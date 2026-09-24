@@ -296,8 +296,19 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
     "ngc7331_quick.json"
 
 #: sha256 of ``json.dumps(plan, sort_keys=True)`` with the minted ids blanked.
+#:
+#: MOVED ONCE, ON PURPOSE (#150). The fixture's ``rotation_deg`` went from 23.4
+#: to null and this hash was recomputed with it: 23.4 was the TARGET palette
+#: default, which the quick wizard never overwrites, so every quick flow was
+#: commanding a connected rotator to PA 23.4. The default is now -1 ("any
+#: angle"), which ``to_plan`` compiles to None. No other field moved. RED
+#: under mutant "restore the 23.4 palette default" (nodes.py):
+#:
+#:     AssertionError: assert {'apply_filte...s': None, ...} == {'apply_filte...s': None, ...}
+#:       Differing items:
+#:       {'targets': [{'acquisition': 'cycle', ...}]} != {'targets': [{'acquisition': 'cycle', ...}]}
 GOLDEN_SHA256 = \
-    "1ec94e5b01d915e2ef510fd58849d890fbed016438672e69d33b519bd055487b"
+    "4bb0e667cc784f7c4f0c6273c5a79e163314b93c0b0f62c48f220103899d5076"
 
 
 def _blank_ids(node):

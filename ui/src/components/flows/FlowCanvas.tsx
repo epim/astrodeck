@@ -38,6 +38,7 @@ import { useStore } from "../../store";
 import { NODE_DEFS } from "./nodeDefs";
 import { clampZoom, nodeW, type FlowTier, type PortDir } from "./geometry";
 import type { PortKind } from "./flowsTypes";
+import { flowLoopRefusal, type ProposedWire } from "./flowLoop";
 import FlowNodeCard from "./FlowNodeCard";
 import FlowWireLayer from "./FlowWireLayer";
 import FlowWireDelete from "./FlowWireDelete";
@@ -103,11 +104,18 @@ export type WireDropResult =
  *  landed on, or null for a miss.
  *
  *  The three fields are pipe-delimited and UNESCAPED (§D.4), which is why
- *  `flowsSlice.nextNodeId()` mints ids that cannot contain a `|`. */
+ *  `flowsSlice.nextNodeId()` mints ids that cannot contain a `|`.
+ *
+ *  `loopOf` is the flow-loop check (#149), built by the surface from the live
+ *  graph - `flowLoop.flowLoopRefusal` over the current nodes and edges. It is
+ *  OPTIONAL so every existing call shape still compiles; a caller that passes
+ *  none keeps the old grammar, and `flowsConnect` still refuses the wire behind
+ *  it, but only into the flow log - the operator gets no toast. */
 export function resolveWireDrop(
   wire: { from: string; fromPort: string },
   portAttr: string | null,
   kindOf: (nodeId: string, portId: string, dir: PortDir) => PortKind | null,
+  loopOf?: (w: ProposedWire) => string | null,
 ): WireDropResult {
   // Rule 7: dropped on empty canvas. Clears the wire, no toast, no edge.
   if (!portAttr) return { ok: false, refusal: null };
@@ -133,8 +141,17 @@ export function resolveWireDrop(
         `${kIn === "flow" ? "a flow" : "an event"} input`,
     };
   }
-  // Rule 5 (single-occupancy input) and rule 8 (no toast on success) are the
-  // store's: `flowsConnect` filters the incumbent out before it concats.
+  // No flow loops (#149). A flow wire whose destination already reaches its
+  // source closes a circle the run cursor cannot travel: the compiler drops
+  // every stage on it, and none of them shoots a frame. Refused here, out loud,
+  // with the server's own sentence - the one the 422 at save would give, but
+  // while the operator's finger is still on the wire. It never overlaps rule 4:
+  // a loop is only ever a flow-to-flow wire, which rule 4 has just let through.
+  const loop = loopOf?.({ from: wire.from, fromPort: wire.fromPort, to: nodeId, toPort: portId });
+  if (loop) return { ok: false, refusal: loop };
+  // Rule 5 (single-occupancy FLOW input; an event input fans in, #152) and
+  // rule 8 (no toast on success) are the store's: `flowsConnect` filters a
+  // flow input's incumbent out before it concats.
   return { ok: true, nodeId, portId };
 }
 
@@ -235,6 +252,15 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
     },
     [],
   );
+
+  /** The flow-loop check the drop resolver is handed (#149), read off the LIVE
+   *  graph at drop time, the way `kindOf` is. Closing over this render's
+   *  `nodes` and `edges` would put the graph in the window listeners'
+   *  dependency list and re-attach all five of them on every edit. */
+  const loopOf = useCallback((w: ProposedWire): string | null => {
+    const { nodes: ns, edges: es } = useStore.getState().flows.graph;
+    return flowLoopRefusal(ns, es, w);
+  }, []);
 
   // ── the one exit from a held gesture ────────────────────────────────────
   /** EVERY path that can end a gesture routes through here — pointerup,
@@ -416,7 +442,7 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
       const wire = useStore.getState().flows.wire;
       if (!wire) return;
       const host = document.elementFromPoint?.(e.clientX, e.clientY)?.closest?.("[data-port]");
-      const res = resolveWireDrop(wire, host?.getAttribute("data-port") ?? null, kindOf);
+      const res = resolveWireDrop(wire, host?.getAttribute("data-port") ?? null, kindOf, loopOf);
       if (!res.ok && res.refusal) {
         enqueueToast({ level: "warning", title: res.refusal });
       }
@@ -445,7 +471,7 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
       window.removeEventListener("blur", onWinBlur);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [endGesture, endWire, enqueueToast, kindOf, moveNode, moveWire, setPan, setZoom, toWorld]);
+  }, [endGesture, endWire, enqueueToast, kindOf, loopOf, moveNode, moveWire, setPan, setZoom, toWorld]);
 
   // ── wheel zoom, anchored under the cursor ───────────────────────────────
   // A REAL `{ passive: false }` listener. React registers `onWheel` as passive,

@@ -11,8 +11,14 @@
 // on this screen and they are the places a card would otherwise invent a value:
 // the meta line's FORMAT is designed but not served (§E.1), and `last_result`
 // has two more values than the design has copy (§G-26).
+//
+// A ROW FOR A FILE THIS BUILD CANNOT OPEN (#153) is drawn with the same card:
+// the server lists it with an `unreadable` reason so a damaged or newer flow
+// does not look deleted. The card prints that reason, is honest-disabled, and a
+// press states the reason instead of opening - every route but the listing
+// answers 404 for such an id.
 import { memo } from "react";
-import type { FlowCard } from "../../lib/flowsApi";
+import { unreadableReason, type FlowCard } from "../../lib/flowsApi";
 import type { LedState } from "../../types";
 import { Led } from "../ui";
 
@@ -59,6 +65,10 @@ export function cardStatus(lastResult: string): CardStatus {
   }
 }
 
+/** The status word of an unreadable row. Not `NEVER RUN`, which is literally
+ *  true of it (the server claims no run) and reads as a flow waiting to be run. */
+const UNREADABLE_STATUS: CardStatus = { led: "warn", text: "CANNOT OPEN", cls: "text-warn" };
+
 // Chrome lifted from the prototype (dc.html:106): 16px pad, 150px floor,
 // radius 16, backdrop-blur 14, and an inset 1px white-5% top highlight that has
 // no token. Both shadows are Tailwind utilities rather than an inline `style`
@@ -91,15 +101,19 @@ export interface FlowLibraryCardProps {
    *  pointer is a claim they have to go and verify. Ringed AND labelled -- the
    *  ring alone would be colour-only. */
   highlight?: boolean;
+  /** Where an unreadable card's press goes: the reason, instead of `onOpen`.
+   *  The library raises it as a warning toast, so the press is never silent. */
+  onExplain?: (reason: string) => void;
 }
 
 /** `React.memo`'d and store-free: the card takes everything it draws as props,
  *  so re-rendering the library's toolbar (a keystroke in the filter box) does
  *  not re-render every card body. */
 export const FlowLibraryCard = memo(function FlowLibraryCard(
-  { card, onOpen, highlight = false }: FlowLibraryCardProps,
+  { card, onOpen, highlight = false, onExplain }: FlowLibraryCardProps,
 ) {
-  const status = cardStatus(card.last_result);
+  const unreadable = unreadableReason(card);
+  const status = unreadable ? UNREADABLE_STATUS : cardStatus(card.last_result);
   return (
     <button
       type="button"
@@ -107,11 +121,22 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
       // requires it VISIBLE — it is the only handle on a card.
       data-flow-id={card.id}
       data-flow-highlight={highlight ? "true" : undefined}
-      onClick={() => onOpen(card.id)}
+      // Honest-disabled, never `disabled`: the native attribute would drop the
+      // card and its reason out of the accessibility tree and out of the tab
+      // order, and leave a press that says nothing.
+      aria-disabled={unreadable ? true : undefined}
+      title={unreadable ?? undefined}
+      // NEVER `flowsOpen` for an unreadable row. The server answers 404 for its
+      // id, and `flowsOpen` writes that 404 into `libraryError` - which would
+      // replace a card that explains itself with "Could not read the flow
+      // library", a claim about the whole library that is false.
+      onClick={() => { if (unreadable) { onExplain?.(unreadable); return; } onOpen(card.id); }}
       className={`text-left flex flex-col gap-1.5 lg:gap-2 p-3 lg:p-4 rounded-2xl
                   bg-panel backdrop-blur-[14px] text-ink border
-                  cursor-pointer transition-colors ${CARD_MIN_H} ${CARD_SHADOW} ${
-                    highlight ? "border-accent" : `border-line ${CARD_HOVER}`}`}
+                  transition-colors ${CARD_MIN_H} ${CARD_SHADOW} ${
+                    unreadable ? "cursor-default border-line"
+                      : highlight ? "cursor-pointer border-accent"
+                        : `cursor-pointer border-line ${CARD_HOVER}`}`}
     >
       <span className="font-display font-semibold text-[12.5px] tracking-[0.1em] uppercase">
         {card.name}
@@ -132,6 +157,14 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
                        lg:line-clamp-none [text-wrap:pretty]">
         {card.tagline}
       </span>
+      {/* The reason, as text on the card and NOT clamped: it is the whole
+          answer to "where did my flow go?", and a row carries no tagline to
+          make room for. The server caps it at a card line. */}
+      {unreadable && (
+        <span data-flow-unreadable className="text-[12px] text-warn leading-[1.45] [text-wrap:pretty]">
+          {unreadable}
+        </span>
+      )}
       <span className="font-mono text-[10px] text-faint">{cardMeta(card)}</span>
       <span className={`flex items-center gap-[7px] font-mono text-[10px] ${status.cls}`}>
         <Led state={status.led} label={status.text} />

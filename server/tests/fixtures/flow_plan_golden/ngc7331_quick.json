@@ -68,7 +68,7 @@
       "mosaic_group": null,
       "name": "NGC 7331",
       "ra_hours": 22.618055555555557,
-      "rotation_deg": 23.4,
+      "rotation_deg": null,
       "schedule": {
         "max_hour_angle_h": 0.0,
         "max_moon_illum_pct": 0.0,

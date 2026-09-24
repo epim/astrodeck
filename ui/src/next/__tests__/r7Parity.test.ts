@@ -95,6 +95,13 @@ const LOGIC_MODULES: Record<string, string> = {
   "components/flows/flowRunControls":
     "2.1 - useFlowRunControls, runBlockedReason, isRunPhaseLive: one place decides " +
     "whether RUN is allowed and what the refusal says.",
+  // Mutant "drop the flowLoop entry" went red, verbatim: "2 legacy import(s)
+  // outside the allow-lists: hubs/session/flows/canvas/FlowCanvasSurface.tsx
+  // imports flowLoopRefusal from components/flows/flowLoop; ... imports type
+  // ProposedWire from components/flows/flowLoop".
+  "components/flows/flowLoop":
+    "S0 #149 - flowLoopRefusal and FLOW_LOOP_REFUSAL: the flow-loop rule both drop resolvers " +
+    "and flowsConnect share, in the server sentence; a copy is how two editors drift apart.",
   "components/sequence/sessionDates":
     "2.1 - night-boundary maths, shared by the gallery and the files sheet.",
   "components/sequence/stepDefaults":

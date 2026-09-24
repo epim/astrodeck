@@ -24,6 +24,29 @@ export interface FlowCard {
   last_run: number | null;
   last_result: string;
   updated_ts: number;
+  /** Present ONLY on a row for a file this build cannot open (#153), and then
+   *  it is the whole reason, already worded for display: "saved by a newer
+   *  AstroDeck (schema 4); update to open it", or "unreadable: <reason>"
+   *  (server `FlowStore._row`). Every other route answers 404 for such an id,
+   *  so a row is drawn read-only and never opened or run. Absent from every
+   *  card an older server sends. Read it through `unreadableReason`. */
+  unreadable?: string;
+}
+
+/** What an unreadable row says when the server marked it with an empty
+ *  reason. The KEY is the server saying "this is a row, not a record"; an
+ *  empty sentence there is a broken reason, never a readable flow. */
+export const UNREADABLE_FALLBACK = "this AstroDeck cannot open this flow";
+
+/** Why this card cannot be opened or run, or null for an ordinary card.
+ *
+ *  The one reading of `unreadable` that every surface shares - both libraries
+ *  and SESSION / NOW's runnable list - so no surface decides on its own that an
+ *  empty or odd value means "go ahead and open it". */
+export function unreadableReason(card: Pick<FlowCard, "unreadable">): string | null {
+  const r = card.unreadable as unknown;
+  if (r === undefined || r === null) return null;
+  return typeof r === "string" && r.trim() !== "" ? r : UNREADABLE_FALLBACK;
 }
 
 export interface FlowFolder {

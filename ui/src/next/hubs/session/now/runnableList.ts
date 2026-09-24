@@ -20,7 +20,7 @@
 // alone - which is what lets a test assert the order from the rows themselves
 // rather than re-deriving it from the inputs.
 
-import type { FlowCard } from "../../../../lib/flowsApi";
+import { unreadableReason, type FlowCard } from "../../../../lib/flowsApi";
 import type { PlanRow } from "../../../../api/plans";
 import { fmtDuration } from "../../../lib/format";
 
@@ -124,6 +124,11 @@ export function buildRunnables(inp: RunnableInputs): Runnable[] {
 
   for (const card of cards) {
     if (!card || typeof card.id !== "string" || card.id === "") continue;
+    // A FILE THIS BUILD CANNOT OPEN IS NOT RUNNABLE (#153). The library lists it
+    // as a row so a damaged flow does not look deleted, and the libraries say
+    // why; this list only carries promises that RUN starts a night, and every
+    // route but the listing answers 404 for that id.
+    if (unreadableReason(card) !== null) continue;
     const live = engineBusy && inp.campaignFlowId === card.id;
     const resumable = !live
       && armed != null && armed.origin === "flow" && armed.origin_id === card.id;

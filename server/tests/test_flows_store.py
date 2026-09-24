@@ -245,8 +245,12 @@ class TestRotationZeroMeantAnyAngle:
             "the rotator to PA 0")
 
     def test_a_v1_flow_with_a_real_angle_is_left_alone(self, store):
-        self._write(store, 1, 23.4)
-        assert self._rotation_of(store) == 23.4
+        # 30, not 23.4. 23.4 was the TARGET palette default under v1 as well,
+        # so FLOW_SCHEMA 3 rewrites a v1 23.4 to "any angle" (#150,
+        # test_flows_schema_v3) and it no longer stands for "a real angle".
+        # RED under mutant "migration keyed on != 23.4": assert -1 == 30
+        self._write(store, 1, 30)
+        assert self._rotation_of(store) == 30
 
     def test_a_v2_flow_that_says_zero_means_zero(self, store):
         self._write(store, 2, 0)

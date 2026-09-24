@@ -422,12 +422,15 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       const before = graph;
       if (prefs.extras.flats) graph = withDuskFlats(graph);
       if (prefs.extras.darks) graph = withDarksAfter(graph);
-      // THE CAMERA ANGLE, which nothing sent before. `wizard.quick` leaves the
-      // node vocabulary's shipped `rotation: 23.4` on the TARGET node and only
-      // replaces name/ra/dec, and `to_plan` reads that as a real position angle
-      // - so every quick flow was quietly asking a connected rotator for PA
-      // 23.4 while the framing card promised something else. -1 is `to_plan`'s
-      // own "no angle constraint" sentinel (0 is a REAL position angle there).
+      // THE CAMERA ANGLE, which nothing sent before. `wizard.quick` replaces
+      // only name/ra/dec on the TARGET node, so the node vocabulary's default
+      // IS the angle. Until #150 that default was `rotation: 23.4`, which
+      // `to_plan` read as a real position angle - so every quick flow was
+      // quietly asking a connected rotator for PA 23.4 while the framing card
+      // promised something else. The default is now -1, `to_plan`'s own "no
+      // angle constraint" sentinel (0 is a REAL position angle there), and this
+      // still writes the angle explicitly: a rig on an older server still
+      // ships 23.4.
       graph = withRotation(graph, commandedPa(mine ? (framing?.rotation_deg ?? 0) : 0));
       if (isPool) {
         graph = withTargetPool(graph, poolRows.rows.map((r) => (r.kind === "solar_system" ? r.id : r.name || r.id)));

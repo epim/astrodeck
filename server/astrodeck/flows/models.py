@@ -49,6 +49,13 @@ _FOLDER_RE = re.compile(r"^[\w][\w \-]{0,48}(/[\w][\w \-]{0,48}){0,3}$", re.UNIC
 EXAMPLES_FOLDER = "Examples"
 MY_FLOWS_FOLDER = "My flows"
 
+#: The refusal for a flow back-edge, filled with the two nodes' NODE_DEFS labels
+#: (#149). The editor's drop resolvers print the same sentence, so the literal
+#: is mirrored in the UI and a test pins the two together: an operator must read
+#: one rule, not two paraphrases of it.
+FLOW_LOOP_REFUSAL = ("this flow loops back on itself at {src} -> {dst}; "
+                     "a flow lane runs once")
+
 
 class FlowNode(BaseModel):
     id: str
@@ -166,13 +173,101 @@ class FlowGraph(BaseModel):
                     out.append(f"input {dst.type}.{e.toPort} is wired twice")
                 seen_inputs.add(key)
 
+        # A FLOW LANE RUNS ONCE (#149). One wire per input does not stop a
+        # back-edge: the editor's replace-on-drop turns FILTER CYCLE `complete`
+        # -> TARGET `arm` into one by swapping out the TARGET's dusk wire. The
+        # compiler's topological walk then drops every node in the loop, so the
+        # save succeeded, the plan held no frames for the looped stages and the
+        # doctor -- which reasons along wires, all still present -- was clean.
+        for src, dst in self._flow_back_edges():
+            out.append(FLOW_LOOP_REFUSAL.format(
+                src=NODE_DEFS[src.type].label, dst=NODE_DEFS[dst.type].label))
+
         if len(known) != len(self.nodes):
             pass        # already reported as duplicates
         return out
 
+    def _flow_back_edges(self) -> list[tuple[FlowNode, FlowNode]]:
+        """Every back-edge a depth-first walk of the FLOW wires finds.
+
+        FLOW WIRES ONLY. An event wire means "whenever", so pointing backwards
+        closes no circle: SESSION REPORT `done` -> TARGET POOL `advance` spans
+        the whole lane and is how a campaign loops (README §"Node vocabulary").
+
+        DETERMINISTIC, by the same canvas tie-break ``compile.flow_order``
+        uses: roots (no incoming flow wire) in x, y order, then the leftmost
+        node still unvisited, which is how a loop with no way in gets entered;
+        each node's successors in x, y order too. Which wire gets named depends
+        on where the walk enters the loop, so an order taken from the node list
+        would name a different wire for the same drawing. Entering at the
+        leftmost stage names the wire that closes the circle back to it.
+
+        Only an edge into a node still on the walk's stack (grey) is a loop. An
+        edge into a finished node (black) is a second way to reach it, which
+        the fan-in rule above already refuses in its own words.
+        Iterative, so a 400-node graph cannot reach the recursion limit.
+        """
+        by_id: dict[str, FlowNode] = {}
+        for n in self.nodes:
+            by_id.setdefault(n.id, n)       # duplicates are reported above
+        succ: dict[str, list[str]] = {i: [] for i in by_id}
+        indeg: dict[str, int] = {i: 0 for i in by_id}
+        for e in self.edges:
+            src, dst = by_id.get(e.from_), by_id.get(e.to)
+            if src is None or dst is None:
+                continue
+            if (port_kind(src.type, e.fromPort, "out") != "flow"
+                    or port_kind(dst.type, e.toPort, "in") != "flow"):
+                continue
+            succ[src.id].append(dst.id)
+            indeg[dst.id] += 1
+
+        def pos(node_id: str) -> tuple[float, float]:
+            return (by_id[node_id].x, by_id[node_id].y)
+
+        for targets in succ.values():
+            targets.sort(key=pos)           # stable: wire order breaks ties
+        order = sorted(by_id, key=pos)
+
+        white, grey, black = 0, 1, 2
+        colour = {i: white for i in by_id}
+        found: list[tuple[FlowNode, FlowNode]] = []
+        reported: set[tuple[str, str]] = set()
+
+        def walk(start: str) -> None:
+            colour[start] = grey
+            stack = [(start, iter(succ[start]))]
+            while stack:
+                node_id, rest = stack[-1]
+                nxt = next(rest, None)
+                if nxt is None:
+                    colour[node_id] = black
+                    stack.pop()
+                elif colour[nxt] == grey:
+                    if (node_id, nxt) not in reported:
+                        reported.add((node_id, nxt))
+                        found.append((by_id[node_id], by_id[nxt]))
+                elif colour[nxt] == white:
+                    colour[nxt] = grey
+                    stack.append((nxt, iter(succ[nxt])))
+
+        for node_id in [i for i in order if indeg[i] == 0] + order:
+            if colour[node_id] == white:
+                walk(node_id)
+        return found
+
     def with_defaults(self) -> "FlowGraph":
         return self.model_copy(
             update={"nodes": [n.with_defaults() for n in self.nodes]})
+
+
+class MigrationNote(BaseModel):
+    """One thing a read changed in a stored flow, said once to the operator.
+
+    ``key`` names what moved (``rotation`` for FLOW_SCHEMA 3's 23.4 rewrite;
+    the mosaic slice adds ``counts``), ``note`` is the sentence to show."""
+    key: str
+    note: str
 
 
 class FlowRecord(BaseModel):
@@ -192,6 +287,16 @@ class FlowRecord(BaseModel):
     #: record rather than inferred from the folder name so that renaming a
     #: folder can never accidentally make a fixture writable.
     readonly: bool = False
+    #: What ``store._migrate`` rewrote on THIS read, for the editor to say once.
+    #: NOT PERSISTED, and deliberately not ``Field(exclude=True)``: FastAPI
+    #: serialises a response with the same dump, so an excluded field would
+    #: never reach ``GET /api/flows/{id}`` and the note would be computed for
+    #: nobody. The store's writers strip it instead, and ``save`` drops one a
+    #: client sends, so the file never holds a note and a client cannot plant
+    #: one. Once the file is written again - a save, or a run's ``touch_run``,
+    #: which is why ``run_flow`` logs the note as it starts - the file is
+    #: current and the note is gone.
+    migrated: list[MigrationNote] = Field(default_factory=list)
 
     @field_validator("folder")
     @classmethod

@@ -11,12 +11,14 @@
 // template). The server does not serve a kind: `FlowRecord.card()`
 // (`server/astrodeck/flows/models.py:213-219`) is {id, name, folder, tagline,
 // readonly, stages, wires, last_run, last_result, updated_ts} and nothing else,
-// and inferring "this is a calibration flow" from its tagline would be a guess
-// printed as a fact. So the verb carries what the rig ACTUALLY reports - is this
-// flow the run that is live, does it own a dormant session that still owes
-// frames, or neither - and OPEN moves onto the row body, where it is the whole
-// name-and-meta block. Nothing is lost: every flow keeps both verbs, and neither
-// of them claims to know something the server never said.
+// plus `unreadable` on a row for a file this build cannot open (#153,
+// `FlowStore._row`), and inferring "this is a calibration flow" from its
+// tagline would be a guess printed as a fact. So the verb carries what the rig
+// ACTUALLY reports - is this flow the run that is live, does it own a dormant
+// session that still owes frames, or neither - and OPEN moves onto the row
+// body, where it is the whole name-and-meta block. Nothing is lost: every flow
+// keeps both verbs, and neither of them claims to know something the server
+// never said.
 
 import type { JSX } from "react";
 
@@ -65,7 +67,8 @@ export interface FlowRowProps {
   /** Why OPEN cannot act, or null. Null at every breakpoint since the cutover:
    *  the phone opens the stage list instead of being told the canvas is
    *  elsewhere. Kept as a prop because a flow whose id the router cannot reach
-   *  still needs a sentence rather than a dead press. */
+   *  still needs a sentence rather than a dead press - which is exactly an
+   *  unreadable row (#153): the screen passes its `unreadable` reason here. */
   openReason: string | null;
   onRun: () => void;
   onResume: () => void;

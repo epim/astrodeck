@@ -17,7 +17,8 @@ path, and ``engine.start`` is deliberately unguarded — the route-level gates
 that reject an unbounded accepted-quota plan do NOT cover this path. So the
 service calls ``quota_unbounded(plan)`` itself before every attempt and refuses
 (alert + backoff, stay dormant) when it would run forever under persistent
-rejects.
+rejects. ``plan_identity_errors(plan)`` is the second gate on the same terms
+(#156): repeated target or step ids, or a rule naming a repeated target.
 
 THE GATES RUN HERE, NOT ONLY IN THE RUN. This file used to say every safety
 gate ran inside ``engine.start`` / the run itself. That was accurate while the
@@ -38,7 +39,8 @@ from ..config import config_store
 from ..devices.base import GotoRefused
 from ..events import bus
 from . import schedule
-from .models import quota_unbounded, replan_cooling
+from .models import (duplicate_name_warning, plan_identity_errors,
+                     quota_unbounded, replan_cooling)
 from .policy import resolve_policy
 from .session import Session, session_store
 
@@ -338,6 +340,22 @@ class ResumeArm:
             return
         if now < self._retry_at:
             return
+        # The same identity check as the four HTTP start paths (#156), and for
+        # the same reason as the quota refusal below: engine.start is
+        # unguarded. HERE, ahead of `_recover`, because the ladder blind-solves
+        # and re-centres - it moves the mount - and a plan that cannot start
+        # must not cost a slew to find that out. Not a crash: the counter is
+        # untouched, and the session stays dormant and armed for a fix.
+        identity = plan_identity_errors(armed.plan)
+        if identity:
+            bus.log("warning", f"auto-resume refused: plan '{armed.name}' "
+                               f"cannot start: {'; '.join(identity)} — "
+                               f"retrying in {int(RETRY_INTERVAL_S / 60)} min",
+                    "sequence")
+            self._retry_at = now + RETRY_INTERVAL_S
+            self._set_hold(armed, "this plan cannot start: "
+                                  + "; ".join(identity), self._retry_at)
+            return
         # HARD REQUIREMENT: engine.start is unguarded here, so refuse an
         # accepted-quota plan that could loop forever (spec §3 / Task 4 review).
         if quota_unbounded(armed.plan,
@@ -387,6 +405,12 @@ class ResumeArm:
             self._retry_at = now + RETRY_INTERVAL_S
             self._set_hold(armed, refusal, self._retry_at)
             return
+        # Logged HERE, once per resume, and not beside the refusal above: the
+        # early returns in between (devices still booting, a dusk hold) come
+        # back every 60 s tick, and the warning would repeat with them.
+        name_warning = duplicate_name_warning(armed.plan)
+        if name_warning:
+            bus.log("warning", name_warning, "sequence")
         try:
             self.hub.require("camera")
             # A resume is a NEW run and re-reads the standing setpoint, exactly

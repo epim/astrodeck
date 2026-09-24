@@ -39,10 +39,11 @@ def _e(a, ap, b, bp):
 def _one_target(rotation=0, **capture):
     """A minimal runnable graph: dusk -> target -> capture.
 
-    ``rotation`` is passed EXPLICITLY because the TARGET node's shipped default
-    is 23.4 (it mirrors the M31 example), so a graph that simply omits it does
-    not exercise the unset case at all — which is the whole point of the
-    zero-means-no-constraint coercion.
+    ``rotation`` is passed EXPLICITLY so every test states the angle it means.
+    The TARGET node's shipped default was 23.4 (it mirrored the M31 example)
+    until #150 made it -1, "any angle"; a test that leaned on the default
+    would have changed meaning with it, silently, which is the class of the
+    zero-means-no-constraint coercion these tests exist for.
     """
     params = {"filter": "L", "exposure": 120, "gain": 100, "bin": "1",
               "count": 10, "goal": 0}

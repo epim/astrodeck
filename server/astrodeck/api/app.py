@@ -148,7 +148,8 @@ from ..flows.tonight import (banked_hours_from_reports,
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
-from ..sequence.models import quota_unbounded, replan_cooling
+from ..sequence.models import (duplicate_name_warning, plan_identity_errors,
+                               quota_unbounded, replan_cooling)
 from ..sequence.policy import resolve_policy
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
@@ -792,6 +793,27 @@ def _refuse_if_camera_owned() -> None:
     if video_recorder.active:
         raise HTTPException(409, detail={"detail": _VIDEO_OWNS_CAMERA,
                                          "code": "video_owns_camera"})
+
+
+def _refuse_plan_identity(plan: SequencePlan, status: int) -> None:
+    """Refuse a plan whose ids repeat, or whose rules name a repeated target
+    (#156), and log the duplicate-name warning when the plan may start anyway.
+
+    ONE HELPER FOR THE FOUR HTTP START PATHS. ``engine.start`` is deliberately
+    unguarded, so a start path that forgets this check is a start path without
+    it; ResumeArm, the fifth, calls the same pure functions itself.
+
+    ``status`` is the caller's: 422 where the request carries the plan
+    (``/api/sequence/start``, ``/api/flows/{id}/run``), 409 where a stored
+    session does (resume, recover). The session is left exactly as it was, so
+    it stays listed, and can be edited and resumed."""
+    errors = plan_identity_errors(plan)
+    if errors:
+        raise HTTPException(status, detail={"detail": "; ".join(errors),
+                                            "code": "plan_identity"})
+    warning = duplicate_name_warning(plan)
+    if warning:
+        bus.log("warning", warning, "sequence")
 
 
 def _spawn(name: str, coro, *, replace: bool = False) -> dict:
@@ -4815,9 +4837,16 @@ def create_app(*, bind_host: str | None = None,
     @declare(CAP_VIEW_STATUS)
     async def list_flows():
         """The card projection, never the graphs. A library of 30 flows at up
-        to 400 nodes each is megabytes of wires to draw a card wall."""
+        to 400 nodes each is megabytes of wires to draw a card wall.
+
+        FILES THIS BUILD CANNOT OPEN ARE LISTED TOO (#153), after the cards:
+        one saved by a newer AstroDeck, one that does not parse, one that fails
+        validation. Each is a read-only card carrying ``unreadable`` (a reason
+        with no filesystem path in it). Skipping them made a damaged flow look
+        deleted; every other route still answers 404 for them."""
         records = await asyncio.to_thread(flow_store.load_all)
-        return [r.card() for r in records]
+        rows = await asyncio.to_thread(flow_store.unreadable)
+        return [r.card() for r in records] + rows
 
     @app.post("/api/flows", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
@@ -4904,10 +4933,11 @@ def create_app(*, bind_host: str | None = None,
         control.capture (auth/capabilities.py), and a viewer holds neither.
 
         THE RUN GOES THROUGH ``run_flow``, not through a copy of it. That
-        handler applies five guards in a fixed order -- structural errors, the
-        dome refusal, the unmapped list, an unbounded quota, the horizon and the
-        sun -- and its own docstring says a second start path that quietly omits
-        one is how a guard stops being a guard. So this calls it.
+        handler applies its guards in a fixed order -- structural errors, the
+        dome refusal, the unmapped list, repeated ids (#156), an unbounded
+        quota, the horizon and the sun -- and its own docstring says a second
+        start path that quietly omits one is how a guard stops being a guard.
+        So this calls it.
 
         ``accept_unmapped`` IS TRUE, and only that. Every wizard-shaped graph
         carries the same list of node settings the compiler does not carry into
@@ -5098,7 +5128,7 @@ def create_app(*, bind_host: str | None = None,
     async def run_flow(flow_id: str, body: FlowRunBody):
         """Compile the stored graph and hand it to the engine.
 
-        The guards below are the SAME five /api/sequence/start applies, in the
+        The guards below are the SAME ones /api/sequence/start applies, in the
         same order, because a second start path that quietly omits one is how a
         guard stops being a guard.
         """
@@ -5167,6 +5197,10 @@ def create_app(*, bind_host: str | None = None,
 
         if not plan.targets or plan.total_frames() == 0:
             raise HTTPException(422, "plan has no frames")
+        # The compile mints uuid4 ids, so a flow cannot reach this today. It
+        # is here because S1 makes the ids deterministic, and an id collision
+        # would then arrive by this door.
+        _refuse_plan_identity(plan, 422)
         if quota_unbounded(plan, resolve_policy(plan, config_store.cfg())):
             raise HTTPException(400, "count_mode=accepted with both reject "
                                      "guards disabled and no stop boundary can "
@@ -5198,6 +5232,17 @@ def create_app(*, bind_host: str | None = None,
             engine.start(plan, origin="flow", origin_id=flow_id)
         except DeviceError as e:
             raise _err(e)
+
+        # WHAT THIS READ REWROTE, SAID NOW (#150, spec 3.6: the note is shown
+        # once). `touch_run` below writes the record back at FLOW_SCHEMA, which
+        # retires the note for good, and a run started from a list - SESSION /
+        # NOW, the library's RUN verb, the wizard - never opened the editor
+        # that otherwise says it. Without this line a v2 flow's 23.4 would
+        # start shooting at "any angle" and the one sentence saying so would
+        # reach nobody. Only once the engine is going: a refused start writes
+        # nothing, so the file keeps the note for the next read.
+        for note in rec.migrated:
+            bus.log("warning", f"flow '{rec.name}': {note.note}", "flow")
 
         # THE CARD SAID "NEVER RUN" FOREVER. `last_run` has been on FlowRecord
         # since the library shipped and the cards render it; nothing wrote it.
@@ -5354,6 +5399,9 @@ def create_app(*, bind_host: str | None = None,
             raise HTTPException(404, "session not found")
         if s.status != "dormant":
             raise HTTPException(409, f"session is {s.status}, not dormant")
+        # 409, not 422: the stored session is what conflicts, and it stays
+        # listed and dormant for the operator to fix.
+        _refuse_plan_identity(s.plan, 409)
         # Same unbounded accepted-quota guard as /api/sequence/start and
         # /api/sequence/recover (Task 4 review, IMPORTANT): resume starts the
         # engine on this same loop, so a session carrying the unbounded
@@ -7335,6 +7383,9 @@ def create_app(*, bind_host: str | None = None,
         # in either UI saying the two had met. ``force`` does not reach this:
         # it overrides the horizon pre-flight, not another lane's hardware.
         _refuse_if_camera_owned()
+        # Repeated ids, or a rule naming a repeated target (#156). Not bypassed
+        # by `force` either: it is the plan's shape, not tonight's sky.
+        _refuse_plan_identity(plan, 422)
         # Unbounded accepted-quota guard (Task 4 review, IMPORTANT): the
         # accepted-mode capture loop (_run_step, spec §3) only terminates via an
         # accepted frame, a reject-guard trip, or a frozen stop boundary — the
@@ -7657,6 +7708,7 @@ def create_app(*, bind_host: str | None = None,
         s = session_store.recoverable()
         if s is None:
             raise HTTPException(404, "no resumable sequence found")
+        _refuse_plan_identity(s.plan, 409)
         # Same unbounded accepted-quota guard as /api/sequence/start (Task 4
         # review, IMPORTANT) — resume starts the engine on this same loop, so a
         # dormant session carrying the unbounded combination must be refused

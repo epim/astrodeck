@@ -585,6 +585,28 @@ class SequenceEngine:
         self._rule_failures: dict[str, int] = {}
         self._rejected = 0
         self._night_rejects = 0   # per-night consecutive-reject counter (spec §3)
+        #: Consecutive rejects per STEP, keyed "<target.id>:<step.id>" (the
+        #: `_done` key), cleared when that step banks an accepted frame and at
+        #: run start (#147).
+        #:
+        #: ENGINE STATE, NOT A LOCAL, because a cycle visit is one attempt
+        #: deep. It used to restart at every `_run_step` call, which only
+        #: worked while an accepted-mode visit kept shooting its rejects
+        #: without counting them. Once a visit is bounded by attempts, a local
+        #: counter can never reach `max_consecutive_rejects` again and the
+        #: per-step guard silently stops working in cycle mode.
+        self._step_rejects: dict[str, int] = {}
+        #: Steps set aside for the rest of THIS run by the per-step reject
+        #: guard, same key, mapped to the sentence that was logged. Set aside
+        #: is not done: the ledger still owes the frames, the session ends
+        #: dormant and a later night picks the step up. Not persisted (S0), so
+        #: it is cleared at run start.
+        self._set_aside: dict[str, str] = {}
+        #: Science exposures `_run_step` has taken this run, accepted or
+        #: rejected. `_frames_done` counts accepted frames only; this is what
+        #: the accepted-mode cycle anti-spin compares (#147), because a pass
+        #: of rejects is a rough pass, not a spin.
+        self._exposures_taken = 0
         # one-shot latch for the "guide RMS gate can't be judged in arcsec" notice
         self._rms_unit_warned = False
         # Meridian-flip arming latch. A GEM flip is owed only when a target is
@@ -622,6 +644,26 @@ class SequenceEngine:
         #: Keyed by target id, cleared only at run start — a recovery that can
         #: loop at 3 a.m. is worse than the bug it recovers from.
         self._tracking_recovered: set[str] = set()
+        # --- the idle-clock park-hold (#165) ----------------------------------
+        # The hazard is a mount TRACKING WITH NOTHING WATCHING IT, and it has
+        # its own clock: it starts when the frame loop stops looking (the last
+        # science exposure, or the end of a target's setup) and runs until the
+        # next target is set up. The teardown used to hang off the length of
+        # ONE computed wait instead, so an eta-0 wait and a constraint wait -
+        # both re-evaluated every 5 s - never park-held at all, and nothing
+        # checked the tracked target's floor or meridian in the meantime (those
+        # checks live in the frame loop). See `_idle_hold_tick`.
+        #: The target the mount was last pointed at and left tracking, by
+        #: `_setup_target`. None until something is acquired: a mount nobody
+        #: pointed is not ours to stop.
+        self._tracked_target: Target | None = None
+        #: Wall time the frame loop last looked at the mount. Read only while
+        #: ``_tracked_target`` is set, and always set with it.
+        self._idle_since = 0.0
+        #: The park-hold latch: open means the next idle park-hold may fire.
+        #: Closed by that park-hold, re-opened by the next `_setup_target`, so
+        #: one idle spell stops tracking ONCE rather than on every 5 s tick.
+        self._idle_hold_open = True
         self._done: dict[str, int] = {}   # "targetId:stepId" -> frames completed
         self._session: Session | None = None   # live ledger (sessions spec §2)
         # In-flight ~512px review-thumbnail renders (Task 6 review, Important
@@ -822,6 +864,9 @@ class SequenceEngine:
         self._rule_failures = {}
         self._rejected = 0
         self._night_rejects = 0
+        self._step_rejects = {}
+        self._set_aside = {}
+        self._exposures_taken = 0
         self._rms_unit_warned = False
         self._flip_armed = False
         self._flip_no_op = set()
@@ -830,6 +875,9 @@ class SequenceEngine:
         self._pre_flip_side = None
         self._flip_owed = False
         self._tracking_recovered = set()
+        self._tracked_target = None
+        self._idle_since = 0.0
+        self._idle_hold_open = True
         self._paused.set()
         self._started_at = time.time()
         self._paused_accum_s = 0.0
@@ -2052,12 +2100,23 @@ class SequenceEngine:
                 # the past anchor this test read "0 seconds from now" and never
                 # park-held, so the mount kept tracking a finished target while
                 # the scheduler span.
+                #
+                # THIS IS NO LONGER THE ONLY TEARDOWN (#165). It is the early
+                # one: a wait known to be long stops tracking at once instead
+                # of after the idle clock runs out. An eta-0 wait (a setting
+                # target below its gate with no crossing ahead) reads 0 here on
+                # every 5 s re-evaluation, and a constraint wait never comes
+                # through this branch at all; `_wait_until`'s idle clock is
+                # what catches both. Through the same latch, so the two never
+                # stop tracking twice for one idle spell.
                 if wait_ts - now > WAIT_TEARDOWN_S:
-                    await self._park_hold()
+                    await self._idle_park_hold(
+                        "the next target is a long wait away")
                 await self._wait_until(wait_ts)
             else:
                 # waiting but no resolvable start_ts (e.g. below-alt with unknown
                 # ETA): a short bounded, cancel-responsive sleep then re-evaluate.
+                # No teardown of its own: the idle clock in `_wait_until` is it.
                 await self._wait_until(time.time() + SCHEDULE_WAIT_STEP_S)
 
         # loop exhausted naturally → all targets ran (or were skipped above).
@@ -2137,12 +2196,25 @@ class SequenceEngine:
         """Bounded, cancel- and pause-responsive wait until ``deadline_ts`` (or a
         re-evaluation tick).
 
-        The caller stops tracking (park-hold) before a long wait, so the mount is
-        idle here rather than tracking a finished target into the pier. We also run
-        the safety gate every tick — a wait used to be a safety blind spot (the gate
-        only ran per frame/slew), so rain during a multi-hour inter-target wait
-        produced no reaction. No frames flow while waiting, so clear the watchdog's
-        progress-expected flag (else it pages a false 'no progress' UNSAFE).
+        THE MOUNT IS WATCHED HERE TOO (#165). Nothing else looks at it while the
+        scheduler waits: the floor and meridian checks run per frame, the safety
+        gate below has no target, and sun_watch stands down while a sequence
+        runs. The caller used to stop tracking only before a wait it had
+        computed to be long, which an eta-0 wait and a constraint wait never
+        are - each is re-evaluated every 5 s - so the last target was tracked
+        with nothing watching until its window closed. Every tick now asks
+        `_idle_hold_tick` whether the target the mount was left tracking should
+        be let go: after ``WAIT_TEARDOWN_S`` of idle, at once if it has sunk
+        below the mount's floor, or at once if it reaches its flip point before
+        the next tick. It stops tracking ONCE per idle spell (a latch the next
+        `_setup_target` re-opens); the next target's setup re-slews and
+        restores tracking, as it always has after a long wait.
+
+        We also run the safety gate every tick — a wait used to be a safety
+        blind spot (the gate only ran per frame/slew), so rain during a
+        multi-hour inter-target wait produced no reaction. No frames flow while
+        waiting, so clear the watchdog's progress-expected flag (else it pages a
+        false 'no progress' UNSAFE).
 
         AT LEAST ONE PASS, ALWAYS — a do-while, not a while. This used to test
         the deadline first, so a deadline already in the PAST returned instantly
@@ -2167,6 +2239,8 @@ class SequenceEngine:
             # sustained unsafe reading at the poll cadence (target=None: no floor
             # check, nothing to re-acquire yet).
             await self._safety_gate(context="frame")
+            # ...and the mount, which the gate above cannot see (#165).
+            await self._idle_hold_tick()
             # A FLOOR ON THE SLEEP, not an early return. Returning here on a
             # non-positive remainder is what let a past deadline spin: the
             # caller's next re-evaluation lands on the same anchor immediately.
@@ -2179,10 +2253,135 @@ class SequenceEngine:
             if remaining <= 0:
                 return
 
+    async def _idle_hold_tick(self) -> None:
+        """One idle-clock look at the mount (#165), taken on every
+        `_wait_until` tick: stop tracking the target the mount was left on when
+        `_idle_hold_reason` has a reason, once per idle spell.
+
+        NOTHING ACQUIRED, NOTHING TO STOP. Before the first `_setup_target` the
+        mount is wherever the operator left it, and the scheduler's planned-wait
+        rule still covers a long first wait exactly as it always has.
+        """
+        target = self._tracked_target
+        if target is None or not self._idle_hold_open:
+            return
+        why = await self._idle_hold_reason(target)
+        if why:
+            await self._idle_park_hold(why)
+
+    async def _idle_hold_reason(self, target: Target) -> str | None:
+        """Why the mount should stop tracking ``target`` now, in words, or None.
+
+        Three checks, each driven by the HAZARD rather than by the wait the
+        scheduler happens to be in ("safety rides value paths"):
+
+        1. The idle clock: ``WAIT_TEARDOWN_S`` since the frame loop last looked
+           (the last science exposure, or the end of the target's setup).
+        2. The floor: the target's LIVE altitude, not a projection, is below the
+           mount's effective floor (min_alt, horizon profile, no-go wedge).
+           Asked of `_altitude_limit_verdict`, the predicate the slew gate
+           raises on, so the two cannot disagree about where the floor is.
+        3. The flip point, reached before the next tick (`_idle_flip_due`).
+
+        With no saved site, 2 and 3 cannot be answered and do nothing; 1 needs
+        no sky, so it still bounds the idle spell.
+
+        WORDS ONLY in the answer, no altitude and no minutes. Nothing about the
+        decision depends on the number, and a number in a log line at 3 a.m. is
+        one more thing to misread as a measurement of something else.
+        """
+        now = time.time()
+        if now - self._idle_since >= WAIT_TEARDOWN_S:
+            return (f"{target.name}: nothing has been shot for a while and the "
+                    f"mount is still tracking it")
+        verdict = self._altitude_limit_verdict(target, projected=False,
+                                               cfg=self._cfg)
+        if verdict is not None and verdict[0] == "floor":
+            return f"{target.name} has sunk below the mount's altitude floor"
+        if await self._idle_flip_due(target, now):
+            return f"{target.name} has reached its meridian flip point"
+        return None
+
+    async def _idle_flip_due(self, target: Target, now: float) -> bool:
+        """Does ``target`` reach the plan's flip point before the next tick?
+
+        The flip point is the PLAN's lead before transit (`_plan_flip_lead_s`).
+        Idle, nothing takes the flip, and a GEM tracking on past it runs into
+        its own limit and then counterweight-up toward the pier. NOT
+        `_flip_lead_s`: that one drops to zero once a mount has shown it cannot
+        flip early (#127) or a target's early flip changed nothing, which is
+        right for when to ATTEMPT a flip and wrong here - the AM5 that taught
+        it stops tracking minutes before transit, and letting an idle mount go
+        costs nothing. "Before the next tick" is one ``SCHEDULE_WAIT_STEP_S``
+        ahead, the longest `_wait_until` sleeps between two looks.
+
+        A target more than the lead plus the arm margin past transit was
+        acquired on the far side and owes nothing: `schedule.flip_should_arm`,
+        the boundary the flip latch itself arms on. The one exemption is
+        `schedule.flip_can_be_skipped`, asked as `_maybe_meridian_flip` asks it.
+        An unreadable pier side reads as a GEM, so a mount that cannot say
+        stops tracking; for an idle mount that costs nothing.
+
+        No saved site: False. Hour angle at the 0,0 default is the Gulf of
+        Guinea's, and the idle clock bounds this mount without it.
+        """
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            return False
+        lat, lon = latlon
+        try:
+            ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon, now)
+        except Exception:                # noqa: BLE001 - cannot say is not due
+            return False
+        lead_s = self._plan_flip_lead_s()
+        if not schedule.flip_should_arm(ttf_h, lead_s / 60.0):
+            return False
+        if ttf_h * 3600.0 - lead_s > SCHEDULE_WAIT_STEP_S:
+            return False
+        side = "unknown"
+        tel = self.hub.devices.get("telescope")
+        if tel is not None:
+            try:
+                side = (await asyncio.wait_for(tel.pier_side(),
+                                               MOUNT_QUERY_TIMEOUT_S)).value
+            except asyncio.CancelledError:
+                raise
+            except Exception:            # noqa: BLE001 - unreadable reads as a GEM
+                side = "unknown"
+        return not schedule.flip_can_be_skipped(target.dec_deg, lat, side)
+
+    async def _idle_park_hold(self, why: str) -> None:
+        """Stop tracking the idle mount, once per idle spell.
+
+        The latch closes here and only `_setup_target` re-opens it, so the idle
+        clock, the floor, the flip point and the scheduler's planned-wait rule
+        all spend the same single park-hold. ``why`` leads the log line."""
+        if not self._idle_hold_open:
+            return
+        self._idle_hold_open = False
+        bus.log("info", f"{why} — stopping tracking until the next target is "
+                        f"set up", "sequence")
+        await self._park_hold()
+
     def _target_complete(self, ti: int, target: Target) -> bool:
+        """Has this target got everything it asked for? ONE definition of done
+        (#158): every step answers `_step_complete`, the question the cycle
+        driver asks.
+
+        This used to compare the SUM of `_done` with the sum of the counts,
+        while `_step_complete` asks the ledger in accepted mode. The two
+        agreed only by construction (a regrade is refused during a run and
+        `_done` is re-seeded at start), and the sum let one step over its
+        count hide another step under it. Either way the scheduler skipped,
+        as "already complete", a target the session still owed.
+
+        ``total > 0`` STAYS. A target with no steps, or only zero-count steps,
+        has never been "already complete", and ``all()`` over nothing is True.
+        """
         total = sum(s.count for s in target.steps)
-        done = sum(self._done.get(f"{target.id}:{s.id}", 0) for s in target.steps)
-        return total > 0 and done >= total
+        return total > 0 and all(self._step_complete(target, s)
+                                 for s in target.steps)
 
     def _enforce_stop_boundary(self, target: Target) -> None:
         """Raise :class:`StopTarget` when the target's FROZEN stop boundary has
@@ -2371,9 +2570,20 @@ class SequenceEngine:
                     bus.log("warning",
                             f"{target.name}: the mount refused to track on the "
                             f"way to the target ({e})", "sequence")
-                    if not await self._recover_from_tracking_refusal(target):
+                    # THE RECOVERY'S OWN CENTRING, NOT A CLAIM ABOUT IT (#171).
+                    # The recovery ends in a `goto_and_center` of its own, and
+                    # this used to replace that answer with a fabricated
+                    # ``{"centered": True}`` - so a re-centre that never
+                    # converged, which the recovery had just logged, reached
+                    # everything below as a centred target. The measurement
+                    # comes back through ``centring``, and the recovery leaves
+                    # the report of a miss to the line below, so it is said
+                    # once rather than twice.
+                    centring: dict = {}
+                    if not await self._recover_from_tracking_refusal(
+                            target, centring=centring):
                         raise
-                    result = {"centered": True, "error_arcmin": None}
+                    result = centring
                 if not result["centered"]:
                     # error_arcmin is None on the solve-failure and motion-fence
                     # abort paths (hub.goto_and_center degrades to a raw GoTo) —
@@ -2428,6 +2638,15 @@ class SequenceEngine:
                             raise
                     else:
                         raise
+            # THE MOUNT IS NOW TRACKING THIS TARGET, and whatever happens next
+            # in this setup - a focus sweep, a guider that will not start and a
+            # StopTarget that skips the target - it is left tracking it. So
+            # this is where the idle clock learns what to watch (#165), not the
+            # end of the method: a setup that raises after the slew must not
+            # leave the park-hold watching the previous target, or nothing.
+            self._tracked_target = target
+            self._idle_since = time.time()
+            self._idle_hold_open = True
 
         if target.autofocus_first and "focuser" in self.hub.devices:
             # THE CENTRING IS SPENT BY THE TIME GUIDING STARTS. Measured
@@ -2508,6 +2727,9 @@ class SequenceEngine:
         # and anchor its clock to NOW so a slow slew/solve/AF that just finished
         # doesn't instantly read as a stall against the last target's frame stamp.
         self._last_frame_at = time.time()
+        # ...and the idle clock the same way (#165): a slow focus sweep and
+        # guider start are not idle time to charge against the frame loop.
+        self._idle_since = time.time()
         self._progress_expected = True
 
     def _arm_meridian_flip(self, target: Target) -> None:
@@ -2800,25 +3022,60 @@ class SequenceEngine:
         that can never complete — a filter the wheel does not have, a quota the
         night cannot reach — would spin this loop forever between frames,
         which is the one failure a driver like this must not have.
+
+        WHICH COUNTER BOUNDS WHAT (#147). A VISIT is ``per_visit`` attempts,
+        counted by ``_run_step`` and rejects included. A PASS is judged by a
+        counter that depends on the count mode:
+
+        * accepted mode compares ``_exposures_taken``, accepted plus rejected.
+          A pass of rejects is a rough pass, not a spin; the per-step reject
+          guard (a step set aside) and the night guard bound a step that keeps
+          rejecting. Comparing accepted frames here would take the target off
+          the night after one reject per step.
+        * attempts mode compares ``_frames_done``. A discarded frame
+          (``hfr_reject_action`` discard) never advances ``_done`` and no reject
+          guard runs in that branch, so nothing else can see a pass that banks
+          nothing. Comparing exposures there would spin on discards forever.
+
+        A step SET ASIDE by the per-step reject guard is left out of the
+        pending list in both modes (and ``_run_step`` returns at once for it).
+        It is still owed in the ledger. When every step still owed is set
+        aside, the target's visit loop ends.
         """
         steps = list(enumerate(target.steps))
         if target.acquisition != "cycle":
             for si, step in steps:
+                if f"{target.id}:{step.id}" in self._set_aside:
+                    continue
                 await self._run_step(ti, si, target, step)
             return
 
+        quota = self.plan is not None and self.plan.count_mode == "accepted" \
+            and not target.calibration
+
+        def _pass_counter() -> int:
+            return self._exposures_taken if quota else self._frames_done
+
         rounds = 0
         while True:
-            pending = [(si, s) for si, s in steps
-                       if not self._step_complete(target, s)]
+            owed = [(si, s) for si, s in steps
+                    if not self._step_complete(target, s)]
+            pending = [(si, s) for si, s in owed
+                       if f"{target.id}:{s.id}" not in self._set_aside]
             if not pending:
+                if owed:
+                    names = ", ".join(s.filter or "no filter" for _, s in owed)
+                    bus.log("warning",
+                            f"{target.name}: every step still owed is set aside "
+                            f"for tonight ({names}) — moving on; the ledger "
+                            f"keeps them owed for another night", "sequence")
                 return
             rounds += 1
-            before = self._frames_done
+            before = _pass_counter()
             for si, step in pending:
                 await self._run_step(ti, si, target, step,
                                      max_frames=max(1, int(step.per_visit or 1)))
-            if self._frames_done == before:
+            if _pass_counter() == before:
                 names = ", ".join(s.filter or "no filter" for _, s in pending)
                 bus.log("warning",
                         f"{target.name}: a full pass took no frames with "
@@ -2838,10 +3095,31 @@ class SequenceEngine:
 
         ``None`` means run to completion, which is what block acquisition does
         and what every existing caller gets.
+
+        WHICH COUNTER BOUNDS WHAT (#147):
+
+        * ``taken_this_visit`` bounds the VISIT, and counts ATTEMPTS, accepted
+          or rejected, in both count modes. The accepted-mode reject branch
+          used not to count, so one rejecting filter held the whole cycle for
+          up to ``max_consecutive_rejects`` subs a round.
+        * ``_step_rejects[key]`` bounds the STEP across visits: consecutive
+          rejects in accepted mode, cleared when this step banks an accepted
+          frame. At ``max_consecutive_rejects`` the step is set aside for the
+          run and this method returns at once for it from then on.
+        * ``_night_rejects`` bounds the NIGHT: consecutive rejects across
+          every step and target, ending it with ``NightQualityStop``.
+        * ``_exposures_taken`` goes up once per exposure this loop opens, for
+          the accepted-mode pass test in ``_run_steps``. An attempts-mode
+          retake, taken inside ``_handle_reject``, is not counted; attempts
+          mode never reads this counter.
         """
         plan = self.plan
         assert plan is not None
         key = f"{target.id}:{step.id}"
+        if key in self._set_aside:
+            # Set aside by its reject guard earlier this run. Whoever calls,
+            # it gets no filter move and no exposure; the ledger keeps it owed.
+            return
         taken_this_visit = 0
         # accepted-frame quota mode (spec §3): the predicate is the LEDGER's
         # effective-accepted count, not the attempt index. Attempts are
@@ -2859,7 +3137,6 @@ class SequenceEngine:
             return
         await self._apply_filter(step)
 
-        step_rejects = 0                 # per-step consecutive guard (spec §3)
         i = self._done.get(key, 0)
 
         def _visit_done() -> bool:
@@ -2964,6 +3241,10 @@ class SequenceEngine:
                                    f"{step.exposure_s:g}s  [{shown}/{step.count}]")
             self._hold_step = step
             info = await self._capture(step, target)
+            # The frame loop's last look at the mount (#165). Accepted or
+            # rejected, the exposure is what the idle clock runs from.
+            self._idle_since = time.time()
+            self._exposures_taken += 1
             self._frames_since_dither += 1
             self._frames_since_focus += 1
             # quality-before-record (§1.9-D, C2-8): decide accept BEFORE _done
@@ -3007,7 +3288,8 @@ class SequenceEngine:
                     panel_ready=self._panel_ready_now())
                 await self._run_instructions(ctx, target, step)
             if accepted:
-                step_rejects = 0
+                # THIS step's run of rejects is over; other steps keep theirs.
+                self._step_rejects.pop(key, None)
                 self._night_rejects = 0            # resets on ANY accepted frame
                 # GN-08: seed the relative-watchdog baseline from the first
                 # accepted frame after a (re)focus. A flow with no autofocus at
@@ -3036,7 +3318,13 @@ class SequenceEngine:
                 self._record_session_frame(target, step, info,
                                            auto_accepted=False)
                 self._end_discarded_frame()
-                step_rejects += 1
+                # A REJECT IS AN ATTEMPT (#147). The visit is bounded by
+                # attempts, as `_visit_done` says; without this a rejecting
+                # filter kept the visit, and every other filter waiting,
+                # until the step or night guard tripped.
+                taken_this_visit += 1
+                step_rejects = self._step_rejects.get(key, 0) + 1
+                self._step_rejects[key] = step_rejects
                 self._night_rejects += 1
                 if self._policy.max_consecutive_rejects_night \
                         and self._night_rejects >= self._policy.max_consecutive_rejects_night:
@@ -3044,10 +3332,7 @@ class SequenceEngine:
                         f"{self._night_rejects} consecutive rejects across targets")
                 if self._policy.max_consecutive_rejects \
                         and step_rejects >= self._policy.max_consecutive_rejects:
-                    bus.log("warning",
-                            f"{target.name}: {step_rejects} consecutive rejects — "
-                            "skipping to the next step (shortfall stays in the "
-                            "ledger for another night)", "sequence")
+                    self._set_step_aside(target, step, key, step_rejects)
                     return
                 continue
             # attempts mode: legacy escalation path (warn / discard / retake).
@@ -3055,6 +3340,26 @@ class SequenceEngine:
                 self._record_frame(key, i, target, step, info, accepted=False)
             i += 1
             taken_this_visit += 1
+
+    def _set_step_aside(self, target: Target, step, key: str, rejects: int) -> None:
+        """The per-step reject guard tripped: set this step aside for the rest
+        of the run (#147) and say so in words.
+
+        Set aside is NOT done. The ledger still owes every frame the step has
+        not banked, so the session ends dormant and a later night picks it up.
+        Until this run ends ``_run_steps`` leaves the step out of its pending
+        list and ``_run_step`` returns at once for it. Before the counter
+        carried across visits the guard only ended the visit, and the next
+        round walked straight back into the same filter.
+        """
+        owed = step.count
+        if self._session is not None:
+            owed = max(0, step.count - self._session.accepted(step.id))
+        line = (f"{target.name}: {step.filter or 'no filter'} set aside for "
+                f"tonight after {rejects} consecutive rejects — its {owed} "
+                f"frame(s) stay owed in the ledger for another night")
+        self._set_aside[key] = line
+        bus.log("warning", line, "sequence")
 
     @staticmethod
     def _effective_filter(step, info: dict) -> str | None:
@@ -4504,9 +4809,6 @@ class SequenceEngine:
         plan = plan if plan is not None else self.plan
         if cfg is None:
             return
-        floor_base = float(cfg.safety.min_alt_deg or 0.0)
-        horizon = cfg.safety.horizon
-        nogo = cfg.safety.nogo_box
         pier = cfg.safety.enforce_pier_limits
 
         tel = self.hub.devices.get("telescope")
@@ -4540,6 +4842,37 @@ class SequenceEngine:
                     f"slew to {target.name} would require a pier flip but meridian "
                     "flip is disabled")
 
+        # The altitude half - floor, horizon, no-go wedges, zenith keep-out and
+        # the no-site refusal - is ONE predicate with two askers: this gate,
+        # which raises on its answer, and the idle-clock park-hold, which acts
+        # on a floor verdict for the target the mount was left tracking (#165).
+        # A second copy of the floor formula is how the two would come to
+        # disagree about where the floor is.
+        verdict = self._altitude_limit_verdict(target, projected=projected,
+                                               cfg=cfg)
+        if verdict is not None:
+            raise SafetyAbort(verdict[1])
+
+    def _altitude_limit_verdict(self, target: Target, *, projected: bool,
+                                cfg) -> tuple[str, str] | None:
+        """The altitude half of `_enforce_mount_floor`, as an answer rather than
+        a raise.
+
+        ``None`` when ``target`` is inside every configured altitude limit, or
+        none is configured (and for a ``cfg`` of None, which configures none).
+        Otherwise ``(kind, sentence)``: ``kind`` is ``"no_site"``, ``"floor"``
+        or ``"ceiling"``, and ``sentence`` is exactly what the slew gate raises.
+        ``projected`` also judges the target ``SLEW_PROJECT_S`` ahead, for a
+        slew; the idle park-hold asks about the LIVE sky and passes False.
+
+        Never raises and touches no device, so it is safe on every wait tick.
+        """
+        if cfg is None:
+            return None
+        floor_base = float(cfg.safety.min_alt_deg or 0.0)
+        horizon = cfg.safety.horizon
+        nogo = cfg.safety.nogo_box
+
         # The CEILING is read here, alongside the floor, because the early return
         # below used to sit between the two: a rig with no floor configured
         # (min_alt_deg = 0 — "I have no tree line", an ordinary setting) returned
@@ -4551,7 +4884,7 @@ class SequenceEngine:
         has_floor = floor_base > 0.0 or bool(horizon) or bool(nogo)
         has_ceiling = ceiling < schedule.NO_CEILING_DEG
         if not has_floor and not has_ceiling:
-            return      # neither end configured → nothing to enforce
+            return None     # neither end configured → nothing to enforce
 
         # DESTINATION alt/az now (and projected forward across the slew+solve), so
         # the guard blocks a slew TO a low target and never trips on where the
@@ -4579,12 +4912,12 @@ class SequenceEngine:
         # that makes a pier collision acceptable.
         latlon = site_lat_lon(self.hub.site)
         if latlon is None:
-            raise SafetyAbort(
-                f"cannot check {target.name} against the altitude limits: no "
-                f"observing site is saved, so every altitude here would be "
-                f"computed for latitude 0, longitude 0. Save the site in "
-                f"Settings, or clear the floor, horizon, no-go and ceiling "
-                f"limits if this mount genuinely has none.")
+            return ("no_site",
+                    f"cannot check {target.name} against the altitude limits: "
+                    f"no observing site is saved, so every altitude here would "
+                    f"be computed for latitude 0, longitude 0. Save the site "
+                    f"in Settings, or clear the floor, horizon, no-go and "
+                    f"ceiling limits if this mount genuinely has none.")
         lat, lon = latlon
         ra, dec = target.ra_hours, target.dec_deg
         now = time.time()
@@ -4596,9 +4929,9 @@ class SequenceEngine:
                 worst_alt, worst_az = alt_p, az_p
         floor = schedule.effective_floor(floor_base, horizon, worst_az, nogo)
         if worst_alt < floor:
-            raise SafetyAbort(
-                f"target {target.name} altitude {worst_alt:.0f}° below safety floor "
-                f"{floor:.0f}° (az {worst_az:.0f}°)")
+            return ("floor",
+                    f"target {target.name} altitude {worst_alt:.0f}° below "
+                    f"safety floor {floor:.0f}° (az {worst_az:.0f}°)")
         # And the CEILING. A mount can foul its own tripod at HIGH altitude with
         # the optics still on open sky; every other limit here is a minimum, so
         # nothing had an opinion about it (#101, observed on the AM5N). Checked
@@ -4611,10 +4944,11 @@ class SequenceEngine:
             if alt_p > best_alt:
                 best_alt, best_az = alt_p, az_p
         if best_alt > ceiling:
-            raise SafetyAbort(
-                f"target {target.name} altitude {best_alt:.0f}° above the "
-                f"zenith keep-out {ceiling:.0f}° (az {best_az:.0f}°) — the mount "
-                "can reach its own tripod up there")
+            return ("ceiling",
+                    f"target {target.name} altitude {best_alt:.0f}° above the "
+                    f"zenith keep-out {ceiling:.0f}° (az {best_az:.0f}°) — the "
+                    "mount can reach its own tripod up there")
+        return None
 
     # ----------------------------------------------------------- watchdog (§1.9-F)
 
@@ -5511,6 +5845,20 @@ class SequenceEngine:
             return 0.0
         if self._mount_flips_early() is False:
             return 0.0
+        return self._plan_flip_lead_s()
+
+    def _plan_flip_lead_s(self) -> float:
+        """The PLAN's flip lead in seconds, clamped the way `_flip_lead_s`
+        clamps it, and never zeroed by what the mount has taught this process.
+
+        A MARGIN, NOT A MOMENT. `_flip_lead_s` answers "when is a flip attempt
+        worth making", and a learned zero is right for that: the AM5 cannot
+        flip before transit, so an early attempt only costs a re-slew. It is
+        wrong as the edge of safe tracking, because the same mount stops
+        tracking 4.7 to 7.6 min BEFORE transit (`MERIDIAN_FLIP_LEAD_MIN`). The
+        idle-clock park-hold (#165, spec 5.1 check 3) asks this one, and so
+        will the group's meridian margin (spec 5.7).
+        """
         lead = getattr(self.plan, "meridian_flip_lead_min", None)
         if lead is None:
             lead = schedule.MERIDIAN_FLIP_LEAD_MIN
@@ -6642,7 +6990,9 @@ class SequenceEngine:
             "the mount is not tracking and will not resume — every light frame "
             "from here would be a streak")
 
-    async def _recover_from_tracking_refusal(self, target: Target | None) -> bool:
+    async def _recover_from_tracking_refusal(
+            self, target: Target | None, *,
+            centring: dict | None = None) -> bool:
         """Park, unpark, re-assert tracking, re-slew, re-centre, resume guiding.
 
         THE INTERVENTION A HUMAN PERFORMED TWICE. On both 2026-08-21 and
@@ -6663,6 +7013,14 @@ class SequenceEngine:
           set-aside-and-park path unchanged.
 
         Returns True only when the mount is measurably tracking again.
+
+        ``centring`` IS FOR THE CALLER THAT HAS TO ACT ON WHERE THE TELESCOPE
+        ENDED UP (#171). Target setup passes an empty dict; on a True return it
+        holds the recovery's own re-centre result - ``goto_and_center``'s
+        answer, with ``centered`` always present - and the recovery leaves the
+        report of a re-centre that missed to that caller, so it is said once.
+        Still a bool, and still True exactly when it always was: the other
+        callers pass nothing and see no change at all.
         """
         if target is None:
             return False
@@ -6734,8 +7092,9 @@ class SequenceEngine:
         self._set_state(detail="recovering the mount from its limit")
         _t0 = time.time()
         try:
-            ok = await asyncio.wait_for(
-                self._do_tracking_recovery(tel, target),
+            found = await asyncio.wait_for(
+                self._do_tracking_recovery(
+                    tel, target, report_centring=centring is None),
                 TRACKING_RECOVERY_TIMEOUT_S)
         except asyncio.CancelledError:
             raise
@@ -6752,8 +7111,11 @@ class SequenceEngine:
                     f"{target.name}: the park/unpark recovery failed ({e}) — "
                     f"setting the target aside", "sequence")
             return False
-        if not ok:
+        if found is None:
             return False
+        if centring is not None:
+            centring.clear()
+            centring.update(found)
         self._frame_had_event = True
         # The wall clock goes in the LOG, not into `_event_costs`. Nothing reads
         # a "tracking recovery" key — `compute_eta` accounts only dither,
@@ -6767,9 +7129,16 @@ class SequenceEngine:
                 "sequence")
         return True
 
-    async def _do_tracking_recovery(self, tel, target: Target) -> bool:
+    async def _do_tracking_recovery(self, tel, target: Target, *,
+                                    report_centring: bool) -> dict | None:
         """The recovery sequence itself; see `_recover_from_tracking_refusal`
-        for the bounds. Split out only so the timeout can wrap it whole."""
+        for the bounds. Split out only so the timeout can wrap it whole.
+
+        Returns the re-centre's own ``goto_and_center`` result when the mount is
+        measurably tracking at the end, ``centered`` always present, and None
+        when it is not (#171). ``report_centring`` says whether this logs a
+        re-centre that missed; False when the caller reports it itself. No
+        default, so no caller can inherit a choice it did not make."""
         # Stop guiding first: the guider must not be pulsing a mount that is
         # about to park. Remembered so it can be put back afterwards — a
         # recovered mount that is no longer guided just fails more quietly.
@@ -6795,7 +7164,7 @@ class SequenceEngine:
             bus.log("warning",
                     f"{target.name}: the mount still will not track after a "
                     f"park/unpark cycle", "sequence")
-            return False
+            return None
         # A park slewed the tube to the home position, so the target has to be
         # re-acquired properly — solve and re-centre, not a bare GoTo. This is
         # the step that put both nights back 0.5 arcmin from target.
@@ -6804,7 +7173,13 @@ class SequenceEngine:
                                      rotation_deg=target.rotation_deg),
             GOTO_TIMEOUT_S + (300 if target.rotation_deg is not None else 0),
             f"re-centre {target.name} after limit recovery")
-        if not result.get("centered"):
+        # KEPT, AS MEASURED, for the caller that has to act on it (#171). A
+        # copy, so nothing downstream can edit the hub's own answer, and
+        # `centered` made explicit: target setup indexes it.
+        centred = bool(result.get("centered"))
+        centring = dict(result)
+        centring["centered"] = centred
+        if not centred and report_centring:
             err = result.get("error_arcmin")
             bus.log("warning",
                     f"{target.name}: re-centring after the recovery "
@@ -6857,8 +7232,10 @@ class SequenceEngine:
                         f"{target.name}: guiding did not restart after the "
                         f"recovery ({e}) — continuing unguided", "sequence")
         # The last word is the mount's, not ours.
-        return bool(await _bounded(tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
-                                   "tracking readback after re-centring"))
+        if not bool(await _bounded(tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
+                                   "tracking readback after re-centring")):
+            return None
+        return centring
 
     async def _guide_start_bound(self) -> tuple[float, str, str]:
         """``(timeout_s, label, note)`` for the NEXT ``start_guiding``.

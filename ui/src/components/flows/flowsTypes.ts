@@ -49,6 +49,14 @@ export interface FlowGraphRec {
   edges: FlowEdgeRec[];
 }
 
+/** One thing the server's read changed in a stored flow (server
+ *  `MigrationNote`). `key` names what moved (`rotation` for FLOW_SCHEMA 3's
+ *  23.4 rewrite, #150); `note` is the sentence to show the operator. */
+export interface FlowMigrationNote {
+  key: string;
+  note: string;
+}
+
 export interface FlowRecordRec {
   id: string;
   name: string;
@@ -60,6 +68,12 @@ export interface FlowRecordRec {
   last_run: number | null;
   last_result: "" | "ok" | "warn" | "bad";
   readonly: boolean;
+  /** What THIS read rewrote, for `flowsOpen` to put on the flow log. Never
+   *  persisted: the server strips it on every write, so it is on each GET until
+   *  the file is next written (a save, or a run's `touch_run`, which logs it),
+   *  and gone from the written record. Optional because an older server does
+   *  not send it. */
+  migrated?: FlowMigrationNote[];
 }
 
 /** A wire being dragged.
