@@ -119,6 +119,15 @@ Recompute on every graph edit; surface in header chip + FLOW overview. Rules shi
 ---
 
 ## Node vocabulary (contract)
+
+> **Amendment 2026-09-24 (approved by the owner 2026-09-24).** Draft, recorded from the owner's rulings on the AstroFlows mosaic design (`docs/superpowers/specs/2026-09-23-flows-mosaic-target-block-design.md`, Revision 2; tracked in issue #189). It amends the loop-back rule in the next paragraph and the DUSK WINDOW and TARGET rows of the table. It takes effect when the owner signs it.
+>
+> 1. **A mosaic is a Target detail, not a node.** The TARGET node gains mosaic params (rows, cols, overlap, angle mode, camera field, skipped panels) and an event input `next` ("next panel"). There is no MOSAIC node type. This answers the prototype's open question "Mosaic panels as a node or a Target detail?" (`AstroDeck Flows.dc.html:565`).
+> 2. **The panel loop is a backward event wire.** FILTER CYCLE and CAPTURE LOOP gain an event output `pass` ("pass done"). The wire `pass done -> next panel`, from the last stage of a TARGET's panel lane back to that TARGET, is the loop. The loop-back rule below allows it, because event wires may point backward. The flow lane stays acyclic, and a flow wire drawn backward is refused. The compile consumes the loop wire as structure (rotate the panels every pass) and never emits it as an instruction, the same way FLAT PANEL `ready` -> QUEUE `panel` compiles to topology.
+> 3. **DUSK WINDOW's campaign repeat is replaced.** The row's "campaign repeat (Single night / Nightly until pool complete / Nightly x30)" becomes one option, default ON: "Automatic resume on subsequent nights until capture quota is fulfilled" (issue #195). "Single night" never stopped the next night's resume.
+>
+> Do not change these back to the prototype's shape.
+
 Ports: `kind: flow` (cyan; exactly one run cursor travels it) or `event` (amber; may fire any time). Wiring only kind→same-kind. **Fan-in rule**: a flow input takes exactly one wire (new wire replaces the occupant); an event input accepts MANY wires. **Loop-back rule**: the flow lane must stay acyclic (that is the compile guarantee), but event wires may point backward - SESSION REPORT `target done` → POOL `advance` is how a campaign loops; the doctor enforces DAG on flow wires only. Per node: label · cat/color · ins/outs · params (defaults in the prototype's `DEFS`) · backend mapping:
 
 | Node | Ports (in → out) | Compiles to / backend |
@@ -161,6 +170,8 @@ Deterministic function of the graph (see `compilePlan()`):
 }
 ```
 Pool targets carry `pool_rank`, `quota_cycles`, `min_altitude_deg`, `min_moon_sep_deg`, `max_hour_angle_h`. A FILTER CYCLE stage compiles to a single step object `{strategy: "cycle", cycles, per_cycle, gain, binning, reject_hfr, slots: [{filter, exposure_s}…]}` - the engine interleaves one sub per slot per pass and resumes mid-cycle after holds; **no loop construct exists at graph level** (the graph stays acyclic - loops live inside stages, and campaign loops are event wires). A campaign flow adds `campaign: {repeat: "nightly", until: "pool_complete"|"nights_30", resume: "cursor"}`. new TriggerKinds are **additive** to the existing closed enum: `on_clouds_in`, `on_clouds_clear`, `on_night_end`, `on_target_complete`, `on_shutdown_complete`, `on_altitude_floor`; CONDITION whens map generically (`on_hfr_above`, `on_star_count_below`, …); new action `pool_advance`. FLAT PANEL `ready` → QUEUE `panel` edges are equipment topology, NOT instructions - they compile only to `automation.calibration_queue.flats_require_panel` and are excluded from the `instructions` array.
+
+> **Amendment 2026-09-24 (approved by the owner 2026-09-24).** Draft; see the amendment under "Node vocabulary (contract)". "No loop construct exists at graph level" still holds for flow wires. The mosaic panel loop is an event wire, like the campaign loop. A mosaic TARGET compiles to one entry, which `to_plan` expands into one Target per panel. The wire `pass done -> next panel` compiles to the plan's `groups` entry with `mode: "rotate"`. It is structure, not an instruction. Without the wire the panels run one after another.
 
 ## Backend work list (server/)
 1. Flow storage: `GET/POST /api/flows`, `GET/PUT/DELETE /api/flows/{id}` - persist the raw graph (nodes: id/type/x/y/params; edges: from/fromPort/to/toPort) plus library metadata (`name`, `folder` path, `tagline`, `last_run`, `last_result`) in the atomic config store pattern; the graph is the source of truth, the plan is derived. Folder CRUD: `GET/POST /api/flows/folders`, rename/delete with re-parenting. Ship the five example flows as read-only fixtures in an `Examples` folder.
