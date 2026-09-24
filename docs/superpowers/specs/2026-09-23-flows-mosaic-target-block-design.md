@@ -1055,7 +1055,7 @@ Tests:
 - The wizard with no optics answers with a single target and a reason. It never writes a default angle; a grep test asserts no numeric angle literal in the mosaic kind.
 - A v3 flow with no `counts` key compiles to attempts when loaded. Mutant "missing-key default Accepted" fails.
 - Saving that flow writes `counts = Accepted subs` on every TARGET and POOL, and the save's answer says so (ruling 2). Mutant "switch on load" changes the compile of a flow nobody saved.
-- A palette-created, wizard-created or example block gets Accepted subs and Any angle.
+- A palette-created or wizard-created block gets Accepted subs and Any angle. An example keeps the angle it was written with (ruling 9): M31 stays at Rotate to PA 23.4.
 - The anchor rule (ruling 3): a move of 9.9' on the 3x2 of 2.0 x 1.33 deg keeps the ids and 10.1' changes them; a 3.3 deg turn keeps them and 3.5 deg changes them; three saves of 6' each in the same direction re-anchor on the second, because each is measured against the anchor. Mutant "compare with the previous save" never re-anchors. Mutant "centres, not corners" keeps the ids of a 1x1 block turned 90 degrees.
 - A mosaic flow stamps 4, and a single-target flow stamps 3.
 - M1-M15 each have a positive and a negative case. M6 trips on a 1x4 at 10% overlap at Dec 75 (38.9%) and not on a 3x3 at 25% at Dec 41 (3.1%).
@@ -1498,6 +1498,14 @@ A test holds the shipped tooltip as a table of claims, each mapped to the named 
 
 Approved. The supervised rig night will be scheduled once S0 to S6 have landed and the simulator run of S7 item 1 is green (S7).
 
+### Ruling 9: the rotator is set explicitly at the start of every run
+
+Owner, 2026-09-24, asked whether the shipped M31 example should keep commanding a connected rotator to PA 23.4: "It's expected that the rotator would need to explicitly set at the start of every run."
+
+- The M31 example (`flows/examples.py:56`) keeps its explicit `rotation: 23.4`. An explicit angle in an example is the intended pattern, not the I-04 defect: I-04 was a palette default that nobody chose. The S3 acceptance line on example blocks is amended to match.
+- A run whose target has a set angle commands the rotator to that angle when the target is acquired, every run. It never assumes the rotator is still where an earlier run left it.
+- Open: whether a new TARGET block may run on its default Any angle, or must have an angle chosen first (asked 2026-09-24).
+
 ### Filed while applying the rulings
 
 | Issue | Kind | What |
@@ -1514,5 +1522,5 @@ Approved. The supervised rig night will be scheduled once S0 to S6 have landed a
 
 1. Ruling 5: confirm that a pass in which every attempted panel failed to start guiding goes to `guiding_action`, and that a mid-visit guiding loss the #72 recovery gives up on defers the panel too.
 2. Ruling 7: approve the interim tooltip text, or hold the option until #191, #192 and #193 close. Approve "resumes at dusk" in place of "resumes at sunset".
-3. Ruling 6: sign the README amendment and the MILESTONE2 note.
+3. ~~Ruling 6: sign the README amendment and the MILESTONE2 note.~~ Approved 2026-09-24 and committed (cbdb59a9).
 4. #192: the end-of-night roof close default when a dome is connected.
