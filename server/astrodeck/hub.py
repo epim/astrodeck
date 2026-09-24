@@ -62,6 +62,7 @@ from .imaging.stackbackfill import plan_backfill, run_backfill
 from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles, resolve_optics
 from . import rotation as _rotation
+from . import sky_angle as _sky_angle
 
 if TYPE_CHECKING:  # annotations only -- the harness is imported lazily at runtime
     from .devices.backend import ConnSpec, RigSpec
@@ -439,6 +440,9 @@ class _WcsJob:
     preview_id: int | None = None
     data_w: int = 0
     data_h: int = 0
+    #: the frame's ``CaptureSnapshot.angle``: what the solve's sky angle is
+    #: checked against before it may calibrate the rotator.
+    angle: Any = None
 
 
 @dataclass
@@ -554,6 +558,11 @@ class CaptureSnapshot:
     id_cards: list = field(default_factory=list)
     #: the sensor temperature the FILENAME token was built from
     sensor_temp_c: float | None = None
+    #: the rotator and pier side as the shutter closed (``sky_angle.
+    #: ExposureAngle``), read for a LIGHT only, so the background WCS solve of
+    #: this frame can calibrate the rotator -- or see that it must not, because
+    #: the rotator turned or the mount flipped before the solve landed.
+    angle: Any = None
 
 
 @dataclass(frozen=True)
@@ -630,6 +639,11 @@ class Hub:
         #: `_note_pier_side` -- a serial read that times out must not turn a
         #: fact nobody disputes into "unknown".
         self._pier_side_seen: tuple[str, float] | None = None
+        #: The latest sky position angle a plate solve of an imaging-camera
+        #: frame measured, and whether it calibrated the rotator (and if not,
+        #: why). Written only by ``sky_angle.note_solved_rotation``; surfaced on
+        #: the status frame as ``sky_angle``.
+        self.last_sky_angle: dict | None = None
         #: ((ra, dec), taken_at_monotonic, (ra_j2000, dec_j2000)) - see
         #: ``from_mount_frame``. One entry, because a mount points at one place.
         self._precess_memo: tuple[tuple[float, float], float,
@@ -3254,6 +3268,24 @@ class Hub:
         # alone (``snap.target``) and is never built from this - that ordering
         # is the invariant, not a coincidence.
         object_name, id_cards = self._object_cards(target, frame_type)
+        # THE ROTATOR AND PIER SIDE AS THE SHUTTER CLOSED, for a light only, and
+        # only while saved lights are being solved: the background WCS worker
+        # is the one consumer, and its solve's sky angle may calibrate the
+        # rotator only if neither has changed by the time it lands (see
+        # ``sky_angle``). Cached pier side, never a live mount read: this runs
+        # on every frame of the live loop. A rig without a rotator pays nothing.
+        # A frame promoted after the feature was switched on simply has no
+        # angle, and its solve is recorded without calibrating.
+        angle = None
+        try:
+            if (frame_type.upper() == "LIGHT"
+                    and getattr(config_store.cfg(), "solve_saved_lights", False)):
+                angle = await _sky_angle.exposure_context(self, cam,
+                                                          live_pier=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            angle = None
         return CaptureSnapshot(
             target=target, frame_type=frame_type, gain=gain, offset=offset,
             exposure_s=exposure_s, binning=binning, filter_name=filter_name,
@@ -3266,7 +3298,8 @@ class Hub:
             instrument=(getattr(cam, "name", "") or ""),
             dark_cards=list(dark_cards or []), beam_cards=list(beam_cards),
             object_name=object_name, id_cards=list(id_cards),
-            sensor_temp_c=getattr(frame, "temperature_c", None))
+            sensor_temp_c=getattr(frame, "temperature_c", None),
+            angle=angle)
 
     async def _save_captured_frame(self, frame, snap: CaptureSnapshot) -> Path:
         """Write ONE frame into the capture library from a frozen snapshot.
@@ -3349,7 +3382,8 @@ class Hub:
                 # when it lands, seconds after the picture is already on screen.
                 preview_id=i.get("id"),
                 data_w=int(i.get("data_width") or 0),
-                data_h=int(i.get("data_height") or 0))
+                data_h=int(i.get("data_height") or 0),
+                angle=getattr(snap, "angle", None))
 
     # ------------------------------------------------- per-frame WCS stamping
     # (per-frame-wcs spec §2; the mechanism — solvers, WcsSolution, write_wcs —
@@ -3358,7 +3392,8 @@ class Hub:
     def _enqueue_wcs_stamp(self, path: Path, ra: float | None, dec: float | None,
                            star_count: int | None, *,
                            preview_id: int | None = None,
-                           data_w: int = 0, data_h: int = 0) -> None:
+                           data_w: int = 0, data_h: int = 0,
+                           angle: Any = None) -> None:
         """Queue one saved light for background solve+stamp. Never blocks, never
         raises (the capture must survive any failure here), and never grows
         without bound.
@@ -3390,7 +3425,7 @@ class Hub:
                 fov_hint = None
             q.put_nowait(_WcsJob(path=path, ra=ra, dec=dec, fov_deg=fov_hint,
                                  star_count=star_count, preview_id=preview_id,
-                                 data_w=data_w, data_h=data_h))
+                                 data_w=data_w, data_h=data_h, angle=angle))
             if dropped and not self._wcs_drop_logged:
                 self._wcs_drop_logged = True
                 bus.log("warning",
@@ -3471,6 +3506,13 @@ class Hub:
         if res.success and res.wcs is not None:
             await asyncio.to_thread(write_wcs, job.path, res.wcs)
             bus.log("info", f"stamped WCS on {job.path.name}", "solve")
+            # The sky angle this light measured, recorded and (when the rotator
+            # has not turned and the mount has not flipped since the shutter
+            # closed) fed to the rotator. Inside this branch on purpose: a
+            # solution not trusted enough to stamp into the header is not
+            # trusted enough to calibrate a rotator either.
+            await _sky_angle.note_solved_rotation(
+                self, res, source="saved-frame WCS", context=job.angle)
             # ...and it stops being landlocked. The solution used to be written
             # into the file and dropped on the floor: nothing published it,
             # nothing stored it, and the browser had never seen one. This is the
@@ -5836,7 +5878,7 @@ class Hub:
         if guide_fl and g_h and g_px:
             guide_fov = (g_h * g_px * 206.265 / guide_fl) / 3600.0
 
-        async def _solve(device, seconds, path_name, fov, binning):
+        async def _expose(device, seconds, path_name, fov, binning):
             async with self.exposure_guard("guide-scope offset"):
                 frame = await device.expose(seconds, 200, 30, binning=binning)
             tmp = CAPTURE_DIR / "_solve" / path_name
@@ -5844,15 +5886,28 @@ class Hub:
                                     dec_deg=dec_hint, instrument=device.name)
             bus.log("info", f"guide-offset: solving {device.name} "
                             f"(fov hint {fov or 'auto'})…", "solve")
-            return await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                      fov_deg_hint=fov)
+            return tmp
+
+        async def _solve_guide_frame(path):
+            # THE GUIDE CAMERA'S SOLVE, kept apart from the main one so the
+            # solve-site audit (test_every_solve_records_the_sky_angle) can
+            # list it by name: its position angle is the guide train's, which
+            # says nothing about the imaging camera the rotator turns.
+            return await solver.solve(path, ra_hint=ra_hint, dec_hint=dec_hint,
+                                      fov_deg_hint=guide_fov)
 
         # MAIN FIRST, and the order is not arbitrary: the imaging frame supplies
         # the position angle the offset is stored against, so a run that dies
         # after one solve has produced the more useful half.
-        main = await _solve(cam, exposure_s, "guide_offset_main.fits", main_fov, 2)
-        guide = await _solve(guide_cam, guide_exposure_s,
-                             "guide_offset_guide.fits", guide_fov, 1)
+        main_angle = await _sky_angle.exposure_context(self, cam)
+        main_path = await _expose(cam, exposure_s, "guide_offset_main.fits",
+                                  main_fov, 2)
+        main = await solver.solve(main_path, ra_hint=ra_hint, dec_hint=dec_hint,
+                                  fov_deg_hint=main_fov)
+        await _sky_angle.note_solved_rotation(
+            self, main, source="guide-scope offset", context=main_angle)
+        guide = await _solve_guide_frame(await _expose(
+            guide_cam, guide_exposure_s, "guide_offset_guide.fits", guide_fov, 1))
 
         out = {
             "main": {"ok": main.success, "ra_hours": main.ra_hours,
@@ -5962,6 +6017,9 @@ class Hub:
         borrowed_slot = await self._borrow_wheel_for_solve()
         try:
             try:
+                # What the rotator and the pier side were as the shutter
+                # opened, so the solve below may calibrate the rotator.
+                angle = await _sky_angle.exposure_context(self, cam)
                 async with self.exposure_guard("plate solve"):
                     frame = await cam.expose(exposure_s, 200, 30, binning=2)
             finally:
@@ -6028,6 +6086,12 @@ class Hub:
                 result.wcs, preview_id=solve_preview.get("id"),
                 data_w=int(solve_preview.get("data_width") or 0),
                 data_h=int(solve_preview.get("data_height") or 0))
+        # The same solve measured the camera's sky angle. Every goto centring
+        # attempt, the resume re-centre, a meridian flip's re-centre and the
+        # bare solve-and-sync route all land here, so this one line is what
+        # keeps the rotator's reported PA as fresh as the last centring.
+        await _sky_angle.note_solved_rotation(
+            self, result, source="plate solve + sync", context=angle)
         return {"ra_hours": result.ra_hours, "dec_deg": result.dec_deg,
                 "solver": solver.name, "pixel_scale": result.pixel_scale_arcsec}
 
@@ -6046,6 +6110,12 @@ class Hub:
         and the resulting offset. Raises DeviceError when there is no rotator,
         no camera, or the sky will not solve — never a silent no-op, because a
         rotator that quietly stays unsynced points every later framing wrong.
+
+        A THIN CALLER of ``sky_angle.note_solved_rotation``, which every solve
+        of the imaging camera now goes through. The difference here is only
+        that the calibration is the whole point, so a calibration that is
+        refused (the rotator moved during the exposure, the mount flipped)
+        raises with the reason instead of being a line in the log.
         """
         rot = self.require("rotator")
         cam: Camera = self.require("camera")
@@ -6063,6 +6133,7 @@ class Hub:
         bus.publish("mount", action="solve_activity", activity="exposing",
                     exposure_s=exposure_s)
         try:
+            angle = await _sky_angle.exposure_context(self, cam)
             async with self.exposure_guard("rotator sync"):
                 frame = await cam.expose(exposure_s, 200, 30, binning=2)
             self.last_frame = frame
@@ -6078,13 +6149,15 @@ class Hub:
             bus.publish("mount", action="solve_activity", activity=None)
         if not result.success:
             raise DeviceError(f"rotator sync: plate solve failed: {result.message}")
-        orientation = _rotation.mod360(result.rotation_deg)
-        await rot.sync(orientation)
+        rec = await _sky_angle.note_solved_rotation(
+            self, result, source="rotator sync", context=angle)
+        if rec is None:
+            raise DeviceError("rotator sync: the solve reported no usable "
+                              "position angle, so there is nothing to sync to")
+        if not rec["calibrated"]:
+            raise DeviceError(f"rotator sync: not synced: {rec['reason']}")
+        orientation = rec["pa_deg"]
         mech = await rot.get_mechanical_position()
-        bus.log("info",
-                f"rotator synced to the sky: PA {orientation:.1f}° at "
-                f"mechanical {mech:.1f}° (offset {rot.sync_offset_deg:.1f}°)",
-                "rotator")
         bus.publish("rotator", action="synced", pa_deg=orientation,
                     mechanical_deg=mech, offset_deg=rot.sync_offset_deg)
         return {"synced": True, "pa_deg": orientation, "mechanical_deg": mech,
@@ -6166,6 +6239,7 @@ class Hub:
                             tel, ra_hint, dec_hint)
                 except Exception:
                     ra_hint = dec_hint = None
+            angle = await _sky_angle.exposure_context(self, cam)
             async with self.exposure_guard("rotate to PA"):
                 frame = await cam.expose(exposure_s, 200, 30, binning=2)
             self.last_frame = frame
@@ -6179,8 +6253,21 @@ class Hub:
                                         fov_deg_hint=opt["fov_h_deg"] or None)
             if not result.success:
                 raise DeviceError(f"rotate: plate solve failed: {result.message}")
-            orientation = _rotation.mod360(result.rotation_deg)
-            await rot.sync(orientation)
+            # The loop's next move is computed through the rotator's offset, so
+            # an attempt whose solve could not calibrate it must stop here: a
+            # move commanded through a stale offset is a rotation to the wrong
+            # angle, and this loop has already turned a camera through a full
+            # revolution once (2026-08-08).
+            rec = await _sky_angle.note_solved_rotation(
+                self, result, source="rotate to PA", context=angle)
+            if rec is None:
+                raise DeviceError("rotate: the solve reported no usable "
+                                  "position angle")
+            if not rec["calibrated"]:
+                raise DeviceError(
+                    f"rotate: the solve could not calibrate the rotator: "
+                    f"{rec['reason']}")
+            orientation = rec["pa_deg"]
             mech = await rot.get_mechanical_position()
             prev = target
             target = _rotation.map_sky_target(prev, mech, rot.sync_offset_deg,
@@ -6708,6 +6795,19 @@ class Hub:
         every status poll, including with no engine, no run and no plan."""
         return bool(getattr(self.engine, "flip_owed", False))
 
+    def pier_side_cached(self) -> str | None:
+        """The last REAL pier-side answer the status poll recorded, if it is
+        younger than ``PIER_SIDE_STALE_S``; otherwise ``None``. No device I/O,
+        no side effects: for a caller on the capture path that must not buy a
+        serial round trip per frame (``sky_angle.exposure_context``)."""
+        seen = getattr(self, "_pier_side_seen", None)
+        if seen is None:
+            return None
+        side, t = seen
+        if time.time() - t > PIER_SIDE_STALE_S:
+            return None
+        return side
+
     def _note_pier_side(self, side: str) -> dict:
         """Fold this poll's pier-side reading into the cache, and say what the
         status block should report: ``pier_side``, ``pier_side_source`` and
@@ -6893,6 +6993,12 @@ class Hub:
                        "is_default": s["is_default"],
                        "horizon_min_deg": s["horizon_min_deg"]}
         out["optics"] = self.effective_optics()        # in-process, no device I/O
+        # The latest sky angle an imaging-camera solve measured, where it came
+        # from, and whether it calibrated the rotator (see ``sky_angle``). The
+        # rotator block's ``sky_deg`` already reflects any calibration, because
+        # it is read through the offset that calibration sets; this says WHEN
+        # the sky last confirmed it, and why it did not when it did not.
+        out["sky_angle"] = getattr(self, "last_sky_angle", None)
         out["busy"] = self.busy_label                  # reliability: busy-aware stale
         # The SAME set busy_label collapses into one word, published unreduced.
         #

@@ -186,6 +186,25 @@ def find_astap() -> str | None:
     return None
 
 
+def _result_from_ini(kv: dict, wcs: "WcsSolution | None") -> SolveResult:
+    """ASTAP's .ini key/values -> SolveResult. Pure, so it is testable.
+
+    No CROTA2 is "no rotation reported", not "rotation 0" (#146): every imaging
+    solve now calibrates the rotator, and a 0 that meant "unknown" would re-sync
+    it to PA 0. ``rotation_known`` carries the difference."""
+    if kv.get("PLTSOLVD") != "T":
+        return SolveResult(False, message=kv.get("ERROR", "no solution"))
+    ra_deg = float(kv["CRVAL1"])
+    dec_deg = float(kv["CRVAL2"])
+    rot_raw = kv.get("CROTA2")
+    rot = float(rot_raw) if rot_raw is not None else 0.0
+    scale = abs(float(kv.get("CDELT2", 0))) * 3600
+    return SolveResult(True, ra_hours=ra_deg / 15.0, dec_deg=dec_deg,
+                       rotation_deg=rot, pixel_scale_arcsec=scale,
+                       wcs=wcs, message="solved by ASTAP",
+                       rotation_known=rot_raw is not None)
+
+
 class AstapSolver(PlateSolver):
     name = "ASTAP"
 
@@ -221,15 +240,7 @@ class AstapSolver(PlateSolver):
         except OSError:
             pass
 
-        if kv.get("PLTSOLVD") != "T":
-            return SolveResult(False, message=kv.get("ERROR", "no solution"))
-        ra_deg = float(kv["CRVAL1"])
-        dec_deg = float(kv["CRVAL2"])
-        rot = float(kv.get("CROTA2", 0))
-        scale = abs(float(kv.get("CDELT2", 0))) * 3600
-        return SolveResult(True, ra_hours=ra_deg / 15.0, dec_deg=dec_deg,
-                           rotation_deg=rot, pixel_scale_arcsec=scale,
-                           wcs=wcs, message="solved by ASTAP")
+        return _result_from_ini(kv, wcs)
 
     @staticmethod
     def _fov_from_scale(scale_arcsec: float, height_px: int) -> float:
