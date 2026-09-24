@@ -1,5 +1,7 @@
 # IMPLEMENTATION CONTRACT — AstroDeck Flows, Milestone 2 (desktop/tablet web UI)
 
+> **Amendment 2026-09-24 (approved by the owner 2026-09-24): superseded for the node and tab counts.** This contract counts 19 node types and 3 Tonight tabs. The code ships 21 node types (`server/astrodeck/flows/nodes.py`, the source of truth) and 4 Tonight tabs, including CAMPAIGN (`ui/src/components/flows/flowsTypes.ts:86`). Wherever this document counts node types or tabs, read `nodes.py` instead. The mosaic design adds no node type (issue #169; `docs/superpowers/specs/2026-09-23-flows-mosaic-target-block-design.md`, Revision 2, ruling 6).
+
 **Status of this document.** Written read-only against the four sweeps plus my own reads of `scripts/flows_visual_check.py`, `ui/src/lib/flowsApi.ts`, `server/astrodeck/flows/{to_plan,models}.py`, `server/astrodeck/api/app.py` (3520–3870), `server/astrodeck/flows/{doctor,tonight,calibration_health,wizard,examples}.py`, `ui/src/index.css`, and the handoff README. Every number and string below is quoted from a file. Where a value is **not** in any source it is marked `⚠ UNSPECIFIED` and appears in §G — it is never filled in with a guess.
 
 **Five findings that change the shape of the work, discovered in this pass and not present in the sweeps:**
