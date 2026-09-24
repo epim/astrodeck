@@ -61,8 +61,11 @@
     {
       "acquisition": "cycle",
       "autofocus_first": true,
+      "autofocus_skip_if_fresh": false,
       "calibration": false,
       "center": true,
+      "center_attempts": null,
+      "center_tolerance_arcmin": null,
       "dec_deg": 34.41555555555556,
       "id": "",
       "mosaic_group": null,

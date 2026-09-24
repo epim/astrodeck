@@ -28,6 +28,7 @@ import { NODE_DEFS } from "./nodeDefs";
 import { nodeW, type PortDir } from "./geometry";
 import { nodeLossDetail, nodeLossLevel } from "./flowsTypes";
 import type { FlowNodeRec, FlowNodeStatus } from "./flowsTypes";
+import { progressChip } from "./flowProgress";
 import FlowPort from "./FlowPort";
 
 /** §C.5: `idle→"off"`, `busy→"busy"`, `ok→"on"`, `warn→"warn"`, `bad→"bad"`.
@@ -84,6 +85,12 @@ function FlowNodeCard({
   // does not wake this card. See flowsTypes.ts for why notes are excluded.
   const loss = useStore((s) => nodeLossLevel(s.flows.compiled?.unmapped, node.type));
   const lossWhy = useStore((s) => nodeLossDetail(s.flows.compiled?.unmapped, node.type));
+  // THE PROGRESS CHIP (#189 S1 item 9), under the same rule: `progressChip`
+  // returns a string or null, so a re-read that leaves this card's count alone,
+  // or moves another card's, does not wake this one. It decides everything -
+  // TARGET only, a session, a saved graph - so the #/next stage cannot answer
+  // differently.
+  const chip = useStore((s) => progressChip(s.flows.progress, node.id, s.flows.dirty));
 
   // Actions are stable references on the store, so selecting them costs nothing.
   const select = useStore((s) => s.flowsSelect);
@@ -239,10 +246,15 @@ function FlowNodeCard({
 
       {/* footer — the params in one line, hidden on phone in BOTH tabs. It is
           computed from the CURRENT params, so an edit shows on the card without
-          opening anything. */}
+          opening anything. The progress chip rides in it and is hidden on
+          phone with it: the 150px card has no footer line, and the
+          auto-graph's layout (autoLayout.ts, +8) budgets room for none. */}
       {!phone && (
-        <div className="px-2.5 pt-[3px] pb-2 font-mono text-[9.5px] text-faint truncate">
-          {def.sum(node.params)}
+        <div className="px-2.5 pt-[3px] pb-2 font-mono text-[9.5px] text-faint">
+          <div className="truncate">{def.sum(node.params)}</div>
+          {chip && (
+            <div data-flow-progress className="truncate text-dim">{chip}</div>
+          )}
         </div>
       )}
     </div>

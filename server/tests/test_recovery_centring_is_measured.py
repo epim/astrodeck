@@ -63,7 +63,8 @@ def _pinned_mount(sim_hub, monkeypatch, gotos: list) -> dict:
     it. ``gotos`` scripts `goto_and_center`, one entry per call: an exception
     is raised, a dict is returned (copied)."""
     tel = sim_hub.devices["telescope"]
-    st = {"limit": True, "events": []}
+    # ``kwargs`` holds every call's keywords, in call order (#170).
+    st = {"limit": True, "events": [], "kwargs": []}
     real_get, real_park, real_unpark = tel.get_tracking, tel.park, tel.unpark
 
     async def get_tracking():
@@ -79,6 +80,7 @@ def _pinned_mount(sim_hub, monkeypatch, gotos: list) -> dict:
         await real_unpark()
 
     async def goto(ra_hours, dec_deg, **kw):
+        st["kwargs"].append(dict(kw))
         answer = gotos[len([e for e in st["events"] if e.startswith("goto")])]
         if isinstance(answer, Exception):
             st["events"].append("goto refused")
@@ -93,10 +95,11 @@ def _pinned_mount(sim_hub, monkeypatch, gotos: list) -> dict:
     return st
 
 
-def _engine(sim_hub) -> tuple[SequenceEngine, Target]:
+def _engine(sim_hub, **target_kw) -> tuple[SequenceEngine, Target]:
     t = Target(name="Alpha", ra_hours=22.6, dec_deg=34.4, center=True,
                autofocus_first=False,
-               steps=[ExposureStep(filter="L", exposure_s=1.0, count=1)])
+               steps=[ExposureStep(filter="L", exposure_s=1.0, count=1)],
+               **target_kw)
     e = SequenceEngine(sim_hub)
     e.plan = SequencePlan(name="recover", guide=False, meridian_flip=False,
                           safety_check=False, targets=[t])
@@ -202,3 +205,53 @@ async def test_the_other_callers_still_hear_the_recovery_report_its_miss(
     assert len(misses) == 1 and "re-centring after the recovery" in misses[0], (
         f"the recovery no longer reports its own miss to the callers that do "
         f"not: {misses}")
+
+
+# ------------------------------------------------ the target's centring (#170)
+
+
+async def test_the_recovery_re_centres_with_the_targets_own_settings(
+        sim_hub, monkeypatch):
+    """The recovery's re-centre is a centring of THIS target, so it takes the
+    target's tolerance and attempts exactly as setup's does: both calls build
+    their keywords through one helper.
+
+    Mutant "setup only" (the recovery's `goto_and_center` passes only
+    ``rotation_deg``, as it did before #170): RED -
+        AssertionError: the recovery re-centred to the hub's defaults, not
+        the target's: setup [{'rotation_deg': None, 'tolerance_deg':
+        0.008333333333333333, 'max_attempts': 5}], recovery
+        [{'rotation_deg': None}]
+    """
+    st = _pinned_mount(sim_hub, monkeypatch, [
+        REFUSED, {"centered": True, "error_arcmin": 0.3}])
+    e, t = _engine(sim_hub, center_tolerance_arcmin=0.5, center_attempts=5)
+    await e._setup_target(0, t)
+    _assert_recovered(st)
+    want = {"rotation_deg": None, "tolerance_deg": pytest.approx(0.5 / 60),
+            "max_attempts": 5}
+    setup, recovery = st["kwargs"][:1], st["kwargs"][1:]
+    assert setup == [want], f"premise: setup passed the settings: {setup}"
+    assert recovery == [want], (
+        f"the recovery re-centred to the hub's defaults, not the target's: "
+        f"setup {setup}, recovery {recovery}")
+
+
+async def test_control_an_unset_target_recovers_with_todays_call(
+        sim_hub, monkeypatch):
+    """CONTROL. Unset, the recovery's re-centre is today's exact call:
+    ``rotation_deg`` alone.
+
+    Mutant "always pass the hub defaults" (the helper always returns
+    ``tolerance_deg=0.02, max_attempts=3``): RED -
+        AssertionError: an unset target's recovery changed its call:
+        [{'rotation_deg': None, 'tolerance_deg': 0.02, 'max_attempts': 3},
+        {'rotation_deg': None, 'tolerance_deg': 0.02, 'max_attempts': 3}]
+    """
+    st = _pinned_mount(sim_hub, monkeypatch, [
+        REFUSED, {"centered": True, "error_arcmin": 0.3}])
+    e, t = _engine(sim_hub)
+    await e._setup_target(0, t)
+    _assert_recovered(st)
+    assert st["kwargs"] == [{"rotation_deg": None}] * 2, (
+        f"an unset target's recovery changed its call: {st['kwargs']}")

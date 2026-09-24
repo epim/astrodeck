@@ -140,7 +140,7 @@ async def test_an_unsited_rig_is_not_held_for_a_flip_it_was_never_going_to_take(
     on before it - which is where every unflipped mount is."""
     _site(monkeypatch, DEFAULT_SITE)
     e, t = _engine(sim_hub)
-    e._pre_flip_side = "west"
+    e._pre_flip_side = {t.id: "west"}       # per target (I-19, #136)
     _mount_stays_west(sim_hub, e, monkeypatch)
     seen = _countdown(monkeypatch, -0.4)
     await e._enforce_flip_owed(t)            # must not raise StopTarget
@@ -155,7 +155,7 @@ async def test_a_sited_rig_in_the_same_state_is_still_held(sim_hub, monkeypatch)
     invariant that saved 2026-09-11."""
     _site(monkeypatch, REAL_SITE)
     e, t = _engine(sim_hub)
-    e._pre_flip_side = "west"
+    e._pre_flip_side = {t.id: "west"}       # per target (I-19, #136)
     _mount_stays_west(sim_hub, e, monkeypatch)
     seen = _countdown(monkeypatch, -0.4)
     started = time.time()

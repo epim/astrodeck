@@ -108,11 +108,15 @@ export function flowLoopRefusal(
   for (let i = 0; i < queue.length; i++) {
     const at = queue[i];
     if (at === wire.from) {
+      // Both nodes are there and both types resolve: `isFlowWire(wire)` above
+      // answered "flow" at each end, and `kindOn` answers that only for a node
+      // on the graph whose type NODE_DEFS knows. Anything else returned null
+      // at that gate, so the assertions below cannot see undefined.
       return FLOW_LOOP_REFUSAL
         // A function replacement, so a `$` in a label is never read as a
         // replacement pattern.
-        .replace("{src}", () => labelOf(byId.get(wire.from), wire.from))
-        .replace("{dst}", () => labelOf(byId.get(wire.to), wire.to));
+        .replace("{src}", () => labelOf(byId.get(wire.from)!))
+        .replace("{dst}", () => labelOf(byId.get(wire.to)!));
     }
     for (const to of next.get(at) ?? []) {
       if (!seen.has(to)) {
@@ -124,9 +128,10 @@ export function flowLoopRefusal(
   return null;
 }
 
-/** The stage's vocabulary label, or its id when the type is one the vocabulary
- *  has since dropped - a sentence naming "undefined" points at nothing. */
-function labelOf(n: FlowNodeRec | undefined, id: string): string {
-  const def = n ? NODE_DEFS[n.type] : undefined;
-  return def ? def.label : id;
+/** The stage's vocabulary label. No id fallback: the only caller fills the
+ *  sentence after the flow-wire gate, which a stage of unknown type never
+ *  passes (see the call site), so a fallback here would be a branch nothing
+ *  can reach. flowLoop.test.ts pins the gate that keeps it unreachable. */
+function labelOf(n: FlowNodeRec): string {
+  return NODE_DEFS[n.type].label;
 }

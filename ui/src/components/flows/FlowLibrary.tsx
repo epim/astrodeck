@@ -102,7 +102,6 @@ export function FlowLibrary() {
   const flowsLoadLibrary = useStore((s) => s.flowsLoadLibrary);
   const flowsSetUi = useStore((s) => s.flowsSetUi);
   const flowsOpen = useStore((s) => s.flowsOpen);
-  const enqueueToast = useStore((s) => s.enqueueToast);
 
   // Fetch once per mount. Guarded by a ref, not by `libraryLoaded`: the slice
   // leaves that flag FALSE on a failed load (so an unreachable library never
@@ -119,13 +118,6 @@ export function FlowLibrary() {
   // arrow per render is a changed prop, and every card re-renders on every
   // keystroke in the filter box.
   const openFlow = useCallback((id: string) => { void flowsOpen(id); }, [flowsOpen]);
-  // An unreadable row's press (#153): the card already prints the reason, and
-  // the press says it again as a warning rather than doing nothing, the same
-  // channel the #/next library's locked controls use.
-  const explainCard = useCallback(
-    (reason: string) => enqueueToast({ level: "warning", title: reason }),
-    [enqueueToast],
-  );
   const openWizard = useCallback(() => flowsSetUi({ wizardOpen: true }), [flowsSetUi]);
   const openQuick = useCallback(() => flowsSetUi({ quickOpen: true }), [flowsSetUi]);
 
@@ -293,7 +285,6 @@ export function FlowLibrary() {
                   the things it creates, at every width. */}
               {sec.cards.map((c) => (
                 <FlowLibraryCard key={c.id} card={c} onOpen={openFlow}
-                                 onExplain={explainCard}
                                  highlight={c.id === highlightId} />
               ))}
               {sec.hasNew && <NewFlowCard onClick={openWizard} />}

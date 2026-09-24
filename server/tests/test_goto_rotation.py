@@ -61,10 +61,15 @@ async def test_rotation_failure_degrades_not_aborts(sim_hub, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_rotator_means_advisory_only(sim_hub):
+    """With no rotator the angle is still advisory: the centring runs and
+    nothing turns. It is no longer SILENT (#160, mosaic S1): the result now
+    carries ``rotation_unavailable`` and one warning is logged. That half is
+    pinned, with its mutants, in test_rotation_unavailable.py; this test keeps
+    only the part that did not change."""
     sim_hub.devices.pop("rotator", None)
     result = await sim_hub.goto_and_center(5.0, 10.0, rotation_deg=90.0)
     assert result["centered"] is True
-    assert result.get("rotation") is None      # silently advisory, as today
+    assert result.get("rotation") is None      # advisory: nothing turned
 
 
 @pytest.mark.asyncio

@@ -421,7 +421,7 @@ flowsSetParam: (id, key, raw) => set((s) => {
 }),
 ```
 
-`flowsConnect` reproduces the replace-on-occupied rule (prototype line 1003; `models.py:121` calls it out as the invariant the server relies on — *"ONE WIRE PER INPUT. The editor enforces this by REPLACING on drop"*):
+`flowsConnect` reproduces the replace-on-occupied rule for **flow inputs only** (prototype line 1003; the fan-in rule in `models.py` `FlowGraph.validation_errors` is the invariant the server relies on — *"A FLOW input takes exactly one wire ... The editor enforces this by REPLACING on drop"* and *"An EVENT input takes as many as you like"*). **Flow inputs are single-occupancy; event inputs fan in** (#152). The unconditional filter below is the prototype's as this contract first transcribed it: on an event input it silently deleted a legal feed, such as the campaign example's second wire into CALIBRATION QUEUE `do` (CLOUD WATCH `in` and PARK + CLOSE `closed` both feed it), so the shipped action removes the incumbent only when `portKindOf(nodes, to, toPort, "in") === "flow"`:
 
 ```ts
 edges: s.flows.graph.edges
@@ -1413,7 +1413,7 @@ Eight rules fall out of that, exactly:
 2. **Only `dir === "in"` accepts a drop.** There is no reverse drag: input spans have no `onPointerDown` at all.
 3. **Self-wiring is refused silently** on drag (`nid !== wire.from`, no toast) — but tap-to-wire **does** toast `Can't wire a stage to itself`. Reproduce the asymmetry.
 4. Kind mismatch refuses with a toast, no edge.
-5. **Inputs are single-occupancy** (the incumbent is filtered out before concat); **outputs fan out freely** — nothing limits how many edges leave one output.
+5. **Flow inputs are single-occupancy** (the incumbent is filtered out before concat); **event inputs fan in** — nothing is filtered, because the server allows many wires into one event input (#152); **outputs fan out freely** — nothing limits how many edges leave one output.
 6. New edge id from one counter shared with node ids.
 7. A miss (dropped on empty canvas) clears the pending wire — no toast, no dangling edge.
 8. **No toast on a successful drag-drop.** Only tap-to-wire toasts `Wired ✓`.

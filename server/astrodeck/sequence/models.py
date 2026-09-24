@@ -101,6 +101,41 @@ class Target(BaseModel):
     # --- atlas (additive; both nullable — existing plans deserialize unchanged) ---
     rotation_deg: float | None = None  # target camera angle (PA) — enforced when a rotator is connected; guidance otherwise
     mosaic_group: str | None = None    # groups mosaic panels in the Plan UI
+    # --- centring (#170; additive — None = exactly today's call) -----------
+    #
+    # The engine has never passed a tolerance or an attempt count to
+    # `hub.goto_and_center`, so every target so far has centred to the hub's
+    # own defaults, 0.02 deg (1.2 arcmin) and 3 attempts, whatever a SLEW card
+    # said. The contract for `_setup_target` (S1) is to pass each one ONLY
+    # WHEN IT IS SET, which is why the default is None and not the hub's
+    # number: a default of 3 would put the kwarg on every plan ever saved, and
+    # no plan could ask for "whatever the rig does" again.
+    #
+    # The bounds are the centring loop's own failure modes. It succeeds on
+    # `err <= tolerance` and calls the mount stuck when the residual sits above
+    # five tolerances and moved under 0.5 arcmin, so a 0 tolerance can never be
+    # met and then reads a CONVERGED mount as one refusing its slews. The 30
+    # arcmin ceiling is 25 times the default: past it "centred" stops meaning
+    # the object is where the frame was planned.
+    center_tolerance_arcmin: float | None = Field(None, gt=0, le=30)
+    # Zero attempts never enters the loop and returns error_arcmin 0: a zero
+    # residual from a centring that took no frame. The ceiling answers to the
+    # engine's GOTO_TIMEOUT_S (420 s for the slew and every attempt, so 42 s
+    # each at 10): a count the timeout would cut short promises attempts it
+    # cannot make.
+    center_attempts: int | None = Field(None, ge=1, le=10)
+    # --- focus at a hop (#189 U-05; additive — False = today's sweep) ------
+    #
+    # Today every target with `autofocus_first` sweeps at every setup, 7-9
+    # minutes on this rig, and a mosaic hops between panels all night. A hop
+    # does not move the focuser or change the tube's temperature, and the
+    # frame loop already refocuses on drift (`autofocus_every`, the
+    # temperature delta), so a hop owes a sweep only when nothing trustworthy
+    # exists or the frame loop would have refocused anyway (spec 5.6 step 6).
+    # True asks for that rule (`_hop_focus_is_owed`, S1), and the mosaic
+    # compile is to set it on every panel (spec 3.3). False keeps the sweep at
+    # every target start that every saved plan has always had.
+    autofocus_skip_if_fresh: bool = False
     # --- autorun scheduling (Batch 4b; additive — default = run-now) ---
     schedule: Schedule = Field(default_factory=Schedule)
 

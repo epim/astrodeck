@@ -16,6 +16,11 @@ Both kept tracking the finished target, unwatched, for as long as they lasted.
 That is the "safety rides value paths" class: the guard hung off the wait's own
 interval, and the hazard does not care how the wait was computed.
 
+Three follow-ups from the S0 review live here too: a stop is READ BACK, and one
+the mount did not take is asked again at every tick, said once per idle spell;
+the predicate's CEILING end (the zenith keep-out) is acted on like its floor;
+and a new run on the same engine does not watch the last run's target.
+
 THE HARNESS IS A CLOCKED SIMULATOR. `engine_mod.time` is a fake wall clock and
 engine.py's `asyncio.sleep`, in the run task only, advances it by what it asked
 for and yields once, so a whole night runs through the real `_run_scheduled`
@@ -251,6 +256,38 @@ def _park_lines(lines) -> list[str]:
     return [m for _lvl, m, _src in lines if "stopping tracking" in m]
 
 
+def _unconfirmed_lines(lines) -> list[str]:
+    return [m for lvl, m, _src in lines
+            if lvl == "warning" and "did not confirm the stop" in m]
+
+
+def _a_mount_that_will_not_stop(run: _Clocked, monkeypatch, *,
+                                readback: str) -> None:
+    """A dead-ish link, the #133 class: ``set_tracking(False)`` times out and
+    the mount goes on tracking. ``readback`` is what a read of it then says:
+    "still tracking" (True) or "unreadable" (the read raises, so None).
+
+    Every stop attempt is still recorded in ``run.tracking_off``. Once the run
+    is frozen at the horizon both calls pass through, so the wind-down after
+    the test's abort is not graded and cannot trip over the double."""
+    tel = run.hub.devices["telescope"]
+    harness_set, real_get = tel.set_tracking, tel.get_tracking
+
+    async def set_tracking(on):
+        if on or run.frozen.is_set():
+            return await harness_set(on)
+        run.tracking_off.append(run.clock.t)
+        raise asyncio.TimeoutError()
+
+    async def get_tracking():
+        if readback == "unreadable" and not run.frozen.is_set():
+            raise RuntimeError("the serial link did not answer")
+        return await real_get()
+
+    monkeypatch.setattr(tel, "set_tracking", set_tracking)
+    monkeypatch.setattr(tel, "get_tracking", get_tracking)
+
+
 # ------------------------------------------------ the two waits that never tore down
 
 async def test_an_eta0_wait_park_holds_on_the_idle_clock(sim_hub, monkeypatch,
@@ -379,6 +416,97 @@ async def test_a_target_sinking_through_the_floor_is_park_held_at_that_tick(
         assert not re.search(r"\d", lines[0]), (
             f"the park-hold line carries a number: {lines[0]!r}")
         assert "floor" in lines[0], lines[0]
+    finally:
+        await run.engine.abort()
+
+
+def _ceiling_run(sim_hub, temp_store, monkeypatch, *, cross_after_idle_s):
+    """Alpha rises through the zenith keep-out ``cross_after_idle_s`` after its
+    150 s exposure ends, and Bravo waits two hours on a constraint. The
+    ceiling is set to Alpha's own altitude at that moment, so the crossing is
+    exact whatever hour the suite runs at."""
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
+    t0 = run.t0
+    exp = 150.0
+    a = _target("Alpha", _ra_at(-3.0, t0), 0.0, exposure_s=exp)   # east, rising
+    t_cross = t0 + exp + cross_after_idle_s
+    ceiling = altaz(a.ra_hours, a.dec_deg, LAT, LON, t_cross)[0]
+    # The slew gate judges the HIGHEST altitude across SLEW_PROJECT_S; Alpha
+    # must clear it at the slew, or the run refuses it and this tests nothing.
+    assert altaz(a.ra_hours, a.dec_deg, LAT, LON,
+                 t0 + engine_mod.SLEW_PROJECT_S + 5.0)[0] < ceiling, "premise"
+    temp_store.set_safety(SafetyConfig(enabled=False, max_alt_deg=ceiling))
+    return run, a, _constraint_waiter("Bravo", t0), t_cross
+
+
+async def test_a_target_rising_into_the_zenith_keep_out_is_park_held_at_that_tick(
+        sim_hub, temp_store, monkeypatch, bus_lines):
+    """The predicate the idle check asks has two ends. Alpha rises into the
+    mount's zenith keep-out (``safety.max_alt_deg``) 40 s into the wait, and is
+    park-held at the first tick after it crosses, as a target sinking through
+    the floor is. A mount tracking on up there reaches its own tripod (#101).
+    Words in the line, no altitude.
+
+    Mutant "floor only" (the idle check acts on a "floor" verdict and ignores
+    "ceiling", as S0 shipped): RED -
+        AssertionError: Alpha rose into the zenith keep-out 40.0 s into the
+        wait but was park-held at 120.0 s: the idle clock caught it, the
+        ceiling did not
+    Mutant "the idle check projects" (see the control below): RED -
+        AssertionError: Alpha rose into the zenith keep-out 40.0 s into the
+        wait but was park-held at 0.0 s: not at the crossing tick
+    """
+    run, a, b, t_cross = _ceiling_run(sim_hub, temp_store, monkeypatch,
+                                      cross_after_idle_s=40.0)
+    try:
+        await run.night(_plan(a, b))
+        idle = run.exposure_end("Alpha")
+        assert 20.0 < t_cross - idle < TEARDOWN - 40.0, (
+            f"premise: the crossing must fall well inside the idle clock "
+            f"({t_cross - idle:.1f} s after the last exposure)")
+        offs = [t for t in run.tracking_off if t >= idle]
+        assert offs, "Alpha was never park-held"
+        assert t_cross <= offs[0] <= t_cross + TICK + 0.5, (
+            f"Alpha rose into the zenith keep-out {t_cross - idle:.1f} s into "
+            f"the wait but was park-held at {offs[0] - idle:.1f} s: "
+            + ("the idle clock caught it, the ceiling did not"
+               if offs[0] - idle >= TEARDOWN else "not at the crossing tick"))
+        lines = _park_lines(bus_lines)
+        assert len(lines) == 1, lines
+        assert not re.search(r"\d", lines[0]), (
+            f"the park-hold line carries a number: {lines[0]!r}")
+        assert "zenith keep-out" in lines[0] and "Alpha" in lines[0], lines[0]
+    finally:
+        await run.engine.abort()
+
+
+async def test_control_a_target_below_its_ceiling_is_not_held_early(
+        sim_hub, temp_store, monkeypatch, bus_lines):
+    """CONTROL. The same rising Alpha, with the keep-out set where Alpha will
+    only reach it 30 s AFTER the idle clock runs out. Until then it is below
+    the ceiling, and only the idle clock stops it, at WAIT_TEARDOWN_S.
+
+    Mutant "the idle check projects" (``projected=True``, the slew gate's
+    look SLEW_PROJECT_S ahead, in `_idle_hold_reason`): RED -
+        AssertionError: park-held 0.0 s into the wait, before the idle clock,
+        with Alpha still below its ceiling: ["Alpha has risen into the
+        mount's zenith keep-out — stopping tracking until the next target is
+        set up"]
+    """
+    run, a, b, t_cross = _ceiling_run(sim_hub, temp_store, monkeypatch,
+                                      cross_after_idle_s=TEARDOWN + 30.0)
+    try:
+        await run.night(_plan(a, b))
+        idle = run.exposure_end("Alpha")
+        assert t_cross - idle > TEARDOWN + TICK, "premise: crosses late"
+        offs = [t for t in run.tracking_off if t >= idle]
+        assert offs, "premise: the idle clock still has to stop it"
+        assert offs[0] - idle >= TEARDOWN, (
+            f"park-held {offs[0] - idle:.1f} s into the wait, before the idle "
+            f"clock, with Alpha still below its ceiling: "
+            f"{_park_lines(bus_lines)}")
+        lines = _park_lines(bus_lines)
+        assert len(lines) == 1 and "nothing has been shot" in lines[0], lines
     finally:
         await run.engine.abort()
 
@@ -558,6 +686,264 @@ async def test_the_latch_park_holds_once_per_idle_spell(sim_hub, monkeypatch,
         assert len(_park_lines(bus_lines)) == 2
     finally:
         await run.engine.abort()
+
+
+# ------------------------------------------------- a stop the mount did not take
+
+@pytest.mark.parametrize("readback", ["still tracking", "unreadable"])
+async def test_a_stop_the_mount_did_not_take_is_asked_again_every_tick(
+        sim_hub, monkeypatch, bus_lines, readback):
+    """`_park_hold` swallows every failure - it has to, it also serves the
+    safety pause - so the idle park-hold used to close its latch on a stop
+    that never happened and never look again: the mount tracked on,
+    unwatched, for the rest of the wait. Here ``set_tracking(False)`` times
+    out and the mount goes on tracking. The idle park-hold must read tracking
+    back, find it not False, and ask again at every later tick. An unreadable
+    read-back counts the same way: a dead serial link (the #133 class) cannot
+    confirm a stop.
+
+    SAID ONCE. One warning per idle spell, and the "stopping tracking" line
+    once too, however many ticks it retries. The /api/logs ring holds 200
+    lines, and a line per 5 s tick would roll it over in under 17 minutes.
+
+    Mutant "no readback" (the `_tracking_now` read-back after `_park_hold`
+    deleted, so the latch stays closed on any outcome): RED, both cases -
+        AssertionError: a stop the mount did not take (still tracking) was
+        asked 1 time(s) in 88 ticks: set_tracking(False) at [120.0] s
+        AssertionError: a stop the mount did not take (unreadable) was
+        asked 1 time(s) in 88 ticks: set_tracking(False) at [120.0] s
+    Mutant "unreadable counts as stopped" (``is True`` in place of
+    ``is not False`` on the read-back): RED, the unreadable case only -
+        AssertionError: a stop the mount did not take (unreadable) was
+        asked 1 time(s) in 88 ticks: set_tracking(False) at [120.0] s
+    Mutant "warn at every failed read-back" (the once-per-spell flag not
+    consulted): RED, both cases -
+        AssertionError: 90 unconfirmed-stop warnings across 90 attempts
+    """
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
+    t0 = run.t0
+    a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
+    b = _constraint_waiter("Bravo", t0)
+    _a_mount_that_will_not_stop(run, monkeypatch, readback=readback)
+    try:
+        await run.night(_plan(a, b))
+        idle = run.exposure_end("Alpha")
+        offs = [t for t in run.tracking_off if t >= idle]
+        later = [t for t in run.ticks if t > idle + TEARDOWN + TICK]
+        assert len(later) > 50, f"premise: many later ticks ({len(later)})"
+        assert offs and TEARDOWN <= offs[0] - idle <= TEARDOWN + TICK, (
+            f"premise: the first stop comes on the idle clock: "
+            f"{run.rel(offs, idle)[:3]} s")
+        assert len(offs) > len(later), (
+            f"a stop the mount did not take ({readback}) was asked "
+            f"{len(offs)} time(s) in {len(later)} ticks: set_tracking(False) "
+            f"at {run.rel(offs, idle)[:5]} s")
+        gaps = sorted({round(y - x, 1) for x, y in zip(offs, offs[1:])})
+        assert gaps == [TICK], f"not once per tick: gaps {gaps}"
+        assert run.tracking() is True, "premise: the double kept it tracking"
+        warned = _unconfirmed_lines(bus_lines)
+        assert len(warned) == 1, (
+            f"{len(warned)} unconfirmed-stop warnings across {len(offs)} "
+            f"attempts")
+        assert not re.search(r"\d", warned[0]), warned[0]
+        assert len(_park_lines(bus_lines)) == 1, _park_lines(bus_lines)[:3]
+    finally:
+        await run.engine.abort()
+
+
+async def test_a_planned_wait_stop_that_did_not_take_is_asked_again_at_the_next_tick(
+        sim_hub, monkeypatch, bus_lines):
+    """The scheduler's planned-wait rule decides the stop a moment after the
+    last exposure: Charlie is three hours away. The mount does not take it.
+    The next tick must ask again, although the idle clock has barely started
+    and would have no reason of its own for another two minutes.
+
+    Mutant "retry only when a reason holds" (the retry branch in
+    `_idle_hold_tick` deleted, so a re-opened latch waits for
+    `_idle_hold_reason`): RED -
+        AssertionError: the planned-wait stop was not taken and the next
+        attempt came at 120.0 s, not the next tick: set_tracking(False) at
+        [0.0, 120.0, 125.0] s
+    """
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
+    t0 = run.t0
+    a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
+    c = _target("Charlie", _ra_at(-3.0, t0), 40.0,
+                start_mode="time", start_time=_hhmm(t0 + 3 * 3600))
+    _a_mount_that_will_not_stop(run, monkeypatch, readback="still tracking")
+    try:
+        await run.night(_plan(a, c))
+        idle = run.exposure_end("Alpha")
+        assert "waiting for Charlie" in (run.engine.state.get("detail") or ""), (
+            f"premise: the scheduler reached Charlie's long planned wait: "
+            f"{run.engine.state.get('detail')!r}")
+        offs = [t for t in run.tracking_off if t >= idle]
+        assert offs and offs[0] - idle < TICK, (
+            f"premise: the planned-wait rule stopped it at once: "
+            f"{run.rel(offs, idle)[:3]} s")
+        assert len(offs) > 1 and offs[1] - offs[0] <= TICK + 0.5, (
+            f"the planned-wait stop was not taken and the next attempt came "
+            f"at {offs[1] - idle if len(offs) > 1 else None} s, not the next "
+            f"tick: set_tracking(False) at {run.rel(offs, idle)[:3]} s")
+        assert len(_unconfirmed_lines(bus_lines)) == 1
+        lines = _park_lines(bus_lines)
+        assert len(lines) == 1 and "long wait" in lines[0], lines[:3]
+    finally:
+        await run.engine.abort()
+
+
+async def test_a_first_wait_stop_that_did_not_take_is_asked_again_every_tick(
+        sim_hub, monkeypatch, bus_lines):
+    """The run OPENS on a long planned wait: Charlie, its only target, is three
+    hours away, so the scheduler's planned-wait rule stops the mount before
+    anything was set up. The mount does not take it. The warning then says
+    "asking again at every wait tick until it does", and nothing is tracked,
+    so the retry must not hang off the tracked-target guard: that guard
+    decides whether a new stop is decided, not whether one in flight is
+    asked again.
+
+    Mutant "retry only with a tracked target" (the retry branch in
+    `_idle_hold_tick` put back behind ``target is None``, as the read-back
+    first shipped): RED - one ask across the whole wait, under a warning
+    promising one per tick -
+        AssertionError: the first wait's unconfirmed stop was asked 1
+        time(s) in 119 ticks, under a warning promising every tick:
+        set_tracking(False) at [0.0] s
+    The CONTROL is `test_no_tracked_target_no_idle_park_hold`: with nothing
+    in flight, a first wait still decides no stop. Mutant "retry on an open
+    latch alone" (the ``_idle_hold_retrying`` half of the retry test dropped)
+    turns it RED, with 18 others -
+        AssertionError: park-held a mount nothing had pointed, at [0.0] s
+    """
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
+    t0 = run.t0
+    c = _target("Charlie", _ra_at(-3.0, t0), 40.0,
+                start_mode="time", start_time=_hhmm(t0 + 3 * 3600))
+    _a_mount_that_will_not_stop(run, monkeypatch, readback="still tracking")
+    try:
+        await run.night(_plan(c))
+        assert "waiting for Charlie" in (run.engine.state.get("detail") or ""), (
+            f"premise: the run opened on Charlie's long planned wait: "
+            f"{run.engine.state.get('detail')!r}")
+        assert run.slews == [] and run.engine._tracked_target is None, (
+            "premise: nothing was acquired, so nothing is tracked")
+        offs = run.tracking_off
+        assert offs and offs[0] - t0 < TICK, (
+            f"premise: the planned-wait rule stopped it at once: "
+            f"{run.rel(offs, t0)[:3]} s")
+        later = [t for t in run.ticks if t > offs[0]]
+        assert len(later) > 50, f"premise: many later ticks ({len(later)})"
+        assert _unconfirmed_lines(bus_lines) and "every wait tick" in (
+            _unconfirmed_lines(bus_lines)[0]), (
+            f"premise: the warning makes the promise: "
+            f"{_unconfirmed_lines(bus_lines)}")
+        assert len(offs) >= len(later), (
+            f"the first wait's unconfirmed stop was asked {len(offs)} time(s) "
+            f"in {len(later)} ticks, under a warning promising every tick: "
+            f"set_tracking(False) at {run.rel(offs, t0)[:5]} s")
+        # `_wait_until` looks once before its first sleep, so the first tick
+        # lands on the planned-wait rule's own instant and asks a second time
+        # there. One tick apart after that.
+        distinct = sorted(set(offs))
+        assert len(offs) - len(distinct) <= 1, run.rel(offs, t0)[:5]
+        gaps = sorted({round(y - x, 1) for x, y in zip(distinct, distinct[1:])})
+        assert gaps == [TICK], f"not once per tick: gaps {gaps}"
+        assert len(_unconfirmed_lines(bus_lines)) == 1
+        lines = _park_lines(bus_lines)
+        assert len(lines) == 1 and "long wait" in lines[0], lines[:3]
+    finally:
+        await run.engine.abort()
+
+
+async def test_the_unconfirmed_stop_is_said_once_per_idle_spell(
+        sim_hub, monkeypatch, bus_lines):
+    """Two idle spells with a `_setup_target` between them, and a mount that
+    never takes the stop: one warning in EACH spell. The flag that limits it
+    is re-armed with the latch, so the second spell's operator is told too.
+
+    Mutant "the warning flag is never re-armed" (`_setup_target` re-opens
+    the latch but leaves the flag set): RED -
+        AssertionError: 1 unconfirmed-stop warning(s) for 2 idle spells in
+        which the mount never stopped
+    """
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=1500.0)
+    t0 = run.t0
+    a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
+    b = _constraint_waiter("Bravo", t0, ready_after_s=600.0)
+    c = _constraint_waiter("Charlie", t0)
+    _a_mount_that_will_not_stop(run, monkeypatch, readback="still tracking")
+    try:
+        await run.night(_plan(a, b, c))
+        idle_a, idle_b = run.exposure_end("Alpha"), run.exposure_end("Bravo")
+        assert idle_b - idle_a > 2 * TEARDOWN, "premise: two separate spells"
+        in_a = [t for t in run.tracking_off if idle_a <= t < idle_b]
+        in_b = [t for t in run.tracking_off if t >= idle_b]
+        assert len(in_a) > 10 and len(in_b) > 10, (
+            f"premise: retried in both spells ({len(in_a)}, {len(in_b)})")
+        warned = _unconfirmed_lines(bus_lines)
+        assert len(warned) == 2, (
+            f"{len(warned)} unconfirmed-stop warning(s) for 2 idle spells in "
+            f"which the mount never stopped")
+    finally:
+        await run.engine.abort()
+
+
+async def test_control_a_mount_that_stops_is_asked_once_and_not_warned_about(
+        sim_hub, monkeypatch, bus_lines):
+    """CONTROL. The simulator's mount takes the stop, and the read-back
+    confirms it: one set_tracking(False) across the whole idle spell, no
+    unconfirmed-stop warning, and the latch stays closed.
+
+    Mutant "re-open the latch whatever the read-back says" (the latch
+    re-opened before the read-back is looked at): RED -
+        AssertionError: a mount that stopped was asked 90 time(s) in one
+        idle spell, at [120.0, 125.0, 130.0, 135.0] s
+    """
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
+    t0 = run.t0
+    a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
+    b = _constraint_waiter("Bravo", t0)
+    try:
+        await run.night(_plan(a, b))
+        idle = run.exposure_end("Alpha")
+        # In fake seconds, not ticks: every confirmed stop spends the
+        # read-back's confirm probes, so a tick count moves with the defect.
+        assert run.horizon - idle > TEARDOWN + 50 * TICK, (
+            "premise: a long idle spell")
+        offs = [t for t in run.tracking_off if t >= idle]
+        assert len(offs) == 1, (
+            f"a mount that stopped was asked {len(offs)} time(s) in one idle "
+            f"spell, at {run.rel(offs, idle)[:4]} s")
+        assert _unconfirmed_lines(bus_lines) == []
+        assert run.engine._idle_hold_open is False
+        assert run.tracking() is False
+    finally:
+        await run.engine.abort()
+
+
+async def test_with_no_telescope_nothing_is_read_back(sim_hub, bus_lines):
+    """A camera-only rig still passes through the scheduler's planned-wait
+    rule. There is no mount to stop and none to read back, so the latch closes
+    and nothing warns about a stop nobody could have confirmed.
+
+    Mutant "read back without a mount" (the no-telescope return deleted, so
+    `_tracking_now` answers None for the missing mount): RED -
+        AssertionError: a rig with no mount was warned about a stop it could
+        not confirm: ['the mount did not confirm the stop (its tracking state
+        cannot be read) — asking again at every wait tick until it does']
+    """
+    e = SequenceEngine(sim_hub)
+    e.plan = _plan()
+    tel = sim_hub.devices.pop("telescope")
+    try:
+        await e._idle_park_hold("the next target is a long wait away")
+        assert _unconfirmed_lines(bus_lines) == [], (
+            f"a rig with no mount was warned about a stop it could not "
+            f"confirm: {_unconfirmed_lines(bus_lines)}")
+        assert e._idle_hold_open is False
+        assert len(_park_lines(bus_lines)) == 1, bus_lines
+    finally:
+        sim_hub.devices["telescope"] = tel
 
 
 async def test_the_planned_wait_rule_spends_the_same_latch(sim_hub, monkeypatch,
@@ -757,6 +1143,123 @@ async def test_no_tracked_target_no_idle_park_hold(sim_hub, monkeypatch,
         await run.engine.abort()
 
 
+async def test_a_new_run_does_not_watch_the_last_runs_target(
+        sim_hub, monkeypatch, bus_lines):
+    """`start()` resets the tracked target, and nothing pinned it: every other
+    case here runs one run per engine (S0 review, test gap 5b). Two runs on
+    ONE engine. Run 1 acquires Alpha, shoots it and ends. Run 2's only target
+    waits on a constraint, so run 2 sits in scheduler waits before any
+    `_setup_target`. Through that wait nothing is tracked, the latch is open,
+    and no idle set_tracking(False) is issued: the idle watch belongs to what
+    THIS run pointed, and before its first setup the mount is wherever it was
+    left.
+
+    Mutant "start keeps _tracked_target" (the ``self._tracked_target = None``
+    reset in `start()` deleted): RED - run 2 park-holds on run 1's stale
+    Alpha at its very first tick, because `start()` still zeroes
+    ``_idle_since`` and the idle clock then reads decades -
+        AssertionError: run 2 park-held run 1's Alpha before acquiring
+        anything: set_tracking(False) at [0.0] s; ['Alpha: nothing has been
+        shot for a while and the mount is still tracking it — stopping
+        tracking until the next target is set up']
+    """
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=4 * 3600.0)
+    t0 = run.t0
+    a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
+    run.engine.start(_plan(a))
+    loop = asyncio.get_running_loop()
+    end = loop.time() + 60.0
+    while run.engine.running and loop.time() < end:
+        await run._real_sleep(0.01)
+    assert not run.engine.running and not run.frozen.is_set(), (
+        f"premise: run 1 must end before the horizon: {run.engine.state}")
+    assert len(run.slews) == 1 and run.exposure_end("Alpha"), (
+        "premise: run 1 acquired and shot Alpha")
+    assert run.engine._tracked_target is a, (
+        "premise: run 1 leaves Alpha as the tracked target, which is what "
+        "start() has to clear")
+
+    t1 = run.clock.t
+    run.horizon = t1 + 600.0
+    run.tracking_off.clear()
+    run.slews.clear()
+    run.ticks.clear()
+    mark = len(bus_lines)
+    b = _constraint_waiter("Bravo", t1)
+    try:
+        await run.night(_plan(b))
+        assert len(run.ticks) > 100 and run.slews == [], (
+            f"premise: run 2 waited ({len(run.ticks)} ticks) and acquired "
+            f"nothing (slews {run.rel(run.slews, t1)})")
+        stale = run.engine._tracked_target
+        assert run.tracking_off == [], (
+            f"run 2 park-held run 1's {getattr(stale, 'name', stale)} before "
+            f"acquiring anything: set_tracking(False) at "
+            f"{run.rel(run.tracking_off, t1)} s; "
+            f"{_park_lines(bus_lines[mark:])}")
+        assert stale is None, f"run 2 is watching {stale.name}"
+        assert run.engine._idle_hold_open is True
+    finally:
+        await run.engine.abort()
+
+
+async def test_a_new_run_does_not_retry_the_last_runs_unconfirmed_stop(
+        sim_hub, monkeypatch, bus_lines):
+    """`start()` clears the unconfirmed-stop retry, and nothing pinned it
+    (S1 review, 2026-09-24): with the reset line deleted every test in this
+    file stayed green. A stop the mount did not confirm leaves
+    ``_idle_hold_retrying`` set, and the retry branch in `_idle_hold_tick`
+    runs BEFORE the tracked-target guard, on nothing but that flag and the
+    open latch. `start()` re-opens the latch, so a run that inherited the flag
+    would stop tracking at its first wait tick, before it had pointed at
+    anything, and say nothing: the retry is the branch that stays quiet.
+
+    Run 1 is the one above (Alpha acquired, shot, ended). It is then given
+    the flag its last stop would have left had the mount not confirmed it,
+    and run 2 waits on a constraint before any `_setup_target`, as above.
+
+    Mutant "start keeps _idle_hold_retrying" (the ``self._idle_hold_retrying
+    = False`` reset in `start()` deleted): RED - the silent stop at run 2's
+    first tick (observed, verbatim):
+        AssertionError: run 2 retried run 1's unconfirmed stop before
+        acquiring anything: set_tracking(False) at [0.0] s; []
+    """
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=4 * 3600.0)
+    t0 = run.t0
+    a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
+    run.engine.start(_plan(a))
+    loop = asyncio.get_running_loop()
+    end = loop.time() + 60.0
+    while run.engine.running and loop.time() < end:
+        await run._real_sleep(0.01)
+    assert not run.engine.running and not run.frozen.is_set(), (
+        f"premise: run 1 must end before the horizon: {run.engine.state}")
+    # What `_idle_park_hold` leaves when the read-back is not a confirmed
+    # False (`test_a_stop_the_mount_did_not_take_is_asked_again_every_tick`).
+    run.engine._idle_hold_retrying = True
+
+    t1 = run.clock.t
+    run.horizon = t1 + 600.0
+    run.tracking_off.clear()
+    run.slews.clear()
+    run.ticks.clear()
+    mark = len(bus_lines)
+    b = _constraint_waiter("Bravo", t1)
+    try:
+        await run.night(_plan(b))
+        assert len(run.ticks) > 100 and run.slews == [], (
+            f"premise: run 2 waited ({len(run.ticks)} ticks) and acquired "
+            f"nothing (slews {run.rel(run.slews, t1)})")
+        assert run.tracking_off == [], (
+            f"run 2 retried run 1's unconfirmed stop before acquiring "
+            f"anything: set_tracking(False) at "
+            f"{run.rel(run.tracking_off, t1)} s; "
+            f"{_park_lines(bus_lines[mark:])}")
+        assert run.engine._idle_hold_retrying is False
+    finally:
+        await run.engine.abort()
+
+
 # ------------------------------------------------------------- no saved site
 
 async def test_with_no_site_the_flip_check_does_nothing_and_the_clock_still_runs(
@@ -786,22 +1289,25 @@ async def test_with_no_site_the_flip_check_does_nothing_and_the_clock_still_runs
         await run.engine.abort()
 
 
+@pytest.mark.parametrize("limit", [{"min_alt_deg": 20.0}, {"max_alt_deg": 60.0}],
+                         ids=["floor", "ceiling"])
 async def test_with_no_site_a_configured_floor_does_not_park_hold(
-        sim_hub, temp_store, monkeypatch):
-    """No saved site, a floor configured: the verdict is "no_site", which is not
-    a floor verdict and must not be acted on as one.
+        sim_hub, temp_store, monkeypatch, limit):
+    """No saved site, a floor or a ceiling configured: the verdict is
+    "no_site", which is neither a floor nor a ceiling verdict and must not be
+    acted on as one.
 
     Unreachable in a whole run on purpose - the slew gate refuses to acquire
-    anything under a floor it cannot evaluate - so asked of the check itself.
+    anything under a limit it cannot evaluate - so asked of the check itself.
 
     Mutant "any verdict counts" (``verdict is not None`` without the kind):
-    RED -
+    RED, both cases -
         AssertionError: 'Alpha has sunk below the mount's altitude floor'
     """
     _unset_the_site(temp_store, monkeypatch)
     e = SequenceEngine(sim_hub)
     e.plan = _plan()
-    e._cfg = AppConfig(safety=SafetyConfig(enabled=False, min_alt_deg=20.0))
+    e._cfg = AppConfig(safety=SafetyConfig(enabled=False, **limit))
     a = _target("Alpha", 1.0, 20.0)
     e._idle_since = time.time()
     assert e._altitude_limit_verdict(a, projected=False, cfg=e._cfg)[0] \
