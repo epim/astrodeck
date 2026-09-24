@@ -1,7 +1,7 @@
 # AstroFlows mosaics: the TARGET block and the panel loop
 
 - Date: 2026-09-23
-- Status: design, ready to plan, revised once against the completeness critic (Revision 1, at the end). No code has changed.
+- Status: design, ready to plan. Revised against the completeness critic (Revision 1) and against the owner's rulings of 2026-09-24 (Revision 2), both at the end. The body carries both revisions. No code has changed.
 - Scope: AstroFlows (server `server/astrodeck/flows/`, the sequence engine, both flows UIs), plus the framing and rotation seams a mosaic touches.
 
 ## Owner's brief (verbatim)
@@ -34,8 +34,9 @@ The engine rotates between panels by list surgery inside the existing scheduler 
 - While nothing can be shot, the mount is park-held on the idle clock (how long nothing has been shootable), never on the length of one wait interval.
 - The mount changes pier side at most once per group per night.
 - Failures set a panel aside for tonight, never mark it done. A panel that rejects while the others accept is set aside after three such visits.
+- A panel whose guider will not start goes to the back of the rotation and is retried on the next pass, whatever the rig's `guiding_action`, and is set aside after three such passes (Revision 2, ruling 5).
 - A pass that takes no exposures ends the rotation.
-- A later target shot while the whole mosaic waits gets visits that end when the next panel is due, so it cannot take the rest of the night.
+- While the whole mosaic waits, the scheduler shoots later targets and comes back (the owner's default, a per-flow option). Their visits end when the next panel is due, so they cannot take the rest of the night.
 
 Pressing Run on night two continues the flow's own dormant session, so there is one ledger per flow and `Session.owed()` stays the only definition of finished.
 
@@ -47,23 +48,24 @@ Pressing Run on night two continues the flow's own dormant session, so there is 
 | D2 | The circle is a drawn **structural event wire**, `<last stage>.pass -> target.next`, where the last stage is the tail of the panel lane (1.5). It is never a flow back-edge and never a new port kind. | Flow back-edges are silently dropped today (`compile.py:72-78`). A third port kind breaks the kind-to-kind rule and `flow_order` (`flows/models.py:143`, `compile.py:77-78`). Backward event wires are already legal (`design_handoff_astrodeck_flows/README.md:122`). |
 | D3 | The default is **pass-major**: rotate panels every pass, one full filter pass per visit, least complete first. Panel-first is what you get by deleting the wire. Filter-major is rejected. | It extends FILTER CYCLE's own reason for existing ("a night cut short still stacks") from channels to panels. A local, untracked mobile handoff draft describes the same rotation (`ASTRODECK-UPDATE/design_handoff_astrodeck_mobile/README.md:174`); it is not a committed contract, and it numbers panels row-major at 15% overlap, which this spec does not follow. |
 | D4 | Panels are derived, never stored. Compile emits one entry per block and `to_plan` expands it. | The graph is the source of truth (`flows/models.py:3-8`). The server is canonical for slew targets (`framing.py:3-8`). |
-| D5 | Identity is deterministic and keyed to the geometry (uuid5). Skipping a panel is not part of the identity. Re-framing restarts the counts, and the modal says so before DONE. | Counts stay honest after a re-frame, and continuation works across nights. This fixes C's flaw of crediting old frames to moved panels. |
+| D5 | Identity is deterministic (uuid5) and keyed to the block's **anchor**: the geometry at which its counts started. Skipping a panel is not part of the identity. A re-frame that moves every panel corner less than half the overlap width (`REFRAME_CARRY_FRACTION = 0.5`, a first guess) keeps the anchor and carries the counts; a larger one re-anchors and restarts them, and the modal says so before DONE (Revision 2, ruling 3). | Counts stay honest after a real re-frame, a nudge does not throw away a campaign, and continuation works across nights. Measuring against the anchor, never the last save, stops small nudges adding up. This still fixes C's flaw of crediting old frames to moved panels. |
 | D6 | One ledger per flow. Run CONTINUES the flow's dormant session through the existing id-safe plan edit plus `engine.start(session=)`. | No second ledger and no session schema change. `owed()` stays single (`session.py:143-152`). |
 | D7 | Engine: `SequencePlan.groups`. Rotation is a requeue inside `_run_scheduled`. Visits are bounded by passes in `_run_steps`. The `_run_step` gate stack is untouched. | There is one scheduler to keep correct. Per-panel gating, waits, park-hold, skips and jumps come for free. |
-| D8 | New blocks count **accepted** subs per panel per filter. Flows saved before this change keep counting attempts, because missing-key defaults reproduce old behaviour. | Rejected frames must not fill a mosaic. Old flows keep their meaning without a data rewrite. |
+| D8 | Every new TARGET block, single target or mosaic, counts **accepted** subs only (owner ruling, 2026-09-24). The editor no longer offers "every sub taken". A flow saved before this change keeps counting attempts when it loads, shows a one-line notice, and switches to accepted subs when it is next saved (Revision 2, ruling 2). | Rejected frames must not fill a quota. Loading never changes a flow's meaning silently; the save that changes it is announced first. |
 | D9 | Reachability is decided in the scheduler's selection, so a blocked panel is "waiting" and the existing do-while wait path runs. A verdict that waiting cannot change (no site, a pier change with flips off) is a refusal, never a wait. The mount is park-held on the idle clock. | This removes the hot loop the safety judge found in A and C, and the tracking-while-idle hole the critic found (5.1). |
 | D10 | Meridian: pier hysteresis on the hour angle with the **plan's** flip lead as the margin (never the lead learned by #127), verified by reading the pier side after every hop. A visit ends before its panel's flip point. The flip-owed memory is kept per target. | At most one pier change per group per night, the #136 invariant stays armed, and the pre-flip idle is priced and bounded (5.7). |
 | D11 | Angle has three explicit modes: any, rotate to, camera fixed. A mosaic requires an angle. Every hop compares the angle its centring solve measured with the planned angle, whatever the rotator state. | A dropped rotator skips rotation silently today (`hub.py:6455-6456`), and a fixed camera at the wrong angle cannot tile. |
 | D12 | Failures set a panel aside for tonight. Deferrals are bounded. The group anti-spin guard counts exposures, not accepted frames. | "Set aside" is not "done", and a clouded pass must not end a mosaic. |
 | D13 | One shared modal module for both UIs, opened from the per-type slot. DONE is one atomic write, made after the server has answered with panel centres. | This avoids a fork between the classic and #/next UIs, and prevents a half-applied framing. |
 | D14 | Per-panel PA correction for meridian convergence waits for #145. Until then a doctor rule states how much overlap convergence costs. | The sign of the correction cannot be validated on the simulator (`solve/simsolver.py:97`). |
-| D15 | "What comes next" is whatever the tail's "all done" output is wired to. By default ("Shoot what comes next, then come back"), while every live panel is waiting, the scheduler may shoot a later target in visits that end when the next panel is due; once the group is set aside tonight, a later target runs its normal course. "Wait for the mosaic" is an explicit choice. The default is an owner decision. | This honours the owner's "before moving on" without silently idling a clear sky, and without handing the night away at every routine wait (1.6). |
+| D15 | "What comes next" is whatever the tail's "all done" output is wired to. By default ("Shoot later targets, then come back"), while every live panel is waiting, the scheduler shoots a later target in visits that end when the next panel is due; once the group is set aside tonight, a later target runs its normal course. The default is the owner's ruling of 2026-09-24 ("No sense in wasting time due to an obstruction"). It is a **per-flow option**, `FlowGraph.settings.whenWaiting`, and "Wait for the mosaic" is its other value (Revision 2, ruling 1). | This honours the owner's "before moving on" without idling a clear sky, and without handing the night away at every routine wait (1.6). |
 
 ### Earlier decisions this reverses (named, not silently overturned)
 
 1. `docs/superpowers/specs/2026-07-14-mosaic-apply-steps-design.md:32-37` kept the Atlas geometry-only, with no live group step editor and no server awareness of group steps. A mosaic block that feeds one FILTER CYCLE is exactly a live group step list, and the server now knows about groups.
 2. `docs/superpowers/specs/2026-07-13-plan-schedule-design.md:98-106` declined a rows/cols round trip. The block now stores rows/cols and reopens the framing it was made from.
-3. The Flows handoff left "Mosaic panels as a node or a Target detail?" open (`design_handoff_astrodeck_flows/AstroDeck Flows.dc.html:565`). This spec rules that a mosaic is a Target detail, and that the loop is a backward event wire the compile consumes as structure. Record the ruling as a README amendment next to `README.md:122` and `:163`, so later agents do not "fix" it back. Mark `MILESTONE2-CONTRACT.md` superseded for the node count (19 there, 21 shipped).
+3. The Flows handoff left "Mosaic panels as a node or a Target detail?" open (`design_handoff_astrodeck_flows/AstroDeck Flows.dc.html:565`). This spec rules that a mosaic is a Target detail, and that the loop is a backward event wire the compile consumes as structure. Record the ruling as a README amendment next to `README.md:122` and `:163`, so later agents do not "fix" it back. Mark `MILESTONE2-CONTRACT.md` superseded for the node count (19 there, 21 shipped). Both are drafted as uncommitted edits labelled "Amendment 2026-09-24 (owner approval pending)", and wait for the owner's signature (Revision 2, ruling 6).
+4. The Atlas and Sky "Send N panels to Plan" door is retired and replaced by "Send to Flow Wizard" (Revision 2, ruling 4, #196). With it goes S2b, the classic Plan "cycle panels each pass" toggle.
 
 ---
 
@@ -128,8 +130,7 @@ The type id stays `target`, category SOURCE, label TARGET.
 **When the wire is added.** It is added automatically only at these moments, and it always leaves the tail of the panel lane (1.5). It is never added as a side effect of connecting something else.
 
 - Modal DONE, when the block becomes multi-panel and owns a stage.
-- The wizard's mosaic kind.
-- Sky FRAME or Atlas "send to flow" (slice S6).
+- The wizard's mosaic kind, including a mosaic sent from the Sky or the Atlas through "Send to Flow Wizard" (slice S6, #196).
 - The one-tap LOOP PANELS button on the card, in the stage list, and as the RUN section toggle in the modal.
 
 **When it is deleted.** The block runs panel-first. Doctor M3 warns. The card reads "one panel at a time". The stage-list rail disappears.
@@ -180,9 +181,9 @@ The switch covers the whole graph, and that closes C's leak. Whenever the two ru
 
 **The group is done** when every non-skipped panel's every step meets its count in the plan's count mode. That is exactly `Session.owed()` over the group's steps equalling 0 (`session.py:143-152`), the single definition of finished. The session is stamped complete only when `owed() == 0` over the whole plan. Otherwise it goes dormant and stays armed (`engine.py:1717-1816`).
 
-**What runs next.** Next is whatever the tail's "all done" output is wired to (1.5, item 6). Targets reachable from it are **followers** of the group. While the group has live members, followers sort after every member in `remaining`, whatever their window start. The block's `whenWaiting` param decides what happens while the mosaic cannot be shot:
+**What runs next.** Next is whatever the tail's "all done" output is wired to (1.5, item 6). Targets reachable from it are **followers** of the group. While the group has live members, followers sort after every member in `remaining`, whatever their window start. The flow's **`whenWaiting` setting** decides what happens while a mosaic cannot be shot. It is one option per flow, stored in `FlowGraph.settings` (Revision 2, ruling 1), and it applies to every multi-panel block in that flow:
 
-- **"Shoot what comes next, then come back"** (default, pending the owner's decision). While every live panel is waiting (below its floor, behind the horizon mask, held by the meridian rule, or in a deferral wait), the scheduler may select a ready follower. This is today's window-sorted skip-ahead (`engine.py:1924-1938`), with one change: such a follower runs with `VisitBound(deadline_ts = group_ready_ts)`.
+- **"Shoot later targets, then come back"** (the default, by the owner's ruling of 2026-09-24: "No sense in wasting time due to an obstruction"). While every live panel is waiting (below its floor, behind the horizon mask, held by the meridian rule, or in a deferral wait), the scheduler may select a ready follower. This is today's window-sorted skip-ahead (`engine.py:1924-1938`), with one change: such a follower runs with `VisitBound(deadline_ts = group_ready_ts)`.
   - `group_ready_ts` is the earliest real time a live member becomes eligible: its meridian crossing (5.7), the end of a deferral wait (5.1), or the projected time a blocked panel clears the floor and the mask. The last is a forward scan in 60 s steps over the same predicate as `_mount_floor_verdict`, in the shape of `_time_to_gate` (`schedule.py:772`). A member with no clearing time tonight does not bound it. The 60 s recheck is a re-evaluation cadence, never a deadline.
   - The deadline is checked at frame boundaries in `_run_steps`, never inside `_run_step`. For a follower with blocks acquisition that means calling `_run_step(max_frames=1)` in a loop, which is the path cycle acquisition already takes, and checking the deadline between calls.
   - At the deadline the follower's visit ends. It keeps its progress, is requeued behind the group, and selection returns to the group.
@@ -190,7 +191,9 @@ The switch covers the whole graph, and that closes C's leak. Whenever the two ru
   - Without this bound, a follower selected at any all-waiting moment runs to completion and is removed (`engine.py:1964-1965`, `:2010`). The routine pre-flip idle (5.7: 0 to 10.6 min with cut visits, and 2.4 to 37.3 min without them, in the Appendix A.4 cases), a tree, or one 60 s recheck would hand the rest of the night away at every meridian crossing.
 - **"Wait for the mosaic"**. Followers get `Target.after_group = <group id>`. Gating reads them as waiting ("after the M31 mosaic") while the group has live members. They are skipped for the night, not marked done, once the group is set aside tonight. They become ready when the group is complete. Tonight shows how many idle hours this choice costs.
 
-Default and why: a multi-night mosaic that holds its followers would idle clear sky for weeks, and a follower that keeps the cursor would starve the mosaic at every meridian crossing. The bounded follower visit gives neither. The owner's "before moving on" is met on any night the mosaic can be shot, because a follower only fills gaps the mosaic cannot use and hands the cursor back when the mosaic can shoot again. Which of the two is the default is an owner decision (Revision 1).
+Default and why: a multi-night mosaic that holds its followers would idle clear sky for weeks, and a follower that keeps the cursor would starve the mosaic at every meridian crossing. The bounded follower visit gives neither. The owner's "before moving on" is met on any night the mosaic can be shot, because a follower only fills gaps the mosaic cannot use and hands the cursor back when a panel is due again. The owner chose this default on 2026-09-24 and asked for it to be an option; "Wait for the mosaic" stays one tap away.
+
+**Where the option lives.** `FlowGraph` gains `settings: dict` of flat scalars, with missing-key defaults in one table (`FLOW_SETTINGS` in `flows/models.py`, mirrored in `flowsTypes.ts` and covered by the parity test). Its first key is `whenWaiting`, missing-key default "Shoot later targets, then come back". There is no older meaning to preserve, because no graph had a multi-panel block before S3, and the setting does nothing in a graph without one. It is edited in three places, all writing the same key: the flow overview (the inspector with nothing selected), the modal's RUN section (labelled "for every mosaic in this flow"), and the wizard's mosaic path (#196). The compile copies it into each block's `mosaic.when_waiting` (3.2), so the engine sees it per group as before.
 
 ### 1.7 SLEW + CENTER becomes part of TARGET
 
@@ -317,8 +320,8 @@ Controls and readouts:
 
 - A **Rotate panels every pass** toggle. It adds or removes the loop wire, which keeps one source of truth.
 - Stay on a panel: `passes` (1 to 20) and "at least N minutes" (0 to 180).
-- Counts: Accepted subs / Every sub taken.
-- When the mosaic cannot be shot: Shoot what comes next, then come back / Wait for the mosaic.
+- Counts: no control. Every new block counts accepted subs only (D8). A block that still counts every sub, because its flow predates the ruling, shows the one-line notice of Revision 2, ruling 2 instead.
+- While a mosaic waits (for every mosaic in this flow): Shoot later targets, then come back / Wait for the mosaic. This row edits the flow's `whenWaiting` setting (1.6).
 - Readouts, for the shipped default cycle (L R G B at 60 s, Ha OIII SII at 180 s, 45 cycles) on a 3x2:
   - `6 panels x 7 filters x 45 = 1890 subs`
   - `9.75 h per panel, 58.5 h in all`
@@ -326,7 +329,7 @@ Controls and readouts:
   - `hop: not measured on this rig yet`, or once it has been measured, `hop 2 m 40 s, measured over 6 hops`. The efficiency figure appears only with a measured hop.
   - `meridian: no idle before the flip` for this 3x2 at Dec 41 (the pre-flip idle of 5.7, computed from the RA span of the panel centres, the plan's flip lead and the hop; none of these is site data). A compact 2x2 of 0.9 x 0.6 deg reads `meridian: up to 10.6 min idle before the flip`.
   - `focus: refocus on temperature` when the focuser temperature delta is armed, or `focus: a sweep only at the first panel; set a temperature delta to refocus as the night cools` when neither it nor `autofocus_every` is set (5.6).
-- With `CAP_VIEW_SITE_DERIVED`: "this is a campaign: about 7.8 nights of 7.5 h before hops. The session stays armed and resumes at the next dusk." The old advice "Set DUSK to repeat nightly" is dropped because it changes nothing: `engine.start` arms auto-resume on every run (`engine.py:795`). What DUSK "Single night" should mean is an owner decision.
+- With `CAP_VIEW_SITE_DERIVED`: "this is a campaign: about 7.8 nights of 7.5 h before hops. The session stays armed and resumes at the next dusk." The old advice "Set DUSK to repeat nightly" is dropped because it changes nothing: `engine.start` arms auto-resume on every run (`engine.py:795`). DUSK's "Single night" is replaced by the option "Automatic resume on subsequent nights until capture quota is fulfilled", default ON (Revision 2, ruling 7, #195). When it is off, this line reads "this is a campaign of about 7.8 nights, and automatic resume is off for this flow: continue it by hand each night".
 
 **CENTRING**
 
@@ -339,7 +342,7 @@ Controls and readouts:
 - Offline, or as a viewer (that route needs `CAP_VIEW_SITE_DERIVED`), DONE unlocks with the chip "panels from the offline mirror; the run computes them on the server". That is true, because `to_plan` calls the same `compute_mosaic`.
 - DONE commits **one** new slice action, `flowsApplyFraming(id, patch, loop)`. It writes every changed param and adds or removes the loop wire in a single slice write, with one dirty/compile cycle. `flowsSetParam` writes one key per call today (`flowsSlice.ts:264-279`). Coercion follows each default's type, as `flowsSetParam` does.
 - The card turns valid only after the compiler answers.
-- **Re-frame confirmation.** If the geometry key (section 3.3) changes while the progress route reports banked subs, DONE asks first: "Re-framing starts all 6 panels from zero: 212 banked subs belong to the old layout and stay on disk."
+- **Re-frame carry or restart** (Revision 2, ruling 3). The readout strip shows how far the new layout moves against the block's anchor (3.3), live: `moved 4.2' of the 10.0' this grid allows: counts carry over`. Only when the move reaches the threshold, while the progress route reports banked subs, does DONE ask first: "Re-framing moves the panels 14.8', more than the 10.0' this grid allows, so all 6 panels start from zero: 212 banked subs belong to the old layout and stay on disk." Changing rows or cols always restarts, with the same question. The numbers come from the server (`POST /api/framing/mosaic` with the anchor, 3.3). Offline, the mirror computes them and the chip says "the server decides at save".
 - Skip toggles never ask, because skip is not part of the identity. Re-enabling a panel restores its progress. CONTINUE keeps this promise: a skipped panel's banked steps are exempt from the dropped-steps refusal (5.9).
 
 ### 2.6 Run mode
@@ -384,10 +387,12 @@ A NodeDef gains `create_params`. These are overrides applied when a node is **cr
 | `centerTol` | number | `1.2` | `1.2` | arcmin. Equals the hub default of 0.02 deg |
 | `centerTries` | number | `3` | `3` | 1 to 5 |
 | `ifNotCentred` | select | `Auto` | `Auto` | / Skip it this pass / Shoot anyway |
-| `counts` | select | `Every sub taken` | `Accepted subs` | sets `plan.count_mode` |
-| `whenWaiting` | select | `Shoot what comes next, then come back` | same | / Wait for the mosaic. The default is an owner decision (D15) |
+| `counts` | none (not offered; Revision 2, ruling 2) | `Every sub taken` (kept on load) | `Accepted subs` | sets `plan.count_mode`. The save path rewrites any other value to `Accepted subs` and says so |
+| `frameAnchor` | none (server-written) | `""` (the current geometry is the anchor) | written at first save | canonical JSON of the geometry the counts started at; the identity key (3.3, Revision 2, ruling 3) |
 
-FILTER CYCLE and CAPTURE LOOP gain the `pass` event output. TARGET gains `next`. No `FieldDef` control is added. The node-type count stays 21.
+`whenWaiting` is not a TARGET param. It is the flow-level setting `FlowGraph.settings.whenWaiting` (1.6, Revision 2, ruling 1). POOL gains the same `counts` treatment as TARGET (created `Accepted subs`, missing-key `Every sub taken`, switched at save), so a new pool-only flow is not the one new flow that counts rejects. DUSK WINDOW's `repeat` is replaced by `autoResume` (Revision 2, ruling 7).
+
+FILTER CYCLE and CAPTURE LOOP gain the `pass` event output. TARGET gains `next`. No `FieldDef` control is added; `FieldDef` gains an optional `help` string for DUSK's info icon (ruling 7). The node-type count stays 21.
 
 ### 3.2 Compiled dict (`compile_plan`, still pure: no devices, no config, no clock)
 
@@ -398,7 +403,7 @@ A TARGET node still emits **one** entry, so the PLAN tab shows the compile verba
  "angle": "any" | "rotate" | "fixed",
  "mosaic": null | {"rows", "cols", "overlap", "fov_x", "fov_y", "fov_from",
                    "skip": [[r, c], ...], "order", "passes", "visit_min",
-                   "require_centred", "when_waiting"},
+                   "require_centred", "when_waiting"},   # when_waiting copied from graph.settings
  "loop": bool,                       # a pass wire from an owned stage exists
  "centre": {"tol_arcmin", "attempts"},
  "count_mode": "accepted" | "attempts",
@@ -429,7 +434,18 @@ A TARGET node still emits **one** entry, so the PLAN tab shows the compile verba
 
 **Identity.** `NS_FLOWS` is a fixed uuid constant in `to_plan`.
 
-- `geometry_key` = the first 16 hex characters of sha256 over canonical JSON of `ra_hours` and `dec_deg` (to 1e-6), `rows`, `cols`, `overlap` (to 1e-4), `rotation_deg` (to 1e-3), and `fov_x`, `fov_y` (to 1e-5). **`skip` is excluded.**
+- `geometry_key` = the first 16 hex characters of sha256 over canonical JSON of `ra_hours` and `dec_deg` (to 1e-6), `rows`, `cols`, `overlap` (to 1e-4), `rotation_deg` (to 1e-3), and `fov_x`, `fov_y` (to 1e-5), taken from the block's **anchor**, not from its current geometry (Revision 2, ruling 3). **`skip` is excluded.** The compile entry carries the anchor as `mosaic.frame_anchor` (or on the entry for a 1x1 block); with no anchor (an unsaved preview) the current geometry is the anchor, so `compile_plan` stays pure.
+- **The anchor rule.** `frameAnchor` is written by the server on every save (`_persist_flow`, so POST, PUT, the wizard and the quick flow alike), through one pure function in `catalog/framing.py`, `reframe_carry(anchor, new) -> {carry, max_move_deg, threshold_deg}`:
+  - no anchor yet (first save, or a flow saved before S3): the anchor becomes the current geometry.
+  - `rows` or `cols` differ from the anchor's, or `rotation` crosses between "any angle" (negative) and a set angle: re-anchor. The counts restart.
+  - otherwise lay out both geometries with `compute_mosaic`, place each panel's four corners at its angle, and take `max_move_deg`, the largest angular distance any corner moves. The corners, not the centres, make one number cover a shift, a turn (which moves the corners of a 1x1 panel although its centre stays put) and a change of camera field.
+  - `threshold_deg = REFRAME_CARRY_FRACTION x w`, where `w` is the overlap width of the **anchor's** grid: `overlap x fov_x` between columns and `overlap x fov_y` between rows, the smaller of those that exist (for a 1x1 block, `overlap x min(fov_x, fov_y)`). `REFRAME_CARRY_FRACTION = 0.5` is a named constant: the owner's first guess ("less than half the width of the overlap"), to be revisited with S7 data.
+  - `max_move_deg < threshold_deg`: keep the anchor, and the counts carry. Otherwise re-anchor, and the counts restart.
+  - A block with no camera field (`fov_x = fov_y = 0`) has a threshold of 0, so only an unchanged geometry keeps its anchor. With no field recorded there is no measure of "a little".
+  - The anchor is compared with the new geometry, never with the previous save, so moves under the threshold cannot add up across saves.
+  - Previews and announcements use the same function. `POST /api/framing/mosaic` takes an optional `anchor` spec and adds `reframe` to its answer, which the modal shows live (2.5). The save's answer lists every block it re-anchored (`reanchored: [{node_id, max_move_deg, threshold_deg}]`), so a raw field edit in the inspector that restarts counts is announced by a toast, and CONTINUE's dropped-steps 409 (5.9) still guards the ledger.
+  - The carry has a cost the constant must be judged against. A.2 already budgets half the overlap for convergence and angle error and leaves the other half for pointing error. A carried move at the limit spends that second half, so the full-depth overlap of a carried panel can shrink to nothing at the seam. The stitched union still has no hole. That is why the constant is a first guess, and S7 measures the centring residual it competes with.
+- Computed thresholds (from `compute_mosaic`, 25% overlap unless stated; Appendix A.5 has the method): a 3x2 of 2.0 x 1.33 deg panels allows 10.0' (a 3.4 deg turn, or a 6.0% change of field, reaches it); a single row of three such panels allows 15.0'; a 3x3 at 15% overlap allows 6.0' (1.75 deg of turn); a 2x2 of 0.9 x 0.6 deg allows 4.5'.
 - `group_id = uuid5(NS_FLOWS, f"{flow_id}/{node_id}/{geometry_key}").hex`
 - `target_id = uuid5(NS_FLOWS, f"{group_id}/r{row}c{col}").hex`. A 1x1 block uses r0c0, so single targets gain continuity too.
 - Pool members: `uuid5(NS_FLOWS, f"{flow_id}/{node_id}/member/{name}").hex`.
@@ -448,7 +464,7 @@ A TARGET node still emits **one** entry, so the PLAN tab shows the compile verba
 
 The compile never re-tiles from live optics. The node snapshot is what the engine slews to.
 
-**`plan.count_mode = "accepted"`** when any block asks for accepted subs. A disagreement is M7.
+**`plan.count_mode = "accepted"`** when any block asks for accepted subs. A disagreement is M7. After ruling 2 a disagreement can only come from a graph written by hand or through the API, because every save rewrites `counts` to accepted subs.
 
 ### 3.4 Engine models (`server/astrodeck/sequence/models.py`)
 
@@ -528,15 +544,16 @@ It is deliberately **not** a pydantic model validator. `SessionStore.active()` a
 - `_migrate` **refuses** `schema_version > FLOW_SCHEMA`. Today it returns any file at version 2 or above unchanged (`store.py:52-73`), so a future file whose node types are all known would load with this build's meaning. `_on_disk` also silently skips files that fail (`store.py:93-105`). From S0, both kinds of file are listed as visible library rows: "saved by a newer AstroDeck (schema 4); update to open it", or "unreadable: <reason>".
 - The writer stamps 3 on every save, as evidence that a 23.4 saved after migration was deliberate.
 
-**FLOW_SCHEMA 4** (slice S3) is a stamp-only bump; the v3 to v4 read is a no-op. The writer stamps 4 when the file uses any meaning a v3 build would misread:
+**FLOW_SCHEMA 4** (slice S3). The v3 to v4 read maps DUSK's `repeat`, whatever its value, to `autoResume = On` with the one-time note of Revision 2, ruling 7; otherwise it is a no-op. (If #195 ships before S3, it takes the next schema number itself, with the same rule.) The writer stamps 4 when the file uses any meaning a v3 build would misread:
 
 - a multi-panel block
 - `angle = Camera fixed at PA`
 - a loop wire
 - `counts = Accepted subs`
-- `whenWaiting = Wait for the mosaic`
+- `settings.whenWaiting = Wait for the mosaic`
+- `autoResume = Off`
 
-Otherwise it stamps 3.
+Otherwise it stamps 3. Because every save rewrites `counts` to accepted subs (ruling 2), in practice every flow saved on an S3 build stamps 4.
 
 **Downgrade matrix**
 
@@ -545,8 +562,10 @@ Otherwise it stamps 3.
 | mosaic flow (v4) | S0-S2 build | refused loudly as future schema |
 | rotating mosaic flow (v4, with the loop wire) | a build older than S0 (today's 0.3.32) | `validation_errors` refuses the wire, because the old build has no `pass` output or `next` input ("cycle has no output port 'pass'"), so save and `/run` answer 422. Safe. |
 | unlooped mosaic flow (v4, loop wire deleted) | a build older than S0 | loads, `rows`/`cols` ignored, shoots the centre |
+| any flow saved on an S3 build (v4, because `counts` was switched at save) | S0-S2 build | refused loudly as future schema, listed as "saved by a newer AstroDeck" |
+| any flow saved on an S3 build | a build older than S0 | loads; `counts` is ignored, so it counts every sub again, and `autoResume = Off` is ignored, so it resumes on later nights |
 
-The last row is the residual risk. Mitigation: ship S0 at least one release before S3.
+The unlooped-mosaic row and the last row are the residual risks. Mitigation: ship S0 at least one release before S3, so a downgrade from S3 lands on a build that refuses v4.
 
 ### 3.7 UI mirrors and test pins
 
@@ -627,9 +646,9 @@ The group's members stay contiguous in `remaining`, ordered by the order functio
 | panel complete (every step `_step_complete`) | remove it. `on_target_complete` rules run for it. They are now gated on real completion, whereas today they run after every `_run_steps` return (`engine.py:1966-1993`). Log: "panel 1-2 complete: 7 of 7 filters". |
 | normal return, still owed, at least one accepted frame | mark it visited and move it behind the group's unvisited members (the requeue). Reset `failed[p]` and `reject_visits[p]`. |
 | normal return, exposures taken, **none accepted**, while another live member accepted a frame since this panel's previous visit | the requeue, plus 1 to `reject_visits[p]`. At `max_failed_visits` (3) consecutive such visits: set it aside tonight with a warning alert, "2-3 rejected every frame for 3 visits while the other panels were accepted". When every member rejects, the sky is to blame and the counter does not move: the night guard and the cloud hold own that case. |
-| `PanelDeferred` (section 5.6) | mark it visited and add 1 to `failed[p]` and `deferred_this_pass`. At `max_failed_visits` consecutive failures: set it aside tonight, with a **warning** alert that names the panel and the reason, then `reporter.mark_skipped`. |
+| `PanelDeferred` (section 5.6), including a guide start that failed (5.6 step 7, Revision 2, ruling 5) | mark it visited, which puts it behind every unvisited member, so it is retried on the next pass. Add 1 to `failed[p]` and `deferred_this_pass`. At `max_failed_visits` (3) consecutive failures: set it aside tonight, with a **warning** alert that names the panel, the reason and the last error ("guiding did not start on 1-2 on 3 consecutive passes: <error>"), then `reporter.mark_skipped`. It is retried the next night. |
 | `StopTarget` from a closed window | handled by the existing all-closed path. Every panel shares the frozen window (`engine.py:1897-1903`). |
-| `StopTarget` from the altitude floor (`on_floor = advance`) or a guiding "skip" escalation | set that panel aside tonight. It is not done. |
+| `StopTarget` from the altitude floor (`on_floor = advance`) | set that panel aside tonight. It is not done. A guide-start failure on a group member no longer escalates to a per-panel skip; it defers (row above). Only a pass in which every attempted panel failed reaches `guiding_action`, and its skip sets the whole group aside tonight (5.6 step 7). |
 | `JumpTarget` | unchanged, via `_apply_jump` (`engine.py:2062`) |
 | `SafetyAbort`, `NightQualityStop`, cancellation | propagate unchanged. A mosaic never downgrades a safety abort to a panel skip. |
 
@@ -641,7 +660,7 @@ The group's members stay contiguous in `remaining`, ordered by the order functio
 
 If no member is eligible at all, the group is waiting and the existing wait path runs, with the idle-clock park-hold above. Under the default `whenWaiting`, a follower may fill the wait in bounded visits (1.6).
 
-**Why the per-panel reject rule.** With the S0 fix, the per-step guard spans visits, and at one pass per visit it takes `max_consecutive_rejects` (10) visits to trip. A panel that always rejects (a star-poor field under the `min_stars` gate, or trailed frames caught by the eccentricity gate) would burn 10 x 780 s = 2.17 h of shutter per night before every step tripped. The panel rule bounds it at 3 x 780 s = 39 min plus three hops. The opposite failure, unguided frames that are **accepted** (guiding_action defaults to warn, `config.py:281`, and #142 lets those frames through the RMS gate), is not a reject and needs the guide-start policy the owner is asked to decide (Revision 1).
+**Why the per-panel reject rule.** With the S0 fix, the per-step guard spans visits, and at one pass per visit it takes `max_consecutive_rejects` (10) visits to trip. A panel that always rejects (a star-poor field under the `min_stars` gate, or trailed frames caught by the eccentricity gate) would burn 10 x 780 s = 2.17 h of shutter per night before every step tripped. The panel rule bounds it at 3 x 780 s = 39 min plus three hops. The opposite failure, unguided frames that are **accepted** (guiding_action defaults to warn, `config.py:281`, and #142 lets those frames through the RMS gate), is not a reject. The owner's guide-start ruling (5.6 step 7, Revision 2, ruling 5) closes it for mosaic panels: a panel whose guider will not start is deferred, never shot unguided.
 
 **Sequential mode** (no loop wire) uses the same machinery without the visit bound: the chosen panel runs to completion. The order policy, set-aside, deferral and meridian rules still apply.
 
@@ -743,7 +762,12 @@ That is a multi-night campaign. The modal, the brief and Tonight say so.
    - A skip is logged: "focus reused: swept 14 min ago, 0.3 C since".
    - `_recentre_after_unguided_focus` still runs after any sweep.
    - Temperature and HFR refocus keep firing at frame boundaries.
-7. **Guiding** restarts with the existing bounded start and its escalations (`engine.py:2450-2500`). The native guider mirrors its calibration on a pier change inside that start.
+7. **Guiding** restarts with the existing bounded start (`engine.py:2450-2500`). The native guider mirrors its calibration on a pier change inside that start.
+   - **[group] A failed start defers the panel** (owner ruling 5, 2026-09-24: "try again after the next go around through the other panels. No point in leaving a hole in the mosaic if we don't have to"). When the plan asks for guiding and the start fails or no guider is connected, a group member raises `PanelDeferred("guiding did not start: <error>")`, **whatever `guiding_action` says**. Today's escalations would each leave a hole: warn shoots the panel unguided (and #142 lets those frames through), skip sets it aside at once, abort ends the night over one panel's guide star. Single targets keep today's escalations.
+   - The panel moves to the back of the rotation and is retried on the next pass (5.1). In sequential mode it moves behind the unvisited panels and is retried when next selected.
+   - **The bound is `max_failed_visits` = 3 consecutive deferred passes**, the counter every `PanelDeferred` shares, reset by a visit that banks an accepted frame. Why three: the retries are a full rotation apart. On a 3x2 at the default cycle one visit is about 16.7 min (780 s of shutter, 70 s of overhead, a 150 s hop; A.3), so the next attempt comes about 83 min later and three attempts span about 2.8 h (a 2x2: 50 min apart, 1.7 h in all). A cloud over the guide star, a star at the edge of the guide camera or a calibration walked after the flip clears inside that span, so two failures are still inside the range of transient faults, the same reasoning as `RESUME_GIVE_UP_AFTER = 3`. Three failures across nearly three hours mean the panel has no usable guide star tonight. Each failed attempt costs a hop plus the bounded start (`GUIDE_START_TIMEOUT_S` 180 s, or `GUIDE_CALIBRATE_TIMEOUT_S` 660 s when a calibration must be walked), 5.5 to 13.5 min and never an exposure, so a starving panel costs at most 16.5 to 40.5 min a night. Four would cost up to 54 min for little more evidence.
+   - **A guider that fails on every panel is the rig's fault, not a panel's.** If at least two panels were attempted in a pass and every one of them failed to start guiding, the per-panel counters do not advance (the same rule as "when every member rejects, the sky is to blame", 5.1). The rig's `guiding_action` then decides, exactly as it does for a single target: abort ends the run, skip sets the group aside tonight, and warn continues the panels unguided. This bounds a dead guider (the #133 and #135 shape) at one wasted pass, about 33 min on a 3x2, instead of three passes and about 109 min. It is the one place the rig-wide action still applies to a mosaic, and the owner is asked to confirm it.
+   - A guiding loss mid-visit that the #72 recovery bound gives up on ends the visit with the same `PanelDeferred`, because the next hop restarts guiding anyway. This extends the ruling from "fails to start" to "fails to recover", and is marked for the owner to confirm.
 8. `_arm_meridian_flip(target)` (`engine.py:2510-2561`) re-arms the latch as a backstop.
 9. **Dither**: `_frames_since_dither = 0` on every acquisition. A fresh centre is a new pointing, so its first frame spends no dither. Today the counter spans targets (`engine.py:2895-2914`, I-21).
 10. Record the hop's wall time as event cost `"hop"` (`_record_event_cost`, `engine.py:956`). Set `_progress_expected = True` and re-anchor the no-progress clock.
@@ -806,7 +830,7 @@ The `patch_session` race itself is a present-day defect and is filed on its own.
 |---|---|
 | steps that hold frames would be dropped (re-framed, or exposure changed) | 409 unless `accept_dropped`: "212 subs belong to steps this flow no longer has; they stay on disk". A step is **not** counted as dropped when its old target id is in the new group's `skipped_ids`. Skipping a panel is not a change of identity (2.5), and re-enabling it brings the same step ids back, with its frames, because the ledger counts by step id. |
 | the dormant session shares **no** step ids with the compile and holds frames, because it was saved before S1 with uuid4 ids (`sequence/models.py:19`, `:80`, `:226`) | 409 `{"adopt": {...}}` rather than a silent fresh start, which would disarm it (`engine.py:795-803`). The UI offers ADOPT or START OVER. ADOPT rewrites the session's step ids to the deterministic ones, under the write lock and after a `.bak` copy. The match is **unique** on (target name, frame type, filter, exposure, gain, binning). Pre-S1 flows carry no mosaics, so this is a one-target-per-node match. Unmatched or ambiguous steps stay as they are and are listed. |
-| the compile's `count_mode` differs from the session's | 409 unless `accept_recount`: "this session counted every sub taken (412); counting accepted subs makes it 371". The ledger is counted by the frozen plan's `count_mode` (`session.py:130-134`), so changing `counts` mid-campaign recounts every banked frame retroactively. |
+| the compile's `count_mode` differs from the session's | 409 unless `accept_recount`: "this session counted every sub taken (412); counting accepted subs makes it 371". The ledger is counted by the frozen plan's `count_mode` (`session.py:130-134`), so changing `counts` mid-campaign recounts every banked frame retroactively. Ruling 2's switch at save is the common way to reach this row: the first CONTINUE after an old flow is saved answers with both totals before anything is recounted. |
 | `body.fresh = true` | START OVER: a fresh session. The UI puts it behind a confirm. |
 | no dormant session | fresh, as today (`app.py:5198`) |
 | a **complete** session whose flow now owes more (counts raised) | fresh, plus follow-up issue I-30 ("reopen a complete flow session") |
@@ -836,10 +860,10 @@ One starter per session still holds. `engine.start` refuses "already running" to
 | 6.4 | Termination | Six independent bounds: the zero-exposure pass (5.1); `max_failed_visits` per panel with a 300 s `_wait_until` between all-deferred passes; the per-panel reject rule (3 visits that accept nothing while others accept, 5.1); the per-step reject guard, now spanning visits (5.3); the frozen stop boundary; `quota_unbounded` on every start path. A follower never holds the cursor past `group_ready_ts` (1.6). |
 | 6.5 | Per-frame gates | No second frame loop. Visits call `_run_step` with its whole gate stack (`engine.py:2870-2954`). |
 | 6.6 | Watchdog | `_progress_expected` is False from the start of the hop to the first exposure (`engine.py:2317`, `:2508`). |
-| 6.7 | Set aside is not done | Window closed, floor advance, guiding skip, repeated centring or rotation failure, an angle failure, a panel that rejects alone, a step reject guard, a pier change with flips off: all set aside for tonight. The ledger decides completion. The session stays dormant and armed. Set-aside records are kept in `Session.set_aside` for the night, so a crash-resume does not retry them. The report names every set-aside panel and its reason. |
+| 6.7 | Set aside is not done | Window closed, floor advance, a guider that would not start on three consecutive passes, repeated centring or rotation failure, an angle failure, a panel that rejects alone, a step reject guard, a pier change with flips off: all set aside for tonight. The ledger decides completion. The session stays dormant and armed. Set-aside records are kept in `Session.set_aside` for the night, so a crash-resume does not retry them. The report names every set-aside panel and its reason. |
 | 6.8 | Star-poor panel | Deferred for at most `max_failed_visits` consecutive passes, then set aside with a warning alert that names it. It never becomes a silent coverage hole. A panel that starves every night gets a Campaign row naming the starvation (follow-up I-31). |
 | 6.9 | Privacy | The setting-first order, the meridian rule and per-panel altitudes use the site inside the engine only. The log ring and the night log speak in panel labels and words: "2-1 first: sets soonest", "1-3 waits for the meridian". Minutes to set, meridian times and altitudes go only to a `CAP_VIEW_SITE_DERIVED` topic (the issue #19 class: a computed value can reveal the site). The progress route carries no site data (`CAP_VIEW_STATUS`). The modal's altitude column, `MosaicNightCard` and Tonight stay gated and hidden for a viewer. **Timing is a channel too, and words alone do not close it.** `/api/logs` is `CAP_VIEW_STATUS` (`app.py:8046`), so a viewer can read it. A line logged when a panel is acquired at its computed meridian crossing timestamps the transit of a known RA. That gives the LST, and the LST gives the longitude, which is why `redact.py:64-88` strips `hours_to_flip`. Rule: a log line or state change whose **time** is set by a site computation (a meridian wait ending, a group flip, a flip at the crossing) carries `site_derived=True`. `/api/logs` and the log topic drop it for a principal without `CAP_VIEW_SITE_DERIVED`, and `state.group` withholds `panel` and `pass` across it (5.10). The night log file keeps everything. Residual: the first frame after a meridian wait still lands at crossing plus hop plus exposure, which is coarse because the hop varies. The privacy issue records that residual, and today's flip lines (#127) and the "holding for the meridian flip point (N min)" state detail (`engine.py:5546-5547`) leak the same way now. |
-| 6.10 | Guider churn | Every hop stops guiding and then starts it again. The bounded start and its warn/skip/abort escalations apply per panel: skip sets that panel aside, abort ends the run. Hops multiply guider starts on the #72/#134/#135 path, so S2 includes a simulator test that forces a guide-start failure mid-mosaic. |
+| 6.10 | Guider churn | Every hop stops guiding and then starts it again. A failed start defers that panel to the next pass whatever `guiding_action` says, bounded at three consecutive passes, and a pass in which every attempted panel failed hands the decision to `guiding_action` (5.6 step 7, Revision 2, ruling 5). Hops multiply guider starts on the #72/#134/#135 path, so S2 includes simulator tests that force a guide-start failure on one panel and on every panel. |
 | 6.11 | Meridian | At most one pier change per group per night (5.7). The flip-owed invariant is kept per target. There is never a 180-degree rotator turn. |
 | 6.12 | Angle | A mosaic cannot run at "any angle" (M2). The measured angle is checked on every hop, whatever the rotator state (5.6). The rotate loop keeps abandoning a non-improving attempt (`hub.py:6317-6334`). |
 | 6.13 | Identity | `plan_identity_errors` on every start path. Duplicate step ids would let one panel's frames count for every panel, and in accepted mode panels 2 to N would read complete at once. |
@@ -978,7 +1002,7 @@ Tests:
 5. `on_target_complete` gated on panel completion. `after_group` gating. Bounded follower visits (`group_ready_ts`, 1.6).
 6. Published group state. ResumeArm using the order function and passing rotation.
 7. The hub rotate shortcut. FITS `MOSAIC` and `PANEL` keywords and a `$$PANEL$$` naming token (`naming.py:18-29`). The `types.ts` mirror.
-8. **S2b**: a classic Plan "cycle panels each pass" toggle on a `mosaic_group` header emits `groups`, so the Sky copy's promise becomes true on the Plan path first. That copy is corrected to name the Plan, not the flow (I-08).
+8. ~~**S2b**: a classic Plan "cycle panels each pass" toggle.~~ Dropped by Revision 2, ruling 4: the Atlas and Sky door to the Plan is retired (#196), so no new Plan mosaics are made, and a `mosaic_group` with no `groups` entry keeps today's panel-first behaviour. Until S6 lands, the Sky copy is corrected to describe panel-first behaviour, as #154 suggests.
 
 Tests (`server/tests/test_group_rotation.py`: the real `_run_scheduled` against the simulator hub on a clocked fake time, never sleeps, and doubles never read live device state):
 
@@ -999,7 +1023,10 @@ Tests (`server/tests/test_group_rotation.py`: the real `_run_scheduled` against 
 - A pier change with flips off sets that panel aside and the others keep shooting. No site with limits configured raises `SafetyAbort`. Mutant "every verdict waits" waits all night.
 - A crash-resume the same night does not retry a set-aside panel, and the next night does.
 - The no-measurement cases of 5.6 step 4 each have a case: fixed and verified shoots, fixed and never verified defers, rotate with a calibrated rotator warns.
-- A guide-start failure forced mid-mosaic: skip sets that panel aside; abort ends the run.
+- Guide-start failures (Revision 2, ruling 5), each under `guiding_action` warn, skip and abort in turn:
+  - one panel fails its start: it is deferred to the next pass, the others shoot, it is retried after the others, and it is set aside after 3 consecutive failed passes with the alert naming it. No frame is shot on it unguided. Mutant "honour `guiding_action` per panel" shoots it unguided under warn, sets it aside at once under skip, and ends the run under abort.
+  - a panel that fails twice and then starts guiding banks frames and resets its counter. Mutant "count lifetime failures" sets it aside later.
+  - every attempted panel fails in one pass (at least two): the counters do not move and `guiding_action` decides (abort ends the run, skip sets the group aside, warn shoots unguided). Mutant "defer even then" spends three passes hopping a dead guider.
 - Accepted mode with a rejecting grader terminates.
 - A resume from a mid-group `done_map` picks the least complete panel, and ResumeArm re-centres on it with rotation.
 - `on_target_complete` fires once per panel, at completion. Mutant "fire every visit" fails.
@@ -1010,7 +1037,7 @@ Tests (`server/tests/test_group_rotation.py`: the real `_run_scheduled` against 
 1. TARGET params and ports, `create_params`, the `pass` outputs, loop-wire consumption, and the `_trigger_for` pass branch.
 2. The compile entry (3.2), the `to_plan` expansion (3.3), the panel lane and `owner_of` (1.5), rig-fact injection, FLOW_SCHEMA 4 stamping.
 3. Doctor R4, M1-M15 and L1 in the server. Correct the stale docstring at `doctor.py:13-17`; there is no UI copy. `LEGACY_TYPES` hides SLEW.
-4. The wizard's mosaic kind, with a lane without SLEW and the loop wire. The angle comes from the operator or USE MEASURED, never a default; the camera field comes from injected optics, and with none the wizard answers with a single target (1.8). The Examples drop SLEW, and an **eighth Example**, "M31 3x2, rotating", joins the acceptance corpus. It must load, validate and run on the simulator (`examples.py:3-7`).
+4. The wizard's mosaic kind, with a lane without SLEW and the loop wire. It is the generator behind "Send to Flow Wizard" (#196), whose stepped sheet lands in S4 with the modal and whose doors move in S6. The angle comes from the operator or USE MEASURED, never a default; the camera field comes from injected optics, and with none the wizard answers with a single target (1.8). The Examples drop SLEW, and an **eighth Example**, "M31 3x2, rotating", joins the acceptance corpus. It must load, validate and run on the simulator (`examples.py:3-7`).
 5. The Tonight mosaic branch:
    - one `compute_night` per block
    - per-panel peak altitude through `_stamp_transit_alt` (gated)
@@ -1026,8 +1053,10 @@ Tests:
 - The four worked cases of 1.5 compile as the table says. `owner_of` is a chain walk: a TARGET -> CYCLE -> DOME -> CAPTURE graph gives M13. Mutant "owner is any upstream TARGET" (the doctor's set walk) hands the CAPTURE to the mosaic.
 - A pass wire from a mid-lane stage is M12. Appending a CAPTURE after the tail moves the loop wire to it.
 - The wizard with no optics answers with a single target and a reason. It never writes a default angle; a grep test asserts no numeric angle literal in the mosaic kind.
-- A v3 flow with no `counts` key compiles to attempts. Mutant "missing-key default Accepted" fails.
-- A palette-created block gets Accepted subs and Any angle.
+- A v3 flow with no `counts` key compiles to attempts when loaded. Mutant "missing-key default Accepted" fails.
+- Saving that flow writes `counts = Accepted subs` on every TARGET and POOL, and the save's answer says so (ruling 2). Mutant "switch on load" changes the compile of a flow nobody saved.
+- A palette-created, wizard-created or example block gets Accepted subs and Any angle.
+- The anchor rule (ruling 3): a move of 9.9' on the 3x2 of 2.0 x 1.33 deg keeps the ids and 10.1' changes them; a 3.3 deg turn keeps them and 3.5 deg changes them; three saves of 6' each in the same direction re-anchor on the second, because each is measured against the anchor. Mutant "compare with the previous save" never re-anchors. Mutant "centres, not corners" keeps the ids of a 1x1 block turned 90 degrees.
 - A mosaic flow stamps 4, and a single-target flow stamps 3.
 - M1-M15 each have a positive and a negative case. M6 trips on a 1x4 at 10% overlap at Dec 75 (38.9%) and not on a 3x3 at 25% at Dec 41 (3.1%).
 - The loop wire emits no Instruction. A pass wire anywhere else says "will not run".
@@ -1063,11 +1092,11 @@ The modal's run mode fed by `state.group`. The Run button reads from the session
 
 ### S6: converge the doors
 
-- Sky FRAME quick and Atlas "send to flow" write a TARGET block with the loop wire. The side channel of Plan targets goes (`next/hubs/sky/sheets/quick.tsx:438-466`).
+- The Atlas "Send N panels to Plan" / "Add target to Plan" button (`views/AtlasView.tsx:1569-1570`) and the Sky FRAME's forward action become **SEND TO FLOW WIZARD** (Revision 2, ruling 4, #196). The wizard opens pre-filled with the framing, asks what is missing, and writes a TARGET block with the loop wire. The side channel of Plan targets goes (`next/hubs/sky/sheets/quick.tsx:438-466`), and so does the first-run guide's "press Add target to Plan" (`lib/firstRunWizard.ts:77`).
 - Delete the synthetic MOSAIC lane card and the false copy: `FramingCard.tsx:37-43`, `quickCopy.ts:225`, `:237-243`, `flowLane.ts:98-117`.
 - One overlap constant.
 
-Tests: the Sky quick path produces exactly one TARGET block and no Plan targets, and a grep test asserts the deleted strings are gone.
+Tests: the Sky and Atlas doors open the wizard pre-filled and produce exactly one TARGET block and no Plan targets, and a grep test asserts the deleted strings ("panels to Plan", "Add target to Plan") are gone.
 
 ### S7: validation before any sky, then one supervised night
 
@@ -1077,6 +1106,8 @@ Tests: the Sky quick path produces exactly one TARGET block and no Plan targets,
 4. File an issue for every human intervention.
 
 A mosaic has never run on the rig (`docs/reviews/2026-07-30-overnight-systems-test.md:102`).
+
+**The supervised night is approved** (owner ruling 8, 2026-09-24). It will be scheduled once S0 to S6 have landed and item 1 is green on the simulator. The night also measures the two first guesses Revision 2 introduced: the re-frame carry threshold (`REFRAME_CARRY_FRACTION`, against the measured centring residual) and the guide-start retry bound.
 
 ### S8: gated on #145
 
@@ -1130,7 +1161,7 @@ No earlier issue mentioned mosaics. The ones checked were #132, #136, #141, #142
 |---|---|---|
 | I-19 | EXTENDED #136 | `_pre_flip_side` is engine-wide (`engine.py:613`, `:827`, `:6419`, `:6485`). Key it per target (5.7). |
 | I-20 | EXTENDED #132 | The slew gate SafetyAborts the whole run for a target behind the mask, and the start refuses on the first blocked target. The tagged verdict at selection (5.1) is the per-panel half, and the start guard should list blocked panels (6.3). |
-| - | EXTENDED #142 | Every panel hop restarts guiding, and a failed start shoots unguided frames that pass the RMS gate. The owner decides the panel policy. |
+| - | EXTENDED #142 | Every panel hop restarts guiding, and a failed start shoots unguided frames that pass the RMS gate. The owner decided the panel policy on 2026-09-24 (ruling 5): defer the panel to the next pass, never shoot it unguided (5.6 step 7). |
 
 **Small follow-ups**
 
@@ -1157,7 +1188,8 @@ No earlier issue mentioned mosaics. The ones checked were #132, #136, #141, #142
 | U-09 | ULTRACODE S3 | The TARGET block vocabulary, the loop-wire grammar, the panel lane and `owner_of`, `create_params`, doctor M1-M15, the wizard mosaic kind with a real angle and injected optics, the eighth Example. |
 | U-10 | ULTRACODE S3 | The Tonight mosaic branch: one `compute_night` per block (`tonight.py:393-439`), a budget that counts panels (`:510-555`), Campaign rows without a pool (`:868-871`), the brief sentence. |
 | U-11 | ULTRACODE S4 | UI seams: a local FramingSession (`store.ts:1283` is a singleton), `flowsApplyFraming` (`flowsSlice.ts:264-279` writes one key), `flowsAddNode` returning the id, the SkyCanvas `panels` and `frameCenter` props, the Overlay `full` variant, the loop back-arc, the stage-list rail. |
-| U-12 | ULTRACODE S2b | A classic Plan "cycle panels each pass" toggle on an existing `mosaic_group`, so every door to a mosaic shares one engine behaviour. |
+| U-12 | DROPPED (Revision 2, ruling 4) | A classic Plan "cycle panels each pass" toggle. The Plan door is retired in favour of "Send to Flow Wizard" (#196), so every new mosaic arrives as a TARGET block. |
+| U-13 | FILED #196 (S3, S4, S6) | Send to Flow Wizard: one stepped wizard for both UIs, pre-filled from the Atlas or Sky framing, asking filters and counts, exposures, guiding, the stop condition and auto-resume, ending on a review of the server compile with OPEN IN EDITOR and RUN. |
 
 **Later follow-ups**
 
@@ -1175,7 +1207,7 @@ No earlier issue mentioned mosaics. The ones checked were #132, #136, #141, #142
 | I-35 | FILED #184 | An optional `on_mosaic_complete` trigger, added only in the commit where the engine raises it (engine first, enum second: `sequence/models.py:123-127`; `to_plan` reads `TriggerKind` directly). Until then M14 notes the per-panel firing. |
 | I-36 | FILED #185 | AUTOFOCUS node `when` policy inside the circle (stale / every panel / first panel), making the node's params live for groups, and running a due sweep on the richest panel. |
 | I-44 | FILED #186 | Per-panel exposure overrides inside one mosaic (a bright core panel, a faint edge panel). |
-| I-45 | FILED #187 | Fixed camera, unknown angle: lay the grid out at the angle the first centring solve measures. It changes the geometry key, so it waits on the owner's re-frame identity decision. |
+| I-45 | FILED #187 | Fixed camera, unknown angle: lay the grid out at the angle the first centring solve measures. It changes the geometry, so it waited on the re-frame identity decision. Ruling 3 decides it: a measured angle within the carry threshold of the laid-out one keeps the counts (a 3.4 deg turn on the 3x2 of 3.3), and a larger one restarts them. |
 | I-46 | FILED #188 | Gallery and Session Review have no mosaic grouping (`report.py:169`, `bundle.py:443` group by target name). |
 | I-37 | VERIFY, do not file blind | The backlog says an abort was followed by an automatic restart 50 s later (`2026-08-22-flow-editor-offers-what-the-engine-refuses.md:74-79`). Re-check it against the fix for #93 before filing. |
 | I-38 | VALIDATION GAP | No mosaic has run on the rig. The simulator solver encodes the handedness assumption (`solve/simsolver.py:97`), so no simulator test can validate #145 or the sign of the per-panel PA. Whether the simulator mount picks its pier side by hour angle, as the AM5 does, must be asserted before the S2 meridian test proves anything. |
@@ -1195,10 +1227,13 @@ No earlier issue mentioned mosaics. The ones checked were #132, #136, #141, #142
 9. **Two UIs.** The modal, the back-arc and the rail must live in shared modules. The pins in `nodeDefs.test` fail loudly by design.
 10. **Downgrade** to a build older than S0 would shoot a mosaic's centre. Ship S0 a release early.
 11. **Privacy.** Scheduling reasons are computed from the site. The rule is words in logs, minutes only behind the gate. Scan every published artifact against the needles file.
-12. **Scope.** S2 is the long pole, and the first visible result (S4) arrives late. The circle can be shown through `/api/sequence/start` and the classic Plan toggle (S2b) before any Flows UI exists.
+12. **Scope.** S2 is the long pole, and the first visible result (S4) arrives late. The circle can be shown through `/api/sequence/start` before any Flows UI exists. (The classic Plan toggle, S2b, was the other early demonstration; Revision 2 dropped it.)
 13. **The idle-clock park-hold changes today's behaviour.** A mount that used to keep tracking through an eta-0 or constraint wait now stops tracking after `WAIT_TEARDOWN_S`. That is the point of the fix, and the next `_setup_target` re-slews and restores tracking as it does after any long wait. It is a named behaviour change with its own issue (#165).
-14. **Bounded follower visits cost hops.** A follower that fills a mosaic's wait pays a slew and a centring each time it comes back. Whether the default is to fill the gap at all is the owner's D15 decision; "Wait for the mosaic" stays one tap away.
+14. **Bounded follower visits cost hops.** A follower that fills a mosaic's wait pays a slew and a centring each time it comes back. The owner chose to fill the gap by default (ruling 1); "Wait for the mosaic" stays one tap away in the flow's settings.
 15. **Hop focus has no age rule.** It relies on the frame loop's refocus triggers (`autofocus_every`, the temperature delta). On a rig with neither, a mosaic focuses once per night, which is what one long target does there today. The RUN section says so, so the operator can arm the temperature delta.
+16. **The carry threshold is a guess.** `REFRAME_CARRY_FRACTION = 0.5` is the owner's hunch. At the limit a carried move spends the overlap budget A.2 left for pointing error (3.3). S7 measures the centring residual, and the constant is revisited then.
+17. **Every save switches the count mode.** Ruling 2's switch makes nearly every flow saved on an S3 build a v4 file, which an S0 to S2 build refuses to open (3.6). That is loud, not silent, but it makes a downgrade after S3 costlier.
+18. **The auto-resume tooltip.** The owner's text promises three things the code does not do today (#191, #192, #193). The option ships with an interim text that is true (Revision 2, ruling 7), and a claims-table test keeps the two in step.
 
 ---
 
@@ -1276,6 +1311,21 @@ Assumptions, stated because they are not measurements: 10 s of per-frame overhea
 
 The idle scales with the hop and the lead, not with the site, so the modal can show it to every role. When it happens is site-derived, and stays behind the gate.
 
+### A.5 The re-frame carry threshold (Revision 2)
+
+`threshold = REFRAME_CARRY_FRACTION x w`, with `REFRAME_CARRY_FRACTION = 0.5` and `w` the overlap width of the anchor's grid (3.3). The move is the largest angular distance any panel corner travels between the anchor layout and the new one. Each corner is placed at its panel's angle in that panel's own tangent plane with `deproject`, and the panels come from `compute_mosaic`. The last three columns are the smallest pure move of each kind that reaches the threshold, found by bisection. The layouts are at angle 30 deg; none of these numbers is site data.
+
+| Grid (cols x rows) | Panel | Overlap | Dec | w | Threshold | North shift | Turn | Field change |
+|---|---|---|---|---|---|---|---|---|
+| 3x2 | 2.0 x 1.33 deg | 25% | 41 | 19.95' | 9.98' | 9.98' | 3.43 deg | 6.0% |
+| 3x2 | 2.0 x 1.33 deg | 25% | 75 | 19.95' | 9.98' | 9.90' | 3.33 deg | 6.0% |
+| 3x1 (one row) | 2.0 x 1.33 deg | 25% | 41 | 30.00' | 15.00' | 15.00' | 5.50 deg | 9.6% |
+| 3x3 | 2.0 x 1.33 deg | 15% | 41 | 11.97' | 5.99' | 5.99' | 1.75 deg | 3.1% |
+| 2x2 | 0.9 x 0.6 deg | 25% | 41 | 9.00' | 4.50' | 4.50' | 4.53 deg | 7.9% |
+| 1x1 | 2.0 x 1.33 deg | 25% | 41 | 19.95' | 9.98' | 9.98' | 7.94 deg | 13.9% |
+
+A turn moves the outer corners of a wide grid most, so the 3x3 at 15% tolerates the least turn. A single panel tolerates the most, because only its own half-diagonal turns.
+
 ## Appendix B: judges' findings and where each is handled
 
 | Finding | Where fixed |
@@ -1333,3 +1383,136 @@ The idle scales with the hop and the lead, not with the site, so the modal can s
 | - | Not verified by the critic: whether the simulator mount picks its pier side by hour angle | `hub.py:6582-6585` for the AM5 | An S2 test asserts it before the meridian straddle test counts (8, I-38). |
 
 Two corrections came from verification rather than from the critic. I-12 is latent, not live: a regrade is refused during a run (`app.py:5449-5452`), and it is filed as such (#158). I-18's latch has one reset, NowEmpty's own RUN press (`NowEmpty.tsx:394-397`), and the classic header still reads the stale value (#162).
+
+## Revision 2 (owner rulings, 2026-09-24)
+
+2026-09-24. The owner ruled on the eight decisions #189 was waiting on. Ruling 2 was first held for a clarification and then decided the same day. Each ruling is recorded below in the owner's words where they were quoted, with what it changes and where. The body of the spec now carries every ruling, so this section is the record, not a patch list to apply. Applying the rulings produced seven new issues (#190 to #196) and comments on #141, #142, #154, #169, #187 and #189.
+
+| # | Ruling | What changes | Where in the body |
+|---|---|---|---|
+| 1 | While a mosaic waits, "shoot later targets and come back", and make it an option: "No sense in wasting time due to an obstruction." | D15's default is decided. It is a per-flow option, `FlowGraph.settings.whenWaiting`; "Wait for the mosaic" is the other value. Revision 1's rule stays: a later target's visit ends when a panel is due. | D15, 1.6, 2.4, 3.1, 3.2, 3.6, risk 14 |
+| 2 | "Only count accepted frames." | Every new TARGET block, single target or mosaic, counts accepted subs, and the choice is withdrawn. Existing flows keep their stored mode on load, show a one-line notice, and switch when next saved. | D8, 2.4, 3.1, 3.3, 3.6, 5.9, S3 tests, risk 17 |
+| 3 | "If the re-frame is less than half the width of the overlap, carry over" the panel counts; otherwise restart them. The number is a hunch. | Identity keys to an anchor geometry. Counts carry while every panel corner moves less than `REFRAME_CARRY_FRACTION` (0.5) of the overlap width: a named constant, derived per grid, to revisit with data. | D5, 2.5, 3.1, 3.3, A.5, S3 tests, I-45, risk 16 |
+| 4 | Retire the Atlas/Sky "Send panels to Plan" door and replace it with "Send to Flow Wizard": "Flow wizard should walk you through prompts to set up a flow on your behalf, which the user can then run." | A stepped wizard, pre-filled from the framing (#196). S2b is dropped. S6 moves the doors. | section 0 item 4, 1.4, S2 item 8, S3 item 4, S6, U-12, U-13 |
+| 5 | Guiding fails to start on a panel: "try again after the next go around through the other panels. No point in leaving a hole in the mosaic if we don't have to." | The panel defers to the back of the rotation whatever `guiding_action` says, bounded at 3 consecutive passes. A pass in which every attempted panel failed goes to `guiding_action`. | section 0, 5.1, 5.6 step 7, 6.7, 6.10, section 9 (#142), S2 tests |
+| 6 | Write the Flows handoff README amendment as a draft now. | Drafted as uncommitted edits labelled "Amendment 2026-09-24 (owner approval pending)". | section 0 item 3; the drafts below |
+| 7 | Replace DUSK "Single night" with an explicit option, default ON, with the exact label and hover text. | A new option (#195). Its tooltip was checked against the code: three claims are not true today (#191, #192, #193), so an interim text is proposed. | 2.4, 3.1, 3.6, risk 18 |
+| 8 | S7 is approved. | Scheduled once S0 to S6 land. | S7 |
+
+### Ruling 1: while a mosaic waits
+
+The owner chose the default the spec proposed and asked for it to be an option. The option is per flow, not per block, so a flow with two mosaics has one answer to "what do we do while a mosaic waits". It lives in `FlowGraph.settings` (1.6), which is new and additive. `whenWaiting` has no older meaning to preserve, because no graph had a multi-panel block before S3.
+
+Revision 1's follower rule is what makes the default safe, and it is unchanged. A later target picked while every live panel waits runs with `VisitBound(deadline_ts = group_ready_ts)`, so it hands the cursor back at the first frame boundary that cannot fit its next frame before a panel is due (1.6, 5.3). Once the group is set aside tonight, or complete, a later target runs its normal course.
+
+### Ruling 2: accepted frames only
+
+- **New blocks.** Every TARGET block created by the palette, the wizard, the quick flow or an Example counts accepted subs. POOL gets the same treatment, so a new pool-only flow is not the one new flow that counts rejects. The read-only Examples cannot be saved, so their fixtures are converted in S3 and their golden plans are re-pinned deliberately.
+- **No choice in the editor.** The "Counts" row goes from the modal's RUN section, and `counts` is not an inspector field.
+- **Existing flows.** Loading never changes a flow's meaning: a flow with no `counts` key, or with "Every sub taken", compiles to attempts as before. Both editors, and the phone stage list, show one line while any TARGET or POOL resolves to attempts: "This flow counts every sub taken, rejected ones included. New flows count accepted subs only, and saving this flow switches it." When the flow has a dormant session, the line adds: "Its armed session keeps its count until you CONTINUE."
+- **The switch.** It is made by the server in `_persist_flow`, so every writer converges: both UIs, the API, the wizard and the quick flow. The save's answer carries `migrated: ["counts"]`, and the UI says "now counts accepted subs only".
+- **Consequences.** The first CONTINUE after the switch meets 5.9's `accept_recount` answer with both totals. `quota_unbounded` now applies to every new flow, and the default reject guards (10 per step, 20 per night) satisfy it; M9 previews it where they are off. The v4 stamp (3.6) means a downgrade after S3 refuses flows saved on S3, loudly. The comment on #141 records that flows now count accepted frames, which narrows #141's gap for flows.
+
+### Ruling 3: re-framing carries counts under half the overlap
+
+The owner's words were "if the re-frame is less than half the width of the overlap, carry over". The spec turns that into one pure function, `framing.reframe_carry(anchor, new)`, and one named constant, `REFRAME_CARRY_FRACTION = 0.5` (3.3).
+
+- **What moves.** A re-frame is measured at the panel corners, as the largest angular distance any corner travels. One number then covers a shift, a turn and a change of camera field. Centres alone would let a 1x1 block turn 90 degrees and keep its counts.
+- **The overlap width** is the anchor grid's: `overlap x fov` across the neighbours that exist, the smaller of the two axes. Worked thresholds are in A.5: 10.0' for the 3x2 of 2.0 x 1.33 deg at 25% (a 3.4 deg turn reaches it), 15.0' for a single row of three, 6.0' for a 3x3 at 15%, and 4.5' for a 2x2 of 0.9 x 0.6 deg.
+- **The identity key tolerates the move.** `geometry_key` hashes the block's **anchor**, `frameAnchor`. The server writes it at save and replaces it only when a move reaches the threshold, when the grid's rows or cols change, or when the angle switches between "any" and a set value. The anchor is compared with the new geometry, never with the last save, so nudges cannot add up.
+- **The constant is a first guess.** At the limit, a carried move spends the half of the overlap that A.2 left for pointing error. S7 measures the centring residual it competes with, and the constant is revisited with that data.
+- This decides #187 as well (section 9, I-45), and the comment there says so.
+
+### Ruling 4: Send to Flow Wizard replaces Send panels to Plan
+
+What exists today (HEAD 5c8530c1):
+
+- **The doors.** Classic Atlas "Send N panels to Plan" / "Add target to Plan" (`ui/src/views/AtlasView.tsx:1569-1570`, handler `:830-848`). The #/next Sky quick sheet's Plan side channel (`ui/src/next/hubs/sky/sheets/quick.tsx:438-466`).
+- **The guided wizard.** Three answers: kind, automation chips, and a target name (`server/astrodeck/flows/wizard.py:198-393`, `POST /api/flows/wizard` at `app.py:4833-4856`). It has two presentation files, `ui/src/components/flows/FlowWizard.tsx` and `ui/src/next/hubs/session/flows/create/wizard.tsx`. It writes no coordinates, so a typed name lands on M31's (#190).
+- **The quick flow.** Four answers, through the same `generate()`: the target with coordinates, subs per filter, the wheel's filters and exposures, and guiding (`wizard.quick`, `wizard.py:574-649`).
+
+The feature (#196):
+
+- **Doors.** Classic Atlas and the #/next Sky FRAME show SEND TO FLOW WIZARD for a mosaic and for a single target. The wizard opens pre-filled with name, coordinates, angle mode and PA, rows, cols, overlap, the camera field and the skipped panels.
+- **One stepped sheet, shared by both UIs** (D13's rule). Its steps: target; framing (read-only, with EDIT FRAMING opening the modal of section 2); filters and counts with exposures (the wheel's rows); guiding; the stop condition (DUSK start, stop and minimum altitude, which need #191); auto-resume (#195); and a review of the server's compile with OPEN IN EDITOR and RUN.
+- **One generator.** `POST /api/flows/wizard` gains optional fields, and a body with only the three original answers generates exactly today's graph. The doctor bar is unchanged: every generated graph passes at note level or better across the option matrix.
+- **What retires.** The Plan side channel, the S2b toggle (U-12) and the "send panels to Plan" strings. The classic Plan page keeps its own target entry for hand-built plans. #154's copy is corrected to panel-first until S6 deletes it, and the comment on #154 points at #196.
+
+### Ruling 5: guiding fails to start on a panel
+
+Specified in 5.6 step 7, with the outcome rows in 5.1 and the tests in S2. In short:
+
+- A group member whose guide start fails, or that has no connected guider when the plan asks for guiding, raises `PanelDeferred`, whatever `guiding_action` says. It moves to the back of the rotation and is retried on the next pass. Single targets keep today's escalations.
+- **N = 3 consecutive deferred passes** (`max_failed_visits`, shared by every deferral) sets the panel aside for tonight with a warning alert. Why three: the retries are a full rotation apart, about 83 min on a 3x2 at the default cycle, so three attempts span about 2.8 h of changing sky. Each attempt costs 5.5 to 13.5 min of hop and bounded start, and no exposure.
+- **Two points for the owner to confirm.**
+  1. A pass in which every attempted panel (at least two) failed to start guiding is treated as the guider's fault. The rig's `guiding_action` then decides. This bounds a dead guider at one wasted pass (about 33 min on a 3x2, against about 109 min without the rule).
+  2. A guiding loss mid-visit that the #72 recovery gives up on ends the visit with the same deferral.
+
+The comment on #142 records the ruling.
+
+### Ruling 6: the Flows handoff amendment (draft, not committed)
+
+Two uncommitted edits, each labelled "Amendment 2026-09-24 (owner approval pending)":
+
+- `design_handoff_astrodeck_flows/README.md`, after the loop-back rule (line 122) and after the compile-output paragraph (line 163). They record that a mosaic is a Target detail, not a node, and that the panel loop is a backward event wire (`pass done -> next panel`) which the compile consumes as structure and never emits as an instruction. The first block also records ruling 7's change to the DUSK WINDOW row, because that row names the `repeat` values being retired.
+- `design_handoff_astrodeck_flows/MILESTONE2-CONTRACT.md`, a note at its top. It marks the contract superseded for the node count (19 there, 21 shipped in `server/astrodeck/flows/nodes.py`) and the Tonight tab count (3 there, 4 shipped), and points at `nodes.py` as the source of truth.
+
+The parent session commits them only after the owner signs. The comment on #169 points at the drafts.
+
+### Ruling 7: automatic resume on subsequent nights
+
+The owner's label, exactly:
+
+> Automatic resume on subsequent nights until capture quota is fulfilled
+
+The owner's hover text, exactly:
+
+> When true, AstroDeck will attempt to automatically resume the imaging session on subsequent nights until it's fulfilled the number of frames specified in the flow config. It automatically parks at dawn and resumes at sunset. It holds during cloudy weather. Flat panel, dome control, etc all work and respond to the day/night cycle as well as weather events.
+
+**The option** (#195):
+
+- DUSK WINDOW param `autoResume`, a select On / Off, default On. `FieldDef` gains an optional `help` string, drawn as an info icon: hover on a fine pointer, tap on a coarse one (44 px), `aria-describedby` for screen readers. No new control type, so the three-controls pin holds.
+- Missing-key default On, which is what every flow does today, because `engine.start` arms auto-resume on every run (`engine.py:795`). A saved "Single night" is not read as Off, which would silently disarm every saved flow. The read maps every `repeat` value to On and shows once: "'Single night' never stopped the next night's automatic resume; this flow now shows that as ON. Turn it off if you meant one night only." (3.6)
+- `SequencePlan.resume_across_nights: bool = True`, additive. `to_plan` sets it from `autoResume`, and a flow with no DUSK WINDOW keeps True.
+- **Off.** The run still arms at start, so a same-night crash or reboot still resumes. At the stop boundary, `_finalize_report` disarms the session and logs why. ResumeArm refuses and disarms such a session when tonight's observing night differs from the session's first night, which covers a crash before dawn followed by a restart after it. The session stays dormant for CONTINUE by hand.
+- The `campaign` compile block (whose `until` was never enforced), the Tonight campaign rows and `doctor._is_campaign` key on the option, and `repeat` retires.
+- The wizard's auto-resume step (#196) asks the same question with the same label and icon.
+
+**The tooltip checked against the code** (HEAD 5c8530c1). A tooltip must not promise what the code does not do.
+
+| Claim | True today? | Evidence | Issue |
+|---|---|---|---|
+| "attempt to automatically resume the imaging session on subsequent nights until it's fulfilled the number of frames specified in the flow config" | Yes | `engine.start` arms `auto_resume` (`engine.py:795`). ResumeArm starts the armed dormant session when its window opens and the sky is dark enough (`resume_arm.py:62-94`). The session is complete only when `owed() == 0` (`engine.py:1759`). | - |
+| "It automatically parks at dawn" | Only when the DUSK Stop is Dawn (the default) | Every flow plan carries `park_when_done` and `warm_cooler_when_done` (`to_plan.py:997`), and dawn park is the net under it (`dawn_park.py`). Stop = Clock time or None compiles to no stop (`compile.py:269`), so the run images into daylight and nothing parks it. | #191 |
+| "and resumes at sunset" | No, as worded | ResumeArm acts when the flow's window opens, at the rig's `twilight_deg` (default -12) plus the DUSK offset (`schedule.py:384-386`), and never before `dark_enough` (`resume_arm.py:88`). The DUSK Start choice is discarded. Suggested wording: "resumes at dusk". | #191 |
+| "It holds during cloudy weather" | Yes on the default configuration; no on one other | The frame-verdict hold runs when no monitor is assigned (`engine.py:3477-3560`, `config.py:167-169`). A cloud-reading monitor pauses. A CLOUD WATCH rule holds (`engine.py:6205-6210`). A monitor that does not read clouds, with no CLOUD WATCH rule, leaves nothing to hold. | #193 |
+| "Flat panel, dome control, etc all work and respond to the day/night cycle as well as weather events" | No | Nothing opens the roof or the dust cover for a night; the only calls are the reopen after an unsafe close (opt-in) and a flat step. The roof closes at dawn only with `close_dome_when_done` (default off). The dome is never bound. DUSK FLATS does not run. After a wind-down closes the cover, a resumed night solves through it and holds until dawn (PLAUSIBLE, by reading). | #192, and #194 for the flat step's cover order |
+
+**What ships.** The label is exact. The hover text ships as the owner wrote it only once #191, #192 and #193 have closed. Until then, the option ships with this interim text, for the owner to approve. Each of its sentences is true today:
+
+> When on, AstroDeck resumes this flow automatically on later nights until every frame it asks for is taken. When the flow stops at dawn, it parks the mount and warms the camera, then resumes at dusk when the flow's window opens. During a run it holds for cloud when something reports cloud: the frames themselves when no safety monitor is assigned, a monitor that reads cloud, or a Cloud Watch rule. It does not yet open the dome or the flat panel's cover for the night.
+
+A test holds the shipped tooltip as a table of claims, each mapped to the named test of the behaviour it describes, so a sentence cannot ship without one. The owner's text replaces the interim text clause by clause as the three issues close.
+
+### Ruling 8: S7
+
+Approved. The supervised rig night will be scheduled once S0 to S6 have landed and the simulator run of S7 item 1 is green (S7).
+
+### Filed while applying the rulings
+
+| Issue | Kind | What |
+|---|---|---|
+| #190 | defect, deterministic | The guided wizard writes a typed target name onto M31's coordinates, so NEW FLOW for M16 slews to Andromeda and files the frames as M16. |
+| #191 | defect, deterministic | DUSK WINDOW's Start choice never reaches the plan (it always arms at the rig's twilight limit), and a Clock time or None Stop compiles to no stop, so such a run images into daylight and does not park at dawn. |
+| #192 | tooltip claim, and a PLAUSIBLE present-day defect | Nothing opens the roof or the dust cover at dusk, the dome is never bound, and dusk flats do not run. A resumed night on a rig with a cover solves through the closed cover and holds until dawn. |
+| #193 | tooltip claim | With a monitor that does not read clouds and no CLOUD WATCH rule, nothing holds for cloud. |
+| #194 | PLAUSIBLE defect | An automated flat step opens the dust cover after lighting the panel, which on a flip-flat points the panel away from the aperture. |
+| #195 | feature | The auto-resume option (ruling 7). |
+| #196 | feature | Send to Flow Wizard (ruling 4). |
+
+### Still waiting on the owner
+
+1. Ruling 5: confirm that a pass in which every attempted panel failed to start guiding goes to `guiding_action`, and that a mid-visit guiding loss the #72 recovery gives up on defers the panel too.
+2. Ruling 7: approve the interim tooltip text, or hold the option until #191, #192 and #193 close. Approve "resumes at dusk" in place of "resumes at sunset".
+3. Ruling 6: sign the README amendment and the MILESTONE2 note.
+4. #192: the end-of-night roof close default when a dome is connected.
