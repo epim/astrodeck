@@ -49,13 +49,18 @@ def _fast_sim_delays(monkeypatch):
     reads ``ASTRODECK_FAST_TEST`` LIVE on every call, so setting it here (per
     test, via ``monkeypatch`` so it's torn down cleanly) zeroes every routed
     connect-latency / exposure-dwell / guide-pulse / status-loop / polar-sim
-    wait. PACING ONLY: the sim derives every VALUE (RA/Dec offsets, star/frame
-    pixels, calibration geometry, guiding corrections) from the logical/virtual
-    clock + the requested exposure/pulse, never from elapsed wall-clock dwell, so
-    results stay bit-identical — the suite just stops paying wall-clock for the
-    sim's fake time. ONE end-to-end timing-realism anchor
-    (test_native_guider_e2e.py::test_native_guider_converges_on_sim) opts back
-    OUT via its ``_real_dwell`` fixture."""
+    wait, and since #207 the mount-slew and rotator-move dwell too. PACING
+    ONLY: the sim derives every VALUE (RA/Dec offsets, star/frame pixels,
+    calibration geometry, guiding corrections, slew and rotator positions)
+    from the logical/virtual clock + the requested exposure/pulse or the step
+    index, never from elapsed wall-clock dwell, so results stay
+    bit-identical — the suite just stops paying wall-clock for the sim's
+    fake time. A test that needs real dwell, or an operation still IN
+    FLIGHT when it next looks (a slew, a roof close, a rotator move to halt),
+    opts back OUT with ``monkeypatch.delenv("ASTRODECK_FAST_TEST")``; grep for
+    it, there are several. The end-to-end timing-realism anchor is
+    test_native_guider_e2e.py::test_native_guider_converges_on_sim, via its
+    ``_real_dwell`` fixture."""
     monkeypatch.setenv("ASTRODECK_FAST_TEST", "1")
     yield
 

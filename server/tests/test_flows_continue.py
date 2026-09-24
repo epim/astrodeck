@@ -38,6 +38,8 @@ it, and the file was restored byte-identical (SHA-256 compared) afterwards.
 from __future__ import annotations
 
 import asyncio
+import math
+import sys
 import threading
 from dataclasses import dataclass
 from uuid import uuid4
@@ -49,13 +51,14 @@ import astrodeck.api.app as app_module
 import astrodeck.config as config_mod
 import astrodeck.flows.store as flow_store_module
 import astrodeck.hub as hub_module
+import astrodeck.sequence.engine as engine_module
 from astrodeck.auth.deps import reset_active_provider
 from astrodeck.config import ConfigStore
 from astrodeck.flows.compile import compile_plan
 from astrodeck.flows.continuation import (AMBIGUOUS, NO_MATCH, adopt_matches,
                                           apply_adoption, dropped_detail,
                                           plan_replace_report, recount,
-                                          recount_detail)
+                                          recount_detail, saved_before_s1)
 from astrodeck.flows.models import FlowGraph
 from astrodeck.flows.store import FlowStore
 from astrodeck.flows.to_plan import to_sequence_plan
@@ -124,6 +127,7 @@ class Start:
     frame_ids: list[str]
     step_ids: list[str]             # the plan's
     count_mode: str
+    cool_to: float | None = None    # the plan's sensor temperature, as started
     error: str = ""
 
 
@@ -164,7 +168,7 @@ def _record_starts(engine: SequenceEngine, monkeypatch) -> list[Start]:
                     if s is not None else [],
                     frame_ids=[f.id for f in s.frames] if s is not None else [],
                     step_ids=[st.id for t in plan.targets for st in t.steps],
-                    count_mode=plan.count_mode)
+                    count_mode=plan.count_mode, cool_to=plan.cool_to)
         try:
             real(plan, **kw)
         except Exception as e:
@@ -178,14 +182,51 @@ def _record_starts(engine: SequenceEngine, monkeypatch) -> list[Start]:
     return starts
 
 
-def _isolate(tmp_path, monkeypatch) -> None:
-    """test_plan_identity's ``api`` isolation: a throwaway config store, flow
-    library and captures directory, the camera and the Sun check stubbed on
-    the app's hub. A default site never blocks the horizon pre-flight."""
+def _sweep_config_store(monkeypatch, store: ConfigStore) -> None:
+    """Point every imported astrodeck module's ``config_store`` at ``store``.
+
+    ``from .config import config_store`` binds the singleton into each
+    importing module, so the three names this harness used to patch
+    (``astrodeck.config``, ``astrodeck.hub``, ``astrodeck.api.app``) left
+    thirty-odd modules reading the REAL store. The one that matters here is
+    the engine: ``engine.start`` snapshots ``config_store.cfg()`` for the
+    run's policy, so every night these tests started ran under this
+    machine's own config rather than the throwaway one, and a setpoint a test
+    posts through ``/api/config`` would land in a store half the code never
+    reads. The same sweep as test_flows_progress_route.py, for the reason
+    test_no_route_leaks_the_site_coordinates.py records (#19)."""
+    for name, mod in list(sys.modules.items()):
+        if (name.startswith("astrodeck") and mod is not None
+                and getattr(mod, "config_store", None) is not None):
+            monkeypatch.setattr(mod, "config_store", store, raising=False)
+
+
+def _isolate(tmp_path, monkeypatch) -> ConfigStore:
+    """test_plan_identity's ``api`` isolation: a throwaway config store swept
+    into every astrodeck module that holds one, a throwaway flow library and
+    captures directory, the camera and the Sun check stubbed on the app's hub.
+    A default site never blocks the horizon pre-flight.
+
+    THE KNOWN POSITIVE. A sweep that patched nothing would pass every test
+    that never reads config, so the module the old three-name patch missed
+    is asserted to read the throwaway store now: ``astrodeck.sequence.engine``.
+
+    RED under mutation "three-name patch only" (``_sweep_config_store``'s
+    loop replaced by the three ``monkeypatch.setattr`` calls this harness
+    had), as an ERROR at the setup of every test that uses ``rig``, observed:
+
+        AssertionError: the engine reads the real config store, not this
+        test's: the sweep missed astrodeck.sequence.engine
+        assert <astrodeck.config.ConfigStore object at 0x000001FAE3A44620>
+        is <astrodeck.config.ConfigStore object at 0x000001FA992B57F0>
+         +  where <astrodeck.config.ConfigStore object at
+         0x000001FAE3A44620> = engine_module.config_store
+    """
     store = ConfigStore(path=tmp_path / "astrodeck.json")
-    monkeypatch.setattr(config_mod, "config_store", store)
-    monkeypatch.setattr(hub_module, "config_store", store)
-    monkeypatch.setattr(app_module, "config_store", store)
+    _sweep_config_store(monkeypatch, store)
+    assert engine_module.config_store is store, (
+        "the engine reads the real config store, not this test's: the sweep "
+        "missed astrodeck.sequence.engine")
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path / "captures")
     monkeypatch.delenv(app_module.AUTH_ENV_VAR, raising=False)
@@ -198,15 +239,18 @@ def _isolate(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(app_module.hub, "require", lambda role: object())
     monkeypatch.setattr(app_module.hub, "last_frame", None, raising=False)
     reset_active_provider()
+    return store
 
 
 class Rig:
     def __init__(self, client: httpx.AsyncClient, engine: SequenceEngine,
-                 night: _Night | None, starts: list[Start]) -> None:
+                 night: _Night | None, starts: list[Start],
+                 store: ConfigStore | None = None) -> None:
         self.client = client
         self.engine = engine
         self.night = night
         self.starts = starts
+        self.store = store
 
     async def save_flow(self, graph: dict, name: str = "continue me") -> str:
         r = await self.client.post("/api/flows", json={
@@ -253,22 +297,25 @@ class Rig:
         return session_store.load(sid)
 
 
-def _app_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app_module.create_app()),
-        base_url="http://testserver")
+def _app_client(monkeypatch, store: ConfigStore) -> httpx.AsyncClient:
+    app = app_module.create_app()
+    # Again after the app is built: a module first imported by create_app
+    # would otherwise keep the real store.
+    _sweep_config_store(monkeypatch, store)
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                             base_url="http://testserver")
 
 
 @pytest.fixture
 async def rig(tmp_path, monkeypatch):
-    _isolate(tmp_path, monkeypatch)
+    store = _isolate(tmp_path, monkeypatch)
     engine = SequenceEngine(app_module.hub)
     night = _Night(engine)
     monkeypatch.setattr(engine, "_run", night)
     starts = _record_starts(engine, monkeypatch)
     monkeypatch.setattr(app_module, "engine", engine)
-    async with _app_client() as client:
-        yield Rig(client, engine, night, starts)
+    async with _app_client(monkeypatch, store) as client:
+        yield Rig(client, engine, night, starts, store)
     if engine.running:
         night.end("aborted")
         await engine._task
@@ -291,6 +338,15 @@ def _file_frames(session_id: str) -> list[tuple[str, str, str]]:
 def _bak(session_id: str):
     path = session_store._path(session_id)
     return path.with_suffix(path.suffix + ".bak")
+
+
+def _separation_arcmin(a: Target, b: Target) -> float:
+    """Great-circle separation of two targets' centres, in arcmin."""
+    ra1, ra2 = math.radians(a.ra_hours * 15.0), math.radians(b.ra_hours * 15.0)
+    d1, d2 = math.radians(a.dec_deg), math.radians(b.dec_deg)
+    h = (math.sin((d2 - d1) / 2) ** 2
+         + math.cos(d1) * math.cos(d2) * math.sin((ra2 - ra1) / 2) ** 2)
+    return math.degrees(2 * math.asin(min(1.0, math.sqrt(h)))) * 60.0
 
 
 # ================================================================ the pure half
@@ -896,6 +952,20 @@ class TestContinue:
         by the verifier:
 
             Failed: DID NOT RAISE <class 'OSError'>
+
+        and observed again after the stub moved from the instance to the
+        class (#189 hardening A8), the same line:
+
+            Failed: DID NOT RAISE <class 'OSError'>
+
+        THE STUB IS ON ``SessionStore``, THE CLASS. ``monkeypatch.setattr(
+        session_store, "backup", stub)`` reads the old value with ``getattr``,
+        which is the BOUND method, and its undo writes that bound method into
+        the instance's ``__dict__``, where there was nothing before. It stays
+        there for the rest of the worker process and shadows the class, so a
+        later test that patches ``SessionStore.backup`` patches something
+        nobody calls (test_flows_continue_race.py records the same leak for
+        ``newest_for_flow``).
         """
         fid = await rig.save_flow(LR)
         t = Target(name="M42", ra_hours=5.588, dec_deg=-5.39,
@@ -907,10 +977,10 @@ class TestContinue:
         _stored(old)
         original = _bytes(old.id)
 
-        def no_room(session_id):
+        def no_room(self, session_id):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr(session_store, "backup", no_room)
+        monkeypatch.setattr(SessionStore, "backup", no_room)
         with pytest.raises(OSError):
             await rig.run(fid, adopt=True, accept_dropped=True)
         assert rig.starts == [], "ADOPT started without its backup"
@@ -1015,6 +1085,115 @@ class TestContinue:
         assert r.status_code == 200, r.text
         assert rig.starts[-1].session_id == one.id
         assert rig.starts[-1].count_mode == "attempts"
+
+    async def test_adopting_does_not_skip_the_recount_question(self, rig):
+        """ADOPT answers one question, not the next one. A pre-S1 session
+        (uuid4 ids, frames banked) that counted accepted subs, continued with
+        ``adopt`` and ``accept_dropped`` but no ``accept_recount``: the
+        recount 409 still comes, with both totals, and it comes before the
+        ``.bak`` and before anything is written. Then the same request with
+        ``accept_recount`` adopts, which shows the recount was the only thing
+        holding it.
+
+        The session's target is AT THE FLOW'S COORDINATES (asserted within
+        10 arcmin), so a rule that refuses ADOPT for a target that has moved
+        cannot change what this test is about.
+
+        RED under mutation "recount skipped when adopting" (``and adopted is
+        None`` added to the recount check in ``_continue_flow_session``): the
+        ledger is re-keyed and recounted under the new mode with nobody asked,
+        observed:
+
+            AssertionError: {"started":true,"flow_id":
+            "483a2e300b9e4812b2048c9d4ccefe6d","frames":5,"unmapped":[],
+            "session":{"id":"ecf0c773f71b4f45a9c6f320737d02f8","night":1,
+            "continued":true,"kept":1,"new":1,"dropped":1,"adopted":
+            {"matched":2,"unmatched":[{"step_id":
+            "a91d9b667196412e906a60dfcd636f6f","target":"M42",
+            "frame_type":"Light","filter":"Ha","exposure_s":0.05,"gain":100,
+            "binning":1,"frames":1,"reason":"no step in this flow matches
+            it"}]}}}
+            assert 200 == 409
+        """
+        fid = await rig.save_flow(LR)
+        tonight = _compiled(LR, fid)
+        here = tonight.targets[0]
+        assert tonight.count_mode == "attempts", (
+            "premise: tonight's compile counts every sub taken")
+        old_l = ExposureStep(filter="L", exposure_s=0.05, count=3)
+        old_ha = ExposureStep(filter="Ha", exposure_s=0.05, count=2)
+        t = Target(name="M42", ra_hours=here.ra_hours, dec_deg=here.dec_deg,
+                   steps=[old_l, old_ha])
+        old = Session(name="pre-S1", created_ts=1.0, status="dormant",
+                      origin="flow", origin_id=fid,
+                      plan=SequencePlan(name="pre-S1", targets=[t],
+                                        count_mode="accepted"))
+        old.frames += [SessionFrame(target_id=t.id, step_id=old_l.id),
+                       SessionFrame(target_id=t.id, step_id=old_l.id,
+                                    auto_accepted=False),
+                       SessionFrame(target_id=t.id, step_id=old_ha.id)]
+        _stored(old)
+        assert _separation_arcmin(t, here) < 10.0, (
+            "premise: the pre-S1 session is at the flow's coordinates")
+        assert saved_before_s1(old) and \
+            adopt_matches(old, tonight).frames_matched == 2, (
+                "premise: this is a session ADOPT takes, and it matches L")
+        original = _bytes(old.id)
+
+        r = await rig.run(fid, adopt=True, accept_dropped=True)
+
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == {
+            "code": "recount",
+            "detail": recount_detail("accepted", "attempts", 2, 3),
+            "before": 2, "after": 3, "session_id": old.id}
+        assert not _bak(old.id).exists(), "a refused adopt wrote a backup"
+        assert _bytes(old.id) == original, "a refusal wrote the session"
+        assert rig.starts == [], "a refusal reached engine.start"
+
+        r = await rig.run(fid, adopt=True, accept_dropped=True,
+                          accept_recount=True)
+
+        assert r.status_code == 200, r.text
+        assert _bak(old.id).read_bytes() == original
+        assert rig.starts[-1].won and rig.starts[-1].session_id == old.id
+        assert r.json()["session"]["adopted"]["matched"] == 2
+
+    async def test_a_continue_renames_the_session_after_the_flow(self, rig):
+        """The flow was renamed between nights. The session it continues is
+        renamed with it, because the session list and the CONTINUE button's
+        copy both read the session's name, and a name the flow no longer has
+        leaves the operator matching a ledger to a flow by its id.
+
+        ``s.name = plan.name or s.name``: the ``or s.name`` half cannot be
+        reached from ``run_flow``, because ``to_sequence_plan`` always names
+        the plan (``compiled.get("name") or "Flow"``). It is kept for a caller
+        that hands in an unnamed plan, the rule ``patch_session`` keeps.
+
+        RED under mutation "continue keeps the old session name" (``s.name =
+        plan.name or s.name`` removed from ``_continue_flow_session``),
+        observed:
+
+            AssertionError: the continued session kept the name the flow no
+            longer has
+            assert 'first name' == 'second name'
+              - second name
+              + first name
+        """
+        fid = await rig.save_flow(LR, name="first name")
+        one = await rig.night_one(fid, [0])
+        assert one.name == "first name", "premise: the session took the name"
+        await rig.put_flow(fid, LR, name="second name")
+
+        r = await rig.run(fid)
+
+        assert r.status_code == 200, r.text
+        assert rig.starts[-1].won and rig.starts[-1].session_id == one.id, (
+            "premise: night two continued night one's session")
+        assert r.json()["session"]["kept"] == 2, (
+            "premise: a rename changes no step id")
+        assert session_store.load(one.id).name == "second name", (
+            "the continued session kept the name the flow no longer has")
 
 
 class TestControls:
@@ -1189,6 +1368,20 @@ class TestControls:
 
             AssertionError: Run reopened the session START OVER left behind
             assert '9055c591cdcd412891bc5167deacfabd' is None
+
+        and, after the lookup became ``session_store.current_for_flow``
+        (#189 hardening A2), under mutant "run_flow picks newest dormant"
+        (``session_store.newest_for_flow, flow_id, ("dormant",)`` as its
+        lookup), observed:
+
+            AssertionError: Run reopened the session START OVER left behind
+            assert 'b580235f80ea4e79b23b599260eda504' is None
+             +  where 'b580235f80ea4e79b23b599260eda504' = Start(won=True,
+             session_id='b580235f80ea4e79b23b599260eda504', ...,
+             cool_to=None, error='').session_id
+
+        The abandoned half of the same rule, and the chip agreeing with it,
+        is test_flow_session_selection.py.
         """
         fid = await rig.save_flow(LR)
         old = await rig.night_one(fid, [0])
@@ -1229,6 +1422,247 @@ class TestControls:
         assert rig.starts[1:] == [], (
             "the continue reached engine.start before the Sun refused it")
         assert _bytes(one.id) == before
+
+
+def _temperature_warnings(lines) -> list[str]:
+    """The ``bus.log`` warnings that name a sensor temperature."""
+    return [m for level, m, _src in lines if level == "warning" and "°C" in m]
+
+
+async def _setpoint(rig: Rig, c: float | None) -> None:
+    """Set the rig's standing setpoint the way the operator does, through
+    ``POST /api/config``, and show it reached the store the run reads."""
+    r = await rig.client.post("/api/config",
+                              json={"cooling": {"setpoint_c": c}})
+    assert r.status_code == 200, r.text
+    assert rig.store.cfg().cooling.setpoint_c == c, (
+        "premise: the setpoint reached the store the run compiles from")
+
+
+class TestTheSessionKeepsItsTemperature:
+    """CONTINUE keeps the session's sensor temperature (#189 hardening A1).
+
+    A flow has no cooling node, so a plan's ``cool_to`` is the rig's standing
+    setpoint at the moment it was compiled, and ``run_flow`` compiles every
+    night. Handing tonight's compile to a dormant session therefore carried
+    TONIGHT'S setpoint into it: a session shot at -10 °C on night one went
+    on at -15 °C on night two because someone changed the setpoint in
+    between. ``replan_cooling``'s docstring is why that is a defect and not a
+    preference: subs that span two sensor temperatures cannot be calibrated
+    against one dark library. It never re-resolves a plan that has a
+    temperature, and CONTINUE, which replaced the plan before
+    ``replan_cooling`` saw it, went round that rule.
+
+    So a session that has a temperature keeps it, the change is said in the
+    log with both numbers, and a session that never had one takes tonight's,
+    exactly as a resume does.
+    """
+
+    async def test_a_session_at_minus_10_continues_at_minus_10(self, rig,
+                                                             bus_lines):
+        """Night one at -10 °C; the setpoint is -15 °C when Run is pressed
+        again. The engine starts at -10 °C, the stored session says -10 °C,
+        and one warning names both temperatures.
+
+        RED under mutation "continue without carrying cool_to" (the
+        ``plan = plan.model_copy(update={"cool_to": kept_c})`` line removed
+        from ``_continue_flow_session``), observed:
+
+            AssertionError: the continued session was started at tonight's
+            setpoint
+            assert -15.0 == -10.0
+             +  where -15.0 = Start(won=True, session_id=
+             '1b3c717b577a41aa9439734bfba9edf4', frames=[(...)], ...,
+             count_mode='attempts', cool_to=-15.0, error='').cool_to
+
+        The same failure, before this fix, was the present-day defect.
+
+        RED under mutation "never warn" (``moved = (kept_c, plan.cool_to)``
+        -> ``pass``: the temperature is kept, and nobody is told the
+        setpoint was overruled), observed:
+
+            AssertionError: []
+            assert 0 == 1
+             +  where 0 = len([])
+        """
+        fid = await rig.save_flow(LR)
+        await _setpoint(rig, -10.0)
+        one = await rig.night_one(fid, [0])
+        assert one.plan.cool_to == -10.0, "premise: night one was at -10"
+        await _setpoint(rig, -15.0)
+        bus_lines.clear()
+
+        r = await rig.run(fid)
+
+        assert r.status_code == 200, r.text
+        start = rig.starts[-1]
+        assert start.won and start.session_id == one.id, (
+            f"premise: night two continued night one's session: {start}")
+        assert start.cool_to == -10.0, (
+            "the continued session was started at tonight's setpoint")
+        assert session_store.load(one.id).plan.cool_to == -10.0, (
+            "the stored session no longer says the temperature it was shot at")
+        warned = _temperature_warnings(bus_lines)
+        assert len(warned) == 1, warned
+        assert "-10°C" in warned[0] and "-15°C" in warned[0], warned[0]
+
+    async def test_control_a_session_with_no_temperature_takes_tonights(
+            self, rig, bus_lines):
+        """CONTROL: night one had no setpoint, so its session has no
+        temperature and no continuity to break. It takes tonight's -15 °C,
+        in the engine and in the stored session, and nothing is warned.
+
+        RED under mutation "carry even None" (the copy moved out of the
+        ``if kept_c is not None`` guard, so ``cool_to`` is carried whatever
+        it is). The engine still starts at -15 °C, because ``replan_cooling``
+        fills a plan with no temperature; it is the STORED session that is
+        left saying None, a ledger that no longer records the temperature
+        its frames are shot at. Observed:
+
+            AssertionError: the stored session does not say the temperature
+            it is now being shot at
+            assert None == -15.0
+             +  where None = SequencePlan(name='continue me', targets=[...],
+             ...).cool_to
+        """
+        fid = await rig.save_flow(LR)
+        await _setpoint(rig, None)
+        one = await rig.night_one(fid, [0])
+        assert one.plan.cool_to is None, "premise: night one had no setpoint"
+        await _setpoint(rig, -15.0)
+        bus_lines.clear()
+
+        r = await rig.run(fid)
+
+        assert r.status_code == 200, r.text
+        start = rig.starts[-1]
+        assert start.won and start.session_id == one.id, (
+            f"premise: night two continued night one's session: {start}")
+        assert start.cool_to == -15.0, (
+            "a session with no temperature did not take tonight's")
+        assert session_store.load(one.id).plan.cool_to == -15.0, (
+            "the stored session does not say the temperature it is now "
+            "being shot at")
+        assert _temperature_warnings(bus_lines) == []
+
+    async def test_control_the_same_temperature_says_nothing(self, rig,
+                                                             bus_lines):
+        """CONTROL: the setpoint has not moved, so there is nothing to say.
+
+        RED under mutation "warn unconditionally" (``if plan.cool_to is not
+        None and plan.cool_to != kept_c:`` -> ``if True:``, so every carried
+        temperature is warned about), observed:
+
+            AssertionError: a warning about a temperature that did not change
+            assert ["'continue m...on at -10°C."] == []
+              Left contains one more item: "'continue me' continues at
+              -10°C, the temperature its frames were shot at, not at
+              tonight's setpoint of -10°C: subs at two sensor temperatures
+              cannot share one dark library. START OVER begins a new session
+              at -10°C."
+        """
+        fid = await rig.save_flow(LR)
+        await _setpoint(rig, -10.0)
+        one = await rig.night_one(fid, [0])
+        bus_lines.clear()
+
+        r = await rig.run(fid)
+
+        assert r.status_code == 200, r.text
+        start = rig.starts[-1]
+        assert start.won and start.session_id == one.id, (
+            f"premise: night two continued night one's session: {start}")
+        assert start.cool_to == -10.0
+        assert session_store.load(one.id).plan.cool_to == -10.0
+        assert _temperature_warnings(bus_lines) == [], (
+            "a warning about a temperature that did not change")
+
+    async def test_control_a_cleared_setpoint_keeps_the_temperature_quietly(
+            self, rig, bus_lines):
+        """CONTROL: night one at -10 °C, and the operator has since cleared
+        the setpoint (``POST /api/config`` with null, the one path that
+        clears it). Tonight's compile then asks for no temperature, so there
+        is nothing to compare: the session keeps -10 °C, as a resume would,
+        and no temperature is named.
+
+        RED under mutation "no temperature counts as a different one"
+        (``plan.cool_to is not None and`` removed from the warning's test):
+        the warning formats None as a temperature and the continue fails
+        after the engine has already started, observed:
+
+            >                   f"{moved[1]:g}°C: subs at two sensor
+            temperatures cannot "
+            E           TypeError: unsupported format string passed to
+            NoneType.__format__
+            astrodeck\\api\\app.py:954: TypeError
+        """
+        fid = await rig.save_flow(LR)
+        await _setpoint(rig, -10.0)
+        one = await rig.night_one(fid, [0])
+        await _setpoint(rig, None)
+        bus_lines.clear()
+
+        r = await rig.run(fid)
+
+        assert r.status_code == 200, r.text
+        start = rig.starts[-1]
+        assert start.won and start.session_id == one.id, (
+            f"premise: night two continued night one's session: {start}")
+        assert start.cool_to == -10.0
+        assert session_store.load(one.id).plan.cool_to == -10.0
+        assert _temperature_warnings(bus_lines) == []
+
+    async def test_control_a_refused_continue_says_nothing(self, rig,
+                                                           bus_lines):
+        """CONTROL: a continue the engine refuses continued nothing, so it
+        names no temperature. Night one at -10 °C, the setpoint -15 °C since,
+        and ANOTHER flow's run holds the engine when Run is pressed: the
+        continue reaches ``engine.start``, which refuses "already running",
+        and the session file is exactly as it was. A warning that the session
+        "continues at -10 °C" would tell the operator a run is going that is
+        not, which is why ``_continue_flow_session`` logs it only after the
+        start returns.
+
+        RED under mutation "warn before the start" (the ``if moved is not
+        None: bus.log(...)`` block moved, verbatim, inside the write lock
+        ahead of ``engine.start``), and only this test: a continue that does
+        start says the same line either way. Observed:
+
+            AssertionError: a refused continue said the session continues
+            at a temperature
+            assert ["'continue m...on at -15°C."] == []
+              Left contains one more item: "'continue me' continues at
+              -10°C, the temperature its frames were shot at, not at
+              tonight's setpoint of -15°C: subs at two sensor temperatures
+              cannot share one dark library. START OVER begins a new session
+              at -15°C."
+        """
+        fid = await rig.save_flow(LR)
+        await _setpoint(rig, -10.0)
+        one = await rig.night_one(fid, [0])
+        await _setpoint(rig, -15.0)
+        other = await rig.save_flow(LR, name="another flow")
+        r = await rig.run(other)
+        assert r.status_code == 200, r.text
+        assert rig.engine.running, "premise: another flow's run holds the engine"
+        # After the other start's singleton disarm, the last write this
+        # session is owed.
+        before = _bytes(one.id)
+        bus_lines.clear()
+
+        r = await rig.run(fid)
+
+        assert r.status_code == 409, r.text
+        start = rig.starts[-1]
+        assert (start.won, start.session_id) == (False, one.id), (
+            f"premise: the continue reached engine.start and was refused: "
+            f"{start}")
+        assert start.cool_to == -10.0, (
+            "premise: the refused start carried the session's temperature, "
+            "so a warning had something to say")
+        assert _temperature_warnings(bus_lines) == [], (
+            "a refused continue said the session continues at a temperature")
+        assert _bytes(one.id) == before, "a refused continue wrote the session"
 
 
 class TestCompileCarriesTheFlowId:
@@ -1277,9 +1711,8 @@ async def sim_rig(tmp_path, monkeypatch):
     the route's own; only what costs sim time and is no part of any id is
     switched off on the plan it returns: centring, focus, the flip, park and
     the warm ramp."""
-    _isolate(tmp_path, monkeypatch)
-    monkeypatch.setattr(config_mod.config_store.cfg().safety,
-                        "solar_avoidance", False)
+    store = _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(store.cfg().safety, "solar_avoidance", False)
     h = Hub()
     await h.connect_sim()
     engine = SequenceEngine(h)
@@ -1298,8 +1731,8 @@ async def sim_rig(tmp_path, monkeypatch):
         return plan, unmapped
 
     monkeypatch.setattr(app_module, "to_sequence_plan", quick)
-    async with _app_client() as client:
-        yield Rig(client, engine, None, starts)
+    async with _app_client(monkeypatch, store) as client:
+        yield Rig(client, engine, None, starts, store)
     if engine.running:
         await engine.abort()
     await h.disconnect_all()

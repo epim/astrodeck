@@ -46,7 +46,17 @@ async def test_sync_sets_offset_and_sky_moves_land(rig):
 
 
 @pytest.mark.asyncio
-async def test_halt_stops_a_move_short(rig):
+async def test_halt_stops_a_move_short(rig, monkeypatch):
+    # Real pacing: the halt below lands 0.05 s in, so the move must still be
+    # going then. #207 (mosaic slice H1, task T10) routed the rotator's
+    # per-step dwell through _sim_delay, which conftest's ASTRODECK_FAST_TEST
+    # collapses to zero, and the 180 deg move then finished inside that
+    # 0.05 s. Without this line, observed verbatim:
+    #     E       assert 180.0 < 180.0
+    #     E        +  where 180.0 = <astrodeck.devices.sim.SimRig object at 0x000001896BCBBB30>.rotator_mech_deg
+    # That a halt can still land mid-move under the fast path (one zero sleep
+    # per step) is test_sim_pacing.py's to pin.
+    monkeypatch.delenv("ASTRODECK_FAST_TEST", raising=False)
     rot = SimRotator(rig)
     await rot.connect()
     task = asyncio.create_task(rot.move_mechanical(180.0))

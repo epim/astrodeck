@@ -155,7 +155,15 @@ class TestGoldenVectors:
             uuid.uuid5(ns, "flow-golden/p1/member/M31#1").hex
 
     def test_step_ids(self):
-        """``{exposure:g}`` for the numbers, and no filter reads as empty.
+        """The numbers spelled to the millisecond, and no filter reads as
+        empty.
+
+        THESE THREE VECTORS DID NOT MOVE when the millisecond spelling replaced
+        ``{:g}`` (#189 A6), and they are left exactly as S1 pinned them to show
+        it: every value here spells the same both ways (180.0 is "180", 0.5 is
+        "0.5", gain 100 and binning 1 and 2 are integers). The spelling only
+        differs where ``{:g}`` ran out of its six significant digits, which
+        ``test_a_millisecond_exposure_is_its_own_vector`` pins.
 
         Mutant "filter None spelled 'None'" (``str(filter)``) failed the third
         assertion:
@@ -177,13 +185,81 @@ class TestGoldenVectors:
             "edb4f5635d8f5fc5ac1fce3fbea93398" == \
             uuid.uuid5(ns, f"{t}/c1/Light//0.5/100/2/0").hex
 
+    def test_a_millisecond_exposure_is_its_own_vector(self):
+        """1234.567 s is spelled "1234.567", all seven digits. ``{:g}`` kept
+        six significant digits and wrote "1234.57", which is also what it
+        wrote for 1234.568 s: two recipes on one count, the #77 fault.
+
+        Mutant "{:g} spelling" (``_spelled`` returns
+        ``format(float(value), "g")``, as ``_g`` did) failed:
+            AssertionError: assert '73b8c3eda1a4...3249204fffc8e' ==
+            '9873bfe77f94...574838f36ddcd'
+        """
+        ns = identity.NS_FLOWS
+        t = "be28a6f009bc59fa9bc73e86f46aa004"
+        assert identity.step_id(t, "c1", frame_type="Light", filter="L",
+                                exposure_s=1234.567, gain=100, binning=1) == \
+            "9873bfe77f9457cfbb9574838f36ddcd" == \
+            uuid.uuid5(ns, f"{t}/c1/Light/L/1234.567/100/1/0").hex
+
+    # A TARGET keyed on its NAME (#189 A5): a name, no typed coordinates, the
+    # 1x1 single-target shape, any angle; then the same at PA 90.
+    NAME = ('{"cols":1,"fov_x":"0.00000","fov_y":"0.00000","name":"Jupiter",'
+            '"overlap":"0.2500","rotation_deg":null,"rows":1}')
+    NAME_90 = ('{"cols":1,"fov_x":"0.00000","fov_y":"0.00000",'
+               '"name":"Jupiter","overlap":"0.2500","rotation_deg":"90.000",'
+               '"rows":1}')
+
+    def test_the_canonical_name_is_spelled_out(self):
+        """The bytes a name key hashes: the geometry's own canonical form with
+        ``name`` where ``ra_hours`` and ``dec_deg`` were, so the angle and the
+        grid are keyed exactly as a geometry keys them.
+
+        Mutant "angle left out of the canonical name" (``canonical_name``
+        hands ``_shape`` None for every angle) failed the PA 90 line:
+            assert '{"cols":1,"f...ull,"rows":1}' ==
+            '{"cols":1,"f...00","rows":1}'
+              Skipping 87 identical leading characters in diff, use -v to show
+              - tion_deg":"90.000","rows":1}
+              + tion_deg":null,"rows":1}
+        Mutants "name left out of the name key" (``"name": ""``) and "grid
+        left out of the name key" (``rows`` and ``cols`` dropped) failed the
+        first line, for example the latter:
+            - {"cols":1,"fov_x":"0.00000","fov_y":"0.00000","name":"Jupiter",
+              "overlap":"0.2500","rotation_deg":null,"rows":1}
+            + {"fov_x":"0.00000","fov_y":"0.00000","name":"Jupiter",
+              "overlap":"0.2500","rotation_deg":null}
+        """
+        assert identity.canonical_name("Jupiter", None) == self.NAME
+        assert identity.canonical_name("Jupiter", 90.0) == self.NAME_90
+
+    def test_the_name_key_is_namespaced_sha256(self):
+        """``name:`` and the first 16 hex of sha256 over the canonical name.
+        The group and target ids are then made exactly as a geometry's are.
+
+        Mutant "no namespace" (``name_key`` returns the bare hex) failed:
+            AssertionError: assert 'eac5522c2c291515' == 'name:eac5522c2c291515'
+        """
+        key = "name:" + hashlib.sha256(self.NAME.encode()).hexdigest()[:16]
+        assert key == "name:eac5522c2c291515"
+        assert identity.name_key("Jupiter", None) == key
+        assert identity.name_key("Jupiter", 90.0) == "name:" + hashlib.sha256(
+            self.NAME_90.encode()).hexdigest()[:16] == "name:391a5a20277e00da"
+        ns = identity.NS_FLOWS
+        g = uuid.uuid5(ns, f"flow-golden/t1/{key}").hex
+        assert g == "d7a333cfe4b2534fb89a15f713f22bd3"
+        assert identity.group_id("flow-golden", "t1", key) == g
+        assert identity.target_id(g) == "522c358486e15dde8743ad6625cc6681"
+
     def test_a_number_and_its_spelling_are_one_recipe(self):
         """180, 180.0 and "180" are one exposure. The compile hands ints, a
         hand-edited plan may hand floats or strings, and one recipe must not
         read as two just because of how it was typed.
 
-        Mutant "numbers keyed as typed" (``_g`` returns ``str(value).strip()``
-        in place of ``format(float(value), "g")``) failed:
+        Mutant "numbers keyed as typed" (the spelling function returns
+        ``str(value).strip()`` in place of the number's spelling) failed, for
+        S1's ``_g`` and again, identically, for the millisecond ``_spelled``
+        that replaced it (#189 A6):
             AssertionError: assert 'd1cb484e1414...a93e1edf3b8b3' ==
             '2b69706b1511...f365332892b8e'
         """
@@ -193,6 +269,123 @@ class TestGoldenVectors:
         b = identity.step_id(t, "c", frame_type="Light", filter="L",
                              exposure_s="180", gain=100.0, binning="1")
         assert a == b
+
+
+def _spelled(**recipe):
+    """The ``exposure/gain/binning`` part of a step signature, as text."""
+    full = dict(frame_type="Light", filter="L", exposure_s=60, gain=100,
+                binning=1)
+    full.update(recipe)
+    return "/".join(identity.step_signature(**full).split("/")[2:])
+
+
+class TestStepSpelling:
+    """How a step's numbers are spelled in its id (#189 A6).
+
+    ``{:g}`` kept six significant digits, so every exposure of 1000 s or more
+    lost its milliseconds and two recipes could share a count (#77): 1234.567 s
+    and 1234.568 s were both "1234.57". The exposure is now spelled to the
+    millisecond, and gain and binning as integers when integral, otherwise to
+    three places. Nothing S1 minted is deployed, so no stored id moves."""
+
+    T = "be28a6f009bc59fa9bc73e86f46aa004"
+
+    def _sid(self, **recipe):
+        full = dict(frame_type="Light", filter="L", exposure_s=60, gain=100,
+                    binning=1)
+        full.update(recipe)
+        return identity.step_id(self.T, "c", **full)
+
+    def test_a_millisecond_apart_is_two_steps(self):
+        """Mutant "{:g} spelling" (``_spelled`` returns
+        ``format(float(value), "g")``, as ``_g`` did) failed:
+            AssertionError: assert '1e6730cd959650fda3179c6e50ba0746' !=
+            '1e6730cd959650fda3179c6e50ba0746'
+             +  where '1e6730cd959650fda3179c6e50ba0746' =
+             _sid(exposure_s=1234.567)
+             +  and   '1e6730cd959650fda3179c6e50ba0746' =
+             _sid(exposure_s=1234.568)
+        """
+        assert self._sid(exposure_s=1234.567) != self._sid(exposure_s=1234.568)
+        assert _spelled(exposure_s=1234.567) == "1234.567/100/1"
+        assert _spelled(exposure_s=1234.568) == "1234.568/100/1"
+
+    @pytest.mark.parametrize("field, value, spelled", [
+        ("exposure_s", 180, "180"),
+        ("exposure_s", 180.0, "180"),
+        ("exposure_s", "180", "180"),
+        ("exposure_s", 1000, "1000"),         # integer zeros are not trimmed
+        ("exposure_s", 3600.0, "3600"),
+        ("exposure_s", 0.5, "0.5"),
+        ("exposure_s", 60.1, "60.1"),         # "60.100", zeros trimmed
+        ("exposure_s", 0.05, "0.05"),
+        ("exposure_s", 1234.5678, "1234.568"),  # to the millisecond
+        ("exposure_s", 0.0004, "0"),          # under a millisecond
+        ("exposure_s", -0.0, "0"),            # negative zero folded
+        ("exposure_s", -0.0004, "0"),         # ...and what rounds to it
+        ("exposure_s", "abc", "abc"),         # not a number: kept as text
+        ("gain", 100, "100"),
+        ("gain", 100.0, "100"),
+        ("gain", "100", "100"),
+        ("gain", 100.5, "100.5"),
+        ("gain", 100.25, "100.25"),
+        ("binning", 2, "2"),
+        ("binning", 2.0, "2"),
+        ("binning", "2", "2"),
+    ])
+    def test_each_number_is_spelled(self, field, value, spelled):
+        """The spelling, value by value: fixed three places, then trailing
+        zeros and a bare trailing point trimmed.
+
+        Mutant "no trim" (the fixed three-place text returned as is) failed 19
+        of the 21 rows, every one but 1234.5678 (nothing to trim) and "abc":
+            AssertionError: exposure_s=180
+            assert '180.000' == '180'
+        Mutant "bare point kept" (``rstrip("0")`` without ``rstrip(".")``)
+        failed the 14 rows that spell an integer, zero included:
+            AssertionError: exposure_s=180
+            assert '180.' == '180'
+        Mutant "trim in one go" (``rstrip("0.")``) failed the 11 of those
+        whose integer ends in a zero, eating the integer's own zeros:
+            AssertionError: exposure_s=1000
+            assert '1' == '1000'
+        Mutant "no -0 fold" (formatted with ``f"{float(value):.3f}"`` rather
+        than through ``fixed``) failed the two negative rows:
+            AssertionError: exposure_s=-0.0
+            assert '-0' == '0'
+        """
+        base = {"exposure_s": 60, "gain": 100, "binning": 1}
+        base[field] = value
+        got = _spelled(**base).split("/")
+        index = ["exposure_s", "gain", "binning"].index(field)
+        assert got[index] == spelled, f"{field}={value!r}"
+
+    def test_control_one_number_however_it_is_typed_is_one_step(self):
+        """180, 180.0 and "180" are one exposure; gain 100 and 100.0 are one
+        gain; binning 2 and 2.0 are one binning.
+
+        Mutant "numbers keyed as typed" (``_spelled`` returns
+        ``str(value).strip()``) failed, 180 and 180.0 two exposures:
+            AssertionError: assert 'd1cb484e1414...a93e1edf3b8b3' ==
+            '95ebe45c1b6f...604b2811c7918'
+        """
+        assert self._sid(exposure_s=180) == self._sid(exposure_s=180.0) == \
+            self._sid(exposure_s="180")
+        assert self._sid(gain=100) == self._sid(gain=100.0)
+        assert self._sid(binning=2) == self._sid(binning=2.0)
+
+    def test_control_a_fractional_gain_is_its_own_step(self):
+        """Gain 100.5 and 100.4 are two recipes: integral is spelled as an
+        integer, and anything else keeps its three places.
+
+        Mutant "gain spelled as an integer" (``step_signature`` spells gain
+        and binning ``str(int(float(value)))``) failed:
+            AssertionError: assert '0d7b58b152e7525b9797f33189cf5183' !=
+            '0d7b58b152e7525b9797f33189cf5183'
+             +  where '0d7b58b152e7525b9797f33189cf5183' = _sid(gain=100.5)
+             +  and   '0d7b58b152e7525b9797f33189cf5183' = _sid(gain=100.4)
+        """
+        assert self._sid(gain=100.5) != self._sid(gain=100.4)
 
 
 class TestGeometryNormalisation:

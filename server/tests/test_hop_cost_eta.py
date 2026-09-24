@@ -38,6 +38,7 @@ from astrodeck.guide.base import Guider, GuideStats
 from astrodeck.hub import Hub
 from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Target
 from astrodeck.sequence.engine import ETA_MIN_FRAMES, HOP_COST_S
+from astrodeck.sequence.session import Session, SessionFrame
 
 
 class _Clock:
@@ -330,6 +331,160 @@ async def test_control_a_single_target_eta_is_unchanged(clock):
         assert eta["eta_s"] == round(_base_eta_s(e)), (when, eta)
         assert eta["hops_costed"] is True, (when, eta)
         assert eta["eta_confident"] is True, (when, eta)
+
+
+# ------------------------------------------------ one walk of the ledger (A9)
+
+
+def _three_by_three(clock: _Clock, count_mode: str) -> SequenceEngine:
+    """Three targets of three steps each (L, R, G, two frames apiece) and a
+    calibration target, with an empty session ledger in ``count_mode``."""
+    targets = [Target(name=n, ra_hours=6.0 + 0.1 * i, dec_deg=20.0,
+                      center=False, autofocus_first=False,
+                      steps=[ExposureStep(filter=f, exposure_s=10.0, count=2)
+                             for f in ("L", "R", "G")])
+               for i, n in enumerate(("A", "B", "C"))]
+    targets.append(_target("Darks", calibration=True))
+    e = _engine(clock, targets)
+    e.plan = SequencePlan(name="ledger", guide=False, meridian_flip=False,
+                          safety_check=False, autofocus_every=0,
+                          dither_every=0, count_mode=count_mode,
+                          targets=targets)
+    e._session = Session(plan=e.plan)
+    return e
+
+
+def _shoot(e: SequenceEngine, target: Target, step, n: int, *,
+           accepted: bool = True, override: str | None = None) -> None:
+    """Bank ``n`` frames of ``step`` in the ledger and in ``_done``, the way a
+    run records them: ``_done`` counts frames recorded whatever their grade
+    (attempts mode reads it), the ledger keeps each frame's grade."""
+    for _ in range(n):
+        e._session.frames.append(SessionFrame(
+            target_id=target.id, step_id=step.id, auto_accepted=accepted,
+            override=override))
+    key = f"{target.id}:{step.id}"
+    e._done[key] = e._done.get(key, 0) + n
+
+
+def _per_step_definition(e: SequenceEngine) -> int:
+    """`_remaining_hops` as it was defined before A9: every step asked of
+    `_step_complete` on its own, so each one reads the ledger for itself."""
+    cur = e._acquiring_ti
+    owing = sum(1 for ti, t in enumerate(e.plan.targets)
+                if not t.calibration and ti != cur
+                and any(not e._step_complete(t, s) for s in t.steps))
+    return max(0, owing - 1) if cur is None else owing
+
+
+async def test_the_hop_count_walks_the_ledger_once(clock, monkeypatch):
+    """#189 A9. In accepted mode `_step_complete` asks `Session.accepted`,
+    which walks every frame of the session, and `compute_eta` runs on every
+    status publish. Asked per step, one hop count was a walk per step of a
+    ledger that grows all night. It takes the map once and answers every
+    step from it. Spied on the CLASS, so the per-step path through
+    ``Session.accepted`` is counted as well as a direct call.
+
+    Every target here has its first two steps done and its third owing, so
+    the per-step definition has to read all three steps of each.
+
+    Mutant "per-step _step_complete" (`_remaining_hops` asks
+    ``_step_complete(target, s)`` without the map, so each step walks the
+    ledger again beside the one walk for the map): RED (observed) -
+        AssertionError: one hop count (acquiring index None) walked the
+        12-frame ledger 10 times; once is enough
+    """
+    walks: list[int] = []
+    real = Session.accepted_by_step
+
+    def counted(self):
+        walks.append(len(self.frames))
+        return real(self)
+
+    e = _three_by_three(clock, "accepted")
+    for t in e.plan.targets[:3]:
+        for s in t.steps[:2]:
+            _shoot(e, t, s, s.count)
+    monkeypatch.setattr(Session, "accepted_by_step", counted)
+    for cur, want in ((None, 2), (0, 2), (2, 2)):
+        e._acquiring_ti = cur
+        walks.clear()
+        got = e._remaining_hops()
+        assert got == want, f"premise: {got} hops with index {cur}, want {want}"
+        assert len(walks) == 1, (
+            f"one hop count (acquiring index {cur}) walked the "
+            f"{walks[0] if walks else 0}-frame ledger {len(walks)} times; "
+            f"once is enough")
+
+
+async def test_control_attempts_mode_takes_no_map(clock, monkeypatch):
+    """CONTROL. Attempts mode reads ``_done``: no ledger walk at all.
+
+    Mutant "map whatever the mode" (the map taken with no count-mode test):
+    RED (observed) -
+        AssertionError: attempts mode walked the ledger 1 times
+    """
+    walks: list[int] = []
+    real = Session.accepted_by_step
+
+    def counted(self):
+        walks.append(len(self.frames))
+        return real(self)
+
+    e = _three_by_three(clock, "attempts")
+    _shoot(e, e.plan.targets[0], e.plan.targets[0].steps[0], 2)
+    monkeypatch.setattr(Session, "accepted_by_step", counted)
+    assert e._remaining_hops() == 2
+    assert walks == [], f"attempts mode walked the ledger {len(walks)} times"
+
+
+@pytest.mark.parametrize("count_mode", ["accepted", "attempts"])
+async def test_control_one_walk_answers_what_every_step_answered(
+        clock, count_mode):
+    """CONTROL. On seeded ledgers, including frames regraded both ways, and
+    at every acquiring index, the one-walk count equals the per-step
+    `_step_complete` definition in both count modes. The regrades are what
+    make the modes disagree: A's L step holds two frames, one of them
+    regraded to rejected, so accepted mode owes it and attempts mode does
+    not; B's R step holds one accepted frame and one auto-rejected frame
+    regraded to accepted, so accepted mode has it done.
+
+    Mutant "recorded frames for accepted" (`_remaining_hops` takes
+    ``recorded_by_step()`` in place of ``accepted_by_step()``): RED in
+    accepted mode, green in attempts mode (observed) -
+        AssertionError: accepted mode, A's L regraded to rejected, acquiring
+        index None: one walk says 1 hops, the per-step definition 2
+    """
+    e = _three_by_three(clock, count_mode)
+    a, b, c = e.plan.targets[:3]
+    seeds = []
+
+    def check(label: str) -> None:
+        for cur in (None, 0, 1, 2, 3):
+            e._acquiring_ti = cur
+            got, want = e._remaining_hops(), _per_step_definition(e)
+            seeds.append((label, cur, got))
+            assert got == want, (
+                f"{count_mode} mode, {label}, acquiring index {cur}: one walk "
+                f"says {got} hops, the per-step definition {want}")
+
+    check("nothing shot")
+    for s in a.steps:
+        _shoot(e, a, s, s.count)
+    _shoot(e, b, b.steps[0], 1)
+    check("A done, B started")
+    e._session.frames[0].override = "reject"          # A's first L frame
+    check("A's L regraded to rejected")
+    _shoot(e, b, b.steps[1], 1)
+    _shoot(e, b, b.steps[1], 1, accepted=False, override="accept")
+    for s in (b.steps[0], b.steps[2]):
+        _shoot(e, b, s, s.count - e._done.get(f"{b.id}:{s.id}", 0))
+    check("B done with a rejected frame regraded to accepted")
+    for s in c.steps:
+        _shoot(e, c, s, s.count)
+    check("everything shot")
+    answers = {got for _l, _c, got in seeds}
+    assert len(answers) > 1, f"premise: the seeds move the answer: {seeds}"
 
 
 # --------------------------------------------------------- across two runs

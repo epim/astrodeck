@@ -113,17 +113,35 @@ async def test_spawn_replace_cancels_existing_task():
         t.cancel()
 
 
-def test_park_supersedes_inflight_goto(client):
+def test_park_supersedes_inflight_goto(client, monkeypatch):
     """Park must not 409 against an in-flight goto (the old bug bumped the motion
-    fence, sabotaging the goto, then 409'd so the mount never parked)."""
+    fence, sabotaging the goto, then 409'd so the mount never parked).
+
+    REAL SIM PACING, and the goto shown in flight before the park. Since #207
+    the fast path (conftest's ``ASTRODECK_FAST_TEST``) zeroes the sim slew's
+    dwell as well, so the goto below finished before the park arrived as
+    often as not, and a park that met no goto answered 200 whatever the route
+    did with one. Under mutant "park 409s a busy goto lane" (``_spawn("goto",
+    _park(), replace=True)`` -> ``replace=False``) this test then went RED in
+    8 runs of 10 and GREEN in 2 (observed 2026-09-24): a guard that let the
+    regression through one time in five. With the pacing restored and the
+    precondition below, the same mutant is RED every run, observed verbatim:
+
+        E   AssertionError: {"detail":{"detail":"'goto' is already running","code":"lane_busy","lane":"goto"}}
+        E   assert 409 == 200
+    """
+    monkeypatch.delenv("ASTRODECK_FAST_TEST", raising=False)
     c, _store, _lib = client
     assert c.post("/api/connect/sim").status_code == 200
 
-    # start a plain (un-centered) goto to a far target — the sim slew takes a few
-    # seconds, so it is reliably still in-flight when park arrives.
+    # start a plain (un-centered) goto to a far target: at the sim's real 4
+    # deg/s the slew takes seconds, so it is still in flight when park arrives.
     g = c.post("/api/mount/goto",
                json={"ra_hours": 2.0, "dec_deg": 80.0, "center": False})
     assert g.status_code == 200, g.text
+    assert "goto" in c.get("/api/status").json().get("busy_lanes", []), (
+        "precondition: the goto is still in flight when the park arrives; "
+        "without one there is nothing for the park to supersede")
 
     r = c.post("/api/mount/park")
     # the key regression: 200 (park accepted + goto superseded), never 409.

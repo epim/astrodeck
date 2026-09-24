@@ -46,6 +46,7 @@ from astrodeck.hub import Hub
 from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.engine import StopTarget
 from astrodeck.sequence.models import ExposureStep, Target
+from astrodeck.sequence.session import SessionStore
 
 pytestmark = pytest.mark.asyncio
 
@@ -499,7 +500,7 @@ class TestTheRecordIsKeptPerTarget:
         """
         e, a, b, ttf, mount = self._two(sim_hub, monkeypatch)
         e._pre_flip_side = {a.id: "west"}
-        monkeypatch.setattr(engine_mod.session_store, "load_all", lambda: [])
+        monkeypatch.setattr(SessionStore, "load_all", lambda self: [])
         monkeypatch.setattr(engine_mod.SequenceEngine, "_run",
                             lambda self: asyncio.sleep(0))
         e.start(SequencePlan(targets=[a], meridian_flip=True, guide=False))

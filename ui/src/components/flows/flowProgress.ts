@@ -13,6 +13,12 @@
 // progress answer that leaves a card's count alone does not wake that card:
 // the re-render discipline both card files exist for.
 //
+// A formatter has no clock, so it cannot tell a fresh answer from a stale one.
+// What keeps the answer current is the slice: flowsSlice.ts re-reads it while
+// the open flow's run is banking frames (#214, at most once per
+// LIVE_PROGRESS_MIN_MS and once more when the run ends), and leaves the count
+// on the card while that re-read is in flight.
+//
 // S1 is single targets: a TARGET block has one panel. The mosaic's
 // "4/6 panels done" (spec 1.2) is S3's, and it replaces this line for a block
 // with more than one panel.
@@ -23,15 +29,19 @@ const finite = (v: unknown): number | null =>
 
 /** The chip for one canvas node, or null when there is nothing true to say.
  *
- *  `{banked}/{total} subs` for a TARGET block: the subs the flow's newest
- *  session has banked on this target's steps, over the subs those steps plan.
+ *  `{banked}/{total} subs` for a TARGET block: the subs the flow's session
+ *  (the one Run would continue) has banked on this target's steps, over the
+ *  subs those steps plan.
  *  Null when:
  *
  *  - THE GRAPH IS DIRTY. The answer is the SAVED flow's: the server compiles
  *    the stored graph, and a step's id is its recipe (#77), so an unsaved
  *    exposure change is a different step with nothing banked. Until the edit
- *    is saved the answer describes a flow the canvas no longer shows.
- *  - THERE IS NO SESSION. The flow has never run, or every run was abandoned.
+ *    is saved the answer describes a flow the canvas no longer shows. This
+ *    rule is only as good as `dirty`, which a save clears only when the
+ *    canvas is still the graph and name its PUT carried (#215).
+ *  - THERE IS NO SESSION. The flow has never run, or its newest run was
+ *    abandoned (an older session is never counted in its place).
  *    "0/315" would read as a campaign that shot nothing, when there is no
  *    campaign to count yet.
  *  - THE NODE IS NOT IN THE ANSWER, or its block is not a TARGET. Only TARGET

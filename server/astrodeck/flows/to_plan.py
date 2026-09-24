@@ -503,11 +503,14 @@ def _coords(entry: dict, when: float | None) -> tuple[float, float] | None:
     defaults to False, so the engine would slew there - and 0h/0deg is below
     the horizon at most sites, which means the operator gets a horizon refusal
     naming a target they never entered.
+
+    "Typed" is ``identity.typed_coordinates``, the same test ``_identify``
+    keys by: an entry resolved by name here is keyed on its name there
+    (#189 A5), and the two must never read one entry differently.
     """
-    ra_text, dec_text = entry.get("ra"), entry.get("dec")
-    if ra_text and dec_text:
+    if identity.typed_coordinates(entry):
         try:
-            return parse_ra(str(ra_text)), parse_dec(str(dec_text))
+            return parse_ra(str(entry["ra"])), parse_dec(str(entry["dec"]))
         except (TypeError, ValueError):
             return None
     name = str(entry.get("name") or "").strip()
@@ -631,9 +634,12 @@ def _identify(target: dict, entry: dict, *, flow_id: str, is_pool: bool,
     else:
         # A single TARGET is its block's 1x1 grid, keyed on the geometry it is
         # at NOW. S1 has no anchor, so any move re-keys and the counts restart;
-        # S3 keys on the anchor and carries a small nudge.
-        key = identity.geometry_key(target["ra_hours"], target["dec_deg"],
-                                    target["rotation_deg"])
+        # S3 keys on the anchor and carries a small nudge. A TARGET with only
+        # a NAME is keyed on the name instead: its geometry is the catalogue's
+        # answer at `when`, which moves (#189 A5). `target_key` decides which,
+        # and `progress._single` asks it the same question.
+        key = identity.target_key(entry, target["ra_hours"],
+                                  target["dec_deg"], target["rotation_deg"])
         tid = identity.target_id(identity.group_id(flow_id, node_id, key), 0, 0)
     target["id"] = tid
     seen: Counter[tuple[str, str]] = Counter()

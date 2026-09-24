@@ -19,6 +19,8 @@ import { flowsApi } from "../../lib/flowsApi";
 import type {
   FlowCard, FlowFolder, FlowProgress, FlowRunFlags, FlowRunSession, FlowUnmapped,
 } from "../../lib/flowsApi";
+import { runIsLive } from "../../lib/lastSessionFrame";
+import type { SequenceState } from "../../types";
 import { NODE_DEFS } from "./nodeDefs";
 import { fitView, type Rect } from "./geometry";
 import { flowLoopRefusal, portKindOf } from "./flowLoop";
@@ -30,6 +32,15 @@ import type {
 
 /** Ring size for the run log. README §"State management" says ~120. */
 export const LOG_RING = 120;
+
+/** The fewest milliseconds between two LIVE progress re-reads (#214): the ones
+ *  a frame landing on the open flow's run starts. Each read compiles the flow
+ *  and scans its session on the server, and a run of 10 s subs would otherwise
+ *  ask six times a minute to move a card decoration by one. Thirty seconds
+ *  keeps the chip within a frame or two of the ledger at any sub length. The
+ *  read when the run ENDS is not held to it: it is the one that makes the
+ *  final count right. */
+export const LIVE_PROGRESS_MIN_MS = 30_000;
 
 export interface FlowsUiState {
   screen: FlowScreen;
@@ -94,8 +105,10 @@ export interface FlowsState {
   calHealth: FlowCalHealth | null;
   /** The OPEN flow's `GET /api/flows/{id}/progress` answer, or null whenever
    *  none is in hand for this record: before the first answer lands, after a
-   *  failed read, and from the moment a re-read starts (`fetchProgress`,
-   *  private to createFlowsActions).
+   *  failed read, and from the moment an open, a save or a new run starts a
+   *  re-read (`fetchProgress`, private to createFlowsActions). A LIVE re-read,
+   *  started by a frame landing on this flow's run (#214), leaves it in place
+   *  until its answer lands.
    *  Cards read it only through `progressChip` (flowProgress.ts). */
   progress: FlowProgress | null;
 
@@ -302,6 +315,36 @@ export interface FlowsHost extends FlowsActions {
 type SetFn = (fn: (s: FlowsHost) => Partial<FlowsHost>) => void;
 type GetFn = () => FlowsHost;
 
+/** The part of the store the live progress refresh watches (#214): the open
+ *  flow, and the run the rig is on. `sequence` is optional so a miniature
+ *  store without one still type-checks; it simply never sees a run. */
+export interface FlowsWatch {
+  flows: FlowsState;
+  sequence?: SequenceState;
+}
+
+/** The one member of zustand's store api the slice uses: the third argument a
+ *  state creator is handed. store.ts passes it; a store that does not (every
+ *  miniature store built before #214) gets no live refresh and nothing else
+ *  changes. */
+export interface FlowsStoreApi {
+  subscribe(listener: (s: FlowsWatch, prev: FlowsWatch) => void): () => void;
+}
+
+/** The session id of the run `seq` describes while that run is live, or null.
+ *  Live is `runIsLive`'s: a cloud hold and an abort's wind-down are still the
+ *  run, and taking either for its end would spend the end read early. */
+function liveSessionOf(seq: SequenceState | undefined): string | null {
+  const id = seq?.session?.id;
+  return runIsLive(seq) && typeof id === "string" && id !== "" ? id : null;
+}
+
+/** `frames_done` when it is a finite number, else null. */
+function framesOf(seq: SequenceState | undefined): number | null {
+  const n = seq?.progress?.frames_done;
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+}
+
 let edgeSeq = 0;
 let nodeSeq = 0;
 let logSeq = 0;
@@ -334,33 +377,74 @@ function migrationNotes(rec: FlowRecordRec): string[] {
     .filter((n): n is string => typeof n === "string" && n !== "");
 }
 
-export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
+export function createFlowsActions(
+  set: SetFn, get: GetFn, api?: FlowsStoreApi,
+): FlowsActions {
   const touch = (s: FlowsHost, graph: FlowGraphRec) =>
     patch(s, { graph, dirty: true });
 
-  // THE NEWEST PROGRESS READ WINS, not the last one to arrive. Open, save and
-  // a started run each start a read, and two for the same flow can land out of
-  // order: the read after a save arriving after the read after a RUN would put
-  // the pre-run session's counts back on the card. Per store rather than per
-  // module, so two stores (the tests' miniature ones) cannot supersede each
-  // other's reads.
+  // THE NEWEST PROGRESS READ WINS, not the last one to arrive. Open, save, a
+  // started run and a frame on a live run each start a read, and two for the
+  // same flow can land out of order: the read after a save arriving after the
+  // read after a RUN would put the pre-run session's counts back on the card.
+  // Per store rather than per module, so two stores (the tests' miniature
+  // ones) cannot supersede each other's reads.
   let progressTicket = 0;
+
+  /** The sessions known to be the OPEN flow's: the one each progress answer
+   *  counts from, and the one `flowsRun`'s answer named. A live run is this
+   *  flow's when its session is one of these (#214).
+   *
+   *  A SET, not the latest one, because both sources are needed and neither
+   *  may overwrite the other. RUN names its session before any answer does
+   *  (START OVER, a first night), and a run started elsewhere - ResumeArm on
+   *  night two, another browser - is known only by the answer, which a save
+   *  clears for the length of one read. A session id is minted once per
+   *  session, so every id that was ever this flow's still is.
+   *
+   *  Dropped whenever no flow is open (the watcher below), which includes the
+   *  sign-out gate's reset of `flows`: a session id is a fact about the rig,
+   *  and nothing keeps one behind the login screen. */
+  let flowSessions: { flowId: string; ids: Set<string> } | null = null;
+  const noteSession = (flowId: string, sid: unknown): void => {
+    if (typeof sid !== "string" || sid === "") return;
+    if (flowSessions?.flowId !== flowId) flowSessions = { flowId, ids: new Set() };
+    flowSessions.ids.add(sid);
+  };
+  const openFlowOwns = (sid: string | null): boolean => {
+    const id = get().flows.record?.id;
+    return sid !== null && id !== undefined
+      && flowSessions?.flowId === id && flowSessions.ids.has(sid);
+  };
+
+  /** When the last live read started, for LIVE_PROGRESS_MIN_MS. Reset when a
+   *  flow opens, so one flow's reads never hold back another's. */
+  let liveReadAt = -Infinity;
 
   /** Re-read the open flow's progress into `flows.progress` (#189 S1 item 9).
    *  Never rejects, and every caller starts it without awaiting it.
    *
-   *  PRIVATE, not a store action: only open, save and a started run have a
-   *  reason to re-read, and a public action is one more store member that
-   *  the sign-out gate (lib/authGate.ts) would have to be told about. */
-  const fetchProgress = async (): Promise<void> => {
+   *  PRIVATE, not a store action: open, save, a started run and the live run
+   *  are the only reasons to re-read, all of them inside this closure, and a
+   *  public action is one more store member that the sign-out gate
+   *  (lib/authGate.ts) would have to be told about.
+   *
+   *  `live` is the frame-driven refresh (#214), and the only read that does
+   *  not clear first. */
+  const fetchProgress = async (live = false): Promise<void> => {
     const id = get().flows.record?.id;
     const ticket = ++progressTicket;
-    // CLEARED FIRST. Every caller starts a read because what the last answer
-    // described has just changed - another flow opened, a save moved step
-    // ids, a run may have started a new session - so until the new answer
-    // lands the old one is a count of something else, and no chip is drawn
-    // from it.
-    set((s) => patch(s, { progress: null }));
+    // CLEARED FIRST, except on a live refresh. Open, save and a new run start
+    // a read because what the last answer described has just changed -
+    // another flow opened, a save moved step ids, a run may have started a new
+    // session - so until the new answer lands the old one is a count of
+    // something else, and no chip is drawn from it.
+    //
+    // A live refresh is the opposite case: same flow, same saved graph, same
+    // session, and a count that only grows while the run shoots. The answer
+    // in hand is still true of this flow, a frame behind, and blanking it for
+    // a round trip on every frame would make the chip blink all night.
+    if (!live) set((s) => patch(s, { progress: null }));
     if (!id) return;
     try {
       const progress = await flowsApi.progress(id);
@@ -369,13 +453,62 @@ export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
       // in flight.
       if (ticket !== progressTicket || get().flows.record?.id !== id) return;
       set((s) => patch(s, { progress }));
+      noteSession(id, progress?.session?.id);
     } catch {
-      // Left null, and SILENT. A server older than S1 answers 404 for every
+      // Left as it was, and SILENT: null after a clearing read, the previous
+      // answer after a live one. A server older than S1 answers 404 for every
       // flow, and a saved graph that cannot become a plan answers 422, which
       // the compile's own doctor already reports. A missing chip claims
       // nothing; a log line on every open would be noise about a decoration.
     }
   };
+
+  // THE LIVE REFRESH (#214). Before it the chip was read on open, save and RUN
+  // and never again, so an operator who left the canvas open through the
+  // night saw the count the run started with - and the chip carries no time,
+  // so a frozen count read as a current one. "212/315 subs" decides whether a
+  // target gets another night.
+  //
+  // Driven by the run's own clock rather than by anything the operator does:
+  // every write of `sequence` (store.ts's `sequence` case, and the snapshot a
+  // reconnect lands) passes through this one subscription. The rig saves the
+  // session ledger BEFORE it publishes the new `frames_done`
+  // (engine.py `_record_frame`), so a read started by the publish sees the
+  // frame that caused it.
+  //
+  //   - A frame landing on the open flow's run re-reads, at most once per
+  //     LIVE_PROGRESS_MIN_MS. Leading edge only: a trailing timer would be one
+  //     more thing to cancel on close and on sign-out, and the next frame
+  //     after the window brings the count up to date anyway.
+  //   - The run ending re-reads once more, outside the window, because the
+  //     frames that landed inside the last window are otherwise never counted.
+  //   - Nothing for another flow's run: its frames are not on this ledger.
+  //   - Nothing while the graph is dirty: the chip is hidden over an unsaved
+  //     edit (progressChip), and the save that ends the edit re-reads.
+  const onSequence = (prev: SequenceState | undefined,
+                      next: SequenceState | undefined): void => {
+    const was = liveSessionOf(prev);
+    const now = liveSessionOf(next);
+    const ended = was !== null && was !== now && openFlowOwns(was);
+    const wasFrames = framesOf(prev);
+    const nowFrames = framesOf(next);
+    const advanced = now !== null && now === was && openFlowOwns(now)
+      && wasFrames !== null && nowFrames !== null && nowFrames > wasFrames;
+    if (!ended && !advanced) return;
+    const f = get().flows;
+    if (!f.record || f.dirty) return;
+    const t = Date.now();
+    if (!ended && t - liveReadAt < LIVE_PROGRESS_MIN_MS) return;
+    liveReadAt = t;
+    void fetchProgress(true);
+  };
+
+  // Called on EVERY store write in the app (status ticks every 2 s, log
+  // lines, previews), so it does two comparisons before anything else.
+  api?.subscribe((s, prev) => {
+    if (flowSessions && !s.flows.record) flowSessions = null;
+    if (s.sequence !== prev.sequence) onSequence(prev.sequence, s.sequence);
+  });
 
   return {
     // ────────────────────────────────────────────────────────────── library
@@ -428,6 +561,7 @@ export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
         // a save or a RUN: the read compiles the flow and scans the session
         // files on the server, and a card decoration must not hold the editor
         // open, the save before a close, or the RUN press.
+        liveReadAt = -Infinity;
         void fetchProgress();
         await get().flowsCompile();
       } catch (e) {
@@ -441,7 +575,35 @@ export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
       try {
         const saved = (await flowsApi.save(record.id,
           { ...record, graph })) as FlowRecordRec;
-        set((s) => patch(s, { record: saved, dirty: false }));
+        // WHAT WAS SENT IS WHAT WAS SAVED, and nothing after it (#215). This
+        // wrote `dirty: false` unconditionally, so an edit made inside the
+        // PUT's round trip - a param, a drag, a wire, a rename - was marked
+        // saved while the canvas still showed it. The next SAVE then sent
+        // nothing, `flowsCloseEditor`'s save declined on `!dirty`, and every
+        // way out of the editor dropped the edit without a word; meanwhile the
+        // TARGET chip, hidden only while `dirty`, drew the saved flow's count
+        // beside an unsaved recipe.
+        //
+        // So `dirty` stays true when the canvas is no longer what was sent.
+        // Identity is enough for the graph: every edit replaces the graph
+        // object (`touch`), and a false positive costs one redundant PUT while
+        // a false negative loses an edit. The name lives on the record, which
+        // the server's answer replaces, so an in-flight rename is carried onto
+        // that answer or the next PUT would send the old name back.
+        const cur = get().flows.record;
+        // A STALE COMPLETION: another flow was opened while this PUT was in
+        // flight. Its answer belongs to a record no longer open, and writing
+        // it would put this flow's id under the other flow's graph - which
+        // the check below would then call an unsaved edit, so the next close
+        // would PUT that graph into this flow's file. The other flow's open
+        // has already read its own progress.
+        if (!cur || cur.id !== record.id) return;
+        const renamed = cur.name !== record.name;
+        const edited = get().flows.graph !== graph;
+        set((s) => patch(s, {
+          record: renamed ? { ...saved, name: cur.name } : saved,
+          dirty: edited || renamed,
+        }));
         // What the server counts is the STORED graph, and the save just
         // changed it: a new exposure is a new step id with nothing banked.
         void fetchProgress();
@@ -652,6 +814,10 @@ export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
         // a fresh start on every surface that shows the log.
         const line = sessionLogLine(res.session);
         if (line) get().flowsAppendLog(line, "info");
+        // The session this run went into is this flow's, known from this
+        // moment: the live refresh (#214) recognizes the run's frames by it
+        // before any progress answer has named it.
+        noteSession(id, res.session?.id);
         // The run may have gone into a NEW session (START OVER, or the first
         // night), whose counts are not the ones the cards are showing.
         void fetchProgress();

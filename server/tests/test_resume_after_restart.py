@@ -438,10 +438,16 @@ class _StubEngine:
 
     def __init__(self):
         self.started: list = []
+        self.tracking: list = []
         self.limit_checks: list = []
 
-    def start(self, plan, *, session=None):
+    def start(self, plan, *, session=None, tracking=None):
+        # ``tracking`` because ResumeArm passes the target its ladder
+        # re-centred (#202). Without it this stub raised TypeError, which
+        # the tick logs as a refusal: a test asserting only on the ladder
+        # stayed green over a resume that never started.
         self.started.append(session)
+        self.tracking.append(tracking)
 
     async def current_safety(self):
         from astrodeck.devices.base import SafetyReading
@@ -612,9 +618,19 @@ async def test_a_half_finished_boot_is_not_a_refusal(fp, bus_lines, monkeypatch)
 
 
 async def test_ready_devices_proceed_to_the_ladder(fp, monkeypatch):
-    """The readiness gate must not become a permanent block."""
+    """The readiness gate must not become a permanent block.
+
+    Through to the START, not only the ladder: a start the stub rejects is
+    logged as a refusal and would leave the ladder assertion green. RED under
+    mutant "stub start without ``tracking=``" (``_StubEngine.start`` back to
+    ``(self, plan, *, session=None)``), observed verbatim:
+
+        __________________ test_ready_devices_proceed_to_the_ladder ___________________
+        E   AssertionError: ready devices must reach the start
+        E   assert [] == ['d3f794fe9d9...83afbbe28565']
+    """
     _record_then_restart(fp)
-    _mk("dormant", auto_resume=True)
+    s = _mk("dormant", auto_resume=True)
 
     class _Dev:
         connected = True
@@ -625,6 +641,8 @@ async def test_ready_devices_proceed_to_the_ladder(fp, monkeypatch):
     monkeypatch.setattr(arm, "_window_open", lambda *a, **k: True)
     await arm.tick()
     assert "solve" in hub.calls, "ready devices must reach the ladder"
+    assert [x.id for x in arm.engine.started] == [s.id], (
+        "ready devices must reach the start")
 
 
 async def test_the_recovery_solve_keeps_the_mount_hint(fp):
