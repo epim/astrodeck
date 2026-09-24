@@ -234,3 +234,362 @@ def test_real_wheel_roundtrip_engine_dump_file_restore_engine(
     _real_guider(tmp_path, eng3)._restore_gp_window()
     assert eng3.dump_gp_window() == [], (
         "past-gate restore leaves a fresh (untrained -> empty-dump) model")
+
+
+# --- #210: dumped_at is when the model was last FED, and only a live stop ----
+#
+# `stop_guiding` used to call `_persist_gp_window()` on every call, and that
+# stamped `dumped_at = time.time()` whenever the engine object still held a
+# trained window (a stop does not clear `_engine`). `_restore_gp_window` then
+# re-phases the model by `now - dumped_at` and keeps it only inside the
+# engine's retain window (40% of the 200 s kernel period: 80 s). So a SECOND
+# stop on an already stopped guider re-stamped the file, and the next start
+# on the calibration-reuse path kept a model that was really minutes old and
+# re-phased it by seconds. S1-12 (#148) stands the guider down before every
+# slew, which made that second stop routine.
+#
+# These drive the REAL wheel through a REAL `start_guiding` on the reuse path,
+# on a virtual wall clock (`guide.native.time`), because the retain-or-reset
+# gate lives in the Rust engine: "reset, not restored" is read off the fresh
+# engine's own dump, not off a fake's opinion of the gate. Each was shown RED
+# under a named mutation of guide/native.py, run from a byte-for-byte backup
+# and restored byte-identical; the observed failure is quoted verbatim.
+
+
+class _WallClock:
+    """``guide.native``'s ``time`` module with a settable ``time()``;
+    ``monotonic`` and the rest delegate to the real module."""
+
+    def __init__(self, wall: float = 50_000.0) -> None:
+        self.wall = wall
+
+    def time(self) -> float:
+        return self.wall
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+class _StarCam:
+    """A guide camera that serves ``serve`` star frames, advancing the virtual
+    clock one 5 s exposure per frame, and then STARVES: the next exposure
+    never returns (a hung camera), until ``stop_guiding`` cancels it. The
+    first frame of every start is the reuse path's star-existence check."""
+
+    name = "fake guide camera"
+
+    def __init__(self, clock: _WallClock, serve: int) -> None:
+        import asyncio
+        self.clock = clock
+        self.serve = serve
+        self.served = 0
+        self.starved = asyncio.Event()
+        self._never = asyncio.Event()
+
+    async def expose(self, exposure_s, gain, offset, binning=1):
+        from types import SimpleNamespace
+        if self.served >= self.serve:
+            self.starved.set()
+            await self._never.wait()
+        i = self.served
+        self.served += 1
+        self.clock.wall += 5.0
+        # The real-wheel round-trip's training frames: a star wobbling 0.3 px.
+        return SimpleNamespace(
+            data=_star_frame(32.0 + 0.3 * math.sin(i / 3.0), 32.0),
+            timestamp=self.clock.wall)
+
+
+class _Mount:
+    """Pier and declination matching ``_IDENT_CAL``, so the persisted
+    calibration passes every reuse gate and the start takes the reuse path."""
+
+    name = "fake mount"
+    can_pulse_guide = True
+
+    async def pulse_guide(self, direction, ms):
+        return None
+
+    async def guide_rates(self):
+        return (0.004178, 0.004178)
+
+    async def get_position(self):
+        return (5.0, 0.0)
+
+    async def pier_side(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(value="west")
+
+
+_TRAIN_FRAMES = 16      # 1 star check + 1 lock + 14 accepted -> a real window
+
+
+@pytest.fixture
+def _reuse_rig(tmp_path, monkeypatch):
+    """A PPEC guider for profile ``prof1`` whose persisted calibration is
+    reusable, on the virtual clock. Returns ``(guider, clock)``."""
+    import astrodeck.guide.native as nativemod
+    monkeypatch.setattr(configmod, "CONFIG_DIR", tmp_path)
+    clock = _WallClock()
+    monkeypatch.setattr(nativemod, "time", clock)
+    d = tmp_path / "guider"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "prof1.json").write_text(
+        json.dumps({**_IDENT_CAL, "image_scale_arcsec": 2.0}), encoding="utf-8")
+    g = NativeGuider(None, _Mount(),
+                     config={"ra_algorithm": "ppec", "image_scale_arcsec": 2.0,
+                             "image_scale_known": True, "exposure_s": 5.0},
+                     profile_id="prof1")
+    return g, clock
+
+
+async def _session(g, clock, serve: int) -> None:
+    """Start on the reuse path and let the loop process ``serve - 1`` frames,
+    then return with the camera starved (the loop is parked in an exposure)."""
+    import asyncio
+    g.cam = _StarCam(clock, serve)
+    await g.start_guiding()
+    await asyncio.wait_for(g.cam.starved.wait(), timeout=30.0)
+
+
+def _gp_file(tmp_path) -> dict:
+    return json.loads((tmp_path / "guider" / "prof1-gp.json").read_text())
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+async def test_a_second_stop_does_not_restamp_the_model(_reuse_rig, tmp_path):
+    """The #210 scenario. Guide, stop, wait past the retain window, stop
+    AGAIN, then start on the reuse path: the model is RESET. The idle stop
+    must not have written anything.
+
+    MUTANT "unconditional persist" (``if ended_a_session:`` removed, so every
+    stop persists) -- RED, observed verbatim:
+
+        AssertionError: an idle stop re-stamped the PPEC file (dumped_at
+        50080.0 -> 51080.0), so a model 1005 s old was restored as fresh
+    """
+    g, clock = _reuse_rig
+    await _session(g, clock, _TRAIN_FRAMES)
+    await g.stop_guiding()
+    first = _gp_file(tmp_path)
+    assert len(first["window"]) >= 2, "session 1 trained no PPEC window"
+
+    clock.wall += 1000.0                    # far past the 80 s retain window
+    await g.stop_guiding()                  # the idle stop
+    second = _gp_file(tmp_path)
+
+    await _session(g, clock, 1)             # reuse path, no frames fed
+    restored = g._engine.dump_gp_window()
+    await g.stop_guiding()
+    assert second["dumped_at"] == first["dumped_at"] and restored == [], (
+        f"an idle stop re-stamped the PPEC file (dumped_at "
+        f"{first['dumped_at']} -> {second['dumped_at']}), so a model "
+        f"{clock.wall - first['dumped_at']:.0f} s old was restored as fresh")
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+async def test_dumped_at_is_the_last_fed_frame_not_the_stop(_reuse_rig, tmp_path):
+    """A loop starved of frames (a hung exposure) stops feeding the model the
+    moment the frames stop, and the file must say so. Here the camera hangs,
+    500 s pass, and then the guider is stopped: ``dumped_at`` is the last
+    processed frame, and the next start on the reuse path resets the model.
+
+    MUTANT "stamp at write time" (``dumped_at = time.time()`` in
+    ``_persist_gp_window``) -- RED, observed verbatim:
+
+        AssertionError: dumped_at is the stop (50580.0), not the last fed
+        frame (50080.0)
+
+    (It also turns ``test_a_restored_model_keeps_its_feed_time_until_fed``
+    RED, by the same stamp.)
+    """
+    g, clock = _reuse_rig
+    await _session(g, clock, _TRAIN_FRAMES)
+    last_fed = clock.wall                   # the clock moves only per frame
+    clock.wall += 500.0                     # starved: no frame arrives
+    await g.stop_guiding()
+    saved = _gp_file(tmp_path)
+    assert saved["dumped_at"] == last_fed, (
+        f"dumped_at is the stop ({saved['dumped_at']}), not the last fed "
+        f"frame ({last_fed})")
+
+    await _session(g, clock, 1)
+    restored = g._engine.dump_gp_window()
+    await g.stop_guiding()
+    assert restored == [], (
+        "a model starved for 500 s was restored as if it had just been fed")
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+async def test_control_one_live_stop_persists_and_restores(_reuse_rig, tmp_path):
+    """CONTROL, green under both mutants above: one stop after live guiding
+    persists the model, stamped with its last frame, and a start 35 s later
+    (inside the retain window) restores the WHOLE window, as before #210."""
+    g, clock = _reuse_rig
+    await _session(g, clock, _TRAIN_FRAMES)
+    last_fed = clock.wall
+    await g.stop_guiding()
+    saved = _gp_file(tmp_path)
+    assert saved["dumped_at"] == last_fed
+    assert len(saved["window"]) >= 2
+
+    clock.wall += 30.0
+    await _session(g, clock, 1)             # +5 s: the star-existence check
+    restored = g._engine.dump_gp_window()
+    await g.stop_guiding()
+    assert [list(r) for r in restored] == saved["window"], \
+        "a model 35 s old was not restored"
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+async def test_a_restored_model_keeps_its_feed_time_until_fed(_reuse_rig, tmp_path):
+    """The same defect by the other door. A start on the reuse path restores
+    the model and is stopped before its loop feeds a frame (a stand-down
+    right after a start). That stop ended a live session and persists, and
+    what it persists was last fed when the FILE says, not now: the engine
+    keeps the restored points' own timestamps and carries the downtime
+    separately. Here the model is fed at T, restored at T+35, stopped at
+    T+65 and started again at T+100: 100 s old, past the 80 s window.
+
+    MUTANT "the restore does not seed the feed time" (the
+    ``self._gp_fed_at = dumped_at`` line in ``_restore_gp_window`` removed)
+    -- RED, observed verbatim:
+
+        AssertionError: the re-persisted restored model is stamped 50145.0,
+        not its real feed time 50080.0
+    """
+    g, clock = _reuse_rig
+    await _session(g, clock, _TRAIN_FRAMES)
+    fed = clock.wall
+    await g.stop_guiding()
+
+    clock.wall += 30.0
+    await _session(g, clock, 1)             # restored at fed + 35
+    assert g._engine.dump_gp_window() != [], "the 35 s restore did not happen"
+    clock.wall += 30.0
+    await g.stop_guiding()                  # live (a loop task existed)
+    saved = _gp_file(tmp_path)
+    assert saved["dumped_at"] == fed, (
+        f"the re-persisted restored model is stamped {saved['dumped_at']}, "
+        f"not its real feed time {fed}")
+
+    clock.wall += 30.0
+    await _session(g, clock, 1)             # fed + 100
+    restored = g._engine.dump_gp_window()
+    await g.stop_guiding()
+    assert restored == [], "a model 100 s old was restored"
+
+
+@pytest.mark.asyncio
+async def test_a_star_lost_frame_does_not_feed_the_model(tmp_path, monkeypatch):
+    """The loop stamps the feed time on every frame it processes EXCEPT a
+    star-lost one: the engine had no star to measure, so the model learned
+    nothing, and a loss that ends in the reacquire budget's honest death
+    would otherwise carry the dead frames' time into the file.
+
+    MUTANT "every processed frame feeds the model" (the ``!= "lock_lost"``
+    guard in ``_guide_loop`` removed) -- RED, observed verbatim:
+
+        AssertionError: the feed time is the last star-lost frame (50020.0),
+        not the last measured one (50010.0)
+    """
+    import asyncio
+    import astrodeck.guide.native as nativemod
+    clock = _WallClock()
+    monkeypatch.setattr(nativemod, "time", clock)
+    lost = {"action": "lock_lost", "reason": "star_lost"}
+    actions = [{"action": "idle"},
+               {"action": "pulse_pair", "ra": {"dir": "west", "ms": 100},
+                "dec": None},
+               lost, lost]
+
+    class _Engine:
+        def process(self, data, ts, exposure_s):
+            return actions.pop(0)
+
+        def stats(self):
+            return {"guiding": True, "settling": False, "recent": []}
+
+    g = NativeGuider(None, _Mount(), config={"exposure_s": 0.01},
+                     profile_id=None)
+    monkeypatch.setattr(nativemod, "_native", None)   # no star-finds needed
+    g._engine = _Engine()
+    g._active = True
+    g._stop.clear()
+    served = []
+
+    class _Cam:
+        name = "fake guide camera"
+
+        async def expose(self, exposure_s, gain, offset, binning=1):
+            from types import SimpleNamespace
+            served.append(clock.wall)
+            clock.wall += 5.0
+            if len(served) == 4:
+                g._stop.set()
+            await asyncio.sleep(0)
+            return SimpleNamespace(data=len(served), timestamp=clock.wall)
+
+    g.cam = _Cam()
+    await g._guide_loop()
+    measured = 50_000.0 + 2 * 5.0          # frame 2, the pulse_pair
+    assert g._gp_fed_at == measured, (
+        f"the feed time is the last star-lost frame ({g._gp_fed_at}), not "
+        f"the last measured one ({measured})")
+
+
+class _StarThenBlankCam(_StarCam):
+    """Serves ``serve`` star frames like ``_StarCam``, then blank sky for as
+    long as it is asked: the star is gone (a cloud that never clears), so the
+    engine dead-reckons for its 20 s staleness window and then reports
+    ``star_lost`` on every frame until the host's reacquire budget kills the
+    loop on its own."""
+
+    async def expose(self, exposure_s, gain, offset, binning=1):
+        from types import SimpleNamespace
+        if self.served < self.serve:
+            return await super().expose(exposure_s, gain, offset, binning)
+        self.served += 1
+        self.clock.wall += 5.0
+        return SimpleNamespace(data=_star_frame(32.0, 32.0, amp=0.0),
+                               timestamp=self.clock.wall)
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+async def test_a_stop_after_the_loops_own_death_persists(_reuse_rig, tmp_path):
+    """The other arm of "ended a live session": a loop task EXISTED on entry.
+    When the loop dies on its own (the reacquire budget, a re-lock stop, a
+    camera fault) it drops ``_active`` itself, so by the time anyone calls
+    ``stop_guiding`` only the dead task says a session was running. That stop
+    must still save what the session trained, stamped from the loop, not from
+    the stop that came 500 s later.
+
+    MUTANT "only _active counts" (``ended_a_session = self._active``) -- RED,
+    observed verbatim:
+
+        AssertionError: the stop after the loop's own death saved nothing: the
+        session's trained PPEC model was discarded
+    """
+    import asyncio
+    g, clock = _reuse_rig
+    g.cam = _StarThenBlankCam(clock, _TRAIN_FRAMES)
+    await g.start_guiding()
+    await asyncio.wait_for(g._loop_task, timeout=30.0)     # died on its own
+    assert g._lost and not g._active, "the loop did not die of the star loss"
+    died_at = clock.wall
+    clock.wall += 500.0
+
+    await g.stop_guiding()
+    p = tmp_path / "guider" / "prof1-gp.json"
+    assert p.exists(), (
+        "the stop after the loop's own death saved nothing: the session's "
+        "trained PPEC model was discarded")
+    saved = _gp_file(tmp_path)
+    assert len(saved["window"]) >= 2
+    assert saved["dumped_at"] <= died_at, (
+        f"dumped_at {saved['dumped_at']} is after the loop died ({died_at})")

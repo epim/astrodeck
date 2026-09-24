@@ -18,8 +18,13 @@
 //   2. IT IS ON THE CARD ONCE (carry-over 6). The first cut also carried it as
 //      the card's `title` and raised it as a toast on a press: the same
 //      sentence three times, two of them repeating a line already on screen.
-//      Assistive tech reaches the printed line through `aria-describedby`, an
-//      id reference, so there is still one copy of the words.
+//      ONCE IS ALSO WHAT A SCREEN READER HEARS (#206). One copy in the DOM was
+//      not enough: the card is a <button> with no aria-label, so its
+//      accessible name comes from its content, reason line included, and the
+//      `aria-describedby` S1-09 pointed at that same line made a screen reader
+//      say the sentence in the name and again in the description. The DOM
+//      count below graded a proxy; the name-and-description case grades what
+//      is heard.
 //   3. A PRESS DOES NOTHING. It never calls `flowsOpen`: every route answers
 //      404 for these ids, and `flowsOpen` writes that 404 into `libraryError` -
 //      so opening one would replace the card that explains itself with "Could
@@ -33,7 +38,8 @@
 //
 // Every case names the mutant it kills and quotes the failure that mutant
 // produced when it was run from a byte-for-byte backup of FlowLibraryCard.tsx
-// (and, for "restore the toast", of FlowLibrary.tsx too).
+// (and, for "restore the toast", of FlowLibrary.tsx too; for the name helper's
+// own known positives, of this file).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -182,7 +188,102 @@ function copiesOf(card: HTMLElement, reason: string): { text: number; attrs: str
   return { text: occurrences(card.textContent ?? "", reason), attrs };
 }
 
+// ------------------------------------------------ accessible name, minimally
+// What a screen reader announces for a control is its accessible NAME and its
+// DESCRIPTION (W3C accname 1.2). This is a minimal computation of both, enough
+// for a <button> built out of spans, and not a general implementation:
+//
+//   name         aria-labelledby, then aria-label, else the text of the
+//                content - where a descendant's own aria-label stands in for
+//                that descendant's content (the status LED is a role="img"
+//                with a label) and an aria-hidden subtree contributes nothing;
+//   description  the text of each element aria-describedby names.
+//
+// An element named by id counts even when it is itself aria-hidden: that is
+// accname's rule, and it is how option (a) of #206 (hide the line from the
+// name, keep it in the description) would work, so the helper must not
+// mistake that option for a missing reason.
+//
+// This is a model of the rules, not a screen reader. LISTENING TO THE CARD ON
+// NVDA AND ON VOICEOVER IS THE OPERATOR'S STEP (#206: "not yet confirmed on a
+// real screen reader"); what this file can do is hold the wiring to the rules.
+function contentText(el: Element): string {
+  let out = "";
+  for (const n of Array.from(el.childNodes)) {
+    if (n.nodeType === 3) { out += n.textContent ?? ""; continue; }
+    if (n.nodeType !== 1) continue;
+    const child = n as Element;
+    if (child.getAttribute("aria-hidden") === "true") continue;
+    const label = child.getAttribute("aria-label");
+    // Spaces around every element: the card's lines are separate spans, and a
+    // name run together ("Mosaic NGC 7000saved by...") would still contain
+    // the reason but would not be what is read.
+    out += ` ${label && label.trim() ? label : contentText(child)} `;
+  }
+  return out;
+}
+const squash = (s: string) => s.replace(/\s+/g, " ").trim();
+function textOfIds(ids: string): string {
+  return squash(ids.split(/\s+/).filter(Boolean)
+    .map((id) => { const t = document.getElementById(id); return t ? contentText(t) : ""; })
+    .join(" "));
+}
+function accName(el: Element): string {
+  const by = el.getAttribute("aria-labelledby");
+  if (by && by.trim()) return textOfIds(by);
+  const label = el.getAttribute("aria-label");
+  if (label && label.trim()) return squash(label);
+  return squash(contentText(el));
+}
+function accDescription(el: Element): string {
+  const by = el.getAttribute("aria-describedby");
+  return by && by.trim() ? textOfIds(by) : "";
+}
+
 // --------------------------------------------------------------------- tests
+
+// The helper's KNOWN POSITIVES, one per rule the heard-once case leans on. If
+// the helper read plain textContent it would pass that case for the wrong
+// reason; each line below would catch it.
+//
+// MUTANT "name ignores aria-label" (accName's `if (label && label.trim())
+// return squash(label);` line deleted - a mutant of THIS file, run from a
+// backup of it). Observed, 8/9:
+//   x precondition: the name helper follows the rules it models: an aria-label
+//     button's name is not its label
+//     expected "Open M31 on the flows canvas"
+//     got      "M31 7 stages"
+//
+// MUTANT "name reads aria-hidden text" (contentText's aria-hidden `continue`
+// deleted). Observed, 8/9:
+//   x precondition: the name helper follows the rules it models: an aria-hidden
+//     glyph reached the name
+//     expected "NEW FLOW"
+//     got      "+ NEW FLOW"
+await test("precondition: the name helper follows the rules it models", async () => {
+  const kp = document.createElement("div");
+  kp.innerHTML = `
+    <button id="kp-label" aria-label="Open M31 on the flows canvas"><span>M31</span><span>7 stages</span></button>
+    <button id="kp-content"><span aria-hidden="true">+</span><span>NEW FLOW</span></button>
+    <button id="kp-led"><span role="img" aria-label="CANNOT OPEN"></span>x</button>
+    <button id="kp-by" aria-labelledby="kp-l" aria-describedby="kp-d">x</button>
+    <span id="kp-l">Label from elsewhere</span>
+    <span id="kp-d" aria-hidden="true">Why it is locked</span>`;
+  document.body.appendChild(kp);
+  try {
+    const $ = (id: string) => document.getElementById(id)!;
+    eq(accName($("kp-label")), "Open M31 on the flows canvas", "an aria-label button's name is not its label");
+    eq(accName($("kp-content")), "NEW FLOW", "an aria-hidden glyph reached the name");
+    eq(accName($("kp-led")), "CANNOT OPEN x", "a labelled descendant did not stand in for its content");
+    eq(accName($("kp-by")), "Label from elsewhere", "aria-labelledby did not win over the content");
+    eq(accDescription($("kp-by")), "Why it is locked",
+      "a directly referenced, aria-hidden line did not count as the description");
+    eq(accDescription($("kp-label")), "", "a button with no aria-describedby has a description");
+  } finally {
+    kp.remove();
+  }
+});
+
 await test("precondition: all three cards render, the unreadable rows included", async () => {
   setUp();
   await mount();
@@ -190,7 +291,8 @@ await test("precondition: all three cards render, the unreadable rows included",
 });
 
 // MUTANT "reason not drawn" (FlowLibraryCard's `{unreadable && (` reason line
-// made `{false && (`). Observed, 5/8 (it also kills the next two cases):
+// made `{false && (`). Observed, 6/9 (it also kills the copies case and the
+// heard-once case below):
 //   x an unreadable card shows its reason as text on the card: the reason is not
 //     on the card - an operator sees a flow and no word about why it will not open
 //   x the reason occurs exactly once across the card's text and attribute values:
@@ -198,18 +300,23 @@ await test("precondition: all three cards render, the unreadable rows included",
 //     repeat of a line already on the card is slop
 //     expected 1
 //     got      0
-//   x aria-describedby resolves to the element holding the reason: future:
-//     aria-describedby=":rd:" points at nothing
+//   x a screen reader meets the reason once: in the card's name or its
+//     description, not both: future: a screen reader meets the reason 0 time(s)
+//     in the name and 0 in the description
+//     name        "Mosaic NGC 7000 9 stages · 8 wires · never run CANNOT OPEN CANNOT OPEN"
+//     description ""
+//     expected 1
+//     got      0
 //
 // MUTANT "no lock attribute" (the `aria-disabled={unreadable ? true :
-// undefined}` line deleted). Observed, 7/8:
+// undefined}` line deleted). Observed, 8/9:
 //   x an unreadable card shows its reason as text on the card: the card must say
 //     it cannot act (honest-disabled, never `disabled`)
 //     expected "true"
 //     got      null
 //
 // MUTANT "status word unchanged" (`const status = cardStatus(card.last_result);`
-// for every card). Observed, 7/8:
+// for every card). Observed, 8/9:
 //   x an unreadable card shows its reason as text on the card: the status word
 //     says NEVER RUN, which reads as a flow that could be run
 await test("an unreadable card shows its reason as text on the card", async () => {
@@ -233,7 +340,7 @@ await test("an unreadable card shows its reason as text on the card", async () =
 // is already on screen tells the operator nothing new.
 //
 // MUTANT "restore title" (`title={unreadable ?? undefined}` put back on the
-// card's <button>). Observed, 7/8:
+// card's <button>). Observed, 8/9:
 //   x the reason occurs exactly once across the card's text and attribute values:
 //     future: the reason must be carried exactly once (text 1, attributes
 //     ["button[title]"]) - a repeat of a line already on the card is slop
@@ -255,15 +362,23 @@ await test("the reason occurs exactly once across the card's text and attribute 
 // calls `onExplain?.(unreadable)` on an unreadable press; FlowLibrary regains
 // `explainCard` = `enqueueToast({ level: "warning", title: reason })` and passes
 // it as `onExplain` - the first cut's toast path, and nothing else of it).
-// Observed, 7/8:
+// Observed, 7/8, on the eight-case file before #206. That mutant was NOT re-run
+// with #206, because it edits FlowLibrary.tsx, which is outside that task's
+// files.
 //   x pressing an unreadable card never calls flowsOpen and raises no toast: the
 //     press repeated the card's own printed reason as a toast
 //     expected "[]"
 //     got      "[\"saved by a newer AstroDeck (schema 4); update to open
 //     it\",\"unreadable: not valid JSON (line 1, column 2)\"]"
 //
+// MUTANT "card toasts its reason" (the same toast, confined to
+// FlowLibraryCard.tsx: the unreadable branch of its onClick calls
+// `useStore.getState().enqueueToast({ level: "warning", title: unreadable })`).
+// This is the nine-case file after #206. Observed, 8/9, with the same failure
+// as quoted above.
+//
 // MUTANT "open every card" (FlowLibraryCard's onClick made
-// `() => onOpen(card.id)` whatever the card). Observed, 7/8:
+// `() => onOpen(card.id)` whatever the card). Observed, 8/9:
 //   x pressing an unreadable card never calls flowsOpen and raises no toast: the
 //     press opened a flow every route answers 404 for
 //     expected ""
@@ -281,39 +396,50 @@ await test("pressing an unreadable card never calls flowsOpen and raises no toas
   eq(JSON.stringify(toastTitles()), "[]", "the press repeated the card's own printed reason as a toast");
 });
 
-// MUTANT "drop aria-describedby" (the card's `aria-describedby={unreadable ?
-// reasonId : undefined}` line deleted). Observed, 7/8:
-//   x aria-describedby resolves to the element holding the reason: future: the
-//     card names no description, so a screen reader meets a disabled card with
-//     no reason attached
+// HEARD ONCE (#206). The reason must occur in EXACTLY ONE of what a screen
+// reader announces for the card - its name or its description - and once
+// there. This deliberately does not say WHICH: #206 lists three shapes that
+// each pass it ((a) aria-hidden on the line plus aria-describedby, (b) an
+// explicit aria-label plus aria-describedby, (c) no description, the reason
+// heard in the name from content), and the ruling between them is not this
+// test's to make. The card's own name must still be in the name, so no shape
+// can pass by hiding the whole card.
 //
-// MUTANT "shared id" (`const reasonId = useId();` made the constant
-// `"flow-unreadable-reason"`, so every unreadable card carries the same id and
-// getElementById answers the first). Observed, 7/8:
-//   x aria-describedby resolves to the element holding the reason: broken: the
-//     description is not the card's own printed line
+// MUTANT "keep aria-describedby" (S1-09's wiring put back: `const reasonId =
+// useId();`, `aria-describedby={unreadable ? reasonId : undefined}` on the
+// <button> and `id={reasonId}` on the reason line - the code before #206).
+// Observed, 8/9:
+//   x a screen reader meets the reason once: in the card's name or its
+//     description, not both: future: a screen reader meets the reason 1 time(s)
+//     in the name and 1 in the description
+//     name        "Mosaic NGC 7000 saved by a newer AstroDeck (schema 4); update to open it 9 stages · 8 wires · never run CANNOT OPEN CANNOT OPEN"
+//     description "saved by a newer AstroDeck (schema 4); update to open it"
+//     expected 1
+//     got      2
 //
-// MUTANT "id on the wrong line" (`id={reasonId}` moved from the reason span to
-// the card's name span, so the reference resolves inside the right card to the
-// wrong words). Observed, 7/8:
-//   x aria-describedby resolves to the element holding the reason: future: the
-//     description resolves to a line of the card that is not its reason
-//     expected "saved by a newer AstroDeck (schema 4); update to open it"
-//     got      "Mosaic NGC 7000"
-await test("aria-describedby resolves to the element holding the reason", async () => {
+// NOT LOCKED TO AN OPTION, shown by running the other two shapes of #206 from
+// the same backup; both left all 9/9 cases green:
+//   (a) the "keep aria-describedby" wiring plus `aria-hidden="true"` on the
+//       reason line (the name loses it, the description keeps it);
+//   (b) the same wiring plus `aria-label={`${card.name}, ${status.text}`}` on
+//       an unreadable card (an explicit name that leaves the reason out).
+// So a ruling for (a) or (b) changes FlowLibraryCard.tsx, not this case.
+await test("a screen reader meets the reason once: in the card's name or its description, not both", async () => {
   setUp();
   await mount();
-  for (const [id, reason] of [["future", NEWER], ["broken", BROKEN]] as const) {
+  for (const [id, reason, cardName] of [
+    ["future", NEWER, "Mosaic NGC 7000"], ["broken", BROKEN, "broken"],
+  ] as const) {
     const card = cardEl(id)!;
-    const ref = card.getAttribute("aria-describedby");
-    assert(ref, `${id}: the card names no description, so a screen reader meets a disabled card with no reason attached`);
-    // ONE id, not a list and not the sentence itself: the attribute is a
-    // pointer at the printed line, so the words exist once.
-    assert(!/\s/.test(ref!), `${id}: aria-describedby is not a single id reference: ${JSON.stringify(ref)}`);
-    const target = document.getElementById(ref!);
-    assert(target, `${id}: aria-describedby=${JSON.stringify(ref)} points at nothing`);
-    assert(card.contains(target), `${id}: the description is not the card's own printed line`);
-    eq(target!.textContent, reason, `${id}: the description resolves to a line of the card that is not its reason`);
+    const name = accName(card);
+    const desc = accDescription(card);
+    assert(occurrences(name, cardName) >= 1,
+      `${id}: the card's name no longer says which flow it is: ${JSON.stringify(name)}`);
+    const inName = occurrences(name, reason);
+    const inDesc = occurrences(desc, reason);
+    eq(inName + inDesc, 1,
+      `${id}: a screen reader meets the reason ${inName} time(s) in the name and ${inDesc} in the`
+      + ` description\n  name        ${JSON.stringify(name)}\n  description ${JSON.stringify(desc)}`);
   }
 });
 
@@ -323,7 +449,7 @@ await test("aria-describedby resolves to the element holding the reason", async 
 // skipped by Tab - hence the separate tabIndex check.
 //
 // MUTANT "native disabled" (`aria-disabled={unreadable ? true : undefined}`
-// made `disabled={unreadable ? true : undefined}`). Observed, 6/8:
+// made `disabled={unreadable ? true : undefined}`). Observed, 7/9:
 //   x an unreadable card shows its reason as text on the card: the card must say
 //     it cannot act (honest-disabled, never `disabled`)
 //     expected "true"
@@ -333,7 +459,7 @@ await test("aria-describedby resolves to the element holding the reason", async 
 //     explaining it
 //
 // MUTANT "out of tab order" (`tabIndex={unreadable ? -1 : undefined}` added to
-// the card's <button>). Observed, 7/8:
+// the card's <button>). Observed, 8/9:
 //   x an unreadable card is still focusable and in the tab order: the card is
 //     skipped by Tab (tabIndex -1) - a keyboard user never reaches the line
 //     explaining it
@@ -350,14 +476,15 @@ await test("an unreadable card is still focusable and in the tab order", async (
 
 // CONTROLS: the readable card opens exactly as before and carries no lock.
 //
-// MUTANT "describedby on every card" (`aria-describedby={reasonId}` on every
-// card). Observed, 7/8:
+// MUTANT "describedby on every card" (the "keep aria-describedby" wiring of
+// the heard-once case, with `aria-describedby={reasonId}` unconditional).
+// Observed, 7/9 (the heard-once case failed as quoted there, and):
 //   x control: a readable card opens on a press, once, with its own id, and says
 //     nothing: a readable card names a description it does not have
 //     expected null
 //     got      ":ri:"
 //
-// MUTANT "no card opens" (onClick made `() => {}`). Observed, 7/8:
+// MUTANT "no card opens" (onClick made `() => {}`). Observed, 8/9:
 //   x control: a readable card opens on a press, once, with its own id, and says
 //     nothing: a readable card no longer opens
 //     expected "good"

@@ -1,9 +1,11 @@
 """What a flow has banked and what it still owes (#189 S1 item 9, spec 8).
 
 The pure half of ``GET /api/flows/{id}/progress``: per block, per panel and
-per step, how many subs the flow's newest session has banked and how many are
-still owed, plus how many of the session's frames sit on steps this flow no
-longer has.
+per step, how many subs the flow's session has banked and how many are still
+owed, plus how many of the session's frames sit on steps this flow no longer
+has. The session is the one Run would continue or has just finished
+(``SessionStore.current_for_flow``, #189 hardening A2); the route picks it,
+and this module only counts it.
 The card's state chip ("212/315 subs", spec 1.2), the modal's per-panel bars
 and the CONTINUE button's copy are all read off this one answer, so every rule
 here is a number an operator acts on:
@@ -55,7 +57,9 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
 
     ``compiled`` is ``compile_plan``'s output and ``plan`` the
     ``to_sequence_plan(compiled, flow_id=flow_id)`` it expands to. ``session``
-    is the flow's newest session, or None when the flow has never run::
+    is ``SessionStore.current_for_flow``'s answer: the flow's newest session,
+    or None when the flow has never run or that newest session was
+    abandoned::
 
         {flow_id,
          session: null | {id, status, nights, count_mode},
@@ -85,9 +89,6 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
             "flow progress needs the flow id: plan targets are found by the "
             "ids the flow compiled to, and with no flow id none can be found")
     counts = _counts(session)
-    keyed = {t.id: identity.geometry_key(t.ra_hours, t.dec_deg,
-                                         t.rotation_deg)
-             for t in plan.targets}
     by_id = {t.id: t for t in plan.targets}
     members_used: dict[str, set[str]] = {}
     blocks: list[dict] = []
@@ -101,7 +102,7 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
                              node_id=node_id, name=name,
                              used=members_used.setdefault(node_id, set()))
         else:
-            target = _single(plan, keyed, flow_id=flow_id, node_id=node_id)
+            target = _single(plan, entry, flow_id=flow_id, node_id=node_id)
         # An entry with no node id (a compiled dict built by hand, older than
         # S1) is its own block: grouping every such entry under "" would give
         # one block two panels at row 0, col 0.
@@ -174,21 +175,27 @@ def _summary(session: "Session | None") -> dict | None:
             "count_mode": session.plan.count_mode}
 
 
-def _single(plan: "SequencePlan", keyed: dict[str, str], *, flow_id: str,
+def _single(plan: "SequencePlan", entry: dict, *, flow_id: str,
             node_id: str) -> "Target | None":
     """The plan target a TARGET block compiled to, or None when ``to_plan``
     dropped it.
 
-    Each plan target's id is recomputed from ITS OWN geometry and this block's
-    node id, exactly as ``to_plan._identify`` minted it. The node id is in the
-    id, so a target of any other block cannot match, whatever its place in the
-    list; the geometry comes from the target, so this needs no coordinate
-    parsing and no catalogue. It is S1's key: a TARGET keyed on the geometry
-    it is at now, as its 1x1 grid at r0c0. A key on anything else (the anchor
+    Each plan target's id is recomputed from this block's compiled ``entry``,
+    ITS OWN geometry and this block's node id, through ``identity.target_key``
+    - the one function ``to_plan._identify`` minted it with. The node id is in
+    the id, so a target of any other block cannot match, whatever its place in
+    the list; the geometry comes from the target, so this needs no coordinate
+    parsing and no catalogue. The entry is what says WHICH key: a TARGET with
+    typed coordinates is keyed on the geometry it is at now, and one with only
+    a name on the name (#189 A5), because the catalogue's answer for a name
+    moves between the compile the run made and the one the card reads. Either
+    way it is the block's 1x1 grid at r0c0. A key on anything else (the anchor
     S3 brings, a panel's row and col) has to be matched here the same way
     ``to_plan`` mints it, or every block reads "nothing banked"."""
     for target in plan.targets:
-        group = identity.group_id(flow_id, node_id, keyed[target.id])
+        key = identity.target_key(entry, target.ra_hours, target.dec_deg,
+                                  target.rotation_deg)
+        group = identity.group_id(flow_id, node_id, key)
         if identity.target_id(group, 0, 0) == target.id:
             return target
     return None

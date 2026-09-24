@@ -44,6 +44,7 @@ import astrodeck.sequence.engine as engine_mod
 from astrodeck.events import bus
 from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Target
 from astrodeck.sequence.engine import FRESH_FOCUS_S, RECENTRE_AFTER_UNGUIDED_S
+from astrodeck.sequence.session import SessionStore
 
 #: A.3's sweep: 8 minutes. Longer than RECENTRE_AFTER_UNGUIDED_S, so every
 #: sweep here also earns the re-centre that follows an unguided sweep.
@@ -335,6 +336,37 @@ class TestAHopSweepsWhenFocusIsOwed:
             f"NGC 7331, re-acquired 5 min after a good sweep, swept again: it "
             f"is not a first acquisition (sweeps {rig.sweeps})")
 
+    @pytest.mark.parametrize("order", ["group first", "target first"])
+    async def test_a_target_id_that_spells_a_group_name_is_its_own_group(
+            self, sim_hub, monkeypatch, order):
+        """#189 A8. A group is keyed by its ``mosaic_group`` string and a
+        target with no group by its own id, and the two are different
+        namespaces: here a single target's id is the very string a mosaic
+        uses as its group. Each one's first acquisition still owes the
+        sweep, whichever comes first.
+
+        MUTATION "_focus_group_key collapses group and target namespaces"
+        (it returns the bare string, ``str(group)`` or the id). Observed,
+        both orders:
+            AssertionError: Solo's first acquisition reused M31 1-1's
+            focus: a target id that spells a group name was read as that
+            group (sweeps 1)
+            AssertionError: M31 1-1's first acquisition reused Solo's
+            focus: a target id that spells a group name was read as that
+            group (sweeps 1)
+        """
+        m = _target("M31 1-1", "M31 mosaic")
+        solo = _target("Solo", None)
+        solo.id = "M31 mosaic"
+        assert solo.id == m.mosaic_group, "premise: the id spells the group"
+        first, second = (m, solo) if order == "group first" else (solo, m)
+        rig = _Rig(sim_hub, monkeypatch, [m, solo])
+        assert await rig.hop(first) is True, "premise: the first one sweeps"
+        assert await rig.hop(second, after_s=5 * 60.0) is True, (
+            f"{second.name}'s first acquisition reused {first.name}'s focus: "
+            f"a target id that spells a group name was read as that group "
+            f"(sweeps {rig.sweeps})")
+
     async def test_a_failed_sweep_is_swept_again(self, sim_hub, monkeypatch):
         """A's sweep did not find focus. B, five minutes later and of the same
         mosaic, has nothing to stand on however recent the attempt was.
@@ -453,7 +485,7 @@ class TestAHopSweepsWhenFocusIsOwed:
         a, c = _target("M31 1-1", "M31 mosaic"), _target("M33 1-1", "M33 mosaic")
         rig = _Rig(sim_hub, monkeypatch, [a, c])
         assert await rig.hop(a) is True
-        monkeypatch.setattr(engine_mod.session_store, "load_all", lambda: [])
+        monkeypatch.setattr(SessionStore, "load_all", lambda self: [])
         monkeypatch.setattr(engine_mod.SequenceEngine, "_run",
                             lambda self: asyncio.sleep(0))
         e = rig.engine

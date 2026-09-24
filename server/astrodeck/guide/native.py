@@ -94,6 +94,39 @@ _RELOCK_SAME_STAR_PX = 1.5
 # feed, not a log (the log is the bus).
 _RELOCK_EVENTS_MAX = 50
 
+# #204: how far from the lock, in guide-camera px, a star on a re-lock frame
+# may be and still be the star we were guiding. It is the engine's own local
+# search radius: ``star_find`` looks within ``search_region`` px of the last
+# position (astro-guide starfind.rs, default 15), and ``_build_engine_config``
+# forwards a configured ``search_region`` to the engine, so the host reads the
+# same key and falls back to the same default. A star farther than this is one
+# the engine's local find could not have followed there.
+_ENGINE_SEARCH_REGION_PX = 15.0
+
+#: #204: how many consecutive re-lock frames the engine may report guiding
+#: while no star lies within the search radius of the lock before the guider
+#: stops itself. Without this the nearest-star rule would make the
+#: different-star guard inert: a re-lock onto a far star with the lock star
+#: gone would read as "lost" on every frame, and nothing would ever be judged.
+#:
+#: Three, computed rather than picked. The host's star-find and the engine's
+#: full-frame re-acquire are the same ``auto_find`` pass over the same frame,
+#: with the same parameters on the shipped defaults (a configured
+#: ``search_region`` shifts the engine's edge and conflict drops, and
+#: ``max_stars`` above 1 SNR-gates its list, so either can make the two lists
+#: differ at the margins). So when the engine claims a star and none of the
+#: host's candidates is near the lock, the engine is on another star: a miss
+#: is evidence, not noise, and waiting buys nothing. Waiting costs
+#: sensitivity instead. From the moment it accepts the other star the engine
+#: drives it toward the lock, and once it is inside the radius the host reads
+#: it as the lock star come back. On the AM5N one capped correction moves it
+#: at most 1000 ms x 15.04 arcsec/s (RA at 1.0x sidereal) / 5.5 arcsec/px =
+#: 2.7 px, so three frames catch any other star farther than 15 + 2 x 2.7 =
+#: 20.5 px (113 arcsec), about where the old 120 arcsec single-jump limit sat
+#: (21.8 px). Eight, the star-loss budget, would let one 34 px (188 arcsec)
+#: away walk in unseen.
+RELOCK_UNCONFIRMED_FRAMES = 3
+
 # Wall-clock backstop for a full calibration walk (~6 legs).
 #
 # This was 180 s, chosen against the SIM, whose ``pulse_guide`` merely sleeps
@@ -310,6 +343,22 @@ def _folded_ortho_deg(cal: dict) -> float:
     return abs(math.degrees(folded))
 
 
+def _nearest_within(stars: list[tuple[float, float]],
+                    origin: tuple[float, float],
+                    radius: float) -> tuple[float, float] | None:
+    """The star nearest ``origin`` if it is within ``radius`` px, else None
+    (#204). Nearest, not first: ``stars`` arrives brightest-first, and
+    brightness order is exactly what a cloud or a saturation cut reshuffles."""
+    best, best_d = None, None
+    for x, y in stars:
+        d = math.hypot(x - origin[0], y - origin[1])
+        if best_d is None or d < best_d:
+            best, best_d = (x, y), d
+    if best is None or best_d > radius:
+        return None
+    return best
+
+
 class GuidingStopped(DeviceError):
     """``stop_guiding`` reached a start that had not begun guiding yet.
 
@@ -451,6 +500,10 @@ class NativeGuider(Guider):
     #: ``NativeGuider.__new__`` (no devices needed), so every attribute the
     #: persistence methods read has to have a class-level answer.
     _cal_discarded: bool = False
+    #: #210: when the guide loop last fed the PPEC model (wall epoch s), or
+    #: None when this session has not fed it. ``_persist_gp_window`` stamps
+    #: ``dumped_at`` with it; class-level for the same ``__new__`` reason.
+    _gp_fed_at: float | None = None
 
     def __init__(self, guide_camera: Camera, telescope: Telescope, *,
                  config: dict, profile_id: str | None = None,
@@ -504,12 +557,14 @@ class NativeGuider(Guider):
         # GN-03 re-lock accounting. ``_lock_xy`` is the last LOCKED guide-star
         # position in guide-camera px (the engine exposes no lock position
         # through ``process()`` or ``stats()`` — only ``secondaries`` — so the
-        # host re-finds it from the frame it already has, and only on the two
-        # frames that matter: the session's first lock and each re-lock).
+        # host re-finds it from the frame it already has, and only on the
+        # frames that matter: the session's first lock, each re-lock, and the
+        # first settled frame after a dither moved it).
         # ``_relock_pending`` is raised by a ``star_lost`` and lowered by the
-        # next frame on which the engine reports a lock again; that transition
-        # IS the re-lock, and it is invisible to every other signal the host
-        # has, because the error resets to zero around the new star.
+        # first frame that finds a star near the lock while the engine reports
+        # a lock again; that transition IS the re-lock, and it is invisible to
+        # every other signal the host has, because the error resets to zero
+        # around the new star.
         self._lock_xy: tuple[float, float] | None = None
         self._relock_pending = False
         self._relocks = 0
@@ -517,6 +572,19 @@ class NativeGuider(Guider):
         #: why the guider stopped ITSELF on re-lock displacement, or ""
         self._relock_stop_reason = ""
         self._relock_events: list[dict] = []
+        # #204: consecutive re-lock frames on which the engine reported guiding
+        # and no star lay within the search radius of ``_lock_xy``.
+        self._relock_unconfirmed = 0
+        # #219: how far a dither may have moved the engine's lock since
+        # ``_lock_xy`` was measured. The engine shifts its lock by every
+        # dither and publishes neither the lock nor the camera-frame shift, so
+        # the host knows only the magnitude; the re-lock radius widens by it
+        # until the first settled frame re-measures the lock.
+        self._lock_moved_px = 0.0
+        # TODO(remove in 0.3.36): the lock as the pre-#204 brightest-first rule
+        # would have held it, kept only so each re-lock can log the distance
+        # that rule would have judged (see ``_note_lock``).
+        self._lock_xy_brightest: tuple[float, float] | None = None
 
         # NOV-7: a small host hint set during the finding/calibrating steps
         # (which precede ``_active`` going True and are otherwise invisible to
@@ -764,6 +832,12 @@ class NativeGuider(Guider):
                 self._relock_arcsec_total = 0.0
                 self._relock_stop_reason = ""
                 self._relock_events = []
+                self._relock_unconfirmed = 0
+                self._lock_moved_px = 0.0
+                self._lock_xy_brightest = None
+                # #210: the engine is rebuilt just below, so nothing has fed
+                # ITS model yet. A reuse-path restore re-seeds this.
+                self._gp_fed_at = None
                 rates = await self._read_guide_rates()
                 self._engine = _native.GuideEngine(self._build_engine_config(rates))
 
@@ -907,6 +981,14 @@ class NativeGuider(Guider):
                 raise
 
     async def stop_guiding(self) -> None:
+        # #210: did THIS stop end a live session? A loop task exists (running,
+        # or dead after an honest death nobody has stopped yet), or guiding was
+        # intended. Read before anything below clears them. An idle stop must
+        # not persist the PPEC window: the engine object and its trained
+        # window survive the stop that really ended the session, so a second
+        # stop re-wrote the file, and S1-12's stand-down before every slew of a
+        # guided plan (spec 5.6 step 2) made that second stop routine.
+        ended_a_session = self._active or self._loop_task is not None
         self._active = False
         # The star-loss latch belongs to the session that lost the star. Nothing
         # cleared it until the NEXT start, so after a Stop the panel went on
@@ -930,7 +1012,13 @@ class NativeGuider(Guider):
         if not self._settle_done.is_set():
             self._settle_error = self._settle_error or "guiding stopped"
             self._settle_done.set()
-        self._persist_gp_window()  # A5: save the trained PPEC model on stop
+        if ended_a_session:
+            # A5: save the trained PPEC model on stop, stamped with when the
+            # loop last fed it (the loop is dead now, so that cannot move).
+            self._persist_gp_window()
+        # The session is over and its feed time is in the file. Cleared so that
+        # nothing written later can claim this session's feed as its own.
+        self._gp_fed_at = None
         bus.publish("guide", **self.stats().__dict__)
         bus.log("info", "native guider stopped", "guide")
 
@@ -1287,6 +1375,13 @@ class NativeGuider(Guider):
                 self._fault_frames = 0
                 action = self._engine.process(
                     frame.data, frame.timestamp, self._exposure_s)
+                # #210: the model's clock is this frame. A star-lost frame
+                # gave the model no measurement, so it does not count as a
+                # feed; a loop starved of frames (a hung exposure) never gets
+                # here, which is the whole point of stamping it here and not
+                # when the file is written.
+                if action.get("action") != "lock_lost":
+                    self._gp_fed_at = time.time()
                 # BEFORE the dispatch: a pulse action resets ``_reacquire``,
                 # and the re-lock this is looking for is exactly the frame on
                 # which that happens (GN-03).
@@ -1453,27 +1548,49 @@ class NativeGuider(Guider):
 
     # ------------------------------------------------------------- re-locking
 
-    def _find_lock_position(self, frame) -> tuple[float, float] | None:
-        """Where the locked guide star is on ``frame``, in guide-camera px, or
-        None when the frame has no star (or no wheel to ask).
+    def _find_stars(self, frame) -> list[tuple[float, float]] | None:
+        """Every star ``guide_star_find`` reports on ``frame``, brightest
+        first, in guide-camera px: an empty list when the frame has no star,
+        None when there is no wheel to ask or the find itself failed (which is
+        no evidence about the sky either way).
 
         The engine keeps the lock internally and publishes neither the lock nor
         the primary star through ``process()`` (whose Actions carry only
-        pulses) or ``stats()`` (which carries ``secondaries`` — the OTHER
+        pulses) or ``stats()`` (which carries ``secondaries`` -- the OTHER
         stars, empty in single-star mode), so the host re-derives it from the
-        frame it has already paid for, with the same brightest-first
-        ``guide_star_find`` pick ``_calibrate`` uses to choose the star in the
-        first place. Called on two frames per lock — the first and each
-        re-lock — never on the steady-state path."""
+        frame it has already paid for. Called only on the frames that need it
+        -- the session's first lock, each re-lock, and the first settled frame
+        after a dither -- never on the steady-state path."""
         if _native is None or frame is None:
             return None
         try:
             stars, _meta = _native.guide_star_find(frame.data)
-            if not stars:
-                return None
-            return float(stars[0]["x"]), float(stars[0]["y"])
+            return [(float(s["x"]), float(s["y"])) for s in (stars or [])]
         except Exception:  # pragma: no cover - defensive; a miss is not fatal
             return None
+
+    def _relock_radius_px(self) -> float:
+        """The radius around ``_lock_xy`` inside which a star can still be the
+        lock star (#204): the engine's local search radius, widened by however
+        far a dither may have moved the lock since ``_lock_xy`` was measured.
+
+        Without the widening the guard would stop healthy guiding on a long
+        session. Dithers walk the engine's lock (each one shifts it from where
+        it is, ``engine.rs`` ``dither``) in a random direction, so 3 px
+        dithers leave it an RMS 3 x sqrt(N) px from where it started after N
+        of them: the whole 15 px radius by the 25th, and the lock star coming
+        back after a loss would then read as no star near the lock at all.
+        (The pre-#204 rule had the same hole in another shape: it measured that
+        walk as re-lock displacement, 120 arcsec at 21.8 px on this rig; #219.)
+        """
+        try:
+            r = float(self.config.get("search_region",
+                                      _ENGINE_SEARCH_REGION_PX))
+        except (TypeError, ValueError):
+            r = _ENGINE_SEARCH_REGION_PX
+        if not (r > 0 and math.isfinite(r)):
+            r = _ENGINE_SEARCH_REGION_PX
+        return r + max(0.0, self._lock_moved_px)
 
     def _note_lock(self, action: dict, frame) -> None:
         """Track the lock position across a star loss and COUNT the re-locks
@@ -1493,44 +1610,132 @@ class NativeGuider(Guider):
         ``GuideStats``. A re-lock within ``_RELOCK_SAME_STAR_PX`` is the same
         star returning after a flicker — still counted (a rig re-locking three
         times in ten minutes is not guiding, whatever the displacement), but
-        said quietly, or every thin cloud edge would cry wolf."""
+        said quietly, or every thin cloud edge would cry wolf.
+
+        THE RE-LOCK IS THE STAR NEAREST THE LOCK, not the brightest (#204).
+        This used to take ``stars[0]`` of a brightest-first find over the whole
+        frame and measure it against the previous brightest pick. That equals
+        the lock distance only while the same star stays brightest. On the M45
+        mosaic of 2026-09-23/24 the field held several near-equal, often
+        saturated, stars; a cloud or a saturation cut that reordered them read
+        as a re-lock of 1733 to 4513 arcsec -- half the guide frame, which no
+        re-lock by the engine's search box could produce -- and stopped healthy
+        guiding five times. Now the re-lock is the candidate nearest the lock
+        within the engine's own search radius (``_relock_radius_px``). A frame
+        with no candidate inside it is LOST: nothing is recorded or judged, the
+        baseline stays and the watch stays armed. So that "lost" cannot become
+        a way to never judge anything, ``RELOCK_UNCONFIRMED_FRAMES`` such
+        frames in a row while the engine keeps guiding stop the guider -- the
+        engine is guiding on a star that is not the lock star.
+
+        RESIDUAL, which the host cannot close. When the engine's full-frame
+        re-acquire (``engine.rs``: a stale loss drops ``search_origin`` and the
+        next frame runs ``select_primary`` over the whole frame) picks a
+        different star while the lock star has ALSO returned inside the
+        radius, the host finds the lock star, reads a near-zero re-lock, and
+        the engine then drives the other star onto the lock. The session's
+        first lock is the same kind of guess: it is the brightest-first pick,
+        and ``select_primary`` skips saturated stars, so on a bright field the
+        baseline can be a star the engine never locked. Both close only when
+        the engine publishes its lock in ``stats()``, the Rust half of #204."""
         kind = action.get("action")
         if kind in ("lock_lost", "cal_step"):
             return
         # The engine reports ``guiding`` from the moment it is asked to guide,
         # INCLUDING on the idle lock-establishment frames after a loss — which
-        # is exactly the frame this wants.
+        # is exactly the frame this wants. It reports False while a dither's
+        # settle window is open, so a moved lock is re-measured only once the
+        # star has been driven onto it.
         try:
             if not self._engine.stats().get("guiding", False):
                 return
         except Exception:  # pragma: no cover - defensive
             return
-        if self._lock_xy is not None and not self._relock_pending:
+        if (self._lock_xy is not None and not self._relock_pending
+                and self._lock_moved_px <= 0.0):
             return                     # steady state: no star-find to pay for
-        pos = self._find_lock_position(frame)
-        if pos is None:
-            return                     # nothing locked yet; try the next frame
-        prev = self._lock_xy
-        self._lock_xy = pos
+        stars = self._find_stars(frame)
+        if stars is None:
+            return                     # no wheel, or a failed find: no evidence
+        if self._lock_xy is None:
+            if not stars:
+                return                 # nothing locked yet; try the next frame
+            # The session's first lock: a baseline, with nothing before it to
+            # measure a re-lock against. A loss that came before it leaves no
+            # displacement to judge, so the watch it armed is spent too.
+            self._lock_xy = stars[0]
+            self._lock_xy_brightest = stars[0]
+            self._relock_pending = False
+            self._relock_unconfirmed = 0
+            return
+        radius = self._relock_radius_px()
+        near = _nearest_within(stars, self._lock_xy, radius)
         if not self._relock_pending:
-            return                     # the session's first lock: a baseline
+            # The first settled frame after a dither: find where the lock is
+            # now. Not a re-lock -- nothing was lost -- so nothing is counted.
+            # A frame without the star keeps the widened radius and tries
+            # again.
+            if near is not None:
+                self._lock_xy = near
+                self._lock_moved_px = 0.0
+            return
+        # Same unit contract as ``stats()``'s ``recent``: multiply by the image
+        # scale (1.0 when there is none), and let ``is_arcsec`` say what the
+        # number means. Only the LOG needs to name the unit out loud.
+        scale = self._image_scale if self._image_scale > 0 else 1.0
+        unit = "arcsec" if (self._image_scale_known
+                            and self._image_scale > 0) else "px"
+        # TODO(remove in 0.3.36): the distance the pre-#204 rule would have
+        # judged -- this frame's brightest star against the previous brightest
+        # pick. Logged beside the real one for one release (0.3.35), so the
+        # first nights on this fix show whether the old guard was firing on
+        # artefacts. Remove it, ``_lock_xy_brightest`` and the ``old`` clauses
+        # below in the release after 0.3.35.
+        old = ""
+        if stars and self._lock_xy_brightest is not None:
+            b, pb = stars[0], self._lock_xy_brightest
+            d_old = math.hypot(b[0] - pb[0], b[1] - pb[1]) * scale
+            old = f"the old brightest-first pick reads {d_old:.1f} {unit}"
+        if near is None:
+            # LOST: no star the engine's local find could have followed here.
+            # No displacement exists to record, so none is; the baseline and
+            # the armed watch both stay for the next frame.
+            self._relock_unconfirmed += 1
+            n = self._relock_unconfirmed
+            bus.log("warning",
+                    f"native guider: no star within {radius:.0f} px of the "
+                    f"lock since the star loss ({n}/"
+                    f"{RELOCK_UNCONFIRMED_FRAMES})"
+                    + (f"; {old}" if old else ""), "guide")
+            if n >= RELOCK_UNCONFIRMED_FRAMES:
+                if stars:
+                    nearest = min(math.hypot(x - self._lock_xy[0],
+                                             y - self._lock_xy[1])
+                                  for x, y in stars)
+                    seen = (f"the nearest of {len(stars)} star(s) was "
+                            f"{nearest:.0f} px away")
+                else:
+                    seen = "the frame had no star at all"
+                self._stop_for_relock(
+                    f"no star was found within {radius:.0f} px of the lock on "
+                    f"{n} consecutive frames while the engine kept reporting "
+                    f"guiding ({seen}) — it is guiding on a different star")
+            return
+        prev = self._lock_xy
+        self._lock_xy = near
+        self._lock_moved_px = 0.0
         self._relock_pending = False
+        self._relock_unconfirmed = 0
+        if stars:
+            self._lock_xy_brightest = stars[0]    # TODO(remove in 0.3.36)
         # ``_reacquire`` is deliberately NOT reset here. It is the budget for
         # consecutive losses and only a dispatched correction spends it
         # (``_dispatch``), which is the very next frame once the engine is
         # really guiding again; resetting it on the lock-establishment frame
         # would let a rig that re-locks and immediately loses the star again
         # ride the budget forever.
-        if prev is None:               # pragma: no cover - baseline missing
-            return
-        # Same unit contract as ``stats()``'s ``recent``: multiply by the image
-        # scale (1.0 when there is none), and let ``is_arcsec`` say what the
-        # number means. Only the LOG needs to name the unit out loud.
-        d_px = math.hypot(pos[0] - prev[0], pos[1] - prev[1])
-        scale = self._image_scale if self._image_scale > 0 else 1.0
+        d_px = math.hypot(near[0] - prev[0], near[1] - prev[1])
         d = d_px * scale
-        unit = "arcsec" if (self._image_scale_known
-                            and self._image_scale > 0) else "px"
         self._relocks += 1
         self._relock_arcsec_total += d
         self._relock_events.append({"t": round(time.time(), 3),
@@ -1543,28 +1748,35 @@ class NativeGuider(Guider):
         # `_relock_limit_exceeded`.
         reason = self._relock_limit_exceeded(d)
         if reason:
-            bus.log("error", f"native guider: {reason} — stopping", "guide")
-            self._relock_stop_reason = reason
-            # The honest-death path, identical to the camera-fault one: latch
-            # `_lost`, drop `_active` so `is_active()` goes false for the
-            # sequence engine's recovery, set `_stop` so the loop exits on its
-            # next pass, and refresh the cached snapshot BEFORE publishing so
-            # no reader can be handed a stale guiding=True from before this.
-            self._lost = True
-            self._active = False
-            self._stop.set()
-            self._last_stats = self.stats()
-            bus.publish("guide", **self._last_stats.__dict__)
+            self._stop_for_relock(reason, f" ({old})" if old else "")
             return
         if d_px <= _RELOCK_SAME_STAR_PX:
             bus.log("info",
                     f"native guider: re-acquired the same star ({d:.1f} {unit} "
-                    f"from the last lock; re-lock {self._relocks} this "
-                    f"session)", "guide")
+                    f"from the last lock; " + (f"{old}; " if old else "")
+                    + f"re-lock {self._relocks} this session)", "guide")
             return
         bus.log("warning",
                 f"native guider: re-locked on a star {d:.1f} {unit} from the "
-                f"last lock (re-lock {self._relocks} this session)", "guide")
+                f"last lock (" + (f"{old}; " if old else "")
+                + f"re-lock {self._relocks} this session)", "guide")
+
+    def _stop_for_relock(self, reason: str, detail: str = "") -> None:
+        """The guider stops ITSELF over a re-lock, through the honest-death
+        path, identical to the camera-fault one: latch ``_lost``, drop
+        ``_active`` so ``is_active()`` goes false for the sequence engine's
+        recovery, set ``_stop`` so the loop exits on its next pass, and refresh
+        the cached snapshot BEFORE publishing so no reader can be handed a
+        stale guiding=True from before this. ``detail`` goes to the log only;
+        ``reason`` is what the guider reports as its own."""
+        bus.log("error", f"native guider: {reason}{detail} — stopping",
+                "guide")
+        self._relock_stop_reason = reason
+        self._lost = True
+        self._active = False
+        self._stop.set()
+        self._last_stats = self.stats()
+        bus.publish("guide", **self._last_stats.__dict__)
 
     def _relock_arcsec_in_window(self, window_min: float) -> float:
         """Accumulated re-lock displacement inside the window, in arcsec.
@@ -2045,6 +2257,10 @@ class NativeGuider(Guider):
         # `stats()["settling"]`, not from this call — do NOT set it here (a
         # pulse frame already in flight must not prematurely wake us).
         self._engine.dither(dx, dy)
+        # #219: the engine's lock just moved by this much, in a camera-frame
+        # direction only the engine knows. Widen the re-lock radius by it until
+        # the first settled frame re-measures the lock (``_note_lock``).
+        self._lock_moved_px += math.hypot(dx, dy)
         try:
             await asyncio.wait_for(self._settle_done.wait(),
                                    timeout=timeout_s)
@@ -2339,7 +2555,15 @@ class NativeGuider(Guider):
         ``_persist_calibration`` does (GN-01): ``clear_calibration`` deletes
         BOTH files, the model is only ever restored alongside a reused
         calibration, and the stop that follows a clear must not put half of
-        what was cleared back."""
+        what was cleared back.
+
+        ``dumped_at`` IS WHEN THE MODEL WAS LAST FED, not when this runs
+        (#210). The restore re-phases the model by ``now - dumped_at``, so
+        the stamp has to name the moment the model stopped learning. Stamped
+        at write time, a stop that came minutes after the loop's last frame (a
+        hung exposure, an idle stop) told the next start the model was fresh,
+        and it was restored out of phase by the difference. ``now`` only when
+        nothing has fed it this session."""
         if not self.profile_id or self._engine is None:
             return
         if self._cal_discarded:
@@ -2348,9 +2572,11 @@ class NativeGuider(Guider):
             window = self._engine.dump_gp_window()
             if not window or len(window) < 2:
                 return
+            fed_at = self._gp_fed_at
+            dumped_at = time.time() if fed_at is None else float(fed_at)
             p = self._profile_path("-gp.json")     # resolve before mkdir
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(json.dumps({"dumped_at": time.time(), "window": window}),
+            p.write_text(json.dumps({"dumped_at": dumped_at, "window": window}),
                          encoding="utf-8")
             bus.log("info",
                     f"native guider: saved PPEC model for profile "
@@ -2409,6 +2635,13 @@ class NativeGuider(Guider):
         downtime_s = time.time() - dumped_at
         try:
             if self._engine.restore_gp_window(points, downtime_s):
+                # #210: the restored window was last fed when the file says,
+                # not now. The engine keeps the points' own timestamps and
+                # carries the downtime separately, so a session stopped before
+                # its loop feeds a frame must re-persist THIS stamp; stamping
+                # the stop instead would hand the next restore a downtime short
+                # by however long this session sat.
+                self._gp_fed_at = dumped_at
                 bus.log("info",
                         f"native guider: restored PPEC model for profile "
                         f"{self.profile_id} (downtime {downtime_s:.0f}s)",

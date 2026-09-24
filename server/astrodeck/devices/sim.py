@@ -42,13 +42,15 @@ def _sim_delay(seconds: float) -> float:
     Under the test fast-path (env ``ASTRODECK_FAST_TEST=1``, read LIVE on every
     call so a conftest fixture / ``monkeypatch`` takes effect without a reimport)
     this collapses to ``0.0`` so the sim's hard-coded connect-latency, exposure
-    dwell, and guide-pulse dwell sleeps disappear under the test suite. It is a
-    PACING knob ONLY: every simulated VALUE (RA/Dec offsets, rendered star/frame
-    pixels, calibration geometry, guiding corrections) is derived from the
-    logical/virtual clock + the REQUESTED ``exposure_s`` / commanded pulse ``ms``,
-    never from elapsed wall-clock dwell, so zeroing the wait leaves results
-    bit-identical. Production (flag unset) returns ``seconds`` unchanged, so the
-    sim paces exactly as it does today."""
+    dwell, guide-pulse dwell, mount-slew and rotator-move sleeps disappear under
+    the test suite. It is a PACING knob ONLY: every simulated VALUE (RA/Dec
+    offsets, rendered star/frame pixels, calibration geometry, guiding
+    corrections) is derived from the logical/virtual clock + the REQUESTED
+    ``exposure_s`` / commanded pulse ``ms``, and every slew or rotator position
+    from the step index, never from elapsed wall-clock dwell, so zeroing the
+    wait leaves results bit-identical (tests/test_sim_pacing.py compares a
+    goto and a rotator move step by step, both ways). Production (flag unset)
+    returns ``seconds`` unchanged, so the sim paces exactly as it does today."""
     return 0.0 if os.environ.get("ASTRODECK_FAST_TEST") == "1" else seconds
 
 
@@ -1033,7 +1035,15 @@ class SimTelescope(Telescope):
             steps = max(2, int(duration / 0.2))
             ra0, dec0 = self.rig.ra_hours, self.rig.dec_deg
             for i in range(1, steps + 1):
-                await asyncio.sleep(duration / steps)
+                # Pacing only, so it goes through _sim_delay (#207): the
+                # position below is a function of the step fraction alone,
+                # never of time spent, so zeroing the dwell leaves every value
+                # bit-identical. Under the test fast path this is still a
+                # zero sleep, one per step, so the loop keeps yielding and an
+                # abort or cancel racing a slew in flight can still land
+                # mid-slew. Before this, every sim-hub goto test paid the
+                # dwell in real time (4.4 s for the goto tests' 17 degrees).
+                await asyncio.sleep(_sim_delay(duration / steps))
                 f = i / steps
                 # F-sim: keep ra_hours wrapped into [0, 24) so the sim's RA never
                 # accumulates an out-of-range value (sim-fidelity only — altaz and
@@ -1362,7 +1372,12 @@ class SimRotator(Rotator):
                 if self._halt.is_set():
                     return
                 self.rig.rotator_mech_deg = (self.rig.rotator_mech_deg + step) % 360.0
-                await asyncio.sleep(abs(step) / self.MOVE_RATE)
+                # Pacing only, through _sim_delay like the mount's slew
+                # (#207): the angle advances by a step fixed by the travel
+                # alone, so the dwell never reaches a value. Still one (zero)
+                # sleep per step under the fast path, so a halt can land
+                # mid-move.
+                await asyncio.sleep(_sim_delay(abs(step) / self.MOVE_RATE))
             self.rig.rotator_mech_deg = target
         finally:
             self._moving = False

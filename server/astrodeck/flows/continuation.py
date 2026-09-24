@@ -20,8 +20,9 @@ the write lock, the refusals and the start.
 * ``saved_before_s1`` / ``adopt_matches`` / ``apply_adoption`` - a session
   saved before S1 has uuid4 step ids that no compile will ever produce again,
   so none of its frames count toward anything tonight. ADOPT re-keys the
-  frames whose step matches exactly one step of the new plan, and leaves the
-  rest where they are. It is offered for such a session only: a session
+  frames whose step matches exactly one step of the new plan, on a target
+  within ``ADOPT_MAX_SEPARATION_ARCMIN`` of the old one, and leaves the rest
+  where they are. It is offered for such a session only: a session
   compiled since S1 that shares no step id with tonight's compile was
   re-framed, and that is the dropped-steps question.
 * ``recount`` - a ledger is counted by its FROZEN plan's ``count_mode``, so
@@ -34,6 +35,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 
+from ..catalog.coords import angular_sep_deg
 from ..sequence.models import SequencePlan
 from ..sequence.session import Session
 
@@ -123,16 +125,52 @@ def _step_key(target, step) -> tuple:
             float(step.exposure_s), int(step.gain), int(step.binning))
 
 
-def _describe(target, step, frames: int, reason: str) -> dict:
+def _describe(target, step, frames: int, reason: str,
+              separation_arcmin: float | None = None) -> dict:
+    """One step left as it is. ``separation_arcmin`` is how far its one
+    match is on the sky, and null when there is no one match to measure."""
     return {"step_id": step.id, "target": target.name,
             "frame_type": step.frame_type or "Light", "filter": step.filter,
             "exposure_s": step.exposure_s, "gain": step.gain,
-            "binning": step.binning, "frames": frames, "reason": reason}
+            "binning": step.binning, "frames": frames, "reason": reason,
+            "separation_arcmin": separation_arcmin}
 
 
-#: The two reasons a step that holds frames is left as it is.
+#: The two fixed reasons a step that holds frames is left as it is. The third,
+#: a match on another field, names its distance (``_moved``).
 NO_MATCH = "no step in this flow matches it"
 AMBIGUOUS = "more than one step matches it"
+
+#: How far apart on the sky an old target and a new one may be for ADOPT to
+#: carry frames between them (#189 A4). The match key is a NAME and a recipe,
+#: and a name is a label, not a place: #190's wizard wrote the typed name
+#: "M16" onto M31's coordinates, so a session filed as "M16" holds frames of
+#: Andromeda, and once the flow is corrected to M16 the key still matches,
+#: 103 degrees away. Carrying those frames onto M16 is the flaw D5 removes for
+#: a re-frame; ``saved_before_s1`` keeps a re-framed S1 session out of ADOPT,
+#: and this keeps a moved pre-S1 one from walking back in.
+#:
+#: 10 arcmin is a first figure, like ``REFRAME_CARRY_FRACTION``: an order of
+#: magnitude above the run's centring tolerance (1.2 arcmin), so one field
+#: typed twice, or re-entered from a catalogue, is the same field; and the
+#: size of the carry threshold spec 3.3 computes for its 3x2 example grid
+#: (10.0 arcmin), so ADOPT carries no further than a re-frame would.
+ADOPT_MAX_SEPARATION_ARCMIN = 10.0
+
+
+def _separation_arcmin(old, new) -> float:
+    """Great-circle distance between two targets, in arcmin. RA is in HOURS;
+    ``angular_sep_deg`` turns it into an angle, so a step in RA shrinks by
+    cos(dec) and wraps at 0 h / 24 h as the sky does."""
+    return angular_sep_deg(old.ra_hours, old.dec_deg,
+                           new.ra_hours, new.dec_deg) * 60.0
+
+
+def _moved(separation_arcmin: float) -> str:
+    return (f"the step in this flow with its name and recipe points "
+            f"{separation_arcmin:.1f} arcmin from where these frames were "
+            f"taken, more than the {ADOPT_MAX_SEPARATION_ARCMIN:g} arcmin "
+            f"ADOPT carries frames across")
 
 
 @dataclass(frozen=True)
@@ -164,6 +202,12 @@ def adopt_matches(session: Session, new_plan: SequencePlan) -> AdoptMatches:
     the other, which is the #77 fault the step ids exist to prevent. Pre-S1
     flows carry no mosaics, so in practice a key is one TARGET node's one
     recipe, and a collision means the flow itself repeats a recipe.
+
+    ON THE SAME FIELD. A unique match maps only when the two targets are
+    within ``ADOPT_MAX_SEPARATION_ARCMIN`` of each other; further apart, the
+    old step is listed with its separation (when it holds frames) and nothing
+    is re-keyed. The name in the key is a label, and the separation is what
+    says the label still points where the frames were taken.
     """
     old_by_key: dict[tuple, list] = {}
     for t in session.plan.targets:
@@ -184,8 +228,13 @@ def adopt_matches(session: Session, new_plan: SequencePlan) -> AdoptMatches:
             n = frames_by_step.get(st.id, 0)
             if len(olds) == 1 and len(news) == 1:
                 nt, nst = news[0]
-                mapping[st.id] = (nt.id, nst.id)
-                matched += n
+                apart = _separation_arcmin(t, nt)
+                if apart <= ADOPT_MAX_SEPARATION_ARCMIN:
+                    mapping[st.id] = (nt.id, nst.id)
+                    matched += n
+                elif n:
+                    unmatched.append(_describe(t, st, n, _moved(apart),
+                                               round(apart, 3)))
             elif n:
                 if news:
                     ambiguous.append(_describe(t, st, n, AMBIGUOUS))

@@ -1,7 +1,7 @@
 # AstroFlows mosaics: the TARGET block and the panel loop
 
 - Date: 2026-09-23
-- Status: design, ready to plan. Revised against the completeness critic (Revision 1) and against the owner's rulings of 2026-09-24 (Revision 2), both at the end. The body carries both revisions. No code has changed.
+- Status: design, being built. Revised against the completeness critic (Revision 1), against the owner's rulings of 2026-09-24 (Revision 2), and against slices S0 and S1 as built and hardened (Revision 3), all at the end. The body carries every revision. S0 (cea8f1f7) and S1 (6c6aae47) are built. The sections Revision 3 lists describe the code as it stands after the S1 hardening round. Elsewhere, "today" and "a present-day defect" still mean the code as it was when this spec was written, before S0, and section 8 says which slice fixes each: among others, S0 and S1 removed the fabricated `centered: True`, the silent dropped rotator, the dither counter that spanned targets and the uuid4 step ids that 5.6 and 9 still describe as live.
 - Scope: AstroFlows (server `server/astrodeck/flows/`, the sequence engine, both flows UIs), plus the framing and rotation seams a mosaic touches.
 
 ## Owner's brief (verbatim)
@@ -101,7 +101,7 @@ The type id stays `target`, category SOURCE, label TARGET.
   - Mosaic rotating: `M31 . 3x2 . PA 30.0 . 25% . rotate`
   - Mosaic without the wire: `M31 . 3x2 . one panel at a time`
   - Single target: `NGC 7331 . any angle`
-- A one-line state chip from the progress route (section 3.8): `4/6 panels done`, or `212/315 subs` for a single target.
+- A one-line state chip from the progress route S1 built, `GET /api/flows/{flow_id}/progress` (`CAP_VIEW_STATUS`, S1 item 9). Its answer is `flow_progress`'s in `flows/progress.py`: one entry in `blocks` per TARGET node (one per POOL node, whose members are its panels), each with `banked`, `owed` and `total` and one entry in `panels` per panel, counted from the flow's session as Run reads it (5.9), plus the frames orphaned on steps the flow no longer has. The chip reads `212/315 subs` for a single target (the block's `banked` over its `total`), which is the chip S1 draws, on both canvases (`progressChip`); for a mosaic it will read `4/6 panels done` (the panels whose `owed` is 0), which S3 adds.
 
 ### 1.3 FILTER CYCLE and CAPTURE LOOP
 
@@ -446,10 +446,12 @@ A TARGET node still emits **one** entry, so the PLAN tab shows the compile verba
   - Previews and announcements use the same function. `POST /api/framing/mosaic` takes an optional `anchor` spec and adds `reframe` to its answer, which the modal shows live (2.5). The save's answer lists every block it re-anchored (`reanchored: [{node_id, max_move_deg, threshold_deg}]`), so a raw field edit in the inspector that restarts counts is announced by a toast, and CONTINUE's dropped-steps 409 (5.9) still guards the ledger.
   - The carry has a cost the constant must be judged against. A.2 already budgets half the overlap for convergence and angle error and leaves the other half for pointing error. A carried move at the limit spends that second half, so the full-depth overlap of a carried panel can shrink to nothing at the seam. The stitched union still has no hole. That is why the constant is a first guess, and S7 measures the centring residual it competes with.
 - Computed thresholds (from `compute_mosaic`, 25% overlap unless stated; Appendix A.5 has the method): a 3x2 of 2.0 x 1.33 deg panels allows 10.0' (a 3.4 deg turn, or a 6.0% change of field, reaches it); a single row of three such panels allows 15.0'; a 3x3 at 15% overlap allows 6.0' (1.75 deg of turn); a 2x2 of 0.9 x 0.6 deg allows 4.5'.
-- `group_id = uuid5(NS_FLOWS, f"{flow_id}/{node_id}/{geometry_key}").hex`
+- **A TARGET with a name and no typed coordinates is keyed on its name** (S1 hardening, #189 A5). `identity.target_key` is the one place this is decided; `to_plan` mints the id through it and the progress route finds the id again through it. Typed coordinates (an RA and a Dec both present, `identity.typed_coordinates`) key on the geometry as above. A name alone keys on `name_key`: `"name:"` followed by the first 16 hex characters of sha256 over `canonical_name`, the canonical JSON of the stripped name with the angle and the grid spelled as in the geometry key. Such a TARGET's coordinates are the catalogue's answer at the compile's `when`, and for a planet, the Moon or a comet that answer moves by the hour, so keyed on the geometry every compile named new steps and night two banked on nothing night one shot. The prefix keeps a name key from ever equalling a geometry key. S1 has no grid on a TARGET, so both keys take the single-target shape; S3 passes the block's grid to the same two keys.
+- `group_id = uuid5(NS_FLOWS, f"{flow_id}/{node_id}/{key}").hex`, where `key` is `geometry_key`, or the name key of the bullet above.
 - `target_id = uuid5(NS_FLOWS, f"{group_id}/r{row}c{col}").hex`. A 1x1 block uses r0c0, so single targets gain continuity too.
-- Pool members: `uuid5(NS_FLOWS, f"{flow_id}/{node_id}/member/{name}").hex`.
-- `step_id = uuid5(NS_FLOWS, f"{target_id}/{stage_node_id}/{frame_type}/{filter}/{exposure_s:g}/{gain}/{binning}/{n}").hex`, where `n` is the occurrence index among identical tuples inside that stage (almost always 0).
+- Pool members: `uuid5(NS_FLOWS, f"{flow_id}/{node_id}/member/{name}").hex`, keyed on the name and never the rank. A second copy of one name in the members box is keyed `{name}#1` (`identity.member_key`), so adding it later re-keys nothing.
+- `step_id = uuid5(NS_FLOWS, f"{target_id}/{stage_node_id}/{signature}/{n}").hex`, where `signature` is `identity.step_signature`, `{frame_type}/{filter}/{exposure}/{gain}/{binning}` with no filter spelled empty, and `n` is the occurrence index among identical signatures inside that stage (almost always 0). Each number is spelled to `STEP_PLACES` = 3 decimals with trailing zeros and a bare trailing point trimmed: the exposure is keyed to the millisecond, and gain and binning are written as integers when integral and to 3 decimals otherwise. A 1234.5678 s L sub at gain 100 and bin 1 has the signature `Light/L/1234.568/100/1`, and gain 100.5 is spelled `100.5`.
+  - Why the millisecond (S1 hardening, #189 A6): S1 first spelled the numbers with `{:g}`, which keeps six significant digits, so every exposure of 1000 s or more lost its milliseconds, and 1234.567 s and 1234.568 s shared one count, the #77 fault. No S1 id was ever deployed, so the change needed no migration.
   - `count` is not in the id, so raising `cycles` keeps progress.
   - An exposure, gain or binning change starts a new count. That is the #77 rule: two geometries must not share a count.
   - The stage node id keeps identical steps from two stages on one panel apart.
@@ -540,11 +542,11 @@ It is deliberately **not** a pydantic model validator. `SessionStore.active()` a
 
 **FLOW_SCHEMA 3** (slice S0; `store.py:28`, `_migrate` at `store.py:52-73`):
 
-- v2 to v3 rewrites a target's `rotation == 23.4` to `-1`, the palette default nobody chose. It sets a non-persisted `FlowRecord.migrated` note that is shown once: "angle 23.4 was the old palette default and commanded a connected rotator to PA 23.4; it now reads 'any angle'. Set it again if you meant it."
+- v2 to v3 rewrites a target's `rotation == 23.4` to `-1`, the palette default nobody chose. It sets a non-persisted `FlowRecord.migrated` note: "angle 23.4 was the old palette default and commanded a connected rotator to PA 23.4; it now reads 'any angle'. Set it again if you meant it." The note is shown on every read until the operator saves: the editor's, and every run's log. Only `save()` stamps FLOW_SCHEMA, and the bookkeeping writers (`touch_run`) edit the raw file and keep its version, so an unsaved v2 file reads as v2 each time. A save is the one point at which the operator has seen the migrated graph and kept it.
 - `_migrate` **refuses** `schema_version > FLOW_SCHEMA`. Today it returns any file at version 2 or above unchanged (`store.py:52-73`), so a future file whose node types are all known would load with this build's meaning. `_on_disk` also silently skips files that fail (`store.py:93-105`). From S0, both kinds of file are listed as visible library rows: "saved by a newer AstroDeck (schema 4); update to open it", or "unreadable: <reason>".
 - The writer stamps 3 on every save, as evidence that a 23.4 saved after migration was deliberate.
 
-**FLOW_SCHEMA 4** (slice S3). The v3 to v4 read maps DUSK's `repeat`, whatever its value, to `autoResume = On` with the one-time note of Revision 2, ruling 7; otherwise it is a no-op. (If #195 ships before S3, it takes the next schema number itself, with the same rule.) The writer stamps 4 when the file uses any meaning a v3 build would misread:
+**FLOW_SCHEMA 4** (slice S3). The v3 to v4 read maps DUSK's `repeat`, whatever its value, to `autoResume = On` with the note of Revision 2, ruling 7, shown like the 23.4 note on every read until the operator saves; otherwise it is a no-op. (If #195 ships before S3, it takes the next schema number itself, with the same rule.) The writer stamps 4 when the file uses any meaning a v3 build would misread:
 
 - a multi-panel block
 - `angle = Camera fixed at PA`
@@ -729,7 +731,7 @@ That is a multi-night campaign. The modal, the brief and Tonight say so.
 `_setup_target` (`engine.py:2314-2508`) serves every acquisition. The pieces that make hops cheap and safe are general fixes (S1). Only the checks marked [group] are group-specific.
 
 1. `_progress_expected = False`. Then `_safety_gate(context="slew")`, the sun cone, and `check_slew_limits` (`engine.py:4463`), all unchanged. Every hop is a slew through the one motion path.
-2. **Stand the guider down first**, bounded, via `_stand_down_guider` (`engine.py:4394`). The native `start_guiding` returns at once while its loop is alive (`guide/native.py:734-740`), so the next target could inherit a loop still chasing the old star and skip the pier-side calibration mirror (`native.py:871`). This is PLAUSIBLE and unverified on the rig. A simulator test must demonstrate it before the fix (I-02).
+2. **Stand the guider down first**, bounded, via `_stand_down_guider` (`engine.py:4394`). The native `start_guiding` returns at once while its loop is alive (`guide/native.py:734-740`), so the next target could inherit a loop still chasing the old star and skip the pier-side calibration mirror (`native.py:871`). S1 showed it on the simulator with the real native guider before the fix (`test_guider_stand_down_before_slew.py`, #148, I-02); it is still unverified on the rig. **RULING (S1 hardening, 2026-09-24): the stand-down happens only when `plan.guide` is set.** Then the engine started the guider, and it is the engine's to stop. A guider the operator started under a guiding-off plan is theirs, and a hop does not stop it (`_setup_target`).
 3. `hub.goto_and_center(ra, dec, tolerance_deg = tol/60, max_attempts = tries, rotation_deg = target.rotation_deg)`, bounded by `GOTO_TIMEOUT_S` plus 300 s when rotating (`engine.py:185`, `:2355-2362`).
    - The hub already accepts tolerance and attempts (`hub.py:6387-6391`). The engine has never passed them (`engine.py:2357-2359`), so every SLEW + CENTER tolerance anyone typed was ignored. That is a present-day defect and is filed on its own.
    - `None` keeps today's exact call.
@@ -801,6 +803,8 @@ Cloud holds and safety pauses return through the current panel's `_setup_target`
 - A rising panel is simply "not ready" until it clears `min_altitude_deg`.
 - A setting panel with `on_floor = advance` is set aside tonight.
 - Holds are not pauses (`sequence/models.py:133-152`). The dawn stop, the safety gate and the deadman stay armed through hops, waits and deferrals.
+- **A cloud hold watches the mount on its own clock** (#203, #205). The hold keeps tracking on by design, for up to `CLOUD_MAX_HOLD_MIN`, with no frame loop running, and the floor, flip and tracking checks live in the frame loop. So the hold runs them on the hold's own clock, never on its check exposures: the held target's live altitude against the floor and the zenith keep-out, and the plan's flip point, asked of the predicates the idle park-hold uses (`_altitude_limit_verdict`, `_idle_flip_due`); and a tracking read before each check exposure, because a check frame from a mount that has stopped at its limit is a streak, reads as cloud, and holds the run to its bound. This hardening round built it (#203, #205): `_hold_for_clear` spends the wait between probes in looks at the mount (`_hold_watch`), and the look before a dark or a probe sees that whole exposure ahead. Before it, the hold ran none of the three. The idle park-hold's stop retry also runs on its own clock: a stop the mount does not confirm is asked again at most once per `IDLE_STOP_RETRY_S` (60 s), never from the wait loop's tick (6.17).
+- **A hold that has stopped the mount slews it back to the target before it judges the sky** (#203, #225). After the zenith keep-out, the hold slews to where the target is now once the slew gate's projection allows it (`_hold_repoint`), because tracking on from where the mount stopped would follow that patch of sky up through the keep-out. A hold opened by a target setup's pre-slew safety gate holds a target the mount was never pointed at; when its tracking read finds the mount stopped (by a floor, keep-out or flip stop on the last target), it slews to the held target the same way rather than resume tracking on the last target's position, which may be past the limit it was stopped for. Each slew goes through the slew gate and the Sun check, with no centring and no guiding: the hold needs only sky to judge, and its release goes through `_setup_target`. So a hold opened before a slew can make that slew itself, under cloud. While the mount is still tracking the last target, nothing watches that target's limits during such a hold (#224, open); closing it extends the same slew to every such hold, and waits on the owner.
 
 ### 5.9 Resume mid-mosaic and across nights
 
@@ -810,10 +814,18 @@ Cloud holds and safety pauses return through the current panel's `_setup_target`
 - The first pass order is recomputed from the ledger, so there is no cursor to lose. A crash mid-visit loses at most the exposure in flight.
 - ResumeArm `_recover` re-centres on the panel the shared order function picks, **with its rotation**. Today it takes the first non-calibration target even when that target is complete, and passes no rotation (`resume_arm.py:602`, `:640-650`, I-13).
 
-**Across nights (CONTINUE).** `run_flow` compiles with `flow_id` and looks for the newest session with `origin == "flow"`, `origin_id == flow_id` and `status == "dormant"`. If that session's plan shares step ids with the new compile:
+**Across nights (CONTINUE).** `run_flow` compiles with `flow_id` and reads the flow's session through `SessionStore.current_for_flow` (S1 hardening, #189 A2): the newest session with `origin == "flow"` and `origin_id == flow_id` by `created_ts`, of any status, and never one older than it. An abandoned newest session means there is none, a dormant one is continued, and a complete one starts fresh:
+
+- **Ordered by `created_ts`, not `updated_ts`.** `created_ts` is written once, by the start that made the session. `engine.start` saves every other armed session it disarms, which moves their `updated_ts`, so ordered by that, CONTINUE would get whichever session last lost the auto-resume singleton.
+- **Never past the newest.** Whatever became of the newest session, an older one is a ledger the operator chose to leave. A START OVER leaves the old session dormant and unarmed for good; once the new session is abandoned or complete, "the newest dormant session" would reopen that old ledger unasked.
+- **A complete newest session starts fresh**, because CONTINUE carries only a dormant one; reopening it when the flow now owes more is I-30. An abandoned one was closed by the operator, so there is nothing to continue.
+- The progress route (1.2) reads the same session through the same method, so the card never counts toward a session Run would not continue.
+
+If a dormant session's plan shares step ids with the new compile:
 
 - `run_flow` applies the id-safe plan **replace**, factored out of `patch_session` (`app.py:5390-5398`) into a function. It is not a merge, and neither is today's code: `patch_session` computes a kept/new/dropped report and then replaces `s.plan` wholesale. The refusal on dropped steps below is **new logic** in CONTINUE. `patch_session` keeps reporting and never refusing.
 - It then calls `engine.start(replan_cooling(plan, ...), session=s)`, the same call resume makes (`app.py:5350-5377`).
+- **The continued plan keeps the session's `cool_to`** (S1 hardening, #189 A1). A flow has no cooling node, so tonight's compile carries tonight's standing setpoint, and replacing the plan with it would move a session shot at -10 C to tonight's -15 C. Subs at two sensor temperatures cannot share one dark library, which is why `replan_cooling` never re-resolves a plan that has a temperature. When tonight's setpoint differs, the run logs a warning after the start that names both temperatures and says START OVER begins a new session at tonight's. A cleared setpoint names no second temperature and is not warned about. A session with no temperature takes tonight's, as a resume does.
 - The response names the session, the night number and the kept/new/dropped counts.
 
 **The critical section.** Today `patch_session` loads (`app.py:5385`), checks for dormant, and saves (`app.py:5433`) in separate `to_thread` calls, outside `SessionStore._write_lock` (`session.py:243`). ResumeArm can start the same session in between (`resume_arm.py:396`), and the save then overwrites the file of a now-active session with stale frames. That is the one-starter race recorded on 2026-09-18, and CONTINUE must not inherit it. CONTINUE therefore:
@@ -828,25 +840,25 @@ The `patch_session` race itself is a present-day defect and is filed on its own.
 
 | Case | Behaviour |
 |---|---|
-| steps that hold frames would be dropped (re-framed, or exposure changed) | 409 unless `accept_dropped`: "212 subs belong to steps this flow no longer has; they stay on disk". A step is **not** counted as dropped when its old target id is in the new group's `skipped_ids`. Skipping a panel is not a change of identity (2.5), and re-enabling it brings the same step ids back, with its frames, because the ledger counts by step id. |
-| the dormant session shares **no** step ids with the compile and holds frames, because it was saved before S1 with uuid4 ids (`sequence/models.py:19`, `:80`, `:226`) | 409 `{"adopt": {...}}` rather than a silent fresh start, which would disarm it (`engine.py:795-803`). The UI offers ADOPT or START OVER. ADOPT rewrites the session's step ids to the deterministic ones, under the write lock and after a `.bak` copy. The match is **unique** on (target name, frame type, filter, exposure, gain, binning). Pre-S1 flows carry no mosaics, so this is a one-target-per-node match. Unmatched or ambiguous steps stay as they are and are listed. |
+| steps that hold frames would be dropped (re-framed, or exposure changed) | 409 unless `accept_dropped`: "212 subs belong to steps this flow no longer has; they stay on disk". A step is **not** counted as dropped when its old target id is in the new group's `skipped_ids` (debt carried to S2/S3: S1 built the refusal without it, S1 item 8). Skipping a panel is not a change of identity (2.5), and re-enabling it brings the same step ids back, with its frames, because the ledger counts by step id. |
+| the dormant session shares **no** step ids with the compile and holds frames, because it was saved before S1 with uuid4 ids (`sequence/models.py:19`, `:80`, `:226`) | 409 `{"adopt": {...}}` rather than a silent fresh start, which would disarm it (`engine.py:795-803`). The UI offers ADOPT or START OVER. ADOPT rewrites the session's step ids to the deterministic ones, under the write lock and after a `.bak` copy. The match is **unique** on (target name, frame type, filter, exposure, gain, binning). Pre-S1 flows carry no mosaics, so this is a one-target-per-node match. Unmatched or ambiguous steps stay as they are and are listed. A unique match is re-keyed only when the old and the new target are within `ADOPT_MAX_SEPARATION_ARCMIN = 10` arcmin of each other on the sky, great circle, inclusive (S1 hardening, #189 A4): a name is a label, not a place, and #190's wizard filed Andromeda's frames as "M16", which still match "M16" by name once the flow is corrected, 103 deg away. A match further apart stays as it is and is listed with its separation. A session compiled since S1 that shares no step id was re-framed, not saved before S1 (`saved_before_s1` asks its ids, not whether any is shared), so it goes to the dropped-steps row: ADOPT matches by name, and would credit the old field's frames to the moved one. |
 | the compile's `count_mode` differs from the session's | 409 unless `accept_recount`: "this session counted every sub taken (412); counting accepted subs makes it 371". The ledger is counted by the frozen plan's `count_mode` (`session.py:130-134`), so changing `counts` mid-campaign recounts every banked frame retroactively. Ruling 2's switch at save is the common way to reach this row: the first CONTINUE after an old flow is saved answers with both totals before anything is recounted. |
 | `body.fresh = true` | START OVER: a fresh session. The UI puts it behind a confirm. |
-| no dormant session | fresh, as today (`app.py:5198`) |
+| the newest session is abandoned, or there is none | fresh, as today (`app.py:5198`); an older dormant session is not continued in its place |
 | a **complete** session whose flow now owes more (counts raised) | fresh, plus follow-up issue I-30 ("reopen a complete flow session") |
 
 Every existing guard still applies to a continue: `plan_identity_errors`, `quota_unbounded`, the per-panel horizon check and the sun check.
 
 Button copy, from the session (slice S5): `CONTINUE M31 MOSAIC (night 3, 412/1890 subs)`, with START OVER behind a confirm.
 
-One starter per session still holds. `engine.start` refuses "already running" to the second of ResumeArm and Run (`engine.py:747-895`). An armed auto-resume replays the dormant session's frozen plan, so the editor says so: "the armed session will replay the version from 2026-09-22; press CONTINUE to apply your edits".
+One starter per session still holds. `engine.start` refuses "already running" to the second of ResumeArm and Run (`engine.py:747-895`). **Starts are refused while auto-resume re-centres** (S1 hardening, #189 A7, #211). ResumeArm's recovery ladder blind-solves and re-centres the mount for minutes before it starts the session, and the engine is idle all that time, so "already running" cannot catch a start made then. `ResumeArm.recovering` is raised for the whole ladder, in the same synchronous stretch as ResumeArm's own `engine.running` check. The four HTTP start paths (`/api/flows/{id}/run`, including CONTINUE, `/api/sessions/{id}/resume`, `/api/sequence/start` and `/api/sequence/recover`) read it immediately before `engine.start`, with no await between, and answer 409 `resume_recovering` while it is raised, because their run would land on a rig the ladder is still moving. Nothing is written, so the session stays dormant and armed, and the ladder's own start follows. The ladder in turn stops before its next move once a run has started, and its own start re-reads the session under the store's write lock instead of starting the copy it read before the ladder. An armed auto-resume replays the dormant session's frozen plan, so the editor says so: "the armed session will replay the version from 2026-09-22; press CONTINUE to apply your edits".
 
 ### 5.10 Published state and ETA
 
 - `_set_state` (`engine.py:1250`) gains `group = {id, name, mode, pass, panel: "2-3", visit_elapsed_s, panels_done, panels_total, set_aside: [{panel, reason}]}`. It is present only while the active target belongs to a group, so existing payloads stay byte-identical. The reasons are words only.
 - Times to set and meridian waits go only to a `CAP_VIEW_SITE_DERIVED`-gated topic.
 - For a principal without `CAP_VIEW_SITE_DERIVED`, the `panel` and `pass` fields are withheld while the group waits on the meridian rule, and the hop that ends that wait is not announced by panel label. The timing of that hop is the crossing (6.9).
-- `compute_eta` (`engine.py:988-1038`) adds `remaining_visits x hop EMA`, and says "hops not yet costed" when no sample exists.
+- `compute_eta` prices the hops still to make (S1, U-07): `_remaining_hops()` times the `hop` event cost, seeded at `HOP_COST_S` = 150 s until a setup has been measured. `hops_costed` is returned by `compute_eta` but not yet rendered: it is false while hops remain and none has been measured, and `eta_confident` is false with it. Saying "hops not yet costed" on screen is the run readouts' job in S5. Under S2 the hops still to make become the visits still to make.
 
 ---
 
@@ -870,7 +882,7 @@ One starter per session still holds. `engine.start` refuses "already running" to
 | 6.14 | Optics drift | The compile never re-tiles. A warning above 2%; a loss (blocks `/run` until accepted) when the live field would leave gaps (M5). |
 | 6.15 | Operator STOP | Unchanged: `POST /api/sequence/abort` disarms auto-resume (`engine.py:1789`). The backlog report of an abort followed by an automatic restart 50 s later (`docs/superpowers/backlog/2026-08-22-flow-editor-offers-what-the-engine-refuses.md:74-79`) must be re-checked against the fix for #93 (closed) before anyone claims it. |
 | 6.16 | Downgrade | See 3.6. |
-| 6.17 | Idle mount | A mount left tracking with no frame loop watching it is park-held on the idle clock (`WAIT_TEARDOWN_S` since the last exposure or hop), or at once if the tracked target reaches its floor or its flip point first (5.1). This closes a present-day hole for eta-0 and constraint waits as well as the mosaic's reach waits. |
+| 6.17 | Idle mount | A mount left tracking with no frame loop watching it is park-held on the idle clock (`WAIT_TEARDOWN_S` since the last exposure or hop), or at once if the tracked target reaches its floor or its flip point first (5.1). This closes a present-day hole for eta-0 and constraint waits as well as the mosaic's reach waits. A stop the mount does not confirm is asked again on its own task and its own clock, at most once per `IDLE_STOP_RETRY_S` (60 s), never from the wait loop's tick, so a dead mount link cannot stretch the safety gate's cadence (#189 A3). A cloud hold, which keeps tracking on by design, runs its floor, flip and tracking checks on the hold's own clock (5.8, #203, #205). |
 | 6.18 | Follower | A later target shot while the mosaic waits never keeps the cursor past `group_ready_ts` (1.6). |
 
 ---
@@ -967,14 +979,14 @@ Tests:
 ### S1: identity, centring, hop hygiene, progress (useful to single targets on its own)
 
 1. The new Target fields. `_setup_target` passes tolerance and attempts only when they are set (the call is otherwise identical).
-2. Guider stand-down before every slew, after the issue's simulator test has demonstrated the defect.
+2. Guider stand-down before every slew, after the issue's simulator test has demonstrated the defect. By ruling (5.6 step 2), only when `plan.guide` is set: a guider the operator started under a guiding-off plan is theirs.
 3. `_pre_flip_side` keyed per target (with #136).
 4. Dither counter reset on acquisition.
 5. `_hop_focus_is_owed` (5.6 step 6): no age rule for hops; owed only on no good sweep tonight, a failed last sweep, `_refocus_due()`, or the group's first acquisition. `_post_flip_focus_is_owed` is unchanged.
 6. Hop event cost and the ETA term.
 7. `to_sequence_plan(flow_id=)`: deterministic ids for targets, steps and pool members.
-8. `run_flow` CONTINUE, dormant sessions only (5.9): the factored plan replace plus `engine.start(session=)` inside one write-locked section that re-reads the session and never saves it separately; `accept_dropped` (skipped panels exempt), `accept_recount`, `fresh`, and the ADOPT path for pre-S1 sessions.
-9. `GET /api/flows/{id}/progress` (`CAP_VIEW_STATUS`): per block, per panel, per step banked/owed from the newest session of that flow, plus orphaned counts. The card chip for single targets.
+8. `run_flow` CONTINUE, dormant sessions only (5.9): the factored plan replace plus `engine.start(session=)` inside one write-locked section that re-reads the session and never saves it separately; `accept_dropped`, `accept_recount`, `fresh`, and the ADOPT path for pre-S1 sessions. The skipped-panel exemption from `accept_dropped` is debt carried to S2/S3: S1 has no groups, so there is no `TargetGroup.skipped_ids` for CONTINUE to read (3.4, S2) and no `skip` param to fill it (3.1, S3). The dropped-steps check must read it when both land.
+9. `GET /api/flows/{id}/progress` (`CAP_VIEW_STATUS`): per block, per panel, per step banked/owed from the flow's session as Run reads it (`current_for_flow`, 5.9), plus orphaned counts. The card chip for single targets.
 10. The hub's `rotation_unavailable` flag.
 11. An angle-check helper fed by `sky_angle`, not yet called by groups.
 
@@ -982,7 +994,7 @@ Tests:
 
 - Two compiles of one flow give identical ids. An exposure change changes only that step id; a count change changes none. A different `flow_id` gives different ids. Mutant "uuid4" fails the continuity test.
 - A second `/run` on the simulator banks on the same ledger entries. Dropping steps that hold frames gets 409 unless accepted. `fresh` starts a new session.
-- Skipping a panel with banked frames and pressing CONTINUE does not 409, and re-enabling it restores its counts. Mutant "skipped panels count as dropped" 409s.
+- Skipping a panel with banked frames and pressing CONTINUE does not 409, and re-enabling it restores its counts. Mutant "skipped panels count as dropped" 409s. Carried to S3 with the exemption (item 8): S1 has no panels to skip.
 - A pre-S1 dormant session (uuid4 ids, frames banked) gets the 409 adopt answer, never a silent fresh start. ADOPT maps unique matches and lists the rest, and the `.bak` exists. Mutant "fresh on no shared ids" disarms it.
 - A `counts` change against a session gets 409 with both totals unless `accept_recount`.
 - CONTINUE and a ResumeArm start fired together (a barrier in the test, not a sleep) leave one run and a session file whose frames include every frame the winner banked. Mutant "save before start, outside the lock" loses frames.
@@ -1472,7 +1484,7 @@ The owner's hover text, exactly:
 **The option** (#195):
 
 - DUSK WINDOW param `autoResume`, a select On / Off, default On. `FieldDef` gains an optional `help` string, drawn as an info icon: hover on a fine pointer, tap on a coarse one (44 px), `aria-describedby` for screen readers. No new control type, so the three-controls pin holds.
-- Missing-key default On, which is what every flow does today, because `engine.start` arms auto-resume on every run (`engine.py:795`). A saved "Single night" is not read as Off, which would silently disarm every saved flow. The read maps every `repeat` value to On and shows once: "'Single night' never stopped the next night's automatic resume; this flow now shows that as ON. Turn it off if you meant one night only." (3.6)
+- Missing-key default On, which is what every flow does today, because `engine.start` arms auto-resume on every run (`engine.py:795`). A saved "Single night" is not read as Off, which would silently disarm every saved flow. The read maps every `repeat` value to On and shows, on every read until the operator saves: "'Single night' never stopped the next night's automatic resume; this flow now shows that as ON. Turn it off if you meant one night only." (3.6)
 - `SequencePlan.resume_across_nights: bool = True`, additive. `to_plan` sets it from `autoResume`, and a flow with no DUSK WINDOW keeps True.
 - **Off.** The run still arms at start, so a same-night crash or reboot still resumes. At the stop boundary, `_finalize_report` disarms the session and logs why. ResumeArm refuses and disarms such a session when tonight's observing night differs from the session's first night, which covers a crash before dawn followed by a restart after it. The session stays dormant for CONTINUE by hand.
 - The `campaign` compile block (whose `until` was never enforced), the Tonight campaign rows and `doctor._is_campaign` key on the option, and `repeat` retires.
@@ -1529,3 +1541,20 @@ Owner, 2026-09-24, asked whether the shipped M31 example should keep commanding 
 2. Ruling 7: approve the interim tooltip text, or hold the option until #191, #192 and #193 close. Approve "resumes at dusk" in place of "resumes at sunset".
 3. ~~Ruling 6: sign the README amendment and the MILESTONE2 note.~~ Approved 2026-09-24 and committed (cbdb59a9).
 4. #192: the end-of-night roof close default when a dome is connected.
+5. #224 and #225 (Revision 3, 5.8): may a cloud hold opened by a target setup's pre-slew gate make that slew itself, under cloud? The #225 fix already does when the hold finds the mount stopped; #224 would do it for a mount still tracking the last target.
+
+## Revision 3 (S0 and S1 as built, 2026-09-24)
+
+2026-09-24. S0 and S1 are built (cea8f1f7, 6c6aae47), and a hardening round then changed part of what S1 did. This revision brings the sections in the table below in line with that code; the body's other "today" sentences still describe the code before S0 (see the status line). It makes one decision, the stand-down ruling, and records it as a ruling; everything else describes what was built, or names what was not. `server/tests/test_mosaic_spec_claims.py` holds each edited claim to the code it describes, and takes the numbers and spellings from that code, so a change to either side turns it red.
+
+| # | Where | Was | Now | Source |
+|---|---|---|---|---|
+| 1 | 1.2 | The chip's route was left to a 3.8 that was never written | `GET /api/flows/{flow_id}/progress`, with the shape of `flow_progress` | S1 item 9, `flows/progress.py` |
+| 2 | 3.3 | The step id spelled `{exposure_s:g}`; every single TARGET keyed on its geometry | The millisecond spelling of `identity.step_signature`; a TARGET with only a name keyed on its name; a second pool copy keyed `{name}#1` | #189 A5, A6; `flows/identity.py` |
+| 3 | 3.6, ruling 7 | Each migration note shown a single time | Shown on every read until the operator saves | `flows/store.py` (`_migrate`, `touch_run`) |
+| 4 | 5.6 step 2, S1 item 2 | The guider stands down before every slew | RULING: only when `plan.guide` is set | `_setup_target`, #148 |
+| 5 | 5.8, 6.17 | Nothing said about the cloud hold's clock; the unconfirmed idle stop was retried from the wait loop's tick | The hold's floor, flip and tracking checks on its own clock (`_hold_watch`); the stop retry on its own clock | #189 A3, #203, #205 |
+| 6 | 5.9 | CONTINUE read the newest dormant session | `current_for_flow`: the newest by `created_ts`, of any status; ADOPT only within 10 arcmin; the session keeps its `cool_to`; starts refused (409 `resume_recovering`) while auto-resume re-centres | #189 A1, A2, A4, A7; #211 |
+| 7 | 5.9 table, S1 item 8 and its test | Skipped panels exempt from the dropped-steps refusal in S1 | Debt carried to S2/S3, where `skipped_ids` and `skip` land | S1 has no groups |
+| 8 | 5.10 | The hop term an EMA, and "hops not yet costed" said | `hops_costed` returned by `compute_eta`, not yet rendered (S5) | `compute_eta` |
+| 9 | 5.8, owner list item 5 | Nothing said about a hold moving the mount | A hold that stopped the mount slews back to the held target before it judges the sky: after the keep-out, and when the mount was stopped on another target; the mount still tracking another target is #224, open, for the owner | `_hold_repoint`, #203, #225 |

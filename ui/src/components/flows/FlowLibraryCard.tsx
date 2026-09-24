@@ -18,8 +18,10 @@
 // and a press does nothing - every route but the listing answers 404 for such
 // an id. The first cut also carried the reason as the card's `title` and raised
 // it as a toast on a press: one sentence three times, two of them repeating a
-// line the operator was already looking at (carry-over 6).
-import { memo, useId } from "react";
+// line the operator was already looking at (carry-over 6). Once is also what a
+// screen reader hears: the reason is part of the card's name, and nothing else
+// names it (#206).
+import { memo } from "react";
 import { unreadableReason, type FlowCard } from "../../lib/flowsApi";
 import type { LedState } from "../../types";
 import { Led } from "../ui";
@@ -113,12 +115,6 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
 ) {
   const unreadable = unreadableReason(card);
   const status = unreadable ? UNREADABLE_STATUS : cardStatus(card.last_result);
-  // The printed reason line's id, for `aria-describedby`. React's, not one
-  // built from `card.id`: it is unique per mounted card whatever the server's
-  // filename stem looks like, so two cards can never point at one line.
-  // Called for every card because a hook cannot be conditional; only an
-  // unreadable card uses it.
-  const reasonId = useId();
   return (
     <button
       type="button"
@@ -128,13 +124,19 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
       data-flow-highlight={highlight ? "true" : undefined}
       // Honest-disabled, never `disabled`: the native attribute would drop the
       // card out of the tab order, so a keyboard user could never reach it or
-      // the reason its aria-describedby names.
+      // hear the reason in its name.
       aria-disabled={unreadable ? true : undefined}
-      // A REFERENCE to the printed reason line, not a copy of its words. No
-      // `title` either: a hover, a tooltip or a second string would put the
-      // same sentence on the card twice, and the copy tells nobody anything
-      // the line under the name does not (carry-over 6).
-      aria-describedby={unreadable ? reasonId : undefined}
+      // NO `aria-describedby`, NO `aria-label`, NO `title`. A <button> with no
+      // aria-label takes its accessible name from its content, and the printed
+      // reason line below is content, so a screen reader already hears the
+      // reason in the name. S1-09 also pointed aria-describedby at that line,
+      // which made it say the sentence twice - name, then description (#206).
+      // The two shapes that keep a description (aria-hidden on the line, or an
+      // aria-label that leaves the line out) make the description the ONLY
+      // place the reason is heard, and iOS VoiceOver reads descriptions as
+      // hints: a user with hints off would never hear why the card is locked.
+      // A `title` would be a second copy of the words for a sighted user as
+      // well (carry-over 6).
       // NEVER `flowsOpen` for an unreadable row. The server answers 404 for its
       // id, and `flowsOpen` writes that 404 into `libraryError` - which would
       // replace a card that explains itself with "Could not read the flow
@@ -171,9 +173,9 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
       {/* The reason, as text on the card and NOT clamped: it is the whole
           answer to "where did my flow go?", and a row carries no tagline to
           make room for. The server caps it at a card line. The one copy of
-          it: the button's aria-describedby points here. */}
+          it, for the eye and, as part of the button's name, for the ear. */}
       {unreadable && (
-        <span id={reasonId} data-flow-unreadable
+        <span data-flow-unreadable
               className="text-[12px] text-warn leading-[1.45] [text-wrap:pretty]">
           {unreadable}
         </span>

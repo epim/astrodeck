@@ -18,11 +18,16 @@ def _real_solve_dwell(monkeypatch):
     collapsed-pacing runs are never the only evidence.
 
     Deliberately NARROWER than the ``_real_dwell`` idiom used elsewhere (which
-    deletes ``ASTRODECK_FAST_TEST`` wholesale): un-faking the sim MOUNT's slew
-    dwell too costs ~8 s here and anchors nothing this change touched — Phase 1
-    already keeps its own real-dwell device anchor in
-    ``test_native_guider_e2e.py``. This fixture anchors exactly the pacing this
-    phase faked, and nothing else."""
+    deletes ``ASTRODECK_FAST_TEST`` wholesale). Since #207 the fast path fakes
+    the sim MOUNT's slew dwell and the rotator's move dwell as well (before it,
+    this paragraph claimed so while every goto here paid the slew in real
+    time). Un-faking everything costs this test about 5.7 s more (9.0-9.5 s
+    against 3.3-3.7 s, measured 2026-09-24), 4.9 s of it the slew: the goto
+    from the sim's default pointing plus one re-slew after the sync. It would
+    anchor nothing this fixture is about: the slew and rotator dwell keep
+    their own real-dwell anchor in ``test_sim_pacing.py``, as the guide
+    camera's does in ``test_native_guider_e2e.py``. This fixture anchors
+    exactly the solver's pacing, and nothing else."""
     from astrodeck.solve import simsolver
     monkeypatch.setattr(simsolver, "_sim_delay", lambda seconds: seconds)
     yield

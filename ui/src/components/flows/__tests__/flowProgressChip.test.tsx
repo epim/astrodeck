@@ -20,7 +20,9 @@
 //   3. THE SLICE READS AT THE RIGHT MOMENTS AND KEEPS ONLY THE RIGHT ANSWER.
 //      A saved flow opening, a save, a run starting. The newest read wins, a
 //      read for a flow no longer open is dropped, and no state ever pairs one
-//      flow's record with another flow's answer.
+//      flow's record with another flow's answer. The reads WHILE the open
+//      flow's run shoots (#214) are graded in flowProgressLive.test.ts, and a
+//      save that must not clear `dirty` (#215) in flowsSaveRace.test.ts.
 //
 // Every guarded case names the mutant it kills and quotes the failure that
 // mutant produced when it was run from a byte-for-byte backup of the file it

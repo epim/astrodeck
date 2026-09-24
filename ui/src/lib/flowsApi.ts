@@ -181,8 +181,9 @@ export interface FlowRunResult {
 // What a flow has banked and what it still owes, per block, per panel and per
 // step (#189 S1 item 9; server `flows/progress.py::flow_progress`, whose
 // docstring is the contract these types copy). Every count is a SUB count.
-// The numbers come from the flow's newest session that was not abandoned,
-// counted by that session's frozen count mode, against the STORED graph
+// The numbers come from the session Run would continue: the flow's newest,
+// and none when that one was abandoned (server `current_for_flow`, #189
+// hardening A2), counted by its frozen count mode, against the STORED graph
 // compiled with the flow's id - so they are the saved flow's, never the
 // editor's unsaved one.
 
@@ -234,9 +235,9 @@ export interface FlowProgressSession {
 
 export interface FlowProgress {
   flow_id: string;
-  /** Null when the flow has never run (or every session it ran was
-   *  abandoned): then every block's `banked` is 0 because nothing was
-   *  counted, not because nothing was shot. */
+  /** Null when the flow has never run, or its newest session was abandoned
+   *  (an older one is not read in its place): then every block's `banked` is
+   *  0 because nothing was counted, not because nothing was shot. */
   session: FlowProgressSession | null;
   blocks: FlowProgressBlock[];
   /** Frames in the session whose step the flow no longer has (a changed

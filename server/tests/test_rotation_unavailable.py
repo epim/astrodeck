@@ -55,12 +55,14 @@ RA, DEC = 5.0, 10.0
 
 @pytest.fixture(autouse=True)
 def _mount_on_the_target(sim_hub):
-    """Start the sim mount on the goto target. ``SimTelescope.slew`` paces its
-    dwell with a bare ``asyncio.sleep`` at 4 deg/s that ``_sim_delay`` does not
-    route, so the fast-test path leaves it running: from the sim's default
-    pointing each case here paid about 4.5 s of real dwell for a 17 degree
-    slew. Every slew still happens, it is just short, and nothing graded here
-    depends on how far the mount travelled."""
+    """Start the sim mount on the goto target. ``SimTelescope.slew`` used to
+    pace its dwell with a bare ``asyncio.sleep`` at 4 deg/s that
+    ``_sim_delay`` did not route, so from the sim's default pointing each case
+    here paid about 4.5 s of real dwell for a 17 degree slew. #207 routed that
+    dwell through ``_sim_delay``, so under the fast path this no longer saves
+    time; it stays because a short slew is what this file was measured with.
+    Every slew still happens, and nothing graded here depends on how far the
+    mount travelled."""
     sim_hub.sim_rig.ra_hours = RA
     sim_hub.sim_rig.dec_deg = DEC
 

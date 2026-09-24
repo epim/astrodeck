@@ -14,9 +14,12 @@ grades its arithmetic. This file grades what only the route can get wrong:
   and every key in it is on an allow-list.
 * WHICH LEDGER, WHICH IDS. The stored graph is compiled with the flow's id,
   the path ``/run`` takes, so the step ids are the ones the ledger counts by.
-  The session is the flow's newest non-abandoned one, by ``created_ts``
-  (``session_store.newest_for_flow``). After a CONTINUE (S1-13) the same step
-  ids are reported, and they are the ids the engine is counting.
+  The session is the one ``/run`` would pick (``session_store.
+  current_for_flow``): the flow's newest by ``created_ts``, whatever became of
+  it, and none when that newest one was abandoned. That the chip and Run agree
+  in every case is test_flow_session_selection.py. After a CONTINUE (S1-13)
+  the same step ids are reported, and they are the ids the engine is
+  counting.
 
 THE HARNESS. The real app over ``httpx.ASGITransport`` on the test's own event
 loop (no lifespan, so no background service ticks), a throwaway config store
@@ -585,40 +588,65 @@ class TestTheCounts:
         assert expected["orphaned"] == {"frames": 2, "steps": 1}
         assert got == expected
 
-    async def test_the_newest_session_that_was_not_abandoned_is_read(
+    async def test_the_newest_session_is_read_and_none_once_abandoned(
             self, api):
-        """An abandoned session is one the operator closed. The newest one
-        that was not is read, whatever became of it.
+        """The newest session is read whatever became of it, never an older
+        one: here a complete session over an older dormant one, the ledger a
+        START OVER leaves behind. Once a newer session is abandoned, the
+        operator has closed the flow's work, and the answer is no session at
+        all, not a fall back to either older ledger (#189 hardening A2: the
+        rule ``/run`` picks by, from ``current_for_flow``).
 
-        RED under mutation "abandoned included" (``SESSION_STATUSES`` passed
-        to ``newest_for_flow``):
+        This test used to read "the newest session that was not abandoned",
+        which under the second half named the complete session here, while
+        Run started fresh.
 
-            AssertionError: assert {'count_mode'...: 'abandoned'} ==
+        RED under mutation "progress keeps its non-abandoned filter" (the
+        lookup replaced by ``session_store.newest_for_flow(flow_id,
+        ("active", "dormant", "complete"))``, the rule this test used to
+        pin), at the second read, observed:
+
+            AssertionError: assert {'count_mode': 'attempts', 'id':
+            'ae666feb05974543a224c3b0116a2e58', 'nights': 1, 'status':
+            'complete'} is None
+
+        RED under mutation "abandoned included" (``session_store.
+        newest_for_flow(flow_id, ("active", "dormant", "complete",
+        "abandoned"))``, no rule for an abandoned newest), at the second
+        read, observed:
+
+            AssertionError: assert {'count_mode': 'attempts', 'id':
+            '9a2f3be446404189a2610aad87f04850', 'nights': 1, 'status':
+            'abandoned'} is None
+
+        RED under mutation "dormant only" (``session_store.newest_for_flow(
+        flow_id, ("dormant",))``), at the first read, observed:
+
+            AssertionError: assert {'count_mode'...s': 'dormant'} ==
             {'count_mode'...': 'complete'}
               Omitting 2 identical items, use -vv to show
               Differing items:
-              {'id': '4950d7b8c77348f78a4f6068ac3be3c7'} != {'id':
-              'f0d8e6c2ea4a48ce8c4effaa32663269'}
-              {'status': 'abandoned'} != {'status': 'complete'}
-
-        RED under mutation "dormant only" (see TestContinue), which drops the
-        complete session too:
-
-            AssertionError: assert None == {'count_mode': 'attempts', 'id':
-            '4727a9f2623d4f5d9bc902790938a7c2', 'nights': 1, 'status':
-            'complete'}
+              {'id': '737ec13465a24bfe86356b770ff68657'} != {'id':
+              '351bf704541c4e05b0944d8c07fc42be'}
+              {'status': 'dormant'} != {'status': 'complete'}
         """
         fid = await api.save_flow(LR)
         _c, plan = _compiled(LR, fid)
         t = plan.targets[0]
-        kept = _seed(fid, plan, _frames(t.id, t.steps[0].id, 2),
-                     created=100.0, status="complete")
-        _seed(fid, plan, _frames(t.id, t.steps[0].id, 1), created=200.0,
-              status="abandoned")
+        _seed(fid, plan, _frames(t.id, t.steps[0].id, 1), created=100.0)
+        done = _seed(fid, plan, _frames(t.id, t.steps[0].id, 2),
+                     created=150.0, status="complete")
         got = await api.ok(fid)
-        assert got["session"] == {"id": kept.id, "status": "complete",
+        assert got["session"] == {"id": done.id, "status": "complete",
                                   "nights": 1, "count_mode": "attempts"}
         assert _steps(got)[0][1] == 2
+
+        _seed(fid, plan, _frames(t.id, t.steps[0].id, 3), created=200.0,
+              status="abandoned")
+        got = await api.ok(fid)
+        assert got["session"] is None
+        assert [banked for _id, banked, _owed in _steps(got)] == [0, 0]
+        assert got["orphaned"] == {"frames": 0, "steps": 0}
 
     async def test_the_newest_by_creation_not_by_update(self, api):
         """``engine.start``'s singleton disarm re-saves the flow's older
@@ -626,13 +654,15 @@ class TestTheCounts:
         routinely the fresher file. ``created_ts`` is written once.
 
         RED under mutation "newest by updated_ts" (the lookup replaced by
-        the flow's non-abandoned sessions from ``load_all()``, the one with
-        the largest ``updated_ts`` taken):
+        the flow's sessions from ``load_all()``, the one with the largest
+        ``updated_ts`` taken, and None if that one was abandoned: the
+        ``current_for_flow`` rule ordered by the wrong timestamp), observed
+        after the lookup became ``current_for_flow`` (#189 hardening A2):
 
-            AssertionError: assert '0cfa329035e1...3b75178841e74' ==
-            'dcaa95b0e082...6c481bf8a31b1'
-              - dcaa95b0e0824832bed6c481bf8a31b1
-              + 0cfa329035e14565be83b75178841e74
+            AssertionError: assert '76fd2dc74940...0246e4b2289ad' ==
+            '3a04db342daf...f441da0babf30'
+              - 3a04db342daf4a6d814f441da0babf30
+              + 76fd2dc749404f21aed0246e4b2289ad
         """
         fid = await api.save_flow(LR)
         _c, plan = _compiled(LR, fid)
@@ -735,16 +765,23 @@ class TestPlumbing:
         other request and the engine's own ticks while a library of cards
         asks for its chips.
 
-        RED under mutation "on the loop" (the helper called directly instead
-        of through ``asyncio.to_thread``):
+        The lookup spied on is ``current_for_flow``, the one call the route
+        makes to pick its session (#189 hardening A2). It used to be
+        ``newest_for_flow``, which ``current_for_flow`` still calls; spying on
+        the route's own call means a lookup that stopped delegating could not
+        slip past this test.
 
-            AssertionError: assert {'flow_progre...e_plan': True} ==
-            {'flow_progre..._plan': False}
+        RED under mutation "on the loop" (the helper called directly instead
+        of through ``asyncio.to_thread``), observed again after the spy moved
+        to ``current_for_flow``:
+
+            AssertionError: assert {'current_for...e_plan': True} ==
+            {'current_for..._plan': False}
               Omitting 1 identical items, use -vv to show
               Differing items:
               {'flow_progress': True} != {'flow_progress': False}
-              {'newest_for_flow': True} != {'newest_for_flow': False}
               {'to_sequence_plan': True} != {'to_sequence_plan': False}
+              {'current_for_flow': True} != {'current_for_flow': False}
 
         RED under mutation "read on the loop" (``flow_store.get(flow_id)``
         called directly instead of through ``asyncio.to_thread``; the
@@ -758,12 +795,15 @@ class TestPlumbing:
               Differing items:
               {'flow_store.get': True} != {'flow_store.get': False}
 
-        Mutation "newest by updated_ts" fails here as well, because it never
-        calls the lookup this spies on:
+        Mutation "newest by updated_ts" (see TestTheCounts) fails here as
+        well, because it never calls the lookup this spies on, observed (and
+        mutation "dormant only" the same way):
 
+            AssertionError: assert {'flow_progre..._plan': False} ==
+            {'current_for..._plan': False}
               Omitting 3 identical items, use -vv to show
               Right contains 1 more item:
-              {'newest_for_flow': False}
+              {'current_for_flow': False}
         """
         fid = await api.save_flow(LR)
         on_loop: dict[str, bool] = {}
@@ -778,7 +818,7 @@ class TestPlumbing:
         real_get = app_module.flow_store.get
         real_plan = app_module.to_sequence_plan
         real_count = app_module.flow_progress
-        real_lookup = SessionStore.newest_for_flow
+        real_lookup = SessionStore.current_for_flow
 
         def get_spy(*a, **kw):
             on_loop["flow_store.get"] = loop_running()
@@ -793,7 +833,7 @@ class TestPlumbing:
             return real_count(*a, **kw)
 
         def lookup_spy(self, *a, **kw):
-            on_loop["newest_for_flow"] = loop_running()
+            on_loop["current_for_flow"] = loop_running()
             return real_lookup(self, *a, **kw)
 
         # The instance the route reads (``_isolate`` put it on app_module),
@@ -802,11 +842,11 @@ class TestPlumbing:
         monkeypatch.setattr(app_module.flow_store, "get", get_spy)
         monkeypatch.setattr(app_module, "to_sequence_plan", plan_spy)
         monkeypatch.setattr(app_module, "flow_progress", count_spy)
-        monkeypatch.setattr(SessionStore, "newest_for_flow", lookup_spy)
+        monkeypatch.setattr(SessionStore, "current_for_flow", lookup_spy)
         await api.ok(fid)
         assert on_loop == {"flow_store.get": False,
                            "to_sequence_plan": False,
-                           "newest_for_flow": False,
+                           "current_for_flow": False,
                            "flow_progress": False}
 
 
@@ -877,9 +917,10 @@ class TestContinue:
               At index 0 diff: 'dd425dd66da85fd1b8509641a62810c3' !=
               '7bfd2b5e84305e2f9b96a51aaed05662'
 
-        RED under mutation "dormant only" (``("dormant",)`` passed to
-        ``newest_for_flow``, the rule CONTINUE uses to pick a ledger), at the
-        first read, while night one is live:
+        RED under mutation "dormant only" (the lookup replaced by
+        ``session_store.newest_for_flow(flow_id, ("dormant",))``), at the
+        first read, while night one is live; observed again after the lookup
+        became ``current_for_flow`` (#189 hardening A2):
 
             assert None is not None
 

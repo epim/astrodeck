@@ -17,22 +17,36 @@ That is the "safety rides value paths" class: the guard hung off the wait's own
 interval, and the hazard does not care how the wait was computed.
 
 Three follow-ups from the S0 review live here too: a stop is READ BACK, and one
-the mount did not take is asked again at every tick, said once per idle spell;
-the predicate's CEILING end (the zenith keep-out) is acted on like its floor;
-and a new run on the same engine does not watch the last run's target.
+the mount did not take is asked again (on its own clock since #189 A3, see
+test_idle_stop_retry_clock.py), said once per idle spell; the predicate's
+CEILING end (the zenith keep-out) is acted on like its floor; and a new run on
+the same engine does not watch the last run's target, unless `start()` is told
+that a caller left the mount tracking one (#202).
 
-THE HARNESS IS A CLOCKED SIMULATOR. `engine_mod.time` is a fake wall clock and
-engine.py's `asyncio.sleep`, in the run task only, advances it by what it asked
-for and yields once, so a whole night runs through the real `_run_scheduled`
-and `_wait_until` against sim_hub without a real sleep. The sim camera advances
-the clock by each exposure. At a horizon the run task parks on a future until
-the test has looked, so the end-of-run wind-down cannot be mistaken for the
-park-hold under test. `set_tracking` is spied (pass-through) with the fake time
-of every call. The site is a fixture, never the real one.
+THE HARNESS IS A CLOCKED SIMULATOR WITH CONCURRENT SLEEPERS. `engine_mod.time`
+is a fake wall clock, and engine.py's `asyncio.sleep` parks the calling task on
+a timer heap when that task is the engine's run task or its idle-stop retry
+task. A driver advances the clock to the EARLIEST wake, and only once every
+live engine task is parked, so two tasks sleeping side by side each wake on
+their own schedule: one clock that summed both tasks' sleeps would put the
+retry's minute into the wait loop's tick and fake the very cadence under test.
+A whole night runs through the real `_run_scheduled` and `_wait_until` against
+sim_hub without a real sleep. The sim camera parks the run task for each
+exposure. At a horizon the driver stops and every engine task stays parked
+until the test has looked, so the end-of-run wind-down cannot be mistaken for
+the park-hold under test. `set_tracking` is spied (pass-through) with the fake
+time of every call. The site is a fixture, never the real one.
+
+A MOUNT THAT WILL NOT STOP hangs, not fails fast: its ``set_tracking(False)``
+(and, when unreadable, its ``get_tracking``) parks the calling task for
+``MOUNT_QUERY_TIMEOUT_S`` and then raises ``asyncio.TimeoutError``, which is
+what a dead serial link costs the engine (the #133 class).
 """
 from __future__ import annotations
 
 import asyncio
+import heapq
+import itertools
 import re
 import time
 
@@ -54,6 +68,8 @@ from astrodeck.sequence.engine import SafetyAbort
 LAT, LON = 40.0, -74.0
 TICK = engine_mod.SCHEDULE_WAIT_STEP_S
 TEARDOWN = engine_mod.WAIT_TEARDOWN_S
+RETRY = engine_mod.IDLE_STOP_RETRY_S
+HANG = engine_mod.MOUNT_QUERY_TIMEOUT_S
 #: Fake seconds per science exposure unless a test says otherwise.
 EXPOSURE_S = 30.0
 
@@ -77,7 +93,8 @@ def temp_store(tmp_path, monkeypatch):
 async def sim_hub(temp_store, monkeypatch):
     monkeypatch.setattr(Hub, "_check_solar",
                         lambda self, ra, dec, *, force=False: None)
-    # A slew is real time in the sim (0.5 s floor); nothing here is about it.
+    # A sim slew takes at least 0.5 s outside the fast path (inside it, #207
+    # makes that zero too); nothing here is about it.
     monkeypatch.setattr(SimTelescope, "SLEW_RATE_DEG_S", 1.0e6)
     h = Hub()
     await h.connect_sim()
@@ -102,7 +119,7 @@ class _Clock:
 
 
 class _Asyncio:
-    """engine.py's `asyncio`: `sleep` goes to the run, the rest is real."""
+    """engine.py's `asyncio`: `sleep` goes to the harness, the rest is real."""
 
     def __init__(self, real, run: "_Clocked"):
         self._real = real
@@ -116,7 +133,16 @@ class _Asyncio:
 
 
 class _Clocked:
-    """One clocked-simulator night. See the module docstring."""
+    """One clocked-simulator night. See the module docstring.
+
+    THE ENGINE TASKS are the run task and the idle-stop retry task, by
+    identity (``engine._task``, ``engine._idle_stop_task``). Each parks on
+    the timer heap when it sleeps, and `_drive` advances the clock to the
+    earliest wake only when every live one of them is parked. A task that
+    is running, or waiting on real I/O in the sim, holds the clock still.
+    Any other task that sleeps through engine.py sleeps for real, as the
+    watchdog does, and so sits out the test.
+    """
 
     def __init__(self, hub, monkeypatch, *, horizon_s: float):
         self.hub = hub
@@ -126,20 +152,44 @@ class _Clocked:
         self.frozen = asyncio.Event()
         self.engine = SequenceEngine(hub)
         self.tracking_off: list[float] = []     # fake time of set_tracking(False)
+        #: (fake time, on, which engine task asked) of every set_tracking
+        self.tracking_calls: list[tuple[float, bool, str]] = []
+        self.exposure_starts: list[tuple[str, float]] = []
         self.exposure_ends: list[tuple[str, float]] = []
         self.slews: list[float] = []
-        self.ticks: list[float] = []            # fake time of every 5 s sleep
+        self.ticks: list[float] = []            # fake time of every 5 s wait sleep
+        #: (fake time, context) of every `_safety_gate` call
+        self.gates: list[tuple[float, str]] = []
+        #: (fake time, call, which task) of every mount hang a cancel cut short
+        self.cut_hangs: list[tuple[float, str, str]] = []
+        #: The mount that will not stop (`_a_mount_that_will_not_stop`).
+        self.stop_hangs = False
+        self.read_hangs = False
+        self._timers: list[tuple[float, int, asyncio.Future]] = []
+        self._parked: dict[asyncio.Task, asyncio.Future] = {}
+        self._seq = itertools.count()
         self._real_sleep = asyncio.sleep
         monkeypatch.setattr(engine_mod, "time", self.clock)
         monkeypatch.setattr(engine_mod, "asyncio", _Asyncio(asyncio, self))
 
         tel = hub.devices["telescope"]
-        real_set, real_slew = tel.set_tracking, tel.slew
+        real_set, real_get, real_slew = (tel.set_tracking, tel.get_tracking,
+                                         tel.slew)
 
         async def set_tracking(on):
-            if not on and not self.frozen.is_set():
+            if self.frozen.is_set():
+                return await real_set(on)
+            self.tracking_calls.append((self.clock.t, bool(on), self.who()))
+            if not on:
                 self.tracking_off.append(self.clock.t)
+                if self.stop_hangs:
+                    await self.hang("set_tracking(False)")
             await real_set(on)
+
+        async def get_tracking():
+            if self.read_hangs and not self.frozen.is_set():
+                await self.hang("get_tracking")
+            return await real_get()
 
         async def slew(ra_hours, dec_deg):
             if not self.frozen.is_set():
@@ -147,39 +197,115 @@ class _Clocked:
             await real_slew(ra_hours, dec_deg)
 
         monkeypatch.setattr(tel, "set_tracking", set_tracking)
+        monkeypatch.setattr(tel, "get_tracking", get_tracking)
         monkeypatch.setattr(tel, "slew", slew)
 
         real_capture = hub.capture
 
         async def capture(exposure_s, *a, **kw):
             info = await real_capture(exposure_s, *a, **kw)
-            self.clock.t += float(exposure_s)
-            self.exposure_ends.append((kw.get("target", ""), self.clock.t))
+            name = kw.get("target", "")
+            self.exposure_starts.append((name, self.clock.t))
+            if self._is_engine_task(asyncio.current_task()):
+                await self._park(float(exposure_s))
+            else:
+                self.clock.t += float(exposure_s)
+            self.exposure_ends.append((name, self.clock.t))
             return info
 
         monkeypatch.setattr(hub, "capture", capture)
 
-    async def sleep(self, delay, result=None):
-        if asyncio.current_task() is not self.engine._task:
-            return await self._real_sleep(delay, result)
+        real_gate = self.engine._safety_gate
+
+        async def safety_gate(*a, **kw):
+            if not self.frozen.is_set():
+                self.gates.append((self.clock.t, kw.get("context", "")))
+            return await real_gate(*a, **kw)
+
+        monkeypatch.setattr(self.engine, "_safety_gate", safety_gate)
+        self._driver = asyncio.get_running_loop().create_task(self._drive())
+
+    # ------------------------------------------------------------ the clock
+
+    def _engine_tasks(self) -> list[asyncio.Task]:
+        return [t for t in (self.engine._task, self.engine._idle_stop_task)
+                if t is not None and not t.done()]
+
+    def _is_engine_task(self, task) -> bool:
+        return task is not None and task in (self.engine._task,
+                                             self.engine._idle_stop_task)
+
+    def who(self) -> str:
+        """Which engine task is asking: "run", "retry", or another name."""
+        task = asyncio.current_task()
+        if task is not None and task.get_name() == "idle-stop-retry":
+            return "retry"
+        if task is not None and task is self.engine._task:
+            return "run"
+        return task.get_name() if task is not None else "none"
+
+    async def _park(self, d: float) -> None:
+        """Park the calling engine task until the clock reaches now + ``d``."""
         if self.frozen.is_set():
             await self._real_sleep(0)          # the wind-down after the abort
-            return result
+            return
+        fut = asyncio.get_running_loop().create_future()
+        heapq.heappush(self._timers, (self.clock.t + max(0.0, d),
+                                      next(self._seq), fut))
+        self._parked[asyncio.current_task()] = fut
+        await fut
+
+    async def _drive(self) -> None:
+        """Advance to the earliest wake once every live engine task is parked.
+
+        At the horizon the clock stops and nothing more is woken: every
+        engine task stays parked until the test's abort cancels it, so
+        nothing after the horizon (the window closing, the end-of-run park)
+        may be read as the behaviour under test."""
+        while not self.frozen.is_set():
+            await self._real_sleep(0)
+            live = self._engine_tasks()
+            if not live or any(self._parked.get(t) is None
+                               or self._parked[t].done() for t in live):
+                continue
+            while self._timers and self._timers[0][2].done():
+                heapq.heappop(self._timers)
+            if not self._timers:
+                continue
+            wake, _seq, fut = heapq.heappop(self._timers)
+            self.clock.t = max(self.clock.t, wake)
+            if self.clock.t >= self.horizon:
+                self.frozen.set()
+                return
+            fut.set_result(None)
+
+    async def sleep(self, delay, result=None):
+        task = asyncio.current_task()
+        if not self._is_engine_task(task):
+            return await self._real_sleep(delay, result)
         d = max(0.0, float(delay))
-        if d == TICK:
+        if d == TICK and task is self.engine._task:
             self.ticks.append(self.clock.t)
-        self.clock.t += d
-        if self.clock.t >= self.horizon:
-            self.frozen.set()
-            # Parked until the test's abort cancels it: nothing after the
-            # horizon - the window closing, the end-of-run park - may be read
-            # as the behaviour under test.
-            await asyncio.get_running_loop().create_future()
-        await self._real_sleep(0)
+        await self._park(d)
         return result
 
-    async def night(self, plan: SequencePlan, timeout: float = 60.0) -> None:
-        self.engine.start(plan)
+    async def hang(self, call: str) -> None:
+        """A mount call that never answers: the calling engine task waits out
+        the call's bound, ``MOUNT_QUERY_TIMEOUT_S``, then times out."""
+        task = asyncio.current_task()
+        if self._is_engine_task(task):
+            try:
+                await self._park(HANG)
+            except asyncio.CancelledError:
+                self.cut_hangs.append((self.clock.t, call, self.who()))
+                raise
+        raise asyncio.TimeoutError()
+
+    # ------------------------------------------------------------- the night
+
+    async def night(self, plan: SequencePlan, timeout: float = 60.0,
+                    **start_kw) -> None:
+        self.engine.start(plan, **start_kw)
         end = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < end:
             if self.frozen.is_set() or not self.engine.running:
@@ -188,6 +314,14 @@ class _Clocked:
         assert self.frozen.is_set(), (
             f"premise: the run must still be going at the horizon; it ended "
             f"at fake +{self.clock.t - self.t0:.0f}s: {self.engine.state}")
+
+    async def close(self) -> None:
+        """The test's abort, then the driver."""
+        try:
+            await self.engine.abort()
+        finally:
+            self._driver.cancel()
+            await asyncio.gather(self._driver, return_exceptions=True)
 
     def exposure_end(self, name: str) -> float:
         ends = [t for n, t in self.exposure_ends if n == name]
@@ -261,31 +395,18 @@ def _unconfirmed_lines(lines) -> list[str]:
             if lvl == "warning" and "did not confirm the stop" in m]
 
 
-def _a_mount_that_will_not_stop(run: _Clocked, monkeypatch, *,
-                                readback: str) -> None:
-    """A dead-ish link, the #133 class: ``set_tracking(False)`` times out and
-    the mount goes on tracking. ``readback`` is what a read of it then says:
-    "still tracking" (True) or "unreadable" (the read raises, so None).
+def _a_mount_that_will_not_stop(run: _Clocked, *, readback: str) -> None:
+    """A dead-ish link, the #133 class: ``set_tracking(False)`` hangs for its
+    whole bound, ``MOUNT_QUERY_TIMEOUT_S`` of fake time, times out, and the
+    mount goes on tracking. ``readback`` is what a read of it then says:
+    "still tracking" (True, at once) or "unreadable" (the read hangs for its
+    bound too and times out, so None). ``set_tracking(True)`` still works.
 
     Every stop attempt is still recorded in ``run.tracking_off``. Once the run
-    is frozen at the horizon both calls pass through, so the wind-down after
+    is frozen at the horizon every call passes through, so the wind-down after
     the test's abort is not graded and cannot trip over the double."""
-    tel = run.hub.devices["telescope"]
-    harness_set, real_get = tel.set_tracking, tel.get_tracking
-
-    async def set_tracking(on):
-        if on or run.frozen.is_set():
-            return await harness_set(on)
-        run.tracking_off.append(run.clock.t)
-        raise asyncio.TimeoutError()
-
-    async def get_tracking():
-        if readback == "unreadable" and not run.frozen.is_set():
-            raise RuntimeError("the serial link did not answer")
-        return await real_get()
-
-    monkeypatch.setattr(tel, "set_tracking", set_tracking)
-    monkeypatch.setattr(tel, "get_tracking", get_tracking)
+    run.stop_hangs = True
+    run.read_hangs = readback == "unreadable"
 
 
 # ------------------------------------------------ the two waits that never tore down
@@ -330,7 +451,7 @@ async def test_an_eta0_wait_park_holds_on_the_idle_clock(sim_hub, monkeypatch,
         lines = _park_lines(bus_lines)
         assert len(lines) == 1 and "Alpha" in lines[0], lines
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_a_constraint_wait_park_holds_on_the_idle_clock(sim_hub, monkeypatch,
@@ -364,7 +485,7 @@ async def test_a_constraint_wait_park_holds_on_the_idle_clock(sim_hub, monkeypat
             f"park-held {offs[0] - idle:.1f} s after the last exposure")
         assert run.tracking() is False
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 # --------------------------------------------- the floor and the flip, before 120 s
@@ -417,7 +538,7 @@ async def test_a_target_sinking_through_the_floor_is_park_held_at_that_tick(
             f"the park-hold line carries a number: {lines[0]!r}")
         assert "floor" in lines[0], lines[0]
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 def _ceiling_run(sim_hub, temp_store, monkeypatch, *, cross_after_idle_s):
@@ -477,7 +598,7 @@ async def test_a_target_rising_into_the_zenith_keep_out_is_park_held_at_that_tic
             f"the park-hold line carries a number: {lines[0]!r}")
         assert "zenith keep-out" in lines[0] and "Alpha" in lines[0], lines[0]
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_control_a_target_below_its_ceiling_is_not_held_early(
@@ -508,7 +629,7 @@ async def test_control_a_target_below_its_ceiling_is_not_held_early(
         lines = _park_lines(bus_lines)
         assert len(lines) == 1 and "nothing has been shot" in lines[0], lines
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 def _flip_run(sim_hub, monkeypatch, *, lon: float = LON):
@@ -553,7 +674,7 @@ async def test_a_target_reaching_its_flip_point_is_park_held_at_that_tick(
         assert len(lines) == 1 and "flip point" in lines[0], lines
         assert not re.search(r"\d", lines[0]), lines[0]
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 @pytest.mark.parametrize("taught", ["mount cannot flip early", "early flip was a no-op"])
@@ -608,7 +729,7 @@ async def test_the_flip_point_is_the_plans_lead_not_the_learned_one(
         lines = _park_lines(bus_lines)
         assert len(lines) == 1 and "flip point" in lines[0], lines
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_control_a_flip_the_mount_can_track_through_is_not_park_held(
@@ -646,7 +767,7 @@ async def test_control_a_flip_the_mount_can_track_through_is_not_park_held(
         _t, dec, lat, _side = idle_asks[0]
         assert (dec, lat) == (a.dec_deg, LAT), idle_asks[0]
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 # ------------------------------------------------------------------ the latch
@@ -675,8 +796,9 @@ async def test_the_latch_park_holds_once_per_idle_spell(sim_hub, monkeypatch,
         idle_a = run.exposure_end("Alpha")
         idle_b = run.exposure_end("Bravo")
         assert idle_b - idle_a > 2 * TEARDOWN, "premise: two separate spells"
-        spell_ticks = len([t for t in run.ticks if t >= idle_a])
-        assert spell_ticks > 100, f"premise: many ticks ({spell_ticks})"
+        # In fake seconds, not ticks: a stop the read-back confirms spends its
+        # confirm probes, so under the defect the tick count shrinks with it.
+        assert run.horizon - idle_a > 100 * TICK, "premise: long idle spells"
         offs = run.tracking_off
         assert len(offs) == 2, (
             f"{len(offs)} set_tracking(False) calls for 2 idle spells, at "
@@ -685,61 +807,88 @@ async def test_the_latch_park_holds_once_per_idle_spell(sim_hub, monkeypatch,
         assert TEARDOWN <= offs[1] - idle_b <= TEARDOWN + TICK
         assert len(_park_lines(bus_lines)) == 2
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 # ------------------------------------------------- a stop the mount did not take
 
+def _asks(run: _Clocked) -> list[tuple[float, str]]:
+    """(fake time, which engine task) of every set_tracking(False)."""
+    return [(t, who) for t, on, who in run.tracking_calls if not on]
+
+
 @pytest.mark.parametrize("readback", ["still tracking", "unreadable"])
-async def test_a_stop_the_mount_did_not_take_is_asked_again_every_tick(
+async def test_a_stop_the_mount_did_not_take_is_asked_again_on_its_own_clock(
         sim_hub, monkeypatch, bus_lines, readback):
     """`_park_hold` swallows every failure - it has to, it also serves the
     safety pause - so the idle park-hold used to close its latch on a stop
     that never happened and never look again: the mount tracked on,
-    unwatched, for the rest of the wait. Here ``set_tracking(False)`` times
-    out and the mount goes on tracking. The idle park-hold must read tracking
-    back, find it not False, and ask again at every later tick. An unreadable
-    read-back counts the same way: a dead serial link (the #133 class) cannot
-    confirm a stop.
+    unwatched, for the rest of the wait. Here ``set_tracking(False)`` hangs
+    for its bound and times out, and the mount goes on tracking. The idle
+    park-hold must read tracking back, find it not False, and hand the stop
+    to the retry task, which asks again IDLE_STOP_RETRY_S after each attempt
+    ends, for the rest of the spell. An unreadable read-back counts the same
+    way: a dead serial link (the #133 class) cannot confirm a stop.
+
+    ON ITS OWN CLOCK (#189 A3): every ask after the first comes from the
+    retry task, and two asks are exactly the retry interval plus the last
+    attempt's own hang apart (one mount timeout for the stop, one more when
+    the read-back hangs too), which is what the engine promises: never less
+    than the interval, and nothing added to it.
 
     SAID ONCE. One warning per idle spell, and the "stopping tracking" line
-    once too, however many ticks it retries. The /api/logs ring holds 200
-    lines, and a line per 5 s tick would roll it over in under 17 minutes.
+    once too, however many times it retries.
 
     Mutant "no readback" (the `_tracking_now` read-back after `_park_hold`
-    deleted, so the latch stays closed on any outcome): RED, both cases -
+    deleted, so the first attempt is taken on trust): RED, both cases
+    (observed) -
         AssertionError: a stop the mount did not take (still tracking) was
-        asked 1 time(s) in 88 ticks: set_tracking(False) at [120.0] s
+        asked 1 time(s) in a 450 s spell: set_tracking(False) at [120.0] s
         AssertionError: a stop the mount did not take (unreadable) was
-        asked 1 time(s) in 88 ticks: set_tracking(False) at [120.0] s
-    Mutant "unreadable counts as stopped" (``is True`` in place of
-    ``is not False`` on the read-back): RED, the unreadable case only -
+        asked 1 time(s) in a 420 s spell: set_tracking(False) at [120.0] s
+    Mutant "unreadable counts as stopped" (``if not tracking: return`` in
+    place of ``if tracking is False: return``): RED, the unreadable case
+    only (observed) -
         AssertionError: a stop the mount did not take (unreadable) was
-        asked 1 time(s) in 88 ticks: set_tracking(False) at [120.0] s
-    Mutant "warn at every failed read-back" (the once-per-spell flag not
-    consulted): RED, both cases -
-        AssertionError: 90 unconfirmed-stop warnings across 90 attempts
+        asked 1 time(s) in a 420 s spell: set_tracking(False) at [120.0] s
+    Mutant "the retry says it again" (`_idle_stop_retry` logs the
+    unconfirmed-stop warning after each failed read-back): RED, both cases
+    (observed) -
+        AssertionError: 5 unconfirmed-stop warnings across 5 attempts
+        AssertionError: 3 unconfirmed-stop warnings across 4 attempts
+    (the unreadable case's last retry is still hanging on its read-back
+    when the horizon stops the clock, so it has not said it yet).
     """
     run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
     t0 = run.t0
     a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
     b = _constraint_waiter("Bravo", t0)
-    _a_mount_that_will_not_stop(run, monkeypatch, readback=readback)
+    _a_mount_that_will_not_stop(run, readback=readback)
+    hang = HANG if readback == "still tracking" else 2 * HANG
     try:
         await run.night(_plan(a, b))
         idle = run.exposure_end("Alpha")
-        offs = [t for t in run.tracking_off if t >= idle]
-        later = [t for t in run.ticks if t > idle + TEARDOWN + TICK]
-        assert len(later) > 50, f"premise: many later ticks ({len(later)})"
+        asks = [(t, who) for t, who in _asks(run) if t >= idle]
+        offs = [t for t, _who in asks]
         assert offs and TEARDOWN <= offs[0] - idle <= TEARDOWN + TICK, (
             f"premise: the first stop comes on the idle clock: "
             f"{run.rel(offs, idle)[:3]} s")
-        assert len(offs) > len(later), (
+        spell = run.horizon - offs[0]
+        assert spell > 3 * (RETRY + hang), f"premise: a long spell ({spell})"
+        assert len(offs) > 1, (
             f"a stop the mount did not take ({readback}) was asked "
-            f"{len(offs)} time(s) in {len(later)} ticks: set_tracking(False) "
-            f"at {run.rel(offs, idle)[:5]} s")
+            f"{len(offs)} time(s) in a {spell:.0f} s spell: "
+            f"set_tracking(False) at {run.rel(offs, idle)[:5]} s")
+        assert [who for _t, who in asks] == ["run"] + ["retry"] * (len(asks) - 1), (
+            f"the first ask is the run's own, every later one the retry "
+            f"task's: {asks}")
         gaps = sorted({round(y - x, 1) for x, y in zip(offs, offs[1:])})
-        assert gaps == [TICK], f"not once per tick: gaps {gaps}"
+        assert gaps == [RETRY + hang], (
+            f"not the retry interval plus the last attempt's hang "
+            f"({RETRY + hang:.0f} s): gaps {gaps}")
+        assert run.horizon - offs[-1] <= RETRY + hang, (
+            f"the retry gave up: last ask {run.horizon - offs[-1]:.0f} s "
+            f"before the horizon")
         assert run.tracking() is True, "premise: the double kept it tracking"
         warned = _unconfirmed_lines(bus_lines)
         assert len(warned) == 1, (
@@ -748,78 +897,77 @@ async def test_a_stop_the_mount_did_not_take_is_asked_again_every_tick(
         assert not re.search(r"\d", warned[0]), warned[0]
         assert len(_park_lines(bus_lines)) == 1, _park_lines(bus_lines)[:3]
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
-async def test_a_planned_wait_stop_that_did_not_take_is_asked_again_at_the_next_tick(
+async def test_a_planned_wait_stop_that_did_not_take_is_asked_again_a_minute_later(
         sim_hub, monkeypatch, bus_lines):
     """The scheduler's planned-wait rule decides the stop a moment after the
     last exposure: Charlie is three hours away. The mount does not take it.
-    The next tick must ask again, although the idle clock has barely started
-    and would have no reason of its own for another two minutes.
+    The retry must ask again one retry interval after that attempt ends,
+    although the idle clock has not run out and would have no reason of its
+    own until WAIT_TEARDOWN_S: the retry asks again for a stop already
+    decided, it does not decide it a second time.
 
-    Mutant "retry only when a reason holds" (the retry branch in
-    `_idle_hold_tick` deleted, so a re-opened latch waits for
-    `_idle_hold_reason`): RED -
+    Mutant "retry only when a reason holds" (`_idle_stop_retry` skips an ask
+    while `_idle_hold_reason` has no reason for the tracked target): RED
+    (observed) -
         AssertionError: the planned-wait stop was not taken and the next
-        attempt came at 120.0 s, not the next tick: set_tracking(False) at
-        [0.0, 120.0, 125.0] s
+        ask came at 150.0 s, not one interval after the first attempt ended
+        (90.0 s): set_tracking(False) at [0.0, 150.0, 240.0] s
     """
     run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
     t0 = run.t0
     a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
     c = _target("Charlie", _ra_at(-3.0, t0), 40.0,
                 start_mode="time", start_time=_hhmm(t0 + 3 * 3600))
-    _a_mount_that_will_not_stop(run, monkeypatch, readback="still tracking")
+    _a_mount_that_will_not_stop(run, readback="still tracking")
     try:
         await run.night(_plan(a, c))
         idle = run.exposure_end("Alpha")
         assert "waiting for Charlie" in (run.engine.state.get("detail") or ""), (
             f"premise: the scheduler reached Charlie's long planned wait: "
             f"{run.engine.state.get('detail')!r}")
-        offs = [t for t in run.tracking_off if t >= idle]
+        offs = [t for t, _who in _asks(run) if t >= idle]
         assert offs and offs[0] - idle < TICK, (
             f"premise: the planned-wait rule stopped it at once: "
             f"{run.rel(offs, idle)[:3]} s")
-        assert len(offs) > 1 and offs[1] - offs[0] <= TICK + 0.5, (
-            f"the planned-wait stop was not taken and the next attempt came "
-            f"at {offs[1] - idle if len(offs) > 1 else None} s, not the next "
-            f"tick: set_tracking(False) at {run.rel(offs, idle)[:3]} s")
+        want = offs[0] + HANG + RETRY
+        assert len(offs) > 1 and abs(offs[1] - want) < 0.5, (
+            f"the planned-wait stop was not taken and the next ask came at "
+            f"{offs[1] - idle if len(offs) > 1 else None} s, not one interval "
+            f"after the first attempt ended ({want - idle:.1f} s): "
+            f"set_tracking(False) at {run.rel(offs, idle)[:3]} s")
         assert len(_unconfirmed_lines(bus_lines)) == 1
         lines = _park_lines(bus_lines)
         assert len(lines) == 1 and "long wait" in lines[0], lines[:3]
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
-async def test_a_first_wait_stop_that_did_not_take_is_asked_again_every_tick(
+async def test_a_first_wait_stop_that_did_not_take_is_asked_again_a_minute_later(
         sim_hub, monkeypatch, bus_lines):
     """The run OPENS on a long planned wait: Charlie, its only target, is three
     hours away, so the scheduler's planned-wait rule stops the mount before
-    anything was set up. The mount does not take it. The warning then says
-    "asking again at every wait tick until it does", and nothing is tracked,
-    so the retry must not hang off the tracked-target guard: that guard
-    decides whether a new stop is decided, not whether one in flight is
-    asked again.
+    anything was set up. The mount does not take it. The warning promises to
+    ask again about once a minute, and nothing is tracked, so the retry must
+    not hang off the tracked-target guard: that guard decides whether a new
+    stop is decided, not whether one already in flight is asked again.
 
-    Mutant "retry only with a tracked target" (the retry branch in
-    `_idle_hold_tick` put back behind ``target is None``, as the read-back
-    first shipped): RED - one ask across the whole wait, under a warning
-    promising one per tick -
+    Mutant "retry only with a tracked target" (`_idle_stop_retry` returns
+    at once while ``_tracked_target`` is None): RED - one ask across the
+    whole wait, under a warning promising more (observed) -
         AssertionError: the first wait's unconfirmed stop was asked 1
-        time(s) in 119 ticks, under a warning promising every tick:
-        set_tracking(False) at [0.0] s
+        time(s) in a 600 s wait, under a warning promising about once a
+        minute: set_tracking(False) at [0.0] s
     The CONTROL is `test_no_tracked_target_no_idle_park_hold`: with nothing
-    in flight, a first wait still decides no stop. Mutant "retry on an open
-    latch alone" (the ``_idle_hold_retrying`` half of the retry test dropped)
-    turns it RED, with 18 others -
-        AssertionError: park-held a mount nothing had pointed, at [0.0] s
+    tracked, a first wait still decides no stop of its own.
     """
     run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
     t0 = run.t0
     c = _target("Charlie", _ra_at(-3.0, t0), 40.0,
                 start_mode="time", start_time=_hhmm(t0 + 3 * 3600))
-    _a_mount_that_will_not_stop(run, monkeypatch, readback="still tracking")
+    _a_mount_that_will_not_stop(run, readback="still tracking")
     try:
         await run.night(_plan(c))
         assert "waiting for Charlie" in (run.engine.state.get("detail") or ""), (
@@ -827,32 +975,25 @@ async def test_a_first_wait_stop_that_did_not_take_is_asked_again_every_tick(
             f"{run.engine.state.get('detail')!r}")
         assert run.slews == [] and run.engine._tracked_target is None, (
             "premise: nothing was acquired, so nothing is tracked")
-        offs = run.tracking_off
+        offs = [t for t, _who in _asks(run)]
         assert offs and offs[0] - t0 < TICK, (
             f"premise: the planned-wait rule stopped it at once: "
             f"{run.rel(offs, t0)[:3]} s")
-        later = [t for t in run.ticks if t > offs[0]]
-        assert len(later) > 50, f"premise: many later ticks ({len(later)})"
-        assert _unconfirmed_lines(bus_lines) and "every wait tick" in (
-            _unconfirmed_lines(bus_lines)[0]), (
-            f"premise: the warning makes the promise: "
-            f"{_unconfirmed_lines(bus_lines)}")
-        assert len(offs) >= len(later), (
+        warned = _unconfirmed_lines(bus_lines)
+        assert warned and "about once a minute" in warned[0], (
+            f"premise: the warning makes the promise: {warned}")
+        assert len(offs) > 3, (
             f"the first wait's unconfirmed stop was asked {len(offs)} time(s) "
-            f"in {len(later)} ticks, under a warning promising every tick: "
-            f"set_tracking(False) at {run.rel(offs, t0)[:5]} s")
-        # `_wait_until` looks once before its first sleep, so the first tick
-        # lands on the planned-wait rule's own instant and asks a second time
-        # there. One tick apart after that.
-        distinct = sorted(set(offs))
-        assert len(offs) - len(distinct) <= 1, run.rel(offs, t0)[:5]
-        gaps = sorted({round(y - x, 1) for x, y in zip(distinct, distinct[1:])})
-        assert gaps == [TICK], f"not once per tick: gaps {gaps}"
-        assert len(_unconfirmed_lines(bus_lines)) == 1
+            f"in a {run.horizon - t0:.0f} s wait, under a warning promising "
+            f"about once a minute: set_tracking(False) at "
+            f"{run.rel(offs, t0)[:5]} s")
+        gaps = sorted({round(y - x, 1) for x, y in zip(offs, offs[1:])})
+        assert gaps == [RETRY + HANG], f"not on the retry clock: gaps {gaps}"
+        assert len(warned) == 1
         lines = _park_lines(bus_lines)
         assert len(lines) == 1 and "long wait" in lines[0], lines[:3]
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_the_unconfirmed_stop_is_said_once_per_idle_spell(
@@ -862,7 +1003,7 @@ async def test_the_unconfirmed_stop_is_said_once_per_idle_spell(
     is re-armed with the latch, so the second spell's operator is told too.
 
     Mutant "the warning flag is never re-armed" (`_setup_target` re-opens
-    the latch but leaves the flag set): RED -
+    the latch but leaves ``_idle_hold_retrying`` set): RED (observed) -
         AssertionError: 1 unconfirmed-stop warning(s) for 2 idle spells in
         which the mount never stopped
     """
@@ -871,21 +1012,21 @@ async def test_the_unconfirmed_stop_is_said_once_per_idle_spell(
     a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
     b = _constraint_waiter("Bravo", t0, ready_after_s=600.0)
     c = _constraint_waiter("Charlie", t0)
-    _a_mount_that_will_not_stop(run, monkeypatch, readback="still tracking")
+    _a_mount_that_will_not_stop(run, readback="still tracking")
     try:
         await run.night(_plan(a, b, c))
         idle_a, idle_b = run.exposure_end("Alpha"), run.exposure_end("Bravo")
         assert idle_b - idle_a > 2 * TEARDOWN, "premise: two separate spells"
         in_a = [t for t in run.tracking_off if idle_a <= t < idle_b]
         in_b = [t for t in run.tracking_off if t >= idle_b]
-        assert len(in_a) > 10 and len(in_b) > 10, (
+        assert len(in_a) > 3 and len(in_b) > 3, (
             f"premise: retried in both spells ({len(in_a)}, {len(in_b)})")
         warned = _unconfirmed_lines(bus_lines)
         assert len(warned) == 2, (
             f"{len(warned)} unconfirmed-stop warning(s) for 2 idle spells in "
             f"which the mount never stopped")
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_control_a_mount_that_stops_is_asked_once_and_not_warned_about(
@@ -898,6 +1039,10 @@ async def test_control_a_mount_that_stops_is_asked_once_and_not_warned_about(
     re-opened before the read-back is looked at): RED -
         AssertionError: a mount that stopped was asked 90 time(s) in one
         idle spell, at [120.0, 125.0, 130.0, 135.0] s
+    Mutant "start the retry whatever the read-back says" (the retry task
+    created before the read-back is looked at, #189 A3): RED (observed) -
+        AssertionError: a mount that stopped was asked 2 time(s) in one idle
+        spell, at [120.0, 180.0] s
     """
     run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
     t0 = run.t0
@@ -918,7 +1063,7 @@ async def test_control_a_mount_that_stops_is_asked_once_and_not_warned_about(
         assert run.engine._idle_hold_open is False
         assert run.tracking() is False
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_with_no_telescope_nothing_is_read_back(sim_hub, bus_lines):
@@ -930,7 +1075,7 @@ async def test_with_no_telescope_nothing_is_read_back(sim_hub, bus_lines):
     `_tracking_now` answers None for the missing mount): RED -
         AssertionError: a rig with no mount was warned about a stop it could
         not confirm: ['the mount did not confirm the stop (its tracking state
-        cannot be read) — asking again at every wait tick until it does']
+        cannot be read) — asking again about once a minute until it does']
     """
     e = SequenceEngine(sim_hub)
     e.plan = _plan()
@@ -978,7 +1123,7 @@ async def test_the_planned_wait_rule_spends_the_same_latch(sim_hub, monkeypatch,
             f"{run.rel(run.tracking_off, idle)} s")
         assert TEARDOWN <= run.tracking_off[0] - idle <= TEARDOWN + TICK
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_setup_time_is_not_idle_time(sim_hub, monkeypatch, bus_lines):
@@ -1028,7 +1173,7 @@ async def test_setup_time_is_not_idle_time(sim_hub, monkeypatch, bus_lines):
         lines = _park_lines(bus_lines)
         assert len(lines) == 1 and "Alpha" in lines[0], lines
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_a_setup_that_gives_up_after_the_slew_leaves_the_mount_watched(
@@ -1079,7 +1224,7 @@ async def test_a_setup_that_gives_up_after_the_slew_leaves_the_mount_watched(
         lines = _park_lines(bus_lines)
         assert len(lines) == 1 and "Alpha" in lines[0], lines
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 # ------------------------------------------------------------------- controls
@@ -1109,7 +1254,7 @@ async def test_control_a_short_idle_does_not_park_hold(sim_hub, monkeypatch,
         assert run.tracking() is True
         assert _park_lines(bus_lines) == []
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_no_tracked_target_no_idle_park_hold(sim_hub, monkeypatch,
@@ -1140,7 +1285,7 @@ async def test_no_tracked_target_no_idle_park_hold(sim_hub, monkeypatch,
             f"park-held a mount nothing had pointed, at "
             f"{run.rel(run.tracking_off, run.t0)} s")
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 async def test_a_new_run_does_not_watch_the_last_runs_target(
@@ -1200,64 +1345,135 @@ async def test_a_new_run_does_not_watch_the_last_runs_target(
         assert stale is None, f"run 2 is watching {stale.name}"
         assert run.engine._idle_hold_open is True
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
-async def test_a_new_run_does_not_retry_the_last_runs_unconfirmed_stop(
+async def test_a_run_that_ends_mid_retry_leaves_no_retry_behind(
         sim_hub, monkeypatch, bus_lines):
-    """`start()` clears the unconfirmed-stop retry, and nothing pinned it
-    (S1 review, 2026-09-24): with the reset line deleted every test in this
-    file stayed green. A stop the mount did not confirm leaves
-    ``_idle_hold_retrying`` set, and the retry branch in `_idle_hold_tick`
-    runs BEFORE the tracked-target guard, on nothing but that flag and the
-    open latch. `start()` re-opens the latch, so a run that inherited the flag
-    would stop tracking at its first wait tick, before it had pointed at
-    anything, and say nothing: the retry is the branch that stays quiet.
+    """The retry task ends with the run that started it (#189 A3). Two runs on
+    ONE engine and a mount that never takes a stop. Run 1 shoots Alpha and
+    then waits on Bravo, a setting target below its gate, until Bravo's window
+    closes and the run ends by itself; its idle stop went unconfirmed, so a
+    retry was asking when it ended. Between the runs, with the engine idle,
+    nothing may go on asking: the rig is the operator's again, and a stray
+    ``set_tracking(False)`` is somebody else's night. Run 2 then opens on a
+    long planned wait, so its stop is decided before any `_setup_target`
+    could re-arm the once-per-spell flag: when the mount does not take it,
+    it is said, once, because `start()` re-arms the flag too.
 
-    Run 1 is the one above (Alpha acquired, shot, ended). It is then given
-    the flag its last stop would have left had the mount not confirmed it,
-    and run 2 waits on a constraint before any `_setup_target`, as above.
-
+    Mutant "run end keeps the retry" (the ``finally`` that cancels the retry
+    around `_run_scheduled` in `_run` deleted): RED - the retry went on
+    asking after run 1 ended, while the engine was idle (observed) -
+        AssertionError: the retry went on asking after run 1 ended, with
+        the engine idle: set_tracking(False) at [(0.0, 'retry'), (90.0,
+        'retry'), (180.0, 'retry'), (270.0, 'retry')] s after the end
     Mutant "start keeps _idle_hold_retrying" (the ``self._idle_hold_retrying
-    = False`` reset in `start()` deleted): RED - the silent stop at run 2's
-    first tick (observed, verbatim):
-        AssertionError: run 2 retried run 1's unconfirmed stop before
-        acquiring anything: set_tracking(False) at [0.0] s; []
+    = False`` reset in `start()` deleted): RED - run 2's unconfirmed stop is
+    never said (observed) -
+        AssertionError: 0 unconfirmed-stop warning(s) in run 2, whose own
+        stop the mount never took
     """
     run = _Clocked(sim_hub, monkeypatch, horizon_s=4 * 3600.0)
     t0 = run.t0
     a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
-    run.engine.start(_plan(a))
+    b = _target("Bravo", _ra_at(+4.0, t0), 0.0, min_altitude_deg=30.0,
+                start_mode="time", start_time=_hhmm(t0 - 2 * 3600),
+                stop_mode="time", stop_time=_hhmm(t0 + 600))
+    _a_mount_that_will_not_stop(run, readback="still tracking")
+    run.engine.start(_plan(a, b))
     loop = asyncio.get_running_loop()
     end = loop.time() + 60.0
     while run.engine.running and loop.time() < end:
         await run._real_sleep(0.01)
-    assert not run.engine.running and not run.frozen.is_set(), (
-        f"premise: run 1 must end before the horizon: {run.engine.state}")
-    # What `_idle_park_hold` leaves when the read-back is not a confirmed
-    # False (`test_a_stop_the_mount_did_not_take_is_asked_again_every_tick`).
-    run.engine._idle_hold_retrying = True
-
-    t1 = run.clock.t
-    run.horizon = t1 + 600.0
-    run.tracking_off.clear()
-    run.slews.clear()
-    run.ticks.clear()
-    mark = len(bus_lines)
-    b = _constraint_waiter("Bravo", t1)
     try:
-        await run.night(_plan(b))
-        assert len(run.ticks) > 100 and run.slews == [], (
-            f"premise: run 2 waited ({len(run.ticks)} ticks) and acquired "
-            f"nothing (slews {run.rel(run.slews, t1)})")
-        assert run.tracking_off == [], (
-            f"run 2 retried run 1's unconfirmed stop before acquiring "
-            f"anything: set_tracking(False) at "
-            f"{run.rel(run.tracking_off, t1)} s; "
-            f"{_park_lines(bus_lines[mark:])}")
-        assert run.engine._idle_hold_retrying is False
+        assert not run.engine.running and not run.frozen.is_set(), (
+            f"premise: run 1 must end before the horizon: {run.engine.state}")
+        assert run.engine.state.get("end_reason") == "dawn_cutoff", (
+            f"premise: run 1 ended on Bravo's closed window: "
+            f"{run.engine.state}")
+        ended = run.clock.t
+        retried = [t for t, who in _asks(run) if who == "retry"]
+        assert retried, (
+            f"premise: run 1 was retrying its stop when it ended: asks "
+            f"{run.rel([t for t, _w in _asks(run)], t0)} s")
+        # With the engine idle the driver would still advance a live retry,
+        # the only engine task left: give it the real time to show itself.
+        await run._real_sleep(0.3)
+        after = [(round(t - ended, 1), who) for t, who in _asks(run)
+                 if who == "retry" and t >= ended]
+        assert after == [], (
+            f"the retry went on asking after run 1 ended, with the engine "
+            f"idle: set_tracking(False) at {after[:4]} s after the end")
+
+        t1 = run.clock.t
+        run.horizon = t1 + 400.0
+        run.tracking_calls.clear()
+        mark = len(bus_lines)
+        c = _target("Charlie", _ra_at(-3.0, t1), 40.0,
+                    start_mode="time", start_time=_hhmm(t1 + 3 * 3600))
+        await run.night(_plan(c))
+        asks = _asks(run)
+        assert asks and asks[0][1] == "run" and asks[0][0] - t1 < TICK, (
+            f"premise: run 2 opens on Charlie's long planned wait, whose rule "
+            f"stops the mount at once: "
+            f"{[(round(t - t1, 1), w) for t, w in asks[:3]]}")
+        assert [w for _t, w in asks[1:]] == ["retry"] * (len(asks) - 1), asks
+        warned = _unconfirmed_lines(bus_lines[mark:])
+        assert len(warned) == 1, (
+            f"{len(warned)} unconfirmed-stop warning(s) in run 2, whose own "
+            f"stop the mount never took")
     finally:
-        await run.engine.abort()
+        await run.close()
+
+
+async def test_a_start_told_what_the_mount_is_tracking_watches_it(
+        sim_hub, monkeypatch, bus_lines):
+    """`start(tracking=...)` (#202). ResumeArm re-centres a target seconds
+    before it starts the resumed run, and leaves the mount tracking it. The
+    run's only target, Bravo, then waits on a constraint, which rides the
+    scheduler's 5 s else-branch and never reaches `_setup_target`. Told what
+    the mount is tracking, the run watches it from the start: park-held on the
+    idle clock, WAIT_TEARDOWN_S plus at most one tick after `start()`.
+
+    Mutant "start ignores tracking" (the ``if tracking is not None:`` block in
+    `start()` deleted): RED - the re-centred target tracked, unwatched,
+    through the whole wait, while the control below stays green (observed) -
+        AssertionError: the target the mount was left tracking was tracked,
+        unwatched, through the whole 600 s wait; set_tracking(False) at [] s
+    Mutant "tracking without the idle anchor" (``self._idle_since =
+    time.time()`` deleted from that block, so the idle clock reads from the
+    reset's 0, decades ago): RED (observed) -
+        AssertionError: park-held 0.0 s after start; the idle clock is 120 s
+        plus one 5 s tick
+    The CONTROL is `test_no_tracked_target_no_idle_park_hold`: a start that
+    is not told stops nothing.
+    """
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
+    t0 = run.t0
+    b = _constraint_waiter("Bravo", t0)
+    tel = sim_hub.devices["telescope"]
+    await tel.slew(b.ra_hours, b.dec_deg)       # what ResumeArm's re-centre did
+    await tel.set_tracking(True)
+    run.slews.clear()
+    run.tracking_calls.clear()
+    try:
+        await run.night(_plan(b), tracking=b)
+        assert run.slews == [], (
+            f"premise: the run never set anything up: slews "
+            f"{run.rel(run.slews, t0)}")
+        offs = run.tracking_off
+        assert offs, (
+            f"the target the mount was left tracking was tracked, unwatched, "
+            f"through the whole {run.horizon - t0:.0f} s wait; "
+            f"set_tracking(False) at {run.rel(offs, t0)} s")
+        assert TEARDOWN <= offs[0] - t0 <= TEARDOWN + TICK, (
+            f"park-held {offs[0] - t0:.1f} s after start; the idle clock is "
+            f"{TEARDOWN:.0f} s plus one {TICK:.0f} s tick")
+        assert run.tracking() is False
+        lines = _park_lines(bus_lines)
+        assert len(lines) == 1 and "Bravo" in lines[0], lines
+    finally:
+        await run.close()
 
 
 # ------------------------------------------------------------- no saved site
@@ -1286,7 +1502,7 @@ async def test_with_no_site_the_flip_check_does_nothing_and_the_clock_still_runs
             f"with no site, park-held at {offs[0] - idle:.1f} s on a flip "
             f"point computed for longitude 0")
     finally:
-        await run.engine.abort()
+        await run.close()
 
 
 @pytest.mark.parametrize("limit", [{"min_alt_deg": 20.0}, {"max_alt_deg": 60.0}],

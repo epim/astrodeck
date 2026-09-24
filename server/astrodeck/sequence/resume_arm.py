@@ -29,6 +29,13 @@ those slews unchecked. ``_recover`` now reads the safety monitor before it moves
 anything and puts the re-centering slew through the same altitude limits an
 in-run slew gets. Sun avoidance was always covered: it lives at the motion
 boundary inside ``goto_and_center``, not in the engine.
+
+ONE STARTER PER SESSION (#211, spec 5.9). The ladder takes minutes, and other
+starters (Run CONTINUE, /resume) can take the same session while it runs. So
+``recovering`` says when the ladder is running, the ladder stops before its
+next move once a run has started, and the start that follows it re-reads the
+session under the store's write lock instead of trusting the copy read before
+the ladder. See ``tick``.
 """
 from __future__ import annotations
 
@@ -39,10 +46,10 @@ from ..config import config_store
 from ..devices.base import GotoRefused
 from ..events import bus
 from . import schedule
-from .models import (duplicate_name_warning, plan_identity_errors,
+from .models import (Target, duplicate_name_warning, plan_identity_errors,
                      quota_unbounded, replan_cooling)
 from .policy import resolve_policy
-from .session import Session, session_store
+from .session import Session, SessionUnreadable, session_store
 
 CHECK_INTERVAL_S = 60.0
 RETRY_INTERVAL_S = 600.0
@@ -174,6 +181,34 @@ class ResumeArm:
         #: ``None`` = not holding. Otherwise {reason, since, retry_at,
         #: session_id, session_name, owed}.
         self.hold: dict | None = None
+        #: True while ``_recover`` runs. Written only by ``tick``; read
+        #: through ``recovering``.
+        self._recovering = False
+        #: The target this tick's ladder left the mount tracking, or None
+        #: (calibration-only, or no ladder yet). Cleared by ``tick`` before
+        #: each ladder, set by ``_recover`` once its slew succeeds, and read
+        #: by ``_tracking_for`` to hand the engine's idle clock (#202).
+        self._recentred: Target | None = None
+
+    @property
+    def recovering(self) -> bool:
+        """True from just before the recovery ladder's first await until it
+        returns or raises.
+
+        FOR THE START ROUTES (#211). The ladder blind-solves and re-centres
+        the mount for minutes, and a manual start of any session in that time
+        puts a run on a rig the ladder is still moving. A route that reads
+        this and ``engine.running`` and starts, all with no await between,
+        cannot land inside a ladder: ``tick`` raises the flag in the same
+        synchronous stretch as its own ``engine.running`` check, so the route
+        runs either wholly before that check (and the tick then finds the
+        engine running) or wholly after the flag went up.
+
+        Read-only, because only this service can say whether it is
+        recovering: a writable flag is one a caller could leave raised, and
+        every start that consults it would be refused until the restart.
+        """
+        return self._recovering
 
     def _set_hold(self, session, reason: str, retry_at: float = 0.0) -> None:
         """Record the current refusal, preserving ``since`` while the reason
@@ -398,37 +433,196 @@ class ResumeArm:
             return
 
         # Make the rig's beliefs true again BEFORE it is allowed to move.
-        refusal = await self._recover(armed)
+        #
+        # ``recovering`` goes up HERE, and where matters: nothing between the
+        # ``engine.running`` check at the top of this method and this line
+        # awaits (every await above sits on a branch that returns), so no turn
+        # of the loop separates the two. That is what lets a start route
+        # refuse on the flag without racing it (see ``recovering``). An await
+        # added anywhere above breaks that; put it on a returning branch or
+        # re-check ``engine.running`` after it. Down in a ``finally``, because
+        # a ladder that raised is not still recovering.
+        #
+        # ``_recentred`` is cleared first, so an earlier tick's slew cannot
+        # be handed to this start: only this ladder's slew sets it.
+        self._recentred = None
+        self._recovering = True
+        try:
+            refusal = await self._recover(armed)
+        finally:
+            self._recovering = False
         if refusal is not None:
             bus.log("warning", f"auto-resume held: {refusal} — retrying in "
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
             self._retry_at = now + RETRY_INTERVAL_S
             self._set_hold(armed, refusal, self._retry_at)
             return
-        # Logged HERE, once per resume, and not beside the refusal above: the
-        # early returns in between (devices still booting, a dusk hold) come
-        # back every 60 s tick, and the warning would repeat with them.
-        name_warning = duplicate_name_warning(armed.plan)
-        if name_warning:
-            bus.log("warning", name_warning, "sequence")
-        try:
-            self.hub.require("camera")
-            # A resume is a NEW run and re-reads the standing setpoint, exactly
-            # as the two /api resume entries do (replan_cooling). Without it a
-            # multi-night session that began with no setpoint warns every single
-            # night with no reachable way to act on the advice.
-            self.engine.start(replan_cooling(
-                armed.plan, config_store.cfg().cooling.setpoint_c),
-                session=armed)
-        except Exception as e:              # noqa: BLE001 — refusal, not a crash
-            bus.log("warning", f"auto-resume refused: {e} — retrying in "
-                               f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
-            self._retry_at = now + RETRY_INTERVAL_S
-            self._set_hold(armed, str(e), self._retry_at)
-            return
+        # WHAT WAS READ BEFORE THE LADDER IS STALE AFTER IT (#211).
+        #
+        # ``armed`` was read at the top of this tick, and the ladder between
+        # there and here is minutes of awaits. Run CONTINUE or /resume can
+        # start the same session in that time. If that run also ENDED inside
+        # the ladder (an abort, a safety stop, a short flow), the session is
+        # dormant and armed again, holding frames ``armed`` has never seen.
+        # Starting ``armed`` handed the engine that stale ledger, and
+        # ``engine.start``'s own save wrote it over the file: every frame the
+        # other run banked stopped being counted. The FITS stay on disk, but
+        # nothing counts them. If the other run was still going, the start
+        # was refused "already running": no frames lost, but a healthy run was
+        # logged as a refusal and got a ten-minute backoff.
+        #
+        # So the session is read again, checked, and started in one section
+        # with no await, under the store's write lock: the section Run
+        # CONTINUE uses (spec 5.9, ``SessionStore.write_locked``). Nothing on
+        # the loop can move the session between this read and the start, and
+        # the lock holds off a worker thread's save until ``engine.start``'s
+        # own save is done. A session that is no longer this tick's to start
+        # is neither a refusal nor a crash: one info line, no backoff, no crash
+        # counted, and the next tick looks again.
+        with session_store.write_locked():
+            fresh, why_not = self._still_startable(armed)
+            if fresh is None:
+                # Not a hold either, so an earlier refusal's reason must not
+                # stay on the Monitor: a live run is not a hold (the top of
+                # this method says the same), and a session that is no longer
+                # dormant, armed or on disk is not one this service holds.
+                self._clear_hold()
+                bus.log("info", f"auto-resume stood down for '{armed.name}': "
+                                f"{why_not}", "sequence")
+                return
+            # THE GATES AGAIN, ON THE PLAN THAT STARTS. The identity and
+            # quota refusals near the top of this method read ``armed.plan``,
+            # and ``fresh.plan`` need not be that plan: PATCH
+            # /api/sessions/{id} replaces a dormant session's plan with
+            # neither gate, the operator's reject guards live in config that
+            # can change too, and the ladder is minutes long. ``engine.start``
+            # is unguarded (this module's header), so without this the one
+            # plan no gate had seen would be the one started. Refused on the
+            # same terms as up there: a hold and the backoff, not a crash,
+            # and the next tick's own gates then refuse it before the ladder.
+            gate = self._plan_refusal(fresh)
+            if gate is not None:
+                bus.log("warning", f"auto-resume refused: {gate} — retrying "
+                                   f"in {int(RETRY_INTERVAL_S / 60)} min",
+                        "sequence")
+                self._retry_at = now + RETRY_INTERVAL_S
+                self._set_hold(fresh, gate, self._retry_at)
+                return
+            # Logged HERE, once per resume, and not beside the refusal above:
+            # the early returns in between (devices still booting, a dusk
+            # hold) come back every 60 s tick, and the warning would repeat
+            # with them. Below the re-check, and about the plan that is
+            # actually started, so a stood-down resume does not warn about a
+            # start that never happened.
+            name_warning = duplicate_name_warning(fresh.plan)
+            if name_warning:
+                bus.log("warning", name_warning, "sequence")
+            try:
+                self.hub.require("camera")
+                # A resume is a NEW run and re-reads the standing setpoint,
+                # exactly as the two /api resume entries do (replan_cooling).
+                # Without it a multi-night session that began with no
+                # setpoint warns every single night with no reachable way to
+                # act on the advice.
+                #
+                # ``tracking``: the ladder just left the mount tracking a
+                # target, and the engine's idle clock watches only what it
+                # acquired itself, so without this nothing watched that
+                # mount's idle time, floor or flip point until the run set
+                # a target up (#202). See ``_tracking_for``.
+                self.engine.start(replan_cooling(
+                    fresh.plan, config_store.cfg().cooling.setpoint_c),
+                    session=fresh, tracking=self._tracking_for(fresh))
+            except Exception as e:          # noqa: BLE001 — refusal, not a crash
+                bus.log("warning", f"auto-resume refused: {e} — retrying in "
+                                   f"{int(RETRY_INTERVAL_S / 60)} min",
+                        "sequence")
+                self._retry_at = now + RETRY_INTERVAL_S
+                self._set_hold(fresh, str(e), self._retry_at)
+                return
         self._retry_at = 0.0
         self._clear_hold()
-        bus.log("info", f"auto-resume: '{armed.name}' resumed", "sequence")
+        bus.log("info", f"auto-resume: '{fresh.name}' resumed", "sequence")
+
+    def _still_startable(self, armed: Session) -> tuple[Session | None, str]:
+        """The armed session as it is NOW, if this tick may still start it,
+        or None and the reason it may not.
+
+        Called inside ``tick``'s locked section, after the ladder: see the
+        comment there. Four ways the session stops being this tick's:
+
+        * a run is going. Usually the same session (then it is active as
+          well), but not always: the operator can arm this dormant session
+          while another run is live, which the PATCH route allows, and then
+          only this check sees it.
+        * the file is gone or no longer validates. Starting the copy read
+          before the ladder would put a deleted ledger back on disk, running,
+          or overwrite the corrupt file someone needs to look at.
+        * it is not dormant. A run inside the ladder that banked everything
+          ends ``complete`` and completion does not disarm, so ``complete``
+          and armed is a real state; starting it would reopen a finished
+          session.
+        * it was disarmed. ``engine.start`` arms what it starts, so starting
+          it would also undo the operator's disarm.
+        """
+        if self.engine.running:
+            return None, "a run started while the recovery ladder was working"
+        try:
+            fresh = session_store.load(armed.id)
+        except (KeyError, SessionUnreadable):
+            return None, ("the session was deleted or became unreadable while "
+                          "the recovery ladder was working")
+        if fresh.status != "dormant":
+            return None, f"it is {fresh.status} now, not dormant"
+        if not fresh.auto_resume:
+            return None, "it was disarmed while the recovery ladder was working"
+        return fresh, ""
+
+    def _tracking_for(self, fresh: Session) -> Target | None:
+        """The target to hand ``engine.start`` as ``tracking``: the one this
+        tick's ladder left the mount tracking, or None when it slewed nowhere
+        (a calibration-only session).
+
+        FROM THE RE-READ SESSION BY ID, so the engine is handed a target of
+        the plan it runs, which is ``fresh``'s and not the copy the ladder
+        read (``_still_startable`` says why that copy is stale).
+
+        UNLESS THAT COPY SAYS SOMEWHERE ELSE. PATCH may replace a dormant
+        session's plan while the ladder runs, and the re-read target by that
+        id can then sit at other coordinates, or be gone. The mount is still
+        tracking where the ladder pointed it, and that is what the idle
+        clock's floor and flip checks must read; a target elsewhere would
+        have them watch a place the mount is not, and None would leave the
+        mount unwatched (#202). So the target as re-centred is handed over
+        instead: same id, same coordinates, and nothing in the idle watch
+        reads the rest."""
+        tgt = self._recentred
+        if tgt is None:
+            return None
+        for t in fresh.plan.targets:
+            if (t.id == tgt.id and t.ra_hours == tgt.ra_hours
+                    and t.dec_deg == tgt.dec_deg):
+                return t
+        return tgt
+
+    def _plan_refusal(self, session: Session) -> str | None:
+        """The identity and quota gates asked of ``session``'s plan: the
+        hold reason when this service may not start it, else None.
+
+        Only the re-check after the ladder calls this. The gates near the top
+        of ``tick`` keep their own wording, because their log lines are what
+        the operator and the suite already read; the rules themselves live in
+        ``models`` and ``policy``, so the two sites cannot disagree about a
+        plan, only phrase it differently.
+        """
+        identity = plan_identity_errors(session.plan)
+        if identity:
+            return "this plan cannot start: " + "; ".join(identity)
+        if quota_unbounded(session.plan,
+                           resolve_policy(session.plan, config_store.cfg())):
+            return ("this plan counts accepted frames with no reject guard "
+                    "and no stop boundary, so it could run forever")
+        return None
 
     async def _give_up_and_stow(self, session) -> None:
         """Stop resuming this session, and PUT THE RIG AWAY.
@@ -477,6 +671,13 @@ class ResumeArm:
         Returns None when the rig is fit to resume, otherwise a human-readable
         reason the caller logs before arming the backoff. The session is left
         dormant AND armed either way, so the next tick retries.
+
+        It also returns None, early, when a run starts while it works (#211):
+        before each step that would focus, expose or slew it asks
+        ``_a_run_took_over`` and stops there. That is not a refusal - nothing
+        is wrong with the rig, and a backoff would only delay the next resume
+        - so it does not say why; ``tick``'s re-check finds the engine running
+        and stands the attempt down with the one line that does.
 
         COOLING IS NOT HERE, deliberately. ``SequenceEngine._run`` already awaits
         ``_cool_and_wait(plan.cool_to, plan.cool_timeout_s)`` under the
@@ -551,6 +752,8 @@ class ResumeArm:
                         "current position, so check focus before trusting "
                         "tonight's frames", "sequence")
             else:
+                if self._a_run_took_over():
+                    return None
                 bus.log("info", "focuser lost its position across the restart — "
                                 "running autofocus before resuming", "sequence")
                 try:
@@ -589,6 +792,8 @@ class ResumeArm:
         #    while "there IS a solver and it could not solve" refuses: that is
         #    cloud or too few stars, a transient inability to verify, and it is
         #    exactly the case where moving is a gamble.
+        if self._a_run_took_over():
+            return None
         if not self._can_solve():
             bus.log("warning", "resuming after a restart WITHOUT verifying where "
                                "the telescope points — no plate solver is "
@@ -672,6 +877,10 @@ class ResumeArm:
                                                     plan=session.plan)
             except Exception as e:  # noqa: BLE001 — SafetyAbort or a bad target
                 return f"re-centering after restart refused: {e}"
+            # BELOW the limit check, not above it: that check awaits too, and
+            # the slew is the step that must never land on a live run.
+            if self._a_run_took_over():
+                return None
             try:
                 await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg)
             except GotoRefused as e:
@@ -683,7 +892,24 @@ class ResumeArm:
                 return f"re-centering after restart refused by the mount: {e.reason}"
             except Exception as e:  # noqa: BLE001
                 return f"re-centering after restart failed: {e}"
+            # The mount is tracking this target now: ``tick`` hands it to the
+            # engine's idle clock with the start (#202).
+            self._recentred = tgt
         return None
+
+    def _a_run_took_over(self) -> bool:
+        """Has a run started since ``tick`` checked ``engine.running``?
+
+        ``tick`` checks once, before the ladder, and the ladder then awaits
+        a safety read, a focuser, an autofocus, a solve and a limit check. Any
+        of those awaits lets a manual start in, and from then on the camera,
+        focuser and mount belong to that run: an autofocus would move the
+        focuser under its exposures, a solve would take the camera, and the
+        re-centring slew would drag the mount off the run's target. So the
+        ladder asks this right before each of those three steps, with no
+        await between the question and the step.
+        """
+        return bool(self.engine.running)
 
     def _floor_eta_note(self, target, floor: float) -> str:
         """How long the wait above is, as a parenthetical, or empty when

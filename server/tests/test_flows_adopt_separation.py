@@ -1,0 +1,301 @@
+"""ADOPT carries a pre-S1 step's frames only onto the SAME FIELD (#189 A4, spec
+5.9, D5; #190).
+
+ADOPT re-keys a pre-S1 session's frames onto tonight's compile by matching a
+step on (target name, frame type, filter, exposure, gain, binning). The name
+is a label, not a place. #190 is the case that proves it: the guided wizard
+wrote the typed name "M16" onto M31's coordinates, so a session filed under
+"M16" holds frames of Andromeda. Once the flow is corrected to M16's real
+coordinates, name and recipe still match, and ADOPT credited the Andromeda
+frames to M16 - 103 degrees away. That is the flaw D5 removes for a re-frame,
+reached through the one door S1 left open.
+
+So a key match counts only when the two targets are within
+``ADOPT_MAX_SEPARATION_ARCMIN`` (10 arcmin) of each other on the sky, by great
+circle, RA in hours. A match further apart is listed as unmatched, with the
+separation in its reason and in ``separation_arcmin``, and nothing is re-keyed.
+
+Every test names the mutation of ``flows/continuation.py`` it guards and quotes
+the failure it produced, run from a byte backup of the file and restored
+byte-identical after. The existing ADOPT tests in ``test_flows_continue.py``
+all use sessions within 10 arcmin of their compile, and stay green.
+"""
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from astrodeck.flows.continuation import (ADOPT_MAX_SEPARATION_ARCMIN,
+                                          AMBIGUOUS, NO_MATCH, adopt_matches,
+                                          apply_adoption)
+from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
+from astrodeck.sequence.session import Session, SessionFrame, session_store
+from test_flows_continue import _bytes, _compiled, _stored, rig  # noqa: F401
+
+
+def _step(filt="L", exposure=60.0, **kw):
+    return ExposureStep(filter=filt, exposure_s=exposure, count=5, **kw)
+
+
+def _session(ra, dec, steps, frames_on, *, name="M16"):
+    """A pre-S1 session: one target named ``name`` at (``ra`` h, ``dec``
+    deg), uuid4 ids, and ``frames_on[i]`` frames on step ``i``."""
+    t = Target(name=name, ra_hours=ra, dec_deg=dec, steps=steps)
+    s = Session(status="dormant", plan=SequencePlan(name="p", targets=[t]))
+    for i, n in frames_on.items():
+        s.frames.extend(SessionFrame(target_id=t.id, step_id=steps[i].id)
+                        for _ in range(n))
+    return s
+
+
+def _plan(ra, dec, *steps, name="M16"):
+    return SequencePlan(targets=[Target(name=name, ra_hours=ra, dec_deg=dec,
+                                        steps=list(steps))])
+
+
+def _ra_offset_h(arcmin, dec):
+    """The RA step, in hours, that is ``arcmin`` of great circle at ``dec``
+    (small-angle, which at these sizes is exact to under 0.001 arcmin; each
+    test checks the premise against the separation ADOPT reports)."""
+    return arcmin / 60.0 / 15.0 / math.cos(math.radians(dec))
+
+
+def test_the_limit_is_ten_arcmin():
+    assert ADOPT_MAX_SEPARATION_ARCMIN == 10.0
+
+
+class TestSameNameElsewhere:
+    def test_a_match_25_arcmin_away_is_listed_and_nothing_is_rekeyed(self):
+        """Same name, same recipe, 25 arcmin of sky apart: not the same field.
+        Listed with the separation, mapped to nothing, and apply_adoption
+        moves no frame.
+
+        Mutant "no coordinate check" (the separation gate removed from
+        ``adopt_matches``, every unique match mapped as in S1) failed:
+            AssertionError: assert ({'4c9c647bfc1...954879007a9')} == {}
+              Left contains 1 more item:
+              {'4c9c647bfc1a4c26a98db7ab16ded555': (
+                  'b848f89d4cfd4cc59f45b83aac6803d0',
+                  '4c11b204ccf24eef93122954879007a9')}
+        Mutants "separation left in degrees" and "RA read as degrees" (below)
+        failed here the same way; "flat RA difference" failed at the reported
+        separation:
+            assert 26.604 == 25.0 ± 0.01
+        """
+        old = _step("L")
+        s = _session(5.0, 20.0, [old], {0: 3})
+        plan = _plan(5.0 + _ra_offset_h(25.0, 20.0), 20.0, _step("L"))
+        before = [(f.target_id, f.step_id) for f in s.frames]
+
+        m = adopt_matches(s, plan)
+
+        assert m.mapping == {} and m.frames_matched == 0
+        assert m.ambiguous == []
+        entry, = m.unmatched
+        assert entry["step_id"] == old.id and entry["frames"] == 3
+        assert entry["separation_arcmin"] == pytest.approx(25.0, abs=0.01)
+        assert "25.0 arcmin" in entry["reason"], entry["reason"]
+        assert "10 arcmin" in entry["reason"], entry["reason"]
+        assert apply_adoption(s, m) == 0
+        assert [(f.target_id, f.step_id) for f in s.frames] == before
+        assert s.plan.targets[0].steps[0].id == old.id
+
+    @pytest.mark.parametrize("axis", ["ra", "dec"])
+    @pytest.mark.parametrize("arcmin, maps", [(9.9, True), (10.1, False)])
+    def test_the_boundary_on_each_axis(self, axis, arcmin, maps):
+        """9.9 arcmin maps and 10.1 does not, whether the offset is in RA or
+        in Dec. At Dec 20 an RA offset is in hours and shrinks by cos(dec), so
+        a mistake in either unit lands on the wrong side of the line.
+
+        Mutant "separation left in degrees" (the arcmin conversion dropped, so
+        0.168 deg is compared with 10) failed both 10.1 rows:
+            AssertionError: 10.1 arcmin in ra was adopted
+            assert {'415429b24c8...f4894519570')} == {}
+            AssertionError: 10.1 arcmin in dec was adopted
+            assert {'0bb19e27433...020dd2c05e4')} == {}
+        Mutant "RA read as degrees" (``ra_hours`` handed to the separation
+        divided by 15, so an hour counts as a degree) failed the RA 10.1 row:
+            AssertionError: 10.1 arcmin in ra was adopted
+            assert {'a69de7a7aed...3cf7ee7e995')} == {}
+        Mutant "flat RA difference" (``hypot(dRA x 15, dDec) x 60``, no
+        cos(dec), no wrap) failed both RA rows, 9.9 arcmin read as 10.5 and
+        10.1 as 10.7:
+            AssertionError: [{'binning': 1, 'exposure_s': 60.0, 'filter': 'L',
+            'frame_type': 'Light', ...}]
+            assert [] == ['bba89f4deea...c2b803c572cd']
+            assert 10.748 == 10.1 ± 0.001
+        """
+        dec = 20.0
+        old = _step("L")
+        s = _session(5.0, dec, [old], {0: 2})
+        if axis == "ra":
+            plan = _plan(5.0 + _ra_offset_h(arcmin, dec), dec, _step("L"))
+        else:
+            plan = _plan(5.0, dec + arcmin / 60.0, _step("L"))
+        m = adopt_matches(s, plan)
+        if maps:
+            assert list(m.mapping) == [old.id], m.unmatched
+            assert m.frames_matched == 2
+        else:
+            assert m.mapping == {}, f"{arcmin} arcmin in {axis} was adopted"
+            entry, = m.unmatched
+            assert entry["separation_arcmin"] == pytest.approx(arcmin,
+                                                               abs=0.001)
+
+    def test_right_ascension_wraps_at_24h(self):
+        """23.998 h and 0.002 h are 3.4 arcmin apart at Dec 20, not 24 h.
+
+        Mutant "flat RA difference" failed (and so did "RA read as
+        degrees"):
+            AssertionError: [{'binning': 1, 'exposure_s': 60.0, 'filter': 'L',
+            'frame_type': 'Light', ...}]
+            assert [] == ['d591d052586...cdf072b0e6dd']
+        """
+        old = _step("L")
+        s = _session(23.998, 20.0, [old], {0: 1})
+        m = adopt_matches(s, _plan(0.002, 20.0, _step("L")))
+        assert list(m.mapping) == [old.id], m.unmatched
+
+    def test_high_declination_shrinks_the_ra_step(self):
+        """At Dec 80, 0.04 h of RA is 36 arcmin flat but 6.3 arcmin of sky:
+        the same field. 0.08 h is 12.5 arcmin of sky and is not.
+
+        Mutant "flat RA difference" failed the first half:
+            AssertionError: assert [] == ['392c7a52de2...86f19f12ccaf']
+        Mutants "no coordinate check", "separation left in degrees" and "RA
+        read as degrees" failed the second half, 12.5 arcmin adopted (the
+        first of them shown):
+            AssertionError: assert {'c309f6da285...44c8b030de2')} == {}
+        """
+        near, far = _step("L"), _step("R")
+        s = _session(3.0, 80.0, [near], {0: 1})
+        assert list(adopt_matches(
+            s, _plan(3.04, 80.0, _step("L"))).mapping) == [near.id]
+        s2 = _session(3.0, 80.0, [far], {0: 1})
+        m = adopt_matches(s2, _plan(3.08, 80.0, _step("R")))
+        assert m.mapping == {}
+        assert m.unmatched[0]["separation_arcmin"] == pytest.approx(12.5,
+                                                                    abs=0.01)
+
+
+class TestControls:
+    def test_control_the_same_place_still_maps(self):
+        """Identical coordinates map, as every S1 ADOPT did."""
+        old = _step("L")
+        s = _session(5.0, 20.0, [old], {0: 2})
+        plan = _plan(5.0, 20.0, _step("L"))
+        m = adopt_matches(s, plan)
+        assert m.mapping == {old.id: (plan.targets[0].id,
+                                      plan.targets[0].steps[0].id)}
+
+    def test_control_a_frameless_moved_step_is_neither_listed_nor_mapped(self):
+        """A step with no frames has nothing to carry: not put in front of
+        the operator, and not re-keyed either.
+
+        Mutant "frameless moved steps listed" (the moved branch lists a step
+        whatever its frame count) failed:
+            AssertionError: assert ['L', 'R'] == ['L']
+              Left contains one more item: 'R'
+        Mutant "no coordinate check" failed the other half, both mapped:
+            AssertionError: assert {'bccd1ac2fb7...ee87fd6683d')} == {}
+              Left contains 2 more items:
+        """
+        s = _session(5.0, 20.0, [_step("L"), _step("R")], {0: 1})
+        m = adopt_matches(s, _plan(5.0, 21.0, _step("L"), _step("R")))
+        assert m.mapping == {}
+        assert [e["filter"] for e in m.unmatched] == ["L"]
+
+    def test_control_the_other_reasons_carry_no_separation(self):
+        """A step with no match, or with two, has no one target to measure
+        against, so its ``separation_arcmin`` is null and its reason is the
+        one it always was."""
+        s = _session(5.0, 20.0, [_step("L"), _step("Ha")], {0: 1, 1: 1})
+        m = adopt_matches(s, _plan(5.0, 20.0, _step("L"), _step("L")))
+        assert [(e["filter"], e["reason"], e["separation_arcmin"])
+                for e in m.rest()] == [("L", AMBIGUOUS, None),
+                                       ("Ha", NO_MATCH, None)]
+
+
+# ------------------------------------------------------------ the route (#190)
+
+#: M16's real coordinates, and the M31 coordinates the wizard wrote under its
+#: name (``nodes.py``'s TARGET default).
+M16_RA, M16_DEC = "18h 18m 48s", "-13 49 00"
+M31_RA_H, M31_DEC = 0.712222, 41.269167
+
+
+def _m16_flow() -> dict:
+    """TARGET "M16" at M16, feeding L then R captures."""
+    def capture(nid, filt, count):
+        return {"id": nid, "type": "capture", "x": 0, "y": 0,
+                "params": {"filter": filt, "exposure": 0.05, "gain": 100,
+                           "bin": "1", "count": count, "goal": 0}}
+    nodes = [{"id": "t", "type": "target", "x": 0, "y": 0,
+              "params": {"name": "M16", "ra": M16_RA, "dec": M16_DEC}},
+             capture("c1", "L", 3), capture("c2", "R", 2)]
+    edges = [{"from": "t", "fromPort": "target", "to": "c1", "toPort": "run"},
+             {"from": "c1", "fromPort": "complete", "to": "c2",
+              "toPort": "run"}]
+    return {"nodes": nodes, "edges": edges}
+
+
+async def test_m31_frames_filed_as_m16_are_never_adopted_onto_m16(rig):
+    """#190's session: saved before S1 under the name "M16", its target at
+    M31's coordinates, two L subs and one R sub banked. The flow now points
+    at the real M16. Name and recipe match; the sky does not.
+
+    The adopt question lists both steps as unmatched, 6210 arcmin away, and
+    counts none as matched. ADOPT with ``accept_dropped`` then starts the
+    session with every frame still on its own step: none counts toward
+    tonight's M16.
+
+    Mutant "no coordinate check" failed at the first answer, all three
+    Andromeda subs offered to M16 as matched:
+        AssertionError: {'frames': 3, 'matched': 3, 'session_id':
+        '0fc1205b5493438fb9d8254e0d01cec1', 'unmatched': []}
+        assert (3 == 3 and 3 == 0)
+    Mutant "separation left in degrees" failed at the reported separation,
+    the right distance in the wrong unit:
+        assert 103.509 == 6210.6 ± 0.5
+    """
+    fid = await rig.save_flow(_m16_flow())
+    old_l = ExposureStep(filter="L", exposure_s=0.05, count=3)
+    old_r = ExposureStep(filter="R", exposure_s=0.05, count=2)
+    t = Target(name="M16", ra_hours=M31_RA_H, dec_deg=M31_DEC,
+               steps=[old_l, old_r])
+    old = Session(name="pre-S1", created_ts=1.0, status="dormant",
+                  auto_resume=True, origin="flow", origin_id=fid,
+                  plan=SequencePlan(name="pre-S1", targets=[t]))
+    for st, n in ((old_l, 2), (old_r, 1)):
+        old.frames.extend(SessionFrame(target_id=t.id, step_id=st.id)
+                          for _ in range(n))
+    _stored(old)
+    original = _bytes(old.id)
+    tonight = _compiled(_m16_flow(), fid)
+    tonight_steps = {st.id for tt in tonight.targets for st in tt.steps}
+
+    r = await rig.run(fid)
+
+    assert r.status_code == 409, r.text
+    body = r.json()["detail"]
+    assert body["code"] == "adopt", body
+    assert body["adopt"]["frames"] == 3 and body["adopt"]["matched"] == 0, \
+        body["adopt"]
+    listed = {u["step_id"]: u for u in body["adopt"]["unmatched"]}
+    assert set(listed) == {old_l.id, old_r.id}
+    for u in listed.values():
+        assert u["separation_arcmin"] == pytest.approx(6210.6, abs=0.5), u
+        assert "arcmin" in u["reason"], u
+    assert _bytes(old.id) == original, "a refusal wrote the session"
+
+    r = await rig.run(fid, adopt=True, accept_dropped=True)
+
+    assert r.status_code == 200, r.text
+    start = rig.starts[-1]
+    assert start.won and start.session_id == old.id
+    assert start.frames == [(t.id, old_l.id), (t.id, old_l.id),
+                            (t.id, old_r.id)], start.frames
+    assert r.json()["session"]["adopted"]["matched"] == 0
+    assert not set(session_store.load(old.id).accepted_by_step()) \
+        & tonight_steps, "Andromeda's frames count toward M16"

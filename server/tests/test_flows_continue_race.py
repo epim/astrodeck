@@ -288,20 +288,55 @@ async def test_a_resume_arm_run_that_ends_in_the_gap_is_continued_whole(
 
 
 async def test_control_continue_starts_first_and_resume_arm_is_refused(
-        rig, arm):
+        rig, arm, bus_lines):
     """CONTROL, the other order. ResumeArm reads the armed session and is
     parked inside its ladder; CONTINUE takes the session and its run banks;
-    then ResumeArm's start arrives with its stale copy and the engine refuses
-    it. One winner, and nothing of the loser's reaches the file.
+    then ResumeArm's ladder returns holding its stale copy. One winner, and
+    nothing of the loser's reaches the file.
 
-    RED under mutant "engine.start without its already-running refusal"
-    (``engine.py``: the ``if self.running: raise`` removed), which shows what
-    the refusal is holding: the stale copy wins a second start and its save
-    takes the frames:
+    UPDATED FOR #211 (mosaic slice H1, task T4), which changed what the loser
+    does. This test used to expect ResumeArm's stale start to REACH
+    ``engine.start`` and be refused "already running": two starts, the second
+    lost. That refusal kept the frames, but ResumeArm then logged a healthy
+    run as a failed start and armed a ten-minute backoff over it. T4 makes
+    the tick re-read the session under the store's write lock after the
+    ladder and stand down, with one info line, when a run has started; it no
+    longer calls ``engine.start`` at all here. So the expectation is now one
+    start (CONTINUE's), no hold and no backoff on the arm, and one stand-down
+    line that names the run. The old expectation failed against T4's tick,
+    observed verbatim:
 
-        AssertionError: the session file lost 2 frame(s) the winning run banked
-        assert ['ba94b12235b...809c4559e82b'] == []
-          Left contains 2 more items, first extra item: 'ba94b12235b341d09f0c75b5f2770b46'
+        AssertionError: [Start(won=True, session_id='43cb92df7ac140b391952407a22aaaf4', ...
+        assert [(True, '43cb...407a22aaaf4')] == [(True, '43cb...407a22aaaf4')]
+          Right contains one more item: (False, '43cb92df7ac140b391952407a22aaaf4')
+
+    Mutants run in a copy of ``server/``, each from a byte backup of the file
+    it changes and restored byte-identical (SHA-256) after, observed verbatim:
+
+    RED under mutant "no re-check" (``_still_startable`` returns ``armed, ""``
+    at once: the pre-T4 tick, which starts the copy it read before the
+    ladder). The engine's refusal still keeps the frames; the tick is what is
+    wrong:
+
+        AssertionError: ResumeArm's stale copy reached engine.start:
+        [Start(won=True, session_id='0693973b638840caba45a9ef5424c73b', [...]
+        error=''), Start(won=False, session_id='0693973b638840caba45a9ef5424c73b',
+        [...] error='a sequence is already running')]
+        assert [(True, '0693...9ef5424c73b')] == [(True, '0693...9ef5424c73b')]
+          Left contains one more item: (False, '0693973b638840caba45a9ef5424c73b')
+
+    RED under mutant "no running re-check" (the ``if self.engine.running``
+    branch of ``_still_startable`` removed). The status check then stands the
+    tick down, so no start is made, but for the wrong reason: the line must
+    name the run, not the status:
+
+        AssertionError: ["auto-resume stood down for 'continue me': it is active now, not dormant"]
+        assert (1 == 1 and 'a run started' in "auto-resume stood down for 'continue me': it is active now, not dormant")
+
+    GREEN under mutant "engine.start without its already-running refusal"
+    (``engine.py``: the ``if self.running: raise`` removed), which was this
+    test's recorded mutant before T4. It no longer reaches that refusal: the
+    tick's stand-down, not the engine, is what holds this interleaving now.
     """
     fid = await rig.save_flow(LR)
     one = await rig.night_one(fid, [0])
@@ -327,9 +362,14 @@ async def test_control_continue_starts_first_and_resume_arm_is_refused(
     assert lost == [], (
         f"the session file lost {len(lost)} frame(s) the winning run banked")
     race = rig.starts[1:]
-    assert [(s.won, s.session_id) for s in race] == [(True, one.id),
-                                                     (False, one.id)], race
-    assert "already running" in race[1].error
+    assert [(s.won, s.session_id) for s in race] == [(True, one.id)], (
+        f"ResumeArm's stale copy reached engine.start: {race}")
+    assert (arm._retry_at, arm.hold) == (0.0, None), (
+        "a run that is going is not a refusal to back off from")
+    stood_down = [m for lvl, m, _src in bus_lines
+                  if lvl == "info" and "stood down" in m]
+    assert len(stood_down) == 1 and "a run started" in stood_down[0], (
+        stood_down)
 
 
 async def test_a_session_deleted_before_the_lock_is_not_recreated(

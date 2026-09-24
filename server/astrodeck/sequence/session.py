@@ -284,6 +284,39 @@ class SessionStore:
                 continue
         return None
 
+    def current_for_flow(self, flow_id: str) -> Session | None:
+        """The session that is this flow's work, or None: the newest session
+        the flow started, by ``created_ts`` and of ANY status, and None when
+        that newest one was abandoned.
+
+        ONE RULE, EVERY READER (#189 hardening A2). The card's progress chip
+        and Run's CONTINUE both ask "which ledger is this flow's", and they
+        used to answer it two ways: the chip took the newest session that was
+        not abandoned, Run the newest of any status. They parted as soon as a
+        flow held the session a START OVER leaves behind, which stays dormant
+        and unarmed for good: abandon the newer session and the chip fell
+        back to that old ledger while Run started fresh, so the card counted
+        frames toward a session no button would continue. Callers decide
+        what to do with the answer; only this method decides which session
+        it is.
+
+        NEVER PAST THE NEWEST. Whatever became of the newest session, an
+        older one is a ledger the operator chose to leave, and reading it
+        again (the chip) or continuing it (Run) would reopen it unasked.
+        A complete newest is returned: the chip shows what it banked, and
+        Run, which continues only a dormant session, starts fresh (reopening
+        a complete one is I-30). An abandoned newest is None: the operator
+        closed it, so there is nothing to show and nothing to continue.
+
+        Through ``newest_for_flow``, so the order (created, not updated) and
+        the skip over an unreadable file are that method's rules and not a
+        second copy of them.
+        """
+        s = self.newest_for_flow(flow_id, SESSION_STATUSES)
+        if s is None or s.status == "abandoned":
+            return None
+        return s
+
     #: Serialises read-modify-write against plain writes. RLock because
     #: ``save_run_state`` holds it across a ``load`` and a ``save``, and
     #: because ``write_locked`` callers go on to call ``save`` (directly, or
@@ -305,14 +338,11 @@ class SessionStore:
         and a section with no ``await`` in it cannot be interleaved by
         anything on that loop. Writers on WORKER threads - a route's
         ``asyncio.to_thread(session_store.save, ...)`` - are not stopped by
-        that. ``save``, ``save_run_state`` and ``backup`` take this lock, so
-        it holds them off until the section, ``engine.start``'s own ``save``
-        included, is done.
-
-        ``delete`` does NOT take it, so a worker-thread delete is not held
-        off, and the DELETE route checks status and unlinks across awaits
-        anyway: the #167 shape, filed as #212. Holding this lock does not
-        make a session safe from deletion.
+        that. ``save``, ``save_run_state``, ``backup`` and ``delete`` take
+        this lock, so it holds them off until the section, ``engine.start``'s
+        own ``save`` included, is done. The DELETE route re-reads and unlinks
+        inside a section of its own (#212), so a delete cannot land between
+        a section's read and its start either.
 
         Re-entrant, so ``save`` inside it does not deadlock. Hold it for
         synchronous work only: never ``await`` inside it. An ``await`` would
@@ -412,16 +442,25 @@ class SessionStore:
         NEVER touches FITS.
 
         The backup goes with it: a ``.bak`` left behind is a copy of a ledger
-        the operator deleted, which nothing lists and nothing would remove."""
+        the operator deleted, which nothing lists and nothing would remove.
+
+        UNDER THE WRITE LOCK (#212), like every other write. Without it a
+        worker-thread delete could unlink a session in the middle of a
+        ``write_locked`` section that had just re-read it and decided to
+        start it (Run CONTINUE, ResumeArm), and ``engine.start``'s save then
+        put a deleted ledger back on disk, running. Re-entrant, so the prune
+        sweep, which deletes from inside ``save``, still works, and so does
+        the DELETE route, which calls this inside its own section."""
         path = self._path(session_id)          # validates the id (KeyError)
-        if path.exists():
-            path.unlink()
-        bak = path.with_suffix(path.suffix + ".bak")
-        if bak.exists():
-            bak.unlink()
-        side_dir = _sessions_dir() / session_id
-        if side_dir.is_dir():
-            shutil.rmtree(side_dir, ignore_errors=True)
+        with self._write_lock:
+            if path.exists():
+                path.unlink()
+            bak = path.with_suffix(path.suffix + ".bak")
+            if bak.exists():
+                bak.unlink()
+            side_dir = _sessions_dir() / session_id
+            if side_dir.is_dir():
+                shutil.rmtree(side_dir, ignore_errors=True)
 
     def thumbs_dir(self, session_id: str) -> Path:
         self._path(session_id)                 # id validation only (KeyError)

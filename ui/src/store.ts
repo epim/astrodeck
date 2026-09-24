@@ -982,12 +982,17 @@ const PREVIEW_PERSISTED = loadPreviewPersisted();
 const TOUCH_INIT = loadTouch();
 haptics.enabled = TOUCH_INIT.hapticsEnabled;
 
-export const useStore = create<AppState>((set, get) => ({
+export const useStore = create<AppState>((set, get, storeApi) => ({
   // Flows. The actions come from the slice module and are spread flat, like
   // every other action here; `flows` is the one nested field, matching the
   // `sequence` / `polar` grouping convention.
+  //
+  // `storeApi` is how the slice watches `sequence` to keep the TARGET chip
+  // current while the open flow's run shoots (#214): a subscription rather
+  // than a public action, so the sign-out gate has no new store member to
+  // classify.
   flows: FLOWS_INIT,
-  ...createFlowsActions(set, get),
+  ...createFlowsActions(set, get, storeApi),
   // --- core ---
   view: "connect",
   helpTopic: null,
@@ -2041,6 +2046,8 @@ export const useStore = create<AppState>((set, get) => ({
                    && seq.state !== "aborting") {
           lastCaptureAtMs = null;          // no run: nothing can be overdue
         }
+        // The flows slice watches this write (createFlowsActions' subscription,
+        // #214): a frame landing on the OPEN flow's run re-reads its progress.
         set({ sequence: seq, runBanner, lastCaptureAtMs, lastFramesDone: doneNow,
              selectedPreviewId: pin });
 

@@ -162,7 +162,7 @@ from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
                                manifest_json, readme_text, weights_csv)
 from ..sequence.resume_arm import ResumeArm
 from ..plans import migrate_plan_policy_fields
-from ..sequence.session import (SESSION_STATUSES, Session, SessionUnreadable,
+from ..sequence.session import (Session, SessionUnreadable,
                                 migrate_legacy_resume, session_store)
 from ..sequence.session_files import active_session, files_index
 from ..weather import NoNightError, weather_service
@@ -820,6 +820,50 @@ def _refuse_plan_identity(plan: SequencePlan, status: int) -> None:
         bus.log("warning", warning, "sequence")
 
 
+_RESUME_RECOVERING = (
+    "Auto-resume is re-centring the mount after a restart and will start its "
+    "armed session when that is done: wait for it, or disarm auto-resume and "
+    "start again once the re-centring has finished.")
+
+
+def _refuse_while_resume_recovers() -> None:
+    """Raise 409 ``resume_recovering`` while ResumeArm's recovery ladder runs
+    (#189 A7, spec 5.9 "One starter per session").
+
+    ONE MOTION SOURCE AT A TIME. After a restart the ladder reads the safety
+    monitor, may autofocus, blind-solves and re-centres the mount, and it is
+    minutes long. None of it is a run, so ``engine.running`` is False the
+    whole time and ``engine.start``'s "already running" refusal does not
+    see it. A start that got in put a run's first slew on a mount the ladder
+    was still slewing; the ladder only notices at its next step
+    (``ResumeArm._a_run_took_over``), never in the middle of one.
+
+    ONE HELPER FOR THE FOUR HTTP START PATHS, called IMMEDIATELY before
+    ``engine.start`` with no ``await`` between. That is what makes a flag
+    enough: ResumeArm raises ``recovering`` in the same synchronous stretch as
+    its own ``engine.running`` check, so a route's check-and-start runs either
+    wholly before that check (and the tick then finds the engine running) or
+    wholly after the flag went up. An ``await`` added between this call and
+    the start reopens the gap. ResumeArm, the fifth start path, is the one
+    this guards against, so it does not call this.
+
+    Not a refusal of the session: nothing is written, so it stays dormant
+    and armed, and the ladder's own start follows. Disarming does not cut
+    the ladder short (the tick finds the session disarmed after it and
+    stands down), which is why the sentence says to start again once the
+    re-centring has finished. Nothing else stops it either, and no route
+    says it is running: #220."""
+    if resume_arm.recovering:
+        raise HTTPException(409, detail={"detail": _RESUME_RECOVERING,
+                                         "code": "resume_recovering"})
+
+
+#: The statuses ``DELETE /api/sessions/{id}`` removes. Named rather than "not
+#: active" because ``Session.status`` is a plain string: a hand-edited or
+#: half-written file can carry anything, and a delete should not guess (#212).
+_DELETABLE_STATUSES = ("dormant", "complete", "abandoned")
+
+
 def _continue_flow_session(first_read: Session, plan: SequencePlan,
                            body: FlowRunBody) -> dict:
     """CONTINUE a flow's dormant session on tonight's compile, or refuse with
@@ -829,8 +873,8 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
     the session, require it dormant, decide, replace the plan, start. There is
     no ``await`` in here, so nothing else on the event loop - ResumeArm, the
     engine's ledger writes, a finalize - runs between the read and the start,
-    and the lock holds off store saves made from worker threads (not a
-    delete, which takes no lock: #212).
+    and the lock holds off store writes made from worker threads, deletes
+    included (#212).
 
     That is the whole defence against the one-starter race (2026-09-18).
     ``patch_session`` loads, checks and saves in separate ``to_thread`` calls,
@@ -867,6 +911,10 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
 
     A refusal leaves the file exactly as it was: every change above is made
     to the in-memory copy, and only ``engine.start`` writes it.
+
+    What carries over is tonight's compile, with one exception: a session
+    that has a sensor temperature keeps it, and a different setpoint tonight
+    is said in the log, not obeyed (the comment at the replace says why).
     """
     with session_store.write_locked():
         try:
@@ -914,12 +962,42 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
             # engine.start's. Raises rather than rewrite without a copy.
             session_store.backup(s.id)
         night = len(s.nights) + 1          # engine.start appends tonight's
+        # THE SESSION KEEPS ITS SENSOR TEMPERATURE (#189 hardening A1). A
+        # flow has no cooling node, so tonight's compile carries TONIGHT'S
+        # standing setpoint, and replacing the plan with it would move a
+        # session shot at -10 °C to -15 °C because the setpoint changed in
+        # between. Subs that span two sensor temperatures cannot share one
+        # dark library, which is why ``replan_cooling`` never re-resolves a
+        # plan that has a temperature; the plan replace below went round that
+        # rule. So a temperature the session has is carried onto the plan,
+        # and ``replan_cooling`` stays a no-op for it. A session with none
+        # takes tonight's, as a resume does: no continuity to break.
+        kept_c = s.plan.cool_to
+        moved: tuple[float, float] | None = None
+        if kept_c is not None:
+            # Said only when tonight asks for a DIFFERENT temperature. A
+            # cleared setpoint asks for none, so there is no second
+            # temperature to name, and the session's own is kept quietly,
+            # as ``replan_cooling`` keeps it on a resume.
+            if plan.cool_to is not None and plan.cool_to != kept_c:
+                moved = (kept_c, plan.cool_to)
+            plan = plan.model_copy(update={"cool_to": kept_c})
         s.plan = plan
         s.name = plan.name or s.name
         # The call /api/sessions/{id}/resume makes: a continue is a NEW run
-        # and re-reads the standing setpoint (replan_cooling).
+        # and re-reads the standing setpoint, which a plan with a temperature
+        # ignores (replan_cooling).
         engine.start(replan_cooling(
             plan, config_store.cfg().cooling.setpoint_c), session=s)
+    if moved is not None:
+        # After the start, not before it: a start the engine refused
+        # ("already running") continued nothing, and must not say it did.
+        bus.log("warning",
+                f"'{s.name}' continues at {moved[0]:g}°C, the temperature "
+                f"its frames were shot at, not at tonight's setpoint of "
+                f"{moved[1]:g}°C: subs at two sensor temperatures cannot "
+                f"share one dark library. START OVER begins a new session "
+                f"at {moved[1]:g}°C.", "sequence")
     out = {"id": s.id, "night": night, "continued": True,
            "kept": len(report.kept), "new": len(report.new),
            "dropped": len(report.dropped)}
@@ -5208,10 +5286,13 @@ def create_app(*, bind_host: str | None = None,
         step with nothing banked, and its old frames are orphaned, which are
         the numbers the next CONTINUE's dropped-steps question will quote.
 
-        THE NEWEST SESSION THIS FLOW STARTED THAT WAS NOT ABANDONED, by
-        ``created_ts`` (``newest_for_flow`` says why not ``updated_ts``). An
-        abandoned session is one the operator closed: its files stay on disk,
-        but its ledger is no longer the flow's work in progress.
+        THE SESSION ``run_flow`` WOULD PICK: ``current_for_flow``, the
+        flow's newest session by ``created_ts`` whatever became of it, and
+        none when that newest one was abandoned (an abandoned session's files
+        stay on disk, but the operator closed its ledger). The same call Run
+        makes, so the chip can never name a session Run would not continue,
+        nor count toward one it would leave: the two used to differ once a
+        START OVER left an old dormant session behind (#189 hardening A2).
         """
         compiled = compile_plan(rec.graph, rec.name)
         plan, _unmapped = to_sequence_plan(
@@ -5220,8 +5301,7 @@ def create_app(*, bind_host: str | None = None,
             camera_can_cool=camera_can_cool,
             closes_on_unsafe=bool(
                 config_store.cfg().safety.close_dome_on_unsafe))
-        session = session_store.newest_for_flow(
-            flow_id, tuple(s for s in SESSION_STATUSES if s != "abandoned"))
+        session = session_store.current_for_flow(flow_id)
         return flow_progress(compiled, plan, session, flow_id=flow_id)
 
     # ORDERING: declared with the static /api/flows/<segment> routes, before
@@ -5477,23 +5557,28 @@ def create_app(*, bind_host: str | None = None,
             # before the engine's first exposure.
             await hub.stop_loop_and_wait()
         # WHICH LEDGER, decided after every guard above so a refused run never
-        # touches a session. The NEWEST session this flow started, whatever
-        # became of it, and it is continued only if it is dormant. Not "the
-        # newest dormant one": after a START OVER the old session stays dormant
-        # (unarmed) forever, and once the new one completes or is abandoned
-        # that rule would reopen the ledger the operator chose to leave. A
-        # complete newest session starts fresh (spec 5.9; reopening one whose
-        # flow now owes more is I-30).
+        # touches a session. ``current_for_flow``: the NEWEST session this
+        # flow started, whatever became of it (none if it was abandoned), and
+        # it is continued only if it is dormant. Not "the newest dormant one":
+        # after a START OVER the old session stays dormant (unarmed) forever,
+        # and once the new one completes or is abandoned that rule would
+        # reopen the ledger the operator chose to leave. A complete newest
+        # session starts fresh (spec 5.9; reopening one whose flow now owes
+        # more is I-30). The progress chip calls the same method, so it names
+        # the session this continues (#189 hardening A2).
         #
         # This read is before an await, so it is only a hint: the continue
         # re-reads the session under the write lock before it decides.
         latest = None
         if not body.fresh:
             latest = await asyncio.to_thread(
-                session_store.newest_for_flow, flow_id, SESSION_STATUSES)
+                session_store.current_for_flow, flow_id)
         continued: dict | None = None
         try:
             hub.require("camera")
+            # Both branches, and nothing awaits between here and either
+            # start: CONTINUE's locked section is synchronous too (#189 A7).
+            _refuse_while_resume_recovers()
             if latest is not None and latest.status == "dormant":
                 continued = _continue_flow_session(latest, plan, body)
             else:
@@ -5705,6 +5790,7 @@ def create_app(*, bind_host: str | None = None,
                 "max_consecutive_rejects_night, a stop time, or max_run_min")
         try:
             hub.require("camera")
+            _refuse_while_resume_recovers()          # no await until the start
             # A resume is a NEW run, so it re-reads the rig's standing setpoint
             # the same way a fresh start does -- but only if the stored plan has
             # no temperature at all. See replan_cooling for why the "only".
@@ -5814,10 +5900,46 @@ def create_app(*, bind_host: str | None = None,
         # abort() does), so a fire-and-forget render for THIS session may still
         # be mid-write — and its trailing session_store.save would RESURRECT the
         # JSON we are about to remove. Drain the matching renders before the
-        # rmtree. (The actively-running session was refused above, never here.)
+        # rmtree.
         await engine.drain_thumbs_for_session(session_id)
-        # session file + thumbs only — NEVER the FITS frames (spec §6).
-        await asyncio.to_thread(session_store.delete, session_id)
+        # THE CHECK ABOVE IS A HINT; THIS ONE DECIDES (#212). The drain is an
+        # await, and any starter - ResumeArm, /resume, Run CONTINUE - can take
+        # the session inside it. The unlink used to follow in a worker thread
+        # on the strength of the status read before the drain, so it removed
+        # the file and thumbnails of a session that was now running, answered
+        # 200, and the engine's next ledger write put the JSON back from
+        # memory. So the session is read again, judged and unlinked in one
+        # synchronous section under the store's write lock: nothing on the
+        # loop can start it in between, and no worker-thread write can land
+        # in the middle. The unlink runs on the loop for the same reason:
+        # handed to a worker, its engine check would read state that a start
+        # on the loop is halfway through changing. Measured on the dev box
+        # (2026-09-24), removing a thumbs directory costs 17 ms at 170
+        # frames and 53 ms at 600, once, on a delete the operator asked for.
+        with session_store.write_locked():
+            try:
+                s = session_store.load(session_id)
+            except KeyError:
+                # Another delete landed during the drain.
+                raise HTTPException(404, "session not found")
+            # THE ENGINE'S WORD AS WELL AS THE FILE'S. They agree unless a
+            # stale copy was saved over a running session's file, which is
+            # exactly what the PATCH race does (#167: a dormant copy loaded
+            # before an await, saved after a start). The file then says
+            # dormant while the engine writes the ledger every frame. The
+            # engine holds ``_session`` from ``start`` until the night is
+            # finalized, so this asks for the run of THIS session only; a
+            # dormant session is deletable while another one runs.
+            ours = getattr(engine, "_session", None)
+            running_it = bool(engine.running and ours is not None
+                              and ours.id == session_id)
+            if running_it or s.status == "active":
+                raise HTTPException(409, "cannot delete a running session")
+            if s.status not in _DELETABLE_STATUSES:
+                raise HTTPException(
+                    409, f"cannot delete a session that is {s.status}")
+            # session file + thumbs only — NEVER the FITS frames (spec §6).
+            session_store.delete(session_id)
         return {"deleted": session_id}
 
     @app.get("/api/sessions/{session_id}/frames/{frame_id}/thumb",
@@ -7731,6 +7853,7 @@ def create_app(*, bind_host: str | None = None,
             await hub.stop_loop_and_wait()
         try:
             hub.require("camera")
+            _refuse_while_resume_recovers()          # no await until the start
             # The OTHER start path. Stamped so a session can say which of the
             # two screens built it - the question "is the flow running?" had no
             # answer because both paths produced identical plans.
@@ -8009,6 +8132,7 @@ def create_app(*, bind_host: str | None = None,
                 "max_consecutive_rejects_night, a stop time, or max_run_min")
         try:
             hub.require("camera")
+            _refuse_while_resume_recovers()          # no await until the start
             # Same re-resolve as /api/sessions/{id}/resume -- the three entries
             # into a dormant session must not disagree about its temperature.
             engine.start(replan_cooling(

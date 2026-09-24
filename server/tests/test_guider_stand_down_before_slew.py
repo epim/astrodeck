@@ -48,8 +48,9 @@ async def sim_hub(tmp_path, monkeypatch):
                         "solar_avoidance", False)
     # The native guider, not the legacy SimGuider escape hatch.
     monkeypatch.delenv("ASTRODECK_SIM_LEGACY_GUIDER", raising=False)
-    # SimTelescope.slew sleeps in real time outside _sim_delay (#207); at this
-    # rate a hop costs its 0.5 s floor.
+    # A hop at this rate costs the slew's 0.5 s floor. That floor now goes
+    # through _sim_delay too (#207), so under the fast path this line only
+    # matters to a run that opts out of it.
     monkeypatch.setattr(SimTelescope, "SLEW_RATE_DEG_S", 1.0e6)
     h = Hub()
     await h.connect_sim()
