@@ -1504,7 +1504,12 @@ Owner, 2026-09-24, asked whether the shipped M31 example should keep commanding 
 
 - The M31 example (`flows/examples.py:56`) keeps its explicit `rotation: 23.4`. An explicit angle in an example is the intended pattern, not the I-04 defect: I-04 was a palette default that nobody chose. The S3 acceptance line on example blocks is amended to match.
 - A run whose target has a set angle commands the rotator to that angle when the target is acquired, every run. It never assumes the rotator is still where an earlier run left it.
-- Open: whether a new TARGET block may run on its default Any angle, or must have an angle chosen first (asked 2026-09-24).
+- An unframed TARGET locks its angle on the first shot. Asked what a new block with no chosen angle should do, the owner answered: "If the target block has no framing, then whatever the first angle of the first shot is, is locked as the angle. Otherwise any framed shot intrinsically has an angle."
+  - A framed TARGET (position, rotation or grid set in the framing modal) carries its angle, and every run commands it.
+  - An unframed TARGET (Any angle) takes the position angle measured by its first imaging-camera plate solve in the session, normally the centring solve before its first frame (`sky_angle.note_solved_rotation`, c38156be). That angle is stored on the session as the target's locked angle, with the solve time.
+  - From then on, the locked angle behaves exactly like a planned one. Every later acquisition, resume, flip re-centre and night commands the rotator to it, or on a fixed camera checks the measured angle against it (D11, 5.6), so frames from different nights stack.
+  - The lock is cleared only by re-framing the block, which re-anchors (ruling 3). The flow editor shows the locked angle and where it came from, so it is visible and not a hidden fact.
+  - Built in S2 alongside the angle check (U-04). Mutant: "lock re-read on every acquisition" lets the angle drift night to night; mutant "no lock" leaves a resumed night at whatever angle the rotator was left.
 
 ### Filed while applying the rulings
 
