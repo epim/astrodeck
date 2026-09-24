@@ -11,9 +11,15 @@ THE EXAMPLES ARE NOT ON DISK. They are code fixtures, merged into every read and
 refused by every write. Writing them out at first boot would mean an operator's
 edit could silently become the shipped example, and a later release "fixing" an
 example would collide with a file the user believes is theirs.
+
+ONLY ``save()`` REWRITES A FILE (carry-over 1, #150). The bookkeeping writers --
+a folder rename or delete, a run's ``touch_run`` -- change their own fields in
+the raw JSON and nothing else, so a file keeps the version it was written at
+until the operator saves it, and the read keeps saying what that version means.
 """
 from __future__ import annotations
 
+import copy
 import json
 import time
 from pathlib import Path
@@ -28,16 +34,19 @@ from .models import EXAMPLES_FOLDER, MY_FLOWS_FOLDER, FlowRecord
 #: 2 -- a target's ``rotation`` of 0 used to mean "no angle constraint"; it now
 #: means position angle 0.
 #: 3 -- a target's ``rotation`` of 23.4 was the palette default, an angle nobody
-#: chose (#150); it now reads "any angle". The writer stamps 3 on every save,
-#: which is what makes a 23.4 in a v3 file evidence that somebody meant it.
+#: chose (#150); it now reads "any angle". ``save()`` stamps 3, and nothing
+#: else stamps anything, which is what makes a 23.4 in a v3 file evidence that
+#: somebody saved it on purpose.
 #: See ``_migrate`` for why the file version is the only thing that can tell
 #: either pair of readings apart.
 FLOW_SCHEMA = 3
 FLOWS_DIR = CONFIG_DIR / "flows"
 
-#: The one-time note for the v2 -> v3 rewrite. It has to say that a DELIBERATE
-#: 23.4 was rewritten too (a duplicated M31 example carries one), because the
-#: migration cannot tell the two apart and the operator can.
+#: The note for the v2 -> v3 rewrite, said on every read of the file until the
+#: operator saves it (only ``save()`` stamps FLOW_SCHEMA, carry-over 1). It has
+#: to say that a DELIBERATE 23.4 was rewritten too (a duplicated M31 example
+#: carries one), because the migration cannot tell the two apart and the
+#: operator can.
 ROTATION_234_NOTE = (
     'angle 23.4 was the old palette default and commanded a connected rotator '
     'to PA 23.4; it now reads "any angle". Set it again if you meant it.')
@@ -131,8 +140,15 @@ def _migrate(raw: dict) -> dict:
     The notes land in ``flow["migrated"]``, REPLACING anything stored there, so
     a note is only ever this read's finding and never replayed from the file.
 
-    Read-only: the migrated dict is returned, the file is left alone until the
-    operator next saves it (which stamps the current FLOW_SCHEMA).
+    READ-ONLY, AND IT STAYS READ-ONLY UNTIL THE OPERATOR SAVES. Only ``save()``
+    stamps FLOW_SCHEMA; the bookkeeping writers edit the raw file, not this
+    result (carry-over 1). So an unsaved v2 file reads v2 every time, and the
+    note is said on every read -- the editor's, and every run's -- until a save
+    makes the file current. That is the only point at which the operator has
+    seen the migrated graph and kept it.
+
+    IT REWRITES THE DICT IT IS GIVEN, in place. A caller that will write the
+    raw JSON back hands it a copy (``_entries(pristine=True)``).
     """
     version = _schema_of(raw)
     if version > FLOW_SCHEMA:
@@ -161,6 +177,17 @@ def _migrate(raw: dict) -> dict:
             notes.append({"key": "rotation", "note": ROTATION_234_NOTE})
     flow["migrated"] = notes
     return flow
+
+
+def _record_of(raw, *, pristine: bool = False) -> FlowRecord:
+    """What this build makes of one file's parsed JSON, or an exception saying
+    why it makes nothing (``FutureFlowSchema`` for a newer build's file).
+
+    ``pristine`` migrates a copy and leaves ``raw`` exactly as the file holds
+    it -- see ``FlowStore._entries``."""
+    if not isinstance(raw, dict):
+        raise ValueError("it holds no flow record")
+    return FlowRecord(**_migrate(copy.deepcopy(raw) if pristine else raw))
 
 
 def _short_reason(exc: BaseException) -> str:
@@ -210,34 +237,61 @@ class FlowStore:
 
     # ------------------------------------------------------------------ read
 
-    def _scan(self) -> tuple[list[FlowRecord], list[dict]]:
-        """Every file in the store: the records, and a row for each file that
-        could not become one.
+    def _entries(self, *, pristine: bool = False):
+        """One walk of the directory: ``(path, raw, record, reason)`` per file.
 
-        ONE BAD FILE MUST NOT MAKE THE LIBRARY UNOPENABLE, and it must not
-        vanish either (#153). The old loop honoured the first half by skipping
-        the file, which made a damaged flow indistinguishable from a deleted
-        one. So a failure becomes a visible, read-only row instead: a file a
-        newer build wrote, JSON that does not parse, a record that fails
-        validation (an unknown node type, say). None of them is ever returned
-        as a record, so ``get`` -- and every route behind it -- answers 404.
+        ``record`` is what this build makes of the file, or None with the
+        ``reason`` it cannot: a file a newer build wrote, JSON that does not
+        parse, a record that fails validation. The judgment is ``_record_of``
+        and nothing else -- this walk applies it for the list, ``get`` and the
+        folder verbs, ``touch_run`` applies it to its one file -- so no two of
+        them can disagree about which files are rows.
+
+        ``pristine`` returns ``raw`` exactly as the file holds it, for a writer
+        that will edit it and write it back. It costs a copy, because
+        ``_migrate`` rewrites the dict it is given, so only the writers ask.
+        Without it ``raw`` is the migrated dict, which is all a row needs.
         """
-        records: list[FlowRecord] = []
-        rows: list[dict] = []
         for path in list_json(self.dir):
             raw = None
             try:
                 raw = read_json(path)
-                if not isinstance(raw, dict):
-                    raise ValueError("it holds no flow record")
-                records.append(FlowRecord(**_migrate(raw)))
+                record = _record_of(raw, pristine=pristine)
             except FileNotFoundError:
                 continue                # deleted between the listing and now
             except FutureFlowSchema as e:
-                rows.append(self._row(path, raw, str(e)))
+                yield path, raw, None, str(e)
             except Exception as e:      # noqa: BLE001 - every failure is a row
-                rows.append(self._row(path, raw, _short_reason(e)))
-        return records, rows
+                yield path, raw, None, _short_reason(e)
+            else:
+                yield path, raw, record, None
+
+    def _scan(self) -> tuple[list[FlowRecord], list[dict], set[str]]:
+        """Every file in the store: the records, a row for each file that
+        could not become one, and every id a file on disk holds.
+
+        ONE BAD FILE MUST NOT MAKE THE LIBRARY UNOPENABLE, and it must not
+        vanish either (#153). The old loop honoured the first half by skipping
+        the file, which made a damaged flow indistinguishable from a deleted
+        one. So a failure becomes a visible, read-only row instead. None of
+        them is ever returned as a record, so ``get`` -- and every route behind
+        it -- answers 404.
+
+        THE IDS ARE WHAT SHADOW THE EXAMPLES (``_examples_free``): each file's
+        stem, which is what a save and a delete address, readable or not, and
+        each record's own id.
+        """
+        records: list[FlowRecord] = []
+        rows: list[dict] = []
+        taken: set[str] = set()
+        for path, raw, record, reason in self._entries():
+            taken.add(path.stem)
+            if record is None:
+                rows.append(self._row(path, raw, reason))
+            else:
+                records.append(record)
+                taken.add(record.id)
+        return records, rows, taken
 
     @staticmethod
     def _row(path: Path, raw, reason: str) -> dict:
@@ -281,6 +335,31 @@ class FlowStore:
     def _on_disk(self) -> list[FlowRecord]:
         return self._scan()[0]
 
+    @staticmethod
+    def _examples_free(taken: set[str]) -> list[FlowRecord]:
+        """The Examples no file on disk has taken the id of.
+
+        ONE RULE, READABLE OR NOT (carry-over 7, #153). A file with an
+        example's id wins, so a corrupted fixture can be shadowed rather than
+        bricking the library. It used to take only a READABLE file's id, so a
+        damaged ``example-m16.json`` listed twice -- the example from code and
+        the file's row, one id for two entries -- and ``get`` opened the
+        example while ``delete`` refused the file. Now the row is the one
+        entry, ``get`` answers 404, and deleting the file brings the example
+        back."""
+        return [e for e in examples() if e.id not in taken]
+
+    def listing(self) -> tuple[list[FlowRecord], list[dict]]:
+        """The whole library from ONE walk of the directory: every record, the
+        Examples included, and a row for each file this build cannot open.
+
+        One walk because ``GET /api/flows`` used to take two (``load_all``,
+        then ``unreadable``), parsing and validating every file twice, and the
+        two halves of one response could disagree about a file written between
+        them."""
+        mine, rows, taken = self._scan()
+        return mine + self._examples_free(taken), rows
+
     def unreadable(self) -> list[dict]:
         """The library rows for files this build cannot open (#153): newer
         schema, unparseable JSON, or a record that fails validation. The route
@@ -288,13 +367,9 @@ class FlowStore:
         return self._scan()[1]
 
     def load_all(self) -> list[FlowRecord]:
-        """Every flow: the operator's, plus the read-only Examples.
-
-        A user flow that somehow carries an example's id wins, so a corrupted
-        fixture can be shadowed rather than bricking the library."""
-        mine = self._on_disk()
-        taken = {r.id for r in mine}
-        return mine + [e for e in examples() if e.id not in taken]
+        """Every flow: the operator's, plus the read-only Examples no file on
+        disk shadows (``_examples_free``)."""
+        return self.listing()[0]
 
     def get(self, flow_id: str) -> FlowRecord:
         for r in self.load_all():
@@ -305,14 +380,15 @@ class FlowStore:
     def folders(self) -> list[dict]:
         """Folder rows with counts, for the library's section headers.
 
-        An unreadable row counts in the folder it names, because the library
-        lists it there: a header reading 0 above a visible row would be a
-        header that lies, and a folder holding only damaged flows would vanish.
+        Counted from ``listing()``, the same entries the library draws: an
+        unreadable row counts in the folder it names, because a header reading
+        0 above a visible row would be a header that lies, and a folder holding
+        only damaged flows would vanish. A shadowed example is not counted,
+        because it is not drawn.
         """
         counts: dict[str, int] = {}
-        mine, rows = self._scan()
-        taken = {r.id for r in mine}
-        for r in mine + [e for e in examples() if e.id not in taken]:
+        records, rows = self.listing()
+        for r in records:
             counts[r.folder] = counts.get(r.folder, 0) + 1
         for row in rows:
             counts[row["folder"]] = counts.get(row["folder"], 0) + 1
@@ -328,14 +404,43 @@ class FlowStore:
     # ----------------------------------------------------------------- write
 
     def _write(self, record: FlowRecord) -> None:
-        """The one serialiser for a stored flow: stamped with FLOW_SCHEMA, and
-        WITHOUT ``migrated``. That note is a message about one read; written
-        into the file it would be a property of the flow, and it would stamp a
-        v3 file with a v2 file's finding."""
+        """``save()``'s serialiser, and ONLY save's: stamped with FLOW_SCHEMA,
+        and WITHOUT ``migrated``. That note is a message about one read;
+        written into the file it would be a property of the flow, and it would
+        stamp a v3 file with a v2 file's finding.
+
+        Nothing else may call it. It writes the MIGRATED record, and stamping
+        that is right only when the operator has just seen and kept the
+        migrated graph -- which is what a save is. The bookkeeping writers use
+        ``_edit_raw`` (carry-over 1)."""
         write_json_atomic(self._path(record.id),
                           {"schema_version": FLOW_SCHEMA, "id": record.id,
                            "flow": record.model_dump(by_alias=True,
                                                      exclude={"migrated"})})
+
+    @staticmethod
+    def _edit_raw(path: Path, raw: dict, fields: dict) -> None:
+        """Write ``fields`` into a stored file's ``flow`` object and change
+        NOTHING ELSE: not its ``schema_version``, not its graph, not a key this
+        build does not model (carry-over 1, #150).
+
+        ``raw`` is the file exactly as read (``_entries(pristine=True)``). Going
+        through the record instead -- what the folder verbs and ``touch_run``
+        used to do -- writes the MIGRATED graph at FLOW_SCHEMA: a v2 file's
+        inherited 23.4 lands as -1 in a v3 file, and the version that let the
+        next read say so is gone. Moving a flow to another folder, or running
+        it, would have silently re-meant it.
+
+        Atomic like every write here: ``write_json_atomic`` stages, fsyncs,
+        replaces and keeps a ``.bak``.
+        """
+        flow = raw.get("flow")
+        if not isinstance(flow, dict):
+            # Every FlowRecord field has a default, so a file with no flow
+            # object still opens; give the fields somewhere to live.
+            flow = raw["flow"] = {}
+        flow.update(fields)
+        write_json_atomic(path, raw)
 
     def _newer_schema_on_disk(self, flow_id: str) -> int | None:
         """The schema of the file at ``flow_id`` when a newer build wrote it,
@@ -368,17 +473,21 @@ class FlowStore:
 
         Best-effort by contract: a read-only flow returns False rather than
         raising, because the caller is bookkeeping after a run that is already
-        under way. A file this build cannot read is not a record, so ``get``
-        misses and nothing is written over it.
+        under way. A file this build cannot open (a row, #153) is not a record,
+        so nothing is written into it.
 
-        It writes the MIGRATED record (a v2 23.4 lands as -1 at schema 3), and
-        that is the angle the run it records actually used.
+        IT EDITS THE RAW FILE: ``last_run`` and ``last_result``, nothing else,
+        and the file keeps its ``schema_version`` (carry-over 1). It used to
+        write the migrated record back at FLOW_SCHEMA, so the first run of a
+        v2 flow retired its 23.4 note for good -- said once, in a log line, and
+        never again. Only ``save()`` stamps FLOW_SCHEMA; until the operator
+        saves, every read of the flow, and every run, says the note.
+
+        THE FILE AT ``flow_id``, and only when it holds that flow: the one a
+        save or a delete of that id addresses. Opening one file, not scanning
+        the library, because this runs at every start and every finalize.
         """
-        try:
-            record = self.get(flow_id)
-        except KeyError:
-            return False
-        if record.readonly or any(e.id == record.id for e in examples()):
+        if any(e.id == flow_id for e in examples()):
             return False
         update: dict = {}
         if ts is not None:
@@ -387,7 +496,15 @@ class FlowStore:
             update["last_result"] = result
         if not update:
             return False
-        self._write(record.model_copy(update=update))
+        try:
+            path = self._path(flow_id)
+            raw = read_json(path)
+            record = _record_of(raw, pristine=True)
+        except Exception:           # noqa: BLE001 - missing, a row, a bad id
+            return False
+        if record.id != flow_id or record.readonly:
+            return False
+        self._edit_raw(path, raw, update)
         return True
 
     def save(self, record: FlowRecord) -> FlowRecord:
@@ -418,13 +535,21 @@ class FlowStore:
         return record
 
     def delete(self, flow_id: str) -> bool:
+        """Remove the file at ``flow_id``. False when there is none.
+
+        AN EXAMPLE'S ID REMOVES THE FILE THAT SHADOWS IT, when there is one
+        (carry-over 7, #153). A file on disk takes its id from the Examples,
+        readable or not, so a damaged ``example-m16.json`` is listed as a row
+        and hides the example; ``save`` refuses an example's id, so deleting
+        the file is the only way back, and the example, being code, returns.
+        With no file the id IS the shipped example, and that is refused."""
+        path = self._path(flow_id)
+        if path.exists():
+            path.unlink()
+            return True
         if any(e.id == flow_id for e in examples()):
             raise ReadOnlyFlow("the shipped examples cannot be deleted")
-        path = self._path(flow_id)
-        if not path.exists():
-            return False
-        path.unlink()
-        return True
+        return False
 
     def rename_folder(self, old: str, new: str) -> int:
         """Move every flow in ``old`` to ``new``. Returns how many moved.
@@ -439,14 +564,18 @@ class FlowStore:
         middle of the folder, leaving some flows moved and the route answering
         500. A graph is refused where it would RUN. Everything this walks is a
         file on disk, the operator's by construction (the Examples are code);
-        a file this build cannot read is not a record, so it stays put."""
+        a file this build cannot open is a row, not a record, so it stays put.
+
+        A RAW EDIT: ``folder`` and ``updated_ts``, nothing else, and each file
+        keeps its ``schema_version`` (carry-over 1, ``_edit_raw``). Tidying a
+        folder must not re-mean the flows in it."""
         if old == EXAMPLES_FOLDER or new == EXAMPLES_FOLDER:
             raise ReadOnlyFlow("the Examples folder is fixed")
         moved = 0
-        for r in self._on_disk():
-            if r.folder == old:
-                self._write(r.model_copy(update={"folder": new,
-                                                 "updated_ts": time.time()}))
+        for path, raw, record, _reason in self._entries(pristine=True):
+            if record is not None and record.folder == old:
+                self._edit_raw(path, raw, {"folder": new,
+                                           "updated_ts": time.time()})
                 moved += 1
         return moved
 

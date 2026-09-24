@@ -23,6 +23,13 @@ side the mount ACTUALLY REPORTED while the target was still east of the
 meridian and trips only when the side after the crossing is that same one.
 `TestItReasonsFromMeasurementNotConvention` is the class that pins this down; it
 runs the whole thing with the convention inverted and expects no hold.
+
+THE RECORD IS THE PRE-FLIP SIDE, ALWAYS, AND ONE PER TARGET. A flip that
+succeeds inside the hold used to overwrite it with the post-flip side, so the
+next frame re-tripped (#136, 2026-09-22); and it was one engine-wide slot, so
+another target near its meridian could overwrite it (I-19). The first is
+pinned by `test_a_flip_that_arrives_releases_the_hold`, the second by
+`TestTheRecordIsKeptPerTarget`.
 """
 from __future__ import annotations
 
@@ -78,6 +85,9 @@ def _engine(sim_hub, monkeypatch, *, side="west", ttf_h=-0.5,
     target's RA and the clock: the invariant is about the RELATION between the
     countdown and the measured side, and driving it through sidereal time would
     make every assertion here depend on what hour the suite happens to run at.
+
+    ``pre_flip`` is THIS target's record. The memory is keyed per target (I-19,
+    extending #136), so None means no entry for it at all.
     """
     t = _target(dec=dec)
     e = SequenceEngine(sim_hub)
@@ -85,7 +95,7 @@ def _engine(sim_hub, monkeypatch, *, side="west", ttf_h=-0.5,
     cfg = AppConfig()
     cfg.safety.flip_owed_hold_min = hold_min
     e._cfg = cfg
-    e._pre_flip_side = pre_flip
+    e._pre_flip_side = {} if pre_flip is None else {t.id: pre_flip}
 
     async def _pier():
         return {"east": PierSide.EAST, "west": PierSide.WEST}.get(
@@ -167,26 +177,64 @@ class TestItRefusesTheFrame:
                                                          monkeypatch):
         """The control that keeps this from being a worse bug than the one it
         fixes: when the mount DOES flip, the run resumes rather than skipping
-        a target that is now perfectly shootable."""
+        a target that is now perfectly shootable - on this frame AND the next.
+
+        THE NEXT FRAME IS THE POINT (#136). This case used to stop after one
+        call and assert that the hold had recorded the post-flip side, which
+        pinned the defect: comparing the next frame against the side the mount
+        flipped TO is exactly what re-trips the invariant. On 2026-09-22 that
+        cost 26 minutes, 16 re-slews and a set-aside target seven minutes
+        after a good flip. So a second call follows, with the mount still
+        east and the countdown still negative, and it must go straight
+        through. The record stays the PRE-flip side.
+
+        The second call's hold bound is cut to about a second only so that a
+        regression fails in a second rather than after the full minute; the
+        assertion is whether it holds at all.
+
+        MUTATION "restore = now_side" (``self._pre_flip_side[key] = now_side``
+        put back in `_hold_for_owed_flip` on success). Observed - the retry
+        count is however many 0.01 s polls fit in the cut hold -
+            Failed: the frame after a good flip was held again and the target
+            set aside: T: a meridian flip has been owed for 0 min and the
+            mount is still on the east side; moving on rather than exposing
+            across the pier (the flip was re-attempted 78 more time(s))
+        """
         e, t = _engine(sim_hub, monkeypatch, side="west", ttf_h=-0.4,
                        hold_min=1.0)
         state = {"side": "west"}
+        flips: list[str] = []
 
         async def _pier():
             return {"east": PierSide.EAST,
                     "west": PierSide.WEST}[state["side"]]
 
         async def _flip(target, next_exposure_s=0.0):
+            flips.append(state["side"])
             state["side"] = "east"          # this time the mount flips
 
         monkeypatch.setattr(sim_hub.devices["telescope"], "pier_side", _pier)
         monkeypatch.setattr(e, "_maybe_meridian_flip", _flip)
         monkeypatch.setattr(engine_mod, "FLIP_OWED_POLL_S", 0.01)
         await e._enforce_flip_owed(t)       # returns; does NOT raise
-        assert e._pre_flip_side == "east", (
-            "the new side was not recorded, so the next frame would compare "
-            "against a side the mount has left")
         assert e.flip_owed is False
+        assert flips == ["west"], f"premise: one flip, taken from west: {flips}"
+
+        # The next frame: still east, still past the meridian.
+        e._cfg.safety.flip_owed_hold_min = 0.02
+        try:
+            await e._enforce_flip_owed(t)
+        except StopTarget as exc:
+            pytest.fail(
+                f"the frame after a good flip was held again and the target "
+                f"set aside: {exc} (the flip was re-attempted "
+                f"{len(flips) - 1} more time(s))")
+        assert flips == ["west"], (
+            f"the frame after a good flip re-armed the flip gate: {flips}")
+        assert e.flip_owed is False
+        assert e._pre_flip_side == {t.id: "west"}, (
+            f"the record is not the side the mount was on BEFORE the flip: "
+            f"{e._pre_flip_side!r}")
 
 
 # ------------------------------------------------- and it refuses nothing else
@@ -200,7 +248,8 @@ class TestItDoesNotFireOtherwise:
         e, t = _engine(sim_hub, monkeypatch, side="west", ttf_h=+2.0,
                        pre_flip=None)
         await e._enforce_flip_owed(t)
-        assert e._pre_flip_side == "west", "the pre-flip side was not recorded"
+        assert e._pre_flip_side == {t.id: "west"}, (
+            f"the pre-flip side was not recorded: {e._pre_flip_side!r}")
         assert e.flip_owed is False
 
     async def test_a_flip_that_happened_passes(self, sim_hub, monkeypatch):
@@ -219,6 +268,9 @@ class TestItDoesNotFireOtherwise:
                        pre_flip=None)
         await e._enforce_flip_owed(t)
         assert e.flip_owed is False
+        assert e._pre_flip_side == {}, (
+            f"a target seen only west of the meridian got a pre-flip record: "
+            f"{e._pre_flip_side!r}")
 
     async def test_a_plan_with_no_flip_is_not_guarded(self, sim_hub,
                                                       monkeypatch):
@@ -271,7 +323,8 @@ class TestItDoesNotFireOtherwise:
                        pre_flip=None)
         monkeypatch.setattr(sim_hub.devices["telescope"], "pier_side", _dead)
         await e._enforce_flip_owed(t)
-        assert e._pre_flip_side is None, "an unreadable mount set the baseline"
+        assert e._pre_flip_side == {}, (
+            f"an unreadable mount set the baseline: {e._pre_flip_side!r}")
         assert e.flip_owed is False
 
     async def test_zero_disables_it(self, sim_hub, monkeypatch):
@@ -300,7 +353,7 @@ class TestItReasonsFromMeasurementNotConvention:
         e, t = _engine(sim_hub, monkeypatch, side="east", ttf_h=+2.0,
                        pre_flip=None)
         await e._enforce_flip_owed(t)            # pre-meridian: records EAST
-        assert e._pre_flip_side == "east"
+        assert e._pre_flip_side == {t.id: "east"}
 
         monkeypatch.setattr(engine_mod.schedule, "hours_to_meridian_flip",
                             lambda ra, lon, now=None: -0.4)
@@ -319,13 +372,141 @@ class TestItReasonsFromMeasurementNotConvention:
         e, t = _engine(sim_hub, monkeypatch, side="east", ttf_h=+2.0,
                        pre_flip=None)
         await e._enforce_flip_owed(t)
-        assert e._pre_flip_side == "east"
+        assert e._pre_flip_side == {t.id: "east"}
 
         monkeypatch.setattr(engine_mod.schedule, "hours_to_meridian_flip",
                             lambda ra, lon, now=None: -0.4)
         await _never_flips(e, monkeypatch)
         with pytest.raises(StopTarget):
             await e._enforce_flip_owed(t)        # still east: owed
+
+
+# ------------------------------------------------------ one record per target
+
+
+class TestTheRecordIsKeptPerTarget:
+    """I-19, extending #136: the pre-flip side is one record PER TARGET.
+
+    It was one engine-wide slot, so a run that alternates targets near the
+    meridian - which a rotating mosaic always does - overwrote one target's
+    record with another's. The backstop was then disarmed exactly where it is
+    needed: a target re-acquired past its meridian on the side it was on
+    before, because the AM5 picks its side from the hour angle and a goto
+    taken inside the flip-lead window stays on the pre-flip side.
+
+    Two targets here, told apart by RA: the countdown stub answers per RA,
+    and one pier side is shared, because it is one mount.
+    """
+
+    @staticmethod
+    def _two(sim_hub, monkeypatch):
+        a, b = _target("A", ra=1.0), _target("B", ra=2.0)
+        e = SequenceEngine(sim_hub)
+        e.plan = SequencePlan(targets=[a, b], meridian_flip=True, guide=False)
+        cfg = AppConfig()
+        cfg.safety.flip_owed_hold_min = 0.02
+        e._cfg = cfg
+        ttf = {}
+        mount = {"side": "west"}
+
+        async def _pier():
+            return {"east": PierSide.EAST, "west": PierSide.WEST}.get(
+                mount["side"], PierSide.UNKNOWN)
+
+        monkeypatch.setattr(sim_hub.devices["telescope"], "pier_side", _pier)
+        monkeypatch.setattr(engine_mod.schedule, "hours_to_meridian_flip",
+                            lambda ra, lon, now=None: ttf[ra])
+        return e, a, b, ttf, mount
+
+    async def test_a_record_survives_another_target_near_the_meridian(
+            self, sim_hub, monkeypatch):
+        """A is shot inside its flip-lead window (6 min before the meridian,
+        inside the default 10) on the west side. B, east of its meridian, is
+        then shot on the east side. A is re-acquired after its crossing and
+        the goto kept it west: the flip is owed, and the invariant must hold.
+
+        MUTATION "engine-wide slot" (`_enforce_flip_owed` keys every target's
+        record on one constant, ``key = "engine"``). Observed:
+            AssertionError: A was re-acquired past its meridian on the side it
+            was on before it and was let through to expose: the records read
+            {'engine': 'east'}
+        """
+        e, a, b, ttf, mount = self._two(sim_hub, monkeypatch)
+        ttf.update({a.ra_hours: +0.1, b.ra_hours: +2.0})
+        await e._enforce_flip_owed(a)            # inside A's lead window
+        mount["side"] = "east"
+        await e._enforce_flip_owed(b)            # B runs on the other side
+        ttf[a.ra_hours] = -0.05                  # A has crossed...
+        mount["side"] = "west"                   # ...and the goto kept it west
+        tried = await _never_flips(e, monkeypatch)
+        held = None
+        try:
+            await e._enforce_flip_owed(a)
+        except StopTarget as exc:
+            held = exc
+        assert held is not None, (
+            f"A was re-acquired past its meridian on the side it was on "
+            f"before it and was let through to expose: the records read "
+            f"{e._pre_flip_side!r}")
+        assert tried, "premise: the hold gives the flip gate its retries"
+        assert e._pre_flip_side == {a.id: "west", b.id: "east"}, (
+            f"A's record did not survive B: {e._pre_flip_side!r}")
+
+    async def test_control_a_target_acquired_west_records_nothing_and_never_trips(
+            self, sim_hub, monkeypatch):
+        """CONTROL. A has a west record from before its crossing. B is
+        acquired already west of its meridian, on the same west side: it owes
+        nothing, gets no record, and is not held on A's.
+
+        MUTATION "engine-wide slot" (as above). Observed:
+            Failed: B, acquired west of its meridian, was held on another
+            target's record: B: a meridian flip has been owed for 0 min and
+            the mount is still on the west side; moving on rather than
+            exposing across the pier
+        """
+        e, a, b, ttf, mount = self._two(sim_hub, monkeypatch)
+        ttf.update({a.ra_hours: +0.5, b.ra_hours: -3.0})
+        await e._enforce_flip_owed(a)
+        assert list(e._pre_flip_side.values()) == ["west"], (
+            f"premise: A's west side is on record: {e._pre_flip_side!r}")
+        tried = await _never_flips(e, monkeypatch)
+        try:
+            await e._enforce_flip_owed(b)
+        except StopTarget as exc:
+            pytest.fail(f"B, acquired west of its meridian, was held on "
+                        f"another target's record: {exc}")
+        assert e.flip_owed is False and tried == []
+        assert b.id not in e._pre_flip_side, e._pre_flip_side
+
+    async def test_control_an_unreadable_side_records_nothing_for_that_target(
+            self, sim_hub, monkeypatch):
+        """CONTROL. B east of its meridian with the side unreadable: no record
+        for B, and A's record is left exactly as it was."""
+        e, a, b, ttf, mount = self._two(sim_hub, monkeypatch)
+        ttf.update({a.ra_hours: +0.5, b.ra_hours: +2.0})
+        await e._enforce_flip_owed(a)
+        mount["side"] = "unknown"
+        await e._enforce_flip_owed(b)
+        assert e._pre_flip_side == {a.id: "west"}, e._pre_flip_side
+
+    async def test_start_clears_every_record(self, sim_hub, monkeypatch):
+        """A new run starts with no records: `start()` resets the memory, as
+        it resets every other per-run flip latch.
+
+        MUTATION "start keeps the records" (the reset line deleted). Observed:
+            AssertionError: a new run inherited the last run's pre-flip
+            records: {'4c98ebab46e64ca0891609adc8cb8640': 'west'}
+        """
+        e, a, b, ttf, mount = self._two(sim_hub, monkeypatch)
+        e._pre_flip_side = {a.id: "west"}
+        monkeypatch.setattr(engine_mod.session_store, "load_all", lambda: [])
+        monkeypatch.setattr(engine_mod.SequenceEngine, "_run",
+                            lambda self: asyncio.sleep(0))
+        e.start(SequencePlan(targets=[a], meridian_flip=True, guide=False))
+        await asyncio.sleep(0)
+        assert e._pre_flip_side == {}, (
+            f"a new run inherited the last run's pre-flip records: "
+            f"{e._pre_flip_side!r}")
 
 
 # ----------------------------------------------------- the call site itself

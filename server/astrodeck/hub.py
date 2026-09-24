@@ -6395,7 +6395,13 @@ class Hub:
         the same persisted setting the Align screen's dial edits. It was a
         frozen ``3.0`` that GotoStrip rendered read-only and nothing could
         change: a centring solve and a polar solve are the same frame off the
-        same camera, and there is no reason for the rig to hold two answers."""
+        same camera, and there is no reason for the rig to hold two answers.
+
+        With ``rotation_deg`` set, every return after the slew says what
+        became of the angle: ``rotation`` is the rotate loop's result (None
+        when it did not run), ``rotation_skipped`` means a connected rotator
+        tried and failed, and ``rotation_unavailable`` means there was no
+        connected rotator to ask. The last two keys appear only when true."""
         if solve_exposure_s is None:
             solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
@@ -6451,6 +6457,15 @@ class Hub:
         # A rotate failure DEGRADES — never abort a slew that already happened.
         rotation_result: dict | None = None
         rotation_skipped = False
+        # A rotation asked for with no connected rotator to do it (I-15, #160).
+        # This used to be silent: the block below was skipped and the result
+        # read exactly like a goto that never asked for an angle, so a caller
+        # shooting a mosaic panel could not tell a rotated frame from one left
+        # at whatever angle the camera happened to sit. Kept apart from
+        # ``rotation_skipped`` (a connected rotator that tried and failed)
+        # because the remedies differ: that one may succeed on a retry, this
+        # one needs somebody to connect a device.
+        rotation_unavailable = False
         rot = self.devices.get("rotator")
         if rotation_deg is not None and rot is not None and rot.connected:
             async with self._motion_lock:
@@ -6472,8 +6487,24 @@ class Hub:
                         f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
                         f"continuing without rotation", "rotator")
                 rotation_skipped = True
+        elif rotation_deg is not None:
+            rotation_unavailable = True
+            # Logged here, once, not per attempt: the answer cannot change
+            # while the loop below runs, and a warning repeated three times
+            # reads like three problems.
+            why = ("no rotator is in the rig" if rot is None
+                   else "the rotator is not connected")
+            bus.log("warning",
+                    f"rotation to PA {rotation_deg:.0f}° was asked for but {why}; "
+                    f"centring without rotating, so the frame keeps whatever "
+                    f"angle the camera is at", "rotator")
+        # Carried by every return from here on (centred, not converged, solve
+        # failed, did not move, aborted after the slew): whichever way the
+        # centring ends, the frame's angle is the same unanswered question.
         _rot_keys = {"rotation": rotation_result,
-                     **({"rotation_skipped": True} if rotation_skipped else {})}
+                     **({"rotation_skipped": True} if rotation_skipped else {}),
+                     **({"rotation_unavailable": True}
+                        if rotation_unavailable else {})}
         last_err = None
         for attempt in range(1, max_attempts + 1):
             bus.publish("mount", action="centering", attempt=attempt)

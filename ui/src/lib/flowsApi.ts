@@ -125,11 +125,124 @@ export interface QuickFlowResult {
   run?: FlowRunResult;
 }
 
+/** What `POST /api/flows/{id}/run` may be told the operator already said yes
+ *  to. Every one defaults to false, and each lifts exactly one refusal:
+ *
+ *  - `acceptUnmapped`: run although parts of the graph are not honoured
+ *    (409 `unmapped`). Never the dome refusal.
+ *  - `force`: past the horizon check. Never the Sun check.
+ *  - `fresh`: START OVER - a new session, the flow's dormant one left on disk.
+ *  - `adopt`: re-key a session saved before flows kept their step ids onto
+ *    this compile's ids (409 `adopt`).
+ *  - `acceptDropped`: continue although steps holding frames are gone from the
+ *    flow (409 `dropped_steps`).
+ *  - `acceptRecount`: continue under a different count mode, which recounts
+ *    every banked frame (409 `recount`).
+ *
+ *  The last four are CONTINUE's (#189 S1, spec 5.9; server `FlowRunBody`). The
+ *  server asks them one at a time, so a re-post must carry every flag already
+ *  accepted - `nextRunFlags` in flowsSlice is the one place that builds one. */
+export interface FlowRunFlags {
+  acceptUnmapped?: boolean;
+  force?: boolean;
+  fresh?: boolean;
+  adopt?: boolean;
+  acceptDropped?: boolean;
+  acceptRecount?: boolean;
+}
+
+/** Which ledger tonight's frames go into (server `run_flow`'s `session`).
+ *  `kept`, `new` and `dropped` are STEP counts; `adopted.matched` and each
+ *  unmatched entry's `frames` are SUB counts. `id` is null when nothing was
+ *  persisted. */
+export interface FlowRunSession {
+  id: string | null;
+  night: number;
+  continued: boolean;
+  kept: number;
+  new: number;
+  dropped: number;
+  adopted?: {
+    matched: number;
+    unmatched: { frames?: number; reason?: string; target?: string }[];
+  };
+}
+
 export interface FlowRunResult {
   started: boolean;
   flow_id: string;
   frames: number;
   unmapped: FlowUnmapped[];
+  /** Absent from every answer a server older than S1 sends. */
+  session?: FlowRunSession;
+}
+
+// ------------------------------------------------ GET /api/flows/{id}/progress
+// What a flow has banked and what it still owes, per block, per panel and per
+// step (#189 S1 item 9; server `flows/progress.py::flow_progress`, whose
+// docstring is the contract these types copy). Every count is a SUB count.
+// The numbers come from the flow's newest session that was not abandoned,
+// counted by that session's frozen count mode, against the STORED graph
+// compiled with the flow's id - so they are the saved flow's, never the
+// editor's unsaved one.
+
+export interface FlowProgressStep {
+  step_id: string;
+  filter: string | null;
+  frame_type: string;
+  exposure_s: number;
+  count: number;
+  /** Capped at `count`: frames past the quota are real subs, but a step
+   *  cannot owe a negative number. */
+  banked: number;
+  owed: number;
+}
+
+/** One place the block images. A TARGET block has one, at row 0 and col 0; a
+ *  POOL block has one per member with row and col null. `target_id` is null
+ *  for an entry the plan dropped (no coordinates), which owes nothing. */
+export interface FlowProgressPanel {
+  target_id: string | null;
+  name: string;
+  row: number | null;
+  col: number | null;
+  banked: number;
+  owed: number;
+  total: number;
+  steps: FlowProgressStep[];
+}
+
+/** One canvas node: `node_id` is the node's id, which is how a card finds its
+ *  own block. */
+export interface FlowProgressBlock {
+  node_id: string;
+  name: string;
+  kind: "target" | "pool";
+  banked: number;
+  owed: number;
+  total: number;
+  panels: FlowProgressPanel[];
+}
+
+export interface FlowProgressSession {
+  id: string;
+  status: "active" | "dormant" | "complete";
+  /** How many nights the session has run. */
+  nights: number;
+  count_mode: "attempts" | "accepted";
+}
+
+export interface FlowProgress {
+  flow_id: string;
+  /** Null when the flow has never run (or every session it ran was
+   *  abandoned): then every block's `banked` is 0 because nothing was
+   *  counted, not because nothing was shot. */
+  session: FlowProgressSession | null;
+  blocks: FlowProgressBlock[];
+  /** Frames in the session whose step the flow no longer has (a changed
+   *  recipe is a new step id), and how many step ids they sit on. They fill
+   *  no quota, so they are in NO block's `banked`. */
+  orphaned: { frames: number; steps: number };
 }
 
 // Spelled out, not composed. `${FLOWS_BASE}/folders` reads the same to a human
@@ -197,14 +310,34 @@ export const flowsApi = {
 
   tonight: (id: string) => api.get<Record<string, unknown>>(`${one(id)}/tonight`),
 
+  /** Banked and owed subs of the SAVED flow (`CAP_VIEW_STATUS`, so a viewer's
+   *  canvas can ask). 404 for an unknown or unreadable id and from any server
+   *  older than S1; 422 `invalid_graph` for a saved graph that cannot become a
+   *  plan. The TARGET card's chip reads it through `progressChip`. */
+  progress: (id: string) => api.get<FlowProgress>(`${one(id)}/progress`),
+
   /** `acceptUnmapped` is the operator saying "run the rest anyway". It does NOT
    *  clear a dome refusal: everything else on that list costs frames, and a roof
-   *  that will not close costs equipment. */
-  run: (id: string, acceptUnmapped = false, force = false) =>
-    api.post<FlowRunResult>(`${one(id)}/run`, {
-      accept_unmapped: acceptUnmapped,
-      force,
-    }),
+   *  that will not close costs equipment.
+   *
+   *  All six flags go on EVERY request, false unless set, so a body says in
+   *  full what was accepted and a reader of the request never has to know the
+   *  server's defaults. A bare boolean is the older `(id, acceptUnmapped,
+   *  force)` form, still accepted; the third argument is read only in that
+   *  form, and the object form carries its own `force`. */
+  run: (id: string, flags: FlowRunFlags | boolean = {}, force = false) => {
+    const f: FlowRunFlags = typeof flags === "boolean"
+      ? { acceptUnmapped: flags, force }
+      : flags;
+    return api.post<FlowRunResult>(`${one(id)}/run`, {
+      accept_unmapped: f.acceptUnmapped === true,
+      force: f.force === true,
+      fresh: f.fresh === true,
+      adopt: f.adopt === true,
+      accept_dropped: f.acceptDropped === true,
+      accept_recount: f.acceptRecount === true,
+    });
+  },
 
   /** Without a flow id the answer is an empty matrix and `planned: false`.
    *  An empty matrix MUST NOT be drawn as healthy — it means no lights are

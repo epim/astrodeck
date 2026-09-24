@@ -262,7 +262,9 @@ class FlowGraph(BaseModel):
 
 
 class MigrationNote(BaseModel):
-    """One thing a read changed in a stored flow, said once to the operator.
+    """One thing a read changed in a stored flow, said to the operator on
+    every read of the file until they save it (only ``save()`` stamps
+    FLOW_SCHEMA, so an unsaved file reads its old version every time).
 
     ``key`` names what moved (``rotation`` for FLOW_SCHEMA 3's 23.4 rewrite;
     the mosaic slice adds ``counts``), ``note`` is the sentence to show."""
@@ -287,15 +289,16 @@ class FlowRecord(BaseModel):
     #: record rather than inferred from the folder name so that renaming a
     #: folder can never accidentally make a fixture writable.
     readonly: bool = False
-    #: What ``store._migrate`` rewrote on THIS read, for the editor to say once.
+    #: What ``store._migrate`` rewrote on THIS read, for the editor to say.
     #: NOT PERSISTED, and deliberately not ``Field(exclude=True)``: FastAPI
     #: serialises a response with the same dump, so an excluded field would
     #: never reach ``GET /api/flows/{id}`` and the note would be computed for
     #: nobody. The store's writers strip it instead, and ``save`` drops one a
     #: client sends, so the file never holds a note and a client cannot plant
-    #: one. Once the file is written again - a save, or a run's ``touch_run``,
-    #: which is why ``run_flow`` logs the note as it starts - the file is
-    #: current and the note is gone.
+    #: one. Only a ``save`` makes the file current and retires the note. A
+    #: run's ``touch_run`` and the folder verbs edit the raw file and keep its
+    #: ``schema_version`` (carry-over 1), so until the operator saves, every
+    #: read says the note again, and ``run_flow`` logs it on every run.
     migrated: list[MigrationNote] = Field(default_factory=list)
 
     @field_validator("folder")

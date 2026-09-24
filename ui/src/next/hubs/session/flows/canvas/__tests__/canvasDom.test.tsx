@@ -317,8 +317,9 @@ test("an EVENT output dropped on a flow input is refused, with the sentence and 
   hitTarget = null;
 
   const after = useStore.getState().flows.graph.edges;
-  // The count alone is not enough: inputs are single-occupancy, so a wrongly
-  // accepted drop would REPLACE the incumbent edge and leave the total the same.
+  // The count alone is not enough: a FLOW input is single-occupancy (an event
+  // input fans in, #152), and n3.run is a flow input that e2 already feeds, so
+  // a wrongly accepted drop would REPLACE e2 and leave the total the same.
   assert(!after.some((e: any) => e.from === "n1" && e.fromPort === "nightend"),
     "the event output was wired into a flow input");
   eq(after.length, before, "a refused drop must leave the graph exactly as it was");

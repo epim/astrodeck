@@ -307,8 +307,37 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
 #:     AssertionError: assert {'apply_filte...s': None, ...} == {'apply_filte...s': None, ...}
 #:       Differing items:
 #:       {'targets': [{'acquisition': 'cycle', ...}]} != {'targets': [{'acquisition': 'cycle', ...}]}
+#:
+#: MOVED A SECOND TIME, ON PURPOSE (S1: #170 U-03, #189 U-05). ``Target``
+#: gained ``center_tolerance_arcmin``, ``center_attempts`` and
+#: ``autofocus_skip_if_fresh``, so the dump grew three keys, and the fixture
+#: gained exactly those three on ``targets[0]`` at their defaults (null, null,
+#: false). Those are the values that keep today's ``goto_and_center`` call and
+#: today's sweep at every target start, so the night itself did not move.
+#: ``test_s1_added_three_keys_and_moved_nothing_else`` holds that against the
+#: #150 hash. RED against the fixture as #150 left it, before it was edited
+#: (the long line wrapped here):
+#:
+#:     AssertionError: assert {'apply_filte...s': None, ...} == {'apply_filte...s': None, ...}
+#:
+#:       Omitting 26 identical items, use -vv to show
+#:       Differing items:
+#:       {'targets': [{'acquisition': 'cycle', 'autofocus_first': True,
+#:           'autofocus_skip_if_fresh': False, 'calibration': False, ...}]}
+#:           != {'targets': [{'acquisition': 'cycle', 'autofocus_first': True,
+#:           'calibration': False, 'center': True, ...}]}
+#:       Use -v to get more diff
 GOLDEN_SHA256 = \
+    "d9ce9109734a3ec4b8340e3cdd255b9325fee6d2209208b029bc1bb76100b0c3"
+
+#: The hash as #150 left it. With the three S1 keys taken off ``targets[0]``,
+#: the compiled plan must hash to exactly this.
+GOLDEN_SHA256_BEFORE_S1 = \
     "4bb0e667cc784f7c4f0c6273c5a79e163314b93c0b0f62c48f220103899d5076"
+
+#: The S1 keys and the defaults the fixture carries them at.
+S1_KEYS = {"center_tolerance_arcmin": None, "center_attempts": None,
+           "autofocus_skip_if_fresh": False}
 
 
 def _blank_ids(node):
@@ -340,6 +369,38 @@ def test_the_compiled_plan_did_not_move(compiled):
     assert got == want
     blob = json.dumps(got, sort_keys=True)
     assert hashlib.sha256(blob.encode("utf-8")).hexdigest() == GOLDEN_SHA256
+
+
+def test_s1_added_three_keys_and_moved_nothing_else(compiled):
+    """THE SECOND MOVE, BOUNDED FROM THE OTHER SIDE. Regenerating a golden is
+    how a changed night gets waved through: the fixture and its hash move
+    together, and the comparison above goes green on whatever the code now
+    does. So the S1 move is also pinned against the hash it moved away from:
+    the three keys sit at their defaults, and with them taken off the plan is
+    the #150 plan exactly, every other field and every other target included.
+
+    RED under mutant "panel_row rides along" (``panel_row: int | None = None``
+    added to ``Target``, the S2 field S1 must not add, with the fixture and
+    ``GOLDEN_SHA256`` regenerated to match, so the test above stays green):
+
+        E   AssertionError: assert 'f2e3fe3a8c4c...bc9e69556f046' ==
+            '4bb0e667cc78...20103899d5076'
+        E     - 4bb0e667cc784f7c4f0c6273c5a79e163314b93c0b0f62c48f220103899d5076
+        E     + f2e3fe3a8c4c5e9956821646ebdee83a1baa50d870ea2cee54cbc9e69556f046
+
+    Mutants "center_attempts default 3" and "autofocus_skip_if_fresh default
+    True" turn it red on the first assertion instead:
+
+        E     Differing items:
+        E     {'center_attempts': 3} != {'center_attempts': None}
+    """
+    _rec, plan, _rows = compiled
+    got = _blank_ids(plan.model_dump(mode="json"))
+    target = got["targets"][0]
+    assert {k: target.pop(k, "<absent>") for k in S1_KEYS} == S1_KEYS
+    blob = json.dumps(got, sort_keys=True)
+    assert hashlib.sha256(blob.encode("utf-8")).hexdigest() == \
+        GOLDEN_SHA256_BEFORE_S1
 
 
 def test_the_golden_is_the_flow_this_file_is_about(compiled):

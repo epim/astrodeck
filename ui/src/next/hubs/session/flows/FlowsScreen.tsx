@@ -304,13 +304,21 @@ export function FlowsScreen(): JSX.Element {
   const rows = useMemo(() => visible.map((card) => {
     // A FILE THIS BUILD CANNOT OPEN (#153): a newer AstroDeck's flow, or one
     // that does not parse or validate. Every route but the listing answers 404
-    // for its id, so its reason goes where this screen already puts one - the
-    // row body's `openReason` and the verb's lock - and onto the meta line,
-    // because it is the one fact about this row worth reading.
+    // for its id, so its reason is the meta line - the one fact about this row
+    // worth reading - and `FlowRow` reads the card's own `unreadable` to lock
+    // the body and drop the verb. It is said there ONCE (S1-10 carry-over 6).
     const unreadable = unreadableReason(card);
-    const isCampaign = camp != null && camp.flowId === card.id;
-    const isLive = startedFlowId === card.id
-      || (seqLive && (isCampaign ? camp.live : seq.plan_name === card.name));
+    // NEVER LIVE, NEVER THE CAMPAIGN (S1-10 carry-over 7). All three matches
+    // are loose: LIVE by the running plan's NAME, which any plan can share; the
+    // started flow by `flows.record`, which outlives a library reload; and the
+    // campaign by an id resolved from a session or an armed resume, whose
+    // ledger `useCampaign` keeps for ten minutes. A row nothing can open or run
+    // is not the run, and saying so would put SESSION / NOW's state on a flow
+    // the operator cannot look inside.
+    const readable = unreadable === null;
+    const isCampaign = readable && camp != null && camp.flowId === card.id;
+    const isLive = readable && (startedFlowId === card.id
+      || (seqLive && (isCampaign ? camp.live : seq.plan_name === card.name)));
     const verb: FlowVerb = isLive
       ? "live"
       : (isCampaign && camp.parked && camp.sessionId) ? "resume" : "run";
@@ -340,7 +348,6 @@ export function FlowsScreen(): JSX.Element {
       card,
       meta,
       verb,
-      unreadable,
       dotColor: dotFor(card.last_result, isLive, isCampaign),
       sessionId: isCampaign ? camp.sessionId : null,
     };
@@ -396,8 +403,15 @@ export function FlowsScreen(): JSX.Element {
   // to open a second copy of this screen. Never an unreadable row either
   // (#153): the canvas would ask for an id every route answers 404 for, and a
   // filter that leaves only such rows showing leaves nothing here to open.
-  const canvasTarget = visible.find((c) => c.id === openRecordId)?.id
-    ?? visible.find((c) => unreadableReason(c) === null)?.id
+  //
+  // BOTH branches read the readable rows (S1-10 carry-over 7). `flows.record`
+  // is whatever was loaded last and a library reload does not touch it, so a
+  // flow opened while it was readable, and since rewritten by a newer build,
+  // keeps its id in memory while its row says unreadable. S0 filtered only the
+  // fallback, and the open-record branch picked that row first.
+  const readableVisible = visible.filter((c) => unreadableReason(c) === null);
+  const canvasTarget = readableVisible.find((c) => c.id === openRecordId)?.id
+    ?? readableVisible[0]?.id
     ?? null;
   const canvasReason = phone
     ? CANVAS_PHONE_REASON
@@ -537,13 +551,15 @@ export function FlowsScreen(): JSX.Element {
               // is LIVE and whose press is a navigation, so the one row that
               // can act still can.
               //
-              // An unreadable row's own reason comes FIRST, for RUN and RESUME
-              // alike: after the run ends, or for an operator who may run, the
-              // file is still unreadable, so that is the sentence that stays
-              // true - a viewer must not be sent to ask for access to run a
-              // flow nobody can run.
-              runReason={r.unreadable ?? listRunReason}
-              openReason={r.unreadable}
+              // An unreadable row gets the SAME two props as every other row,
+              // deliberately. S0 passed its reason here as `openReason` and
+              // `runReason` too, which put it in a title, a toast and a locked
+              // RUN beside the meta line that already said it. `FlowRow` reads
+              // the card itself: no verb, and a body described by the meta line
+              // (S1-10 carry-over 6). So a viewer is still never sent to ask
+              // for access to run a flow nobody can run - there is no RUN.
+              runReason={listRunReason}
+              openReason={null}
               onRun={() => { void start(r.card.id); }}
               onResume={() => { if (r.sessionId) void resume(r.sessionId); }}
               onLive={() => nav.go("/session/now")}

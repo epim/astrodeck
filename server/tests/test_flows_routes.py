@@ -195,9 +195,10 @@ class TestFolders:
 
     @pytest.mark.parametrize("bad", ["../../../etc", "a/b/c/d/e/f", "", "x" * 300])
     def test_a_path_shaped_folder_name_is_refused(self, client, bad):
-        """``rename_folder`` uses ``model_copy``, which runs NO validators — so
-        the record's own folder rule never sees this and the string would be
-        persisted into every moved flow."""
+        """``rename_folder`` writes the name straight into each moved file's
+        raw JSON, which runs NO validators — so the record's own folder rule
+        never sees this and the string would be persisted into every moved
+        flow."""
         r = client.post("/api/flows/folders",
                         json={"name": "My flows", "new_name": bad})
         assert r.status_code == 422, r.text

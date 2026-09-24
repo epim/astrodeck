@@ -157,7 +157,21 @@ def test_touch_run_does_not_make_a_run_look_like_an_edit(tmp_path):
 def test_touch_run_refuses_the_shipped_examples_without_raising(tmp_path):
     """The M16 example is required to run on the simulator. `save()` raises
     ReadOnlyFlow for examples, so an unguarded write-back would turn every
-    example run into a 500 AFTER the engine had already started."""
+    example run into a 500 AFTER the engine had already started.
+
+    WHAT THIS STILL GRADES (mosaic S1-06): `touch_run` no longer goes through
+    `save()`; it edits the raw file at the flow's id. With no file on disk
+    there is nothing to write, so this test holds only the "without raising"
+    half. RED under mutant "the example branch raises" (its `return False`
+    replaced by `raise ReadOnlyFlow("example")`):
+
+        astrodeck.flows.store.ReadOnlyFlow: example
+
+    The refusal itself - a READABLE file carrying an example's id, the case
+    where the early return is the only thing that stops a write - is held by
+    test_flows_store_raw_edits.py::...::test_control_the_examples_stay_refused.
+    Under mutant "touch_run drops the example refusal" this test stays green
+    and that control goes red ("a run of 'example-m31' was recorded")."""
     from astrodeck.flows.examples import examples
     store = FlowStore(tmp_path)
     ex = next(e for e in examples())

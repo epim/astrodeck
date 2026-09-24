@@ -87,6 +87,11 @@ DEFAULT_OVERHEAD_S = 12.0   # seed overhead until real frames are measured
 DITHER_COST_S = 8.0         # seed event costs; replaced by measured averages
 AF_COST_S = 45.0
 FLIP_COST_S = 90.0
+#: One move between targets: stand the guider down, slew, centre, start
+#: guiding again. The seed is the spec's ASSUMED hop (A.3), not a measurement;
+#: nobody has timed one on this rig yet. Every completed `_setup_target`
+#: records the real figure, which replaces it from the first acquisition on.
+HOP_COST_S = 150.0
 
 # States the run has FINISHED in. "aborting" is deliberately not one: it names a
 # teardown that is still running, and every consumer that treats it as terminal
@@ -561,6 +566,13 @@ class SequenceEngine:
         #: find it. A run whose most recent sweep failed has no fresh focus to
         #: stand on whatever the clock says, and must focus again.
         self._last_focus_at: float | None = None
+        #: The focus groups acquired this run (#189 U-05, spec 5.6 step 6),
+        #: keyed by `_focus_group_key`: a target's ``mosaic_group``, or its
+        #: own id when it has none. A group's first acquisition owes a sweep
+        #: in `_hop_focus_is_owed`; its later panels, and a target re-acquired
+        #: after a hold, reuse a focus that is still good. Per run, reset in
+        #: `start()`: a resume is a new run and focuses each group once more.
+        self._focus_groups_acquired: set[tuple[str, str]] = set()
         #: GN-08: the HFR of the first ACCEPTED frame since the last successful
         #: autofocus (or, absent any autofocus this run, the run's own first
         #: accepted frame). Read by a relative `hfr_above` rule; reset to None
@@ -595,9 +607,12 @@ class SequenceEngine:
         self._step_rejects: dict[str, int] = {}
         #: Steps set aside for the rest of THIS run by the per-step reject
         #: guard, same key, mapped to the sentence that was logged. Set aside
-        #: is not done: the ledger still owes the frames, the session ends
-        #: dormant and a later night picks the step up. Not persisted (S0), so
-        #: it is cleared at run start.
+        #: is not done: the ledger still owes the frames and the session ends
+        #: dormant. ENGINE MEMORY ONLY (S0): cleared at run start, so the next
+        #: run tries the step again, and that includes a restart or an
+        #: auto-resume the same night, not only the next night's run. S2
+        #: persists it in `Session.set_aside`; until then no sentence may
+        #: promise the operator more than "the rest of this run".
         self._set_aside: dict[str, str] = {}
         #: Science exposures `_run_step` has taken this run, accepted or
         #: rejected. `_frames_done` counts accepted frames only; this is what
@@ -627,12 +642,21 @@ class SequenceEngine:
         #: dropped link says so once instead of once per frame.
         self._flip_offline_logged = False
         self._flip_no_site_logged = False
-        #: The pier side this target was OBSERVED on while it was still east of
-        #: the meridian, i.e. before its flip was owed. The flip-owed invariant
-        #: (`_enforce_flip_owed`) compares against this rather than against a
-        #: convention, so it cannot be fooled by a mount whose east/west sense
-        #: is the opposite of ours. None until such a reading exists.
-        self._pre_flip_side: str | None = None
+        #: The pier side each target was OBSERVED on while it was still east of
+        #: the meridian, i.e. before its flip was owed, keyed by target id. The
+        #: flip-owed invariant (`_enforce_flip_owed`) compares against this
+        #: rather than against a convention, so it cannot be fooled by a mount
+        #: whose east/west sense is the opposite of ours. No entry until such a
+        #: reading exists; cleared at run start.
+        #:
+        #: PER TARGET, NOT ONE SLOT (I-19, extending #136). One engine-wide
+        #: value meant a run that alternates targets near the meridian - a
+        #: rotating mosaic always does - overwrote one target's record with
+        #: another's. That disarmed the backstop exactly where it is needed:
+        #: a target re-acquired past its meridian on its pre-flip side, which
+        #: is where the AM5 leaves a goto taken inside the flip-lead window,
+        #: because it picks its side from the hour angle.
+        self._pre_flip_side: dict[str, str] = {}
         #: True while `_enforce_flip_owed` is refusing to open the shutter.
         #: Published in the status block as `meridian.flip_owed`.
         self._flip_owed = False
@@ -660,7 +684,12 @@ class SequenceEngine:
         #: The park-hold latch: open means the next idle park-hold may fire.
         #: Closed by that park-hold, re-opened by the next `_setup_target`, so
         #: one idle spell stops tracking ONCE rather than on every 5 s tick.
+        #: Also re-opened by the park-hold itself when the mount does not
+        #: confirm the stop, so the next tick asks again (`_idle_park_hold`).
         self._idle_hold_open = True
+        #: True once a stop this idle spell went unconfirmed. Its retries then
+        #: say nothing more; cleared with the latch by `_setup_target`.
+        self._idle_hold_retrying = False
         self._done: dict[str, int] = {}   # "targetId:stepId" -> frames completed
         self._session: Session | None = None   # live ledger (sessions spec §2)
         # In-flight ~512px review-thumbnail renders (Task 6 review, Important
@@ -680,6 +709,9 @@ class SequenceEngine:
         self._overhead_ema = DEFAULT_OVERHEAD_S
         self._overhead_samples = 0          # real per-frame overhead samples seen
         self._event_costs: dict[str, list[float]] = {}  # measured event durations
+        #: Plan index of the target the run last began acquiring, or None
+        #: before the first. `compute_eta` counts hops to the OTHER targets.
+        self._acquiring_ti: int | None = None
         # --- automation / safety collaborators (Batch 4b §1.9) ---------------
         self.reporter: SessionReporter | None = None
         self._report_finalized = False      # idempotency guard (P3-18)
@@ -853,6 +885,7 @@ class SequenceEngine:
         self._dither_settle_fails = 0
         self._last_focus_temp = None
         self._last_focus_at = None
+        self._focus_groups_acquired = set()
         self._focus_baseline_hfr = None
         self._recent_hfr = []
         self._cooling_reasserted = False
@@ -869,12 +902,13 @@ class SequenceEngine:
         self._flip_no_op = set()
         self._flip_offline_logged = False
         self._flip_no_site_logged = False
-        self._pre_flip_side = None
+        self._pre_flip_side = {}
         self._flip_owed = False
         self._tracking_recovered = set()
         self._tracked_target = None
         self._idle_since = 0.0
         self._idle_hold_open = True
+        self._idle_hold_retrying = False
         self._paused.set()
         self._started_at = time.time()
         self._paused_accum_s = 0.0
@@ -887,6 +921,7 @@ class SequenceEngine:
         self._overhead_ema = DEFAULT_OVERHEAD_S
         self._overhead_samples = 0
         self._event_costs = {}
+        self._acquiring_ti = None
         # --- automation / safety run state (snapshot config ONCE at run start) ---
         self._cfg = config_store.cfg()
         # RESOLVE THE RIG'S STANDARDS ONCE, HERE (#239 stage A). Twelve settings
@@ -1033,11 +1068,38 @@ class SequenceEngine:
         """True for the single step whose frame is currently exposing."""
         return getattr(self, "_active_step", None) == (ti, si)
 
+    def _remaining_hops(self) -> int:
+        """Moves between targets this run still has to make (#189 U-07).
+
+        A hop is owed to every non-calibration target that still owes frames,
+        except the one being acquired now: the run is already there, or paying
+        for getting there. Calibration targets never slew. "Owes" is
+        `_step_complete`, the scheduler's own definition of done (#158), so
+        the ETA prices exactly the targets the scheduler will go back to.
+
+        BEFORE THE FIRST ACQUISITION the count is one less than the targets
+        owing frames. The run's opening slew is not a hop BETWEEN targets,
+        and no ETA has ever priced it, single target or many; counting it
+        would move every single-target finish clock for the moments before
+        its setup begins.
+        """
+        if not self.plan:
+            return 0
+        cur = self._acquiring_ti
+        owing = 0
+        for ti, target in enumerate(self.plan.targets):
+            if target.calibration or ti == cur:
+                continue
+            if any(not self._step_complete(target, s) for s in target.steps):
+                owing += 1
+        return max(0, owing - 1) if cur is None else owing
+
     def compute_eta(self) -> dict:
         """Deterministic ETA assembly (spec §5.2/§5.3). Split into pure capture
         seconds + a low-α per-frame overhead EMA + analytically-counted event
-        costs (dither/AF/flip), each measured once observed. Returns the progress
-        sub-dict's ETA fields; never raises."""
+        costs (dither/AF/flip, and the hops between targets), each measured
+        once observed. Returns the progress sub-dict's ETA fields; never
+        raises."""
         if not self.plan:
             return {}
         total = self.plan.total_frames()
@@ -1053,30 +1115,47 @@ class SequenceEngine:
         af_every = self.plan.autofocus_every or 0
         dithers_remaining = (frames_remaining // d_every) if d_every else 0
         refocus_remaining = (frames_remaining // af_every) if af_every else 0
+        # EVERY MOVE BETWEEN TARGETS IS TIME THE NIGHT SPENDS (#189 U-07). The
+        # finish clock priced the frames and the events inside a target and
+        # nothing for getting from one to the next, so a multi-target night
+        # finished late by one slew, centring and guide start per target. The
+        # seed is replaced by the measured hop once one setup has completed.
+        remaining_hops = self._remaining_hops()
+        hops_s = remaining_hops * self._event_cost("hop", HOP_COST_S)
         # only count a flip that actually falls inside the remaining run window
         # (a meridian hours away must not inflate a short run's ETA — spec §5.2).
+        # The hops are part of that window: the run is still going while it
+        # moves between targets.
         remaining_window_s = (remaining_capture_s + in_flight
                               + frames_remaining * self._overhead_ema
                               + dithers_remaining * self._event_cost("dither", DITHER_COST_S)
-                              + refocus_remaining * self._event_cost("autofocus", AF_COST_S))
+                              + refocus_remaining * self._event_cost("autofocus", AF_COST_S)
+                              + hops_s)
         flip_pending = 1 if self._flip_pending(remaining_window_s) else 0
         events_cost_s = (
             dithers_remaining * self._event_cost("dither", DITHER_COST_S)
             + refocus_remaining * self._event_cost("autofocus", AF_COST_S)
-            + flip_pending * self._event_cost("flip", FLIP_COST_S))
+            + flip_pending * self._event_cost("flip", FLIP_COST_S)
+            + hops_s)
 
         eta_s = (remaining_capture_s + in_flight
                  + frames_remaining * self._overhead_ema + events_cost_s)
 
+        # True when the hop term rests on a measurement, and when there is no
+        # hop term at all: a clock with nothing to cost has nothing unpriced,
+        # so a client can say "hops not yet costed" exactly when it is False.
+        hops_costed = not remaining_hops or "hop" in self._event_costs
         events_measured_ok = not (
             (dithers_remaining and "dither" not in self._event_costs)
             or (refocus_remaining and "autofocus" not in self._event_costs)
-            or (flip_pending and "flip" not in self._event_costs))
+            or (flip_pending and "flip" not in self._event_costs)
+            or not hops_costed)
         eta_confident = (self._overhead_samples >= ETA_MIN_FRAMES
                          and events_measured_ok)
         return {
             "eta_s": round(eta_s),
             "eta_confident": bool(eta_confident),
+            "hops_costed": bool(hops_costed),
             "server_now_ms": round(time.time() * 1000),
             "current_exposure_s": round(self._cur_exposure_s, 3),
             "frame_started_at_ms": round(self._frame_started_at * 1000)
@@ -2202,10 +2281,12 @@ class SequenceEngine:
         with nothing watching until its window closed. Every tick now asks
         `_idle_hold_tick` whether the target the mount was left tracking should
         be let go: after ``WAIT_TEARDOWN_S`` of idle, at once if it has sunk
-        below the mount's floor, or at once if it reaches its flip point before
-        the next tick. It stops tracking ONCE per idle spell (a latch the next
-        `_setup_target` re-opens); the next target's setup re-slews and
-        restores tracking, as it always has after a long wait.
+        below the mount's floor or risen into its zenith keep-out, or at once
+        if it reaches its flip point before the next tick. It stops tracking
+        ONCE per idle spell (a latch the next `_setup_target` re-opens, and a
+        stop the mount does not confirm re-opens at once); the next target's
+        setup re-slews and restores tracking, as it always has after a long
+        wait.
 
         We also run the safety gate every tick — a wait used to be a safety
         blind spot (the gate only ran per frame/slew), so rain during a
@@ -2258,7 +2339,24 @@ class SequenceEngine:
         NOTHING ACQUIRED, NOTHING TO STOP. Before the first `_setup_target` the
         mount is wherever the operator left it, and the scheduler's planned-wait
         rule still covers a long first wait exactly as it always has.
+
+        A STOP ALREADY DECIDED IS ASKED AGAIN WITHOUT RE-DECIDING IT. When the
+        mount did not confirm the last stop, the next tick retries at once,
+        whichever rule decided it. Re-asking `_idle_hold_reason` instead would
+        leave a stop the scheduler's planned-wait rule decided, a moment after
+        the last exposure, unretried until the idle clock ran out.
+
+        AND WHETHER OR NOT ANYTHING WAS ACQUIRED. The planned-wait rule also
+        stops the mount before the first `_setup_target`, when a run opens on
+        a long wait, and its unconfirmed-stop warning promises a retry at every
+        tick. With the retry behind the tracked-target guard, that first wait
+        of the night asked once and then sat out the whole wait - the warning
+        a claim nothing kept. The guard still decides whether a NEW stop is
+        decided here; it has no say over one already in flight.
         """
+        if self._idle_hold_retrying and self._idle_hold_open:
+            await self._idle_park_hold("the stop was not confirmed")
+            return
         target = self._tracked_target
         if target is None or not self._idle_hold_open:
             return
@@ -2274,10 +2372,15 @@ class SequenceEngine:
 
         1. The idle clock: ``WAIT_TEARDOWN_S`` since the frame loop last looked
            (the last science exposure, or the end of the target's setup).
-        2. The floor: the target's LIVE altitude, not a projection, is below the
-           mount's effective floor (min_alt, horizon profile, no-go wedge).
-           Asked of `_altitude_limit_verdict`, the predicate the slew gate
-           raises on, so the two cannot disagree about where the floor is.
+        2. The floor and the ceiling: the target's LIVE altitude, not a
+           projection, is below the mount's effective floor (min_alt, horizon
+           profile, no-go wedge) or above its zenith keep-out (max_alt, where a
+           mount can reach its own tripod, #101). Asked of
+           `_altitude_limit_verdict`, the predicate the slew gate raises on, so
+           the two cannot disagree about where either end is. Both ends,
+           because the predicate has both: a target rising into the keep-out
+           while the mount tracks it unwatched is the floor's hazard upside
+           down, and acting on "floor" alone left it to the idle clock.
         3. The flip point, reached before the next tick (`_idle_flip_due`).
 
         With no saved site, 2 and 3 cannot be answered and do nothing; 1 needs
@@ -2293,8 +2396,11 @@ class SequenceEngine:
                     f"mount is still tracking it")
         verdict = self._altitude_limit_verdict(target, projected=False,
                                                cfg=self._cfg)
-        if verdict is not None and verdict[0] == "floor":
+        kind = verdict[0] if verdict is not None else None
+        if kind == "floor":
             return f"{target.name} has sunk below the mount's altitude floor"
+        if kind == "ceiling":
+            return f"{target.name} has risen into the mount's zenith keep-out"
         if await self._idle_flip_due(target, now):
             return f"{target.name} has reached its meridian flip point"
         return None
@@ -2351,15 +2457,49 @@ class SequenceEngine:
     async def _idle_park_hold(self, why: str) -> None:
         """Stop tracking the idle mount, once per idle spell.
 
-        The latch closes here and only `_setup_target` re-opens it, so the idle
-        clock, the floor, the flip point and the scheduler's planned-wait rule
-        all spend the same single park-hold. ``why`` leads the log line."""
+        The latch closes here and `_setup_target` re-opens it, so the idle
+        clock, the floor, the ceiling, the flip point and the scheduler's
+        planned-wait rule all spend the same single park-hold. ``why`` leads
+        the log line.
+
+        A STOP IS READ BACK, NOT ASSUMED. `_park_hold` swallows every failure,
+        and must, because the safety pause relies on it never raising; so a
+        ``set_tracking(False)`` that timed out used to close this latch on a
+        stop that never happened, and the mount tracked on, unwatched, for the
+        rest of the wait. Tracking is now read back through `_tracking_now`,
+        and anything but a confirmed False re-opens the latch so the next tick
+        asks again: True, the mount says it is still tracking; None, nobody can
+        say - a dead serial link, the #133 class, which is exactly the link
+        whose stop cannot be taken on trust.
+
+        SAID ONCE PER IDLE SPELL. The retries log nothing: not the warning, and
+        not the "stopping tracking" line either. The /api/logs ring holds 200
+        lines, and a line per 5 s tick would roll it over in under 17 minutes.
+
+        No telescope at all, nothing to read back: a camera-only run still
+        passes through the planned-wait rule, and "cannot confirm" would be
+        noise about a mount that is not there.
+        """
         if not self._idle_hold_open:
             return
         self._idle_hold_open = False
-        bus.log("info", f"{why} — stopping tracking until the next target is "
-                        f"set up", "sequence")
+        if not self._idle_hold_retrying:
+            bus.log("info", f"{why} — stopping tracking until the next target "
+                            f"is set up", "sequence")
         await self._park_hold()
+        if "telescope" not in self.hub.devices:
+            return
+        tracking = await self._tracking_now()
+        if tracking is not False:
+            self._idle_hold_open = True
+            if not self._idle_hold_retrying:
+                self._idle_hold_retrying = True
+                detail = ("it still reports tracking" if tracking
+                          else "its tracking state cannot be read")
+                bus.log("warning",
+                        f"the mount did not confirm the stop ({detail}) — "
+                        f"asking again at every wait tick until it does",
+                        "sequence")
 
     def _target_complete(self, ti: int, target: Target) -> bool:
         """Has this target got everything it asked for? ONE definition of done
@@ -2416,10 +2556,14 @@ class SequenceEngine:
 
         SUSPENDED, NOT DONE, and that distinction is the feature. ``StopTarget``
         is caught by the scheduler, which logs a skip, calls
-        ``reporter.mark_skipped`` and drops the target from TONIGHT's rotation -
-        while writing nothing to the frame ledger. So tomorrow's resume seeds
+        ``reporter.mark_skipped`` and drops the target from THIS RUN's rotation
+        - while writing nothing to the frame ledger. So the next run seeds
         ``_done`` from the frames that actually exist, finds this target short,
-        and shoots the remainder. A target marked complete would never come
+        and shoots the remainder once it is back above its floor. The next run
+        is any run: a restart or an auto-resume the same night as much as the
+        next night's, because the drop lives in the scheduler's list and
+        nowhere else - which is why the line below says "the rest of this
+        run" and not "tomorrow". A target marked complete would never come
         back; a target left in rotation would be re-selected and re-refused by
         its own start gate, forever.
 
@@ -2449,8 +2593,10 @@ class SequenceEngine:
             return
         bus.log("warn",
                 f"{target.name}: sank to {alt:.1f}°, below its {floor:.0f}° "
-                f"floor — setting it aside for tonight (its frames stay in the "
-                f"ledger, so it resumes tomorrow)", "sequence")
+                f"floor — setting it aside for the rest of this run (its "
+                f"frames stay owed in the ledger, so a restart or an "
+                f"auto-resume takes it up again once it is back above its "
+                f"floor)", "sequence")
         if self.plan and self.plan.instructions:
             await self._run_instructions(
                 TriggerContext(now_ts=now,
@@ -2510,10 +2656,49 @@ class SequenceEngine:
             return False
         return was_open
 
+    @staticmethod
+    def _centring_kwargs(target) -> dict:
+        """The target's own centring settings as `goto_and_center` keywords,
+        each ONLY WHEN IT IS SET (#170).
+
+        The hub has always taken ``tolerance_deg`` and ``max_attempts``, and
+        the engine never passed either, so every target centred to the hub's
+        1.2 arcmin and 3 attempts whatever its SLEW card said. Unset, this is
+        empty and the call is exactly the one every saved plan has always
+        made. One helper, for EVERY centring of a target: its setup, the
+        tracking-refusal recovery's re-centre, the re-centre after an
+        unguided initial sweep, and the two guiding re-centres (a lost star,
+        a walking field). Two copies of the conversion are two places for a
+        unit to go wrong. The Target stores arcminutes because that is what
+        people type; the hub works in degrees.
+
+        ALL FIVE, NOT JUST SETUP. The re-centre after the initial sweep runs
+        on any target whose sweep outlasted ``RECENTRE_AFTER_UNGUIDED_S``
+        (60 s; a sweep on this rig takes minutes), and it is the LAST
+        centring before the first frame. Left on the hub's defaults it
+        overrode the setup's centring with 1.2 arcmin and 3 attempts, so the
+        tolerance a SLEW card set was honoured by a centring whose result
+        nothing kept, and #170 stayed broken for every autofocus-first target.
+
+        ``getattr``: the recoveries are reachable with duck-typed targets, and
+        a target that has no such field has not set it.
+        """
+        kw: dict = {}
+        tol = getattr(target, "center_tolerance_arcmin", None)
+        if tol is not None:
+            kw["tolerance_deg"] = tol / 60.0
+        tries = getattr(target, "center_attempts", None)
+        if tries is not None:
+            kw["max_attempts"] = tries
+        return kw
+
     async def _setup_target(self, ti: int, target: Target) -> None:
         # A slew + plate-solve + initial autofocus legitimately produces no frames
         # for minutes; keep the no-progress watchdog quiet until capture begins.
         self._progress_expected = False
+        # The finish clock counts hops to the targets OTHER than this one
+        # (`_remaining_hops`), from the moment its acquisition begins.
+        self._acquiring_ti = ti
         # this target is now actually starting — clear any stale waiting sub-state
         # a prior gated wait published (wave-3 §2).
         self._set_state(target=target.name, target_index=ti, detail=f"slewing to {target.name}",
@@ -2540,7 +2725,36 @@ class SequenceEngine:
             except DeviceError as e:
                 raise SafetyAbort(f"slew blocked by sun-exclusion cone: {e}") from e
 
+        # THE HOP'S CLOCK STARTS HERE, after the gates (#189 U-07). The safety
+        # gate can hold for weather, and a rain hold charged to the hop would
+        # price every later hop at the length of a shower. The initial sweep
+        # is taken off at the end, because it records itself as "autofocus".
+        hop_t0 = time.monotonic()
+        sweep_s = 0.0
+
         if "telescope" in self.hub.devices:
+            # STAND THE GUIDER DOWN BEFORE THE MOUNT MOVES (#148, spec 5.6
+            # step 2). Nothing between two targets stopped the last target's
+            # guide loop, so the slew ran with it still pulsing, and the next
+            # target's guide start found the loop alive and returned at once:
+            # the native guider's "already active" guard. No star selection,
+            # no calibration check and no `_maybe_flip_for_pier`, so on the
+            # far pier side the old side's calibration drove the new side's
+            # corrections, which is the runaway GN-01 exists to prevent.
+            # Shown on the simulator with the real native guider before this
+            # line existed (test_guider_stand_down_before_slew.py). One call
+            # covers both branches below. Only when the plan guides: then the
+            # engine started the guider and it is the engine's to stop; with
+            # guiding off, a guider running is the operator's. Bounded and
+            # never raises (`_stand_down_guider`). It does not ask `is_active`
+            # first: that answers whether the guider is guiding, and what
+            # blocks the next start is the loop, which stays alive through a
+            # star lost in the slew for as long as it keeps re-acquiring. The
+            # stop is therefore often a second one (after a hold, or on the
+            # first target of a run), and a second stop re-stamps the native
+            # guider's saved PPEC window as if it had just been fed (#210).
+            if self.plan.guide:
+                await self._stand_down_guider()
             if target.center:
                 # GOTO+center is the slew + iterated solve→sync→re-slew loop —
                 # bounded so a hung solve/slew can't stall the night (P0-2).
@@ -2555,7 +2769,8 @@ class SequenceEngine:
                     result = await _bounded(
                         self.hub.goto_and_center(
                             target.ra_hours, target.dec_deg,
-                            rotation_deg=target.rotation_deg),
+                            rotation_deg=target.rotation_deg,
+                            **self._centring_kwargs(target)),
                         GOTO_TIMEOUT_S
                         + (300 if target.rotation_deg is not None else 0),
                         f"goto+center {target.name}")
@@ -2614,6 +2829,21 @@ class SequenceEngine:
                 # writer was carrying (GN-07); the centering that follows
                 # records a fresh one. Guarded: test hubs are bare doubles.
                 getattr(self.hub, "note_pointing_moved", lambda: None)()
+                if target.rotation_deg is not None:
+                    # SAID, NOT DROPPED (#160). Only `goto_and_center` turns
+                    # the rotator, and this branch never calls it, so a
+                    # planned angle on a target with centring off vanished
+                    # without a word and the frame kept whatever angle the
+                    # camera happened to be at. The centred branch leaves the
+                    # saying to the hub (`rotation_unavailable`), which knows
+                    # whether a rotator answered.
+                    bus.log("warning",
+                            f"{target.name}: rotation to PA "
+                            f"{target.rotation_deg:g} was asked for, but only "
+                            f"a centred slew turns the rotator and this target "
+                            f"is not centred; slewing without rotating, so the "
+                            f"frame keeps whatever angle the camera is at",
+                            "sequence")
                 await _bounded(tel.slew(target.ra_hours, target.dec_deg),
                                SLEW_TIMEOUT_S, f"slew to {target.name}")
                 try:
@@ -2644,8 +2874,18 @@ class SequenceEngine:
             self._tracked_target = target
             self._idle_since = time.time()
             self._idle_hold_open = True
+            self._idle_hold_retrying = False
 
-        if target.autofocus_first and "focuser" in self.hub.devices:
+        # A HOP DOES NOT MOVE THE FOCUSER (#189 U-05, spec 5.6 step 6). A
+        # target with `autofocus_skip_if_fresh` (every mosaic panel) sweeps
+        # only when `_hop_focus_is_owed` says the focus is untrustworthy or
+        # the frame loop would have refocused anyway; every other target
+        # sweeps at every setup, as it always has. The re-centre below stays
+        # inside the sweep: it answers the drift of an unguided sweep, and a
+        # reused focus spent no time unguided.
+        if target.autofocus_first and "focuser" in self.hub.devices and (
+                not getattr(target, "autofocus_skip_if_fresh", False)
+                or await self._hop_focus_is_owed(target)):
             # THE CENTRING IS SPENT BY THE TIME GUIDING STARTS. Measured
             # 2026-09-07: centred to 0.08' at 22:12, first light frame 2.0' off
             # at 22:21 — the sweep runs UNGUIDED between the two, and this rig
@@ -2654,6 +2894,7 @@ class SequenceEngine:
             _af_t0 = time.monotonic()
             await self._autofocus("initial autofocus", target=target)
             af_s = time.monotonic() - _af_t0
+            sweep_s = af_s
             guided_through = guided_before and await self._guiding_active_now()
             await self._recentre_after_unguided_focus(
                 target, af_s, guided=bool(guided_through))
@@ -2719,6 +2960,23 @@ class SequenceEngine:
                                        "unguided", "sequence")
 
         self._arm_meridian_flip(target)
+
+        # A FRESH ACQUISITION IS A NEW POINTING (#163, spec 5.6 step 9), so
+        # its first frame owes no dither. The counter used to span targets: B
+        # inherited A's frames since A's last dither, so B dithered after one
+        # frame of its own, or before its first when A ended on a full
+        # cadence. Here, with the setup done, and not at the slew: a setup
+        # that raises shoots nothing, and the next one resets it anyway.
+        self._frames_since_dither = 0
+
+        # THE HOP'S WALL TIME (#189 U-07, spec 5.6 step 10), for the finish
+        # clock's hop term. The initial sweep comes off: `_autofocus` already
+        # records it as "autofocus", and whether a hop sweeps at all is a
+        # decision of its own (a mosaic panel reuses a fresh focus, spec 5.6
+        # step 6), so folded in here a 7-9 minute sweep would be priced into
+        # every hop, swept or not. A setup that raised never gets here, so
+        # only a completed hop is a sample.
+        self._record_event_cost("hop", time.monotonic() - hop_t0 - sweep_s)
 
         # setup complete — capture is about to begin. Arm the no-progress watchdog
         # and anchor its clock to NOW so a slow slew/solve/AF that just finished
@@ -3064,8 +3322,10 @@ class SequenceEngine:
                     names = ", ".join(s.filter or "no filter" for _, s in owed)
                     bus.log("warning",
                             f"{target.name}: every step still owed is set aside "
-                            f"for tonight ({names}) — moving on; the ledger "
-                            f"keeps them owed for another night", "sequence")
+                            f"for the rest of this run ({names}) — moving on; "
+                            f"the ledger keeps them owed, so a restart or an "
+                            f"auto-resume tries them again, even tonight",
+                            "sequence")
                 return
             rounds += 1
             before = _pass_counter()
@@ -3343,18 +3603,26 @@ class SequenceEngine:
         of the run (#147) and say so in words.
 
         Set aside is NOT done. The ledger still owes every frame the step has
-        not banked, so the session ends dormant and a later night picks it up.
-        Until this run ends ``_run_steps`` leaves the step out of its pending
-        list and ``_run_step`` returns at once for it. Before the counter
-        carried across visits the guard only ended the visit, and the next
-        round walked straight back into the same filter.
+        not banked, so the session ends dormant. Until this run ends
+        ``_run_steps`` leaves the step out of its pending list and
+        ``_run_step`` returns at once for it. Before the counter carried
+        across visits the guard only ended the visit, and the next round
+        walked straight back into the same filter.
+
+        THE SENTENCE PROMISES THE REST OF THIS RUN AND NO MORE. The set-aside
+        lives in engine memory and is cleared at run start (S2 persists it),
+        so a restart or an auto-resume the same night tries the step again.
+        It used to say the frames stayed owed "for another night", and an
+        operator who read that at 1 a.m. would not expect the filter that had
+        just failed ten times to be back on the shutter at 2 a.m.
         """
         owed = step.count
         if self._session is not None:
             owed = max(0, step.count - self._session.accepted(step.id))
         line = (f"{target.name}: {step.filter or 'no filter'} set aside for "
-                f"tonight after {rejects} consecutive rejects — its {owed} "
-                f"frame(s) stay owed in the ledger for another night")
+                f"the rest of this run after {rejects} consecutive rejects — "
+                f"its {owed} frame(s) stay owed in the ledger, so a restart or "
+                f"an auto-resume tries it again, even tonight")
         self._set_aside[key] = line
         bus.log("warning", line, "sequence")
 
@@ -4842,7 +5110,8 @@ class SequenceEngine:
         # The altitude half - floor, horizon, no-go wedges, zenith keep-out and
         # the no-site refusal - is ONE predicate with two askers: this gate,
         # which raises on its answer, and the idle-clock park-hold, which acts
-        # on a floor verdict for the target the mount was left tracking (#165).
+        # on a floor or ceiling verdict for the target the mount was left
+        # tracking (#165).
         # A second copy of the floor formula is how the two would come to
         # disagree about where the floor is.
         verdict = self._altitude_limit_verdict(target, projected=projected,
@@ -6018,8 +6287,11 @@ class SequenceEngine:
                 f"nothing holding the field", "sequence")
         try:
             self._set_state(detail="re-centring after the unguided sweep")
+            # The target's own tolerance and attempts: this is the centring
+            # the first frame is shot at (`_centring_kwargs`, #170).
             await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                           rotation_deg=target.rotation_deg)
+                                           rotation_deg=target.rotation_deg,
+                                           **self._centring_kwargs(target))
         except Exception as e:          # noqa: BLE001
             # Non-fatal by design (same as the recovery and re-lock re-centres):
             # a failed re-centre leaves the mount where it already was.
@@ -6098,7 +6370,8 @@ class SequenceEngine:
             try:
                 self._set_state(detail="re-centring after guiding loss")
                 await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=target.rotation_deg)
+                                               rotation_deg=target.rotation_deg,
+                                               **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design: a failed re-centre leaves the mount where
                 # it was, which is exactly where it would have been without this
@@ -6221,7 +6494,8 @@ class SequenceEngine:
             try:
                 self._set_state(detail="re-centring: the guided field walked")
                 await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=target.rotation_deg)
+                                               rotation_deg=target.rotation_deg,
+                                               **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design (same as recovery): a failed re-centre
                 # leaves the mount where it already was.
@@ -6731,6 +7005,11 @@ class SequenceEngine:
         UNREADABLE IS NOT A VERDICT, in both directions: no mount, a dropped
         link or a driver that raises yields None from ``_pier_side_now``, and
         this then neither records a pre-flip side nor trips on one.
+
+        ONE RECORD PER TARGET (I-19, extending #136). The pre-flip side is
+        read and written under ``target``'s own key, so another target shot
+        near its meridian in between cannot overwrite it, and a target seen
+        only west of its meridian is never compared against someone else's.
         """
         if not (self.plan and self.plan.meridian_flip):
             return                      # nobody asked for a flip; nothing is owed
@@ -6760,14 +7039,16 @@ class SequenceEngine:
         side = await self._pier_side_now()
         if side not in ("east", "west"):
             return                      # nobody can say; do not record, do not trip
+        key = getattr(target, "id", None) or target.name
         if ttf_h > 0:
             # Still east of the meridian: this IS the pre-flip side, by
             # definition. Recorded every frame rather than once, so a target
             # re-acquired mid-run (a recovery, a resume) refreshes it.
-            self._pre_flip_side = side
+            self._pre_flip_side[key] = side
             self._flip_owed = False
             return
-        if self._pre_flip_side is None or side != self._pre_flip_side:
+        pre = self._pre_flip_side.get(key)
+        if pre is None or side != pre:
             # Either nobody saw the side before the crossing, or it has changed
             # since -- and a changed side is what a flip looks like from here.
             self._flip_owed = False
@@ -6830,7 +7111,15 @@ class SequenceEngine:
                             f"{target.name}: the mount is on the {now_side} "
                             f"side now -- the flip happened, resuming",
                             "sequence")
-                    self._pre_flip_side = now_side
+                    # THE RECORD STAYS THE PRE-FLIP SIDE (#136). This used to
+                    # store ``now_side`` here, the side the mount flipped TO.
+                    # The next frame then read that same side back, past the
+                    # meridian, and tripped again: a second hold waiting for
+                    # the mount to leave a side a goto past the meridian always
+                    # lands on. On 2026-09-22 that cost 26 minutes, 16 re-slews
+                    # and a set-aside target seven minutes after a good flip.
+                    # Left alone, ``side`` is still this target's record, so
+                    # the next frame sees a changed side and goes through.
                     return
                 await self._checkpoint()
                 await asyncio.sleep(FLIP_OWED_POLL_S)
@@ -7163,10 +7452,13 @@ class SequenceEngine:
             return None
         # A park slewed the tube to the home position, so the target has to be
         # re-acquired properly — solve and re-centre, not a bare GoTo. This is
-        # the step that put both nights back 0.5 arcmin from target.
+        # the step that put both nights back 0.5 arcmin from target. It is a
+        # centring of this target, so it takes the target's own tolerance and
+        # attempts, through the same helper target setup uses (#170).
         result = await _bounded(
             self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                     rotation_deg=target.rotation_deg),
+                                     rotation_deg=target.rotation_deg,
+                                     **self._centring_kwargs(target)),
             GOTO_TIMEOUT_S + (300 if target.rotation_deg is not None else 0),
             f"re-centre {target.name} after limit recovery")
         # KEPT, AS MEASURED, for the caller that has to act on it (#171). A
@@ -7722,6 +8014,83 @@ class SequenceEngine:
                 f"skipping the post-flip autofocus: the last successful focus "
                 f"was {age_s / 60:.0f} min ago{temp_note} — a flip does not "
                 f"move the focuser", "sequence")
+        return False
+
+    @staticmethod
+    def _focus_group_key(target) -> tuple[str, str]:
+        """The key `_hop_focus_is_owed` records a first acquisition under.
+
+        A mosaic's panels share their ``mosaic_group``, so the mosaic focuses
+        once on arrival and not once per panel. A target with no group is its
+        own group, keyed by its id. Namespaced, so a group name can never
+        collide with a target id.
+        """
+        group = getattr(target, "mosaic_group", None)
+        if group:
+            return ("group", str(group))
+        return ("target", str(getattr(target, "id", None) or target.name))
+
+    async def _hop_focus_is_owed(self, target: Target) -> bool:
+        """Whether a hop to ``target`` owes the initial sweep (#189 U-05, spec
+        5.6 step 6). Asked only for a target with `autofocus_skip_if_fresh`,
+        once per acquisition: it RECORDS the acquisition as it answers.
+
+        A hop does not move the focuser and does not change the tube's
+        temperature, and the frame loop already owns drift through
+        `_refocus_due` at every frame boundary inside a visit. So a hop owes a
+        sweep only when nothing trustworthy exists or the frame loop would
+        have refocused anyway:
+
+        * no sweep has succeeded this run, or the last one failed
+          (``_last_focus_at`` cleared);
+        * this is the group's first acquisition this run
+          (`_focus_group_key`);
+        * `_refocus_due()` is true now: ``autofocus_every`` reached, or the
+          temperature delta, when armed, exceeded.
+
+        THERE IS NO AGE RULE, and that is the difference from
+        `_post_flip_focus_is_owed`, which sweeps whenever the last sweep is
+        ``FRESH_FOCUS_S`` old before it looks at the temperature. On a
+        rotating mosaic one visit plus its hop is about 16.7 min, so that rule
+        would put a 7-9 minute sweep on about every second hop: computed,
+        19.4% of the night for an 8-minute sweep (spec A.3). The cost of
+        leaving it out is written down as spec risk 15: a rig with neither
+        ``autofocus_every`` nor a temperature delta armed focuses once per run
+        on a mosaic, which is what one long single target does there today.
+
+        An unreadable temperature decides nothing here, unlike the post-flip
+        gate: it decides nothing in `_refocus_due` either, and a hop owes a
+        sweep only when the frame loop would have taken one.
+        """
+        key = self._focus_group_key(target)
+        first = key not in self._focus_groups_acquired
+        self._focus_groups_acquired.add(key)
+        if self._last_focus_at is None:
+            return True
+        if first:
+            return True
+        # THE BASELINE IS TAKEN BEFORE `_refocus_due` IS ASKED, because that
+        # call seeds a missing one from the reading it makes now. A sweep whose
+        # temperature read failed (the Alpaca focuser returns None on a
+        # DeviceError) left none, and compared after the seed the log said
+        # "0.0 C since" about a change nobody measured.
+        baseline = self._last_focus_temp
+        if await self._refocus_due():
+            return True
+        age_s = time.monotonic() - self._last_focus_at
+        try:
+            t = await self.hub.require("focuser").get_temperature()
+        except Exception:       # noqa: BLE001
+            t = None
+        if baseline is None:
+            since = "no focuser temperature was read at that sweep"
+        elif t is None:
+            since = "the focuser temperature could not be read"
+        else:
+            since = f"{abs(float(t) - float(baseline)):.1f} C since"
+        bus.log("info",
+                f"{target.name}: focus reused: swept {age_s / 60:.0f} min ago, "
+                f"{since}", "sequence")
         return False
 
     async def _autofocus(self, label: str, *, step=None,

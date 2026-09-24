@@ -33,6 +33,7 @@ import { memo, type JSX, type MouseEvent as RMouseEvent, type PointerEvent as RP
 import { NODE_DEFS, type PortDef } from "../../../../../components/flows/nodeDefs";
 import { PORT_ROW_H, nodeW, type PortDir } from "../../../../../components/flows/geometry";
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
+import { progressChip } from "../../../../../components/flows/flowProgress";
 import { useStore } from "../../../../../store";
 import { nav } from "../../../../router";
 import { ActionButton, Mono, Pill, StatusPill } from "../../../../ui";
@@ -160,18 +161,24 @@ export interface FlowNodeCardProps {
 }
 
 function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTapPort }: FlowNodeCardProps): JSX.Element {
-  // Five subscriptions, all returning a primitive, so all five are exact under
+  // Six subscriptions, all returning a primitive, so all six are exact under
   // Object.is. `nodeMarkLevel` returns a string or null and never a fresh
   // object, so a compile that changes nothing for this type does not wake this
   // card - and `rigValueFor` reaches into `status.providers` for ONE label
   // rather than taking the providers object, which would be a new reference on
   // every poll and would re-render every card on the canvas four times a
-  // minute.
+  // minute. `progressChip` is the same: the chip STRING, not the progress
+  // answer, which is a new object on every re-read.
   const status = useStore((s) => asNodeStatus(s.flows.statuses[node.id]));
   const selected = useStore((s) => s.flows.sel?.kind === "node" && s.flows.sel.id === node.id);
   const mark = useStore((s) => nodeMarkLevel(s.flows.compiled?.unmapped, node.type));
   const markWhy = useStore((s) => nodeMarkDetail(s.flows.compiled?.unmapped, node.type));
   const rigValue = useStore((s) => rigValueFor(node.type, s.status));
+  // THE PROGRESS CHIP (#189 S1 item 9), "212/315 subs". The classic card draws
+  // it from the same formatter, which decides everything - TARGET only, a
+  // session to count from, a saved graph - so the two canvases cannot disagree
+  // about when a count is true.
+  const chip = useStore((s) => progressChip(s.flows.progress, node.id, s.flows.dirty));
   // A LOSS earns the `!` and the card outline; a note does not. The note says
   // the run uses the rig's own value for these settings, which is not a defect
   // in the graph and must not be painted as one.
@@ -346,6 +353,11 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
         <div className="nx-flow-node-marks">
           {status !== "idle" && (
             <StatusPill text={word} tone={NODE_STATUS_TONE[status]} pulse={status === "busy"} />
+          )}
+          {chip && (
+            // A pill in the marks row, which wraps, rather than a third footer
+            // line: the 188 px card already clips the rig line to fit.
+            <Pill tone="info" data-testid="flow-node-progress">{chip}</Pill>
           )}
           {mark && (
             // A word, not a ring. The night palette collapses warn and bad

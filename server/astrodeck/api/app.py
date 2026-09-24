@@ -136,8 +136,12 @@ from ..provenance import effective_config
 from ..flows.calibration_health import (CalNeed, DEFAULT_QUOTA, KIND_ORDER,
                                         frame_from_header, health_matrix)
 from ..flows.compile import compile_plan
+from ..flows.continuation import (adopt_detail, adopt_matches, apply_adoption,
+                                  dropped_detail, plan_replace_report, recount,
+                                  recount_detail, saved_before_s1)
 from ..flows.doctor import check as flow_doctor
 from ..flows.models import MY_FLOWS_FOLDER, FlowGraph, FlowRecord
+from ..flows.progress import flow_progress
 from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
 from ..flows import wizard as flow_wizard
 from ..flows.to_plan import (GraphNotRunnable, blocking_reasons, losses,
@@ -158,8 +162,8 @@ from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
                                manifest_json, readme_text, weights_csv)
 from ..sequence.resume_arm import ResumeArm
 from ..plans import migrate_plan_policy_fields
-from ..sequence.session import (SessionUnreadable, migrate_legacy_resume,
-                                session_store)
+from ..sequence.session import (SESSION_STATUSES, Session, SessionUnreadable,
+                                migrate_legacy_resume, session_store)
 from ..sequence.session_files import active_session, files_index
 from ..weather import NoNightError, weather_service
 # Cloud-occlusion model (stage 6a). Imported HERE and nowhere near the sequence
@@ -814,6 +818,115 @@ def _refuse_plan_identity(plan: SequencePlan, status: int) -> None:
     warning = duplicate_name_warning(plan)
     if warning:
         bus.log("warning", warning, "sequence")
+
+
+def _continue_flow_session(first_read: Session, plan: SequencePlan,
+                           body: FlowRunBody) -> dict:
+    """CONTINUE a flow's dormant session on tonight's compile, or refuse with
+    a 409 that says what continuing would do (#189 S1, spec 5.9, D6).
+
+    ONE CRITICAL SECTION, SYNCHRONOUS, UNDER THE STORE'S WRITE LOCK: re-read
+    the session, require it dormant, decide, replace the plan, start. There is
+    no ``await`` in here, so nothing else on the event loop - ResumeArm, the
+    engine's ledger writes, a finalize - runs between the read and the start,
+    and the lock holds off store saves made from worker threads (not a
+    delete, which takes no lock: #212).
+
+    That is the whole defence against the one-starter race (2026-09-18).
+    ``patch_session`` loads, checks and saves in separate ``to_thread`` calls,
+    and ResumeArm can start the same session in between: the save then puts a
+    stale frame list over the file of a session that is now running. So this:
+
+    * NEVER SAVES THE SESSION ITSELF. ``engine.start(session=)`` persists it,
+      as a resume does. A start that is refused ("already running") has
+      written nothing.
+    * RE-READS inside the lock. ``first_read`` is the route's lookup, made
+      before an await; a ResumeArm run that started - or started and ENDED -
+      since then has banked frames that only the file knows about, and
+      continuing the route's copy would start a run from a ledger without
+      them. It is used for its id and nothing else.
+
+    The refusals come in the order the UI asks them, each one lifted only by
+    its own flag on the next request:
+
+    (a) ``adopt`` - no step id is shared, the ledger holds frames, and the
+        session was saved before S1 (``saved_before_s1``: none of its ids is
+        one the compile mints), so its uuid4 ids no compile produces again.
+        Continuing it as it is would count none of them; starting fresh
+        without a word would disarm it (``engine.start``'s singleton). With
+        ``adopt`` the unique matches are re-keyed and a ``.bak`` is taken
+        before ``engine.start`` writes the result. What does not match still
+        meets (c). A session compiled since S1 that shares no id was
+        re-framed (a single TARGET is keyed on its geometry): it goes straight
+        to (c), and an ``adopt`` flag re-keys nothing, because re-keying it
+        by name would credit the old field's frames to the new one (D5).
+    (b) ``recount`` - the ledger is counted by the frozen plan's
+        ``count_mode``, so a different mode recounts every banked frame.
+    (c) ``dropped_steps`` - steps that hold frames are gone from the flow. The
+        frames stay in the ledger and on disk; they stop counting.
+
+    A refusal leaves the file exactly as it was: every change above is made
+    to the in-memory copy, and only ``engine.start`` writes it.
+    """
+    with session_store.write_locked():
+        try:
+            s = session_store.load(first_read.id)
+        except (KeyError, SessionUnreadable):
+            s = None
+        if s is None or s.status != "dormant":
+            now = "no longer on disk" if s is None else f"now {s.status}"
+            raise HTTPException(409, detail={
+                "code": "session_changed", "session_id": first_read.id,
+                "status": None if s is None else s.status,
+                "detail": f"this flow's session changed while the run was "
+                          f"being prepared: it is {now}, so it was not "
+                          f"continued and nothing was written. Press Run "
+                          f"again."})
+        report = plan_replace_report(s, plan)
+        adopted = None
+        if not report.kept and s.frames and saved_before_s1(s):
+            matches = adopt_matches(s, plan)
+            if not body.adopt:
+                raise HTTPException(409, detail={
+                    "code": "adopt",
+                    "detail": adopt_detail(len(s.frames),
+                                           matches.frames_matched),
+                    "adopt": {"session_id": s.id, "frames": len(s.frames),
+                              "matched": matches.frames_matched,
+                              "unmatched": matches.rest()}})
+            apply_adoption(s, matches)
+            adopted = matches
+            report = plan_replace_report(s, plan)
+        if s.plan.count_mode != plan.count_mode and not body.accept_recount:
+            before, after = recount(s, plan)
+            raise HTTPException(409, detail={
+                "code": "recount",
+                "detail": recount_detail(s.plan.count_mode, plan.count_mode,
+                                         before, after),
+                "before": before, "after": after, "session_id": s.id})
+        if report.dropped and not body.accept_dropped:
+            raise HTTPException(409, detail={
+                "code": "dropped_steps",
+                "detail": dropped_detail(report.dropped_frames),
+                "dropped_frames": report.dropped_frames, "session_id": s.id})
+        if adopted is not None:
+            # Before the first write of the re-keyed ledger, which is
+            # engine.start's. Raises rather than rewrite without a copy.
+            session_store.backup(s.id)
+        night = len(s.nights) + 1          # engine.start appends tonight's
+        s.plan = plan
+        s.name = plan.name or s.name
+        # The call /api/sessions/{id}/resume makes: a continue is a NEW run
+        # and re-reads the standing setpoint (replan_cooling).
+        engine.start(replan_cooling(
+            plan, config_store.cfg().cooling.setpoint_c), session=s)
+    out = {"id": s.id, "night": night, "continued": True,
+           "kept": len(report.kept), "new": len(report.new),
+           "dropped": len(report.dropped)}
+    if adopted is not None:
+        out["adopted"] = {"matched": adopted.frames_matched,
+                          "unmatched": adopted.rest()}
+    return out
 
 
 def _spawn(name: str, coro, *, replace: bool = False) -> dict:
@@ -1666,9 +1779,29 @@ class FlowRunBody(BaseModel):
     It deliberately does NOT clear the dome refusal. Everything else on the
     unmapped list costs frames; a roof that will not close costs equipment, and
     a checkbox that can wave that through is a checkbox that will be ticked
-    once and never read again."""
+    once and never read again.
+
+    The last four answer CONTINUE's questions (#189 S1, spec 5.9). Run
+    continues the flow's own dormant session by default, and each flag is the
+    operator saying yes to one thing that continuing would otherwise refuse
+    to do without asking:
+
+    * ``fresh`` - START OVER: a new session, leaving the dormant one on disk.
+    * ``adopt`` - re-key a pre-S1 session's frames onto this compile's step
+      ids (409 ``adopt`` asks).
+    * ``accept_dropped`` - continue although steps holding frames are gone
+      from the flow (409 ``dropped_steps`` asks).
+    * ``accept_recount`` - continue under a different ``count_mode``, which
+      recounts every banked frame (409 ``recount`` asks).
+
+    None of them lifts any guard above: identity, the unbounded quota, the
+    horizon and the Sun all apply to a continue exactly as to a fresh run."""
     accept_unmapped: bool = False
     force: bool = False
+    fresh: bool = False
+    adopt: bool = False
+    accept_dropped: bool = False
+    accept_recount: bool = False
 
 
 class SessionPatchBody(BaseModel):
@@ -4776,8 +4909,13 @@ def create_app(*, bind_host: str | None = None,
             return bool(getattr(cam, "can_cool", False))
         return bool(config_store.cfg().camera_can_cool_seen)
 
-    async def _compile_payload(graph: FlowGraph, name: str) -> dict:
+    async def _compile_payload(graph: FlowGraph, name: str, *,
+                               flow_id: str = "") -> dict:
         """``{plan, structural, issues, unmapped}``.
+
+        ``flow_id`` is the stored flow's id, "" for an unsaved draft. It goes
+        to ``to_sequence_plan`` exactly as the run passes it (spec 3.3), so a
+        saved flow's preview is compiled with the ids its run will carry.
 
         FOUR lists, not one, because four different things can be wrong with a
         graph and collapsing them takes away the operator's ability to act:
@@ -4802,9 +4940,11 @@ def create_app(*, bind_host: str | None = None,
             # SAME ARGUMENTS AS THE RUN. A preview compiled differently from the
             # run is a preview of a different night — the defect the park/warm
             # binding was written for, one layer up. Whatever the run would cool
-            # to, the PLAN tab has to show.
+            # to, the PLAN tab has to show. The flow's id included: without it
+            # the ids fall back to uuid4 and the preview names different steps
+            # from the run's.
             _plan, unmapped = to_sequence_plan(
-                compiled, graph,
+                compiled, graph, flow_id=flow_id,
                 cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
                 camera_can_cool=_camera_can_cool(),
                 closes_on_unsafe=bool(
@@ -4843,9 +4983,13 @@ def create_app(*, bind_host: str | None = None,
         one saved by a newer AstroDeck, one that does not parse, one that fails
         validation. Each is a read-only card carrying ``unreadable`` (a reason
         with no filesystem path in it). Skipping them made a damaged flow look
-        deleted; every other route still answers 404 for them."""
-        records = await asyncio.to_thread(flow_store.load_all)
-        rows = await asyncio.to_thread(flow_store.unreadable)
+        deleted; every other route still answers 404 for them.
+
+        ONE WALK OF THE DIRECTORY (``listing``). This used to call
+        ``load_all`` and then ``unreadable``: every file parsed and validated
+        twice per request, and the two halves of one response free to disagree
+        about a file written between them."""
+        records, rows = await asyncio.to_thread(flow_store.listing)
         return [r.card() for r in records] + rows
 
     @app.post("/api/flows", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
@@ -4987,11 +5131,12 @@ def create_app(*, bind_host: str | None = None,
     async def rename_flow_folder(body: FlowFolderRenameBody):
         """Re-parent, not rename — a folder is a field on the record.
 
-        THE STORE DOES NOT VALIDATE THE TARGET NAME. ``rename_folder`` uses
-        ``model_copy``, which runs no validators, so ``FlowRecord``'s own folder
-        rule never sees the new name and a path-shaped string would be persisted
-        into every moved record. Validated here THROUGH THE MODEL rather than
-        against a second copy of the rule, so the two cannot drift.
+        THE STORE DOES NOT VALIDATE THE TARGET NAME. ``rename_folder`` writes
+        it straight into each moved file's raw JSON, which runs no validators,
+        so ``FlowRecord``'s own folder rule never sees the new name and a
+        path-shaped string would be persisted into every moved record.
+        Validated here THROUGH THE MODEL rather than against a second copy of
+        the rule, so the two cannot drift.
         """
         try:
             FlowRecord(name="_", folder=body.new_name)
@@ -5015,7 +5160,7 @@ def create_app(*, bind_host: str | None = None,
 
         Losing a night's automation because a folder was tidied away is not a
         trade anybody would choose. The destination is FIXED rather than a query
-        param: it would reach ``rename_folder`` — and therefore ``model_copy`` —
+        param: it would reach ``rename_folder`` — and therefore the raw files —
         unvalidated, and one unvalidated path into that is enough. A caller who
         wants somewhere else can rename first.
         """
@@ -5035,6 +5180,100 @@ def create_app(*, bind_host: str | None = None,
         POST /api/flows/{flow_id} for it to collide with today, and relying on
         that absence is how the next route added here breaks this one."""
         return await _compile_payload(body.graph or FlowGraph(), body.name or "")
+
+    def _flow_progress_payload(rec: FlowRecord, flow_id: str,
+                               camera_can_cool: bool) -> dict:
+        """The progress answer for one stored flow. Synchronous, so the route
+        can run all of it on a worker thread.
+
+        THE STORED GRAPH, COMPILED THE WAY ``run_flow`` COMPILES IT:
+        ``compile_plan(rec.graph, rec.name)`` and then ``to_sequence_plan``
+        with the flow's own id and the run's own arguments. The ids are uuid5s
+        of that id (spec 3.3), and the ledger counts frames by step id alone,
+        so a compile on any other path names steps the ledger never heard of:
+        every block reads "nothing banked" and every frame "orphaned".
+        ``flow_progress`` refuses a plan it cannot account for, but a compile
+        keyed on the wrong id is self-consistent and it cannot see that. The
+        cooling and dome arguments shape plan-level fields this answer never
+        reads, and they are passed anyway: an identical call cannot drift from
+        the run's, and every ``to_sequence_plan`` call in this file is held to
+        the run's arguments (test_flows_cooling.py and
+        test_a_run_without_a_temperature_says_so.py parse them). They are all
+        config reads except ``camera_can_cool``, which asks the connected
+        camera and so is asked on the event loop, where the run and the
+        preview ask it, and handed in.
+
+        NOT THE SESSION'S FROZEN PLAN. The card shows what the flow owes as it
+        stands now; a step the operator has since changed or removed is a new
+        step with nothing banked, and its old frames are orphaned, which are
+        the numbers the next CONTINUE's dropped-steps question will quote.
+
+        THE NEWEST SESSION THIS FLOW STARTED THAT WAS NOT ABANDONED, by
+        ``created_ts`` (``newest_for_flow`` says why not ``updated_ts``). An
+        abandoned session is one the operator closed: its files stay on disk,
+        but its ledger is no longer the flow's work in progress.
+        """
+        compiled = compile_plan(rec.graph, rec.name)
+        plan, _unmapped = to_sequence_plan(
+            compiled, rec.graph, flow_id=flow_id,
+            cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
+            camera_can_cool=camera_can_cool,
+            closes_on_unsafe=bool(
+                config_store.cfg().safety.close_dome_on_unsafe))
+        session = session_store.newest_for_flow(
+            flow_id, tuple(s for s in SESSION_STATUSES if s != "abandoned"))
+        return flow_progress(compiled, plan, session, flow_id=flow_id)
+
+    # ORDERING: declared with the static /api/flows/<segment> routes, before
+    # GET /api/flows/{flow_id}. Starlette tries routes in declaration order,
+    # and ``{flow_id}`` matches one path segment only, so today it cannot
+    # swallow ``/<id>/progress`` the way it would swallow "folders". It stays
+    # up here for the day that parameter widens to ``{flow_id:path}`` (an id
+    # carrying a folder): declared below it, "<id>/progress" would then be read
+    # as a flow id and 404'd, on a route that exists.
+    @app.get("/api/flows/{flow_id}/progress",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def get_flow_progress(flow_id: str):
+        """Per block, per panel and per step: subs banked and owed from the
+        flow's newest session, plus the frames sitting on steps the flow no
+        longer has (#189 S1 item 9; the shape is ``flow_progress``'s). The
+        card's state chip, the modal's panel bars and the CONTINUE button's
+        copy all read it.
+
+        CAP_VIEW_STATUS, so a viewer can read it, and therefore NOTHING HERE
+        MAY BE DERIVED FROM THE SITE (spec 6.9). No altitude, no transit, no
+        setting time, not one value computed from a clock and the site: a
+        key-name filter cannot withhold a value a route computes and names
+        itself (#19), so the only safe answer is never to compute one.
+        ``flow_progress`` takes no site, clock or config, and the keys it
+        emits are held to an allow-list at the wire by
+        tests/test_flows_progress_route.py. Anything site-derived belongs on
+        GET /api/flows/{flow_id}/tonight, which is CAP_VIEW_SITE_DERIVED.
+
+        OFF THE EVENT LOOP: a compile, a scan of every session file on disk
+        and a count, for each card of a library that asks for its chips.
+
+        404 for an id ``flow_store.get`` does not answer, which includes a
+        file the library lists as unreadable (#153): there is no graph to
+        compile. 422 ``invalid_graph`` for a graph that cannot become a plan
+        (``GraphNotRunnable``), the refusal and the words ``/run`` gives it.
+        ``flow_progress``'s own ValueError (a plan it cannot account for) is
+        deliberately NOT caught: this route compiles with the flow's id, so
+        that refusal would be a defect here, never the operator's, and a 500
+        says so where a mapped answer would pass for a verdict. A broader
+        ``except ValueError`` would also swallow ``GraphNotRunnable`` and
+        pydantic's ``ValidationError``, both subclasses of it.
+        """
+        try:
+            rec = await asyncio.to_thread(flow_store.get, flow_id)
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+        try:
+            return await asyncio.to_thread(_flow_progress_payload, rec, flow_id,
+                                           _camera_can_cool())
+        except GraphNotRunnable as e:
+            raise HTTPException(422, detail={"detail": str(e), "code": e.code})
 
     @app.get("/api/flows/{flow_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -5083,7 +5322,7 @@ def create_app(*, bind_host: str | None = None,
             rec = await asyncio.to_thread(flow_store.get, flow_id)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
-        return await _compile_payload(rec.graph, rec.name)
+        return await _compile_payload(rec.graph, rec.name, flow_id=flow_id)
 
     @app.get("/api/flows/{flow_id}/tonight",
              dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
@@ -5131,6 +5370,14 @@ def create_app(*, bind_host: str | None = None,
         The guards below are the SAME ones /api/sequence/start applies, in the
         same order, because a second start path that quietly omits one is how a
         guard stops being a guard.
+
+        THEN IT CONTINUES THE FLOW'S OWN SESSION (#189 S1, spec 5.9, D6), when
+        the newest session this flow started is dormant: one ledger per flow,
+        so night two banks on night one's step ids and ``Session.owed()``
+        stays the only definition of finished. ``_continue_flow_session`` is
+        the write-locked section that does it, and its docstring lists the
+        three 409s (``adopt``, ``recount``, ``dropped_steps``) that ask before
+        continuing changes what the ledger counts. ``fresh`` starts over.
         """
         try:
             rec = await asyncio.to_thread(flow_store.get, flow_id)
@@ -5150,8 +5397,12 @@ def create_app(*, bind_host: str | None = None,
             # without this the night shoots at whatever the sensor drifted to and
             # no dark in the library matches it. None means no intent, and the
             # run then behaves exactly as it always has.
+            #
+            # `flow_id` makes the target and step ids deterministic (spec 3.3):
+            # the same flow compiles to the same ids on every night, which is
+            # what lets the continue below find last night's frames by step id.
             plan, unmapped = to_sequence_plan(
-                compiled, rec.graph,
+                compiled, rec.graph, flow_id=flow_id,
                 cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
                 camera_can_cool=_camera_can_cool(),
                 closes_on_unsafe=bool(
@@ -5197,9 +5448,9 @@ def create_app(*, bind_host: str | None = None,
 
         if not plan.targets or plan.total_frames() == 0:
             raise HTTPException(422, "plan has no frames")
-        # The compile mints uuid4 ids, so a flow cannot reach this today. It
-        # is here because S1 makes the ids deterministic, and an id collision
-        # would then arrive by this door.
+        # The compile's ids are deterministic now (`flow_id` above, S1), so an
+        # id collision in the identity scheme would arrive by this door, and
+        # a continue must never start one: the ledger counts by step id alone.
         _refuse_plan_identity(plan, 422)
         if quota_unbounded(plan, resolve_policy(plan, config_store.cfg())):
             raise HTTPException(400, "count_mode=accepted with both reject "
@@ -5225,22 +5476,56 @@ def create_app(*, bind_host: str | None = None,
             # Awaited, not fired: the preview loop must have released the camera
             # before the engine's first exposure.
             await hub.stop_loop_and_wait()
+        # WHICH LEDGER, decided after every guard above so a refused run never
+        # touches a session. The NEWEST session this flow started, whatever
+        # became of it, and it is continued only if it is dormant. Not "the
+        # newest dormant one": after a START OVER the old session stays dormant
+        # (unarmed) forever, and once the new one completes or is abandoned
+        # that rule would reopen the ledger the operator chose to leave. A
+        # complete newest session starts fresh (spec 5.9; reopening one whose
+        # flow now owes more is I-30).
+        #
+        # This read is before an await, so it is only a hint: the continue
+        # re-reads the session under the write lock before it decides.
+        latest = None
+        if not body.fresh:
+            latest = await asyncio.to_thread(
+                session_store.newest_for_flow, flow_id, SESSION_STATUSES)
+        continued: dict | None = None
         try:
             hub.require("camera")
-            # Synchronous, and it owns its own task — do not await it, and do
-            # not wrap it in a busy lane. "Already running" is raised in here.
-            engine.start(plan, origin="flow", origin_id=flow_id)
+            if latest is not None and latest.status == "dormant":
+                continued = _continue_flow_session(latest, plan, body)
+            else:
+                # Synchronous, and it owns its own task — do not await it, and
+                # do not wrap it in a busy lane. "Already running" is raised in
+                # here.
+                engine.start(plan, origin="flow", origin_id=flow_id)
         except DeviceError as e:
             raise _err(e)
+        if continued is None:
+            # The session the engine just made, read back rather than reached
+            # for inside the engine. "active" only: an older session of this
+            # flow must never be reported as tonight's, so no match is None.
+            made = await asyncio.to_thread(
+                session_store.newest_for_flow, flow_id, ("active",))
+            session_out = {"id": made.id if made is not None else None,
+                           "night": 1, "continued": False, "kept": 0,
+                           "new": sum(len(t.steps) for t in plan.targets),
+                           "dropped": 0}
+        else:
+            session_out = continued
 
-        # WHAT THIS READ REWROTE, SAID NOW (#150, spec 3.6: the note is shown
-        # once). `touch_run` below writes the record back at FLOW_SCHEMA, which
-        # retires the note for good, and a run started from a list - SESSION /
-        # NOW, the library's RUN verb, the wizard - never opened the editor
-        # that otherwise says it. Without this line a v2 flow's 23.4 would
-        # start shooting at "any angle" and the one sentence saying so would
-        # reach nobody. Only once the engine is going: a refused start writes
-        # nothing, so the file keeps the note for the next read.
+        # WHAT THIS READ REWROTE, SAID ON EVERY RUN UNTIL THE FLOW IS SAVED
+        # (#150, spec 3.6). Only save() stamps FLOW_SCHEMA: `touch_run` below
+        # edits last_run/last_result in the raw file and leaves its version
+        # alone (carry-over 1), so an unsaved v2 flow reads v2 on every run and
+        # every run says what that means. A run started from a list - SESSION
+        # / NOW, the library's RUN verb, the wizard - never opens the editor
+        # that otherwise says it, so without this line a v2 flow's 23.4 would
+        # shoot at "any angle" night after night and the sentence saying so
+        # would reach nobody. Only once the engine is going: a refused start
+        # says nothing, and the next read (the editor, or the next run) will.
         for note in rec.migrated:
             bus.log("warning", f"flow '{rec.name}': {note.note}", "flow")
 
@@ -5257,10 +5542,15 @@ def create_app(*, bind_host: str | None = None,
 
         bus.log("info",
                 f"flow '{rec.name}' started: {plan.total_frames()} frames"
+                + (f", continuing its session on night "
+                   f"{session_out['night']} ({session_out['kept']} step(s) "
+                   f"carried over, {session_out['new']} new)"
+                   if continued is not None else "")
                 + (f" — {len(real)} graph feature(s) are not honoured by "
                    f"this run" if real else ""), "flow")
         return {"started": True, "flow_id": flow_id,
-                "frames": plan.total_frames(), "unmapped": unmapped}
+                "frames": plan.total_frames(), "unmapped": unmapped,
+                "session": session_out}
 
     # ------------------------------------------------ calibration library (PRO-1)
 
@@ -5437,12 +5727,10 @@ def create_app(*, bind_host: str | None = None,
             # id-safe plan edit (spec §4): DORMANT only; running never editable.
             if s.status != "dormant":
                 raise HTTPException(409, "plan edits require a dormant session")
-            old_ids = {st.id for t in s.plan.targets for st in t.steps}
-            new_ids = {st.id for t in body.plan.targets for st in t.steps}
-            with_frames = {f.step_id for f in s.frames}
-            merge = {"kept": sorted(old_ids & new_ids),
-                     "new": sorted(new_ids - old_ids),
-                     "dropped": sorted((old_ids - new_ids) & with_frames)}
+            # The same kept/new/dropped rule Run CONTINUE applies, from one
+            # function so the two cannot drift. A PATCH reports and never
+            # refuses; the dropped-steps 409 is CONTINUE's alone.
+            merge = plan_replace_report(s, body.plan).merge()
             s.plan = body.plan
             s.name = body.plan.name or s.name
         if body.status is not None:

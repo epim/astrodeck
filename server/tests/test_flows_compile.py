@@ -68,8 +68,13 @@ class TestCompile:
         plan = compile_plan(g, "n")
         assert len(plan["targets"]) == 1
         step = plan["targets"][0]["steps"][0]
+        # `node_id` added DELIBERATELY in #189 S1 (item 7): the step names the
+        # stage that emitted it, because `to_plan` keys the step's
+        # deterministic id on that stage (spec 3.2, 3.3). The rest of the dict
+        # is unchanged.
         assert step == {"filter": "Ha", "exposure_s": 180, "gain": 100,
-                        "binning": 1, "count": 20, "frame_type": "Light"}
+                        "binning": 1, "count": 20, "frame_type": "Light",
+                        "node_id": "c"}
 
     def test_an_integration_goal_rides_along_only_when_set(self):
         """`goal` is hours of banked integration across nights, and 0 means "no
@@ -127,6 +132,52 @@ class TestCompile:
     def test_stop_none_is_honoured(self):
         g = FlowGraph(nodes=[_n("d", "dusk", stop="None")])
         assert compile_plan(g, "n")["schedule"]["stop_mode"] == "none"
+
+
+class TestNodeIdsRideTheCompile:
+    """#189 S1 item 7 (spec 3.2): every TARGET entry, every POOL member and
+    every capture or cycle step names the node that emitted it. ``to_plan``
+    keys the deterministic ids on those names, so an entry that lost its node
+    id would quietly fall back to a random id and a flow could not continue
+    its ledger - nothing else in the compile would look wrong."""
+
+    def test_a_target_entry_names_its_node(self):
+        """Mutant "no node_id on the TARGET entry" failed:
+            KeyError: 'node_id'
+        """
+        g = FlowGraph(nodes=[_n("t7", "target", name="M31", ra="00h", dec="+41")])
+        assert compile_plan(g, "n")["targets"][0]["node_id"] == "t7"
+
+    def test_every_pool_member_names_the_pool(self):
+        """Mutant "no node_id on a POOL member" failed:
+            KeyError: 'node_id'
+        """
+        g = FlowGraph(nodes=[_n("p3", "pool", members="M16, M17, M8")])
+        assert [t["node_id"] for t in compile_plan(g, "n")["targets"]] == \
+            ["p3", "p3", "p3"]
+
+    def test_a_capture_step_names_its_stage_not_its_target(self):
+        """After a pool every member gets the capture's step; the step names
+        the CAPTURE node, which is what tells two stages apart on one target.
+
+        Mutant "no node_id on a capture step" failed:
+            KeyError: 'node_id'
+        """
+        g = FlowGraph(nodes=[_n("p", "pool", members="A, B"),
+                             _n("c9", "capture", x=100, count=5)],
+                      edges=[_e("p", "target", "c9", "run")])
+        steps = [t["steps"][0] for t in compile_plan(g, "n")["targets"]]
+        assert [s["node_id"] for s in steps] == ["c9", "c9"]
+
+    def test_a_cycle_step_names_its_stage(self):
+        """Mutant "no node_id on a cycle step" failed:
+            KeyError: 'node_id'
+        """
+        g = FlowGraph(nodes=[_n("t", "target"),
+                             _n("y4", "cycle", x=100, plan="L 60, R 60")],
+                      edges=[_e("t", "target", "y4", "run")])
+        step = compile_plan(g, "n")["targets"][0]["steps"][0]
+        assert step["strategy"] == "cycle" and step["node_id"] == "y4"
 
 
 class TestInstructions:

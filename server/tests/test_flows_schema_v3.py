@@ -117,7 +117,8 @@ class TestTheOldPaletteDefaultMigrates:
         assert FLOW_SCHEMA == 3
 
     def test_the_note_says_what_happened_and_what_to_do(self):
-        """Pinned verbatim: the operator reads this once, and it has to say
+        """Pinned verbatim: the operator reads this on every read until they
+        save the flow (S1-06; it used to be said once), and it has to say
         both that the 23.4 was never theirs AND that a deliberate 23.4 (a
         duplicated M31 example) was rewritten too.
 
@@ -279,27 +280,51 @@ class TestTheNoteIsNeverPersisted:
 
     def test_touch_run_writes_no_note(self, store):
         """``touch_run`` is the other writer (a run's start and its finalize
-        both call it), and it rewrites the whole record.
+        both call it). It writes no note, and -- REWRITTEN DELIBERATELY for
+        carry-over 1 (#150) -- it no longer rewrites the record either.
 
-        RED under mutant "touch_run dumps the record itself" (without the
-        exclusion the shared writer applies):
+        This test used to pin ``raw["schema_version"] == 3``: a run wrote the
+        MIGRATED record back at FLOW_SCHEMA, so the first run of a v2 flow
+        rewrote its inherited 23.4 to -1 and retired the note for good. Only
+        ``save()`` stamps FLOW_SCHEMA now. ``touch_run`` edits ``last_run`` and
+        ``last_result`` in the raw file, which stays v2 with its 23.4 until the
+        operator saves, and the next read still says the note.
+        (test_flows_store_raw_edits pins the byte-level "nothing else changed".)
+
+        RED under mutant "write the migrated record" (``touch_run`` restored to
+        ``self._write(record.model_copy(update=update))``, the code as it
+        stood):
+
+            AssertionError: a run stamped the file current, and the note is
+            gone before the operator saved
+            assert 3 == 2
+
+        RED under mutant "no copy before _migrate" (``_record_of`` migrates the
+        raw dict in place and ``touch_run`` writes that dict) -- the version
+        survives but the migration leaks into the file:
 
             AssertionError: a run's bookkeeping wrote the read-time note into
             the file
-            assert 'migrated' not in {'created_ts': 1790241060.6554186,
-            'folder': 'My flows', 'graph': {'edges': [{'from': 'd', ...}, ...]},
-            'id': 'f1', ...}
-
-        RED under mutant "persist migrated" (the shared writer) too, with the
-        same message.
+            assert 'migrated' not in {'folder': 'My flows', 'graph':
+            {'edges': [{'from': 'd', 'fromPort': 'window', 'to': 't',
+            'toPort': 'arm'}, {'from': '...': 12, 'exposure': 120, 'filter':
+            'L', ...}, 'type': 'capture', 'x': 490, ...}]}, 'id': 'f1',
+            'last_result': 'ok', ...}
         """
         path = _put_file(store.dir, "f1", 2, rotation=23.4)
         assert store.touch_run("f1", ts=1234.0, result="ok") is True
         raw = json.loads(path.read_text(encoding="utf-8"))
-        assert raw["schema_version"] == 3
+        assert raw["schema_version"] == 2, (
+            "a run stamped the file current, and the note is gone before the "
+            "operator saved")
         assert "migrated" not in raw["flow"], (
             "a run's bookkeeping wrote the read-time note into the file")
+        assert next(n for n in raw["flow"]["graph"]["nodes"]
+                    if n["type"] == "target")["params"]["rotation"] == 23.4
         assert raw["flow"]["last_run"] == 1234.0
+        assert raw["flow"]["last_result"] == "ok"
+        assert _notes(store.get("f1")) == [
+            {"key": "rotation", "note": ROTATION_234_NOTE}]
 
 
 @pytest.fixture
@@ -321,37 +346,63 @@ def _said(bus_lines) -> list[tuple[str, str]]:
     return [(lvl, m) for lvl, m, _src in bus_lines if "23.4" in m]
 
 
-class TestARunSaysTheNoteItRetires:
-    """``/run`` compiles the MIGRATED graph, and ``touch_run`` then writes it
-    back at FLOW_SCHEMA, which retires the note for good. A run started from a
-    list (SESSION / NOW, the library's RUN verb, the wizard) never opens the
-    editor that otherwise says it, so the run has to: spec 3.6 says the note is
-    shown once, and without this it could be shown to nobody while a v2 flow's
-    23.4 started shooting at "any angle"."""
+class TestARunSaysTheNoteUntilTheFlowIsSaved:
+    """Formerly ``TestARunSaysTheNoteItRetires``, REWRITTEN DELIBERATELY for
+    carry-over 1 (#150), because it pinned the old behaviour: ``touch_run``
+    wrote the migrated record back at FLOW_SCHEMA, so the first run of a v2
+    flow retired the note for good and its one log line was the only time
+    anybody was told.
 
-    def test_a_run_of_a_v2_23_4_flow_says_the_note(self, run_client, tmp_path,
-                                                   bus_lines):
-        """RED under mutant "no note on the run" (the ``rec.migrated`` loop in
-        ``run_flow`` deleted, as the diff first shipped):
+    The new truth: only ``save()`` stamps FLOW_SCHEMA. ``/run`` compiles the
+    MIGRATED graph, ``touch_run`` edits ``last_run`` in the raw file, and the
+    file stays v2 with its 23.4 until the operator saves. So every run of an
+    unsaved v2 23.4 flow shoots at "any angle" AND says so. A run started from
+    a list (SESSION / NOW, the library's RUN verb, the wizard) never opens the
+    editor that otherwise says it, so the run has to, and it has to keep
+    saying it: an operator who missed the line on night one would otherwise
+    never hear it on night two."""
 
-            AssertionError: the run retired the note and said it to nobody
+    def test_every_run_of_an_unsaved_v2_23_4_flow_says_the_note(
+            self, run_client, tmp_path, bus_lines):
+        """RED under mutant "no note on the run" (the ``bus.log`` in
+        ``run_flow``'s ``rec.migrated`` loop replaced by ``pass``, as the diff
+        first shipped):
+
+            AssertionError: the note reached nobody, or only the first run
             assert [] == [('warning', ...u meant it.")]
+              Right contains 2 more items, first extra item: ('warning',
+              'flow \\'flow f1\\': angle 23.4 was the old palette default and
+              commanded a connected rotator to PA 23.4; it now reads "any
+              angle". Set it again if you meant it.')
+
+        RED under mutant "write the migrated record" (``touch_run`` restored
+        to ``self._write(record.model_copy(update=update))``, the code as it
+        stood) -- the first run stamps the file 3 and the second is silent:
+
+            AssertionError: the note reached nobody, or only the first run
+            assert [('warning', ...u meant it.")] == [('warning', ...u meant it.")]
               Right contains one more item: ('warning', 'flow \\'flow f1\\':
               angle 23.4 was the old palette default and commanded a connected
               rotator to PA 23.4; it now reads "any angle". Set it again if
               you meant it.')
         """
         path = _put_file(tmp_path / "flows", "f1", 2, rotation=23.4)
-        r = run_client.post("/api/flows/f1/run", json={"accept_unmapped": True})
-        assert r.status_code == 200, r.text
-        assert [p.targets[0].rotation_deg for p in run_client.starts] == [None], (
-            "premise: the run shot the migrated angle")
-        assert _said(bus_lines) == [
-            ("warning", f"flow 'flow f1': {ROTATION_234_NOTE}")], (
-            "the run retired the note and said it to nobody")
-        # ...and it WAS the last read that could say it.
-        assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 3
-        assert run_client.get("/api/flows/f1").json()["migrated"] == []
+        for _ in range(2):
+            r = run_client.post("/api/flows/f1/run",
+                                json={"accept_unmapped": True})
+            assert r.status_code == 200, r.text
+        assert [p.targets[0].rotation_deg for p in run_client.starts] == [
+            None, None], "premise: both runs shot the migrated angle"
+        said = ("warning", f"flow 'flow f1': {ROTATION_234_NOTE}")
+        assert _said(bus_lines) == [said, said], (
+            "the note reached nobody, or only the first run")
+        # ...because nothing has made the file current: it is still the v2
+        # file the operator has not saved, and the next read says so too.
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw["schema_version"] == 2
+        assert raw["flow"]["last_run"] is not None, "premise: the run was recorded"
+        assert run_client.get("/api/flows/f1").json()["migrated"] == [
+            {"key": "rotation", "note": ROTATION_234_NOTE}]
 
     def test_control_a_deliberate_23_4_is_run_without_a_word(
             self, run_client, tmp_path, bus_lines):
@@ -375,9 +426,9 @@ class TestARunSaysTheNoteItRetires:
 
     def test_a_refused_run_says_nothing_and_keeps_the_note(
             self, run_client, tmp_path, bus_lines, monkeypatch):
-        """A start the engine refuses writes nothing, so the file stays v2 and
-        the next read (the editor) still carries the note. Saying it here too
-        would say it twice.
+        """A start the engine refuses says nothing: the line tells the operator
+        what a run is shooting, and nothing shot. The file stays v2, so the
+        next read (the editor, or the next run) still carries the note.
 
         RED under mutant "note said before the guards" (the loop moved above
         ``hub.require``):

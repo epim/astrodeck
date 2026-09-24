@@ -20,7 +20,10 @@
 //     accepts running a graph part of which the engine will not honour, and the
 //     answer is a confirm listing every one of them - not a red toast. Accepting
 //     re-runs with `accept_unmapped: true`. It does NOT clear a dome refusal,
-//     and nothing here says it does.
+//     and nothing here says it does. CONTINUE's three 409s (`adopt`,
+//     `recount`, `dropped_steps`, #189 S1) are questions too, asked through
+//     the same `askContinue` the Flows RUN button uses, and every re-post
+//     carries every answer already given.
 //
 // STOP IS NOT HERE. A flow run IS a sequence run, so the only thing that stops
 // one is `POST /api/sequence/abort`, which lives on Session - Now. On success
@@ -35,7 +38,9 @@ import { nav } from "../../../router";
 import { useBreakpoint } from "../../../breakpoint";
 import { useStore } from "../../../../store";
 import { accessPhrase, useCanControlMount, useRoleConnected } from "../../../../lib/caps";
-import { isRunPhaseLive, runBlockedReason } from "../../../../components/flows/flowRunControls";
+import {
+  askContinue, isRunPhaseLive, runAnsweringQuestions, runBlockedReason,
+} from "../../../../components/flows/flowRunControls";
 import type { FlowUnmapped } from "../../../../lib/flowsApi";
 import {
   FLOWS_NEEDS_WIDTH, UNMAPPED_CANCEL, UNMAPPED_CONFIRM, UNMAPPED_TITLE,
@@ -55,6 +60,7 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
   const flowsOpen = useStore((s) => s.flowsOpen);
   const flowsRun = useStore((s) => s.flowsRun);
   const pushConfirm = useStore((s) => s.pushConfirm);
+  const resolveConfirm = useStore((s) => s.resolveConfirm);
   const enqueueToast = useStore((s) => s.enqueueToast);
   const breakpoint = useBreakpoint();
 
@@ -105,38 +111,42 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
 
   const start = async (): Promise<void> => {
     if (runReason) return;
-    const list = await flowsRun(false);
-    if (!list) {
-      if (started()) { nav.hub("session", "now"); return; }
-      enqueueToast({
-        level: "error",
-        title: "The flow did not start",
-        detail: "The engine refused it. The reason is in the flow log on Session - Flows.",
-      });
-      return;
-    }
-    const ok = await pushConfirm({
-      title: UNMAPPED_TITLE,
-      body: (
-        <ul style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
-          {list.map((u: FlowUnmapped) => (
-            <li key={u.key}>{u.detail}</li>
-          ))}
-        </ul>
-      ),
-      confirmLabel: UNMAPPED_CONFIRM,
-      cancelLabel: UNMAPPED_CANCEL,
-      tone: "warn",
-      confirmPrimary: true,
-    });
-    if (!ok) return;
-    await flowsRun(true);
+    // The loop the Flows RUN button uses: one question per request, and every
+    // re-post carries every answer already given. A decline is silent -
+    // nothing failed, the operator said no.
+    const { cancelled, answered } = await runAnsweringQuestions(
+      flowsRun,
+      (list) => pushConfirm({
+        title: UNMAPPED_TITLE,
+        body: (
+          <ul style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+            {list.map((u: FlowUnmapped) => (
+              <li key={u.key}>{u.detail}</li>
+            ))}
+          </ul>
+        ),
+        confirmLabel: UNMAPPED_CONFIRM,
+        cancelLabel: UNMAPPED_CANCEL,
+        tone: "warn",
+        confirmPrimary: true,
+      }),
+      (q) => askContinue(q, pushConfirm, resolveConfirm, "nx-confirm-btn"),
+    );
+    if (cancelled) return;
     if (started()) { nav.hub("session", "now"); return; }
-    enqueueToast({
-      level: "error",
-      title: "The flow still did not start",
-      detail: "Accepting the losses was not what was blocking it - the reason is in the flow log.",
-    });
+    enqueueToast(answered === null
+      ? {
+          level: "error",
+          title: "The flow did not start",
+          detail: "The engine refused it. The reason is in the flow log on Session - Flows.",
+        }
+      : {
+          level: "error",
+          title: "The flow still did not start",
+          detail: answered === "unmapped"
+            ? "Accepting the losses was not what was blocking it - the reason is in the flow log."
+            : "Answering the question was not what was blocking it - the reason is in the flow log.",
+        });
   };
 
   const flowsReason = breakpoint === "phone" ? FLOWS_NEEDS_WIDTH : null;

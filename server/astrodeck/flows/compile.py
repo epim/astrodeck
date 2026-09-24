@@ -191,6 +191,12 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 # command the rotator to PA 0 on every target of every flow
                 # whose angle box was left blank.
                 "rotation_deg": _num(n.params.get("rotation"), -1),
+                # THE BLOCK THIS CAME FROM (#189 S1, spec 3.2). `to_plan` keys
+                # the target's deterministic id on it, so a flow compiled on
+                # night two names the targets night one banked frames against.
+                # The canvas node id is the one thing about a block that an
+                # edit never changes; the name and the coordinates both can.
+                "node_id": n.id,
                 "steps": [],
             })
         elif n.type == "pool":
@@ -201,6 +207,10 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             for i, m in enumerate([x for x in members if x]):
                 targets.append({
                     "name": m, "pool_rank": i + 1,
+                    # The POOL's node id on every member: a member's id is keyed
+                    # on the pool and the member's NAME, never its rank, so
+                    # reordering the members box re-keys nothing (spec 3.3).
+                    "node_id": n.id,
                     # HOW MUCH EACH MEMBER OWES BEFORE IT COUNTS AS DONE. Without
                     # it "advance" has nothing to compare against and a campaign
                     # can never finish a target, only stop working on one.
@@ -234,6 +244,10 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 "binning": _num(n.params.get("bin"), 1),
                 "count": _num(n.params.get("count")),
                 "frame_type": "Light",
+                # The STAGE, not the target: two capture nodes drawing the same
+                # recipe on one target are two quotas, and this is what keeps
+                # their step ids apart (spec 3.3).
+                "node_id": n.id,
             }
             goal = _num(n.params.get("goal"))
             if goal:
@@ -262,6 +276,8 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 "reject_hfr": _num(n.params.get("reject")),
                 "slots": slots,
                 "frame_type": "Light",
+                # Every slot step `to_plan` expands from this stage carries it.
+                "node_id": n.id,
             }
             for t in targets:
                 t["steps"].append({**step, "slots": [dict(s) for s in slots]})

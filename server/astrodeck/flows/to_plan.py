@@ -31,11 +31,13 @@ classifies and reports; the route decides. See ``blocking_reasons``.
 """
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 
 from ..catalog.coords import parse_dec, parse_ra
 from ..sequence.models import ActionKind, SequencePlan, TriggerKind
+from . import identity
 from .models import FlowGraph
 from .tonight import catalog_coords
 
@@ -554,6 +556,9 @@ def _cycle_steps(step: dict, target_name: str, index: int) -> list[dict]:
             "count": cycles * per_cycle,
             "per_visit": per_cycle,
             "frame_type": step.get("frame_type", "Light"),
+            # The STAGE's node id, on every slot it expands to; `_identify`
+            # keys the step ids on it and then removes it.
+            "node_id": step.get("node_id"),
         })
     return out
 
@@ -591,6 +596,56 @@ def _steps(entry: dict, target_name: str, out: list[dict]) -> list[dict]:
                 f"quota - this run stops at {count} frames regardless"))
         steps.append(clean)
     return steps
+
+
+def _identify(target: dict, entry: dict, *, flow_id: str, is_pool: bool,
+              members_seen: dict[str, set[str]]) -> None:
+    """Give ``target`` and its steps deterministic ids, in place (spec 3.3).
+
+    Every step arrives carrying its stage's ``node_id`` (the compile put it
+    there); it is taken off here whatever happens, because it is a compile
+    fact and not an ``ExposureStep`` field.
+
+    NOTHING TO KEY ON, NOTHING KEYED. With no ``flow_id`` (an unsaved preview,
+    a graph-less caller) or an entry with no ``node_id`` (a compiled dict built
+    by hand, or by a caller older than S1), the ids are left unset and
+    ``SequencePlan`` mints uuid4s exactly as it always has. Keying such an
+    entry on "" instead would give two id-less entries on one field one id,
+    and ``plan_identity_errors`` would refuse a run that used to start.
+
+    ``members_seen`` holds, per POOL node, the member keys already issued. A
+    repeated name takes the next free occurrence suffix, checked against the
+    keys issued rather than counted, so even a member literally named "M31#1"
+    beside two M31s cannot collide with the second copy's suffix."""
+    stages = [str(s.pop("node_id", None) or "") for s in target["steps"]]
+    node_id = str(entry.get("node_id") or "")
+    if not flow_id or not node_id:
+        return
+    if is_pool:
+        used = members_seen.setdefault(node_id, set())
+        occurrence = 0
+        while identity.member_key(target["name"], occurrence) in used:
+            occurrence += 1
+        used.add(identity.member_key(target["name"], occurrence))
+        tid = identity.member_id(flow_id, node_id, target["name"], occurrence)
+    else:
+        # A single TARGET is its block's 1x1 grid, keyed on the geometry it is
+        # at NOW. S1 has no anchor, so any move re-keys and the counts restart;
+        # S3 keys on the anchor and carries a small nudge.
+        key = identity.geometry_key(target["ra_hours"], target["dec_deg"],
+                                    target["rotation_deg"])
+        tid = identity.target_id(identity.group_id(flow_id, node_id, key), 0, 0)
+    target["id"] = tid
+    seen: Counter[tuple[str, str]] = Counter()
+    for stage, step in zip(stages, target["steps"]):
+        recipe = dict(frame_type=step.get("frame_type", "Light"),
+                      filter=step.get("filter"),
+                      exposure_s=step.get("exposure_s"),
+                      gain=step.get("gain"), binning=step.get("binning", 1))
+        signature = identity.step_signature(**recipe)
+        n = seen[(stage, signature)]
+        seen[(stage, signature)] += 1
+        step["id"] = identity.step_id(tid, stage, **recipe, n=n)
 
 
 def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
@@ -1020,6 +1075,7 @@ def plan_extras(compiled: dict) -> dict:
 
 
 def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
+                     flow_id: str = "",
                      when: float | None = None,
                      cool_to: float | None = None,
                      camera_can_cool: bool = False,
@@ -1030,6 +1086,14 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     ``graph`` is optional but strongly wanted: without it the inert-node class
     cannot be reported at all, because it is invisible in ``compiled``.
     ``when`` is the timestamp pool names are resolved against.
+
+    ``flow_id`` makes the target and step ids DETERMINISTIC (#189 S1, spec
+    3.3): a uuid5 of the flow, the node, the geometry and the recipe (see
+    ``flows/identity.py``), so compiling one flow twice names the same targets
+    and steps, and the session ledger - which counts frames by step id alone -
+    can continue a campaign across nights. Empty (the default, an unsaved
+    preview) leaves every id a fresh uuid4, as before. Instruction ids stay
+    uuid4 either way: the ledger counts frames, not rules.
 
     ``cool_to`` is THE RIG'S OWN STANDING SETPOINT, injected by the caller -
     never read from config here, so this stays a pure function of the compile.
@@ -1059,6 +1123,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
 
     targets: list[dict] = []
     pooled = 0
+    members_seen: dict[str, set[str]] = {}
     for entry in compiled.get("targets") or []:
         name = str(entry.get("name") or "").strip()
         is_pool = entry.get("pool_rank") is not None
@@ -1107,6 +1172,8 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             # whose target says blocks is a plan nobody can read, and keeping two
             # keys in step is how that happens.
             target["acquisition"] = "cycle"
+        _identify(target, entry, flow_id=flow_id, is_pool=is_pool,
+                  members_seen=members_seen)
         targets.append(target)
         pooled += 1 if is_pool else 0
 

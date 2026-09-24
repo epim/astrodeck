@@ -1,8 +1,10 @@
 """Multi-night Session entity + store (sessions spec §2).
 
 One JSON file per session under ``CAPTURE_DIR/sessions/<id>.json`` (written
-atomically, no ``.bak`` — the file churns every frame like the retired resume
-file); thumbnails under ``CAPTURE_DIR/sessions/<id>/thumbs/<frame_id>.jpg``.
+atomically, no ``.bak`` on those writes — the file churns every frame like the
+retired resume file; the one ``.bak`` is ``backup``'s, taken before ADOPT
+rewrites a ledger's step ids); thumbnails under
+``CAPTURE_DIR/sessions/<id>/thumbs/<frame_id>.jpg``.
 ``SessionStore`` mirrors ``plans.PlanLibrary``: ``safe_id_path`` escape guard,
 soft quota with oldest complete/abandoned pruned first (dormant/active NEVER
 pruned). ``migrate_legacy_resume`` folds the retired single-slot
@@ -14,17 +16,24 @@ import json
 import shutil
 import threading
 import time
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from .. import hub as _hubmod
-from ..persist import list_json, read_json_or, safe_id_path, write_json_atomic
+from ..persist import (harden_private_file, list_json, read_json_or,
+                       safe_id_path, write_json_atomic)
 from .models import SequencePlan
 
 SESSION_SCHEMA = 1
 MAX_SESSIONS = 200
+
+#: Every value ``Session.status`` takes. Named so a caller asking "the newest
+#: session of this flow, whatever became of it" can say so in one word.
+SESSION_STATUSES = ("active", "dormant", "complete", "abandoned")
 
 
 class SessionUnreadable(Exception):
@@ -238,9 +247,81 @@ class SessionStore:
                 continue                      # corrupt file: skip, never raise
         return out
 
+    def newest_for_flow(self, flow_id: str,
+                        statuses: Iterable[str]) -> Session | None:
+        """The most recently CREATED session this flow started whose status is
+        one of ``statuses``, or None.
+
+        CREATED, NOT UPDATED. ``engine.start`` disarms every other armed
+        session and saves each one it touches, and ``save`` stamps
+        ``updated_ts``, so a fresh start of flow B makes flow A's older session
+        the "most recently updated" one on disk. Ordered by ``updated_ts`` this
+        would hand CONTINUE whichever session last lost the auto-resume
+        singleton rather than the flow's latest ledger. ``created_ts`` is
+        written once, by the start that made the session, and nothing moves it.
+
+        Filtered on the raw dicts like ``_scan_status``, so one flow's lookup
+        does not build a ``Session`` for every archived session of every other
+        flow. A candidate that no longer validates is skipped, the rule
+        ``active`` and ``load_all`` keep, and the next newest is tried.
+        """
+        wanted = set(statuses)
+        rows: list[tuple[float, dict]] = []
+        for path in list_json(_sessions_dir()):
+            raw = read_json_or(path)
+            if (not isinstance(raw, dict) or raw.get("origin") != "flow"
+                    or raw.get("origin_id") != flow_id
+                    or raw.get("status") not in wanted):
+                continue
+            ts = raw.get("created_ts")
+            rows.append((float(ts) if isinstance(ts, (int, float)) else 0.0,
+                         raw))
+        rows.sort(key=lambda r: r[0], reverse=True)
+        for _ts, raw in rows:
+            try:
+                return Session.model_validate(raw)
+            except Exception:
+                continue
+        return None
+
     #: Serialises read-modify-write against plain writes. RLock because
-    #: ``save_run_state`` holds it across a ``load`` and a ``save``.
+    #: ``save_run_state`` holds it across a ``load`` and a ``save``, and
+    #: because ``write_locked`` callers go on to call ``save`` (directly, or
+    #: through ``engine.start``) while they hold it.
     _write_lock = threading.RLock()
+
+    @contextmanager
+    def write_locked(self) -> Iterator[SessionStore]:
+        """Hold the store's write lock across a caller's own read-check-start.
+
+        ``save`` and ``save_run_state`` each take this lock for one write, which
+        keeps a write whole but says nothing about what a caller READ before
+        it. Run CONTINUE reads a dormant session, decides it may take it, and
+        hands it to ``engine.start``; if anything can start or end that same
+        session between the read and the start, the start persists a stale
+        copy over the frames the other run banked (the one-starter race of
+        2026-09-18, spec 5.9). Two things close it together. The engine's
+        ledger writes, its finalize and ResumeArm all run on the event loop,
+        and a section with no ``await`` in it cannot be interleaved by
+        anything on that loop. Writers on WORKER threads - a route's
+        ``asyncio.to_thread(session_store.save, ...)`` - are not stopped by
+        that. ``save``, ``save_run_state`` and ``backup`` take this lock, so
+        it holds them off until the section, ``engine.start``'s own ``save``
+        included, is done.
+
+        ``delete`` does NOT take it, so a worker-thread delete is not held
+        off, and the DELETE route checks status and unlinks across awaits
+        anyway: the #167 shape, filed as #212. Holding this lock does not
+        make a session safe from deletion.
+
+        Re-entrant, so ``save`` inside it does not deadlock. Hold it for
+        synchronous work only: never ``await`` inside it. An ``await`` would
+        let the loop's own writers in, which defeats the first half, and a
+        coroutine suspended while holding a thread lock can stall every
+        worker-thread writer behind a lock only it can release.
+        """
+        with self._write_lock:
+            yield self
 
     def save(self, session: Session) -> None:
         """Atomic write, no .bak (churns every frame). A NEW id triggers the
@@ -303,11 +384,41 @@ class SessionStore:
         for s in prunable[:excess]:
             self.delete(s.id)
 
+    def backup(self, session_id: str) -> Path:
+        """Copy ``<id>.json`` to ``<id>.json.bak`` and return the copy's path.
+
+        For a rewrite a person asked for and may want back: ADOPT re-keys a
+        pre-S1 ledger's frames onto the deterministic step ids, and a wrong
+        match would otherwise leave no record of where each frame was counted
+        before. Never on the per-frame writes, which churn too fast for a
+        backup to mean anything.
+
+        A copy, never a move, so the live file is never absent (the
+        ``write_json_atomic`` rule), and hardened like the file it copies.
+        Taken under the write lock so it cannot copy a half-finished write.
+        ``<id>.json.bak`` does not match ``*.json``, so no listing ever reads
+        it as a second session. Raises on failure: a caller that asked for a
+        backup must not rewrite the ledger without one.
+        """
+        path = self._path(session_id)          # validates the id (KeyError)
+        bak = path.with_suffix(path.suffix + ".bak")
+        with self._write_lock:
+            shutil.copy2(path, bak)
+            harden_private_file(bak)
+        return bak
+
     def delete(self, session_id: str) -> None:
-        """Remove the session file + its thumbs directory. NEVER touches FITS."""
+        """Remove the session file, its ADOPT backup and its thumbs directory.
+        NEVER touches FITS.
+
+        The backup goes with it: a ``.bak`` left behind is a copy of a ledger
+        the operator deleted, which nothing lists and nothing would remove."""
         path = self._path(session_id)          # validates the id (KeyError)
         if path.exists():
             path.unlink()
+        bak = path.with_suffix(path.suffix + ".bak")
+        if bak.exists():
+            bak.unlink()
         side_dir = _sessions_dir() / session_id
         if side_dir.is_dir():
             shutil.rmtree(side_dir, ignore_errors=True)

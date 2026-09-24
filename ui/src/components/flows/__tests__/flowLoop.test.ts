@@ -24,6 +24,11 @@
 //      counts it. A wire whose ports disagree (tap-to-wire can leave one) is
 //      the lane rule's business; judging it here would refuse wires the save
 //      does not call loops.
+//   6. A STAGE NODE_DEFS DOES NOT KNOW NEVER REACHES THE SENTENCE. The sentence
+//      is filled with vocabulary labels and has no id fallback, because the
+//      flow-wire gate answers "flow" only for a stage whose type resolves. If
+//      the gate ever let an unknown stage through, the refusal would be built
+//      from a label that does not exist.
 //
 // Every case names the mutant it kills and quotes the failure that mutant
 // produced when it was run from a byte-for-byte backup of flowLoop.ts.
@@ -227,6 +232,113 @@ test("a circle that closes only through a wire whose ports disagree refuses noth
   const edges = [edge("s", "centered", "c", "run"), edge("c", "complete", "p", "advance")];
   eq(flowLoopRefusal(nodes, edges, wire("p", "target", "s", "run")), null,
     "the server would not call this a loop, so neither may the canvas");
+});
+
+/** flowLoopRefusal's answer, or "threw <message>" when it throws, so a case
+ *  that expects null reports a crash as a value instead of as a bare stack. */
+function answerOf(nodes: FlowNodeRec[], edges: FlowEdgeRec[], w: ReturnType<typeof wire>): string | null {
+  try { return flowLoopRefusal(nodes, edges, w); } catch (e) { return `threw ${String(e)}`; }
+}
+
+// TARGET -> FILTER CYCLE plus one stage k, whose type each case chooses.
+// "dropped_stage" is no type NODE_DEFS has; "capture" (CAPTURE LOOP: run in,
+// complete out, both flow ports) stands in for it where the shape itself is
+// under test.
+//   k as SOURCE:       t.target -> c.run, c.complete -> k.run;  draw k.complete -> t.arm
+//   k as DESTINATION:  k.complete -> t.arm, t.target -> c.run;  draw c.complete -> k.run
+//   k INTO ITSELF:     no edges;                                draw k.complete -> k.run
+const unknownLane = (kType: string) => ({
+  nodes: [node("t", "target"), node("c", "cycle", 250), node("k", kType, 500)],
+  asSource: [edge("t", "target", "c", "run"), edge("c", "complete", "k", "run")],
+  asDest: [edge("k", "complete", "t", "arm"), edge("t", "target", "c", "run")],
+});
+
+test("the unknown-stage lane, with every stage known, IS a loop at either end", () => {
+  // CONTROL for the case below: its null has to come from the unknown type,
+  // not from a fixture that closes no circle. MUTANT "no reachability walk"
+  // (`i < queue.length` -> `i < 0`, so the walk's body never runs). Observed
+  // (4 failed; the three earlier loop cases, then this one):
+  //   x the unknown-stage lane, with every stage known, IS a loop at either end: the fixture must be a real circle at either end
+  //     k as source: expected "this flow loops back on itself at CAPTURE LOOP -> TARGET; a flow lane runs once", got null
+  //     k as destination: expected "this flow loops back on itself at FILTER CYCLE -> CAPTURE LOOP; a flow lane runs once", got null
+  //     k into itself: expected "this flow loops back on itself at CAPTURE LOOP -> CAPTURE LOOP; a flow lane runs once", got null
+  const known = unknownLane("capture");
+  const want: Record<string, string> = {
+    "k as source": "this flow loops back on itself at CAPTURE LOOP -> TARGET; a flow lane runs once",
+    "k as destination": "this flow loops back on itself at FILTER CYCLE -> CAPTURE LOOP; a flow lane runs once",
+    "k into itself": "this flow loops back on itself at CAPTURE LOOP -> CAPTURE LOOP; a flow lane runs once",
+  };
+  const got: Record<string, string | null> = {
+    "k as source": answerOf(known.nodes, known.asSource, wire("k", "complete", "t", "arm")),
+    "k as destination": answerOf(known.nodes, known.asDest, wire("c", "complete", "k", "run")),
+    "k into itself": answerOf(known.nodes, [], wire("k", "complete", "k", "run")),
+  };
+  const wrong = Object.keys(want).filter((k) => got[k] !== want[k])
+    .map((k) => `${k}: expected ${JSON.stringify(want[k])}, got ${JSON.stringify(got[k])}`);
+  if (wrong.length) {
+    throw new Error(`the fixture must be a real circle at either end\n  ${wrong.join("\n  ")}`);
+  }
+});
+
+test("a would-be loop through a stage of unknown type is not refused, and names no id", () => {
+  // The guard that lets `labelOf` go without a fallback: the gate asks each
+  // end's port kind, `kindOn` answers null for a type NODE_DEFS does not know
+  // (and for a node that is not on the graph at all), and null is not "flow".
+  // So the walk never starts and the sentence is never filled.
+  //
+  // WHY THE SELF-WIRE IS HERE. The walk reads the graph's edges through the
+  // same isFlowWire, so in the three circle shapes an edge into or out of the
+  // unknown stage is dropped from the walk as well, and those shapes stay null
+  // even when the gate alone is broken. Only "unknown stage into itself" needs
+  // no edge: the walk's first step compares the destination with the source,
+  // so the gate is the one thing between it and labelOf.
+  //
+  // MUTANT "isFlowWire treats an unknown port kind as flow" (both ends read
+  // `(kindOn(...) ?? "flow") === "flow"`, which widens the gate AND the walk).
+  // Observed (1 failed, this one; no other case has an unknown stage, which is
+  // why this case exists):
+  //   x a would-be loop through a stage of unknown type is not refused, and names no id: each must stop at the flow-wire gate and answer null
+  //     unknown stage as source: "threw TypeError: Cannot read properties of undefined (reading 'label')"
+  //     unknown stage as destination: "threw TypeError: Cannot read properties of undefined (reading 'label')"
+  //     node not on the graph: "threw TypeError: Cannot read properties of undefined (reading 'type')"
+  //     unknown stage into itself: "threw TypeError: Cannot read properties of undefined (reading 'label')"
+  //
+  // MUTANT "gate alone treats an unknown port kind as flow" (the proposed
+  // wire is judged with `?? "flow"` at both ends; the walk's edge test is left
+  // strict). Before the self-wire was added this mutant passed all 12 cases.
+  // Observed (1 failed):
+  //   x a would-be loop through a stage of unknown type is not refused, and names no id: each must stop at the flow-wire gate and answer null
+  //     unknown stage into itself: "threw TypeError: Cannot read properties of undefined (reading 'label')"
+  //
+  // The two mutants against flowLoop.ts as it stood BEFORE the fallback was
+  // removed. These are the sentences the fallback existed to write, each
+  // naming a node id the operator never sees on a card. Observed (1 failed
+  // each). Widening isFlowWire:
+  //   x a would-be loop through a stage of unknown type is not refused, and names no id: each must stop at the flow-wire gate and answer null
+  //     unknown stage as source: "this flow loops back on itself at k -> TARGET; a flow lane runs once"
+  //     unknown stage as destination: "this flow loops back on itself at FILTER CYCLE -> k; a flow lane runs once"
+  //     node not on the graph: "this flow loops back on itself at gone -> TARGET; a flow lane runs once"
+  //     unknown stage into itself: "this flow loops back on itself at k -> k; a flow lane runs once"
+  // Widening the gate alone:
+  //   x a would-be loop through a stage of unknown type is not refused, and names no id: each must stop at the flow-wire gate and answer null
+  //     unknown stage into itself: "this flow loops back on itself at k -> k; a flow lane runs once"
+  //
+  // Every shape is judged before anything is reported, so the failure shows
+  // each one rather than stopping at the first.
+  const lane = unknownLane("dropped_stage");
+  // The third shape: a wire from a node the list does not hold, with the edge
+  // into it that a circle would need. byId has no entry for it at all.
+  const ghost = [edge("t", "target", "c", "run"), edge("c", "complete", "gone", "run")];
+  const got: Record<string, string | null> = {
+    "unknown stage as source": answerOf(lane.nodes, lane.asSource, wire("k", "complete", "t", "arm")),
+    "unknown stage as destination": answerOf(lane.nodes, lane.asDest, wire("c", "complete", "k", "run")),
+    "node not on the graph": answerOf(lane.nodes, ghost, wire("gone", "complete", "t", "arm")),
+    "unknown stage into itself": answerOf(lane.nodes, [], wire("k", "complete", "k", "run")),
+  };
+  const wrong = Object.entries(got).filter(([, v]) => v !== null).map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
+  if (wrong.length) {
+    throw new Error(`each must stop at the flow-wire gate and answer null\n  ${wrong.join("\n  ")}`);
+  }
 });
 
 console.log(`\nflowLoop: ${passed} passed, ${failed} failed`);

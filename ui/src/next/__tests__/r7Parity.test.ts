@@ -102,6 +102,13 @@ const LOGIC_MODULES: Record<string, string> = {
   "components/flows/flowLoop":
     "S0 #149 - flowLoopRefusal and FLOW_LOOP_REFUSAL: the flow-loop rule both drop resolvers " +
     "and flowsConnect share, in the server sentence; a copy is how two editors drift apart.",
+  // Mutant "drop the flowProgress entry" went red, verbatim: "1 legacy
+  // import(s) outside the allow-lists: hubs/session/flows/canvas/FlowNode.tsx
+  // imports progressChip from components/flows/flowProgress".
+  "components/flows/flowProgress":
+    "S1 #189 - progressChip: the TARGET card's '212/315 subs' chip off the progress route. " +
+    "Both canvases draw it from this one pure formatter, so when a count may be shown (a " +
+    "session, a saved graph, a TARGET block) cannot drift between them.",
   "components/sequence/sessionDates":
     "2.1 - night-boundary maths, shared by the gallery and the files sheet.",
   "components/sequence/stepDefaults":

@@ -111,8 +111,13 @@ async def test_progress_dict_carries_eta_fields(sim_hub):
     engine.start(_plan())
     assert await wait_for(lambda: "eta_s" in engine.state.get("progress", {}))
     prog = engine.state["progress"]
+    # ``hops_costed`` is additive (#189 U-07): whether the finish clock's hop
+    # term rests on a measured hop. Mutant "drop the key" (the
+    # ``"hops_costed"`` entry removed from `compute_eta`'s dict): RED -
+    #     AssertionError: hops_costed
     for k in ("eta_s", "eta_confident", "server_now_ms", "current_exposure_s",
-              "remaining_capture_s", "events_cost_s", "elapsed_s"):
+              "remaining_capture_s", "events_cost_s", "elapsed_s",
+              "hops_costed"):
         assert k in prog, k
     await engine.abort()
 
