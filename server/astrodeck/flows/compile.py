@@ -70,9 +70,17 @@ def flow_order(graph: FlowGraph) -> list[FlowNode]:
     run in.
 
     A cycle simply stops the walk — the nodes in it are dropped rather than
-    looped forever. A flow cycle is not expressible in the editor (one wire per
-    input, and a cursor cannot revisit), so reaching one means the graph came
-    from somewhere else; dropping is the fail-closed reading.
+    looped forever. THE EDITOR CAN DRAW ONE. This docstring used to say it
+    could not ("one wire per input, and a cursor cannot revisit"), but one wire
+    per input does not stop a back-edge: dragging FILTER CYCLE ``complete``
+    onto TARGET ``arm`` replaces the TARGET's dusk wire with a loop, and this
+    walk then dropped every looped stage while the doctor stayed clean (#149).
+    ``FlowGraph.validation_errors`` now refuses a loop by name: save and
+    ``/run`` answer 422, and both compile routes list it under ``structural``
+    beside the plan. Those routes still compile the graph (an editor's graph is
+    half-built by nature), as would any caller that skips validation, and for
+    whatever reaches here with a loop, dropping it stays the fail-closed
+    reading.
     """
     flow_edges = [e for e in graph.edges
                   if port_kind(_type_of(graph, e.from_), e.fromPort, "out") == "flow"]

@@ -433,3 +433,97 @@ def quota_unbounded(plan: SequencePlan, policy: "RunPolicy") -> bool:
         return False
     return any(t.schedule.stop_mode == "none" and not t.schedule.max_run_min
                for t in plan.targets if not t.calibration)
+
+
+def _names_rules_resolve(plan: SequencePlan) -> set[str]:
+    """Every target name an ENABLED instruction looks up, spelled the way the
+    engine compares it.
+
+    Two lookups, two spellings, because the engine has two. ``only_target`` is
+    compared exactly as written (``instructions.evaluate_instructions``); a
+    ``run_target``/``skip_target`` destination is stripped before it is looked
+    up (``engine._apply_jump``, ``engine._dispatch_actions``), so " M42 " lands
+    on the first M42. A disabled rule is skipped before either lookup, so it
+    names nothing."""
+    names: set[str] = set()
+    for rule in plan.instructions:
+        if not rule.enabled:
+            continue
+        if rule.only_target is not None:
+            names.add(rule.only_target)
+        if rule.action in ("run_target", "skip_target"):
+            names.add((rule.target_arg or "").strip())
+    return names
+
+
+def _repeats(keys: list[str]) -> dict[str, list[int]]:
+    """Each key seen more than once -> the positions it was seen at, in order
+    of first appearance, so the answer reads in plan order."""
+    seen: dict[str, list[int]] = {}
+    for i, key in enumerate(keys):
+        seen.setdefault(key, []).append(i)
+    return {key: at for key, at in seen.items() if len(at) > 1}
+
+
+def plan_identity_errors(plan: SequencePlan) -> list[str]:
+    """Why ``plan`` must not start, one sentence per problem, or [] (#156,
+    spec 3.5). Pure: every problem at once, so a plan is fixed in one pass
+    rather than one refusal per round trip.
+
+    Refused:
+
+    * a repeated TARGET id;
+    * a repeated STEP id anywhere in the plan. The session ledger counts frames
+      by step id alone (``Session.accepted_by_step``), so one step's frames
+      would count for every copy, and in accepted mode copies 2 to N read
+      complete the moment the first finishes;
+    * a repeated target NAME that an enabled instruction names. A jump resolves
+      the first target with the name and an ``only_target`` gate fires on every
+      one, so the rule cannot say which it meant.
+
+    A repeated name that no rule names is NOT refused: the classic Plan appends
+    the same object twice routinely (``store.ts`` ``addTargetsToPlan``), each
+    copy has its own ids and counts on its own, and refusing it would strand
+    dormant sessions. ``duplicate_name_warning`` says it instead. S2 adds the
+    group checks here (a group with no members, a calibration member, an
+    ``after_group`` naming no group) and refuses every repeated name in a plan
+    that carries groups.
+
+    CALLED ON EVERY ``engine.start`` PATH, NEVER A MODEL VALIDATOR. ``SessionStore
+    .load_all`` and ``active`` skip a file that fails validation without a word,
+    so a validator would make every stored session holding such a plan vanish
+    on upgrade - out of the list, out of ``recoverable`` and ``armed`` - where a
+    refused start keeps it listed and says why."""
+    targets = plan.targets
+    errors: list[str] = []
+    for tid, at in _repeats([t.id for t in targets]).items():
+        errors.append(f"target id {tid!r} is used by {len(at)} targets "
+                      f"({', '.join(repr(targets[i].name) for i in at)})")
+    steps = [(t.name, n, s.id)
+             for t in targets for n, s in enumerate(t.steps, start=1)]
+    for sid, at in _repeats([sid for _name, _n, sid in steps]).items():
+        where = ", ".join(f"{steps[i][0]!r} step {steps[i][1]}" for i in at)
+        errors.append(f"step id {sid!r} is used by {len(at)} steps ({where}), "
+                      f"and frames are counted by step id alone")
+    named = _names_rules_resolve(plan)
+    for name, at in _repeats([t.name for t in targets]).items():
+        if name in named:
+            errors.append(f"target name {name!r} is used by {len(at)} targets "
+                          f"and an instruction names it, so the rule cannot "
+                          f"tell them apart")
+    return errors
+
+
+def duplicate_name_warning(plan: SequencePlan) -> str | None:
+    """The warning for every repeated target name ``plan_identity_errors`` does
+    not refuse, or None. The start goes ahead; this says what the operator may
+    not have meant, and what would break if they later added a rule by name."""
+    named = _names_rules_resolve(plan)
+    repeats = [(name, len(at))
+               for name, at in _repeats([t.name for t in plan.targets]).items()
+               if name not in named]
+    if not repeats:
+        return None
+    listed = ", ".join(f"{name!r} x{n}" for name, n in repeats)
+    return (f"targets share a name ({listed}); they run and count separately, "
+            f"but an instruction could not name just one of them")

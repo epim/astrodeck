@@ -196,7 +196,10 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // RA/Dec are TEXT, in the sexagesimal forms the server's parser accepts —
     // including the typographic prime/double-prime and U+2212 minus that these
     // very defaults carry. (parse_dec could not read them until 136be93.)
-    params: { name: "M31 - Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: 23.4 },
+    // rotation -1 is "any angle" (#150). The old default, 23.4, was a real PA to
+    // the compiler, so every dropped TARGET commanded the rotator to an angle
+    // nobody chose. Still a number: edits are coerced by the default's type.
+    params: { name: "M31 - Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: -1 },
     fields: [
       { key: "name", label: "Name", control: "text" },
       { key: "ra", label: "RA", control: "text" },

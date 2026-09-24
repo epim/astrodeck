@@ -3,7 +3,7 @@
 //
 // Two kinds of assertion here, and the second kind is the point.
 //
-// The first kind checks the graph rules: one wire per input, a deleted node
+// The first kind checks the graph rules: one wire per flow input, a deleted node
 // takes its wires, param coercion keyed off the DEFAULT's type. Each of those
 // is a rule the SERVER also enforces, so getting it wrong here produces a graph
 // that saves and then refuses to load.
@@ -32,6 +32,7 @@ const { createFlowsActions, FLOWS_INIT, LOG_RING } = await import("../flowsSlice
 const { NODE_DEFS } = await import("../nodeDefs");
 type FlowsHost = import("../flowsSlice").FlowsHost;
 type FlowsState = import("../flowsSlice").FlowsState;
+type FlowGraphRec = import("../flowsTypes").FlowGraphRec;
 
 let passed = 0;
 let failed = 0;
@@ -41,15 +42,17 @@ function test(name: string, fn: () => void): void {
 }
 function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
 
-/** A miniature store: the same set/get contract zustand hands the slice. */
-function harness() {
+/** A miniature store: the same set/get contract zustand hands the slice.
+ *  `graph` seeds a hand-built graph, for wiring no editor action can draw -
+ *  the campaign's two event feeds into one input, for one. */
+function harness(graph?: FlowGraphRec) {
   let state: FlowsHost;
   const set = (fn: (s: FlowsHost) => Partial<FlowsHost>) => {
     state = { ...state, ...fn(state) } as FlowsHost;
   };
   const get = () => state;
   const actions = createFlowsActions(set, get);
-  state = { ...actions, flows: { ...FLOWS_INIT } } as FlowsHost;
+  state = { ...actions, flows: { ...FLOWS_INIT, ...(graph ? { graph } : {}) } } as FlowsHost;
   return {
     get flows(): FlowsState { return state.flows; },
     a: actions,
@@ -64,7 +67,7 @@ function withGraph(h: ReturnType<typeof harness>, nodes: string[]) {
 
 // ───────────────────────────────────────────────────────────── graph rules
 
-test("one wire per input — a second wire into the same port REPLACES the first", () => {
+test("one wire per flow input — a second wire into the same port REPLACES the first", () => {
   const h = harness();
   const [a, b, c] = withGraph(h, ["target", "capture", "target"]);
   h.a.flowsConnect(a, "target", b, "run");
@@ -240,6 +243,106 @@ test("dirty starts false and a graph edit sets it", () => {
   assert(h.flows.dirty === false, "a freshly opened flow is clean");
   withGraph(h, ["target"]);
   assert(h.flows.dirty === true, "…and an edit is what makes it dirty");
+});
+
+// ───────────────────────── event fan-in and the loop guard (#152, #149)
+//
+// THE FIXTURE is a hand-built copy of the campaign example's calibration
+// corner. Server examples.py:200-204 wires TWO event feeds into CALIBRATION
+// QUEUE "do": CLOUD WATCH "clouds in" (`("n13", "in", "n15", "do")`, line 200)
+// and PARK + CLOSE "closed" (`("n21", "closed", "n15", "do")`, line 203), and
+// FlowGraph.validation_errors (models.py:149-167) allows it because an event
+// input means "whenever" and fans in. It is SEEDED rather than drawn through
+// flowsConnect because drawing it is exactly what the old store could not do:
+// the second feed deleted the first.
+const campaignCalib = (): FlowGraphRec => ({
+  nodes: [
+    { id: "n1", type: "dusk", x: 30, y: 60, params: {} },
+    { id: "n13", type: "cloudwatch", x: 30, y: 590, params: {} },
+    { id: "n15", type: "calib", x: 580, y: 610, params: {} },
+    { id: "n18", type: "flatpanel", x: 30, y: 810, params: {} },
+    { id: "n21", type: "parkclose", x: 950, y: 570, params: {} },
+    { id: "n30", type: "condition", x: 310, y: 900, params: {} },
+  ],
+  edges: [
+    { id: "c200", from: "n13", fromPort: "in", to: "n15", toPort: "do" },
+    { id: "c201", from: "n13", fromPort: "clear", to: "n15", toPort: "stop" },
+    { id: "c202", from: "n18", fromPort: "ready", to: "n15", toPort: "panel" },
+    { id: "c203a", from: "n1", fromPort: "nightend", to: "n21", toPort: "do" },
+    { id: "c203b", from: "n21", fromPort: "closed", to: "n15", toPort: "do" },
+  ],
+});
+
+test("a third wire into calib.do leaves all three: an EVENT input fans in (#152)", () => {
+  // MUTANT "filter on any input" (the replacement ignores the input's lane,
+  // which is what flowsConnect did before #152). Observed:
+  //   x a third wire into calib.do leaves all three: an EVENT input fans in (#152): calib.do must keep every feed, got 1: n30
+  const h = harness(campaignCalib());
+  h.a.flowsConnect("n30", "fire", "n15", "do");
+  const into = h.flows.graph.edges.filter((e) => e.to === "n15" && e.toPort === "do");
+  assert(into.length === 3,
+    `calib.do must keep every feed, got ${into.length}: ${into.map((e) => e.from).join(", ")}`);
+  assert(into.some((e) => e.id === "c200") && into.some((e) => e.id === "c203b"),
+    "the campaign's own two feeds must survive the new one untouched");
+  assert(h.flows.graph.edges.length === 6, "and no other wire was disturbed");
+});
+
+test("a second wire into target.arm replaces the first: a FLOW input still takes one", () => {
+  // The server refuses two wires into one flow input (models.py:163-166,
+  // "is wired twice"), so the store must keep replacing there.
+  //
+  // MUTANT "never filter" (every wire is appended). Observed (2 failed; the
+  // older flow-input case above goes red with it):
+  //   x a second wire into target.arm replaces the first: a FLOW input still takes one: target.arm must hold one wire, got 2
+  const h = harness({
+    nodes: [
+      { id: "d", type: "dusk", x: 0, y: 0, params: {} },
+      { id: "m", type: "dome", x: 250, y: 0, params: {} },
+      { id: "t", type: "target", x: 500, y: 0, params: {} },
+    ],
+    edges: [{ id: "k1", from: "d", fromPort: "window", to: "t", toPort: "arm" }],
+  });
+  h.a.flowsConnect("m", "open", "t", "arm");
+  const into = h.flows.graph.edges.filter((e) => e.to === "t" && e.toPort === "arm");
+  assert(into.length === 1, `target.arm must hold one wire, got ${into.length}`);
+  assert(into[0].from === "m", "the LATER wire is the one that survives");
+});
+
+test("tapping cycle.complete then target.arm is refused: graph unchanged, sentence logged (#149)", () => {
+  // Tap-to-wire reaches flowsConnect WITHOUT passing through either drop
+  // resolver, so the store's own guard is the only thing between the tap and a
+  // flow that compiles to nothing. target.arm is occupied (dusk feeds it): an
+  // unguarded connect would REPLACE that wire with the loop, so the edge count
+  // alone would not show the damage - the identity of the graph does.
+  //
+  // MUTANT "no loop guard in flowsConnect". Observed - the dusk wire is gone
+  // and the loop took its place:
+  //   x tapping cycle.complete then target.arm is refused: graph unchanged, sentence logged (#149): the graph must not be rewritten, edges now: t.target->c.run, c.complete->t.arm
+  //
+  // MUTANT "log the refusal at info tone". Observed:
+  //   x tapping cycle.complete then target.arm is refused: graph unchanged, sentence logged (#149): the refusal is a warning, got tone "info"
+  const h = harness({
+    nodes: [
+      { id: "d", type: "dusk", x: 0, y: 0, params: {} },
+      { id: "t", type: "target", x: 250, y: 0, params: {} },
+      { id: "c", type: "cycle", x: 500, y: 0, params: {} },
+    ],
+    edges: [
+      { id: "k1", from: "d", fromPort: "window", to: "t", toPort: "arm" },
+      { id: "k2", from: "t", fromPort: "target", to: "c", toPort: "run" },
+    ],
+  });
+  const graph = h.flows.graph;
+  h.a.flowsTapPort("c", "complete", "out");
+  h.a.flowsTapPort("t", "arm", "in");
+  assert(h.flows.graph === graph,
+    `the graph must not be rewritten, edges now: ${h.flows.graph.edges.map((e) => `${e.from}.${e.fromPort}->${e.to}.${e.toPort}`).join(", ")}`);
+  assert(h.flows.dirty === false, "a refused wire must not mark the flow as edited");
+  assert(h.flows.tapWire === null, "the arm is spent either way");
+  const last = h.flows.logs[h.flows.logs.length - 1];
+  assert(last?.msg === "this flow loops back on itself at FILTER CYCLE -> TARGET; a flow lane runs once",
+    `the refusal must reach the flow log in the server's words, got ${JSON.stringify(last?.msg)}`);
+  assert(last.tone === "warn", `the refusal is a warning, got tone ${JSON.stringify(last.tone)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -47,7 +47,8 @@ export const PA_DEADBAND_DEG = 0.5;
  * One expression, read by the framing card's promise AND by the graph edit that
  * writes the TARGET node's `rotation` - so the sentence on screen and the number
  * on the wire cannot drift apart. They had: the card promised a PA and the flow
- * carried the node vocabulary's shipped 23.4.
+ * carried 23.4, the node vocabulary's default until #150 (an older server still
+ * ships it, which is why the -1 is still written explicitly).
  */
 export function commandedPa(rotationDeg: number): number | null {
   return rotationDeg > PA_DEADBAND_DEG ? rotationDeg : null;

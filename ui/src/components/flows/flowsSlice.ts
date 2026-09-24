@@ -19,6 +19,7 @@ import { flowsApi } from "../../lib/flowsApi";
 import type { FlowCard, FlowFolder } from "../../lib/flowsApi";
 import { NODE_DEFS } from "./nodeDefs";
 import { fitView, type Rect } from "./geometry";
+import { flowLoopRefusal, portKindOf } from "./flowLoop";
 import type {
   FlowCalHealth, FlowCompileResult, FlowGraphRec, FlowLogLine, FlowNodeType,
   FlowPhoneTab, FlowRecordRec, FlowRunState, FlowScreen, FlowSelection,
@@ -183,6 +184,18 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** The sentences in a record's `migrated`, in order. An older server sends no
+ *  such key, and an entry with no sentence in it is skipped: printed, it would
+ *  be a warn line reading "undefined", which looks like the rig saying
+ *  something it did not. */
+function migrationNotes(rec: FlowRecordRec): string[] {
+  const list = rec.migrated as unknown;
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((m) => (m && typeof m === "object" ? (m as { note?: unknown }).note : undefined))
+    .filter((n): n is string => typeof n === "string" && n !== "");
+}
+
 export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
   const touch = (s: FlowsHost, graph: FlowGraphRec) =>
     patch(s, { graph, dirty: true });
@@ -217,6 +230,16 @@ export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
           // would otherwise still be ringing a card on the next visit.
           ui: { ...s.flows.ui, screen: "editor", highlightId: null },
         }));
+        // WHAT THE SERVER'S READ CHANGED, said on the log both editors draw
+        // (#150). FLOW_SCHEMA 3 turns a stored rotation of 23.4 - the old
+        // palette default, a real PA to the compiler - into "any angle", which
+        // changes what this saved flow does; a change nobody is told about is
+        // the "semantics flip needs a migration" defect again. Warn tone, once
+        // per open: the file keeps its 23.4 until it is next written, so every
+        // GET carries the note again and every open says it exactly once. A
+        // save writes it, and so does a RUN (`touch_run`), which is why
+        // `run_flow` puts the same sentence on the server log as it starts.
+        for (const note of migrationNotes(rec)) get().flowsAppendLog(note, "warn");
         await get().flowsCompile();
       } catch (e) {
         set((s) => patch(s, { libraryError: errText(e) }));
@@ -295,16 +318,43 @@ export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
                           ? null : s.flows.editNode } };
     }),
 
-    flowsConnect: (from, fromPort, to, toPort) => set((s) => touch(s, {
-      ...s.flows.graph,
-      // ONE WIRE PER INPUT, enforced by REPLACING on drop. models.py names this
-      // as the invariant the server relies on: it refuses a graph with two
-      // wires into one input, so an editor that appended would produce a graph
-      // that saves and then will not load.
-      edges: s.flows.graph.edges
-        .filter((e) => !(e.to === to && e.toPort === toPort))
-        .concat([{ id: nextEdgeId(), from, fromPort, to, toPort }]),
-    })),
+    flowsConnect: (from, fromPort, to, toPort) => {
+      // NO FLOW LOOPS (#149), refused HERE as well as in both drop resolvers,
+      // because tap-to-wire (`flowsTapPort`) reaches this action without
+      // passing through any resolver. A flow wire that closes a circle makes
+      // the compiler drop every stage on it, and none of them shoots a frame.
+      // So the graph is left exactly as it was and the server's own sentence
+      // goes to the flow log: a tap passes no resolver and so gets no toast,
+      // and a refusal that said nothing would read as a tap that missed.
+      const { nodes, edges } = get().flows.graph;
+      const loop = flowLoopRefusal(nodes, edges, { from, fromPort, to, toPort });
+      if (loop) {
+        get().flowsAppendLog(loop, "warn");
+        return;
+      }
+      set((s) => {
+        const g = s.flows.graph;
+        // ONE WIRE PER FLOW INPUT, enforced by REPLACING on drop. models.py
+        // names this as the invariant the server relies on: it refuses a graph
+        // with two wires into one flow input, so an editor that appended there
+        // would produce a graph that saves and then will not load.
+        //
+        // AN EVENT INPUT FANS IN, and replacing there is data loss (#152): the
+        // server allows many wires into one event input (models.py:149-167) and
+        // the campaign example needs it - CLOUD WATCH "clouds in" AND PARK +
+        // CLOSE "closed" both feed CALIBRATION QUEUE "do". Filtering on every
+        // input silently deleted the first feed when the second was drawn, and
+        // nothing said so. An input whose lane cannot be resolved is not a flow
+        // input, so it is never cleared either.
+        const flowInput = portKindOf(g.nodes, to, toPort, "in") === "flow";
+        return touch(s, {
+          ...g,
+          edges: g.edges
+            .filter((e) => !(flowInput && e.to === to && e.toPort === toPort))
+            .concat([{ id: nextEdgeId(), from, fromPort, to, toPort }]),
+        });
+      });
+    },
 
     flowsSetName: (name) => set((s) => (s.flows.record
       ? patch(s, { record: { ...s.flows.record, name }, dirty: true })

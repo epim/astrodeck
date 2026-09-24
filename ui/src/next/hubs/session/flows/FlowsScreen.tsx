@@ -44,7 +44,7 @@ import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
 
 import { cardMeta, cardStatus } from "../../../../components/flows/FlowLibraryCard";
 import { runBlockedReason, useFlowRunControls } from "../../../../components/flows/flowRunControls";
-import type { FlowCard } from "../../../../lib/flowsApi";
+import { unreadableReason, type FlowCard } from "../../../../lib/flowsApi";
 import { fmtClock } from "../../../../lib/eta";
 import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
@@ -302,6 +302,12 @@ export function FlowsScreen(): JSX.Element {
   }, [enqueueToast, listRunReason, runControls]);
 
   const rows = useMemo(() => visible.map((card) => {
+    // A FILE THIS BUILD CANNOT OPEN (#153): a newer AstroDeck's flow, or one
+    // that does not parse or validate. Every route but the listing answers 404
+    // for its id, so its reason goes where this screen already puts one - the
+    // row body's `openReason` and the verb's lock - and onto the meta line,
+    // because it is the one fact about this row worth reading.
+    const unreadable = unreadableReason(card);
     const isCampaign = camp != null && camp.flowId === card.id;
     const isLive = startedFlowId === card.id
       || (seqLive && (isCampaign ? camp.live : seq.plan_name === card.name));
@@ -310,7 +316,9 @@ export function FlowsScreen(): JSX.Element {
       : (isCampaign && camp.parked && camp.sessionId) ? "resume" : "run";
 
     let meta: string;
-    if (isCampaign) {
+    if (unreadable) {
+      meta = unreadable;
+    } else if (isCampaign) {
       const head = `campaign · night ${camp.night} of ~${camp.totalNights}`;
       if (isLive) meta = `${head} · running now`;
       else if (camp.parked) {
@@ -332,6 +340,7 @@ export function FlowsScreen(): JSX.Element {
       card,
       meta,
       verb,
+      unreadable,
       dotColor: dotFor(card.last_result, isLive, isCampaign),
       sessionId: isCampaign ? camp.sessionId : null,
     };
@@ -384,9 +393,11 @@ export function FlowsScreen(): JSX.Element {
 
   // Which flow the list-level control opens. The one already loaded when it is
   // still in the visible list, else the first row: never `library`, which used
-  // to open a second copy of this screen.
+  // to open a second copy of this screen. Never an unreadable row either
+  // (#153): the canvas would ask for an id every route answers 404 for, and a
+  // filter that leaves only such rows showing leaves nothing here to open.
   const canvasTarget = visible.find((c) => c.id === openRecordId)?.id
-    ?? visible[0]?.id
+    ?? visible.find((c) => unreadableReason(c) === null)?.id
     ?? null;
   const canvasReason = phone
     ? CANVAS_PHONE_REASON
@@ -525,8 +536,14 @@ export function FlowsScreen(): JSX.Element {
               // `FlowRow` drops the reason for the LIVE row itself, whose verb
               // is LIVE and whose press is a navigation, so the one row that
               // can act still can.
-              runReason={listRunReason}
-              openReason={null}
+              //
+              // An unreadable row's own reason comes FIRST, for RUN and RESUME
+              // alike: after the run ends, or for an operator who may run, the
+              // file is still unreadable, so that is the sentence that stays
+              // true - a viewer must not be sent to ask for access to run a
+              // flow nobody can run.
+              runReason={r.unreadable ?? listRunReason}
+              openReason={r.unreadable}
               onRun={() => { void start(r.card.id); }}
               onResume={() => { if (r.sessionId) void resume(r.sessionId); }}
               onLive={() => nav.go("/session/now")}

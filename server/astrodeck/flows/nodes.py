@@ -113,8 +113,16 @@ NODE_DEFS: dict[str, NodeDef] = {
     "target": NodeDef(
         type="target", label="TARGET", cat="SOURCE",
         ins=(_f("arm", "arm"),), outs=(_f("target", "target"),),
+        # `rotation` -1 IS "ANY ANGLE" (#150). It was 23.4 -- the M31 example's
+        # own angle, copied in as the palette default -- and anything 0 or
+        # above is a real position angle to `to_plan`, so every palette-dropped,
+        # wizard and quick-flow target commanded a connected rotator to PA 23.4,
+        # an angle nobody chose. The wizard overwrites only the name and the
+        # coordinates, so the default IS the angle for most flows. Stored 23.4s
+        # are rewritten by `store._migrate` (FLOW_SCHEMA 3). Still a number:
+        # the inspector coerces an edit by the type of the default.
         params={"name": "M31 - Andromeda", "ra": "00h 42m 44s",
-                "dec": "+41° 16′ 09″", "rotation": 23.4}),
+                "dec": "+41° 16′ 09″", "rotation": -1}),
     "safety": NodeDef(
         type="safety", label="SAFETY MONITOR", cat="SOURCE",
         outs=(_e("unsafe", "unsafe"),),
