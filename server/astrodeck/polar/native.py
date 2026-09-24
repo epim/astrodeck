@@ -38,6 +38,7 @@ import asyncio
 import math
 from typing import Any
 
+from .. import sky_angle as _sky_angle
 from ..devices.base import DeviceError
 from ..events import bus
 from ..sequence.schedule import hour_angle_h
@@ -808,6 +809,12 @@ async def _capture_and_solve(hub: Any, solver: Any, session: Any = None):
     try:
         await _apply_solve_filter(hub, cfg.get("filter"))
         _publish_activity(session, "exposing")
+        # The rotator and pier side as the shutter opens: a polar solve is a
+        # solve of the IMAGING camera, so it records the sky angle and may
+        # calibrate the rotator like every other (``sky_angle``). The arc's RA
+        # turns do not change the camera's position angle on a German
+        # equatorial; a flip would, and the calibration refuses across one.
+        angle = await _sky_angle.exposure_context(hub, cam)
         async with hub.exposure_guard("polar solve"):
             frame = await cam.expose(float(cfg["exposure_s"]), int(cfg["gain"]),
                                      int(cfg["offset"]),
@@ -833,6 +840,8 @@ async def _capture_and_solve(hub: Any, solver: Any, session: Any = None):
         _publish_activity(session, None)
     if not result.success:
         raise DeviceError(f"polar plate solve failed: {result.message}")
+    await _sky_angle.note_solved_rotation(hub, result, source="polar alignment",
+                                          context=angle)
 
     h, w = frame.data.shape
     scale = (result.pixel_scale_arcsec or opt.get("image_scale_arcsec_px") or 1.55)

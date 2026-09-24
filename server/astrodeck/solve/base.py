@@ -35,6 +35,11 @@ class SolveResult:
     rotation_deg: float = 0.0
     pixel_scale_arcsec: float = 0.0
     message: str = ""
+    #: False when the solver did not report a rotation at all (issue #146).
+    #: ``rotation_deg`` then reads 0.0 for the consumers that need a float, and
+    #: that 0 must never be believed: since every imaging solve calibrates the
+    #: rotator, a 0 that means "unknown" would re-sync it to PA 0.
+    rotation_known: bool = True
     wcs: "WcsSolution | None" = None
 
 
