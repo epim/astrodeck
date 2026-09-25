@@ -42,6 +42,31 @@ disarm, abandon or delete of the session being recovered, call
 ``stop_recovery``: the ladder stops before its next step, the step it is
 awaiting is cancelled, and nothing starts. ``recovery`` says which step it is
 on, for ``GET /api/sequence/resume-arm``.
+
+SO DOES EVERY ROUTE THAT TEARS THE RIG DOWN (#238, spec 6.15).
+``/api/disconnect``, and a forced profile apply, profile activate or rig
+connect, stop the ladder the way Abort does, then wait on ``wait_stopped``
+until it has returned before they touch a device: a teardown under a ladder
+still awaiting a solve or a slew pulled the devices out from under it. Unforced,
+those three refuse while the ladder runs, as they refuse while a run does.
+
+A HOLD SPEAKS IN WORDS, AND THE NUMBERS ARE KEPT APART (#233). The ladder's
+start-floor and slew-limit refusals used to be one sentence carrying the
+target's altitude, its floor, an ETA and an azimuth, and that sentence was the
+hold's reason and the "auto-resume held" warning, both of which a viewer
+reads. Those are the site, re-encoded (#140). Now the reason is words, and the
+numbers ride ``hold["site_detail"]``, which ``api/redact.py`` withholds from a
+principal without ``view.site_derived``.
+
+A CAPPED OPTIC IS NOT A CLOUD (#251). On 2026-09-24/25 the recovery solve
+failed with "Not enough stars." every ten minutes from 19:59 to past 22:24
+under a clear sky, because the optic was covered, and nobody was told. The
+solve now says whether light reached the sensor (``solve.light``). On a
+``NoLightError`` the ladder sends one push alert per session per no-light
+spell, retries first after ``RETRY_INTERVAL_S`` and then every
+``NO_LIGHT_RETRY_S``, and holds in words; a solve that works or a cloud
+verdict ends the spell, and so does the end of the night. A cloud verdict
+keeps the ten-minute retry and sends nothing, as before. See ``tick``.
 """
 from __future__ import annotations
 
@@ -51,6 +76,7 @@ import time
 from ..config import config_store
 from ..devices.base import GotoRefused
 from ..events import bus
+from ..solve.light import CLOUD, NO_LIGHT_WORDS, FailedSolveError, NoLightError
 from . import schedule
 from .models import (Target, duplicate_name_warning, plan_identity_errors,
                      quota_unbounded, replan_cooling)
@@ -59,6 +85,20 @@ from .session import Session, SessionUnreadable, session_store
 
 CHECK_INTERVAL_S = 60.0
 RETRY_INTERVAL_S = 600.0
+
+#: How often auto-resume tries again while its recovery solve keeps finding no
+#: light (#251), after the first retry, which comes at RETRY_INTERVAL_S.
+#:
+#: A covered optic does not uncover itself, so every ten-minute retry after
+#: the alert spends a 12 s exposure and a solver run to learn what the alert
+#: already said, and logs it: fifteen identical lines on 2026-09-24. Hourly
+#: still picks the night up within the hour of someone uncapping it without
+#: telling the rig. The FIRST retry stays at ten minutes on purpose: the
+#: operator who reads the alert and walks out to uncap should not then wait
+#: an hour for the rig to notice. A wrong no-light verdict, which the
+#: classifier works hard never to give, costs at most this long under a sky
+#: that has cleared.
+NO_LIGHT_RETRY_S = 3600.0
 
 #: Consecutive crashes of ONE session before auto-resume stops trying and stows
 #: the rig. Three, because two is inside the range of genuinely transient faults
@@ -82,6 +122,22 @@ RECOVERY_SOLVE_EXPOSURE_S = 12.0
 #: altitude at a known time is a latitude (#140).
 LADDER_STEPS = ("starting", "safety", "focus", "autofocus", "solve", "limits",
                 "recentre")
+
+#: How long ``wait_stopped`` waits for a stopped ladder to return, in seconds,
+#: before a teardown route gives up and answers 409 (#238).
+#:
+#: A stopped ladder normally returns within a turn or two of the loop: the
+#: stop cancels the step it is awaiting. The one thing that legitimately
+#: takes longer is a driver finishing a halt ON the cancel before the step
+#: can return - Alpaca's ``slew`` sends ``abortslew`` and its exposure wait
+#: sends ``abortexposure`` from their ``except CancelledError`` arms
+#: (devices/alpaca.py), each one request on the Alpaca client, whose
+#: per-request timeout is 30 s (``AlpacaConnection.__init__``). So one request
+#: that runs to its timeout, plus 5 s of margin for the loop around it. A
+#: bound shorter than that refuses a teardown the halt would have allowed a
+#: moment later; a longer one only keeps the operator's request open on a
+#: link that is not answering. Read at call time, so a test can shrink it.
+LADDER_STOP_WAIT_S = 35.0
 
 
 def window_open(session: Session, site, twilight_deg: float, now: float) -> bool:
@@ -196,7 +252,10 @@ class ResumeArm:
         #: strands it (a fresh start disarms every other session).
         #:
         #: ``None`` = not holding. Otherwise {reason, since, retry_at,
-        #: session_id, session_name, owed}.
+        #: session_id, session_name, owed}, and ``site_detail`` as well when
+        #: the refusal has site-derived numbers behind its words (#233): the
+        #: reason is what anyone may read, ``site_detail`` is withheld from a
+        #: viewer by ``api/redact.py``'s ``_redact_resume_arm_for``.
         self.hold: dict | None = None
         #: True while ``_recover`` runs. Written only by ``tick``; read
         #: through ``recovering``.
@@ -219,6 +278,32 @@ class ResumeArm:
         self._ladder_session: Session | None = None
         self._ladder_step: str | None = None
         self._stop_why: str | None = None
+        #: Resolved when ``tick`` has left the ladder, in the same ``finally``
+        #: that lowers ``recovering``; None while no ladder runs. What
+        #: ``wait_stopped`` waits on (#238). A future made per ladder, on
+        #: the running loop, rather than an Event made here: this object is
+        #: built at import (api/app.py), before any loop exists.
+        self._ladder_left: asyncio.Future | None = None
+        #: The numbers behind the words-only refusal ``_recover`` last
+        #: returned, or None (#233). Set by ``_recover`` beside the reason it
+        #: returns, cleared by ``tick`` before each ladder, and handed to
+        #: ``_set_hold`` as ``site_detail``. Kept off the return value so
+        #: ``_recover`` still answers ``str | None``, which the suite's spies
+        #: of it return.
+        self._refusal_site_detail: str | None = None
+        #: What this tick's recovery solve showed about light (#251): "dark"
+        #: for a ``NoLightError``, "lit" for a solve that worked or a cloud
+        #: verdict, None when the solve did not run or nothing could judge its
+        #: frame. Set by ``_recover`` beside the solve, cleared by ``tick``
+        #: before each ladder, for the same reason ``_refusal_site_detail``
+        #: is: kept off ``_recover``'s ``str | None`` answer.
+        self._ladder_light: str | None = None
+        #: The session whose no-light spell is open, i.e. the one that has
+        #: had its alert (#251). The latch that makes it ONE alert per
+        #: session per spell, and what tells the first retry of a spell (ten
+        #: minutes) from the later ones (hourly). Cleared when a solve shows
+        #: light, when nothing is armed, and when the window closes.
+        self._no_light_spell: str | None = None
 
     @property
     def recovering(self) -> bool:
@@ -274,7 +359,11 @@ class ResumeArm:
         /api/sessions/{id}`` when it disarms or abandons the session being
         recovered, or arms another one (the singleton disarms this one), and
         ``DELETE /api/sessions/{id}`` of it, each with ``session_id``, so
-        withdrawing a DIFFERENT session leaves this ladder alone. Before
+        withdrawing a DIFFERENT session leaves this ladder alone. And every
+        route that tears the rig down (#238): ``POST /api/disconnect``, and
+        a forced profile apply, profile activate or ``/api/connect/rig``,
+        each with ``disarm`` as Abort, each then awaiting ``wait_stopped``
+        before it touches a device. Before
         #220 none of them reached the ladder: an abort had no run to abort,
         so the ladder slewed on and started the session seconds later, and a
         disarm was read only after the ladder, by ``_still_startable``, so
@@ -329,6 +418,33 @@ class ResumeArm:
             self._disarm_stopped(s)
         return s.id
 
+    async def wait_stopped(self) -> bool:
+        """Wait until no recovery ladder is running: True once ``tick`` has
+        left the ladder (or none was running), False when
+        ``LADDER_STOP_WAIT_S`` passes first (#238).
+
+        FOR THE TEARDOWN ROUTES, after ``stop_recovery``. Asking the ladder
+        to stop is not the ladder having stopped: the stop cancels the step
+        it is awaiting, and a step can take its time to end on the cancel (a
+        driver sending its halt), or swallow the cancel and run to its end,
+        and the ladder is still using the camera or the mount until it has
+        returned. ``/api/disconnect`` pulled the devices out from under it.
+        So a route that tears the rig down calls ``stop_recovery`` and then
+        this, and touches nothing unless it answers True.
+
+        Resolves when ``tick``'s ``finally`` lowers ``recovering``, not when
+        the ladder's task finishes, which is a turn of the loop earlier: the
+        flag the start routes read and the answer here agree.
+
+        Never cancels anything and never raises on the bound: a caller that
+        gets False has a ladder that was asked to stop and has not, and
+        decides for itself what to refuse."""
+        left = self._ladder_left
+        if left is None or left.done():
+            return not self._recovering
+        done, _ = await asyncio.wait({left}, timeout=LADDER_STOP_WAIT_S)
+        return left in done
+
     def _disarm_stopped(self, session: Session) -> None:
         """Disarm the session whose ladder Abort stopped, and say so in the
         words the engine uses when Abort disarms a run. Best-effort: a store
@@ -353,9 +469,17 @@ class ResumeArm:
                 f"Arm it from the session list to pick it up again.",
                 "sequence")
 
-    def _set_hold(self, session, reason: str, retry_at: float = 0.0) -> None:
+    def _set_hold(self, session, reason: str, retry_at: float = 0.0,
+                  site_detail: str | None = None) -> None:
         """Record the current refusal, preserving ``since`` while the reason
-        stands so the UI can say how long it has been waiting."""
+        stands so the UI can say how long it has been waiting.
+
+        ``site_detail`` is the site-derived sentence behind a words-only
+        ``reason`` (#233), stored under its own key only when there is one,
+        so every other hold keeps the shape it always had. It does not take
+        part in ``since``: the altitude in it changes on every retry while
+        the words stay, and a floor hold now keeps its ``since`` across the
+        retries that used to restamp it."""
         prior = self.hold or {}
         same = prior.get("reason") == reason and prior.get("session_id") == getattr(session, "id", "")
         self.hold = {
@@ -366,9 +490,42 @@ class ResumeArm:
             "session_name": getattr(session, "name", ""),
             "owed": session.owed() if hasattr(session, "owed") else 0,
         }
+        if site_detail is not None:
+            self.hold["site_detail"] = site_detail
 
     def _clear_hold(self) -> None:
         self.hold = None
+
+    def _no_light_backoff(self, session) -> float:
+        """The wait before the next attempt after a no-light verdict on
+        ``session``'s recovery solve, sending the spell's one alert when this
+        verdict opens the spell (#251).
+
+        THE ALERT IS AN ERROR LINE, because that is the level the alert
+        pipeline delivers to a sink left at its defaults: ``bus.log`` becomes
+        an alert whose type is its level, and a default ``AlertSink``
+        subscribes to "error" and not to "warning". A warning here would be
+        one more line in the log nobody read on 2026-09-24.
+
+        ONCE PER SESSION PER SPELL. The spell is the run of no-light verdicts
+        with no evidence of light between them; ``tick`` ends it on a solve
+        that worked or a cloud verdict, and at the end of the night. A
+        failure nothing could judge, or a refusal before the solve, is no
+        evidence either way and leaves it open.
+
+        TEN MINUTES, THEN HOURLY: see ``NO_LIGHT_RETRY_S``."""
+        if self._no_light_spell == getattr(session, "id", None):
+            return NO_LIGHT_RETRY_S
+        self._no_light_spell = getattr(session, "id", None)
+        bus.log("error",
+                f"auto-resume for '{session.name}': {NO_LIGHT_WORDS}. Its "
+                f"recovery plate solve read the camera at the level it reads "
+                f"in the dark, so nothing will be imaged until the optic is "
+                f"uncovered. It looks again in "
+                f"{int(RETRY_INTERVAL_S / 60)} min, then every "
+                f"{int(NO_LIGHT_RETRY_S / 60)} min while it stays dark.",
+                "sequence")
+        return RETRY_INTERVAL_S
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -423,6 +580,7 @@ class ResumeArm:
             self._retry_at = 0.0            # disarmed from the UI: stop instantly
             self._clear_hold()
             self._gave_up_for = None
+            self._no_light_spell = None     # nothing to be dark for (#251)
             # SAY SO WHEN THERE IS AN INTERRUPTED RUN NOBODY WILL RESTART.
             #
             # This used to be a bare return, and on 2026-08-11 that cost 25
@@ -451,6 +609,12 @@ class ResumeArm:
                 self._quiet_note_for = None
             return
         if not self._window_open(armed, now):
+            # A NO-LIGHT SPELL NEVER OUTLIVES THE NIGHT (#251). The optic
+            # still covered at tomorrow's first solve is news again: the
+            # person the alert reached tonight may not be the one looking
+            # tomorrow, and the window reopening is already "a fresh night"
+            # to this tick (``_gave_up_for`` below).
+            self._no_light_spell = None
             # THE MOST COMMON HOLD, and the one the log ring cannot answer for:
             # the branch below latches per session and logs exactly ONCE, so
             # forty minutes later there is nothing left to read. Recorded every
@@ -594,10 +758,18 @@ class ResumeArm:
         # to go on and stand the attempt down. Creating the task does not
         # await, so the flag still goes up in the same synchronous stretch as
         # the ``engine.running`` check.
+        #
+        # ``_refusal_site_detail`` likewise, so a detail an earlier ladder
+        # left cannot ride this ladder's refusal (#233). ``_ladder_left`` is
+        # made here, with the flag, so a teardown route that saw
+        # ``recovering`` always finds a future to wait on (#238).
         self._recentred = None
+        self._refusal_site_detail = None
+        self._ladder_light = None
         self._stop_why = None
         self._ladder_session = armed
         self._ladder_step = "starting"
+        self._ladder_left = asyncio.get_running_loop().create_future()
         self._recovering = True
         self._ladder = asyncio.ensure_future(self._recover(armed))
         try:
@@ -620,6 +792,12 @@ class ResumeArm:
             self._ladder_session = None
             self._ladder_step = None
             stopped, self._stop_why = self._stop_why, None
+            # Last, once the flag is down: a teardown route waiting in
+            # ``wait_stopped`` resumes on the next turn of the loop, and by
+            # then there is no ladder left for it to find.
+            left, self._ladder_left = self._ladder_left, None
+            if left is not None and not left.done():
+                left.set_result(None)
         if stopped is not None:
             # AN OPERATOR STOPPED IT (#220), whether the ladder returned early
             # at a between-step point, was cancelled mid-step, or finished a
@@ -635,11 +813,27 @@ class ResumeArm:
             bus.log("info", f"auto-resume stood down for '{armed.name}': "
                             f"{stopped}", "sequence")
             return
+        if self._ladder_light == "lit":
+            # LIGHT REACHED THE SENSOR, so whatever covered it is off (#251):
+            # a solve that worked, or one that failed on a sky it could see.
+            # The next no-light verdict is a new spell with its own alert.
+            self._no_light_spell = None
         if refusal is not None:
+            # THE WORDS GO TO THE LOG, THE NUMBERS ONLY TO THE HOLD (#233).
+            # This line reaches the log ring, which ``/api/logs`` serves to a
+            # viewer, and the night log, and ``refusal`` is words by
+            # ``_recover``'s contract. The site-derived sentence behind it
+            # (an altitude, a floor, an ETA, an azimuth) goes on the hold as
+            # ``site_detail``, which the route withholds from a viewer; put
+            # here, it would reach that viewer through the ring instead.
+            backoff = RETRY_INTERVAL_S
+            if self._ladder_light == "dark":
+                backoff = self._no_light_backoff(armed)
             bus.log("warning", f"auto-resume held: {refusal} — retrying in "
-                               f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
-            self._retry_at = now + RETRY_INTERVAL_S
-            self._set_hold(armed, refusal, self._retry_at)
+                               f"{int(backoff / 60)} min", "sequence")
+            self._retry_at = now + backoff
+            self._set_hold(armed, refusal, self._retry_at,
+                           site_detail=self._refusal_site_detail)
             return
         # WHAT WAS READ BEFORE THE LADDER IS STALE AFTER IT (#211).
         #
@@ -856,6 +1050,12 @@ class ResumeArm:
         reason the caller logs before arming the backoff. The session is left
         dormant AND armed either way, so the next tick retries.
 
+        THE REASON IS WORDS (#233): it becomes the hold's ``reason`` and the
+        "auto-resume held" warning, which a viewer reads. A refusal whose
+        explanation is made of site-derived numbers (the start floor, the
+        slew-limit gate) puts that sentence in ``_refusal_site_detail``
+        instead, and ``tick`` stores it as the hold's ``site_detail``.
+
         It also returns None, early, when a run starts while it works (#211)
         or an operator asks it to stop (#220): before each step that would
         focus, expose or slew it asks ``_must_stop`` and stops there. That
@@ -1015,9 +1215,29 @@ class ResumeArm:
                 self._ladder_step = "solve"
                 await self.hub.solve_and_sync(
                     exposure_s=RECOVERY_SOLVE_EXPOSURE_S)
+            except NoLightError:
+                # THE CAMERA IS IN THE DARK (#251), which is not the cloud
+                # the words below describe. ``tick`` alerts once and backs
+                # off. The reason is words only, not the error's text, which
+                # carries the solver's own words and whatever numbers they
+                # hold: the hold must keep its ``since`` across the hourly
+                # retries, and it is read by a viewer.
+                self._ladder_light = "dark"
+                return (f"{NO_LIGHT_WORDS}, so the blind plate solve after "
+                        f"the restart cannot say where the mount points; not "
+                        f"slewing")
             except Exception as e:  # noqa: BLE001
+                # A FAILED SOLVE WHOSE FRAME SHOWED LIGHT ends a no-light
+                # spell: something that had covered the optic is off, and a
+                # cloudy sky is today's ten-minute hold. Asked of the
+                # verdict, not the text; a failure nothing could judge (no
+                # reference, a camera fault) is no evidence of light and
+                # leaves ``_ladder_light`` None.
+                if isinstance(e, FailedSolveError) and e.verdict.kind == CLOUD:
+                    self._ladder_light = "lit"
                 return (f"blind plate solve failed after restart ({e}) — refusing "
                         "to slew a mount whose true position is unknown")
+            self._ladder_light = "lit"
 
         # 3. RE-CENTER on the first real target. Calibration-only sessions have
         #    none and never slew, so they skip this; they still got the solve
@@ -1052,9 +1272,26 @@ class ResumeArm:
                 # and for the same reason: refusing on an unreadable altitude
                 # would strand every rig whose site is not configured.
                 if alt is not None and alt < floor:
-                    return (f"{tgt.name} is at {alt:.0f} deg, below its "
-                            f"{floor:.0f} deg start floor; not slewing yet"
-                            + self._floor_eta_note(tgt, floor))
+                    # WORDS FOR THE REASON, NUMBERS FOR SITE_DETAIL (#233; H3
+                    # orchestrator ruling 1 (spec, Still waiting on the
+                    # owner, item 10)). The reason is the hold a viewer reads
+                    # at GET /api/sequence/resume-arm and the warning a viewer
+                    # reads at /api/logs, and the altitude of a known target
+                    # at a known time is the site (#140); the ETA is a second
+                    # fix on it, and the floor, printed beside the altitude,
+                    # is the bound that dates the crossing. So none of the
+                    # three is in the words. The operator still gets the
+                    # sentence that says how long the wait is, through
+                    # ``site_detail``, which ``api/redact.py`` withholds from
+                    # a viewer. What the words cannot withhold is that a
+                    # floor refusal happened at all, and when it stopped:
+                    # the timing channel spec 6.9 records as a residual.
+                    self._refusal_site_detail = (
+                        f"{tgt.name} is at {alt:.0f} deg, below its "
+                        f"{floor:.0f} deg start floor"
+                        + self._floor_eta_note(tgt, floor))
+                    return (f"{tgt.name} is below its start floor; not "
+                            f"slewing yet")
             # The altitude floor, horizon, no-go wedges, pier limits and the
             # zenith keep-out — the SAME gate every in-run slew passes. It lived
             # only inside the run, so this slew, the one made unattended by a
@@ -1071,7 +1308,33 @@ class ResumeArm:
                 await self.engine.check_slew_limits(tgt, cfg=cfg,
                                                     plan=session.plan)
             except Exception as e:  # noqa: BLE001 — SafetyAbort or a bad target
-                return f"re-centering after restart refused: {e}"
+                # The gate's numbers (the altitude, the limit and the
+                # azimuth it judged: "... altitude 12 deg below safety floor
+                # 20 deg (az 238 deg)") and which of its limits refused
+                # (floor, horizon mask, wedge, zenith keep-out, pier side)
+                # are each a fact about where the rig stands. So the reason
+                # names none of them, and the numbers go to ``site_detail``
+                # (#233, as the floor refusal above). Any exception, not only
+                # SafetyAbort: the gate's text is not read here, so none of
+                # it is trusted to be site-free.
+                #
+                # THE NUMBERS ARE ON THE REFUSAL, NOT IN ITS TEXT. Since
+                # #233 the gate's message is words and its numeric sentence
+                # rides ``SlewRefused.site_detail``; filing ``str(e)`` handed
+                # the operator the same words twice and the numbers never.
+                # ``str(e)`` stays the fallback for a refusal without one (a
+                # pier-side refusal, a bad target), which is what an operator
+                # was shown before.
+                from .engine import SafetyAbort
+                self._refusal_site_detail = (getattr(e, "site_detail", None)
+                                             or str(e))
+                if isinstance(e, SafetyAbort):
+                    return ("re-centering after restart refused: the target "
+                            "is outside this rig's configured slew limits "
+                            "(altitude floor, horizon, no-go wedges, pier "
+                            "side or zenith keep-out); not slewing yet")
+                return ("re-centering after restart refused: the slew-limit "
+                        "check failed; not slewing")
             # BELOW the limit check, not above it: that check awaits too, and
             # the slew is the step that must never land on a live run, nor
             # follow an operator's stop (#220). A stop that arrives once the
@@ -1130,7 +1393,10 @@ class ResumeArm:
         ``gating_status``'s ``eta_s`` for a target waiting on altitude - so the
         hold and the Tonight page cannot quote different numbers for the same
         wait. Best-effort throughout: no site, no crossing inside a sidereal
-        day, or any arithmetic failure simply means no note."""
+        day, or any arithmetic failure simply means no note.
+
+        Site-derived, so it goes only into the hold's ``site_detail``, never
+        into its words (#233)."""
         try:
             lat, lon = schedule._lat_lon(self.hub.site)
             eta = schedule._time_to_gate(target, lat, lon, floor,

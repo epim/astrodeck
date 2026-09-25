@@ -1,4 +1,4 @@
-"""A cloud hold follows the mount it has (#224, #221, #228, #189 rulings 1 and 2).
+"""A cloud hold follows the mount it has (#224, #221, #228).
 
 The hold of #203 and #205 watches the target it holds: its floor, its keep-out
 and its flip point. That is right only while the mount is on that target, and a
@@ -17,8 +17,12 @@ hold does not always have that.
   opening detail ("Checking at the science exposure ...") over a stopped
   mount that judged no sky.
 
-THE RULINGS (owner, 2026-09-24; spec 5.8, Revision 3 rows 5 and 9, owner
-list item 5). A hold whose mount is not on its target points the mount there
+THE RULINGS: H2 orchestrator rulings 2 and 1 (spec, Still waiting on the
+owner, items 5 and 6; spec 5.8). The orchestrator made them so that the
+second hardening round could be built, and each is binding until the owner
+overturns it; they are not the owner's rulings 1 and 2 of 2026-09-24, which
+the spec's Revision 2 records on other subjects. A hold whose mount is not on
+its target points the mount there
 before it judges the sky, behind the slew gate, the Sun check and the
 projection the slew gate raises on; when it may not, it stops the mount once,
 says why, and points it on a later look once it may. It never reads the last
@@ -401,9 +405,10 @@ async def test_a_parked_mount_is_unparked_and_pointed_at_the_held_target(
     w.tel.rig.parked = True
     # THE PREMISE IS SCRIPTED. On a fresh run the frames have no verdict yet,
     # so a real first gate cannot read cloud; the script puts the rig in the
-    # shape the ruling names anyway. The check frames borrow the last step
-    # the engine shot, which `start` does not reset (the engine outlives its
-    # runs), so it is set here as an earlier run would have left it.
+    # shape H2 orchestrator ruling 2 names anyway. The check frames borrow
+    # the last step the engine shot, which `start` does not reset (the engine
+    # outlives its runs), so it is set here as an earlier run would have left
+    # it.
     w.engine._hold_step = a.steps[0]
     unparked: list[float] = []
     real_unpark = w.tel.unpark
@@ -904,7 +909,7 @@ async def test_a_calibration_hold_asks_the_mount_nothing_and_does_not_slew(
     assert asked == [], f"the calibration hold asked the mount {asked}"
 
 
-# ------------------------------------------------ A3 (#228): honest detail
+# ----------------------------------------------------- #228: honest detail
 
 async def test_a_stopped_mount_whose_slew_fails_never_claims_to_check_the_sky(
         sim_hub, temp_store, monkeypatch, bus_lines):
@@ -965,16 +970,16 @@ async def test_a_stopped_mount_whose_slew_fails_never_claims_to_check_the_sky(
         await w.close()
 
 
-# --------------------------------------------------- A1 (ruling 1): flips off
+# ---------------------------------- H2 orchestrator ruling 1: flips off
 
 async def test_a_flips_off_hold_takes_no_action_at_the_flip_point(
         sim_hub, temp_store, monkeypatch, bus_lines):
-    """RULING 1: with the plan's flips switched off, the hold takes no
-    action at the flip point at all. Alpha's flip point falls 200 s into
-    the hold, the sky clears 60 s after it, and the hold goes on judging
-    the sky through the flip point and releases on two clear checks, with
-    the mount never stopped. (A mount that stops at its own limit is the
-    tracking probe's to find, as in the control below.)
+    """H2 ORCHESTRATOR RULING 1: with the plan's flips switched off, the
+    hold takes no action at the flip point at all. Alpha's flip point falls
+    200 s into the hold, the sky clears 60 s after it, and the hold goes on
+    judging the sky through the flip point and releases on two clear checks,
+    with the mount never stopped. (A mount that stops at its own limit is
+    the tracking probe's to find, as in the control below.)
 
     Mutant "park at the flip point regardless" (``not plan.meridian_flip
     or`` restored in `_hold_flip_watch`'s park test): RED, the look before
@@ -1015,13 +1020,13 @@ async def test_a_flips_off_hold_takes_no_action_at_the_flip_point(
 
 async def test_control_a_flips_off_mount_that_stops_at_its_limit_is_resumed(
         sim_hub, temp_store, monkeypatch, bus_lines):
-    """CONTROL for ruling 1. Flips off, the mount stops tracking on its own
-    (as the AM5 does at its own limit) 310 s into the hold, far from the flip
-    point. The tracking read before the next check finds it, judges no
-    streak, and the frame loop's resume-then-recover path puts tracking
-    back; the hold releases on clear checks from the tracking mount.
-    Unchanged by ruling 1: green with and without the mutant above
-    (observed).
+    """CONTROL for H2 orchestrator ruling 1. Flips off, the mount stops
+    tracking on its own (as the AM5 does at its own limit) 310 s into the
+    hold, far from the flip point. The tracking read before the next check
+    finds it, judges no streak, and the frame loop's resume-then-recover
+    path puts tracking back; the hold releases on clear checks from the
+    tracking mount. Unchanged by that ruling: green with and without the
+    mutant above (observed).
 
     Mutant "the hold skips the tracking probe" (the ``_tracking_now`` test
     before the check made False): RED, every check after the stop is a
@@ -1327,8 +1332,12 @@ async def test_a_refused_repoint_says_which_limit_in_words_and_no_numbers(
     a number is shown with its digits masked.
 
     Mutant "the refusal is the gate's sentence" (each of the three verdict
-    branches returns ``verdict[1]``): RED, all three mount-side rules, and
-    green for the own floor, which has no gate sentence to leak (observed) -
+    branches returns ``verdict[1]``; since H3, whose `_limit_words` holds
+    the three for the gate's `SlewRefused` too (#240), the one
+    ``return self._limit_words(target, kind)`` made ``return verdict[1]``,
+    observed again with the same four failures): RED, all three mount-side
+    rules, and green for the own floor, which has no gate sentence to leak
+    (observed) -
         [floor] AssertionError: the floor refusal carries numbers, and it
         is published (masked): 'target Bravo altitude -##° below safety
         floor ##° (az #°)'
@@ -1356,9 +1365,51 @@ async def test_a_refused_repoint_says_which_limit_in_words_and_no_numbers(
     Before this case and that check, the ceiling mutant passed all 42 tests
     in this file and test_cloud_hold_watch.py.
 
+    SINCE #233 (H3 T11) THE GATE'S SENTENCE IS WORDS, so ``verdict[1]`` no
+    longer leaks a number; the numbers are ``verdict.site_detail``. The same
+    mutant run again (``return verdict[1]``): still RED for the three
+    mount-side rules, the floor and the ceiling now on their words and the
+    no-site sentence, whose 0s are no site, on its digits; and the
+    end-to-end case above is green, having no number to catch (observed,
+    both files: 3 failed, 43 passed) -
+        [floor] AssertionError: the floor refusal names another rule:
+        "slew refused: Bravo would be below the mount's altitude floor by
+        the end of a slew there"
+        [ceiling] AssertionError: the ceiling refusal names another rule:
+        "slew refused: Bravo would be in the mount's zenith keep-out by the
+        end of a slew there, where the mount can reach its own tripod"
+        [no_site] AssertionError: the no_site refusal carries numbers, and
+        it is published (masked): 'cannot check Bravo against the altitude
+        limits: no observing site is saved, so every altitude here would be
+        computed for latitude #, longitude #. Save the site in Settings, or
+        clear the floor, horizon, no-go and ceiling limits if this mount
+        genuinely has none.'
+    Mutant "the refusal is the gate's numbers" (``return
+    verdict.site_detail``): RED, the floor and ceiling on their numbers, the
+    no-site rule because it has none and so reads as no refusal, and the
+    end-to-end case at its published refusal (observed) -
+        [floor] AssertionError: the floor refusal carries numbers, and it
+        is published (masked): 'target Bravo altitude -##° below safety
+        floor ##° (az #°)'
+        [ceiling] AssertionError: the ceiling refusal carries numbers, and
+        it is published (masked): 'target Bravo altitude ##° above the
+        zenith keep-out ##° (az ##°) — the mount can reach its own tripod
+        up there'
+        [no_site] AssertionError: premise: no_site refuses the re-point
+        AssertionError: the published refusal carries numbers (masked):
+        ['held for cloud - the mount is stopped: the mount is not on Bravo,
+        and target Bravo altitude ##° above the zenith keep-out ##° (az ##°)
+        — the mount can reach its own tripod up there. The sky is not
+        judged until it tracks again', 'the mount is not on Bravo, and
+        target Bravo altitude ##° above the zenith keep-out ##° (az ##°) —
+        the mount can reach its own tripod up there - stopping tracking;
+        the cloud hold goes on but judges no sky until the mount can track
+        the target again']
+
     Mutant "a floor refusal reads as no site" (the ``kind == "floor"``
-    branch deleted, so the floor falls through to the no-site sentence):
-    RED, the floor only (observed) -
+    branch deleted, so the floor falls through to the no-site sentence; in
+    `_limit_words` since H3, observed again with the same failure): RED, the
+    floor only (observed) -
         AssertionError: the floor refusal names another rule: "no observing
         site is saved, so no slew can be checked against the mount's limits"
     It passed every test in this file, test_cloud_hold_watch.py,

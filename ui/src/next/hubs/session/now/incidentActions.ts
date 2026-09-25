@@ -47,6 +47,7 @@ import type {
   Capability, CoolerInfo, DiskInfo, FocusEvent, RigStatus, SafetyState, SequenceState,
 } from "../../../../types";
 import type { Incident, IncidentAction } from "../../../lib";
+import { CLOUD_DEFERRED_PILL } from "../../../lib/incidents";
 import { nav } from "../../../router";
 
 // ---------------------------------------------------------------- the table
@@ -349,6 +350,12 @@ export function refineIncident(inc: Incident, ctx: RefineContext): Incident {
 
   switch (inc.kind) {
     case "cloud": {
+      // A DEFERRED HOLD IS NOT A HOLD (#244). The lib's deferral card carries
+      // the engine's own `sky.hold_deferred` sentence, and the hold card's
+      // lines below would overwrite it with "Capture paused at the frame
+      // boundary ... Watching the star count", a hold that is not open and
+      // probes that are not running. Both lines are already live fields.
+      if (inc.pill === CLOUD_DEFERRED_PILL) break;
       out.engine = detail.startsWith("held for cloud")
         ? detail
         : "Capture paused at the frame boundary. Guiding parked, mount tracking, "

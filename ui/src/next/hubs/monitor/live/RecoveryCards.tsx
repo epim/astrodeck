@@ -21,9 +21,11 @@
 
 import { useEffect, useRef, useState, type JSX } from "react";
 import { api } from "../../../../api";
+import { resumeRecoveryLine } from "../../../../api/sessions";
 import { useStore, useResumeArm, useArmedBannerDismissed, useSeq } from "../../../../store";
 import { accessPhrase, useCanControlMount } from "../../../../lib/caps";
-import { ActionButton, IncidentCard, type Incident } from "../../../ui";
+import { useStopResumeRecovery } from "../../../../lib/stopResumeRecovery";
+import { ActionButton, IncidentCard, Mono, type Incident } from "../../../ui";
 import { nav } from "../../../router";
 import { sendControl } from "../../session/now/sendControl";
 import { MANUAL_STOP_NOTE } from "../../session/now/RunControls";
@@ -71,43 +73,87 @@ export function useRecoverable(running: boolean): [Recoverable | null, () => voi
   return [rec, () => setRec(null)];
 }
 
+/** Why a viewer's STOP AUTO-RESUME is locked: the stop is the session's
+ *  disarm, `PATCH /api/sessions/{id}`, which is `control.mount`. */
+export const STOP_RECOVERY_LOCK_NOTE =
+  `View only - stopping auto-resume needs ${accessPhrase("control.mount")}.`;
+
 export function RunArmedCard(): JSX.Element | null {
   const seq = useSeq();
   const resumeArm = useResumeArm();
   const dismissed = useArmedBannerDismissed();
+  const canRun = useCanControlMount();
+  const stopRecovery = useStopResumeRecovery();
   const armed = resumeArm?.armed ?? null;
   const hold = resumeArm?.hold ?? null;
+  // WHILE THE RECOVERY LADDER RUNS (#246) the armed session is no longer
+  // waiting: ResumeArm is solving and re-centring the mount for it, with the
+  // engine idle. So the card stays up whatever the engine's terminal word is
+  // (a night that ended on a safety stop is the one auto-resume picks up) and
+  // even if its armed news was dismissed, because the rig moving on its own is
+  // new news. Its NEXT line becomes the server's sentence, as sent: the wait
+  // sentences describe the time before an attempt, and a `hold` still on the
+  // payload is the previous attempt's refusal, so neither is true now.
+  const recovering = resumeRecoveryLine(resumeArm, seq.state);
 
   if (!armed) return null;
-  if (seq.state !== "idle") return null;
-  if (dismissed === armed.id) return null;
+  if (!recovering && seq.state !== "idle") return null;
+  if (!recovering && dismissed === armed.id) return null;
 
   const incident: Incident = {
     kind: "armed",
-    pill: hold ? "HOLDING" : "ARMED",
-    color: hold ? "#ffb454" : "#00D2FF",
+    pill: recovering ? "RECOVERING" : hold ? "HOLDING" : "ARMED",
+    color: recovering || hold ? "#ffb454" : "#00D2FF",
     title: "RUN ARMED",
-    sinceMs: hold?.since != null ? hold.since * 1000 : null,
+    sinceMs: !recovering && hold?.since != null ? hold.since * 1000 : null,
     resolvesItself: true,
     engine: `${armed.name} · ${armed.owed} frames owed of ${armed.total} · ${armed.accepted} accepted`,
-    next: hold
-      ? `Holding: ${hold.reason}. It starts by itself when that clears.`
-      : "It starts by itself when its window opens.",
-    actions: [
-      { id: "open", label: "OPEN SESSION", primary: true },
-      { id: "dismiss", label: "DISMISS" },
-    ],
+    next: recovering
+      ?? (hold
+        ? `Holding: ${hold.reason}. It starts by itself when that clears.`
+        : "It starts by itself when its window opens."),
+    // No DISMISS while the ladder runs: the card ignores a dismissal then (see
+    // above), and a button that changes nothing on screen is worse than none.
+    // STOP AUTO-RESUME instead (#246): the card says the mount is moving on its
+    // own, and with the engine idle no run control is on screen to stop it.
+    // The stop is the session's own disarm (`lib/stopResumeRecovery.ts`), for
+    // the session the ladder names. Not primary: the ladder doing its job is
+    // the normal case, and stopping it is the operator's call.
+    actions: recovering
+      ? [
+        { id: "open", label: "OPEN SESSION", primary: true },
+        {
+          id: "stop",
+          label: stopRecovery.pending ? "STOPPING..." : "STOP AUTO-RESUME",
+          cap: "control.mount",
+        },
+      ]
+      : [
+        { id: "open", label: "OPEN SESSION", primary: true },
+        { id: "dismiss", label: "DISMISS" },
+      ],
   };
+  const recoveringId = recovering ? resumeArm?.recovery?.session_id ?? null : null;
 
   return (
-    <IncidentCard
-      incident={incident}
-      data-testid="run-armed"
-      onAction={(id) => {
-        if (id === "open") nav.go("/session/now");
-        else useStore.getState().dismissArmedBanner();
-      }}
-    />
+    <>
+      <IncidentCard
+        incident={incident}
+        data-testid="run-armed"
+        lockedFor={(id) => (id === "stop" && !canRun ? STOP_RECOVERY_LOCK_NOTE : null)}
+        onExplain={(r) => useStore.getState().enqueueToast({ level: "warning", title: r })}
+        onAction={(id) => {
+          if (id === "open") nav.go("/session/now");
+          else if (id === "stop") { if (recoveringId) stopRecovery.stop(recoveringId); }
+          else useStore.getState().dismissArmedBanner();
+        }}
+      />
+      {recovering && stopRecovery.error && (
+        <div role="alert">
+          <Mono size={10} tone="bad" data-testid="run-armed-stop-error">{stopRecovery.error}</Mono>
+        </div>
+      )}
+    </>
   );
 }
 

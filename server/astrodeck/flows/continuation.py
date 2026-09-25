@@ -10,10 +10,13 @@ the ledger counts frames by step id alone.
 
 What this module answers is whether carrying the ledger over is safe to do
 without asking first, and it answers from the session and the new plan alone:
-no store, no engine, no clock, no devices. The one outside answer ADOPT asks
-for is what KIND of object a target name is, from the shipped catalogue
-(``tonight.resolve_target``, injectable). ``run_flow`` in ``api/app.py`` owns
-the write lock, the refusals and the start.
+no store, no engine, no clock, no devices. The one outside source ADOPT asks
+is the shipped catalogue (``tonight.resolve_target``, injectable): what KIND
+of object a target name is, and where a moving body was when its frames were
+taken. ``adopt_evidence`` asks all of it in one call, so the caller can ask
+off the event loop and outside the store's write lock (#249).
+``run_flow`` in ``api/app.py`` owns the write lock, the refusals and the
+start.
 
 * ``plan_replace_report`` - which steps carry over, which are new, and which
   steps that hold frames the new plan no longer has. It is also what
@@ -24,10 +27,11 @@ the write lock, the refusals and the start.
   so none of its frames count toward anything tonight. ADOPT re-keys the
   frames whose step matches exactly one step of the new plan, on a target
   within ``ADOPT_MAX_SEPARATION_ARCMIN`` of the old one (or on the same
-  moving body, whose position no bound can hold), and leaves the rest where
-  they are. It is offered for such a session only: a session compiled since
-  S1 that shares no step id with tonight's compile was re-framed, and that
-  is the dropped-steps question.
+  moving body, when the old target was within that bound of the body at the
+  instants its frames were taken), and leaves the rest where they are. It is
+  offered for such a session only: a session compiled since S1 that shares
+  no step id with tonight's compile was re-framed, and that is the
+  dropped-steps question.
 * ``recount`` - a ledger is counted by its FROZEN plan's ``count_mode``, so
   continuing under a different mode recounts every banked frame at once. The
   operator is shown both totals before that happens.
@@ -36,13 +40,13 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from ..sequence.models import SequencePlan
-from ..sequence.session import Session
+from ..sequence.session import Session, SessionFrame
 from . import tonight
+from .tonight import NameResolution
 
 
 @dataclass(frozen=True)
@@ -128,7 +132,7 @@ def _step_key(target, step, body: str | None = None) -> tuple:
     and ``flows/identity.py`` spells both "" in the step id.
 
     ``body`` is the canonical name of the moving body the target's name
-    resolves to (``_bodies``), or None. A body is matched on that name, so
+    resolves to (``_body``), or None. A body is matched on that name, so
     "jupiter" typed before S1 finds tonight's "Jupiter" (#229); anything else
     keeps the name as typed, which the ruling left unchanged. The body is
     written as a ``("body", name)`` pair, which no ``str`` equals, so a body
@@ -139,19 +143,122 @@ def _step_key(target, step, body: str | None = None) -> tuple:
             float(step.exposure_s), int(step.gain), int(step.binning))
 
 
-def _bodies(resolve: Callable) -> Callable[[str], str | None]:
-    """``name -> canonical body name or None``, asking ``resolve`` once per
-    name. A name the catalogue does not know, or knows as a fixed row, is
-    None: only a row whose position is a function of time is a body."""
-    seen: dict[str, str | None] = {}
+def _body(hit: NameResolution | None) -> str | None:
+    """The canonical body name a resolved name is, or None. A name the
+    catalogue does not know, or knows as a fixed row, is None: only a row
+    whose position is a function of time is a body."""
+    return hit.identity if hit is not None and hit.moves else None
 
-    def body(name: str) -> str | None:
-        if name not in seen:
-            hit = resolve(name)
-            seen[name] = hit.identity if hit is not None and hit.moves \
-                else None
-        return seen[name]
-    return body
+
+def _usable(ts) -> float | None:
+    """``ts`` as an instant, or None when it is not one: a frame the engine
+    never stamped carries 0.0, and nothing before 1970 or not finite is a
+    time a frame was taken at."""
+    try:
+        t = float(ts)
+    except (TypeError, ValueError):
+        return None
+    return t if math.isfinite(t) and t > 0.0 else None
+
+
+def _capture_times(frames: list[SessionFrame], created_ts) -> list[float]:
+    """The instants ADOPT checks a body step's old pointing at (H3
+    orchestrator ruling 7): the first and the last frame of each night the
+    step was shot on, from the frames' ``ts``; a frame with no night
+    recorded is an instant of its own, since nothing says which night it
+    belongs to (the engine records one for every frame it banks). A step
+    that holds no frames is checked at the session's ``created_ts``. Empty
+    when there is no usable instant, which leaves the step unmatched.
+
+    WHY A NIGHT'S TWO ENDS SUFFICE. The points within the bound of the old
+    pointing are a spherical cap, and a cap contains the whole of the
+    shortest arc between any two of its points. Over one night a planet or a
+    comet moves at most a few degrees, near a great circle. The Moon moves
+    about 7 degrees, and its topocentric path bends from a great circle by
+    under an arcminute over any stretch whose two ends lie within 10 arcmin
+    of one point (such a stretch lasts about an hour at most). So a body
+    inside the cap at the night's first and last frame was inside it between
+    them. A satellite does not move that way, but a sidereal pointing holds
+    one for a minute or two at most, so a night of it longer than that fails
+    at one of its ends.
+
+    A frame with no usable time is left out. ``created_ts`` stands in only
+    for a step with NO frames: it says when the session was made, not when
+    anything was shot."""
+    if not frames:
+        t = _usable(created_ts)
+        return [] if t is None else [t]
+    nights: dict[str, list[float]] = {}
+    out: set[float] = set()
+    for f in frames:
+        t = _usable(f.ts)
+        if t is None:
+            continue
+        if f.night:
+            nights.setdefault(f.night, []).append(t)
+        else:
+            out.add(t)
+    for times in nights.values():
+        out.update((min(times), max(times)))
+    return sorted(out)
+
+
+def _frames_by_step(session: Session) -> dict[str, list[SessionFrame]]:
+    out: dict[str, list[SessionFrame]] = {}
+    for f in session.frames:
+        out.setdefault(f.step_id, []).append(f)
+    return out
+
+
+@dataclass(frozen=True)
+class AdoptEvidence:
+    """Every catalogue answer ADOPT needs for one session and one new plan
+    (#249), asked before the match so that the match asks none.
+
+    ``names`` holds ``resolve(name)`` for every distinct target name of both
+    plans (None where the catalogue does not know it). ``positions`` holds
+    ``resolve(name, when=t)`` for each old target that resolves to a moving
+    body, at each instant ``_capture_times`` samples for each of its steps.
+    An answer the match looks for and does not find here is not asked for:
+    a name missing is a name the catalogue does not know, and an instant
+    missing is an instant the body could not be placed at."""
+    names: Mapping[str, NameResolution | None]
+    positions: Mapping[tuple[str, float], NameResolution | None]
+
+
+def adopt_evidence(session: Session, new_plan: SequencePlan, *,
+                   resolve: Callable | None = None) -> AdoptEvidence:
+    """Ask the catalogue every question ``adopt_matches`` has about
+    ``session`` and ``new_plan``.
+
+    SAFE ON A WORKER THREAD, AND OUTSIDE THE WRITE LOCK. It reads the two and
+    writes neither, and every catalogue call is here: a full search per name
+    and per instant, some 10 to 35 ms each and 700 ms for the first body of
+    the process (#249), which the route must not spend on the event loop
+    holding the store's lock. It may be built from the route's first read of
+    the session: frames banked after it are instants it has no answer for,
+    and the match lists their step as unplaced rather than mapping it.
+
+    ``resolve`` is ``tonight.resolve_target`` unless a test hands in another
+    (``(name, when=None) -> NameResolution | None``), looked up at call time
+    so a test that replaces the module's resolver replaces it here too. Each
+    distinct name, and each distinct (name, instant), is asked once."""
+    ask = resolve or tonight.resolve_target
+    names: dict[str, NameResolution | None] = {}
+    for t in (*session.plan.targets, *new_plan.targets):
+        if t.name not in names:
+            names[t.name] = ask(t.name)
+    by_step = _frames_by_step(session)
+    positions: dict[tuple[str, float], NameResolution | None] = {}
+    for t in session.plan.targets:
+        if _body(names[t.name]) is None:
+            continue
+        for st in t.steps:
+            for when in _capture_times(by_step.get(st.id, []),
+                                       session.created_ts):
+                if (t.name, when) not in positions:
+                    positions[(t.name, when)] = ask(t.name, when=when)
+    return AdoptEvidence(names=names, positions=positions)
 
 
 def _describe(target, step, frames: int, reason: str,
@@ -187,14 +294,21 @@ AMBIGUOUS = "more than one step matches it"
 #:
 #: INCLUSIVE: a match exactly this far apart is the same field (spec 5.9).
 #:
-#: NOT FOR A MOVING BODY (#229). A body leaves the bound behind in days: the
-#: shipped ephemeris, sampled every 10 days from September 2026 for two
-#: years, gives median daily motions of 39 arcmin for Mars, 7.4 for Jupiter
-#: and 1.4 for Neptune (about a week to 10 arcmin, longer near a stationary
-#: point), and the Moon moves some 13 deg a day. So the bound refused a
-#: pre-S1 session of one as soon as the body had moved on; such a step
-#: matches on the body's canonical name instead (``_step_key``), and the
-#: separation is not asked.
+#: FOR A MOVING BODY, AGAINST THE BODY AT CAPTURE TIME (#229, #234). A body
+#: leaves the bound behind in days: the shipped ephemeris, sampled every 10
+#: days from September 2026 for two years, gives median daily motions of 39
+#: arcmin for Mars, 7.4 for Jupiter and 1.4 for Neptune (about a week to 10
+#: arcmin, longer near a stationary point), and the Moon moves some 13 deg a
+#: day. So measured against TONIGHT's target the bound refused a pre-S1
+#: session of one as soon as the body had moved on, and H2 matched a body
+#: on its canonical name (``_step_key``) with no measurement at all. That
+#: trusted the name at the old end, the #190 fault: a session filed as
+#: "Jupiter" at M31's coordinates was adopted onto Jupiter. H3 orchestrator
+#: ruling 7 (spec, Still waiting on the owner, item 16) puts the bound back
+#: for a body, measured between the OLD target and the body where it was
+#: when the frames were taken (``_pointing``). A session frame records no
+#: solve position, so the old plan's target coordinates are the evidence of
+#: where the frames were pointed.
 ADOPT_MAX_SEPARATION_ARCMIN = 10.0
 
 
@@ -227,6 +341,47 @@ def _moved(separation_arcmin: float) -> str:
             f"ADOPT carries frames across")
 
 
+def _off_body(body: str, worst_arcmin: float) -> str:
+    return (f"these frames were taken up to {worst_arcmin:.1f} arcmin from "
+            f"where {body} was at the time, more than the "
+            f"{ADOPT_MAX_SEPARATION_ARCMIN:g} arcmin ADOPT carries frames "
+            f"across, so they are not of {body}")
+
+
+def _no_time(body: str) -> str:
+    return (f"no capture time is recorded for these frames, so nothing shows "
+            f"they were taken of {body}")
+
+
+def _unplaced(body: str) -> str:
+    return (f"the catalogue could not place {body} at a time these frames "
+            f"were taken, so nothing shows they are of it")
+
+
+def _pointing(target, frames: list[SessionFrame], created_ts, body: str,
+              evidence: AdoptEvidence) -> tuple[float | None, str | None]:
+    """``(worst separation, reason)`` for an old body step: the reason is
+    None when the old target was within ``ADOPT_MAX_SEPARATION_ARCMIN`` of
+    ``body``, inclusive, at every instant ``_capture_times`` samples, and
+    says why not otherwise (H3 orchestrator ruling 7, #234).
+
+    Read from ``evidence`` alone, never from the catalogue: an instant it
+    holds no answer for, or an answer that names another object, proves
+    nothing and refuses."""
+    times = _capture_times(frames, created_ts)
+    if not times:
+        return None, _no_time(body)
+    worst = 0.0
+    for when in times:
+        at = evidence.positions.get((target.name, when))
+        if at is None or at.identity != body:
+            return None, _unplaced(body)
+        worst = max(worst, _separation_arcmin(target, at))
+    if worst <= ADOPT_MAX_SEPARATION_ARCMIN:
+        return worst, None
+    return worst, _off_body(body, worst)
+
+
 @dataclass(frozen=True)
 class AdoptMatches:
     """The outcome of matching a pre-S1 session against a fresh compile.
@@ -249,7 +404,8 @@ class AdoptMatches:
 
 
 def adopt_matches(session: Session, new_plan: SequencePlan, *,
-                  resolve: Callable | None = None) -> AdoptMatches:
+                  resolve: Callable | None = None,
+                  evidence: AdoptEvidence | None = None) -> AdoptMatches:
     """Match ``session``'s steps to ``new_plan``'s on ``_step_key``.
 
     UNIQUE ON BOTH SIDES. A key that two old steps share, or that two new
@@ -265,26 +421,32 @@ def adopt_matches(session: Session, new_plan: SequencePlan, *,
     separation is what says the label still points where the frames were
     taken.
 
-    ...OR ON THE SAME BODY (#229). A name that ``resolve`` finds as a moving
-    row (a planet, the Moon, a comet) is keyed on the row's canonical body
-    name, and a match on it maps without the separation: the body has moved
-    since the frames were taken, and measured against tonight's position the
-    bound refused a pre-S1 session of a planet once it had moved 10 arcmin,
-    which takes days (``ADOPT_MAX_SEPARATION_ARCMIN``). The key match says
-    both NAMES resolve to the same body; that the old frames were taken of
-    it is trusted to the name and not checked, which is #190's
-    label-as-place fault for a body (#234). A deep-sky or star name keeps
-    the typed-name key and the bound.
+    ...OR ON THE SAME BODY, WHERE IT WAS (#229, #234). A name the catalogue
+    finds as a moving row (a planet, the Moon, a comet, a satellite) is keyed
+    on the row's canonical body name, so "jupiter" typed before S1 finds
+    tonight's "Jupiter"; tonight's position is not compared, because the body
+    has moved on since. The match maps only when the OLD target was within
+    the bound of the body at the instants its frames were taken
+    (``_pointing``, H3 orchestrator ruling 7); otherwise the step is listed
+    with a reason that names the body and, when it was placed, the worst
+    separation. A deep-sky or star name keeps the typed-name key and the
+    bound against tonight's target.
 
-    ``resolve`` is ``tonight.resolve_target`` unless a test hands in another
-    (``name -> NameResolution | None``); it is looked up at call time, so a
-    test that replaces the module's resolver replaces it here too. Each
-    distinct name is asked once.
+    ``evidence`` is ``adopt_evidence``'s answer, and when it is given this
+    makes NO catalogue call and ``resolve`` is not used: the route asks the
+    catalogue off the event loop and outside the write lock, then matches
+    inside it (#249). Without it, the evidence is asked here, through
+    ``resolve`` (``tonight.resolve_target`` unless a test hands in another,
+    looked up at call time). ``api/app.py`` never takes that path: it
+    always passes evidence, an empty one when its first read of the session
+    did not ask the ADOPT question, and lists every step the evidence holds
+    no answer for as one to ADOPT again (``_unasked``).
     """
-    body = _bodies(resolve or tonight.resolve_target)
+    if evidence is None:
+        evidence = adopt_evidence(session, new_plan, resolve=resolve)
 
     def key(t, st) -> tuple:
-        return _step_key(t, st, body(t.name))
+        return _step_key(t, st, _body(evidence.names.get(t.name)))
 
     old_by_key: dict[tuple, list] = {}
     for t in session.plan.targets:
@@ -294,27 +456,36 @@ def adopt_matches(session: Session, new_plan: SequencePlan, *,
     for t in new_plan.targets:
         for st in t.steps:
             new_by_key.setdefault(key(t, st), []).append((t, st))
-    frames_by_step = Counter(f.step_id for f in session.frames)
+    by_step = _frames_by_step(session)
     mapping: dict[str, tuple[str, str]] = {}
     unmatched: list[dict] = []
     ambiguous: list[dict] = []
     matched = 0
     for k, olds in old_by_key.items():
         news = new_by_key.get(k, [])
-        # The first field of a body's key is the ("body", name) pair; the
-        # match on it is the whole test, and no distance is measured.
-        moving = isinstance(k[0], tuple)
+        # The first field of a body's key is the ("body", name) pair: it is
+        # measured against the body where it was when its frames were
+        # taken, never against tonight's target.
+        body = k[0][1] if isinstance(k[0], tuple) else None
         for t, st in olds:
-            n = frames_by_step.get(st.id, 0)
+            n = len(by_step.get(st.id, []))
             if len(olds) == 1 and len(news) == 1:
                 nt, nst = news[0]
-                apart = None if moving else _separation_arcmin(t, nt)
-                if apart is None or apart <= ADOPT_MAX_SEPARATION_ARCMIN:
+                if body is None:
+                    apart = _separation_arcmin(t, nt)
+                    why = (None if apart <= ADOPT_MAX_SEPARATION_ARCMIN
+                           else _moved(apart))
+                else:
+                    apart, why = _pointing(t, by_step.get(st.id, []),
+                                           session.created_ts, body,
+                                           evidence)
+                if why is None:
                     mapping[st.id] = (nt.id, nst.id)
                     matched += n
                 elif n:
-                    unmatched.append(_describe(t, st, n, _moved(apart),
-                                               round(apart, 3)))
+                    unmatched.append(_describe(
+                        t, st, n, why,
+                        None if apart is None else round(apart, 3)))
             elif n:
                 if news:
                     ambiguous.append(_describe(t, st, n, AMBIGUOUS))

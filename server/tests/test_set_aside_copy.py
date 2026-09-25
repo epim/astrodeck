@@ -34,6 +34,7 @@ from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.engine import StopTarget
 from astrodeck.sequence.models import ExposureStep, Schedule, Target
 from astrodeck.sequence.session import session_store
+from _site_tracking import numeric_tokens
 
 FILTERS = ("B", "Ha", "OIII")
 TERMINAL = ("complete", "aborted", "error")
@@ -188,6 +189,24 @@ async def test_the_altitude_floor_line_says_what_the_code_does(
         not keep (tomorrow): 'M31: sank to 12.4°, below its 30° floor —
         setting it aside for tonight (its frames stay in the ledger, so it
         resumes tomorrow)'
+
+    WORDS ONLY SINCE #233 (H3 T11; H3 orchestrator ruling 1, spec "Still
+    waiting on the owner" item 10). The line and the reason used to carry
+    the altitude and the floor ("sank to 12.4°, below its 30° floor"): the
+    line is served to a viewer by ``/api/logs``, the reason is the
+    scheduler's "skipped" line, and a named target's altitude at a logged
+    time is the site (#140). This file used to pin the numbers IN; it now
+    pins them out. The two-site grade of the same line on the clocked
+    simulator is test_engine_logs_carry_no_site_numbers.py.
+
+    MUTATION "restore the 'sank to' numbers" (the line and the reason put
+    back to ``f"sank to {alt:.1f}°, below its {floor:.0f}° ..."``).
+    Observed:
+        AssertionError: the set-aside carries numbers a viewer reads: line
+        'M31: sank to 12.4°, below its 30° floor — setting it aside for the
+        rest of this run (its frames stay owed in the ledger, so a restart
+        or an auto-resume takes it up again once it is back above its
+        floor)', reason 'sank to 12.4°, below its 30° altitude floor'
     """
     t = Target(name="M31", ra_hours=0.712, dec_deg=41.27, center=False,
                autofocus_first=False,
@@ -196,9 +215,10 @@ async def test_the_altitude_floor_line_says_what_the_code_does(
     e = SequenceEngine(sim_hub)
     e.plan = SequencePlan(targets=[t])
     monkeypatch.setattr(engine_mod, "_frame_altitude", lambda *a, **k: 12.4)
-    with pytest.raises(StopTarget):
+    with pytest.raises(StopTarget) as stopped:
         await e._enforce_altitude_floor(t)
-    lines = [m for _lvl, m, _src in bus_lines if "sank to" in m]
+    lines = [m for _lvl, m, _src in bus_lines
+             if "setting it aside for the rest of this run" in m]
     assert len(lines) == 1, bus_lines
     line = lines[0]
     assert not _promises(line), (
@@ -206,4 +226,10 @@ async def test_the_altitude_floor_line_says_what_the_code_does(
         f"({', '.join(_promises(line))}): {line!r}")
     assert "for the rest of this run" in line, line
     assert "a restart or an auto-resume" in line, line
-    assert "12.4" in line and "30" in line, line
+    # "M31" is no token (glued to a letter), so only a number standing on its
+    # own counts, and the fixture's 12.4 and 30 are exactly such numbers.
+    reason = str(stopped.value)
+    assert not numeric_tokens(line) and not numeric_tokens(reason), (
+        f"the set-aside carries numbers a viewer reads: line {line!r}, "
+        f"reason {reason!r}")
+    assert "M31" in line and "sank below its own altitude floor" in line, line

@@ -401,9 +401,9 @@ def bus_lines(monkeypatch):
     return out
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _the_tree_must_not_move_under_the_run():
-    """Fail loudly if an `astrodeck` source file changes while the suite runs.
+class _TheTreeMustNotMove:
+    """Fail the run, once and loudly, if an `astrodeck` source file changes
+    while the suite runs.
 
     34 tests in 23 files assert on their subject's SOURCE, through
     `inspect.getsource`. That takes the LINE NUMBER from the loaded code object
@@ -426,30 +426,110 @@ def _the_tree_must_not_move_under_the_run():
     the guard passes while the seam is gone, which is the exact failure
     `TestNoteSaved`'s own docstring says it exists to prevent.
 
-    Session-scoped and one place, rather than a check at each of the 34 sites:
-    if nothing moved, every scrape in the run was sound, and if something did,
-    no single test's verdict means anything and saying so once is the honest
-    report. It runs at teardown because that is the only moment that can see
-    the whole run - a mid-run check would clear a file that changes afterwards.
+    One check for the whole run, rather than one at each of the 34 sites: if
+    nothing moved, every scrape in the run was sound, and if something did, no
+    single test's verdict means anything and saying so once is the honest
+    report. It compares at the end because that is the only moment that can
+    see the whole run - a mid-run check would clear a file that changes
+    afterwards.
+
+    ONCE MEANS ONCE PER RUN, NOT ONCE PER PROCESS (issue #250). This was a
+    session-scoped fixture raising at teardown, and a session fixture is torn
+    down in every process: under xdist that is every worker, and pytest pins
+    the error on whichever test the worker ran last - under `--dist
+    worksteal`, the last item of the contiguous block of the collection that
+    worker was handed, which is why the same "unrelated" node ids come back
+    run after run. So one edit came out as
+    twelve ERRORs on twelve unrelated tests - "12 errors" across files that
+    had nothing to do with each other, truncated in the short summary to
+    "AssertionE..." - which reads as a teardown leak on every worker, not as
+    one fact about the tree. (With `-x`, pytest also tears the session down
+    straight after a failure, so the getsource tests the edit broke carried
+    the error on top of their FAILED, and that worker stopped there.)
+    Reproduced on a byte copy of `server/` with an edit inserted mid-run: the
+    twelve errors, every one naming `api/app.py, hub.py`.
+
+    So it is a plugin, and only the process that owns the run acts on it: the
+    xdist controller, or the one process of a `-n0` run. An xdist worker
+    leaves it alone - its terminal output and its exit status are not the
+    run's, so anything it reported would go nowhere. The verdict is one block
+    printed after pytest's own closing counts line, the last thing in the
+    output and so still there through `| tail`, and a run that would have
+    exited 0 exits 1 instead; a run already exiting non-zero keeps its own
+    code, because that code already says something.
+
+    The snapshot is taken at session start, before collection. The fixture
+    took it at the first test's setup, after collection had imported every
+    module, so an edit landing in between went unreported while every scrape
+    in the run read shifted text. The controller of an xdist run starts
+    before its workers exist, so its snapshot precedes all of their imports.
 
     In a repository where agents share one working tree, this is a normal thing
     to do by accident, which is why it gets a message rather than a shrug.
+    Its cases are in `test_suite_guards_report_once.py`.
     """
-    import pathlib
-    root = pathlib.Path(__file__).resolve().parents[1] / "astrodeck"
-    before = {p: p.stat().st_mtime_ns for p in root.rglob("*.py")}
-    yield
-    moved = sorted(
-        p.relative_to(root).as_posix() for p, t in before.items()
-        if not p.is_file() or p.stat().st_mtime_ns != t)
-    gone = sorted(p.relative_to(root).as_posix()
-                  for p in root.rglob("*.py") if p not in before)
-    if moved or gone:
-        raise AssertionError(
-            "the source tree changed while this suite was running, so no "
-            "verdict in it can be trusted - the tests that read their "
-            "subject's source (inspect.getsource) were reading a file that no "
-            "longer matched the code they were grading, and they can pass that "
-            "way as easily as fail (issue #118). Re-run on a quiescent tree.\n"
-            f"  changed: {', '.join(moved) or 'none'}\n"
-            f"  appeared: {', '.join(gone) or 'none'}")
+
+    HEADLINE = "THIS RUN IS INVALID: the source tree changed while it ran"
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        #: path -> mtime at session start; None in a process that is not the
+        #: run's (an xdist worker), which therefore never reports.
+        self._before: dict[Path, int] | None = None
+
+    def _mtimes(self) -> dict[Path, int]:
+        return {p: p.stat().st_mtime_ns for p in self.root.rglob("*.py")}
+
+    def _moved(self, before: dict[Path, int]) -> tuple[list[str], list[str]]:
+        """(changed or removed, appeared) since ``before``, as paths under
+        the root."""
+        now = self._mtimes()
+        changed = sorted(p.relative_to(self.root).as_posix()
+                         for p, t in before.items() if now.get(p) != t)
+        appeared = sorted(p.relative_to(self.root).as_posix()
+                          for p in now if p not in before)
+        return changed, appeared
+
+    def pytest_sessionstart(self, session: pytest.Session) -> None:
+        if hasattr(session.config, "workerinput"):
+            return
+        self._before = self._mtimes()
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_sessionfinish(self, session: pytest.Session):
+        # tryfirst makes this the OUTERMOST wrapper, so the code after the
+        # yield runs after the terminal reporter's, which is what prints the
+        # summary and the counts line.
+        result = yield
+        if self._before is None:
+            return result
+        changed, appeared = self._moved(self._before)
+        if not (changed or appeared):
+            return result
+        if session.exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        # Names only: paths under the package, never their contents.
+        body = [
+            "The tests that read their subject's source (inspect.getsource) "
+            "were reading a file that no longer matched the code they were "
+            "grading, and they can pass that way as easily as fail (issue "
+            "#118), so no verdict above can be trusted, the passes included. "
+            "Re-run on a quiescent tree.",
+            f"  changed or removed: {', '.join(changed) or 'none'}",
+            f"  appeared: {', '.join(appeared) or 'none'}",
+        ]
+        tr = session.config.pluginmanager.get_plugin("terminalreporter")
+        if tr is None:
+            sys.stderr.write("\n".join([self.HEADLINE, *body]) + "\n")
+        else:
+            tr.write_sep("=", self.HEADLINE, red=True, bold=True)
+            for line in body:
+                tr.write_line(line)
+        return result
+
+
+def pytest_configure(config):
+    # Registered at configure time, so it is in place for pytest_sessionstart,
+    # which is before collection imports anything (see the class).
+    config.pluginmanager.register(
+        _TheTreeMustNotMove(_SERVER_DIR / "astrodeck"), "astrodeck-tree-guard")

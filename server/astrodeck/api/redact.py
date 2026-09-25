@@ -592,6 +592,61 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         return {**ev_json, "data": safe}
 
 
+# ------------------------------------------- the auto-resume hold's numbers
+#: The key of a ResumeArm hold that carries its site-derived sentence (#233).
+_RESUME_HOLD_SITE_KEY = "site_detail"
+
+
+def _redact_resume_arm_for(payload: dict, principal: Principal | None) -> dict:
+    """``GET /api/sequence/resume-arm``'s payload, with ``hold.site_detail``
+    removed (ABSENT, not nulled) for a principal lacking
+    ``view.site_derived`` (#233; H3 orchestrator ruling 1 (spec, Still
+    waiting on the owner, item 10)).
+
+    WHAT IT CARRIES. ResumeArm's recovery ladder refuses to re-centre on a
+    target below its plan's start floor, or one the slew-limit gate refuses,
+    and the sentence that says so is made of site-derived numbers: the
+    target's altitude now, its floor, how long until it reaches the floor,
+    and for the gate its azimuth as well. A known object's altitude at a
+    known time is a circle of places on the Earth, and the ETA is a second
+    one (#140). Until #233 that sentence WAS the hold's ``reason``, which
+    this route serves to a viewer, and the "auto-resume held: ..." warning,
+    which ``/api/logs`` serves to the same viewer. Now the reason is words
+    and the numbers ride ``site_detail`` alone, and this is the one place
+    that decides who reads them: an operator and an admin do (the owner's
+    role-visibility ruling of 2026-09-22), a viewer and a syncer do not.
+
+    Only ``site_detail`` goes. The reason, the session, ``since``,
+    ``retry_at`` and ``owed`` are about the plan and the service's own
+    clock, and a viewer needs them to see that a session is armed and
+    waiting (the failure the hold exists to prevent, see ``ResumeArm.hold``).
+
+    COPIES, never strips in place: ``payload["hold"]`` is
+    ``ResumeArm.hold``, the service's own live dict, and a pop through it
+    would take the detail from the next operator's read too. FAIL-CLOSED on
+    shape drift, this module's rule: a hold that is not a dict cannot be
+    key-stripped, so a non-holder gets ``None`` in its place, and any error
+    on the way does the same rather than 500 the route."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    hold = payload.get("hold")
+    if hold is None:
+        return payload
+    try:
+        if not isinstance(hold, dict):
+            new_hold = None             # unexpected shape -> fail CLOSED
+        elif _RESUME_HOLD_SITE_KEY not in hold:
+            return payload
+        else:
+            new_hold = {k: v for k, v in hold.items()
+                        if k != _RESUME_HOLD_SITE_KEY}
+    except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
+        new_hold = None
+    return {**payload, "hold": new_hold}
+
+
 # ------------------------------------------------------ driver-row redaction
 def _redact_drivers_for(payload: dict, principal: Principal | None) -> dict:
     """Scrub ``host``/``port``/``port_path``/``extra`` from every driver row in
@@ -775,6 +830,7 @@ __all__ = [
     "_redact_switch_ports_for",
     "_redact_site_for",
     "_redact_ws_event",
+    "_redact_resume_arm_for",
     "_redact_drivers_for",
     "_redact_profile_for",
     "_redact_session_for",

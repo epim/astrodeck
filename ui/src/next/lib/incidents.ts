@@ -40,6 +40,7 @@ export type IncidentKind = "cloud" | "safety" | "link" | "solve" | "af" | "guide
 
 export type IncidentPill =
   | "HOLDING"
+  | "WAITING"
   | "PARKED"
   | "STALE"
   | "RETRYING"
@@ -93,6 +94,9 @@ export interface IncidentInputs {
       reason?: string;
       text?: string;
       holding?: boolean;
+      /** The engine's sentence for a cloudy sky with no target to hold for,
+       *  so no hold opens (#221, #244); null otherwise. See `cloudIncident`. */
+      hold_deferred?: string | null;
     } | null;
   };
   /** `SafetyState.reading`, flattened; `ts` already in MILLISECONDS. */
@@ -235,6 +239,18 @@ function detailOf(inp: IncidentInputs): string {
 
 // -------------------------------------------------------------------- cloud
 
+/** The pill of the cloud card while a hold is DEFERRED rather than open. The
+ *  engine publishes `sky.hold_deferred` only from inside a scheduler wait
+ *  (`_wait_until`: the gate there asks with no target), so the run is waiting,
+ *  and HOLDING would claim the one thing the sentence says is not happening.
+ *  Exported because `refineIncident` has to recognise this card and leave its
+ *  two lines alone (`hubs/session/now/incidentActions.ts`). */
+export const CLOUD_DEFERRED_PILL: IncidentPill = "WAITING";
+
+/** The line the rig logs, once per wait spell, when it defers a hold
+ *  (`_note_hold_deferred`). Dates the card on the rig's clock. */
+const HOLD_DEFERRED_LOG = /^the frames say the sky has closed in, with no target/;
+
 function cloudIncident(inp: IncidentInputs): Incident | null {
   const sky = inp.sequence.sky ?? null;
   const state = inp.sequence.state;
@@ -248,6 +264,43 @@ function cloudIncident(inp: IncidentInputs): Incident | null {
   // `running` publish overwrote the state.
   const reasonFits = reason !== "" && /cloud|weather|sky|clear/.test(reason);
   const active = sky?.holding === true || (holdingState && reasonFits);
+  // A CLOUDY SKY THAT IS NOT HOLDING, SAID IN THE ENGINE'S WORDS (#221, #244).
+  // A scheduler wait under a closed sky opens no hold - with no target it would
+  // have nothing to watch and nothing to point at - and publishes why in
+  // `sky.hold_deferred` instead. Before this card the screen showed a cloudy
+  // sky with no hold and no reason, which is the situation the field exists to
+  // explain. The sentence is the ENGINE line, as sent and whole: it already
+  // says both that no hold is open and what opens one, so nothing is added to
+  // it. NEXT carries the verdict it rests on (`sky.text`: its age and its star
+  // count), the one fact the sentence refers to ("the frames say") without
+  // stating. A hold that is really up outranks it, though the engine never
+  // publishes both.
+  //
+  // THE SENTENCE IS ENGINE, NOT NEXT, BECAUSE OF WHO ELSE READS THE CARD. On
+  // every #/next hub but Session the operator meets it only as the cross-hub
+  // banner, `${title}. ${firstSentence(engine)}` (`hubs/session/crossHub.ts`).
+  // With the verdict as ENGINE that banner read "CLOUDY. cloudy, from a reading
+  // 40s old - ...": the verdict twice, and never why no hold opened, which is
+  // the one thing #244 asks every screen to carry. The card itself then had
+  // CLOUDY directly over "cloudy, ...", the same restatement.
+  const deferred = sky?.hold_deferred || null;
+  if (!active && deferred) {
+    return {
+      kind: "cloud",
+      pill: CLOUD_DEFERRED_PILL,
+      color: COLOR.cloud,
+      title: "CLOUDY",
+      sinceMs: sinceFromLog(inp.logs, "sequence", HOLD_DEFERRED_LOG),
+      resolvesItself: true,
+      engine: deferred,
+      next: sky?.text ?? "",
+      // WAIT only. IGNORE WEATHER TONIGHT lifts the forecast rain veto and
+      // nothing else (weather.py `veto_reason`: "RAIN VETOES. CLOUD DOES NOT."),
+      // so it cannot touch a verdict read off the frames, and a primary button
+      // that changes nothing about the sentence above it is a false affordance.
+      actions: [{ id: "wait", label: "WAIT" }],
+    };
+  }
   if (!active) return null;
 
   const detail = detailOf(inp);

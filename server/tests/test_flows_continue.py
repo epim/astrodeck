@@ -857,6 +857,12 @@ class TestContinue:
     async def test_a_pre_s1_session_gets_the_adopt_answer_then_adopts(self, rig):
         """A session saved before S1: uuid4 ids, the flow's recipe, frames.
 
+        The end-to-end round trip on the shipped catalogue. Since H3 (#249)
+        ``run_flow`` asks the catalogue on a worker thread before the write
+        lock and the locked section matches on that answer alone; that the
+        lookup never runs under the lock or on the loop is held by
+        ``test_adopt_resolves_off_the_lock.py``.
+
         RED under mutant "fresh on no shared ids" (the adopt refusal replaced
         by ``engine.start(plan, origin="flow", origin_id=s.origin_id)`` and a
         fresh answer): the request succeeds as a fresh start, which disarms

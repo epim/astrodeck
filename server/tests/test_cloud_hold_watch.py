@@ -88,21 +88,24 @@ class _Watched:
     ``stops_tracking_at_s`` is when the mount stops tracking on its own, as
     the AM5 does at its limit (None: never). Both are fake seconds from the
     start of the clock. ``safety`` is extra `SafetyConfig` fields: the mount
-    floor and the zenith keep-out.
+    floor and the zenith keep-out. ``t0`` pins the start of the fake clock
+    (`_Clocked`), for a test that runs the same night twice and compares
+    the two (test_engine_logs_carry_no_site_numbers.py).
     """
 
     def __init__(self, hub, store, monkeypatch, *, horizon_s: float,
                  clears_at_s: float | None = None,
                  stops_tracking_at_s: float | None = None,
                  safety: dict | None = None,
-                 closes_at_s: float = CLOSES_AT_S):
+                 closes_at_s: float = CLOSES_AT_S,
+                 t0: float | None = None):
         store.set_safety(SafetyConfig(enabled=True, sky_fallback_hold=True,
                                       **(safety or {})))
         hub.mode = "native"                 # a real rig: its frames are a sky
         hub.devices.pop("safety", None)     # ...with no monitor assigned
         hub.devices.pop("focuser", None)    # no post-flip sweep to clock
         self.hub = hub
-        self.run = _Clocked(hub, monkeypatch, horizon_s=horizon_s)
+        self.run = _Clocked(hub, monkeypatch, horizon_s=horizon_s, t0=t0)
         self.engine = self.run.engine
         self.t0 = self.run.t0
         monkeypatch.setattr(coords_mod, "time", self.run.clock)
@@ -198,9 +201,11 @@ class _Watched:
     # -------------------------------------------------------------- the night
 
     async def night(self, plan: SequencePlan, *, timeout: float = 120.0,
-                    to_the_horizon: bool = True) -> None:
+                    to_the_horizon: bool = True, **start_kw) -> None:
+        """Run ``plan`` to the horizon. ``start_kw`` goes to `start`, as
+        ``tracking=`` for a run handed a target auto-resume re-centred."""
         import asyncio
-        self.engine.start(plan)
+        self.engine.start(plan, **start_kw)
         loop = asyncio.get_running_loop()
         end = loop.time() + timeout
         while loop.time() < end:
@@ -515,11 +520,20 @@ async def test_a_mount_that_stops_tracking_mid_hold_is_restored_not_judged(
     IN PLACE, BECAUSE THE MOUNT IS ON ALPHA: Alpha's own setup pointed it
     there, so the hold had nothing to point at its open, and by the time
     its tracking read runs, any hold's mount is on its target (#224; a hold
-    whose mount was elsewhere is stopped until a look points it). The resume
-    in place is the only arm that branch has left. The open's choice is
-    held by test_cloud_hold_follows_the_mount.py: its control shows a hold
-    on the mount's own target does not slew, and the next-target test below
-    shows one opened elsewhere points the mount before anything else.
+    whose mount was elsewhere is stopped until a look points it). The open's
+    choice is held by test_cloud_hold_follows_the_mount.py: its control shows
+    a hold on the mount's own target does not slew, and the next-target test
+    below shows one opened elsewhere points the mount before anything else.
+
+    THE CONTROL FOR #248 (H3 orchestrator ruling 6). That branch now has a
+    second arm: a mount the ENGINE stopped since it was last pointed is
+    re-pointed (test_hold_repoints_after_any_stop.py). This mount stopped on
+    its own, so it takes the resume in place, as before, and no slew.
+    Mutant "the stopped branch re-points whatever stopped the mount" (its
+    ``self._mount_stopped_since is not None`` test made True): RED
+    (observed) -
+        AssertionError: a mount that stopped on its own was re-slewed
+        instead of resumed in place: slews after the stop at [424.0] s
     """
     t_h0 = EXP
     w = _Watched(sim_hub, temp_store, monkeypatch,
@@ -544,6 +558,12 @@ async def test_a_mount_that_stops_tracking_mid_hold_is_restored_not_judged(
             f"{[tr for t, tr in w.probes if t >= t_h][:4]}")
         assert w.stopped_at is not None, "premise: the mount stopped"
         assert released - t_h < MAX_HOLD_S
+        # Before the release, whose own setup re-acquires Alpha by a slew.
+        moved = [t for t in w.run.slews if w.stopped_at <= t < released]
+        assert not moved, (
+            f"a mount that stopped on its own was re-slewed instead of "
+            f"resumed in place: slews after the stop at "
+            f"{w.rel(moved, t_h)} s")
         assert all(tr for t, tr in w.probes if t >= t_h), (
             f"a check was judged on a stopped mount: "
             f"{[(round(t - t_h, 1), tr) for t, tr in w.probes]}")
@@ -590,6 +610,14 @@ async def test_a_target_sinking_through_the_mount_floor_mid_hold_is_set_aside(
     sentence as the reason" (``raise StopTarget(limit[1])``): RED
     (observed; degree signs spelled out, the fixture target's azimuth
     elided) -
+        AssertionError: a line about the set-aside carries a number:
+        'Alpha: skipped — target Alpha altitude 30 deg below safety floor
+        30 deg (az ...)'
+    Since #233 (H3 T11) ``limit[1]`` is the gate's words, and that mutant
+    passes (observed: 1 passed); the numbers are the verdict's
+    ``site_detail``. Mutant "the slew gate's numbers as the reason"
+    (``raise StopTarget(limit.site_detail)``): RED (observed, spelled and
+    elided as above) -
         AssertionError: a line about the set-aside carries a number:
         'Alpha: skipped — target Alpha altitude 30 deg below safety floor
         30 deg (az ...)'
@@ -837,6 +865,12 @@ async def test_control_the_next_target_a_slew_would_find_in_the_keep_out_is_not_
         it ended at fake +270s: 'unsafe', 'target Bravo altitude 70 deg
         above the zenith keep-out 70 deg (az ...) - the mount can reach its
         own tripod up there'
+    Run again after H3 (T11, #233): GREEN (observed: 1 passed). The slew
+    gate's refusal no longer ends the run: `_hold_repoint` catches its
+    `SlewRefused` by type, stops tracking and holds (#240, H3 orchestrator
+    ruling 3, T7), so without the pre-ask the gate refuses the same slew
+    and nothing moves. The sentence the run ended with is words since
+    #233. This case now grades the pre-ask's result, not its necessity.
     Mutant "restore the detail unconditionally" (the open's
     ``self._set_state(detail=detail)`` run after the park as well): RED
     (observed) -
@@ -1065,6 +1099,11 @@ async def test_control_a_target_that_a_slew_would_find_in_the_keep_out_stays_sto
         astrodeck.sequence.engine.SafetyAbort: target Alpha altitude 84 deg
         above the zenith keep-out 84 deg (az ...) - the mount can reach its
         own tripod up there
+    Run again after H3 (T11, #233): GREEN (observed: 1 passed), for the
+    reason the control above gives: `_hold_repoint` now catches the gate's
+    `SlewRefused` and holds (#240, T7), so the gate refuses the slew the
+    pre-ask would have, and the mount stays where it is. That SafetyAbort's
+    sentence is words since #233.
     """
     import time
     e, a = _parked_for_the_keep_out(sim_hub, ha_h=0.0)

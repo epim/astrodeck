@@ -313,7 +313,10 @@ export default function PolarView() {
               <span className="text-dim text-sm">arcmin</span>
               {hasReading && (
                 <span className="flex items-center gap-2 ml-auto">
-                  <Led state={verdict.led} label={verdict.text} />
+                  {/* Unlabelled: the verdict printed beside it is its name. A
+                      label of `verdict.text` read it twice to a screen reader
+                      (#231). */}
+                  <Led state={verdict.led} />
                   <span className={`text-sm font-medium ${verdict.tone}`}>{verdict.text}</span>
                 </span>
               )}
@@ -330,7 +333,11 @@ export default function PolarView() {
               </p>
             ) : measuring || live ? (
               <div className="flex items-center gap-2 mt-2">
-                <Led state="busy" label="measuring" />
+                {/* Unlabelled in all three sub-states (#231). Beside "Measuring
+                    axis…" a "measuring" label said the word twice; beside the
+                    other two it claimed a measurement nothing was making yet.
+                    The sentence always says which it is. */}
+                <Led state="busy" />
                 <span className="text-sm text-dim">
                   {measuring ? "Measuring axis…"
                     : starting ? "Starting — the mount is committed."

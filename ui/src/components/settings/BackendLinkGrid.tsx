@@ -16,6 +16,10 @@
 // an ENGINE rather than a device object (the guider: AstroDeck native / NINA /
 // PHD2) — hub._role_live_connected covers that. This grid additionally
 // guarantees an alarm word NEVER renders alone: see linkReason (UX #52).
+//
+// The Leds are unlabelled. The role and the word printed beside each one are
+// its name; a "Camera: connected" label made a screen reader say both twice
+// (#231).
 
 import type { JSX } from "react";
 import type { BackendLink, DeviceInfo, LedState } from "../../types";
@@ -71,7 +75,7 @@ function LinkRow({ link, dense }: { link: BackendLink; dense?: boolean }): JSX.E
   const reason = !dense || alarm ? linkReason(link) : null;
   return (
     <div className="flex items-center gap-3 border border-line bg-bg/60 px-3 py-2.5">
-      <Led state={meta.led} label={`${label}: ${meta.word.toLowerCase()}`} />
+      <Led state={meta.led} />
       <span className="label w-28 shrink-0">{label}</span>
       <div className="min-w-0 flex-1">
         <span className={`mono text-[11px] tracking-wider ${meta.tone}`}>{meta.word}</span>
@@ -127,7 +131,7 @@ export default function BackendLinkGrid({
         <LinkRow key={role} link={link} dense={dense} />
       ) : (
         <div key={role} className="flex items-center gap-3 border border-line bg-bg/60 px-3 py-2.5">
-          <Led state={device?.connected ? "on" : "off"} label={`${ROLE_LABEL[role] ?? role}: ${device?.connected ? "connected" : "disconnected"}`} />
+          <Led state={device?.connected ? "on" : "off"} />
           <span className="label w-28 shrink-0">{ROLE_LABEL[role] ?? role}</span>
           <span className={`mono text-[11px] tracking-wider ${device?.connected ? "text-good" : "text-faint"}`}>
             {device?.connected ? "CONNECTED" : "DISCONNECTED"}

@@ -16,8 +16,9 @@ NOT the forecast, and the same night proves why: Open-Meteo said 100% cloud
 while the frames showed 200 bright stars at 17x noise. A prediction that wrong
 must never be allowed to park a mount. This reads the sky.
 
-A HOLD NEEDS A TARGET (#221, owner ruling 2 of 2026-09-24). The gate this
-fallback sits behind is also asked with no target: by every tick of a
+A HOLD NEEDS A TARGET (#221, H2 orchestrator ruling 2, spec "Still waiting
+on the owner" item 5; the orchestrator's ruling, not the owner's). The gate
+this fallback sits behind is also asked with no target: by every tick of a
 scheduler wait, and between day darks after the park. A hold opened there had
 nothing to watch and nothing to point at, and on a stopped mount every check it
 took was a streak read as cloud, so it ran to its 45 minute bound under a sky

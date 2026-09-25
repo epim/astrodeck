@@ -1,5 +1,5 @@
 """The run-start cooling wait watches a target a caller left the mount
-tracking (#202 follow-up, mosaic H2 A6).
+tracking (a #202 follow-up, made in the second hardening round, H2).
 
 `start(tracking=...)` tells a run that the mount is already tracking a target:
 ResumeArm re-centres one seconds before it starts the resumed run. The idle
@@ -11,16 +11,16 @@ target tracked and nothing looking at it. So the cooling loop now takes the
 same look on every probe, looking one ``COOLER_PROBE_EVERY_S`` ahead for the
 flip point, the longest it sleeps between two looks.
 
-ONLY THE RUN-START CALL WATCHES. `_cooler_gate` also comes through
-`_cool_and_wait`, after a cloud hold and after a safety pause, and does not:
-after a safety pause the pause itself stopped tracking, and after either the
-idle clock has usually run out, so a watch there would stop the mount at its
-first look whatever the sky says, in words ("nothing has been shot for a
-while and the mount is still tracking it") that are false after a pause,
-just before `_setup_target` re-slews anyway. The last case here pins that
-choice. What it leaves unwatched is the gate's own wait after a cloud hold:
-nothing when the sensor never left its band, up to ``cool_timeout_s`` when
-it did (#236).
+THE COOLER GATE AFTER A CLOUD HOLD WATCHES TOO (#236), AND ONLY THAT ONE.
+`_cooler_gate` also comes through `_cool_and_wait`, after a cloud hold and
+after a safety pause. After a hold the held target is still tracked, and the
+gate's wait on a drifted sensor, up to ``cool_timeout_s``, had nothing
+looking at it, so the hold's release now asks the gate to watch; the hold
+has usually spent the idle clock, so the first look stops tracking, which
+costs nothing because the release re-slews. After a safety pause the pause
+stopped tracking itself, and a look would say the mount is "still tracking"
+when it is not, so that gate does not watch. The last case here pins the
+gate's half of that; test_waits_that_watch_the_mount drives both call sites.
 
 A COOLING WAIT THAT ENDS THE RUN ENDS THE SPELL. A stop the watch decides
 during cooling is made by the idle-stop task (#216), and a run can end
@@ -380,22 +380,36 @@ async def test_a_run_that_ends_in_its_cooling_wait_leaves_no_retry_behind(
         await run.close()
 
 
-async def test_the_cooler_gate_after_a_hold_does_not_watch(sim_hub,
-                                                          monkeypatch):
-    """The choice, pinned. `_cooler_gate` runs the same `_cool_and_wait`
+@pytest.mark.parametrize("gate", ["after a hold", "after a safety pause"])
+async def test_the_cooler_gate_watches_only_when_asked(sim_hub, monkeypatch,
+                                                       gate):
+    """The gate's half of #236, FLIPPED from what H2 pinned
+    (``test_the_cooler_gate_after_a_hold_does_not_watch``, which asserted
+    that no gate watched). `_cooler_gate` runs the same `_cool_and_wait`
     after a cloud hold and after a safety pause, with the last target still
     in ``_tracked_target``, the latch open and its idle clock long run out.
-    It does not watch: the mount is not stopped during the gate, and the
-    latch is still open for the `_setup_target` that follows.
+    Asked to watch, as the hold's release asks it, it takes the idle look:
+    the mount is stopped once, by the idle-stop task, and the latch is
+    closed. Not asked, as the safety pause's release is not, it stops
+    nothing and leaves the latch open for the `_setup_target` that follows.
+    Which call site asks is test_waits_that_watch_the_mount's.
 
     A direct call, with the cooling constants cut to real hundredths of a
     second: the camera reads warm for its first probes, then settles.
 
-    Mutant "the cooler gate watches too" (`_cooler_gate` passes
-    ``watch=True``): RED (observed) -
-        AssertionError: the cooler gate after a hold stopped the mount 1
-        time(s), latch closed
+    Mutant "the gate does not pass watch on" (`_cooler_gate` calls
+    `_cool_and_wait` without ``watch=``): RED, after a hold (observed) -
+        AssertionError: the cooler gate after a hold did not watch the tracked
+        target: set_tracking(False) [], latch open
+        and test_waits_that_watch_the_mount's hold case with it.
+    Mutant "the gate always watches" (`_cooler_gate` passes ``watch=True``
+    whatever it is asked, H2's own recorded mutant): RED, after a safety
+    pause (observed) -
+        AssertionError: the cooler gate after a safety pause watched:
+        set_tracking(False) ['idle-stop-retry'], latch closed
+        and test_waits_that_watch_the_mount's safety-pause control with it.
     """
+    watch = gate == "after a hold"
     monkeypatch.setattr(engine_mod, "COOLER_PROBE_EVERY_S", 0.01)
     monkeypatch.setattr(engine_mod, "COOLER_STABLE_S", 0.05)
     engine = SequenceEngine(sim_hub)
@@ -418,24 +432,32 @@ async def test_the_cooler_gate_after_a_hold_does_not_watch(sim_hub,
         return 15.0 if probes["n"] <= 3 else COOL_TO
 
     monkeypatch.setattr(cam, "get_temperature", get_temperature)
-    stops: list[bool] = []
+    stops: list[str] = []
     real_set = tel.set_tracking
 
     async def set_tracking(on):
         if not on:
-            stops.append(on)
+            stops.append(asyncio.current_task().get_name())
         await real_set(on)
 
     monkeypatch.setattr(tel, "set_tracking", set_tracking)
+    why = ("resumed after 20 min of cloud" if watch
+           else "resumed after a safety pause")
     try:
-        await asyncio.wait_for(
-            engine._cooler_gate("resumed after 20 min of cloud"), 10.0)
+        await asyncio.wait_for(engine._cooler_gate(why, watch=watch), 10.0)
         await asyncio.sleep(0.05)         # a task it started would have asked
         assert probes["n"] > 3, "premise: the gate waited on the sensor"
-        assert stops == [] and engine._idle_hold_open, (
-            f"the cooler gate after a hold stopped the mount "
-            f"{len(stops)} time(s), latch "
-            f"{'open' if engine._idle_hold_open else 'closed'}")
-        assert tel.rig.tracking is True
+        if watch:
+            assert stops == ["idle-stop-retry"] and not engine._idle_hold_open, (
+                f"the cooler gate after a hold did not watch the tracked "
+                f"target: set_tracking(False) {stops}, latch "
+                f"{'open' if engine._idle_hold_open else 'closed'}")
+            assert tel.rig.tracking is False
+        else:
+            assert stops == [] and engine._idle_hold_open, (
+                f"the cooler gate after a safety pause watched: "
+                f"set_tracking(False) {stops}, latch "
+                f"{'open' if engine._idle_hold_open else 'closed'}")
+            assert tel.rig.tracking is True
     finally:
         await engine._cancel_idle_stop_retry()

@@ -198,7 +198,11 @@ def _single(plan: "SequencePlan", entry: dict, *, flow_id: str,
     spelling of the object. That identity comes from ``tonight.resolve_target``,
     the resolver ``to_plan._coords`` asked, so the two sides cannot disagree
     on which object a name is; the name as typed would key "M 31" apart from
-    the "M31" ``to_plan`` keyed. A name the catalogue does not know was
+    the "M31" ``to_plan`` keyed. It is asked here at now and there at the
+    compile's instant, and answers alike because the resolver chooses the
+    row at one shared instant, ``tonight.IDENTITY_WHEN`` (#249); chosen at
+    each caller's own, a body and a fixed row tied on a name's best rank
+    could swap between the two. A name the catalogue does not know was
     dropped by ``to_plan``, and is None here. Either way it is the block's
     1x1 grid at r0c0. A key on anything else (the anchor S3 brings, a panel's
     row and col) has to be matched here the same way ``to_plan`` mints it, or

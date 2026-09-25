@@ -46,6 +46,7 @@ import math
 import random
 import time
 
+from ..aio import reap
 from ..devices.base import Camera, DeviceError, Telescope
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
@@ -221,6 +222,35 @@ _MAX_CAL_ORTHO_ERROR_DEG = 12.5
 #: cos falls away sharply near the pole, so six degrees is nothing at +34 and
 #: decisive at +66.
 _MAX_CAL_RA_RATE_DRIFT = 0.20
+
+
+#: The variance the Rust PPEC engine stamps on a point it did NOT measure
+#: (#243): a dead-reckoned frame with no star, and every frame of a dither's
+#: dark-guiding window (``handle_dark_guiding``, ``lp.variance = 1e4``, in
+#: native/crates/astro-guide/src/algorithms/gaussian_process.rs). A measured
+#: point's variance comes from its SNR and stays under 500 px^2 however faint
+#: the star (``gp_math::variance_from_snr`` floors the SNR at 3.4), so the two
+#: never meet. Mirrored because the wheel exposes neither; a test reads the
+#: Rust expression so this cannot drift from it.
+GP_DARK_VARIANCE = 1e4
+
+#: The engine's GP inference engages once its buffer holds MORE than this many
+#: points (``self.n_measurements() > 10`` in ``deduce_result_impl`` and
+#: ``result_impl``, gaussian_process.rs); read from the Rust source by the same
+#: test.
+_GP_INFERENCE_ENGAGES_ABOVE = 10
+
+#: The fewest MEASURED points a PPEC window must hold for the stop to save it
+#: (#243): as many as the engine needs before it predicts at all. A window
+#: with fewer has learned nothing the engine would act on, and saving it
+#: replaced a saved model that had.
+GP_MIN_MEASURED_POINTS = _GP_INFERENCE_ENGAGES_ABOVE + 1
+
+
+def _gp_measured_points(window) -> int:
+    """How many rows of a PPEC window (``[t, measurement, variance,
+    control]``) the engine measured: every row but a dark one (#243)."""
+    return sum(1 for row in window if float(row[2]) != GP_DARK_VARIANCE)
 
 
 def _ra_rate_ratio(cal_dec_rad: float, now_dec_rad: float) -> float | None:
@@ -1004,22 +1034,49 @@ class NativeGuider(Guider):
         self._stop.set()
         task = self._loop_task
         self._loop_task = None
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        # Unblock any dither waiter so a stop mid-dither raises rather than hangs.
-        if not self._settle_done.is_set():
-            self._settle_error = self._settle_error or "guiding stopped"
-            self._settle_done.set()
-        if ended_a_session:
-            # A5: save the trained PPEC model on stop, stamped with when the
-            # loop last fed it (the loop is dead now, so that cannot move).
-            self._persist_gp_window()
-        # The session is over and its feed time is in the file. Cleared so that
-        # nothing written later can claim this session's feed as its own.
-        self._gp_fed_at = None
-        bus.publish("guide", **self.stats().__dict__)
+        loop_dead = False
+        try:
+            if task is not None:
+                task.cancel()
+                # #235: NOT ``suppress(CancelledError)`` around ``await task``.
+                # A cancel of whoever called this stop is passed on to the loop
+                # task it waits on, and the suppress ate it with the loop's
+                # own, so the caller ran on past its cancel (into the slew
+                # after a stand-down, say) while its canceller waited for it.
+                # ``reap`` absorbs only the loop's end and raises the caller's
+                # cancel, once the loop is dead.
+                await reap(task)
+            loop_dead = True
+        finally:
+            # Whether or not the caller was cancelled, guiding has stopped:
+            # the loop is cancelled and nothing will restart it. So the rest
+            # of the stop's bookkeeping runs on both paths; none of it awaits.
+            # Unblock any dither waiter so a stop mid-dither raises rather
+            # than hangs.
+            if not self._settle_done.is_set():
+                self._settle_error = self._settle_error or "guiding stopped"
+                self._settle_done.set()
+            if ended_a_session:
+                if loop_dead:
+                    # A5: save the trained PPEC model on stop, stamped with
+                    # when the loop last fed it (the loop is dead now, so that
+                    # cannot move).
+                    self._persist_gp_window()
+                else:
+                    # A cancelled stop does only what others depend on (the
+                    # waiter above, the publish below), not the optional work
+                    # of a stop that finished: its canceller is waiting for it
+                    # to end. So it saves nothing, and says so, because the
+                    # model on disk is then older than this session.
+                    bus.log("warning",
+                            "native guider: the stop was cancelled while its "
+                            "guide loop was ending; the PPEC model was not "
+                            "saved", "guide")
+            # The session is over and its feed time is in the file (or was
+            # deliberately not written). Cleared so that nothing written later
+            # can claim this session's feed as its own.
+            self._gp_fed_at = None
+            bus.publish("guide", **self.stats().__dict__)
         bus.log("info", "native guider stopped", "guide")
 
     def _abort_if_stopped(self, during: str) -> None:
@@ -1377,11 +1434,12 @@ class NativeGuider(Guider):
                 # A loop starved of frames (a hung exposure) never gets here,
                 # which is why this is stamped here and not when the file is
                 # written. What counts as measured is the engine's own record
-                # (``_measurement_mark``), never the Action kind (#189 H2 item
-                # 13): ``idle`` is also the lock frame and both rejects, and a
-                # dead-reckoned PPEC frame is a ``pulse_pair`` it measured
-                # nothing for. Both marks are read with no await between them
-                # and ``process``, so a moved mark is this frame's.
+                # (``_measurement_mark``), never the Action kind (a #210
+                # follow-up): ``idle`` is also the lock frame and both
+                # rejects, and a dead-reckoned PPEC frame is a ``pulse_pair``
+                # it measured nothing for. Both marks are read with no await
+                # between them and ``process``, so a moved mark is this
+                # frame's.
                 mark = self._measurement_mark()
                 action = self._engine.process(
                     frame.data, frame.timestamp, self._exposure_s)
@@ -2602,14 +2660,47 @@ class NativeGuider(Guider):
         at write time, a stop that came minutes after the loop's last frame (a
         hung exposure, an idle stop) told the next start the model was fresh,
         and it was restored out of phase by the difference. ``now`` only when
-        nothing has fed it this session."""
+        nothing has fed it this session.
+
+        ONLY A MODEL THAT HAS MEASURED ENOUGH IS SAVED, AND NEVER OVER A
+        BETTER ONE (#243). The window used to be saved whenever it had two
+        rows. A session that locked and then lost the star holds only
+        dead-reckoned rows, stamped with the dark-guiding variance and
+        measuring nothing, and its stop replaced a model trained on a good
+        night; the next start restored it as current. So the window must hold
+        ``GP_MIN_MEASURED_POINTS`` measured rows, as many as the engine needs
+        before it predicts, and at least as many as the saved model's
+        window. A skipped save says why, once; the saved model stays as it
+        was, byte for byte."""
         if not self.profile_id or self._engine is None:
             return
         if self._cal_discarded:
             return
         try:
             window = self._engine.dump_gp_window()
-            if not window or len(window) < 2:
+            if not window:
+                # A reactive RA algorithm has no model to save, and a PPEC one
+                # that never saw a frame has nothing in it: not worth a line.
+                return
+            measured = _gp_measured_points(window)
+            if measured < GP_MIN_MEASURED_POINTS:
+                bus.log("info",
+                        f"native guider: PPEC model for profile "
+                        f"{self.profile_id} not saved: this session's window "
+                        f"holds {measured} measured point(s) of the "
+                        f"{GP_MIN_MEASURED_POINTS} the model needs before it "
+                        f"predicts; any saved model is kept", "guide")
+                return
+            # Not yet asked: whether the saved model could still be restored.
+            # A file past the engine's retention window never will be, and its
+            # count still blocks every shorter session's save (#253).
+            saved = self._saved_gp_measured_points()
+            if saved > measured:
+                bus.log("info",
+                        f"native guider: PPEC model for profile "
+                        f"{self.profile_id} not saved: this session's window "
+                        f"holds {measured} measured points and the saved "
+                        f"model's {saved}; the saved model is kept", "guide")
                 return
             fed_at = self._gp_fed_at
             dumped_at = time.time() if fed_at is None else float(fed_at)
@@ -2623,6 +2714,31 @@ class NativeGuider(Guider):
         except Exception as e:  # pragma: no cover - best effort
             bus.log("warning",
                     f"native guider: could not persist PPEC model: {e}", "guide")
+
+    def _saved_gp_measured_points(self) -> int:
+        """How many measured rows the profile's saved PPEC window holds (#243),
+        0 when there is no file or it cannot be read. Quiet, unlike
+        ``_load_gp_window``: this runs at a stop, where "starting fresh" would
+        be the wrong sentence, and a file the restore would ignore has nothing
+        in it worth protecting from a save."""
+        try:
+            p = self._profile_path("-gp.json")
+            if not p.exists():
+                return 0
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or not isinstance(
+                    data.get("window"), list):
+                return 0
+            # The restore's own parse, so a file it rejects counts as none:
+            # without a stamp, or with rows that are not four numbers, the
+            # restore raises and starts fresh, and a count that skipped these
+            # let a file nothing will ever restore block every save.
+            float(data["dumped_at"])
+            window = [(float(t), float(m), float(v), float(c))
+                      for t, m, v, c in data["window"]]
+            return _gp_measured_points(window)
+        except Exception:  # noqa: BLE001 - an unreadable file protects nothing
+            return 0
 
     def _load_gp_window(self) -> tuple[float, list] | None:
         """Read this profile's persisted GP window

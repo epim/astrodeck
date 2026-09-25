@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from . import cooling
+from .aio import reap
 from .config import (config_store, f_ratio, fov_deg, frames_payload,
                      image_scale_arcsec_px, redacted)
 from .persist import read_json_or, write_json_atomic
@@ -4511,19 +4512,27 @@ class Hub:
         if task is None or task.done():
             return False
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
-        state = self._warm_state
-        if state is not None:
-            # Unconditionally, NOT gated on state["active"]: the task's own
-            # ``finally`` has already flipped that False on its way out and
-            # stamped its default "warm complete" note. Gating here left every
-            # cancelled ramp claiming, in the UI and the log, that it had
-            # finished — the one sentence a cancel must never produce.
-            state["active"] = False
-            state["note"] = f"stopped: {reason}"
-            state["_finished_monotonic"] = time.monotonic()
-        bus.log("info", f"camera warm ramp stopped — {reason}", "camera")
+        try:
+            # #235: ``reap``, not ``suppress(CancelledError)`` around ``await
+            # task``, which also ate a cancel of whoever called this, so the
+            # caller ran on (into ``cancel_warm``'s cooler command) past it.
+            await reap(task)
+        finally:
+            # On both paths: the ramp is dead either way (``reap`` raises the
+            # caller's cancel only once it is), and its own ``finally`` has
+            # stamped "warm complete" on the way out, so a cancelled cancel
+            # that skipped this would leave exactly that sentence standing.
+            state = self._warm_state
+            if state is not None:
+                # Unconditionally, NOT gated on state["active"]: the task's own
+                # ``finally`` has already flipped that False on its way out and
+                # stamped its default "warm complete" note. Gating here left
+                # every cancelled ramp claiming, in the UI and the log, that it
+                # had finished — the one sentence a cancel must never produce.
+                state["active"] = False
+                state["note"] = f"stopped: {reason}"
+                state["_finished_monotonic"] = time.monotonic()
+            bus.log("info", f"camera warm ramp stopped — {reason}", "camera")
         return True
 
     async def warm_camera(self, *, source: str = "user", ramp: bool = True) -> dict:
@@ -5243,8 +5252,9 @@ class Hub:
         old = self._loop_task
         self.stop_loop()
         if old is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await old
+            # #235: ``reap``, not ``suppress(CancelledError)``, which ate a
+            # cancel of this caller too and went on to spawn the new loop.
+            await reap(old)
 
         async def _loop() -> None:
             while True:
@@ -5306,8 +5316,10 @@ class Hub:
         old = self._loop_task
         self.stop_loop()
         if old is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await old
+            # #235: ``reap``, not ``suppress(CancelledError)``, which ate a
+            # cancel of this caller too, so a cancelled sequence start or
+            # capture went on to expose.
+            await reap(old)
 
     async def yield_camera_for(self, what: str) -> bool:
         """Take the camera off the live preview loop so ``what`` — a path that
@@ -6051,7 +6063,16 @@ class Hub:
         finally:
             bus.publish("mount", action="solve_activity", activity=None)
         if not result.success:
-            raise DeviceError(f"plate solve failed: {result.message}")
+            # SAY WHETHER LIGHT REACHED THE SENSOR (#251). ASTAP says "Not
+            # enough stars" under cloud and through a cap in the same words,
+            # and auto-resume retried a capped optic every ten minutes for a
+            # night on them. The frame tells the two apart; a no-light verdict
+            # raises ``NoLightError`` (a DeviceError), which the recovery
+            # ladder backs off on. Only a FAILED solve is judged: the median
+            # of a full frame is not worth paying on every centring attempt.
+            from .solve import light as _light
+            raise await _light.failed_solve_error(
+                frame, result, prefix="plate solve failed", hub=self)
         # ASTAP returns J2000. Sync the mount in the frame IT expects (JNOW for a
         # real Alpaca mount, else unchanged) so a plate-solve sync does not corrupt
         # a JNOW mount's alignment model by ~20 arcmin. The returned dict stays
@@ -6148,7 +6169,12 @@ class Hub:
         finally:
             bus.publish("mount", action="solve_activity", activity=None)
         if not result.success:
-            raise DeviceError(f"rotator sync: plate solve failed: {result.message}")
+            # Judged for light like every solve that exposes its own frame
+            # (#251, see ``solve_and_sync``).
+            from .solve import light as _light
+            raise await _light.failed_solve_error(
+                frame, result, prefix="rotator sync: plate solve failed",
+                hub=self)
         rec = await _sky_angle.note_solved_rotation(
             self, result, source="rotator sync", context=angle)
         if rec is None:
@@ -6252,7 +6278,11 @@ class Hub:
             result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
                                         fov_deg_hint=opt["fov_h_deg"] or None)
             if not result.success:
-                raise DeviceError(f"rotate: plate solve failed: {result.message}")
+                # Judged for light (#251, see ``solve_and_sync``).
+                from .solve import light as _light
+                raise await _light.failed_solve_error(
+                    frame, result, prefix="rotate: plate solve failed",
+                    hub=self)
             # The loop's next move is computed through the rotator's offset, so
             # an attempt whose solve could not calibrate it must stop here: a
             # move commanded through a stale offset is a rotation to the wrong

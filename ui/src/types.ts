@@ -799,6 +799,13 @@ export interface SequenceState {
     reason: string;
     text: string;
     holding: boolean;
+    /** The other half of `holding` (#221, #244): the engine's own sentence
+     *  while a scheduler wait meets a cloudy sky with no target to hold for,
+     *  so no hold opens, and null otherwise (`_note_hold_deferred`). Without
+     *  it the payload says `cloudy: true, holding: false` and leaves the
+     *  reader to guess why nothing is holding. Rendered as sent, and only
+     *  while non-null. Optional: a server older than H2 does not send it. */
+    hold_deferred?: string | null;
     latest_frame?: {
       cloudy: boolean | null;
       score: number | null;
@@ -2398,6 +2405,37 @@ export interface SessionRow {
   total: number;
   auto_resume: boolean;
 }
+
+/** A session file the store cannot read (#242): corrupt JSON, a file that is
+ *  not a valid Session, or one that states no status (#218, H2 orchestrator
+ *  ruling 12). `GET /api/sessions` lists it so the operator can see it and
+ *  DELETE it; before that, it was invisible and a shell on the rig was the
+ *  only way to remove it.
+ *
+ *  DELIBERATELY NOT A `SessionRow`. It has no counts, no nights and no
+ *  auto-resume flag, because the file that would carry them is the thing that
+ *  is broken (server `session.py` `_unreadable_row`). Typed apart, a list that
+ *  forgot to check `status` cannot draw it as a session with 0 of 0 frames or
+ *  offer it RESUME: the compiler refuses the field reads. */
+export interface UnreadableSessionRow {
+  /** The file's stem: what `DELETE /api/sessions/{id}` addresses. */
+  id: string;
+  /** The name inside the file when it has one, else the stem. */
+  name: string;
+  status: "unreadable";
+  /** The store's own words for the damage ("not valid JSON", "fails
+   *  validation", "it has no status"), shown as sent. Never the parser's
+   *  detail: that can quote a frame's absolute path, and viewers read this. */
+  unreadable: string;
+  /** The FILE's mtime, which the server sorts the row in by. It is not a
+   *  session date, so it is not shown as one. */
+  updated_ts: number;
+}
+
+/** One entry of `GET /api/sessions` as the server sends it. Only the two
+ *  session lists read this (`listSessionRows`); everything else reads
+ *  `listSessions`, which never returns an unreadable row. */
+export type SessionListRow = SessionRow | UnreadableSessionRow;
 
 export interface PlanRow {
   id: string;

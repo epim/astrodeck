@@ -55,6 +55,7 @@ from ..auth.rbac import assert_route_capabilities, declare
 # importing them back out of app.py would be a circular import.
 from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
                      _redact_profile_for, _redact_report_for,
+                     _redact_resume_arm_for,
                      _redact_session_for, _redact_site_for,
                      _redact_switch_ports_for, _redact_ws_event,
                      report_csv_columns)
@@ -136,9 +137,16 @@ from ..provenance import effective_config
 from ..flows.calibration_health import (CalNeed, DEFAULT_QUOTA, KIND_ORDER,
                                         frame_from_header, health_matrix)
 from ..flows.compile import compile_plan
-from ..flows.continuation import (adopt_detail, adopt_matches, apply_adoption,
-                                  dropped_detail, plan_replace_report, recount,
+from ..flows.continuation import (AdoptEvidence, AdoptMatches, adopt_detail,
+                                  adopt_evidence, adopt_matches,
+                                  apply_adoption, dropped_detail,
+                                  plan_replace_report, recount,
                                   recount_detail, saved_before_s1)
+# Two private helpers, and on purpose: which instants ADOPT samples a body
+# step at, and the shape of a listed step, are continuation's to define, and
+# the evidence check below must ask the same ones or it would judge a
+# different set of instants from the set the match reads (#249).
+from ..flows.continuation import _capture_times, _describe
 from ..flows.doctor import check as flow_doctor
 from ..flows.models import MY_FLOWS_FOLDER, FlowGraph, FlowRecord
 from ..flows.progress import flow_progress
@@ -822,7 +830,7 @@ def _refuse_plan_identity(plan: SequencePlan, status: int) -> None:
 
 _RESUME_RECOVERING = (
     "Auto-resume is re-centring the mount after a restart and will start its "
-    "armed session when that is done; GET /api/sequence/resume-arm reports "
+    "armed session when that is done; the Monitor shows the re-centring and "
     "the step it is on. Wait for it, or turn that session's auto-resume off, "
     "which stops the re-centring before its next step (an abort does the "
     "same); start again once it has stopped.")
@@ -852,10 +860,12 @@ def _refuse_while_resume_recovers() -> None:
     Not a refusal of the session: nothing is written, so it stays dormant
     and armed, and the ladder's own start follows.
 
-    THE SENTENCE NAMES WHAT THE OPERATOR CAN REACH (#220). ``GET
+    THE SENTENCE NAMES WHAT THE OPERATOR CAN REACH (#220, #246). ``GET
     /api/sequence/resume-arm`` reports ``recovering`` and the step the ladder
-    is on (``ResumeArm.recovery``), which spec 5.9 has the sentence point at;
-    no screen renders it yet. The action it names is the DISARM: a PATCH
+    is on (``ResumeArm.recovery``), and the Monitor draws both (the UI half
+    of #246), so the sentence sends the operator to the Monitor. It used to
+    name the route, which is no place a person pressing RUN on a phone can
+    go and read. The action it names is the DISARM: a PATCH
     that turns the session's auto-resume off stops the ladder before its next
     step and cancels the step it is awaiting (``ResumeArm.stop_recovery``),
     and it is the one control both UIs show for that session while the
@@ -876,14 +886,169 @@ def _refuse_while_resume_recovers() -> None:
                                          "code": "resume_recovering"})
 
 
+#: The 409 detail a teardown route has always given for a run, a capture loop
+#: or a polar alignment, unchanged when no ladder runs
+#: (test_connect_rig_guard.py pins it as written).
+_TEARDOWN_BUSY = "a sequence, capture loop or polar alignment is running"
+
+_TEARDOWN_WHILE_RECOVERING = (
+    "auto-resume is re-centring the mount after a restart "
+    "(GET /api/sequence/resume-arm reports the step it is on); force stops "
+    "the re-centring before its next step and turns that session's "
+    "auto-resume off, as Abort does, then goes ahead")
+
+
+def _teardown_busy_detail() -> str | None:
+    """The 409 detail for an unforced profile apply, profile activate or
+    ``/api/connect/rig``, or None when nothing they would tear down under is
+    running (#238, spec 6.15).
+
+    THE LADDER COUNTS AS RUNNING. Each of the three disconnects the rig
+    before it builds another, and they refused while a run, a capture loop
+    or a polar alignment ran, but not while ResumeArm's recovery ladder did,
+    and the ladder is the thing using the camera and the mount after a
+    restart, with the engine idle all the while. So they tore the rig down
+    under a solve or a slew without asking for confirmation. Now the ladder
+    refuses them too, under the same code ``running`` (the clients that
+    offer "force" on it need nothing new), and the detail says what is
+    running, because "a sequence ... is running" over an idle engine would
+    send the operator looking for a run that is not there.
+
+    Reads ``resume_arm.recovering`` and the three busy flags with no await,
+    so the answer is one moment's."""
+    busy = engine.running or hub.looping or hub.polar.running
+    if not resume_arm.recovering:
+        return _TEARDOWN_BUSY if busy else None
+    return (f"{_TEARDOWN_BUSY}, and " if busy else "") + \
+        _TEARDOWN_WHILE_RECOVERING
+
+
+async def _wait_for_the_ladder() -> None:
+    """After ``resume_arm.stop_recovery``: return once the recovery ladder
+    has returned, or raise 409 ``running`` when it has not within
+    ``LADDER_STOP_WAIT_S`` (#238).
+
+    ASKING IS NOT STOPPING. ``stop_recovery`` raises the ladder's flag and
+    cancels the step it is awaiting, and a step can take its time to end on
+    a cancel (a driver sending its halt) or swallow it and run to its end.
+    Until the ladder has returned it is still using the camera or the mount,
+    and a teardown then pulls the devices out from under it. So every route
+    that tears the rig down calls this between the stop and the teardown,
+    and touches nothing when it raises. The stop and the disarm stand: they
+    are what the operator asked for, and the next press finds the ladder
+    gone or still going."""
+    if await resume_arm.wait_stopped():
+        return
+    from ..sequence import resume_arm as _resume_arm_mod
+    raise HTTPException(409, detail={
+        "detail": ("auto-resume's re-centring was asked to stop and has not "
+                   f"stopped within {_resume_arm_mod.LADDER_STOP_WAIT_S:g} s, "
+                   "so nothing was torn down; its session's auto-resume is "
+                   "off. GET /api/sequence/resume-arm reports it until it "
+                   "has stopped; try again then."),
+        "code": "running"})
+
+
 #: The statuses ``DELETE /api/sessions/{id}`` removes. Named rather than "not
 #: active" because ``Session.status`` is a plain string: a hand-edited or
 #: half-written file can carry anything, and a delete should not guess (#212).
 _DELETABLE_STATUSES = ("dormant", "complete", "abandoned")
 
 
+def _asks_adopt(session: Session, report) -> bool:
+    """Whether CONTINUE asks ADOPT's question about ``session``, given the
+    ``plan_replace_report`` of it against tonight's compile (spec 5.9 (a)):
+    no step id shared, frames banked, and saved before S1.
+
+    ONE GATE, ASKED TWICE. ``run_flow`` asks it of its first read, to decide
+    whether to spend the catalogue's time on ``adopt_evidence`` before the
+    lock; ``_continue_flow_session`` asks it of the re-read, and that answer
+    decides."""
+    return (not report.kept and bool(session.frames)
+            and saved_before_s1(session))
+
+
+#: How a step is listed when its frames outran ADOPT's catalogue lookup (#249).
+_ADOPT_AGAIN = ("frames were banked on this step after ADOPT looked it up in "
+                "the catalogue, so it was not matched; press ADOPT again to "
+                "include them")
+
+
+def _unasked(session: Session, plan: SequencePlan,
+             evidence: AdoptEvidence) -> set[str]:
+    """The steps of ``session`` that hold frames and whose match ``evidence``
+    holds no answer for (#249): every step of a target whose name it was
+    never asked, and every body step with a capture instant it was never
+    asked at (``_capture_times``, the instants the match reads). Every step
+    that holds frames, when a name of ``plan`` is missing: a new key built
+    without its answer could pair anything.
+
+    THE EVIDENCE IS OLDER THAN THE SESSION IT JUDGES. ``run_flow`` asks the
+    catalogue about its FIRST read, off the loop and outside the lock, and
+    the match is made on the RE-READ inside the lock. Frames a run banked in
+    between (a ResumeArm run that started and ended in the gap) are on the
+    re-read alone. ``adopt_matches`` maps no step on an answer it does not
+    hold, so nothing is mis-credited, but it lists such a step as a body
+    "the catalogue could not place", which is false and sends the operator
+    nowhere. The next press asks the catalogue about a read that holds those
+    frames, so that is what these steps are told to do.
+
+    A deep-sky step needs its name and nothing else: its bound is against
+    tonight's target, which no frame moves."""
+    by_step: dict[str, list] = {}
+    for f in session.frames:
+        by_step.setdefault(f.step_id, []).append(f)
+    held = {st.id for t in session.plan.targets for st in t.steps
+            if by_step.get(st.id)}
+    if any(t.name not in evidence.names for t in plan.targets):
+        return held
+    out: set[str] = set()
+    for t in session.plan.targets:
+        if t.name not in evidence.names:
+            out.update(st.id for st in t.steps if st.id in held)
+            continue
+        hit = evidence.names[t.name]
+        if hit is None or not hit.moves:
+            continue
+        for st in t.steps:
+            if st.id in held and any(
+                    (t.name, when) not in evidence.positions
+                    for when in _capture_times(by_step[st.id],
+                                               session.created_ts)):
+                out.add(st.id)
+    return out
+
+
+def _relisted(session: Session, matches: AdoptMatches,
+              unasked: set[str]) -> AdoptMatches:
+    """``matches`` with every step in ``unasked`` taken out of the mapping
+    and the other lists, and listed first, with ``_ADOPT_AGAIN``."""
+    counts: dict[str, int] = {}
+    for f in session.frames:
+        counts[f.step_id] = counts.get(f.step_id, 0) + 1
+    again = [_describe(t, st, counts[st.id], _ADOPT_AGAIN)
+             for t in session.plan.targets for st in t.steps
+             if st.id in unasked]
+    return AdoptMatches(
+        mapping={k: v for k, v in matches.mapping.items()
+                 if k not in unasked},
+        unmatched=[*again, *(u for u in matches.unmatched
+                             if u["step_id"] not in unasked)],
+        ambiguous=[a for a in matches.ambiguous
+                   if a["step_id"] not in unasked],
+        frames_matched=matches.frames_matched - sum(
+            counts.get(k, 0) for k in matches.mapping if k in unasked))
+
+
+def _adopt_again_detail(steps: int) -> str:
+    return (f". {steps} step{'' if steps == 1 else 's'} took frames after "
+            f"ADOPT looked this session up in the catalogue; press ADOPT "
+            f"again to include them")
+
+
 def _continue_flow_session(first_read: Session, plan: SequencePlan,
-                           body: FlowRunBody) -> dict:
+                           body: FlowRunBody,
+                           evidence: AdoptEvidence | None = None) -> dict:
     """CONTINUE a flow's dormant session on tonight's compile, or refuse with
     a 409 that says what continuing would do (#189 S1, spec 5.9, D6).
 
@@ -922,6 +1087,10 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
         re-framed (a single TARGET is keyed on its geometry): it goes straight
         to (c), and an ``adopt`` flag re-keys nothing, because re-keying it
         by name would credit the old field's frames to the new one (D5).
+        The match asks the catalogue nothing: ``evidence`` is
+        ``adopt_evidence``'s answer, asked by ``run_flow`` off the loop and
+        before the lock (#249), and a step it holds no answer for is told
+        to press ADOPT again (``_unasked``).
     (b) ``recount`` - the ledger is counted by the frozen plan's
         ``count_mode``, so a different mode recounts every banked frame.
     (c) ``dropped_steps`` - steps that hold frames are gone from the flow. The
@@ -950,13 +1119,31 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
                           f"again."})
         report = plan_replace_report(s, plan)
         adopted = None
-        if not report.kept and s.frames and saved_before_s1(s):
-            matches = adopt_matches(s, plan)
-            if not body.adopt:
+        if _asks_adopt(s, report):
+            # NO CATALOGUE CALL IN HERE (#249). The match reads ``evidence``,
+            # which ``run_flow`` asked for on a worker thread before the
+            # lock, and nothing else. When the first read did not ask this
+            # question and the re-read does (frames banked on a frameless
+            # pre-S1 session in the gap), there is no evidence, and every
+            # step that holds frames is told to press ADOPT again rather
+            # than looked up here.
+            held = (evidence if evidence is not None
+                    else AdoptEvidence(names={}, positions={}))
+            matches = adopt_matches(s, plan, evidence=held)
+            unasked = _unasked(s, plan, held)
+            if unasked:
+                matches = _relisted(s, matches, unasked)
+            # Refused even with ``adopt`` while any step is unasked: adopted
+            # now, its frames would stay on a step id the new plan does not
+            # have, and once the plan is replaced there is no ADOPT left to
+            # press. Nothing is written, so the next press starts clean.
+            if not body.adopt or unasked:
+                detail = adopt_detail(len(s.frames), matches.frames_matched)
+                if unasked:
+                    detail += _adopt_again_detail(len(unasked))
                 raise HTTPException(409, detail={
                     "code": "adopt",
-                    "detail": adopt_detail(len(s.frames),
-                                           matches.frames_matched),
+                    "detail": detail,
                     "adopt": {"session_id": s.id, "frames": len(s.frames),
                               "matched": matches.frames_matched,
                               "unmatched": matches.rest()}})
@@ -3503,10 +3690,21 @@ def create_app(*, bind_host: str | None = None,
         # is required, has been since it was introduced, and FastAPI rejects a
         # body without it with a 422 before this function runs. What was missing
         # is the guard, not the validation.
-        if (engine.running or hub.looping or hub.polar.running) and not body.force:
-            raise HTTPException(409, detail={
-                "detail": "a sequence, capture loop or polar alignment is running",
-                "code": "running"})
+        #
+        # AUTO-RESUME'S RECOVERY LADDER COUNTS AS RUNNING (#238, spec 6.15):
+        # after a restart it solves and re-centres with the engine idle, and
+        # this route tore the rig down under it. Unforced, the guard refuses
+        # it as it refuses a run (``_teardown_busy_detail``). Forced, the
+        # ladder is stopped and its session disarmed, as Abort does, and the
+        # route waits until it has returned before anything is torn down.
+        busy = _teardown_busy_detail()
+        if busy is not None and not body.force:
+            raise HTTPException(409, detail={"detail": busy, "code": "running"})
+        if body.force:
+            resume_arm.stop_recovery(
+                "the operator force-connected a rig while it was re-centring "
+                "the mount", disarm=True)
+            await _wait_for_the_ladder()
         if body.force and engine.running:
             await engine.abort()
         # "none" is not a registry backend -- it's the Equipment surface's
@@ -3539,6 +3737,23 @@ def create_app(*, bind_host: str | None = None,
     @app.post("/api/disconnect", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
     @declare(CAP_CONFIG_BACKEND)
     async def disconnect():
+        # DISCONNECT STOPS THE RECOVERY LADDER, THEN WAITS FOR IT (#238, spec
+        # 6.15). After a restart ResumeArm's ladder solves and re-centres the
+        # mount with no run behind it, so ``engine.abort`` had nothing to
+        # stop and ``disconnect_all`` pulled the camera and the mount out
+        # from under a ladder still awaiting them. It is stopped as Abort
+        # stops it: here, before the first await, and the session it was
+        # recovering is disarmed, so the ladder does not run it again the
+        # moment the rig is connected again. Then the route waits until the
+        # ladder has actually returned (``_wait_for_the_ladder``), and
+        # refuses with 409, tearing nothing down, if it has not within the
+        # bound. Both are no-ops when no ladder is running. There is no
+        # ``force`` here and no unforced refusal: a disconnect has always
+        # ended whatever it found.
+        resume_arm.stop_recovery(
+            "the operator disconnected the rig while it was re-centring the "
+            "mount", disarm=True)
+        await _wait_for_the_ladder()
         if engine.running:
             await engine.abort()
         await hub.disconnect_all()
@@ -4826,10 +5041,17 @@ def create_app(*, bind_host: str | None = None,
             raise HTTPException(404, "profile not found")
         # Apply is destructive (disconnects the current rig). Refuse if anything
         # is actively running unless forced; the engine is aborted app-side.
-        if (engine.running or hub.looping or hub.polar.running) and not force:
-            raise HTTPException(409, detail={
-                "detail": "a sequence, capture loop or polar alignment is running",
-                "code": "running"})
+        # Auto-resume's recovery ladder is running too (#238): refused
+        # unforced, and forced it is stopped and waited for as Abort stops it
+        # (see ``connect_rig``).
+        busy = _teardown_busy_detail()
+        if busy is not None and not force:
+            raise HTTPException(409, detail={"detail": busy, "code": "running"})
+        if force:
+            resume_arm.stop_recovery(
+                "the operator force-applied a profile while it was "
+                "re-centring the mount", disarm=True)
+            await _wait_for_the_ladder()
         if force and engine.running:
             await engine.abort()
         # Route through _spawn_connect (NOT _spawn): apply_profile's first step is
@@ -4852,14 +5074,20 @@ def create_app(*, bind_host: str | None = None,
 
         404 when the id is unknown; 409 when a sequence / capture loop / polar
         alignment is running and ``force`` is not set (the connect is destructive
-        - it disconnects the current rig)."""
+        - it disconnects the current rig). Auto-resume's recovery ladder counts
+        as running (#238); forced, it is stopped with its session disarmed and
+        waited for before the connect (see ``connect_rig``)."""
         force = bool(body and body.force)
         if not _profile_exists(profile_id):
             raise HTTPException(404, "profile not found")
-        if (engine.running or hub.looping or hub.polar.running) and not force:
-            raise HTTPException(409, detail={
-                "detail": "a sequence, capture loop or polar alignment is running",
-                "code": "running"})
+        busy = _teardown_busy_detail()
+        if busy is not None and not force:
+            raise HTTPException(409, detail={"detail": busy, "code": "running"})
+        if force:
+            resume_arm.stop_recovery(
+                "the operator force-activated a profile while it was "
+                "re-centring the mount", disarm=True)
+            await _wait_for_the_ladder()
         if force and engine.running:
             await engine.abort()
         return _spawn_connect(hub.connect_profile_id(profile_id))
@@ -5591,6 +5819,23 @@ def create_app(*, bind_host: str | None = None,
         if not body.fresh:
             latest = await asyncio.to_thread(
                 session_store.current_for_flow, flow_id)
+        # ADOPT'S CATALOGUE WORK, HERE AND NEVER IN THE LOCK (#249). The
+        # match needs every target name resolved, and a body's position at
+        # its capture instants: a full catalogue search each, 10 to 35 ms,
+        # and some 700 ms for the first body of the process. Made inside the
+        # write-locked section, that ran on the event loop holding the
+        # store's lock, stalling the safety poller, the relay and every
+        # route, and every worker-thread session write behind the lock. So
+        # it is asked here, of the first read, on a worker thread, and only
+        # when that read asks the ADOPT question at all. The locked section
+        # re-reads and matches on this answer alone (``_unasked`` says what
+        # it does about frames banked in between). Before the recovering
+        # check, never after it: nothing may await between that check and
+        # the start.
+        evidence = None
+        if (latest is not None and latest.status == "dormant"
+                and _asks_adopt(latest, plan_replace_report(latest, plan))):
+            evidence = await asyncio.to_thread(adopt_evidence, latest, plan)
         continued: dict | None = None
         try:
             hub.require("camera")
@@ -5598,7 +5843,8 @@ def create_app(*, bind_host: str | None = None,
             # start: CONTINUE's locked section is synchronous too (#189 A7).
             _refuse_while_resume_recovers()
             if latest is not None and latest.status == "dormant":
-                continued = _continue_flow_session(latest, plan, body)
+                continued = _continue_flow_session(latest, plan, body,
+                                                   evidence)
             else:
                 # Synchronous, and it owns its own task — do not await it, and
                 # do not wrap it in a busy lane. "Already running" is raised in
@@ -5768,6 +6014,9 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/sessions", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def list_sessions():
+        # Every session, and a row with ``status: "unreadable"`` and the
+        # store's reason for every file it cannot read (#242), which DELETE
+        # removes. No ledger field on those: see ``_unreadable_row``.
         return {"sessions": await asyncio.to_thread(session_store.list)}
 
     @app.get("/api/sessions/{session_id}")
@@ -5933,11 +6182,21 @@ def create_app(*, bind_host: str | None = None,
                 dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT)
     async def delete_session(session_id: str):
+        # A FILE THE STORE CANNOT READ IS DELETABLE (#242). GET /api/sessions
+        # lists it as unreadable (not JSON, failing validation, or stating no
+        # status), and this is the one way to remove it short of a shell on
+        # the rig. ``load`` raises ``SessionUnreadable`` for it, which the
+        # app-wide handler answers 500: loaded as this route's first step
+        # with only ``KeyError`` caught, the delete never ran. It has no
+        # status to refuse on, so ``s`` is None and the file's word is
+        # silent; the engine's word below still decides whether it runs.
         try:
             s = await asyncio.to_thread(session_store.load, session_id)
         except KeyError:
             raise HTTPException(404, "session not found")
-        if s.status == "active":
+        except SessionUnreadable:
+            s = None
+        if s is not None and s.status == "active":
             raise HTTPException(409, "cannot delete a running session")
         # Task 6 carry-in: natural completion does NOT drain thumb renders (only
         # abort() does), so a fire-and-forget render for THIS session may still
@@ -5965,6 +6224,8 @@ def create_app(*, bind_host: str | None = None,
             except KeyError:
                 # Another delete landed during the drain.
                 raise HTTPException(404, "session not found")
+            except SessionUnreadable:
+                s = None                # unreadable (#242): see the top
             # THE ENGINE'S WORD AS WELL AS THE FILE'S. They agree unless a
             # stale copy was saved over a running session's file, which is
             # exactly what the PATCH race does (#167: a dormant copy loaded
@@ -5972,13 +6233,16 @@ def create_app(*, bind_host: str | None = None,
             # dormant while the engine writes the ledger every frame. The
             # engine holds ``_session`` from ``start`` until the night is
             # finalized, so this asks for the run of THIS session only; a
-            # dormant session is deletable while another one runs.
+            # dormant session is deletable while another one runs. For an
+            # unreadable file it is the only word there is: the engine's
+            # session came from a readable load, but a file damaged by hand
+            # while it runs is still the file its next ledger write puts back.
             ours = getattr(engine, "_session", None)
             running_it = bool(engine.running and ours is not None
                               and ours.id == session_id)
-            if running_it or s.status == "active":
+            if running_it or (s is not None and s.status == "active"):
                 raise HTTPException(409, "cannot delete a running session")
-            if s.status not in _DELETABLE_STATUSES:
+            if s is not None and s.status not in _DELETABLE_STATUSES:
                 raise HTTPException(
                     409, f"cannot delete a session that is {s.status}")
             # DELETING THE SESSION THE LADDER IS RECOVERING STOPS THE LADDER
@@ -7916,10 +8180,10 @@ def create_app(*, bind_host: str | None = None,
             raise _err(e)
         return {"started": True, "frames": plan.total_frames()}
 
-    @app.get("/api/sequence/resume-arm",
-             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/sequence/resume-arm")
     @declare(CAP_VIEW_STATUS)
-    async def sequence_resume_arm():
+    async def sequence_resume_arm(
+            principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """Is a run armed and waiting, and what is holding it.
 
         The engine's own state cannot answer this: `_set_state` clears the
@@ -7942,9 +8206,17 @@ def create_app(*, bind_host: str | None = None,
         an altitude or a mount position would hand a viewer the site (#140).
         Both are read after the store read's await, in one synchronous
         stretch, so they cannot disagree with each other.
+
+        `hold.site_detail` is the numbers behind a start-floor or slew-limit
+        hold (the target's altitude, its floor, the wait until it rises, the
+        gate's azimuth), and a principal without view.site_derived does not
+        get the key at all (#233; H3 orchestrator ruling 1 (spec, Still
+        waiting on the owner, item 10)). The hold's `reason` is words, and a
+        viewer reads it. `_redact_resume_arm_for` makes that one decision,
+        and nothing else in the payload changes with the role.
         """
         armed = await asyncio.to_thread(session_store.armed)
-        return {
+        return _redact_resume_arm_for({
             "armed": ({"id": armed.id, "name": armed.name,
                        "owed": armed.owed(),
                        "accepted": armed.total_accepted(),
@@ -7954,7 +8226,7 @@ def create_app(*, bind_host: str | None = None,
             "hold": resume_arm.hold,
             "recovering": resume_arm.recovering,
             "recovery": resume_arm.recovery,
-        }
+        }, principal)
 
     @app.post("/api/sequence/pause", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT)

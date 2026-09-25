@@ -694,31 +694,65 @@ async def test_a_new_start_cancels_a_retry_left_from_before_it(
         await run.close()
 
 
-async def test_an_abort_cancels_a_retry_left_over_with_no_run_behind_it(
+async def test_an_abort_completes_a_stop_left_over_with_no_run_behind_it(
         sim_hub, monkeypatch, bus_lines):
-    """`abort` cancels an idle-stop task whatever the run did, including
-    when there is no run at all. Afterwards, with the engine idle, the
-    harness would advance a live task (the only engine task left); none
-    asks.
+    """`abort` ends an idle-stop task whatever the run did, including when
+    there is no run at all, and since #247 it ends it by COMPLETING the stop
+    rather than dropping it (H3 orchestrator ruling 5, spec "Still waiting
+    on the owner" item 14): nothing turns tracking back on after an abort.
+    The task's first attempt, not begun when the abort comes, is let run;
+    the mount does not take it, so abort asks once more, bounded, reads it
+    back, and says once that it is still unconfirmed. Afterwards, with the
+    engine idle, the harness would advance a live task (the only engine task
+    left); none asks.
 
     This case used to start a run and abort it before its first turn, so
-    that the run never reached its own cancel. `start` now cancels a task
-    left over itself (see the case above), which would keep that version
-    green with `abort`'s call deleted; with no `start`, only `abort` can.
+    that the run never reached its own end. `start` now cancels a task left
+    over itself (see the case above), which would keep that version green
+    with `abort`'s call deleted; with no `start`, only `abort` can.
 
-    Mutant "abort leaves the retry" (the `_cancel_idle_stop_retry` call in
-    `abort` deleted): RED (observed) -
-        AssertionError: a retry outlived the abort and asked at [0.0, 90.0,
-        180.0, 270.0] s
+    ON THE CLOCK (`abort_on_the_clock`). Called straight from the test,
+    abort's wait for the first attempt polled with real sleeps while the
+    driver ran the task through forty fake retries in one of them.
+
+    Mutant "abort leaves the retry" (the `_finish_idle_stop` call in `abort`
+    deleted): RED (observed) -
+        AssertionError: the abort did not complete the stop left over: its
+        first attempt and one more ask were wanted, set_tracking(False) at
+        [(0.0, 'retry')] s, and after the abort at [(90.0, 'retry'), (180.0,
+        'retry'), (270.0, 'retry'), (360.0, 'retry')] s
+    Mutant "abort cancels the stop" (`_cancel_idle_stop_retry` in its place,
+    H2's call): RED (observed) -
+        AssertionError: the abort did not complete the stop left over: its
+        first attempt and one more ask were wanted, set_tracking(False) at
+        [(0.0, 'retry')] s, and after the abort at [] s
+    and the same text under "cancel instead of complete" (the body of
+    `_finish_idle_stop` replaced by ``await self._cancel_idle_stop_retry()``).
+    The first attempt's ask at 0.0 is made in both: the task was created
+    before the abort's, so it gets its first turn first, and the cancel then
+    cuts it on the wire.
     """
     run = _Clocked(sim_hub, monkeypatch, horizon_s=3600.0)
     stale = await _a_retry_left_over(run)
     try:
-        await run.engine.abort()
+        await run.abort_on_the_clock()
+        done_at = len(run.tracking_calls)
         await run._real_sleep(0.3)
-        asked = [round(t - run.t0, 1) for t in _retry_asks(run)]
-        assert stale.done() and asked == [], (
-            f"a retry outlived the abort and asked at {asked[:4]} s")
+        asks = [(round(t - run.t0, 1), who)
+                for t, on, who in run.tracking_calls[:done_at] if not on]
+        after = [(round(t - run.t0, 1), who)
+                 for t, on, who in run.tracking_calls[done_at:] if not on]
+        assert [w for _t, w in asks] == ["retry", "abort"], (
+            f"the abort did not complete the stop left over: its first "
+            f"attempt and one more ask were wanted, set_tracking(False) at "
+            f"{asks[:4]} s, and after the abort at {after[:4]} s")
+        assert stale.done() and after == [], (
+            f"a retry outlived the abort and asked at {after[:4]} s")
+        assert len(_unconfirmed_lines(bus_lines)) == 1, (
+            _unconfirmed_lines(bus_lines))
+        ended = [m for lvl, m, _s in bus_lines if lvl == "warning"
+                 and "has still not confirmed it" in m]
+        assert len(ended) == 1, ended
     finally:
         await run.close()
 

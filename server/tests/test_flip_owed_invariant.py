@@ -31,8 +31,17 @@ another target near its meridian could overwrite it (I-19). The first is
 pinned by `test_a_flip_that_arrives_releases_the_hold`, the second by
 `TestTheRecordIsKeptPerTarget`. And it was refreshed on every frame east of
 the meridian, so an early flip taken inside the lead window was recorded as
-the side to leave (#222); it is now written once per flip cycle, pinned by
-`TestThePreFlipSideIsRecordedOncePerCycle`.
+the side to leave (#222); it is now written once, at the first sighting east
+of the meridian, pinned by `TestThePreFlipSideIsRecordedOnce`.
+
+AND IT IS KEPT ALL RUN (#237, H3 orchestrator ruling 2, spec "Still waiting
+on the owner" item 11). H2 cleared a target's record once the flip gate had
+measured its flip, and wrote none again that run. A target re-acquired east
+of its meridian after that, inside the flip-lead window where the AM5 picks
+the pre-flip side from the hour angle, then had no record, and carried past
+the meridian on that side it was let through. The side a target occupies
+before its flip is a fixed property of its east side, so the record stays
+true all run; `TestTheRecordOutlivesAMeasuredFlip` pins it.
 """
 from __future__ import annotations
 
@@ -513,10 +522,10 @@ class TestTheRecordIsKeptPerTarget:
             f"{e._pre_flip_side!r}")
 
 
-# --------------------------------------------- one pre-flip record per flip cycle
+# ------------------------------------------- one pre-flip record, written once
 
 
-class TestThePreFlipSideIsRecordedOncePerCycle:
+class TestThePreFlipSideIsRecordedOnce:
     """#222: a flip taken inside the lead window, before the meridian, used to
     be recorded as the pre-flip side.
 
@@ -529,17 +538,14 @@ class TestThePreFlipSideIsRecordedOncePerCycle:
     `flip_owed_hold_min` and set it aside. The #136 class, by the route of an
     ordinary early flip instead of the flip-owed hold.
 
-    Now the side is recorded only when there is no record, and a flip the
-    engine MEASURED (both pier-side reads readable, and different, the
-    evidence `_learn_mount_flips_early` asks for, with the hub's own check not
-    disagreeing) clears the target's record and closes its cycle: nothing is
-    recorded for it again this run. Clearing alone would not do: the next
-    frame before the meridian would find no record and write the post-flip
-    side, which is #222 again.
-
-    NEVER CLEARED IN `_setup_target`. That would drop the I-19/#136 guard for
-    a target re-acquired past its meridian, which is what the per-target
-    record exists for (`TestTheRecordIsKeptPerTarget`).
+    Now the side is recorded only when there is no record, and nothing
+    clears it within the run (#237, H3 orchestrator ruling 2): not the flip
+    gate after a flip it MEASURED, which H2 made clear the record and close
+    the target's "cycle", and not `_setup_target`. Clearing would not do in
+    either place: the next frame before the meridian would find no record and
+    write the post-flip side, which is #222 again, and a target re-acquired
+    on its pre-flip side would have nothing to be compared with
+    (`TestTheRecordOutlivesAMeasuredFlip`, `TestTheRecordIsKeptPerTarget`).
 
     The mount here flips early: its side changes at the flip gate's goto,
     minutes before transit, while the countdown is still positive. The
@@ -607,33 +613,33 @@ class TestThePreFlipSideIsRecordedOncePerCycle:
            it flipped to. No hold, and no StopTarget.
 
         Two routes to the flip. MEASURED: the flip gate's own goto, with both
-        side reads readable and different, which closes the cycle. NOT
-        MEASURED: the gate's reads before its goto answer "unknown", so the
-        flip is not evidence and the cycle stays open; the record is then
-        kept only because it is written once.
+        side reads readable and different. NOT MEASURED: the gate's reads
+        before its goto answer "unknown", so the flip is not evidence of
+        anything. The record is kept on both, because it is written once and
+        nothing clears it.
 
-        Mutant "record on every frame" (``self._pre_flip_side[key] = side``
-        in place of ``setdefault``, the cycle check kept): RED, the unmeasured
-        route (observed) -
-            Failed: a target that flipped early (not measured) was held
-            past the meridian on the side it flipped to and set aside: T: a
-            meridian flip has been owed for 0 min and the mount is still on
-            the east side; moving on rather than exposing across the pier;
-            the records read {'49817b0baa034a618d9714922d85e724': 'east'},
-            the flip was re-attempted 77 more time(s)
-        Mutant "clear on confirm without closing the cycle" (the
-        ``self._flip_cycle_closed.add(key)`` after a measured flip deleted,
-        the record still cleared): RED, the measured route (observed) -
-            Failed: a target that flipped early (measured by the flip gate)
-            was held past the meridian on the side it flipped to and set
-            aside: T: a meridian flip has been owed for 0 min and the mount
-            is still on the east side; moving on rather than exposing across
-            the pier; the records read {'9df3c815e3be47d3aa9e0c66af705569':
-            'east'}, the flip was re-attempted 78 more time(s)
-        (the retry count is however many 0.01 s polls fit in the cut hold,
-        and the key is the target's fresh id.) The same #222 failure, with
-        the record ``{...: 'east'}``, is what this case gives on the code
-        before the fix, on both routes.
+        Mutant "record on every frame" (``self._pre_flip_side[key] = side`` in
+        place of ``setdefault`` in `_enforce_flip_owed`): RED, both routes
+        (observed, the measured route) -
+            Failed: a target that flipped early (measured by the flip gate) was
+            held past the meridian on the side it flipped to and set aside: T: a
+            meridian flip has been owed for 0 min and the mount is still on the
+            east side; moving on rather than exposing across the pier; the
+            records read {'a4c8c2c32a28494884a3717f6b5ffc28': 'east'}, the flip
+            was re-attempted 77 more time(s)
+        and the same text with "(not measured)" on the other route.
+        Mutant "H2's clear and close on a measured flip" (H2's code put back: the
+        flip gate pops the record and adds the target to a `_flip_cycle_closed`
+        set after a measured flip, and `_enforce_flip_owed` records nothing for a
+        target in it): RED, the measured route, at the record check right after
+        the flip (observed) -
+            AssertionError: after the measured by the flip gate flip the records
+            read {}; the pre-flip side is kept after any flip
+        Mutant "clear on a measured flip" (the flip gate's setdefault replaced by
+        ``self._pre_flip_side.pop(key, None)``): RED, the same route, with the
+        same text.
+        (The retry count is however many 0.01 s polls fit in the cut hold, and
+        the key is the target's fresh id.)
         """
         e, t, ttf, mount, flips = self._early_flipper(sim_hub, monkeypatch)
         await e._enforce_flip_owed(t)                       # 1
@@ -650,27 +656,21 @@ class TestThePreFlipSideIsRecordedOncePerCycle:
         assert flips == ["west"] and mount["side"] == "east", (
             f"premise: the early flip was taken and the mount went east: "
             f"{flips}, now {mount['side']}")
-        # THE MEASURED FLIP CLEARS THE RECORD, the unmeasured one keeps it:
-        # the other half of what the flip gate does with its evidence, and
-        # the one the StopTarget below cannot see, since a kept west record
-        # and no record both let the mount through past the meridian on
-        # east. Mutant "no clear on confirm" (the ``pop`` after a measured
-        # flip deleted, the cycle still closed): RED, the measured route
-        # (observed) -
-        #     AssertionError: after the measured by the flip gate flip the
-        #     records read {'3f5f9e7f688a4f09bc407af1cea46334': 'west'}; a
-        #     measured flip clears the target's record and an unmeasured
-        #     one keeps it
-        # (the key is the target's fresh id). This pins the clear the task
-        # specified; whether the record should be kept instead, as a guard
-        # for a later re-acquisition on the pre-flip side, is an open
-        # question for the spec (#237), and flipping it is this line and
-        # the ``pop`` in `_maybe_meridian_flip`.
-        measured = route == "measured by the flip gate"
-        assert e._pre_flip_side == ({} if measured else {t.id: "west"}), (
+        # BOTH FLIPS KEEP THE RECORD (#237, H3 orchestrator ruling 2). This
+        # line used to pin the opposite, H2's clear after a measured flip,
+        # and said that flipping it was an open question for the spec. The
+        # ruling answered it: the side a target occupies before its flip is
+        # a fixed property of its east side, so the record stays true all
+        # run, and a later re-acquisition on that side is compared with it
+        # (`TestTheRecordOutlivesAMeasuredFlip`). The StopTarget below
+        # cannot see this half: a kept west record and no record both let
+        # the mount through past the meridian on east.
+        # Mutant "H2's clear and close on a measured flip" and mutant "clear
+        # on a measured flip" go RED here, on the measured route (the observed
+        # text is in the docstring).
+        assert e._pre_flip_side == {t.id: "west"}, (
             f"after the {route} flip the records read {e._pre_flip_side!r}; "
-            f"a measured flip clears the target's record and an unmeasured "
-            f"one keeps it")
+            f"the pre-flip side is kept after any flip")
         ttf["h"] = +0.12
         await e._enforce_flip_owed(t)                       # 2
         ttf["h"] = -0.05
@@ -684,33 +684,78 @@ class TestThePreFlipSideIsRecordedOncePerCycle:
                 f"re-attempted {len(flips) - 1} more time(s)")
         assert e.flip_owed is False
         assert flips == ["west"], f"the flip was taken again: {flips}"
-        closed = t.id in getattr(e, "_flip_cycle_closed", set())
-        assert closed is (route == "measured by the flip gate"), (
-            f"the {route} flip {'closed' if closed else 'left open'} the "
-            f"cycle")
 
-    async def test_control_an_unreadable_side_after_the_flip_leaves_the_cycle_open(
+    async def test_a_flip_before_the_first_sighting_records_the_side_it_left(
+            self, sim_hub, monkeypatch):
+        """The route to #222 that H2's closed cycle also covered, and that
+        H3 orchestrator ruling 2's "setdefault only" would have reopened. In the frame loop
+        the flip gate runs BEFORE `_enforce_flip_owed`, so a target whose
+        first frame comes inside its flip-lead window, on a mount that can
+        flip early, is flipped before anything has recorded its side. The
+        first sighting then comes after the flip, still east of the
+        meridian, on the side the mount flipped TO; setdefault keeps it, and
+        past the meridian on that same side the target is held and set
+        aside after a good flip.
+
+        So a flip the gate MEASURED records the side it left, with
+        setdefault: by definition the pre-flip side, and nothing is
+        recorded over an earlier sighting. An unmeasured flip records
+        nothing, as an unreadable side is no evidence of which side is
+        which.
+
+        Mutant "no record from the flip gate" (the gate's setdefault of
+        ``side_before`` deleted, which is H3 orchestrator ruling 2 applied
+        as written): RED
+        (observed) -
+            Failed: a target flipped before its first sighting was held past
+            the meridian on the side it flipped to and set aside: T: a meridian
+            flip has been owed for 0 min and the mount is still on the east
+            side; moving on rather than exposing across the pier; the records
+            read {'033d0625fc4b4019b8e7d540b1612402': 'east'}
+        Mutant "H2's clear and close on a measured flip" (as above): RED at the
+        last check, H2's closed cycle having let the target through with no
+        record at all (observed) -
+            AssertionError: the side the measured flip left is not on record: {}
+        """
+        e, t, ttf, mount, flips = self._early_flipper(sim_hub, monkeypatch)
+        ttf["h"] = +0.14                          # first frame, in the lead
+        e._flip_armed = True
+        await e._maybe_meridian_flip(t, 0.0)
+        assert flips == ["west"] and mount["side"] == "east", (
+            f"premise: the early flip was taken first and the mount went "
+            f"east: {flips}, now {mount['side']}")
+        await e._enforce_flip_owed(t)             # the first sighting, east
+        ttf["h"] = -0.05
+        try:
+            await e._enforce_flip_owed(t)
+        except StopTarget as exc:
+            pytest.fail(
+                f"a target flipped before its first sighting was held past "
+                f"the meridian on the side it flipped to and set aside: "
+                f"{exc}; the records read {e._pre_flip_side!r}")
+        assert e.flip_owed is False
+        assert e._pre_flip_side == {t.id: "west"}, (
+            f"the side the measured flip left is not on record: "
+            f"{e._pre_flip_side!r}")
+
+    async def test_control_an_unreadable_side_after_the_flip_keeps_the_record(
             self, sim_hub, monkeypatch):
         """CONTROL. The flip gate's goto, and the read after it answers
         "unknown": that is no evidence that anything moved, and here nothing
-        did, the mount is still west. The cycle stays open and west stays on
-        record, so past the meridian, still west, the invariant holds and
-        sets the target aside, as it must for a flip that did not happen.
+        did, the mount is still west. West stays on record, so past the
+        meridian, still west, the invariant holds and sets the target aside,
+        as it must for a flip that did not happen.
 
-        Mutant "an unreadable side closes the cycle" (the measured-flip test
-        drops the readable-pair half, closing on ``not nothing_flipped``
-        alone): RED (observed) -
-            AssertionError: a flip whose side after the goto could not be
-            read closed the cycle, and the mount, still west past the
-            meridian, was let through to expose: records {}, closed
-            ['07c30b8901474bac82d07491f808277a']
-        and the unmeasured route of the case above with it, at its record
-        check right after the flip (observed) -
-            AssertionError: after the not measured flip the records read {};
-            a measured flip clears the target's record and an unmeasured
-            one keeps it
-        (before that check, the same route failed on its last line: "the not
-        measured flip closed the cycle").
+        Mutant "the invariant never holds" (the `_hold_for_owed_flip` call in
+        `_enforce_flip_owed` replaced by ``self._flip_owed = False``): RED
+        (observed) -
+            AssertionError: after a flip whose side after the goto could not be
+            read, the mount, still west past the meridian, was let through to
+            expose: records {'acce7a3f0bcb4e898fecfe7c6bfaea4b': 'west'}
+        H2 pinned this case against "an unreadable side closes the cycle". With
+        the cycle gone (#237), a mutant that clears the record after an
+        unmeasured flip is healed by the next sighting east of the meridian,
+        which writes west again; so this case now guards the hold itself.
         """
         e, t, ttf, mount, flips = self._early_flipper(sim_hub, monkeypatch)
         await e._enforce_flip_owed(t)
@@ -736,32 +781,181 @@ class TestThePreFlipSideIsRecordedOncePerCycle:
         except StopTarget as exc:
             held = exc
         assert held is not None, (
-            f"a flip whose side after the goto could not be read closed the "
-            f"cycle, and the mount, still west past the meridian, was let "
-            f"through to expose: records {e._pre_flip_side!r}, closed "
-            f"{sorted(getattr(e, '_flip_cycle_closed', set()))!r}")
+            f"after a flip whose side after the goto could not be read, the "
+            f"mount, still west past the meridian, was let through to "
+            f"expose: records {e._pre_flip_side!r}")
         assert e._pre_flip_side == {t.id: "west"}, e._pre_flip_side
 
-    async def test_start_reopens_every_cycle(self, sim_hub, monkeypatch):
-        """A new run starts with every flip cycle open, as it starts with no
-        records: a target measured flipped last night crosses its meridian
-        again tonight.
 
-        Mutant "start keeps the closed cycles" (the reset in `start()`
-        deleted): RED (observed) -
-            AssertionError: a new run inherited the last run's closed flip
-            cycles: ['5d9c39193ff94d2f91304c526afd28f7']
+# ------------------------------------------- the record outlives a measured flip
+
+
+class TestTheRecordOutlivesAMeasuredFlip:
+    """#237, H3 orchestrator ruling 2 (spec, Still waiting on the owner, item
+    11): nothing clears a target's pre-flip record within the run.
+
+    H2 cleared it the moment the flip gate MEASURED the target's flip (both
+    pier-side reads readable and different) and marked the target so that no
+    record was written for it again that run. The side a target occupies
+    before its flip is a fixed property of its east side, so the record was
+    still true when it was dropped, and dropping it disarmed the backstop for
+    the case I-19 keyed the record per target for: a target re-acquired east
+    of its meridian, inside the flip-lead window, where the AM5 picks the
+    pre-flip side from the hour angle. A rotating mosaic does exactly that at
+    every hop back to a panel it flipped early. If the repeat flip then does
+    not fire, the target is carried past the meridian on the pre-flip side
+    with nothing to compare it with, which is the 2026-09-11 night.
+
+    The engine is `TestThePreFlipSideIsRecordedOnce`'s early flipper, the
+    flip taken through the real `_maybe_meridian_flip`. The re-acquisition is
+    the mount reporting the pre-flip side again at a countdown still inside
+    the lead, and "the repeat flip does not fire" is `_never_flips`: the hold
+    gives the flip gate its retries and none of them moves the mount.
+    """
+
+    @staticmethod
+    def _spy_hold(e, monkeypatch) -> list[str]:
+        """The side each `_hold_for_owed_flip` was entered on."""
+        entered: list[str] = []
+        real = e._hold_for_owed_flip
+
+        async def hold(target, side, hold_min):
+            entered.append(side)
+            return await real(target, side, hold_min)
+
+        monkeypatch.setattr(e, "_hold_for_owed_flip", hold)
+        return entered
+
+    async def _measured_early_flip(self, sim_hub, monkeypatch):
+        """Frame 1 at +0.15 h on the west side, then the flip gate's goto at
+        +0.14 h, inside the lead, measured: both reads readable, west before
+        and east after. Then the frame after it, at +0.12 h, on east."""
+        e, t, ttf, mount, flips = TestThePreFlipSideIsRecordedOnce \
+            ._early_flipper(sim_hub, monkeypatch)
+        await e._enforce_flip_owed(t)
+        ttf["h"] = +0.14
+        e._flip_armed = True
+        await e._maybe_meridian_flip(t, 0.0)
+        assert flips == ["west"] and mount["side"] == "east", (
+            f"premise: the early flip was taken and the mount went east: "
+            f"{flips}, now {mount['side']}")
+        assert mount["unreadable"] == 0 and e._flip_armed is False, (
+            "premise: both reads were readable and the flip spent the latch, "
+            "so the gate measured this flip")
+        ttf["h"] = +0.12
+        await e._enforce_flip_owed(t)
+        return e, t, ttf, mount, flips
+
+    async def test_a_target_re_acquired_on_its_pre_flip_side_is_held_past_the_meridian(
+            self, sim_hub, monkeypatch):
+        """The measured early flip, then a hop away and back: the target is
+        re-acquired at +0.05 h, still east of its meridian and inside the
+        lead, and the goto lands on west, the pre-flip side. The repeat flip
+        does not fire, and the target is carried past the meridian (-0.05 h)
+        still on west. `_hold_for_owed_flip` must trip, on west, and end in
+        StopTarget rather than let the shutter open.
+
+        Mutant "H2's clear and close on a measured flip" (H2's code put back:
+        the gate pops the record and closes the target's cycle, and
+        `_enforce_flip_owed` records nothing for a closed target): RED
+        (observed) -
+            AssertionError: the target re-acquired east of its meridian on its
+            pre-flip side after a measured flip was carried past the meridian on
+            that side and let through to expose: the hold was entered [], the
+            records read {}
+        Mutant "clear on a measured flip" (the pop without the closed cycle):
+        RED, the next sighting having recorded the post-flip side (observed) -
+            AssertionError: the target re-acquired east of its meridian on its
+            pre-flip side after a measured flip was carried past the meridian on
+            that side and let through to expose: the hold was entered [], the
+            records read {'31a1726b46be4f35a0b73b7ad1c58bad': 'east'}
         """
-        e, t, ttf, mount, flips = self._early_flipper(sim_hub, monkeypatch)
-        e._flip_cycle_closed = {t.id}
-        monkeypatch.setattr(SessionStore, "load_all", lambda self: [])
-        monkeypatch.setattr(engine_mod.SequenceEngine, "_run",
-                            lambda self: asyncio.sleep(0))
-        e.start(SequencePlan(targets=[t], meridian_flip=True, guide=False))
-        await asyncio.sleep(0)
-        assert e._flip_cycle_closed == set(), (
-            f"a new run inherited the last run's closed flip cycles: "
-            f"{sorted(e._flip_cycle_closed)!r}")
+        e, t, ttf, mount, flips = await self._measured_early_flip(
+            sim_hub, monkeypatch)
+        mount["side"] = "west"                   # re-acquired, pre-flip side
+        ttf["h"] = +0.05
+        await e._enforce_flip_owed(t)
+        assert e.flip_owed is False, "premise: east of the meridian, no hold"
+        tried = await _never_flips(e, monkeypatch)
+        entered = self._spy_hold(e, monkeypatch)
+        ttf["h"] = -0.05                         # carried past the meridian
+        held = None
+        try:
+            await e._enforce_flip_owed(t)
+        except StopTarget as exc:
+            held = exc
+        assert held is not None and entered == ["west"], (
+            f"the target re-acquired east of its meridian on its pre-flip "
+            f"side after a measured flip was carried past the meridian on "
+            f"that side and let through to expose: the hold was entered "
+            f"{entered!r}, the records read {e._pre_flip_side!r}")
+        assert tried, "premise: the hold gave the flip gate its retries"
+        assert mount["side"] == "west" and flips == ["west"], (
+            f"premise: the repeat flip did not fire: {flips}, now "
+            f"{mount['side']}")
+        assert e._pre_flip_side == {t.id: "west"}, e._pre_flip_side
+
+    async def test_control_a_correctly_flipped_target_passes(
+            self, sim_hub, monkeypatch):
+        """CONTROL. The same measured early flip, and the target carried
+        past the meridian on east, the side it flipped to: a changed side,
+        which is what a flip looks like from here. No hold, and the record
+        is still west.
+
+        Mutant "record on every frame" (as above): RED (observed) -
+            Failed: a target that flipped correctly was held past the meridian
+            and set aside: T: a meridian flip has been owed for 0 min and the
+            mount is still on the east side; moving on rather than exposing
+            across the pier; the records read
+            {'1a5f491317384072b76ab0e5f5f15ceb': 'east'}
+        """
+        e, t, ttf, mount, flips = await self._measured_early_flip(
+            sim_hub, monkeypatch)
+        entered = self._spy_hold(e, monkeypatch)
+        ttf["h"] = -0.05
+        try:
+            await e._enforce_flip_owed(t)
+        except StopTarget as exc:
+            pytest.fail(f"a target that flipped correctly was held past the "
+                        f"meridian and set aside: {exc}; the records read "
+                        f"{e._pre_flip_side!r}")
+        assert entered == [] and e.flip_owed is False, entered
+        assert e._pre_flip_side == {t.id: "west"}, e._pre_flip_side
+
+    async def test_control_a_target_first_seen_west_is_never_recorded_or_held(
+            self, sim_hub, monkeypatch):
+        """CONTROL. A target first seen already west of its meridian, on
+        west, and seen there again later on the same side: no reading was
+        ever taken before its crossing, so there is no record and nothing to
+        hold it on. A mount that slewed there landed on the side it chose.
+
+        Mutant "record whatever the hour angle" (`_enforce_flip_owed` records
+        the side before it asks which side of the meridian the target is on):
+        RED (observed) -
+            Failed: a target first seen west of its meridian was held at -0.05
+            h: T: a meridian flip has been owed for 0 min and the mount is
+            still on the west side; moving on rather than exposing across the
+            pier; the records read {'c0340b3d972747e9ba7b4857c55bd203': 'west'}
+        and with it the two older controls that pin the same rule,
+        `test_a_target_acquired_already_west_is_not_guarded` and
+        `test_control_a_target_acquired_west_records_nothing_and_never_trips`.
+        """
+        e, t, ttf, mount, flips = TestThePreFlipSideIsRecordedOnce \
+            ._early_flipper(sim_hub, monkeypatch)
+        await _never_flips(e, monkeypatch)
+        entered = self._spy_hold(e, monkeypatch)
+        for h in (-0.05, -0.2, -0.4):
+            ttf["h"] = h
+            try:
+                await e._enforce_flip_owed(t)
+            except StopTarget as exc:
+                pytest.fail(f"a target first seen west of its meridian was "
+                            f"held at {h:+.2f} h: {exc}; the records read "
+                            f"{e._pre_flip_side!r}")
+        assert entered == [] and e.flip_owed is False, entered
+        assert e._pre_flip_side == {}, (
+            f"a target seen only west of its meridian got a pre-flip record: "
+            f"{e._pre_flip_side!r}")
 
 
 # ----------------------------------------------------- the call site itself

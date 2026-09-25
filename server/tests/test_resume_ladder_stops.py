@@ -389,6 +389,65 @@ async def test_abort_mid_ladder_stops_it_before_its_next_step(
         f"{lad.rig.starts[before_starts:]}")
 
 
+async def test_a_step_that_finishes_during_the_abort_s_await_is_not_followed_by_a_goto(
+        ladder, bus_lines, monkeypatch):
+    """#189 item 10 (b): ``sequence_abort`` stops the ladder BEFORE its first
+    await, and this is the case that says why the order matters.
+
+    The ladder is parked in a stubborn slew-limit check (it swallows the
+    cancel and runs to its end once released), the await right before the
+    goto. ``engine.abort``, the route's first await, is made to release that
+    step and then give the loop turns enough for a ladder that has not been
+    told to stop to reach its goto. With the stop made before the await, the
+    step runs to its end, the ladder finds the flag at its next between-step
+    point and returns: no goto, and no start. With the stop made after, the
+    step finished into a ladder nobody had stopped yet.
+
+    The test above cannot see the order: every case in it lets the step go
+    only after the route has returned, by which time the stop has been made
+    whichever side of the await it was on.
+
+    RED under mutant "stop_recovery moved after the route's first await"
+    (``resume_arm.stop_recovery(...)`` placed after ``await
+    engine.abort()``), observed verbatim:
+
+        E   AssertionError: a goto followed a step that finished during the abort's await: ['solve', 'goto']
+        E   assert ['solve', 'goto'] == ['solve']
+    """
+    lad = ladder
+    limits = lad.hub.steps["limits"]
+    limits.stubborn = True
+    before_starts = len(lad.rig.starts)
+    tick = await _park(lad, "limits")
+    real_abort = lad.rig.engine.abort
+
+    async def abort_that_lets_the_step_finish() -> None:
+        limits.release.set()
+        for _ in range(TURN_CAP // 10):
+            await asyncio.sleep(0)
+        await real_abort()
+
+    monkeypatch.setattr(lad.rig.engine, "abort",
+                        abort_that_lets_the_step_finish)
+    try:
+        r = await lad.rig.client.post("/api/sequence/abort")
+        await _unwound(tick)
+    finally:
+        await _finish(lad, tick)
+
+    assert r.status_code == 200, r.text
+    assert lad.hub.calls == ["solve"], (
+        f"a goto followed a step that finished during the abort's await: "
+        f"{lad.hub.calls}")
+    assert limits.ended == "ran to its end", (
+        "premise: the slew-limit check ran to its end inside the abort's "
+        f"await: {limits.ended}")
+    assert lad.arm._recentred is None
+    assert lad.rig.starts[before_starts:] == [], (
+        f"a start followed the abort: {lad.rig.starts[before_starts:]}")
+    assert session_store.load(lad.session.id).auto_resume is False
+
+
 async def test_control_abort_with_no_ladder_leaves_the_armed_session_alone(
         ladder, bus_lines):
     """CONTROL: Abort with no ladder running changes nothing about auto-
