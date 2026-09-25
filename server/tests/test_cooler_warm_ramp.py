@@ -146,6 +146,26 @@ class FakeCamera(Camera):
         return self._ambient
 
 
+@pytest.fixture(autouse=True)
+def _a_store_of_its_own(monkeypatch, tmp_path):
+    """Every test here gets its own config store: the singleton repointed at a
+    file under tmp_path with its cache dropped, both through monkeypatch.
+
+    A cool saves the standing setpoint (`Hub._remember_cooling`), and three
+    tests here cool a camera, so the file used to leave -10 or -12 C on the
+    process-wide config for every later test on the worker (#227). Autouse
+    rather than on those three, so the next test written here that cools is
+    covered without anyone remembering this.
+
+    Without the two lines, the conftest guard errors at teardown
+    (2 in this file alone, observed): "test_cool_during_a_warm_wins_cleanly
+    left the process-wide config changed: cooling.setpoint_c."
+    """
+    from astrodeck.config import config_store
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
+
+
 @pytest.fixture
 def hub_with_camera(monkeypatch):
     """A bare Hub with a fake camera and a ~instant ramp step, so a 12-minute

@@ -822,8 +822,10 @@ def _refuse_plan_identity(plan: SequencePlan, status: int) -> None:
 
 _RESUME_RECOVERING = (
     "Auto-resume is re-centring the mount after a restart and will start its "
-    "armed session when that is done: wait for it, or disarm auto-resume and "
-    "start again once the re-centring has finished.")
+    "armed session when that is done; GET /api/sequence/resume-arm reports "
+    "the step it is on. Wait for it, or turn that session's auto-resume off, "
+    "which stops the re-centring before its next step (an abort does the "
+    "same); start again once it has stopped.")
 
 
 def _refuse_while_resume_recovers() -> None:
@@ -848,11 +850,27 @@ def _refuse_while_resume_recovers() -> None:
     this guards against, so it does not call this.
 
     Not a refusal of the session: nothing is written, so it stays dormant
-    and armed, and the ladder's own start follows. Disarming does not cut
-    the ladder short (the tick finds the session disarmed after it and
-    stands down), which is why the sentence says to start again once the
-    re-centring has finished. Nothing else stops it either, and no route
-    says it is running: #220."""
+    and armed, and the ladder's own start follows.
+
+    THE SENTENCE NAMES WHAT THE OPERATOR CAN REACH (#220). ``GET
+    /api/sequence/resume-arm`` reports ``recovering`` and the step the ladder
+    is on (``ResumeArm.recovery``), which spec 5.9 has the sentence point at;
+    no screen renders it yet. The action it names is the DISARM: a PATCH
+    that turns the session's auto-resume off stops the ladder before its next
+    step and cancels the step it is awaiting (``ResumeArm.stop_recovery``),
+    and it is the one control both UIs show for that session while the
+    ladder runs, the session list's auto-resume switch, because the session
+    is dormant and armed. Abort stops the ladder too and disarms the session,
+    as Abort disarms a running session (spec 6.15), but the sentence does not
+    send the operator to press it: while the ladder runs the engine is idle,
+    and both UIs draw their Abort and STOP only for a live run (classic
+    Monitor's ``runActive``, #/next's ``LIVE_STATES``; the one exception is
+    the locked screen's EMERGENCY STOP), so "press Abort" named a control the
+    operator pressing RUN could not find. Either way the start is refused
+    until the ladder has actually returned, which a cancelled step makes a
+    matter of a turn of the loop, so "once it has stopped" is not a long
+    wait. Before #220 nothing stopped the ladder and no route said it was
+    running, and the sentence could only say to wait it out."""
     if resume_arm.recovering:
         raise HTTPException(409, detail={"detail": _RESUME_RECOVERING,
                                          "code": "resume_recovering"})
@@ -5850,8 +5868,33 @@ def create_app(*, bind_host: str | None = None,
                 for other in await asyncio.to_thread(session_store.load_all):
                     if other.id != s.id and other.auto_resume:
                         other.auto_resume = False
+                        # A disarm like any other, so it stops a ladder that
+                        # is recovering ``other`` (#220, below); the next
+                        # tick then recovers the session armed here.
+                        resume_arm.stop_recovery(
+                            "another session was armed in its place while "
+                            "the recovery ladder was working, so the ladder "
+                            "stopped before its next step",
+                            session_id=other.id)
                         await asyncio.to_thread(session_store.save, other)
             s.auto_resume = body.auto_resume
+        # A DISARM STOPS THE LADDER RECOVERING THIS SESSION (#220). It used to
+        # be read only after the ladder, by ResumeArm's re-check, so the mount
+        # was solved and re-centred, minutes of motion, for a session the
+        # operator had just withdrawn. ``stop_recovery`` names this session,
+        # so disarming any OTHER session leaves a running ladder alone, and
+        # it is called after every refusal above (a refused request changes
+        # nothing, the ladder included) and before the save's await, so the
+        # ladder cannot take a step between the request and the stop. Not an
+        # abort: the session was disarmed by this request's own write, and
+        # nothing else about it changes.
+        if body.status == "abandoned" or body.auto_resume is False:
+            resume_arm.stop_recovery(
+                ("it was abandoned" if body.status == "abandoned"
+                 else "it was disarmed")
+                + " while the recovery ladder was working, so the ladder "
+                  "stopped before its next step",
+                session_id=s.id)
         await asyncio.to_thread(session_store.save, s)
         out = {"id": s.id, "status": s.status, "auto_resume": s.auto_resume,
                "remaining": s.remaining()}
@@ -5938,6 +5981,17 @@ def create_app(*, bind_host: str | None = None,
             if s.status not in _DELETABLE_STATUSES:
                 raise HTTPException(
                     409, f"cannot delete a session that is {s.status}")
+            # DELETING THE SESSION THE LADDER IS RECOVERING STOPS THE LADDER
+            # (#220): the same class as a disarm, decided so. A deleted
+            # session can never be started - ResumeArm's re-check finds it
+            # gone and stands down - so every step the ladder took after the
+            # delete was a solve or a slew for nothing. Stopped only when the
+            # delete goes through, and inside this section, so no step lands
+            # between the unlink and the stop.
+            resume_arm.stop_recovery(
+                "it was deleted while the recovery ladder was working, so "
+                "the ladder stopped before its next step",
+                session_id=session_id)
             # session file + thumbs only — NEVER the FITS frames (spec §6).
             session_store.delete(session_id)
         return {"deleted": session_id}
@@ -7879,6 +7933,15 @@ def create_app(*, bind_host: str | None = None,
         `hold` is the service's own current refusal, which existed only as a
         log line before this. view.status - it says nothing a status frame
         does not already carry.
+
+        `recovering` and `recovery` say whether the recovery ladder is
+        running, which step it is on and for which session (#220), and are
+        false and null otherwise. The 409 `resume_recovering` sends the
+        operator here, so a refused start can see what it is waiting for.
+        The step is a WORD (`LADDER_STEPS`): this route is view.status, and
+        an altitude or a mount position would hand a viewer the site (#140).
+        Both are read after the store read's await, in one synchronous
+        stretch, so they cannot disagree with each other.
         """
         armed = await asyncio.to_thread(session_store.armed)
         return {
@@ -7889,6 +7952,8 @@ def create_app(*, bind_host: str | None = None,
                        "origin": armed.origin, "origin_id": armed.origin_id}
                       if armed is not None else None),
             "hold": resume_arm.hold,
+            "recovering": resume_arm.recovering,
+            "recovery": resume_arm.recovery,
         }
 
     @app.post("/api/sequence/pause", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
@@ -7906,6 +7971,20 @@ def create_app(*, bind_host: str | None = None,
     @app.post("/api/sequence/abort", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT)
     async def sequence_abort():
+        # ABORT STOPS THE RECOVERY LADDER TOO (#220, spec 6.15). After a
+        # restart, ResumeArm's ladder solves and re-centres the mount with no
+        # run behind it, so ``engine.abort`` had nothing to stop: the ladder
+        # slewed on and started the session a moment later. It is stopped
+        # here, before the first await, so it cannot take a step after the
+        # press, and the session it was recovering is disarmed as Abort
+        # disarms a running one, so the next tick does not restart it 60 s
+        # later. A no-op when no ladder is running. ``engine.abort`` still
+        # runs: the start routes refuse while the ladder runs, but a run can
+        # still get in (the ladder's own ``_a_run_took_over`` exists for it),
+        # and an abort must stop whichever of the two it finds.
+        resume_arm.stop_recovery(
+            "the operator pressed Abort while it was re-centring the mount",
+            disarm=True)
         await engine.abort()
         return {"aborted": True}
 

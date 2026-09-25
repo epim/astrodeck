@@ -36,6 +36,12 @@ starters (Run CONTINUE, /resume) can take the same session while it runs. So
 next move once a run has started, and the start that follows it re-reads the
 session under the store's write lock instead of trusting the copy read before
 the ladder. See ``tick``.
+
+AN OPERATOR CAN STOP THE LADDER (#220, spec 5.9 and 6.15). Abort, and a
+disarm, abandon or delete of the session being recovered, call
+``stop_recovery``: the ladder stops before its next step, the step it is
+awaiting is cancelled, and nothing starts. ``recovery`` says which step it is
+on, for ``GET /api/sequence/resume-arm``.
 """
 from __future__ import annotations
 
@@ -65,6 +71,17 @@ RESUME_GIVE_UP_AFTER = 3
 #: Exposure for the post-restart blind solve. Deliberately longer than
 #: solve_and_sync's 3 s default -- see the call site for the measurement.
 RECOVERY_SOLVE_EXPOSURE_S = 12.0
+
+#: The words ``recovery`` reports for the ladder's current step, in ladder
+#: order (#220). "starting" covers the moment between the tick raising
+#: ``recovering`` and the ladder's first step.
+#:
+#: WORDS, NEVER NUMBERS. ``GET /api/sequence/resume-arm`` is CAP_VIEW_STATUS,
+#: which a viewer holds, and a step that carried the target's altitude or the
+#: mount's position would hand that viewer the site: a known object's
+#: altitude at a known time is a latitude (#140).
+LADDER_STEPS = ("starting", "safety", "focus", "autofocus", "solve", "limits",
+                "recentre")
 
 
 def window_open(session: Session, site, twilight_deg: float, now: float) -> bool:
@@ -189,6 +206,19 @@ class ResumeArm:
         #: each ladder, set by ``_recover`` once its slew succeeds, and read
         #: by ``_tracking_for`` to hand the engine's idle clock (#202).
         self._recentred: Target | None = None
+        #: THE LADDER WHILE IT RUNS, and what an operator needs to stop it
+        #: (#220). ``tick`` sets the first three as the ladder begins, only
+        #: ``stop_recovery`` sets the fourth, and ``tick``'s ``finally``
+        #: clears all four. ``_ladder`` is the ladder's own task,
+        #: so a stop can cancel the step it is awaiting; ``_ladder_session``
+        #: is the session it is recovering, as read before it;
+        #: ``_ladder_step`` is one of ``LADDER_STEPS``; ``_stop_why`` is the
+        #: reason a stop was asked for, or None, and it is what the ladder
+        #: reads between steps.
+        self._ladder: asyncio.Task | None = None
+        self._ladder_session: Session | None = None
+        self._ladder_step: str | None = None
+        self._stop_why: str | None = None
 
     @property
     def recovering(self) -> bool:
@@ -209,6 +239,119 @@ class ResumeArm:
         every start that consults it would be refused until the restart.
         """
         return self._recovering
+
+    @property
+    def recovery(self) -> dict | None:
+        """What the ladder is doing, for ``GET /api/sequence/resume-arm``:
+        ``{step, session_id, session_name}`` while it runs, else None.
+
+        THE 409 POINTS HERE (#220). A start refused ``resume_recovering``
+        used to tell the operator to wait for something no route showed, so
+        there was no way to tell a ladder that was solving from one that had
+        wedged. ``step`` is a word from ``LADDER_STEPS`` and nothing else
+        about the step is reported, because the route is CAP_VIEW_STATUS
+        (see ``LADDER_STEPS``)."""
+        s = self._ladder_session
+        if not self._recovering or s is None:
+            return None
+        return {"step": self._ladder_step, "session_id": s.id,
+                "session_name": s.name}
+
+    def stop_recovery(self, why: str, *, session_id: str | None = None,
+                      disarm: bool = False) -> str | None:
+        """Stop the recovery ladder before its next step, and cancel the
+        step it is awaiting (#220). Returns the id of the session whose
+        ladder was stopped, or None when there was nothing to stop: no ladder
+        running, or ``session_id`` given and the ladder recovering another
+        session.
+
+        ``why`` finishes the stand-down line ``tick`` logs ("auto-resume
+        stood down for '<name>': <why>"). ``disarm`` also disarms the
+        session, for Abort (below).
+
+        WHO CALLS THIS. ``POST /api/sequence/abort``, with ``disarm``, for
+        any session: an abort stops whatever is moving the rig. ``PATCH
+        /api/sessions/{id}`` when it disarms or abandons the session being
+        recovered, or arms another one (the singleton disarms this one), and
+        ``DELETE /api/sessions/{id}`` of it, each with ``session_id``, so
+        withdrawing a DIFFERENT session leaves this ladder alone. Before
+        #220 none of them reached the ladder: an abort had no run to abort,
+        so the ladder slewed on and started the session seconds later, and a
+        disarm was read only after the ladder, by ``_still_startable``, so
+        the mount was re-centred for a session nobody wanted any more.
+
+        TWO MECHANISMS, because either alone leaves a gap. The flag is read
+        at the ladder's between-step points (``_must_stop``, the same points
+        ``_a_run_took_over`` guards), which stops a step that runs to its end
+        whatever its caller does. The cancel cuts short the await the ladder
+        is in, so an operator does not wait out a twelve-second solve, an
+        autofocus or a slew before the ladder notices.
+
+        A GOTO ALREADY COMMANDED MAY RUN TO ITS END ON THE MOUNT. Cancelling
+        cancels the coroutine awaiting ``goto_and_center``; nothing in the
+        Telescope contract says that stops the slew, because the contract
+        has no abort_slew (``Telescope.stop`` zeroes ``move_axis`` motion,
+        which a goto is not). Some drivers do halt on the cancel - the AM5's
+        ``slew`` sends :Q# and Alpaca's sends abortslew - but the ladder is
+        written for the contract, not for the drivers it has met: with any
+        other driver the mount finishes the slew it was sent and tracks
+        there. The ladder has returned by then, so ``recovering`` is down
+        and a start is no longer refused, and nothing further moves the
+        mount on the ladder's behalf.
+
+        NOT A REFUSAL AND NOT A CRASH. ``tick`` stands the attempt down with
+        one info line: no backoff (the operator's decision is not a fault to
+        wait out) and no crash counted, and no hold is left on the Monitor.
+
+        ABORT DISARMS, as Abort disarms a running session (spec 6.15,
+        ``SequenceEngine._finalize_report``). Without it the next tick, 60 s
+        later, would find the session still dormant and armed and run the
+        ladder again, and the operator's abort would have bought one minute.
+        Written here, synchronously, under the store's write
+        lock on a fresh read, so the route's 200 means the file is disarmed
+        and a stale copy is never saved over it. PATCH and DELETE make their
+        own write and do not ask for this.
+
+        Synchronous on purpose, and so is every caller's path to it: the
+        flag is up before the route's next await, so the ladder cannot take
+        a step between the operator's request and the stop."""
+        s = self._ladder_session
+        if not self._recovering or s is None:
+            return None
+        if session_id is not None and s.id != session_id:
+            return None
+        if self._stop_why is None:
+            self._stop_why = why
+        ladder = self._ladder
+        if ladder is not None and not ladder.done():
+            ladder.cancel()
+        if disarm:
+            self._disarm_stopped(s)
+        return s.id
+
+    def _disarm_stopped(self, session: Session) -> None:
+        """Disarm the session whose ladder Abort stopped, and say so in the
+        words the engine uses when Abort disarms a run. Best-effort: a store
+        that cannot be written must not fail the abort, but it is said
+        loudly, because an unsaved disarm lets the next tick try again."""
+        try:
+            with session_store.write_locked():
+                fresh = session_store.load(session.id)
+                if fresh.auto_resume:
+                    fresh.auto_resume = False
+                    session_store.save(fresh)
+        except (KeyError, SessionUnreadable):
+            return                          # nothing left to disarm
+        except Exception as e:              # noqa: BLE001 - never fail an abort
+            bus.log("error", f"could not disarm '{session.name}' after the "
+                             f"abort - auto-resume may start it again on its "
+                             f"next tick: {e}", "sequence")
+            return
+        bus.log("info",
+                f"'{fresh.name}': stopped by hand while auto-resume was "
+                f"re-centring the mount, so auto-resume is disarmed for it. "
+                f"Arm it from the session list to pick it up again.",
+                "sequence")
 
     def _set_hold(self, session, reason: str, retry_at: float = 0.0) -> None:
         """Record the current refusal, preserving ``since`` while the reason
@@ -445,12 +588,53 @@ class ResumeArm:
         #
         # ``_recentred`` is cleared first, so an earlier tick's slew cannot
         # be handed to this start: only this ladder's slew sets it.
+        #
+        # THE LADDER RUNS AS ITS OWN TASK so ``stop_recovery`` can cancel the
+        # step it is awaiting (#220) without cancelling this tick, which has
+        # to go on and stand the attempt down. Creating the task does not
+        # await, so the flag still goes up in the same synchronous stretch as
+        # the ``engine.running`` check.
         self._recentred = None
+        self._stop_why = None
+        self._ladder_session = armed
+        self._ladder_step = "starting"
         self._recovering = True
+        self._ladder = asyncio.ensure_future(self._recover(armed))
         try:
-            refusal = await self._recover(armed)
+            refusal = await self._ladder
+        except asyncio.CancelledError:
+            # TWO THINGS CANCEL THIS AWAIT, and only one is ours to absorb.
+            # ``stop_recovery`` cancels the ladder task alone, and the tick
+            # goes on to stand down. The service's own ``stop`` (the app
+            # shutting down) cancels THIS task, which cancels the ladder
+            # with it, and that must propagate or the service would not
+            # stop. ``cancelling()`` counts the requests to cancel this task,
+            # so it tells the two apart.
+            me = asyncio.current_task()
+            if self._stop_why is None or (me is not None and me.cancelling()):
+                raise
+            refusal = None
         finally:
             self._recovering = False
+            self._ladder = None
+            self._ladder_session = None
+            self._ladder_step = None
+            stopped, self._stop_why = self._stop_why, None
+        if stopped is not None:
+            # AN OPERATOR STOPPED IT (#220), whether the ladder returned early
+            # at a between-step point, was cancelled mid-step, or finished a
+            # step that ran to its end and then found the flag. Checked ahead
+            # of the refusal, because a step cut short can still return a
+            # reason ("the solve failed"), and that is not why nothing
+            # started. Not a refusal (no backoff: the operator's decision is
+            # not a fault to wait out), not a crash (nothing counted), and not
+            # a hold, so an earlier refusal's reason comes off the Monitor.
+            # The session is never re-read or started here: whatever the
+            # operator did to it (disarm, abandon, delete, abort) is theirs.
+            self._clear_hold()
+            bus.log("info", f"auto-resume stood down for '{armed.name}': "
+                            f"{stopped}", "sequence")
+            return
         if refusal is not None:
             bus.log("warning", f"auto-resume held: {refusal} — retrying in "
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
@@ -672,12 +856,18 @@ class ResumeArm:
         reason the caller logs before arming the backoff. The session is left
         dormant AND armed either way, so the next tick retries.
 
-        It also returns None, early, when a run starts while it works (#211):
-        before each step that would focus, expose or slew it asks
-        ``_a_run_took_over`` and stops there. That is not a refusal - nothing
-        is wrong with the rig, and a backoff would only delay the next resume
-        - so it does not say why; ``tick``'s re-check finds the engine running
-        and stands the attempt down with the one line that does.
+        It also returns None, early, when a run starts while it works (#211)
+        or an operator asks it to stop (#220): before each step that would
+        focus, expose or slew it asks ``_must_stop`` and stops there. That
+        is not a refusal - nothing is wrong with the rig, and a backoff would
+        only delay the next resume - so it does not say why; ``tick`` finds
+        the stop request or the running engine and stands the attempt down
+        with the one line that does. A stop also cancels whatever step this
+        is awaiting (``stop_recovery``), so the question matters most for a
+        step that ran to its end regardless.
+
+        It names each step in ``_ladder_step`` as it reaches it, for
+        ``recovery``: words from ``LADDER_STEPS``, never a number.
 
         COOLING IS NOT HERE, deliberately. ``SequenceEngine._run`` already awaits
         ``_cool_and_wait(plan.cool_to, plan.cool_timeout_s)`` under the
@@ -707,6 +897,7 @@ class ResumeArm:
         #    evidence of safety — holds, and the ten-minute backoff is exactly
         #    right here because the sky may well clear.
         if cfg.safety.enabled and self.hub.devices.get("safety") is not None:
+            self._ladder_step = "safety"
             reading = await self.engine.current_safety()
             if reading is None:
                 return ("the safety monitor has not reported yet — not moving "
@@ -724,6 +915,7 @@ class ResumeArm:
         #    a measurement. Driving it back to the remembered value would be a
         #    guess about a device that just said it does not know where it is.
         pos = None
+        self._ladder_step = "focus"
         try:
             foc = self.hub.require("focuser")
             pos = await foc.get_position()
@@ -752,10 +944,11 @@ class ResumeArm:
                         "current position, so check focus before trusting "
                         "tonight's frames", "sequence")
             else:
-                if self._a_run_took_over():
+                if self._must_stop():
                     return None
                 bus.log("info", "focuser lost its position across the restart — "
                                 "running autofocus before resuming", "sequence")
+                self._ladder_step = "autofocus"
                 try:
                     await self._autofocus()
                 except Exception as e:  # noqa: BLE001
@@ -792,7 +985,7 @@ class ResumeArm:
         #    while "there IS a solver and it could not solve" refuses: that is
         #    cloud or too few stars, a transient inability to verify, and it is
         #    exactly the case where moving is a gamble.
-        if self._a_run_took_over():
+        if self._must_stop():
             return None
         if not self._can_solve():
             bus.log("warning", "resuming after a restart WITHOUT verifying where "
@@ -819,6 +1012,7 @@ class ResumeArm:
                 # of error a sagged or slipped mount showed that night, while
                 # dropping it forces a true all-sky search that failed outright
                 # on a sparse field. Bounded-and-generous beats blind.
+                self._ladder_step = "solve"
                 await self.hub.solve_and_sync(
                     exposure_s=RECOVERY_SOLVE_EXPOSURE_S)
             except Exception as e:  # noqa: BLE001
@@ -873,14 +1067,19 @@ class ResumeArm:
                 # engine's own plan is still None — so without it the pier half
                 # of the gate was inert while the altitude half ran. Same object
                 # engine.start receives below, so both gates read one setting.
+                self._ladder_step = "limits"
                 await self.engine.check_slew_limits(tgt, cfg=cfg,
                                                     plan=session.plan)
             except Exception as e:  # noqa: BLE001 — SafetyAbort or a bad target
                 return f"re-centering after restart refused: {e}"
             # BELOW the limit check, not above it: that check awaits too, and
-            # the slew is the step that must never land on a live run.
-            if self._a_run_took_over():
+            # the slew is the step that must never land on a live run, nor
+            # follow an operator's stop (#220). A stop that arrives once the
+            # goto is under way cancels this await; see ``stop_recovery`` for
+            # what that does and does not do to the mount.
+            if self._must_stop():
                 return None
+            self._ladder_step = "recentre"
             try:
                 await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg)
             except GotoRefused as e:
@@ -910,6 +1109,18 @@ class ResumeArm:
         await between the question and the step.
         """
         return bool(self.engine.running)
+
+    def _must_stop(self) -> bool:
+        """Should the ladder stop before its next step? When an operator
+        asked it to (``stop_recovery``, #220) or a run has taken over
+        (``_a_run_took_over``, #211). Asked at the same three points, with no
+        await between the question and the step.
+
+        The operator's flag matters most after a step that ran to its end
+        despite the cancel ``stop_recovery`` sent it: without this read the
+        ladder would carry on from that step to the next as if nothing had
+        been asked."""
+        return self._stop_why is not None or self._a_run_took_over()
 
     def _floor_eta_note(self, target, floor: float) -> str:
         """How long the wait above is, as a parenthetical, or empty when

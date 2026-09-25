@@ -10,7 +10,9 @@ the ledger counts frames by step id alone.
 
 What this module answers is whether carrying the ledger over is safe to do
 without asking first, and it answers from the session and the new plan alone:
-no store, no engine, no clock, no devices. ``run_flow`` in ``api/app.py`` owns
+no store, no engine, no clock, no devices. The one outside answer ADOPT asks
+for is what KIND of object a target name is, from the shipped catalogue
+(``tonight.resolve_target``, injectable). ``run_flow`` in ``api/app.py`` owns
 the write lock, the refusals and the start.
 
 * ``plan_replace_report`` - which steps carry over, which are new, and which
@@ -21,23 +23,26 @@ the write lock, the refusals and the start.
   saved before S1 has uuid4 step ids that no compile will ever produce again,
   so none of its frames count toward anything tonight. ADOPT re-keys the
   frames whose step matches exactly one step of the new plan, on a target
-  within ``ADOPT_MAX_SEPARATION_ARCMIN`` of the old one, and leaves the rest
-  where they are. It is offered for such a session only: a session
-  compiled since S1 that shares no step id with tonight's compile was
-  re-framed, and that is the dropped-steps question.
+  within ``ADOPT_MAX_SEPARATION_ARCMIN`` of the old one (or on the same
+  moving body, whose position no bound can hold), and leaves the rest where
+  they are. It is offered for such a session only: a session compiled since
+  S1 that shares no step id with tonight's compile was re-framed, and that
+  is the dropped-steps question.
 * ``recount`` - a ledger is counted by its FROZEN plan's ``count_mode``, so
   continuing under a different mode recounts every banked frame at once. The
   operator is shown both totals before that happens.
 """
 from __future__ import annotations
 
+import math
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from ..catalog.coords import angular_sep_deg
 from ..sequence.models import SequencePlan
 from ..sequence.session import Session
+from . import tonight
 
 
 @dataclass(frozen=True)
@@ -113,16 +118,40 @@ def saved_before_s1(session: Session) -> bool:
                    for t in session.plan.targets for st in t.steps)
 
 
-def _step_key(target, step) -> tuple:
+def _step_key(target, step, body: str | None = None) -> tuple:
     """What ADOPT matches a pre-S1 step on (spec 5.9): target name, frame
     type, filter, exposure, gain, binning.
 
     ``count`` is deliberately absent, for the reason the step id leaves it out:
     raising a quota must keep the frames already banked. A None filter and ""
     are one key, because the engine treats both as "do not move the wheel"
-    and ``flows/identity.py`` spells both "" in the step id."""
-    return (target.name, step.frame_type or "Light", step.filter or "",
+    and ``flows/identity.py`` spells both "" in the step id.
+
+    ``body`` is the canonical name of the moving body the target's name
+    resolves to (``_bodies``), or None. A body is matched on that name, so
+    "jupiter" typed before S1 finds tonight's "Jupiter" (#229); anything else
+    keeps the name as typed, which the ruling left unchanged. The body is
+    written as a ``("body", name)`` pair, which no ``str`` equals, so a body
+    key and a name key are disjoint by construction, whatever a target is
+    called."""
+    who = ("body", body) if body else target.name
+    return (who, step.frame_type or "Light", step.filter or "",
             float(step.exposure_s), int(step.gain), int(step.binning))
+
+
+def _bodies(resolve: Callable) -> Callable[[str], str | None]:
+    """``name -> canonical body name or None``, asking ``resolve`` once per
+    name. A name the catalogue does not know, or knows as a fixed row, is
+    None: only a row whose position is a function of time is a body."""
+    seen: dict[str, str | None] = {}
+
+    def body(name: str) -> str | None:
+        if name not in seen:
+            hit = resolve(name)
+            seen[name] = hit.identity if hit is not None and hit.moves \
+                else None
+        return seen[name]
+    return body
 
 
 def _describe(target, step, frames: int, reason: str,
@@ -155,15 +184,40 @@ AMBIGUOUS = "more than one step matches it"
 #: typed twice, or re-entered from a catalogue, is the same field; and the
 #: size of the carry threshold spec 3.3 computes for its 3x2 example grid
 #: (10.0 arcmin), so ADOPT carries no further than a re-frame would.
+#:
+#: INCLUSIVE: a match exactly this far apart is the same field (spec 5.9).
+#:
+#: NOT FOR A MOVING BODY (#229). A body leaves the bound behind in days: the
+#: shipped ephemeris, sampled every 10 days from September 2026 for two
+#: years, gives median daily motions of 39 arcmin for Mars, 7.4 for Jupiter
+#: and 1.4 for Neptune (about a week to 10 arcmin, longer near a stationary
+#: point), and the Moon moves some 13 deg a day. So the bound refused a
+#: pre-S1 session of one as soon as the body had moved on; such a step
+#: matches on the body's canonical name instead (``_step_key``), and the
+#: separation is not asked.
 ADOPT_MAX_SEPARATION_ARCMIN = 10.0
 
 
 def _separation_arcmin(old, new) -> float:
-    """Great-circle distance between two targets, in arcmin. RA is in HOURS;
-    ``angular_sep_deg`` turns it into an angle, so a step in RA shrinks by
-    cos(dec) and wraps at 0 h / 24 h as the sky does."""
-    return angular_sep_deg(old.ra_hours, old.dec_deg,
-                           new.ra_hours, new.dec_deg) * 60.0
+    """Great-circle distance between two targets, in arcmin. RA is in HOURS,
+    turned into an angle here, so a step in RA shrinks by cos(dec) and wraps
+    at 0 h / 24 h as the sky does.
+
+    THE ATAN2 FORM (Vincenty's, on a sphere), not the law of cosines
+    ``catalog.coords.angular_sep_deg`` uses. The law of cosines takes an
+    ``acos`` of a number within 5e-6 of 1 at this scale, and the answers it
+    can give there are spaced 1.3e-10 arcmin apart with none of them exactly
+    10.0: the bound's own value was unreachable, so "inclusive" was a claim
+    no pair of targets could put to the test. The atan2 form keeps full
+    precision at every angle, a target 10/60 deg north of another is exactly
+    10.0 arcmin from it, and the boundary test holds the ``<=``."""
+    dra = math.radians((new.ra_hours - old.ra_hours) * 15.0)
+    d1, d2 = math.radians(old.dec_deg), math.radians(new.dec_deg)
+    across = math.hypot(
+        math.cos(d2) * math.sin(dra),
+        math.cos(d1) * math.sin(d2) - math.sin(d1) * math.cos(d2) * math.cos(dra))
+    along = math.sin(d1) * math.sin(d2) + math.cos(d1) * math.cos(d2) * math.cos(dra)
+    return math.degrees(math.atan2(across, along)) * 60.0
 
 
 def _moved(separation_arcmin: float) -> str:
@@ -194,7 +248,8 @@ class AdoptMatches:
         return [*self.ambiguous, *self.unmatched]
 
 
-def adopt_matches(session: Session, new_plan: SequencePlan) -> AdoptMatches:
+def adopt_matches(session: Session, new_plan: SequencePlan, *,
+                  resolve: Callable | None = None) -> AdoptMatches:
     """Match ``session``'s steps to ``new_plan``'s on ``_step_key``.
 
     UNIQUE ON BOTH SIDES. A key that two old steps share, or that two new
@@ -204,32 +259,57 @@ def adopt_matches(session: Session, new_plan: SequencePlan) -> AdoptMatches:
     recipe, and a collision means the flow itself repeats a recipe.
 
     ON THE SAME FIELD. A unique match maps only when the two targets are
-    within ``ADOPT_MAX_SEPARATION_ARCMIN`` of each other; further apart, the
-    old step is listed with its separation (when it holds frames) and nothing
-    is re-keyed. The name in the key is a label, and the separation is what
-    says the label still points where the frames were taken.
+    within ``ADOPT_MAX_SEPARATION_ARCMIN`` of each other, inclusive; further
+    apart, the old step is listed with its separation (when it holds frames)
+    and nothing is re-keyed. The name in the key is a label, and the
+    separation is what says the label still points where the frames were
+    taken.
+
+    ...OR ON THE SAME BODY (#229). A name that ``resolve`` finds as a moving
+    row (a planet, the Moon, a comet) is keyed on the row's canonical body
+    name, and a match on it maps without the separation: the body has moved
+    since the frames were taken, and measured against tonight's position the
+    bound refused a pre-S1 session of a planet once it had moved 10 arcmin,
+    which takes days (``ADOPT_MAX_SEPARATION_ARCMIN``). The key match says
+    both NAMES resolve to the same body; that the old frames were taken of
+    it is trusted to the name and not checked, which is #190's
+    label-as-place fault for a body (#234). A deep-sky or star name keeps
+    the typed-name key and the bound.
+
+    ``resolve`` is ``tonight.resolve_target`` unless a test hands in another
+    (``name -> NameResolution | None``); it is looked up at call time, so a
+    test that replaces the module's resolver replaces it here too. Each
+    distinct name is asked once.
     """
+    body = _bodies(resolve or tonight.resolve_target)
+
+    def key(t, st) -> tuple:
+        return _step_key(t, st, body(t.name))
+
     old_by_key: dict[tuple, list] = {}
     for t in session.plan.targets:
         for st in t.steps:
-            old_by_key.setdefault(_step_key(t, st), []).append((t, st))
+            old_by_key.setdefault(key(t, st), []).append((t, st))
     new_by_key: dict[tuple, list] = {}
     for t in new_plan.targets:
         for st in t.steps:
-            new_by_key.setdefault(_step_key(t, st), []).append((t, st))
+            new_by_key.setdefault(key(t, st), []).append((t, st))
     frames_by_step = Counter(f.step_id for f in session.frames)
     mapping: dict[str, tuple[str, str]] = {}
     unmatched: list[dict] = []
     ambiguous: list[dict] = []
     matched = 0
-    for key, olds in old_by_key.items():
-        news = new_by_key.get(key, [])
+    for k, olds in old_by_key.items():
+        news = new_by_key.get(k, [])
+        # The first field of a body's key is the ("body", name) pair; the
+        # match on it is the whole test, and no distance is measured.
+        moving = isinstance(k[0], tuple)
         for t, st in olds:
             n = frames_by_step.get(st.id, 0)
             if len(olds) == 1 and len(news) == 1:
                 nt, nst = news[0]
-                apart = _separation_arcmin(t, nt)
-                if apart <= ADOPT_MAX_SEPARATION_ARCMIN:
+                apart = None if moving else _separation_arcmin(t, nt)
+                if apart is None or apart <= ADOPT_MAX_SEPARATION_ARCMIN:
                     mapping[st.id] = (nt.id, nst.id)
                     matched += n
                 elif n:

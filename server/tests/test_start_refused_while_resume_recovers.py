@@ -196,6 +196,40 @@ async def test_a_start_while_the_ladder_recovers_is_refused(rig, arm, route):
 
         ______ test_a_start_while_the_ladder_recovers_is_refused[session_resume] ______
         E   AssertionError: a refused start changed a session file: ['e1e9845adec742a9bc07ea2d06dcb6a8.json']
+
+    The sentence points at ``GET /api/sequence/resume-arm``, which now shows
+    the ladder and its step, and at the disarm, which now stops it (#220).
+    RED under mutant "the old sentence" (``_RESUME_RECOVERING`` restored to
+    the H1 text, "wait for it, or disarm auto-resume and start again once the
+    re-centring has finished"), every case, observed verbatim:
+
+        ______ test_a_start_while_the_ladder_recovers_is_refused[sequence_start] ______
+        E   AssertionError: auto-resume is re-centring the mount after a restart and will start its armed session when that is done: wait for it, or disarm auto-resume and start again once the re-centring has finished.
+        E   assert 'get /api/sequence/resume-arm' in 'auto-resume is re-centring the mount after a restart and will start its armed session when that is done: wait for it, or disarm auto-resume and start again once the re-centring has finished.'
+
+    and the same two lines under ``[flow_fresh]``, ``[flow_continue]``,
+    ``[session_resume]`` and ``[sequence_recover]``.
+
+    It names the disarm and never "press Abort" (H2 spec-fidelity review):
+    while the ladder runs the engine is idle, and neither UI draws an Abort
+    or a STOP for an idle engine, so the operator pressing RUN had no Abort
+    to press; the session list's auto-resume switch is on screen, and the
+    disarm it sends stops the ladder. RED under mutant "the H2 sentence"
+    (``_RESUME_RECOVERING`` restored to "Wait for it, or press Abort, which
+    stops the re-centring before its next step and disarms that session"),
+    every case, observed verbatim:
+
+        ______ test_a_start_while_the_ladder_recovers_is_refused[sequence_start] ______
+        E   AssertionError: auto-resume is re-centring the mount after a restart and will start its armed session when that is done; get /api/sequence/resume-arm reports the step it is on. wait for it, or press abort, which stops the re-centring before its next step and disarms that session; start again once it has stopped.
+        E   assert ("turn that session's auto-resume off" in 'auto-resume is re-centring the mount after a restart and will start its armed session when that is done; get /api/seq...ess abort, which stops the re-centring before its next step and disarms that session; start again once it has stopped.')
+
+    RED under mutant "both named" (the disarm kept and "(or press Abort,
+    which does the same)" in place of "(an abort does the same)"), every
+    case, observed verbatim:
+
+        ______ test_a_start_while_the_ladder_recovers_is_refused[sequence_start] ______
+        E   AssertionError: auto-resume is re-centring the mount after a restart and will start its armed session when that is done; get /api/sequence/resume-arm reports the step it is on. wait for it, or turn that session's auto-resume off, which stops the re-centring before its next step (or press abort, which does the same); start again once it has stopped.
+        E   assert 'press abort' not in 'auto-resume...has stopped.'
     """
     fid = await rig.save_flow(LR)
     one = await _night_one(rig, fid)
@@ -220,7 +254,16 @@ async def test_a_start_while_the_ladder_recovers_is_refused(rig, arm, route):
     assert detail["code"] == "resume_recovering", detail
     words = detail["detail"].lower()
     assert "auto-resume" in words and "re-centring" in words, words
-    assert "disarm" in words and "wait" in words, words
+    # THE SENTENCE POINTS AT SOMETHING THE OPERATOR CAN USE (#220): the route
+    # that shows the ladder and its step, and the disarm, which stops it and
+    # is the one control both UIs draw for that session while the ladder
+    # runs. Never "press Abort": neither UI draws an Abort or a STOP while
+    # no run is live, and the ladder is no run.
+    assert "get /api/sequence/resume-arm" in words, words
+    assert ("turn that session's auto-resume off" in words
+            and "stops the re-centring" in words), words
+    assert "press abort" not in words, words
+    assert "wait" in words, words
     assert refused_starts == [], (
         f"a refused start reached engine.start: {refused_starts}")
     assert after_files == before_files, (
@@ -242,10 +285,11 @@ async def test_control_with_no_ladder_running_each_route_starts(rig, arm,
     RED under mutant "the helper always refuses" (``if resume_arm.recovering``
     -> ``if True``), every case, on the route under test and not in the setup
     (which is why ``_night_one`` makes the session without a route). Observed
-    verbatim for the first; the other four are the same line:
+    verbatim for the first, re-run on the sentence as the H2 spec-fidelity
+    review left it; the other four are the same line:
 
         ____ test_control_with_no_ladder_running_each_route_starts[sequence_start] ____
-        E   AssertionError: {"detail":{"detail":"Auto-resume is re-centring the mount after a restart and will start its armed session when that is done: wait for it, or disarm auto-resume and start again once the re-centring has finished.","code":"resume_recovering"}}
+        E   AssertionError: {"detail":{"detail":"Auto-resume is re-centring the mount after a restart and will start its armed session when that is done; GET /api/sequence/resume-arm reports the step it is on. Wait for it, or turn that session's auto-resume off, which stops the re-centring before its next step (an abort does the same); start again once it has stopped.","code":"resume_recovering"}}
         E   assert 409 == 200
     """
     fid = await rig.save_flow(LR)

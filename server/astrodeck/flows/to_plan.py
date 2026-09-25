@@ -37,9 +37,8 @@ from typing import Any, Literal, Sequence
 
 from ..catalog.coords import parse_dec, parse_ra
 from ..sequence.models import ActionKind, SequencePlan, TriggerKind
-from . import identity
+from . import identity, tonight
 from .models import FlowGraph
-from .tonight import catalog_coords
 
 #: The engine's real vocabularies, read off the ``Literal`` types rather than
 #: retyped. A hand-copied list is a claim that silently stops being true the
@@ -493,11 +492,18 @@ def _target_schedule(base: dict, entry: dict, *, is_pool: bool) -> dict:
     return sched
 
 
-def _coords(entry: dict, when: float | None) -> tuple[float, float] | None:
-    """``(ra_hours, dec_deg)`` for one compiled target entry, or ``None``.
+def _coords(entry: dict, when: float | None
+            ) -> tuple[float, float, str | None] | None:
+    """``(ra_hours, dec_deg, canonical)`` for one compiled target entry, or
+    ``None``.
 
-    A plain TARGET carries sexagesimal text; a POOL member carries only a name
-    and is resolved against the shipped catalogue.
+    A plain TARGET carries sexagesimal text, and ``canonical`` is None: its
+    field is what was typed. A POOL member, or a TARGET with only a name,
+    is resolved against the shipped catalogue through
+    ``tonight.resolve_target``, and ``canonical`` is the catalogue's
+    canonical identity for the name, which ``_identify`` keys a TARGET on
+    (#229). One call answers both, so the coordinates the run points at and
+    the identity its ids carry are the same row.
 
     NEVER INVENTS (0, 0). ``Target`` accepts it happily and ``calibration``
     defaults to False, so the engine would slew there - and 0h/0deg is below
@@ -505,16 +511,21 @@ def _coords(entry: dict, when: float | None) -> tuple[float, float] | None:
     naming a target they never entered.
 
     "Typed" is ``identity.typed_coordinates``, the same test ``_identify``
-    keys by: an entry resolved by name here is keyed on its name there
-    (#189 A5), and the two must never read one entry differently.
+    keys by: an entry resolved by name here is keyed on its name's identity
+    there (#189 A5), and the two must never read one entry differently.
     """
     if identity.typed_coordinates(entry):
         try:
-            return parse_ra(str(entry["ra"])), parse_dec(str(entry["dec"]))
+            return parse_ra(str(entry["ra"])), parse_dec(str(entry["dec"])), None
         except (TypeError, ValueError):
             return None
     name = str(entry.get("name") or "").strip()
-    return catalog_coords(name, when) if name else None
+    # Looked up on the module at call time, never bound here by name, so a
+    # test that replaces `tonight.resolve_target` replaces it for this and
+    # for `progress._single` at once: two bindings of one resolver could let
+    # a test pass with the two sides reading different catalogues.
+    hit = tonight.resolve_target(name, when) if name else None
+    return None if hit is None else (hit.ra_hours, hit.dec_deg, hit.identity)
 
 
 def _cycle_steps(step: dict, target_name: str, index: int) -> list[dict]:
@@ -602,8 +613,14 @@ def _steps(entry: dict, target_name: str, out: list[dict]) -> list[dict]:
 
 
 def _identify(target: dict, entry: dict, *, flow_id: str, is_pool: bool,
-              members_seen: dict[str, set[str]]) -> None:
+              members_seen: dict[str, set[str]],
+              canonical: str | None = None) -> None:
     """Give ``target`` and its steps deterministic ids, in place (spec 3.3).
+
+    ``canonical`` is the catalogue's canonical identity for the entry's name,
+    as ``_coords`` resolved it, or None for typed coordinates. A single
+    TARGET with only a name is keyed on it (#229); a POOL member keeps its
+    typed-name key, which the ruling left alone.
 
     Every step arrives carrying its stage's ``node_id`` (the compile put it
     there); it is taken off here whatever happens, because it is a compile
@@ -635,11 +652,14 @@ def _identify(target: dict, entry: dict, *, flow_id: str, is_pool: bool,
         # A single TARGET is its block's 1x1 grid, keyed on the geometry it is
         # at NOW. S1 has no anchor, so any move re-keys and the counts restart;
         # S3 keys on the anchor and carries a small nudge. A TARGET with only
-        # a NAME is keyed on the name instead: its geometry is the catalogue's
-        # answer at `when`, which moves (#189 A5). `target_key` decides which,
-        # and `progress._single` asks it the same question.
+        # a NAME is keyed on the catalogue's canonical identity for it
+        # instead: its geometry is the catalogue's answer at `when`, which
+        # moves (#189 A5), and the name as typed is one spelling of many
+        # (#229). `target_key` decides which, and `progress._single` asks it
+        # the same question with the same resolver's answer.
         key = identity.target_key(entry, target["ra_hours"],
-                                  target["dec_deg"], target["rotation_deg"])
+                                  target["dec_deg"], target["rotation_deg"],
+                                  canonical=canonical)
         tid = identity.target_id(identity.group_id(flow_id, node_id, key), 0, 0)
     target["id"] = tid
     seen: Counter[tuple[str, str]] = Counter()
@@ -1141,7 +1161,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                 "name this catalogue knows; a target needs an RA and Dec that "
                 "parse", "danger"))
             continue
-        ra_hours, dec_deg = coords
+        ra_hours, dec_deg, canonical = coords
 
         # NEGATIVE MEANS "NO ANGLE CONSTRAINT". 0 IS A POSITION ANGLE.
         #
@@ -1179,7 +1199,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             # keys in step is how that happens.
             target["acquisition"] = "cycle"
         _identify(target, entry, flow_id=flow_id, is_pool=is_pool,
-                  members_seen=members_seen)
+                  members_seen=members_seen, canonical=canonical)
         targets.append(target)
         pooled += 1 if is_pool else 0
 

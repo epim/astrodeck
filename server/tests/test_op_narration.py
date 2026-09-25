@@ -163,11 +163,25 @@ async def test_binning_is_refused_while_the_guider_is_active():
 
 @native_only
 @pytest.mark.asyncio
-async def test_build_native_guider_reads_the_persisted_camera_settings():
+async def test_build_native_guider_reads_the_persisted_camera_settings(
+        monkeypatch, tmp_path):
     """The dial's PUT persists to config; a guider built after a reconnect must
-    come up with those values, not the historical constructor constants."""
+    come up with those values, not the historical constructor constants.
+
+    On a store of the test's own - the singleton repointed at a file under
+    tmp_path with its cache dropped, both through monkeypatch - because
+    `set_guide` writes the process-wide config, and this left 3.5 s, gain 222
+    and bin 2 on it for every later test on the worker (#227).
+
+    Without the two lines, the conftest guard errors at teardown
+    (1 in this file alone, observed): "test_build_native_guider_reads_the_persisted_camera_settings
+    left the process-wide config changed: guide.binning,
+    guide.exposure_s, guide.gain."
+    """
     from astrodeck.config import config_store
     from astrodeck.guide.native import build_native_guider
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
     gc = config_store.cfg().guide.model_copy(
         update={"exposure_s": 3.5, "gain": 222, "binning": 2})
     config_store.set_guide(gc)

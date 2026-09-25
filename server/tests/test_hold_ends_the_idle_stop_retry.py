@@ -25,10 +25,14 @@ cancels and awaits the retry before it turns tracking on.
 
 THE HARNESS is `test_idle_stop_retry_clock`'s direct one: the real
 `_idle_stop_retry` task on the simulator's mount, with the interval cut to a
-fraction of a second, and a mount double on which the inline first stop is
-not taken (so the retry is handed the stop) while the retry's own stop lands.
-Each case then calls the route under test directly, as the hold does, and
-waits several retry intervals.
+fraction of a second, and a mount double on which the spell's first stop is
+not taken (so the task goes on to retry) while every retry's stop lands. The
+first stop is the task's own first act since #216, where it used to be made
+inline by `_idle_park_hold`, so the double tells it apart by order rather
+than by task, and `_a_retry_alive` waits for it to be over. Each case then
+calls the route under test directly, as the hold does, and waits several
+retry intervals. Every mutant quoted below was run again on the reworked
+double, and each failure read as it is quoted.
 """
 from __future__ import annotations
 
@@ -59,20 +63,23 @@ def _target(name: str, ra: float, dec: float) -> Target:
 
 class _Mount:
     """The simulator's mount, with every ``set_tracking`` recorded as (what
-    took effect, which task) and the inline first stop not taken, so the idle
-    park-hold hands the stop to the retry task. The retry's own stop lands."""
+    took effect, which task) and the spell's first stop not taken, so the
+    idle-stop task goes on to retry. Every later stop lands."""
 
     def __init__(self, hub, monkeypatch):
         self.tel = hub.devices["telescope"]
         self._real = self.tel.set_tracking
         self.effects: list[tuple[str, str]] = []
+        #: the spell's first stop has been asked for, and refused
+        self.refused = False
         monkeypatch.setattr(self.tel, "set_tracking", self._set_tracking)
 
     async def _set_tracking(self, on):
         task = asyncio.current_task()
         who = ("retry" if task is not None
                and task.get_name() == "idle-stop-retry" else "engine")
-        if not on and who != "retry":
+        if not on and not self.refused:
+            self.refused = True
             raise asyncio.TimeoutError()     # the first attempt: not taken
         await self._real(bool(on))
         self.effects.append(("on" if on else "off", who))
@@ -89,11 +96,22 @@ class _Mount:
 
 
 async def _a_retry_alive(engine, mount: _Mount) -> asyncio.Task:
-    """The idle park-hold's stop, not taken, handed to the retry task."""
+    """The idle park-hold's stop, not taken, and the task that made it gone
+    on to its retry loop: the first attempt over, read back as still
+    tracking, and the unconfirmed-stop flag raised just before the loop's
+    first sleep."""
     await mount.track(True)
     await engine._idle_park_hold("the next target is a long wait away")
     task = engine._idle_stop_task
     assert task is not None and not task.done(), "premise: a retry is alive"
+    for _ in range(200):
+        if engine._idle_hold_retrying:
+            break
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)                  # into the loop's sleep
+    assert mount.refused and engine._idle_hold_retrying, (
+        "premise: the task made its first attempt and found it not taken")
+    assert not task.done(), "premise: a retry is alive"
     assert mount.tracking(), "premise: the first stop was not taken"
     return task
 
@@ -127,6 +145,11 @@ async def test_a_hold_repoint_ends_the_retry_before_it_slews(
     mount = _Mount(sim_hub, monkeypatch)
     task = await _a_retry_alive(engine, mount)
     bravo = _target("Bravo", _ra_at(-2.0, time.time()), 60.0)
+    # A hold always has its plan: the re-point arms the held target's own
+    # flip latch from it (#224). Flips off, so nothing here is about a flip.
+    engine.plan = SequencePlan(name="repoint", guide=False, dither_every=0,
+                               autofocus_every=0, meridian_flip=False,
+                               targets=[bravo])
     try:
         mark = len(mount.effects)
         await engine._hold_repoint(bravo, elsewhere=True)

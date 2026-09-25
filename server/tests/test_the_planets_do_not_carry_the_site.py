@@ -66,9 +66,23 @@ def _unset_site():
 
 
 @pytest.fixture(autouse=True)
-def _a_configured_site():
+def _a_configured_site(monkeypatch, tmp_path):
     """Every test here needs a REAL site, because the leak only exists when
-    there is one to leak. An unconfigured rig has always been geocentric."""
+    there is one to leak. An unconfigured rig has always been geocentric.
+
+    ON A STORE OF THE TEST'S OWN, the way ``_simhub.sim_hub`` makes one: the
+    singleton repointed at a file under ``tmp_path`` with its cache dropped,
+    both through monkeypatch. ``set_site`` writes the process-wide config, and
+    this file used to leave SITE_B - or an unset site - on it for every later
+    test on the worker (#227).
+
+    Without the two lines, the conftest guard errors at teardown
+    (6 in this file alone, observed): "test_the_ephemeris_cache_does_not_cross_the_capability_boundary
+    left the process-wide config changed: site.elevation_m,
+    site.latitude, site.longitude."
+    """
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
     _set_site(*SITE_A)
     yield
     region._reset_ephemeris_cache()

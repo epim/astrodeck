@@ -22,9 +22,14 @@ WHAT IS IN AN ID, AND WHAT IS LEFT OUT, IS THE DESIGN. Each choice is a rule:
   and for a planet, the Moon or a comet that answer moves by the hour (a
   deep-sky name resolves to a fixed J2000 row, which does not), so keyed on
   it the ids moved with it and the campaign restarted on every compile. Such
-  a TARGET is keyed on its name instead (``name_key``), with the angle and
-  the grid still in the key and a namespace that keeps a name key from ever
-  equalling a geometry key.
+  a TARGET is keyed on the catalogue's CANONICAL IDENTITY for the name
+  instead (``name_key``, #229): the row's catalogue id for a fixed row, the
+  canonical body name for a moving one. Not on the name as typed, because
+  "M 31", "M31" and "m31" are one object and a spelling edit must not
+  restart its campaign. The caller resolves the name
+  (``tonight.resolve_target``) and passes the identity in, so this module
+  stays pure. The angle and the grid are still in the key, and a namespace
+  keeps a name key from ever equalling a geometry key.
 * the exposure RECIPE is in: frame type, filter, exposure, gain, binning. Two
   recipes must never share a count (#77); 60 s frames do not stand in for
   180 s ones.
@@ -73,8 +78,10 @@ ROTATION_PLACES = 3
 FOV_PLACES = 5
 
 #: Decimal places a step's exposure (seconds), gain and binning are spelled to
-#: in its id: the exposure to the millisecond (#189 A6). See ``_spelled``.
-STEP_PLACES = 3
+#: in its id: the exposure to the MICROSECOND (#189, H2), and gain and binning
+#: share the same six places because all three go through ``_spelled``. See
+#: ``_spelled`` for why three places were not enough.
+STEP_PLACES = 6
 
 #: What a key made from a TARGET's NAME starts with. A geometry key is 16
 #: lowercase hex characters and nothing else, so a key that starts with this
@@ -166,9 +173,11 @@ def canonical_name(name: str, rotation_deg: float | None, *,
     """The exact text ``name_key`` hashes: ``canonical_geometry`` with
     ``name`` where ``ra_hours`` and ``dec_deg`` were, and the angle and grid
     spelled by the same ``_shape``. ``json.dumps`` escapes every non-ASCII
-    character, so the text is ASCII and a name typed in any script keys the
-    same on every machine. The name is taken as given; the caller strips it,
-    the way ``to_plan`` names the target."""
+    character, so the text is ASCII and a name in any script (or a typed
+    position's id, which carries a degree sign) keys the same on every
+    machine. ``name`` is taken as given: for a TARGET it is the catalogue's
+    canonical identity, which ``target_key`` is handed by its caller, never
+    the name the operator typed."""
     return json.dumps({
         "name": str(name),
         **_shape(rotation_deg, rows, cols, overlap, fov_x, fov_y),
@@ -204,7 +213,7 @@ def typed_coordinates(entry: dict) -> bool:
 
 
 def target_key(entry: dict, ra_hours: float, dec_deg: float,
-               rotation_deg: float | None) -> str:
+               rotation_deg: float | None, *, canonical: str | None) -> str:
     """The key a single TARGET's group id is made from, decided from its
     compiled ``entry``. The ONE place this is decided: ``to_plan._identify``
     mints the id through it and ``progress._single`` finds the id again
@@ -212,11 +221,22 @@ def target_key(entry: dict, ra_hours: float, dec_deg: float,
     banked" against the ledger of a live campaign.
 
     Typed coordinates: ``geometry_key`` of the field, as S1 keyed every
-    TARGET. A name and no typed coordinates: ``name_key`` of the name. The
-    coordinates passed in are then the catalogue's answer at the compile's
-    ``when``, and that answer moves: keyed on it, every compile named new
-    steps and night two banked on nothing night one shot (#189 A5). The name
-    is stripped, as ``to_plan`` strips it to name the target.
+    TARGET, and ``canonical`` is not read. A name and no typed coordinates:
+    ``name_key`` of ``canonical``, the catalogue's canonical identity for the
+    name (``tonight.resolve_target``: the catalogue id of a fixed row, the
+    canonical body name of a moving one), which the caller resolved (#229).
+    The coordinates passed in are then the catalogue's answer at the
+    compile's ``when``, and that answer moves: keyed on it, every compile
+    named new steps and night two banked on nothing night one shot (#189 A5).
+    Keyed on the name as typed, "M 31" and "M31" were two campaigns of one
+    object, and a spelling edit restarted the counts.
+
+    REFUSES TO GUESS. A name-keyed entry with no ``canonical`` raises
+    ``ValueError`` rather than falling back to the typed name or to the
+    geometry: either fallback mints an id the other side of the seam does not
+    (``to_plan`` drops an entry the catalogue cannot resolve before keying it,
+    and ``progress._single`` does not ask), so a caller that forgot to resolve
+    would name steps no ledger holds.
 
     ``rotation_deg`` is keyed either way, as the target carries it (None for
     any angle), so setting an angle re-frames a named field as it re-frames a
@@ -224,7 +244,15 @@ def target_key(entry: dict, ra_hours: float, dec_deg: float,
     single-target shape; S3 passes the block's grid to the same two keys."""
     name = str(entry.get("name") or "").strip()
     if name and not typed_coordinates(entry):
-        return name_key(name, rotation_deg)
+        # Keyed AS GIVEN: the resolver hands back a trimmed catalogue id, and
+        # a second trim here would hide a caller that asked the catalogue
+        # about an untrimmed name. Blank is no identity at all.
+        if canonical is None or not str(canonical).strip():
+            raise ValueError(
+                f"TARGET {name!r} has no typed coordinates, so it is keyed on "
+                f"the catalogue's canonical identity for its name, and none "
+                f"was given: resolve the name (tonight.resolve_target) first")
+        return name_key(str(canonical), rotation_deg)
     return geometry_key(ra_hours, dec_deg, rotation_deg)
 
 
@@ -262,18 +290,24 @@ def _spelled(value) -> str:
     zeros and a bare trailing point trimmed, so 180, 180.0 and "180" are one
     exposure and 60.1 is "60.1".
 
-    TO THE MILLISECOND (#189 A6). This used to be ``{:g}``, which keeps six
-    significant digits: every exposure of 1000 s or more lost its
+    TO THE MICROSECOND (#189: A6, then H2). This used to be ``{:g}``, which
+    keeps six significant digits: every exposure of 1000 s or more lost its
     milliseconds, and 1234.567 s and 1234.568 s were both "1234.57", two
-    recipes on one count (#77). Gain and binning go through the same
-    spelling, which writes an integral value as the integer ("100", never
-    "100.0") and keeps three places of anything else, so gain 100.5 and 100.4
-    stay two recipes. Negative zero is folded by ``fixed``.
+    recipes on one count (#77). A6 spelled it to the millisecond, which did
+    the same to the other end of the range: a planetary or lunar sub is a
+    fraction of a millisecond, and three places wrote 0.0005 s and 0.001 s
+    both as "0.001" and 0.0001 s as "0", so two of those three recipes shared
+    a count. Six places keep every one of them apart and still write
+    1234.5678 s whole. Gain and binning go through the same spelling and
+    share the six places: an integral value is written as the integer
+    ("100", never "100.0") and anything else keeps up to six places, so gain
+    100.5 and 100.4 stay two recipes. Negative zero, and a negative that
+    rounds to it at six places, is folded by ``fixed``.
 
     NO MIGRATION. Every value S1's golden vectors and the shipped examples
-    use spells the same both ways, and no S1 id exists in the wild: nothing
-    S1 minted has been deployed, so no stored ledger holds a step id this
-    moves.
+    use spells the same all three ways, and no S1 or H1 id exists in the
+    wild: nothing they minted has been deployed, so no stored ledger holds a
+    step id this moves.
 
     A value that is not a number is kept as its text; the plan's own
     validation refuses it later, and this must not raise a different error

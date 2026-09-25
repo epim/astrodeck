@@ -155,15 +155,16 @@ class TestGoldenVectors:
             uuid.uuid5(ns, "flow-golden/p1/member/M31#1").hex
 
     def test_step_ids(self):
-        """The numbers spelled to the millisecond, and no filter reads as
+        """The numbers spelled to the microsecond, and no filter reads as
         empty.
 
         THESE THREE VECTORS DID NOT MOVE when the millisecond spelling replaced
-        ``{:g}`` (#189 A6), and they are left exactly as S1 pinned them to show
-        it: every value here spells the same both ways (180.0 is "180", 0.5 is
+        ``{:g}`` (#189 A6), nor when the microsecond replaced the millisecond
+        (H2), and they are left exactly as S1 pinned them to show it: every
+        value here spells the same all three ways (180.0 is "180", 0.5 is
         "0.5", gain 100 and binning 1 and 2 are integers). The spelling only
-        differs where ``{:g}`` ran out of its six significant digits, which
-        ``test_a_millisecond_exposure_is_its_own_vector`` pins.
+        differs where ``{:g}`` ran out of its six significant digits, or three
+        places ran out of decimals, which the two tests below pin.
 
         Mutant "filter None spelled 'None'" (``str(filter)``) failed the third
         assertion:
@@ -201,6 +202,41 @@ class TestGoldenVectors:
                                 exposure_s=1234.567, gain=100, binning=1) == \
             "9873bfe77f9457cfbb9574838f36ddcd" == \
             uuid.uuid5(ns, f"{t}/c1/Light/L/1234.567/100/1/0").hex
+
+    def test_microsecond_exposures_are_their_own_vectors(self):
+        """RE-PINNED ON PURPOSE for the microsecond (H2, #189). Two new
+        vectors, each where three places and six spell differently:
+
+        * 0.0005 s, a planetary sub, is "0.0005". Three places wrote it
+          "0.001", the spelling of 0.001 s, so the two shared a count; the
+          0.001 s vector beside it shows they are now two ids.
+        * 1234.5678 s is "1234.5678", whole. Three places rounded it to
+          "1234.568"; this is the exposure spec 3.3 quotes.
+
+        Each expected id was computed from the hand-written string with plain
+        ``uuid.uuid5``, not through ``identity``. No S1 or H1 id is deployed,
+        so no stored ledger holds the three-place ids these replace, and no
+        migration is owed.
+
+        Mutant "STEP_PLACES = 3" failed on the first vector, 0.0005 s
+        taking 0.001 s's id:
+            AssertionError: assert 'f5aad0f086f0...d34d8933d107e' ==
+            'c201d45c386f...538cdfdf45315'
+              - c201d45c386f5b94b01538cdfdf45315
+              + f5aad0f086f050a78ddd34d8933d107e
+        """
+        ns = identity.NS_FLOWS
+        t = "be28a6f009bc59fa9bc73e86f46aa004"
+
+        def sid(exposure):
+            return identity.step_id(t, "c1", frame_type="Light", filter="L",
+                                    exposure_s=exposure, gain=100, binning=1)
+        assert sid(0.0005) == "c201d45c386f5b94b01538cdfdf45315" == \
+            uuid.uuid5(ns, f"{t}/c1/Light/L/0.0005/100/1/0").hex
+        assert sid(0.001) == "f5aad0f086f050a78ddd34d8933d107e" == \
+            uuid.uuid5(ns, f"{t}/c1/Light/L/0.001/100/1/0").hex
+        assert sid(1234.5678) == "cb0824d7afd1529a8c87ca1cf698d396" == \
+            uuid.uuid5(ns, f"{t}/c1/Light/L/1234.5678/100/1/0").hex
 
     # A TARGET keyed on its NAME (#189 A5): a name, no typed coordinates, the
     # 1x1 single-target shape, any angle; then the same at PA 90.
@@ -280,13 +316,16 @@ def _spelled(**recipe):
 
 
 class TestStepSpelling:
-    """How a step's numbers are spelled in its id (#189 A6).
+    """How a step's numbers are spelled in its id (#189 A6, then H2).
 
     ``{:g}`` kept six significant digits, so every exposure of 1000 s or more
     lost its milliseconds and two recipes could share a count (#77): 1234.567 s
-    and 1234.568 s were both "1234.57". The exposure is now spelled to the
-    millisecond, and gain and binning as integers when integral, otherwise to
-    three places. Nothing S1 minted is deployed, so no stored id moves."""
+    and 1234.568 s were both "1234.57". A6 spelled the exposure to the
+    millisecond, which folded the other end instead: 0.0005 s and 0.001 s were
+    both "0.001". It is now spelled to the microsecond (``STEP_PLACES`` = 6),
+    and gain and binning share the six places: integers when integral,
+    otherwise up to six decimals. Nothing S1 or H1 minted is deployed, so no
+    stored id moves."""
 
     T = "be28a6f009bc59fa9bc73e86f46aa004"
 
@@ -310,6 +349,27 @@ class TestStepSpelling:
         assert _spelled(exposure_s=1234.567) == "1234.567/100/1"
         assert _spelled(exposure_s=1234.568) == "1234.568/100/1"
 
+    def test_sub_millisecond_exposures_are_three_steps(self):
+        """0.1 ms, 0.5 ms and 1 ms are three recipes: a planetary or lunar
+        sub is a fraction of a millisecond, and a count must not be shared
+        between two of them (#77). Integral values still spell as integers:
+        an exposure of 180 s is "180" and gain 100 is "100" at six places, so
+        every id S1 minted for a whole-second recipe is unchanged.
+
+        Mutant "STEP_PLACES = 3" failed, 0.5 ms and 1 ms both "0.001" and
+        0.1 ms "0":
+            AssertionError: assert 2 == 3
+             +  where 2 = len({'273613ec341a59789209888a5dc25afc',
+             'c267b28a5ae552ac93689ae290f6363e'})
+        """
+        ids = {self._sid(exposure_s=e) for e in (0.0001, 0.0005, 0.001)}
+        assert len(ids) == 3
+        assert [_spelled(exposure_s=e).split("/")[0]
+                for e in (0.0001, 0.0005, 0.001)] == ["0.0001", "0.0005",
+                                                      "0.001"]
+        assert _spelled(exposure_s=180, gain=100) == "180/100/1"
+        assert _spelled(exposure_s=180.0, gain=100.0) == "180/100/1"
+
     @pytest.mark.parametrize("field, value, spelled", [
         ("exposure_s", 180, "180"),
         ("exposure_s", 180.0, "180"),
@@ -317,30 +377,40 @@ class TestStepSpelling:
         ("exposure_s", 1000, "1000"),         # integer zeros are not trimmed
         ("exposure_s", 3600.0, "3600"),
         ("exposure_s", 0.5, "0.5"),
-        ("exposure_s", 60.1, "60.1"),         # "60.100", zeros trimmed
+        ("exposure_s", 60.1, "60.1"),         # "60.100000", zeros trimmed
         ("exposure_s", 0.05, "0.05"),
-        ("exposure_s", 1234.5678, "1234.568"),  # to the millisecond
-        ("exposure_s", 0.0004, "0"),          # under a millisecond
+        # RE-PINNED (H2): whole at six places; three wrote "1234.568".
+        ("exposure_s", 1234.5678, "1234.5678"),
+        # NEW: rounded at the sixth place, then its zero trimmed.
+        ("exposure_s", 1234.5678901, "1234.56789"),
+        # RE-PINNED (H2): a sub-millisecond is kept; three wrote "0".
+        ("exposure_s", 0.0004, "0.0004"),
+        # NEW: under a microsecond is what now spells "0".
+        ("exposure_s", 0.0000004, "0"),
         ("exposure_s", -0.0, "0"),            # negative zero folded
-        ("exposure_s", -0.0004, "0"),         # ...and what rounds to it
+        # RE-PINNED (H2): -0.0004 is "-0.0004" at six places, no longer a
+        # negative that rounds to zero; this is the one that does.
+        ("exposure_s", -0.0000004, "0"),
         ("exposure_s", "abc", "abc"),         # not a number: kept as text
         ("gain", 100, "100"),
         ("gain", 100.0, "100"),
         ("gain", "100", "100"),
         ("gain", 100.5, "100.5"),
         ("gain", 100.25, "100.25"),
+        # NEW: gain shares the six places; three wrote "100".
+        ("gain", 100.0005, "100.0005"),
         ("binning", 2, "2"),
         ("binning", 2.0, "2"),
         ("binning", "2", "2"),
     ])
     def test_each_number_is_spelled(self, field, value, spelled):
-        """The spelling, value by value: fixed three places, then trailing
+        """The spelling, value by value: fixed six places, then trailing
         zeros and a bare trailing point trimmed.
 
-        Mutant "no trim" (the fixed three-place text returned as is) failed 19
-        of the 21 rows, every one but 1234.5678 (nothing to trim) and "abc":
+        Mutant "no trim" (the fixed six-place text returned as is) failed 23
+        of the 24 rows, every one but "abc":
             AssertionError: exposure_s=180
-            assert '180.000' == '180'
+            assert '180.000000' == '180'
         Mutant "bare point kept" (``rstrip("0")`` without ``rstrip(".")``)
         failed the 14 rows that spell an integer, zero included:
             AssertionError: exposure_s=180
@@ -349,10 +419,16 @@ class TestStepSpelling:
         whose integer ends in a zero, eating the integer's own zeros:
             AssertionError: exposure_s=1000
             assert '1' == '1000'
-        Mutant "no -0 fold" (formatted with ``f"{float(value):.3f}"`` rather
+        Mutant "no -0 fold" (formatted with ``f"{float(value):.6f}"`` rather
         than through ``fixed``) failed the two negative rows:
             AssertionError: exposure_s=-0.0
             assert '-0' == '0'
+        Mutant "STEP_PLACES = 3" failed the four rows six places exist for
+        (1234.5678, 1234.5678901, 0.0004 and gain 100.0005), for example:
+            AssertionError: exposure_s=1234.5678
+            assert '1234.568' == '1234.5678'
+            AssertionError: gain=100.0005
+            assert '100.001' == '100.0005'
         """
         base = {"exposure_s": 60, "gain": 100, "binning": 1}
         base[field] = value

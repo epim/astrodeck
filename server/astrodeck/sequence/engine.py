@@ -447,6 +447,26 @@ async def _bounded(awaitable, timeout_s: float, what: str, *, note: str = ""):
         raise _timeout_abort(what, timeout_s, note)
 
 
+def _reraise_swallowed_cancel() -> None:
+    """Raise ``CancelledError`` if the current task was cancelled and the call
+    it just came back from ate the cancel.
+
+    A coroutine that awaits a task of its own under
+    ``suppress(CancelledError)`` eats a cancel meant for its caller too: the
+    caller's cancel is passed on to the task it is waiting on, and the
+    CancelledError that comes back is suppressed with the task's own. The
+    native guider's ``stop_guiding`` does exactly that with its guide loop.
+    The caller then runs on as if nothing had been asked, while whoever
+    cancelled it waits for it to finish. ``Task.cancelling()`` still counts
+    the request, so asking it after such a call restores the cancel. Only
+    the idle-stop task asks it so far; the guider's stop itself, and the run
+    task's own calls to it, are #235.
+    """
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        raise asyncio.CancelledError()
+
+
 def _mint_report_id(plan_name: str, started_at: float, taken: list[str]) -> str:
     """Collision-safe per-night report id (spec §4): ``slug-YYYYMMDD-HHMMSS``,
     suffixed ``-2``/``-3``/... when this session already minted that id (same
@@ -687,6 +707,11 @@ class SequenceEngine:
         #: is where the AM5 leaves a goto taken inside the flip-lead window,
         #: because it picks its side from the hour angle.
         self._pre_flip_side: dict[str, str] = {}
+        #: Targets whose flip this run the engine MEASURED (#222): the flip
+        #: gate read both pier sides, readable and different. Their record is
+        #: cleared and none is written again this run: one pre-flip side per
+        #: flip cycle, and this target's cycle is over. Cleared at run start.
+        self._flip_cycle_closed: set[str] = set()
         #: True while `_enforce_flip_owed` is refusing to open the shutter.
         #: Published in the status block as `meridian.flip_owed`.
         self._flip_owed = False
@@ -720,9 +745,10 @@ class SequenceEngine:
         #: True once a stop this idle spell went unconfirmed, so the warning is
         #: said once per spell; cleared with the latch by `_setup_target`.
         self._idle_hold_retrying = False
-        #: The task asking again, on its own clock, for a stop the mount did
-        #: not confirm (`_idle_stop_retry`). None when nothing is owed. Every
-        #: path that ends the spell cancels AND awaits it before it goes on
+        #: The task that makes the idle stop, reads it back and asks again on
+        #: its own clock until the mount confirms it (`_idle_stop_retry`,
+        #: #189 A3, #216). None, or done, when nothing is owed. Every path
+        #: that ends the spell cancels AND awaits it before it goes on
         #: (`_cancel_idle_stop_retry`), above all `_setup_target` before it
         #: restores tracking.
         self._idle_stop_task: asyncio.Task | None = None
@@ -785,11 +811,27 @@ class SequenceEngine:
         # probe frames a hold takes while the science camera is otherwise idle.
         self._clouds = CloudState()
         self._holding_for_clear = False
-        # Why a cloud hold has stopped tracking the target it holds ("floor",
-        # "ceiling" or "flip"), or None while the mount tracks it (#203). While
-        # it is set the hold judges no sky: a check frame on a stopped mount is
-        # a streak (#205). Set and cleared only inside `_hold_for_clear`.
+        # Why a cloud hold has stopped tracking, or None while the mount
+        # tracks the target it holds (#203): "ceiling" (the zenith keep-out),
+        # "flip" (a flip point it could not take), or "elsewhere" (the mount
+        # is not on the held target and may not be pointed there yet, #224).
+        # While it is set the hold judges no sky: a check frame on a stopped
+        # mount is a streak (#205). Set and cleared only inside
+        # `_hold_for_clear` and the methods it calls.
         self._hold_parked: str | None = None
+        #: A re-point the mount refused has been said, this stopped spell of
+        #: the hold. Every later look asks again, and says nothing (#224).
+        self._hold_repoint_said = False
+        #: What ``sky.hold_deferred`` publishes while a cloudy sky meets no
+        #: target to hold for in a scheduler wait, or None (#221). It ends
+        #: with the scheduler (`_run`).
+        self._hold_deferred: str | None = None
+        #: That has been said, this wait spell. A target's setup ends it.
+        self._hold_deferred_said = False
+        #: Day darks are asking the safety gate (`_day_darks`). They run after
+        #: the run has ended, so a cloudy verdict there defers no hold and
+        #: publishes nothing (#221).
+        self._day_darks_gate = False
         # The step a cloud probe borrows its filter/gain/binning from. Set on
         # every frame so a hold entered mid-step probes the sky through the SAME
         # optics the science frames used - a probe through a different filter
@@ -955,16 +997,25 @@ class SequenceEngine:
         self._flip_offline_logged = False
         self._flip_no_site_logged = False
         self._pre_flip_side = {}
+        self._flip_cycle_closed = set()
         self._flip_owed = False
         self._tracking_recovered = set()
         self._tracked_target = None
         self._idle_since = 0.0
         self._idle_hold_open = True
         self._idle_hold_retrying = False
-        # `_idle_stop_task` is NOT reset here. A retry still asking for an
+        # `_idle_stop_task` is NOT reset here. A task still asking for an
         # earlier spell's stop is not this run's, but `start` cannot await it:
         # `_run` cancels and awaits it before its first line of work, and
-        # `abort` does if the run is cancelled before it begins.
+        # `abort` does if the run is cancelled before it begins. It IS
+        # cancelled here, because it may not have had its first turn yet: the
+        # stop's first attempt is the task's own first act (#216), and a task
+        # created before this run's task is scheduled before it, so it would
+        # make that attempt, on the mount this run is about to use, before
+        # `_run` reached its cancel. Cancelled now, a task that has not
+        # started never does, and one mid-ask stops at its current await.
+        if self._idle_stop_task is not None:
+            self._idle_stop_task.cancel()
         if tracking is not None:
             # After the reset above, so the reset cannot undo it (#202).
             self._tracked_target = tracking
@@ -1013,6 +1064,8 @@ class SequenceEngine:
         self._fire_state = {}
         self._clouds = CloudState()
         self._holding_for_clear = False
+        self._hold_deferred = None
+        self._hold_deferred_said = False
         self._jumps_spent = 0
         self._pending_skips = set()
         self._dawn_cutoff = False
@@ -1324,8 +1377,10 @@ class SequenceEngine:
             # review, Important #1: no orphaned renders / "destroyed but pending"
             # warnings at interpreter exit).
             await self._drain_thumb_tasks()
-            # The run's own teardown cancelled its idle-stop retry; this covers
-            # a run cancelled before its first turn, which never reached it.
+            # The run's own teardown cancelled its idle-stop task; this covers
+            # one with no run behind it, and a run cancelled before its first
+            # turn, whose `_run` never reached the await for the task `start`
+            # cancelled.
             await self._cancel_idle_stop_retry()
             # A STOPPED RUN IS NOT A PAUSED ONE. `pause()` clears this event
             # and `resume()` sets it; nothing here ever did, and both of them
@@ -1435,6 +1490,12 @@ class SequenceEngine:
         published beside it precisely so a client can render the difference; a
         UI that showed a bare "clear" for a reading nobody had taken would be
         the same lie in a different place.
+
+        ``hold_deferred`` is the other half of ``holding``: a sentence while the
+        sky reads cloudy and there is no target to hold for, so no hold opens
+        (#221, `_note_hold_deferred`), and null otherwise. Without it a wait
+        under a closed sky would publish ``cloudy: true, holding: false`` and
+        leave the reader to guess why nothing is holding.
         """
         now = time.time()
         return {
@@ -1448,6 +1509,7 @@ class SequenceEngine:
                              "reason": self._clouds.last_reason},
             "text": self._clouds.describe(now),
             "holding": self._holding_for_clear,
+            "hold_deferred": self._hold_deferred,
         }
 
     def _set_state(self, **kw: Any) -> None:
@@ -1724,10 +1786,11 @@ class SequenceEngine:
     async def _run(self) -> None:
         plan = self.plan
         assert plan is not None
-        # AN IDLE-STOP RETRY LEFT FROM BEFORE THIS RUN ENDS HERE. Every run
+        # AN IDLE-STOP TASK LEFT FROM BEFORE THIS RUN ENDS HERE. Every run
         # cancels its own at its end, so one alive now was started outside a
-        # run; `start` cannot await, so it is cancelled and awaited here,
-        # before anything of this run can touch the mount.
+        # run; `start` cancelled it but cannot await, so it is awaited here,
+        # before anything of this run can touch the mount: a stop already on
+        # the wire can still land on its way out.
         await self._cancel_idle_stop_retry()
         try:
             self._set_state(state="running", detail=f"starting plan '{plan.name}'",
@@ -1759,17 +1822,44 @@ class SequenceEngine:
             # 2026-08-22 night the run-start warning above was written for —
             # the warning made that night audible, this makes it stoppable.
             skip_detail: str | None = None
-            if plan.cool_to is not None:
-                cooled = await self._cool_and_wait(plan.cool_to, self._policy.cool_timeout_s)
-                # P1-7: require_cooling + cooling_action == "skip" → don't shoot
-                # warm lights. (abort raised SafetyAbort inside _cool_and_wait;
-                # warn/not-required returned and we proceed as before.)
-                cfg = self._cfg
-                if (not cooled and cfg and cfg.escalation.require_cooling
-                        and cfg.escalation.cooling_action == "skip"):
-                    skip_detail = "skipped: camera did not reach target temp"
-            elif self._no_setpoint_must_stop_the_run():
-                skip_detail = "skipped: this run has no target temperature"
+            try:
+                if plan.cool_to is not None:
+                    # `watch=True`: a target `start(tracking=...)` handed this
+                    # run is looked at on every probe (#202, H2 A6).
+                    cooled = await self._cool_and_wait(
+                        plan.cool_to, self._policy.cool_timeout_s, watch=True)
+                    # P1-7: require_cooling + cooling_action == "skip" → don't
+                    # shoot warm lights. (abort raised SafetyAbort inside
+                    # _cool_and_wait; warn/not-required returned and we
+                    # proceed as before.)
+                    cfg = self._cfg
+                    if (not cooled and cfg and cfg.escalation.require_cooling
+                            and cfg.escalation.cooling_action == "skip"):
+                        skip_detail = "skipped: camera did not reach target temp"
+                elif self._no_setpoint_must_stop_the_run():
+                    skip_detail = "skipped: this run has no target temperature"
+                if skip_detail is None:
+                    await self._run_scheduled(plan)
+            finally:
+                # THE WAIT'S NOTE ENDS WITH THE SCHEDULER TOO (#221). It says
+                # the next target's setup opens a hold, and after the scheduler
+                # there is no next target. A run that ended in a cloudy wait (a
+                # dawn cutoff, the last window closing) published its terminal
+                # state with the note still in it, and it stayed published
+                # until the next start. Every ending below publishes, so none
+                # of them carries it. First, and synchronous, so a cancel
+                # landing in the await below cannot skip it.
+                self._hold_deferred = None
+                # THE SPELL ENDS WITH THE COOLING WAIT OR THE SCHEDULER, however
+                # either ends: a natural end, a cooling skip, a safety abort
+                # (the cooling escalation's included), a quality stop, an
+                # operator abort. Every teardown below talks to the mount (the
+                # wind-down parks it), so a task still asking for the idle stop
+                # is stopped first, and awaited, rather than left to interleave
+                # with the park. The cooling wait is inside since it watches
+                # the mount (A6): a stop it decides is made by that task, and a
+                # skip or an abort out of cooling never reaches the scheduler.
+                await self._cancel_idle_stop_retry()
 
             if skip_detail is not None:
                 self._set_state(state="complete", detail=skip_detail,
@@ -1783,16 +1873,6 @@ class SequenceEngine:
                     close_dome=bool(self._cfg
                                     and self._cfg.safety.close_dome_when_done))
                 return
-
-            try:
-                await self._run_scheduled(plan)
-            finally:
-                # THE SPELL ENDS WITH THE SCHEDULER, however it ends: a natural
-                # end, a safety abort, a quality stop, an operator abort. Every
-                # teardown below talks to the mount (the wind-down parks it), so
-                # a retry still asking for the idle stop is stopped first, and
-                # awaited, rather than left to interleave with the park.
-                await self._cancel_idle_stop_retry()
 
             # WHICH ENDING IS THIS? Two facts decide it, and they answer
             # different questions. `owed` says whether the PLAN is unfinished;
@@ -2372,11 +2452,12 @@ class SequenceEngine:
         be let go: after ``WAIT_TEARDOWN_S`` of idle, at once if it has sunk
         below the mount's floor or risen into its zenith keep-out, or at once
         if it reaches its flip point before the next tick. It stops tracking
-        ONCE per idle spell (a latch the next `_setup_target` re-opens; a stop
-        the mount does not confirm is asked again by `_idle_stop_retry` on its
-        own task and clock, never from this loop, so a dead mount link cannot
-        stretch the tick below); the next target's setup re-slews and restores
-        tracking, as it always has after a long wait.
+        ONCE per idle spell (a latch the next `_setup_target` re-opens). The
+        stop is only DECIDED here: the stop itself, its read-back and any
+        retry are made by `_idle_stop_retry` on its own task and clock, never
+        from this loop, so a dead mount link or a wedged guider cannot stretch
+        the tick below (#189 A3, #216); the next target's setup re-slews and
+        restores tracking, as it always has after a long wait.
 
         We also run the safety gate every tick — a wait used to be a safety
         blind spot (the gate only ran per frame/slew), so rain during a
@@ -2405,7 +2486,13 @@ class SequenceEngine:
             await self._checkpoint()
             # weather still matters while idle between targets — pause/abort on a
             # sustained unsafe reading at the poll cadence (target=None: no floor
-            # check, nothing to re-acquire yet).
+            # check, nothing to re-acquire yet). A cloudy sky here opens NO hold
+            # (#221): with no target, a hold has nothing to watch and nothing to
+            # point at, and on a stopped mount every check it took was a streak
+            # read as cloud, so it could only end at its bound. It is said and
+            # published instead (`_note_hold_deferred`), this loop goes on with
+            # the idle park-hold below, and the next target's pre-slew gate opens
+            # a hold for that target if the sky is still shut.
             await self._safety_gate(context="frame")
             # ...and the mount, which the gate above cannot see (#165).
             await self._idle_hold_tick()
@@ -2421,35 +2508,45 @@ class SequenceEngine:
             if remaining <= 0:
                 return
 
-    async def _idle_hold_tick(self) -> None:
+    async def _idle_hold_tick(self, *,
+                              ahead_s: float = SCHEDULE_WAIT_STEP_S) -> None:
         """One idle-clock look at the mount (#165), taken on every
         `_wait_until` tick: stop tracking the target the mount was left on when
         `_idle_hold_reason` has a reason, once per idle spell.
+
+        ``ahead_s`` is how long the caller goes before its next look, which
+        is how far ahead the flip point is looked for: one
+        ``SCHEDULE_WAIT_STEP_S`` from `_wait_until`, one
+        ``COOLER_PROBE_EVERY_S`` from the run-start cooling wait
+        (`_cool_and_wait`, #202).
 
         NOTHING ACQUIRED, NOTHING TO STOP. Before the first `_setup_target` the
         mount is wherever the operator left it (or wherever `start`'s
         ``tracking`` says a caller left it), and the scheduler's planned-wait
         rule still covers a long first wait exactly as it always has.
 
-        A STOP THE MOUNT DID NOT CONFIRM IS NOT ASKED AGAIN FROM HERE (#189
-        A3). It used to be, on the very next tick, and on a dead link one ask
-        is a ``set_tracking(False)`` and a read-back that each hang for
-        ``MOUNT_QUERY_TIMEOUT_S``: the safety gate above this call then ran
-        once a minute instead of every ``SCHEDULE_WAIT_STEP_S``, for as long
-        as the link stayed dead, which is weather unwatched on exactly the
-        night something is already wrong. The retry is `_idle_stop_retry`'s,
-        on its own task and its own clock, and this tick never awaits it. The
-        latch stays closed while it runs, so this tick decides no second stop
-        either. The first attempt is still made here (#216).
+        NO STOP IS MADE FROM HERE, not the first and not a retry (#189 A3,
+        #216). On a dead link the first attempt is a guider stop bounded by
+        ``GUIDE_OP_TIMEOUT_S``, then a ``set_tracking(False)`` and a read-back
+        that each hang for ``MOUNT_QUERY_TIMEOUT_S``, and every retry is the
+        last two again. Made from this tick, they held the safety gate above
+        it for three minutes once per spell and for a minute at every retry
+        after that, instead of letting it run every ``SCHEDULE_WAIT_STEP_S``:
+        weather unwatched on exactly the night something is already wrong.
+        `_idle_park_hold` decides the stop and closes the latch; the stop
+        itself is `_idle_stop_retry`'s, on its own task and its own clock, and
+        this tick never awaits it.
         """
         target = self._tracked_target
         if target is None or not self._idle_hold_open:
             return
-        why = await self._idle_hold_reason(target)
+        why = await self._idle_hold_reason(target, ahead_s=ahead_s)
         if why:
             await self._idle_park_hold(why)
 
-    async def _idle_hold_reason(self, target: Target) -> str | None:
+    async def _idle_hold_reason(self, target: Target, *,
+                                ahead_s: float = SCHEDULE_WAIT_STEP_S
+                                ) -> str | None:
         """Why the mount should stop tracking ``target`` now, in words, or None.
 
         Three checks, each driven by the HAZARD rather than by the wait the
@@ -2466,7 +2563,8 @@ class SequenceEngine:
            because the predicate has both: a target rising into the keep-out
            while the mount tracks it unwatched is the floor's hazard upside
            down, and acting on "floor" alone left it to the idle clock.
-        3. The flip point, reached before the next tick (`_idle_flip_due`).
+        3. The flip point, reached before the caller's next look, ``ahead_s``
+           from now (`_idle_flip_due`).
 
         With no saved site, 2 and 3 cannot be answered and do nothing; 1 needs
         no sky, so it still bounds the idle spell.
@@ -2486,7 +2584,7 @@ class SequenceEngine:
             return f"{target.name} has sunk below the mount's altitude floor"
         if kind == "ceiling":
             return f"{target.name} has risen into the mount's zenith keep-out"
-        if await self._idle_flip_due(target, now):
+        if await self._idle_flip_due(target, now, ahead_s=ahead_s):
             return f"{target.name} has reached its meridian flip point"
         return None
 
@@ -2505,6 +2603,8 @@ class SequenceEngine:
         ahead, the longest `_wait_until` sleeps between two looks. A cloud
         hold asks the same question with its own ``ahead_s`` (#203): one
         ``HOLD_WATCH_S`` between two looks, or a whole exposure before one.
+        So does the run-start cooling wait: one ``COOLER_PROBE_EVERY_S``
+        (#202, `_cool_and_wait`).
 
         A target more than the lead plus the arm margin past transit was
         acquired on the far side and owes nothing: `schedule.flip_should_arm`,
@@ -2543,47 +2643,117 @@ class SequenceEngine:
         return not schedule.flip_can_be_skipped(target.dec_deg, lat, side)
 
     async def _idle_park_hold(self, why: str) -> None:
-        """Stop tracking the idle mount, once per idle spell.
+        """Decide to stop tracking the idle mount, once per idle spell, and
+        hand the stop to its own task.
 
         The latch closes here and `_setup_target` re-opens it, so the idle
         clock, the floor, the ceiling, the flip point and the scheduler's
         planned-wait rule all spend the same single park-hold. ``why`` leads
         the log line.
 
-        A STOP IS READ BACK, NOT ASSUMED. `_park_hold` swallows every failure,
-        and must, because the safety pause relies on it never raising; so a
-        ``set_tracking(False)`` that timed out used to close this latch on a
-        stop that never happened, and the mount tracked on, unwatched, for the
-        rest of the wait. Tracking is now read back through `_tracking_now`,
-        and anything but a confirmed False hands the stop to
-        `_idle_stop_retry`: True, the mount says it is still tracking; None,
-        nobody can say - a dead serial link, the #133 class, which is exactly
-        the link whose stop cannot be taken on trust. The latch stays closed:
-        the stop is already decided, and what is owed is asking again, which
-        the retry does on its own clock instead of on the wait loop's (#189
-        A3). Whichever rule decided the stop, and whether or not anything was
+        NOTHING HERE TALKS TO A DEVICE (#216). The stop, its read-back and
+        every retry are `_idle_stop_retry`'s, on a task of its own, and this
+        returns as soon as that task exists. The first attempt used to be
+        made inline, on the caller's tick or in the scheduler: a guider stop
+        bounded by ``GUIDE_OP_TIMEOUT_S`` and two mount calls bounded by
+        ``MOUNT_QUERY_TIMEOUT_S``, so on a dead link the wait loop's safety
+        gate was not called for three minutes, once per spell, while the rig
+        sat idle and tracking. Measured on the clocked simulator before this
+        change: 185 s between two looks from the wait tick, 180 s from the
+        planned-wait rule (test_idle_stop_retry_clock). Both callers come
+        through here, so both are covered.
+
+        Whichever rule decided the stop, and whether or not anything was
         acquired: the planned-wait rule stops a mount on a run's first wait
-        too, and a warning promising a retry is a claim something must keep.
+        too, and the task asks for that stop as it asks for any other.
 
-        THIS FIRST ATTEMPT IS STILL MADE INLINE, on the caller's tick or in the
-        scheduler, so on a dead link it holds the wait loop for up to two
-        mount timeouts once per spell (#216).
+        SAID ONCE PER IDLE SPELL: this line here, and the task's warning if
+        the stop goes unconfirmed. The retries log nothing. The /api/logs ring
+        holds 200 lines, and a line per retry would roll it over in a few
+        hours of a dead link.
 
-        SAID ONCE PER IDLE SPELL. The retries log nothing: not the warning, and
-        not the "stopping tracking" line either. The /api/logs ring holds 200
-        lines, and a line per retry would roll it over in a few hours of a
-        dead link.
-
-        No telescope at all, nothing to read back: a camera-only run still
-        passes through the planned-wait rule, and "cannot confirm" would be
-        noise about a mount that is not there.
+        A task still alive when a stop is decided is left to ask for it. Every
+        path that re-opens the latch cancels the task first, so none is alive
+        here in practice; were one alive, it is already asking for this same
+        stop, and a second task would only ask twice.
         """
         if not self._idle_hold_open:
             return
         self._idle_hold_open = False
         bus.log("info", f"{why} — stopping tracking until the next target "
                         f"is set up", "sequence")
+        if self._idle_stop_task is None or self._idle_stop_task.done():
+            self._idle_stop_task = asyncio.create_task(
+                self._idle_stop_retry(), name="idle-stop-retry")
+
+    async def _idle_stop_retry(self) -> None:
+        """Stop the idle mount, read the stop back, and ask again on this
+        task's own clock until a read-back confirms it or the spell ends.
+
+        THE FIRST ATTEMPT IS THIS TASK'S FIRST ACT (#216), made the moment
+        `_idle_park_hold` decides the stop: `_park_hold`, which stops the
+        guider and then the mount. On a dead link that costs up to
+        ``GUIDE_OP_TIMEOUT_S`` plus two ``MOUNT_QUERY_TIMEOUT_S``, and all of
+        it is this task's time: `_wait_until` goes on running the safety gate
+        every ``SCHEDULE_WAIT_STEP_S`` beside it.
+
+        A STOP IS READ BACK, NOT ASSUMED. `_park_hold` swallows every failure,
+        and must, because the safety pause relies on it never raising; so a
+        ``set_tracking(False)`` that timed out used to close the latch on a
+        stop that never happened, and the mount tracked on, unwatched, for the
+        rest of the wait. Tracking is read back through `_tracking_now`, and
+        anything but a confirmed False is asked again: True, the mount says it
+        is still tracking; None, nobody can say - a dead serial link, the #133
+        class, which is exactly the link whose stop cannot be taken on trust.
+        The warning that promises the retry is said once per spell
+        (``_idle_hold_retrying``). No telescope at all, nothing to read back:
+        a camera-only run still passes through the planned-wait rule, and
+        "cannot confirm" would be noise about a mount that is not there.
+
+        AT MOST ONCE PER ``IDLE_STOP_RETRY_S`` after that, and never from the
+        wait loop (#189 A3). The sleep comes before each ask, so the gap
+        between two asks is the constant plus however long the last one hung,
+        never less.
+
+        ONLY THE STOP, NEVER THE GUIDER, ON A RETRY (#210). The first attempt
+        stopped the guider. A second stop on an idle native guider used to
+        re-stamp its saved PPEC window as if it had just been fed, so a retry
+        through `_park_hold` would have mis-phased the model the next target
+        restores, once a minute for as long as the link stayed dead. The
+        native guider now persists the window only on the stop that ends a
+        live session (#210), and the retry still stops nothing but the mount:
+        a guider that keeps no such rule, or loses it, is not asked sixty
+        times an hour.
+
+        NOTHING RE-DECIDED. The stop was decided when it was first asked for;
+        this does not consult `_idle_hold_reason` or the tracked target, so a
+        stop the scheduler's planned-wait rule decided a moment after the last
+        exposure, or on a run's first wait with nothing acquired, is asked
+        again a minute later, not when the idle clock would have found a
+        reason of its own.
+
+        CANCELLED, AND AWAITED, by everything that ends the spell
+        (`_cancel_idle_stop_retry`): `_setup_target` before it restores
+        tracking, the end of the run's cooling wait or scheduler before its
+        wind-down, `abort`, and the next `start`. And by the three other
+        things that turn tracking back on, because a cloud hold opened by a
+        setup's pre-slew gate reaches them before that setup's own cancel: the
+        hold's re-point (`_hold_repoint`), a resume (`_enforce_tracking`), and
+        a flip (`_maybe_meridian_flip`).
+
+        A CANCEL CAN NOW LAND IN THE GUIDER'S STOP, and the native guider's
+        stop swallows it: it awaits its own loop task under
+        ``suppress(CancelledError)``, which also eats a cancel of whoever is
+        awaiting it. Left there, this task would run on into the retry loop,
+        and the canceller, which awaits it, would wait for as long as the
+        mount refused the stop. So the first attempt is followed by
+        `_reraise_swallowed_cancel`. Only there: the mount calls go through
+        drivers that let a cancel through (the serial link joins an exchange
+        on the wire and re-raises), and the guider's stop is the one call this
+        task makes that is known to eat one.
+        """
         await self._park_hold()
+        _reraise_swallowed_cancel()
         if "telescope" not in self.hub.devices:
             return
         tracking = await self._tracking_now()
@@ -2597,49 +2767,6 @@ class SequenceEngine:
                     f"the mount did not confirm the stop ({detail}) — "
                     f"asking again about once a minute until it does",
                     "sequence")
-        if self._idle_stop_task is None or self._idle_stop_task.done():
-            self._idle_stop_task = asyncio.create_task(
-                self._idle_stop_retry(), name="idle-stop-retry")
-
-    async def _idle_stop_retry(self) -> None:
-        """Ask the idle mount again for the stop it did not confirm, on this
-        task's own clock, until a read-back confirms it or the spell ends.
-
-        AT MOST ONCE PER ``IDLE_STOP_RETRY_S``, and never from the wait loop.
-        Each ask costs up to two ``MOUNT_QUERY_TIMEOUT_S`` on a dead link; on
-        its own task that is this task's time, and `_wait_until` goes on
-        running the safety gate every ``SCHEDULE_WAIT_STEP_S`` beside it. The
-        sleep comes before each ask, so the gap between two asks is the
-        constant plus however long the last one hung, never less.
-
-        ONLY THE STOP, NEVER THE GUIDER (#210). `_park_hold` also stops the
-        guider, and the first attempt already did that. A second stop on an
-        idle native guider used to re-stamp its saved PPEC window as if it had
-        just been fed, so a retry through `_park_hold` would have mis-phased
-        the model the next target restores, once a minute for as long as the
-        link stayed dead. The native guider now persists the window only on
-        the stop that ends a live session (#210), and the retry still stops
-        nothing but the mount: a guider that keeps no such rule, or loses it,
-        is not asked sixty times an hour.
-
-        NOTHING RE-DECIDED. The stop was decided when it was first asked for;
-        this does not consult `_idle_hold_reason` or the tracked target, so a
-        stop the scheduler's planned-wait rule decided a moment after the last
-        exposure, or on a run's first wait with nothing acquired, is asked
-        again a minute later, not when the idle clock would have found a
-        reason of its own.
-
-        SAYS NOTHING: `_idle_park_hold` said it once for the spell.
-
-        CANCELLED, AND AWAITED, by everything that ends the spell
-        (`_cancel_idle_stop_retry`): `_setup_target` before it restores
-        tracking, the end of the run before its wind-down, `abort`, and the
-        next `start`. And by the three other things that turn tracking back
-        on, because a cloud hold opened by a setup's pre-slew gate reaches
-        them before that setup's own cancel: the hold's re-point
-        (`_hold_repoint`), a resume (`_enforce_tracking`), and a flip
-        (`_maybe_meridian_flip`).
-        """
         while True:
             await asyncio.sleep(IDLE_STOP_RETRY_S)
             await self._stop_tracking_quietly()
@@ -2735,13 +2862,8 @@ class SequenceEngine:
         the operator with the run still on this target - the alert names the
         target that sank, not the one that replaced it.
         """
-        sched = getattr(target, "schedule", None)
-        if sched is None or getattr(sched, "on_floor", "keep") != "advance":
-            return
-        floor = float(getattr(sched, "min_altitude_deg", 0.0) or 0.0)
-        if floor <= 0 or target.calibration:
-            # A floor of 0 is "no gate" everywhere else in this model, and a
-            # calibration target has no sky position to sink.
+        floor = self._own_floor(target)
+        if floor is None:
             return
         now = time.time()
         alt = _frame_altitude(target, self.hub.site, now)
@@ -2768,6 +2890,27 @@ class SequenceEngine:
                 target, None)
         raise StopTarget(
             f"sank to {alt:.1f}°, below its {floor:.0f}° altitude floor")
+
+    @staticmethod
+    def _own_floor(target: Target) -> float | None:
+        """The altitude below which ``target``'s own schedule sets it aside,
+        or None when it sets nothing aside. One reading of the rule, for the
+        frame loop's set-aside (`_enforce_altitude_floor`) and for a cloud
+        hold deciding whether a slew there is worth making
+        (`_hold_repoint_refusal`), so the two cannot disagree about it.
+
+        Gated on ``on_floor == "advance"``: "keep" shoots on down through the
+        floor, as every saved plan always has. A floor of 0 is "no gate"
+        everywhere else in this model, and a calibration target has no sky
+        position to sink.
+        """
+        sched = getattr(target, "schedule", None)
+        if sched is None or getattr(sched, "on_floor", "keep") != "advance":
+            return None
+        floor = float(getattr(sched, "min_altitude_deg", 0.0) or 0.0)
+        if floor <= 0 or target.calibration:
+            return None
+        return floor
 
     def _missed_start(self, target: Target, now: float, site: dict,
                       twilight_deg: float) -> bool:
@@ -2856,6 +2999,13 @@ class SequenceEngine:
         # A slew + plate-solve + initial autofocus legitimately produces no frames
         # for minutes; keep the no-progress watchdog quiet until capture begins.
         self._progress_expected = False
+        # THE WAIT SPELL ENDS HERE (#221). A cloudy sky met from now on has a
+        # target, and the pre-slew gate below opens a hold for it; the wait's
+        # "no target to hold for" must not be published over that hold, and
+        # the next wait under a closed sky says it again. Before the publish
+        # below, so the first state of this setup already carries it.
+        self._hold_deferred = None
+        self._hold_deferred_said = False
         # The finish clock counts hops to the targets OTHER than this one
         # (`_remaining_hops`), from the moment its acquisition begins.
         self._acquiring_ti = ti
@@ -4305,10 +4455,36 @@ class SequenceEngine:
                             "safety is armed with no monitor assigned, so the "
                             "sky verdict from the frames is standing in for one "
                             f"— {self._clouds.describe(time.time())}", "safety")
+                # A HOLD NEEDS A TARGET (#221, #189 ruling 2). With none - a
+                # scheduler wait, or day darks after the park - it had nothing
+                # to watch and nothing to point at, and on a stopped mount
+                # every check it took was a streak read as cloud: observed on
+                # the clocked simulator, a hold entered from a wait ran on
+                # under a sky that had cleared until its 45 minute bound
+                # parked the rig and ended the run. So no hold opens: it is
+                # said once for the spell and published, whatever called the
+                # gate goes on (a wait with its idle park-hold on the mount,
+                # day darks with their frames, which need no sky), and the
+                # next target's pre-slew gate opens a hold with a target.
+                if target is None:
+                    # DAY DARKS ARE NOT A WAIT. They run after the run has
+                    # ended, with the mount parked, so there is no next
+                    # target's setup to open the hold the note promises, and
+                    # nothing would end it. A dark needs no sky: nothing is
+                    # said or published there.
+                    if not self._day_darks_gate:
+                        self._note_hold_deferred()
+                    return
                 await self._hold_for_clear(
                     "no safety monitor is assigned and the frames say the sky "
                     "has closed in", target)
                 return
+            if target is None and self._hold_deferred is not None:
+                # The sky no longer reads cloudy, so the wait's note is over.
+                # Published now: a constraint wait publishes nothing of its
+                # own between ticks, and the note would outlive the cloud.
+                self._hold_deferred = None
+                self._set_state()
         if self._warned_no_safety_source:
             return
         self._warned_no_safety_source = True
@@ -4330,6 +4506,42 @@ class SequenceEngine:
                     "the weather for this run. Assign a safety monitor, or turn safety "
                     "off so the run does not claim a guard it does not have.",
                     "safety")
+
+    #: What ``sky.hold_deferred`` says while a cloudy sky has no target to hold
+    #: for (`_note_hold_deferred`). Words only: it is published.
+    _HOLD_DEFERRED = ("the frames say the sky has closed in, with no target "
+                      "set up to judge it from, so no cloud hold is open; the "
+                      "next target's setup opens one if the sky is still closed")
+
+    def _note_hold_deferred(self) -> None:
+        """A cloudy sky with no target to hold for (#221): say so, once per
+        wait spell, and publish it, and open no hold.
+
+        ONCE PER SPELL, because a wait asks the gate every
+        ``SCHEDULE_WAIT_STEP_S``, and a line a tick would roll the 200-line
+        ring over in a quarter of an hour of cloud. The spell ends at the next
+        target's setup (`_setup_target`), so a later wait under a closed sky
+        says it again.
+
+        PUBLISHED IN ``sky.hold_deferred`` for as long as it is true: from the
+        first cloudy gate until the sky no longer reads cloudy, a setup
+        begins, or the scheduler ends (`_run`), since after the scheduler no
+        setup is coming. Published at once when it starts, since nothing else
+        in a constraint wait publishes between ticks. Day darks, which ask the
+        gate after the run has ended, never note it.
+        """
+        started = self._hold_deferred is None
+        self._hold_deferred = self._HOLD_DEFERRED
+        if not self._hold_deferred_said:
+            self._hold_deferred_said = True
+            bus.log("warning",
+                    "the frames say the sky has closed in, with no target set "
+                    "up to judge it from - no cloud hold opens without one. "
+                    "The run goes on as it was (a wait keeps its idle "
+                    "park-hold on the mount), and the next target's setup "
+                    "opens the hold if the sky is still closed", "sequence")
+        if started:
+            self._set_state()
 
     async def _read_safety(self):
         """The cached SafetyReading from the hub's own-cadence poller. When the
@@ -4779,6 +4991,29 @@ class SequenceEngine:
         later probe as cloud, and the hold ran to its bound under a sky that
         may well have cleared, publishing "held for cloud" throughout.
 
+        THE MOUNT IS THE HELD TARGET'S BEFORE ANY SKY IS JUDGED (#224, #225,
+        owner ruling 2 of 2026-09-24). A hold opened by a target's pre-slew
+        safety gate holds a target the mount was never pointed at: it is
+        still tracking the last target, or stopped where that one was left,
+        or parked with nothing acquired. The looks watch the held target, so
+        a mount left on the last one was tracked with nothing watching it
+        (observed on the clocked simulator: the last target sank through the
+        mount's floor 200 s into such a hold, tracked all the way). So the
+        hold points the mount at its target when it opens, through
+        `_hold_repoint` (the slew gate, the Sun check, an unpark), after the
+        projection the slew gate raises on and the target's own floor
+        (`_hold_repoint_refusal`) say it may. When they do not, or the slew
+        fails, it stops the mount once (`_hold_park`), says why, and every
+        later look asks again. The last target's flip latch is not this
+        one's: it is disarmed while the mount is elsewhere, and the re-point
+        arms the held target's own. So a hold opened before a slew makes that
+        slew itself, under cloud. Its release runs the held target's setup
+        itself, and the setup it interrupted then runs its own acquisition as
+        well: two setups, and three slews counting the re-point, where one
+        setup would do (#241, not yet fixed). A
+        calibration target has no place on the sky, and its hold asks the
+        mount nothing.
+
         NOT RE-ENTRANT, AND IT SAYS SO. The loop above calls ``_safety_gate``
         on every pass, and on a rig with no monitor that gate reads the same
         cloudy verdict this hold is already waiting out. Before the guard
@@ -4800,15 +5035,46 @@ class SequenceEngine:
         clear_streak = 0
         self._holding_for_clear = True
         self._hold_parked = None
+        self._hold_repoint_said = False
         self._hold_darks_want = None
         self._hold_darks_taken = 0
         detail = (f"held for cloud - {reason}. Checking at the science "
                   f"exposure, with up to {CLOUD_PROBE_EVERY_S / 60:.0f} min "
                   f"between checks; parks after {max_hold_s / 60:.0f} min")
+        # NOT ON THIS TARGET: tracking the last one, stopped where it was left,
+        # or nothing acquired yet (#224). A calibration target, or a run with
+        # no mount, has nothing to point.
+        elsewhere = (target is not None and not target.calibration
+                     and "telescope" in self.hub.devices
+                     and self._tracked_target is not target)
         try:
             await self._stand_down_guider()
             bus.log("warning", f"holding for clear sky: {reason}", "sequence")
-            self._set_state(state="holding", hold="clouds", detail=detail)
+            self._set_state(
+                state="holding", hold="clouds",
+                detail=(f"held for cloud - {reason}. The mount is not on "
+                        f"{target.name} yet: pointing it there before the sky "
+                        f"is judged" if elsewhere else detail))
+            if elsewhere:
+                # THE LAST TARGET'S FLIP LATCH IS NOT THIS ONE'S. Read by the
+                # looks' flip gate, it would flip this target on the last
+                # one's hour angle. Disarmed while the mount is elsewhere; the
+                # re-point arms this target's own (`_arm_meridian_flip`).
+                self._flip_armed = False
+                why = self._hold_repoint_refusal(target)
+                if why is None:
+                    await self._hold_repoint(target, elsewhere=True)
+                if self._tracked_target is target:
+                    # THE OPENING DETAIL ONLY NOW, and only because tracking
+                    # on this target is what the re-point just achieved: a
+                    # detail that says the sky is being checked, published
+                    # over a stopped mount that judges none, is #228.
+                    self._set_state(detail=detail)
+                else:
+                    await self._hold_park(
+                        "elsewhere",
+                        f"the mount is not on {target.name}, and "
+                        + (why or f"pointing it at {target.name} failed"))
             while True:
                 # THE THREE THINGS A PAUSE WOULD HAVE DISARMED, kept armed.
                 await self._checkpoint()             # a manual pause still works
@@ -4869,10 +5135,11 @@ class SequenceEngine:
                     target, ahead_s=self._hold_exposure_ahead_s(
                         probe.exposure_s if probe is not None else 0.0))
                 if self._hold_parked is not None:
-                    # The hold stopped tracking (the keep-out, or a flip it
-                    # could not take), and said so when it did. A check frame
-                    # now would be a streak read as cloud, so none is taken
-                    # until a look puts the mount back on the target.
+                    # The hold stopped tracking (the keep-out, a flip it could
+                    # not take, or a mount it may not yet point at this
+                    # target), and said so when it did. A check frame now
+                    # would be a streak read as cloud, so none is taken until
+                    # a look puts the mount back on the target.
                     clear_streak = 0
                     continue
                 if (target is not None and not target.calibration
@@ -4885,37 +5152,28 @@ class SequenceEngine:
                     # resume-then-recover, which sets the target aside if the
                     # mount will not track again.
                     #
-                    # IN PLACE ONLY WHERE THE MOUNT HAS THIS TARGET. A hold
-                    # opened by a target setup's pre-slew safety gate holds
-                    # a target the mount was never pointed at: it is still
-                    # wherever the last one left it, and stopped there on
-                    # purpose - by this hold's own floor set-aside, or by the
-                    # idle park-hold's floor, keep-out or flip point. A
-                    # resume in place tracked
-                    # that position on through the limit it was stopped for,
-                    # while every look watched this target instead (observed
-                    # in the clocked simulator: a mount below the floor set
-                    # tracking again 128 s after the set-aside, with no slew).
-                    # So a mount not on this target is pointed at it, behind
-                    # the slew gate and its projection as the keep-out
-                    # re-point is, and until that slew is allowed it stays
-                    # stopped, with no sky judged.
-                    on_target = self._tracked_target is target
+                    # IN PLACE, BECAUSE BY HERE THE MOUNT IS THIS TARGET'S. A
+                    # hold whose mount was elsewhere pointed it here when it
+                    # opened, or is stopped (``_hold_parked``, above) until a
+                    # look may (#224). Before that, this branch had to choose:
+                    # a resume in place on a mount stopped where the last
+                    # target was left tracked that position on through the
+                    # limit it was stopped for (#225).
                     clear_streak = 0
                     bus.log("warning",
                             f"{target.name}: the mount has stopped tracking "
                             f"during the cloud hold - not judging the sky from "
                             f"a check frame that would be a streak", "sequence")
                     self._set_state(
-                        detail=("held for cloud - the mount stopped tracking, "
-                                "so the sky is not being judged; "
-                                + ("restoring tracking first" if on_target
-                                   else "pointing it at the target first")))
-                    if on_target:
-                        await self._enforce_tracking(self._hold_step, target)
-                    elif self._altitude_limit_verdict(
-                            target, projected=True, cfg=self._cfg) is None:
-                        await self._hold_repoint(target, elsewhere=True)
+                        detail="held for cloud - the mount stopped tracking, "
+                               "so the sky is not being judged; restoring "
+                               "tracking first")
+                    await self._enforce_tracking(self._hold_step, target)
+                    # RESTORED, OR THIS LINE IS NOT REACHED (#228):
+                    # `_enforce_tracking` returns once tracking is back (or
+                    # nobody can say, which is no verdict of a stop here any
+                    # more than in the frame loop), and raises StopTarget when
+                    # it will not come back.
                     self._set_state(detail=detail)
                     continue
                 verdict = await self._cloud_probe(target)
@@ -5214,7 +5472,14 @@ class SequenceEngine:
                     # still a reason to stop, and SafetyAbort must propagate to
                     # the caller's teardown rather than be swallowed as a
                     # "calibration hiccup".
-                    await self._safety_gate(context="frame", target=None)
+                    # Flagged, so a cloudy verdict from the night's last frames
+                    # is not noted as a wait's deferred hold (#221): there is
+                    # no next target to defer it to.
+                    self._day_darks_gate = True
+                    try:
+                        await self._safety_gate(context="frame", target=None)
+                    finally:
+                        self._day_darks_gate = False
                     dark = Target(
                         name=f"day darks {step.exposure_s:g}s g{step.gain}",
                         ra_hours=0.0, dec_deg=0.0,
@@ -5327,15 +5592,21 @@ class SequenceEngine:
                           ahead_s: float) -> None:
         """One look at the mount a cloud hold has left tracking (#203).
 
-        Seeing ``ahead_s`` ahead, in this order: the mount's altitude floor
-        sets the target aside; the target's own on_floor rule does what it
-        does in the frame loop (`_enforce_altitude_floor`); the zenith
-        keep-out stops tracking (`_hold_park`), and a hold stopped for it
-        points back at the target once the slew gate would let it
-        (`_hold_repoint`); otherwise the flip point (`_hold_flip_watch`). No
-        flip is attempted while the target is in the keep-out, or about to
-        be: the flip is a slew, and the slew gate would refuse it with a
-        SafetyAbort that ends the run.
+        First, a hold whose mount is not on the held target (#224) points it
+        there if the slew may now be made (`_hold_repoint_refusal`,
+        `_hold_repoint`); the rest of the look is then a look at a mount on
+        its target. Then, seeing ``ahead_s`` ahead, in this order: the
+        mount's altitude floor sets the target aside; the target's own
+        on_floor rule does what it does in the frame loop
+        (`_enforce_altitude_floor`); the zenith keep-out stops tracking
+        (`_hold_park`), and a hold stopped for it points back at the target
+        once the slew gate would let it (`_hold_repoint`); otherwise the flip
+        point (`_hold_flip_watch`), but not while the mount is still
+        elsewhere: the flip point it would read is this target's and the
+        pier side the last target's, and `_enforce_flip_owed` would file the
+        one under the other. No flip is attempted while the target is in the
+        keep-out, or about to be: the flip is a slew, and the slew gate would
+        refuse it with a SafetyAbort that ends the run.
 
         ANY TARGET SET ASIDE FROM HERE LEAVES THE MOUNT STOPPED, whichever
         check raised: the floor, the on_floor rule, or a flip owed past its
@@ -5348,6 +5619,9 @@ class SequenceEngine:
                 or "telescope" not in self.hub.devices):
             return
         try:
+            if (self._hold_parked == "elsewhere"
+                    and self._hold_repoint_refusal(target) is None):
+                await self._hold_repoint(target, elsewhere=True)
             limit = self._hold_limit_ahead(target, ahead_s)
             kind = limit[0] if limit is not None else None
             if kind == "floor":
@@ -5372,11 +5646,48 @@ class SequenceEngine:
                 if self._altitude_limit_verdict(target, projected=True,
                                                 cfg=self._cfg) is None:
                     await self._hold_repoint(target)
-            else:
+            elif self._hold_parked != "elsewhere":
                 await self._hold_flip_watch(target, ahead_s)
         except StopTarget:
             await self._stop_tracking_quietly()
             raise
+
+    def _hold_repoint_refusal(self, target: Target) -> str | None:
+        """Why a hold may not slew the mount to ``target`` now, as the end of
+        a sentence, or None when it may (#224).
+
+        The slew gate's altitude half, projected across a slew exactly as the
+        gate projects it (`_altitude_limit_verdict` with ``projected=True``),
+        because the gate raises a SafetyAbort on that answer and a SafetyAbort
+        ends the run. And the target's own floor as the frame loop enforces
+        it (`_own_floor`, ``on_floor = advance``), over the same span: a slew
+        to a target that is about to be set aside is a slew for nothing.
+
+        WORDS ONLY, as `_idle_hold_reason`'s are: this reaches the log and the
+        published detail, and the gate's own sentence carries an altitude and
+        an azimuth, which with a time is the site (#19, #140).
+        """
+        verdict = self._altitude_limit_verdict(target, projected=True,
+                                               cfg=self._cfg)
+        kind = verdict[0] if verdict is not None else None
+        if kind == "floor":
+            return (f"{target.name} would be below the mount's altitude floor "
+                    f"by the end of a slew there")
+        if kind == "ceiling":
+            return (f"{target.name} would be in the mount's zenith keep-out by "
+                    f"the end of a slew there")
+        if kind is not None:
+            return ("no observing site is saved, so no slew can be checked "
+                    "against the mount's limits")
+        floor = self._own_floor(target)
+        if floor is not None:
+            now = time.time()
+            for when in (now, now + SLEW_PROJECT_S):
+                alt = _frame_altitude(target, self.hub.site, when)
+                if alt is not None and alt < floor:
+                    return (f"{target.name} is sinking below its own altitude "
+                            f"floor")
+        return None
 
     def _hold_limit_ahead(self, target: Target,
                           ahead_s: float) -> tuple[str, str] | None:
@@ -5414,12 +5725,21 @@ class SequenceEngine:
 
         Between them, the one thing the frame loop never had to decide. At
         the plan's flip point (`_idle_flip_due`, the idle clock's predicate,
-        seeing ``ahead_s`` ahead) a flip that was not taken stops tracking:
-        flips switched off, a mount that cannot be reached, or the AM5's lead
-        attempt that moved nothing and now waits for the meridian itself.
-        Never tracking past it. The mount stays stopped, and the sky
-        unjudged, until the latch is spent by a flip, when the flip's own goto
-        has put tracking back on.
+        seeing ``ahead_s`` ahead) a flip that is owed and was not taken stops
+        tracking: a mount that cannot be reached, or the AM5's lead attempt
+        that moved nothing and now waits for the meridian itself. Never
+        tracking past it. The mount stays stopped, and the sky unjudged,
+        until the latch is spent by a flip, when the flip's own goto has put
+        tracking back on.
+
+        FLIPS SWITCHED OFF, NO ACTION AT THE FLIP POINT AT ALL (owner ruling
+        1, #189). This used to stop tracking there too, and with flips off
+        nothing ever spends a latch, so the stop could never be lifted: the
+        hold judged no sky from the flip point to its 45 minute bound. A
+        flips-off plan takes the frame loop's answer instead, the same as
+        between frames: a mount that stops at its own limit is found by the
+        tracking read before the next check, which runs the frame loop's
+        resume-then-recover (`_hold_for_clear`, #205).
 
         The mount is asked nothing unless the latch is armed or the point is
         due: the same two questions `_maybe_meridian_flip` asks before every
@@ -5430,7 +5750,7 @@ class SequenceEngine:
             await self._maybe_meridian_flip(
                 target, max(0.0, ahead_s - FLIP_FRAME_MARGIN_S))
         due = await self._idle_flip_due(target, time.time(), ahead_s=ahead_s)
-        if due and (not plan.meridian_flip or self._flip_armed):
+        if due and self._flip_armed:
             await self._hold_park(
                 "flip", f"{target.name} has reached its meridian flip point "
                         f"and the flip cannot be taken now")
@@ -5446,16 +5766,24 @@ class SequenceEngine:
                                    "been taken; checking the sky again")
 
     async def _hold_park(self, why_kind: str, why: str) -> None:
-        """Stop tracking the held target, once, and say why (#203).
+        """Stop tracking, once, and say why (#203).
 
         The mount half of `_park_hold` only: the hold stood the guider down
         when it began, and there is nothing left to stop (a second stop used
         to re-stamp an idle native guider's saved PPEC window, #210).
         Best-effort, as `_park_hold` is, and safe to be: a parked hold takes
         no check frame whether or not the mount obeyed, so a stop that did not
-        take costs the hold its sky, never a streak read as cloud. ``why`` leads the log line and the published
-        detail, which from here says the mount is stopped rather than "held
-        for cloud" alone.
+        take costs the hold its sky, never a streak read as cloud. ``why``
+        leads the log line and the published detail, which from here says the
+        mount is stopped rather than "held for cloud" alone.
+
+        ONCE PER STOPPED SPELL, whichever reason comes second. A mount stopped
+        because it is not on the held target (``"elsewhere"``, #224) is
+        refused again by every look, and a target rising into the keep-out
+        while the mount is elsewhere asks for a stop of its own: the first
+        stop stands, with its reason, and neither a second
+        ``set_tracking(False)`` nor a second line is sent. The spell ends when
+        a re-point, or a flip, puts tracking back on.
         """
         if self._hold_parked is not None:
             return
@@ -5470,8 +5798,9 @@ class SequenceEngine:
 
     async def _hold_repoint(self, target: Target, *,
                             elsewhere: bool = False) -> None:
-        """Point the mount back at the held target once it is out of the
-        keep-out, and track it (#203).
+        """Point the mount at the held target and track it: back at it once it
+        is out of the keep-out (#203), or at it for the first time when the
+        mount was elsewhere (#224).
 
         A RE-SLEW, NOT A RESUME. The mount stopped where the target entered
         the keep-out, and tracking again from there would follow that patch of
@@ -5482,15 +5811,31 @@ class SequenceEngine:
         the hold needs only sky to judge, and its release re-centres and
         restarts guiding through `_setup_target` anyway.
 
-        ``elsewhere``: the mount was never on this target. A hold opened by
-        `_setup_target`'s pre-slew gate finds it stopped where the last target
-        left it, and the same slew behind the same gates is the only safe way
-        to track again; only what is said differs. The mount is then this
-        target's, so `_tracked_target` says so, and a later stop in the same
-        hold takes the in-place resume.
+        ``elsewhere``: the mount was never on this target (#224, #225). A hold
+        opened by `_setup_target`'s pre-slew gate finds it tracking the last
+        target, stopped where that one was left, or parked with nothing
+        acquired, and the same slew behind the same gates is the only safe
+        way to track this one; the caller asks `_hold_repoint_refusal` first.
+        It is a new acquisition, as a setup's slew is, and is booked as one:
+        the idle clock starts at it and the idle latch re-opens, so a hold
+        that re-pointed and then ends (the stop boundary, which is no look
+        and stops nothing) leaves this target to the next wait's idle clock;
+        and this target's own flip latch is armed (`_arm_meridian_flip`),
+        never the last one's.
 
-        A slew or a tracking command the mount refuses leaves the hold stopped
-        and says so; the next look asks again.
+        EVERY SUCCESSFUL RE-POINT MAKES THE MOUNT THIS TARGET'S, keep-out or
+        elsewhere, and `_tracked_target` says so: it is what the next hold's
+        open asks to decide whether its mount is elsewhere, and what the next
+        idle spell watches.
+
+        A PARKED MOUNT IS UNPARKED FIRST, bounded, as `_setup_target`'s
+        uncentred branch does: a slew to a parked mount is refused, and the
+        hold would otherwise ask it again on every look until its bound.
+
+        A slew, an unpark or a tracking command the mount refuses leaves the
+        hold stopped and says so, ONCE for the stopped spell; the next look
+        asks again, and says nothing, so a mount that keeps refusing costs one
+        line, not one every ``HOLD_WATCH_S``.
         """
         tel = self.hub.devices.get("telescope")
         if tel is None or not getattr(tel, "connected", False):
@@ -5511,6 +5856,9 @@ class SequenceEngine:
         await self._cancel_idle_stop_retry()
         getattr(self.hub, "note_pointing_moved", lambda: None)()
         try:
+            if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
+                              "mount is_parked query"):
+                await _bounded(tel.unpark(), PARK_TIMEOUT_S, "mount unpark")
             await _bounded(tel.slew(target.ra_hours, target.dec_deg),
                            SLEW_TIMEOUT_S, f"slew to {target.name}")
             await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
@@ -5518,20 +5866,27 @@ class SequenceEngine:
         except SafetyAbort:
             raise
         except Exception as e:           # noqa: BLE001 - the next look asks again
-            bus.log("warning",
-                    f"{target.name}: could not point the mount "
-                    + ("at the target" if elsewhere
-                       else "back at the target after the keep-out")
-                    + f" ({e}) - still stopped", "sequence")
+            if not self._hold_repoint_said:
+                self._hold_repoint_said = True
+                bus.log("warning",
+                        f"{target.name}: could not point the mount "
+                        + ("at the target" if elsewhere
+                           else "back at the target after the keep-out")
+                        + f" ({e}) - still stopped; each look asks again, "
+                          f"and this is said once", "sequence")
             return
         self._hold_parked = None
+        self._hold_repoint_said = False
+        self._tracked_target = target
         if elsewhere:
-            self._tracked_target = target
             self._idle_since = time.time()
+            self._idle_hold_open = True
+            self._idle_hold_retrying = False
+            self._arm_meridian_flip(target)
             bus.log("info",
-                    f"{target.name}: the mount was stopped on another target - "
-                    f"it is now pointed at this one and tracking; the cloud "
-                    f"hold is judging the sky again", "sequence")
+                    f"{target.name}: the mount was not on this target - it is "
+                    f"now pointed at this one and tracking; the cloud hold "
+                    f"judges the sky from here", "sequence")
             self._set_state(detail="held for cloud - the mount is on the "
                                    "target and tracking; checking the sky again")
             return
@@ -5982,12 +6337,42 @@ class SequenceEngine:
 
     # ----------------------------------------------------------- sub-routines
 
-    async def _cool_and_wait(self, target_c: float, timeout_s: int) -> bool:
+    async def _cool_and_wait(self, target_c: float, timeout_s: int, *,
+                             watch: bool = False) -> bool:
         """Cool the camera to ``target_c`` and wait for it to stabilize.
 
         Returns ``True`` when the cooler reached the band (or there is no
         coolable camera — nothing to wait on), ``False`` on a cool-timeout / a
         failed cooler command.
+
+        ``watch``: THE RUN-START WAIT WATCHES THE MOUNT (#202, mosaic H2 A6).
+        `start(tracking=...)` hands a run a target the caller left the mount
+        tracking (ResumeArm re-centres one seconds before it starts the
+        resumed run), and the idle watch starts on it at once. But this wait
+        is the first thing the run does, and after a restart it is minutes of
+        a sensor walking down from ambient, during which only `_wait_until`
+        used to take the idle look, and `_wait_until` had not started. So
+        every probe of this loop takes the same look (`_idle_hold_tick`: the
+        idle clock, the floor, the zenith keep-out, the flip point), one
+        ``COOLER_PROBE_EVERY_S`` ahead for the flip point: the longest this
+        loop sleeps between two looks, as `_wait_until` looks one
+        ``SCHEDULE_WAIT_STEP_S`` ahead. A temperature read that hangs adds up
+        to ``COOLER_CMD_TIMEOUT_S`` to one gap; the plan's flip point is
+        minutes before any mount's own limit, so that lateness is spent
+        inside the lead, not past it. With nothing tracked, the look finds
+        nothing to stop, as it does in `_wait_until`.
+
+        Only `_run`'s call passes it. `_cooler_gate`, after a cloud hold or a
+        safety pause, does not: the idle clock has usually run out by then (it
+        was last reset by the last frame, or by the hold's re-point, and a
+        hold or a pause lasts minutes), so a look would stop the mount at its
+        first probe whatever the sky says, and after a safety pause, which
+        stopped tracking itself, it would log a mount "still tracking" that
+        is not. Both end in `_setup_target`, which re-slews and restarts the
+        idle clock. What that leaves is the gate's own wait after a cloud
+        hold, with the held target tracked: none when the sensor never left
+        its band, up to ``cool_timeout_s`` when it did (#236, with the
+        camera-lane wait before this one at run start).
 
         P1-7 escalation (``cfg.escalation.require_cooling`` + ``cooling_action``):
         the default ``cooling_action == "warn"`` keeps the historical fail-open
@@ -6085,6 +6470,11 @@ class SequenceEngine:
                 return self._cooling_failed(require, action,
                                             "cooler reached its band but never settled")
             await self._checkpoint()
+            if watch:
+                # The mount a caller left tracking, looked at as `_wait_until`
+                # looks at it (see the docstring). Before the probe, so the
+                # first look is taken the moment the wait begins.
+                await self._idle_hold_tick(ahead_s=COOLER_PROBE_EVERY_S)
             try:
                 t = await asyncio.wait_for(cam.get_temperature(), COOLER_CMD_TIMEOUT_S)
             except (asyncio.TimeoutError, Exception):
@@ -6545,6 +6935,22 @@ class SequenceEngine:
         if lead_s > 0 and side_before not in (None, "unknown") \
                 and side_after not in (None, "unknown"):
             self._learn_mount_flips_early(not nothing_flipped)
+        # A MEASURED FLIP CLOSES THIS TARGET'S FLIP CYCLE (#222): both sides
+        # read, readable and different, and the hub's own check not saying
+        # otherwise. The pre-flip record has done its job, so it is cleared,
+        # and the target is marked so `_enforce_flip_owed` writes no new one
+        # this run. The mark is the half that matters: cleared alone, the
+        # next frame before the meridian finds no record and writes the side
+        # the mount has just flipped TO, and past the meridian that is "no
+        # change" again. Nothing unmeasured closes it: an unreadable side is
+        # no evidence that the mount moved, and the invariant must still
+        # catch a flip that did not happen. The record is never cleared
+        # anywhere else, `_setup_target` above all, which would drop the
+        # guard for a target re-acquired past its meridian (I-19, #136).
+        if (side_before in ("east", "west") and side_after in ("east", "west")
+                and not nothing_flipped):
+            self._pre_flip_side.pop(key, None)
+            self._flip_cycle_closed.add(key)
         # one flip per meridian crossing: the target now tracks counterweight-down
         # on the far side and the server countdown stays negative for hours, so
         # disarm until the next target re-arms in _setup_target.
@@ -7560,6 +7966,13 @@ class SequenceEngine:
         read and written under ``target``'s own key, so another target shot
         near its meridian in between cannot overwrite it, and a target seen
         only west of its meridian is never compared against someone else's.
+
+        ONE RECORD PER FLIP CYCLE (#222). Written at the first sighting east
+        of the meridian and never refreshed; cleared, and not written again
+        this run, once the flip gate has measured the target's flip
+        (`_flip_cycle_closed`). A target re-acquired east of its meridian
+        after another target keeps its first record, which is the same side:
+        a German mount picks its side from the hour angle.
         """
         if not (self.plan and self.plan.meridian_flip):
             return                      # nobody asked for a flip; nothing is owed
@@ -7591,10 +8004,20 @@ class SequenceEngine:
             return                      # nobody can say; do not record, do not trip
         key = getattr(target, "id", None) or target.name
         if ttf_h > 0:
-            # Still east of the meridian: this IS the pre-flip side, by
-            # definition. Recorded every frame rather than once, so a target
-            # re-acquired mid-run (a recovery, a resume) refreshes it.
-            self._pre_flip_side[key] = side
+            # Still east of the meridian: the side the mount reports is the
+            # pre-flip side, until the flip. ONCE PER FLIP CYCLE (#222): the
+            # first sighting is kept, not refreshed on every frame. The flip
+            # gate fires at the plan's lead, before the meridian, so on a
+            # mount that can flip early the flip lands while this branch is
+            # still being taken, and a refresh recorded the side the mount had
+            # flipped TO: past the meridian the side then "had not changed",
+            # and a target that flipped correctly was held and set aside.
+            # And none at all once the flip gate MEASURED this target's flip
+            # (`_flip_cycle_closed`, set in `_maybe_meridian_flip`): its
+            # record was cleared there, and a first sighting now would be the
+            # post-flip side, which is the same defect by another door.
+            if key not in self._flip_cycle_closed:
+                self._pre_flip_side.setdefault(key, side)
             self._flip_owed = False
             return
         pre = self._pre_flip_side.get(key)
@@ -7669,7 +8092,11 @@ class SequenceEngine:
                     # lands on. On 2026-09-22 that cost 26 minutes, 16 re-slews
                     # and a set-aside target seven minutes after a good flip.
                     # Left alone, ``side`` is still this target's record, so
-                    # the next frame sees a changed side and goes through.
+                    # the next frame sees a changed side and goes through. Or
+                    # there is no record at all: when the flip gate above
+                    # MEASURED this flip it cleared the record and closed the
+                    # target's cycle (#222), and the next frame finds nothing
+                    # to compare and goes through the same way.
                     return
                 await self._checkpoint()
                 await asyncio.sleep(FLIP_OWED_POLL_S)

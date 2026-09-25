@@ -46,6 +46,28 @@ from astrodeck.sequence.engine import (FRESH_FOCUS_S,
 from astrodeck.sequence.models import ExposureStep, Target
 
 
+@pytest.fixture(autouse=True)
+def _a_store_of_its_own(tmp_path, monkeypatch):
+    """Every test here gets its own config store, set up before `sim_hub`
+    patches the cache: the singleton repointed at a file under tmp_path with
+    its cache dropped, both through monkeypatch. The refocus cases save the
+    temperature and position they anchored at (`_anchor_temp_comp`), and
+    used to leave them on the process-wide config for every later test on
+    the worker (#227).
+
+    Without the two lines, the conftest guard errors at teardown
+    (4 in this file alone, observed): "test_the_swap_is_announced
+    left the process-wide config changed: focus.temp_comp.reference_position."
+
+    Here and not in `sim_hub`, which two other files import. One of them,
+    `test_the_mount_floor_needs_a_site.py`, is where #227's leak was, and it
+    keeps writing the shared store on purpose: its fix is graded by the
+    conftest guard catching that leak when it is put back."""
+    monkeypatch.setattr(hub_module.config_store, "_path",
+                        tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module.config_store, "_cfg", None)
+
+
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)

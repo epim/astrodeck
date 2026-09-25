@@ -47,7 +47,9 @@ export function cardMeta(card: FlowCard): string {
 export interface CardStatus {
   led: LedState;
   /** The visible word. Status is never colour alone — the LED is shape-coded
-   *  (dash / circle / SQUARE) and this word says the same thing in text. */
+   *  (dash / circle / SQUARE) and this word says the same thing in text. It
+   *  is also the only copy a screen reader hears; the LED beside it is
+   *  unlabelled (#217). */
   text: string;
   cls: string;
 }
@@ -181,8 +183,14 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
         </span>
       )}
       <span className="font-mono text-[10px] text-faint">{cardMeta(card)}</span>
+      {/* The word is printed, so the LED beside it carries NO label, which
+          `Led` draws aria-hidden. A labelled LED is role="img" with that
+          label, and in a button named from its content the label stands in
+          for the LED: every card said its status twice ("... never run CANNOT
+          OPEN CANNOT OPEN", #217). The printed word is the one copy, for the
+          eye and for the ear, and it is why the status is not colour-only. */}
       <span className={`flex items-center gap-[7px] font-mono text-[10px] ${status.cls}`}>
-        <Led state={status.led} label={status.text} />
+        <Led state={status.led} />
         {status.text}
       </span>
     </button>

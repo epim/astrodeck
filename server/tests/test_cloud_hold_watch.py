@@ -94,7 +94,8 @@ class _Watched:
     def __init__(self, hub, store, monkeypatch, *, horizon_s: float,
                  clears_at_s: float | None = None,
                  stops_tracking_at_s: float | None = None,
-                 safety: dict | None = None):
+                 safety: dict | None = None,
+                 closes_at_s: float = CLOSES_AT_S):
         store.set_safety(SafetyConfig(enabled=True, sky_fallback_hold=True,
                                       **(safety or {})))
         hub.mode = "native"                 # a real rig: its frames are a sky
@@ -106,6 +107,9 @@ class _Watched:
         self.t0 = self.run.t0
         monkeypatch.setattr(coords_mod, "time", self.run.clock)
         monkeypatch.setattr(schedule, "time", self.run.clock)
+        #: When the scripted sky closes. A negative value has it shut before
+        #: the run's first target is set up.
+        self.closes_at = self.t0 + closes_at_s
         self.clears_at = (None if clears_at_s is None
                           else self.t0 + clears_at_s)
         self.stops_at = (None if stops_tracking_at_s is None
@@ -119,6 +123,8 @@ class _Watched:
         self.untargeted: list[tuple[float, bool]] = []
         #: (fake time, state, hold, detail) after every `_set_state`
         self.states: list[tuple[float, str, str | None, str]] = []
+        #: (fake time, the published ``sky.hold_deferred``) after the same
+        self.deferred: list[tuple[float, str | None]] = []
         self.tel = hub.devices["telescope"]
 
         # The debounced verdict the safety gate's fallback reads, and its
@@ -161,13 +167,15 @@ class _Watched:
                 s = self.engine.state
                 self.states.append((self.run.clock.t, s.get("state"),
                                     s.get("hold"), s.get("detail") or ""))
+                self.deferred.append((self.run.clock.t, (s.get("sky") or {})
+                                      .get("hold_deferred")))
 
         monkeypatch.setattr(self.engine, "_set_state", set_state)
 
     # -------------------------------------------------------------- the world
 
     def sky_cloudy(self, now: float) -> bool:
-        if now < self.t0 + CLOSES_AT_S:
+        if now < self.closes_at:
             return False
         return self.clears_at is None or now < self.clears_at
 
@@ -241,9 +249,9 @@ def _target(name: str, ra: float, dec: float, *, exposure_s: float = EXP,
     return t
 
 
-def _plan(*targets: Target, darks: int = 0) -> SequencePlan:
+def _plan(*targets: Target, darks: int = 0, flip: bool = True) -> SequencePlan:
     return SequencePlan(name="hold", guide=False, dither_every=0,
-                        autofocus_every=0, meridian_flip=True,
+                        autofocus_every=0, meridian_flip=flip,
                         safety_check=True, cloud_hold_darks=darks,
                         targets=list(targets))
 
@@ -428,10 +436,12 @@ async def test_a_flip_the_mount_never_takes_is_not_tracked_past_in_the_hold(
         AssertionError: the hold judged the sky past the meridian with the
         mount still on its pre-flip side: checks at [658.4, 808.4, 958.4,
         1108.4] s, the meridian at 658.4 s
-    Mutant "no stop on set-aside" (see the next-target test) is RED here
-    too (observed) -
-        AssertionError: the mount was left tracking after the set-aside:
-        [(688.4, True), (718.4, True), (748.4, True)]
+    Mutant "no stop on set-aside" (see the next-target test) was RED here
+    too until #221, because Bravo's wait then opened a target-less hold and
+    nothing looked at Alpha. It is GREEN here now (observed): the wait opens
+    no hold, and its idle park-hold stops Alpha on the idle clock. The
+    set-aside's own stop is held by the next-target test, where no wait
+    follows.
     """
     t_h0 = EXP
     w = _Watched(sim_hub, temp_store, monkeypatch,
@@ -472,8 +482,10 @@ async def test_a_flip_the_mount_never_takes_is_not_tracked_past_in_the_hold(
         assert last and last[-1][1] is False, (
             f"the mount was left tracking after the set-aside: "
             f"{[(round(t - t_h, 1), on) for t, on in last[-3:]]}")
-        # Not the state at the horizon: Bravo's constraint wait then opens a
-        # target-less hold of its own under the same cloud (#221).
+        # Any state, not the one at the horizon: the scheduler then waits on
+        # Bravo, whose "waiting" publish replaces the detail. (That wait,
+        # under the same cloud, used to open a target-less hold of its own;
+        # since #221 it opens none, and says so.)
         assert any(d == "cloud hold ended: Alpha was set aside"
                    for _t, _s, _h, d in w.states)
     finally:
@@ -501,18 +513,13 @@ async def test_a_mount_that_stops_tracking_mid_hold_is_restored_not_judged(
         False]
 
     IN PLACE, BECAUSE THE MOUNT IS ON ALPHA: Alpha's own setup pointed it
-    there. The resume is in place only for the target the mount has
-    acquired (the next-target test below has the other arm). Mutant
-    "re-point whatever the mount is on" (``on_target`` in the tracking-lost
-    branch made False): RED, the hold re-slews to the target it is already
-    on and no resume in place ever runs (observed; the em dash of the idle
-    line spelled as a hyphen) -
-        AssertionError: the hold never ran the in-place resume on the mount
-        that stopped on Alpha: ['Alpha: the mount was stopped on another
-        target - it is now pointed at this one and tracking; the cloud hold
-        is judging the sky again', 'Alpha: nothing has been shot for a while
-        and the mount is still tracking it - stopping tracking until the
-        next target is set up']
+    there, so the hold had nothing to point at its open, and by the time
+    its tracking read runs, any hold's mount is on its target (#224; a hold
+    whose mount was elsewhere is stopped until a look points it). The resume
+    in place is the only arm that branch has left. The open's choice is
+    held by test_cloud_hold_follows_the_mount.py: its control shows a hold
+    on the mount's own target does not slew, and the next-target test below
+    shows one opened elsewhere points the mount before anything else.
     """
     t_h0 = EXP
     w = _Watched(sim_hub, temp_store, monkeypatch,
@@ -698,33 +705,36 @@ async def test_the_next_targets_hold_never_tracks_where_the_last_was_set_aside(
     tracking stopped. Bravo is ready at once, so its `_setup_target` runs the
     pre-slew safety gate with the sky still shut, and that gate opens a NEW
     hold, for Bravo, with the mount still stopped where Alpha was: below the
-    floor. That hold finds the mount not tracking before its first check. It
-    must not resume in place: nothing watches that position (every look is
-    at Bravo), and tracking from there follows Alpha on down through the
-    floor it was stopped for. It points the mount at Bravo instead, behind
-    the slew gate, judges the sky from there, and releases when it clears.
+    floor. It must not resume in place: nothing watches that position (every
+    look is at Bravo), and tracking from there follows Alpha on down through
+    the floor it was stopped for (#225). Since #224 it does not wait for its
+    tracking read to find the mount stopped either: the hold points the
+    mount at Bravo when it opens, behind the slew gate, judges the sky from
+    there, and releases when it clears.
 
     The constraint-waiting Bravo of (c) cannot tell whether the HOLD stopped
     the mount: the scheduler's wait park-holds at once on Alpha's floor and
     stops it at the same fake moment. A Bravo that is ready leaves no wait to
     do it, so only the hold's own stop is left to see.
 
-    Mutant "resume in place whatever the mount is on" (``on_target`` in
-    `_hold_for_clear`'s tracking-lost branch made True): RED (observed) -
+    Mutant "watch B while tracking A" (the re-point at the hold's open
+    removed: its ``elsewhere`` made False): RED, the tracking read finds the
+    mount stopped where Alpha was and resumes it there (observed) -
         AssertionError: Bravo's hold turned tracking on with the mount still
         where Alpha was set aside, 128.0 s after the set-aside, with no slew
         in between: set_tracking(True) at [368.0, 668.0] s
     Mutant "no stop on set-aside" (the `_stop_tracking_quietly` in
-    `_hold_watch`'s ``except StopTarget`` deleted), which every test above
-    survives: RED (observed; the mount tracked Alpha below the floor until
-    the hold released and Bravo's setup slewed at 690 s) -
+    `_hold_watch`'s ``except StopTarget`` deleted): RED, Bravo's re-point
+    now leaves Alpha at the same fake moment, but with no stop first
+    (observed) -
         AssertionError: Alpha was set aside at its floor and the mount was
         left tracking it: no stop from 30 s before the crossing to Bravo's
-        slew; tracking calls [(690.0, True), (690.0, True), (690.0, True),
-        (690.0, True)] s
+        slew; tracking calls [(240.0, True), (690.0, True), (690.0, True),
+        (690.0, True), (690.0, True)] s
     CONTROL, the other arm: in (b) the mount stopped on the very target the
-    hold holds, and the resume there is still in place; see (b) for mutant
-    "re-point whatever the mount is on".
+    hold holds, and the resume there is still in place; the hold whose mount
+    is on its target does not slew at its open
+    (test_cloud_hold_follows_the_mount.py).
     """
     t_h0 = EXP
     t_cross_s = t_h0 + 250.0
@@ -804,34 +814,42 @@ async def test_the_next_targets_hold_never_tracks_where_the_last_was_set_aside(
 
 async def test_control_the_next_target_a_slew_would_find_in_the_keep_out_is_not_slewed_to(
         sim_hub, temp_store, monkeypatch, bus_lines):
-    """CONTROL for the re-point above. As there, Alpha is set aside at its
-    floor and Bravo's setup gate opens a second hold on the stopped mount,
-    but Bravo is rising into a 70 degree keep-out about 135 s after that
-    hold's first tracking check. The check's own look (90 s ahead) finds no
-    limit; the slew gate, projecting a slew 180 s ahead, would raise the
-    SafetyAbort that ends the run. So the hold does not slew: the mount stays
-    stopped, no sky is judged, and the next looks stop the hold for the
-    keep-out in the ordinary way. The run is still going at the horizon.
+    """CONTROL for the re-point above, and #228's projection half. As there,
+    Alpha is set aside at its floor and Bravo's setup gate opens a second
+    hold with the mount stopped where Alpha was, but Bravo is rising into a
+    70 degree keep-out 100 s after that hold opens. The slew gate, projecting
+    a slew 180 s ahead, would raise the SafetyAbort that ends the run. So the
+    hold does not slew (`_hold_repoint_refusal`): it stops the mount (it is
+    already stopped; the stop is asked once), says why, once, and judges no
+    sky. The run is still going at the horizon.
 
-    Mutant "re-point elsewhere without the slew gate's projection" (the
-    ``projected=True`` check before ``_hold_repoint(target, elsewhere=True)``
-    made True): RED (observed; degree signs spelled out, the fixture
-    target's azimuth elided) -
+    #228: THE DETAIL SAYS SO FOR THE WHOLE SPELL. Before the fix the hold
+    published its opening detail again after a refused re-point, "held for
+    cloud - ... Checking at the science exposure ...", over a stopped mount
+    that judged no sky, until its bound. From Bravo's hold on, no detail
+    claims a check; the last one says the mount is stopped and why.
+
+    Mutant "re-point elsewhere without the refusal" (the open's ``why is
+    None`` test before ``_hold_repoint(target, elsewhere=True)`` made True):
+    RED (observed; degree signs spelled out, the fixture target's azimuth
+    elided) -
         AssertionError: premise: the run must still be going at the horizon;
-        it ended at fake +394s: 'unsafe', 'target Bravo altitude 70 deg
+        it ended at fake +270s: 'unsafe', 'target Bravo altitude 70 deg
         above the zenith keep-out 70 deg (az ...) - the mount can reach its
         own tripod up there'
-    Mutant "no stop on set-aside" is RED here too, on the premise that the
-    second hold finds the mount stopped (observed) -
-        AssertionError: premise: Bravo's hold found the mount stopped
+    Mutant "restore the detail unconditionally" (the open's
+    ``self._set_state(detail=detail)`` run after the park as well): RED
+    (observed) -
+        AssertionError: the hold claimed to check the sky while the mount
+        was stopped: 'held for cloud - no safety monitor is assigned and the
+        frames say the sky has closed in. Checking at the science exposure,
+        with up to 2 min between checks; parks after 45 min' at 240.0 s
     """
     t_h0 = EXP
     t_cross_s = t_h0 + 250.0
     # The first hold's look at +240 s sees Alpha's crossing and sets it
-    # aside; the second hold's first check follows its 120 s of ticks and a
-    # confirmed tracking read (observed at 128 s in the case above).
-    t_check_s = t_h0 + 240.0 + 128.0
-    t_in_s = t_check_s + 135.0
+    # aside, and Bravo's setup opens the second hold at that moment.
+    t_in_s = t_h0 + 240.0 + 100.0
     w = _Watched(sim_hub, temp_store, monkeypatch,
                  horizon_s=t_in_s + 240.0,
                  safety={"min_alt_deg": 30.0, "max_alt_deg": 70.0})
@@ -849,10 +867,10 @@ async def test_control_the_next_target_a_slew_would_find_in_the_keep_out_is_not_
         aside = [t for t, _st, _h, d in w.states
                  if d == "cloud hold ended: Alpha was set aside"]
         assert aside, "premise: the first hold ended with the set-aside"
+        second = [t for t, st, _h, _d in w.states
+                  if st == "holding" and t >= aside[0]]
+        assert second, "premise: Bravo's setup gate opened a second hold"
         msgs = [m for _l, m, _s in bus_lines]
-        assert any("Bravo: the mount has stopped tracking during the cloud "
-                   "hold" in m for m in msgs), (
-            "premise: Bravo's hold found the mount stopped")
         assert not [t for t in w.run.slews if t >= aside[0]], (
             f"the hold slewed toward a target the slew gate would refuse: "
             f"slews at {w.rel(w.run.slews, t_h)} s")
@@ -860,8 +878,17 @@ async def test_control_the_next_target_a_slew_would_find_in_the_keep_out_is_not_
                     if on and t >= aside[0]], "tracking was turned back on"
         assert not [t for t, _tr in w.probes if t >= aside[0]], (
             f"a check was taken on the stopped mount: {w.probes}")
-        assert any("Bravo is rising into the mount's zenith keep-out" in m
-                   for m in msgs), msgs[-6:]
+        said = [(t, d) for t, st, _h, d in w.states
+                if t >= aside[0] and st == "holding"]
+        claims = [(t, d) for t, d in said if "Checking at the science" in d]
+        assert not claims, (
+            f"the hold claimed to check the sky while the mount was stopped: "
+            f"{claims[0][1]!r} at {claims[0][0] - t_h:.1f} s")
+        assert said and "the mount is stopped" in said[-1][1] and \
+            "zenith keep-out" in said[-1][1], said[-2:]
+        refused = [m for m in msgs if "the mount is not on Bravo" in m]
+        assert len(refused) == 1, (
+            f"the refusal was said {len(refused)} times: {refused[:2]}")
     finally:
         await w.close()
 
@@ -1064,6 +1091,155 @@ async def test_control_a_target_that_a_slew_would_find_in_the_keep_out_stays_sto
         e._holding_for_clear = False
 
 
+# ------------------------------------------- the watch's own arithmetic (H2)
+
+async def test_a_crossing_in_the_last_interval_of_a_probe_is_met_before_it(
+        sim_hub, temp_store, monkeypatch, bus_lines):
+    """The look before a probe sees `_hold_exposure_ahead_s` of the
+    exposure ahead: the exposure, its download (``FLIP_FRAME_MARGIN_S``), and
+    one ``HOLD_WATCH_S`` more. Alpha rises into the 70 degree keep-out 75 s
+    after that look, inside the last of those intervals. The look acts on it
+    at once, the mount is stopped before the shutter would have opened, and
+    no check is taken. Every other test here meets its crossing somewhere a
+    shorter span would also reach.
+
+    Mutant "drop + HOLD_WATCH_S" (`_hold_exposure_ahead_s` returns the
+    exposure plus ``FLIP_FRAME_MARGIN_S`` alone): RED, the check is taken
+    and the crossing is met by a tick after it (observed) -
+        AssertionError: the look before the check at 120.0 s did not act on
+        a crossing 75.0 s ahead, inside its span: checks at [120.0] s, the
+        mount stopped at [180.0] s
+    """
+    t_h0 = EXP
+    look_s = t_h0 + PROBE_EVERY
+    t_cross_s = look_s + EXP + engine_mod.FLIP_FRAME_MARGIN_S + WATCH / 2.0
+    w = _Watched(sim_hub, temp_store, monkeypatch,
+                 horizon_s=t_cross_s + 120.0, safety={"max_alt_deg": 70.0})
+    t_cross = w.t0 + t_cross_s
+    ra = _crossing_ra(70.0, 45.0, t_cross, rising=True)
+    assert _crosses(ra, 45.0, 70.0, t_cross, rising=True), "premise"
+    a = _target("Alpha", ra, 45.0)
+    try:
+        await w.night(_plan(a))
+        t_h = w.hold_started()
+        t_look = w.t0 + look_s
+        assert abs(t_h - (w.t0 + t_h0)) < 1.0, "premise: the hold begins"
+        # The span as the docstring of `_hold_exposure_ahead_s` promises it,
+        # from the constants, not from the method under test.
+        ahead = EXP + engine_mod.FLIP_FRAME_MARGIN_S + WATCH
+        assert ahead - WATCH < t_cross - t_look <= ahead, (
+            "premise: the crossing is inside the look's last interval")
+        stops = w.stops(t_h)
+        checks = [t for t, _tr in w.probes if t >= t_h]
+        assert stops[:1] and abs(stops[0] - t_look) < 0.5 and not checks, (
+            f"the look before the check at {t_look - t_h:.1f} s did not act "
+            f"on a crossing {t_cross - t_look:.1f} s ahead, inside its span: "
+            f"checks at {w.rel(checks, t_h)} s, the mount stopped at "
+            f"{w.rel(stops, t_h)} s")
+    finally:
+        await w.close()
+
+
+async def test_the_flip_gate_engages_at_the_look_that_can_see_the_point(
+        sim_hub, temp_store, monkeypatch, bus_lines):
+    """A look hands the flip gate its span less ``FLIP_FRAME_MARGIN_S``,
+    because `_maybe_meridian_flip` adds that margin (and the frame loop's
+    overhead allowance) itself, for a frame. Alpha's flip point is 80 s into
+    the hold. The tick at +30 s sees 30 s ahead, so the gate stays out of it;
+    the tick at +60 s is the first whose span, with the overhead allowance,
+    holds the point, and the gate waits the last 20 s there.
+
+    Mutant "drop - FLIP_FRAME_MARGIN_S in the lead _hold_flip_watch hands
+    _maybe_meridian_flip": RED, the gate engages one look early and waits
+    past the look's horizon, the watch taking no look in the meantime
+    (observed) -
+        AssertionError: the flip gate began waiting at [30.0] s, 50.0 s
+        before the flip point: expected the look at 60.0 s, whose span with
+        the 12 s overhead allowance first holds it
+    """
+    t_h0 = EXP
+    w = _Watched(sim_hub, temp_store, monkeypatch, horizon_s=t_h0 + 300.0)
+    t_flip = w.t0 + t_h0 + 80.0
+    a = _target("Alpha", _flip_ra(t_flip), 20.0)
+    waits: list[float] = []
+    real_wait = w.engine._wait_for_flip_point
+
+    async def wait_for_flip_point(target, lead_s=0.0):
+        if not w.run.frozen.is_set():
+            waits.append(w.run.clock.t)
+        return await real_wait(target, lead_s)
+
+    monkeypatch.setattr(w.engine, "_wait_for_flip_point", wait_for_flip_point)
+    try:
+        await w.night(_plan(a))
+        t_h = w.hold_started()
+        allowance = float(w.engine._overhead_ema)
+        looks = [t_h + i * WATCH for i in range(4)]
+        want = next(t for t in looks
+                    if t_flip - t <= WATCH + allowance + 1e-6)
+        assert waits, "premise: the flip gate waited for the flip point"
+        assert abs(waits[0] - want) < 0.5, (
+            f"the flip gate began waiting at {w.rel(waits[:1], t_h)} s, "
+            f"{t_flip - waits[0]:.1f} s before the flip point: expected the "
+            f"look at {want - t_h:.1f} s, whose span with the "
+            f"{allowance:.0f} s overhead allowance first holds it")
+    finally:
+        await w.close()
+
+
+async def test_a_second_stop_in_one_stopped_spell_does_and_says_nothing(
+        sim_hub, monkeypatch, bus_lines):
+    """`_hold_park` is once per stopped spell. A hold stopped because its
+    mount is not on its target is asked to stop again by a look that sees
+    the target rising into the keep-out: no second ``set_tracking(False)``,
+    no second line, no second detail. The first reason stands.
+
+    Mutant "remove the once-only guard" (the ``_hold_parked is not None``
+    return at the top of `_hold_park` deleted): RED (observed) -
+        AssertionError: a second stop in one spell: set_tracking(False) x2,
+        lines ['the mount is not on Bravo - stopping tracking; the cloud
+        hold goes on but judges no sky until the mount can track the target
+        again', "Bravo is rising into the mount's zenith keep-out - stopping
+        tracking; the cloud hold goes on but judges no sky until the mount
+        can track the target again"], details 2
+    """
+    e = SequenceEngine(sim_hub)
+    e.plan = SequencePlan(name="p", meridian_flip=False, targets=[])
+    e._cfg = AppConfig(safety=SafetyConfig(enabled=False))
+    e._holding_for_clear = True
+    tel = sim_hub.devices["telescope"]
+    stops: list[bool] = []
+    real_set = tel.set_tracking
+
+    async def set_tracking(on):
+        if not on:
+            stops.append(on)
+        return await real_set(on)
+
+    monkeypatch.setattr(tel, "set_tracking", set_tracking)
+    details: list[str] = []
+    real_state = e._set_state
+
+    def set_state(**kw):
+        if "detail" in kw:
+            details.append(kw["detail"])
+        return real_state(**kw)
+
+    monkeypatch.setattr(e, "_set_state", set_state)
+    try:
+        await e._hold_park("elsewhere", "the mount is not on Bravo")
+        await e._hold_park("ceiling",
+                           "Bravo is rising into the mount's zenith keep-out")
+        lines = [m for _l, m, _s in bus_lines if "stopping tracking" in m]
+        assert (len(stops), len(lines), len(details)) == (1, 1, 1), (
+            f"a second stop in one spell: set_tracking(False) x{len(stops)}, "
+            f"lines {lines}, details {len(details)}")
+        assert e._hold_parked == "elsewhere"
+        assert "not on Bravo" in details[0]
+    finally:
+        e._holding_for_clear = False
+
+
 # -------------------------------------------------------------------- controls
 
 async def test_control_a_hold_far_from_every_limit_releases_as_it_always_did(
@@ -1079,10 +1255,12 @@ async def test_control_a_hold_far_from_every_limit_releases_as_it_always_did(
     counts to ``span_s + HOLD_WATCH_S``): RED (observed) -
         AssertionError: the checks no longer come at the old cadence: [150.0,
         330.0, 510.0] s, expected [120.0, 270.0, 420.0] s
-    Mutant "every look stops tracking" (`_hold_watch` park-holds whatever
-    it finds): RED (observed) -
+    Mutant "every look stops tracking" (a ``_hold_park("ceiling", ...)``
+    made at the top of every look): RED, each look stops the mount and the
+    keep-out re-point puts it back, look after look (observed, H2) -
         AssertionError: the mount was stopped during a hold with nothing to
-        stop it for: [0.0] s
+        stop it for: [0.0, 30.0, 60.0, 90.0, 120.0, 150.0, 180.0, 210.0,
+        240.0, 270.0, 300.0, 330.0, 360.0, 390.0, 420.0] s
     """
     t_h0 = EXP
     w = _Watched(sim_hub, temp_store, monkeypatch,
@@ -1195,28 +1373,27 @@ def test_a_culmination_inside_a_look_is_seen_though_both_ends_are_below(
 async def test_a_repoint_from_another_target_makes_the_mount_the_held_targets(
         sim_hub, monkeypatch):
     """(c)'s re-point, the bookkeeping half. A hold opened by a target
-    setup's pre-slew gate finds the mount stopped where the LAST target left
-    it, and points it at the held one (`_hold_repoint` with ``elsewhere``).
-    From then on the mount is tracking the held target, and the engine must
-    say so: ``_tracked_target`` is what the hold's tracking-lost branch asks
-    (``on_target``) to choose an in-place resume over another slew, and what
-    the idle park-hold watches if this hold ends with the target set aside.
-    Left on the old target, a second stop in the same hold would slew again,
-    and an idle spell after a set-aside would watch the floor and flip point
-    of a target the mount is not on (the #202 class). The idle clock starts
-    at the re-point, as it does after a setup.
+    setup's pre-slew gate finds the mount on the LAST target, and points it
+    at the held one (`_hold_repoint` with ``elsewhere``). From then on the
+    mount is tracking the held target, and the engine must say so:
+    ``_tracked_target`` is what tells the hold's open whether the mount is
+    elsewhere (#224), and what the idle park-hold watches if this hold ends
+    with the target set aside or its window closed. Left on the old target,
+    an idle spell after the hold would watch the floor and flip point of a
+    target the mount is not on (the #202 class). The idle clock starts at
+    the re-point, as it does after a setup.
 
     Asked of the method itself, on the sim mount: (c) above runs the whole
     night, but nothing after its one re-point reads the bookkeeping, so it
     stays green without it.
 
-    Mutant "the re-point leaves the old target tracked" (``self.
-    _tracked_target = target`` deleted from ``_hold_repoint``'s
-    ``elsewhere`` branch): RED (observed) -
+    Mutant "the re-point leaves the old target tracked" (the
+    ``self._tracked_target = target`` that follows any successful re-point
+    deleted): RED (observed) -
         AssertionError: after pointing the mount at Bravo the engine still
         says it is tracking Alpha
     Mutant "no idle anchor at the re-point" (``self._idle_since =
-    time.time()`` deleted from the same branch): RED (observed) -
+    time.time()`` deleted from the ``elsewhere`` branch): RED (observed) -
         AssertionError: the idle clock did not start at the re-point
     """
     e = SequenceEngine(sim_hub)

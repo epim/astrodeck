@@ -141,12 +141,24 @@ class TestHemispheresAndJunk:
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    # A store of the test's own, BEFORE anything below patches the cache: the
+    # singleton repointed at a file under tmp_path with its cache dropped,
+    # both through monkeypatch. A run that finds focus saves the temperature
+    # and position it anchored at (`_anchor_temp_comp`), and the flip cases here that refocus left
+    # them on the process-wide config for every later test on the worker
+    # (#227).
+    # Without these two lines, the conftest guard errors at teardown
+    # (1 in this file alone, observed): "test_a_mount_reporting_NO_pier_side_now_flips_anyway
+    # left the process-wide config changed: focus.temp_comp.reference_position,
+    # focus.temp_comp.reference_temp_c."
+    monkeypatch.setattr(hub_module.config_store, "_path",
+                        tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module.config_store, "_cfg", None)
     monkeypatch.setattr(hub_module.config_store.cfg().safety,
                         "solar_avoidance", False)
-    # A REAL SITE BEFORE THE HUB (#24). This fixture does not isolate
-    # the config store, so without it the hub comes up on the 0,0
-    # default and every meridian number below is computed for the Gulf
-    # of Guinea.
+    # A REAL SITE BEFORE THE HUB (#24). The store above starts from the
+    # defaults, so without it the hub comes up on the 0,0 default and
+    # every meridian number below is computed for the Gulf of Guinea.
     a_real_site(monkeypatch)
     h = Hub()
     await h.connect_sim()

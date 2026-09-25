@@ -35,6 +35,11 @@
 //      out of reach of the one sentence explaining it.
 //   5. A READABLE CARD IS UNCHANGED (the controls): it opens on a press, raises
 //      no toast, and carries no lock and no description.
+//   6. THE STATUS WORD IS HEARD ONCE AND STILL PRINTED (#217), on every card,
+//      readable or not. The LED beside it used to carry the same word as its
+//      label, so the name said it twice. The names the #206 records below
+//      quote end in the word twice for that reason; they were observed before
+//      #217 and are left verbatim.
 //
 // Every case names the mutant it kills and quotes the failure that mutant
 // produced when it was run from a byte-for-byte backup of FlowLibraryCard.tsx
@@ -88,6 +93,7 @@ function eq<T>(got: T, want: T, msg: string): void {
 const { useStore } = await import("../../../store");
 const { api } = await import("../../../api");
 const { FlowLibrary } = await import("../FlowLibrary");
+const { FlowLibraryCard } = await import("../FlowLibraryCard");
 
 // ------------------------------------------------------------------- fixture
 const NEWER = "saved by a newer AstroDeck (schema 4); update to open it";
@@ -157,6 +163,19 @@ async function mount() {
   await act(async () => { root!.render(React.createElement(FlowLibrary)); });
   return host;
 }
+/** One card on its own, for the status words the library fixture does not
+ *  carry: every card in it has never run, and `cardStatus` has three more
+ *  readable words than NEVER RUN. */
+async function mountCard(card: any): Promise<HTMLElement> {
+  const host = document.getElementById("root")!;
+  unmount();
+  host.innerHTML = "";
+  root = createRoot(host);
+  await act(async () => {
+    root!.render(React.createElement(FlowLibraryCard, { card, onOpen: () => {} }));
+  });
+  return host.querySelector(`[data-flow-id="${card.id}"]`) as HTMLElement;
+}
 
 const cardEl = (id: string) =>
   document.querySelector(`[data-flow-id="${id}"]`) as HTMLElement | null;
@@ -188,6 +207,26 @@ function copiesOf(card: HTMLElement, reason: string): { text: number; attrs: str
   return { text: occurrences(card.textContent ?? "", reason), attrs };
 }
 
+/** The text a sighted reader can see in `el`: its text, less every subtree the
+ *  page hides from the eye. `textContent` is not that - a word in an `sr-only`
+ *  span is in `textContent` and in the accessible name, and on nobody's
+ *  screen. jsdom has no stylesheet here (the CSS is stubbed), so this reads the
+ *  markup this codebase hides text with: the `hidden` attribute and the
+ *  `sr-only`, `hidden` and `invisible` utilities, at their unprefixed (phone)
+ *  width. `aria-hidden` is NOT one of them: it hides from the ear, not the eye. */
+function seenText(el: Element): string {
+  let out = "";
+  for (const n of Array.from(el.childNodes)) {
+    if (n.nodeType === 3) { out += n.textContent ?? ""; continue; }
+    if (n.nodeType !== 1) continue;
+    const child = n as Element;
+    if (child.hasAttribute("hidden")) continue;
+    if (["sr-only", "hidden", "invisible"].some((c) => child.classList.contains(c))) continue;
+    out += seenText(child);
+  }
+  return out;
+}
+
 // ------------------------------------------------ accessible name, minimally
 // What a screen reader announces for a control is its accessible NAME and its
 // DESCRIPTION (W3C accname 1.2). This is a minimal computation of both, enough
@@ -195,8 +234,10 @@ function copiesOf(card: HTMLElement, reason: string): { text: number; attrs: str
 //
 //   name         aria-labelledby, then aria-label, else the text of the
 //                content - where a descendant's own aria-label stands in for
-//                that descendant's content (the status LED is a role="img"
-//                with a label) and an aria-hidden subtree contributes nothing;
+//                that descendant's content (a labelled LED is a role="img"
+//                with an aria-label, which is how the status word reached the
+//                name twice, #217) and an aria-hidden subtree contributes
+//                nothing;
 //   description  the text of each element aria-describedby names.
 //
 // An element named by id counts even when it is itself aria-hidden: that is
@@ -260,6 +301,18 @@ function accDescription(el: Element): string {
 //     glyph reached the name
 //     expected "NEW FLOW"
 //     got      "+ NEW FLOW"
+//
+// MUTANT "descendant label ignored" (contentText's
+// `${label && label.trim() ? label : contentText(child)}` made
+// `${contentText(child)}`). The #217 status-word case leans on this rule: a
+// helper that read a labelled LED as empty could never hear its label, so it
+// could never see the word twice. Observed, 10/11, and the SAME 10/11 when it
+// was run together with the card mutant "LED keeps its label" - the status
+// case stayed green, blind, and only this line caught it:
+//   x precondition: the name helper follows the rules it models: a labelled
+//     descendant did not stand in for its content
+//     expected "CANNOT OPEN x"
+//     got      "x"
 await test("precondition: the name helper follows the rules it models", async () => {
   const kp = document.createElement("div");
   kp.innerHTML = `
@@ -423,7 +476,9 @@ await test("pressing an unreadable card never calls flowsOpen and raises no toas
 //       reason line (the name loses it, the description keeps it);
 //   (b) the same wiring plus `aria-label={`${card.name}, ${status.text}`}` on
 //       an unreadable card (an explicit name that leaves the reason out).
-// So a ruling for (a) or (b) changes FlowLibraryCard.tsx, not this case.
+// So a ruling for (a) or (b) changes FlowLibraryCard.tsx, not this case. It
+// does change the #217 control further down, which holds the rest of each
+// card's name and so pins (c); that control's comment quotes both failures.
 await test("a screen reader meets the reason once: in the card's name or its description, not both", async () => {
   setUp();
   await mount();
@@ -441,6 +496,195 @@ await test("a screen reader meets the reason once: in the card's name or its des
       `${id}: a screen reader meets the reason ${inName} time(s) in the name and ${inDesc} in the`
       + ` description\n  name        ${JSON.stringify(name)}\n  description ${JSON.stringify(desc)}`);
   }
+});
+
+// THE STATUS WORD IS HEARD ONCE TOO (#217). The status row prints its word
+// beside an LED, and the LED used to carry the same word as its label. `Led`
+// draws a labelled LED as role="img" with that aria-label, and in a button
+// named from its content a descendant's label stands in for the descendant, so
+// every card said its status twice - the names quoted for #206 above end
+// "never run CANNOT OPEN CANNOT OPEN". Same class as #206: the DOM holds the
+// word once and the ear gets it twice.
+//
+// Two halves, because either alone passes a wrong fix:
+//   - the word is in the card's name ONCE: not twice, and not zero, which is
+//     what hiding the whole status row from the ear would give;
+//   - the word is still PRINTED on the card. Deleting the text and keeping the
+//     LED's label would pass the first half and leave a sighted reader with an
+//     LED's colour and shape and no word. "Printed" is what `seenText` reads,
+//     not `textContent`: moving the word into an `sr-only` span keeps it in
+//     `textContent` and in the name, and takes it off the screen.
+//
+// Every status word the card can print, readable and unreadable: CANNOT OPEN
+// and NEVER RUN from the library, the other three from `mountCard`.
+//
+// Counted case-sensitively, which matters for one card: a card that has never
+// run also says "never run" (lowercase) in its meta line's last-run slot, so it
+// is heard as "never run NEVER RUN" whether or not the LED is labelled. Those
+// are two designed strings for two fields (last_run and last_result); this case
+// grades the LED's copy of the status word, not that design.
+//
+// NOT HEARD ON A SCREEN READER. Like the #206 case, this holds the wiring to
+// the accname rules the helper models; nobody has listened to a card on NVDA
+// or on VoiceOver.
+//
+// It can see a labelled LED only because the helper lets a descendant's
+// aria-label stand in for it; the precondition case pins that rule, and the
+// "descendant label ignored" record there shows this case going blind without
+// it.
+//
+// MUTANT "LED keeps its label" (the status row's `<Led state={status.led} />`
+// given back `label={status.text}` - the code before #217). Observed, 10/11:
+//   x a screen reader hears each card's status word once, and the word is still
+//     printed: future (unreadable): "CANNOT OPEN" heard 2 time(s), name "Mosaic NGC 7000 saved by a newer AstroDeck (schema 4); update to open it 9 stages · 8 wires · never run CANNOT OPEN CANNOT OPEN"
+//     broken (unreadable): "CANNOT OPEN" heard 2 time(s), name "broken unreadable: not valid JSON (line 1, column 2) 0 stages · 0 wires · never run CANNOT OPEN CANNOT OPEN"
+//     good (readable): "NEVER RUN" heard 2 time(s), name "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run NEVER RUN NEVER RUN"
+//     last_result "ok" (readable): "COMPLETED CLEAN" heard 2 time(s), name "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run COMPLETED CLEAN COMPLETED CLEAN"
+//     last_result "warn" (readable): "WARN" heard 2 time(s), name "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run WARN WARN"
+//     last_result "bad" (readable): "BAD" heard 2 time(s), name "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run BAD BAD"
+//
+// MUTANT "word only in the LED label" (the LED labelled again and the
+// `{status.text}` line after it deleted). Observed, 8/11:
+//   x an unreadable card shows its reason as text on the card: the status word
+//     does not say it cannot open
+//   x a screen reader hears each card's status word once, and the word is still
+//     printed: future (unreadable): "CANNOT OPEN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     broken (unreadable): "CANNOT OPEN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     good (readable): "NEVER RUN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     last_result "ok" (readable): "COMPLETED CLEAN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     last_result "warn" (readable): "WARN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     last_result "bad" (readable): "BAD" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//   x control: a readable card opens on a press, once, with its own id, and
+//     says nothing: the readable card's status word changed
+//
+// MUTANT "status row hidden" (`aria-hidden="true"` on the status row's <span>,
+// the LED left unlabelled). Observed, 10/11:
+//   x a screen reader hears each card's status word once, and the word is still
+//     printed: future (unreadable): "CANNOT OPEN" heard 0 time(s), name "Mosaic NGC 7000 saved by a newer AstroDeck (schema 4); update to open it 9 stages · 8 wires · never run"
+//     broken (unreadable): "CANNOT OPEN" heard 0 time(s), name "broken unreadable: not valid JSON (line 1, column 2) 0 stages · 0 wires · never run"
+//     good (readable): "NEVER RUN" heard 0 time(s), name "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run"
+//     last_result "ok" (readable): "COMPLETED CLEAN" heard 0 time(s), name "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run"
+//     last_result "warn" (readable): "WARN" heard 0 time(s), name "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run"
+//     last_result "bad" (readable): "BAD" heard 0 time(s), name "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run"
+//
+// MUTANT "LED labelled when on" (`label={status.led === "on" ? status.text :
+// undefined}`: only COMPLETED CLEAN's LED is labelled). This is why the case
+// mounts the three readable words the library fixture lacks. Observed, 10/11:
+//   x a screen reader hears each card's status word once, and the word is still
+//     printed: last_result "ok" (readable): "COMPLETED CLEAN" heard 2 time(s), name "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run COMPLETED CLEAN COMPLETED CLEAN"
+//
+// MUTANT "word visually hidden" (the LED left unlabelled and the printed
+// `{status.text}` wrapped in `<span className="sr-only">`: heard once, seen
+// nowhere). Found by the #217 verifier, when this case still counted
+// `textContent` and left all 11/11 green. Observed with `seenText`, 10/11:
+//   x a screen reader hears each card's status word once, and the word is still
+//     printed: future (unreadable): "CANNOT OPEN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     broken (unreadable): "CANNOT OPEN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     good (readable): "NEVER RUN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     last_result "ok" (readable): "COMPLETED CLEAN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     last_result "warn" (readable): "WARN" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//     last_result "bad" (readable): "BAD" printed 0 time(s) - without the word the status is an LED's colour and shape alone
+//
+// MUTANT "seenText reads textContent" (the helper's body made `return
+// el.textContent ?? "";` - a mutant of THIS file). The known positive at the
+// top of the case catches it; run together with "word visually hidden", the
+// same single line is the only failure, so the positive is what keeps the
+// printed half from going blind. Observed, 10/11, alone and together:
+//   x a screen reader hears each card's status word once, and the word is still
+//     printed: precondition: seenText read text the eye cannot see
+//     expected "E F"
+//     got      "A B C D E F"
+//
+// NOT LOCKED TO ONE SHAPE. The other way to say the word once - the LED keeps
+// its label and the printed word is wrapped in `<span aria-hidden="true">` -
+// was run from the same backup and left all 11/11 cases green. The shipped
+// shape unlabels the LED because #217 asked for it, not because this case
+// requires it. It stays green with `seenText`, which is why the helper must
+// not treat `aria-hidden` as unseen.
+await test("a screen reader hears each card's status word once, and the word is still printed", async () => {
+  // The seen-text helper's known positive: every way this codebase hides text
+  // from the eye is dropped, and an aria-hidden span, which only the ear loses,
+  // is kept.
+  const kp = document.createElement("div");
+  kp.innerHTML = `<span class="sr-only">A</span> <span hidden>B</span> `
+    + `<span class="hidden lg:inline">C</span> <span class="invisible">D</span> `
+    + `<span aria-hidden="true">E</span> F`;
+  eq(squash(seenText(kp)), "E F", "precondition: seenText read text the eye cannot see");
+
+  const wrong: string[] = [];
+  const check = (who: string, card: HTMLElement, word: string) => {
+    const name = accName(card);
+    const heard = occurrences(name, word);
+    if (heard !== 1) {
+      wrong.push(`${who}: ${JSON.stringify(word)} heard ${heard} time(s), name ${JSON.stringify(name)}`);
+    }
+    const printed = occurrences(seenText(card), word);
+    if (printed !== 1) {
+      wrong.push(`${who}: ${JSON.stringify(word)} printed ${printed} time(s) - without the word`
+        + " the status is an LED's colour and shape alone");
+    }
+  };
+  setUp();
+  await mount();
+  check("future (unreadable)", cardEl("future")!, "CANNOT OPEN");
+  check("broken (unreadable)", cardEl("broken")!, "CANNOT OPEN");
+  check("good (readable)", cardEl("good")!, "NEVER RUN");
+  // `last_run` stays null on these three, so their meta line says "never run"
+  // beside a result. That is not a state the server sends, and it does not
+  // matter here: the meta line is not graded. A real time would be formatted
+  // in LOCAL time, which would make the quoted names below depend on the
+  // machine's time zone.
+  for (const [lastResult, word] of [["ok", "COMPLETED CLEAN"], ["warn", "WARN"], ["bad", "BAD"]] as const) {
+    const card = await mountCard({ ...CARDS[0], id: `ran-${lastResult}`, last_result: lastResult });
+    check(`last_result ${JSON.stringify(lastResult)} (readable)`, card, word);
+  }
+  assert(wrong.length === 0, wrong.join("\n  "));
+});
+
+// CONTROL (#217): the fix takes a copy of the status word out of the name and
+// nothing else. With EVERY copy of the word taken out, what is left of each
+// card's name must be what the card said before the fix, so this case is blind
+// to the count the case above grades and sees only the rest of the name - the
+// title, the tagline, the reason and the meta line. Run against the card
+// before #217 it passed, which is what makes it a control and not a second
+// copy of the count.
+//
+// IT PINS #206's SHAPE (c) FOR THE UNREADABLE CARDS. The #206 case above is
+// deliberately open between that issue's three shapes; this control is not,
+// because the reason is part of the rest of the name it holds. Found by the
+// #217 verifier, running the two other shapes exactly as the #206 record
+// describes them. Each leaves every other case green and fails only here,
+// 10/11. Shape (a), the reason aria-hidden and referenced by
+// aria-describedby:
+//   x control: apart from its status word, each card's name is what it was:
+//     future: the unreadable card's name lost or gained something besides its
+//     status word
+//     expected "Mosaic NGC 7000 saved by a newer AstroDeck (schema 4); update to open it 9 stages · 8 wires · never run"
+//     got      "Mosaic NGC 7000 9 stages · 8 wires · never run"
+// Shape (b), an explicit aria-label on an unreadable card: the same line,
+// with got "Mosaic NGC 7000,". So a ruling for (a) or (b) on #206 also
+// rewrites the two unreadable expectations below; the readable one stands.
+//
+// MUTANT "name from an aria-label" (`aria-label={`${card.name},
+// ${status.text}`}` on every card's <button>, the LED left unlabelled: the
+// status word is heard once, so the case above stays green). Observed, 9/11
+// (the #206 heard-once case also fails, with name "Mosaic NGC 7000, CANNOT
+// OPEN" and the reason heard 0 times):
+//   x control: apart from its status word, each card's name is what it was:
+//     good: the readable card's name lost or gained something besides its
+//     status word
+//     expected "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run"
+//     got      "M31 LRGB,"
+await test("control: apart from its status word, each card's name is what it was", async () => {
+  setUp();
+  await mount();
+  const rest = (id: string, word: string) => squash(accName(cardEl(id)!).split(word).join(" "));
+  eq(rest("good", "NEVER RUN"), "M31 LRGB 12 subs each of L, R, G, B 7 stages · 6 wires · never run",
+    "good: the readable card's name lost or gained something besides its status word");
+  eq(rest("future", "CANNOT OPEN"), `Mosaic NGC 7000 ${NEWER} 9 stages · 8 wires · never run`,
+    "future: the unreadable card's name lost or gained something besides its status word");
+  eq(rest("broken", "CANNOT OPEN"), `broken ${BROKEN} 0 stages · 0 wires · never run`,
+    "broken: the unreadable card's name lost or gained something besides its status word");
 });
 
 // Two ways to lose the card, two assertions. `focus()` catches the native

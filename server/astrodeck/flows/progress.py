@@ -37,14 +37,19 @@ here is a number an operator acts on:
   and a viewer can read it. This function takes no site, no clock and no
   config, so it cannot compute an altitude or a transit time; the keys it
   emits are pinned to an allow-list by ``tests/test_flows_progress.py``.
+  The one outside answer it reads is the catalogue's canonical IDENTITY of a
+  TARGET known only by its name (``tonight.resolve_target``, #229), which is
+  a catalogue constant ("M31", "Jupiter"). The lookup computes a position as
+  well, and for a body that position comes from the clock and, for the Moon,
+  the site; it is thrown away here, never used and never emitted.
 
-Pure: no devices, no config, no clock, no store.
+Pure otherwise: no devices, no store, and no clock or config of its own.
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from . import identity
+from . import identity, tonight
 
 if TYPE_CHECKING:                       # pragma: no cover - typing only
     from ..sequence.models import SequencePlan, Target
@@ -185,16 +190,29 @@ def _single(plan: "SequencePlan", entry: dict, *, flow_id: str,
     - the one function ``to_plan._identify`` minted it with. The node id is in
     the id, so a target of any other block cannot match, whatever its place in
     the list; the geometry comes from the target, so this needs no coordinate
-    parsing and no catalogue. The entry is what says WHICH key: a TARGET with
-    typed coordinates is keyed on the geometry it is at now, and one with only
-    a name on the name (#189 A5), because the catalogue's answer for a name
-    moves between the compile the run made and the one the card reads. Either
-    way it is the block's 1x1 grid at r0c0. A key on anything else (the anchor
-    S3 brings, a panel's row and col) has to be matched here the same way
-    ``to_plan`` mints it, or every block reads "nothing banked"."""
+    parsing. The entry is what says WHICH key: a TARGET with typed
+    coordinates is keyed on the geometry it is at now, and one with only a
+    name on the catalogue's canonical identity for the name (#189 A5, #229),
+    because the catalogue's answer for a name moves between the compile the
+    run made and the one the card reads, and the name as typed is only one
+    spelling of the object. That identity comes from ``tonight.resolve_target``,
+    the resolver ``to_plan._coords`` asked, so the two sides cannot disagree
+    on which object a name is; the name as typed would key "M 31" apart from
+    the "M31" ``to_plan`` keyed. A name the catalogue does not know was
+    dropped by ``to_plan``, and is None here. Either way it is the block's
+    1x1 grid at r0c0. A key on anything else (the anchor S3 brings, a panel's
+    row and col) has to be matched here the same way ``to_plan`` mints it, or
+    every block reads "nothing banked"."""
+    canonical = None
+    if not identity.typed_coordinates(entry):
+        name = str(entry.get("name") or "").strip()
+        hit = tonight.resolve_target(name) if name else None
+        if hit is None:
+            return None
+        canonical = hit.identity
     for target in plan.targets:
         key = identity.target_key(entry, target.ra_hours, target.dec_deg,
-                                  target.rotation_deg)
+                                  target.rotation_deg, canonical=canonical)
         group = identity.group_id(flow_id, node_id, key)
         if identity.target_id(group, 0, 0) == target.id:
             return target
