@@ -839,7 +839,13 @@ async def _capture_and_solve(hub: Any, solver: Any, session: Any = None):
         # would be the exact lie this field exists to remove.
         _publish_activity(session, None)
     if not result.success:
-        raise DeviceError(f"polar plate solve failed: {result.message}")
+        # Judged for light (#251): a capped optic says "not enough stars" in
+        # the words a cloud does, and ``_solve_until_it_works`` would tell the
+        # operator to wait for the sky. The verdict is still a DeviceError, so
+        # that retry loop is unchanged; its line now says which it is.
+        from ..solve import light as _light
+        raise await _light.failed_solve_error(
+            frame, result, prefix="polar plate solve failed", hub=hub)
     await _sky_angle.note_solved_rotation(hub, result, source="polar alignment",
                                           context=angle)
 

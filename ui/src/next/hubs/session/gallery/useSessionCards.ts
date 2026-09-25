@@ -21,16 +21,16 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getSession } from "../../../../api/sessions";
 import type { Session } from "../../../../types";
-import { buildCards, useSessionsIndex } from "./sessionsIndex";
-import type { SessionCardData } from "./sessionsIndex";
+import { buildCards, unreadableCards, useSessionsIndex } from "./sessionsIndex";
+import type { SessionCardData, UnreadableCardData } from "./sessionsIndex";
 
 // The pure half of this module - what a card IS, and how the two payloads
 // fold into one shelf - lives in `sessionsIndex.ts`, because the GALLERY
 // chip needs the same fold without mounting a grid. Re-exported here so
 // every existing importer (`SessionCard.tsx`, `cardActions.ts`, the barrel)
 // keeps its one import path.
-export { buildCards, nightKeyOf, reportMatchesSession } from "./sessionsIndex";
-export type { SessionCardData } from "./sessionsIndex";
+export { buildCards, nightKeyOf, reportMatchesSession, unreadableCards } from "./sessionsIndex";
+export type { SessionCardData, UnreadableCardData } from "./sessionsIndex";
 
 /** How many cards get a ledger read for their thumbnail. Beyond this the card
  *  still renders, with the dashed face - a picture is not worth an unbounded
@@ -49,6 +49,10 @@ export function newestThumbFrameId(session: Session): string | null {
 
 export interface SessionCards {
   cards: SessionCardData[];
+  /** Session files the store cannot read (#242), drawn after the cards as
+   *  read-only cards with their reason and DELETE. Never in `cards`, so no
+   *  thumbnail read, sub count or session verb can reach one. */
+  unreadable: UnreadableCardData[];
   loading: boolean;
   error: string | null;
   /** sessionId -> thumbnail path (app-absolute, prefix with `u()`), or null
@@ -67,6 +71,12 @@ export function useSessionCards(): SessionCards {
 
   const cards = useMemo(
     () => (rows && reports ? buildCards(rows, reports) : []),
+    [rows, reports],
+  );
+  // On the same gate as `cards`, so the two halves of the shelf appear in one
+  // render and the count above them never reads a half-loaded grid.
+  const unreadable = useMemo(
+    () => (rows && reports ? unreadableCards(rows) : []),
     [rows, reports],
   );
 
@@ -96,5 +106,5 @@ export function useSessionCards(): SessionCards {
     return () => { alive = false; };
   }, [cards]);
 
-  return { cards, loading: rows == null || reports == null, error, thumbs, refresh };
+  return { cards, unreadable, loading: rows == null || reports == null, error, thumbs, refresh };
 }

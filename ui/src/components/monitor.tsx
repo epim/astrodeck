@@ -473,7 +473,9 @@ export function CountdownTile({
 /** Cooler power readout. With power: 0-100% bar + target + at-target check.
  *  Without (`canReportPower=false`): degrade to an ON/OFF Led + the WORD
  *  "ON"/"OFF" + target + "(no power readout)" — the word is required because the
- *  Led is color-only and red at night (resolves accessibility-13/crit2-A2).
+ *  Led is color-only and red at night (resolves accessibility-13/crit2-A2). The
+ *  word is also the Led's name, so the Led is unlabelled: labelled "cooler on",
+ *  it was said before the "ON" beside it (#231).
  *  Memoized: its props derive from the 2s status poll, never the parent's 1s
  *  coarse tick, so the per-second repaint skips this cell entirely (P3-8). */
 export const ThermometerBar = memo(function ThermometerBar({
@@ -494,7 +496,7 @@ export const ThermometerBar = memo(function ThermometerBar({
   if (!canReportPower || power == null) {
     return (
       <div className="flex items-center gap-2 min-w-0">
-        <Led state={on ? "on" : "off"} label={on ? "cooler on" : "cooler off"} />
+        <Led state={on ? "on" : "off"} />
         <span className={`mono text-xs ${on ? "text-ink" : "text-dim"}`}>{on ? "ON" : "OFF"}</span>
         <span className="text-xs text-dim">→ {targetStr}</span>
         {atTarget && (

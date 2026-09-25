@@ -503,7 +503,11 @@ def _coords(entry: dict, when: float | None
     ``tonight.resolve_target``, and ``canonical`` is the catalogue's
     canonical identity for the name, which ``_identify`` keys a TARGET on
     (#229). One call answers both, so the coordinates the run points at and
-    the identity its ids carry are the same row.
+    the identity its ids carry are the same row. The row is chosen at
+    ``tonight.IDENTITY_WHEN``, the instant ``progress._single`` and ADOPT
+    choose it at too, and placed at ``when``, the compile's (#249): asked
+    at ``when`` alone, a name whose best rank a body shares with a fixed row
+    could key two nights' compiles on two objects.
 
     NEVER INVENTS (0, 0). ``Target`` accepts it happily and ``calibration``
     defaults to False, so the engine would slew there - and 0h/0deg is below

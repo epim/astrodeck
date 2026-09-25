@@ -12,6 +12,7 @@ from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.models import ExposureStep, Target
 from astrodeck.sequence.resume_arm import RETRY_INTERVAL_S, ResumeArm
 from astrodeck.sequence.session import Session, session_store
+from _site_tracking import numeric_tokens
 
 
 @pytest.fixture
@@ -343,9 +344,91 @@ async def test_recovery_refuses_a_recenter_that_breaks_the_altitude_limits(
         "the ladder slewed to a target below the altitude floor"
     assert not engine.running
     # and for the RIGHT reason — the limits gate, not some other refusal that
-    # happened to land first.
-    assert any("below safety floor" in m for _lv, m, _s in bus_lines), \
-        f"expected the altitude-limit refusal, got: {bus_lines}"
+    # happened to land first. The gate's own sentence names the altitude, the
+    # floor and the azimuth it judged, which are the site re-encoded (#140),
+    # so it is the hold's ``site_detail`` and nowhere a viewer reads: the
+    # reason is words, and the held warning's one number is the retry
+    # interval (#233).
+    #
+    # RED under mutant "limits reason keeps the gate sentence" (the limits
+    # branch returns ``f"re-centering after restart refused: {e}"`` again),
+    # observed verbatim (the gate reads the real clock, so its numbers vary
+    # from run to run):
+    #
+    #     E   AssertionError: re-centering after restart refused: target M42 altitude 22° below safety floor 89° (az 119°)
+    #     E   assert 'configured slew limits' in 're-centering after restart refused: target M42 altitude 22° below safety floor 89° (az 119°)'
+    #
+    # under "the held warning logs site_detail", observed verbatim:
+    #
+    #     E   AssertionError: the held warning carries more than the retry interval: "auto-resume held: re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet (target M42 altitude 22° below safety floor 89° (az 118°)) — retrying in 10 min"
+    #
+    # and under "the tick drops the detail" (``tick``'s ``_set_hold``
+    # passes ``site_detail=None``), observed verbatim:
+    #
+    #     E   AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': '1dee71803e514926b445da0cee3e670f', 'session_name': 'arm', 'owed': 5}
+    #     E   assert 'below safety floor' in ''
+    #
+    # THE GATE'S MESSAGE IS WORDS SINCE #233 (H3 T11), and its altitude,
+    # floor and azimuth ride ``SlewRefused.site_detail``. ``_recover`` files
+    # ``str(e)``, so until it reads that attribute the operator's
+    # ``site_detail`` carries the gate's words, not its numbers. The pin
+    # below is on words the message still has. The three mutants were run
+    # again on a scratch copy of the tree (resume_arm.py is not T11's file),
+    # each observed verbatim:
+    #
+    # "limits reason keeps the gate sentence", RED:
+    #
+    #     E   AssertionError: re-centering after restart refused: slew refused: M42 would be below the mount's altitude floor by the end of a slew there
+    #     E   assert 'configured slew limits' in "re-centering after restart refused: slew refused: M42 would be below the mount's altitude floor by the end of a slew there"
+    #
+    # "the held warning logs site_detail": GREEN here now (1 passed). What it
+    # would log is the gate's words, which have no number to catch. It goes
+    # RED again once ``_recover`` files ``SlewRefused.site_detail``; the
+    # floor refusal's form of the same mutant is still graded by
+    # test_resume_arm_hold_is_site_free.py.
+    #
+    # "the tick drops the detail", RED:
+    #
+    #     E   AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': '41cb2d4ff4c1446493d8cd75b3319d03', 'session_name': 'arm', 'owed': 5}
+    #     E   assert 'altitude floor' in ''
+    #
+    # AND NOW IT DOES (H3 integration, the T11 verifier's required follow-up):
+    # the limits branch files ``SlewRefused.site_detail``, so the pin is back
+    # on the gate's NUMERIC sentence ("target M42 altitude N° below safety
+    # floor N° (az N°)"), which the words do not contain. Mutants run on a
+    # scratch copy of the tree, each restored byte-identical:
+    #
+    # "the limits branch files the words" (``_refusal_site_detail = str(e)``,
+    # the line before this change), RED, observed verbatim:
+    #
+    #     E       AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': '05db3df6afbf4fac8b9049dd2a78a249', 'session_name': 'arm', 'owed': 5, 'site_detail': "slew refused: M42 would be below the mount's altitude floor by the end of a slew there"}
+    #     E       assert 'below safety floor' in "slew refused: M42 would be below the mount's altitude floor by the end of a slew there"
+    #
+    # "the held warning logs site_detail", RED again, observed verbatim:
+    #
+    #     E       AssertionError: the held warning carries more than the retry interval: "auto-resume held: re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet (target M42 altitude 35° below safety floor 89° (az 223°)) — retrying in 10 min"
+    #     E       assert Counter({'35'...: 1, '10': 1}) == Counter({'10': 1})
+    #
+    # "the tick drops the detail", RED, observed verbatim:
+    #
+    #     E       AssertionError: expected the altitude-limit refusal on site_detail, got: {'reason': "re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet", 'since': 1700000000.0, 'retry_at': 1700000600.0, 'session_id': 'c4620d50d68c4cd48cf62c92ce44c767', 'session_name': 'arm', 'owed': 5}
+    #     E       assert 'below safety floor' in ''
+    assert arm.hold is not None, "a refused re-centre must leave a hold"
+    assert "below safety floor" in arm.hold.get("site_detail", ""), (
+        f"expected the altitude-limit refusal on site_detail, got: {arm.hold}")
+    reason = arm.hold["reason"]
+    assert "configured slew limits" in reason, reason
+    assert numeric_tokens(reason) == numeric_tokens(""), (
+        f"the limits reason carries the gate's numbers: {reason!r}")
+    held = [m for lv, m, _s in bus_lines
+            if lv == "warning" and m.startswith("auto-resume held:")]
+    assert len(held) == 1, bus_lines
+    assert numeric_tokens(held[0]) == numeric_tokens(
+        f"retrying in {int(RETRY_INTERVAL_S / 60)} min"), (
+            f"the held warning carries more than the retry interval: "
+            f"{held[0]!r}")
+    assert not any("below safety floor" in m for _lv, m, _s in bus_lines), (
+        f"the gate's sentence reached the log: {bus_lines}")
 
 
 async def test_no_autofocus_provider_warns_and_resumes_anyway(sim_hub, monkeypatch,
@@ -495,6 +578,19 @@ async def test_recover_will_not_slew_to_a_target_below_its_own_start_floor(
 
     Nothing was wrong with the retry. What was wrong is that the plan already
     knew the answer and nobody asked it.
+
+    RED under mutant "floor reason keeps the altitude" (the words-only reason
+    becomes ``f"{tgt.name} is at {alt:.0f} deg, below its start floor; not
+    slewing yet"``), observed verbatim:
+
+        E   AssertionError: NGC 604 is at 10 deg, below its start floor; not slewing yet
+        E   assert 'NGC 604 is below its start floor' in 'NGC 604 is at 10 deg, below its start floor; not slewing yet'
+
+    RED under mutant "the detail is dropped" (the floor branch no longer
+    writes ``_refusal_site_detail``), observed verbatim:
+
+        E   AssertionError: the floor refusal kept no site detail
+        E   assert None is not None
     """
     _trust_focus(monkeypatch)
     engine = SequenceEngine(sim_hub)
@@ -507,15 +603,237 @@ async def test_recover_will_not_slew_to_a_target_below_its_own_start_floor(
                                          plan=_plan_with_floor(30.0)))
 
     assert refusal is not None, "the ladder slewed to a target below its floor"
-    assert "below its 30 deg start floor" in refusal, refusal
-    assert "NGC 604" in refusal, refusal
+    # The reason is WORDS (#233): it is the hold a viewer reads and the
+    # warning a viewer reads in /api/logs, and the altitude of a known target
+    # at a known time is the site (#140). Its one number is the target's
+    # catalogue number, which no site moves.
+    assert "NGC 604 is below its start floor" in refusal, refusal
+    assert numeric_tokens(refusal) == numeric_tokens("NGC 604"), (
+        f"the floor reason carries a number: {refusal!r}")
+    # The numbers move to ``site_detail``, for the operator...
+    detail = arm._refusal_site_detail
+    assert detail is not None, "the floor refusal kept no site detail"
+    assert "below its 30 deg start floor" in detail, detail
+    assert "NGC 604" in detail, detail
     # ...and say how long the wait is, from the scheduler's own gate-crossing
     # search. "Not yet" with no number is the hold that gets diagnosed at 2am.
-    assert "reaches 30 deg in about" in refusal, refusal
+    assert "reaches 30 deg in about" in detail, detail
     assert "goto" not in moved, f"the mount was moved anyway: {moved}"
     assert gated == [], (
         "the target's own floor must be read BEFORE the mount gate - that gate "
         "passed on the rig, which is how the slew got out")
+
+
+async def test_a_floor_hold_keeps_its_numbers_off_the_reason_and_the_log(
+        sim_hub, monkeypatch, bus_lines):
+    """The same refusal through a whole tick (#233): the hold's ``reason``
+    and the "auto-resume held" warning are words, and the altitude, the
+    floor and the ETA are the hold's ``site_detail`` alone. The route
+    withholds that key from a viewer (test_resume_arm_hold_is_site_free.py);
+    this pins what the service puts where.
+
+    RED under mutant "the held warning logs site_detail" (the warning
+    formats ``self._refusal_site_detail`` after the reason), observed
+    verbatim:
+
+        E   AssertionError: the held warning carries more than the retry interval: 'auto-resume held: NGC 604 is below its start floor; not slewing yet (NGC 604 is at 10 deg, below its 30 deg start floor (it reaches 30 deg in about 12.2 h)) — retrying in 10 min'
+
+    (the altitude there is 10, the same token as the retry interval's 10;
+    the comparison counts tokens, so it saw two where one belongs.)
+
+    RED under mutant "floor reason keeps the altitude", observed verbatim:
+
+        E   AssertionError: NGC 604 is at 10 deg, below its start floor; not slewing yet
+        E   assert 'NGC 604 is a...t slewing yet' == 'NGC 604 is b...t slewing yet'
+
+    RED under mutant "the tick drops the detail" (``tick``'s ``_set_hold``
+    passes ``site_detail=None``), and under "the detail is dropped",
+    observed verbatim:
+
+        E   AssertionError: the hold kept no site detail: {'reason': 'NGC 604 is below its start floor; not slewing yet', 'since': 1700041700.0, 'retry_at': 1700042300.0, 'session_id': 'a584592aef854da685b49b416e0e862b', 'session_name': 'floor', 'owed': 1}
+        E   assert None is not None
+    """
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    moved = _record_motion(sim_hub, monkeypatch)
+    _spy_slew_limits(engine, monkeypatch)
+    s = Session(name="floor", status="dormant", plan=_plan_with_floor(30.0),
+                auto_resume=True)
+    session_store.save(s)
+    t = _when_altitude_between(sim_hub.site, NGC604_RA, NGC604_DEC, 8.0, 10.0)
+    arm = ResumeArm(engine, sim_hub, clock=lambda: t)
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+
+    assert "goto" not in moved, f"the mount was moved anyway: {moved}"
+    assert arm.hold is not None, "a floor refusal must leave a hold"
+    reason = arm.hold["reason"]
+    assert reason == "NGC 604 is below its start floor; not slewing yet", reason
+    assert numeric_tokens(reason) == numeric_tokens("NGC 604"), (
+        f"the floor reason carries a number: {reason!r}")
+    detail = arm.hold.get("site_detail")
+    assert detail is not None, f"the hold kept no site detail: {arm.hold}"
+    assert "below its 30 deg start floor" in detail, detail
+    assert "reaches 30 deg in about" in detail, detail
+    held = [m for lv, m, _s in bus_lines
+            if lv == "warning" and m.startswith("auto-resume held:")]
+    assert len(held) == 1, bus_lines
+    assert numeric_tokens(held[0]) == numeric_tokens(
+        f"NGC 604 retrying in {int(RETRY_INTERVAL_S / 60)} min"), (
+            f"the held warning carries more than the retry interval: "
+            f"{held[0]!r}")
+    assert not any("deg" in m for _lv, m, _s in bus_lines), (
+        f"a line carries degrees: {bus_lines}")
+
+
+async def test_a_floor_hold_keeps_its_since_while_the_altitude_changes(
+        sim_hub, monkeypatch):
+    """Two floor refusals, the second past the ten-minute backoff, with the
+    target a couple of degrees higher: the words are the same, so the hold
+    is the same hold and ``since`` is the first refusal's; ``site_detail``
+    carries the new numbers. Before #233 the altitude was in the reason, so
+    every retry restamped ``since`` and the Monitor could never say how long
+    the session had been waiting on its floor.
+
+    RED under mutant "since keys on site_detail" (``_set_hold``'s ``same``
+    also asks ``prior.get("site_detail") == site_detail``), observed
+    verbatim:
+
+        E   AssertionError: the hold restarted its clock on a retry: 1700042360.0 != 1700041700.0
+        E   assert 1700042360.0 == 1700041700.0
+
+    RED under mutant "floor reason keeps the altitude", one check earlier:
+    the words themselves moved with the altitude, observed verbatim:
+
+        E   AssertionError: ({'owed': 1, 'reason': 'NGC 604 is at 10 deg, below its start floor; not slewing yet', 'retry_at': 1700042300.0, 'sess...ow its start floor; not slewing yet', 'retry_at': 1700042960.0, 'session_id': '7eb8f182006a4c0b91c5314b28018d26', ...})
+        E   assert 'NGC 604 is a...t slewing yet' == 'NGC 604 is a...t slewing yet'
+        E     - NGC 604 is at 10 deg, below its start floor; not slewing yet
+        E     + NGC 604 is at 8 deg, below its start floor; not slewing yet
+    """
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    _record_motion(sim_hub, monkeypatch)
+    _spy_slew_limits(engine, monkeypatch)
+    session_store.save(Session(name="floor", status="dormant",
+                               plan=_plan_with_floor(30.0), auto_resume=True))
+    t0 = _when_altitude_between(sim_hub.site, NGC604_RA, NGC604_DEC, 8.0, 10.0)
+    now = {"t": t0}
+    arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"])
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+    first = dict(arm.hold)
+    now["t"] = t0 + RETRY_INTERVAL_S + 60.0
+    await arm.tick()
+    second = dict(arm.hold)
+
+    assert first["site_detail"] != second["site_detail"], (
+        f"premise: the target's numbers moved between the two refusals: "
+        f"{first['site_detail']!r}")
+    assert second["reason"] == first["reason"], (first, second)
+    assert second["since"] == first["since"], (
+        f"the hold restarted its clock on a retry: {second['since']} != "
+        f"{first['since']}")
+    assert first["since"] == t0
+    assert second["retry_at"] == now["t"] + RETRY_INTERVAL_S
+
+
+async def test_a_later_refusal_does_not_carry_an_earlier_floor_detail(
+        sim_hub, monkeypatch):
+    """A floor refusal, then, past the backoff and with the target risen
+    above its floor, a refusal of another kind (the re-centring goto fails):
+    the second hold is the goto's, and it has no ``site_detail``, because
+    nothing site-derived is behind it (#233). ``tick`` clears the detail
+    before each ladder. Without that, the first refusal's altitude, floor and
+    ETA ride the second hold beside a reason they do not explain, and an
+    operator reads an altitude from an earlier retry, below a floor the
+    target has since cleared, as the reason nothing started.
+
+    RED under mutant "the stale detail rides the next refusal" (``tick`` no
+    longer sets ``self._refusal_site_detail = None`` before the ladder),
+    observed verbatim:
+
+        E   AssertionError: an earlier refusal's site detail rode a later hold: {'reason': 're-centering after restart failed: the mount did not answer', 'since': 1700088320.0, 'retry_at': 1700088920.0, 'session_id': '6ce7f1dbef74489a9eedda6e8c50492d', 'session_name': 'floor', 'owed': 1, 'site_detail': 'NGC 604 is at 10 deg, below its 30 deg start floor (it reaches 30 deg in about 12.2 h)'}
+        E   assert 'site_detail' not in {'owed': 1, 'reason': 're-centering after restart failed: the mount did not answer', 'retry_at': 1700088920.0, 'session_id': '6ce7f1dbef74489a9eedda6e8c50492d', ...}
+
+    (Mutant run by the H3 T1 verifier from a byte backup of resume_arm.py in
+    a scratch copy of ``server/``; the file was restored byte-identical,
+    SHA-256 compared.)
+    """
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    moved = _record_motion(sim_hub, monkeypatch)
+    _spy_slew_limits(engine, monkeypatch)
+    session_store.save(Session(name="floor", status="dormant",
+                               plan=_plan_with_floor(30.0), auto_resume=True))
+    t0 = _when_altitude_between(sim_hub.site, NGC604_RA, NGC604_DEC, 8.0, 10.0)
+    t1 = _when_altitude_between(sim_hub.site, NGC604_RA, NGC604_DEC, 40.0,
+                                60.0, t0=t0 + RETRY_INTERVAL_S + 60.0)
+    now = {"t": t0}
+    arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"])
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+    assert "site_detail" in (arm.hold or {}), (
+        f"premise: the first tick held on the floor, with a detail: "
+        f"{arm.hold}")
+
+    async def goto_fails(*a, **kw):
+        moved.append("goto")
+        raise RuntimeError("the mount did not answer")
+    monkeypatch.setattr(sim_hub, "goto_and_center", goto_fails)
+    now["t"] = t1
+    await arm.tick()
+
+    assert moved.count("goto") == 1, (
+        f"premise: the second ladder cleared the floor and reached its "
+        f"goto: {moved}")
+    assert arm.hold is not None, "a failed re-centre must leave a hold"
+    assert arm.hold["reason"] == ("re-centering after restart failed: the "
+                                  "mount did not answer"), arm.hold
+    assert "site_detail" not in arm.hold, (
+        f"an earlier refusal's site detail rode a later hold: {arm.hold}")
+
+
+async def test_a_limit_check_that_fails_keeps_its_text_off_the_reason(
+        sim_hub, monkeypatch):
+    """The slew-limit check raises something other than its SafetyAbort (a
+    bad target, a horizon file it could not read). The ladder cannot tell
+    what that text carries, so it is treated as the gate's sentence is:
+    the reason says in words that the check failed, and the text goes to
+    ``site_detail`` (#233). The reason does not claim the target is outside
+    the limits, because nothing said it was.
+
+    RED under mutant "a failed check keeps its text in the reason" (the
+    non-SafetyAbort arm returns ``f"re-centering after restart refused:
+    {e}"``), observed verbatim:
+
+        E   AssertionError: assert 're-centering...d at az 212.5' == 're-centering...; not slewing'
+        E     - re-centering after restart refused: the slew-limit check failed; not slewing
+        E     + re-centering after restart refused: the horizon mask could not be read at az 212.5
+
+    RED under mutant "every exception reads as the gate" (``isinstance(e,
+    SafetyAbort)`` replaced by ``True``), observed verbatim:
+
+        E   AssertionError: assert 're-centering...t slewing yet' == 're-centering...; not slewing'
+        E     - re-centering after restart refused: the slew-limit check failed; not slewing
+        E     + re-centering after restart refused: the target is outside this rig's configured slew limits (altitude floor, horizon, no-go wedges, pier side or zenith keep-out); not slewing yet
+    """
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    moved = _record_motion(sim_hub, monkeypatch)
+
+    async def broken(target, *, cfg=None, plan=None, projected=True):
+        raise RuntimeError("the horizon mask could not be read at az 212.5")
+    monkeypatch.setattr(engine, "check_slew_limits", broken)
+    arm = ResumeArm(engine, sim_hub, clock=lambda: 1_700_000_000.0)
+    refusal = await arm._recover(Session(name="limits",
+                                         plan=_plan_with_floor(0.0)))
+
+    assert refusal == ("re-centering after restart refused: the slew-limit "
+                       "check failed; not slewing")
+    assert numeric_tokens(refusal) == numeric_tokens("")
+    assert arm._refusal_site_detail == (
+        "the horizon mask could not be read at az 212.5")
+    assert "goto" not in moved, f"the mount was moved anyway: {moved}"
 
 
 async def test_recover_slews_when_the_target_is_above_its_start_floor(

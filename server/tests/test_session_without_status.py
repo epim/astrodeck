@@ -1,5 +1,5 @@
-"""A session file with no ``status`` key has no status (#218, mosaic spec
-ruling 12).
+"""A session file with no ``status`` key has no status (#218, H2
+orchestrator ruling 12, spec "Still waiting on the owner" item 9).
 
 ``Session.status`` defaults to "active", which is right for a session the
 engine builds in code (it passes the status anyway) and wrong for a file read
@@ -13,6 +13,10 @@ does not know. Three such counts and ResumeArm gives up and stows the rig.
 The ruling: every ``SessionStore`` reader treats such a file as unreadable.
 ``load`` raises ``SessionUnreadable`` naming the reason, and every scanning
 reader skips it, the rule they already keep for a file that fails validation.
+Since H3 (#242) ``list`` shows it, as a row with ``status: "unreadable"`` and
+the reason and never as a session, so ``DELETE`` can remove it; that half is
+``test_unreadable_sessions_listed_and_deletable.py``'s, and here ``list`` is
+held only to the first half: none of its sessions is this file.
 
 Written first and run against the unfixed store: 9 RED (``load``; ``load_all``
 and ``list`` on both shapes; the sweep on both shapes; the sweep-to-ResumeArm
@@ -49,6 +53,15 @@ restored byte-identical (sha256 compared) after every one:
 
 Every collected test goes RED under at least one of them.
 
+Re-run in H3 (#242), after ``load_all`` and ``list`` moved onto one walk of
+the directory (``SessionStore._entries``) and ``list`` began to show the
+file as an unreadable row: M1, M2 and M4 as written, and M7 as that walk
+validating with ``Session.model_validate`` directly (its ``except
+SessionUnreadable`` widened to ``except Exception``). Every RED claimed
+below held, test for test; ``list`` is now read for its session rows only.
+M7 in that form also turns ``test_control_an_invalid_file_is_still_unreadable``
+red, its row's reason being "".
+
 Failures quoted below are verbatim pytest output, wrapped to fit, with
 ``[...]`` eliding the middle of a long model repr.
 
@@ -64,7 +77,7 @@ import pytest
 
 import astrodeck.hub as hub_module
 from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
-from astrodeck.sequence.session import (Session, SessionUnreadable,
+from astrodeck.sequence.session import (INVALID, Session, SessionUnreadable,
                                         session_store)
 
 #: 32 hex, like every session id. Fixed so the failures quoted below name the
@@ -148,7 +161,10 @@ def test_load_refuses_a_file_with_no_status_and_says_why():
 
 READERS = {
     "load_all": lambda: [s.id for s in session_store.load_all()],
-    "list": lambda: [r["id"] for r in session_store.list()],
+    # The SESSION rows only: its unreadable row is expected (#242), and is
+    # pinned with its reason in test_unreadable_sessions_listed_and_deletable.
+    "list": lambda: [r["id"] for r in session_store.list()
+                     if r["status"] != "unreadable"],
     "active": lambda: session_store.active(),
     "armed": lambda: session_store.armed(),
     "recoverable": lambda: session_store.recoverable(),
@@ -455,7 +471,9 @@ def test_control_an_invalid_file_is_still_unreadable():
     """CONTROL. ``{"plan": "not a plan"}`` fails validation. It still raises
     ``SessionUnreadable`` from ``load`` with the validation error as its cause
     (it states no status either, and the damage is what gets reported), and
-    every scanning reader still skips it.
+    ``load_all`` still skips it; ``list`` shows it as unreadable, never as a
+    session (#242). The reason is the store's ``INVALID``: it was "" before
+    H3, and pydantic's message stays on ``__cause__``.
 
     RED under M5, observed verbatim:
 
@@ -464,6 +482,13 @@ def test_control_an_invalid_file_is_still_unreadable():
         E   plan
         E     Input should be a valid dictionary or instance of SequencePlan
         [type=model_type, input_value='not a plan', input_type=str]
+
+    RED under mutant "validation failure keeps the bare message" (H3, #242:
+    ``_session_from_file`` raises ``SessionUnreadable(session_id)`` with no
+    reason, as it did before), observed verbatim:
+
+        E   AssertionError: assert '' == 'fails validation'
+        E     - fails validation
 
     RED under M8, where the missing status is reported and the damage is
     not, observed verbatim:
@@ -479,6 +504,7 @@ def test_control_an_invalid_file_is_still_unreadable():
     with pytest.raises(SessionUnreadable) as info:
         session_store.load(SID)
     assert isinstance(info.value.__cause__, ValidationError)
-    assert info.value.reason == ""
+    assert info.value.reason == INVALID
     assert session_store.load_all() == []
-    assert session_store.list() == []
+    assert [(r["id"], r["status"], r["unreadable"])
+            for r in session_store.list()] == [(SID, "unreadable", INVALID)]

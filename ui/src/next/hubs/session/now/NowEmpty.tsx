@@ -47,8 +47,9 @@ import { api } from "../../../../api";
 import { fmtIntegration } from "../../../../api/sessionStack";
 import { getPlan, listPlans, type PlanRow } from "../../../../api/plans";
 import { listReports } from "../../../../api/reports";
-import { resumeSession } from "../../../../api/sessions";
+import { resumeRecoveryLine, resumeSession } from "../../../../api/sessions";
 import { endReasonMeta } from "../../../../lib/reportChart";
+import { useStopResumeRecovery } from "../../../../lib/stopResumeRecovery";
 import { flowsApi } from "../../../../lib/flowsApi";
 import { buildPreflight } from "../../../../lib/preflight";
 import {
@@ -302,6 +303,18 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
 
   const armed = resumeArm?.armed ?? null;
   const hold = resumeArm?.hold ?? null;
+  // WHILE THE RECOVERY LADDER RUNS, `hold` IS THE PREVIOUS ATTEMPT'S (#246).
+  // ResumeArm clears it only after its own start or a stop, so beside
+  // `recovering` it is the refusal of the attempt before this one, and
+  // "Holding: ... It starts by itself when that clears" would claim a wait
+  // that is already over. The ladder's own line is NowBanners', above this card.
+  const recovering = resumeRecoveryLine(resumeArm, seq.state) != null;
+  // THE STOP FOR THAT LADDER, ON THIS CARD (#246). NowBanners says the mount is
+  // moving on its own; with the engine idle no run control is on screen, and
+  // the switch that stops the ladder (the session's auto-resume) lives in the
+  // gallery. So this card carries the same disarm for the session it names.
+  const stopRecovery = useStopResumeRecovery();
+  const recoveringId = recovering ? resumeArm?.recovery?.session_id ?? null : null;
   const last = state.kind === "ready" ? state.rows[0] ?? null : null;
 
   // THE REFUSAL NAMES WHAT THE ROW IS (T-R7-21a item 11). The gate is one gate
@@ -346,8 +359,10 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
   const verdicts = useTonightVerdicts(flowIds, wantVerdicts);
 
   const title = armed ? "RUN ARMED" : "NO SESSION RUNNING";
+  // No wait sentence while the ladder runs: the window has opened, which is why
+  // it is running, and the banner above says what it is doing instead (#246).
   const hint = armed
-    ? "It starts by itself when its window opens."
+    ? (recovering ? null : "It starts by itself when its window opens.")
     : "Pick a target in Sky, or run a saved flow.";
 
   /** Shared by both verbs: A LIST ROW NEVER STOPS A RUN.
@@ -558,16 +573,19 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
         title={title}
         hint={
           <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span>{hint}</span>
+            {hint && <span>{hint}</span>}
             {armed && (
               <Mono size={10} tone="dim">
                 {armed.name} - {armed.owed} frames owed ({armed.accepted}/{armed.total})
               </Mono>
             )}
-            {armed && hold && (
+            {armed && hold && !recovering && (
               <Mono size={10} tone="warn">
                 Holding: {hold.reason}. It starts by itself when that clears.
               </Mono>
+            )}
+            {recovering && stopRecovery.error && (
+              <Mono size={10} tone="bad" data-testid="now-stop-recovery-error">{stopRecovery.error}</Mono>
             )}
             {state.kind === "loading" && <Mono size={10} tone="dim">reading the report archive...</Mono>}
             {state.kind === "error" && (
@@ -596,6 +614,19 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
             >
               FIND A TARGET
             </ActionButton>
+            {recoveringId && (
+              <ActionButton
+                kind="secondary"
+                onPress={() => stopRecovery.stop(recoveringId)}
+                lockedReason={canControl ? null
+                  : `View only - stopping auto-resume needs ${accessPhrase("control.mount")}.`}
+                onExplain={explainLock}
+                busy={stopRecovery.pending}
+                data-testid="now-stop-recovery"
+              >
+                {stopRecovery.pending ? "STOPPING..." : "STOP AUTO-RESUME"}
+              </ActionButton>
+            )}
             {state.kind === "error" && (
               <ActionButton kind="secondary" onPress={retry} data-testid="now-reports-retry">
                 RETRY

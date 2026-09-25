@@ -418,10 +418,13 @@ export default function GuideView() {
               // classic sign of a poor or wrong-declination calibration.
               const bad = !calReport.is_valid;
               const warn = calReport.is_valid && calReport.ortho_error_deg > 10;
+              // The Led is unlabelled: the sentence beside it is its name. Its
+              // label ("calibrated" beside "Good calibration", "check
+              // calibration" beside "Non-orthogonal — verify") said the state
+              // twice to a screen reader, in two wordings (#231).
               return (
                 <div className="flex items-center gap-2 mb-3">
-                  <Led state={bad ? "bad" : warn ? "warn" : "on"}
-                    label={bad ? "not calibrated" : warn ? "check calibration" : "calibrated"} />
+                  <Led state={bad ? "bad" : warn ? "warn" : "on"} />
                   <span className={`text-sm font-medium ${bad ? "text-bad" : warn ? "text-warn" : "text-good"}`}>
                     {bad ? "No valid calibration" : warn ? "Non-orthogonal — verify" : "Good calibration"}
                   </span>

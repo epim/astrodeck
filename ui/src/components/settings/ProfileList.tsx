@@ -614,7 +614,10 @@ function ProfileCard({
       className={`border bg-bg/60 px-3 py-2.5 flex items-center gap-3 flex-wrap
         ${row.active ? "border-accent" : "border-line"}`}
     >
-      <Led state={row.active ? "on" : "off"} label={row.active ? "Active profile" : undefined} />
+      {/* Unlabelled on every row. The active row's "Active" badge is the
+          name; an "Active profile" label said it twice to a screen reader
+          (#231), and an inactive row never had one. */}
+      <Led state={row.active ? "on" : "off"} />
       <div className="min-w-0 flex-1">
         {renaming ? (
           <RenameField

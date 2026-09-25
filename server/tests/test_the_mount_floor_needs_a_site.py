@@ -185,8 +185,24 @@ async def test_the_refusal_names_what_to_do_about_it(sim_hub, monkeypatch):
 async def test_a_configured_site_is_judged_normally(sim_hub):
     """The fixture's site is real, so a target well above the floor passes and
     one below it aborts for the ordinary reason. Without this the refusal above
-    could be a guard that simply never lets anything through."""
+    could be a guard that simply never lets anything through.
+
+    The ordinary reason is WORDS since #233 (H3 T11; H3 orchestrator ruling
+    1, spec "Still waiting on the owner" item 10): the message ends the run,
+    and a run's end is logged and published to viewers, so the altitude, the
+    floor and the azimuth moved to ``site_detail``, which nothing logs or
+    publishes. This pin used to read the numbers off the message.
+
+    MUTATION "restore the gate's altitude and azimuth" (the floor verdict's
+    sentence made its numeric ``site_detail`` again, in
+    `_altitude_limit_verdict`). Observed (the fixture's 40 N 74 W site):
+        AssertionError: target T altitude 0° below safety floor 30° (az 90°)
+    And under "site_detail dropped" (`_enforce_mount_floor` passes
+    ``site_detail=None``). Observed:
+        AssertionError: the gate's numbers are not on site_detail: None
+    """
     from astrodeck.sequence import schedule
+    from _site_tracking import numeric_tokens
     e, _cfg = _engine(sim_hub, min_alt_deg=30.0)
     lat = sim_hub.site["latitude"]
     overhead = _target((schedule.lst_hours(sim_hub.site["longitude"])) % 24.0,
@@ -196,7 +212,14 @@ async def test_a_configured_site_is_judged_normally(sim_hub):
     low = _target(_ra_at_altitude_zero(sim_hub, 0.0), 0.0)
     with pytest.raises(SafetyAbort) as caught:
         await e._enforce_mount_floor(projected=False, target=low)
-    assert "below safety floor" in str(caught.value), str(caught.value)
+    message = str(caught.value)
+    assert "below the mount's altitude floor" in message, message
+    assert not numeric_tokens(message), (
+        f"the refusal's message carries numbers, and a run it ends logs and "
+        f"publishes it: {message!r}")
+    assert "below safety floor 30" in (caught.value.site_detail or ""), (
+        f"the gate's numbers are not on site_detail: "
+        f"{caught.value.site_detail!r}")
 
 
 async def test_a_rig_with_no_limits_at_all_is_not_asked_where_it_is(

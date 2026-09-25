@@ -15,8 +15,21 @@ import time
 import pytest
 
 import astrodeck.config as configmod
-from astrodeck.guide.native import NativeGuider
+from astrodeck.guide.native import GP_MIN_MEASURED_POINTS, NativeGuider
 from astrodeck.providers import NATIVE_AVAILABLE
+
+
+def _trained(n: int = GP_MIN_MEASURED_POINTS) -> list[list[float]]:
+    """A window the stop will save: ``n`` MEASURED rows, one every 5 s.
+
+    UPDATED FOR #243 (mosaic H3). The stub tests below used a two-row window,
+    which the stop saved until #243 made it refuse any window holding fewer
+    than ``GP_MIN_MEASURED_POINTS`` measured rows (a row whose variance is not
+    the dark-guiding 1e4). Two rows is now a window the engine would not
+    predict from, so it is not saved, and every test here that meant "a
+    trained model" was testing the refusal instead. The default is exactly
+    the threshold, so a gate that asked one point more fails the roundtrip."""
+    return [[5.0 * i, 0.1 + 0.01 * i, 1.0, -0.05 * (i % 2)] for i in range(n)]
 
 
 class _FakeEngine:
@@ -42,7 +55,21 @@ def _guider(tmp_path, monkeypatch, window, restore_result=True):
 
 
 def test_persist_then_load_roundtrip(tmp_path, monkeypatch):
-    window = [[0.0, 0.1, 1.0, 0.0], [5.0, 0.2, 1.0, -0.05]]
+    """A window of exactly ``GP_MIN_MEASURED_POINTS`` measured rows is saved
+    and read back row for row.
+
+    UPDATED FOR #243: the window was two rows, which the stop now refuses
+    (see ``_trained``); the expected points follow the window.
+
+    MUTANT "the gate asks one point more than the engine needs"
+    (``measured < GP_MIN_MEASURED_POINTS`` made ``<=`` in
+    ``_persist_gp_window``) -- RED, observed verbatim:
+        AssertionError: assert False
+         +  where False = exists()
+         +    where exists = WindowsPath('C:/.../test_persist_then_load_roundtr0/guider/prof1-gp.json').exists
+    (the pytest tmp prefix elided).
+    """
+    window = _trained()
     g = _guider(tmp_path, monkeypatch, window)
     before = time.time()
     g._persist_gp_window()
@@ -55,15 +82,16 @@ def test_persist_then_load_roundtrip(tmp_path, monkeypatch):
     assert loaded is not None
     dumped_at, points = loaded
     assert dumped_at == saved["dumped_at"]
-    assert points == [(0.0, 0.1, 1.0, 0.0), (5.0, 0.2, 1.0, -0.05)]
+    assert points == [tuple(row) for row in window]
 
 
 def test_restore_passes_downtime_not_a_percentage(tmp_path, monkeypatch):
     # Fix round: the threshold lives in the Rust engine
     # (GpParams::retain_max_pct_period); Python passes ONLY the measured
     # downtime (now - dumped_at), which for an immediate restore is ~0 s —
-    # not the old 40.0-percent constant.
-    window = [[0.0, 0.1, 1.0, 0.0], [5.0, 0.2, 1.0, -0.05]]
+    # not the old 40.0-percent constant. UPDATED FOR #243: a window the stop
+    # saves (``_trained``), where two rows now save nothing to restore.
+    window = _trained()
     g = _guider(tmp_path, monkeypatch, window)
     g._persist_gp_window()
     g._restore_gp_window()
@@ -75,8 +103,10 @@ def test_restore_passes_downtime_not_a_percentage(tmp_path, monkeypatch):
 
 def test_restore_gate_rejection_is_nonfatal(tmp_path, monkeypatch):
     # Engine returns False (downtime outside the retention window): the
-    # restore path logs the fresh-start line and never raises.
-    window = [[0.0, 0.1, 1.0, 0.0], [5.0, 0.2, 1.0, -0.05]]
+    # restore path logs the fresh-start line and never raises. UPDATED FOR
+    # #243: a window the stop saves (``_trained``); with two rows nothing was
+    # saved, the restore never reached the engine and ``restored`` stayed None.
+    window = _trained()
     g = _guider(tmp_path, monkeypatch, window, restore_result=False)
     g._persist_gp_window()
     g._restore_gp_window()  # must not raise
@@ -106,8 +136,9 @@ def test_corrupt_gp_file_is_ignored(tmp_path, monkeypatch):
 
 
 def test_clear_calibration_removes_both_files(tmp_path, monkeypatch):
-    g = _guider(tmp_path, monkeypatch,
-                [[0.0, 0.1, 1.0, 0.0], [5.0, 0.2, 1.0, 0.0]])
+    # UPDATED FOR #243: a window the stop saves (``_trained``); two rows no
+    # longer write the -gp.json this test clears.
+    g = _guider(tmp_path, monkeypatch, _trained())
     d = tmp_path / "guider"
     d.mkdir(parents=True, exist_ok=True)
     (d / "prof1.json").write_text("{}", encoding="utf-8")
@@ -132,9 +163,26 @@ def test_clear_calibration_removes_both_files(tmp_path, monkeypatch):
 def test_a_profile_id_can_never_address_a_file_outside_the_guider_dir(
         tmp_path, monkeypatch, hostile):
     """`clear_calibration` UNLINKS what the id resolves to. A decoy one level up
-    is the concrete stake: `../victim` deleted `CONFIG_DIR/victim.json`."""
-    g = _guider(tmp_path, monkeypatch,
-                [[0.0, 0.1, 1.0, 0.0], [5.0, 0.2, 1.0, 0.0]])
+    is the concrete stake: `../victim` deleted `CONFIG_DIR/victim.json`.
+
+    UPDATED FOR #243. With the old two-row window the persist half of this
+    test could no longer fail: ``_persist_gp_window`` now returns at its
+    measured-point gate before it resolves the id at all, so a persist that
+    wrote through the raw id was never reached. ``_trained`` is a window the
+    stop saves, so the write is attempted and the guard is what refuses it.
+
+    MUTANT "the persist builds its path from the raw id" (in
+    ``_persist_gp_window``, ``self._profile_path("-gp.json")`` replaced by
+    ``CONFIG_DIR / "guider" / f"{self.profile_id}-gp.json"``) -- RED on all
+    three ids, observed verbatim (the pytest tmp prefix elided):
+        [../victim]  AssertionError: assert not [WindowsPath('C:/.../test_a_profile_id_can_never_ad0/victim.json')]
+        [..\\victim] AssertionError: assert not [WindowsPath('C:/.../test_a_profile_id_can_never_ad1/victim.json')]
+        [sub/victim] AssertionError: assert not [WindowsPath('C:/.../test_a_profile_id_can_never_ad2/guider/sub/victim-gp.json')]
+    (for the first two the raw path wrote ``victim-gp.json`` beside the
+    decoy, so the list's second entry is the decoy.) All three passed under
+    the same mutant with the old two-row window, 3 passed: the defect this
+    update closes."""
+    g = _guider(tmp_path, monkeypatch, _trained())
     g.profile_id = hostile
     victim = tmp_path / "victim.json"
     victim.write_text("{}", encoding="utf-8")
@@ -152,9 +200,10 @@ def test_a_profile_id_can_never_address_a_file_outside_the_guider_dir(
 
 def test_an_ordinary_profile_id_still_round_trips(tmp_path, monkeypatch):
     """The guard must not cost the normal case. uuid4 ids have hyphens in them
-    and hyphens are the one thing the `-gp.json` suffix also uses."""
-    g = _guider(tmp_path, monkeypatch,
-                [[0.0, 0.1, 1.0, 0.0], [5.0, 0.2, 1.0, 0.0]])
+    and hyphens are the one thing the `-gp.json` suffix also uses. UPDATED
+    FOR #243: a window the stop saves (``_trained``), which two rows is not;
+    this is also the control that the hostile-id case's window is written."""
+    g = _guider(tmp_path, monkeypatch, _trained())
     g.profile_id = "7f3a1c2e-9b40-4d51-8a6f-2c0d5e7b1a94"
     g._persist_gp_window()
     assert (tmp_path / "guider" /
@@ -493,8 +542,8 @@ async def test_a_star_lost_frame_does_not_feed_the_model(tmp_path, monkeypatch):
 
     The fake keeps the engine's contract for ``recent`` (``engine.rs``
     ``push_recent``, the accept path only), which is what the loop reads
-    since #189 H2 item 13: frame 2's measurement enters it, the lock frame
-    and the two star-lost frames leave it alone.
+    since the #210 follow-up H2 made: frame 2's measurement enters it, the
+    lock frame and the two star-lost frames leave it alone.
 
     MUTANT "every processed frame feeds the model" (the stamp in
     ``_guide_loop`` made unconditional) -- RED, observed verbatim:
@@ -503,7 +552,8 @@ async def test_a_star_lost_frame_does_not_feed_the_model(tmp_path, monkeypatch):
         not the last measured one (50010.0)
 
     Green under "today's rule" (``!= "lock_lost"`` counts as a feed), the
-    control #189 H2 item 13 asks for: that rule also skips a star-lost frame.
+    control that #210 follow-up asks for: that rule also skips a star-lost
+    frame.
     """
     import asyncio
     import astrodeck.guide.native as nativemod
@@ -558,7 +608,7 @@ async def test_a_star_lost_frame_does_not_feed_the_model(tmp_path, monkeypatch):
         f"the last measured one ({measured})")
 
 
-# --- #189 H2 item 13: only a real measurement stamps the feed time ----------
+# --- #210 follow-up (H2): only a real measurement stamps the feed time -----
 #
 # The loop used to stamp ``_gp_fed_at`` on every frame whose Action was not a
 # ``lock_lost``. The Action says what the MOUNT should do, not whether the

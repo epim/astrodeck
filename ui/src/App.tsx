@@ -725,11 +725,13 @@ export default function App() {
             happening that you should know about", and it was previously
             announced only as dim centred text inside an empty panel on one
             screen. Amber not accent: nothing is running, and the LED does not
-            blink because nothing is in motion. */}
+            blink because nothing is in motion. The LED is unlabelled: RUN
+            ARMED beside it is its name, and a "Run armed and waiting" label
+            said it twice to a screen reader (#231). */}
         {showArmedBanner && resumeArm?.armed && (
           <div className="flex items-center gap-3 px-4 py-2 border-b border-line bg-warn/10 shrink-0 text-xs">
             <span className="shrink-0">
-              <Led state="warn" label="Run armed and waiting" />
+              <Led state="warn" />
             </span>
             <span className="min-w-0 truncate text-ink">
               <span className="font-display tracking-wider text-warn">RUN ARMED</span>
@@ -770,10 +772,11 @@ export default function App() {
                 through a PAUSED engine (store §monitor 3.2, runBanner survives
                 "paused"), so its own state must be read here too — otherwise a
                 paused run keeps blinking "RUNNING" against the Plan card's own
-                honest PAUSED badge (SeqStateBadge / stateMeta) two clicks away. */}
+                honest PAUSED badge (SeqStateBadge / stateMeta) two clicks away.
+                Unlabelled for the same reason as the armed banner's LED: the
+                SEQUENCE PAUSED / RUNNING beside it is its name (#231). */}
             <span className={sequence.state === "paused" ? "shrink-0" : "blink shrink-0"}>
-              <Led state={sequence.state === "paused" ? "warn" : "busy"}
-                label={sequence.state === "paused" ? "Sequence paused" : "Sequence running"} />
+              <Led state={sequence.state === "paused" ? "warn" : "busy"} />
             </span>
             <span className="min-w-0 truncate text-ink">
               <span className={`font-display tracking-wider ${sequence.state === "paused" ? "text-warn" : "text-accent"}`}>

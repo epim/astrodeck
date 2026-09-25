@@ -141,7 +141,8 @@ class _Clocked:
     earliest wake only when every live one of them is parked. A task that
     is running, or waiting on real I/O in the sim, holds the clock still.
     Any other task that sleeps through engine.py sleeps for real, as the
-    watchdog does, and so sits out the test.
+    watchdog does, and so sits out the test, unless the test hands it to the
+    driver in ``also`` (`abort_on_the_clock`).
 
     ``t0`` pins where the fake night starts; left out, it starts now. A test
     whose timeline crosses a minute-resolution ``HH:MM`` boundary pins it
@@ -173,6 +174,9 @@ class _Clocked:
         self.read_hangs = False
         self._timers: list[tuple[float, int, asyncio.Future]] = []
         self._parked: dict[asyncio.Task, asyncio.Future] = {}
+        #: Tasks of the test's own that the driver clocks as it clocks the
+        #: engine's (`abort_on_the_clock`).
+        self.also: set[asyncio.Task] = set()
         self._seq = itertools.count()
         self._real_sleep = asyncio.sleep
         monkeypatch.setattr(engine_mod, "time", self.clock)
@@ -234,12 +238,14 @@ class _Clocked:
     # ------------------------------------------------------------ the clock
 
     def _engine_tasks(self) -> list[asyncio.Task]:
-        return [t for t in (self.engine._task, self.engine._idle_stop_task)
+        return [t for t in (self.engine._task, self.engine._idle_stop_task,
+                            *self.also)
                 if t is not None and not t.done()]
 
     def _is_engine_task(self, task) -> bool:
-        return task is not None and task in (self.engine._task,
-                                             self.engine._idle_stop_task)
+        return task is not None and (
+            task in (self.engine._task, self.engine._idle_stop_task)
+            or task in self.also)
 
     def who(self) -> str:
         """Which engine task is asking: "run", "retry", or another name."""
@@ -253,7 +259,12 @@ class _Clocked:
     async def _park(self, d: float) -> None:
         """Park the calling engine task until the clock reaches now + ``d``."""
         if self.frozen.is_set():
-            await self._real_sleep(0)          # the wind-down after the abort
+            # The wind-down after the abort. The clock moves by the sleep, so
+            # a wait bounded on it (the run's end completing an idle stop
+            # whose task is still parked here, #247) reaches its bound rather
+            # than polling a stopped clock for ever.
+            self.clock.t += max(0.0, float(d))
+            await self._real_sleep(0)
             return
         fut = asyncio.get_running_loop().create_future()
         heapq.heappush(self._timers, (self.clock.t + max(0.0, d),
@@ -294,6 +305,54 @@ class _Clocked:
             self.ticks.append(self.clock.t)
         await self._park(d)
         return result
+
+    async def park_until(self, gate: asyncio.Event) -> None:
+        """Park the calling engine task until ``gate`` is set, with no wake
+        of its own: the driver counts it as parked, so the clock goes on for
+        the other engine tasks, and only the test's ``gate.set()`` wakes it.
+        A device call that has not come back, for as long as the test says
+        (the guider stop of `test_run_end_completes_the_idle_stop`)."""
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        waiter = loop.create_task(gate.wait())
+        waiter.add_done_callback(
+            lambda _w: fut.done() or fut.set_result(None))
+        self._parked[asyncio.current_task()] = fut
+        try:
+            await fut
+        finally:
+            waiter.cancel()
+
+    def hold_clock(self) -> asyncio.Event:
+        """Stop the clock until the returned event is set. A task of the
+        test's in ``also`` that is never parked, so the driver waits for it.
+        For a test that must act at an exact fake instant, an abort landing
+        while a stop is still in flight, however long its own turn takes;
+        called from a spy on the engine task, it stops the clock at the
+        instant the spy runs."""
+        release = asyncio.Event()
+        task = asyncio.get_running_loop().create_task(release.wait(),
+                                                      name="clock-hold")
+        self.also.add(task)
+        task.add_done_callback(self.also.discard)
+        return release
+
+    async def abort_on_the_clock(self) -> None:
+        """`engine.abort()` from a task the driver clocks as an engine task,
+        so a wait of abort's own (the idle stop it completes, #247) sleeps on
+        the fake clock beside the task it waits for, as the two share the
+        real one. Called straight from the test, its polls would sleep for
+        real while the driver raced the idle-stop task through fake minutes
+        of retries. ONLY WITH NO RUN BEHIND IT: an abort of a live run awaits
+        the run task, which the driver cannot count as parked, so the clock
+        would stop."""
+        task = asyncio.get_running_loop().create_task(self.engine.abort(),
+                                                      name="abort")
+        self.also.add(task)
+        try:
+            await task
+        finally:
+            self.also.discard(task)
 
     async def hang(self, call: str) -> None:
         """A mount call that never answers: the calling engine task waits out
@@ -523,6 +582,15 @@ async def test_a_target_sinking_through_the_floor_is_park_held_at_that_tick(
         AssertionError: the park-hold line carries a number: 'target Alpha
         altitude 32° below safety floor 32° (az 238°) — stopping tracking
         until the next target is set up'
+    Since #233 (H3 T11) the gate's sentence is words, and ``verdict[1]``
+    passes (observed: 1 passed); its numbers are ``verdict.site_detail``.
+    Mutant "the gate's numbers in the floor sentence" (the reason returns
+    ``verdict.site_detail``): RED (observed, the numbers the hour's) -
+        AssertionError: the park-hold line carries a number: 'target Alpha
+        altitude 32° below safety floor 32° (az 238°) — stopping tracking
+        until the next target is set up'
+    The two-site grade of every idle park-hold line is
+    test_engine_logs_carry_no_site_numbers.py.
     """
     run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
     t0 = run.t0
@@ -1650,6 +1718,10 @@ async def test_the_slew_gate_and_the_idle_check_ask_one_floor_predicate(
     computes altaz + `schedule.effective_floor` itself): RED -
         AssertionError: the idle check did not ask the slew gate's
         predicate: None
+
+    The predicate's answer is a `LimitVerdict` since #233 (H3 T11): the
+    gate raises its words-only ``sentence`` and carries its numbers as
+    ``site_detail``, and both come from this one answer.
     """
     e = SequenceEngine(sim_hub)
     e.plan = _plan()
@@ -1658,9 +1730,14 @@ async def test_the_slew_gate_and_the_idle_check_ask_one_floor_predicate(
     e._idle_since = time.time()
     monkeypatch.setattr(e, "_altitude_limit_verdict",
                         lambda target, *, projected, cfg:
-                        ("floor", "the predicate's own sentence"))
-    with pytest.raises(SafetyAbort, match="the predicate's own sentence"):
+                        engine_mod.LimitVerdict(
+                            "floor", "the predicate's own sentence",
+                            "the predicate's own numbers"))
+    with pytest.raises(SafetyAbort, match="the predicate's own sentence") \
+            as raised:
         await e._enforce_mount_floor(projected=True, target=a)
+    assert raised.value.site_detail == "the predicate's own numbers", (
+        raised.value.site_detail)
     why = await e._idle_hold_reason(a)
     assert why is not None and "floor" in why, (
         f"the idle check did not ask the slew gate's predicate: {why}")

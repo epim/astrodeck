@@ -75,14 +75,33 @@ def _engine(hub, target, instructions=None) -> SequenceEngine:
 class TestTheFloorEndsTheTarget:
     async def test_a_sunk_target_is_stopped(self, sim_hub, monkeypatch):
         """The regression. Before this, nothing consulted the floor once the
-        target was running, so this returned quietly and the run carried on."""
+        target was running, so this returned quietly and the run carried on.
+
+        THE REFUSAL NAMES THE RULE, IN WORDS (#233, H3 T11; H3 orchestrator
+        ruling 1, spec "Still waiting on the owner" item 10). This case used
+        to require the measurement and the bar in the reason ("sank to
+        12.4°, below its 30° altitude floor"). The reason is the scheduler's
+        "skipped" line, which ``/api/logs`` serves to a viewer, and a named
+        target's altitude at a logged time is the site (#140), so it now
+        requires the opposite: the rule by name, and no number.
+
+        MUTATION "restore the 'sank to' numbers" (the line and the reason put
+        back to ``f"sank to {alt:.1f}°, below its {floor:.0f}° ..."``).
+        Observed:
+            AssertionError: the refusal carries a number a viewer reads:
+            'sank to 12.4°, below its 30° altitude floor'
+        """
+        from _site_tracking import numeric_tokens
         t = _target(floor=30.0)
         monkeypatch.setattr(engine_mod, "_frame_altitude",
                             lambda *a, **k: 12.4)
         with pytest.raises(StopTarget) as ei:
             await _engine(sim_hub, t)._enforce_altitude_floor(t)
-        assert "12.4" in str(ei.value) and "30" in str(ei.value), (
-            f"the refusal has to name the measurement and the bar: {ei.value}")
+        reason = str(ei.value)
+        assert not numeric_tokens(reason), (
+            f"the refusal carries a number a viewer reads: {reason!r}")
+        assert "altitude floor" in reason, (
+            f"the refusal has to name the rule: {reason!r}")
 
     async def test_a_target_still_above_its_floor_is_left_alone(
             self, sim_hub, monkeypatch):

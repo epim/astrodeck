@@ -24,8 +24,8 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from .. import hub as _hubmod
-from ..persist import (harden_private_file, list_json, read_json_or,
-                       safe_id_path, write_json_atomic)
+from ..persist import (harden_private_file, list_json, read_json,
+                       read_json_or, safe_id_path, write_json_atomic)
 from .models import SequencePlan
 
 SESSION_SCHEMA = 1
@@ -37,18 +37,21 @@ SESSION_STATUSES = ("active", "dormant", "complete", "abandoned")
 
 
 class SessionUnreadable(Exception):
-    """A session file exists and parses as JSON but is not a valid Session,
-    or states no status (#218, ``_stated_status``).
+    """A session file exists and is not JSON, or is not a valid Session, or
+    states no status (#218, ``_stated_status``).
 
     Distinct from ``KeyError`` (no such session) because the two deserve
     different answers: one is "you asked for something that is not here", the
     other is "what is here is damaged", and calling the second one the first
-    sends the user looking for a session they can see in the list."""
+    sends the user looking for a session they can see in the list, which is
+    where ``SessionStore.list`` now shows every such file (#242)."""
 
     def __init__(self, session_id: str, reason: str = ""):
-        # ``reason`` when the store knows it in a sentence the operator can act
-        # on (a file with no status, #218). A validation failure keeps the bare
-        # message: its detail is pydantic's, and travels as ``__cause__``.
+        # ``reason`` is one of the store's own words for the damage
+        # (``NOT_JSON``, ``INVALID``, ``NO_STATUS``), never the parser's: the
+        # detail of a validation failure is pydantic's, quotes the values it
+        # refused (a frame's absolute path, say) and travels as ``__cause__``
+        # only, because the reason is shown in a list viewers can read.
         message = f"session file is unreadable: {session_id}"
         super().__init__(f"{message} ({reason})" if reason else message)
         self.session_id = session_id
@@ -181,15 +184,24 @@ class Session(BaseModel):
 #: Why ``SessionUnreadable`` refuses a file that states no status (#218).
 NO_STATUS = "it has no status"
 
+#: Why it refuses a file that does not parse, or is not UTF-8 text (#242): a
+#: write cut short by a power cut, or a file copied in by hand. Writes are
+#: atomic (``write_json_atomic``), so the store itself should never leave one.
+NOT_JSON = "not valid JSON"
+
+#: Why it refuses JSON that ``Session`` does not validate (#242).
+INVALID = "fails validation"
+
 
 def _stated_status(raw: dict) -> str | None:
     """The status a session FILE states, or None when it states none.
 
-    THE ONE PLACE A READER ASKS A FILE ITS STATUS (#218, mosaic spec ruling
-    12). ``Session.status`` defaults to "active" so a session built in code
-    gets one, and the engine passes it explicitly anyway. Read off disk, that
-    default turned a file which says nothing about its session into a RUNNING
-    session, and the readers disagreed about it: ``load`` answered active, the
+    THE ONE PLACE A READER ASKS A FILE ITS STATUS (#218, H2 orchestrator
+    ruling 12, spec "Still waiting on the owner" item 9). ``Session.status``
+    defaults to "active" so a session built in code gets one, and the engine
+    passes it explicitly anyway. Read off disk, that default turned a file
+    which says nothing about its session into a RUNNING session, and the
+    readers disagreed about it: ``load`` answered active, the
     raw-dict scan behind ``active()`` did not find it, and ``boot_sweep`` swept
     it, counted a crash that never happened (three make ResumeArm stow the
     rig) and saved the default-filled model over the file. A missing fact read
@@ -201,24 +213,79 @@ def _stated_status(raw: dict) -> str | None:
     return raw.get("status")
 
 
-def _session_from_file(raw: dict, session_id: str) -> Session:
-    """Validate a session file, or raise :class:`SessionUnreadable`.
+def _session_from_file(raw, session_id: str) -> Session:
+    """Validate a parsed session file, or raise :class:`SessionUnreadable`.
 
     Every ``SessionStore`` reader builds its ``Session`` here, so a file is
-    readable by all of them or by none: ``load`` raises, and the scanning
-    readers skip it under the rule they already keep for a corrupt file.
+    readable by all of them or by none: ``load`` raises, the scanning
+    readers skip it under the rule they already keep for a corrupt file, and
+    ``list`` shows it as unreadable with the reason raised here (#242).
 
     Validation first, so a file that is damaged in some other way as well
     (``{"plan": "not a plan"}`` states no status either) reports the damage,
     with pydantic's error as the cause, rather than the missing status alone:
-    adding a status to that file would not make it readable."""
+    adding a status to that file would not make it readable. JSON that is
+    not an object at all (``[]``, ``"x"``) fails validation too."""
     try:
         session = Session.model_validate(raw)
     except Exception as e:
-        raise SessionUnreadable(session_id) from e
+        raise SessionUnreadable(session_id, INVALID) from e
     if _stated_status(raw) is None:
         raise SessionUnreadable(session_id, NO_STATUS)
     return session
+
+
+def _parsed(path: Path):
+    """The JSON a session file holds, or raise: :class:`SessionUnreadable`
+    (``NOT_JSON``) for a file that is there and does not parse, and
+    ``OSError`` for one that is gone or that the OS will not open.
+
+    THE ONE PLACE A STORE READER TELLS "DAMAGED" FROM "NOT THERE" (#242).
+    ``read_json_or`` answers both with its default, so ``load`` called a
+    truncated file "no such session" and ``DELETE`` answered 404 for a file
+    on disk, and the scans skipped it without a word. A file held open by
+    another process (an antivirus scan, a replace in flight on Windows) is
+    an ``OSError`` and not damage: nothing about it says it will stay that
+    way, so it is never offered for deletion."""
+    try:
+        return read_json(path)
+    except ValueError as e:     # JSONDecodeError, UnicodeDecodeError
+        raise SessionUnreadable(path.stem, NOT_JSON) from e
+
+
+#: Longest name an unreadable row carries: it is a list line, and the name
+#: comes from a file nothing validated.
+_NAME_MAX = 120
+
+
+def _unreadable_row(path: Path, raw, reason: str | None) -> dict | None:
+    """The ``GET /api/sessions`` row for a file the store cannot read (#242),
+    or None when the file has gone since it was read.
+
+    SEEN, AND NOTHING TO MISTAKE FOR A SESSION. The scans skip such a file,
+    which is right for every reader that would count, sweep, start or save
+    over it, and it made the file invisible: the only ways to remove it were
+    a shell on the rig or a factory reset. So the list shows it, the way the
+    flow library shows an unreadable flow (#153), and ``DELETE`` removes it.
+    The row carries no ledger field (accepted, total, owed, nights,
+    auto_resume): none of them was read from anything, and a 0 of 0 would
+    be a count of a session that does not exist. ``status`` is
+    "unreadable", which is none of ``SESSION_STATUSES``, so no client
+    filtering on a real status picks it up.
+
+    The id is the FILE's stem, because that is what ``DELETE`` addresses.
+    The name inside is used when there is one, else the stem. ``updated_ts``
+    is the file's mtime: the ``updated_ts`` inside, if any, was written by
+    whatever damaged the file, and it sorts the row in among the rest."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    name = raw.get("name") if isinstance(raw, dict) else None
+    name = (name.strip()[:_NAME_MAX]
+            if isinstance(name, str) and name.strip() else path.stem)
+    return {"id": path.stem, "name": name, "status": "unreadable",
+            "unreadable": reason, "updated_ts": mtime}
 
 
 class SessionStore:
@@ -239,10 +306,12 @@ class SessionStore:
         no sentence naming the file.
 
         A file that states no status raises it too, naming that as the reason
-        (#218): see ``_stated_status``."""
-        raw = read_json_or(self._path(session_id))
-        if not isinstance(raw, dict):
-            raise KeyError(session_id)
+        (#218): see ``_stated_status``. So does a file that is not JSON
+        (#242): it is on disk, and ``GET /api/sessions`` lists it."""
+        try:
+            raw = _parsed(self._path(session_id))
+        except OSError:
+            raise KeyError(session_id) from None
         return _session_from_file(raw, session_id)
 
     def _scan_status(self, status: str) -> list[tuple[float, Path]]:
@@ -284,21 +353,35 @@ class SessionStore:
                 continue
         return None
 
+    def _entries(self) -> Iterator[tuple[Path, object, Session | None,
+                                         str | None]]:
+        """One walk of the sessions directory, one judgment per file:
+        ``(path, raw, session, None)`` for a session, and ``(path, raw, None,
+        reason)`` for a file the store cannot read, ``raw`` None when it is
+        not JSON (#242). A file that is gone since the listing, or that the
+        OS will not open, yields nothing (``_parsed``).
+
+        ``load_all`` keeps the sessions and ``list`` keeps both, so the two
+        cannot disagree about which files are sessions: the judgment is
+        ``_parsed`` and ``_session_from_file``, the same two ``load`` makes."""
+        for path in list_json(_sessions_dir()):
+            raw = None
+            try:
+                raw = _parsed(path)
+                yield path, raw, _session_from_file(raw, path.stem), None
+            except OSError:
+                continue
+            except SessionUnreadable as e:
+                yield path, raw, None, e.reason
+
     def load_all(self) -> list[Session]:
-        """Every readable session. ``list``, ``boot_sweep``, ``recoverable``,
+        """Every readable session. ``boot_sweep``, ``recoverable``,
         ``armed``, the prune sweep and ``engine.start``'s disarm loop all read
         through here, so a file this skips is one none of them can sweep,
-        count, start or save over (#218)."""
-        out: list[Session] = []
-        for path in list_json(_sessions_dir()):
-            raw = read_json_or(path)
-            if not isinstance(raw, dict):
-                continue
-            try:
-                out.append(_session_from_file(raw, path.stem))
-            except SessionUnreadable:
-                continue                      # corrupt file: skip, never raise
-        return out
+        count, start or save over (#218). ``list`` walks the same entries and
+        shows the skipped files as what they are (#242); nothing else does."""
+        return [s for _path, _raw, s, _why in self._entries()
+                if s is not None]           # unreadable: skip, never raise
 
     def newest_for_flow(self, flow_id: str,
                         statuses: Iterable[str]) -> Session | None:
@@ -503,7 +586,10 @@ class SessionStore:
         start it (Run CONTINUE, ResumeArm), and ``engine.start``'s save then
         put a deleted ledger back on disk, running. Re-entrant, so the prune
         sweep, which deletes from inside ``save``, still works, and so does
-        the DELETE route, which calls this inside its own section."""
+        the DELETE route, which calls this inside its own section.
+
+        It never reads the file, so a file the store cannot read goes the
+        same way (#242); whether it MAY go is the route's decision."""
         path = self._path(session_id)          # validates the id (KeyError)
         with self._write_lock:
             if path.exists():
@@ -520,9 +606,16 @@ class SessionStore:
         return _sessions_dir() / session_id / "thumbs"
 
     def list(self) -> list[dict]:
-        """Lightweight rows for GET /api/sessions (spec §6), newest first."""
+        """Lightweight rows for GET /api/sessions (spec §6), newest first,
+        with a row for every file the store cannot read (``_unreadable_row``,
+        #242) sorted in among them by the file's mtime."""
         rows: list[dict] = []
-        for s in self.load_all():
+        for path, raw, s, why in self._entries():
+            if s is None:
+                row = _unreadable_row(path, raw, why)
+                if row is not None:
+                    rows.append(row)
+                continue
             rows.append({
                 "id": s.id, "name": s.name, "status": s.status,
                 "created_ts": s.created_ts, "updated_ts": s.updated_ts,

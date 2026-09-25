@@ -29,6 +29,20 @@ halves are read from the syntax tree where a docstring could otherwise
 answer for the code, since H2's docstrings name the very calls the claims
 are about.
 
+The third hardening round (H3) added Revision 5 and nine orchestrator
+rulings, recorded as owner list items 10 to 18, and brought the claims above
+that H3 made stale back into line: 5.7's pre-flip record, kept all run
+(#237); 5.8's refused re-point that keeps holding (#240), its one setup per
+acquisition (#241) and its re-point after any stop (#248); 5.9's ADOPT
+measured against a body where it was (#234), asked off the event loop
+(#249), the teardown routes that stop the ladder (#238) and the no-light
+backoff (#251); 6.9's words-only hold and the route that withholds its
+numbers (#233); 6.15's teardown routes (#238); and 6.17's two waits that now
+watch (#236) and the run's end that completes the idle stop (#247). Two
+checks hold the record itself: Revision 5's table against the sections that
+carry H3's edits, and every ruling a server module or test cites by label
+against the spec entry with that label (#239).
+
 WHAT THIS CANNOT DO. It reads words, so it proves the spec SAYS a thing, not
 that the thing holds everywhere the spec implies. Where a claim describes
 code, the code half is asserted too, as the shape of that code (a call made,
@@ -170,6 +184,44 @@ def _app_function(name: str) -> str:
     return text[start:] if end == -1 else text[start:end]
 
 
+def _app_def(name: str) -> ast.AST:
+    """The one function named ``name`` anywhere in ``api/app.py`` (a route
+    inside ``create_app`` or a module-level helper), as a syntax tree, read
+    through ``APP`` at call time as ``_app_function`` is."""
+    tree = ast.parse(APP.read_text(encoding="utf-8"))
+    hits = [n for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == name]
+    assert len(hits) == 1, f"app.py has {len(hits)} functions named {name}"
+    return hits[0]
+
+
+def _app_constant(name: str) -> str:
+    """The string ``api/app.py`` assigns to the module global ``name``, its
+    adjacent literals joined as Python joins them."""
+    tree = ast.parse(APP.read_text(encoding="utf-8"))
+    hits = [n.value for n in tree.body if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == name
+                    for t in n.targets)]
+    assert len(hits) == 1, f"app.py assigns {name} {len(hits)} times"
+    return ast.literal_eval(hits[0])
+
+
+def _calls(node: ast.AST, attr: str) -> list[ast.Call]:
+    """Every call under ``node`` whose callee is named ``attr``, as a plain
+    name or as an attribute, in source order."""
+    hits = [n for n in ast.walk(node) if isinstance(n, ast.Call)
+            and ((isinstance(n.func, ast.Attribute) and n.func.attr == attr)
+                 or (isinstance(n.func, ast.Name) and n.func.id == attr))]
+    return sorted(hits, key=lambda n: (n.lineno, n.col_offset))
+
+
+def _handlers(node: ast.Try, name: str) -> list[ast.ExceptHandler]:
+    """The handlers of ``node`` that catch the exception class ``name``."""
+    return [h for h in node.handlers
+            if isinstance(h.type, ast.Name) and h.type.id == name]
+
+
 # ------------------------------------------------------------------ control
 
 #: One sentence per section that this round did NOT edit, so finding it
@@ -180,6 +232,7 @@ _ANCHORS = {
     "3.3": "**Identity.** `NS_FLOWS` is a fixed uuid constant in `to_plan`.",
     "3.6": "`_migrate` **refuses** `schema_version > FLOW_SCHEMA`.",
     "5.6": "Every hop is a slew through the one motion path.",
+    "5.7": "**Hysteresis.**",
     "5.8": "Holds are not pauses",
     "5.9": "**The critical section.**",
     "5.10": "`_set_state`",
@@ -636,66 +689,129 @@ def test_5_9_names_the_session_continue_reads_and_the_rules_around_it():
         "it does")
 
 
-def test_5_9_says_the_adopt_bound_is_inclusive_and_a_body_matches_by_name():
+def test_5_9_says_adopt_measures_a_body_where_it_was_and_off_the_loop():
     """5.9's ADOPT row says the bound is inclusive (a match exactly 10 arcmin
-    apart is re-keyed) and that a moving body matches on its canonical name,
-    learned through ``tonight.resolve_target``, with no bound (#229).
-    ``continuation.adopt_matches`` does both: two fields exactly
-    ``ADOPT_MAX_SEPARATION_ARCMIN`` apart map, and a body typed in another
-    case maps across 120 arcmin.
+    apart is re-keyed); that a moving body matches on its canonical name,
+    learned through ``tonight.resolve_target`` (#229), and is then measured
+    between the OLD target and the body where the catalogue places it at the
+    step's capture times, the first and the last frame of each night (H3
+    orchestrator ruling 7, #234); and that the catalogue is asked off the
+    event loop, before the store's write lock (#249). The code does each:
+    ``continuation.adopt_matches`` maps two fields exactly
+    ``ADOPT_MAX_SEPARATION_ARCMIN`` apart; maps a body step whose frames were
+    taken on the body although tonight's body is 120 arcmin away, and asks
+    the catalogue at exactly the night's first and last frame; refuses one
+    whose last frame was 120 arcmin off the body, naming it; and, handed
+    ``adopt_evidence``'s answer, asks the catalogue nothing. ``run_flow``
+    builds that answer with ``asyncio.to_thread`` before its recovering
+    check, and the locked section passes it and asks nothing itself.
 
-    Each spec mutant ran against a scratch copy of the spec, as above; each
-    code mutant was rebuilt from a scratch copy of the function's source and
-    rebound onto ``continuation`` in the test process only (continuation.py
-    never edited).
+    H2's version of this test held a body matched by name with no bound
+    (#229). T4 of the third hardening round built ruling 7, which turned it
+    red by design; it now holds the ruling.
 
-    RED under mutant "5.9 without the inclusive sentence":
+    Each spec mutant ran in place on the spec, from a byte backup, which was
+    restored byte-identical (sha256 compared) after each; each code mutant
+    was rebound in the test process only (a pytest plugin), and an app.py
+    mutant pointed this module's ``APP`` at a scratch copy. continuation.py
+    and app.py were never edited.
 
-        AssertionError: 5.9's ADOPT row must say: 'a match exactly 10 arcmin
-        apart is re-keyed'
+    RED under mutant "5.9 back to H2's moving-body sentence" (the bound "does
+    not apply to it"):
+
+        AssertionError: 5.9's ADOPT row must say: '**A moving body matches on
+        its canonical name, and the bound is measured against the body where it
+        was**'
         assert False
 
-    RED under mutant "5.9 without the moving-body sentence":
+    RED under mutant "5.9 without the #249 sentence":
 
-        AssertionError: 5.9's ADOPT row must say: '**A moving body matches
-        on its canonical name, and the bound does not apply to it**'
+        AssertionError: 5.9's ADOPT row must say: '**The catalogue is asked off
+        the event loop** (#249)'
         assert False
 
-    RED under the code mutant "'<=' to '<'" (``adopt_matches`` rebuilt with
-    ``apart < ADOPT_MAX_SEPARATION_ARCMIN``):
+    RED under the app.py mutant "evidence built inside the lock"
+    (``adopt_matches(s, plan, evidence=adopt_evidence(s, plan))``):
 
-        AssertionError: a match exactly at the bound was not re-keyed
-        assert [] == ['502d9242e4b...10778aaef3d9']
-          Right contains one more item: '502d9242e4be44f0be9f10778aaef3d9'
+        AssertionError: the locked section no longer matches on the evidence
+        alone (catalogue calls ['adopt_evidence(s, plan)']); 5.9 says it asks
+        the catalogue nothing (#249)
+        assert (True and ['adopt_evidence(s, plan)'] == []
+        Left contains one more item: 'adopt_evidence(s, plan)'
+        Use -v to get more diff)
 
-    RED under the code mutant "the bound applies to bodies"
-    (``adopt_matches`` rebuilt measuring and comparing every match):
+    RED under the app.py mutant "the catalogue asked on the loop" (``evidence =
+    adopt_evidence(latest, plan)``, no to_thread):
 
-        AssertionError: a body 120 arcmin from its old position was not
-        re-keyed
-        assert [] == ['8a46f391ba4...5dff2308a328']
-          Right contains one more item: '8a46f391ba4c4cf092755dff2308a328'
+        AssertionError: run_flow no longer asks adopt_evidence on a worker
+        thread before its recovering check; 5.9 says the catalogue is asked off
+        the loop, before the lock (#249)
+        assert False
+
+    RED under the code mutant "the body check skipped"
+    (``continuation._pointing`` rebound to answer "within the bound"):
+
+        AssertionError: a body step whose last frame was 120 arcmin off the
+        body was not listed with the body and that separation: mapping
+        ['0d834902cf21435b895aac61fc6ca6d9'], unmatched []
+        assert ({'0d834902cf2...0b6d11e3daf')} == {}
+        Left contains 1 more item:
+        {'0d834902cf21435b895aac61fc6ca6d9':
+        ('d052bfc796654da0a19a5e60416d19bb',
+        '707501007d7a405c8f3700b6d11e3daf')}
+        Use -v to get more diff)
+
+    RED under the code mutant "the match ignores the evidence"
+    (``adopt_matches`` rebound to drop ``evidence=``):
+
+        AssertionError: adopt_matches asked the catalogue although it was
+        handed adopt_evidence's answer (#249)
+
+    RED under the code mutant "every frame sampled"
+    (``continuation._capture_times`` rebound to every frame's time):
+
+        AssertionError: ADOPT asked the catalogue at [1790000000.0,
+        1790001800.0, 1790003600.0]; 5.9 says it checks the first and the last
+        frame of each night, [1790000000.0, 1790003600.0]
+        assert [1790000000.0... 1790003600.0] == [1790000000.0, 1790003600.0]
+        At index 1 diff: 1790001800.0 != 1790003600.0
+        Left contains one more item: 1790003600.0
+        Use -v to get more diff
     """
+    from astrodeck.flows import tonight
     from astrodeck.flows.tonight import NameResolution
     from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
     from astrodeck.sequence.session import Session, SessionFrame
     row = _line(_section("5.9"), "| the dormant session shares **no** step")
     bound = continuation.ADOPT_MAX_SEPARATION_ARCMIN
-    for phrase in ("inclusive", f"a match exactly {bound:g} arcmin apart is "
-                   "re-keyed", "**A moving body matches on its canonical "
-                   "name, and the bound does not apply to it**",
-                   "`tonight.resolve_target`", "#229",
-                   "A deep-sky or star name keeps the name as typed in its "
-                   "key, and the bound"):
-        said = phrase in row
-        assert said, f"5.9's ADOPT row must say: {phrase!r}"
+    _says(row, ("inclusive", f"a match exactly {bound:g} arcmin apart is "
+                "re-keyed", "**A moving body matches on its canonical name, "
+                "and the bound is measured against the body where it was**",
+                "`tonight.resolve_target`", "#229", "#234",
+                "H3 orchestrator ruling 7", "`_capture_times`",
+                "the first and the last frame of each night", "`created_ts`",
+                "A deep-sky or star name keeps the name as typed in its key, "
+                "and the bound against tonight's target",
+                "**The catalogue is asked off the event loop** (#249)",
+                "`adopt_evidence`", "`asyncio.to_thread`",
+                "before the store's write lock", "`adopt_matches(evidence=)`",
+                "press ADOPT again", "`tonight.IDENTITY_WHEN`"),
+          "5.9's ADOPT row")
+    for stale in ("the bound does not apply to it", "is open as #234"):
+        kept = stale in row
+        assert not kept, (f"5.9's ADOPT row still says {stale!r}; H3 "
+                          f"orchestrator ruling 7 measures a body step (#234)")
 
-    def session(name, dec):
+    t0 = 1_790_000_000.0                  # 2026-09-21, one night of frames
+
+    def session(name, dec, stamps=((0.0, ""),)):
         step = ExposureStep(filter="L", exposure_s=60.0, count=5)
         t = Target(name=name, ra_hours=5.0, dec_deg=dec, steps=[step])
         s = Session(status="dormant", plan=SequencePlan(name="p",
                                                         targets=[t]))
-        s.frames.append(SessionFrame(target_id=t.id, step_id=step.id))
+        for ts, night in stamps:
+            s.frames.append(SessionFrame(target_id=t.id, step_id=step.id,
+                                         ts=ts, night=night))
         return s, step
 
     def tonight_plan(name, dec):
@@ -713,17 +829,73 @@ def test_5_9_says_the_adopt_bound_is_inclusive_and_a_body_matches_by_name():
     assert list(continuation.adopt_matches(old, plan).mapping) == [
         old_step.id], "a match exactly at the bound was not re-keyed"
 
-    # A body: typed in another case, 120 arcmin from where it was.
-    def catalogue(name, when=None):
-        if str(name).strip().lower() == "jupiter":
-            return NameResolution(ra_hours=5.0, dec_deg=22.0,
-                                  identity="Jupiter", moves=True)
-        return None
-    old, old_step = session("jupiter", 20.0)
+    # A body, typed in another case, shot at dec 20 on one night; tonight it
+    # is 120 arcmin away, at dec 22. ``where`` is the body at each instant.
+    night = [(t0, "n1"), (t0 + 1800.0, "n1"), (t0 + 3600.0, "n1")]
+    asked: list[float] = []
+
+    def catalogue_for(where):
+        def catalogue(name, when=None):
+            if str(name).strip().lower() != "jupiter":
+                return None
+            if when is not None:
+                asked.append(when)
+            return NameResolution(
+                ra_hours=5.0, dec_deg=22.0 if when is None else where(when),
+                identity="Jupiter", moves=True)
+        return catalogue
+
+    on_it = catalogue_for(lambda when: 20.1)          # 6 arcmin off, always
+    old, old_step = session("jupiter", 20.0, night)
     plan = tonight_plan("Jupiter", 22.0)
     assert list(continuation.adopt_matches(
-        old, plan, resolve=catalogue).mapping) == [old_step.id], (
-        "a body 120 arcmin from its old position was not re-keyed")
+        old, plan, resolve=on_it).mapping) == [old_step.id], (
+        "a body step whose frames were taken on the body was not re-keyed")
+    assert sorted(asked) == [t0, t0 + 3600.0], (
+        f"ADOPT asked the catalogue at {sorted(asked)}; 5.9 says it checks "
+        f"the first and the last frame of each night, {[t0, t0 + 3600.0]}")
+    off_it = catalogue_for(lambda when: 22.0 if when > t0 + 3000 else 20.1)
+    refused = continuation.adopt_matches(old, plan, resolve=off_it)
+    reasons = [(u["step_id"], "Jupiter" in u["reason"],
+                u["separation_arcmin"]) for u in refused.unmatched]
+    assert (refused.mapping == {}
+            and reasons == [(old_step.id, True, 120.0)]), (
+        f"a body step whose last frame was 120 arcmin off the body was not "
+        f"listed with the body and that separation: mapping "
+        f"{list(refused.mapping)}, unmatched {reasons}")
+
+    # #249: with the evidence in hand, the match asks the catalogue nothing.
+    evidence = continuation.adopt_evidence(old, plan, resolve=on_it)
+
+    def refuse(name, when=None):
+        raise AssertionError("adopt_matches asked the catalogue although it "
+                             "was handed adopt_evidence's answer (#249)")
+    assert list(continuation.adopt_matches(
+        old, plan, evidence=evidence, resolve=refuse).mapping) == [
+        old_step.id]
+    assert "IDENTITY_WHEN" in inspect.getsource(tonight.resolve_target), (
+        "resolve_target no longer picks its row at tonight.IDENTITY_WHEN; 5.9 "
+        "says to_plan, progress and ADOPT resolve identity at that instant")
+    run = _app_def("run_flow")
+    threaded = [c for c in _calls(run, "to_thread")
+                if c.args and isinstance(c.args[0], ast.Name)
+                and c.args[0].id == "adopt_evidence"]
+    checked = _calls(run, "_refuse_while_resume_recovers")
+    early = (bool(threaded) and bool(checked)
+             and threaded[0].lineno < checked[0].lineno)
+    assert early, ("run_flow no longer asks adopt_evidence on a worker thread "
+                   "before its recovering check; 5.9 says the catalogue is "
+                   "asked off the loop, before the lock (#249)")
+    locked = _app_def("_continue_flow_session")
+    matched = _calls(locked, "adopt_matches")
+    asks = [ast.unparse(c) for c in _calls(locked, "adopt_evidence")
+            + _calls(locked, "resolve_target")]
+    handed = bool(matched) and all(_keyword_node(c, "evidence") is not None
+                                   for c in matched)
+    assert handed and asks == [], (
+        f"the locked section no longer matches on the evidence alone "
+        f"(catalogue calls {asks}); 5.9 says it asks the catalogue nothing "
+        f"(#249)")
 
 
 def test_s1_item_8_carries_the_skipped_panel_exemption_as_debt():
@@ -1074,22 +1246,33 @@ def test_5_8_says_a_repoint_unparks_and_arms_only_the_held_targets_latch():
     reach. The hold unparks a parked mount before it slews. The last
     target's flip latch is disarmed while the mount is elsewhere, and the
     re-point arms B's own, so a look never flips B on the last target's hour
-    angle. And the stop follows a refusal of the gate's PROJECTION, which is
-    all ``_hold_repoint_refusal`` asks first: the slew gate's pier guard and
-    the Sun check are asked only by the slew itself, and they raise the
-    SafetyAbort any slew raises instead of stopping the hold, which ends the
-    run where H2 orchestrator ruling 2 says the hold stops tracking (#240,
-    filed by T10's verifier). The bullet first said "When the gate would
-    refuse", which claimed the stop for those two as well; it now names
-    #240, and the check that the refusal still asks neither goes red when
-    #240 is fixed. The engine: ``_hold_for_clear``'s ``if elsewhere:``
-    arm sets ``_flip_armed`` False before it asks the refusal;
-    ``_hold_repoint`` asks ``_arm_meridian_flip(target)`` under its own ``if
-    elsewhere:``; it awaits ``tel.unpark()`` before ``tel.slew``; and it
-    asks the slew gate and the Sun check before the ``try`` whose ``except
-    Exception`` turns a failed slew into a stop.
+    angle. And a refused re-point keeps holding (#240, H3 orchestrator
+    ruling 3): ``_hold_repoint_refusal`` asks only the gate's PROJECTION
+    first, and when the slew gate's pier guard or the Sun check refuses the
+    slew itself, it raises ``SlewRefused``, which ``_hold_repoint`` catches
+    by type, stopping the hold (``_hold_park``) and returning its words,
+    never raising; a bound's expiry is a plain SafetyAbort, re-raised, and
+    ends the run under P0-2.
 
-    Mutants as in the tests above (scratch spec, rebound method).
+    Under H2 this test held the opposite: the pier guard and the Sun check
+    raised the SafetyAbort any slew raises and ended the run, and a check
+    that the gates sat before the stopping ``try`` stood for "#240 still
+    open". T7 of the third hardening round fixed #240 by catching the
+    refusal before that ``try``, where the H2 check could not see it, so the
+    check stayed green over a fixed #240 (a test that could no longer fail);
+    it now requires the ``except SlewRefused`` itself. The engine:
+    ``_hold_for_clear``'s ``if elsewhere:`` arm sets ``_flip_armed`` False
+    before it asks the refusal; ``_hold_repoint`` asks
+    ``_arm_meridian_flip(target)`` under its own ``if elsewhere:``; it
+    awaits ``tel.unpark()`` before ``tel.slew``; it asks the slew gate and
+    the Sun check inside a ``try`` whose ``except SlewRefused`` stops and
+    returns; the Sun check raises ``SlewRefused``; every refusal
+    ``_enforce_mount_floor`` raises is a ``SlewRefused``; and the mount
+    calls' ``except SafetyAbort`` re-raises.
+
+    Mutants as in the tests above (scratch spec, rebound method), and the
+    third round's engine mutants in place on engine.py from a byte backup,
+    restored byte-identical (sha256 compared) after each.
 
     RED under mutant "5.8 says any gate refusal stops the hold" (the
     bullet's first wording put back):
@@ -1128,31 +1311,58 @@ def test_5_8_says_a_repoint_unparks_and_arms_only_the_held_targets_latch():
         (mount calls ['is_parked', 'set_tracking', 'slew']); 5.8 says it does
         assert False
 
-    RED under mutant "drop the #240 sentence from 5.8":
+    RED under mutant "5.8 says a pier-guard or Sun-cone refusal ends the run"
+    (H2's #240 sentence put back):
 
-        AssertionError: 5.8's re-point bullet must say: "The gate's pier guard
-        and the Sun check are not asked first"
+        AssertionError: 5.8's re-point bullet must say: '**A refused re-point
+        keeps holding** (#240, H3 orchestrator ruling 3)'
         assert False
 
-    RED under the code mutant "the refusal asks the Sun cone" (the shape of
-    a #240 fix: ``self.hub._check_solar(...)`` added to
-    ``_hold_repoint_refusal``):
+    RED under the engine mutant "the refusal ends the run again" (``raise``
+    first in ``_hold_repoint``'s ``except SlewRefused``):
 
-        AssertionError: _hold_repoint_refusal now asks ['_check_solar'], so
-        #240 may be fixed and 5.8's 'not asked first' is stale
-        assert ['_check_solar'] == []
+        AssertionError: _hold_repoint's except SlewRefused no longer stops the
+        hold and returns (raises ['raise']); 5.8 says a refused re-point keeps
+        holding and never ends the run (#240)
+        assert False
 
-    RED under the code mutant "the slew gate asked inside the stopping try"
-    (``_hold_repoint`` with its ``_safety_gate`` call moved into the ``try``
-    ahead of the unpark, so the other test's text check still finds it):
+    RED under the engine mutant "caught as any SafetyAbort" (``except
+    SlewRefused`` made ``except SafetyAbort``):
 
         AssertionError: _hold_repoint no longer asks the slew gate and the Sun
-        check before the try that turns a failed slew into a stop, so a
-        refusal may no longer end the run; 5.8 says it does (#240)
-        assert False
+        check inside a try that catches SlewRefused by type; 5.8 says a refused
+        re-point keeps holding (#240)
+        assert []
 
-    Unchanged under the control "unrelated edit in section 7" (all 23 in
-    this file pass on that copy).
+    RED under the engine mutant "the Sun cone raises a plain SafetyAbort" (its
+    ``raise SlewRefused(`` made ``raise SafetyAbort(``):
+
+        AssertionError: the Sun check inside _hold_repoint raises
+        ['SafetyAbort']; 5.8 says a Sun-cone refusal is a SlewRefused the hold
+        keeps holding on
+        assert ['SafetyAbort'] == ['SlewRefused']
+        At index 0 diff: 'SafetyAbort' != 'SlewRefused'
+        Use -v to get more diff
+
+    RED under the engine mutant "the pier guard raises a plain SafetyAbort"
+    (``_enforce_mount_floor``'s pier ``raise SlewRefused(`` made ``raise
+    SafetyAbort(``):
+
+        AssertionError: _enforce_mount_floor raises ['SafetyAbort',
+        'SlewRefused']; 5.8 says every refusal of the slew gate's limits is a
+        SlewRefused, which the hold catches
+        assert ['SafetyAbort', 'SlewRefused'] == ['SlewRefused']
+        At index 0 diff: 'SafetyAbort' != 'SlewRefused'
+        Left contains one more item: 'SlewRefused'
+        Use -v to get more diff
+
+    RED under the engine mutant "a bound's expiry kept holding" (the mount
+    calls' ``except SafetyAbort: raise`` made a return):
+
+        AssertionError: _hold_repoint no longer re-raises a bound's expiry from
+        its mount calls; 5.8 says a mount call past its bound still ends the
+        run (P0-2)
+        assert False
     """
     bullet = _line(_section("5.8"), _REPOINT)
     _says(bullet, ("unparking a parked mount first",
@@ -1162,36 +1372,74 @@ def test_5_8_says_a_repoint_unparks_and_arms_only_the_held_targets_latch():
           "5.8's re-point bullet")
     broad = "When the gate would refuse" in bullet
     assert not broad, (
-        "5.8 says any refusal of the slew gate stops the hold; only its "
-        "projection is asked first, and its pier guard and the Sun check "
-        "raise a SafetyAbort from the slew")
-    _says(bullet, ("The gate's pier guard and the Sun check are not asked "
-                   "first", "that ends the run (#240)"),
+        "5.8 says any refusal of the slew gate is asked first; only its "
+        "projection is, and its pier guard and the Sun check refuse the slew "
+        "itself")
+    _says(bullet, ("**A refused re-point keeps holding** (#240, H3 "
+                   "orchestrator ruling 3)", "The gate's pier guard and the "
+                   "Sun check are not asked first", "`SlewRefused`",
+                   "catches it by type", "never ends the run",
+                   "A mount call past its bound", "(P0-2)"),
           "5.8's re-point bullet")
-    # #240 STILL OPEN: the refusal asks neither the pier guard nor the Sun
-    # cone, and `_hold_repoint` asks both before the ``try`` whose ``except``
-    # turns a failed slew into a stop. When #240 is fixed this goes red, and
-    # 5.8's sentence and Revision 4's row 2 are stale.
+    stale = "that ends the run (#240)" in bullet
+    assert not stale, ("5.8 still says a pier-guard or Sun-cone refusal ends "
+                       "the run; since H3 it keeps holding (#240)")
+    # The pre-ask is still the projection alone: the pier side and the Sun
+    # are the gate's to know, and a refusal of either is caught from the
+    # slew (below), not asked for first.
     asked = {n.func.attr for n in ast.walk(
         _tree(SequenceEngine._hold_repoint_refusal))
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
     pier_or_sun = sorted(asked & {"_check_solar", "destination_pier_side",
                                   "_enforce_mount_floor", "_safety_gate"})
     assert pier_or_sun == [], (
-        f"_hold_repoint_refusal now asks {pier_or_sun}, so #240 may be "
-        f"fixed and 5.8's 'not asked first' is stale")
-    body = _tree(SequenceEngine._hold_repoint).body[0].body
-    tried = min(s.lineno for s in body if isinstance(s, ast.Try)
-                and any(isinstance(h.type, ast.Name)
-                        and h.type.id == "Exception" for h in s.handlers))
-    gates = [c.lineno for c in ast.walk(_tree(SequenceEngine._hold_repoint))
-             if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
-             and c.func.attr in ("_safety_gate", "_check_solar")]
-    before = len(gates) == 2 and all(line < tried for line in gates)
-    assert before, (
-        "_hold_repoint no longer asks the slew gate and the Sun check before "
-        "the try that turns a failed slew into a stop, so a refusal may no "
-        "longer end the run; 5.8 says it does (#240)")
+        f"_hold_repoint_refusal now asks {pier_or_sun} first; 5.8 says the "
+        f"gate's pier guard and the Sun check are not asked first")
+    repoint = _tree(SequenceEngine._hold_repoint)
+    guarded = [t for t in ast.walk(repoint) if isinstance(t, ast.Try)
+               and _handlers(t, "SlewRefused")
+               and {"_safety_gate", "_check_solar"} <= {
+                   c.func.attr for s in t.body for c in ast.walk(s)
+                   if isinstance(c, ast.Call)
+                   and isinstance(c.func, ast.Attribute)}]
+    assert guarded, (
+        "_hold_repoint no longer asks the slew gate and the Sun check inside "
+        "a try that catches SlewRefused by type; 5.8 says a refused re-point "
+        "keeps holding (#240)")
+    handler = _handlers(guarded[0], "SlewRefused")[0]
+    stops = any(_is_self_call(c, "_hold_park") for c in ast.walk(handler))
+    returns = any(isinstance(s, ast.Return) for s in handler.body)
+    raises = [ast.unparse(n) for n in ast.walk(handler)
+              if isinstance(n, ast.Raise)]
+    holds = stops and returns and raises == []
+    assert holds, (
+        f"_hold_repoint's except SlewRefused no longer stops the hold and "
+        f"returns (raises {raises}); 5.8 says a refused re-point keeps "
+        f"holding and never ends the run (#240)")
+    sun = [n for n in ast.walk(guarded[0])
+           if isinstance(n, ast.Raise) and isinstance(n.exc, ast.Call)
+           and isinstance(n.exc.func, ast.Name)]
+    sun_kinds = sorted({n.exc.func.id for n in sun})
+    assert sun_kinds == ["SlewRefused"], (
+        f"the Sun check inside _hold_repoint raises {sun_kinds}; 5.8 says a "
+        f"Sun-cone refusal is a SlewRefused the hold keeps holding on")
+    floor = _tree(SequenceEngine._enforce_mount_floor)
+    kinds = sorted({n.exc.func.id for n in ast.walk(floor)
+                    if isinstance(n, ast.Raise) and isinstance(n.exc, ast.Call)
+                    and isinstance(n.exc.func, ast.Name)})
+    assert kinds == ["SlewRefused"], (
+        f"_enforce_mount_floor raises {kinds}; 5.8 says every refusal of the "
+        f"slew gate's limits is a SlewRefused, which the hold catches")
+    assert issubclass(engine_mod.SlewRefused, engine_mod.SafetyAbort)
+    mount = [h for t in ast.walk(repoint) if isinstance(t, ast.Try)
+             for h in _handlers(t, "SafetyAbort")]
+    reraised = bool(mount) and all(
+        len(h.body) == 1 and isinstance(h.body[0], ast.Raise)
+        and h.body[0].exc is None for h in mount)
+    assert reraised, (
+        "_hold_repoint no longer re-raises a bound's expiry from its mount "
+        "calls; 5.8 says a mount call past its bound still ends the run "
+        "(P0-2)")
     hold = _tree(SequenceEngine._hold_for_clear)
     refusal = _self_calls(hold, "_hold_repoint_refusal")
     arms = [n for n in ast.walk(hold) if isinstance(n, ast.If)
@@ -1207,7 +1455,6 @@ def test_5_8_says_a_repoint_unparks_and_arms_only_the_held_targets_latch():
         "_hold_for_clear no longer disarms the last target's flip latch "
         "before it asks whether it may re-point; 5.8 says a look never "
         "flips B on the last target's hour angle")
-    repoint = _tree(SequenceEngine._hold_repoint)
     own = [n for n in ast.walk(repoint) if isinstance(n, ast.If)
            and isinstance(n.test, ast.Name) and n.test.id == "elsewhere"
            and any(_is_self_call(c, "_arm_meridian_flip")
@@ -1312,8 +1559,11 @@ def test_5_8_says_the_published_detail_says_what_the_hold_is_doing():
     once tracking is back; a stopped mount's detail says "the mount is
     stopped", why, and "The sky is not judged until it tracks again", words
     this test takes from ``_hold_park``. In ``_hold_for_clear`` the opening
-    detail after a re-point from elsewhere is published only under ``if
-    self._tracked_target is target``, with the stop in the other arm, and
+    detail after a re-point from elsewhere is published only under ``if why
+    is None``, where ``why`` is the re-point's own answer (H2 asked ``if
+    self._tracked_target is target``, which T7 of the third hardening round
+    changed for #248, turning this red by design), with the stop in the
+    other arm, and
     after a lost-tracking resume only as the statement after
     ``_enforce_tracking``, which raises when tracking does not come back.
     ONLY there: no other statement publishes it, and the open publishes it
@@ -1331,7 +1581,25 @@ def test_5_8_says_the_published_detail_says_what_the_hold_is_doing():
 
     RED under the code mutant "the opening detail published whatever the
     re-point did" (``_hold_for_clear`` with ``if self._tracked_target is
-    target:`` made ``if True:``):
+    target:`` made ``if True:``; H2's record):
+
+        AssertionError: _hold_for_clear no longer publishes its opening detail
+        only when the re-point put the mount on the held target; 5.8 says a
+        stopped mount never claims the sky is checked (#228)
+        assert []
+
+    RED under the engine mutant "the opening detail published whatever the
+    re-point answered" (``if why is None:`` before the publish made ``if
+    True:``):
+
+        AssertionError: _hold_for_clear no longer publishes its opening detail
+        only when the re-point put the mount on the held target; 5.8 says a
+        stopped mount never claims the sky is checked (#228)
+        assert []
+
+    RED under the engine mutant "the opening detail keyed on _tracked_target
+    again" (that ``if why is None:`` made H2's ``if self._tracked_target is
+    target:``):
 
         AssertionError: _hold_for_clear no longer publishes its opening detail
         only when the re-point put the mount on the held target; 5.8 says a
@@ -1368,14 +1636,23 @@ def test_5_8_says_the_published_detail_says_what_the_hold_is_doing():
                    "(#228)",) + tuple(f'"{w}"' for w in words),
           "5.8's re-point bullet")
     tree = _tree(SequenceEngine._hold_for_clear)
+    # THE RE-POINT'S OWN ANSWER decides, since H3 (#248): ``why`` is what
+    # ``_hold_repoint(target, elsewhere=True)`` returned, None once the mount
+    # is on the target and tracking. H2 asked ``self._tracked_target is
+    # target``, which a mount stopped on this very target already is, so a
+    # refused re-point of it would have published the opening detail over a
+    # stopped mount (#228 by the #248 door).
+    answered = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                and [ast.unparse(t) for t in n.targets] == ["why"]
+                and isinstance(n.value, ast.Await)
+                and _is_self_call(n.value.value, "_hold_repoint")
+                and _keyword(n.value.value, "elsewhere") is True]
     gated = [n for n in ast.walk(tree)
-             if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
-             and isinstance(n.test.left, ast.Attribute)
-             and n.test.left.attr == "_tracked_target"
-             and isinstance(n.test.ops[0], ast.Is)
+             if isinstance(n, ast.If) and ast.unparse(n.test) == "why is None"
              and any(_publishes_detail(s) for s in n.body)
              and any(_is_self_call(c, "_hold_park")
-                     for s in n.orelse for c in ast.walk(s))]
+                     for s in n.orelse for c in ast.walk(s))
+             and answered and answered[0].lineno < n.lineno]
     assert gated, (
         "_hold_for_clear no longer publishes its opening detail only when "
         "the re-point put the mount on the held target; 5.8 says a stopped "
@@ -1495,20 +1772,281 @@ def test_5_8_says_a_flips_off_hold_takes_no_flip_point_action_and_takes_none():
         f"stop at the point and ask the owed-flip guard, and did {control}")
 
 
+# ------------- 5.8, one setup per acquisition and a re-point after any stop
+
+#: 5.8's own sentences for H3 orchestrator rulings 4 and 6. Owner list items
+#: 13 and 15 record the rulings; these are the section's account of what the
+#: engine does, which the test below holds to the engine.
+_ONE_SETUP = "**One setup per acquisition** (#241, H3 orchestrator ruling 4)"
+_AFTER_STOP = ("**After any stop of the mount, a hold re-points** (#248, H3 "
+               "orchestrator ruling 6)")
+#: What ``_acquisition_behind_gate`` is asked as, wherever a release decides.
+_BEHIND = "self._acquisition_behind_gate is target"
+
+
+def _asks(node: ast.AST, text: str) -> bool:
+    """Is there a comparison that reads ``text`` anywhere under ``node``?"""
+    return any(isinstance(n, ast.Compare) and ast.unparse(n) == text
+               for n in ast.walk(node))
+
+
+def _assigns(node: ast.AST, target: str,
+             value: str | None = None) -> list[ast.Assign]:
+    """The assignments under ``node`` to ``target`` (spelled as the source
+    spells it, ``self._x``), of ``value`` when one is given."""
+    return [n for n in ast.walk(node) if isinstance(n, ast.Assign)
+            and [ast.unparse(t) for t in n.targets] == [target]
+            and (value is None or ast.unparse(n.value) == value)]
+
+
+def _within(block: list[ast.stmt], node: ast.AST) -> bool:
+    return any(node is n for stmt in block for n in ast.walk(stmt))
+
+
+def _marks_its_gate(fn) -> bool:
+    """Does ``fn`` name its target as the acquisition behind its pre-slew
+    gate: ``self._acquisition_behind_gate = target`` directly before a
+    ``try`` whose body awaits ``self._safety_gate(context="slew", ...)`` and
+    whose ``finally`` puts the flag back?"""
+    for block in _statements(_tree(fn)):
+        for stmt, nxt in zip(block, block[1:]):
+            if not (isinstance(stmt, ast.Assign) and ast.unparse(stmt)
+                    == "self._acquisition_behind_gate = target"
+                    and isinstance(nxt, ast.Try)):
+                continue
+            gated = any(_keyword(c, "context") == "slew" for s in nxt.body
+                        for c in _self_calls(s, "_safety_gate"))
+            restored = any(_assigns(s, "self._acquisition_behind_gate")
+                           for s in nxt.finalbody)
+            if gated and restored:
+                return True
+    return False
+
+
+def _setups_not_held_back(fn) -> tuple[int, list[int]]:
+    """How many ``self._setup_target(...)`` calls ``fn`` makes, and the
+    source lines of those a setup waiting behind the gate does NOT hold
+    back. A call is held back when it sits in the body of an ``if`` that
+    asks ``not behind``, where ``behind`` is read from `_BEHIND`, or in the
+    ``else`` (an ``elif`` included) of an ``if`` that asks `_BEHIND` itself
+    and not in that ``if``'s own body."""
+    tree = _tree(fn)
+    read = any(_asks(a.value, _BEHIND) for a in _assigns(tree, "behind"))
+    ifs = [n for n in ast.walk(tree) if isinstance(n, ast.If)]
+
+    def held(call: ast.Call) -> bool:
+        for n in ifs:
+            not_behind = read and any(
+                isinstance(u, ast.UnaryOp) and isinstance(u.op, ast.Not)
+                and isinstance(u.operand, ast.Name) and u.operand.id == "behind"
+                for u in ast.walk(n.test))
+            if not_behind and _within(n.body, call):
+                return True
+            if (_asks(n.test, _BEHIND) and _within(n.orelse, call)
+                    and not _within(n.body, call)):
+                return True
+        return False
+
+    calls = _self_calls(tree, "_setup_target")
+    return len(calls), [c.lineno for c in calls if not held(c)]
+
+
+def test_5_8_says_one_setup_per_acquisition_and_a_repoint_after_any_stop():
+    """5.8 says a hold opened by a setup's pre-slew gate returns, on release,
+    to the setup it interrupted, which makes the one acquisition, and that a
+    safety pause and a roof reopen such a gate opens follow the same rule
+    (#241, H3 orchestrator ruling 4); and that a stop the engine made since
+    the mount was last pointed counts as elsewhere, so a hold re-points
+    instead of resuming in place, with ``_mount_stopped_since`` set by every
+    stop and cleared only by a fresh pointing (#248, H3 orchestrator ruling
+    6). The module docstring and Revision 5 say this file holds every claim
+    H3 edited, and until this test none held these two sentences: owner list
+    items 13 and 15 name the rulings, and the published-detail test above
+    reaches #248 only through the re-point's answer.
+
+    The code half, from the syntax trees, since the docstrings of these
+    methods name every call the claims are about:
+
+    * ``_setup_target`` and ``_hold_repoint`` set ``_acquisition_behind_gate``
+      to the target directly before the ``try`` that awaits their
+      ``_safety_gate(context="slew")``, and put it back in its ``finally``;
+    * ``_hold_for_clear``'s release runs ``_setup_target`` only under ``not
+      behind``, ``behind`` read from ``self._acquisition_behind_gate is
+      target``; the safety pause's release (``_park_hold_pause``) and the
+      roof reopen (``_await_safe_and_reopen``) run it only in the ``elif`` of
+      an ``if`` that asks the same. Each makes at least one such call, so
+      "every call is held back" cannot pass on none;
+    * ``_hold_for_clear`` counts the mount as elsewhere when
+      ``self._mount_stopped_since is not None``, at the open and in the
+      stopped-tracking branch, which re-points (``_hold_repoint(...,
+      elsewhere=True)``); ``_stop_tracking_quietly``, the stop primitive
+      under the pause, the roof close, the hold's own stop and the idle
+      stop, records the stop (``_note_mount_stopped``), which writes the
+      field; a setup's slew and a successful re-point clear it.
+
+    Mutants: the spec read from a scratch copy through this module's
+    ``SPEC``, and the engine methods rebound, each compiled from its own
+    source with one edit, all inside the test process only (a pytest
+    plugin); the spec and ``engine.py`` were never written, and their
+    SHA-256 was the same before and after the runs.
+
+    RED under mutant "5.8 without the #241 sentence" (its bold head
+    deleted):
+
+        AssertionError: 5.8's re-point bullet must say: '**One setup per
+        acquisition** (#241, H3 orchestrator ruling 4)'
+        assert False
+
+    RED under the code mutant "the release runs a setup behind the gate"
+    (``_hold_for_clear`` with ``and not behind):`` made ``):``):
+
+        AssertionError: _hold_for_clear runs _setup_target at line(s) [347]
+        of its source whether or not a setup waits behind the gate; 5.8
+        says the hold never runs _setup_target for it (#241)
+        assert [347] == []
+
+    RED under the code mutant "the setup does not mark its gate"
+    (``_setup_target`` with ``self._acquisition_behind_gate = target`` made
+    ``self._acquisition_behind_gate = behind``):
+
+        AssertionError: _setup_target no longer names its target as the
+        acquisition behind its pre-slew gate; 5.8 says a hold that gate opens
+        returns to it (#241)
+        assert False
+
+    RED under the code mutant "the pause re-acquires behind the gate"
+    (``_park_hold_pause`` with ``and self._acquisition_behind_gate is
+    target):`` made ``and False):``):
+
+        AssertionError: _park_hold_pause runs _setup_target at line(s) [67]
+        of its source whether or not a setup waits behind the gate; 5.8
+        says a safety pause follows the same rule (#241)
+        assert [67] == []
+
+    RED under the code mutant "a stopped mount is not elsewhere" (the
+    ``or self._mount_stopped_since is not None`` taken out of
+    ``_hold_for_clear``'s ``elsewhere``):
+
+        AssertionError: _hold_for_clear no longer counts a mount the engine
+        stopped as elsewhere at the open; 5.8 says a hold re-points after any
+        stop (#248)
+        assert False
+
+    RED under the code mutant "the stop is not recorded"
+    (``_stop_tracking_quietly`` without ``self._note_mount_stopped()``):
+
+        AssertionError: _stop_tracking_quietly no longer records the stop;
+        5.8 says every stop the engine makes sets _mount_stopped_since (#248)
+        assert False
+
+    RED under the code mutant "a re-point leaves the mount counted as
+    stopped" (``_hold_repoint`` without ``self._mount_stopped_since =
+    None``):
+
+        AssertionError: _hold_repoint no longer clears
+        _mount_stopped_since; 5.8 says a fresh pointing clears it (#248)
+        assert False
+
+    Unchanged under the controls "an unrelated edit in section 7" (its
+    Engine heading reworded) and "the release's log line reworded"
+    (``_hold_for_clear`` with "returning to the setup the hold" made "going
+    back to the setup the hold"): 1 passed on each.
+    """
+    bullet = _line(_section("5.8"), _REPOINT)
+    _says(bullet, (_ONE_SETUP, "`_acquisition_behind_gate`",
+                   "The hold never runs `_setup_target` for it",
+                   "A safety pause and a roof reopen that such a gate opens "
+                   "follow the same rule", "#263", _AFTER_STOP,
+                   "`_mount_stopped_since`", "only a fresh pointing clears "
+                   "it"), "5.8's re-point bullet")
+    stale = "its release goes through `_setup_target`" in bullet
+    assert not stale, ("5.8 still says every hold's release goes through "
+                       "_setup_target; since H3 one opened by a setup's gate "
+                       "returns to that setup (#241)")
+    # #241, the gates: each asker names the acquisition behind it.
+    for fn in (SequenceEngine._setup_target, SequenceEngine._hold_repoint):
+        marked = _marks_its_gate(fn)
+        assert marked, (
+            f"{fn.__name__} no longer names its target as the acquisition "
+            f"behind its pre-slew gate; 5.8 says a hold that gate opens "
+            f"returns to it (#241)")
+    # #241, the releases: none runs a setup while one waits behind the gate.
+    for fn, which in ((SequenceEngine._hold_for_clear, "the hold never runs "
+                       "_setup_target for it"),
+                      (SequenceEngine._park_hold_pause, "a safety pause "
+                       "follows the same rule"),
+                      (SequenceEngine._await_safe_and_reopen, "a roof reopen "
+                       "follows the same rule")):
+        made, loose = _setups_not_held_back(fn)
+        assert made >= 1, (
+            f"premise: {fn.__name__} re-acquires through _setup_target when "
+            f"no setup waits behind the gate")
+        assert loose == [], (
+            f"{fn.__name__} runs _setup_target at line(s) {loose} of its "
+            f"source whether or not a setup waits behind the gate; 5.8 says "
+            f"{which} (#241)")
+    # #248: a mount the engine stopped is elsewhere, at the open and when
+    # the tracking read finds it stopped, and that branch re-points.
+    hold = _tree(SequenceEngine._hold_for_clear)
+    opened = any(_asks(a.value, "self._mount_stopped_since is not None")
+                 for a in _assigns(hold, "elsewhere"))
+    assert opened, ("_hold_for_clear no longer counts a mount the engine "
+                    "stopped as elsewhere at the open; 5.8 says a hold "
+                    "re-points after any stop (#248)")
+    repointed = [n for n in ast.walk(hold) if isinstance(n, ast.If)
+                 and ast.unparse(n.test)
+                 == "self._mount_stopped_since is not None"
+                 and any(_keyword(c, "elsewhere") is True for s in n.body
+                         for c in _self_calls(s, "_hold_repoint"))]
+    assert repointed, ("_hold_for_clear no longer re-points a mount the "
+                       "engine stopped when its tracking read finds it "
+                       "stopped; 5.8 says it re-points instead of resuming "
+                       "in place (#248)")
+    recorded = bool(_self_calls(_tree(SequenceEngine._stop_tracking_quietly),
+                                "_note_mount_stopped"))
+    assert recorded, ("_stop_tracking_quietly no longer records the stop; "
+                      "5.8 says every stop the engine makes sets "
+                      "_mount_stopped_since (#248)")
+    written = bool(_assigns(_tree(SequenceEngine._note_mount_stopped),
+                            "self._mount_stopped_since"))
+    assert written, ("_note_mount_stopped no longer writes "
+                     "_mount_stopped_since; 5.8 names the field (#248)")
+    for fn in (SequenceEngine._setup_target, SequenceEngine._hold_repoint):
+        cleared = bool(_assigns(_tree(fn), "self._mount_stopped_since",
+                                "None"))
+        assert cleared, (f"{fn.__name__} no longer clears "
+                         f"_mount_stopped_since; 5.8 says a fresh pointing "
+                         f"clears it (#248)")
+
+
 # --------------------------------- 6.17, the idle stop and the cooling wait
 
 def test_6_17_says_the_first_stop_attempt_is_on_its_task_and_cooling_watches():
     """6.17 says the idle park-hold's stop is asked on its own task, the
-    first attempt as well as every retry (#216), and that the run-start
-    cooling wait watches a target ``start(tracking=)`` hands the run (#202),
-    while the cooler gate's wait after a cloud hold still does not (#236);
-    5.8's watch bullet says the first half too. ``_idle_park_hold`` talks to
-    no device and starts ``_idle_stop_retry``, whose first act is the stop;
-    ``_run`` waits for the cooler with ``watch=True``, ``_cool_and_wait``
-    looks at the mount under ``if watch:``, and ``_cooler_gate`` does not
-    pass it.
+    first attempt as well as every retry (#216); that the run-start cooling
+    wait watches a target ``start(tracking=)`` hands the run (#202); that
+    the two waits which did not watch now do, the cooler gate's wait when a
+    cloud hold releases and the camera-lane wait at run start (H3, #236);
+    and that a run's end completes a stop the idle watch decided, bounded by
+    ``IDLE_STOP_FINISH_S`` (H3, #247, H3 orchestrator ruling 5). 5.8's watch
+    bullet says the first half too. ``_idle_park_hold`` talks to no device
+    and starts ``_idle_stop_retry``, whose first act is the stop; ``_run``
+    waits for the cooler with ``watch=True`` and ``_cool_and_wait`` looks at
+    the mount under ``if watch:``; ``_hold_for_clear`` asks ``_cooler_gate``
+    with ``watch=True``; ``_await_camera_lane`` takes ``_idle_hold_tick``
+    in its polling loop; ``_run`` completes the stop in a ``finally`` and
+    ``abort`` completes it too (``_finish_idle_stop``), which polls the task
+    against ``IDLE_STOP_FINISH_S`` and never awaits it.
 
-    Mutants as in the tests above.
+    Under H2 the last check held "the cooler gate's wait still does not
+    watch", and T2 of the third hardening round reported it stayed green
+    over the fix: it read only a constant ``watch=True`` in ``_cooler_gate``,
+    which now forwards its own ``watch``. It now holds the fix where the
+    watch is asked for, the hold's call.
+
+    Mutants as in the tests above; the third round's engine mutants in place
+    on engine.py from a byte backup, restored byte-identical (sha256
+    compared) after each.
 
     RED under mutant "6.17 without the first attempt":
 
@@ -1539,11 +2077,79 @@ def test_6_17_says_the_first_stop_attempt_is_on_its_task_and_cooling_watches():
         AssertionError: _run's cooling wait no longer watches the mount; 6.17
         says it does (#202)
         assert []
+
+    RED under mutant "6.17 back to 'Two waits still do not watch'":
+
+        AssertionError: 6.17 must say: '**The two waits that did not watch now
+        do** (H3, #236)'
+        assert False
+
+    RED under mutant "6.17 without the #247 sentence":
+
+        AssertionError: 6.17 must say: "**A run's end completes a stop the idle
+        watch decided** (H3, #247, H3 orchestrator ruling 5)"
+        assert False
+
+    RED under the engine mutant "the hold's cooler gate unwatched"
+    (``_hold_for_clear``'s ``watch=True`` made ``watch=False``):
+
+        AssertionError: a cloud hold's release no longer waits for the cooler
+        with the mount watched (_hold_for_clear's _cooler_gate(...,
+        watch=True), passed on to _cool_and_wait); 6.17 says it does (#236)
+        assert ([])
+
+    RED under the engine mutant "the gate drops its watch" (``_cooler_gate``
+    passes ``watch=False``):
+
+        AssertionError: a cloud hold's release no longer waits for the cooler
+        with the mount watched (_hold_for_clear's _cooler_gate(...,
+        watch=True), passed on to _cool_and_wait); 6.17 says it does (#236)
+        assert ([<ast.Call object at 0x0000024A6D7F0FD0>] and [])
+
+    RED under the engine mutant "the camera-lane wait unwatched" (its
+    ``_idle_hold_tick`` made ``pass``):
+
+        AssertionError: _await_camera_lane no longer takes the idle look while
+        it polls; 6.17 says the camera-lane wait watches (#236)
+        assert []
+
+    RED under the engine mutant "the run's end cancels the stop again"
+    (``_finish_idle_stop(...)`` in ``_run``'s finally made
+    ``_cancel_idle_stop_retry()``):
+
+        AssertionError: _run's finally or abort no longer completes the idle
+        stop (_finish_idle_stop); 6.17 says a run's end completes it (#247)
+        assert ([])
+
+    RED under the engine mutant "the wind-down awaits the task" (the bounded
+    poll made ``await task``):
+
+        AssertionError: _complete_idle_stop no longer polls the first attempt
+        against IDLE_STOP_FINISH_S without awaiting it (awaits ['await task']);
+        6.17 says the wind-down's wait is bounded and shielded (#247)
+        assert (False)
+
+    RED under the code mutant "engine.IDLE_STOP_FINISH_S = 120.0" (rebound in
+    the test process):
+
+        AssertionError: 6.17 must say: '`IDLE_STOP_FINISH_S` (120 s)'
+        assert False
     """
     row = _line(_spec(), "| 6.17 |")
+    finish = f"`IDLE_STOP_FINISH_S` ({engine_mod.IDLE_STOP_FINISH_S:g} s)"
+    lane_s = f"up to {engine_mod._CAMERA_LANE_WAIT_S:g} s"
     _says(row, ("the first attempt as well as every retry (H2, #216)",
                 "The run-start cooling wait watches the same way (H2, #202)",
-                "#236"), "6.17")
+                "**The two waits that did not watch now do** (H3, #236)",
+                "`_cooler_gate(..., watch=True)`", "`_await_camera_lane`",
+                lane_s,
+                "**A run's end completes a stop the idle watch decided** "
+                "(H3, #247, H3 orchestrator ruling 5)",
+                "`_finish_idle_stop`", finish,
+                "whether or not the wind-down parks"), "6.17")
+    stale = "Two waits still do not watch" in row
+    assert not stale, ("6.17 still says two waits do not watch; since H3 "
+                       "both do (#236)")
     hold = _line(_section("5.8"),
                  "- **A cloud hold watches the mount on its own clock**")
     _says(hold, ("the first attempt and every retry", "#216"),
@@ -1576,12 +2182,45 @@ def test_6_17_says_the_first_stop_attempt_is_on_its_task_and_cooling_watches():
                      for s in n.body for c in ast.walk(s))]
     assert looks, ("_cool_and_wait no longer takes the idle look when asked "
                    "to watch; 6.17 says the run's cooling wait watches")
-    gate = _self_calls(_tree(SequenceEngine._cooler_gate), "_cool_and_wait")
-    unwatched = bool(gate) and all(_keyword(c, "watch") is not True
-                                   for c in gate)
-    assert unwatched, (
-        "_cooler_gate's cooling wait now watches the mount, so the first half "
-        "of #236 is fixed and 6.17's 'still do not watch' is stale")
+    # #236, first half: the hold's release asks the cooler gate to watch,
+    # and the gate passes its ``watch`` on to the wait that looks.
+    released = [c for c in _self_calls(_tree(SequenceEngine._hold_for_clear),
+                                       "_cooler_gate")
+                if _keyword(c, "watch") is True]
+    forwarded = [c for c in _self_calls(_tree(SequenceEngine._cooler_gate),
+                                        "_cool_and_wait")
+                 if ast.unparse(_keyword_node(c, "watch") or
+                                ast.Constant(None)) == "watch"]
+    assert released and forwarded, (
+        "a cloud hold's release no longer waits for the cooler with the "
+        "mount watched (_hold_for_clear's _cooler_gate(..., watch=True), "
+        "passed on to _cool_and_wait); 6.17 says it does (#236)")
+    # #236, second half: every poll of the camera-lane wait takes the look.
+    lane = [n for n in ast.walk(_tree(SequenceEngine._await_camera_lane))
+            if isinstance(n, ast.While)
+            and any(_is_self_call(c, "_idle_hold_tick")
+                    for s in n.body for c in ast.walk(s))]
+    assert lane, ("_await_camera_lane no longer takes the idle look while it "
+                  "polls; 6.17 says the camera-lane wait watches (#236)")
+    # #247: the run's end and an abort complete the stop, polled against
+    # the bound and never awaited, so a cancel cannot land on the task.
+    ending = [t for t in ast.walk(_tree(SequenceEngine._run))
+              if isinstance(t, ast.Try)
+              and any(_is_self_call(c, "_finish_idle_stop")
+                      for s in t.finalbody for c in ast.walk(s))]
+    aborted = _self_calls(_tree(SequenceEngine.abort), "_finish_idle_stop")
+    assert ending and aborted, (
+        "_run's finally or abort no longer completes the idle stop "
+        "(_finish_idle_stop); 6.17 says a run's end completes it (#247)")
+    work = _tree(SequenceEngine._complete_idle_stop)
+    bounded = any(isinstance(n, ast.Name) and n.id == "IDLE_STOP_FINISH_S"
+                  for n in ast.walk(work))
+    awaited = [ast.unparse(n) for n in ast.walk(work)
+               if isinstance(n, ast.Await) and isinstance(n.value, ast.Name)]
+    assert bounded and awaited == [], (
+        f"_complete_idle_stop no longer polls the first attempt against "
+        f"IDLE_STOP_FINISH_S without awaiting it (awaits {awaited}); 6.17 "
+        f"says the wind-down's wait is bounded and shielded (#247)")
 
 
 # ------------------------------------------- 5.9 and 6.15, the ladder's stop
@@ -1594,9 +2233,20 @@ def test_5_9_and_6_15_say_abort_and_a_disarm_stop_the_ladder_and_it_says_so():
     that session, or arms another in its place, and a DELETE of it, stop it
     too, each naming that session so that withdrawing any other leaves it
     running; the route reports ``recovering`` and ``recovery``, whose step
-    is a word from ``LADDER_STEPS``. 6.15 also says the other callers of
-    ``engine.abort`` do not stop it yet (#238). ``api/app.py`` and
-    ``ResumeArm`` do each.
+    is a word from ``LADDER_STEPS``. ``api/app.py`` and ``ResumeArm`` do
+    each.
+
+    SINCE H3 (#238): the routes that tear the rig down stop the ladder too.
+    ``/api/disconnect`` stops it with its session disarmed before anything
+    else; profile apply, profile activate and ``/api/connect/rig`` refuse
+    unforced with 409 ``running`` while it runs (``_teardown_busy_detail``)
+    and, forced, stop it with the session disarmed; each then waits for it
+    (``_wait_for_the_ladder``, ``ResumeArm.wait_stopped`` bounded by
+    ``LADDER_STOP_WAIT_S``) before it aborts or tears down. And the refused
+    start's sentence names the Monitor, not the route (#246). H2's version
+    ended by holding "the other callers of ``engine.abort`` do not stop it
+    yet"; T1 of the third round fixed #238 and turned it red by design, and
+    T8 changed the sentence, which H2's checks did not read.
 
     Mutants as in the tests above. The app.py mutants point this module's
     ``APP`` at a scratch copy with the mutation, in the test process only;
@@ -1677,6 +2327,59 @@ def test_5_9_and_6_15_say_abort_and_a_disarm_stop_the_ladder_and_it_says_so():
         step')"]), so withdrawing any other session stops it too; 5.9 says
         that leaves it running
         assert ["resume_arm.... next step')"] == []
+
+    RED under mutant "6.15 back to 'do not stop it yet'" (H2's #238 sentence
+    put back):
+
+        AssertionError: 6.15 must say: '**So do the routes that tear the rig
+        down** (H3, #238)'
+        assert False
+
+    RED under mutant "5.9 back to 'the 409 sends the operator there'":
+
+        AssertionError: 5.9 must say: 'the Monitor shows the re-centring and
+        the step it is on'
+        assert False
+
+    RED under the app.py mutant "disconnect without the ladder stop":
+
+        AssertionError: disconnect no longer stops the recovery ladder with its
+        session disarmed and waits for it before it aborts or tears the rig
+        down; 6.15 says it does (#238)
+        assert False
+
+    RED under the app.py mutant "a forced apply does not wait for the ladder":
+
+        AssertionError: apply_profile no longer stops the recovery ladder with
+        its session disarmed and waits for it before it aborts or tears the rig
+        down; 6.15 says it does (#238)
+        assert False
+
+    RED under the app.py mutant "a forced connect keeps the session armed"
+    (``disarm=False``):
+
+        AssertionError: connect_rig no longer stops the recovery ladder with
+        its session disarmed and waits for it before it aborts or tears the rig
+        down; 6.15 says it does (#238)
+        assert False
+
+    RED under the app.py mutant "activate refuses nothing" (its unforced
+    ``_teardown_busy_detail`` refusal removed):
+
+        AssertionError: activate_profile no longer refuses unforced while the
+        ladder runs; 6.15 says profile apply, activate and a rig connect refuse
+        and a disconnect does not
+        assert False == True
+
+    RED under the app.py mutant "the refused start names the route again":
+
+        AssertionError: the resume_recovering sentence no longer says 'the
+        Monitor shows the re-centring and the step it is on'; 5.9 quotes it
+        assert 'the Monitor shows the re-centring and the step it is on' in
+        'Auto-resume is re-centring the mount after a restart and will start
+        its armed session when that is done; GET /api/seq...esume off, which
+        stops the re-centring before its next step (an abort does the same);
+        start again once it has stopped.'
     """
     s59 = _section("5.9")
     _says(s59, ("**Abort and a disarm stop the ladder, and the route says it "
@@ -1685,12 +2388,27 @@ def test_5_9_and_6_15_say_abort_and_a_disarm_stop_the_ladder_and_it_says_so():
                 "another in its place, and a DELETE of it, stop the ladder "
                 "too", "withdrawing any other session leaves it running",
                 "`GET /api/sequence/resume-arm` reports `recovering`",
-                "`recovery`", "`LADDER_STEPS`"), "5.9")
+                "`recovery`", "`LADDER_STEPS`",
+                "the Monitor shows the re-centring and the step it is on",
+                "**The routes that tear the rig down stop it too** (H3, "
+                "#238)"), "5.9")
+    sent = "the 409's sentence sends the operator there" in s59
+    assert not sent, ("5.9 still says the 409 sends the operator to the "
+                      "route; since #246 it names the Monitor")
     row = _line(_spec(), "| 6.15 |")
     unchanged = "Unchanged" in row
     assert not unchanged, ("6.15 still says Abort is unchanged; since H2 it "
                            "stops the recovery ladder (#220)")
-    _says(row, ("recovery ladder", "(H2, #220)", "#238"), "6.15")
+    wait_s = resume_arm_mod.LADDER_STOP_WAIT_S
+    _says(row, ("recovery ladder", "(H2, #220)",
+                "**So do the routes that tear the rig down** (H3, #238)",
+                "`/api/disconnect`", "409 `running`",
+                "`ResumeArm.wait_stopped`",
+                f"`LADDER_STOP_WAIT_S` = {wait_s:g} s", "The disarm is "
+                "deliberate", "#256", "#257"), "6.15")
+    stale = "neither stop the ladder nor see it yet" in row
+    assert not stale, ("6.15 still says the teardown routes do not stop the "
+                       "ladder; since H3 they do (#238)")
     # The code halves, from app.py's route functions.
     abort = _app_function("sequence_abort")
     stop = abort.find("resume_arm.stop_recovery(")
@@ -1753,12 +2471,54 @@ def test_5_9_and_6_15_say_abort_and_a_disarm_stop_the_ladder_and_it_says_so():
     declared = ('@app.get("/api/sequence/resume-arm"'
                 in APP.read_text(encoding="utf-8"))
     assert declared, "app.py no longer declares the route 5.9 names"
+    # #238: each route that tears the rig down stops the ladder, disarms
+    # its session, and waits for it before it aborts or tears anything
+    # down; the three that can be forced refuse unforced while it runs.
     for other in ("disconnect", "apply_profile", "activate_profile",
                   "connect_rig"):
-        reached = "stop_recovery(" in _app_function(other)
-        assert not reached, (
-            f"{other} now stops the recovery ladder: #238 is fixed, so "
-            f"6.15's 'do not stop it yet' is stale")
+        tree = _app_def(other)
+        stops = [c for c in _calls(tree, "stop_recovery")
+                 if _keyword(c, "disarm") is True]
+        waits = [n for n in ast.walk(tree) if isinstance(n, ast.Await)
+                 and isinstance(n.value, ast.Call)
+                 and isinstance(n.value.func, ast.Name)
+                 and n.value.func.id == "_wait_for_the_ladder"]
+        after = [c.lineno for name in ("abort", "disconnect_all",
+                                       "apply_profile", "connect_profile_id",
+                                       "connect_rigspec")
+                 for c in _calls(tree, name)
+                 if isinstance(c.func, ast.Attribute)
+                 and isinstance(c.func.value, ast.Name)
+                 and c.func.value.id in ("engine", "hub")]
+        ordered = (bool(stops) and bool(waits) and bool(after)
+                   and stops[0].lineno < waits[0].lineno < min(after))
+        assert ordered, (
+            f"{other} no longer stops the recovery ladder with its session "
+            f"disarmed and waits for it before it aborts or tears the rig "
+            f"down; 6.15 says it does (#238)")
+        asked = _calls(tree, "_teardown_busy_detail")
+        refuses = bool(asked) and asked[0].lineno < stops[0].lineno
+        forceable = other != "disconnect"
+        assert refuses == forceable, (
+            f"{other} {'no longer refuses' if forceable else 'now refuses'} "
+            f"unforced while the ladder runs; 6.15 says profile apply, "
+            f"activate and a rig connect refuse and a disconnect does not")
+    waited = _app_def("_wait_for_the_ladder")
+    gives_up = (bool(_calls(waited, "wait_stopped"))
+                and "'code': 'running'" in ast.unparse(waited))
+    assert gives_up, ("_wait_for_the_ladder no longer waits on "
+                      "ResumeArm.wait_stopped and answers 409 running; 6.15 "
+                      "says a ladder that does not stop is refused")
+    bound = [n for n in ast.walk(_tree(ResumeArm.wait_stopped))
+             if isinstance(n, ast.Name) and n.id == "LADDER_STOP_WAIT_S"]
+    assert bound, ("ResumeArm.wait_stopped is no longer bounded by "
+                   "LADDER_STOP_WAIT_S; 6.15 names that bound")
+    # The refused start's sentence names the screen, not the route (#246).
+    sentence = _app_constant("_RESUME_RECOVERING")
+    monitor = "the Monitor shows the re-centring and the step it is on"
+    assert monitor in sentence, (
+        f"the resume_recovering sentence no longer says {monitor!r}; 5.9 "
+        f"quotes it")
     # And ResumeArm: the stop cancels the awaited step and can disarm.
     stopper = _tree(ResumeArm.stop_recovery)
     cancels = [n for n in ast.walk(stopper) if isinstance(n, ast.Call)
@@ -1797,20 +2557,36 @@ def _session_file(**over) -> dict:
     return raw
 
 
-def test_the_owner_list_records_the_h2_orchestrator_rulings():
+def test_the_owner_list_records_the_h2_orchestrator_rulings(tmp_path,
+                                                            monkeypatch):
     """The owner list records H2 orchestrator rulings 2, 1, 8, 9 and 12 as
     items 5 to 9, each labelled the orchestrator's and binding until the
     owner overturns it, with a note that their numbers are not Revision 2's
     (whose own rulings 1, 2, 8 and 9 are on other subjects, so the note is
     needed). Each ruling's text is held to the code where it names
     something the code keeps: rulings 1 and 2 by the 5.8 tests above, ruling
-    8 by the catalogue's answer for the two spellings it quotes, ruling 9 by
-    ``identity``, and ruling 12 by ``session._session_from_file``, the one
-    place every ``SessionStore`` reader builds a session (its sweep, crash
-    count and rewrite are test_session_without_status.py's).
+    8 by the catalogue's answer for the two spellings it quotes and by
+    ``tonight.MOVING_KINDS``, ruling 9 by ``identity``, and ruling 12 by
+    ``session._session_from_file``, the one place every ``SessionStore``
+    reader builds a session (its sweep, crash count and rewrite are
+    test_session_without_status.py's), by ``SessionStore.list``, which shows
+    such a file as an unreadable row, and by the DELETE route, which
+    tolerates it (#242; test_unreadable_sessions_listed_and_deletable.py
+    holds their behaviour).
 
-    Mutants as in the tests above; the session mutant rebinds
-    ``session._session_from_file`` in the test process only.
+    SINCE H3. Item 7 says "a moving body (a planet, the Moon, a comet or a
+    satellite)" where it said "a solar-system body", because the code has
+    always exempted every row of ``tonight.MOVING_KINDS`` (H3 orchestrator
+    ruling 9), and it names ruling 7's pointing check where it said "what
+    that trusts is #234": T4 built that check, which made the old item stale
+    by design. Item 9 no longer says every reader "reports" such a file,
+    which overclaimed: ``load`` reports it and the scans skip it, and since
+    #242 the list shows it and DELETE removes it. T8 built #242 and reported
+    that this test stayed green over it, because it read only
+    ``_session_from_file``; the list and the route are read now.
+
+    Mutants as in the tests above; the session mutants rebind a
+    ``session`` function in the test process only.
 
     RED under mutant "label ruling 12 an owner ruling":
 
@@ -1850,6 +2626,48 @@ def test_the_owner_list_records_the_h2_orchestrator_rulings():
 
     The 3.3 name-key test above goes red under it too, as its own docstring
     records.
+
+    RED under mutant "drop 'satellite' from item 7":
+
+        AssertionError: owner list item 7 must say: 'a moving body (a planet,
+        the Moon, a comet or a satellite)'
+        assert False
+
+    RED under mutant "item 9 back to 'every reader reports it'":
+
+        AssertionError: owner list item 9 must say: '`load` reports it as
+        unreadable, with the reason'
+        assert False
+
+    RED under the code mutant "tonight.MOVING_KINDS without satellites"
+    (rebound in the test process):
+
+        AssertionError: tonight.MOVING_KINDS is ['comet', 'solar_system'];
+        owner list item 7 says a moving body is a planet, the Moon, a comet or
+        a satellite
+        assert ['comet', 'solar_system'] == ['comet', 'sa...solar_system']
+        At index 1 diff: 'solar_system' != 'satellite'
+        Right contains one more item: 'solar_system'
+        Use -v to get more diff
+
+    RED under the code mutant "an unreadable file is not listed"
+    (``session._unreadable_row`` rebound to answer None):
+
+        AssertionError: GET /api/sessions' rows are [('session', 'dormant',
+        None)]; owner list item 9 says a file with no status is listed as an
+        unreadable row with its reason
+        assert [('session', 'dormant', None)] == [('session', ...s no status')]
+        Right contains one more item: ('unstated', 'unreadable', 'it has no
+        status')
+        Use -v to get more diff
+
+    RED under the app.py mutant "DELETE refuses an unreadable file again" (its
+    first ``except SessionUnreadable`` removed):
+
+        AssertionError: DELETE /api/sessions/{id} catches SessionUnreadable at
+        1 of its two reads; owner list item 9 says it removes such a file
+        assert 1 == 2
+        +  where 1 = len([<ast.ExceptHandler object at 0x0000022D46819610>])
     """
     owner = _section("Still")
     for item, ruling in _H2_RULINGS.items():
@@ -1870,17 +2688,29 @@ def test_the_owner_list_records_the_h2_orchestrator_rulings():
     assert shared == [1, 2, 8, 9], (
         f"Revision 2's rulings share the numbers {shared} with H2's; the "
         f"note on items 5 to 9 names 1, 2, 8 and 9")
-    # Ruling 8: the two spellings it quotes are one row, and a body moves.
+    # Ruling 8: the two spellings it quotes are one row, and every moving
+    # kind is a body, satellites included (H3 orchestrator ruling 9).
     from astrodeck.flows import tonight
     bound = continuation.ADOPT_MAX_SEPARATION_ARCMIN
-    _says(_line(owner, "7. "), ('"M 31" and "M31" are one key',
-                                f"ADOPT's {bound:g} arcmin bound", "#229",
-                                "#234"), "owner list item 7")
+    item7 = _line(owner, "7. ")
+    _says(item7, ('"M 31" and "M31" are one key',
+                  f"ADOPT's {bound:g} arcmin bound", "#229",
+                  "a moving body (a planet, the Moon, a comet or a "
+                  "satellite)", "H3 orchestrator ruling 9",
+                  "H3 orchestrator ruling 7"), "owner list item 7")
+    for stale in ("what that trusts is #234", "solar-system body"):
+        kept = stale in item7
+        assert not kept, (f"owner list item 7 still says {stale!r}; H3 "
+                          f"orchestrator rulings 7 and 9 changed it")
     rows = sorted({tonight.resolve_target(n).identity
                    for n in ("M 31", "M31")})
     assert rows == ["M31"], (f"'M 31' and 'M31' resolve to {rows}; owner "
                              f"list item 7 says they are one key")
     assert tonight.resolve_target("Jupiter").moves
+    kinds = sorted(tonight.MOVING_KINDS)
+    assert kinds == ["comet", "satellite", "solar_system"], (
+        f"tonight.MOVING_KINDS is {kinds}; owner list item 7 says a moving "
+        f"body is a planet, the Moon, a comet or a satellite")
     # Ruling 9: the places identity spells, and the three keys it quotes.
     _says(_line(owner, "8. "), (f"`STEP_PLACES` = {identity.STEP_PLACES}",
                                 "0.0001 s, 0.0005 s and 0.001 s are three "
@@ -1890,15 +2720,679 @@ def test_the_owner_list_records_the_h2_orchestrator_rulings():
             for e in (0.0001, 0.0005, 0.001)}
     assert len(keys) == 3, ("identity spells two of 0.0001 s, 0.0005 s and "
                             "0.001 s alike; owner list item 8 says three keys")
-    # Ruling 12: a file that states no status is unreadable, and says why.
-    _says(_line(owner, "9. "), ("#218", "reported as unreadable, with the "
-                                "reason", "never swept by the boot sweep",
-                                "never counted as a crash",
-                                "never rewritten"), "owner list item 9")
+    # Ruling 12: a file that states no status is unreadable, and says why;
+    # the list shows it as an unreadable row, and DELETE can remove it.
+    item9 = _line(owner, "9. ")
+    _says(item9, ("#218", "`load` reports it as unreadable, with the reason",
+                  "never swept by the boot sweep", "never counted as a crash",
+                  "never rewritten", "#242", "`GET /api/sessions` lists it "
+                  "as an unreadable row with its reason",
+                  "`DELETE /api/sessions/{id}` removes it"),
+          "owner list item 9")
+    over = "Every `SessionStore` reader treats it the same way" in item9
+    assert not over, ("owner list item 9 still says every reader reports "
+                      "such a file; the scans skip it")
     session_mod._session_from_file(_session_file(), "claims")   # premise
     with pytest.raises(session_mod.SessionUnreadable) as refused:
         session_mod._session_from_file(_session_file(status=None), "claims")
     assert refused.value.reason == session_mod.NO_STATUS
+    import astrodeck.hub as hub_mod
+    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path)
+    (tmp_path / "sessions").mkdir()
+    for stem, raw in (("stated", _session_file()),
+                      ("unstated", _session_file(status=None))):
+        (tmp_path / "sessions" / f"{stem}.json").write_text(
+            json.dumps(raw), encoding="utf-8")
+    listed = sorted((r["id"] if r["status"] == "unreadable" else "session",
+                     r["status"], r.get("unreadable"))
+                    for r in SessionStore().list())
+    assert listed == [("session", "dormant", None),
+                      ("unstated", "unreadable", session_mod.NO_STATUS)], (
+        f"GET /api/sessions' rows are {listed}; owner list item 9 says a "
+        f"file with no status is listed as an unreadable row with its reason")
+    tolerated = [h for t in ast.walk(_app_def("delete_session"))
+                 if isinstance(t, ast.Try)
+                 for h in _handlers(t, "SessionUnreadable")]
+    assert len(tolerated) == 2, (
+        f"DELETE /api/sessions/{{id}} catches SessionUnreadable at "
+        f"{len(tolerated)} of its two reads; owner list item 9 says it "
+        f"removes such a file")
+
+
+# --------------------------------------- the owner list's H3 rulings
+
+#: Owner list items 10 to 18: the H3 orchestrator ruling each records, and
+#: the issue it decides (ruling 9, satellites count, was decided on the
+#: spec's own wording and has none).
+_H3_RULINGS = {10: (1, "#233"), 11: (2, "#237"), 12: (3, "#240"),
+               13: (4, "#241"), 14: (5, "#247"), 15: (6, "#248"),
+               16: (7, "#234"), 17: (8, "#251"), 18: (9, None)}
+
+
+def test_the_owner_list_records_the_h3_orchestrator_rulings():
+    """The owner list records H3 orchestrator rulings 1 to 9 as items 10 to
+    18, each labelled the orchestrator's, binding until the owner overturns
+    it and naming the issue it decides, with a closing note that they are
+    not the owner's and that their numbers are neither Revision 2's nor
+    H2's. Which numbers collide is computed, not typed: all nine with
+    Revision 2's rulings, and 1, 2, 8 and 9 with H2's, which the note names.
+    Where an item quotes a value, the value is taken from the code: the
+    idle-stop finish bound (ruling 5), ADOPT's bound (ruling 7), the retry
+    clocks and the no-light words (ruling 8), and the moving kinds (ruling
+    9). The behaviour of each ruling is its section's test above and its
+    own suite's.
+
+    Mutants as in the tests above.
+
+    RED under mutant "label H3 ruling 5 an owner ruling":
+
+        AssertionError: owner list item 14 must record H3 orchestrator ruling
+        5, labelled as the orchestrator's
+        assert False
+
+    RED under mutant "drop the note on items 10 to 18":
+
+        AssertionError: expected exactly one line starting "Items 10 to 18 are
+        not the owner's rulings.", found 0
+        assert 0 == 1
+        +  where 0 = len([])
+
+    RED under the code mutant "engine.IDLE_STOP_FINISH_S = 120.0" (rebound in
+    the test process):
+
+        AssertionError: owner list item 14 must say: '`IDLE_STOP_FINISH_S` (120
+        s)'
+        assert False
+
+    RED under the code mutant "resume_arm.NO_LIGHT_RETRY_S = 1800.0" (rebound
+    in the test process):
+
+        AssertionError: owner list item 17 must say: '`NO_LIGHT_RETRY_S` (30
+        min)'
+        assert False
+
+    RED under the code mutant "tonight.MOVING_KINDS without satellites"
+    (rebound in the test process):
+
+        AssertionError: tonight.MOVING_KINDS no longer holds satellites; owner
+        list item 18 says a satellite counts as a moving body
+        assert 'satellite' in frozenset({'comet', 'solar_system'})
+    """
+    from astrodeck.flows import tonight
+    from astrodeck.solve import light
+    owner = _section("Still")
+    for item, (ruling, issue) in _H3_RULINGS.items():
+        line = _line(owner, f"{item}. ")
+        labelled = line.startswith(f"{item}. **H3 orchestrator ruling "
+                                   f"{ruling}:")
+        assert labelled, (f"owner list item {item} must record H3 "
+                          f"orchestrator ruling {ruling}, labelled as the "
+                          f"orchestrator's")
+        _says(line, ("Binding until the owner overturns it.",)
+              + ((issue,) if issue else ()), f"owner list item {item}")
+    note = _line(owner, "Items 10 to 18 are not the owner's rulings.")
+    h3 = {ruling for ruling, _issue in _H3_RULINGS.values()}
+    revision_2 = {int(m.group(1)) for m in re.finditer(
+        r"^### Ruling (\d+):", _spec(), re.MULTILINE)}
+    both = sorted(h3 & set(_H2_RULINGS.values()))
+    assert h3 <= revision_2 and both == [1, 2, 8, 9], (
+        f"premise: every H3 number is one of Revision 2's, and H3 shares "
+        f"{both} with H2")
+    _says(note, ("binding until the owner overturns it", "(Revision 5)",
+                 "not Revision 2's numbering, nor H2's",
+                 "H2 orchestrator rulings "
+                 f"{', '.join(map(str, both[:-1]))} and {both[-1]}"),
+          "the note on items 10 to 18")
+    finish = f"`IDLE_STOP_FINISH_S` ({engine_mod.IDLE_STOP_FINISH_S:g} s)"
+    bound = (f"`ADOPT_MAX_SEPARATION_ARCMIN` "
+             f"({continuation.ADOPT_MAX_SEPARATION_ARCMIN:g} arcmin)")
+    retry = (f"`RETRY_INTERVAL_S` "
+             f"({resume_arm_mod.RETRY_INTERVAL_S / 60:g} min)")
+    hourly = (f"`NO_LIGHT_RETRY_S` "
+              f"({resume_arm_mod.NO_LIGHT_RETRY_S / 60:g} min)")
+    for item, phrases in (
+            (10, ("`hold.site_detail`", "`CAP_VIEW_SITE_DERIVED`")),
+            (11, ("`setdefault`",)),
+            (12, ("`SlewRefused`", "(P0-2)")),
+            (13, ("`_setup_target`",)),
+            (14, (finish,)),
+            (15, ("`_mount_stopped_since`",)),
+            (16, (bound,)),
+            (17, (retry, hourly, f'"{light.NO_LIGHT_WORDS}"',
+                  "`solve/light.py`")),
+            (18, ("`tonight.MOVING_KINDS`", "satellite"))):
+        _says(_line(owner, f"{item}. "), phrases, f"owner list item {item}")
+    assert "satellite" in tonight.MOVING_KINDS, (
+        "tonight.MOVING_KINDS no longer holds satellites; owner list item 18 "
+        "says a satellite counts as a moving body")
+
+
+# ------------------------------------------------ 5.7, the pre-flip record
+
+def test_5_7_says_the_pre_flip_record_is_kept_all_run_and_the_engine_does():
+    """5.7 says the pre-flip side is written with ``setdefault`` only and
+    kept all run, a flip included (#237, H3 orchestrator ruling 2): at the
+    first sighting east of the meridian, or by a flip the flip gate measured
+    before any sighting (the #222 case), and cleared at run start and
+    nowhere else. The engine writes ``_pre_flip_side`` in exactly two ways:
+    a ``setdefault``, in ``_enforce_flip_owed`` and ``_maybe_meridian_flip``,
+    and a whole new dict in ``__init__`` and ``start``. Nothing pops,
+    deletes, assigns an item, clears or updates it, and H2's closed-cycle
+    mark is gone.
+
+    Mutants: the spec in place from a byte backup; engine.py in place from a
+    byte backup; each restored byte-identical (sha256 compared) afterwards.
+
+    RED under mutant "drop the record paragraph from 5.7":
+
+        AssertionError: expected exactly one line starting '**The record is
+        kept all run**', found 0
+        assert 0 == 1
+        +  where 0 = len([])
+
+    RED under the engine mutant "the flip gate clears the record again"
+    (``self._pre_flip_side.pop(key, None)`` after its setdefault):
+
+        AssertionError: _pre_flip_side is written by {'rebind': ['__init__',
+        'start'], 'setdefault': ['_enforce_flip_owed', '_maybe_meridian_flip'],
+        'pop': ['_maybe_meridian_flip']}; 5.7 says only a setdefault in
+        _enforce_flip_owed and _maybe_meridian_flip writes it, and only run
+        start clears it (#237)
+        assert {'pop': ['_ma...ridian_flip']} == {'rebind': ['...ridian_flip']}
+        Omitting 2 identical items, use -vv to show
+        Left contains 1 more item:
+        {'pop': ['_maybe_meridian_flip']}
+        Use -v to get more diff
+
+    RED under the engine mutant "a sighting refreshes the record"
+    (``_enforce_flip_owed``'s setdefault made ``self._pre_flip_side[key] =
+    side``):
+
+        AssertionError: _pre_flip_side is written by {'rebind': ['__init__',
+        'start'], 'setdefault': ['_maybe_meridian_flip'], 'item':
+        ['_enforce_flip_owed']}; 5.7 says only a setdefault in
+        _enforce_flip_owed and _maybe_meridian_flip writes it, and only run
+        start clears it (#237)
+        assert {'item': ['_e...ridian_flip']} == {'rebind': ['...ridian_flip']}
+        Omitting 1 identical items, use -vv to show
+        Differing items:
+        {'setdefault': ['_maybe_meridian_flip']} != {'setdefault':
+        ['_enforce_flip_owed', '_maybe_meridian_flip']}
+        Left contains 1 more item:
+        {'item': ['_enforce_flip_owed']}
+    """
+    text = _section("5.7")
+    record = _line(text, "**The record is kept all run**")
+    _says(record, ("(#237, H3 orchestrator ruling 2)", "`setdefault`",
+                   "`_enforce_flip_owed`", "`_maybe_meridian_flip`",
+                   "#222", "a flip included",
+                   "cleared at run start and nowhere else"), "5.7")
+    engine_src = inspect.getsource(engine_mod)
+    assert "_flip_cycle_closed" not in engine_src, (
+        "engine.py has a closed-cycle mark again; 5.7 says nothing marks a "
+        "target so its record is not written again (#237)")
+    # One parse of the module, every method of the class by name: a write
+    # is booked to the method it is written in.
+    module = ast.parse(engine_src)
+    cls = [n for n in module.body if isinstance(n, ast.ClassDef)
+           and n.name == "SequenceEngine"]
+    assert len(cls) == 1
+    writers: dict[str, list[str]] = {}
+    for fn in cls[0].body:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        name = fn.name
+        for n in ast.walk(fn):
+            use = None
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and isinstance(n.func.value, ast.Attribute)
+                    and n.func.value.attr == "_pre_flip_side"
+                    and n.func.attr != "get"):
+                use = n.func.attr
+            elif isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign,
+                                ast.Delete)):
+                targets = (n.targets if isinstance(n, (ast.Assign, ast.Delete))
+                           else [n.target])
+                for t in targets:
+                    if (isinstance(t, ast.Attribute)
+                            and t.attr == "_pre_flip_side"):
+                        use = "rebind"
+                    elif (isinstance(t, ast.Subscript)
+                          and isinstance(t.value, ast.Attribute)
+                          and t.value.attr == "_pre_flip_side"):
+                        use = "item"
+            if use is not None:
+                writers.setdefault(use, []).append(name)
+    found = {k: sorted(v) for k, v in writers.items()}
+    assert found == {"setdefault": ["_enforce_flip_owed",
+                                    "_maybe_meridian_flip"],
+                     "rebind": ["__init__", "start"]}, (
+        f"_pre_flip_side is written by {found}; 5.7 says only a setdefault "
+        f"in _enforce_flip_owed and _maybe_meridian_flip writes it, and "
+        f"only run start clears it (#237)")
+
+
+# ------------------------------------ 6.9, a resume-arm hold's numbers
+
+def test_6_9_says_hold_lines_are_words_and_the_route_withholds_the_numbers():
+    """6.9 says the resume-arm hold's reason and the engine's hold,
+    idle-watch and flip-watch lines are words (#233, H3 orchestrator ruling
+    1); that ``GET /api/sequence/resume-arm`` carries the numbers in
+    ``hold.site_detail``, which ``_redact_resume_arm_for`` removes, absent
+    and not null, for a principal without ``CAP_VIEW_SITE_DERIVED``; that
+    the slew gate's numbers ride ``SlewRefused.site_detail``; that no log
+    line keeps them; and that the flip-point detail no longer counts its
+    minutes. The code: the route passes its payload through the redactor; a
+    viewer, and no principal at all, get the hold without ``site_detail``
+    and an operator with it, while the service's own hold keeps it; the
+    gate's refusal and its verdict carry ``site_detail``; and every detail
+    ``_wait_for_flip_point`` publishes is a constant.
+
+    Mutants: the spec in place from a byte backup; code rebound in the test
+    process only (a pytest plugin); engine.py in place from a byte backup;
+    each restored byte-identical (sha256 compared) afterwards.
+
+    RED under mutant "6.9 without the #233 sentence":
+
+        AssertionError: 6.9 must say: '(H3, #233, H3 orchestrator ruling 1)'
+        assert False
+
+    RED under mutant "6.9 back to 'The night log file keeps everything.'":
+
+        AssertionError: 6.9 still says 'The night log file keeps everything.';
+        since H3 (#233) it is not so
+        assert not True
+
+    RED under the code mutant "the redactor passes site_detail to anyone"
+    (``_redact_resume_arm_for`` rebound to return its payload):
+
+        AssertionError: hold.site_detail reaches {'viewer': True, 'nobody':
+        True, 'operator': True}; 6.9 says only a holder of
+        CAP_VIEW_SITE_DERIVED reads it
+        assert {'nobody': Tr...viewer': True} == {'nobody': Fa...iewer': False}
+        Omitting 1 identical items, use -vv to show
+        Differing items:
+        {'nobody': True} != {'nobody': False}
+        {'viewer': True} != {'viewer': False}
+        Use -v to get more diff
+
+    RED under the code mutant "the redactor strips the live hold" (rebound to
+    pop ``site_detail`` from the hold it was handed):
+
+        AssertionError: hold.site_detail reaches {'viewer': False, 'nobody':
+        False, 'operator': False}; 6.9 says only a holder of
+        CAP_VIEW_SITE_DERIVED reads it
+        assert {'nobody': Fa...iewer': False} == {'nobody': Fa...iewer': False}
+        Omitting 2 identical items, use -vv to show
+        Differing items:
+        {'operator': False} != {'operator': True}
+        Use -v to get more diff
+
+    RED under the app.py mutant "the route skips the redactor":
+
+        AssertionError: GET /api/sequence/resume-arm no longer passes its
+        payload through _redact_resume_arm_for; 6.9 says it withholds
+        site_detail
+        assert []
+        +  where [] = _calls(<ast.AsyncFunctionDef object at
+        0x0000022322ED9710>, '_redact_resume_arm_for')
+
+    RED under the engine mutant "the flip-point detail counts minutes again"
+    (its constant made an f-string):
+
+        AssertionError: _wait_for_flip_point publishes a computed detail
+        (["f'holding for the meridian flip point ({0:.0f} min)'"]); 6.9 says
+        the flip-point detail no longer carries its minutes
+        assert ([<ast.Call object at 0x000002B3297FA810>] and ["f'holding
+        f...0:.0f} min)'"] == []
+        Left contains one more item: "f'holding for the meridian flip point
+        ({0:.0f} min)'"
+        Use -v to get more diff)
+
+    AND RESUMEARM FILES THE GATE'S NUMBERS (H3 integration, the T11
+    verifier's required follow-up). 6.9 said ResumeArm filed the gate's
+    message, now words, as a slew-limit hold's detail, which gave an
+    operator the words twice and the numbers never; ``_recover`` now files
+    ``SlewRefused.site_detail`` and 6.9 says so.
+
+    RED under mutant "6.9 back to 'files the gate's message, now words'"
+    (the spec in place from a byte backup):
+
+        AssertionError: 6.9 must say: "ResumeArm files them as a slew-limit hold's `hold.site_detail`"
+        assert False
+
+    RED under the resume_arm.py mutant "the limits branch files the words"
+    (``getattr(e, "site_detail", None) or str(e)`` made ``str(e)``, in a
+    scratch copy of the tree):
+
+        AssertionError: ResumeArm._recover no longer reads the refusal's site_detail; 6.9 says ResumeArm files the gate's numbers as a slew-limit hold's hold.site_detail
+        assert []
+    """
+    from astrodeck.api import redact as redact_mod
+    from astrodeck.auth.capabilities import CAP_VIEW_SITE_DERIVED
+    from astrodeck.auth.principal import principal_for_role
+    row = _line(_spec(), "| 6.9 |")
+    _says(row, ("(H3, #233, H3 orchestrator ruling 1)", "`hold.site_detail`",
+                "`_redact_resume_arm_for`", "absent, not null",
+                "`CAP_VIEW_SITE_DERIVED`", "`SlewRefused.site_detail`",
+                "test_resume_arm_hold_is_site_free.py",
+                "test_engine_logs_carry_no_site_numbers.py",
+                "no longer carries its minutes",
+                "ResumeArm files them as a slew-limit hold's "
+                "`hold.site_detail`"), "6.9")
+    for stale in ('"holding for the meridian flip point (N min)"',
+                  "The night log file keeps everything.",
+                  "ResumeArm files the gate's message, now words"):
+        kept = stale in row
+        assert not kept, (f"6.9 still says {stale!r}; since H3 (#233) it is "
+                          f"not so")
+    hold = {"reason": "M42 is below its start floor; not slewing yet",
+            "site_detail": "M42 is at A deg, below its F deg start floor"}
+    payload = {"armed": None, "hold": hold, "recovering": False,
+               "recovery": None}
+    viewer, operator = (principal_for_role(r) for r in ("viewer", "operator"))
+    ruled = (not viewer.has(CAP_VIEW_SITE_DERIVED)
+             and operator.has(CAP_VIEW_SITE_DERIVED))
+    assert ruled, ("premise: the owner's ruling of 2026-09-22 gives an "
+                   "operator the site-derived view and a viewer not")
+    seen = {who: redact_mod._redact_resume_arm_for(payload, p)["hold"]
+            for who, p in (("viewer", viewer), ("nobody", None),
+                           ("operator", operator))}
+    kept = {who: "site_detail" in h for who, h in seen.items()}
+    assert kept == {"viewer": False, "nobody": False, "operator": True}, (
+        f"hold.site_detail reaches {kept}; 6.9 says only a holder of "
+        f"CAP_VIEW_SITE_DERIVED reads it")
+    assert seen["viewer"]["reason"] == hold["reason"] and "site_detail" in hold
+    route = _app_def("sequence_resume_arm")
+    assert _calls(route, "_redact_resume_arm_for"), (
+        "GET /api/sequence/resume-arm no longer passes its payload through "
+        "_redact_resume_arm_for; 6.9 says it withholds site_detail")
+    refused = engine_mod.SlewRefused("words", words="words",
+                                     site_detail="numbers")
+    assert (refused.site_detail == "numbers"
+            and "site_detail" in engine_mod.LimitVerdict._fields)
+    filed = [c for c in _calls(_tree(ResumeArm._recover), "getattr")
+             if len(c.args) >= 2 and isinstance(c.args[1], ast.Constant)
+             and c.args[1].value == "site_detail"]
+    assert filed, (
+        "ResumeArm._recover no longer reads the refusal's site_detail; 6.9 "
+        "says ResumeArm files the gate's numbers as a slew-limit hold's "
+        "hold.site_detail")
+    flip = [c for c in _self_calls(_tree(SequenceEngine._wait_for_flip_point),
+                                   "_set_state")
+            if _keyword_node(c, "detail") is not None]
+    counted = [ast.unparse(_keyword_node(c, "detail")) for c in flip
+               if not isinstance(_keyword_node(c, "detail"), ast.Constant)]
+    assert flip and counted == [], (
+        f"_wait_for_flip_point publishes a computed detail ({counted}); 6.9 "
+        f"says the flip-point detail no longer carries its minutes")
+
+
+# ------------------------------------------ 5.9, the no-light backoff
+
+def test_5_9_says_a_no_light_solve_backs_off_and_resume_arm_does(monkeypatch):
+    """5.9 says a recovery solve that finds no light backs off (#251, H3
+    orchestrator ruling 8): the classifier in ``solve/light.py`` judges a
+    failed solve frame by its light level; on a no-light verdict ResumeArm
+    holds in words, sends one alert per session per spell, and retries once
+    after ``RETRY_INTERVAL_S`` and then every ``NO_LIGHT_RETRY_S`` (both
+    taken from ``resume_arm``); with no reference the frame gets no verdict
+    (#262). ``ResumeArm._no_light_backoff`` answers the first retry, then
+    the hourly one, and says the alert once, as an error line (the level a
+    default alert sink delivers); ResumeArm branches on ``NoLightError``,
+    the type, which is a ``FailedSolveError``.
+
+    Mutants: the spec in place from a byte backup; code rebound in the test
+    process only (a pytest plugin).
+
+    RED under mutant "5.9 without the no-light sentence":
+
+        AssertionError: 5.9 must say: '**A recovery solve that finds no light
+        backs off** (#251, H3 orchestrator ruling 8)'
+        assert False
+
+    RED under the code mutant "resume_arm.NO_LIGHT_RETRY_S = 1800.0" (rebound
+    in the test process):
+
+        AssertionError: 5.9 must say: '`NO_LIGHT_RETRY_S` (30 min)'
+        assert False
+
+    RED under the code mutant "no backoff" (``ResumeArm._no_light_backoff``
+    rebound to answer RETRY_INTERVAL_S):
+
+        AssertionError: a no-light spell waits [600.0, 600.0, 600.0]; 5.9 says
+        one retry after RETRY_INTERVAL_S, then every NO_LIGHT_RETRY_S
+        assert [600.0, 600.0, 600.0] == [600.0, 3600.0, 3600.0]
+        At index 1 diff: 600.0 != 3600.0
+        Use -v to get more diff
+
+    RED under the code mutant "an alert on every retry" (``_no_light_backoff``
+    rebound to say the alert each time):
+
+        AssertionError: a no-light spell said its alert as ['error', 'error',
+        'error', 'error']; 5.9 says one alert per session per spell
+        assert ['error', 'er...ror', 'error'] == ['error']
+        Left contains 3 more items, first extra item: 'error'
+        Use -v to get more diff
+    """
+    from astrodeck.solve import light
+    s59 = _section("5.9")
+    retry = (f"`RETRY_INTERVAL_S` "
+             f"({resume_arm_mod.RETRY_INTERVAL_S / 60:g} min)")
+    hourly = (f"`NO_LIGHT_RETRY_S` "
+              f"({resume_arm_mod.NO_LIGHT_RETRY_S / 60:g} min)")
+    _says(s59, ("**A recovery solve that finds no light backs off** (#251, "
+                "H3 orchestrator ruling 8)", "`solve/light.py`", retry,
+                hourly, "one alert per session per spell", "#262",
+                f'"{light.NO_LIGHT_WORDS}"'), "5.9")
+    said: list[tuple[str, str]] = []
+    monkeypatch.setattr(resume_arm_mod.bus, "log",
+                        lambda level, msg, *a, **k: said.append((level, msg)))
+    arm = object.__new__(ResumeArm)
+    arm._no_light_spell = None
+    session = SimpleNamespace(id="s1", name="claims")
+    waits = [arm._no_light_backoff(session) for _ in range(3)]
+    assert waits == [resume_arm_mod.RETRY_INTERVAL_S,
+                     resume_arm_mod.NO_LIGHT_RETRY_S,
+                     resume_arm_mod.NO_LIGHT_RETRY_S], (
+        f"a no-light spell waits {waits}; 5.9 says one retry after "
+        f"RETRY_INTERVAL_S, then every NO_LIGHT_RETRY_S")
+    alerts = [lvl for lvl, msg in said if light.NO_LIGHT_WORDS in msg]
+    assert alerts == ["error"], (
+        f"a no-light spell said its alert as {alerts}; 5.9 says one alert "
+        f"per session per spell")
+    caught = [h for t in ast.walk(ast.parse(inspect.getsource(resume_arm_mod)))
+              if isinstance(t, ast.Try) for h in _handlers(t, "NoLightError")]
+    assert caught and issubclass(light.NoLightError, light.FailedSolveError), (
+        "ResumeArm no longer branches on NoLightError by type; 5.9 says the "
+        "ladder acts on the no-light verdict")
+
+
+# ------------------------------------------ #239, the rulings code cites
+
+#: A ruling cited by its label: the owner's (Revision 2's "### Ruling N"),
+#: or an orchestrator's (the owner list's "**H2 orchestrator ruling N:" or
+#: "**H3 orchestrator ruling N:"). ``issues`` is the run of issue numbers
+#: written just before the label in the same parenthesis, "(#224, #225,
+#: owner ruling 2 ...)", which is what the entry must be about.
+_CITE = re.compile(
+    r"(?P<issues>(?:#\d+[,;] ?)*)"
+    r"(?<![\w'])(?P<whose>[Oo]wner|H2 orchestrator|H3 orchestrator) "
+    r"rulings? (?P<nums>\d+(?:(?:, and |, | and )\d+)*)\b")
+#: Where a citation says which owner-list item records it.
+_ITEM = re.compile(r'[ ,;(]*(?:spec[ ,;]*)?"?(?:Still waiting on the owner'
+                   r'|owner list)"?[ ,;]*items? (?P<items>\d+(?:(?:, and |, '
+                   r'| and )\d+)*)')
+#: Labels no document defines: a round's own item and A numbering. "A6"
+#: already means #189 A6, the S1 hardening round's step-id spelling (3.3).
+_UNDEFINED = re.compile(r"\bH\d+ (?:A\d+|items? \d+)\b")
+#: A ruling cited by number without whose it is.
+_UNOWNED = re.compile(r"(?:\bH\d+|#\d+|\bmosaic spec|\bspec) rulings? \d+")
+
+
+def _prose(path: Path) -> str:
+    """``path``'s text with each line break, and the indent and comment
+    marker after it, made one space, and adjacent string literals joined,
+    so a citation wrapped across lines or literals reads as one phrase. A
+    ``#`` followed by a digit is an issue number and is kept."""
+    text = re.sub(r"[ \t]*\r?\n[ \t]*(?:#:?[ \t]+)?", " ",
+                  path.read_text(encoding="utf-8"))
+    return re.sub(r'"\s*f?"', "", text)
+
+
+def _ruling_entries() -> dict[tuple[str, int], tuple[str, int | None]]:
+    """(whose, N) -> (the text of the spec's entry, its owner-list item, or
+    None for an owner's ruling)."""
+    entries: dict[tuple[str, int], tuple[str, int | None]] = {}
+    for line in _section("Still").splitlines():
+        m = re.match(r"(\d+)\. \*\*(H[23] orchestrator) ruling (\d+):", line)
+        if m:
+            key = (m.group(2), int(m.group(3)))
+            assert key not in entries, f"the owner list records {key} twice"
+            entries[key] = (line, int(m.group(1)))
+    blocks = _blocks()
+    rev2 = [text for name, text in blocks if name.startswith("Revision 2")]
+    rows = {r[0]: " | ".join(r) for r in _rows(rev2[0])}
+    for name, text in blocks:
+        m = re.match(r"Ruling (\d+):", name)
+        if m:
+            entries[("owner", int(m.group(1)))] = (
+                f"{name}\n{text}\n{rows.get(m.group(1), '')}", None)
+    return entries
+
+
+def test_every_ruling_the_server_cites_is_the_spec_entry_it_names():
+    """#239: engine.py cited H2's orchestrator rulings as "owner ruling 1"
+    and "owner ruling 2 of 2026-09-24", numbers the spec gives to the
+    owner's own rulings on other subjects, and other modules and tests used
+    labels no document defines ("H2 A6", "H2 item 13"). A reader who follows
+    such a citation lands on the wrong ruling, or on nothing.
+
+    So every "owner ruling N", "H2 orchestrator ruling N" and "H3
+    orchestrator ruling N" under server/astrodeck and server/tests must
+    resolve to a spec entry with that label and that attribution: an owner
+    list item that opens with that label for an orchestrator's, Revision 2's
+    "### Ruling N" for the owner's. Where issue numbers stand just before
+    the label, the entry must name one of them, which is what catches a
+    label that resolves to an entry on another subject (the #239 case,
+    whose issues #224 and #225 Revision 2's Ruling 2 never names). Where the
+    citation names its owner-list item, the ruling must be that item. And
+    no round-internal label ("H2 A6", "H2 item 13") and no ruling cited
+    without whose it is ("mosaic spec ruling 12", "#189 rulings 1 and 2")
+    remains.
+
+    This file is not scanned: its docstrings quote the mutants below, which
+    are citations that must not resolve. Issue numbers themselves cannot be
+    checked offline (#239's second comment records two tests citing #233
+    for an earlier numbering); this checks rulings only.
+
+    Mutants in place on engine.py from a byte backup, restored
+    byte-identical (sha256 compared) after each.
+
+    RED under the engine mutant "re-add 'owner ruling 2 of 2026-09-24' to
+    engine.py" (``_hold_for_clear``'s docstring as #239 found it):
+
+        AssertionError: astrodeck/sequence/engine.py: '#224, #225, owner ruling
+        2' cites owner ruling 2 beside ['#224', '#225'], and the spec's entry
+        names none of them
+        assert ['astrodeck/s...none of them'] == []
+        Left contains one more item: "astrodeck/sequence/engine.py: '#224,
+        #225, owner ruling 2' cites owner ruling 2 beside ['#224', '#225'], and
+        the spec's entry names none of them"
+        Use -v to get more diff
+
+    RED under the engine mutant "re-add 'H2 A6'" (``_run``'s cooling-wait
+    comment as #239 found it):
+
+        AssertionError: astrodeck/sequence/engine.py: 'H2 A6' is a label no
+        document defines
+        assert ['astrodeck/s...ment defines'] == []
+        Left contains one more item: "astrodeck/sequence/engine.py: 'H2 A6' is
+        a label no document defines"
+        Use -v to get more diff
+
+    RED under the engine mutant "cite 'H3 orchestrator ruling 10'" (the
+    ``_acquisition_behind_gate`` comment):
+
+        AssertionError: astrodeck/sequence/engine.py: '#241, H3 orchestrator
+        ruling 10' names no H3 orchestrator ruling 10 the spec records
+        assert ['astrodeck/s...spec records'] == []
+        Left contains one more item: "astrodeck/sequence/engine.py: '#241, H3
+        orchestrator ruling 10' names no H3 orchestrator ruling 10 the spec
+        records"
+        Use -v to get more diff
+
+    RED under the engine mutant "a citation at the wrong item"
+    (``IDLE_STOP_FINISH_S``'s comment placing ruling 5 at item 13):
+
+        AssertionError: astrodeck/sequence/engine.py: '#247; H3 orchestrator
+        ruling 5' places H3 orchestrator ruling 5 at owner list item 13; the
+        spec records it as item 14
+        assert ['astrodeck/s...t as item 14'] == []
+        Left contains one more item: "astrodeck/sequence/engine.py: '#247; H3
+        orchestrator ruling 5' places H3 orchestrator ruling 5 at owner list
+        item 13; the spec records it as item 14"
+        Use -v to get more diff
+
+    Unchanged under the control "a correct citation added" (``_run``'s
+    comment citing "#240, H3 orchestrator ruling 3, spec "Still waiting
+    on the owner" item 12", wrapped over three comment lines): 1
+    passed.
+    """
+    entries = _ruling_entries()
+    # Premise: the spec's entries were read, all three kinds of them.
+    assert {("owner", 2), ("H2 orchestrator", 2), ("H2 orchestrator", 12),
+            ("H3 orchestrator", 1), ("H3 orchestrator", 9)} <= set(entries)
+    here = Path(__file__).resolve()
+    problems: list[str] = []
+    found: set[tuple[str, str, int]] = set()
+    for root in (_SERVER / "astrodeck", _SERVER / "tests"):
+        for path in sorted(root.rglob("*.py")):
+            if path.resolve() == here:
+                continue
+            rel = path.relative_to(_SERVER).as_posix()
+            text = _prose(path)
+            for m in _CITE.finditer(text):
+                whose = ("owner" if m.group("whose").lower() == "owner"
+                         else m.group("whose"))
+                nums = [int(n) for n in re.findall(r"\d+", m.group("nums"))]
+                issues = re.findall(r"#\d+", m.group("issues"))
+                im = _ITEM.match(text, m.end())
+                items = ([int(n) for n in re.findall(r"\d+",
+                                                     im.group("items"))]
+                         if im else [])
+                cite = f"{rel}: {m.group(0).strip()!r}"
+                for i, n in enumerate(nums):
+                    found.add((rel, whose, n))
+                    entry = entries.get((whose, n))
+                    if entry is None:
+                        problems.append(f"{cite} names no {whose} ruling {n} "
+                                        f"the spec records")
+                        continue
+                    body, item = entry
+                    if issues and not any(re.search(rf"{iss}(?!\d)", body)
+                                          for iss in issues):
+                        problems.append(
+                            f"{cite} cites {whose} ruling {n} beside "
+                            f"{issues}, and the spec's entry names none of "
+                            f"them")
+                    if (len(items) == len(nums) and item is not None
+                            and items[i] != item):
+                        problems.append(
+                            f"{cite} places {whose} ruling {n} at owner list "
+                            f"item {items[i]}; the spec records it as item "
+                            f"{item}")
+            for pattern, why in ((_UNDEFINED, "a label no document defines"),
+                                 (_UNOWNED, "a ruling cited without whose it "
+                                            "is")):
+                problems += [f"{rel}: {m.group(0)!r} is {why}"
+                             for m in pattern.finditer(text)]
+    # Premise: the scan reads wrapped citations; this one is wrapped in
+    # engine.py (the IDLE_STOP_FINISH_S comment) and in resume_arm.py.
+    assert {("astrodeck/sequence/engine.py", "H3 orchestrator", 5),
+            ("astrodeck/sequence/resume_arm.py", "H3 orchestrator", 1),
+            ("astrodeck/sequence/engine.py", "H2 orchestrator", 2)} <= found
+    assert problems == [], "\n".join(problems)
 
 
 # ------------------------------------------------- Revision 4 and the status
@@ -1943,6 +3437,29 @@ def _where(cell: str) -> set[str]:
 
 
 _H2 = re.compile(r"\bH2\b")
+_H3 = re.compile(r"\bH3\b")
+
+
+def _carried(round_mark: re.Pattern) -> set[str]:
+    """The sections whose text names a round (``round_mark``): every
+    heading's text, and every row of the section 6 table, that says it. The
+    revision records themselves are not sections, so they are skipped: a
+    later revision names the round before it (Revision 5's preamble names
+    Revision 4's rows, which record H2), and that is no edit of the body."""
+    carried: set[str] = set()
+    for name, text in _blocks():
+        if re.match(r"Revision \d+\b", name):
+            continue
+        if name.startswith("6. "):
+            stray = [ln for ln in text.splitlines()
+                     if round_mark.search(ln) and not ln.startswith("| 6.")]
+            assert stray == [], (f"section 6 carries {round_mark.pattern} "
+                                 f"text outside its rows")
+            carried |= {ln.split("|")[1].strip() for ln in text.splitlines()
+                        if ln.startswith("| 6.") and round_mark.search(ln)}
+        elif round_mark.search(text):
+            carried.add(_label(name))
+    return carried
 
 
 def test_revision_4_lists_every_section_h2_edited():
@@ -1953,6 +3470,11 @@ def test_revision_4_lists_every_section_h2_edited():
     so does a row whose section carries none. Its preamble names the rows
     of Revision 3 that its own rows supersede, computed here from the two
     tables.
+
+    SINCE H3 the scan skips every revision record (``_carried``), not only
+    Revision 4: Revision 5's preamble names the H2 rows it supersedes, and
+    a revision record is not a section of the body. Both mutants below were
+    run again on the H3 code and are still RED with the same failure.
 
     Mutants as in the tests above.
 
@@ -1981,18 +3503,7 @@ def test_revision_4_lists_every_section_h2_edited():
     assert len(rev4) == 1, "the spec must have one Revision 4"
     rows = _rows(rev4[0])
     listed = set().union(*(_where(r[1]) for r in rows))
-    carried: set[str] = set()
-    for name, text in blocks:
-        if name.startswith("Revision 4"):
-            continue
-        if name.startswith("6. "):
-            stray = [ln for ln in text.splitlines()
-                     if _H2.search(ln) and not ln.startswith("| 6.")]
-            assert stray == [], "section 6 carries H2 text outside its rows"
-            carried |= {ln.split("|")[1].strip() for ln in text.splitlines()
-                        if ln.startswith("| 6.") and _H2.search(ln)}
-        elif _H2.search(text):
-            carried.add(_label(name))
+    carried = _carried(_H2)
     # Premise: the scan finds the sections this round is known to have
     # edited, so an empty scan cannot agree with an empty table.
     assert {"3.3", "5.8", "5.9", "6.15", "6.17", "owner list"} <= carried
@@ -2010,6 +3521,71 @@ def test_revision_4_lists_every_section_h2_edited():
     assert said, f"Revision 4's preamble must say {named!r} are superseded"
 
 
+def test_revision_5_lists_every_section_h3_edited():
+    """Revision 5, "the third hardening round, H3", has one row per section
+    that carries H3's edits, and no other, by the same scan as Revision 4's
+    (``_carried``): every heading's text, and every row of the section 6
+    table, that says "H3" is listed, and every section listed says it. Its
+    rows are numbered from 1, and its preamble names the rows of Revision 4
+    that its own rows supersede, computed from the two tables.
+
+    Mutants as in the tests above.
+
+    RED under mutant "drop a Revision 5 row" (the 6.9 row):
+
+        AssertionError: Revision 5 lists ['5.7', '5.8', '5.9', '6.15', '6.17',
+        'owner list']; the sections carrying H3's edits are ['5.7', '5.8',
+        '5.9', '6.15', '6.17', '6.9', 'owner list']
+        assert ['5.7', '5.8'...', '6.9', ...] == ['5.7', '5.8'... 'owner list']
+        At index 5 diff: '6.9' != 'owner list'
+        Left contains one more item: 'owner list'
+        Use -v to get more diff
+
+    RED under mutant "an H3 edit in 5.10 with no Revision 5 row":
+
+        AssertionError: Revision 5 lists ['5.7', '5.8', '5.9', '6.15', '6.17',
+        '6.9', 'owner list']; the sections carrying H3's edits are ['5.10',
+        '5.7', '5.8', '5.9', '6.15', '6.17', '6.9', 'owner list']
+        assert ['5.10', '5.7..., '6.17', ...] == ['5.7', '5.8'...', '6.9', ...]
+        At index 0 diff: '5.10' != '5.7'
+        Left contains one more item: 'owner list'
+        Use -v to get more diff
+
+    RED under mutant "Revision 5's preamble without the rows it supersedes":
+
+        AssertionError: Revision 5's preamble must say "Revision 4's rows 2, 3,
+        4, 5 and 6" are superseded
+        assert False
+
+    Unchanged under the control "an unrelated edit in section 7"
+    (all 29 tests in this file passed on it).
+    """
+    blocks = _blocks()
+    rev5 = [(name, text) for name, text in blocks
+            if name.startswith("Revision 5")]
+    assert [name for name, _text in rev5] == [
+        "Revision 5 (the third hardening round, H3)"], (
+        "the spec must have one Revision 5, the third hardening round")
+    rows = _rows(rev5[0][1])
+    listed = set().union(*(_where(r[1]) for r in rows))
+    carried = _carried(_H3)
+    # Premise: the sections H3 is known to have edited are found.
+    assert {"5.7", "5.8", "5.9", "6.9", "6.15", "6.17",
+            "owner list"} <= carried
+    assert sorted(carried) == sorted(listed), (
+        f"Revision 5 lists {sorted(listed)}; the sections carrying H3's "
+        f"edits are {sorted(carried)}")
+    assert [r[0] for r in rows] == [str(i) for i in range(1, len(rows) + 1)]
+    rev4 = [text for name, text in blocks if name.startswith("Revision 4")]
+    superseded = [r[0] for r in _rows(rev4[0]) if _where(r[1]) & listed]
+    assert superseded == ["2", "3", "4", "5", "6"], superseded
+    preamble = _line(rev5[0][1], "2026-09-25. A third hardening round")
+    named = (f"Revision 4's rows {', '.join(superseded[:-1])} and "
+             f"{superseded[-1]}")
+    said = named in preamble
+    assert said, f"Revision 5's preamble must say {named!r} are superseded"
+
+
 def test_the_status_line_scopes_what_describes_the_code_as_built():
     """The status line said that wherever the body describes S0 and S1, it
     describes the code after the hardening round. Revision 3 edited the
@@ -2021,7 +3597,8 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
     elsewhere, and the Revision 3 preamble must not claim the whole body.
     Since H2 it names Revision 4 as well: the sections Revision 4 lists
     describe the code after H2, and those only Revision 3 lists are as H1
-    left them.
+    left them. Since H3, Revision 5 likewise: its sections describe the code
+    after H3, and those only Revision 4 lists are as H2 left them.
 
     Found by the spec-fidelity review of the hardening round. The mutants
     ran against a scratch copy of the spec, as in the tests above.
@@ -2043,6 +3620,13 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
 
         AssertionError: the status line must say: '(Revision 4)'
         assert False
+
+    Since H3 it names Revision 5 the same way.
+
+    RED under mutant "the status line without Revision 5":
+
+        AssertionError: the status line must say: '(Revision 5)'
+        assert False
     """
     status = _line(_spec(), "- Status:")
     blanket = "where the text below describes them, it describes the code" \
@@ -2054,7 +3638,10 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
     assert "before S0" in status
     _says(status, ("(Revision 4)", "The sections Revision 4 lists describe "
                    "the code as it stands after the second hardening round "
-                   "(H2)", "except in the sections Revision 4 lists too"),
+                   "(H2)", "except in the sections Revision 4 lists too",
+                   "(Revision 5)", "The sections Revision 5 lists describe "
+                   "the code as it stands after the third hardening round "
+                   "(H3)", "except in the sections Revision 5 lists too"),
           "the status line")
     preamble = _line(_spec(), "2026-09-24. S0 and S1 are built")
     whole = "brings the body in line" in preamble

@@ -248,8 +248,49 @@ def banked_hours_from_reports(reports: Iterable[Any],
 #: an ephemeris at the search's ``when``. Every other kind (``dso``, ``star``,
 #: ``coordinates``) is a fixed J2000 row. A kind this set does not name reads
 #: as fixed, so a new kind added to the catalogue keeps ADOPT's separation
-#: bound until someone decides it moves (``continuation.adopt_matches``).
+#: bound against tonight's target until someone decides it moves
+#: (``continuation.adopt_matches``). A satellite counts as a body (H3
+#: orchestrator ruling 9, spec, Still waiting on the owner, item 18): its old
+#: pointing is checked against its ephemeris at capture time like a planet's.
 MOVING_KINDS = frozenset({"solar_system", "comet", "satellite"})
+
+#: THE ONE INSTANT A NAME'S IDENTITY IS ASKED AT (#249): 2026-09-01T00:00:00
+#: UTC. ``catalog.objects.search`` ranks its hits by (rank, magnitude, id), and
+#: a body's magnitude is computed for the search's ``when``, so when a body and
+#: a fixed row share a name's best rank, WHICH one comes first can change
+#: between two instants. Asked at each caller's own instant, ``to_plan`` (the
+#: compile's), ``progress._single`` (now) and ADOPT could name one TARGET two
+#: objects: the card then read "nothing banked" against a live ledger, and two
+#: nights' compiles minted two sets of step ids. Asked here, every caller gets
+#: one answer, whatever its clock. The row's COORDINATES are still taken at
+#: the caller's ``when`` (``resolve_target``).
+#:
+#: A NAMED INSTANT, NOT A TIME-FREE TIE-BREAK. A tie-break inside a rank needs
+#: the rank, which the search does not return; building it again here would be
+#: a second copy of the catalogue's ranking. What a fixed instant must still
+#: do is place every kind of row, and a satellite is the one that stops: SGP4
+#: refuses an element set far from its epoch. Measured on the ISS element set
+#: ``tests/test_satellite_ephemeris.py`` pins (epoch 2026-09-10), SGP4
+#: propagates it about 5,870 days back and 3,680 days forward; at J2000 it
+#: refuses, and "ISS" then resolves to the star Meissa. So the instant sits
+#: at the element sets current when it was chosen, where that set places the
+#: ISS and 2P/Encke (``tests/test_flows_identity_one_when.py``), and
+#: ``_identity_row`` falls back to the caller's instant for a moving row this
+#: one cannot place, rather than let a name slide onto whatever else it
+#: matches. The one input left that can move a name's identity is the
+#: catalogue itself: an element-set refresh, or a site that makes satellites
+#: placeable at all.
+IDENTITY_WHEN = 1_788_220_800.0
+
+#: How many rows each of ``resolve_target``'s two searches keeps. The row a
+#: name is has the best rank at either instant, so at the caller's instant
+#: only rows of that rank can sort ahead of it: a body or a comet whose
+#: magnitude moved (satellites carry none), or, when the row is itself one,
+#: the rows its own magnitude fell behind. 100 is room for every body and
+#: comet the catalogue places beside it (comets are capped at 25 a search);
+#: a name whose best rank a hundred rows share is no TARGET's name, and
+#: there the row is no answer rather than a guess.
+_RESOLVE_ROWS = 100
 
 
 @dataclass(frozen=True)
@@ -267,17 +308,57 @@ class NameResolution:
     moves: bool
 
 
+def _row_key(row: dict) -> tuple:
+    """What makes two search rows one object: its kind, its trimmed id and,
+    for a satellite, its catalogue number (debris pieces share a name)."""
+    return (row.get("kind"), str(row.get("id") or "").strip(),
+            row.get("norad_id"))
+
+
+def _identity_row(at_when: list[dict], at_identity: list[dict]
+                  ) -> dict | None:
+    """The row a name IS, as it stands at the caller's instant, or None.
+
+    ``at_identity`` is the search at ``IDENTITY_WHEN`` and decides which row;
+    ``at_when`` is the search at the caller's ``when`` and supplies that row's
+    coordinates. None when the chosen row cannot be placed at ``when`` (a
+    body whose ephemeris failed there): the name's first hit at ``when`` is
+    then another object, and pointing at it would be the slide this exists
+    to stop.
+
+    A MOVING ROW THE SHARED INSTANT CANNOT PLACE IS DECIDED AT ``when``: a
+    satellite past its element set's SGP4 horizon is missing from
+    ``at_identity``, and the fixed instant's first hit is then something else
+    the name happens to match (``IDENTITY_WHEN``)."""
+    if not at_when:
+        return None
+    first = at_when[0]
+    if not at_identity or (
+            first.get("kind") in MOVING_KINDS
+            and _row_key(first) not in {_row_key(r) for r in at_identity}):
+        return first
+    want = _row_key(at_identity[0])
+    return next((r for r in at_when if _row_key(r) == want), None)
+
+
 def resolve_target(name: str, when: float | None = None
                    ) -> NameResolution | None:
     """Where, which and whether it moves, for a target NAME, from the shipped
-    catalogue's first hit at ``when``; None when the catalogue has no row.
+    catalogue; None when the catalogue has no row.
 
     THE ONE RESOLVER (#229). ``to_plan`` points a name-only TARGET with its
     coordinates and keys its ids on its ``identity``; ``progress._single``
     finds those ids again through the same ``identity``; ADOPT learns from
-    ``moves`` whether its separation bound can apply. Three callers asking one
-    function is what keeps "which object is this name" from being answered
-    two ways, as "M 31" and "M31" were when the key was the name as typed.
+    ``moves`` whether a name is a body, and where that body was at the
+    instants its frames were taken. Three callers asking one function is
+    what keeps "which object is this name" from being answered two ways, as
+    "M 31" and "M31" were when the key was the name as typed.
+
+    WHICH ROW AT ONE INSTANT, WHERE AT ``when`` (#249). The row is the
+    catalogue's first hit at ``IDENTITY_WHEN``, whatever ``when`` the caller
+    passes, so the compile, the card and ADOPT name one object; its
+    coordinates are that row's at ``when``, so a body is still pointed where
+    it is at the compile. ``_identity_row`` has the two exceptions.
 
     A row without an id cannot be keyed, so it is no answer: every kind the
     catalogue ships carries one (``catalog.objects.search``).
@@ -286,12 +367,14 @@ def resolve_target(name: str, when: float | None = None
     time), so a test that replaces it here replaces it for all three."""
     try:
         from ..catalog.objects import search
-        rows = search(str(name), limit=1, when=when).rows
+        at_when = search(str(name), limit=_RESOLVE_ROWS, when=when).rows
+        at_identity = at_when if when == IDENTITY_WHEN else search(
+            str(name), limit=_RESOLVE_ROWS, when=IDENTITY_WHEN).rows
     except Exception:       # noqa: BLE001 - a missing/broken catalogue means we
         return None         # do not know where this is, not a 500 for the panel
-    if not rows:
+    row = _identity_row(at_when, at_identity)
+    if row is None:
         return None
-    row = rows[0]
     try:
         ra_hours, dec_deg = float(row["ra_hours"]), float(row["dec_deg"])
         identity = str(row["id"]).strip()

@@ -208,6 +208,14 @@ function connectButton(): any {
   return buttons.find((b: any) => /connect rig|rig connected|reconnect rig/i.test(b.textContent || ""));
 }
 function label(): string { return (connectButton()?.textContent || "").trim(); }
+/** The Link Status rows for `role` printed as `word` (BackendLinkGrid). Found by
+ *  what they print: the grid's LEDs are unlabelled (#231), because the role and
+ *  the state word beside each one are its name. */
+const linkRows = (role: string, word: string): any[] =>
+  [...container.querySelectorAll(".led")]
+    .map((led: any) => led.parentElement)
+    .filter((row: any) => row?.querySelector(".label")?.textContent?.trim() === role
+      && [...row.querySelectorAll("span")].some((s: any) => s.textContent?.trim() === word));
 /** The per-role driver dropdowns only — the Tasks panel below renders its own
  *  <select>s, and counting those in would make a row assertion meaningless. */
 function driverSelects(): any[] {
@@ -487,7 +495,7 @@ test("externally connected equipment is not presented as a missing rig", () => {
   assert(!text.includes("No equipment yet"), "live device was described as no equipment");
   assert(!text.includes("No connection status available"), "live telemetry was ignored");
   assert(text.includes("1 equipment role is connected"), "rig actions must describe the live rig");
-  assert(container.querySelector('[aria-label="Camera: connected"]') != null,
+  assert(linkRows("Camera", "CONNECTED").length > 0,
     "Link Status must use device telemetry when attempt metadata is absent");
 });
 const postsBeforeStatusChange = posted.length;
@@ -498,7 +506,7 @@ act(() => {
   } } as never);
 });
 test("device-only status follows a disconnect without reconnecting equipment", () => {
-  assert(container.querySelector('[aria-label="Camera: disconnected"]') != null,
+  assert(linkRows("Camera", "DISCONNECTED").length > 0,
     "Link Status must clear its connected state when device telemetry goes down");
   assert(container.textContent.includes("No equipment yet"), "disconnected rig must offer setup again");
   assert(posted.length === postsBeforeStatusChange, "status updates must never reconnect hardware");
@@ -512,9 +520,9 @@ act(() => {
 });
 test("attempt errors and engine-only roles survive the device fallback", () => {
   assert(container.textContent.includes("Camera unplugged"), "connection error was lost");
-  assert(container.querySelectorAll('[aria-label="Camera: failed"]').length === 1,
+  assert(linkRows("Camera", "FAILED").length === 1,
     "device fallback must not duplicate a role with an attempt report");
-  assert(container.querySelector('[aria-label="Guiding: connected"]') != null,
+  assert(linkRows("Guiding", "CONNECTED").length > 0,
     "guider engine has no device record but still needs a status row");
 });
 

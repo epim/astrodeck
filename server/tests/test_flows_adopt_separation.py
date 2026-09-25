@@ -16,14 +16,17 @@ sky, by great circle, RA in hours. A match further apart is listed as
 unmatched, with the separation in its reason and in ``separation_arcmin``, and
 nothing is re-keyed.
 
-A MOVING BODY IS THE EXCEPTION (#229). A body leaves the 10 arcmin bound
-behind in days (median daily motion from the shipped ephemeris, sampled over
-two years from September 2026: Mars 39 arcmin, Jupiter 7.4, Neptune 1.4; the
-Moon some 13 deg), so the bound refused a pre-S1 session of one as soon as
-the body had moved on. A name the shared resolver (``tonight.resolve_target``)
-finds as a moving row is matched on its canonical body name, in any case, and
-the
-bound is not asked. Deep-sky names keep the bound and the name as typed.
+A MOVING BODY IS MEASURED WHERE IT WAS (#229, #234). A body leaves the 10
+arcmin bound behind in days (median daily motion from the shipped ephemeris,
+sampled over two years from September 2026: Mars 39 arcmin, Jupiter 7.4,
+Neptune 1.4; the Moon some 13 deg), so measured against tonight's target the
+bound refused a pre-S1 session of one as soon as the body had moved on. A
+name the shared resolver (``tonight.resolve_target``) finds as a moving row
+is matched on its canonical body name, in any case, and tonight's position
+is not compared; the old target is held to the bound against the body at the
+instants its frames were taken instead (H3 orchestrator ruling 7, whose own
+tests are ``test_flows_adopt_body_pointing.py``). So the body cases here
+carry capture times. Deep-sky names keep the bound and the name as typed.
 
 Every test names the mutation of ``flows/continuation.py`` (or of
 ``flows/tonight.py``, for the resolver) it guards and quotes the failure it
@@ -31,7 +34,9 @@ produced, run from a byte backup of the file and restored byte-identical
 after. The separation mutants below ("no coordinate check", "separation left
 in degrees", "RA read as degrees", "flat RA difference") were first run on the
 law of cosines, and run again after H2 moved the separation to the atan2 form:
-each failed the same tests with the same numbers. The existing ADOPT tests in
+each failed the same tests with the same numbers. "No coordinate check" and
+"'<=' to '<'" were run a third time on H3's restructured match (#234), and
+failed the same tests in the same way. The existing ADOPT tests in
 ``test_flows_continue.py`` all use sessions within 10 arcmin of their compile,
 and stay green.
 """
@@ -55,13 +60,20 @@ def _step(filt="L", exposure=60.0, **kw):
     return ExposureStep(filter=filt, exposure_s=exposure, count=5, **kw)
 
 
-def _session(ra, dec, steps, frames_on, *, name="M16"):
+#: When the body cases' frames were taken: 2026-09-10 04:00 UTC.
+CAPTURE_TS = 1_789_012_800.0
+
+
+def _session(ra, dec, steps, frames_on, *, name="M16", ts=0.0):
     """A pre-S1 session: one target named ``name`` at (``ra`` h, ``dec``
-    deg), uuid4 ids, and ``frames_on[i]`` frames on step ``i``."""
+    deg), uuid4 ids, and ``frames_on[i]`` frames on step ``i``, each taken
+    at ``ts`` on one night (0.0, never stamped, unless a case needs a
+    capture time)."""
     t = Target(name=name, ra_hours=ra, dec_deg=dec, steps=steps)
     s = Session(status="dormant", plan=SequencePlan(name="p", targets=[t]))
     for i, n in frames_on.items():
-        s.frames.extend(SessionFrame(target_id=t.id, step_id=steps[i].id)
+        s.frames.extend(SessionFrame(target_id=t.id, step_id=steps[i].id,
+                                     night="n1", ts=ts)
                         for _ in range(n))
     return s
 
@@ -399,12 +411,15 @@ class TestTheBoundIsInclusive:
 # ------------------------------------------------------- a moving body (#229)
 
 def _catalogue(name, when=None):
-    """A catalogue that knows two names, whatever their case: Jupiter, a
-    moving body, and M16, a fixed deep-sky row. Where it puts them is not
-    read by ADOPT; only the identity and ``moves`` are."""
-    rows = {"jupiter": NameResolution(ra_hours=5.0, dec_deg=22.0,
+    """A catalogue that knows three names, whatever their case: Jupiter and
+    Mars, moving bodies, and M16, a fixed deep-sky row. A body is at (5.0 h,
+    +20 deg), the old sessions' pointing, when their frames were taken
+    (``CAPTURE_TS``), and at (5.0 h, +22 deg), tonight's, at every other
+    instant; M16's position is never read."""
+    dec = 20.0 if when == CAPTURE_TS else 22.0
+    rows = {"jupiter": NameResolution(ra_hours=5.0, dec_deg=dec,
                                       identity="Jupiter", moves=True),
-            "mars": NameResolution(ra_hours=5.0, dec_deg=22.0,
+            "mars": NameResolution(ra_hours=5.0, dec_deg=dec,
                                    identity="Mars", moves=True),
             "m16": NameResolution(ra_hours=18.3, dec_deg=-13.8,
                                   identity="M16", moves=False)}
@@ -415,32 +430,37 @@ class TestAMovingBody:
     """A pre-S1 session of a planet or a comet is more than 10 arcmin from
     tonight's position once the body has moved on, which takes days
     (Jupiter's median daily motion is 7.4 arcmin), so the bound refused it
-    (#229). A body is matched on its canonical name instead, and the
-    bound is not asked; every fixed row keeps the bound and the name as
-    typed."""
+    (#229). A body is matched on its canonical name instead, and tonight's
+    position is not compared; the old target is held to the bound against
+    the body where it was when the frames were taken (#234). Every fixed row
+    keeps the bound and the name as typed."""
 
     def test_a_body_two_degrees_away_typed_in_another_case_maps(self):
-        """The session was shot as "jupiter" at (5.0 h, +20 deg); tonight's
-        "Jupiter" is at (5.0 h, +22 deg), 120 arcmin away. It is the same
-        body, so the frames are re-keyed.
+        """The session was shot as "jupiter" at (5.0 h, +20 deg), where
+        Jupiter was at the time; tonight's "Jupiter" is at (5.0 h, +22 deg),
+        120 arcmin away. It is the same body, so the frames are re-keyed.
 
-        Mutant "the bound applies to bodies" (``apart`` measured and compared
-        for every match, as H1 had it) failed:
-            AssertionError: assert {} == {'e472ac46899...81d1830e852')}
+        Mutant "the bound applies to bodies" (a body's old target measured
+        against tonight's target, as H1 had it, in place of ``_pointing``;
+        ``test_flows_adopt_body_pointing.py`` calls it "check against
+        tonight's ephemeris instead of capture time") failed, re-run on H3's
+        code with this case carrying its capture time:
+            AssertionError: assert {} == {'ffdc626d8f8...b01b126701f')}
               Right contains 1 more item:
-              {'e472ac46899b447a906abdf83d855c19': (
-                  'a077015cb2df4347bacf45b7ac5505c9',
-                  '337ccde11fbd456cb4b4681d1830e852')}
+              {'ffdc626d8f894674b7548b661519fdcc': (
+                  'db2bf22d650b4542835af3449625f143',
+                  '539a38cac417450d86d0cb01b126701f')}
         Mutant "a body is keyed on its name as typed" (``_step_key`` keys
         ``target.name`` whatever ``body`` is) failed:
-            AssertionError: assert {} == {'5a415ff065c...68ae50bc3d9')}
+            AssertionError: assert {} == {'baa3948aa93...ce60b3782ef')}
               Right contains 1 more item:
-              {'5a415ff065cd4a29b7a5bfc44eba1449': (
-                  '36d825091c1a4db8b2963e83dcd7f2e3',
-                  '5bd01b73b29a4d30a28be68ae50bc3d9')}
+              {'baa3948aa93240709b142cdea63300c0': (
+                  '55535882d5d1478fa5e61a4921be9ca4',
+                  'f3bab7b7c8c9403da896cce60b3782ef')}
         """
         old = _step("L")
-        s = _session(5.0, 20.0, [old], {0: 3}, name="jupiter")
+        s = _session(5.0, 20.0, [old], {0: 3}, name="jupiter",
+                     ts=CAPTURE_TS)
         plan = _plan(5.0, 22.0, _step("L"), name="Jupiter")
         apart = continuation._separation_arcmin(s.plan.targets[0],
                                                 plan.targets[0])
@@ -457,19 +477,20 @@ class TestAMovingBody:
         (the #190 case at the route stays green too:
         ``test_m31_frames_filed_as_m16_are_never_adopted_onto_m16``).
 
-        Mutant "every resolved name is a body" (``_bodies`` returns the
-        identity whether or not the row moves) failed:
-            AssertionError: assert {'9179cb99dcf...686e3891f37')} == {}
-              Left contains 1 more item:
-              {'9179cb99dcfb415cb6173a409aa71d07': (
-                  '3190717db41a47ffbc4cf22597fe21b6',
-                  '10d515771a97432dac09a686e3891f37')}
-        and so did seven other tests in this file whose names the shipped
-        catalogue resolves (every "M16" test beyond the bound), among them
-        the #190 route test:
-            AssertionError: {'frames': 3, 'matched': 3, 'session_id':
-            'f21324639c4645008ae0ac2f1213500d', 'unmatched': []}
-            assert (3 == 3 and 3 == 0)
+        Mutant "every resolved name is a body" (``_body`` returns the
+        identity whether or not the row moves) failed. Re-run on H3's code,
+        where a body is checked at its capture times and these frames carry
+        none, M16 is listed as unplaced instead of measured:
+            assert None == 25.0 ± 0.01
+              comparison failed
+              Obtained: None
+              Expected: 25.0 ± 0.01
+        and so did ten other tests in this file whose names the shipped
+        catalogue resolves (every "M16" test, within the bound or beyond
+        it), among them the #190 route test:
+            AssertionError: {'binning': 1, 'exposure_s': 0.05, 'filter': 'L',
+            'frame_type': 'Light', ...}
+            assert None == 6210.6 ± 0.5
         """
         old = _step("L")
         s = _session(5.0, 20.0, [old], {0: 3}, name="M16")
@@ -485,14 +506,13 @@ class TestAMovingBody:
         name, so two bodies are two keys.
 
         Mutant "a body key drops the name" (``_step_key`` writes
-        ``("body",)`` for every body) failed:
-            AssertionError: assert {'c91df29e6f8...3e66405c832')} == {}
-              Left contains 1 more item:
-              {'c91df29e6f844d599592d1c2adb367ee': (
-                  '7160d0f03a584863aad78f818d5d1d07',
-                  '879a3d83479d4c3b95e8a3e66405c832')}
+        ``("body",)`` for every body) failed. Re-run on H3's code, which
+        reads the body's name back out of the key to check it at capture
+        time, the key without one no longer maps; it raises:
+            IndexError: tuple index out of range
         """
-        s = _session(5.0, 20.0, [_step("L")], {0: 1}, name="Mars")
+        s = _session(5.0, 20.0, [_step("L")], {0: 1}, name="Mars",
+                     ts=CAPTURE_TS)
         m = adopt_matches(s, _plan(5.0, 22.0, _step("L"), name="Jupiter"),
                           resolve=_catalogue)
         assert m.mapping == {}
@@ -501,21 +521,25 @@ class TestAMovingBody:
     def test_the_default_resolver_is_the_shipped_catalogue(self):
         """With no ``resolve`` handed in, ADOPT asks ``tonight.resolve_target``,
         the resolver ``to_plan`` points a name with: the shipped catalogue
-        says Jupiter moves, so the route's ADOPT (``api/app.py`` passes no
+        says Jupiter moves and where it was at ``CAPTURE_TS``, where the old
+        session pointed, so the route's ADOPT (``api/app.py`` passes no
         resolver) maps it across the sky too.
 
-        Mutant "no resolver by default" (``adopt_matches`` uses ``resolve or
-        (lambda name: None)``) failed:
+        Mutant "no resolver by default" (``adopt_evidence`` uses ``resolve
+        or (lambda name, when=None: None)``) failed, re-run on H3's code:
             AssertionError: [{'binning': 1, 'exposure_s': 60.0, 'filter': 'L',
             'frame_type': 'Light', ...}]
-            assert [] == ['c33a3cdf00a...538fe9f5299e']
-              Right contains one more item: 'c33a3cdf00a246f6a5f5538fe9f5299e'
+            assert [] == ['60eb0ca1582...d77942aa960c']
+              Right contains one more item: '60eb0ca1582146a3a79ed77942aa960c'
         Mutant "solar_system not a moving kind" (in ``tonight``) failed here
         the same way, and so did "the bound applies to bodies" and "a body is
         keyed on its name as typed".
         """
+        from astrodeck.flows import tonight
+        then = tonight.resolve_target("Jupiter", CAPTURE_TS)
         old = _step("L")
-        s = _session(5.0, 20.0, [old], {0: 1}, name="jupiter")
+        s = _session(then.ra_hours, then.dec_deg, [old], {0: 1},
+                     name="jupiter", ts=CAPTURE_TS)
         plan = _plan(5.0, 22.0, _step("L"), name="Jupiter")
         m = adopt_matches(s, plan)
         assert list(m.mapping) == [old.id], m.unmatched

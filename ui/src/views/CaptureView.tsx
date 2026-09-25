@@ -1623,10 +1623,12 @@ export default function CaptureView() {
           <Panel title="Cooler" right={!canCapture && <ReadOnlyBadge />}>
             {/* ---- cooling state indicator (item 3). LED+badge encode ON/OFF by
                  shape+text (night palette collapses color), with live power% and an
-                 "at target" chip. Gracefully degrades when cooler is absent. ---- */}
+                 "at target" chip. Gracefully degrades when cooler is absent. The
+                 LED is unlabelled because the badge beside it is its name: a
+                 "cooling on" label was said before "Cooling" (#231). ---- */}
             <div className="flex items-center justify-between gap-2 mb-3">
               <span className="inline-flex items-center gap-2">
-                <Led state={cooler?.on ? "on" : "off"} label={cooler?.on ? "cooling on" : "cooling off"} />
+                <Led state={cooler?.on ? "on" : "off"} />
                 <span className={`mono text-xs tracking-wider uppercase ${cooler?.on ? "text-accent" : "text-dim"}`}>
                   {cooler?.on ? "Cooling" : "Off"}
                 </span>

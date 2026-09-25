@@ -1,4 +1,4 @@
-"""#189 H2 item 14: the session resets H1 left unguarded (#204, #210 follow-ups).
+"""The session resets H1 left unguarded (#204, #210 follow-ups; H2, #189).
 
 H1 added per-session host state to the native guider and reset it at the
 session boundaries: ``start_guiding`` zeroes the #204 unconfirmed re-lock
@@ -27,7 +27,8 @@ import pytest
 
 import astrodeck.config as configmod
 import astrodeck.guide.native as nativemod
-from astrodeck.guide.native import (RELOCK_UNCONFIRMED_FRAMES, NativeGuider,
+from astrodeck.guide.native import (GP_DARK_VARIANCE,
+                                    RELOCK_UNCONFIRMED_FRAMES, NativeGuider,
                                     _ENGINE_SEARCH_REGION_PX)
 from astrodeck.providers import NATIVE_AVAILABLE
 
@@ -209,30 +210,37 @@ async def test_a_start_does_not_file_the_last_sessions_feed_time(rig, tmp_path):
     its feed time, and a recovery restart comes straight back through
     ``start_guiding`` without a stop. The engine is rebuilt, so nothing has
     fed the new model. Here the new session locks and then loses the star:
-    two dead-reckoned frames put two DARK points in the fresh PPEC window,
-    which is enough for the stop to write it. The file must not be stamped
-    with the previous session's feed time.
+    two dead-reckoned frames put two DARK points in the fresh PPEC window.
+
+    UPDATED FOR #243, AND NOW NO FILE SEES THIS LINE. Until #243 the stop
+    wrote that two-point window, and the file's stamp showed the carried
+    feed time. Now the stop saves only a window with
+    ``GP_MIN_MEASURED_POINTS`` measured points, and every one of them was
+    measured by this session's loop, which stamps the feed time itself, or
+    restored, which seeds it from the file. So this asserts what the start
+    promises, read with the loop parked after the two dark frames, and that
+    the stop wrote nothing.
 
     DELETED -- RED, observed verbatim:
 
-        AssertionError: the new session's model was filed as last fed at
-        40000.0, the previous session's feed time
+        AssertionError: the new session carries the previous session's feed
+        time (40000.0) and has measured nothing
     """
     g, clock = rig
     g._gp_fed_at = 40_000.0             # the previous session's last feed
     await _start(g, clock, [_star_frame(32.0, 32.0), _star_frame(32.0, 32.0),
                             _BLANK, _BLANK])
-    stopped_at = clock.wall
-    await g.stop_guiding()
-    p = tmp_path / "guider" / "prof1-gp.json"
-    assert p.exists(), "the stop wrote no PPEC file: the premise did not hold"
-    saved = json.loads(p.read_text(encoding="utf-8"))
-    assert len(saved["window"]) == 2, saved["window"]
-    assert saved["dumped_at"] != 40_000.0, (
-        f"the new session's model was filed as last fed at "
-        f"{saved['dumped_at']}, the previous session's feed time")
-    # Nothing was measured this session, so the stop's own clock is the stamp.
-    assert saved["dumped_at"] == stopped_at
+    try:
+        window = g._engine.dump_gp_window()
+        assert len(window) == 2 and all(
+            r[2] == GP_DARK_VARIANCE for r in window), window
+        assert g._gp_fed_at is None, (
+            f"the new session carries the previous session's feed time "
+            f"({g._gp_fed_at}) and has measured nothing")
+    finally:
+        await g.stop_guiding()
+    # #243: a window of dark points only is not saved at all.
+    assert not (tmp_path / "guider" / "prof1-gp.json").exists()
 
 
 # ------------------------------------------------------------- stop_guiding
@@ -253,14 +261,18 @@ async def test_a_stop_leaves_no_feed_time_behind(rig, tmp_path):
     asserts the state the stop promises; a new caller of the persist would
     otherwise inherit the value this pins as gone.
 
+    The session guides twelve measured frames after its lock, so its window
+    clears #243's ``GP_MIN_MEASURED_POINTS`` and the stop really writes it
+    (three frames were enough before #243).
+
     DELETED -- RED, observed verbatim:
 
         AssertionError: the stopped guider still holds the session's feed
-        time (50020.0)
+        time (50070.0)
     """
     g, clock = rig
     star = _star_frame(32.0, 32.0)
-    await _start(g, clock, [star, star, star, star])
+    await _start(g, clock, [star] * 14)
     assert g._gp_fed_at == clock.wall, "the session fed nothing: no premise"
     await g.stop_guiding()
     assert (tmp_path / "guider" / "prof1-gp.json").exists()
