@@ -33,6 +33,17 @@ from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Targe
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    # A store of the test's own, BEFORE anything patches the cache below: the
+    # singleton repointed at a file under tmp_path with its cache dropped,
+    # both through monkeypatch. Every test here saves a cooling setpoint - the
+    # standing preference is the subject - and they used to leave -10 C on the
+    # process-wide config for every later test on the worker (#227).
+    # Without these two lines, the conftest guard errors at teardown
+    # (3 in this file alone, observed): "test_warming_does_not_forget_what_temperature_the_rig_images_at
+    # left the process-wide config changed: cooling.setpoint_c."
+    monkeypatch.setattr(hub_module.config_store, "_path",
+                        tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module.config_store, "_cfg", None)
     monkeypatch.setattr(hub_module.config_store.cfg().safety, "solar_avoidance", False)
     monkeypatch.setenv("ASTRODECK_SIM_LEGACY_GUIDER", "1")
     h = Hub()

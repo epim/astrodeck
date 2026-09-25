@@ -140,6 +140,176 @@ def _never_touch_the_real_config():
     elements_mod.EphemerisStore.start = real_start
 
 
+def _config_a_reader_would_see(store) -> object:
+    """What the next ``store.cfg()`` would hand a caller, as plain data,
+    WITHOUT making the store load.
+
+    A filled cache is dumped as it stands. An empty one (``_cfg is None``) is
+    what a reset leaves, and there the next reader gets whatever ``_load``
+    builds from the file - so that is what stands in for it: the store's own
+    ``_load``, run on a scratch copy of the file and its ``.bak``, so the
+    migrations and the backup recovery are the real ones and cannot drift from
+    a second copy of them written here.
+
+    Loading the store itself is the extra load this must not force. It would
+    fill the cache and, for a store with no file yet, write one, so the next
+    test would start from a state it was never handed - and the cold-path
+    clients in ``test_framing.py`` exist to reach exactly the empty cache that
+    a pre-load would take away from them.
+
+    The decision that follows: a reset whose reload equals the old value is not
+    a leak, and a reset over a file that now says something else is, because
+    the next reader gets the something else. A file that no longer loads at all
+    is a change too - the next reader gets a RuntimeError instead of a config -
+    and so is a cache some test replaced with a thing that is not a config.
+    """
+    cfg = store._cfg
+    if cfg is not None:
+        if not hasattr(cfg, "model_dump"):
+            return f"not a config ({type(cfg).__name__})"
+        return cfg.model_dump(mode="json")
+    import shutil
+    import tempfile
+    from astrodeck.config import ConfigStore
+    with tempfile.TemporaryDirectory(prefix="astrodeck-config-peek-") as d:
+        probe = ConfigStore(path=Path(d) / store._path.name)
+        for src, dst in ((store._path, probe._path),
+                         (store._bak_path(), probe._bak_path())):
+            if src.is_file():
+                shutil.copy2(src, dst)
+        try:
+            return probe._load().model_dump(mode="json")
+        except Exception as exc:     # the next reader's cfg() raises this too
+            return f"unloadable ({type(exc).__name__})"
+
+
+def _changed_fields(before: object, after: object,
+                    path: tuple[str, ...] = ()) -> list[str]:
+    """The dotted names of every leaf that differs, ``safety.max_alt_deg``
+    rather than ``safety``, so a report points at the write that made it. A
+    list compares whole: its elements have no names to report."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        out: list[str] = []
+        for key in sorted(set(before) | set(after), key=str):
+            if key not in before or key not in after:
+                out.append(".".join((*path, str(key))))
+            else:
+                out += _changed_fields(before[key], after[key],
+                                       (*path, str(key)))
+        return out
+    if before == after:
+        return []
+    return [".".join(path) or "the whole config"]
+
+
+#: The two top-level fields a test is not blamed for moving, and why. Each
+#: reason holds for every test in the suite; nothing else is exempt, and a
+#: change to any other field is reported even when one of these moved with it.
+_NOT_A_LEAK = {
+    # The save counter. Every save moves it, including the save that puts a
+    # value back, so a test that restores through the product's own setter -
+    # `test_polar_solve_settings.py` resets its frames block that way on both
+    # sides of every test - would be blamed for leaving everything as it found
+    # it. Nothing reads its absolute value: a token check compares against the
+    # store's current one, which the caller reads first.
+    "version",
+    # A fact the HUB writes on every camera connect
+    # (`ConfigStore.remember_camera_can_cool`), not anything a test asked for.
+    # It changes once per worker - on the first camera to connect there - so
+    # blaming it blames scheduling: both full sweeps run before this exemption
+    # named 12 tests, the first to connect a camera on each of the 12 workers,
+    # while a probe of a later run counted 517 tests connecting a camera on
+    # the shared store. The product reads it only while no camera is
+    # connected (`_camera_can_cool` in api/app.py, for the flow compile's
+    # cooling advisory); the one test that grades it,
+    # `test_a_run_without_a_temperature_says_so`, gives itself a private
+    # store, and a test that reads it must set it.
+    "camera_can_cool_seen",
+}
+
+
+def _config_left_as_found(nodeid: str, store=None):
+    """The body of the guard below, as a plain generator so a test can drive
+    it against a private store (``test_the_mount_floor_needs_a_site.py``).
+
+    ``store`` defaults to the singleton AS IT IS NOW, and that object is the
+    one compared at the end. Re-reading ``astrodeck.config.config_store`` at
+    teardown would grade whatever a test left bound to the name, which is the
+    one thing a leaking test is least likely to have put back.
+    """
+    if store is None:
+        import astrodeck.config as config_mod
+        store = config_mod.config_store
+    before = _config_a_reader_would_see(store)
+    yield
+    changed = [field for field in
+               _changed_fields(before, _config_a_reader_would_see(store))
+               if field.split(".", 1)[0] not in _NOT_A_LEAK]
+    if changed:
+        # Names only, never values: this config holds the site and the auth
+        # secrets, and a teardown error is printed wherever the run's output
+        # goes.
+        raise AssertionError(
+            f"{nodeid} left the process-wide config changed: "
+            f"{', '.join(changed)}. Every later test on this worker reads that "
+            f"config, and fails or passes for reasons of its own (issue #227). "
+            f"Write it through monkeypatch "
+            f"(monkeypatch.setattr(cfg.safety, 'min_alt_deg', ...)), hand the "
+            f"code under test a deep copy (cfg.model_copy(deep=True)), or give "
+            f"the test its own ConfigStore(path=tmp_path / ...).")
+
+
+@pytest.fixture(autouse=True)
+def _a_test_leaves_the_config_as_it_found_it(request):
+    """Fail, at its own teardown, any test that leaves the process-wide
+    ``config_store``'s config changed (issue #227).
+
+    ``_never_touch_the_real_config`` above keeps the suite off the developer's
+    file, but it is SESSION-scoped: one store per worker, shared by every test
+    that worker runs. ``test_the_mount_floor_needs_a_site.py`` wrote its
+    safety limits and an unset site straight onto that store's cached config
+    and never put them back. The next engine test on the same worker then ran
+    under a zenith keep-out and a floor it never asked for, and aborted
+    'unsafe' with 0 of 12 frames - but only when xdist drew the two files onto
+    one worker AND the clock put the victim's target below the horizon, which
+    it is for part of every day. The red landed on recovery code that was
+    innocent, on whichever worker drew the pair.
+
+    Compared BY VALUE, not by identity: the leak was an in-place write, which
+    leaves the cached object the very same object.
+
+    ITS TEARDOWN MUST BE THE LAST ONE, after ``monkeypatch`` has undone its
+    edits, or every correctly patched test is reported as a leak. Pytest sets
+    up higher-scoped fixtures first, then the autouse ones ahead of the rest,
+    and the autouse fixtures of one conftest in ``dir()`` order - alphabetical
+    - and tears down in reverse. So this name sorts ahead of
+    ``_fast_sim_delays``, which is what brings ``monkeypatch`` in for every
+    test, and it asks for no fixture that could set ``monkeypatch`` up first.
+    RED under mutant "set up after monkeypatch" (renamed
+    ``_z_test_leaves_the_config_as_it_found_it``): every test in
+    ``test_the_mount_floor_needs_a_site.py`` that patches the config errors
+    at teardown, its monkeypatch control included (observed, verbatim):
+
+        __ ERROR at teardown of test_a_config_edit_through_monkeypatch_is_not_a_leak __
+        E           AssertionError: tests/test_the_mount_floor_needs_a_site.py::
+        test_a_config_edit_through_monkeypatch_is_not_a_leak left the
+        process-wide config changed: safety.max_alt_deg, safety.min_alt_deg,
+        site.name. ...
+
+    The named mutant that puts #227's leak back, and the mutants of the
+    helpers above, are recorded where they are graded, in that file.
+
+    What it does not see: a module- or session-scoped fixture's edit, which is
+    in place before this runs and gone after; a rebinding of the name
+    ``config_store`` in some module (the #19 class), which leaves the
+    singleton itself untouched; and a test that SAVES a changed value while
+    the cache is put back, which leaves the file saying something the cache
+    does not - harmless until some later test resets the cache without
+    restoring it, and then blamed on that test.
+    """
+    yield from _config_left_as_found(request.node.nodeid)
+
+
 @pytest.fixture(autouse=True)
 def _no_inherited_focus_calibration():
     """No test starts with another test's measured sweep span.

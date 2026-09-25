@@ -45,6 +45,7 @@ import datetime as _dt
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from ..sequence.schedule import (hours_to_meridian_flip, observing_night,
@@ -242,17 +243,47 @@ def banked_hours_from_reports(reports: Iterable[Any],
 
 # --------------------------------------------------------------- target coords
 
-def catalog_coords(name: str, when: float | None = None
-                   ) -> tuple[float, float] | None:
-    """``(ra_hours, dec_deg)`` for a target NAME, from the shipped catalogue.
+#: The catalogue row kinds whose position is a function of TIME: a planet, the
+#: Moon or the Sun (``solar_system``), a comet and a satellite are computed from
+#: an ephemeris at the search's ``when``. Every other kind (``dso``, ``star``,
+#: ``coordinates``) is a fixed J2000 row. A kind this set does not name reads
+#: as fixed, so a new kind added to the catalogue keeps ADOPT's separation
+#: bound until someone decides it moves (``continuation.adopt_matches``).
+MOVING_KINDS = frozenset({"solar_system", "comet", "satellite"})
 
-    A TARGET POOL compiles to names and constraints and NOTHING ELSE — the
-    prototype's pool members are "M16, M17, M8, NGC 6946" — so without a lookup
-    the best-of-four example has four targets and not one altitude curve. The
-    catalogue is local, static data, so this stays deterministic; it is
-    imported lazily and injectable (``resolve_name``) so a caller without the
-    catalogue, or a test, is not forced through it.
-    """
+
+@dataclass(frozen=True)
+class NameResolution:
+    """What the shipped catalogue says a target NAME is.
+
+    ``identity`` is the row's catalogue id, which is canonical: every spelling
+    that finds the row finds the same id ("M 31", "m31" and "Andromeda" are
+    all "M31"), and for a moving body the id is its canonical name ("Jupiter",
+    however it was typed). ``moves`` says whether the row's position is a
+    function of time (``MOVING_KINDS``)."""
+    ra_hours: float
+    dec_deg: float
+    identity: str
+    moves: bool
+
+
+def resolve_target(name: str, when: float | None = None
+                   ) -> NameResolution | None:
+    """Where, which and whether it moves, for a target NAME, from the shipped
+    catalogue's first hit at ``when``; None when the catalogue has no row.
+
+    THE ONE RESOLVER (#229). ``to_plan`` points a name-only TARGET with its
+    coordinates and keys its ids on its ``identity``; ``progress._single``
+    finds those ids again through the same ``identity``; ADOPT learns from
+    ``moves`` whether its separation bound can apply. Three callers asking one
+    function is what keeps "which object is this name" from being answered
+    two ways, as "M 31" and "M31" were when the key was the name as typed.
+
+    A row without an id cannot be keyed, so it is no answer: every kind the
+    catalogue ships carries one (``catalog.objects.search``).
+
+    Late-bound by every caller (``tonight.resolve_target``, looked up at call
+    time), so a test that replaces it here replaces it for all three."""
     try:
         from ..catalog.objects import search
         rows = search(str(name), limit=1, when=when).rows
@@ -262,9 +293,31 @@ def catalog_coords(name: str, when: float | None = None
         return None
     row = rows[0]
     try:
-        return float(row["ra_hours"]), float(row["dec_deg"])
+        ra_hours, dec_deg = float(row["ra_hours"]), float(row["dec_deg"])
+        identity = str(row["id"]).strip()
     except (KeyError, TypeError, ValueError):
         return None
+    if not identity:
+        return None
+    return NameResolution(ra_hours=ra_hours, dec_deg=dec_deg,
+                          identity=identity,
+                          moves=row.get("kind") in MOVING_KINDS)
+
+
+def catalog_coords(name: str, when: float | None = None
+                   ) -> tuple[float, float] | None:
+    """``(ra_hours, dec_deg)`` for a target NAME, from the shipped catalogue.
+
+    A TARGET POOL compiles to names and constraints and NOTHING ELSE — the
+    prototype's pool members are "M16, M17, M8, NGC 6946" — so without a lookup
+    the best-of-four example has four targets and not one altitude curve. The
+    catalogue is local, static data, so this stays deterministic; it is
+    imported lazily and injectable (``resolve_name``) so a caller without the
+    catalogue, or a test, is not forced through it. The coordinates of
+    ``resolve_target``'s answer, so the panel and the run place a name alike.
+    """
+    hit = resolve_target(name, when)
+    return None if hit is None else (hit.ra_hours, hit.dec_deg)
 
 
 def _target_coords(entry: dict, resolver: Callable[[str], tuple[float, float] | None],

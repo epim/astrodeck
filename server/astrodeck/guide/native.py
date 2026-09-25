@@ -1373,14 +1373,19 @@ class NativeGuider(Guider):
                             f"({self._fault_frames}/{_FAULT_FRAME_BUDGET})", "guide")
                     continue
                 self._fault_frames = 0
+                # #210: the model's clock is the last frame the engine MEASURED.
+                # A loop starved of frames (a hung exposure) never gets here,
+                # which is why this is stamped here and not when the file is
+                # written. What counts as measured is the engine's own record
+                # (``_measurement_mark``), never the Action kind (#189 H2 item
+                # 13): ``idle`` is also the lock frame and both rejects, and a
+                # dead-reckoned PPEC frame is a ``pulse_pair`` it measured
+                # nothing for. Both marks are read with no await between them
+                # and ``process``, so a moved mark is this frame's.
+                mark = self._measurement_mark()
                 action = self._engine.process(
                     frame.data, frame.timestamp, self._exposure_s)
-                # #210: the model's clock is this frame. A star-lost frame
-                # gave the model no measurement, so it does not count as a
-                # feed; a loop starved of frames (a hung exposure) never gets
-                # here, which is the whole point of stamping it here and not
-                # when the file is written.
-                if action.get("action") != "lock_lost":
+                if self._measurement_mark() not in (mark, None):
                     self._gp_fed_at = time.time()
                 # BEFORE the dispatch: a pulse action resets ``_reacquire``,
                 # and the re-lock this is looking for is exactly the frame on
@@ -1403,6 +1408,40 @@ class NativeGuider(Guider):
                 self._settle_error = self._settle_error or f"guide loop error: {e}"
                 self._settle_done.set()
             bus.publish("guide", **self.stats().__dict__)
+
+    def _measurement_mark(self) -> tuple[int, float] | None:
+        """Where the engine's record of accepted measurements stands: how many
+        entries ``stats()["recent"]`` holds and the timestamp of the newest,
+        or None when it holds none or cannot be read.
+
+        ``engine.rs`` writes ``recent`` from one place a guiding frame can
+        reach, ``push_recent`` on the accept path (``ingest_guiding`` step 5),
+        after the mass and distance gates. The lock-establishing frame, a mass
+        reject, a distance reject and a dead-reckoned lost-star frame
+        (``deduce_move``, a real pulse under PPEC) all return before it, so
+        the mark moving across one ``process()`` is the engine's evidence that
+        this frame's measurement was accepted.
+
+        Both halves are needed. The window is capped at 100 entries, so once
+        it is full an accepted frame leaves the length where it was and moves
+        only the newest timestamp. Below the cap the length moves even when
+        two frames carry one timestamp: ``time.time()`` on Windows moves in
+        system-timer ticks of up to 15.6 ms, and stamps frames that come
+        closer together than that alike.
+
+        Two accepted frames never reach the RA algorithm, and they count here:
+        a fast-recenter step (the recenter replaces the algorithm's move, and
+        its Action is a ``pulse_pair`` like any other) and the frame on which
+        a settle window fails (``lock_lost``, ``settle_timeout``). Both fall
+        within the settle after a dither, so the stamp can run at most that
+        long past the model's last point."""
+        try:
+            recent = self._engine.stats().get("recent") or []
+            if not recent:
+                return None
+            return len(recent), float(recent[-1][0])
+        except Exception:  # pragma: no cover - defensive; no evidence either way
+            return None
 
     async def _dispatch(self, action: dict) -> None:
         kind = action["action"]

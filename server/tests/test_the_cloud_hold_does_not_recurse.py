@@ -27,6 +27,13 @@ second hold would reset the 45-minute bound the first one is counting.
 WHAT THIS FILE DRIVES. The REAL ``_safety_gate`` from inside the REAL
 ``_hold_for_clear``, on a real ``SequenceEngine``, with the sky reading cloudy -
 the exact loop of the incident. Stubbing either one would test the stub.
+
+WITH A TARGET, since #221. The gate the hold calls carries the held target, and
+only a gate with a target may open a hold at all: a target-less gate (a
+scheduler wait) now says it and holds nothing. These cases used to pass None,
+and on that path the stand-aside below can no longer be what stops a second
+hold, so a test of it there could not fail. The mount is on the target and
+tracking, as it is for a hold the frame loop opens.
 """
 from __future__ import annotations
 
@@ -74,6 +81,10 @@ def _engine(hub, monkeypatch):
                         autofocus_first=False,
                         steps=[ExposureStep(filter="L", exposure_s=0.05,
                                             count=1)])])
+    # The mount is A's and tracking, as after A's own setup: the hold neither
+    # points it anywhere nor finds it stopped, so nothing but the gate runs.
+    eng._tracked_target = eng.plan.targets[0]
+    hub.devices["telescope"].rig.tracking = True
     return eng
 
 
@@ -153,13 +164,21 @@ async def test_the_hold_is_entered_once_and_releases_when_the_sky_clears(
     Before the guard this did not fail an assertion - it raised
     ``RecursionError`` out of the hold, which is precisely what happened to the
     run on 2026-09-06.
+
+    Mutant "no stand-aside while holding" (the ``if self._holding_for_clear:
+    return`` in `_no_safety_source` deleted; the hold's own guard kept): RED,
+    the gate of the pass taken while the sky is still shut asks for a second
+    hold, which the hold's own guard refuses (observed) -
+        AssertionError: the hold was entered 2 times for one cloudy sky; the
+        deepest nesting was 2
     """
     eng = _engine(sim_hub, monkeypatch)
     sky = _Sky(eng, clear_after=1)      # cloudy, then clear from probe 2 on
     _stub_the_rig(eng, monkeypatch, sky)
     seen = _count_entries(eng, monkeypatch)
 
-    await eng._hold_for_clear("the frames say the sky has closed in", None)
+    await eng._hold_for_clear("the frames say the sky has closed in",
+                              eng.plan.targets[0])
 
     assert seen["n"] == 1, (
         f"the hold was entered {seen['n']} times for one cloudy sky; the "
@@ -178,6 +197,10 @@ async def test_the_gate_inside_the_hold_does_not_start_another_hold(
     This is the single call that recursed. The gate itself must still RUN -
     dawn and a real monitor are why the hold takes it at all - so the
     assertion is about the hold, not about the gate being skipped.
+
+    Mutant "no stand-aside while holding" (as above): RED (observed) -
+        AssertionError: the gate answered the hold's own cloudy verdict with
+        another hold
     """
     eng = _engine(sim_hub, monkeypatch)
     sky = _Sky(eng, clear_after=None)   # never clears
@@ -186,7 +209,7 @@ async def test_the_gate_inside_the_hold_does_not_start_another_hold(
 
     eng._holding_for_clear = True       # as the running hold would have left it
     try:
-        await eng._safety_gate(context="frame", target=None)
+        await eng._safety_gate(context="frame", target=eng.plan.targets[0])
     finally:
         eng._holding_for_clear = False
     assert seen["n"] == 0, (
@@ -227,6 +250,11 @@ async def test_the_running_hold_keeps_its_own_timeout(sim_hub, monkeypatch):
     abort-and-park bound could never be reached under a sky that stayed shut -
     the run would sit until dawn instead. Drive the real loop with a sky that
     never clears and a bound of nothing, and it must abort.
+
+    Mutant "no stand-aside while holding" (as above): RED, every pass's gate
+    asks for a second hold, which the hold refuses, until the bound
+    (observed) -
+        assert 6 == 1
     """
     from astrodeck.sequence.engine import SafetyAbort
 
@@ -237,6 +265,6 @@ async def test_the_running_hold_keeps_its_own_timeout(sim_hub, monkeypatch):
     monkeypatch.setattr(engine_mod, "CLOUD_MAX_HOLD_MIN", 0.001)
 
     with pytest.raises(SafetyAbort, match="cloud hold exceeded"):
-        await eng._hold_for_clear("the sky never opened", None)
+        await eng._hold_for_clear("the sky never opened", eng.plan.targets[0])
     assert seen["n"] == 1
     assert eng._holding_for_clear is False

@@ -486,33 +486,49 @@ async def test_a_restored_model_keeps_its_feed_time_until_fed(_reuse_rig, tmp_pa
 
 @pytest.mark.asyncio
 async def test_a_star_lost_frame_does_not_feed_the_model(tmp_path, monkeypatch):
-    """The loop stamps the feed time on every frame it processes EXCEPT a
-    star-lost one: the engine had no star to measure, so the model learned
-    nothing, and a loss that ends in the reacquire budget's honest death
-    would otherwise carry the dead frames' time into the file.
+    """A star-lost frame does not stamp the feed time: the engine had no star
+    to measure, so the model learned nothing, and a loss that ends in the
+    reacquire budget's honest death would otherwise carry the dead frames'
+    time into the file.
 
-    MUTANT "every processed frame feeds the model" (the ``!= "lock_lost"``
-    guard in ``_guide_loop`` removed) -- RED, observed verbatim:
+    The fake keeps the engine's contract for ``recent`` (``engine.rs``
+    ``push_recent``, the accept path only), which is what the loop reads
+    since #189 H2 item 13: frame 2's measurement enters it, the lock frame
+    and the two star-lost frames leave it alone.
+
+    MUTANT "every processed frame feeds the model" (the stamp in
+    ``_guide_loop`` made unconditional) -- RED, observed verbatim:
 
         AssertionError: the feed time is the last star-lost frame (50020.0),
         not the last measured one (50010.0)
+
+    Green under "today's rule" (``!= "lock_lost"`` counts as a feed), the
+    control #189 H2 item 13 asks for: that rule also skips a star-lost frame.
     """
     import asyncio
     import astrodeck.guide.native as nativemod
     clock = _WallClock()
     monkeypatch.setattr(nativemod, "time", clock)
     lost = {"action": "lock_lost", "reason": "star_lost"}
-    actions = [{"action": "idle"},
-               {"action": "pulse_pair", "ra": {"dir": "west", "ms": 100},
-                "dec": None},
-               lost, lost]
+    # (Action, whether the engine accepted a measurement on that frame)
+    script = [({"action": "idle"}, False),
+              ({"action": "pulse_pair", "ra": {"dir": "west", "ms": 100},
+                "dec": None}, True),
+              (lost, False), (lost, False)]
 
     class _Engine:
+        def __init__(self) -> None:
+            self.recent: list[list[float]] = []
+
         def process(self, data, ts, exposure_s):
-            return actions.pop(0)
+            action, measured = script.pop(0)
+            if measured:
+                self.recent.append([ts, 0.1, 0.0])
+            return action
 
         def stats(self):
-            return {"guiding": True, "settling": False, "recent": []}
+            return {"guiding": True, "settling": False,
+                    "recent": [list(r) for r in self.recent]}
 
     g = NativeGuider(None, _Mount(), config={"exposure_s": 0.01},
                      profile_id=None)
@@ -540,6 +556,330 @@ async def test_a_star_lost_frame_does_not_feed_the_model(tmp_path, monkeypatch):
     assert g._gp_fed_at == measured, (
         f"the feed time is the last star-lost frame ({g._gp_fed_at}), not "
         f"the last measured one ({measured})")
+
+
+# --- #189 H2 item 13: only a real measurement stamps the feed time ----------
+#
+# The loop used to stamp ``_gp_fed_at`` on every frame whose Action was not a
+# ``lock_lost``. The Action says what the MOUNT should do, not whether the
+# engine measured anything, and it is wrong in both directions:
+#
+# * ``idle`` is the lock-establishing frame, a mass reject and a distance
+#   reject (``engine.rs`` ``ingest_guiding`` steps 1, 3 and 4), none of which
+#   measured the star; and a dead-reckoned lost-star frame under PPEC is a
+#   ``pulse_pair`` predicted with no measurement at all (``deduce_move``).
+# * An ACCEPTED frame whose correction falls under the min-move deadband is
+#   ``idle`` too, and it did measure.
+#
+# The engine's own evidence is its ``recent`` window: ``push_recent`` runs on
+# the accept path (step 5) and nowhere else a guiding frame reaches. These
+# drive the REAL wheel through the real ``_guide_loop``, so each frame takes
+# the engine path its test names because the engine took it, and each test
+# asserts that premise from the engine's own Action before it asserts the
+# stamp. Each was shown RED under the named mutation of guide/native.py, run
+# from a byte-for-byte backup and restored byte-identical.
+
+
+def _live_ppec_engine():
+    """A real PPEC engine, calibrated and asked to guide: its next found star
+    establishes the lock."""
+    import astrodeck_native as native
+    eng = native.GuideEngine(
+        {"ra_algorithm": "ppec", "image_scale_arcsec": 2.0})
+    eng.load_calibration(dict(_IDENT_CAL))
+    eng.begin_guiding()
+    return eng
+
+
+class _Recorded:
+    """The REAL engine with each ``process()`` Action kind kept, so a test can
+    say which path a frame took from the engine's own answer. Everything else
+    passes straight through to the engine."""
+
+    def __init__(self, engine) -> None:
+        self._engine = engine
+        self.actions: list[str] = []
+
+    def process(self, data, ts, exposure_s):
+        a = self._engine.process(data, ts, exposure_s)
+        self.actions.append(a["action"])
+        return a
+
+    def __getattr__(self, name):
+        return getattr(self._engine, name)
+
+
+class _ScriptCam:
+    """Serves ``frames`` in order, advancing the virtual clock ``dt`` s before
+    each and stamping the frame with it, and sets the stop flag on the last so
+    the loop processes exactly the script. ``fed[k]`` is the guider's
+    ``_gp_fed_at`` after frame ``k``: read here, when frame ``k + 1`` is asked
+    for, and for the last frame by ``_drive`` once the loop has returned.
+    ``frame_ts``, when given, is a camera clock that never ticks: every frame
+    carries it while the host's clock moves on."""
+
+    name = "fake guide camera"
+
+    def __init__(self, g, clock: _WallClock, frames, dt: float,
+                 frame_ts: float | None = None) -> None:
+        self.g = g
+        self.clock = clock
+        self.frames = list(frames)
+        self.dt = dt
+        self.frame_ts = frame_ts
+        self.times: list[float] = []
+        self.fed: list[float | None] = []
+
+    async def expose(self, exposure_s, gain, offset, binning=1):
+        import asyncio
+        from types import SimpleNamespace
+        if self.times:
+            self.fed.append(self.g._gp_fed_at)
+        i = len(self.times)
+        self.clock.wall += self.dt
+        self.times.append(self.clock.wall)
+        if i == len(self.frames) - 1:
+            self.g._stop.set()
+        await asyncio.sleep(0)
+        ts = self.clock.wall if self.frame_ts is None else self.frame_ts
+        return SimpleNamespace(data=self.frames[i], timestamp=ts)
+
+
+async def _drive(monkeypatch, frames, dt: float, frame_ts: float | None = None):
+    """Run the real ``_guide_loop`` over ``frames`` on a fresh live PPEC
+    engine and the virtual clock. Returns ``(engine, cam)``."""
+    import astrodeck.guide.native as nativemod
+    clock = _WallClock()
+    monkeypatch.setattr(nativemod, "time", clock)
+    g = NativeGuider(None, _Mount(),
+                     config={"ra_algorithm": "ppec", "image_scale_arcsec": 2.0,
+                             "image_scale_known": True, "exposure_s": dt},
+                     profile_id=None)
+    eng = _Recorded(_live_ppec_engine())
+    g._engine = eng
+    g._active = True
+    g._stop.clear()
+    cam = _ScriptCam(g, clock, frames, dt, frame_ts)
+    g.cam = cam
+    await g._guide_loop()
+    cam.fed.append(g._gp_fed_at)
+    assert len(cam.fed) == len(frames), "the loop did not process the script"
+    return eng, cam
+
+
+_BLANK = None           # marker in a script: a frame with no star in it
+
+
+def _frames(script):
+    return [_star_frame(32.0, 32.0, amp=0.0) if f is _BLANK else f
+            for f in script]
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+async def test_the_lock_frame_does_not_stamp_but_an_idle_accept_does(monkeypatch):
+    """Frame 0 establishes the lock: ``idle``, and nothing measured. Frame 1
+    is the same star at the lock, ACCEPTED, and ``idle`` as well, because a
+    zero error asks for no pulse. Only frame 1 is a feed.
+
+    MUTANT "today's rule" (``action.get("action") != "lock_lost"`` counts as a
+    feed) -- RED, observed verbatim:
+
+        AssertionError: the lock-establishing frame stamped the feed time
+        (50005.0); it measured nothing
+
+    MUTANT "only a pulse is a feed" (``action.get("action") in ("pulse",
+    "pulse_pair")``) -- RED, observed verbatim:
+
+        AssertionError: an accepted frame that asked for no pulse did not
+        stamp the feed time (None, frame at 50010.0)
+    """
+    star = _star_frame(32.0, 32.0)
+    eng, cam = await _drive(monkeypatch, [star, star], dt=5.0)
+    # Premise, from the engine: both frames are idle, and the second (only)
+    # put a measurement in the engine's window.
+    assert eng.actions == ["idle", "idle"], eng.actions
+    assert len(eng.stats()["recent"]) == 1
+    assert cam.fed[0] is None, (
+        f"the lock-establishing frame stamped the feed time ({cam.fed[0]}); "
+        f"it measured nothing")
+    assert cam.fed[1] == cam.times[1], (
+        f"an accepted frame that asked for no pulse did not stamp the feed "
+        f"time ({cam.fed[1]}, frame at {cam.times[1]})")
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("amp, rejected", [(12_000.0, True), (4_000.0, False)],
+                         ids=["mass_reject", "control_same_mass"])
+async def test_a_mass_reject_does_not_stamp_the_feed_time(monkeypatch, amp,
+                                                          rejected):
+    """A lock and seven accepted frames give the mass checker its five-sample
+    history; the last frame is the same star at the lock at three times the
+    brightness, past the checker's 50% limit (``track.rs`` ``check``), so the
+    engine rejects it and measures nothing. The feed time stays on the frame
+    before. CONTROL: the same last frame at the same brightness is accepted
+    and stamps, so the reject is the brightness and nothing else.
+
+    MUTANT "today's rule" -- RED (mass_reject; the control stays green),
+    observed verbatim:
+
+        AssertionError: the mass-rejected frame stamped the feed time
+        (50009.0); the last measured frame was 50008.0
+    """
+    script = [_star_frame(32.0, 32.0)] * 8 + [_star_frame(32.0, 32.0, amp=amp)]
+    eng, cam = await _drive(monkeypatch, script, dt=1.0)
+    # Premise, from the engine: the last frame is idle either way, and only
+    # the control's entered the window (seven accepts after the lock frame).
+    assert eng.actions[-1] == "idle", eng.actions
+    assert len(eng.stats()["recent"]) == (7 if rejected else 8)
+    expected = cam.times[-2] if rejected else cam.times[-1]
+    if rejected:
+        assert cam.fed[-1] == expected, (
+            f"the mass-rejected frame stamped the feed time ({cam.fed[-1]}); "
+            f"the last measured frame was {expected}")
+    else:
+        assert cam.fed[-1] == expected, (
+            f"the control's accepted frame did not stamp ({cam.fed[-1]}, "
+            f"frame at {expected})")
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("x, rejected", [(35.0, True), (32.0, False)],
+                         ids=["distance_reject", "control_back_on_lock"])
+async def test_a_distance_reject_does_not_stamp_the_feed_time(monkeypatch, x,
+                                                              rejected):
+    """Thirteen frames on the lock, then one with no star, then the star back
+    3 px off the lock. The blank is dead-reckoned (``idle``: an untrained
+    model predicts nothing) and measured nothing. The jump is a FOUND star
+    with the lock star's mass, and the distance gate rejects it
+    (``ingest_guiding`` step 4, ``track.rs`` ``check_distance``): twelve
+    accepts put the engine past the ten frames in which every jump counts as
+    small, and a star that sat exactly on the lock leaves a smoothed error of
+    zero, so any multiple of it is a zero tolerance and a 3 px jump is not
+    small. Neither the blank nor the jump stamps. CONTROL: the star back ON
+    the lock is accepted and stamps, so the reject is the distance.
+
+    The blank is not what rejects the jump. It activates the checker, but the
+    same jump straight after the thirteen lock frames is rejected too (probed
+    on the wheel: the window stays at 13). It is here as a second frame that
+    must not stamp: a dead-reckoned ``idle``.
+
+    MUTANT "today's rule" -- RED (distance_reject; the control stays green),
+    observed verbatim:
+
+        AssertionError: the distance-rejected frame stamped the feed time
+        (50015.0); the last measured frame was 50013.0
+    """
+    import astrodeck_native as native
+    script = [_star_frame(32.0, 32.0)] * 13 + [_BLANK, _star_frame(x, 32.0)]
+    eng, cam = await _drive(monkeypatch, _frames(script), dt=1.0)
+    # Premise, from the engine: both last frames are idle; the star in the
+    # last one is there to be found (so it is not a lost-star frame); and
+    # only the control's entered the window (twelve accepts after the lock).
+    assert eng.actions[-2:] == ["idle", "idle"], eng.actions
+    found, _meta = native.guide_star_find(script[-1])
+    assert any(abs(s["x"] - x) < 0.5 and abs(s["y"] - 32.0) < 0.5
+               for s in found), found
+    assert len(eng.stats()["recent"]) == (12 if rejected else 13)
+    last_measured = cam.times[-3]
+    if rejected:
+        assert cam.fed[-1] == last_measured, (
+            f"the distance-rejected frame stamped the feed time "
+            f"({cam.fed[-1]}); the last measured frame was {last_measured}")
+        assert cam.fed[-2] == last_measured, (
+            f"the blank frame stamped the feed time ({cam.fed[-2]})")
+    else:
+        assert cam.fed[-1] == cam.times[-1], (
+            f"the control's star back on the lock did not stamp "
+            f"({cam.fed[-1]}, frame at {cam.times[-1]})")
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+async def test_a_dead_reckoned_ppec_pulse_does_not_stamp_the_feed_time(
+        monkeypatch):
+    """110 accepted frames of a 3 px, 200 s periodic error train PPEC past the
+    two periods (400 s of gear time) it needs before it predicts, and fill the
+    engine's ``recent`` window to its 100-entry cap. Then the star vanishes:
+    the engine dead-reckons a real ``pulse_pair`` from the model's prediction
+    (``deduce_move``) with no measurement behind it. That frame does not
+    stamp. The accepted frames AT the cap do, although the window's length no
+    longer moves.
+
+    MUTANT "today's rule" -- RED, observed verbatim:
+
+        AssertionError: the dead-reckoned pulse stamped the feed time
+        (50560.0); the last measured frame was 50555.0
+
+    MUTANT "a growing window is the only evidence" (the mark reduced to
+    ``len(recent)``) -- RED, observed verbatim:
+
+        AssertionError: the accepted frames at the window's cap stopped
+        stamping: the feed time is 50505.0, the last accepted frame 50555.0
+    """
+    script = [_star_frame(32.0, 32.0)]
+    for k in range(1, 111):
+        t = 5.0 * k
+        script.append(_star_frame(
+            32.0 + 3.0 * math.sin(2.0 * math.pi * t / 200.0), 32.0))
+    script.append(_BLANK)
+    eng, cam = await _drive(monkeypatch, _frames(script), dt=5.0)
+    # Premise, from the engine: the last frame is a real predicted pulse, and
+    # the window was already at its cap before it.
+    assert eng.actions[-1] == "pulse_pair", eng.actions[-3:]
+    assert "lock_lost" not in eng.actions and eng.actions[0] == "idle"
+    assert len(eng.stats()["recent"]) == 100, "the window is not at its cap"
+    last_accepted = cam.times[-2]
+    assert cam.fed[-2] == last_accepted, (
+        f"the accepted frames at the window's cap stopped stamping: the feed "
+        f"time is {cam.fed[-2]}, the last accepted frame {last_accepted}")
+    assert cam.fed[-1] == last_accepted, (
+        f"the dead-reckoned pulse stamped the feed time ({cam.fed[-1]}); the "
+        f"last measured frame was {last_accepted}")
+
+
+@pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+@pytest.mark.asyncio
+async def test_frames_sharing_one_timestamp_are_still_told_apart(monkeypatch):
+    """A camera clock coarser than the frame rate stamps several frames alike
+    (``time.time()`` on Windows moves in system-timer ticks of up to 15.6 ms,
+    and frames can come closer together than that). Here every frame carries
+    one timestamp. Each
+    accept still stamps, because the window's LENGTH moves, and the mass
+    reject that shares the accepted frames' timestamp still does not, because
+    nothing in the window moves.
+
+    MUTANT "the newest timestamp alone" (the mark reduced to
+    ``recent[-1][0]``) -- RED, observed verbatim:
+
+        AssertionError: the second accepted frame on the camera's one
+        timestamp did not stamp (50002.0, frame at 50003.0)
+
+    MUTANT "the newest entry is this frame's" (stamp when ``recent[-1][0] ==
+    frame.timestamp``) -- RED, observed verbatim:
+
+        AssertionError: the mass-rejected frame stamped the feed time
+        (50009.0): it shares the accepted frames' timestamp, not their
+        measurement; the last measured frame was 50008.0
+
+    ("today's rule" turns it RED with that same line: the reject is ``idle``.)
+    """
+    script = [_star_frame(32.0, 32.0)] * 8 + [
+        _star_frame(32.0, 32.0, amp=12_000.0)]
+    eng, cam = await _drive(monkeypatch, script, dt=1.0, frame_ts=7.0)
+    # Premise, from the engine: seven accepts on one timestamp, then a reject.
+    assert eng.actions[-1] == "idle", eng.actions
+    recent = eng.stats()["recent"]
+    assert len(recent) == 7 and {r[0] for r in recent} == {7.0}, recent
+    assert cam.fed[2] == cam.times[2], (
+        f"the second accepted frame on the camera's one timestamp did not "
+        f"stamp ({cam.fed[2]}, frame at {cam.times[2]})")
+    assert cam.fed[-1] == cam.times[-2], (
+        f"the mass-rejected frame stamped the feed time ({cam.fed[-1]}): it "
+        f"shares the accepted frames' timestamp, not their measurement; the "
+        f"last measured frame was {cam.times[-2]}")
 
 
 class _StarThenBlankCam(_StarCam):

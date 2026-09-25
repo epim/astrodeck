@@ -142,11 +142,17 @@ class _Clocked:
     is running, or waiting on real I/O in the sim, holds the clock still.
     Any other task that sleeps through engine.py sleeps for real, as the
     watchdog does, and so sits out the test.
+
+    ``t0`` pins where the fake night starts; left out, it starts now. A test
+    whose timeline crosses a minute-resolution ``HH:MM`` boundary pins it
+    (`_t0_at_second`), or the night's shape moves with the wall-clock second
+    the test happened to start on (#223).
     """
 
-    def __init__(self, hub, monkeypatch, *, horizon_s: float):
+    def __init__(self, hub, monkeypatch, *, horizon_s: float,
+                 t0: float | None = None):
         self.hub = hub
-        self.t0 = time.time()
+        self.t0 = time.time() if t0 is None else float(t0)
         self.clock = _Clock(time, self.t0)
         self.horizon = self.t0 + horizon_s
         self.frozen = asyncio.Event()
@@ -346,6 +352,18 @@ def _ra_at(ha_h: float, t: float, lon: float = LON) -> float:
 
 def _hhmm(t: float) -> str:
     return time.strftime("%H:%M", time.localtime(t))
+
+
+def _t0_at_second(second: float) -> float:
+    """A fake night start ``second`` seconds past the current minute.
+
+    `_hhmm` truncates to the minute, so a boundary written as
+    ``_hhmm(t0 + x)`` falls ``second`` seconds short of ``t0 + x``, and
+    everything the engine does on its own grid from ``t0`` meets it at a
+    phase set by ``t0``'s second. Pinning the second pins that phase. Every
+    time zone's offset is a whole number of minutes, so the local second and
+    the epoch second agree."""
+    return (time.time() // 60.0) * 60.0 + float(second)
 
 
 def _target(name: str, ra: float, dec: float, *,
@@ -824,24 +842,29 @@ async def test_a_stop_the_mount_did_not_take_is_asked_again_on_its_own_clock(
     safety pause - so the idle park-hold used to close its latch on a stop
     that never happened and never look again: the mount tracked on,
     unwatched, for the rest of the wait. Here ``set_tracking(False)`` hangs
-    for its bound and times out, and the mount goes on tracking. The idle
-    park-hold must read tracking back, find it not False, and hand the stop
-    to the retry task, which asks again IDLE_STOP_RETRY_S after each attempt
-    ends, for the rest of the spell. An unreadable read-back counts the same
-    way: a dead serial link (the #133 class) cannot confirm a stop.
+    for its bound and times out, and the mount goes on tracking. The
+    idle-stop task must read tracking back, find it not False, and ask
+    again IDLE_STOP_RETRY_S after each attempt ends, for the rest of the
+    spell. An unreadable read-back counts the same way: a dead serial link
+    (the #133 class) cannot confirm a stop.
 
-    ON ITS OWN CLOCK (#189 A3): every ask after the first comes from the
-    retry task, and two asks are exactly the retry interval plus the last
-    attempt's own hang apart (one mount timeout for the stop, one more when
-    the read-back hangs too), which is what the engine promises: never less
-    than the interval, and nothing added to it.
+    ON ITS OWN CLOCK (#189 A3, #216): every ask comes from the idle-stop
+    task, the first one included, and two asks are exactly the retry
+    interval plus the last attempt's own hang apart (one mount timeout for
+    the stop, one more when the read-back hangs too), which is what the
+    engine promises: never less than the interval, and nothing added to it.
+    This case used to pin the first ask on the run task, ``["run"] +
+    ["retry"] * n``: that was the first attempt made inline, the #216
+    defect, and test_idle_stop_retry_clock's case (a) now grades what it
+    cost.
 
     SAID ONCE. One warning per idle spell, and the "stopping tracking" line
     once too, however many times it retries.
 
     Mutant "no readback" (the `_tracking_now` read-back after `_park_hold`
-    deleted, so the first attempt is taken on trust): RED, both cases
-    (observed) -
+    in `_idle_stop_retry` deleted, so the first attempt is taken on trust):
+    RED, both cases (observed; this and the next two re-run after #216 with
+    the texts unchanged) -
         AssertionError: a stop the mount did not take (still tracking) was
         asked 1 time(s) in a 450 s spell: set_tracking(False) at [120.0] s
         AssertionError: a stop the mount did not take (unreadable) was
@@ -879,9 +902,9 @@ async def test_a_stop_the_mount_did_not_take_is_asked_again_on_its_own_clock(
             f"a stop the mount did not take ({readback}) was asked "
             f"{len(offs)} time(s) in a {spell:.0f} s spell: "
             f"set_tracking(False) at {run.rel(offs, idle)[:5]} s")
-        assert [who for _t, who in asks] == ["run"] + ["retry"] * (len(asks) - 1), (
-            f"the first ask is the run's own, every later one the retry "
-            f"task's: {asks}")
+        assert [who for _t, who in asks] == ["retry"] * len(asks), (
+            f"every ask is the idle-stop task's, the first one included "
+            f"(#216): {asks}")
         gaps = sorted({round(y - x, 1) for x, y in zip(offs, offs[1:])})
         assert gaps == [RETRY + hang], (
             f"not the retry interval plus the last attempt's hang "
@@ -954,9 +977,10 @@ async def test_a_first_wait_stop_that_did_not_take_is_asked_again_a_minute_later
     not hang off the tracked-target guard: that guard decides whether a new
     stop is decided, not whether one already in flight is asked again.
 
-    Mutant "retry only with a tracked target" (`_idle_stop_retry` returns
-    at once while ``_tracked_target`` is None): RED - one ask across the
-    whole wait, under a warning promising more (observed) -
+    Mutant "retry only with a tracked target" (`_idle_stop_retry`'s retry
+    loop returns while ``_tracked_target`` is None): RED - one ask across
+    the whole wait, under a warning promising more (observed, and again
+    after #216 moved the first attempt onto the task, same text) -
         AssertionError: the first wait's unconfirmed stop was asked 1
         time(s) in a 600 s wait, under a warning promising about once a
         minute: set_tracking(False) at [0.0] s
@@ -1348,8 +1372,22 @@ async def test_a_new_run_does_not_watch_the_last_runs_target(
         await run.close()
 
 
+#: `t0`'s second at which run 1's last tick and a retry ask share one fake
+#: instant (#223). The first stop comes at +150 s (Alpha's 30 s exposure, then
+#: WAIT_TEARDOWN_S), and each retry one IDLE_STOP_RETRY_S plus one hung
+#: ``set_tracking(False)`` after the last: +240, +330, ... +600. Bravo's stop,
+#: ``_hhmm(t0 + 600)``, falls ``second`` seconds before +600, and the run ends
+#: on the first 5 s tick at or after it, which is +600 for every second in
+#: [0, 5) and nothing else. 2.5 sits mid-band.
+_TIE_SECOND = 2.5
+#: One second from the middle of each 5 s band of the minute: every timeline
+#: the run can have, since the run's end moves in 5 s steps.
+_BAND_SECONDS = [2.5 + 5.0 * k for k in range(12)]
+
+
+@pytest.mark.parametrize("second", _BAND_SECONDS)
 async def test_a_run_that_ends_mid_retry_leaves_no_retry_behind(
-        sim_hub, monkeypatch, bus_lines):
+        sim_hub, monkeypatch, bus_lines, second):
     """The retry task ends with the run that started it (#189 A3). Two runs on
     ONE engine and a mount that never takes a stop. Run 1 shoots Alpha and
     then waits on Bravo, a setting target below its gate, until Bravo's window
@@ -1361,25 +1399,80 @@ async def test_a_run_that_ends_mid_retry_leaves_no_retry_behind(
     could re-arm the once-per-spell flag: when the mount does not take it,
     it is said, once, because `start()` re-arms the flag too.
 
+    AFTER THE END IS AN ORDER, NOT A TIME (#223). This used to count every
+    retry ask with fake time ``>= ended`` as after the end, and failed about
+    one run in twelve. Bravo's stop is minute-resolution, so the run's last
+    tick moved with the wall-clock second the test started on, while the
+    retry's asks ran on their own grid from ``t0``. With ``t0``'s second in
+    [0, 5), the retry's fifth ask and the run's last tick fall due at the
+    same fake instant, +600 s. The retry set its timer first, so the harness
+    wakes it first: it asks and hangs, and only then does the run's tick
+    find Bravo's window shut, end the run and cancel the retry mid-ask. That
+    ask was made while run 1 was still running, and ``t >= ended`` counted it
+    as after. The engine did nothing wrong. The end is now an event: the
+    index into ``tracking_calls`` when `_run_scheduled` returns, which is
+    where the engine owes the cancel. The night starts at a pinned second
+    (`_t0_at_second`), one per 5 s band of the minute (`_BAND_SECONDS`).
+    Swept on the old oracle at every half second of the minute, the run
+    had twelve timelines, one per band, and failed in exactly the ten
+    half-seconds of [0, 5), each time with the text below. `_TIE_SECOND` is
+    the band where the tie happens, and a premise pins that it still does.
+
+    Mutant "the old t >= ended oracle" (the event-order filter replaced by
+    ``t >= ended`` over `_asks`): RED at the tie second only, with the #223
+    failure itself; the other eleven seconds pass, the two oracles agreeing
+    wherever nothing ties (observed) -
+        [2.5] AssertionError: the retry went on asking after run 1 ended,
+        with the engine idle: set_tracking(False) at [(0.0, 'retry')] s
+        after the end
     Mutant "run end keeps the retry" (the ``finally`` that cancels the retry
-    around `_run_scheduled` in `_run` deleted): RED - the retry went on
-    asking after run 1 ended, while the engine was idle (observed) -
-        AssertionError: the retry went on asking after run 1 ended, with
-        the engine idle: set_tracking(False) at [(0.0, 'retry'), (90.0,
-        'retry'), (180.0, 'retry'), (270.0, 'retry')] s after the end
+    around `_run_scheduled` in `_run` deleted): RED at every second. At the
+    tie second the ask made before the end is no longer among them
+    (observed) -
+        [2.5] AssertionError: the retry went on asking after run 1 ended,
+        with the engine idle: set_tracking(False) at [(90.0, 'retry'),
+        (180.0, 'retry'), (270.0, 'retry'), (360.0, 'retry')] s after the end
+        [7.5] AssertionError: the retry went on asking after run 1 ended,
+        with the engine idle: set_tracking(False) at [(5.0, 'retry'), (95.0,
+        'retry'), (185.0, 'retry'), (275.0, 'retry')] s after the end
     Mutant "start keeps _idle_hold_retrying" (the ``self._idle_hold_retrying
-    = False`` reset in `start()` deleted): RED - run 2's unconfirmed stop is
-    never said (observed) -
+    = False`` reset in `start()` deleted): RED at every second - run 2's
+    unconfirmed stop is never said (observed) -
         AssertionError: 0 unconfirmed-stop warning(s) in run 2, whose own
         stop the mount never took
+    Mutant "the tie second off its band" (``_TIE_SECOND = 7.5``): RED at 7.5
+    only, the premise (observed) -
+        AssertionError: premise: at second 7.5 a retry ask shares the run's
+        last fake instant (+595.0 s) and comes before the end; pick
+        `_TIE_SECOND` again from these asks: [(150.0, 'retry'), (240.0,
+        'retry'), (330.0, 'retry'), (420.0, 'retry'), (510.0, 'retry')]
+    (re-run after #216 moved the first attempt onto the task: the first
+    ask reads 'retry' where it read 'run', and nothing else moved. The
+    other three mutants above were re-run then too, with the texts above
+    unchanged.)
     """
-    run = _Clocked(sim_hub, monkeypatch, horizon_s=4 * 3600.0)
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=4 * 3600.0,
+                   t0=_t0_at_second(second))
     t0 = run.t0
     a = _target("Alpha", _ra_at(-3.0, t0), 20.0)
     b = _target("Bravo", _ra_at(+4.0, t0), 0.0, min_altitude_deg=30.0,
                 start_mode="time", start_time=_hhmm(t0 - 2 * 3600),
                 stop_mode="time", stop_time=_hhmm(t0 + 600))
     _a_mount_that_will_not_stop(run, readback="still tracking")
+    # THE RUN'S END, IN EVENT ORDER: how many set_tracking calls had been
+    # made, and the fake time, when the scheduler returned. `_run` cancels
+    # the retry right after it, so anything the retry asks past this index
+    # was asked after the run was over.
+    ends: list[tuple[int, float]] = []
+    real_scheduled = run.engine._run_scheduled
+
+    async def run_scheduled(plan):
+        try:
+            return await real_scheduled(plan)
+        finally:
+            ends.append((len(run.tracking_calls), run.clock.t))
+
+    monkeypatch.setattr(run.engine, "_run_scheduled", run_scheduled)
     run.engine.start(_plan(a, b))
     loop = asyncio.get_running_loop()
     end = loop.time() + 60.0
@@ -1391,16 +1484,28 @@ async def test_a_run_that_ends_mid_retry_leaves_no_retry_behind(
         assert run.engine.state.get("end_reason") == "dawn_cutoff", (
             f"premise: run 1 ended on Bravo's closed window: "
             f"{run.engine.state}")
-        ended = run.clock.t
+        assert len(ends) == 1, f"premise: one scheduler, one end: {ends}"
+        ended_at, ended = ends[0]
         retried = [t for t, who in _asks(run) if who == "retry"]
         assert retried, (
             f"premise: run 1 was retrying its stop when it ended: asks "
             f"{run.rel([t for t, _w in _asks(run)], t0)} s")
+        if second == _TIE_SECOND:
+            # ``==`` is exact: every fake instant here is t0 plus whole
+            # seconds, which a double holds exactly at this magnitude.
+            tie = [t for t, on, who in run.tracking_calls[:ended_at]
+                   if not on and who == "retry" and t == ended]
+            assert tie, (
+                f"premise: at second {second} a retry ask shares the run's "
+                f"last fake instant (+{ended - t0:.1f} s) and comes before "
+                f"the end; pick `_TIE_SECOND` again from these asks: "
+                f"{[(round(t - t0, 1), w) for t, w in _asks(run)]}")
         # With the engine idle the driver would still advance a live retry,
         # the only engine task left: give it the real time to show itself.
         await run._real_sleep(0.3)
-        after = [(round(t - ended, 1), who) for t, who in _asks(run)
-                 if who == "retry" and t >= ended]
+        after = [(round(t - ended, 1), who)
+                 for t, on, who in run.tracking_calls[ended_at:]
+                 if not on and who == "retry"]
         assert after == [], (
             f"the retry went on asking after run 1 ended, with the engine "
             f"idle: set_tracking(False) at {after[:4]} s after the end")
@@ -1413,11 +1518,14 @@ async def test_a_run_that_ends_mid_retry_leaves_no_retry_behind(
                     start_mode="time", start_time=_hhmm(t1 + 3 * 3600))
         await run.night(_plan(c))
         asks = _asks(run)
-        assert asks and asks[0][1] == "run" and asks[0][0] - t1 < TICK, (
+        # Every ask on the idle-stop task, the first one included: #216 moved
+        # the first attempt off the run task, where this premise used to
+        # find it.
+        assert asks and asks[0][0] - t1 < TICK, (
             f"premise: run 2 opens on Charlie's long planned wait, whose rule "
             f"stops the mount at once: "
             f"{[(round(t - t1, 1), w) for t, w in asks[:3]]}")
-        assert [w for _t, w in asks[1:]] == ["retry"] * (len(asks) - 1), asks
+        assert [w for _t, w in asks] == ["retry"] * len(asks), asks
         warned = _unconfirmed_lines(bus_lines[mark:])
         assert len(warned) == 1, (
             f"{len(warned)} unconfirmed-stop warning(s) in run 2, whose own "

@@ -1,26 +1,32 @@
-"""A TARGET with a name and no typed coordinates is keyed on its NAME (#189 A5,
-spec 3.3).
+"""A TARGET with a name and no typed coordinates is keyed on the catalogue's
+CANONICAL IDENTITY for its name (#189 A5, #229, spec 3.3).
 
-THE FAILURE. S1 keyed a single TARGET on the geometry it compiled to. For a
-TARGET whose coordinates were typed into the node that is the field the
+THE FAILURE A5 FIXED. S1 keyed a single TARGET on the geometry it compiled to.
+For a TARGET whose coordinates were typed into the node that is the field the
 operator drew. For one that carries only a NAME, the coordinates are the
 catalogue's answer at the compile's ``when`` (``to_plan._coords`` ->
-``catalog_coords(name, when)``), and for a planet, a comet or the Moon that
-answer moves by the hour (a deep-sky name resolves to a fixed J2000 row, which
-does not). So the ids moved with it, night two named steps night one never
-banked on, and the campaign restarted every time it was compiled - the exact
-fault S1's ids exist to remove, for the one kind of TARGET whose field
-genuinely moves.
+``tonight.resolve_target(name, when)``), and for a planet, a comet or the Moon
+that answer moves by the hour (a deep-sky name resolves to a fixed J2000 row,
+which does not). So the ids moved with it, night two named steps night one
+never banked on, and the campaign restarted every time it was compiled.
 
-So such a TARGET is keyed on its name, through ``identity.target_key``, the ONE
-function that decides a single TARGET's key from its compiled entry; both
-``to_plan._identify`` (which mints the id) and ``progress._single`` (which
-finds it again) call it. The angle and the grid stay in the key, and the key
-is namespaced so it can never equal a geometry key.
+THE FAILURE #229 FIXED. A5 keyed such a TARGET on the name AS TYPED. "M 31",
+"M31" and "m31" are one object, one catalogue row, and they were three keys:
+a spelling edit restarted a deep-sky campaign S1 would have kept. So the key
+is the resolver's canonical identity instead: the catalogue id for a fixed row
+("M31"), the canonical body name for a moving one ("Jupiter"). One resolver,
+``tonight.resolve_target``, answers the coordinates, the identity and whether
+the row moves; ``to_plan`` and ``progress._single`` both ask it, and
+``identity.target_key`` (the ONE function that decides a single TARGET's key)
+is handed the identity, so ``identity`` stays pure. The angle and the grid
+stay in the key, and the key is namespaced so it can never equal a geometry
+key.
 
-The catalogue is replaced by ``_moving``, whose answer moves with ``when``, so
-the property is tested against the thing that actually moves rather than
-against whatever the shipped catalogue does for one name today.
+Most tests replace the catalogue with ``_moving``, whose answer moves with
+``when``, so the property is tested against the thing that actually moves
+rather than against whatever the shipped catalogue does for one name today.
+``TestTheCanonicalIdentity`` uses the shipped catalogue, because WHICH row a
+spelling finds is exactly what it is about.
 
 Every test names the mutation it guards and quotes the failure it produced,
 run from a byte backup of the file mutated and restored byte-identical after.
@@ -31,12 +37,13 @@ import re
 
 import pytest
 
-import astrodeck.flows.to_plan as to_plan_module
+import astrodeck.flows.tonight as tonight_module
 from astrodeck.flows import identity
 from astrodeck.flows.compile import compile_plan
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
 from astrodeck.flows.progress import flow_progress
 from astrodeck.flows.to_plan import to_sequence_plan
+from astrodeck.flows.tonight import NameResolution
 from astrodeck.sequence.models import plan_identity_errors
 from astrodeck.sequence.session import Session, SessionFrame
 
@@ -45,18 +52,29 @@ FLOW = "flow-name-keyed"
 DAY_ONE = 1_790_000_000.0
 DAY_TWO = DAY_ONE + 86_400.0
 
+#: The shipped resolver, kept before the autouse fixture replaces it, for the
+#: tests that are about which row a real spelling finds.
+REAL_RESOLVER = tonight_module.resolve_target
+
 
 def _moving(name, when=None):
     """A catalogue whose answer moves with ``when``: 0.1 h of RA and half a
     degree of Dec a day, about what Mars does. Every name resolves, because
-    WHERE a name resolves is not what these tests are about."""
+    WHERE a name resolves is not what these tests are about. Its canonical
+    identity is the name in title case, so "mars" and "Mars" are one body,
+    as the shipped catalogue has it. It does NOT strip the name, so a test
+    can see whether the caller did."""
     days = ((DAY_ONE if when is None else when) - DAY_ONE) / 86_400.0
-    return (10.0 + 0.1 * days) % 24.0, 12.0 - 0.5 * days
+    return NameResolution(ra_hours=(10.0 + 0.1 * days) % 24.0,
+                          dec_deg=12.0 - 0.5 * days,
+                          identity=str(name).title(), moves=True)
 
 
 @pytest.fixture(autouse=True)
 def moving_catalogue(monkeypatch):
-    monkeypatch.setattr(to_plan_module, "catalog_coords", _moving)
+    # On the module, where every caller looks it up at call time: this one
+    # patch replaces the resolver for `to_plan` and `progress` alike.
+    monkeypatch.setattr(tonight_module, "resolve_target", _moving)
 
 
 def _n(nid, ntype, x=0.0, y=0.0, **params):
@@ -126,15 +144,22 @@ class TestKeyedOnTheName:
         assert plan_identity_errors(one) == []
 
     def test_the_id_is_the_name_key_recipe(self):
-        """End to end: the TARGET's node id and its name key make the target
-        id, exactly as ``identity`` spells it; the step ids hang off it as
-        they do for any target.
+        """End to end: the TARGET's node id and the name key of the
+        CANONICAL identity make the target id, exactly as ``identity`` spells
+        it; the step ids hang off it as they do for any target. The node
+        says "mars" and the catalogue says "Mars", and the id is keyed on
+        what the catalogue says (#229).
 
         Mutant "key on the resolved coordinates" failed here too:
             AssertionError: assert 'e8a6021df841...13fa1083471ce' ==
             '15669a418363...ef72f347b9752'
+        Mutant "key the name as typed" (``target_key`` keys
+        ``name_key(name, ...)``, the stripped name from the entry, as A5
+        did) failed:
+            AssertionError: assert '7c933c503755...bd4a31e5bc694' ==
+            '15669a418363...ef72f347b9752'
         """
-        _c, plan = _compile(_graph(), DAY_ONE)
+        _c, plan = _compile(_graph(name="mars"), DAY_ONE)
         key = identity.name_key("Mars", None)
         assert plan.targets[0].id == identity.target_id(
             identity.group_id(FLOW, "t", key), 0, 0)
@@ -233,9 +258,10 @@ class TestWhatStillReKeys:
         assert identity.name_key("Mars", None, overlap=0.15) != single
 
     def test_control_a_renamed_target_re_keys(self):
-        """The name IS the field now, so a different name is a different
-        field. Surrounding whitespace is not a different name: ``to_plan``
-        strips it before naming the target, and the key reads the same name.
+        """The object IS the field now, so a name that resolves to another
+        object is a different field. Surrounding whitespace is not a
+        different name: ``to_plan`` strips it before asking the catalogue
+        (``_moving`` does not strip, so this sees whether ``to_plan`` did).
 
         Mutant "name left out of the name key" (``canonical_name`` writes
         ``""`` for every name) failed:
@@ -243,8 +269,9 @@ class TestWhatStillReKeys:
               Extra items in the left set:
               'e108e3dd60e4550ba7ab5322cce6e343'
               ...
-        Mutant "unstripped name" (``target_key`` keys ``entry["name"]`` as
-        given) failed the whitespace half:
+        Mutant "unstripped name to the resolver" (``to_plan._coords`` asks
+        ``resolve_target`` for ``entry["name"]`` as given) failed the
+        whitespace half:
             AssertionError: assert [('3646072a9f...266c8c5fd7'])] ==
             [('15669a4183...7f9e28d992'])]
         """
@@ -289,9 +316,10 @@ class TestTheNamespace:
         where = (a.targets[0].ra_hours, a.targets[0].dec_deg)
 
         def at_m31(name, when=None):
-            return where
+            return NameResolution(ra_hours=where[0], dec_deg=where[1],
+                                  identity=str(name).strip(), moves=False)
 
-        monkeypatch.setattr(to_plan_module, "catalog_coords", at_m31)
+        monkeypatch.setattr(tonight_module, "resolve_target", at_m31)
         _c, b = _compile(_graph(name=geo), DAY_ONE)
         assert (b.targets[0].ra_hours, b.targets[0].dec_deg) == where, \
             "premise: the name resolved to the typed target's coordinates"
@@ -339,6 +367,90 @@ class TestProgressFindsTheBlock:
             ("Ha", 4), ("L", 1), ("R", 0)]
         assert got["orphaned"] == {"frames": 0, "steps": 0}
 
+    def test_progress_reads_a_padded_name_as_to_plan_keyed_it(self):
+        """The node says "  mars ", padding and all, and the compiled entry
+        keeps it. ``to_plan`` and ``progress._single`` each trim the name
+        before they ask the resolver (``_moving`` does not trim), so both ask
+        about "mars", get "Mars", and find one block.
+
+        Mutant "progress resolves the unstripped name" (``progress._single``
+        asks ``resolve_target`` for ``entry["name"]`` as given) failed:
+            ValueError: 1 plan target(s) match no block of this compile
+            (mars): the plan was not compiled from it with
+            flow_id='flow-name-keyed', so every count read against it would
+            be wrong
+        Mutant "unstripped name to the resolver" (the same in
+        ``to_plan._coords``) failed with the same refusal from the other
+        side of the seam.
+        """
+        compiled, plan = _compile(_graph(name="  mars "), DAY_ONE)
+        assert compiled["targets"][0]["name"] == "  mars ", \
+            "premise: the compiled entry keeps the padding"
+        ha = plan.targets[0].steps[0]
+        got = flow_progress(compiled, plan,
+                            self._session(plan, [SessionFrame(step_id=ha.id)]),
+                            flow_id=FLOW)
+        assert got["blocks"][0]["panels"][0]["target_id"] == plan.targets[0].id
+        assert got["blocks"][0]["banked"] == 1
+
+    def test_a_name_the_catalogue_cannot_place_reads_as_a_dropped_block(
+            self, monkeypatch):
+        """A TARGET named "Nowhere", which the catalogue has no row for,
+        beside one named "Mars". ``to_plan`` drops "Nowhere" (nothing to
+        point at), so there is no identity to key it on, and
+        ``progress._single`` has to answer None for its block BEFORE it asks
+        ``target_key``, which refuses a name-only entry with no identity. The
+        block owes nothing, and Mars keeps its frame.
+
+        The branch is also taken when the resolver, a moment after the
+        compile, cannot place a body the compile did place ("Mars could not
+        be placed just now"). There the plan target is left unclaimed, and
+        ``flow_progress`` refuses the plan as foreign: loud, not a wrong
+        count. This test covers only the dropped entry.
+
+        Mutant "progress raises on an unresolved name" (``progress._single``
+        passes ``canonical=None`` for a name the resolver cannot place,
+        instead of returning None) failed, a card the operator could not read
+        because one of its TARGETs is unknown:
+            ValueError: TARGET 'Nowhere' has no typed coordinates, so it is
+            keyed on the catalogue's canonical identity for its name, and
+            none was given: resolve the name (tonight.resolve_target) first
+        (Before this test that mutant passed every owned test file: the one
+        TARGET the other progress tests drop has no name, which never
+        reaches the resolver.)
+        """
+        def knows_mars_only(name, when=None):
+            if str(name).strip().lower() != "mars":
+                return None
+            return _moving(name, when)
+        monkeypatch.setattr(tonight_module, "resolve_target", knows_mars_only)
+        graph = FlowGraph(
+            nodes=[_n("d", "dusk", offset=-30, stop="Dawn", minAlt=30),
+                   _n("lost", "target", x=100, name="Nowhere", ra="",
+                      dec="", rotation=-1),
+                   _n("t", "target", x=100, y=100, name="Mars", ra="",
+                      dec="", rotation=-1),
+                   _n("c", "capture", x=200, filter="Ha", exposure=120,
+                      gain=100, bin="1", count=10, goal=0)],
+            edges=[_e("d", "window", "lost", "arm"),
+                   _e("d", "window", "t", "arm"),
+                   _e("t", "target", "c", "run")])
+        compiled, plan = _compile(graph, DAY_ONE)
+        assert [e["node_id"] for e in compiled["targets"]] == ["lost", "t"]
+        assert [t.name for t in plan.targets] == ["Mars"], \
+            "premise: to_plan dropped the name the catalogue cannot place"
+        mars = plan.targets[0]
+        got = flow_progress(compiled, plan,
+                            self._session(plan,
+                                          [SessionFrame(
+                                              step_id=mars.steps[0].id)]),
+                            flow_id=FLOW)
+        lost, found = got["blocks"]
+        assert (lost["node_id"], lost["panels"][0]["target_id"],
+                lost["total"]) == ("lost", None, 0)
+        assert (found["node_id"], found["panels"][0]["target_id"],
+                found["banked"]) == ("t", mars.id, 1)
+
     def test_control_progress_still_reads_a_typed_block(self):
         """The typed TARGET is found by its geometry, as before.
 
@@ -358,3 +470,258 @@ class TestProgressFindsTheBlock:
                             flow_id=FLOW)
         assert got["blocks"][0]["panels"][0]["target_id"] == plan.targets[0].id
         assert got["blocks"][0]["banked"] == 1
+
+
+# ------------------------------------------------ the canonical identity (#229)
+
+@pytest.fixture
+def shipped_catalogue(monkeypatch):
+    """Put the shipped resolver back for a test about which row a real
+    spelling finds."""
+    monkeypatch.setattr(tonight_module, "resolve_target", REAL_RESOLVER)
+
+
+@pytest.mark.usefixtures("shipped_catalogue")
+class TestTheCanonicalIdentity:
+    """A name-only TARGET is keyed on the catalogue's canonical identity for
+    the name: the catalogue id of a fixed row, the canonical body name of a
+    moving one (#229). Against the shipped catalogue, because which row a
+    spelling finds is the whole question."""
+
+    def test_the_resolver_answers_identity_and_motion(self):
+        """``tonight.resolve_target`` is the one resolver: four spellings of
+        M31 find one fixed row whose id is "M31"; Jupiter in either case is
+        one moving row whose id is its canonical name; a star is fixed; a
+        name the catalogue does not carry is no answer.
+
+        Mutant "identity is the name as typed" (``resolve_target`` returns
+        ``identity=str(name).strip()``) failed:
+            AssertionError: assert ['M 31', 'M31..., 'Andromeda'] ==
+            ['M31', 'M31', 'M31', 'M31']
+              At index 0 diff: 'M 31' != 'M31'
+        Mutant "solar_system not a moving kind" (``MOVING_KINDS`` without
+        ``"solar_system"``) failed:
+            assert (False, False) == (True, True)
+              At index 0 diff: False != True
+        """
+        spellings = ["M 31", "M31", "m31", "Andromeda"]
+        hits = [tonight_module.resolve_target(s) for s in spellings]
+        assert [h.identity for h in hits] == ["M31"] * 4
+        assert not any(h.moves for h in hits)
+        jup, jup_lower = (tonight_module.resolve_target("Jupiter"),
+                          tonight_module.resolve_target("jupiter"))
+        assert (jup.identity, jup_lower.identity) == ("Jupiter", "Jupiter")
+        assert (jup.moves, jup_lower.moves) == (True, True)
+        assert tonight_module.resolve_target("Vega").moves is False
+        assert tonight_module.resolve_target("flow-name") is None
+
+    def test_three_spellings_of_m31_are_one_campaign(self):
+        """"M 31", "M31" and "m31" resolve to one catalogue row, so a TARGET
+        renamed between them keeps its target id and every step id, and the
+        id is the name key of "M31", the catalogue's id. Under A5 they were
+        three keys and a spelling edit restarted the campaign.
+
+        Mutant "key the name as typed" (``target_key`` keys
+        ``name_key(name, ...)``, the stripped name from the entry, as A5
+        did) failed:
+            AssertionError: 'M 31' is keyed apart from 'M31'
+            assert [('535bb08da1...94f49e83b3'])] ==
+            [('e5c49f84a4...99a4872a8e'])]
+              At index 0 diff: ('535bb08da1ce55478403ef34d50b4c17', [...])
+              != ('e5c49f84a40f5590b06b3f4acf9c9556', [...])
+        Mutant "identity is the name as typed" (in ``resolve_target``)
+        failed with the same diff.
+        """
+        by_spelling = {}
+        for spelling in ("M 31", "M31", "m31"):
+            _c, plan = _compile(_graph(name=spelling), DAY_ONE)
+            assert plan.targets[0].name == spelling, \
+                "premise: the target still carries the name as typed"
+            by_spelling[spelling] = plan
+        reference = _ids(by_spelling["M31"])
+        for spelling, plan in by_spelling.items():
+            assert _ids(plan) == reference, \
+                f"{spelling!r} is keyed apart from 'M31'"
+        key = identity.name_key("M31", None)
+        assert by_spelling["M 31"].targets[0].id == identity.target_id(
+            identity.group_id(FLOW, "t", key), 0, 0)
+
+    def test_control_two_different_objects_are_two_keys(self):
+        """M31 and M33 are two rows, so two keys and no shared id: the
+        canonical identity must still tell objects apart.
+
+        Mutant "identity is the row's kind" (``resolve_target`` returns
+        ``identity=str(row["kind"])``, so every deep-sky row is "dso")
+        failed:
+            AssertionError: two objects share an id
+            assert {'1f52f11d563...ce9ee314bdfa'} == set()
+              Extra items in the left set:
+              '327b137653ab572b981675219008b330'
+              ...
+        """
+        _c, m31 = _compile(_graph(name="M 31"), DAY_ONE)
+        _c, m33 = _compile(_graph(name="M 33"), DAY_ONE)
+        shared = _all_ids(m31) & _all_ids(m33)
+        assert shared == set(), "two objects share an id"
+
+    def test_jupiter_a_day_apart_in_either_case_is_one_key(self):
+        """A5 kept, against the shipped ephemeris: "Jupiter" compiled a day
+        apart moves on the sky and keeps every id, and "jupiter" typed on the
+        second night is the same body with the same ids. No coordinate is
+        printed, even on failure: only whether it moved.
+
+        Mutant "key on the resolved coordinates" (``target_key`` returns the
+        geometry key for every entry, S1's rule) failed:
+            AssertionError: Jupiter a day later is keyed apart
+            assert False
+        Mutant "key the name as typed" failed the second half:
+            AssertionError: 'jupiter' is keyed apart from 'Jupiter'
+            assert False
+        """
+        _c, one = _compile(_graph(name="Jupiter"), DAY_ONE)
+        _c, two = _compile(_graph(name="Jupiter"), DAY_TWO)
+        _c, lower = _compile(_graph(name="jupiter"), DAY_TWO)
+        moved = ((one.targets[0].ra_hours, one.targets[0].dec_deg)
+                 != (two.targets[0].ra_hours, two.targets[0].dec_deg))
+        assert moved, "premise: Jupiter moved between the compiles"
+        same_day_two = _ids(two) == _ids(one)
+        assert same_day_two, "Jupiter a day later is keyed apart"
+        same_lower = _ids(lower) == _ids(one)
+        assert same_lower, "'jupiter' is keyed apart from 'Jupiter'"
+
+    def test_progress_finds_the_target_to_plan_keyed(self):
+        """The card reads the block the run filed its frames under. The
+        TARGET says "M 31"; ``to_plan`` keyed it on "M31", the catalogue's
+        id, and ``progress._single`` has to key it on the same identity from
+        the same resolver, or the block claims nothing and the plan reads as
+        foreign.
+
+        Mutant "progress keys the typed name" (``progress._single`` passes
+        ``canonical=name``, the stripped name from the entry, in place of
+        the resolver's identity) failed:
+            ValueError: 1 plan target(s) match no block of this compile
+            (M 31): the plan was not compiled from it with
+            flow_id='flow-name-keyed', so every count read against it would
+            be wrong
+        Mutant "progress keys on geometry" (S1's rule) failed with the same
+        refusal.
+        """
+        compiled, plan = _compile(_graph(name="M 31"), DAY_ONE)
+        ha, lum, _red = plan.targets[0].steps
+        frames = ([SessionFrame(step_id=ha.id) for _ in range(3)]
+                  + [SessionFrame(step_id=lum.id)])
+        session = Session(id="session-1", status="dormant", nights=["n1"],
+                          plan=plan, frames=frames, origin="flow",
+                          origin_id=FLOW)
+        got = flow_progress(compiled, plan, session, flow_id=FLOW)
+        panel, = got["blocks"][0]["panels"]
+        assert panel["target_id"] == plan.targets[0].id
+        assert [(s["filter"], s["banked"]) for s in panel["steps"]] == [
+            ("Ha", 3), ("L", 1), ("R", 0)]
+
+
+class TestTheResolversOwnRules:
+    """What ``tonight.resolve_target`` does with a row, against a stubbed
+    ``catalog.objects.search``: the rules are about row shapes the shipped
+    catalogue does not produce today, so only a stub can reach them."""
+
+    @pytest.fixture(autouse=True)
+    def _shipped(self, monkeypatch):
+        monkeypatch.setattr(tonight_module, "resolve_target", REAL_RESOLVER)
+
+    def _answer(self, monkeypatch, row):
+        from astrodeck.catalog import objects
+        monkeypatch.setattr(objects, "search", lambda *a, **k:
+                            objects.SearchResult(rows=[row], notes=[]))
+        return tonight_module.resolve_target("anything")
+
+    def test_a_row_id_is_trimmed_and_a_row_without_one_is_no_answer(
+            self, monkeypatch):
+        """The identity is the row's id, trimmed, so padding a cache file
+        carries (a satellite name from an element set, say) cannot key one
+        object twice; a row with no id, or a blank one, cannot be keyed and
+        is no answer, as a row with no coordinates is not.
+
+        Mutant "id not trimmed" (``identity = str(row["id"])``) failed:
+            AssertionError: assert ('  ISS (ZARYA)  ', True) ==
+            ('ISS (ZARYA)', True)
+        Mutant "an id-less row keys as empty" (``identity =
+        str(row.get("id") or "").strip()`` and the blank check removed)
+        failed:
+            AssertionError: assert NameResolution(ra_hours=1.0, dec_deg=2.0,
+            identity='', moves=True) is None
+        """
+        base = {"ra_hours": 1.0, "dec_deg": 2.0, "kind": "satellite"}
+        hit = self._answer(monkeypatch, {**base, "id": "  ISS (ZARYA)  "})
+        assert (hit.identity, hit.moves) == ("ISS (ZARYA)", True)
+        assert self._answer(monkeypatch, dict(base)) is None
+        assert self._answer(monkeypatch, {**base, "id": "   "}) is None
+
+    @pytest.mark.parametrize("kind, moves", [
+        ("solar_system", True),
+        ("comet", True),
+        ("satellite", True),
+        ("dso", False),
+        ("star", False),
+        ("coordinates", False),
+        # A kind the catalogue does not ship today reads as fixed, so it
+        # keeps ADOPT's bound until someone decides it moves.
+        ("asteroid", False),
+    ])
+    def test_moves_is_decided_by_the_row_kind(self, monkeypatch, kind, moves):
+        """Every kind the catalogue ships (``catalog/objects.py``,
+        ``brightstars.py``, ``solar_system.py``, ``ephemeris/comets.py``,
+        ``ephemeris/satellites.py``), each read as spec 3.3 lists it: a
+        planet, the Moon, a comet and a satellite move; a deep-sky object, a
+        star and a typed position do not. ``moves`` is what exempts a body
+        from ADOPT's 10 arcmin bound, so a fixed kind read as moving loses
+        #190's guard, and a moving kind read as fixed refuses a pre-S1
+        session of it once the body has moved 10 arcmin. The shipped
+        catalogue only lets a test reach ``solar_system`` (Jupiter)
+        reliably: comets and satellites come from element-set cache files a
+        machine may not have, so only a stub reaches them.
+
+        Mutant "comet not a moving kind" (``MOVING_KINDS`` without
+        ``"comet"``) failed here, and passed every other owned test file:
+            AssertionError: assert ('comet', False) == ('comet', True)
+              At index 1 diff: False != True
+        Mutant "a star is a moving kind" (``MOVING_KINDS`` with ``"star"``)
+        failed:
+            AssertionError: assert ('star', True) == ('star', False)
+              At index 1 diff: True != False
+        Mutant "everything but a deep-sky row moves" (``moves=row.get("kind")
+        != "dso"``) failed the star, typed-position and unknown-kind rows:
+            AssertionError: assert ('coordinates', True) ==
+            ('coordinates', False)
+              At index 1 diff: True != False
+            AssertionError: assert ('asteroid', True) == ('asteroid', False)
+              At index 1 diff: True != False
+        """
+        hit = self._answer(monkeypatch, {"id": "X", "ra_hours": 1.0,
+                                         "dec_deg": 2.0, "kind": kind})
+        assert (kind, hit.moves) == (kind, moves)
+
+
+class TestTargetKeyNeedsTheIdentity:
+    def test_a_name_keyed_entry_with_no_canonical_identity_is_refused(self):
+        """``identity.target_key`` is handed the canonical identity by its
+        caller and never guesses one: a name-only entry with none raises,
+        because keying the typed name (or the geometry) in its place mints
+        an id the other side of the seam does not. A typed entry needs none.
+
+        Mutant "fall back to the typed name" (``target_key`` keys
+        ``name_key(canonical or name, ...)``) failed:
+            Failed: DID NOT RAISE <class 'ValueError'>
+        Mutant "key on the resolved coordinates" failed here too, on the
+        same line: a geometry key needs no identity.
+        """
+        with pytest.raises(ValueError, match="canonical identity"):
+            identity.target_key({"name": "M 31"}, 0.71, 41.27, None,
+                                canonical=None)
+        with pytest.raises(ValueError, match="canonical identity"):
+            identity.target_key({"name": "M 31"}, 0.71, 41.27, None,
+                                canonical="  ")
+        typed = {"name": "M31", "ra": "00h 42m 44s", "dec": "+41 16 09"}
+        assert identity.target_key(typed, 0.71, 41.27, None,
+                                   canonical=None) == \
+            identity.geometry_key(0.71, 41.27, None)

@@ -11,14 +11,29 @@ frames to M16 - 103 degrees away. That is the flaw D5 removes for a re-frame,
 reached through the one door S1 left open.
 
 So a key match counts only when the two targets are within
-``ADOPT_MAX_SEPARATION_ARCMIN`` (10 arcmin) of each other on the sky, by great
-circle, RA in hours. A match further apart is listed as unmatched, with the
-separation in its reason and in ``separation_arcmin``, and nothing is re-keyed.
+``ADOPT_MAX_SEPARATION_ARCMIN`` (10 arcmin, inclusive) of each other on the
+sky, by great circle, RA in hours. A match further apart is listed as
+unmatched, with the separation in its reason and in ``separation_arcmin``, and
+nothing is re-keyed.
 
-Every test names the mutation of ``flows/continuation.py`` it guards and quotes
-the failure it produced, run from a byte backup of the file and restored
-byte-identical after. The existing ADOPT tests in ``test_flows_continue.py``
-all use sessions within 10 arcmin of their compile, and stay green.
+A MOVING BODY IS THE EXCEPTION (#229). A body leaves the 10 arcmin bound
+behind in days (median daily motion from the shipped ephemeris, sampled over
+two years from September 2026: Mars 39 arcmin, Jupiter 7.4, Neptune 1.4; the
+Moon some 13 deg), so the bound refused a pre-S1 session of one as soon as
+the body had moved on. A name the shared resolver (``tonight.resolve_target``)
+finds as a moving row is matched on its canonical body name, in any case, and
+the
+bound is not asked. Deep-sky names keep the bound and the name as typed.
+
+Every test names the mutation of ``flows/continuation.py`` (or of
+``flows/tonight.py``, for the resolver) it guards and quotes the failure it
+produced, run from a byte backup of the file and restored byte-identical
+after. The separation mutants below ("no coordinate check", "separation left
+in degrees", "RA read as degrees", "flat RA difference") were first run on the
+law of cosines, and run again after H2 moved the separation to the atan2 form:
+each failed the same tests with the same numbers. The existing ADOPT tests in
+``test_flows_continue.py`` all use sessions within 10 arcmin of their compile,
+and stay green.
 """
 from __future__ import annotations
 
@@ -26,9 +41,11 @@ import math
 
 import pytest
 
+from astrodeck.flows import continuation
 from astrodeck.flows.continuation import (ADOPT_MAX_SEPARATION_ARCMIN,
                                           AMBIGUOUS, NO_MATCH, adopt_matches,
                                           apply_adoption)
+from astrodeck.flows.tonight import NameResolution
 from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
 from astrodeck.sequence.session import Session, SessionFrame, session_store
 from test_flows_continue import _bytes, _compiled, _stored, rig  # noqa: F401
@@ -299,3 +316,206 @@ async def test_m31_frames_filed_as_m16_are_never_adopted_onto_m16(rig):
     assert r.json()["session"]["adopted"]["matched"] == 0
     assert not set(session_store.load(old.id).accepted_by_step()) \
         & tonight_steps, "Andromeda's frames count toward M16"
+
+
+# ------------------------------------------------- the bound is inclusive
+
+#: Two targets on one RA, the second 10/60 deg north of the first on the
+#: equator. The atan2 separation of these two is EXACTLY 10.0 arcmin, which
+#: the test asserts with ``==`` rather than assumes; the law of cosines
+#: cannot produce 10.0 for any pair (``continuation._separation_arcmin``).
+EXACT_RA, EXACT_DEC_OLD, EXACT_DEC_NEW = 5.0, 0.0, 10.0 / 60.0
+
+
+class TestTheBoundIsInclusive:
+    def test_a_match_exactly_ten_arcmin_away_maps(self):
+        """Spec 5.9: the bound is inclusive. Two fields exactly
+        ``ADOPT_MAX_SEPARATION_ARCMIN`` apart are the same field, and the
+        frames are re-keyed.
+
+        Mutant "'<=' to '<'" (``apart < ADOPT_MAX_SEPARATION_ARCMIN`` in
+        ``adopt_matches``) failed:
+            AssertionError: assert {} == {'b5174731285...37a8f84265c')}
+              Right contains 1 more item:
+              {'b5174731285241c6a452d6d44ea52a4c': (
+                  '86dd9944bf074c29be03ba0892e2f7b0',
+                  '0be02fb1aede48008bcab37a8f84265c')}
+        Mutant "law of cosines" (``_separation_arcmin`` returns
+        ``angular_sep_deg(...) * 60.0`` again) failed the premise, the
+        separation 10.0 cannot be computed by it (and the control below
+        failed its premise the same way; every other ADOPT test here and in
+        test_flows_continue.py passed under it):
+            AssertionError: premise: the separation is exactly 10.0
+            (9.999999999955872)
+            assert False
+        """
+        old = _step("L")
+        s = _session(EXACT_RA, EXACT_DEC_OLD, [old], {0: 2})
+        plan = _plan(EXACT_RA, EXACT_DEC_NEW, _step("L"))
+        apart = continuation._separation_arcmin(s.plan.targets[0],
+                                                plan.targets[0])
+        exact = apart == ADOPT_MAX_SEPARATION_ARCMIN == 10.0
+        assert exact, f"premise: the separation is exactly 10.0 ({apart!r})"
+        m = adopt_matches(s, plan)
+        assert m.mapping == {old.id: (plan.targets[0].id,
+                                      plan.targets[0].steps[0].id)}
+        assert m.frames_matched == 2 and m.unmatched == []
+
+    def test_control_a_hair_past_ten_arcmin_is_unmatched(self):
+        """The first representable Dec north of the exact pair whose
+        separation is more than 10.0 arcmin (one step of Dec is too small to
+        move 10.0 off itself, so the test walks north a step at a time) is
+        not the same field: the bound is 10.0, not "about 10".
+
+        Mutant "bound widened by a rounding tolerance" (``apart <=
+        ADOPT_MAX_SEPARATION_ARCMIN + 1e-9``) failed:
+            AssertionError: assert {'6691c6a41e1...e997548767b')} == {}
+              Left contains 1 more item:
+              {'6691c6a41e144864ac1114a265164704': (
+                  '7e6e89acd12848b6bd4808c4a3e2bebd',
+                  'c4ad98da4c9c43388387ce997548767b')}
+        """
+        old = _step("L")
+        s = _session(EXACT_RA, EXACT_DEC_OLD, [old], {0: 2})
+        dec, apart = EXACT_DEC_NEW, 10.0
+        for _ in range(64):
+            if apart > 10.0:
+                break
+            dec = math.nextafter(dec, math.inf)
+            apart = continuation._separation_arcmin(
+                s.plan.targets[0], Target(name="M16", ra_hours=EXACT_RA,
+                                          dec_deg=dec))
+        plan = _plan(EXACT_RA, dec, _step("L"))
+        apart = continuation._separation_arcmin(s.plan.targets[0],
+                                                plan.targets[0])
+        hair = 10.0 < apart < 10.0 + 1e-12
+        assert hair, f"premise: a hair past 10.0 arcmin ({apart!r})"
+        m = adopt_matches(s, plan)
+        assert m.mapping == {}
+        entry, = m.unmatched
+        assert entry["step_id"] == old.id
+
+
+# ------------------------------------------------------- a moving body (#229)
+
+def _catalogue(name, when=None):
+    """A catalogue that knows two names, whatever their case: Jupiter, a
+    moving body, and M16, a fixed deep-sky row. Where it puts them is not
+    read by ADOPT; only the identity and ``moves`` are."""
+    rows = {"jupiter": NameResolution(ra_hours=5.0, dec_deg=22.0,
+                                      identity="Jupiter", moves=True),
+            "mars": NameResolution(ra_hours=5.0, dec_deg=22.0,
+                                   identity="Mars", moves=True),
+            "m16": NameResolution(ra_hours=18.3, dec_deg=-13.8,
+                                  identity="M16", moves=False)}
+    return rows.get(str(name).strip().lower())
+
+
+class TestAMovingBody:
+    """A pre-S1 session of a planet or a comet is more than 10 arcmin from
+    tonight's position once the body has moved on, which takes days
+    (Jupiter's median daily motion is 7.4 arcmin), so the bound refused it
+    (#229). A body is matched on its canonical name instead, and the
+    bound is not asked; every fixed row keeps the bound and the name as
+    typed."""
+
+    def test_a_body_two_degrees_away_typed_in_another_case_maps(self):
+        """The session was shot as "jupiter" at (5.0 h, +20 deg); tonight's
+        "Jupiter" is at (5.0 h, +22 deg), 120 arcmin away. It is the same
+        body, so the frames are re-keyed.
+
+        Mutant "the bound applies to bodies" (``apart`` measured and compared
+        for every match, as H1 had it) failed:
+            AssertionError: assert {} == {'e472ac46899...81d1830e852')}
+              Right contains 1 more item:
+              {'e472ac46899b447a906abdf83d855c19': (
+                  'a077015cb2df4347bacf45b7ac5505c9',
+                  '337ccde11fbd456cb4b4681d1830e852')}
+        Mutant "a body is keyed on its name as typed" (``_step_key`` keys
+        ``target.name`` whatever ``body`` is) failed:
+            AssertionError: assert {} == {'5a415ff065c...68ae50bc3d9')}
+              Right contains 1 more item:
+              {'5a415ff065cd4a29b7a5bfc44eba1449': (
+                  '36d825091c1a4db8b2963e83dcd7f2e3',
+                  '5bd01b73b29a4d30a28be68ae50bc3d9')}
+        """
+        old = _step("L")
+        s = _session(5.0, 20.0, [old], {0: 3}, name="jupiter")
+        plan = _plan(5.0, 22.0, _step("L"), name="Jupiter")
+        apart = continuation._separation_arcmin(s.plan.targets[0],
+                                                plan.targets[0])
+        far = apart > 10 * ADOPT_MAX_SEPARATION_ARCMIN
+        assert far, "premise: tonight's position is far past the bound"
+        m = adopt_matches(s, plan, resolve=_catalogue)
+        assert m.mapping == {old.id: (plan.targets[0].id,
+                                      plan.targets[0].steps[0].id)}
+        assert m.frames_matched == 3 and m.rest() == []
+
+    def test_control_a_deep_sky_name_keeps_the_bound(self):
+        """M16 is a fixed row, so the bound still holds for it with the same
+        resolver that exempts Jupiter: 25 arcmin apart is listed, not mapped
+        (the #190 case at the route stays green too:
+        ``test_m31_frames_filed_as_m16_are_never_adopted_onto_m16``).
+
+        Mutant "every resolved name is a body" (``_bodies`` returns the
+        identity whether or not the row moves) failed:
+            AssertionError: assert {'9179cb99dcf...686e3891f37')} == {}
+              Left contains 1 more item:
+              {'9179cb99dcfb415cb6173a409aa71d07': (
+                  '3190717db41a47ffbc4cf22597fe21b6',
+                  '10d515771a97432dac09a686e3891f37')}
+        and so did seven other tests in this file whose names the shipped
+        catalogue resolves (every "M16" test beyond the bound), among them
+        the #190 route test:
+            AssertionError: {'frames': 3, 'matched': 3, 'session_id':
+            'f21324639c4645008ae0ac2f1213500d', 'unmatched': []}
+            assert (3 == 3 and 3 == 0)
+        """
+        old = _step("L")
+        s = _session(5.0, 20.0, [old], {0: 3}, name="M16")
+        plan = _plan(5.0 + _ra_offset_h(25.0, 20.0), 20.0, _step("L"),
+                     name="M16")
+        m = adopt_matches(s, plan, resolve=_catalogue)
+        assert m.mapping == {}
+        entry, = m.unmatched
+        assert entry["separation_arcmin"] == pytest.approx(25.0, abs=0.01)
+
+    def test_control_two_different_bodies_do_not_match(self):
+        """Mars frames are not Jupiter's: a body key carries the body's
+        name, so two bodies are two keys.
+
+        Mutant "a body key drops the name" (``_step_key`` writes
+        ``("body",)`` for every body) failed:
+            AssertionError: assert {'c91df29e6f8...3e66405c832')} == {}
+              Left contains 1 more item:
+              {'c91df29e6f844d599592d1c2adb367ee': (
+                  '7160d0f03a584863aad78f818d5d1d07',
+                  '879a3d83479d4c3b95e8a3e66405c832')}
+        """
+        s = _session(5.0, 20.0, [_step("L")], {0: 1}, name="Mars")
+        m = adopt_matches(s, _plan(5.0, 22.0, _step("L"), name="Jupiter"),
+                          resolve=_catalogue)
+        assert m.mapping == {}
+        assert [e["reason"] for e in m.unmatched] == [NO_MATCH]
+
+    def test_the_default_resolver_is_the_shipped_catalogue(self):
+        """With no ``resolve`` handed in, ADOPT asks ``tonight.resolve_target``,
+        the resolver ``to_plan`` points a name with: the shipped catalogue
+        says Jupiter moves, so the route's ADOPT (``api/app.py`` passes no
+        resolver) maps it across the sky too.
+
+        Mutant "no resolver by default" (``adopt_matches`` uses ``resolve or
+        (lambda name: None)``) failed:
+            AssertionError: [{'binning': 1, 'exposure_s': 60.0, 'filter': 'L',
+            'frame_type': 'Light', ...}]
+            assert [] == ['c33a3cdf00a...538fe9f5299e']
+              Right contains one more item: 'c33a3cdf00a246f6a5f5538fe9f5299e'
+        Mutant "solar_system not a moving kind" (in ``tonight``) failed here
+        the same way, and so did "the bound applies to bodies" and "a body is
+        keyed on its name as typed".
+        """
+        old = _step("L")
+        s = _session(5.0, 20.0, [old], {0: 1}, name="jupiter")
+        plan = _plan(5.0, 22.0, _step("L"), name="Jupiter")
+        m = adopt_matches(s, plan)
+        assert list(m.mapping) == [old.id], m.unmatched
