@@ -18,8 +18,10 @@ off the event loop and outside the store's write lock (#249).
 ``run_flow`` in ``api/app.py`` owns the write lock, the refusals and the
 start.
 
-* ``plan_replace_report`` - which steps carry over, which are new, and which
-  steps that hold frames the new plan no longer has. It is also what
+* ``plan_replace_report`` - which steps carry over, which are new, which
+  steps that hold frames the new plan no longer has, and which of those sit
+  on a panel the new plan skips (spec 5.9, 2.5: skipping is not a change of
+  identity, so those are not dropped). It is also what
   ``PATCH /api/sessions/{id}`` reports for a plan edit, which is why it lives
   here and both call it: two copies of "what counts as dropped" would drift.
 * ``saved_before_s1`` / ``adopt_matches`` / ``apply_adoption`` - a session
@@ -59,15 +61,26 @@ class ReplaceReport:
     ``dropped_frames`` is how many ledger entries sit on those steps. They are
     not deleted - the frames list is never edited by a plan replace - they
     simply stop counting toward anything.
+
+    ``skipped`` lists, apart from ``dropped``, the old steps that hold frames
+    and that the new plan lacks BECAUSE their panel is skipped: the old
+    target that holds the step is in a ``skipped_ids`` of the new plan's
+    groups. ``skipped_frames`` is how many ledger entries sit on them. They
+    stop counting only while the panel is skipped, and re-enabling it brings
+    the same step ids back (``kept``), so they are not a loss to refuse.
     """
     kept: list[str]
     new: list[str]
     dropped: list[str]
     dropped_frames: int
+    skipped: list[str] = field(default_factory=list)
+    skipped_frames: int = 0
 
     def merge(self) -> dict[str, list[str]]:
         """The ``merge`` object ``PATCH /api/sessions/{id}`` has always
-        answered, key for key."""
+        answered, key for key. ``skipped`` is not in it: before S3 no compile
+        skips a panel, and a key added here changes the answer of every
+        PATCH, skip or none."""
         return {"kept": self.kept, "new": self.new, "dropped": self.dropped}
 
 
@@ -78,17 +91,63 @@ def plan_replace_report(session: Session,
     A REPORT, NOT A MERGE. Neither caller merges anything: both replace
     ``session.plan`` wholesale afterwards. The refusal on dropped steps is
     CONTINUE's alone (spec 5.9); a PATCH keeps reporting and never refusing.
+
+    A SKIPPED PANEL IS NOT DROPPED (spec 5.9, 2.5; #189 S1 item 8, built in
+    S2). Skip is not part of a panel's identity (3.3), so the compile drops
+    the panel from its targets and names its deterministic target id in its
+    group's ``skipped_ids`` (3.4). The old steps of a target so named are
+    listed as ``skipped`` and never as ``dropped``, so CONTINUE does not
+    refuse them. Read from EVERY group of the new plan: a panel is skipped by
+    the block it belongs to, and the target id already says which block that
+    is, since the block's node id and anchor are in it.
+
+    A STEP COMING BACK IS KEPT. Re-enabling the panel on a later night
+    compiles the same step ids again, and by then ``session.plan`` is the
+    plan the skip was continued with, which lacks them. Their frames are
+    still in the ledger, which counts by step id alone, so they count again
+    at once. Reported as ``new`` they would read as steps starting from
+    zero, which they are not: a step of the new plan that the ledger holds
+    frames on is ``kept``, whether or not the old plan still lists it. That
+    is as true of a step a CONTINUE with ``accept_dropped`` let go of and a
+    later edit restored, for the same reason.
+
+    A SKIP ONCE CONTINUED IS STILL THE SESSION'S TO ANSWER FOR (#282). The
+    plan the skip was continued with lists none of the panel's steps, so
+    read from ``session.plan``'s targets alone, the panel's frames would be
+    out of sight of the refusal from then on: re-enabling it after its
+    recipe changed, or re-framing its block, would let them go without a
+    word, or name fewer subs than stop counting. So the steps that the
+    session's frames on a panel skipped in ``session.plan``'s own
+    ``skipped_ids`` sit on count as old steps for ``dropped``
+    (``parked``), and a panel skipped two nights running is exempt through
+    its frames, which is all the session still has of it. The price is one
+    question asked twice: a step of that panel let go of under
+    ``accept_dropped`` BEFORE it was skipped is named again when the panel
+    comes back, since nothing still says it was let go of. Asked twice,
+    never silently lost.
     """
     old_ids = {st.id for t in session.plan.targets for st in t.steps}
     new_ids = {st.id for t in new_plan.targets for st in t.steps}
     with_frames = {f.step_id for f in session.frames}
-    dropped = sorted((old_ids - new_ids) & with_frames)
-    gone = set(dropped)
+    skipped_targets = {tid for g in new_plan.groups for tid in g.skipped_ids}
+    held_back = {tid for g in session.plan.groups for tid in g.skipped_ids}
+    parked = {f.step_id for f in session.frames if f.target_id in held_back}
+    on_skipped = ({st.id for t in session.plan.targets
+                   if t.id in skipped_targets for st in t.steps}
+                  | {f.step_id for f in session.frames
+                     if f.target_id in skipped_targets})
+    lost = ((old_ids | parked) - new_ids) & with_frames
+    dropped = sorted(lost - on_skipped)
+    skipped = sorted(lost & on_skipped)
+    gone, set_by = set(dropped), set(skipped)
     return ReplaceReport(
-        kept=sorted(old_ids & new_ids),
-        new=sorted(new_ids - old_ids),
+        kept=sorted(new_ids & (old_ids | with_frames)),
+        new=sorted(new_ids - old_ids - with_frames),
         dropped=dropped,
-        dropped_frames=sum(1 for f in session.frames if f.step_id in gone))
+        dropped_frames=sum(1 for f in session.frames if f.step_id in gone),
+        skipped=skipped,
+        skipped_frames=sum(1 for f in session.frames
+                           if f.step_id in set_by))
 
 
 # ------------------------------------------------------------------ ADOPT

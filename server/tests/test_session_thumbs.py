@@ -171,7 +171,26 @@ async def test_abort_drains_pending_thumb_tasks(sim_hub, monkeypatch, bus_lines)
     orphaned task ("Task was destroyed but it is pending" at interpreter
     exit). ``abort()`` must now cancel every pending thumb task and await it
     so teardown is clean (task set empties, no warnings) and bounded (a slow
-    encoder can't hang shutdown)."""
+    encoder can't hang shutdown).
+
+    UPDATED FOR S2 (#270, #289). "complete" is published before the run's
+    wind-down, and the case used to abort as soon as it saw it. S2 made the
+    wind-down's guider stop a task of its own, reaped by a 0.25 s poll
+    (``_reap_by``, ``IDLE_STOP_FINISH_POLL_S``) rather than awaited, so the
+    wind-down now outlives "complete" by up to one poll. The abort then landed
+    inside it, cancelled the run and logged "sequence aborted", and the count
+    below moved (3 of 6 runs on this machine, 0 of 8 on a tree without S2),
+    for a reason outside the drain this case grades. So it waits for the run
+    to finish winding down first; the thumb render stays gated shut, pending,
+    all the same. Passed 10 of 10 after the wait was added.
+
+    RED under mutant "abort does not drain" (``await
+    self._drain_thumb_tasks()`` removed from ``abort``), observed:
+
+        E           AssertionError: assert False
+        E            +  where False = <built-in method done of
+                     _asyncio.Task object at 0x...>()
+    """
     gate = threading.Event()
 
     def _gated_to_jpeg(data, **kw):
@@ -185,6 +204,10 @@ async def test_abort_drains_pending_thumb_tasks(sim_hub, monkeypatch, bus_lines)
     eng.start(plan)
     try:
         assert await wait_for(lambda: eng.state.get("state") == "complete")
+        # ...and the wind-down behind "complete" has ended, so the abort
+        # below has only the drain to do.
+        assert await wait_for(lambda: not eng.running), \
+            "the run never finished winding down"
         # the run's own frame render is gated shut -> still pending right now
         assert len(eng._thumb_tasks) == 1
         pending_task = next(iter(eng._thumb_tasks))

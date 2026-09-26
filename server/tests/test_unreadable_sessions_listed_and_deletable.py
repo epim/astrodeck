@@ -15,9 +15,11 @@ Every scanning reader skipped all three without a word, so nothing in the
 API could see or remove them: a shell on the rig or a factory reset, both a
 human touching the rig. Now ``GET /api/sessions`` lists each as a row with
 ``status: "unreadable"``, the reason and the file's mtime, and no ledger
-field, sorted in with the rest; DELETE removes it, its ``.bak`` and its
-thumbs inside the write-locked section it already had (#212). The readers
-that must never treat it as a session still skip it.
+field, sorted in with the rest; DELETE removes it inside the write-locked
+section it already had (#212), and keeps a ``.bak`` beside it with the
+thumbs, since that can be the last good copy of the ledger (#266,
+test_unreadable_delete_keeps_backup.py). The readers that must never treat
+it as a session still skip it.
 
 Each mutant was run from a byte-for-byte backup of the file it changes and
 the file was restored byte-identical (sha256 compared) afterwards. Failures
@@ -198,8 +200,9 @@ def test_each_kind_is_listed_with_its_reason(client, kind):
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_each_kind_is_deletable(client, kind):
-    """DELETE removes the file, its ``.bak`` and its thumbs directory, and the
-    list no longer shows it.
+    """DELETE removes the file, keeps its ``.bak`` and its thumbs directory
+    (#266: even a ``.bak`` that is not a ledger, since the delete never reads
+    it), and the list no longer shows it.
 
     RED under mutant "delete loads the session first" (the route's first
     ``except SessionUnreadable: s = None`` removed, i.e. ``session_store.
@@ -226,6 +229,12 @@ def test_each_kind_is_deletable(client, kind):
 
         [not_json] E   AssertionError: {"detail":"session not found"}
         E   assert 404 == 200
+
+    RED under mutant "delete unlinks both" (#266: ``delete``'s ``keep =
+    keep_backup and bak.is_file()`` made ``keep = False``), every kind:
+
+        [not_json] E   assert (False, False, False) == (False, True, True)
+        E     At index 1 diff: False != True
     """
     path = _write(kind)
     bak, side = _side_files(SID)
@@ -233,9 +242,9 @@ def test_each_kind_is_deletable(client, kind):
     r = client.delete(f"/api/sessions/{SID}")
 
     assert r.status_code == 200, r.text
-    assert r.json() == {"deleted": SID}
-    assert (path.exists(), bak.exists(), side.exists()) == (False, False,
-                                                             False)
+    assert r.json()["deleted"] == SID
+    assert (path.exists(), bak.exists(), side.exists()) == (False, True,
+                                                             True)
     assert client.get("/api/sessions").json()["sessions"] == []
 
 

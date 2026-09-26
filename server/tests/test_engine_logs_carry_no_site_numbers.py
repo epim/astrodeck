@@ -262,6 +262,26 @@ async def _rig(pair, root):
         mp.setattr(Hub, "_enqueue_thumb", lambda self, path: None)
         mp.setattr(Hub, "ensure_status_poller",
                    lambda self: self.ensure_safety_poller())
+        # A THIRD RACER: THE HOP'S WALL TIME (#299). The engine prices
+        # each completed setup into the ETA's hop term from
+        # ``time.monotonic()`` (`_setup_target`, #189 U-07), and
+        # test_idle_park_hold's `_Clock` fakes only ``time()``, so the sample
+        # was the machine's real clock: 0 (dropped, the 150 s seed stays)
+        # when the setup finished inside one tick of Windows' 15.6 ms
+        # monotonic clock, one tick (0.0156 s, priced as about nothing) when
+        # it crossed one. Which happened at which site was chance, and the
+        # ETA's ``events_cost_s`` and ``eta_s`` then differed by 150 between
+        # the two nights, read as a number that moves with the site. S2's
+        # longer hop made the crossing likely enough to see: before this
+        # line the file failed about one run in five (observed: 1 of 8, 2 of
+        # 5, 1 of 6 and one full-suite run, each on a different family),
+        # after it 10 of 10 passed. Observed, verbatim:
+        #     AssertionError: a number a viewer is shown moves with the site
+        #     (idle_flip_point): {'a': ['0', '0', '1680', '1722'], 'b':
+        #     ['150', '150', '1830', '1872']}
+        # So within these nights ``monotonic()`` reads the fake clock as well,
+        # as tests/_group_harness.py's clock does.
+        mp.setattr(_Clock, "monotonic", lambda self: self.t, raising=False)
         real_render = SimCamera._render
 
         def render(self, *a, **k):

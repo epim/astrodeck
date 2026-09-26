@@ -166,6 +166,7 @@ async def _held_tick(lad, monkeypatch, where: tuple[float, float]):
     bus = events.bus
     bus.flush()
     monkeypatch.setattr(bus, "_history", deque(maxlen=200))
+    monkeypatch.setattr(bus, "_history_unflagged", deque(maxlen=200))
     monkeypatch.setattr(bus, "night_log", None)
     lines: list[tuple[str, str, str]] = []
 

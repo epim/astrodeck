@@ -253,6 +253,57 @@ def _gp_measured_points(window) -> int:
     return sum(1 for row in window if float(row[2]) != GP_DARK_VARIANCE)
 
 
+#: ``GpParams::retain_max_pct_period`` (gaussian_process.rs; upstream
+#: ``noreset_max_pct_period``): how much of one kernel period, in percent, a
+#: saved PPEC window may sit unfed and still be restored. The restore gate
+#: lives in the engine; the save side needs the same answer before any engine
+#: is asked (#253, S2 orchestrator ruling 3), and the wheel does not expose the
+#: horizon, so it is mirrored and pinned to the wheel by test.
+GP_RETAIN_MAX_PCT_PERIOD = 40.0
+
+#: ``GpParams::default().periodic_period``: the kernel period, s, the
+#: restoring engine compares the downtime against. ``start_guiding`` builds a
+#: new engine every time and ``make_algo`` gives its PPEC axis the defaults, so
+#: the period a session learned is gone by the restore; the learned period is
+#: not persisted, and it must not be while the restore would ignore it.
+GP_DEFAULT_KERNEL_PERIOD_S = 200.0
+
+
+def gp_restore_horizon_s(period_s=None) -> float:
+    """The downtime, s, at and past which the engine will not restore a saved
+    PPEC window: ``GP_RETAIN_MAX_PCT_PERIOD`` percent of the kernel period
+    (#253, S2 orchestrator ruling 3). 80 s for the default engine.
+
+    The period is the file's ``period_s`` when it holds a positive finite
+    number, else ``GP_DEFAULT_KERNEL_PERIOD_S``. No writer puts ``period_s``
+    in the file today, so every real file takes the default, which is what
+    the restore compares against. The key is honoured for the day a writer
+    persists the learned period and the restore applies it; anything that is
+    not a period is ignored, as the restore ignores the key, because trusting
+    zero shrinks the horizon to nothing and trusting infinity lets a stale
+    file protect itself forever (#253 again)."""
+    period = GP_DEFAULT_KERNEL_PERIOD_S
+    if (type(period_s) in (int, float) and math.isfinite(period_s)
+            and period_s > 0):
+        period = float(period_s)
+    # restore_window's own expression, operation for operation, so the float
+    # compared against is the engine's to the last bit (0.4 * 200.0 is 80.0).
+    return max(GP_RETAIN_MAX_PCT_PERIOD / 100.0, 0.0) * period
+
+
+def gp_could_restore(downtime_s: float, period_s=None) -> bool:
+    """Whether the engine's ``restore_gp_window`` would restore a saved window
+    after ``downtime_s`` (#253, S2 orchestrator ruling 3): the same range test
+    as ``restore_window``, ``(0.0..horizon).contains(&downtime_s)``. Strictly
+    under the horizon, as upstream's ``<``: exactly the horizon resets. A
+    negative downtime (the host clock stepped back past the stamp) is refused
+    there as untrustworthy, so it is refused here. The engine's other refusal,
+    a window of fewer than two points, is not mirrored: the save gate that
+    asks this blocks only on a file that out-counts a window of at least
+    ``GP_MIN_MEASURED_POINTS`` measured rows."""
+    return 0.0 <= downtime_s < gp_restore_horizon_s(period_s)
+
+
 def _ra_rate_ratio(cal_dec_rad: float, now_dec_rad: float) -> float | None:
     """How much of the calibrated RA rate survives at ``now_dec_rad``.
 
@@ -2671,7 +2722,17 @@ class NativeGuider(Guider):
         ``GP_MIN_MEASURED_POINTS`` measured rows, as many as the engine needs
         before it predicts, and at least as many as the saved model's
         window. A skipped save says why, once; the saved model stays as it
-        was, byte for byte."""
+        was, byte for byte.
+
+        A SAVED MODEL PROTECTS ITSELF ONLY WHILE IT COULD STILL BE RESTORED
+        (#253, S2 orchestrator ruling 3). The engine restores a saved window
+        only when ``now - dumped_at`` is under ``gp_restore_horizon_s`` (80 s
+        on the default engine), so an older file will never be restored
+        again. #243's rule counted it anyway, and after one long guided night
+        its count blocked every shorter session's save: each quick stop and
+        start (the stand-down every mosaic hop makes, spec 6.10) then began
+        PPEC from nothing instead of keeping the model it had moments
+        before."""
         if not self.profile_id or self._engine is None:
             return
         if self._cal_discarded:
@@ -2691,9 +2752,8 @@ class NativeGuider(Guider):
                         f"{GP_MIN_MEASURED_POINTS} the model needs before it "
                         f"predicts; any saved model is kept", "guide")
                 return
-            # Not yet asked: whether the saved model could still be restored.
-            # A file past the engine's retention window never will be, and its
-            # count still blocks every shorter session's save (#253).
+            # 0 for a file the next start could no longer restore (#253, S2
+            # orchestrator ruling 3): its count protects nothing.
             saved = self._saved_gp_measured_points()
             if saved > measured:
                 bus.log("info",
@@ -2717,7 +2777,8 @@ class NativeGuider(Guider):
 
     def _saved_gp_measured_points(self) -> int:
         """How many measured rows the profile's saved PPEC window holds (#243),
-        0 when there is no file or it cannot be read. Quiet, unlike
+        0 when there is no file, it cannot be read, or the next start could
+        no longer restore it (#253, S2 orchestrator ruling 3). Quiet, unlike
         ``_load_gp_window``: this runs at a stop, where "starting fresh" would
         be the wrong sentence, and a file the restore would ignore has nothing
         in it worth protecting from a save."""
@@ -2733,9 +2794,21 @@ class NativeGuider(Guider):
             # without a stamp, or with rows that are not four numbers, the
             # restore raises and starts fresh, and a count that skipped these
             # let a file nothing will ever restore block every save.
-            float(data["dumped_at"])
+            dumped_at = float(data["dumped_at"])
             window = [(float(t), float(m), float(v), float(c))
                       for t, m, v, c in data["window"]]
+            # #253, S2 orchestrator ruling 3: the count means something only
+            # while the restore would still take the file, asked with the
+            # restore's own downtime (``_restore_gp_window``: now minus the
+            # stamp). Past the horizon it never will again, and a count kept
+            # anyway blocks every shorter session's save. A stamp after now
+            # is refused too, as the restore refuses it: the clock has stepped
+            # back by an unknown amount, and a file that protected itself
+            # until the clock caught up could block saves for as long as the
+            # step was, which is #253 again from the other end.
+            if not gp_could_restore(time.time() - dumped_at,
+                                    data.get("period_s")):
+                return 0
             return _gp_measured_points(window)
         except Exception:  # noqa: BLE001 - an unreadable file protects nothing
             return 0

@@ -136,8 +136,75 @@ class Target(BaseModel):
     # compile is to set it on every panel (spec 3.3). False keeps the sweep at
     # every target start that every saved plan has always had.
     autofocus_skip_if_fresh: bool = False
+    # --- mosaic panels (#189 S2, spec 3.4; additive — None = not a panel) ---
+    #
+    # The panel's place in its block's grid, 0-based: row 0 col 0 is panel
+    # "1-1". The compile names the panel "<name> <row+1>-<col+1>" as well,
+    # and these keep the grid position where nothing has to parse a name to
+    # find it: the order policy, the FITS PANEL keyword, the published
+    # ``state.group.panel`` and the report all read it here. None on every
+    # target that is not a TARGET block's panel, which is every target saved
+    # before S2.
+    panel_row: int | None = None
+    panel_col: int | None = None
+    # "Wait for the mosaic" (spec 1.6): the id of a TargetGroup this target
+    # follows. While that group has live members the target waits; once the
+    # group is set aside tonight it is skipped (not done); once the group is
+    # complete it is ready. None is today's scheduling: no target waits for
+    # another. ``plan_identity_errors`` refuses an id that names no group,
+    # because a gate on nothing would never open.
+    after_group: str | None = None
     # --- autorun scheduling (Batch 4b; additive — default = run-now) ---
     schedule: Schedule = Field(default_factory=Schedule)
+
+
+class TargetGroup(BaseModel):
+    """One TARGET block with a grid, as the engine runs it (#189 U-01, spec
+    3.4). Its MEMBERS are the targets whose ``mosaic_group`` equals ``id``;
+    the group holds what the panel loop needs that no single panel does.
+
+    Everything is additive. A plan with ``groups == []`` runs exactly as it
+    did, and a ``mosaic_group`` with no entry here (a Plan-UI mosaic) keeps
+    today's panel-first behaviour, so membership is only ever read through a
+    group that exists.
+
+    ``id`` has no default, unlike every other model's here: it is the key the
+    members repeat, and a group whose id were minted fresh would name no
+    member at all."""
+    id: str
+    name: str = ""                           # the block's name, for the log
+    kind: Literal["mosaic"] = "mosaic"
+    # "rotate" visits each panel in turn for ``visit_passes`` filter passes
+    # and comes back (the loop wire); "sequential" runs the chosen panel to
+    # completion before the next (no loop wire, spec 5.1).
+    mode: Literal["rotate", "sequential"] = "rotate"
+    # The visit bound (spec 5.3): full filter passes per visit, and a floor
+    # on the visit's length checked at round boundaries. The ceilings are
+    # the TARGET block's own (``passes`` 1 to 20, ``minVisit`` 0 to 180 min).
+    visit_passes: int = Field(1, ge=1, le=20)
+    visit_min_s: float = Field(0.0, ge=0, le=10800)
+    order: Literal["least_complete", "setting_first", "grid"] = \
+        "least_complete"
+    # True: a panel that does not centre is deferred, never shot off its
+    # tile (spec 5.6 step 3). For a mosaic, the block's "If not centred:
+    # Auto" means this (spec Appendix B).
+    require_centred: bool = True
+    # Consecutive failed visits (a deferral, or a visit that accepts nothing
+    # while the others accept) before a panel is set aside for tonight
+    # (spec 5.1, 6.8). Bounded, so a star-poor panel is never a spin.
+    max_failed_visits: int = Field(3, ge=1, le=20)
+    pa_deg: float | None = None              # layout angle, CROTA2 convention (#145)
+    rotate: bool = False                     # members carry rotation_deg = pa_deg
+    # Computed in ``to_plan`` from the geometry, after convergence has taken
+    # its share of the overlap (spec Appendix A.2). None disables the angle
+    # check.
+    angle_tolerance_deg: float | None = None
+    # Target ids of the panels the operator skipped. They are not members
+    # (the compile drops them), and CONTINUE reads this to tell a skipped
+    # panel from a dropped one (spec 5.9).
+    skipped_ids: list[str] = []
+    # Provenance only (rows, cols, overlap, fov, key): nothing steers by it.
+    geometry: dict = {}
 
 
 _HHMM_RE = re.compile(r"^(\d{2}):(\d{2})$")
@@ -383,6 +450,12 @@ class SequencePlan(BaseModel):
     # targets×steps plan. Empty by default so existing plans deserialize
     # unchanged and the engine's eval path is a guarded no-op.
     instructions: list[Instruction] = []
+    # --- mosaic groups (#189 S2, spec 3.4; ADDITIVE — [] => byte-identical
+    # run). One entry per TARGET block with a grid; see ``TargetGroup``.
+    # Whether a plan's groups are coherent (members, calibration, the
+    # ``after_group`` gates) is ``plan_identity_errors``'s question, asked at
+    # the start paths, and never a validator's: see there.
+    groups: list[TargetGroup] = []
 
     def total_frames(self) -> int:
         return sum(s.count for t in self.targets for s in t.steps)
@@ -512,17 +585,29 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
       by step id alone (``Session.accepted_by_step``), so one step's frames
       would count for every copy, and in accepted mode copies 2 to N read
       complete the moment the first finishes;
+    * a GROUP WITH NO MEMBERS: no target's ``mosaic_group`` equals its id.
+      Every panel skipped, or a hand edit; the group driver would run a mosaic
+      of nothing;
+    * a CALIBRATION TARGET IN A GROUP. Darks, bias and flats skip the slew,
+      the centring, the focus and the guider, and a member is hopped to,
+      centred and angle-checked, so the two cannot both hold. A calibration
+      target whose ``mosaic_group`` names no group is in no group;
+    * an ``after_group`` THAT NAMES NO GROUP: a gate on nothing never opens;
     * a repeated target NAME that an enabled instruction names. A jump resolves
       the first target with the name and an ``only_target`` gate fires on every
-      one, so the rule cannot say which it meant.
+      one, so the rule cannot say which it meant;
+    * EVERY repeated target name in a plan that carries groups. The log, the
+      published state and the set-aside report speak in panel labels and
+      target names (spec 6.9), and a panel's label is its block's name, so two
+      targets with one name leave no sentence that says which.
 
-    A repeated name that no rule names is NOT refused: the classic Plan appends
-    the same object twice routinely (``store.ts`` ``addTargetsToPlan``), each
-    copy has its own ids and counts on its own, and refusing it would strand
-    dormant sessions. ``duplicate_name_warning`` says it instead. S2 adds the
-    group checks here (a group with no members, a calibration member, an
-    ``after_group`` naming no group) and refuses every repeated name in a plan
-    that carries groups.
+    A repeated name is otherwise NOT refused: the classic Plan appends the same
+    object twice routinely (``store.ts`` ``addTargetsToPlan``), each copy has
+    its own ids and counts on its own, and refusing it would strand dormant
+    sessions. ``duplicate_name_warning`` says it instead. "Carries groups"
+    means ``plan.groups``, not any ``mosaic_group``: a Plan-UI mosaic sets
+    ``mosaic_group`` with no group entry and keeps today's behaviour, and its
+    stored sessions must keep resuming.
 
     CALLED ON EVERY ``engine.start`` PATH, NEVER A MODEL VALIDATOR. ``SessionStore
     .load_all`` and ``active`` skip a file that fails validation without a word,
@@ -540,19 +625,46 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
         where = ", ".join(f"{steps[i][0]!r} step {steps[i][1]}" for i in at)
         errors.append(f"step id {sid!r} is used by {len(at)} steps ({where}), "
                       f"and frames are counted by step id alone")
+    group_ids = {g.id for g in plan.groups}
+    members = {t.mosaic_group for t in targets}
+    for g in plan.groups:
+        if g.id not in members:
+            label = f"group {g.id!r}" + (f" ({g.name!r})" if g.name else "")
+            errors.append(f"{label} has no members: no target's mosaic_group "
+                          f"names it, so it is not a mosaic")
+    for t in targets:
+        if t.calibration and t.mosaic_group in group_ids:
+            errors.append(f"calibration target {t.name!r} is in group "
+                          f"{t.mosaic_group!r}; darks, bias and flats are shot "
+                          f"where the mount is, and a group member is a "
+                          f"mosaic panel")
+    for t in targets:
+        if t.after_group is not None and t.after_group not in group_ids:
+            errors.append(f"target {t.name!r} waits for group "
+                          f"{t.after_group!r}, and the plan has no such group")
     named = _names_rules_resolve(plan)
     for name, at in _repeats([t.name for t in targets]).items():
+        # One sentence per name. A rule naming it is the sharper reason.
         if name in named:
             errors.append(f"target name {name!r} is used by {len(at)} targets "
                           f"and an instruction names it, so the rule cannot "
                           f"tell them apart")
+        elif plan.groups:
+            errors.append(f"target name {name!r} is used by {len(at)} targets "
+                          f"and the plan carries groups, so a panel label "
+                          f"cannot tell them apart")
     return errors
 
 
 def duplicate_name_warning(plan: SequencePlan) -> str | None:
     """The warning for every repeated target name ``plan_identity_errors`` does
     not refuse, or None. The start goes ahead; this says what the operator may
-    not have meant, and what would break if they later added a rule by name."""
+    not have meant, and what would break if they later added a rule by name.
+
+    A plan that carries groups has no such name: every repeat in it is
+    refused, and a refused name is not offered as a warning as well."""
+    if plan.groups:
+        return None
     named = _names_rules_resolve(plan)
     repeats = [(name, len(at))
                for name, at in _repeats([t.name for t in plan.targets]).items()

@@ -2,7 +2,13 @@
 // small-angle approximation (`sensor/fl` instead of `2*atan(sensor/2/fl)`)
 // turns the 23.5mm@530mm worked example red; swapping the >2 / <0.7
 // thresholds turns the sampling-verdict boundaries red; not rotating the
-// base order turns "panelOrder cycles" red.
+// base order turns "panelOrder: 2x1 mosaic, pass 0 is row-major; pass 1
+// rotates the start" red.
+//
+// That last case is this function's ONLY caller. It pins what `panelOrder`
+// computes, not what a night does: the engine shoots a Plan mosaic's panels
+// panel-first (#154), and the Sky copy that used to cite this order as the
+// night's is pinned to panel-first in `hubs/sky/__tests__/mosaicCopyPanelFirst.test.ts`.
 import { fovDeg, mosaicPitch, panelOrder, samplingArcsecPerPx, samplingVerdict } from "../fov";
 
 let passed = 0, failed = 0; const failures: string[] = [];

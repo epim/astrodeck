@@ -67,19 +67,32 @@ spell, retries first after ``RETRY_INTERVAL_S`` and then every
 ``NO_LIGHT_RETRY_S``, and holds in words; a solve that works or a cloud
 verdict ends the spell, and so does the end of the night. A cloud verdict
 keeps the ten-minute retry and sends nothing, as before. See ``tick``.
+
+THE RE-CENTRE GOES WHERE THE RUN WILL SHOOT, AT ITS ANGLE (#159, I-13;
+mosaic spec 5.9, 3.4, Revision 2 ruling 9). The ladder used to slew to the
+plan's first light target whatever the ledger said: a finished target, a
+mosaic's panel 1-1 whatever the panel order, a panel set aside tonight, and
+never with an angle. A finished first target below its start floor refused
+the whole resume while the target the run would shoot stood high. Now
+``recentre_candidates`` lists what the run can still shoot tonight in the
+order it takes it, the ladder re-centres on the first of those that clears
+its floor and the slew limits, and ``commanded_rotation`` gives it the
+planned angle or the locked one. See step 3 of ``_recover``.
 """
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 
 from ..config import config_store
 from ..devices.base import GotoRefused
-from ..events import bus
+from ..events import bus, night_key
 from ..solve.light import CLOUD, NO_LIGHT_WORDS, FailedSolveError, NoLightError
 from . import schedule
-from .models import (Target, duplicate_name_warning, plan_identity_errors,
-                     quota_unbounded, replan_cooling)
+from .models import (Target, TargetGroup, duplicate_name_warning,
+                     plan_identity_errors, quota_unbounded, replan_cooling)
+from .panel_order import OrderSnapshot, order_panels
 from .policy import resolve_policy
 from .session import Session, SessionUnreadable, session_store
 
@@ -213,6 +226,218 @@ def resume_expected_tonight(hub, now: float | None = None) -> Session | None:
                        time.time() if now is None else now):
         return None
     return armed
+
+
+#: The refusal for a session that has nothing to shoot tonight (#159). Words
+#: only, like every reason ``_recover`` returns (#233).
+NOTHING_TONIGHT = ("everything this session still owes is set aside for "
+                   "tonight; not slewing until the next night")
+
+
+def _owes(target: Target, remaining: dict[str, int]) -> bool:
+    """Does ``target`` still owe a frame, by ``Session.remaining``? A target
+    with no steps owes nothing."""
+    return any(remaining.get(s.id, 0) > 0 for s in target.steps)
+
+
+def _set_aside_tonight(target: Target, remaining: dict[str, int],
+                       records: list[dict]) -> bool:
+    """Is ``target`` set aside for the night ``records`` belong to?
+
+    TWO KINDS OF RECORD (spec 3.4). The group driver sets a panel aside
+    whole (``step_id`` None), and the reject guard sets one step aside. A
+    target with a whole record has nothing to shoot tonight, and so does one
+    whose every owed step has a step record: the run skips each of those
+    steps tonight, and nothing of the target is left for it. A target with
+    one of its owed steps set aside still owes the others tonight."""
+    whole = {r.get("target_id") for r in records if r.get("step_id") is None}
+    if target.id in whole:
+        return True
+    steps = {r.get("step_id") for r in records
+             if r.get("target_id") == target.id
+             and r.get("step_id") is not None}
+    owed = [s.id for s in target.steps if remaining.get(s.id, 0) > 0]
+    return bool(owed) and all(sid in steps for sid in owed)
+
+
+def _group_order(group: TargetGroup, members: list[Target],
+                 live: list[Target], done: dict[str, int],
+                 last_ts: dict[str, float]) -> list[Target]:
+    """``live``, the group's panels the run can still shoot tonight, in the
+    order ``panel_order.order_panels`` gives them from the ledger (spec 5.2,
+    5.9). ``members`` is every panel of the group, complete ones included,
+    because the panel visited last may have completed on that visit and the
+    grid order still resumes after its place.
+
+    THE SNAPSHOT IS THE LEDGER'S (5.2): the fraction of each panel's owed
+    frames banked, in the plan's count mode (``done`` is ``done_map``), and
+    each panel's newest frame as its last visit. ``time_to_floor_s`` is left
+    empty, which ``order_panels`` reads as "does not set tonight", so under
+    ``setting_first`` the ladder orders by the fraction and then the snake.
+    That is the one place its order can differ from the run's, until the
+    scheduler's own snapshot builder can be shared.
+
+    THE COLUMN COUNT is one more than the widest column of ANY member, the
+    complete ones included, never the live panels' alone (``order_panels``
+    says why). ``geometry["cols"]`` is not read: it is provenance (3.4), and
+    the snake order does not depend on the count anyway, for any count wider
+    than every panel. Rows never interleave (row r's indexes all sit below
+    row r+1's), and within a row the order is by column, ascending or
+    descending, whatever the width. So a narrower count than the layout's,
+    when a whole column was skipped, gives the same order, and a stale
+    geometry cannot make a panel "outside the grid".
+
+    A GROUP THAT CANNOT BE ORDERED IS TAKEN IN PLAN ORDER, with a warning. A
+    panel with no grid position makes ``order_panels`` raise, and raised
+    here it would end every tick ("resume-arm tick failed") a minute apart
+    for the rest of the night."""
+    fraction: dict[str, float] = {}
+    for m in live:
+        owed = sum(s.count for s in m.steps)
+        banked = sum(done.get(f"{m.id}:{s.id}", 0) for s in m.steps)
+        fraction[m.id] = banked / owed if owed else 1.0
+    visited = {m.id: last_ts[m.id] for m in live if m.id in last_ts}
+    placed = [m for m in members if m.id in last_ts
+              and m.panel_row is not None and m.panel_col is not None]
+    last = max(placed, key=lambda m: last_ts[m.id], default=None)
+    snapshot = OrderSnapshot(
+        fraction_banked=fraction, last_visit_ts=visited,
+        last_visited=None if last is None else (last.panel_row,
+                                                last.panel_col))
+    cols = 1 + max((m.panel_col for m in members
+                    if isinstance(m.panel_col, int)), default=0)
+    try:
+        return order_panels(live, cols=cols, policy=group.order,
+                            snapshot=snapshot)
+    except ValueError as e:
+        bus.log("warning", f"auto-resume: the panel order of "
+                           f"'{group.name or group.id}' could not be worked "
+                           f"out ({e}), so it re-centres on its panels in "
+                           f"plan order", "sequence")
+        return list(live)
+
+
+def recentre_candidates(session: Session, night: str,
+                        walk: list[Target] | None = None) -> list[Target]:
+    """The light targets the run can still shoot on the night ``night``
+    (an ``events.night_key``), in the order the run takes them: what the
+    recovery ladder may re-centre on (#159, spec 5.9).
+
+    * A target is a candidate while it owes frames and is not set aside for
+      ``night`` (``Session.set_aside``, spec 3.4). A complete target is
+      never shot again, and a set-aside one is not retried until another
+      night. Calibration never slews.
+    * THE RUN'S WALK. ``walk`` is the plan's targets in the order the run
+      walks them, ``schedule.schedule_order`` (``ResumeArm._walk``), and
+      plan order when it is not given. Each ``plan.groups`` entry stands at
+      its first member's place in it, and its live panels come in the order
+      ``_group_order`` gives. A ``mosaic_group`` naming no group is a
+      Plan-UI mosaic, whose panels are ordinary targets (3.4: it keeps
+      today's panel-first behaviour).
+    * A target that waits for a group (``after_group``) is left out while the
+      group owes frames: the group is live (the target waits) or set aside
+      tonight (the target is skipped with it), and either way the run does
+      not shoot it tonight until the group is complete (spec 1.6).
+
+    What this does not model is the rest of the run's gating
+    (``schedule.gating_status``, #283): a target whose window has not opened
+    yet, or has closed, or that a moon or hour-angle constraint holds, is
+    still a candidate here, where the run would pass it by. The ladder asks
+    each candidate only today's two questions, its start floor and the slew
+    limits. Nothing moves the mount on this order but the one re-centre, and
+    the run acquires its own first target, so such a miss costs a slew, not
+    a frame; #283 also records the restart loop a closed window can cause.
+
+    Pure: it reads the session and the walk and nothing else, and it takes
+    the night key as an argument so the answer depends on the caller's
+    clock."""
+    plan = session.plan
+    remaining = session.remaining()
+    records = session.set_aside_on(night)
+    groups = {g.id: g for g in plan.groups}
+    owing_groups = {t.mosaic_group for t in plan.targets
+                    if t.mosaic_group in groups and _owes(t, remaining)}
+    done = session.done_map()
+    last_ts: dict[str, float] = {}
+    for f in session.frames:
+        if f.ts > last_ts.get(f.target_id, float("-inf")):
+            last_ts[f.target_id] = f.ts
+
+    def live(t: Target) -> bool:
+        return (not t.calibration and _owes(t, remaining)
+                and not _set_aside_tonight(t, remaining, records))
+
+    out: list[Target] = []
+    placed: set[str] = set()
+    for t in (walk if walk is not None else plan.targets):
+        group = groups.get(t.mosaic_group) if t.mosaic_group else None
+        if group is not None:
+            if group.id not in placed:
+                placed.add(group.id)
+                members = [m for m in plan.targets
+                           if m.mosaic_group == group.id]
+                out.extend(_group_order(group, members,
+                                        [m for m in members if live(m)],
+                                        done, last_ts))
+            continue
+        if live(t) and t.after_group not in owing_groups:
+            out.append(t)
+    return out
+
+
+def nothing_to_shoot_tonight(session: Session,
+                             candidates: list[Target]) -> bool:
+    """True when the run would shoot nothing tonight although the session
+    still owes light frames: no candidate (``recentre_candidates``), a light
+    target that owes frames, and no calibration owed.
+
+    WHY THIS REFUSES (#159). A run does not retry what is set aside for its
+    night (spec 3.4), so started, such a run has nothing to shoot: it ends,
+    the session stays dormant and armed, and the next tick, a minute later,
+    would run the ladder and start it again, all night. Refused, it holds in
+    words on the ten-minute retry, and the next night's key reads none of
+    tonight's records. A session that owes no light frame at all is not this
+    case: calibration-only work starts, and so does a session that owes
+    nothing, which the run then completes."""
+    if candidates:
+        return False
+    remaining = session.remaining()
+    light = any(not t.calibration and _owes(t, remaining)
+                for t in session.plan.targets)
+    calibration = any(t.calibration and _owes(t, remaining)
+                      for t in session.plan.targets)
+    return light and not calibration
+
+
+def commanded_rotation(session: Session, target: Target) -> float | None:
+    """The angle a re-centre on ``target`` commands, or None for none
+    (Revision 2, ruling 9: "the rotator is set explicitly at the start of
+    every run").
+
+    THE PLANNED ANGLE FIRST. A framed target carries its ``rotation_deg``,
+    and a group's member carries its group's PA there. Then THE LOCKED ANGLE:
+    an unframed target whose first imaging solve locked its angle
+    (``Session.locked_angles``) is re-centred at that angle, so a resumed
+    night stacks with the nights before it. With neither, None, and the
+    re-centre call is exactly today's.
+
+    0 IS AN ANGLE (north up), so every test here is ``is None``.
+
+    A LOCK THAT IS NOT A FINITE NUMBER COMMANDS NOTHING. ``lock_angle``
+    refuses one, but the session is a JSON file and Python's JSON reads NaN
+    and Infinity: handed on, a NaN would reach the rotate loop, where every
+    comparison it makes is false."""
+    if target.rotation_deg is not None:
+        return target.rotation_deg
+    lock = session.locked_angle(target.id)
+    if not isinstance(lock, dict):
+        return None
+    pa = lock.get("pa_deg")
+    if isinstance(pa, bool) or not isinstance(pa, (int, float)):
+        return None
+    if not math.isfinite(pa):
+        return None
+    return float(pa)
 
 
 class ResumeArm:
@@ -569,6 +794,25 @@ class ResumeArm:
         cfg = config_store.cfg()
         twilight = cfg.safety.twilight_deg if cfg else -12.0
         return window_open(session, self.hub.site, twilight, now)
+
+    def _walk(self, session: Session, now: float) -> list[Target]:
+        """The session's targets in the order its run will walk them (#159):
+        ``schedule.schedule_order``, the call ``_run_scheduled`` makes at run
+        start, against the same live site and twilight, so a target whose
+        window opened first comes first and equal windows keep plan order.
+        The run starts within moments of the ladder, so ``now`` stands in
+        for its start.
+
+        A site the schedule cannot read (no latitude or longitude at all:
+        only a test double's hub has none, a real ``Hub.site`` always has
+        both) walks in plan order, which is what the ladder did before."""
+        cfg = config_store.cfg()
+        twilight = cfg.safety.twilight_deg if cfg else -12.0
+        try:
+            return schedule.schedule_order(session.plan.targets,
+                                           self.hub.site, twilight, now)
+        except (KeyError, TypeError, ValueError):
+            return list(session.plan.targets)
 
     async def tick(self) -> None:
         now = self._clock()
@@ -1080,6 +1324,19 @@ class ResumeArm:
 
         cfg = config_store.cfg()
 
+        # WHAT THE RUN WILL SHOOT TONIGHT, from the ledger alone (#159). Asked
+        # first because it touches no device: a session with nothing to shoot
+        # tonight is refused before the safety read, the focuser or the
+        # blind solve spend anything on it (see ``nothing_to_shoot_tonight``
+        # for why it is refused at all). Step 3 re-centres on these. The
+        # night key is ``events.night_key`` of the injected clock, the key
+        # ``Session.note_set_aside`` records are written under (3.4).
+        now = self._clock()
+        candidates = recentre_candidates(session, night_key(now),
+                                         self._walk(session, now))
+        if nothing_to_shoot_tonight(session, candidates):
+            return NOTHING_TONIGHT
+
         # 0. IS IT SAFE TO BE OUT AT ALL — before anything moves.
         #
         #    This module's header once said every safety gate "runs inside
@@ -1239,12 +1496,34 @@ class ResumeArm:
                         "to slew a mount whose true position is unknown")
             self._ladder_light = "lit"
 
-        # 3. RE-CENTER on the first real target. Calibration-only sessions have
-        #    none and never slew, so they skip this; they still got the solve
-        #    above, which costs one exposure and confirms the sky is usable.
-        tgt = next((t for t in session.plan.targets if not t.calibration), None)
-        if tgt is not None:
-            # THE TARGET'S OWN START FLOOR, and it is asked FIRST.
+        # 3. RE-CENTER ON WHAT THE RUN WILL SHOOT FIRST, AT ITS ANGLE (#159,
+        #    I-13; spec 5.9, ruling 9). This used to be the plan's first light
+        #    target, whatever the ledger said: a finished one, a mosaic's 1-1
+        #    whatever the order, a panel set aside tonight. A finished first
+        #    target below its floor then refused the whole resume while the
+        #    target the run would shoot stood high. The candidates are what
+        #    the run can still shoot tonight, in its order (listed above,
+        #    before anything moved), and the first that clears its own start
+        #    floor and the slew limits is the one re-centred.
+        #
+        #    IT REFUSES ONLY WHEN NO CANDIDATE CAN BE REACHED, and in the
+        #    FIRST candidate's words and numbers: the target the run would
+        #    shoot first is the one whose wait the operator wants to read,
+        #    and a plan with one light target keeps today's refusal word for
+        #    word. The words are site-free either way (#233).
+        #
+        #    No candidate and no refusal: calibration-only work, or nothing
+        #    owed at all. Those never slew; they still got the solve above,
+        #    which costs one exposure and confirms the sky is usable.
+        tgt: Target | None = None
+        first_refusal: tuple[str, str] | None = None
+        for candidate in candidates:
+            # EACH CANDIDATE GETS TODAY'S TWO CHECKS, in today's order, and a
+            # refusal records its words and numbers and tries the next. Only
+            # the refusal step 3 returns is filed, so a candidate that gives
+            # way leaves no ``_refusal_site_detail`` behind.
+            #
+            # THE CANDIDATE'S OWN START FLOOR, and it is asked FIRST.
             #
             # The gate below is the MOUNT's floor - config, horizon, wedges,
             # pier. The plan carries a second, usually higher one:
@@ -1261,11 +1540,11 @@ class ResumeArm:
             # A refusal, not a wait, because RETRY_INTERVAL_S is already the
             # cadence for exactly this - come back in ten minutes and ask the
             # sky again.
-            floor = float(getattr(getattr(tgt, "schedule", None),
+            floor = float(getattr(getattr(candidate, "schedule", None),
                                   "min_altitude_deg", 0.0) or 0.0)
             if floor > 0:
                 from .engine import _frame_altitude
-                alt = _frame_altitude(tgt, self.hub.site, self._clock())
+                alt = _frame_altitude(candidate, self.hub.site, self._clock())
                 # ``None`` is "nobody can say" - an unset site, a bad
                 # coordinate - and it must not read as "below the floor". The
                 # engine's own floor gate makes the same tri-state distinction,
@@ -1286,12 +1565,14 @@ class ResumeArm:
                     # a viewer. What the words cannot withhold is that a
                     # floor refusal happened at all, and when it stopped:
                     # the timing channel spec 6.9 records as a residual.
-                    self._refusal_site_detail = (
-                        f"{tgt.name} is at {alt:.0f} deg, below its "
-                        f"{floor:.0f} deg start floor"
-                        + self._floor_eta_note(tgt, floor))
-                    return (f"{tgt.name} is below its start floor; not "
-                            f"slewing yet")
+                    if first_refusal is None:
+                        first_refusal = (
+                            f"{candidate.name} is below its start floor; not "
+                            f"slewing yet",
+                            f"{candidate.name} is at {alt:.0f} deg, below its "
+                            f"{floor:.0f} deg start floor"
+                            + self._floor_eta_note(candidate, floor))
+                    continue
             # The altitude floor, horizon, no-go wedges, pier limits and the
             # zenith keep-out — the SAME gate every in-run slew passes. It lived
             # only inside the run, so this slew, the one made unattended by a
@@ -1305,7 +1586,7 @@ class ResumeArm:
                 # of the gate was inert while the altitude half ran. Same object
                 # engine.start receives below, so both gates read one setting.
                 self._ladder_step = "limits"
-                await self.engine.check_slew_limits(tgt, cfg=cfg,
+                await self.engine.check_slew_limits(candidate, cfg=cfg,
                                                     plan=session.plan)
             except Exception as e:  # noqa: BLE001 — SafetyAbort or a bad target
                 # The gate's numbers (the altitude, the limit and the
@@ -1326,15 +1607,24 @@ class ResumeArm:
                 # pier-side refusal, a bad target), which is what an operator
                 # was shown before.
                 from .engine import SafetyAbort
-                self._refusal_site_detail = (getattr(e, "site_detail", None)
-                                             or str(e))
-                if isinstance(e, SafetyAbort):
-                    return ("re-centering after restart refused: the target "
-                            "is outside this rig's configured slew limits "
-                            "(altitude floor, horizon, no-go wedges, pier "
-                            "side or zenith keep-out); not slewing yet")
-                return ("re-centering after restart refused: the slew-limit "
+                if first_refusal is None:
+                    words = (
+                        "re-centering after restart refused: the target "
+                        "is outside this rig's configured slew limits "
+                        "(altitude floor, horizon, no-go wedges, pier "
+                        "side or zenith keep-out); not slewing yet"
+                        if isinstance(e, SafetyAbort) else
+                        "re-centering after restart refused: the slew-limit "
                         "check failed; not slewing")
+                    first_refusal = (words, getattr(e, "site_detail", None)
+                                     or str(e))
+                continue
+            tgt = candidate
+            break
+        if tgt is None and first_refusal is not None:
+            reason, self._refusal_site_detail = first_refusal
+            return reason
+        if tgt is not None:
             # BELOW the limit check, not above it: that check awaits too, and
             # the slew is the step that must never land on a live run, nor
             # follow an operator's stop (#220). A stop that arrives once the
@@ -1343,8 +1633,17 @@ class ResumeArm:
             if self._must_stop():
                 return None
             self._ladder_step = "recentre"
+            # THE ANGLE, when there is one (ruling 9): the planned angle or
+            # the locked one (``commanded_rotation``). With neither, the call
+            # is today's, with no keyword at all, so a rig with no rotator
+            # and a plan with no angle see nothing new.
+            rotation = commanded_rotation(session, tgt)
             try:
-                await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg)
+                if rotation is None:
+                    await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg)
+                else:
+                    await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg,
+                                                   rotation_deg=rotation)
             except GotoRefused as e:
                 # THE MOUNT SAID NO, which is a different thing from the slew
                 # failing, and the operator can act on the difference: a

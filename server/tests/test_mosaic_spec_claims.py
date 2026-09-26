@@ -43,6 +43,22 @@ checks hold the record itself: Revision 5's table against the sections that
 carry H3's edits, and every ruling a server module or test cites by label
 against the spec entry with that label (#239).
 
+Slice S2 built the engine group driver, and added Revision 6 and three
+orchestrator rulings, recorded as owner list items 19 to 21 (#270, #262,
+#253). The tests after the status line hold the claims S2 made stale or
+built: 1.6's deferral wait, which no follower fills yet (#304); 3.4's
+session fields and ruling 9's lock; 5.1's group state, reach verdict and
+pass boundary; 5.2's users of the order; 5.3's visit; 5.6's rotate
+shortcut, angle check and pier check, and the guide-lost deferral that is
+not built (#303); 5.7's band past the meridian; 5.8's hold that marks its
+own gate (#263); 5.9's re-centre (#159) and the light check's own reference
+(#262); 5.10's group state and visits; 6.3's start guard; 6.9's flag, now
+built (#166); 6.15's rig connect that validates first (#257); 6.17's
+parking ending that hands the stop to its park (#270); and the S1 and S2
+build items. Revision 6's table is held against the sections that carry
+S2's mark, and the #239 check reads S2's labels too. 5.9's skipped-panel
+exemption is S2's as well, and its test above was written with it.
+
 WHAT THIS CANNOT DO. It reads words, so it proves the spec SAYS a thing, not
 that the thing holds everywhere the spec implies. Where a claim describes
 code, the code half is asserted too, as the shape of that code (a call made,
@@ -84,6 +100,7 @@ from astrodeck.sequence import engine as engine_mod
 from astrodeck.sequence import resume_arm as resume_arm_mod
 from astrodeck.sequence import session as session_mod
 from astrodeck.sequence.engine import SequenceEngine
+from astrodeck.sequence.models import TargetGroup
 from astrodeck.sequence.resume_arm import ResumeArm
 from astrodeck.sequence.session import SessionStore
 
@@ -898,34 +915,136 @@ def test_5_9_says_adopt_measures_a_body_where_it_was_and_off_the_loop():
         f"(#249)")
 
 
-def test_s1_item_8_carries_the_skipped_panel_exemption_as_debt():
-    """S1 promised CONTINUE with "skipped panels exempt", and S1 has no groups:
-    no ``TargetGroup.skipped_ids`` to read and no ``skip`` param to set one.
-    Item 8 says it is debt for S2/S3, and the code agrees there is none yet.
+def test_s1_item_8_and_5_9_say_s2_built_the_skipped_panel_exemption():
+    """S1 promised CONTINUE with "skipped panels exempt" and had no groups to
+    exempt, so item 8 and 5.9's dropped-steps row carried the exemption as
+    debt to S2/S3, and this test held the code to "none yet". S2 built the
+    server half (#189): ``TargetGroup.skipped_ids`` (3.4), which
+    ``continuation.plan_replace_report`` reads from every group of the new
+    plan, listing a skipped panel's steps as ``skipped``, apart from
+    ``dropped``, so CONTINUE's refusal does not count them; and a step of the
+    new plan the ledger holds frames on is ``kept``, so a re-enabled panel
+    comes back as it was. The ``skip`` param that fills ``skipped_ids``
+    lands in S3. Item 8 and the 5.9 row now say so, and this test holds
+    them to the code: the reader's name from ``continuation``, the field
+    from ``TargetGroup``, and the read itself from the syntax tree, since
+    the function's docstring names ``skipped_ids`` too and a text search
+    would be answered by it.
 
-    WHEN THIS GOES RED ON THE CODE HALF, S2 or S3 has built the exemption:
-    rewrite item 8 to say so, and this test with it.
+    WHEN S3 LANDS the ``skip`` param, the "lands in S3" clauses become
+    history: rewrite them to say S3 built it, and this test with them.
 
-    RED under mutant "restore S1 item 8's 'skipped panels exempt'":
+    The mutants ran in a private copy of ``server/`` and the spec under the
+    session scratchpad, each from a byte backup restored and SHA-256
+    compared after it; the shared tree was never written.
 
-        AssertionError: S1 item 8 must name the debt and where it lands
-        assert ('`TargetGroup.skipped_ids`' in '8. `run_flow` CONTINUE,
-        dormant sessions only (5.9): the factored plan replace plus
-        `engine.start(session=)` inside o...parately; `accept_dropped`
-        (skipped panels exempt), `accept_recount`, `fresh`, and the ADOPT
-        path for pre-S1 sessions.')
+    RED under the spec mutant "restore the debt text" (item 8's and the
+    5.9 row's sentences put back as S1 left them):
+
+        AssertionError: S1 item 8 must say: '`plan_replace_report` reads'
+        assert False
+
+    RED under the spec mutant "restore the 5.9 row's debt text" alone:
+
+        AssertionError: 5.9's dropped-steps row must say: "any `skipped_ids`
+        of the new plan's groups"
+        assert False
+
+    RED under the code mutant "remove the read" (``skipped_targets =
+    {tid for g in new_plan.groups for tid in g.skipped_ids}`` ->
+    ``skipped_targets: set[str] = set()`` in ``plan_replace_report``):
+
+        AssertionError: plan_replace_report no longer reads skipped_ids off
+        the new plan's groups; S1 item 8 and 5.9 say it does
+        assert ([<ast.Attribute object at 0x00000210569B7BD0>] and [])
+
+    (the one read left is of ``session.plan.groups``, the session's own
+    skips, #189 T12 verifier: re-run after that read was added, and the
+    address differs from run to run).
+
+    RED under the code mutant "a returning step is new" (``kept`` and
+    ``new`` computed from the old plan's steps alone):
+
+        AssertionError: plan_replace_report no longer counts a step the
+        ledger holds frames on as kept; 5.9 says a re-enabled panel's steps
+        come back kept
+        assert False
+
+    A SKIP ONCE CONTINUED stays in the refusal's sight (added by the T12
+    verifier): the plan the skip was continued with lists none of the
+    panel's steps, so the reader also reads the session's own plan's
+    ``skipped_ids``, and the 5.9 row says so. Behaviour is held in
+    ``test_continue_skipped_panels.py``; here the claim and the read.
+
+    RED under the spec mutant "drop the continued-skip sentence" (the 5.9
+    row's "A skip once continued ..." sentence removed):
+
+        AssertionError: 5.9's dropped-steps row must say: "the
+        `skipped_ids` of the session's own plan"
+        assert False
+
+    RED under the code mutant "forget the session's own skips"
+    (``held_back = {tid for g in session.plan.groups ...}`` ->
+    ``held_back: set[str] = set()``):
+
+        AssertionError: plan_replace_report no longer reads the session's
+        own plan's groups; 5.9 says a skip once continued stays in the
+        refusal's sight
+        assert []
+
+    Unchanged under the control "an unrelated edit in section 7": 1 passed.
     """
+    assert "skipped_ids" in TargetGroup.model_fields, (
+        "TargetGroup no longer has skipped_ids; item 8 and 5.9 say it does")
+    reader = continuation.plan_replace_report.__name__
     item8 = _line(_section("S1:"), "8. ")
-    assert ("`TargetGroup.skipped_ids`" in item8 and "`skip`" in item8
-            and "debt carried to S2/S3" in item8), (
-        "S1 item 8 must name the debt and where it lands")
-    assert "(skipped panels exempt)" not in item8
-    built = sorted(str(p.relative_to(_SERVER))
-                   for p in (_SERVER / "astrodeck").rglob("*.py")
-                   if "skipped_ids" in p.read_text(encoding="utf-8"))
-    assert built == [], (
-        f"skipped_ids now exists in {built}: the exemption is no longer debt, "
-        f"so S1 item 8 is stale")
+    _says(item8, ("`TargetGroup.skipped_ids`", f"`{reader}` reads",
+                  "S2 built its server half", "reported as skipped and "
+                  "never as dropped", "The `skip` param that fills it (3.1) "
+                  "lands in S3"), "S1 item 8")
+    for stale in ("debt carried to S2/S3", "(skipped panels exempt)",
+                  "must read it when both land"):
+        gone = stale not in item8
+        assert gone, f"S1 item 8 still says {stale!r}"
+    row = _line(_section("5.9"), "| steps that hold frames would be dropped")
+    _says(row, ("any `skipped_ids` of the new plan's groups",
+                f"`{reader}` reads them", "`skipped`, apart from `dropped`",
+                "S2 built this server half of S1 item 8",
+                "lands in S3", "as kept"), "5.9's dropped-steps row")
+    gone = "debt carried" not in row
+    assert gone, "5.9's dropped-steps row still carries the exemption as debt"
+    _says(row, ("the `skipped_ids` of the session's own plan",
+                "a panel skipped again is exempt"), "5.9's dropped-steps row")
+    # The code half, from the tree: the reader reads ``skipped_ids`` off the
+    # new plan's groups, hands the report a ``skipped`` list of its own, and
+    # computes ``kept`` from the ledger's steps as well as the old plan's.
+    tree = _tree(continuation.plan_replace_report)
+    reads = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+             and n.attr == "skipped_ids" and isinstance(n.ctx, ast.Load)]
+    groups = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+              and n.attr == "groups" and isinstance(n.value, ast.Name)
+              and n.value.id == "new_plan"]
+    assert reads and groups, (
+        f"{reader} no longer reads skipped_ids off the new plan's groups; "
+        f"S1 item 8 and 5.9 say it does")
+    own = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+           and n.attr == "groups" and isinstance(n.value, ast.Attribute)
+           and n.value.attr == "plan" and isinstance(n.value.value, ast.Name)
+           and n.value.value.id == "session"]
+    assert own, (f"{reader} no longer reads the session's own plan's groups; "
+                 f"5.9 says a skip once continued stays in the refusal's "
+                 f"sight")
+    built = _calls(tree, "ReplaceReport")
+    apart = len(built) == 1 and _keyword_node(built[0], "skipped") is not None
+    assert apart, (f"{reader} no longer lists the skipped steps apart; 5.9 "
+                   f"says it does")
+    kept = _keyword_node(built[0], "kept")
+    from_ledger = kept is not None and any(
+        isinstance(n, ast.Name) and n.id == "with_frames"
+        for n in ast.walk(kept))
+    assert from_ledger, (f"{reader} no longer counts a step the ledger holds "
+                         f"frames on as kept; 5.9 says a re-enabled panel's "
+                         f"steps come back kept")
 
 
 # ----------------------------------------------------- 5.10, the finish clock
@@ -1803,18 +1922,19 @@ def _within(block: list[ast.stmt], node: ast.AST) -> bool:
     return any(node is n for stmt in block for n in ast.walk(stmt))
 
 
-def _marks_its_gate(fn) -> bool:
+def _marks_its_gate(fn, context: str = "slew") -> bool:
     """Does ``fn`` name its target as the acquisition behind its pre-slew
     gate: ``self._acquisition_behind_gate = target`` directly before a
     ``try`` whose body awaits ``self._safety_gate(context="slew", ...)`` and
-    whose ``finally`` puts the flag back?"""
+    whose ``finally`` puts the flag back? ``context`` asks the same of
+    another gate: the cloud hold marks its own ``"frame"`` gate (#263)."""
     for block in _statements(_tree(fn)):
         for stmt, nxt in zip(block, block[1:]):
             if not (isinstance(stmt, ast.Assign) and ast.unparse(stmt)
                     == "self._acquisition_behind_gate = target"
                     and isinstance(nxt, ast.Try)):
                 continue
-            gated = any(_keyword(c, "context") == "slew" for s in nxt.body
+            gated = any(_keyword(c, "context") == context for s in nxt.body
                         for c in _self_calls(s, "_safety_gate"))
             restored = any(_assigns(s, "self._acquisition_behind_gate")
                            for s in nxt.finalbody)
@@ -2134,6 +2254,23 @@ def test_6_17_says_the_first_stop_attempt_is_on_its_task_and_cooling_watches():
 
         AssertionError: 6.17 must say: '`IDLE_STOP_FINISH_S` (120 s)'
         assert False
+
+    SINCE S2 (#270, S2 orchestrator ruling 1) the row no longer says a run's
+    end completes the stop "whether or not the wind-down parks", which this
+    test used to require: an ending that parks hands the stop to its park,
+    and `test_6_17_says_a_parking_ending_hands_the_stop_to_its_park` below
+    holds that. What this test holds is unchanged, and the ``_finish_idle_stop``
+    it finds in ``_run``'s ``finally`` is now the arm for an ending that does
+    not park. The mutant ran from a byte backup of the spec, which was
+    byte-identical afterwards.
+
+    RED under mutant "6.17 back to 'reads tracking back, whether or not the
+    wind-down parks'":
+
+        AssertionError: 6.17 still says a run's end completes the stop
+        whether or not it parks; since S2 an ending that parks hands it to
+        its park (#270)
+        assert not True
     """
     row = _line(_spec(), "| 6.17 |")
     finish = f"`IDLE_STOP_FINISH_S` ({engine_mod.IDLE_STOP_FINISH_S:g} s)"
@@ -2145,11 +2282,14 @@ def test_6_17_says_the_first_stop_attempt_is_on_its_task_and_cooling_watches():
                 lane_s,
                 "**A run's end completes a stop the idle watch decided** "
                 "(H3, #247, H3 orchestrator ruling 5)",
-                "`_finish_idle_stop`", finish,
-                "whether or not the wind-down parks"), "6.17")
+                "`_finish_idle_stop`", finish), "6.17")
     stale = "Two waits still do not watch" in row
     assert not stale, ("6.17 still says two waits do not watch; since H3 "
                        "both do (#236)")
+    parks = "reads tracking back, whether or not the wind-down parks" in row
+    assert not parks, ("6.17 still says a run's end completes the stop "
+                       "whether or not it parks; since S2 an ending that "
+                       "parks hands it to its park (#270)")
     hold = _line(_section("5.8"),
                  "- **A cloud hold watches the mount on its own clock**")
     _says(hold, ("the first attempt and every retry", "#216"),
@@ -3211,13 +3351,15 @@ def test_5_9_says_a_no_light_solve_backs_off_and_resume_arm_does(monkeypatch):
 # ------------------------------------------ #239, the rulings code cites
 
 #: A ruling cited by its label: the owner's (Revision 2's "### Ruling N"),
-#: or an orchestrator's (the owner list's "**H2 orchestrator ruling N:" or
-#: "**H3 orchestrator ruling N:"). ``issues`` is the run of issue numbers
-#: written just before the label in the same parenthesis, "(#224, #225,
-#: owner ruling 2 ...)", which is what the entry must be about.
+#: or an orchestrator's (the owner list's "**H2 orchestrator ruling N:",
+#: "**H3 orchestrator ruling N:" or, since S2, "**S2 orchestrator ruling
+#: N:"). ``issues`` is the run of issue numbers written just before the
+#: label in the same parenthesis, "(#224, #225, owner ruling 2 ...)", which
+#: is what the entry must be about.
 _CITE = re.compile(
     r"(?P<issues>(?:#\d+[,;] ?)*)"
-    r"(?<![\w'])(?P<whose>[Oo]wner|H2 orchestrator|H3 orchestrator) "
+    r"(?<![\w'])(?P<whose>[Oo]wner|H2 orchestrator|H3 orchestrator"
+    r"|S2 orchestrator) "
     r"rulings? (?P<nums>\d+(?:(?:, and |, | and )\d+)*)\b")
 #: Where a citation says which owner-list item records it.
 _ITEM = re.compile(r'[ ,;(]*(?:spec[ ,;]*)?"?(?:Still waiting on the owner'
@@ -3226,8 +3368,10 @@ _ITEM = re.compile(r'[ ,;(]*(?:spec[ ,;]*)?"?(?:Still waiting on the owner'
 #: Labels no document defines: a round's own item and A numbering. "A6"
 #: already means #189 A6, the S1 hardening round's step-id spelling (3.3).
 _UNDEFINED = re.compile(r"\bH\d+ (?:A\d+|items? \d+)\b")
-#: A ruling cited by number without whose it is.
-_UNOWNED = re.compile(r"(?:\bH\d+|#\d+|\bmosaic spec|\bspec) rulings? \d+")
+#: A ruling cited by number without whose it is. A slice's ruling needs
+#: its whose as a round's does: "S2 ruling 1" is no label the spec keeps.
+_UNOWNED = re.compile(
+    r"(?:\b[HS]\d+|#\d+|\bmosaic spec|\bspec) rulings? \d+")
 
 
 def _prose(path: Path) -> str:
@@ -3245,7 +3389,8 @@ def _ruling_entries() -> dict[tuple[str, int], tuple[str, int | None]]:
     None for an owner's ruling)."""
     entries: dict[tuple[str, int], tuple[str, int | None]] = {}
     for line in _section("Still").splitlines():
-        m = re.match(r"(\d+)\. \*\*(H[23] orchestrator) ruling (\d+):", line)
+        m = re.match(r"(\d+)\. \*\*((?:H[23]|S2) orchestrator) ruling "
+                     r"(\d+):", line)
         if m:
             key = (m.group(2), int(m.group(3)))
             assert key not in entries, f"the owner list records {key} twice"
@@ -3338,11 +3483,71 @@ def test_every_ruling_the_server_cites_is_the_spec_entry_it_names():
     comment citing "#240, H3 orchestrator ruling 3, spec "Still waiting
     on the owner" item 12", wrapped over three comment lines): 1
     passed.
+
+    SINCE S2 the scan reads "S2 orchestrator ruling N" as well, the label
+    slice S2's three rulings carry (owner list items 19 to 21), and a
+    slice's ruling cited by number alone ("S2 ruling 1") is refused as a
+    round's is. S2's code cites all three: engine.py ruling 1 (#270),
+    solve/light.py ruling 2 (#262, with its item) and guide/native.py
+    ruling 3 (#253), each read here, wrapped. Before S2 the scan did not
+    know the label, so none of those citations was checked (T6's report).
+    The mutants ran in a private scratch copy of ``server/`` and the spec,
+    each file from a byte backup and byte-identical afterwards.
+
+    RED under the light.py mutant "cite S2 orchestrator ruling 4" (its
+    module docstring's citation):
+
+        AssertionError: astrodeck/solve/light.py: '#262, S2 orchestrator
+        ruling 4' names no S2 orchestrator ruling 4 the spec records
+        assert ['astrodeck/s...spec records'] == []
+          Left contains one more item: "astrodeck/solve/light.py: '#262, S2
+          orchestrator ruling 4' names no S2 orchestrator ruling 4 the spec
+          records"
+          Use -v to get more diff
+
+    RED under the light.py mutant "a citation at the wrong item" (the
+    module docstring placing ruling 2 at item 19):
+
+        AssertionError: astrodeck/solve/light.py: '#262, S2 orchestrator
+        ruling 2' places S2 orchestrator ruling 2 at owner list item 19; the
+        spec records it as item 20
+        assert ['astrodeck/s...t as item 20'] == []
+          Left contains one more item: "astrodeck/solve/light.py: '#262, S2
+          orchestrator ruling 2' places S2 orchestrator ruling 2 at owner
+          list item 19; the spec records it as item 20"
+          Use -v to get more diff
+
+    RED under the spec mutant "drop owner list item 21":
+
+        AssertionError: astrodeck/guide/native.py: '#253, S2 orchestrator
+        ruling 3' names no S2 orchestrator ruling 3 the spec records
+          astrodeck/guide/native.py: '#253, S2 orchestrator ruling 3' names
+          no S2 orchestrator ruling 3 the spec records
+          astrodeck/guide/native.py: '#253, S2 orchestrator ruling 3' names
+          no S2 orchestrator ruling 3 the spec records
+          astrodeck/guide/native.py: '#253, S2 orchestrator ruling 3' names
+          no S2 orchestrator ruling 3 the spec records
+          astrodeck/guide/native.py: '#253, S2 orchestrator ruling 3' names
+          no S2 orchestrator ruling 3 the spec records
+          astrodeck/guide/native.py: '#253, S2 orchestrator ruling 3' names
+          no S2 orchestrator ruling 3 the spec records
+          astrodeck/guide/native.py: '#253, S2 orchestrator ruling 3' names
+          no S2 orchestrator ruling 3 the spec records
+          tests/test_ppec_file_horizon.py: '#253, S2 orchestrator ruling 3'
+          names no S2 orchestrator ruling 3 the spec records
+          tests/test_ppec_persist_needs_measured_points.py: 'S2 orchestrator
+          ruling 3' names no S2 orchestrator ruling 3 the spec records
+        assert ['astrodeck/g...records', ...] == []
+          Left contains 9 more items, first extra item:
+          "astrodeck/guide/native.py: '#253, S2 orchestrator ruling 3' names
+          no S2 orchestrator ruling 3 the spec records"
+          Use -v to get more diff
     """
     entries = _ruling_entries()
-    # Premise: the spec's entries were read, all three kinds of them.
+    # Premise: the spec's entries were read, all four kinds of them.
     assert {("owner", 2), ("H2 orchestrator", 2), ("H2 orchestrator", 12),
-            ("H3 orchestrator", 1), ("H3 orchestrator", 9)} <= set(entries)
+            ("H3 orchestrator", 1), ("H3 orchestrator", 9),
+            ("S2 orchestrator", 1)} <= set(entries)
     here = Path(__file__).resolve()
     problems: list[str] = []
     found: set[tuple[str, str, int]] = set()
@@ -3388,10 +3593,14 @@ def test_every_ruling_the_server_cites_is_the_spec_entry_it_names():
                 problems += [f"{rel}: {m.group(0)!r} is {why}"
                              for m in pattern.finditer(text)]
     # Premise: the scan reads wrapped citations; this one is wrapped in
-    # engine.py (the IDLE_STOP_FINISH_S comment) and in resume_arm.py.
+    # engine.py (the IDLE_STOP_FINISH_S comment) and in resume_arm.py. And
+    # S2's three labels are found where S2's code cites them.
     assert {("astrodeck/sequence/engine.py", "H3 orchestrator", 5),
             ("astrodeck/sequence/resume_arm.py", "H3 orchestrator", 1),
-            ("astrodeck/sequence/engine.py", "H2 orchestrator", 2)} <= found
+            ("astrodeck/sequence/engine.py", "H2 orchestrator", 2),
+            ("astrodeck/sequence/engine.py", "S2 orchestrator", 1),
+            ("astrodeck/solve/light.py", "S2 orchestrator", 2),
+            ("astrodeck/guide/native.py", "S2 orchestrator", 3)} <= found
     assert problems == [], "\n".join(problems)
 
 
@@ -3415,12 +3624,20 @@ def _blocks() -> list[tuple[str, str]]:
 
 
 def _label(heading: str) -> str:
-    """The name a revision table gives a section: its number, or "owner
-    list" for the list of what waits on the owner."""
+    """The name a revision table gives a section: its number, "owner list"
+    for the list of what waits on the owner, and, since Revision 6 edited
+    them, "S1" for a slice of section 8 ("### S1: identity, ...") and
+    "ruling 9" for a ruling of Revision 2 ("### Ruling 9: ...")."""
     if heading.startswith("Still waiting on the owner"):
         return "owner list"
     first = heading.split(" ", 1)[0].rstrip(".")
-    return first if re.fullmatch(r"\d+(\.\d+)?", first) else heading
+    if re.fullmatch(r"\d+(\.\d+)?", first):
+        return first
+    part = re.match(r"(S\d+):", heading)
+    if part:
+        return part.group(1)
+    ruling = re.match(r"Ruling (\d+):", heading)
+    return f"ruling {ruling.group(1)}" if ruling else heading
 
 
 def _rows(text: str) -> list[list[str]]:
@@ -3438,6 +3655,12 @@ def _where(cell: str) -> set[str]:
 
 _H2 = re.compile(r"\bH2\b")
 _H3 = re.compile(r"\bH3\b")
+#: S2's mark on an edit of the body (Revision 6). "S2" alone cannot be the
+#: mark, as "H2" and "H3" are: the body names S2 as a plan throughout ("S2
+#: tests", "an S0 to S2 build", "ULTRACODE S2"), and those sentences are no
+#: edit. So an S2 edit says "(S2, ...)", "S2 built" or an S2 orchestrator
+#: ruling, and Revision 6's preamble says so.
+_S2 = re.compile(r"\(S2, |\bS2 built\b|\bS2 orchestrator ruling \d")
 
 
 def _carried(round_mark: re.Pattern) -> set[str]:
@@ -3627,6 +3850,19 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
 
         AssertionError: the status line must say: '(Revision 5)'
         assert False
+
+    Since S2 it names Revision 6 the same way: its sections describe the code
+    after S2, and those only Revision 5 lists are as H3 left them. The mutant
+    ran from a byte backup of the spec, byte-identical afterwards. This test
+    reads only the spec, so it has no code mutant: the sentences it keeps
+    are about which revision describes which code, and the claims tests
+    above hold the code.
+
+    RED under mutant "the status line without Revision 6" (the line as it
+    stood before Revision 6):
+
+        AssertionError: the status line must say: 'slice S2 as built'
+        assert False
     """
     status = _line(_spec(), "- Status:")
     blanket = "where the text below describes them, it describes the code" \
@@ -3641,8 +3877,11 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
                    "(H2)", "except in the sections Revision 4 lists too",
                    "(Revision 5)", "The sections Revision 5 lists describe "
                    "the code as it stands after the third hardening round "
-                   "(H3)", "except in the sections Revision 5 lists too"),
-          "the status line")
+                   "(H3)", "except in the sections Revision 5 lists too",
+                   "slice S2 as built", "(Revision 6)",
+                   "The sections Revision 6 lists describe the code as it "
+                   "stands after S2", "except in the sections Revision 6 "
+                   "lists too"), "the status line")
     preamble = _line(_spec(), "2026-09-24. S0 and S1 are built")
     whole = "brings the body in line" in preamble
     assert not whole, (
@@ -3656,3 +3895,1434 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
                   "Today the counter spans targets"):
         assert stale in s56, stale
     assert "Today every compile mints uuid4" in _spec()
+
+
+# ====================================================== S2 and Revision 6
+#
+# Slice S2 built the engine group driver (#189). Every test below holds
+# one section S2 edited to the code it now describes, and takes each
+# number from that code. Mutants: the spec from a byte backup and code in
+# a private scratch copy of ``server/`` (never the shared tree, #254), each
+# file checked byte-identical (sha256) after its run.
+
+#: Owner list items 19 to 21: the S2 orchestrator ruling each records, and
+#: the issue it decides.
+_S2_RULINGS = {19: (1, "#270"), 20: (2, "#262"), 21: (3, "#253")}
+
+
+def test_the_owner_list_records_the_s2_orchestrator_rulings():
+    """The owner list records S2 orchestrator rulings 1 to 3 as items 19 to
+    21, each labelled the orchestrator's, binding until the owner overturns
+    it and naming the issue it decides (#270, #262, #253), with a closing
+    note that they are not the owner's and that their numbers are neither
+    Revision 2's, nor H2's, nor H3's; and item 14, H3 orchestrator ruling
+    5, says ruling 1 refines it. Which numbers collide is computed: all
+    three with Revision 2's and H3's, and 1 and 2 with H2's, which the note
+    names. Each value an item quotes is taken from the code: the idle-stop
+    finish bound (ruling 1), the self-reference's fallback exposure, bound
+    and temperature band (ruling 2), and the PPEC restore horizon (ruling
+    3), whose range test is asked here and whose use by the save gate is
+    read from the tree. Rulings 1 and 2 are held to their code by the 6.17
+    and 5.9 tests below as well; ruling 3's behaviour is
+    test_ppec_file_horizon.py's.
+
+    RED under mutant "label S2 ruling 2 an owner ruling" (item 20's bold
+    head made "**Owner ruling 2:"):
+
+        AssertionError: owner list item 20 must record S2 orchestrator
+        ruling 2, labelled as the orchestrator's
+        assert False
+
+    RED under mutant "drop the note on items 19 to 21":
+
+        AssertionError: expected exactly one line starting "Items 19 to 21
+        are not the owner's rulings.", found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under mutant "item 14 without the refinement":
+
+        AssertionError: owner list item 14 must say: 'S2 orchestrator ruling
+        1 (item 19) refines it'
+        assert False
+
+    RED under the native.py mutant "GP_RETAIN_MAX_PCT_PERIOD = 30.0":
+
+        AssertionError: owner list item 21 must say:
+        '`GP_RETAIN_MAX_PCT_PERIOD` (30%)'
+        assert False
+
+    RED under the light.py mutant "SELF_REFERENCE_TIMEOUT_S = 30.0":
+
+        AssertionError: owner list item 20 must say:
+        '`SELF_REFERENCE_TIMEOUT_S` (30 s)'
+        assert False
+
+    RED under the native.py mutant "the save gate forgets the horizon"
+    (``_saved_gp_measured_points``'s ``if not gp_could_restore(...)`` made
+    ``if False``):
+
+        AssertionError: _saved_gp_measured_points no longer asks
+        gp_could_restore before it counts a saved file; owner list item 21
+        says a file past the horizon counts 0
+        assert []
+
+    The T19 verifier's native.py mutant "the save gate keeps the call and
+    ignores it" (``if not gp_could_restore(...)`` made ``if False and not
+    gp_could_restore(...)``, in a private scratch copy, restored from a
+    byte backup and sha256-compared) PASSED the looser check this test had,
+    which asked only for the call somewhere in an ``if``'s test;
+    test_ppec_file_horizon.py caught it (14 failed). Now the guard is read
+    whole:
+
+        AssertionError: _saved_gp_measured_points no longer asks
+        gp_could_restore before it counts a saved file; owner list item 21
+        says a file past the horizon counts 0
+        assert []
+    """
+    from astrodeck.guide import native
+    from astrodeck.solve import light
+    owner = _section("Still")
+    for item, (ruling, issue) in _S2_RULINGS.items():
+        line = _line(owner, f"{item}. ")
+        labelled = line.startswith(f"{item}. **S2 orchestrator ruling "
+                                   f"{ruling}:")
+        assert labelled, (f"owner list item {item} must record S2 "
+                          f"orchestrator ruling {ruling}, labelled as the "
+                          f"orchestrator's")
+        _says(line, ("Binding until the owner overturns it.", issue),
+              f"owner list item {item}")
+    _says(_line(owner, "14. "), ("S2 orchestrator ruling 1 (item 19) "
+                                 "refines it",), "owner list item 14")
+    note = _line(owner, "Items 19 to 21 are not the owner's rulings.")
+    s2 = {ruling for ruling, _issue in _S2_RULINGS.values()}
+    revision_2 = {int(m.group(1)) for m in re.finditer(
+        r"^### Ruling (\d+):", _spec(), re.MULTILINE)}
+    h3 = {ruling for ruling, _issue in _H3_RULINGS.values()}
+    h2 = sorted(s2 & set(_H2_RULINGS.values()))
+    assert s2 <= revision_2 and s2 <= h3 and h2 == [1, 2], (
+        f"premise: every S2 number is one of Revision 2's and H3's, and S2 "
+        f"shares {h2} with H2")
+    _says(note, ("binding until the owner overturns it", "(Revision 6)",
+                 "not Revision 2's numbering, nor H2's, nor H3's",
+                 f"H2 orchestrator rulings {h2[0]} and {h2[1]}"),
+          "the note on items 19 to 21")
+    horizon = native.gp_restore_horizon_s()
+    finish = f"`IDLE_STOP_FINISH_S` ({engine_mod.IDLE_STOP_FINISH_S:g} s)"
+    fallback = (f"`SELF_REFERENCE_FALLBACK_S` "
+                f"({light.SELF_REFERENCE_FALLBACK_S:g} s)")
+    bound = (f"`SELF_REFERENCE_TIMEOUT_S` "
+             f"({light.SELF_REFERENCE_TIMEOUT_S:g} s)")
+    band = f"`SELF_REFERENCE_BAND_C` ({light.SELF_REFERENCE_BAND_C:g} C)"
+    pct = (f"`GP_RETAIN_MAX_PCT_PERIOD` "
+           f"({native.GP_RETAIN_MAX_PCT_PERIOD:g}%)")
+    period = (f"`GP_DEFAULT_KERNEL_PERIOD_S` "
+              f"({native.GP_DEFAULT_KERNEL_PERIOD_S:g} s)")
+    for item, phrases in (
+            (19, ("It refines item 14.", "`_hand_idle_stop_to_the_park`",
+                  "`_idle_stop_epoch`", "`_stop_after_a_failed_park`",
+                  "`_ending_parks`", finish)),
+            (20, ("`failed_solve_error`", fallback, bound, band)),
+            (21, ("#243", pct, period, f"{horizon:g} s on the default "
+                  "engine", "`gp_restore_horizon_s`", "`gp_could_restore`"))):
+        _says(_line(owner, f"{item}. "), phrases, f"owner list item {item}")
+    # Ruling 3's code half: the horizon is a strict range test from 0, as
+    # the restore's, and the save gate asks it before it counts a file.
+    inside = (native.gp_could_restore(0.0)
+              and native.gp_could_restore(horizon - 0.001))
+    outside = (native.gp_could_restore(horizon)
+               or native.gp_could_restore(-1.0))
+    assert inside and not outside, (
+        f"gp_could_restore is not the range [0, {horizon:g}) owner list item "
+        f"21 quotes")
+    # The whole guard, ``if not gp_could_restore(...): return 0``, and not
+    # only a call somewhere in an ``if``'s test: "if False and not
+    # gp_could_restore(...)" still holds the call, and counts every file.
+    gate = [n for n in ast.walk(_tree(
+        native.NativeGuider._saved_gp_measured_points))
+        if isinstance(n, ast.If) and isinstance(n.test, ast.UnaryOp)
+        and isinstance(n.test.op, ast.Not)
+        and isinstance(n.test.operand, ast.Call)
+        and ast.unparse(n.test.operand.func) == "gp_could_restore"
+        and [ast.unparse(s) for s in n.body] == ["return 0"]]
+    assert gate, ("_saved_gp_measured_points no longer asks gp_could_restore "
+                  "before it counts a saved file; owner list item 21 says a "
+                  "file past the horizon counts 0")
+
+
+def test_6_17_says_a_parking_ending_hands_the_stop_to_its_park():
+    """6.17 says an ending that parks hands the idle stop to its park (#270,
+    S2 orchestrator ruling 1): `_ending_parks` decides (every SafetyAbort,
+    SlewRefused included, and a natural end, a cooling skip or a quality
+    stop whose plan parks when done), `_hand_idle_stop_to_the_park` cancels
+    the stop's task without awaiting it and moves its fence
+    (``_idle_stop_epoch``), the wind-down reaps the tasks bounded by
+    ``GUIDE_OP_TIMEOUT_S``, and `_stop_after_a_failed_park` follows a failed
+    park; and it names the two windows left (#305, #306). It no longer
+    says the run's end completes the stop "whether or not the wind-down
+    parks".
+
+    The code: in ``_run``'s ``finally`` the one ``if parks:`` hands the stop
+    over and awaits NOTHING, and only its ``else`` awaits
+    `_finish_idle_stop`; ``parks`` is ``self._ending_parks(...)``; the
+    ending table is asked of `_ending_parks` itself; and the hand-over,
+    run against a real task, cancels it without awaiting it, moves the
+    fence by one and keeps the task for the wind-down.
+
+    RED under mutant "6.17 without the #270 sentence" (its bold head
+    deleted):
+
+        AssertionError: 6.17 must say: '**An ending that parks hands the
+        stop to its park** (S2, #270, S2 orchestrator ruling 1)'
+        assert False
+
+    RED under the engine mutant "a parking ending waits for the stop again"
+    (the ``if parks:`` arm's ``self._hand_idle_stop_to_the_park()`` made
+    ``await self._finish_idle_stop(already_ending=not spell_ran_out)``):
+
+        AssertionError: _run's parking ending no longer hands the stop to
+        its park without awaiting anything (awaits ['await
+        self._finish_idle_stop(already_ending=not spell_ran_out)']); 6.17
+        says it waits for none of _finish_idle_stop (#270)
+        assert (1 == 1 and [])
+         +  where 1 = len([<ast.If object at 0x0000022ABC6AD090>])
+
+    RED under the engine mutant "an unsafe ending does not park"
+    (`_ending_parks`'s last line made ``return False``):
+
+        AssertionError: _ending_parks answers {'natural, parks when done':
+        True, 'natural, does not park': False, 'quality stop, parks when
+        done': True, 'unsafe': False, 'slew refused': False, 'operator
+        abort': False, 'failure': False}; 6.17 says which endings park
+        assert {'failure': F...': False, ...} == {'failure': F...': False,
+        ...}
+          Omitting 5 identical items, use -vv to show
+          Differing items:
+          {'slew refused': False} != {'slew refused': True}
+          {'unsafe': False} != {'unsafe': True}
+          Use -v to get more diff
+
+    RED under the engine mutant "the hand-over leaves the fence where it
+    was" (``self._idle_stop_epoch += 1`` deleted):
+
+        AssertionError: the hand-over left (task cleared, epoch, kept for
+        the wind-down, cancelled) = (True, 4, True, True); 6.17 says it
+        cancels the task, moves the fence and leaves the task to the
+        wind-down
+        assert (True, 4, True, True) == (True, 5, True, True)
+          At index 1 diff: 4 != 5
+          Use -v to get more diff
+
+    RED under the engine mutant "the hand-over forgets the cancel"
+    (`_hand_idle_stop_to_the_park`'s ``task.cancel()`` deleted; added by
+    the T19 verifier, in a private scratch copy, the file restored from a
+    byte backup and sha256-compared). It PASSED while the task's state was
+    read after ``asyncio.run`` had returned, which cancels every pending
+    task on its way out; now it is read inside the loop:
+
+        AssertionError: the hand-over left (task cleared, epoch, kept for
+        the wind-down, cancelled) = (True, 5, True, False); 6.17 says it
+        cancels the task, moves the fence and leaves the task to the
+        wind-down
+        assert (True, 5, True, False) == (True, 5, True, True)
+          At index 3 diff: False != True
+    """
+    from astrodeck.sequence.models import SequencePlan
+    row = _line(_spec(), "| 6.17 |")
+    _says(row, ("**An ending that parks hands the stop to its park** (S2, "
+                "#270, S2 orchestrator ruling 1)", "`_ending_parks`",
+                "`_hand_idle_stop_to_the_park`", "`_idle_stop_epoch`",
+                "`GUIDE_OP_TIMEOUT_S`", "`_stop_after_a_failed_park`",
+                "#305", "#306"), "6.17")
+    stale = "reads tracking back, whether or not the wind-down parks" in row
+    assert not stale, ("6.17 still says a run's end completes the stop "
+                       "whether or not it parks (#270)")
+    run = _tree(SequenceEngine._run)
+    arms = [n for n in ast.walk(run) if isinstance(n, ast.If)
+            and ast.unparse(n.test) == "parks"]
+    handed = [c for n in arms for s in n.body
+              for c in _self_calls(s, "_hand_idle_stop_to_the_park")]
+    awaited = [ast.unparse(a) for n in arms for s in n.body
+               for a in ast.walk(s) if isinstance(a, ast.Await)]
+    finished = [c for n in arms for s in n.orelse
+                for c in _self_calls(s, "_finish_idle_stop")]
+    assert len(arms) == 1 and handed and awaited == [] and finished, (
+        f"_run's parking ending no longer hands the stop to its park without "
+        f"awaiting anything (awaits {awaited}); 6.17 says it waits for none "
+        f"of _finish_idle_stop (#270)")
+    decided = [a for a in _assigns(run, "parks")
+               if _is_self_call(a.value, "_ending_parks")]
+    assert decided, "_run's parks is no longer _ending_parks's answer"
+    parking = SequencePlan(name="p", targets=[], park_when_done=True)
+    staying = SequencePlan(name="p", targets=[], park_when_done=False)
+    table = {
+        "natural, parks when done": (parking, None),
+        "natural, does not park": (staying, None),
+        "quality stop, parks when done": (
+            parking, engine_mod.NightQualityStop("q")),
+        "unsafe": (staying, engine_mod.SafetyAbort("rain")),
+        "slew refused": (staying, engine_mod.SlewRefused("s", words="s")),
+        "operator abort": (parking, asyncio.CancelledError()),
+        "failure": (parking, RuntimeError("boom")),
+    }
+    parks = {k: SequenceEngine._ending_parks(*v) for k, v in table.items()}
+    assert parks == {"natural, parks when done": True,
+                     "natural, does not park": False,
+                     "quality stop, parks when done": True, "unsafe": True,
+                     "slew refused": True, "operator abort": False,
+                     "failure": False}, (
+        f"_ending_parks answers {parks}; 6.17 says which endings park")
+    assert not inspect.iscoroutinefunction(
+        SequenceEngine._hand_idle_stop_to_the_park), (
+        "_hand_idle_stop_to_the_park awaits now; 6.17 says the park is asked "
+        "at once")
+
+    # The task's state is read INSIDE the loop, one turn after the
+    # hand-over: ``asyncio.run`` cancels every task still pending when its
+    # coroutine returns, so a ``task.cancelled()`` read after it is True
+    # whether or not the hand-over cancelled anything (T19 verifier: the
+    # mutant "the hand-over forgets the cancel" passed until this moved).
+    async def hand_over():
+        task = asyncio.ensure_future(asyncio.sleep(3600))
+        eng = SimpleNamespace(_idle_stop_task=task, _idle_stop_epoch=4,
+                              _idle_stop_handed=None)
+        SequenceEngine._hand_idle_stop_to_the_park(eng)
+        await asyncio.sleep(0)
+        return eng, task, task.cancelled()
+
+    eng, task, cancelled = asyncio.run(hand_over())
+    seen = (eng._idle_stop_task is None, eng._idle_stop_epoch,
+            eng._idle_stop_handed is task, cancelled)
+    assert seen == (True, 5, True, True), (
+        f"the hand-over left (task cleared, epoch, kept for the wind-down, "
+        f"cancelled) = {seen}; 6.17 says it cancels the task, moves the "
+        f"fence and leaves the task to the wind-down")
+
+
+def test_5_9_says_the_light_check_shoots_its_own_reference():
+    """5.9 says that with no master at a failed solve frame's readout, the
+    light check shoots its own reference (#262, S2 orchestrator ruling 2):
+    `_self_reference`, at the camera's shortest exposure or
+    ``SELF_REFERENCE_FALLBACK_S``, shutter closed, under the hub's exposure
+    guard, within ``SELF_REFERENCE_TIMEOUT_S``, kept per
+    ``SELF_REFERENCE_BAND_C`` band, and none for a hub whose library is
+    missing or unreadable; and it no longer says the check has no
+    reference on the rig. Every value is taken from ``solve/light.py``.
+
+    The code: ``failed_solve_error`` asks `_self_reference` once, and only
+    under ``if verdict is None:`` (the library gave no reference); the
+    self-shot is made in an ``async with`` on ``exposure_guard``, bounded by
+    ``wait_for(..., SELF_REFERENCE_TIMEOUT_S)`` and exposed ``light=False``;
+    and ``_min_exposure_s`` falls back to ``SELF_REFERENCE_FALLBACK_S``.
+    Its behaviour on a frame is test_no_light_self_reference.py's.
+
+    RED under mutant "5.9 back to 'nothing shoots a bias'" (the sentence as
+    Revision 5 left it):
+
+        AssertionError: 5.9 must say: "**With no master at the frame's
+        readout, the check shoots its own reference** (S2, #262, S2
+        orchestrator ruling 2)"
+        assert False
+
+    RED under the light.py mutant "no self-shot" (``if verdict is None:``
+    made ``if False:``):
+
+        AssertionError: failed_solve_error no longer shoots its own
+        reference only when the library gave none; 5.9 says it does (#262)
+        assert (1 == 1 and [])
+         +  where 1 = len([<ast.Call object at 0x00000194F57BB0D0>])
+
+    RED under the light.py mutant "an open shutter" (``light=False`` made
+    ``light=True``):
+
+        AssertionError: _self_reference shoots under the exposure guard:
+        True, within SELF_REFERENCE_TIMEOUT_S: True, with the shutter
+        closed: False; 5.9 says all three
+        assert ([<ast.AsyncWith object at 0x000001EEAB08E450>] and
+        [<ast.Call object at 0x000001EEAB08E010>] and [])
+
+    RED under the light.py mutant "SELF_REFERENCE_FALLBACK_S = 0.01":
+
+        AssertionError: 5.9 must say: '`SELF_REFERENCE_FALLBACK_S` (0.01 s)'
+        assert False
+
+    RED under the light.py mutant "the shot outside the guard" (the
+    ``async with hub.exposure_guard(...)`` body made ``pass``, and the
+    bounded exposure moved after it; added by the T19 verifier, in a
+    private scratch copy, restored from a byte backup and
+    sha256-compared). It PASSED while the guard, the bound and the dark
+    exposure were three searches of the whole function; now the bound is
+    read inside the guard's body and the exposure inside the bound:
+
+        AssertionError: _self_reference shoots under the exposure guard:
+        True, within SELF_REFERENCE_TIMEOUT_S: False, with the shutter
+        closed: False; 5.9 says all three
+        assert ([<ast.AsyncWith object at 0x0000029C0C2E9D50>] and [])
+    """
+    from astrodeck.solve import light
+    s59 = _section("5.9")
+    _says(s59, ("**With no master at the frame's readout, the check shoots "
+                "its own reference** (S2, #262, S2 orchestrator ruling 2)",
+                "`_self_reference`",
+                f"`SELF_REFERENCE_FALLBACK_S` "
+                f"({light.SELF_REFERENCE_FALLBACK_S:g} s)",
+                f"`SELF_REFERENCE_TIMEOUT_S` "
+                f"({light.SELF_REFERENCE_TIMEOUT_S:g} s)",
+                f"`SELF_REFERENCE_BAND_C` ({light.SELF_REFERENCE_BAND_C:g} C)",
+                "shutter closed", "the hub's exposure guard",
+                "A hub with no library loaded, or one that could not be "
+                "read, takes none"), "5.9")
+    stale = ("so the check has no reference and the ladder keeps its 10 "
+             "minute retry") in s59
+    assert not stale, ("5.9 still says the light check has no reference on "
+                       "the rig; since S2 it shoots its own (#262)")
+    tree = _tree(light.failed_solve_error)
+    shots = [c for c in ast.walk(tree) if isinstance(c, ast.Call)
+             and ast.unparse(c.func) == "_self_reference"]
+    gated = [n for n in ast.walk(tree) if isinstance(n, ast.If)
+             and ast.unparse(n.test) == "verdict is None"
+             and any(c in shots for s in n.body for c in ast.walk(s))]
+    assert len(shots) == 1 and gated, (
+        "failed_solve_error no longer shoots its own reference only when the "
+        "library gave none; 5.9 says it does (#262)")
+    ref = _tree(light._self_reference)
+    # Nested, as 5.9 says it: the bounded wait is INSIDE the guard's body,
+    # and what it bounds is the dark exposure. Three searches of the whole
+    # function let a shot moved out of the guard pass (T19 verifier).
+    guarded = [n for n in ast.walk(ref) if isinstance(n, ast.AsyncWith)
+               and "exposure_guard" in ast.unparse(n.items[0].context_expr)]
+    bounded = [c for g in guarded for s in g.body
+               for c in _calls(s, "wait_for") if len(c.args) >= 2
+               and ast.unparse(c.args[1]) == "SELF_REFERENCE_TIMEOUT_S"]
+    dark = [c for b in bounded for c in _calls(b.args[0], "expose")
+            if _keyword(c, "light") is False]
+    assert guarded and bounded and dark, (
+        f"_self_reference shoots under the exposure guard: {bool(guarded)}, "
+        f"within SELF_REFERENCE_TIMEOUT_S: {bool(bounded)}, with the shutter "
+        f"closed: {bool(dark)}; 5.9 says all three")
+    shortest = (light._min_exposure_s(SimpleNamespace()),
+                light._min_exposure_s(SimpleNamespace(min_exposure_s=0.0005)))
+    assert shortest == (light.SELF_REFERENCE_FALLBACK_S, 0.0005), (
+        f"the self-shot's exposure is {shortest}; 5.9 says the camera's "
+        f"shortest, or SELF_REFERENCE_FALLBACK_S when it reports none")
+
+
+def test_6_9_says_the_site_derived_flag_is_built_and_every_seam_drops_it():
+    """6.9 says the ``site_derived`` flag is built (#166): ``bus.log(...,
+    site_derived=True)`` sets it, ``events.is_site_derived`` is the one
+    test, `/api/logs` drops a flagged line through `_redact_log_rows_for`,
+    the export and the night reader through ``include_site_derived``, and
+    both WS lanes drop a flagged event whole; it names what the engine
+    flags and what is not flagged yet (#302, `alerting.py`). The two
+    sentences that said the flag was still to come are gone.
+
+    The code: ``bus.log`` takes ``site_derived`` keyword-only, default
+    False; the ring's seam drops a flagged row for a viewer and for no
+    principal, and keeps it for an operator; ``GET /api/logs`` passes the
+    ring through that seam and ``/api/logs/export`` asks the reader with
+    ``include_site_derived``; the night reader takes that parameter; and
+    both lines of the engine's meridian wait, its start and its end, are
+    logged flagged. Behaviour across the seams is
+    test_site_derived_log_lines.py's, and across a real wait
+    test_group_meridian.py's viewer case.
+
+    RED under mutant "6.9 back to the rule as designed" (the "`/api/logs`
+    and the log topic drop it ..." sentence restored):
+
+        AssertionError: 6.9 must say: '**The flag is built** (S2, #166)'
+        assert False
+
+    RED under the redact.py mutant "the ring drops nothing"
+    (`_redact_log_rows_for`'s last line made ``return rows``):
+
+        AssertionError: the ring's seam serves {'viewer': ['said', 'timed'],
+        'nobody': ['said', 'timed'], 'operator': ['said', 'timed']}; 6.9
+        says a flagged line reaches only a holder of CAP_VIEW_SITE_DERIVED
+        assert {'nobody': ['...id', 'timed']} == {'nobody': ['...er':
+        ['said']}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'nobody': ['said', 'timed']} != {'nobody': ['said']}
+          {'viewer': ['said', 'timed']} != {'viewer': ['said']}
+          Use -v to get more diff
+
+    RED under the engine mutant "the wait's end is said unflagged" (the
+    "the meridian wait is over" line without ``site_derived=True``):
+
+        AssertionError: the meridian wait says 2 lines and flags 1; 6.9 says
+        its start and its end are both flagged
+        assert (2 == 2 and [<ast.Call ob...01DD827CCA90>] == [<ast.Call
+        ob...01DD827CCA90>]
+         +  where 2 = len([<ast.Call object at 0x000001DD827C1010>,
+         <ast.Call object at 0x000001DD827CCA90>])
+          At index 0 diff: <ast.Call object at 0x000001DD827CCA90> !=
+          <ast.Call object at 0x000001DD827C1010>
+          Right contains one more item: <ast.Call object at
+          0x000001DD827CCA90>
+          Use -v to get more diff)
+    """
+    from astrodeck import events as events_mod
+    from astrodeck.api import redact as redact_mod
+    from astrodeck.auth.principal import principal_for_role
+    row = _line(_spec(), "| 6.9 |")
+    _says(row, ("**The flag is built** (S2, #166)",
+                "`bus.log(..., site_derived=True)`",
+                "`events.is_site_derived`", "`_redact_log_rows_for`",
+                "`/api/logs/export`", "`include_site_derived`",
+                "both WS lanes drop any flagged event whole",
+                "a meridian wait's start and end",
+                "The night log file keeps everything a line says.",
+                "#302", "`alerting.py`"), "6.9")
+    for stale in ("`/api/logs` and the log topic drop it for a principal",
+                  "until a line can carry them flagged"):
+        kept = stale in row
+        assert not kept, (f"6.9 still says {stale!r}; since S2 the flag is "
+                          f"built (#166)")
+    param = inspect.signature(events_mod.bus.log).parameters.get(
+        "site_derived")
+    assert (param is not None and param.kind is param.KEYWORD_ONLY
+            and param.default is False), (
+        "bus.log no longer takes site_derived keyword-only, default False; "
+        "6.9 says that is how a line is flagged")
+    rows = [{"level": "info", "message": "said", "data": {}},
+            {"level": "info", "message": "timed",
+             "data": {events_mod.SITE_DERIVED_KEY: True}}]
+    viewer, operator = (principal_for_role(r) for r in ("viewer", "operator"))
+    seen = {who: [r["message"] for r in redact_mod._redact_log_rows_for(
+        rows, p)] for who, p in (("viewer", viewer), ("nobody", None),
+                                 ("operator", operator))}
+    assert seen == {"viewer": ["said"], "nobody": ["said"],
+                    "operator": ["said", "timed"]}, (
+        f"the ring's seam serves {seen}; 6.9 says a flagged line reaches "
+        f"only a holder of CAP_VIEW_SITE_DERIVED")
+    served = (bool(_calls(_app_def("logs"), "_redact_log_rows_for"))
+              and "include_site_derived" in ast.unparse(_app_def(
+                  "log_export")))
+    assert served, ("GET /api/logs or /api/logs/export no longer passes its "
+                    "lines through the seam; 6.9 says both drop a flagged "
+                    "line")
+    assert "include_site_derived" in inspect.signature(
+        events_mod.NightLogWriter.read).parameters
+    said = [c for c in _calls(_tree(SequenceEngine._note_meridian_waits),
+                              "log")]
+    flagged = [c for c in said if _keyword(c, "site_derived") is True]
+    assert len(said) == 2 and flagged == said, (
+        f"the meridian wait says {len(said)} lines and flags {len(flagged)}; "
+        f"6.9 says its start and its end are both flagged")
+
+
+def test_5_10_says_the_group_state_and_the_visits_as_s2_built_them():
+    """5.10 lists ``state.group``'s keys as `_group_state` builds them,
+    ``meridian_wait`` included (#166), says `_withhold_group_timing` takes
+    ``panel`` and ``pass`` out across the wait and that a viewer's GET still
+    sees ``target`` change (#166), and says the finish clock prices the
+    visits still owed (`_visits_owed`, over ``visit_passes``), with the
+    overhead EMA's double count named (#297). The "CAP_VIEW_SITE_DERIVED
+    topic" and "Under S2 the hops ... become" sentences are gone.
+
+    The code: the key set of `_group_state`'s dict is exactly the spec's;
+    `_withhold_group_timing` drops ``panel`` and ``pass`` while
+    ``meridian_wait`` is true and returns the state itself otherwise;
+    `_remaining_hops` asks `_visits_owed`; and `_visits_owed`, asked of a
+    member that owes 3 rounds, answers 3 visits at one pass a visit, 2 at
+    two, 1 in sequential mode and 0 once set aside.
+
+    RED under mutant "5.10 without meridian_wait" (the key taken out of
+    the spec's ``group = {...}``):
+
+        AssertionError: 5.10 lists state.group as ['id', 'mode', 'name',
+        'panel', 'panels_done', 'panels_total', 'pass', 'set_aside',
+        'visit_elapsed_s']; _group_state builds ['id', 'meridian_wait',
+        'mode', 'name', 'panel', 'panels_done', 'panels_total', 'pass',
+        'set_aside', 'visit_elapsed_s']
+        assert ['id', 'mode'...s_total', ...] == ['id', 'merid...ls_done',
+        ...]
+          At index 1 diff: 'mode' != 'meridian_wait'
+          Right contains one more item: 'visit_elapsed_s'
+          Use -v to get more diff
+
+    RED under the engine mutant "the group state without meridian_wait"
+    (its ``"meridian_wait"`` entry deleted from `_group_state`):
+
+        AssertionError: 5.10 lists state.group as ['id', 'meridian_wait',
+        'mode', 'name', 'panel', 'panels_done', 'panels_total', 'pass',
+        'set_aside', 'visit_elapsed_s']; _group_state builds ['id', 'mode',
+        'name', 'panel', 'panels_done', 'panels_total', 'pass', 'set_aside',
+        'visit_elapsed_s']
+        assert ['id', 'merid...ls_done', ...] == ['id', 'mode'...s_total',
+        ...]
+          At index 1 diff: 'meridian_wait' != 'mode'
+          Left contains one more item: 'visit_elapsed_s'
+          Use -v to get more diff
+
+    RED under the engine mutant "a visit per round" (`_visits_owed`'s
+    ``-(-rounds // group.visit_passes)`` made ``rounds``):
+
+        AssertionError: a member owing 3 rounds owes (3, 3, 1, 0) visits (1
+        pass, 2 passes, sequential, set aside); 5.10 says its rounds over
+        visit_passes, one in sequential mode, none set aside
+        assert (3, 3, 1, 0) == (3, 2, 1, 0)
+          At index 1 diff: 3 != 2
+          Use -v to get more diff
+    """
+    from astrodeck.api import redact as redact_mod
+    from astrodeck.sequence.models import ExposureStep, Target
+    line = _line(_section("5.10"), "- `_set_state`")
+    _says(line, ("(S2, #166; `_group_state`)", "`meridian_wait` is true"),
+          "5.10's group line")
+    inner = re.sub(r"\[\{[^\]]*\}\]", "", re.sub(
+        r'"[^"]*"', "", line.split("`group = {", 1)[1].split("}`", 1)[0]))
+    spec_keys = sorted(k.split(":")[0].strip() for k in inner.split(",")
+                       if k.strip())
+    built = [n.value for n in ast.walk(_tree(SequenceEngine._group_state))
+             if isinstance(n, ast.Return) and isinstance(n.value, ast.Dict)]
+    code_keys = sorted(k.value for k in built[0].keys) if built else []
+    assert spec_keys == code_keys, (
+        f"5.10 lists state.group as {spec_keys}; _group_state builds "
+        f"{code_keys}")
+    s510 = _section("5.10")
+    _says(s510, ("`_withhold_group_timing`", "absent and not null",
+                 "still sees `target` and `detail` change at the crossing "
+                 "(#166)", "`_publish_group_wait`"), "5.10")
+    eta = _line(s510, "- `compute_eta`")
+    _says(eta, ("S2 made the hops still to make the visits still to make "
+                "(S2, #189)", "`_visits_owed`", "`visit_passes`", "#297"),
+          "5.10's compute_eta line")
+    for stale in ("-gated topic", "Under S2 the hops still to make become"):
+        kept = stale in s510
+        assert not kept, f"5.10 still says {stale!r}; S2 built what it named"
+    waiting = {"state": "running", "group": {"id": "g", "panel": "1-2",
+                                             "pass": 3, "meridian_wait": True}}
+    quiet = {"state": "running", "group": {"id": "g", "panel": "1-2",
+                                           "pass": 3, "meridian_wait": False}}
+    held = redact_mod._withhold_group_timing(waiting)["group"]
+    assert (sorted(held) == ["id", "meridian_wait"]
+            and redact_mod._withhold_group_timing(quiet) is quiet), (
+        f"_withhold_group_timing left {sorted(held)} across a meridian wait; "
+        f"5.10 says panel and pass are withheld, and nothing otherwise")
+    priced = _self_calls(_tree(SequenceEngine._remaining_hops),
+                         "_visits_owed")
+    assert priced, ("_remaining_hops no longer prices a member's visits; "
+                    "5.10 says it does")
+    member = Target(name="1-1", ra_hours=1.0, dec_deg=10.0, steps=[
+        ExposureStep(filter="L", exposure_s=60.0, count=3),
+        ExposureStep(filter="R", exposure_s=60.0, count=2)])
+
+    def owed(passes: int, mode: str = "rotate", aside: bool = False) -> int:
+        eng = SimpleNamespace(
+            _group_runs={}, _set_aside={}, _done={},
+            _set_aside_targets={member.id: "r"} if aside else {},
+            _visit_in_progress=None)
+        group = TargetGroup(id="g", mode=mode, visit_passes=passes)
+        return SequenceEngine._visits_owed(eng, member, group, None)
+
+    visits = (owed(1), owed(2), owed(1, "sequential"), owed(1, aside=True))
+    assert visits == (3, 2, 1, 0), (
+        f"a member owing 3 rounds owes {visits} visits (1 pass, 2 passes, "
+        f"sequential, set aside); 5.10 says its rounds over visit_passes, "
+        f"one in sequential mode, none set aside")
+
+
+def test_6_3_says_a_group_is_refused_only_when_every_panel_is_down():
+    """6.3 says the start guard is built (#132): `_start_preflight`, one
+    helper for ``/api/sequence/start`` and ``/api/flows/{id}/run``, refuses
+    a group with 409 ``below_horizon`` listing its panels only when every
+    panel is down, answers a started run's blocked panels in
+    ``below_horizon``, logs them through `_name_panels_below`, and is not
+    run by ``/api/sessions/{id}/resume`` or ``/api/sequence/recover``
+    (#291). The line refs of the loop it replaced are gone.
+
+    The code, from ``api/app.py``'s syntax tree: `_start_preflight`'s group
+    refusal carries ``code: below_horizon`` and ``panels``, and its entry
+    for a started run carries exactly ``group``, ``mosaic``, ``target`` and
+    ``panel``; both start routes call it and `_name_panels_below` and add
+    ``below_horizon`` to their answer; the resume and recover routes call
+    neither. Behaviour is test_group_start_guard.py's.
+
+    RED under mutant "6.3 back to the design" (the row as Revision 5 left
+    it):
+
+        AssertionError: 6.3 must say: 'Built (S2, #132)'
+        assert False
+
+    RED under the app.py mutant "run_flow skips the pre-flight"
+    (``below_horizon = _start_preflight(plan, force=body.force)`` made
+    ``below_horizon = []``):
+
+        AssertionError: run_flow no longer runs _start_preflight and names
+        the panels below the horizon; 6.3 says it does
+        assert False
+
+    RED under the app.py mutant "resume runs the pre-flight" (a call to
+    `_start_preflight` added to ``resume_session``), the control that the
+    #291 half can fail:
+
+        AssertionError: resume_session runs the pre-flight now; 6.3 says it
+        runs neither check (#291), so the row is stale
+        assert not True
+    """
+    row = _line(_spec(), "| 6.3 |")
+    _says(row, ("Built (S2, #132)", "`_start_preflight`",
+                "409 `below_horizon`", "`panels: [{panel, target}]`",
+                "`below_horizon: [{group, mosaic, target, panel}]`",
+                "`_name_panels_below`", "`/api/sessions/{id}/resume` and "
+                "`/api/sequence/recover` run neither check (#291)"), "6.3")
+    stale = "This replaces the all-or-nothing loop" in row
+    assert not stale, "6.3 still describes the start guard as to be built"
+    pre = _app_def("_start_preflight")
+    refusal = "'code': 'below_horizon'" in ast.unparse(pre) and \
+        "'panels':" in ast.unparse(pre)
+    entry = [n for n in ast.walk(pre) if isinstance(n, ast.FunctionDef)
+             and n.name == "entry"]
+    keys = sorted(k.value for e in entry for n in ast.walk(e)
+                  if isinstance(n, ast.Dict) for k in n.keys
+                  if isinstance(k, ast.Constant))
+    assert refusal and keys == ["group", "mosaic", "panel", "target"], (
+        f"_start_preflight's refusal ({refusal}) or its entry ({keys}) is no "
+        f"longer what 6.3 quotes")
+    for route in ("sequence_start", "run_flow"):
+        tree = _app_def(route)
+        wired = (bool(_calls(tree, "_start_preflight"))
+                 and bool(_calls(tree, "_name_panels_below"))
+                 and "'below_horizon'" in ast.unparse(tree))
+        assert wired, (f"{route} no longer runs _start_preflight and names "
+                       f"the panels below the horizon; 6.3 says it does")
+    for route in ("resume_session", "sequence_recover"):
+        ran = bool(_calls(_app_def(route), "_start_preflight"))
+        assert not ran, (f"{route} runs the pre-flight now; 6.3 says it runs "
+                         f"neither check (#291), so the row is stale")
+
+
+def test_5_1_and_5_7_say_reach_and_the_meridian_rule_as_s2_built_them():
+    """5.1 says the reach verdict is built (#132): `_mount_floor_verdict`
+    answers a ``ReachVerdict`` tagged by ``REACH_TAGS``, the ``floor`` and
+    ``ceiling`` kinds wait on a ``REACH_RECHECK_S`` cadence, the pier limit
+    is not a wait, and no site raises the gate's own ``SlewRefused``; that
+    the group state is ``GroupRun``, which sums each visit's exposures
+    (``exposures_this_pass``); and that a floor advance is ``FloorStop``.
+    5.7 says the rule is built in `_meridian_now` over
+    ``meridian_eligibility``, with ``MERIDIAN_SIDE_MARGIN_S`` past each
+    crossing, and that a confirming hop disarms that panel's latch. The
+    values come from the engine and ``group_rules``.
+
+    The code: ``REACH_TAGS`` makes exactly the floor and the ceiling waits;
+    `_eligibility_now` asks the projected verdict and raises
+    ``SlewRefused``; ``GroupRun`` keeps ``exposures_this_pass`` and no
+    ledger snapshot; `_meridian_now` hands the rule the plan's lead
+    (`_group_flip_margin_s`) and the band; `_group_flip_margin_s` never asks
+    `_flip_lead_s`; and `_setup_target` disarms the latch after a verified
+    hop.
+
+    RED under mutant "5.1 back to 'pier limit' as a wait":
+
+        AssertionError: 5.1 must say: 'the `floor` kind'
+        assert False
+
+    RED under the engine mutant "the pier limit waits" (``REACH_TAGS``'s
+    ``"pier": "refuse"`` made ``"pier": "wait"``):
+
+        AssertionError: REACH_TAGS waits on ['ceiling', 'floor', 'pier'] and
+        refuses ['no_site']; 5.1 says the floor and the ceiling wait, and no
+        site and the pier refuse
+        assert (['ceiling', ..., ['no_site']) == (['ceiling', ...ite',
+        'pier'])
+          At index 0 diff: ['ceiling', 'floor', 'pier'] != ['ceiling',
+          'floor']
+          Use -v to get more diff
+
+    RED under the engine mutant "MERIDIAN_SIDE_MARGIN_S = 30.0":
+
+        AssertionError: 5.7 must say: '`MERIDIAN_SIDE_MARGIN_S` (30 s)'
+        assert False
+
+    RED under the engine mutant "the margin is the learned lead"
+    (`_group_flip_margin_s` returning ``self._flip_lead_s()``):
+
+        AssertionError: _group_flip_margin_s asks _flip_lead_s; 5.7 says the
+        margin is the plan's lead, never the learned one
+        assert '_flip_lead_s' not in ['_flip_lead_s']
+    """
+    from astrodeck.sequence import group_rules
+    s51 = _section("5.1")
+    recheck = (f"REACH_RECHECK_S` ({group_rules.REACH_RECHECK_S:g} s, a "
+               f"named constant in `sequence/group_rules.py`)")
+    _says(s51, ("`_mount_floor_verdict(target, projected=True) -> "
+                "ReachVerdict | None`", "(S2, #132;", "`REACH_TAGS`",
+                "the `floor` kind", "the `ceiling` kind",
+                "The pier limit is not a wait", recheck,
+                "the gate's own `SlewRefused`", "`GroupRun`",
+                "`exposures_this_pass`", "`FloorStop`",
+                "`GroupRun.close_pass`"), "5.1")
+    for stale in ("zenith keep-out, pier limit. Time changes these",
+                  "exposures_at_pass_start",
+                  "raises `SafetyAbort` exactly as the slew gate does today"):
+        kept = stale in s51
+        assert not kept, f"5.1 still says {stale!r}; S2 built it otherwise"
+    tags = engine_mod.REACH_TAGS
+    waits = sorted(k for k, v in tags.items() if v == "wait")
+    refuses = sorted(k for k, v in tags.items() if v == "refuse")
+    assert (waits, refuses) == (["ceiling", "floor"], ["no_site", "pier"]), (
+        f"REACH_TAGS waits on {waits} and refuses {refuses}; 5.1 says the "
+        f"floor and the ceiling wait, and no site and the pier refuse")
+    elig = _tree(SequenceEngine._eligibility_now)
+    asked = [c for c in _self_calls(elig, "_mount_floor_verdict")
+             if _keyword(c, "projected") is True]
+    raised = [n for n in ast.walk(elig) if isinstance(n, ast.Raise)
+              and isinstance(n.exc, ast.Call)
+              and ast.unparse(n.exc.func) == "SlewRefused"]
+    assert asked and raised, ("_eligibility_now no longer asks the projected "
+                              "reach verdict and raises SlewRefused for no "
+                              "site; 5.1 says it does")
+    run = group_rules.GroupRun({"p": "1-1"}, max_failed_visits=3)
+    kept = (hasattr(run, "exposures_this_pass"),
+            hasattr(run, "exposures_at_pass_start"))
+    assert kept == (True, False), (
+        f"GroupRun keeps (exposures_this_pass, exposures_at_pass_start) = "
+        f"{kept}; 5.1 says it sums the visits and keeps no snapshot")
+    s57 = _section("5.7")
+    band = (f"`MERIDIAN_SIDE_MARGIN_S` "
+            f"({engine_mod.MERIDIAN_SIDE_MARGIN_S:g} s)")
+    _says(s57, ("S2 built the rule (S2, #136)", "`_meridian_now`",
+                "`group_rules.meridian_eligibility`", band,
+                "disarms that panel's flip latch"), "5.7")
+    rule = [c for c in _calls(_tree(SequenceEngine._meridian_now),
+                              "meridian_eligibility")]
+    fed = bool(rule) and (
+        "MERIDIAN_SIDE_MARGIN_S" in ast.unparse(
+            _keyword_node(rule[0], "crossed_h") or ast.Constant(None))
+        and "self._group_flip_margin_s()" in ast.unparse(
+            _keyword_node(rule[0], "lead_h") or ast.Constant(None)))
+    assert fed, ("_meridian_now no longer hands the rule the plan's lead and "
+                 "MERIDIAN_SIDE_MARGIN_S; 5.7 says it does")
+    learned = [c.func.attr for c in _self_calls(_tree(
+        SequenceEngine._group_flip_margin_s))]
+    assert "_flip_lead_s" not in learned, (
+        "_group_flip_margin_s asks _flip_lead_s; 5.7 says the margin is the "
+        "plan's lead, never the learned one")
+    disarmed = [n for n in ast.walk(_tree(SequenceEngine._setup_target))
+                if isinstance(n, ast.If) and ast.unparse(n.test)
+                == "hop_flip_verified" and any(
+                    _assigns(s, "self._flip_armed", "False") for s in n.body)]
+    assert disarmed, ("_setup_target no longer disarms the latch after a hop "
+                      "that verified the side past the meridian; 5.7 says it "
+                      "does")
+
+
+def test_5_6_says_the_hop_checks_as_s2_built_them():
+    """5.6 says the rotate shortcut is built (`Hub._rotation_already_set`,
+    U-06), that the goto commands `_commanded_rotation`, that the group
+    checks are built (`_group_hop_checks`, `_group_angle_check`,
+    `_rotator_evidence`, ``GroupSetAside``, U-04), that the pier-side check
+    is built (`_group_pier_check`, kind ``pier_side``, #136), and that the
+    guide-lost deferral is NOT built (#303). The status line's three
+    "today" sentences in 5.6 are left as they were, which the status-line
+    test asks.
+
+    The code: ``Hub.goto_and_center`` asks the shortcut; `_setup_target`
+    asks `_commanded_rotation`; `_group_angle_check` raises
+    ``GroupSetAside`` and asks `_rotator_evidence`; `_group_pier_check`
+    raises ``PanelDeferred`` of kind ``pier_side``; and no call in the
+    engine raises a ``PanelDeferred`` of kind ``guide_lost``, although the
+    kind exists, so building it turns this red until 5.6 step 7 says so.
+
+    RED under mutant "5.6 back to 'A new shortcut (S2)'":
+
+        AssertionError: 5.6 must say: 'The shortcut is built (S2, U-06,
+        #189)'
+        assert False
+
+    RED under the hub.py mutant "no shortcut" (``goto_and_center``'s
+    ``await self._rotation_already_set(rot, rotation_deg)`` made ``None``):
+
+        AssertionError: Hub.goto_and_center no longer asks
+        _rotation_already_set; 5.6 says the shortcut is built
+        assert []
+
+    RED under the engine mutant "the guide-lost deferral built" (the #72
+    bound's skip arm raising ``PanelDeferred(..., kind="guide_lost")``
+    ahead of its ``StopTarget``), the case where the spec is stale:
+
+        AssertionError: the engine raises a guide_lost deferral now; 5.6
+        step 7 says it is not built (#303): say it is
+        assert [<ast.Call ob...023FD079B1D0>] == []
+          Left contains one more item: <ast.Call object at
+          0x0000023FD079B1D0>
+          Use -v to get more diff
+    """
+    from astrodeck.hub import Hub
+    from astrodeck.sequence import group_rules
+    s56 = _section("5.6")
+    _says(s56, ("`_commanded_rotation(target)` (S2, #189)",
+                "The shortcut is built (S2, U-06, #189)",
+                "`Hub._rotation_already_set`", "`sky_angle.MOVED_TOL_DEG`",
+                "S2 built them (S2, U-04, #189)", "`_group_hop_checks`",
+                "`_group_angle_check`", "`_rotator_evidence`",
+                "`GroupSetAside`", "`_group_pier_check`", "kind `pier_side`",
+                "Not built in S2 (S2, #303)", "`guide_lost`"), "5.6")
+    stale = "A new shortcut (S2) skips" in s56
+    assert not stale, "5.6 still says the rotate shortcut is to be built"
+    shortcut = _self_calls(_tree(Hub.goto_and_center),
+                           "_rotation_already_set")
+    assert shortcut, ("Hub.goto_and_center no longer asks "
+                      "_rotation_already_set; 5.6 says the shortcut is built")
+    assert _self_calls(_tree(SequenceEngine._setup_target),
+                       "_commanded_rotation"), (
+        "_setup_target no longer commands _commanded_rotation; 5.6 step 3 "
+        "says it does")
+    angle = _tree(SequenceEngine._group_angle_check)
+    sets = [n for n in ast.walk(angle) if isinstance(n, ast.Raise)
+            and isinstance(n.exc, ast.Call)
+            and ast.unparse(n.exc.func) == "GroupSetAside"]
+    assert sets and _self_calls(angle, "_rotator_evidence"), (
+        "_group_angle_check no longer sets a fixed camera's group aside or "
+        "asks the rotator's evidence; 5.6 step 4 says it does")
+
+    def deferrals(tree: ast.AST, kind: str) -> list[ast.Call]:
+        return [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                and ast.unparse(n.func) == "PanelDeferred"
+                and _keyword(n, "kind") == kind]
+
+    assert deferrals(_tree(SequenceEngine._group_pier_check), "pier_side"), (
+        "_group_pier_check no longer defers a hop on the wrong side; 5.6 "
+        "step 5 says it does")
+    assert "guide_lost" in group_rules.DEFERRAL_KINDS, (
+        "premise: PanelDeferred still has the kind guide_lost")
+    built = deferrals(ast.parse(inspect.getsource(engine_mod)), "guide_lost")
+    assert built == [], ("the engine raises a guide_lost deferral now; 5.6 "
+                         "step 7 says it is not built (#303): say it is")
+
+
+def test_3_4_and_ruling_9_say_the_session_and_the_lock_as_s2_built_them():
+    """3.4 says the session gained ``locked_angles`` beside ``set_aside``,
+    that records are written through ``Session.note_set_aside`` with
+    ``events.night_key()``, saved at once (`_persist_set_aside`) and read
+    back by ``start`` (``Session.set_aside_on``), and that a lock is written
+    only through ``Session.lock_angle``, where the first wins. Revision 2's
+    ruling 9 says S2 built the lock (`_settle_locked_angle`,
+    `_take_pending_lock`, `_commanded_rotation`), that a fixed camera is
+    checked against it within ``RotatorConfig.tolerance_deg``, that the
+    progress route shows it as ``locked_angle`` and no editor draws it yet,
+    and that ResumeArm commands it with no rotator (#295).
+
+    The code: ``Session`` has both fields; a second lock returns the first
+    and a NaN is refused; a record with no night is refused and one is
+    read back only on its night; `_persist_set_aside` writes with
+    ``night_key(...)`` and saves; `_commanded_rotation` gives a planned
+    angle first, a lock only to a connected rotator, and nothing without
+    either; the progress route has ``LOCK_SOURCE`` and emits
+    ``locked_angle``; and no ``.tsx`` file under ui/src reads it.
+
+    RED under mutant "ruling 9 back to 'Built in S2 alongside'":
+
+        AssertionError: ruling 9 must say: 'S2 built it alongside the angle
+        check (S2, U-04, #189)'
+        assert False
+
+    RED under the session.py mutant "the last lock wins" (``if held is not
+    None: return held`` made ``if False: return held``):
+
+        AssertionError: a second lock gave 45.0; 3.4 says the first lock
+        wins
+        assert (30.0, 45.0, 45.0) == (30.0, 30.0, 30.0)
+          At index 1 diff: 45.0 != 30.0
+          Use -v to get more diff
+
+    RED under the engine mutant "a lock commanded to no rotator"
+    (`_commanded_rotation`'s ``if lock is None or not
+    self._rotator_connected():`` made ``if lock is None:``):
+
+        AssertionError: _commanded_rotation answers (45.0, 30.0, 30.0, None)
+        (planned, lock with a rotator, lock without one, neither); ruling 9
+        and 5.6 say the planned angle, the lock only to a connected rotator,
+        and nothing
+        assert (45.0, 30.0, 30.0, None) == (45.0, 30.0, None, None)
+          At index 2 diff: 30.0 != None
+          Use -v to get more diff
+    """
+    from astrodeck.flows import progress as progress_mod
+    from astrodeck.sequence.models import SequencePlan
+    s34 = _section("3.4")
+    _says(s34, ("locked_angles: dict[str, dict] = {}",
+                "sequence/group_rules.py; engine-internal",
+                "As built (S2, #208)", "`Session.note_set_aside`",
+                "`events.night_key()`", "`_persist_set_aside`",
+                "`Session.set_aside_on`", "`Session.locked_angles`",
+                "`Session.lock_angle`", "the first lock wins"), "3.4")
+    ruling = [text for name, text in _blocks()
+              if name.startswith("Ruling 9:")]
+    assert len(ruling) == 1, "the spec must have one Revision 2 ruling 9"
+    _says(ruling[0], ("S2 built it alongside the angle check (S2, U-04, "
+                      "#189)", "`Session.lock_angle`",
+                      "`_settle_locked_angle`", "`_take_pending_lock`",
+                      "`_commanded_rotation`", "`RotatorConfig.tolerance_deg`",
+                      "`locked_angle: {pa_deg, source}`",
+                      "no editor draws it yet", "#295"), "ruling 9")
+    stale = "Built in S2 alongside" in ruling[0]
+    assert not stale, "ruling 9 still says the lock is to be built in S2"
+    fields = session_mod.Session.model_fields
+    assert {"set_aside", "locked_angles"} <= set(fields), (
+        "Session no longer has set_aside and locked_angles; 3.4 says it does")
+    s = session_mod.Session(status="dormant",
+                            plan=SequencePlan(name="p", targets=[]))
+    first = s.lock_angle("t", 30.0, solved_at=1.0, exposed_at=None,
+                         source="claims")
+    again = s.lock_angle("t", 45.0, solved_at=2.0, exposed_at=None,
+                         source="claims")
+    assert (first["pa_deg"], again["pa_deg"],
+            s.locked_angle("t")["pa_deg"]) == (30.0, 30.0, 30.0), (
+        f"a second lock gave {again['pa_deg']}; 3.4 says the first lock wins")
+    with pytest.raises(ValueError):
+        s.lock_angle("u", float("nan"), solved_at=1.0, exposed_at=None,
+                     source="claims")
+    with pytest.raises(ValueError):
+        s.note_set_aside("t", "claims", night="")
+    s.note_set_aside("t", "claims", night="2026-09-25")
+    nights = (len(s.set_aside_on("2026-09-25")),
+              len(s.set_aside_on("2026-09-26")))
+    assert nights == (1, 0), (f"a record is read back on nights {nights}; "
+                              f"3.4 says on its own night only")
+    persist = _tree(SequenceEngine._persist_set_aside)
+    noted = [c for c in _calls(persist, "note_set_aside")
+             if "night_key(" in ast.unparse(_keyword_node(c, "night")
+                                            or ast.Constant(None))]
+    assert noted and _calls(persist, "save_run_state"), (
+        "_persist_set_aside no longer records with night_key() and saves at "
+        "once; 3.4 says it does")
+
+    def commanded(planned, lock, connected):
+        eng = SimpleNamespace(_lock_in_force=lambda t: lock,
+                              _rotator_connected=lambda: connected)
+        return SequenceEngine._commanded_rotation(
+            eng, SimpleNamespace(rotation_deg=planned))
+
+    lock = {"pa_deg": 30.0}
+    answers = (commanded(45.0, lock, False), commanded(None, lock, True),
+               commanded(None, lock, False), commanded(None, None, True))
+    assert answers == (45.0, 30.0, None, None), (
+        f"_commanded_rotation answers {answers} (planned, lock with a "
+        f"rotator, lock without one, neither); ruling 9 and 5.6 say the "
+        f"planned angle, the lock only to a connected rotator, and nothing")
+    assert isinstance(getattr(progress_mod, "LOCK_SOURCE", None), str) and \
+        '"locked_angle"' in inspect.getsource(progress_mod), (
+            "the progress route no longer shows the lock; ruling 9 says it "
+            "does")
+    drawn = sorted(str(p.relative_to(UI_SRC)) for p in UI_SRC.rglob("*.tsx")
+                   if "locked_angle" in p.read_text(encoding="utf-8",
+                                                    errors="replace"))
+    assert drawn == [], (f"{drawn} now draw locked_angle; ruling 9's 'no "
+                         f"editor draws it yet' is stale")
+
+
+def test_5_9_says_resume_arm_recentres_on_what_the_run_would_shoot():
+    """5.9 says ResumeArm re-centres on the panel the order picks, with its
+    rotation (#159): `recentre_candidates` in the run's own order
+    (``schedule.schedule_order``) leaving out what is complete, set aside
+    tonight or waiting on its group, `commanded_rotation`, and a refusal in
+    words when everything owed is set aside tonight
+    (`nothing_to_shoot_tonight`, #284); and it names what it does not model
+    (#283) and the lock it commands with no rotator (#295). "Today it takes
+    the first non-calibration target" is gone.
+
+    The code: ``ResumeArm._recover`` asks all three; ``ResumeArm._walk``
+    asks ``schedule_order``; and asked of a session with one complete, one
+    set-aside and one owing target, `recentre_candidates` answers the owing
+    one tonight and the set-aside one again the next night, a session whose
+    only owing target is set aside has nothing to shoot tonight, and a lock
+    is the angle `commanded_rotation` gives an unframed target.
+
+    RED under mutant "5.9 back to 'Today it takes the first
+    non-calibration target'":
+
+        AssertionError: 5.9's re-centre bullet must say: '**with its
+        rotation** (S2, #159)'
+        assert False
+
+    RED under the resume_arm.py mutant "tonight's set-aside forgotten"
+    (``records = session.set_aside_on(night)`` made ``records = []``):
+
+        AssertionError: recentre_candidates picks {'2026-09-25': ['aside',
+        'owing'], '2026-09-26': ['aside', 'owing']}; 5.9 says not a complete
+        target, not one set aside tonight, and the set-aside one again on
+        another night
+        assert {'2026-09-25'...de', 'owing']} == {'2026-09-25'...de',
+        'owing']}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'2026-09-25': ['aside', 'owing']} != {'2026-09-25': ['owing']}
+          Use -v to get more diff
+    """
+    from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
+    from astrodeck.sequence.session import Session, SessionFrame
+    bullet = _line(_section("5.9"), "- ResumeArm `_recover` re-centres")
+    _says(bullet, ("**with its rotation** (S2, #159)",
+                   "`recentre_candidates`", "`schedule.schedule_order`",
+                   "`commanded_rotation`", "`nothing_to_shoot_tonight`",
+                   "#283", "#284", "#295", "Before S2 it took"),
+          "5.9's re-centre bullet")
+    stale = "Today it takes the first non-calibration target" in bullet
+    assert not stale, "5.9 still says ResumeArm takes the first target"
+    recover = inspect.getsource(ResumeArm._recover)
+    for call in ("recentre_candidates(", "nothing_to_shoot_tonight(",
+                 "commanded_rotation("):
+        asked = call in recover
+        assert asked, f"ResumeArm._recover no longer asks {call[:-1]}"
+    assert "schedule_order" in inspect.getsource(ResumeArm._walk)
+
+    def target(name: str) -> Target:
+        return Target(name=name, ra_hours=1.0, dec_deg=10.0, steps=[
+            ExposureStep(filter="L", exposure_s=60.0, count=1)])
+
+    done, aside, owing = target("done"), target("aside"), target("owing")
+    s = Session(status="dormant", plan=SequencePlan(
+        name="p", targets=[done, aside, owing]))
+    s.frames.append(SessionFrame(target_id=done.id, step_id=done.steps[0].id,
+                                 ts=1.0, night="2026-09-24"))
+    s.note_set_aside(aside.id, "claims", night="2026-09-25")
+    picked = {night: [t.name for t in resume_arm_mod.recentre_candidates(
+        s, night)] for night in ("2026-09-25", "2026-09-26")}
+    assert picked == {"2026-09-25": ["owing"],
+                      "2026-09-26": ["aside", "owing"]}, (
+        f"recentre_candidates picks {picked}; 5.9 says not a complete "
+        f"target, not one set aside tonight, and the set-aside one again on "
+        f"another night")
+    alone = Session(status="dormant", plan=SequencePlan(
+        name="p", targets=[aside]))
+    alone.note_set_aside(aside.id, "claims", night="2026-09-25")
+    none = resume_arm_mod.recentre_candidates(alone, "2026-09-25")
+    refused = resume_arm_mod.nothing_to_shoot_tonight(alone, none)
+    assert none == [] and refused, (
+        "a session whose only owing target is set aside tonight is not "
+        "refused; 5.9 says it refuses before it touches a device")
+    s.lock_angle(owing.id, 33.0, solved_at=1.0, exposed_at=None,
+                 source="claims")
+    assert resume_arm_mod.commanded_rotation(s, owing) == 33.0
+
+
+def test_5_8_and_6_15_say_263_and_257_are_fixed():
+    """5.8 says a safety pause or a roof reopen opened by a frame-loop
+    hold's own gate returns to the hold, which acquires the target once
+    (#263): the hold marks its own gate's acquisition. 6.15 says a forced
+    rig connect validates its whole body first, so a 422 touches nothing
+    (#257). Both old sentences are gone, and "#263" and "#257" stay, as the
+    tests above ask.
+
+    The code: ``_hold_for_clear`` sets ``_acquisition_behind_gate`` to its
+    target directly before the ``try`` that awaits its
+    ``_safety_gate(context="frame")``, and puts it back in the ``finally``
+    (the H3 helper, asked of the frame gate); and ``connect_rig``'s first
+    422 comes before its busy refusal and its ladder stop. Behaviour is
+    test_pause_inside_frame_hold.py's and
+    test_connect_rig_validates_first.py's.
+
+    RED under mutant "5.8 back to 'still runs a setup of its own'":
+
+        AssertionError: 5.8's re-point bullet must say: 'returns to the
+        hold, which acquires the target once, when the sky clears (S2,
+        #263)'
+        assert False
+
+    RED under the engine mutant "the hold's gate unmarked"
+    (``_hold_for_clear``'s ``self._acquisition_behind_gate = target`` before
+    its frame gate made ``= gated``):
+
+        AssertionError: _hold_for_clear no longer marks the acquisition
+        behind its own frame gate; 5.8 says a pause that gate opens returns
+        to the hold (#263)
+        assert False
+
+    RED under the app.py mutant "the busy refusal before the validation"
+    (``connect_rig``'s unforced 409 moved ahead of its 422 checks):
+
+        AssertionError: connect_rig no longer validates its body before its
+        busy refusal and its ladder stop; 6.15 says a 422 touches nothing
+        (#257)
+        assert False
+    """
+    bullet = _line(_section("5.8"), _REPOINT)
+    _says(bullet, ("returns to the hold, which acquires the target once, "
+                   "when the sky clears (S2, #263)",
+                   '`_safety_gate(context="frame")`'), "5.8's re-point bullet")
+    stale = "still runs a setup of its own, and the release another" in bullet
+    assert not stale, "5.8 still says #263 is open"
+    row = _line(_spec(), "| 6.15 |")
+    _says(row, ("it now validates the whole body first, ahead of the "
+                "unforced 409 as well, so a 422 means nothing was touched "
+                "(S2, #257)",), "6.15")
+    stale = ("a forced rig connect aborts and disarms before it "
+             "validates") in row
+    assert not stale, "6.15 still says #257 is open"
+    marked = _marks_its_gate(SequenceEngine._hold_for_clear, context="frame")
+    assert marked, ("_hold_for_clear no longer marks the acquisition behind "
+                    "its own frame gate; 5.8 says a pause that gate opens "
+                    "returns to the hold (#263)")
+    rig = _app_def("connect_rig")
+    first_422 = min((n.lineno for n in ast.walk(rig)
+                     if isinstance(n, ast.Raise)
+                     and isinstance(n.exc, ast.Call)
+                     and ast.unparse(n.exc.func) == "HTTPException"
+                     and n.exc.args and isinstance(n.exc.args[0], ast.Constant)
+                     and n.exc.args[0].value == 422), default=None)
+    later = [c.lineno for name in ("_teardown_busy_detail", "stop_recovery")
+             for c in _calls(rig, name)]
+    ordered = first_422 is not None and bool(later) and first_422 < min(later)
+    assert ordered, ("connect_rig no longer validates its body before its "
+                     "busy refusal and its ladder stop; 6.15 says a 422 "
+                     "touches nothing (#257)")
+
+
+def test_1_6_5_2_and_5_3_say_the_waits_the_order_and_the_visit_as_built():
+    """1.6 says a follower does not fill a deferral wait yet (#304), and
+    ``group_ready_ts`` is a crossing, a limit's clearing or a gating's
+    opening (`_group_ready_ts`). 5.2 says the scheduler and ResumeArm use
+    the order and the progress route does not yet, with ``SETTING_SCAN_S``
+    and the 60 s scan behind ``setting_first``. 5.3 says `_run_visit` runs
+    a bounded visit, a follower's bound has no passes, a visit its deadline
+    ended before its first frame is not a visit, and a flip-point deadline
+    is in clock seconds (#300).
+
+    The code: `_close_group_pass` awaits ``_wait_until`` itself for
+    ``DEFER_WAIT_S``, and `_group_ready_ts` knows no deferral wait; the
+    engine and ResumeArm import ``order_panels`` and the progress route
+    does not; `_time_to_floor_s` scans with ``forward_clear_ts`` up to
+    ``SETTING_SCAN_S``; ``_run_steps`` hands a bounded visit to
+    `_run_visit`; and `_visit_panel` requeues a visit the deadline ended
+    with no exposure without handing it to ``visit_outcome``.
+
+    RED under mutant "1.6 back to 'or in a deferral wait'":
+
+        AssertionError: 1.6 must say: 'A deferral wait is not filled yet
+        (S2, #304)'
+        assert False
+
+    RED under the progress.py mutant "the progress route orders panels" (an
+    ``order_panels`` import added):
+
+        AssertionError: order_panels is used by (engine, ResumeArm,
+        progress) = (True, True, True); 5.2 says the scheduler and
+        ResumeArm, and not the progress route yet
+        assert (True, True, True) == (True, True, False)
+          At index 2 diff: True != False
+          Use -v to get more diff
+
+    RED under the engine mutant "a follower fills the deferral wait"
+    (`_close_group_pass`'s ``await self._wait_until(time.time() +
+    DEFER_WAIT_S)`` deleted, the shape the #304 fix will have), the case
+    where 1.6 is stale:
+
+        AssertionError: the deferral wait no longer blocks inside
+        _close_group_pass, or group_ready_ts counts it; 1.6 says no follower
+        fills it yet (#304): say what was built
+        assert ([])
+
+    RED under the engine mutant "SETTING_SCAN_S = 6 * 3600.0":
+
+        AssertionError: 5.2 must say: 'a 60 s forward scan capped at
+        `SETTING_SCAN_S` (6 h)'
+        assert False
+    """
+    from astrodeck.flows import progress as progress_mod
+    from astrodeck.sequence import group_rules
+    s16 = _section("1.6")
+    _says(s16, ("A deferral wait is not filled yet (S2, #304)",
+                "`_close_group_pass`", "the opening its gating waits for "
+                "(`_group_ready_ts`)"), "1.6")
+    for stale in ("held by the meridian rule, or in a deferral wait)",
+                  "the end of a deferral wait (5.1), or the projected time"):
+        kept = stale in s16
+        assert not kept, f"1.6 still says {stale!r} (#304)"
+    s52 = _section("5.2")
+    _says(s52, ("The scheduler and ResumeArm (section 5.9) use it (S2, "
+                "#159); the progress route does not yet",
+                f"a {group_rules.REACH_RECHECK_S:g} s forward scan capped at "
+                f"`SETTING_SCAN_S` ({engine_mod.SETTING_SCAN_S / 3600:g} h)",
+                "`_resort_group`"), "5.2")
+    s53 = _section("5.3")
+    _says(s53, ("S2 built it (S2, #189)", "`_run_visit`", "`passes=None`",
+                "is not a visit", "`VisitBound.next_frame_fits`", "#300"),
+          "5.3")
+    closing = _tree(SequenceEngine._close_group_pass)
+    blocks = [c for c in _self_calls(closing, "_wait_until")
+              if "DEFER_WAIT_S" in ast.unparse(c)]
+    ready = "DEFER_WAIT_S" in ast.unparse(
+        _tree(SequenceEngine._group_ready_ts))
+    assert blocks and not ready, (
+        "the deferral wait no longer blocks inside _close_group_pass, or "
+        "group_ready_ts counts it; 1.6 says no follower fills it yet (#304): "
+        "say what was built")
+    users = (hasattr(engine_mod, "order_panels"),
+             hasattr(resume_arm_mod, "order_panels"),
+             "order_panels" in inspect.getsource(progress_mod))
+    assert users == (True, True, False), (
+        f"order_panels is used by (engine, ResumeArm, progress) = {users}; "
+        f"5.2 says the scheduler and ResumeArm, and not the progress route "
+        f"yet")
+    scan = _tree(SequenceEngine._time_to_floor_s)
+    assert _calls(scan, "forward_clear_ts") and "SETTING_SCAN_S" in \
+        ast.unparse(scan), ("_time_to_floor_s is no longer the scan 5.2 "
+                            "describes")
+    steps = _tree(SequenceEngine._run_steps)
+    handed = [n for n in ast.walk(steps) if isinstance(n, ast.If)
+              and ast.unparse(n.test) == "visit is not None"
+              and any(_self_calls(s, "_run_visit") for s in n.body)]
+    assert handed, "_run_steps no longer hands a bounded visit to _run_visit"
+    visit = _tree(SequenceEngine._visit_panel)
+    not_a_visit = [n for n in ast.walk(visit) if isinstance(n, ast.If)
+                   and "self._visit_ended_by_deadline" in ast.unparse(n.test)
+                   and "exposures == 0" in ast.unparse(n.test)
+                   and any(_self_calls(s, "_requeue") for s in n.body)
+                   and not any(_calls(s, "visit_outcome") for s in n.body)]
+    assert not_a_visit, ("_visit_panel no longer requeues a visit its "
+                         "deadline ended before a frame without counting it; "
+                         "5.3 says it is not a visit")
+
+
+def test_the_s1_and_s2_build_items_say_what_s2_built_and_where():
+    """Section 8's S2 says what was built, names the files its tests are in,
+    what was not built (#303, #304) and the simulator mount's flip (#298);
+    S1's test list says S2 built the skipped-panel case in
+    test_continue_skipped_panels.py and that S3 owes the real ``skip``. Every
+    test file either names is a file in server/tests, so a rename or a
+    deletion turns this red.
+
+    RED under mutant "S2 without its as-built paragraph":
+
+        AssertionError: S2 must say: '**As built** (S2, #189)'
+        assert False
+
+    RED under the tree mutant "test_group_reach.py deleted" (in the private
+    scratch copy):
+
+        AssertionError: S1 and S2 name test files that do not exist:
+        ['test_group_reach.py']
+        assert ['test_group_reach.py'] == []
+          Left contains one more item: 'test_group_reach.py'
+          Use -v to get more diff
+    """
+    s2 = _section("S2:")
+    _says(s2, ("**As built** (S2, #189)", "`tests/_group_harness.py`",
+               "#303", "#304", "#298"), "S2")
+    s1 = _line(_section("S1:"), "- Skipping a panel with banked frames")
+    _says(s1, ("S2 built the case against a compile patched to skip one",
+               "`test_continue_skipped_panels.py`", "S3's"), "S1's tests")
+    named = sorted(set(re.findall(r"`(?:tests/)?(_?test\w*\.py|_group_"
+                                  r"harness\.py)`", s2 + "\n" + s1)))
+    assert len(named) >= 9, f"premise: S1 and S2 name {named}"
+    missing = [n for n in named if not (_SERVER / "tests" / n).is_file()]
+    assert missing == [], (f"S1 and S2 name test files that do not exist: "
+                           f"{missing}")
+
+
+def _source_names_exist(cell: str, corpus: str) -> list[str]:
+    """The backticked names in a revision row's Source cell that name
+    nothing in server/: a path is a file under ``astrodeck/`` or
+    ``tests/`` (or a file of that name anywhere under ``astrodeck/``), and
+    a name is a ``def``, a ``class`` or a ``self.<name>`` assignment in
+    ``corpus``, the text of ``astrodeck/`` (its last dotted part)."""
+    missing = []
+    for name in re.findall(r"`([^`]+)`", cell):
+        if name.endswith(".py"):
+            found = ((_SERVER / "astrodeck" / name).is_file()
+                     or (_SERVER / "tests" / name).is_file()
+                     or any((_SERVER / "astrodeck").rglob(Path(name).name)))
+        else:
+            last = re.escape(name.split(".")[-1])
+            found = bool(re.search(rf"\b(?:def|class) {last}\b", corpus)
+                       or re.search(rf"self\.{last}\s*(?::[^=\n]*)?=",
+                                    corpus))
+        if not found:
+            missing.append(name)
+    return missing
+
+
+def test_revision_6_lists_every_section_s2_edited():
+    """Revision 6, "slice S2 as built", has one row per section that carries
+    an S2 edit, and no other, by the scan Revisions 4 and 5 use
+    (`_carried`) with S2's mark (``_S2``): every heading's text, and every
+    row of the section 6 table, that carries the mark is listed, and every
+    section listed carries it. Its rows are numbered from 1; its preamble
+    names the rows of Revision 5 that its own rows supersede, computed
+    from the two tables; and every code name its Source column gives is a
+    ``def``, a ``class``, an attribute or a file in server/, so the record
+    cannot point at code that is not there.
+
+    RED under mutant "drop the 5.2 row" (Revision 6 without its row 4, the
+    rest renumbered):
+
+        AssertionError: Revision 6 lists ['1.6', '3.4', '5.1', '5.10',
+        '5.3', '5.6', '5.7', '5.8', '5.9', '6.15', '6.17', '6.3', '6.9',
+        'S1', 'S2', 'owner list', 'ruling 9']; the sections carrying S2's
+        edits are ['1.6', '3.4', '5.1', '5.10', '5.2', '5.3', '5.6', '5.7',
+        '5.8', '5.9', '6.15', '6.17', '6.3', '6.9', 'S1', 'S2', 'owner
+        list', 'ruling 9']
+        assert ['1.6', '3.4'...', '5.3', ...] == ['1.6', '3.4'...', '5.6',
+        ...]
+          At index 4 diff: '5.2' != '5.3'
+          Left contains one more item: 'ruling 9'
+          Use -v to get more diff
+
+    RED under mutant "an S2 edit in 2.5 with no Revision 6 row":
+
+        AssertionError: Revision 6 lists ['1.6', '3.4', '5.1', '5.10',
+        '5.2', '5.3', '5.6', '5.7', '5.8', '5.9', '6.15', '6.17', '6.3',
+        '6.9', 'S1', 'S2', 'owner list', 'ruling 9']; the sections carrying
+        S2's edits are ['1.6', '2.5', '3.4', '5.1', '5.10', '5.2', '5.3',
+        '5.6', '5.7', '5.8', '5.9', '6.15', '6.17', '6.3', '6.9', 'S1',
+        'S2', 'owner list', 'ruling 9']
+        assert ['1.6', '2.5'...', '5.2', ...] == ['1.6', '3.4'...', '5.3',
+        ...]
+          At index 1 diff: '2.5' != '3.4'
+          Left contains one more item: 'ruling 9'
+          Use -v to get more diff
+
+    RED under mutant "Revision 6's preamble without the rows it supersedes":
+
+        AssertionError: Revision 6's preamble must say "Revision 5's rows 1,
+        2, 3, 4, 5, 6 and 7" are superseded
+        assert False
+
+    RED under the engine mutant "_persist_set_aside renamed
+    _record_set_aside" (every use renamed, in the scratch copy):
+
+        AssertionError: Revision 6's Source column names code that is not in
+        server/: {'3.4': ['_persist_set_aside']}
+        assert {'3.4': ['_pe...t_set_aside']} == {}
+          Left contains 1 more item:
+          {'3.4': ['_persist_set_aside']}
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its
+    Engine heading reworded): every test in this file passed on it
+    (44 passed).
+    """
+    blocks = _blocks()
+    rev6 = [(name, text) for name, text in blocks
+            if name.startswith("Revision 6")]
+    assert [name for name, _text in rev6] == [
+        "Revision 6 (slice S2 as built)"], (
+        "the spec must have one Revision 6, slice S2 as built")
+    rows = _rows(rev6[0][1])
+    listed = set().union(*(_where(r[1]) for r in rows))
+    carried = _carried(_S2)
+    # Premise: the sections S2 is known to have edited are found, S1's item
+    # 8 and 5.9's skipped-panel row (T12) among them.
+    assert {"1.6", "3.4", "5.1", "5.3", "5.6", "5.7", "5.8", "5.9", "5.10",
+            "6.3", "6.9", "6.15", "6.17", "S1", "S2", "ruling 9",
+            "owner list"} <= carried
+    assert sorted(carried) == sorted(listed), (
+        f"Revision 6 lists {sorted(listed)}; the sections carrying S2's "
+        f"edits are {sorted(carried)}")
+    assert [r[0] for r in rows] == [str(i) for i in range(1, len(rows) + 1)]
+    rev5 = [text for name, text in blocks if name.startswith("Revision 5")]
+    superseded = [r[0] for r in _rows(rev5[0]) if _where(r[1]) & listed]
+    assert superseded == ["1", "2", "3", "4", "5", "6", "7"], superseded
+    preamble = _line(rev6[0][1], "2026-09-25. Slice S2 (#189)")
+    named = (f"Revision 5's rows {', '.join(superseded[:-1])} and "
+             f"{superseded[-1]}")
+    said = named in preamble
+    assert said, f"Revision 6's preamble must say {named!r} are superseded"
+    corpus = "\n".join(p.read_text(encoding="utf-8")
+                       for p in (_SERVER / "astrodeck").rglob("*.py"))
+    missing = {r[1]: _source_names_exist(r[4], corpus) for r in rows}
+    missing = {k: v for k, v in missing.items() if v}
+    assert missing == {}, (f"Revision 6's Source column names code that is "
+                           f"not in server/: {missing}")

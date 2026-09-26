@@ -604,11 +604,26 @@ async def test_nina_camera_no_longer_sends_minutes_zero(monkeypatch):
 
 # ------------------------------------------------------- the safety wind-down
 
-async def test_wind_down_starts_the_ramp_and_does_not_wait_for_it(monkeypatch):
+async def test_wind_down_starts_the_ramp_and_does_not_wait_for_it(
+        monkeypatch, tmp_path):
     """``abort_park_warm`` is the path this whole change exists for: it runs
     unattended, and it used to cut the TEC dead. It must now start a ramp — and
     must NOT block on it, because the park and the roof close are the urgent
-    parts of a wind-down."""
+    parts of a wind-down.
+
+    THE CAPTURE ROOT IS THE TEST'S OWN. The wind-down's warm asks
+    ``resume_expected_tonight``, which reads every stored session, and this
+    case used to read the developer's real ``captures/sessions``: 620 files
+    on 2026-09-25, most of them left there by other tests, so the wind-down
+    took 0.5 s on its own and 1.09 s under a parallel run, and failed the
+    1.0 s bound below with no change to the code it grades. RED under
+    mutant "the wind-down waits a second and a half" (``await
+    asyncio.sleep(1.5)`` at the top of ``_wind_down_warm``), observed:
+
+        AssertionError: wind-down blocked for 1.52s
+    """
+    import astrodeck.hub as hub_module
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(cooling, "WARM_STEP_S", 0.05)
     from astrodeck.sequence.engine import SequenceEngine
 

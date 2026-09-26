@@ -278,6 +278,15 @@ ROTATE_MIN_GAIN_DEG = 0.5
 #: degrade to "nobody can say" and leave the flip conservative, never hang it.
 PIER_SIDE_QUERY_TIMEOUT_S = 30.0
 
+#: Bound on each command a rig teardown's cleanup sends (#267): every device's
+#: disconnect, the guider's, the NINA client's and each session's close, and
+#: the polar session's stop. The cooler-off it owes a stopped warm ramp keeps
+#: the ramp's own ``cooling.WARM_CMD_TIMEOUT_S``. 30 s matches that and the
+#: Alpaca client's HTTP timeout, so a disconnect that is getting answers is not
+#: what it cuts: it cuts a driver that never answers, which used to hold the
+#: teardown, and the connect lock with it, for ever.
+TEARDOWN_STEP_TIMEOUT_S = 30.0
+
 #: how many full display frames the ring keeps (memory cap on the Pi), how many
 #: tiny thumbnails it keeps for the filmstrip, and how many linear arrays it
 #: retains for /crop and /render (a 6200 frame is ~125 MB, so only the latest
@@ -564,6 +573,12 @@ class CaptureSnapshot:
     #: this frame can calibrate the rotator -- or see that it must not, because
     #: the rotator turned or the mount flipped before the solve landed.
     angle: Any = None
+    #: a mosaic panel's provenance (#189 U-08): the MOSAIC card's group and the
+    #: PANEL card's 1-based ``row-col`` label, which ``$$PANEL$$`` renders. The
+    #: caller's to say, never read off the rig; frozen here so a promoted panel
+    #: frame is still a panel frame. Empty for every frame that is not one.
+    mosaic: str = ""
+    panel: str = ""
 
 
 @dataclass(frozen=True)
@@ -593,6 +608,47 @@ class PromoteRefused(RuntimeError):
         self.detail = detail
         self.code = code
         self.status = status
+
+
+async def _run_to_its_bound(make, timeout_s: float) -> BaseException | None:
+    """Run ``make()`` until it ends or ``timeout_s`` passes, whatever cancels
+    the caller meanwhile. Returns what it ended with: ``None`` when it
+    returned, ``TimeoutError`` when the bound cut it, or its own exception.
+
+    This is one step of a teardown's cleanup (#267), which must finish however
+    the teardown is ended. The call runs on its own task behind
+    ``asyncio.shield``, so a cancel of the caller does not reach it, and the
+    caller goes on waiting for it, so the next step never overlaps this one (a
+    camera disconnected while its cooler-off is still on the wire). The bound
+    is what keeps that wait finite.
+
+    A cancel of the caller that lands here is NOT eaten, although the loop
+    below catches it: it stays counted on the caller's task
+    (``Task.cancelling()``), and ``Hub._teardown`` raises it once its whole
+    cleanup is done (#235). Catching it per step is what lets the steps after
+    this one still run.
+    """
+    async def bounded():
+        # ``make()`` is called inside the step's task, so a driver that raises
+        # before its first await, or a double with no such method at all,
+        # ends the step and not the whole cleanup. That holds only if the
+        # caller's ``make`` does the method lookup too: pass
+        # ``lambda: dev.disconnect()``, never ``dev.disconnect``.
+        return await asyncio.wait_for(make(), timeout_s)
+
+    step = asyncio.ensure_future(bounded())
+    while not step.done():
+        try:
+            await asyncio.shield(step)
+        except asyncio.CancelledError:
+            # The caller's cancel (the step is still running) or the step's
+            # own (it is done): either way the loop reads ``step`` below.
+            pass
+        except Exception:       # noqa: BLE001 - the step's end, read below
+            pass
+    if step.cancelled():
+        return asyncio.CancelledError()
+    return step.exception()
 
 
 class Hub:
@@ -1338,7 +1394,18 @@ class Hub:
         ``disconnect_all`` or from inside a locked connect path) so it never races
         a concurrent connect. Defense-in-depth: skip ``asyncio.current_task()`` in
         the busy-cancel loop so a driver that runs teardown as its first step (the
-        legacy apply path) can never cancel itself."""
+        legacy apply path) can never cancel itself.
+
+        A CANCELLED TEARDOWN STILL CLEANS UP (#267). Everything after the warm
+        ramp's cancel is the teardown's cleanup, run in a ``finally``. A
+        cancel that landed while ``cancel_warm`` waited out the ramp's death
+        (its reap lets a caller's cancel through, #235) used to end the
+        teardown right there: no cooler-off, no polar stop, no device
+        disconnected, so the TEC stayed at the dead ramp's last setpoint on a
+        rig nothing was talking to. Now the cleanup sends the cooler-off
+        ``cancel_warm`` did not reach, stops and disconnects everything, and the
+        cancel is raised again once it is done. A cancel that lands DURING the
+        cleanup waits for it too, and is raised after it."""
         self.stop_loop()
         self.stop_wcs_worker()              # per-frame-wcs R1: never outlive the hub
         self.live_stacker = None            # NOV-1: release the accumulator on teardown
@@ -1363,75 +1430,138 @@ class Hub:
         # it early is the only defined end state available here. Best-effort and
         # bounded inside cancel_warm; a teardown must not be blockable by a
         # wedged cooler.
-        with contextlib.suppress(Exception):
-            await self.cancel_warm("the rig is disconnecting", finalize=True)
-        await self.polar.stop()
-        if self._status_task and not self._status_task.done():
-            self._status_task.cancel()
-        self._status_task = None
-        if self._safety_task and not self._safety_task.done():
-            self._safety_task.cancel()
-        self._safety_task = None
-        self._safety_reading = None
-        self._last_connect.clear()
-        if self._nina_ws_task and not self._nina_ws_task.done():
-            self._nina_ws_task.cancel()
-        self._nina_ws_task = None
-        if self._nina_hb_task and not self._nina_hb_task.done():
-            self._nina_hb_task.cancel()
-        self._nina_hb_task = None
-        if self._move_watchdog_task and not self._move_watchdog_task.done():
-            self._move_watchdog_task.cancel()
-        self._move_watchdog_task = None
-        self.last_move_ts = None
-        self._move_rates_seen = {"ra": 0.0, "dec": 0.0}
-        self._bridge_ready = False
-        current = asyncio.current_task()
-        for task in self._busy.values():
-            if task is not current:
-                task.cancel()
-        self._busy.clear()
-        for dev in self.devices.values():
+        #
+        # #267: WHETHER the cooler-off is owed is read before the cancel that
+        # stops the ramp. A cancel of this teardown that lands inside
+        # cancel_warm ends it before its cooler command, and by then the ramp
+        # it stopped is gone, so nothing afterwards could tell. Owed only when
+        # a ramp is running, as cancel_warm's own cooler-off is: a camera
+        # cooling for a run keeps its TEC through a teardown, as it always has.
+        ramp = self._warm_task
+        cooler_owed = ramp is not None and not ramp.done()
+        # The cancels this task already carries, so a new one is told apart.
+        me = asyncio.current_task()
+        asked = me.cancelling() if me is not None else 0
+        try:
             try:
-                await dev.disconnect()
-            except Exception:
+                await self.cancel_warm("the rig is disconnecting", finalize=True)
+            except Exception:       # noqa: BLE001 - best-effort, as it always was
                 pass
-        self.devices.clear()
-        self._mount_wants_jnow = None
-        if self.guider:
-            try:
-                await self.guider.disconnect()
-            except Exception:
-                pass
-            self.guider = None
-        if self.nina_client is not None:
-            try:
-                await self.nina_client.close()
-            except Exception:
-                pass
-            self.nina_client = None
-        # Close the native httpx clients we still hold, so a profile switch /
-        # repeated reconnect leaks no keep-alive socket pool (session-leak fix):
-        # the retained RigSpec-connect sessions AND the per-role legacy-Alpaca
-        # sessions. Best-effort — one failing aclose must not strand the others.
-        if self.last_connect_result is not None:
-            for session in self.last_connect_result.sessions.values():
-                try:
-                    await session.close()
-                except Exception:
-                    pass
-        for session in self._alpaca_sessions.values():
-            try:
-                await session.close()
-            except Exception:
-                pass
-        self._alpaca_sessions.clear()
-        self.sim_rig = None
-        self.mode = "none"
-        # a manual disconnect clears the boot-LED grid (no stale tri-state).
-        self.last_connect_result = None
-        self._last_rigspec = None
-        bus.log("info", "all equipment disconnected", "hub")
+            else:
+                # cancel_warm sent it, or said in a warning why it could not.
+                cooler_owed = False
+        finally:
+            # THE CLEANUP (#267): everything below runs however the
+            # teardown ends. Every await is one ``_run_to_its_bound`` step,
+            # on its own task behind ``asyncio.shield`` and cut at its own
+            # bound, so a cancel can neither cut the command on the wire
+            # nor skip the ones after it; the rest is synchronous, in the
+            # order the teardown always used.
+            if cooler_owed:
+                await self._teardown_cooler_off()
+            # Each step is handed a lambda, never a bound method: the lookup
+            # must run inside the step, where a failure is the step's. The old
+            # try/except around each await tolerated a guider or a NINA
+            # client with no disconnect/close, and the cleanup must too.
+            polar = self.polar
+            await self._teardown_step("the polar-alignment stop",
+                                      lambda: polar.stop())
+            if self._status_task and not self._status_task.done():
+                self._status_task.cancel()
+            self._status_task = None
+            if self._safety_task and not self._safety_task.done():
+                self._safety_task.cancel()
+            self._safety_task = None
+            self._safety_reading = None
+            self._last_connect.clear()
+            if self._nina_ws_task and not self._nina_ws_task.done():
+                self._nina_ws_task.cancel()
+            self._nina_ws_task = None
+            if self._nina_hb_task and not self._nina_hb_task.done():
+                self._nina_hb_task.cancel()
+            self._nina_hb_task = None
+            if self._move_watchdog_task and not self._move_watchdog_task.done():
+                self._move_watchdog_task.cancel()
+            self._move_watchdog_task = None
+            self.last_move_ts = None
+            self._move_rates_seen = {"ra": 0.0, "dec": 0.0}
+            self._bridge_ready = False
+            current = asyncio.current_task()
+            for task in self._busy.values():
+                if task is not current:
+                    task.cancel()
+            self._busy.clear()
+            # A snapshot: the loop awaits, and nothing may resize what it walks.
+            for role, dev in list(self.devices.items()):
+                await self._teardown_step(f"the {role}'s disconnect",
+                                          lambda dev=dev: dev.disconnect())
+            self.devices.clear()
+            self._mount_wants_jnow = None
+            if self.guider:
+                guider = self.guider
+                await self._teardown_step("the guider's disconnect",
+                                          lambda: guider.disconnect())
+                self.guider = None
+            if self.nina_client is not None:
+                client = self.nina_client
+                await self._teardown_step("the NINA client's close",
+                                          lambda: client.close())
+                self.nina_client = None
+            # Close the native httpx clients we still hold, so a profile switch /
+            # repeated reconnect leaks no keep-alive socket pool (session-leak fix):
+            # the retained RigSpec-connect sessions AND the per-role legacy-Alpaca
+            # sessions. Best-effort — one failing aclose must not strand the others.
+            if self.last_connect_result is not None:
+                for session in list(self.last_connect_result.sessions.values()):
+                    await self._teardown_step("a device session's close",
+                                              lambda s=session: s.close())
+            for session in list(self._alpaca_sessions.values()):
+                await self._teardown_step("an Alpaca session's close",
+                                          lambda s=session: s.close())
+            self._alpaca_sessions.clear()
+            self.sim_rig = None
+            self.mode = "none"
+            # a manual disconnect clears the boot-LED grid (no stale tri-state).
+            self.last_connect_result = None
+            self._last_rigspec = None
+            bus.log("info", "all equipment disconnected", "hub")
+        # Reached only when nothing cancelled the teardown before its cleanup.
+        # A cancel that landed DURING the cleanup let it finish (each step is
+        # shielded) and is raised now, never eaten (#235).
+        if me is not None and me.cancelling() > asked:
+            raise asyncio.CancelledError()
+
+    async def _teardown_step(self, what: str, make) -> None:
+        """One bounded, shielded command of the teardown's cleanup (#267). A
+        failure stays best-effort, as it always was, so one device that cannot
+        disconnect never strands the others; a command cut at its bound is
+        said, because until #267 it held the teardown for ever instead."""
+        bound = TEARDOWN_STEP_TIMEOUT_S
+        err = await _run_to_its_bound(make, bound)
+        if isinstance(err, TimeoutError):
+            bus.log("warning", f"{what} did not finish within {bound:g} s; "
+                               f"the teardown went on without it", "hub")
+
+    async def _teardown_cooler_off(self) -> None:
+        """The cooler-off a teardown owes a warm ramp whose stop did not finish
+        (#267): the one ``cancel_warm(finalize=True)`` sends on the way out of
+        its reap, which a cancel of the teardown ends first. Same guard, same
+        bound and same warning as that one; one more line when it lands, since
+        a teardown that reached it was cut short and the log is where anyone
+        will look for what it still did."""
+        cam = self.devices.get("camera")
+        if cam is None or not getattr(cam, "connected", False):
+            return
+        bound = cooling.WARM_CMD_TIMEOUT_S
+        err = await _run_to_its_bound(lambda: cam.set_cooler(False), bound)
+        if err is None:
+            bus.log("info", "the warm ramp's stop did not finish, so the teardown "
+                            "switched the cooler off itself", "camera")
+            return
+        why = (f"no answer within {bound:g} s" if isinstance(err, TimeoutError)
+               else (str(err) or type(err).__name__))
+        bus.log("warning", f"could not switch the cooler off after stopping the "
+                           f"warm ramp: {why}", "camera")
 
     def require(self, role: str):
         dev = self.devices.get(role)
@@ -2979,7 +3109,17 @@ class Hub:
 
     async def capture(self, exposure_s: float, gain: int, offset: int,
                       binning: int = 1, save: bool = False, target: str = "",
-                      frame_type: str = "Light", request_id: str | None = None) -> dict:
+                      frame_type: str = "Light", request_id: str | None = None,
+                      mosaic: str | None = None,
+                      panel: str | None = None) -> dict:
+        """Expose one frame, publish it and, with ``save``, write it.
+
+        ``mosaic`` and ``panel`` say that the frame is a mosaic panel (#189
+        U-08): ``mosaic`` is ``naming.mosaic_label(group.name, group.id)`` and
+        ``panel`` is ``naming.panel_label(row, col)``. They become the FITS
+        ``MOSAIC`` and ``PANEL`` cards and the ``$$PANEL$$`` token. Unset (the
+        default, and every caller but a mosaic's), the frame's header and path
+        are exactly what they always were."""
         cam: Camera = self.require("camera")
         # Serialize the exposure against every other capture path (loop / single /
         # autofocus / sequence / solve) so two coroutines can't poll the shared
@@ -3046,7 +3186,8 @@ class Hub:
             snap = await self._capture_snapshot(
                 frame, target=target, frame_type=frame_type, gain=gain,
                 offset=offset, exposure_s=exposure_s, binning=binning,
-                filter_name=filt, note_pointing=save, wheel_slot=wheel_slot)
+                filter_name=filt, note_pointing=save, wheel_slot=wheel_slot,
+                mosaic=mosaic, panel=panel)
         if save and snap is not None:
             local_save_path = await self._save_captured_frame(frame, snap)
 
@@ -3196,7 +3337,9 @@ class Hub:
                                 gain: int, offset: int, exposure_s: float,
                                 binning: int, filter_name: str,
                                 note_pointing: bool = True,
-                                wheel_slot: int | None = ...) -> CaptureSnapshot:
+                                wheel_slot: int | None = ...,
+                                mosaic: str | None = None,
+                                panel: str | None = None) -> CaptureSnapshot:
         """Read the rig ONCE and freeze what the header depends on.
 
         Every device read the FITS header needs lives here and nowhere else,
@@ -3300,7 +3443,7 @@ class Hub:
             dark_cards=list(dark_cards or []), beam_cards=list(beam_cards),
             object_name=object_name, id_cards=list(id_cards),
             sensor_temp_c=getattr(frame, "temperature_c", None),
-            angle=angle)
+            angle=angle, mosaic=mosaic or "", panel=panel or "")
 
     async def _save_captured_frame(self, frame, snap: CaptureSnapshot) -> Path:
         """Write ONE frame into the capture library from a frozen snapshot.
@@ -3313,7 +3456,7 @@ class Hub:
             # follows what they typed even when a solve identified the field.
             snap.target or "untargeted", snap.frame_type, snap.filter_name,
             gain=snap.gain, exposure_s=snap.exposure_s, binning=snap.binning,
-            sensor_temp_c=snap.sensor_temp_c)
+            sensor_temp_c=snap.sensor_temp_c, panel=snap.panel)
         # Offloaded so a 25-120 MB uint16 FITS write to the Pi's SD card never
         # freezes the event loop for seconds every frame (WS/preview stall,
         # queued guide events, delayed STOP) — same as solve_and_sync's write.
@@ -3327,7 +3470,10 @@ class Hub:
             dec_deg=snap.best_dec, telescope=snap.telescope_name,
             instrument=snap.instrument, meta=snap.meta,
             extra_cards=(list(snap.dark_cards) + list(snap.beam_cards)
-                         + list(snap.id_cards)))
+                         + list(snap.id_cards)),
+            # Written only when set (``save_fits``), so a frame that is not a
+            # panel keeps exactly the header it always had.
+            mosaic=snap.mosaic, panel=snap.panel)
         # carry the path on the frame so _publish_preview reports a correct
         # saved_path/saved_local in the very first event (no stale re-publish).
         frame.saved_path = str(path)
@@ -5212,7 +5358,8 @@ class Hub:
     def _capture_path(self, target: str, frame_type: str, filter_name: str = "",
                       *, gain: int | None = None, exposure_s: float | None = None,
                       binning: int | None = None,
-                      sensor_temp_c: float | None = None) -> Path:
+                      sensor_temp_c: float | None = None,
+                      panel: str | None = None) -> Path:
         from .naming import capture_tokens, render_relative_path, sanitize_component
         # "untargeted" fallback keyed off the SANITIZED target (legacy parity,
         # hub.py old :1681); sanitize is idempotent so the engine re-sanitize is a
@@ -5237,6 +5384,9 @@ class Hub:
             # caller gets.
             **capture_tokens(gain=gain, exposure_s=exposure_s, binning=binning,
                              sensor_temp_c=sensor_temp_c),
+            # A mosaic panel's 1-based ``row-col`` (#189 U-08). Empty for any
+            # frame that is not a panel, so ``$$PANEL$$`` drops out.
+            "PANEL": panel or "",
         }
         template = config_store.cfg().naming.template
         return CAPTURE_DIR / render_relative_path(template, fields)
@@ -6370,6 +6520,89 @@ class Hub:
             f"{last_error}. Attempts (attempt, solved PA, target, error, "
             f"commanded): {trail}")
 
+    async def _rotation_already_set(self, rot, rotation_deg: float) -> dict | None:
+        """The rotate shortcut (#189 U-06, mosaic spec 5.6 step 3): a rotate
+        result without a rotate solve, when the rotator's own reading can be
+        trusted and already says the camera is at the angle. ``None`` means
+        "run the rotate loop", which is also the answer to anything this
+        cannot establish.
+
+        WHY IT EXISTS. The rotate loop always solves at least once, exposure
+        included, even when the camera is already there. On a rotating mosaic
+        that was one rotate solve on every hop of the night for an angle that
+        had not changed since the last panel: the centring solve that ends
+        every hop calibrates the rotator (``sky_angle.note_solved_rotation``),
+        and nothing turns it between panels.
+
+        ALL THREE MUST HOLD, and each is the reason the reading is evidence:
+
+        * CALIBRATED: the newest sky-angle record says so, and it is THIS
+          rotator's calibration. The record does not name the device, so the
+          device is tied to it through what the calibration wrote: the object
+          in the rig is ``synced`` (a reconnect builds a fresh, unsynced one)
+          and holds the offset the record wrote. The newest record decides,
+          even when an older one calibrated: a newer solve that refused to
+          calibrate (the rotator moved, the mount flipped mid-solve) is saying
+          the relation was not re-established, and that is not a shortcut.
+        * NOT MOVED since: its mechanical angle is within
+          ``sky_angle.MOVED_TOL_DEG`` of the one the calibration was exposed
+          at, and it does not report motion. The same line the calibration
+          itself draws between "at rest" and "turned".
+        * AT THE ANGLE: it reads the target within ``RotatorConfig.
+          tolerance_deg``, the rotate loop's own bound, MOD 180. A centred
+          rectangle turned half a turn covers the same sky (5.7). It is also
+          what makes the shortcut survive a meridian flip: the flip turns the
+          field 180 degrees under a rotator that never moved, so its reading
+          (calibrated on the other side) is exactly 180 off the camera's true
+          PA, and mod 180 that is no difference at all. The same reason the
+          calibration is never folded by pier side (``sky_angle``).
+
+        Reads only: nothing moves and nothing is exposed. Never raises
+        (cancellation aside): a rotator that cannot be read here is left to the
+        loop, which reads it again and says what went wrong."""
+        try:
+            rec = self.last_sky_angle
+            if not isinstance(rec, dict) or rec.get("calibrated") is not True:
+                return None
+            offset = float(rot.sync_offset_deg)
+            rec_offset = float(rec.get("offset_deg"))
+            rec_mech = float(rec.get("mechanical_deg"))
+            if not getattr(rot, "synced", False):
+                return None
+            # The record wrote ``float(rot.sync_offset_deg)`` straight after
+            # the sync, so the calibration this rotator holds matches it to
+            # the bit; the slack only forgives a wrap at 0/360. Every
+            # comparison here is written so that NaN FAILS it: ``nan > tol``
+            # is False, and a NaN read that way would pass as "unmoved".
+            if not _angle_apart_deg(offset, rec_offset) <= 1e-6:
+                return None
+            if await rot.is_moving():
+                return None
+            mech = _rotation.mod360(float(await rot.get_mechanical_position()))
+            moved = _angle_apart_deg(mech, rec_mech)
+            if not moved <= _sky_angle.MOVED_TOL_DEG:
+                return None
+            reads = _rotation.mod360(mech - offset)
+            tol = float(config_store.cfg().rotator.tolerance_deg)
+            if not _rotation.angle_equals_mod180(reads, rotation_deg, tol):
+                return None
+        except asyncio.CancelledError:
+            raise
+        except Exception:                # noqa: BLE001 - the loop will say why
+            return None
+        d = (reads - rotation_deg) % 180.0
+        error = min(d, 180.0 - d)
+        reason = (f"no rotate solve: the rotator reads PA {reads:.1f}°, "
+                  f"{error:.1f}° from the target PA {rotation_deg:.1f}° mod 180 "
+                  f"(tolerance {tol:.1f}°); it was calibrated by the "
+                  f"{rec.get('source') or 'last'} solve and has not moved since "
+                  f"(mechanical {mech:.2f}°, {moved:.2f}° from the calibration)")
+        bus.log("info", f"rotator: {reason}", "rotator")
+        bus.publish("rotator", action="rotated", pa_deg=round(reads, 2))
+        return {"rotated": True, "pa_deg": reads, "adjusted_to": None,
+                "attempts": 0, "error_deg": round(error, 2),
+                "shortcut": True, "reason": reason}
+
     def note_pointing_verified(self, ok: bool, *, error_arcmin: float | None = None,
                                reason: str = "") -> None:
         """Record whether the tube's position was CONFIRMED against the sky.
@@ -6498,25 +6731,31 @@ class Hub:
         rotation_unavailable = False
         rot = self.devices.get("rotator")
         if rotation_deg is not None and rot is not None and rot.connected:
-            async with self._motion_lock:
-                if not self._motion_committed_clean(epoch):
-                    bus.log("warning", "goto abandoned: aborted before rotation",
-                            "mount")
-                    self.note_pointing_verified(False, reason=str("centering did not converge"))
-                    return {"centered": False, "error_arcmin": None,
-                            "attempts": 0, "aborted": True, "rotation": None}
-                slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
-                await tel.slew(slew_ra, slew_dec)
-            try:
-                rotation_result = await self.rotate_to_pa(
-                    rotation_deg, exposure_s=solve_exposure_s)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                bus.log("warning",
-                        f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
-                        f"continuing without rotation", "rotator")
-                rotation_skipped = True
+            # THE ROTATE SHORTCUT (U-06, mosaic spec 5.6 step 3). Asked before
+            # the slew below, which exists only so the rotate loop solves the
+            # target's field: when the loop is not going to run, the centring
+            # attempts slew there anyway.
+            rotation_result = await self._rotation_already_set(rot, rotation_deg)
+            if rotation_result is None:
+                async with self._motion_lock:
+                    if not self._motion_committed_clean(epoch):
+                        bus.log("warning", "goto abandoned: aborted before rotation",
+                                "mount")
+                        self.note_pointing_verified(False, reason=str("centering did not converge"))
+                        return {"centered": False, "error_arcmin": None,
+                                "attempts": 0, "aborted": True, "rotation": None}
+                    slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
+                    await tel.slew(slew_ra, slew_dec)
+                try:
+                    rotation_result = await self.rotate_to_pa(
+                        rotation_deg, exposure_s=solve_exposure_s)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    bus.log("warning",
+                            f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
+                            f"continuing without rotation", "rotator")
+                    rotation_skipped = True
         elif rotation_deg is not None:
             rotation_unavailable = True
             # Logged here, once, not per attempt: the answer cannot change
@@ -6635,10 +6874,20 @@ class Hub:
             return None
         return getattr(side, "value", None) or None
 
-    async def meridian_flip(self, ra_hours: float, dec_deg: float) -> dict:
+    async def meridian_flip(self, ra_hours: float, dec_deg: float,
+                            rotation_deg: float | None = None) -> dict:
         """Flip a German equatorial mount across the meridian: stop guiding,
         re-slew (the mount chooses the far side of the pier), plate-solve
         re-center, and restart guiding.
+
+        ``rotation_deg`` is the target's angle, carried to the re-centre
+        (#160; mosaic spec Revision 2, ruling 9: a set angle is commanded at
+        every acquisition, the flip re-centre included, and never assumed to
+        be where an earlier move left it). ``None`` makes exactly the
+        re-centre call this always made. A flip turns the field 180 degrees
+        under an unmoved rotator, which is the same footprint (5.7), so with a
+        calibrated rotator the re-centre's rotate shortcut leaves it alone and
+        says so in ``rotation``; nothing here turns it half a turn.
 
         THE RE-SLEW DOES NOT ALWAYS FLIP, and everything expensive here used to
         be spent as if it always did. The AM5 picks its pier side from the HOUR
@@ -6667,7 +6916,15 @@ class Hub:
             except Exception:
                 pass
         side_before = await self.pier_side_now()
-        result = await self.goto_and_center(ra_hours, dec_deg)
+        # Two spellings of one call on purpose: with no angle the re-centre is
+        # today's call keyword for keyword, not one carrying rotation_deg=None,
+        # so nothing that grades or wraps it can see a difference. ``is None``
+        # and never truthiness: PA 0 is north up, a real angle.
+        if rotation_deg is None:
+            result = await self.goto_and_center(ra_hours, dec_deg)
+        else:
+            result = await self.goto_and_center(ra_hours, dec_deg,
+                                                rotation_deg=rotation_deg)
         side_after = await self.pier_side_now()
         # Both reads have to have SUCCEEDED for "unchanged" to mean anything.
         flipped = not (side_before not in (None, "unknown")
@@ -7625,6 +7882,13 @@ def _ang_sep_deg(ra1_h: float, dec1: float, ra2_h: float, dec2: float) -> float:
     cos_sep = (math.sin(d1) * math.sin(d2)
                + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2))
     return math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
+
+
+def _angle_apart_deg(a: float, b: float) -> float:
+    """Unsigned distance between two angles, wrap-aware, in [0, 180]. The
+    measure ``sky_angle`` uses for "did the rotator move", so the rotate
+    shortcut draws that line exactly where the calibration drew it."""
+    return abs(((a - b + 180.0) % 360.0) - 180.0)
 
 
 hub = Hub()

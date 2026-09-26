@@ -7,8 +7,9 @@ a panel turned away from the layout shifts its neighbours sideways by
 ``step x sin(theta)`` and eats the corner overlap. The S2 group driver checks
 the angle on every hop, whatever the rotator state, because a fixed camera
 cannot correct itself and a rotator that skipped its move says so only in a
-flag. NOTHING CALLS THIS IN S1. It is the arithmetic, pinned on its own before
-the engine leans on it.
+flag. It is the arithmetic, pinned on its own; the engine's hop
+(`SequenceEngine._group_angle_check`) and an unframed target's angle lock
+(`SequenceEngine._settle_locked_angle`, ruling 9) are its callers since S2.
 
 THE MEASUREMENT is ``hub.last_sky_angle``, the record
 ``sky_angle.note_solved_rotation`` writes on every imaging-camera solve (the
@@ -148,6 +149,30 @@ def angle_verdict(record: Mapping[str, Any] | None, *, planned_pa_deg: float,
                             reason=f"{head}, beyond the {tol:.1f} deg tolerance")
     return AngleVerdict(kind="ok", measured_deg=measured, error_deg=error,
                         reason=f"{head}, within the {tol:.1f} deg tolerance")
+
+
+def fresh_sky_angle(record: Mapping[str, Any] | None,
+                    since_ts: float) -> Mapping[str, Any] | None:
+    """``record`` when it is a sky angle measured at or after ``since_ts``,
+    otherwise ``None``.
+
+    The freshness rule :func:`angle_verdict` applies, for a caller that needs
+    the record itself rather than a verdict against a planned angle: an
+    unframed target's angle lock (mosaic spec Revision 2, ruling 9) takes the
+    first fresh record of the acquisition, whatever angle it reads. Fresh
+    means a finite PA and a finite ``exposed_at`` not before ``since_ts``,
+    judged by the exposure and never the solve, for the reason the module
+    docstring gives. Raises ``ValueError`` when ``since_ts`` is not a finite
+    number, since a NaN there would pass every record."""
+    since = _finite_arg("since_ts", since_ts)
+    if not isinstance(record, Mapping):
+        return None
+    if _finite(record.get("pa_deg")) is None:
+        return None
+    exposed = _finite(record.get("exposed_at"))
+    if exposed is None or exposed < since:
+        return None
+    return record
 
 
 def angle_tolerance_deg(fov_x: float, fov_y: float, overlap: float,

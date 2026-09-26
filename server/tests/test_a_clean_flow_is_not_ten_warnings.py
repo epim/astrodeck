@@ -327,10 +327,27 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
 #:           != {'targets': [{'acquisition': 'cycle', 'autofocus_first': True,
 #:           'calibration': False, 'center': True, ...}]}
 #:       Use -v to get more diff
+#:
+#: MOVED A THIRD TIME, ON PURPOSE (S2: #189, spec 5.9 and 5.10). The plan
+#: gained ``groups`` (the mosaic groups a rotating mosaic is shot by) and
+#: ``Target`` gained ``panel_row``, ``panel_col`` and ``after_group``, so the
+#: dump grew four keys, and the fixture gained exactly those four at their
+#: defaults (``[]`` on the plan; null, null, null on ``targets[0]``). A plan
+#: with no groups is the plan the engine ran before S2, so the night did not
+#: move. ``test_s2_added_four_keys_and_moved_nothing_else`` holds that against
+#: the S1 hash. RED against the S1 hash before it was re-pinned, observed
+#: verbatim:
+#:
+#:     AssertionError: assert '0a20172d4b9e...4de7ec32ff4fc' == 'd9ce9109734a...c1bb76100b0c3'
 GOLDEN_SHA256 = \
+    "0a20172d4b9e422fab169d5113fb25ec00597bb33e4198e37e54de7ec32ff4fc"
+
+#: The hash as S1 left it. With the four S2 keys taken off, the compiled plan
+#: must hash to exactly this.
+GOLDEN_SHA256_BEFORE_S2 = \
     "d9ce9109734a3ec4b8340e3cdd255b9325fee6d2209208b029bc1bb76100b0c3"
 
-#: The hash as #150 left it. With the three S1 keys taken off ``targets[0]``,
+#: The hash as #150 left it. With the S2 keys and the three S1 keys taken off,
 #: the compiled plan must hash to exactly this.
 GOLDEN_SHA256_BEFORE_S1 = \
     "4bb0e667cc784f7c4f0c6273c5a79e163314b93c0b0f62c48f220103899d5076"
@@ -338,6 +355,20 @@ GOLDEN_SHA256_BEFORE_S1 = \
 #: The S1 keys and the defaults the fixture carries them at.
 S1_KEYS = {"center_tolerance_arcmin": None, "center_attempts": None,
            "autofocus_skip_if_fresh": False}
+
+#: The S2 keys and the defaults the fixture carries them at: one on the plan,
+#: three on ``targets[0]``.
+S2_PLAN_KEYS = {"groups": []}
+S2_TARGET_KEYS = {"panel_row": None, "panel_col": None, "after_group": None}
+
+
+def _take_off_s2_keys(got: dict) -> dict:
+    """The four S2 keys, popped from the dump in place, with what each held
+    (``"<absent>"`` for a key the dump did not carry)."""
+    taken = {k: got.pop(k, "<absent>") for k in S2_PLAN_KEYS}
+    target = got["targets"][0]
+    taken.update({k: target.pop(k, "<absent>") for k in S2_TARGET_KEYS})
+    return taken
 
 
 def _blank_ids(node):
@@ -379,14 +410,18 @@ def test_s1_added_three_keys_and_moved_nothing_else(compiled):
     the three keys sit at their defaults, and with them taken off the plan is
     the #150 plan exactly, every other field and every other target included.
 
-    RED under mutant "panel_row rides along" (``panel_row: int | None = None``
-    added to ``Target``, the S2 field S1 must not add, with the fixture and
-    ``GOLDEN_SHA256`` regenerated to match, so the test above stays green):
+    UPDATED FOR S2 (#189), which moved the dump on purpose: the S2 keys are
+    taken off first (``test_s2_added_four_keys_and_moved_nothing_else`` grades
+    them), so this case still bounds S1's own three. Its original mutant,
+    "panel_row rides along", is now the real code and no longer a mutant.
 
-        E   AssertionError: assert 'f2e3fe3a8c4c...bc9e69556f046' ==
+    RED under mutant "panel_label rides along" (``panel_label: str | None =
+    None`` added to ``Target``, a field neither slice added, with the fixture
+    and ``GOLDEN_SHA256`` regenerated to match, so the test above stays
+    green), observed verbatim:
+
+        E   AssertionError: assert '12a24bc0b154...2e7faade746c9' ==
             '4bb0e667cc78...20103899d5076'
-        E     - 4bb0e667cc784f7c4f0c6273c5a79e163314b93c0b0f62c48f220103899d5076
-        E     + f2e3fe3a8c4c5e9956821646ebdee83a1baa50d870ea2cee54cbc9e69556f046
 
     Mutants "center_attempts default 3" and "autofocus_skip_if_fresh default
     True" turn it red on the first assertion instead:
@@ -396,11 +431,45 @@ def test_s1_added_three_keys_and_moved_nothing_else(compiled):
     """
     _rec, plan, _rows = compiled
     got = _blank_ids(plan.model_dump(mode="json"))
+    _take_off_s2_keys(got)
     target = got["targets"][0]
     assert {k: target.pop(k, "<absent>") for k in S1_KEYS} == S1_KEYS
     blob = json.dumps(got, sort_keys=True)
     assert hashlib.sha256(blob.encode("utf-8")).hexdigest() == \
         GOLDEN_SHA256_BEFORE_S1
+
+
+def test_s2_added_four_keys_and_moved_nothing_else(compiled):
+    """THE THIRD MOVE, BOUNDED THE SAME WAY (S2, #189). The plan's ``groups``
+    and the target's ``panel_row``, ``panel_col`` and ``after_group`` sit at
+    their defaults, the values that keep a plan with no groups the plan the
+    engine ran before S2; with them taken off the plan is the S1 plan exactly.
+    A quick flow compiles no group before S3, so any other value here would
+    be a changed night.
+
+    RED under mutant "panel_label rides along" (``panel_label: str | None =
+    None`` added to ``Target``, with the fixture and ``GOLDEN_SHA256``
+    regenerated to match, so the golden comparison stays green), observed
+    verbatim:
+
+        E   AssertionError: assert 'fa7ee6b8e206...cb44bcdc6286d' ==
+            'd9ce9109734a...c1bb76100b0c3'
+
+    RED under mutant "a panel row by default" (``panel_row: int | None = 0``
+    on ``Target``, the 0-based first row where "not a panel" belongs),
+    observed verbatim:
+
+        E   AssertionError: assert {'after_group...panel_row': 0} ==
+            {'after_group...el_row': None}
+        E     Differing items:
+        E     {'panel_row': 0} != {'panel_row': None}
+    """
+    _rec, plan, _rows = compiled
+    got = _blank_ids(plan.model_dump(mode="json"))
+    assert _take_off_s2_keys(got) == {**S2_PLAN_KEYS, **S2_TARGET_KEYS}
+    blob = json.dumps(got, sort_keys=True)
+    assert hashlib.sha256(blob.encode("utf-8")).hexdigest() == \
+        GOLDEN_SHA256_BEFORE_S2
 
 
 def test_the_golden_is_the_flow_this_file_is_about(compiled):

@@ -67,12 +67,44 @@ def _finite(x) -> bool:
     return True
 
 
+def _header_text(value: str | None) -> str:
+    """``value`` as a header string: printable ASCII, stripped; ``""`` for
+    nothing. The fold is the dark check's (``darks._ascii_card``), imported
+    only when there is something to fold, so a frame that is not a panel pays
+    no import for it."""
+    if not value or not str(value).strip():
+        return ""
+    from .darks import _ascii_card
+    return _ascii_card(str(value)).strip()
+
+
+def _with_comment(value: str, comment: str):
+    """``(value, comment)`` when that card fits in 80 columns, else the value
+    alone. A group name is free text: from about 25 characters a comment no
+    longer fits beside it, and astropy then truncates the comment and warns,
+    once per frame. The value is the part a stitching tool reads.
+
+    The arithmetic is the fixed-format string card: ``KEYWORD = `` (10), the
+    quoted value with quotes doubled, padded to at least 20, then ``" / "``."""
+    quoted = len(value.replace("'", "''")) + 2
+    if 10 + max(quoted, 20) + 3 + len(comment) <= 80:
+        return (value, comment)
+    return value
+
+
 def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
               filter_name: str = "", frame_type: str = "Light",
               ra_hours: float | None = None, dec_deg: float | None = None,
               telescope: str = "", instrument: str = "",
               meta: "FrameMeta | None" = None,
-              extra_cards: "list[tuple[str, object, str]] | None" = None) -> Path:
+              extra_cards: "list[tuple[str, object, str]] | None" = None,
+              mosaic: str | None = None, panel: str | None = None) -> Path:
+    """Write one frame with its header.
+
+    ``mosaic`` and ``panel`` are a mosaic panel's provenance (#189 U-08): the
+    group (``naming.mosaic_label``) and the 1-based ``row-col`` label
+    (``naming.panel_label``). Each card is written only when its value is set,
+    so a frame that is not a panel has exactly the header it always had."""
     hdu = fits.PrimaryHDU(frame.data)
     hdr = hdu.header
     hdr["EXPTIME"] = (frame.exposure_s, "Exposure time (s)")
@@ -104,6 +136,21 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
         hdr["OBJECT"] = target
     if filter_name:
         hdr["FILTER"] = filter_name
+    # WHICH MOSAIC AND WHICH PANEL (#189 U-08). A stacker that groups by OBJECT
+    # or by folder cannot tell two panels of one mosaic from two targets, or
+    # worse from one target, and co-adds two pieces of sky; these two cards let
+    # a stitching tool group the panels and never co-add them. Folded to the
+    # printable ASCII a header value permits: a group is named by whoever
+    # framed it, astropy raises on anything else, and a header write must
+    # never fail a capture. Omitted when empty, never written blank.
+    mosaic_text = _header_text(mosaic)
+    if mosaic_text:
+        hdr["MOSAIC"] = _with_comment(
+            mosaic_text, "Mosaic group; stitch panels, never co-add")
+    panel_text = _header_text(panel)
+    if panel_text:
+        hdr["PANEL"] = _with_comment(
+            panel_text, "Panel row-col, 1-based; 1-1 is NW at PA 0")
     if ra_hours is not None:
         hdr["RA"] = (ra_hours * 15.0, "RA of telescope (deg, J2000)")
     if dec_deg is not None:

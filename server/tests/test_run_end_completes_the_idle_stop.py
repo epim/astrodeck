@@ -13,13 +13,20 @@ the mount tracked on, unwatched, after the run: the hazard the stop had been
 decided for. The same for an operator's Abort, whose cancel reaches the run's
 end, and for `abort`'s own call.
 
-Now the end COMPLETES it (`_finish_idle_stop`), whether or not the wind-down
-parks: a first attempt in flight is let finish, up to ``IDLE_STOP_FINISH_S``
-(120 s + 2 x 30 s, the bounds it awaits), shielded from a cancel landing
-meanwhile; a stop still unconfirmed, or a first attempt wedged past that
-bound, is asked once more, bounded, and read back; and a stop still
-unconfirmed then, or a wedged first attempt, is said once. Nothing asks
-after the run.
+Now the end COMPLETES it (`_finish_idle_stop`): a first attempt in flight
+is let finish, up to ``IDLE_STOP_FINISH_S`` (120 s + 2 x 30 s, the bounds it
+awaits), shielded from a cancel landing meanwhile; a stop still unconfirmed,
+or a first attempt wedged past that bound, is asked once more, bounded, and
+read back; and a stop still unconfirmed then, or a wedged first attempt, is
+said once. Nothing asks after the run.
+
+ONLY FOR AN ENDING THAT DOES NOT PARK, since #270 (S2 orchestrator ruling 1,
+which refines ruling 5's "whether or not the wind-down parks"). Every case
+here is one: a natural end with ``park_when_done`` off, an operator's Abort,
+a failure. An ending that parks hands the stop to its park and waits for
+none of this; that is test_unsafe_ending_parks_at_once.py. Until the ruling
+this file also held a natural end that parks, and an unsafe ending, to the
+completion; both now hold the opposite there.
 
 THE HARNESS is test_idle_park_hold's clocked simulator. The first attempt's
 guider stop is parked on an event the test sets (`park_until`), counted as
@@ -170,31 +177,31 @@ class _Night:
 
 # ------------------------------------------------ the first attempt in flight
 
-@pytest.mark.parametrize("park", [False, True],
-                         ids=["no park", "the wind-down parks"])
 async def test_a_run_that_ends_mid_first_attempt_lets_the_stop_land(
-        sim_hub, monkeypatch, bus_lines, park):
+        sim_hub, monkeypatch, bus_lines):
     """The idle clock decides the stop two minutes after Alpha's last
     exposure, and the first attempt's guider stop does not come back. The
-    run then ends by itself at Bravo's stop time, the guider stop still out.
-    At that instant the clock stops, the guider stop comes back, and the
-    clock goes on: the run's end must let the first attempt finish, so
-    ``set_tracking(False)`` is sent by the idle-stop task and read back, and
-    the mount is not tracking when the run is over. Whether or not the
-    wind-down parks: with ``park_when_done`` the stop still lands, before the
-    park.
+    run then ends by itself at Bravo's stop time, the guider stop still out,
+    with ``park_when_done`` off. At that instant the clock stops, the guider
+    stop comes back, and the clock goes on: the run's end must let the first
+    attempt finish, so ``set_tracking(False)`` is sent by the idle-stop task
+    and read back, and the mount is not tracking when the run is over.
 
-    RED TODAY. Mutant "cancel instead of complete" (`_finish_idle_stop`'s
-    body replaced by ``await self._cancel_idle_stop_retry()``, H2's end of
-    run): RED, both (observed) -
-        [no park] AssertionError: the run's end abandoned the stop its idle
-        watch decided: no set_tracking(False) after the run ended (at [] s),
-        and the mount is still tracking
-        [the wind-down parks] AssertionError: the run's end abandoned the stop
-        its idle watch decided: no set_tracking(False) after the run ended (at
-        [] s), and the mount is not tracking
-        (not tracking there only because the park that followed stopped it.)
+    AMENDED TO S2 ORCHESTRATOR RULING 1 (#270). This test had a second case,
+    the same night with ``park_when_done`` on, which held that the stop
+    landed before the park. Under the ruling that ending parks at once and
+    does not wait for the first attempt:
+    test_unsafe_ending_parks_at_once's
+    `test_a_natural_end_that_parks_parks_at_once`, which holds the opposite.
+
+    Mutant "cancel instead of complete" (`_finish_idle_stop`'s body replaced
+    by ``await self._cancel_idle_stop_retry()``, H2's end of run): RED
+    (observed) -
+        AssertionError: the run's end abandoned the stop its idle watch
+        decided: no set_tracking(False) after the run ended (at [] s), and
+        the mount is still tracking
     """
+    park = False
     n = _Night(sim_hub, monkeypatch, park=park, hold_at_end=True)
     run = n.run
     gate = asyncio.Event()
@@ -233,12 +240,7 @@ async def test_a_run_that_ends_mid_first_attempt_lets_the_stop_land(
             f"{[(round(t - ended, 2), w, i) for t, w, i in n.reads[-3:]]}")
         assert n.wound and n.wound[0][0] > i_off, (
             f"the wind-down began before the stop was sent: {n.wound}")
-        if park:
-            assert n.parks and n.parks[0] > i_off, (
-                f"the stop landed after the park, or there was no park: "
-                f"parks at {n.parks}, the stop at {i_off}")
-        else:
-            assert n.parks == [], f"premise: no park: {n.parks}"
+        assert n.parks == [], f"premise: no park: {n.parks}"
         assert run.tracking() is False
         assert run.engine._idle_stop_task is None
         said = [m for lvl, m, _s in bus_lines if lvl == "warning"
@@ -320,25 +322,33 @@ async def test_an_abort_still_sends_the_stop(sim_hub, monkeypatch, bus_lines,
         await run.close()
 
 
-async def test_an_abort_in_the_run_s_end_does_not_replace_a_safety_abort(
+async def test_an_abort_in_the_run_s_end_does_not_replace_the_ending(
         sim_hub, monkeypatch, bus_lines):
-    """The weather turns while the first attempt's guider stop is still out:
-    the safety gate in Bravo's wait raises SafetyAbort, so the run's end is
-    completing the stop with a SafetyAbort already under way, and the
-    operator's Abort lands in that wait. The shield notes the cancel and the
-    stop is still sent; but the cancel must not then be raised OVER the
-    SafetyAbort, whose handler parks the mount under a shield (and closes the
-    roof when the rig is set to) precisely so that an Abort landing meanwhile
-    cannot orphan the park (§1.9-G). Raised over it, the run takes the
-    Abort's teardown instead, `_safe_stop`: no park, no roof, and the report
-    says "aborted" about an unsafe night.
+    """A quality stop ends the run, with ``park_when_done`` off, while the
+    first attempt's guider stop is still out: the gate in Bravo's wait raises
+    NightQualityStop (the per-night reject guard's exception, raised here by
+    a double of the gate). So the run's end is completing the stop with that
+    exception already under way, and the operator's Abort lands in that
+    wait. The shield notes the cancel and the stop is still sent; but the
+    cancel must not then be raised OVER the exception already ending the
+    run, whose own handler ends it: the quality stop's wind-down, and the
+    report saying "quality". Raised over it, the run takes the Abort's
+    teardown instead, `_safe_stop`, and the report says "aborted" about a
+    night the reject guard ended.
+
+    AMENDED TO S2 ORCHESTRATOR RULING 1 (#270). The exception here was a
+    SafetyAbort until the ruling, whose handler parks and closes the roof
+    under a shield (§1.9-G). An unsafe ending no longer waits for the idle
+    stop at all, so no Abort can land in this wait with a SafetyAbort under
+    way (test_unsafe_ending_parks_at_once.py); the ending that does not park
+    carries the same rule, and this holds it there.
 
     Mutant "the noted cancel is raised over the exception already ending the
     run" (`_finish_idle_stop` raises CancelledError whenever a cancel landed,
     ``already_ending`` ignored; the code as it first stood): RED (observed) -
-        AssertionError: an Abort landing in the run's end replaced the
-        SafetyAbort already ending it: end_reason 'aborted', parks [], so the
-        unsafe wind-down's park never ran
+        AssertionError: an Abort landing in the run's end replaced the quality
+        stop already ending it: end_reason 'aborted', so its own wind-down
+        never ran
     THE CONTROL is `test_an_abort_still_sends_the_stop` [during the run's
     end]: with nothing else ending the run, the noted cancel IS raised, and
     the run ends aborted. Mutant "never raised" (the cancel always dropped),
@@ -358,18 +368,18 @@ async def test_an_abort_in_the_run_s_end_does_not_replace_a_safety_abort(
 
     async def safety_gate(*a, **kw):
         if asked and not run.frozen.is_set():
-            raise engine_mod.SafetyAbort("rain")
+            raise engine_mod.NightQualityStop("consecutive rejects")
         return await real_safety_gate(*a, **kw)
 
     monkeypatch.setattr(engine, "_safety_gate", safety_gate)
     engine.start(n.plan)
     aborting = None
     try:
-        await n.until(n.at_end.is_set, "the safety abort ended the scheduler")
+        await n.until(n.at_end.is_set, "the quality stop ended the scheduler")
         i_end, _ended = n.ends[0]
         assert asked and not gate.is_set() and n.wound == [], (
             "premise: the first attempt was still out, and nothing had wound "
-            "down, when the SafetyAbort reached the run's end")
+            "down, when the quality stop reached the run's end")
         aborting = asyncio.ensure_future(engine.abort())
         for _ in range(20):                # let the cancel land in the wait
             await run._real_sleep(0)
@@ -380,15 +390,16 @@ async def test_an_abort_in_the_run_s_end_does_not_replace_a_safety_abort(
         assert offs and offs[0][1] == "retry", (
             f"premise: the stop was still sent by the idle-stop task: {offs}")
         reason = engine.state.get("end_reason")
-        assert reason == "unsafe" and n.parks, (
-            f"an Abort landing in the run's end replaced the SafetyAbort "
-            f"already ending it: end_reason {reason!r}, parks {n.parks}, so "
-            f"the unsafe wind-down's park never ran")
+        assert reason == "quality" and n.wound, (
+            f"an Abort landing in the run's end replaced the quality stop "
+            f"already ending it: end_reason {reason!r}, so its own wind-down "
+            f"never ran")
         i_off = next(i for i, (_t, on, who) in enumerate(run.tracking_calls)
                      if i >= i_end and not on)
-        assert n.parks[0] > i_off, (
-            f"the park came before the idle stop was sent: parks {n.parks}, "
-            f"the stop at {i_off}")
+        assert n.wound[0][0] > i_off, (
+            f"the wind-down began before the idle stop was sent: "
+            f"{n.wound}, the stop at {i_off}")
+        assert n.parks == [], f"premise: this plan does not park: {n.parks}"
         assert engine._idle_stop_task is None
     finally:
         gate.set()

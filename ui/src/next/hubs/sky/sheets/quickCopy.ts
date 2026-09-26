@@ -221,8 +221,15 @@ export const UNMAPPED_CANCEL = "CANCEL";
 
 /** H.6: `nodeDefs` has no `mosaic` node, and the engine's mosaic mechanism is N
  *  plan targets sharing a group. The lane card is honest about being drawn, not
- *  compiled. */
-export const MOSAIC_FOOTNOTE = "the panels are plan targets, not a flow stage";
+ *  compiled.
+ *
+ *  It also carries what panel-first COSTS (#154), because the card's summary is
+ *  one ellipsised line on a phone and this footnote is the part that wraps: a
+ *  night cut short does not leave every panel with a share, it leaves the last
+ *  ones short. */
+export const MOSAIC_FOOTNOTE =
+  "the panels are plan targets in one mosaic group, not a flow stage - "
+  + "a night cut short leaves the last panels short";
 
 /**
  * What GENERATE FLOW will do with a framing that has more than one panel, said
@@ -233,13 +240,46 @@ export const MOSAIC_FOOTNOTE = "the panels are plan targets, not a flow stage";
  * group. That is the engine's own mosaic mechanism (there is no mosaic node),
  * and it is the difference between "my mosaic is in the flow" and finding six
  * targets in the plan.
+ *
+ * AND IT NAMES THE ORDER THE ENGINE ACTUALLY TAKES (#154). It used to say "the
+ * engine shoots a pass at each panel in turn, so a clouded-out night still
+ * leaves every panel with data". A `mosaic_group` with no `groups` entry is
+ * scheduled like any other target, each run to completion before the next, so
+ * that sentence promised the one property the night does not have. It says
+ * panel-first until S6 replaces this door with "Send to Flow Wizard" (#196);
+ * `mosaicCopyPanelFirst.test.ts` holds it there.
  */
 export function mosaicPlanNote(panels: number, cols: number, rows: number): string {
   return `Framed as a ${cols}×${rows} mosaic. GENERATE FLOW saves the flow for the framing `
     + `centre and queues all ${panels} panels as plan targets in one mosaic group, each `
-    + "carrying the camera angle above. The engine shoots a pass at each panel in turn, so "
-    + "a clouded-out night still leaves every panel with data. Re-framing replaces them "
-    + "rather than adding a second set.";
+    + "carrying the camera angle above. The engine shoots each panel to completion before "
+    + "it starts the next, so a night cut short leaves the last panels short. Re-framing "
+    + "replaces them rather than adding a second set.";
+}
+
+/**
+ * The "Framing kept" toast's detail, when FRAME's DONE keeps a framing
+ * (`SkyHub.tsx`'s `finishFrame`).
+ *
+ * A MOSAIC IS QUEUED PANEL-FIRST, AND THE TOAST SAYS SO (#275, the #154 class).
+ * It used to be written inline in `SkyHub.tsx` and end "as plan targets, one
+ * pass each". In this UI a pass is one sub per checked filter, and a Plan
+ * `mosaic_group` with no `groups` entry is shot one panel at a time, each to
+ * completion, so each panel gets every pass before the next starts: read
+ * either way, the phrase promised a rotation or a quota the night does not
+ * have. It lives here so `mosaicCopyPanelFirst.test.ts` reads it with the
+ * other Sky mosaic strings, and it carries the same four facts they do. S6
+ * (#196) deletes it with the Plan door.
+ *
+ * A single frame has no panels to order, so its sentence says where the night
+ * is centred instead, as it always did.
+ */
+export function framingKeptDetail(panels: number): string {
+  return panels > 1
+    ? `GENERATE FLOW queues all ${panels} panels as plan targets in one mosaic group, `
+      + "each shot to completion before the next, so a night cut short leaves the last "
+      + "panels short."
+    : "GENERATE FLOW centres the night here instead of on the catalogue position.";
 }
 
 /** A.10's footer, verbatim from the design prototype. */

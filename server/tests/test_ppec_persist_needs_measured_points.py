@@ -199,7 +199,18 @@ def test_fewer_measured_points_than_the_file_leave_it_untouched(
     """The saved model has 20 measured rows. This session's window has 12
     measured (enough to be saved on its own) and 10 dark, 22 rows in all: it
     must not replace the file, which stays byte-identical, and the skip says
-    why once.
+    why once. The file is 30 s old at the stop (the clock pinned at 1030 s
+    against its 1000 s stamp), inside the horizon within which the next
+    start could restore it.
+
+    UPDATED FOR #253 (S2 orchestrator ruling 3), because the case asserted
+    the defect. It read the real clock, so its file, stamped 1000 s after the
+    epoch, was decades past the horizon and could never be restored again,
+    and the case required that such a file still block the save. Under the
+    #253 fix, before the clock was pinned, it went RED, observed verbatim:
+
+        AssertionError: a window of 12 measured points replaced a saved model
+        of 20
 
     MUTANT "overwrite regardless of the file" (the ``saved > measured``
     return removed) -- RED, observed verbatim:
@@ -214,6 +225,7 @@ def test_fewer_measured_points_than_the_file_leave_it_untouched(
     """
     before = _save_file(tmp_path, _rows(20))
     g = _guider(tmp_path, monkeypatch, _rows(12, 10))
+    monkeypatch.setattr(nativemod, "time", _WallClock(1_030.0))
     g._persist_gp_window()
     assert _sha(tmp_path) == before, (
         "a window of 12 measured points replaced a saved model of 20")
@@ -231,6 +243,12 @@ def test_more_measured_points_than_the_file_are_saved_under_the_stamp_rule(
     under the H2 rule (#210): the feed time when the session fed the model,
     the write's own clock only when nothing did.
 
+    The file is 30 s old at the stop, inside the horizon within which the
+    next start could restore it. CLOCK PINNED FOR #253 (S2 orchestrator
+    ruling 3): the file used to be stamped 1000 s against a clock at 50000
+    s, past the 80 s horizon, where it counts as no file at all, so the
+    mutant below reached no rule and passed (15 passed).
+
     MUTANT "count every row as measured" -- RED, observed verbatim (the file
     counts 42 rows, the window 23):
 
@@ -238,7 +256,7 @@ def test_more_measured_points_than_the_file_are_saved_under_the_stamp_rule(
         model of 12
     """
     monkeypatch.setattr(nativemod, "time", _WallClock(50_000.0))
-    _save_file(tmp_path, _rows(12, 30))
+    _save_file(tmp_path, _rows(12, 30), dumped_at=50_000.0 - 30.0)
     window = _rows(20, 3, t0=900.0)
     g = _guider(tmp_path, monkeypatch, window, fed_at=fed_at)
     g._persist_gp_window()
@@ -255,6 +273,12 @@ def test_control_as_many_measured_points_as_the_file_are_saved(
     the newer model, and is saved. (A restored model stopped before it is fed
     again re-saves its own window and its own stamp this way.)
 
+    The file is 30 s old at the stop (the clock pinned at 1030 s against its
+    1000 s stamp). CLOCK PINNED FOR #253 (S2 orchestrator ruling 3): the case
+    read the real clock, so its file was decades past the horizon and
+    counted as no file, and the mutant below passed (15 passed): the #243
+    equal-count rule was pinned by no test.
+
     MUTANT "overwrite only a file with fewer" (``saved >= measured``) -- RED,
     observed verbatim:
 
@@ -264,6 +288,7 @@ def test_control_as_many_measured_points_as_the_file_are_saved(
     _save_file(tmp_path, _rows(15), dumped_at=1_000.0)
     window = _rows(15, t0=500.0)
     g = _guider(tmp_path, monkeypatch, window)
+    monkeypatch.setattr(nativemod, "time", _WallClock(1_030.0))
     g._persist_gp_window()
     saved = json.loads(_gp_path(tmp_path).read_text(encoding="utf-8"))
     assert saved["window"] == window, (
@@ -284,6 +309,12 @@ def test_an_unreadable_saved_model_counts_as_none(
     would call measured, more than the window's 16: only a count that
     rejects what the restore rejects lets the save through.
 
+    Every stamped file is 30 s old at the stop (the clock pinned at 31 s
+    against its 1 s stamp). CLOCK PINNED FOR #253 (S2 orchestrator ruling 3):
+    on the real clock the stamped files were past the horizon, where the
+    count is 0 before any shape is looked at, so "the count skips the
+    restore's row parse" below passed (15 passed).
+
     MUTANT "an unreadable file protects itself" (the ``except`` of
     ``_saved_gp_measured_points`` returns ``10 ** 9``) -- RED (corrupt),
     observed verbatim:
@@ -294,9 +325,13 @@ def test_an_unreadable_saved_model_counts_as_none(
     MUTANT "a foreign shape protects itself" (its shape check returns ``10 **
     9``) -- RED (legacy_bare_array, no_window), with the same line.
 
-    MUTANT "the count skips the restore's stamp check" (the
-    ``float(data["dumped_at"])`` line removed; also the count as the
-    implementer first wrote it) -- RED (no_stamp), with the same line.
+    MUTANT "a missing stamp reads as now" (``dumped_at =
+    float(data.get("dumped_at", time.time()))``, the stamp check as a count
+    that skipped it would read under #253) -- RED (no_stamp), with the same
+    line. (Deleting the stamp line outright, this mutant's earlier form, now
+    leaves ``dumped_at`` unbound; the ``except`` turns that NameError into 0
+    for every file, and test_fewer_measured_points_than_the_file_leave_it_
+    untouched goes RED instead.)
 
     MUTANT "the count skips the restore's row parse" (the row unpack
     replaced by ``window = data["window"]``) -- RED (three_column_rows), with
@@ -307,6 +342,7 @@ def test_an_unreadable_saved_model_counts_as_none(
     p.write_text(content, encoding="utf-8")
     window = _rows(GP_MIN_MEASURED_POINTS + 5)
     g = _guider(tmp_path, monkeypatch, window)
+    monkeypatch.setattr(nativemod, "time", _WallClock(31.0))
     g._persist_gp_window()
     assert p.read_text(encoding="utf-8") != content, (
         f"a saved model the restore cannot read blocked a save of "
@@ -420,14 +456,17 @@ async def test_a_lock_then_two_blank_frames_saves_nothing(
 
     ``over_a_saved_model``: the profile has a model saved on a good night (20
     measured rows, too old for this start to restore), and it stays
-    byte-identical (sha256). Both rules protect it (the window measured
-    fewer than the minimum, and fewer than the file), so only a persist with
-    neither turns it RED. ``with_no_saved_model``: nothing to compare with,
-    so the measured-point gate alone stands between this window and the
-    disk.
+    byte-identical (sha256). ``with_no_saved_model``: nothing to compare
+    with. In both, the measured-point gate alone stands between this window
+    and the disk. UPDATED FOR #253 (S2 orchestrator ruling 3): the file rule
+    used to hold ``over_a_saved_model`` too, but a file too old to restore
+    now counts as no file, so it protects nothing and the gate is the one
+    rule left.
 
-    MUTANT "no measured-point gate" -- RED (with_no_saved_model; the other
-    case is held by the file rule), observed verbatim:
+    MUTANT "no measured-point gate" -- RED (both cases), observed verbatim:
+
+        Failed: the stop of a session that measured nothing replaced the
+        saved PPEC model (window now: 2 dark row(s))
 
         Failed: the stop of a session that measured nothing wrote a PPEC
         model (2 dark row(s))

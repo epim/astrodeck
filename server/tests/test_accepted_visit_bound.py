@@ -15,8 +15,10 @@ parts and each has a case here:
 1. a reject counts toward the visit, so a visit is `per_visit` attempts;
 2. the per-step consecutive-reject counter lives on the engine, keyed like
    `_done`, and survives the visit; when it trips the step is set aside for
-   the run (a local counter could never reach the threshold again in a
-   one-attempt visit);
+   the night (a local counter could never reach the threshold again in a
+   one-attempt visit; since S2, #208, the set-aside is persisted with its
+   night key, so a restart the same night keeps it and the next night does
+   not);
 3. the accepted-mode anti-spin compares exposures, not accepted frames (after
    part 1, one reject per step would otherwise take the target off the night).
 
@@ -42,11 +44,13 @@ reads the step from `_active_step`, not from the wheel.
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
 import astrodeck.hub as hub_module
 from astrodeck.config import config_store
+from astrodeck.events import night_key
 from astrodeck.hub import Hub
 from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.models import ExposureStep, Target
@@ -362,14 +366,29 @@ class TestTheStepGuardSpansVisits:
     async def test_start_clears_the_counter_and_the_set_aside(
             self, sim_hub, monkeypatch):
         """Night one sets Ha aside after 3 rejects; B and OIII complete. The
-        resumed run must shoot Ha again and give it the full 3 before setting
-        it aside again: the set-aside is for THIS run (it is not persisted in
-        S0), and so is the count.
+        run the NEXT night must shoot Ha again and give it the full 3 before
+        setting it aside again: the count is for THIS run, and the set-aside
+        is for the night it was made on.
 
-        MUTATION "start() keeps the set-aside". Observed:
+        UPDATED FOR S2 (#208, spec 3.4 and 6.7), which changed the rule on
+        purpose. In S0 the set-aside was not persisted, so every restart,
+        the same night's included, retried the step. Now it is a
+        ``Session.set_aside`` record carrying its night key: a restart the
+        same night does not retry it
+        (test_group_set_aside_persisted.py::
+        test_step_set_aside_not_retried_same_night), and the next night does.
+        So the second start here is the next night's: night one's record is
+        moved to the night before, as a day passing leaves it. Before the
+        update the case restarted the same night and failed on the new rule,
+        observed:
             AssertionError: the resumed run gave Ha 0 attempts, not a fresh 3
-        MUTATION "start() keeps the counter" (the set-aside is cleared).
+
+        MUTATION "start() reads every night's records" (``start`` loads
+        ``session.set_aside`` whole instead of ``set_aside_on(tonight)``).
         Observed:
+            AssertionError: the resumed run gave Ha 0 attempts, not a fresh 3
+        MUTATION "start() keeps the counter" (``self._step_rejects = {}``
+        removed from ``start``). Observed:
             AssertionError: the resumed run gave Ha 1 attempts, not a fresh 3
         """
         plan = _cycle_plan(3, max_consecutive_rejects=3,
@@ -384,6 +403,15 @@ class TestTheStepGuardSpansVisits:
 
         session = session_store.load(sid)
         assert session.status == "dormant"
+        tonight = night_key(time.time())
+        ha = next(s for s in session.plan.targets[0].steps if s.filter == "Ha")
+        assert [(r["step_id"], r["night"]) for r in session.set_aside] == [
+            (ha.id, tonight)], session.set_aside
+        # A day passes: the record is last night's now.
+        last_night = night_key(time.time() - 24 * 3600)
+        assert last_night != tonight
+        for rec in session.set_aside:
+            rec["night"] = last_night
         mark = len(shots)
         eng.start(session.plan, session=session)
         assert await _finish(eng, 90), f"night two never ended: {shots}"
