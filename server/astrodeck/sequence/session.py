@@ -13,6 +13,7 @@ pruned). ``migrate_legacy_resume`` folds the retired single-slot
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import threading
 import time
@@ -123,6 +124,95 @@ class Session(BaseModel):
     # system working, and counting them would park the mount three cloudy holds
     # into a night that was going to clear.
     crash_resumes: int = 0
+    # SET ASIDE FOR TONIGHT (#189 S2, #208; spec 3.4, 5.1, 6.7). Each record
+    # is ``{target_id, step_id | None, reason, night}``: a panel the group
+    # driver set aside whole (step_id None) or a step the reject guard set
+    # aside, with the night key it happened under. Persisted because a crash
+    # takes the engine's memory with it, and a same-night crash-resume that
+    # forgot would retry, all over again, every panel it had just given up
+    # on. ``set_aside_on`` reads one night's; a later night ignores the rest,
+    # so every panel is retried tomorrow, as "set aside is not done" says.
+    # Plain dicts rather than a model, as the spec has it: no record can make
+    # a file fail validation, and a file that fails validation vanishes from
+    # every scan (``load_all``). Written only through ``note_set_aside``.
+    set_aside: list[dict] = Field(default_factory=list)
+    # LOCKED ANGLES (Revision 2, ruling 9): ``{target_id: {pa_deg, solved_at,
+    # exposed_at, source}}``. An unframed TARGET takes the position angle its
+    # first imaging-camera solve measures, and from then on that angle
+    # behaves exactly like a planned one: every acquisition, resume, flip
+    # re-centre and night commands the rotator to it, or on a fixed camera
+    # checks against it, so frames from different nights stack. Keyed by
+    # target id, and a re-frame re-anchors the block and so re-keys its ids
+    # (spec 3.3, ruling 3), which is the one thing that clears a lock.
+    # Written only through ``lock_angle``, where the first lock wins.
+    locked_angles: dict[str, dict] = Field(default_factory=dict)
+    # Both are additive with SESSION_SCHEMA still 1. There is no
+    # ``extra="forbid"`` here, so a build that predates them loads this file
+    # and ignores them (it then retries set-aside panels, today's behaviour),
+    # and this build reads a file without them as empty.
+
+    # ---- set aside and locks (run-owned; the engine writes, a resume reads) --
+    def note_set_aside(self, target_id: str, reason: str, *, night: str,
+                       step_id: str | None = None) -> dict:
+        """Record that ``target_id`` (or one of its steps) is set aside for the
+        night ``night``, and return the record. Appended, never replacing: the
+        second panel set aside tonight must not erase the first.
+
+        ``night`` is the ``events.night_key()`` of the moment, the key a
+        crash-resume asks with. An empty one is refused, because no night key
+        is ever "": the record would be read by no night, and the set-aside
+        would silently not survive the crash it is kept for."""
+        if not night:
+            raise ValueError(
+                f"a set-aside record needs the night it applies to "
+                f"(events.night_key()), got {night!r}")
+        record = {"target_id": target_id, "step_id": step_id,
+                  "reason": reason, "night": night}
+        self.set_aside.append(record)
+        return record
+
+    def set_aside_on(self, night: str) -> list[dict]:
+        """The set-aside records for ``night``, in the order they were made.
+        A crash-resume passes ``events.night_key()`` and does not retry these;
+        any other night's records are history."""
+        return [r for r in self.set_aside if r.get("night") == night]
+
+    def lock_angle(self, target_id: str, pa_deg: float, *, solved_at: float,
+                   exposed_at: float | None, source: str) -> dict:
+        """Lock ``target_id``'s angle to ``pa_deg`` unless it is locked
+        already, and return the lock IN FORCE, which is the angle the caller
+        commands (ruling 9).
+
+        THE FIRST LOCK WINS. A second call, a later night's first solve
+        included, leaves the lock as it was and returns it. Overwriting would
+        re-read the angle at every acquisition, and the angle would drift from
+        night to night: the failure ruling 9 exists to prevent.
+
+        ``solved_at`` is when the solve finished, ``exposed_at`` when its frame
+        was exposed (None when that is not known), both unix seconds, and
+        ``source`` says in words which solve measured it, for the flow editor
+        that shows where the angle came from.
+
+        A NaN or infinite angle (a failed solve can hand one back) is refused
+        and nothing is written: locked, it would be the angle every later night
+        commands, and the session could no longer be served, since the API's
+        JSON rendering refuses NaN and every route returning it would 500."""
+        held = self.locked_angles.get(target_id)
+        if held is not None:
+            return held
+        if not math.isfinite(pa_deg):
+            raise ValueError(
+                f"cannot lock {target_id!r} to angle {pa_deg!r}: a locked angle "
+                f"must be a finite number of degrees")
+        record = {"pa_deg": float(pa_deg), "solved_at": float(solved_at),
+                  "exposed_at": exposed_at, "source": source}
+        self.locked_angles[target_id] = record
+        return record
+
+    def locked_angle(self, target_id: str) -> dict | None:
+        """``target_id``'s lock, or None when it has none. Never a default
+        angle: 0 is a real position angle."""
+        return self.locked_angles.get(target_id)
 
     # ---- derived helpers (mode-aware per the FROZEN plan's count_mode) -------
     def accepted_by_step(self) -> dict[str, int]:
@@ -258,6 +348,25 @@ def _parsed(path: Path):
 _NAME_MAX = 120
 
 
+def _backup_path(path: Path) -> Path:
+    """``<id>.json.bak`` for ``<id>.json``: the one name ``backup`` writes,
+    ``delete`` removes or keeps, and ``_unreadable_row`` reports (#266)."""
+    return path.with_suffix(path.suffix + ".bak")
+
+
+def _has_backup(path: Path) -> bool:
+    """Whether a backup sits beside session file ``path``, for the list row.
+
+    False when the OS will not say (a stat refused), the rule
+    ``_unreadable_row`` keeps for the file itself: one file nobody can look
+    at must not cost the whole list. The row then claims nothing, and
+    ``delete`` still keeps a backup it finds there (#266)."""
+    try:
+        return _backup_path(path).is_file()
+    except OSError:
+        return False
+
+
 def _unreadable_row(path: Path, raw, reason: str | None) -> dict | None:
     """The ``GET /api/sessions`` row for a file the store cannot read (#242),
     or None when the file has gone since it was read.
@@ -276,7 +385,14 @@ def _unreadable_row(path: Path, raw, reason: str | None) -> dict | None:
     The id is the FILE's stem, because that is what ``DELETE`` addresses.
     The name inside is used when there is one, else the stem. ``updated_ts``
     is the file's mtime: the ``updated_ts`` inside, if any, was written by
-    whatever damaged the file, and it sorts the row in among the rest."""
+    whatever damaged the file, and it sorts the row in among the rest.
+
+    ``backup: true`` WHEN A BACKUP SITS BESIDE IT (#266). ``DELETE`` keeps
+    that ``.bak`` for an unreadable file, since it can be the last good copy
+    of the ledger, and the confirm has to say so before the tap. The key is
+    left out when there is none, so that row is the #242 row unchanged. It
+    says a file exists, not that it would load: whether it does is only
+    known by reading it, and the delete keeps it either way."""
     try:
         mtime = path.stat().st_mtime
     except OSError:
@@ -284,8 +400,11 @@ def _unreadable_row(path: Path, raw, reason: str | None) -> dict | None:
     name = raw.get("name") if isinstance(raw, dict) else None
     name = (name.strip()[:_NAME_MAX]
             if isinstance(name, str) and name.strip() else path.stem)
-    return {"id": path.stem, "name": name, "status": "unreadable",
-            "unreadable": reason, "updated_ts": mtime}
+    row = {"id": path.stem, "name": name, "status": "unreadable",
+           "unreadable": reason, "updated_ts": mtime}
+    if _has_backup(path):
+        row["backup"] = True
+    return row
 
 
 class SessionStore:
@@ -564,21 +683,34 @@ class SessionStore:
         Taken under the write lock so it cannot copy a half-finished write.
         ``<id>.json.bak`` does not match ``*.json``, so no listing ever reads
         it as a second session. Raises on failure: a caller that asked for a
-        backup must not rewrite the ledger without one.
+        backup must not rewrite the ledger without one. ``delete`` keeps it
+        when the live file has become unreadable (#266).
         """
         path = self._path(session_id)          # validates the id (KeyError)
-        bak = path.with_suffix(path.suffix + ".bak")
+        bak = _backup_path(path)
         with self._write_lock:
             shutil.copy2(path, bak)
             harden_private_file(bak)
         return bak
 
-    def delete(self, session_id: str) -> None:
+    def delete(self, session_id: str, *,
+               keep_backup: bool = False) -> Path | None:
         """Remove the session file, its ADOPT backup and its thumbs directory.
-        NEVER touches FITS.
+        NEVER touches FITS. Returns the backup it kept, or None.
 
         The backup goes with it: a ``.bak`` left behind is a copy of a ledger
         the operator deleted, which nothing lists and nothing would remove.
+
+        EXCEPT WHEN THE FILE COULD NOT BE READ (#266): the route passes
+        ``keep_backup`` for that file, and then a ``.bak`` beside it stays,
+        byte for byte, and so does the thumbs directory, which belongs to the
+        ledger the backup holds. The ``.bak`` is the copy ``backup`` took
+        before an ADOPT rewrote the ledger, so for a ledger damaged since, it
+        can be the last good record of which frames were accepted for which
+        step, and the operator pressed DELETE on the damaged file, not on
+        that. With no ``.bak`` there, the thumbnails belong to nothing that
+        can be read, and go as before. The backup is looked for before
+        anything is removed, so a stat that fails removes nothing.
 
         UNDER THE WRITE LOCK (#212), like every other write. Without it a
         worker-thread delete could unlink a session in the middle of a
@@ -589,17 +721,22 @@ class SessionStore:
         the DELETE route, which calls this inside its own section.
 
         It never reads the file, so a file the store cannot read goes the
-        same way (#242); whether it MAY go is the route's decision."""
+        same way (#242); whether it MAY go, and whether its backup stays, is
+        the route's decision, since the route has read it."""
         path = self._path(session_id)          # validates the id (KeyError)
+        bak = _backup_path(path)
         with self._write_lock:
+            keep = keep_backup and bak.is_file()
             if path.exists():
                 path.unlink()
-            bak = path.with_suffix(path.suffix + ".bak")
+            if keep:
+                return bak
             if bak.exists():
                 bak.unlink()
             side_dir = _sessions_dir() / session_id
             if side_dir.is_dir():
                 shutil.rmtree(side_dir, ignore_errors=True)
+            return None
 
     def thumbs_dir(self, session_id: str) -> Path:
         self._path(session_id)                 # id validation only (KeyError)

@@ -27,6 +27,11 @@ KNOWN_TOKENS: dict[str, str] = {
     # as ``Dark_<target>_0001.fits`` and only the header tells them apart.
     "GAIN": "loose", "EXPOSURE": "loose", "BINNING": "loose",
     "SENSORTEMP": "loose",
+    # The mosaic panel's 1-based ``row-col`` label (``panel_label``; #189
+    # U-08). Empty on every frame that is not a panel, so it drops out like
+    # the capture tokens do. Strict, like FILTER: a label is digits and one
+    # hyphen, and nothing else belongs in it.
+    "PANEL": "strict",
 }
 
 _TOKEN_RE = re.compile(r"\$\$([A-Z0-9_]+)\$\$")
@@ -136,6 +141,41 @@ def capture_tokens(gain: int | None = None, exposure_s: float | None = None,
         "BINNING": "" if binning is None else str(int(binning)),
         "SENSORTEMP": format_sensor_temp_token(sensor_temp_c),
     }
+
+
+def panel_label(row: int | None, col: int | None) -> str:
+    """A mosaic panel's label, ``"r-c"``, 1-based (mosaic spec 2.3), from the
+    server's 0-based row and column.
+
+    Row 1 is the north edge and col 1 the west edge at angle 0: server panel
+    (0, 0) is the north-west corner (``framing.compute_mosaic``). The same
+    label as the Plan's ``<name> r-c`` and the Target name ``to_plan`` builds
+    (3.3: ``<row+1>-<col+1>``), so the file, the name and the chart agree.
+    ``""`` when either index is ``None`` (not a panel), which drops the
+    ``$$PANEL$$`` token and omits the PANEL card. A negative index is a
+    caller's bug and raises ``ValueError``, rather than naming a panel
+    ``0-1`` that no chart shows."""
+    if row is None or col is None:
+        return ""
+    r, c = int(row), int(col)
+    if r < 0 or c < 0:
+        raise ValueError(f"panel row and col are 0-based, got {row!r}, {col!r}")
+    return f"{r + 1}-{c + 1}"
+
+
+def mosaic_label(name: str | None, group_id: str | None) -> str:
+    """What a panel frame's MOSAIC card says: the group's name, or its id when
+    the name is empty (#189 U-08). ``""`` for neither, which omits the card.
+
+    A name with no printable ASCII in it at all counts as empty. A FITS header
+    value is printable ASCII, so the writer folds everything else out
+    (``fitsio.save_fits``), and such a name would fold to an empty card that
+    groups nothing; the id is the one value every group has. A name with
+    some ASCII in it is kept, and the writer folds the rest."""
+    n = (name or "").strip()
+    if not any(" " < ch <= "~" for ch in n):
+        n = ""
+    return n or (group_id or "").strip()
 
 
 #: sample fields used by validate_template's dry render.

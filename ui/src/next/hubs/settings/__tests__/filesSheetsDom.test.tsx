@@ -150,9 +150,9 @@ const { NamingSheet } = await import("../sheets/NamingSheet");
 const { WcsSheet } = await import("../sheets/WcsSheet");
 const { StandardsSheet } = await import("../sheets/StandardsSheet");
 const { OpticsSheet } = await import("../sheets/OpticsSheet");
-const { namingPreview, syncSummary, formatBytes, pushBlockedReason } =
+const { namingPreview, syncSummary, formatBytes, pushBlockedReason, tokenText } =
   await import("../tuning/files");
-const { DEFAULT_TEMPLATE } = await import("../../../../lib/naming");
+const { DEFAULT_TEMPLATE, NAMING_TOKENS } = await import("../../../../lib/naming");
 const { STANDARDS_NUMBER_FIELDS } = await import("../../../../lib/standards");
 
 // ------------------------------------------------------------------ harness
@@ -315,8 +315,28 @@ await test("markers: the controls the probe walks are present and named", async 
   const naming = mount(NamingSheet);
   await settle();
   assert(byId(naming.host, "naming-template") != null, "no naming-template input");
-  eq(qa(naming.host, '[data-testid="naming-token"]').length, 8,
-    "the eight naming tokens did not all render as chips");
+  // Every offered token renders as a chip, in the offered order, read by its
+  // text rather than counted against a literal: S2 (#189 U-08) added PANEL
+  // as the ninth token, and a literal 8 went red on a chip that was right.
+  // PANEL is named on its own so a list that lost it cannot pass here by
+  // shrinking with the chips.
+  // Mutation 'the editor offers only the first eight' (NamingEditor maps
+  // `NAMING_TOKENS.slice(0, 8)`), observed:
+  //   x markers: the controls the probe walks are present and named: not every
+  //   naming token rendered as a chip, in order (expected $$TARGET$$
+  //   $$FRAMETYPE$$ $$FILTER$$ $$DATE$$ $$TIME$$ $$DATETIME$$ $$NIGHT$$
+  //   $$FRAMENR$$ $$PANEL$$, got $$TARGET$$ $$FRAMETYPE$$ $$FILTER$$ $$DATE$$
+  //   $$TIME$$ $$DATETIME$$ $$NIGHT$$ $$FRAMENR$$)
+  // Mutation 'PANEL not offered' ("PANEL" removed from NAMING_TOKENS, so the
+  // list and the chips shrink together and the comparison above holds),
+  // observed:
+  //   x markers: the controls the probe walks are present and named: no
+  //   $$PANEL$$ chip
+  const chips = qa(naming.host, '[data-testid="naming-token"]')
+    .map((c: any) => (c.textContent ?? "").trim()).join(" ");
+  eq(chips, NAMING_TOKENS.map(tokenText).join(" "),
+    "not every naming token rendered as a chip, in order");
+  assert(chips.split(" ").includes("$$PANEL$$"), "no $$PANEL$$ chip");
   await unmount(naming);
 
   const wcs = mount(WcsSheet);

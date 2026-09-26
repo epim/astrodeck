@@ -26,9 +26,62 @@ export interface SessionPatchResult {
   merge?: MergeSummary;
 }
 
+/** An unreadable row as the server sends it since #266: `types.ts`'s #242
+ *  row, plus whether a backup sits beside the file.
+ *
+ *  `isUnreadableRow` still narrows to the #242 row, not to this: a guard onto
+ *  an intersection stops TypeScript narrowing the other branch to
+ *  `SessionRow`, and every session card reads its counts off that branch.
+ *  A #242 row is assignable to this type (the key is optional), so a reader
+ *  that wants the flag takes this type as its parameter, as
+ *  `unreadableDeleteBody` does. */
+export type UnreadableListRow = UnreadableSessionRow & {
+  /** True while `<id>.json.bak` sits beside the file, which DELETE keeps,
+   *  with the thumbnails, because it can be the last good copy of the ledger
+   *  (the copy taken before an ADOPT rewrote it). The server leaves the key
+   *  OUT when there is none, so absent is the normal case, not an error. It
+   *  says the file exists, not that it would load. */
+  backup?: boolean;
+};
+
 /** Is this list entry a file the store could not read (#242)? */
 export const isUnreadableRow = (r: SessionListRow): r is UnreadableSessionRow =>
   r.status === "unreadable";
+
+/** What `DELETE /api/sessions/{id}` answers. `backup_kept` and `detail` come
+ *  only from deleting an unreadable file with a backup beside it (#266): the
+ *  backup's file name, and the server's words saying it remains and how it
+ *  brings the ledger back. A readable session's delete answers
+ *  `{deleted}` alone. */
+export interface DeleteSessionResult {
+  deleted: string;
+  backup_kept?: string;
+  detail?: string;
+}
+
+/** The delete confirm's body for an unreadable row (#266).
+ *
+ *  NOT THE SESSION DELETE'S SENTENCE. That one says "Removes the session
+ *  ledger and thumbnails", and for this row it was wrong both ways: there is
+ *  no ledger anyone can read, and the server keeps a backup beside the file,
+ *  with the thumbnails, because that backup can be the last good copy of the
+ *  ledger. So it names the one file that goes, by the name it has on disk,
+ *  and, when the row reports a backup, names that and says it stays. With no
+ *  backup the thumbnails go too, and it says so: a confirm that names less
+ *  than the delete removes is the defect #266 was.
+ *
+ *  The FITS sentence stays word for word: it is the answer to the question
+ *  every delete raises. */
+export function unreadableDeleteBody(row: Pick<UnreadableListRow, "id" | "backup">): string {
+  const file = `${row.id}.json`;
+  if (row.backup) {
+    return `Removes only the file ${file}, which cannot be read. Its backup ${file}.bak stays, `
+      + "and so do the thumbnails, because the backup may be the last good copy of this ledger. "
+      + "Saved FITS frames are NOT deleted. Removing the damaged file cannot be undone.";
+  }
+  return `Removes the file ${file}, which cannot be read, and its thumbnails. `
+    + "Saved FITS frames are NOT deleted. This cannot be undone.";
+}
 
 /** Every entry `GET /api/sessions` sends, unreadable files included (#242).
  *
@@ -73,8 +126,8 @@ export const patchFrame = (
   api.patch<{ frame: SessionFrame; remaining: Record<string, number> }>(
     `/api/sessions/${id}/frames/${frameId}`, body);
 
-export const deleteSession = (id: string): Promise<{ deleted: string }> =>
-  api.del<{ deleted: string }>(`/api/sessions/${id}`);
+export const deleteSession = (id: string): Promise<DeleteSessionResult> =>
+  api.del<DeleteSessionResult>(`/api/sessions/${id}`);
 
 /** What is armed and waiting, and what is holding it.
  *

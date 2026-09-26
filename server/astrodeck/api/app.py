@@ -54,8 +54,9 @@ from ..auth.rbac import assert_route_capabilities, declare
 # here as nested closures: app.py imports remote.relay_client, so relay_client
 # importing them back out of app.py would be a circular import.
 from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
+                     _redact_log_rows_for,
                      _redact_profile_for, _redact_report_for,
-                     _redact_resume_arm_for,
+                     _redact_resume_arm_for, _redact_sequence_for,
                      _redact_session_for, _redact_site_for,
                      _redact_switch_ports_for, _redact_ws_event,
                      report_csv_columns)
@@ -160,8 +161,9 @@ from ..flows.tonight import (banked_hours_from_reports,
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
-from ..sequence.models import (duplicate_name_warning, plan_identity_errors,
-                               quota_unbounded, replan_cooling)
+from ..sequence.models import (TargetGroup, duplicate_name_warning,
+                               plan_identity_errors, quota_unbounded,
+                               replan_cooling)
 from ..sequence.policy import resolve_policy
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
@@ -3674,6 +3676,37 @@ def create_app(*, bind_host: str | None = None,
         """
         from ..devices import backends as _b  # noqa: F401 - registration side-effect
         from ..devices.backend import RigSpec, ConnSpec, get_backend
+        # THE WHOLE BODY IS VALIDATED FIRST (#257, spec 6.15), before the busy
+        # refusal and before anything a forced connect ends: the ladder stop,
+        # the disarm, the wait and ``engine.abort``. These checks used to sit
+        # after all four, so a forced request with a typo in one role override
+        # ended the night and switched the armed session's auto-resume off,
+        # then answered 422 and connected nothing: a 422 that read as "nothing
+        # happened" over a rig left idle and untracked with nothing to restart
+        # it. A 422 from this route now means nothing was touched. Ahead of
+        # the unforced 409 as well, so the operator is never offered "force"
+        # for a body that would fail whatever the rig was doing.
+        #
+        # "none" is not a registry backend -- it's the Equipment surface's
+        # explicit-only rig mode (spec §4.1): only `roles` overrides are
+        # requested, so there is no primary to look up in the registry.
+        if body.primary != "none":
+            try:
+                get_backend(body.primary)
+            except KeyError:
+                raise HTTPException(422, f"unknown primary backend {body.primary!r}")
+        for role, cs in body.roles.items():
+            try:
+                allowed = get_backend(cs.backend).roles
+            except KeyError:
+                raise HTTPException(
+                    422, f"unknown backend {cs.backend!r} for role {role!r}")
+            if role not in allowed:
+                raise HTTPException(
+                    422, f"backend {cs.backend!r} cannot fill role {role!r}")
+        spec = RigSpec(
+            primary=body.primary,
+            roles={r: ConnSpec(**cs.model_dump()) for r, cs in body.roles.items()})
         # A WHOLE-RIG CONNECT IS DESTRUCTIVE: it disconnects the current rig
         # before it builds the new one. The two routes that are strictly LESS
         # destructive - /api/profiles/{id}/apply and /api/profiles/{id}/activate
@@ -3707,26 +3740,6 @@ def create_app(*, bind_host: str | None = None,
             await _wait_for_the_ladder()
         if body.force and engine.running:
             await engine.abort()
-        # "none" is not a registry backend -- it's the Equipment surface's
-        # explicit-only rig mode (spec §4.1): only `roles` overrides are
-        # requested, so there is no primary to look up in the registry.
-        if body.primary != "none":
-            try:
-                get_backend(body.primary)
-            except KeyError:
-                raise HTTPException(422, f"unknown primary backend {body.primary!r}")
-        for role, cs in body.roles.items():
-            try:
-                allowed = get_backend(cs.backend).roles
-            except KeyError:
-                raise HTTPException(
-                    422, f"unknown backend {cs.backend!r} for role {role!r}")
-            if role not in allowed:
-                raise HTTPException(
-                    422, f"backend {cs.backend!r} cannot fill role {role!r}")
-        spec = RigSpec(
-            primary=body.primary,
-            roles={r: ConnSpec(**cs.model_dump()) for r, cs in body.roles.items()})
         try:
             return await hub.connect_rigspec(spec)
         except DeviceError as e:
@@ -3885,6 +3898,129 @@ def create_app(*, bind_host: str | None = None,
         except (DeviceError, ValueError) as e:
             return {"detail": str(e), "code": "sun_exclusion"}
         return None
+
+    def _start_preflight(plan: SequencePlan, *, force: bool) -> list[dict]:
+        """The horizon and Sun pre-flight of the two start paths that run one,
+        ``/api/sequence/start`` and ``/api/flows/{id}/run``: one helper, so the
+        two cannot drift (spec 6.3; #132). Raises 409 for a refusal. Returns
+        the panels of a mosaic group that are below the horizon now and did
+        not refuse the start, for the caller to name in its response and its
+        log line (``_name_panels_below``) once the run has started.
+
+        A MOSAIC GROUP IS REFUSED ONLY WHEN EVERY PANEL IS BLOCKED. A group's
+        panels span the sky between them, so some can be below the horizon
+        while the rest are up. The loop this replaces refused the whole start
+        for the first panel behind the horizon, so such a mosaic could only
+        be started with ``force``, which waives the check for every other
+        target in the plan too. Now a member counts toward its group: the
+        group refuses (unless forced) only when every one of its panels is
+        below the horizon now, and the 409 lists them. Otherwise the start
+        goes ahead and the blocked panels are returned. What the run does
+        with a panel that is not up is decided in the scheduler's selection
+        (spec D9, 5.1), not here.
+
+        A member is what the engine counts as one (``SequenceEngine.
+        _group_of``): a non-calibration target whose ``mosaic_group`` names a
+        group the plan CARRIES. Every other target, including each panel of
+        a classic Plan mosaic (a ``mosaic_group`` with no ``groups`` entry),
+        refuses alone, with the same 409 as before, and ``force`` still
+        waives it without a look. A forced group's members are still looked
+        at, so the panels a forced start leaves below the horizon are named.
+
+        THE SUN IS UNCHANGED: any target in the cone refuses, a panel
+        included, forced or not. Everything else here costs you a night;
+        this one costs you a sensor.
+
+        Refusals come in plan order, every horizon refusal before any Sun
+        refusal, as the two loops ran. Calibration targets (darks, bias,
+        flats) carry mandatory dummy coordinates and never slew, so both
+        checks skip them: a dark-library build at a configured site must not
+        be refused because (0, 0) is below the horizon."""
+        groups = {g.id: g for g in plan.groups}
+        sky = [t for t in plan.targets if not t.calibration
+               and getattr(t, "ra_hours", None) is not None
+               and getattr(t, "dec_deg", None) is not None]
+
+        def group_of(t) -> TargetGroup | None:
+            gid = getattr(t, "mosaic_group", None)
+            return groups.get(gid) if gid is not None else None
+
+        def mosaic(g: TargetGroup) -> str:
+            return g.name or g.id               # as the engine's lines name it
+
+        def entry(t, g: TargetGroup) -> dict:
+            return {"group": g.id, "mosaic": mosaic(g), "target": t.name,
+                    "panel": SequenceEngine._panel_name(t)}
+
+        below: dict[int, dict] = {}
+        for t in sky:
+            if force and group_of(t) is None:
+                continue            # forced, as before: not looked at
+            blocked = _horizon_block(t.ra_hours, t.dec_deg)
+            if blocked is not None:
+                below[id(t)] = blocked
+        if not force:
+            for t in sky:
+                if id(t) not in below:
+                    continue
+                g = group_of(t)
+                if g is None:
+                    raise HTTPException(409, detail={**below[id(t)],
+                                                     "target": t.name})
+                members = [m for m in sky if group_of(m) is g]
+                if all(id(m) in below for m in members):
+                    labels = ", ".join(SequenceEngine._panel_name(m)
+                                       for m in members)
+                    raise HTTPException(409, detail={
+                        "detail": f"every panel of mosaic '{mosaic(g)}' is "
+                                  f"below the horizon now: {labels}",
+                        "code": "below_horizon", "group": g.id,
+                        "mosaic": mosaic(g),
+                        "panels": [{"panel": e["panel"], "target": e["target"]}
+                                   for e in (entry(m, g) for m in members)]})
+        for t in sky:
+            solar = _solar_block(t.ra_hours, t.dec_deg)
+            if solar is not None:
+                raise HTTPException(409, detail={**solar, "target": t.name})
+        return [entry(t, group_of(t)) for t in sky
+                if id(t) in below and group_of(t) is not None]
+
+    def _name_panels_below(plan: SequencePlan, blocked: list[dict]) -> None:
+        """One log line per group for the panels ``_start_preflight`` found
+        below the horizon on a start that went ahead (spec 6.3). A group with
+        every panel below can only have started forced: unforced, it refused.
+
+        WORDS ONLY (6.9; H3 orchestrator ruling 1): the mosaic's name and the
+        panels' labels, never the altitude the 409 detail of a refusal
+        carries. ``/api/logs`` is view.status, and a named target's altitude
+        at a logged time is a circle of latitudes (#140). When it is logged
+        is the operator's press, not a site computation, so the line needs
+        no ``site_derived`` flag. Called only once the engine is going: a
+        refused start says nothing."""
+        by_group: dict[str, list[dict]] = {}
+        for e in blocked:
+            by_group.setdefault(e["group"], []).append(e)
+        for gid, rows in by_group.items():
+            n = sum(1 for t in plan.targets if not t.calibration
+                    and getattr(t, "mosaic_group", None) == gid)
+            labels = [e["panel"] for e in rows]
+            name = rows[0]["mosaic"]
+            if len(labels) == n:
+                bus.log("info",
+                        f"mosaic '{name}': all {n} panels are below the "
+                        f"horizon now ({', '.join(labels)}); started because "
+                        f"the start was forced", "sequence")
+                continue
+            if len(labels) == 1:
+                which = f"panel {labels[0]} is"
+            else:
+                which = (f"panels {', '.join(labels[:-1])} and {labels[-1]} "
+                         f"are")
+            up = n - len(labels)
+            bus.log("info",
+                    f"mosaic '{name}': {which} below the horizon now; "
+                    f"started, since {up} of its {n} panels "
+                    f"{'is' if up == 1 else 'are'} not", "sequence")
 
     def _merge_alert_verified(incoming: list[AlertSink]) -> list[AlertSink]:
         """Reset ``verified`` to False on any sink whose delivery identity
@@ -5783,21 +5919,11 @@ def create_app(*, bind_host: str | None = None,
                                      "guards disabled and no stop boundary can "
                                      "run unbounded — set a frame count, a stop "
                                      "time, or a reject guard")
-        if not body.force:
-            for t in plan.targets:
-                if t.calibration:
-                    continue
-                blocked = _horizon_block(t.ra_hours, t.dec_deg)
-                if blocked is not None:
-                    raise HTTPException(409, detail={**blocked, "target": t.name})
-        # Sun exclusion is checked REGARDLESS of force. Everything else on this
-        # list costs you a night; this one costs you a sensor.
-        for t in plan.targets:
-            if t.calibration:
-                continue
-            solar = _solar_block(t.ra_hours, t.dec_deg)
-            if solar is not None:
-                raise HTTPException(409, detail={**solar, "target": t.name})
+        # The horizon (waived by force) and the Sun (never waived), the same
+        # helper /api/sequence/start calls (spec 6.3): a mosaic group refuses
+        # only when every panel is below the horizon, and the ones that are
+        # below on a start that goes ahead are named once it has started.
+        below_horizon = _start_preflight(plan, force=body.force)
         if hub.looping:
             # Awaited, not fired: the preview loop must have released the camera
             # before the engine's first exposure.
@@ -5897,9 +6023,15 @@ def create_app(*, bind_host: str | None = None,
                    if continued is not None else "")
                 + (f" — {len(real)} graph feature(s) are not honoured by "
                    f"this run" if real else ""), "flow")
-        return {"started": True, "flow_id": flow_id,
-                "frames": plan.total_frames(), "unmapped": unmapped,
-                "session": session_out}
+        _name_panels_below(plan, below_horizon)
+        out = {"started": True, "flow_id": flow_id,
+               "frames": plan.total_frames(), "unmapped": unmapped,
+               "session": session_out}
+        if below_horizon:
+            # Absent when none is: every answer without a blocked panel is
+            # byte-identical to before (spec 6.3).
+            out["below_horizon"] = below_horizon
+        return out
 
     # ------------------------------------------------ calibration library (PRO-1)
 
@@ -6016,7 +6148,9 @@ def create_app(*, bind_host: str | None = None,
     async def list_sessions():
         # Every session, and a row with ``status: "unreadable"`` and the
         # store's reason for every file it cannot read (#242), which DELETE
-        # removes. No ledger field on those: see ``_unreadable_row``.
+        # removes. No ledger field on those: see ``_unreadable_row``. Such a
+        # row says ``backup: true`` when a ``.bak`` sits beside the file,
+        # which DELETE keeps (#266).
         return {"sessions": await asyncio.to_thread(session_store.list)}
 
     @app.get("/api/sessions/{session_id}")
@@ -6257,8 +6391,29 @@ def create_app(*, bind_host: str | None = None,
                 "the ladder stopped before its next step",
                 session_id=session_id)
             # session file + thumbs only — NEVER the FITS frames (spec §6).
-            session_store.delete(session_id)
-        return {"deleted": session_id}
+            # AN UNREADABLE FILE'S BACKUP STAYS (#266). Its ``.bak`` is the
+            # copy taken before an ADOPT, which for a ledger damaged since
+            # can be the last good one, and the operator deleted the damaged
+            # file, not that. ``s is None`` is exactly "unreadable" here: a
+            # missing file answered 404 above. A readable session's backup
+            # still goes with it, as ``delete`` documents.
+            kept = session_store.delete(session_id, keep_backup=s is None)
+        if kept is None:
+            return {"deleted": session_id}
+        # In words as well as a key, and naming the file, because nothing
+        # lists a ``.bak``: once the row is gone, this answer is the last
+        # thing that says the backup is there and what it is called. File
+        # names only, never the path: the captures directory is the rig's
+        # filesystem. "If ... intact", because nothing read the backup: the
+        # delete keeps whatever ``.bak`` it finds.
+        return {"deleted": session_id, "backup_kept": kept.name,
+                "detail": (
+                    f"Removed {kept.stem}, which could not be read. Its "
+                    f"backup {kept.name} remains in the sessions folder, "
+                    f"and so do the session's thumbnails: renaming the "
+                    f"backup to {kept.stem} brings the ledger back as it "
+                    f"was when the backup was taken, if the backup itself "
+                    f"is intact.")}
 
     @app.get("/api/sessions/{session_id}/frames/{frame_id}/thumb",
              dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
@@ -8129,40 +8284,13 @@ def create_app(*, bind_host: str | None = None,
                 "stop boundary can run unbounded — set max_consecutive_rejects, "
                 "max_consecutive_rejects_night, a stop time, or max_run_min")
         # Below-horizon pre-flight: refuse to start a run whose target can't be
-        # observed from a *configured* site, unless explicitly forced.
-        if not force:
-            for t in plan.targets:
-                # calibration targets (darks/bias/flats) carry mandatory dummy
-                # coords and never slew/center — the horizon check is meaningless
-                # for them, so a dark-library build at a configured site must not
-                # be 409'd just because (0,0) happens to be below the horizon.
-                if t.calibration:
-                    continue
-                ra = getattr(t, "ra_hours", None)
-                dec = getattr(t, "dec_deg", None)
-                if ra is None or dec is None:
-                    continue
-                blocked = _horizon_block(ra, dec)
-                if blocked is not None:
-                    blocked = dict(blocked)
-                    blocked["target"] = getattr(t, "name", "")
-                    raise HTTPException(409, detail=blocked)
-        # Sun-exclusion pre-flight (W1.10) runs REGARDLESS of ``force`` -- a
+        # observed from a *configured* site, unless explicitly forced; a mosaic
+        # group refuses only when every panel is below it (spec 6.3). The
+        # sun-exclusion pre-flight (W1.10) runs REGARDLESS of ``force`` -- a
         # forced run bypasses only the visible-horizon 409, never sun avoidance.
         # Disarming requires a solar session (config.solar_override), which makes
-        # _check_solar inert. Calibration targets never slew, so skip them.
-        for t in plan.targets:
-            if t.calibration:
-                continue
-            ra = getattr(t, "ra_hours", None)
-            dec = getattr(t, "dec_deg", None)
-            if ra is None or dec is None:
-                continue
-            solar = _solar_block(ra, dec)
-            if solar is not None:
-                solar = dict(solar)
-                solar["target"] = getattr(t, "name", "")
-                raise HTTPException(409, detail=solar)
+        # _check_solar inert. One helper, shared with /api/flows/{id}/run.
+        below_horizon = _start_preflight(plan, force=force)
         # Auto-stop the live preview loop before the run owns the camera (the
         # natural ASIAIR-style flow: frame with the loop, then hit Start Plan).
         # Awaited so the loop's in-flight expose fully releases the camera +
@@ -8178,7 +8306,12 @@ def create_app(*, bind_host: str | None = None,
             engine.start(plan, origin="plan")
         except DeviceError as e:
             raise _err(e)
-        return {"started": True, "frames": plan.total_frames()}
+        _name_panels_below(plan, below_horizon)
+        out = {"started": True, "frames": plan.total_frames()}
+        if below_horizon:
+            # Absent when none is, so every other answer is unchanged.
+            out["below_horizon"] = below_horizon
+        return out
 
     @app.get("/api/sequence/resume-arm")
     @declare(CAP_VIEW_STATUS)
@@ -8260,10 +8393,19 @@ def create_app(*, bind_host: str | None = None,
         await engine.abort()
         return {"aborted": True}
 
-    @app.get("/api/sequence/state", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/sequence/state")
     @declare(CAP_VIEW_STATUS)
-    async def sequence_state():
-        return _sequence_envelope(engine)
+    async def sequence_state(
+            principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        """The engine's state with liveness made to agree (`_sequence_envelope`).
+
+        While a mosaic group waits on the meridian rule, `group.panel` and
+        `group.pass` are withheld from a principal without view.site_derived
+        (spec 5.10): the panel held for the crossing, and the hop that ends
+        the wait, change at the moment a known RA transits, which is the
+        longitude. `_redact_sequence_for` decides it, the same helper the WS
+        `sequence` event and the monitor snapshot use."""
+        return _redact_sequence_for(_sequence_envelope(engine), principal)
 
     # ----------------------------------------------------------------- monitor
 
@@ -8283,7 +8425,11 @@ def create_app(*, bind_host: str | None = None,
         an idle aligner and no reason. The user then re-runs the thing that just
         refused, and gets the same silence."""
         snap = await hub.monitor_snapshot()
-        snap["sequence"] = _sequence_envelope(engine)
+        # The same sequence state GET /api/sequence/state serves, so the same
+        # 5.10 withholding: without it a viewer's cold load would read the
+        # panel a mosaic holds for the meridian that the route withholds.
+        snap["sequence"] = _redact_sequence_for(_sequence_envelope(engine),
+                                                principal)
         snap["polar"] = hub.polar.state | {"running": hub.polar.running}
         # SAME SEAM AS /api/status, and it was missing here. This route carries
         # a whole ``poll_status()`` under ``snap["status"]`` — site block,
@@ -8858,55 +9004,94 @@ def create_app(*, bind_host: str | None = None,
         return {"date": out_date, "picks": rank_picks(picks),
                 "site_is_default": bool(hub.site.get("is_default", False))}
 
-    @app.get("/api/logs", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/logs")
     @declare(CAP_VIEW_STATUS)
     async def logs(level: str | None = None, night: str | None = None,
-                   limit: int = 0):
+                   limit: int = 0,
+                   principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """Event log rows, oldest first.
 
         Default (no params) = the in-memory ring, byte-identical to before.
         ``night=YYYY-MM-DD`` reads that night's PERSISTED file instead (UX #9 —
         the ring is only the last ~40 minutes of a ten-hour run), and ``level``
-        filters either source. ``limit`` keeps the newest N rows."""
+        filters either source. ``limit`` keeps the newest N rows.
+
+        A line flagged ``site_derived`` (its moment was set by a site
+        computation, spec 6.9) is left out of BOTH sources for a principal
+        without view.site_derived, and left out before ``level`` and ``limit``
+        are applied, so ``limit=N`` is the newest N lines this reader may see
+        and cannot go short at the moment a flagged line lands. This route is
+        view.status, which a viewer holds (#166)."""
+        sees_timed = principal.has(CAP_VIEW_SITE_DERIVED)
         if night:
             store = bus.night_log
             rows = (await asyncio.to_thread(
                 store.read, _slug(night), level=level,
-                limit=(limit or LOG_READ_MAX))) if store is not None else []
+                limit=(limit or LOG_READ_MAX),
+                include_site_derived=sees_timed)) if store is not None else []
             return rows
-        rows = bus.log_history
+        # A reader without view.site_derived reads the ring that no flagged
+        # line enters (``EventBus._history_unflagged``), not the full ring
+        # filtered: in the full ring a flagged line still evicts the oldest
+        # row, and a viewer polling a full ring would see that row go at the
+        # flagged line's moment. Filtered again all the same, so a flagged row
+        # that ever reached that ring would still not be served.
+        rows = (bus.log_history if sees_timed else
+                _redact_log_rows_for(bus.log_history_unflagged, principal))
         if level:
             rows = [r for r in rows if (r.get("data") or {}).get("level") == level]
         if limit and limit > 0:
             rows = rows[-limit:]
         return rows
 
-    @app.get("/api/logs/nights", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/logs/nights")
     @declare(CAP_VIEW_STATUS)
-    async def log_nights():
+    async def log_nights(
+            principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """``{current, nights:[{night,bytes}]}`` — which nights are on disk, so
-        the log drawer can offer more than the live tail."""
+        the log drawer can offer more than the live tail.
+
+        For a principal without view.site_derived, the CURRENT night's
+        ``bytes`` counts only its lines not flagged ``site_derived`` (spec
+        6.9, #166). The file keeps every line, so its size grows at the moment
+        a flagged line is written, and a viewer polling this view.status route
+        would read that moment off the size while every row stayed withheld.
+        The route's own ``current`` is the night asked about, so the two
+        answers cannot name different nights."""
         store = bus.night_log
-        nights = await asyncio.to_thread(store.nights) if store is not None else []
-        return {"current": night_key(), "persisted": store is not None,
+        current = night_key()
+        hide = None if principal.has(CAP_VIEW_SITE_DERIVED) else current
+        nights = (await asyncio.to_thread(store.nights,
+                                          unflagged_bytes_for=hide)
+                  if store is not None else [])
+        return {"current": current, "persisted": store is not None,
                 "nights": nights}
 
-    @app.get("/api/logs/export", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/logs/export")
     @declare(CAP_VIEW_STATUS)
-    async def log_export(night: str | None = None, format: str = "txt"):
+    async def log_export(night: str | None = None, format: str = "txt",
+                         principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """Download one night's log. ``format=txt`` (default) is the readable
         transcript; ``jsonl`` is the raw rows. The filename is built from the
-        SANITIZED night (never the raw param), like every other export route."""
+        SANITIZED night (never the raw param), like every other export route.
+
+        Both formats leave out a ``site_derived`` line for a principal without
+        view.site_derived, as ``GET /api/logs`` does (spec 6.9): the transcript
+        prints each line's time, and that time is what the flag withholds.
+        The file on disk is not changed; it keeps every line."""
         store = bus.night_log
         n = _slug(night or night_key())
         if store is None:
             raise HTTPException(404, "log persistence is disabled")
+        sees_timed = principal.has(CAP_VIEW_SITE_DERIVED)
         if format == "jsonl":
-            rows = await asyncio.to_thread(store.read, n)
+            rows = await asyncio.to_thread(
+                store.read, n, include_site_derived=sees_timed)
             body = "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows)
             media, ext = "application/x-ndjson", "jsonl"
         else:
-            body = await asyncio.to_thread(store.export_text, n)
+            body = await asyncio.to_thread(
+                store.export_text, n, include_site_derived=sees_timed)
             media, ext = "text/plain; charset=utf-8", "txt"
         if not body:
             raise HTTPException(404, f"no persisted log for {n}")

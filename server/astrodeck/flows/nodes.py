@@ -229,9 +229,13 @@ NODE_DEFS: dict[str, NodeDef] = {
         ins=(_f("arm", "arm"), _e("advance", "advance")),
         optional_ins=frozenset({"advance"}),
         # `floor` is the other half of an unattended campaign: when the active
-        # target sinks to the altitude floor the scheduler suspends THAT target's
-        # cursor — suspended, not done, so it is retried next night — and hands
-        # out the next best member.
+        # target sinks to the altitude floor the scheduler sets THAT target
+        # aside for tonight — set aside, not done: its frames stay owed, and
+        # since S2 its record in `Session.set_aside` means a restart tonight
+        # does not retry it and the next night does (#208) — and hands out the
+        # next best member. The `onFloor` value below is never reworded: saved
+        # flows store it and compile.py matches only its verb. Since S2 it is
+        # also true.
         outs=(_f("target", "best target"), _e("floor", "floor hit")),
         params={"members": "M16, M17, M8, NGC 6946",
                 "strategy": "Best available (alt × moon)", "quota": 45,

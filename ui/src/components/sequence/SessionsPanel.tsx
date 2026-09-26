@@ -15,6 +15,14 @@
 // no counts, no dates, no review, resume, update or auto-resume, because every
 // one of those reads the file that is broken, and a row of "0/0" would say the
 // session is empty when nobody knows.
+//
+// ITS DELETE CONFIRM SAYS WHAT GOES (#266). The server removes only that file
+// when a backup sits beside it, and keeps the backup and the thumbnails, since
+// the backup can be the last good copy of the ledger; the row says
+// `backup: true` then. So the confirm is `unreadableDeleteBody`'s, which names
+// the file and, when the row reports one, the backup that stays. The session
+// sentence ("Removes the session ledger and thumbnails") is a readable
+// session's only.
 import { useCallback, useEffect, useState } from "react";
 import { useStore, useWeather } from "../../store";
 import { Panel, Toggle } from "../ui";
@@ -28,8 +36,14 @@ import { ensurePlanIds } from "../../lib/ids";
 import { mergePreview, targetProgress } from "../../lib/sessions";
 import {
   deleteSession, getSession, isUnreadableRow, listSessionRows, patchSession, resumeSession,
+  unreadableDeleteBody,
 } from "../../api/sessions";
 import type { Session, SessionListRow, SessionRow } from "../../types";
+
+/** A readable session's delete confirm. Not an unreadable row's (#266): see
+ *  `unreadableDeleteBody`. */
+const SESSION_DELETE_BODY =
+  "Removes the session ledger and thumbnails. Saved FITS frames are NOT deleted. This cannot be undone.";
 
 function StatusChip({ status }: { status: SessionListRow["status"] }) {
   const cls = status === "active" ? "text-good blink"
@@ -140,11 +154,12 @@ export default function SessionsPanel() {
   };
 
   // By id and a label rather than a row, so an unreadable file (which has no
-  // name, only its id) goes through the very same confirm and route.
-  const onDelete = async (id: string, label: string) => {
+  // name, only its id) goes through the very same confirm and route. The body
+  // is the caller's, because the two remove different things (#266).
+  const onDelete = async (id: string, label: string, body: string) => {
     const ok = await confirmDialog({
       title: `Delete session "${label}"?`,
-      body: "Removes the session ledger and thumbnails. Saved FITS frames are NOT deleted. This cannot be undone.",
+      body,
       tone: "danger",
       mode: "confirm",
       confirmLabel: "Delete",
@@ -181,7 +196,7 @@ export default function SessionsPanel() {
                         border border-bad/60 text-bad hover:bg-bad/10"
                       aria-label={`Delete unreadable session ${r.name}`}
                       title={`Delete ${r.id}`}
-                      onClick={() => void onDelete(r.id, r.name)}>
+                      onClick={() => void onDelete(r.id, r.name, unreadableDeleteBody(r))}>
                       <Icon name="trash" size={14} />
                     </button>
                   )}
@@ -241,7 +256,7 @@ export default function SessionsPanel() {
                       border border-bad/60 text-bad hover:bg-bad/10"
                     aria-label={`Delete session ${r.name}`}
                     title={`Delete ${r.name}`}
-                    onClick={() => void onDelete(r.id, r.name)}>
+                    onClick={() => void onDelete(r.id, r.name, SESSION_DELETE_BODY)}>
                     <Icon name="trash" size={14} />
                   </button>
                 )}

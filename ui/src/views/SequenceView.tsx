@@ -1700,12 +1700,18 @@ export default function SequenceView() {
                   <RigChip f="max_eccentricity" />
                 </span>
               </label>
+              {/* The guard's set-aside lasts the night and no longer. Since S2
+                  it is a `Session.set_aside` record under tonight's night
+                  key, read back by a restart tonight and ignored on any other
+                  night, and the tooltip says exactly that, in the phrases the
+                  engine's own line uses. server/tests/test_set_aside_promises.py
+                  maps it to the tests that prove each half (#208). */}
               <label className="flex items-center justify-between gap-2">
                 <span className="text-dim inline-flex items-center gap-1">
                   skip step after N rejects
                   <InfoDot
                     label="About the per-step reject guard"
-                    content="Accepted-count mode only: after N consecutive rejected frames on one step, skip to the next step/target. The shortfall stays in the session ledger for another night."
+                    content="Accepted-count mode only: after N consecutive rejected frames on one step, that step is set aside for tonight and the run moves on to the next step or target. Its shortfall stays owed in the session ledger: a restart tonight does not retry it, the next night does."
                   />
                 </span>
                 <span className="inline-flex items-center gap-2">

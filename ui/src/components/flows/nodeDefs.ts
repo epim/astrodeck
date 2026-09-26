@@ -463,6 +463,10 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // WINDOW says the night comes back.
     ins: [_f("arm", "arm"), { id: "advance", label: "advance", kind: "event", optional: true }],
     outs: [_f("target", "best target"), _e("floor", "floor hit")],
+    // The `onFloor` option VALUES are stored in saved flows and compile.py
+    // matches only their verb, so they are never reworded (#208). The
+    // set-aside promise they and `desc` make is mapped to the engine tests
+    // that keep it in server/tests/test_set_aside_promises.py.
     params: {
       members: "M16, M17, M8, NGC 6946",
       strategy: "Best available (alt × moon)",
@@ -478,7 +482,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "moonSep", label: "Min moon separation", control: "text", unit: "°" },
       { key: "maxHA", label: "Max hour angle", control: "text", unit: "h" },
     ],
-    desc: "Holds candidates and hands the flow whichever scores best right now - altitude × moon separation × hour angle. 'Advance' marks the active target done and re-scores the REMAINING members; done targets are never re-selected. The scheduler watches the active target's altitude: at the floor it fires 'floor hit', suspends that target's cursor (NOT done - it retries next night), and hands out the next best.",
+    desc: "Holds candidates and hands the flow whichever scores best right now - altitude × moon separation × hour angle. 'Advance' marks the active target done and re-scores the REMAINING members; done targets are never re-selected. The scheduler watches the active target's altitude: at the floor it fires 'floor hit', sets that target aside for tonight (NOT done - a restart tonight does not retry it; the next night does), and hands out the next best.",
     // "Best available (alt × moon)" lowercased would print the "×" formula in
     // the footer and overflow a 188px card, so that one strategy gets a short
     // form and the other two are lowercased whole.

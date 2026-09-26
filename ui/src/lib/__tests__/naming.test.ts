@@ -6,7 +6,9 @@
 // build`), so this uses the same tiny inline-assert harness as eta.test.ts.
 // Run directly with a TS-aware runner:  npx tsx src/lib/__tests__/naming.test.ts
 
-import { DEFAULT_TEMPLATE, renderTemplatePreview, sanitizeComponent } from "../naming";
+import {
+  DEFAULT_TEMPLATE, NAMING_TOKENS, renderTemplatePreview, sanitizeComponent,
+} from "../naming";
 
 // ---------------------------------------------------------------- harness
 let passed = 0;
@@ -65,6 +67,51 @@ test("no path traversal from a hostile target value", () => {
     { TARGET: "../../etc", FRAMETYPE: "Light", FILTER: "", DATE: "d", TIME: "t",
       FRAMENR: "0001" });
   assert(!rendered.includes(".."), `must not contain '..': ${rendered}`);
+});
+
+// ---------------------------------------------------------------- PANEL golden vectors
+// A mosaic panel's 1-based "row-col" label (#189 U-08). Mirror the vectors in
+// server/tests/test_panel_provenance.py (test_the_panel_token_renders_the_label,
+// test_an_unset_panel_drops_out_with_no_double_underscore,
+// test_the_panel_value_is_sanitized_like_a_filter): same template, same fields,
+// same path.
+//
+// Each mutation below was run on a private scratch copy of naming.ts and this
+// file, never the shared tree. The output is verbatim except that the
+// harness's failure marker at the start of each failing line is left out.
+//
+// Mutation 'PANEL unknown to the mirror' (the PANEL entry removed from MODE)
+// went red on the render and sanitize cases, rendering empty for a panel:
+//   naming.test: 7/9 passed
+//   PANEL renders the label (matches Python golden):  expected M31/Light_M31_1-2_Ha_0001.fits, got M31/Light_M31_Ha_0001.fits
+//   PANEL value is sanitized strict, like FILTER:  expected M31/1_2_0001.fits, got M31/0001.fits
+// Mutation 'PANEL not offered' (the entry removed from NAMING_TOKENS, MODE
+// kept) went red on the token-list case alone:
+//   naming.test: 8/9 passed
+//   PANEL is an offered token: NAMING_TOKENS lacks PANEL
+// Mutation 'loose PANEL' (MODE PANEL: "loose") went red on the sanitize case
+// alone:
+//   naming.test: 8/9 passed
+//   PANEL value is sanitized strict, like FILTER:  expected M31/1_2_0001.fits, got M31/___1 2_0001.fits
+const PANEL_TEMPLATE =
+  "$$TARGET$$/$$FRAMETYPE$$_$$TARGET$$_$$PANEL$$_$$FILTER$$_$$FRAMENR$$";
+const M31 = { ...F, TARGET: "M31" };
+
+test("PANEL renders the label (matches Python golden)", () => {
+  eq(renderTemplatePreview(PANEL_TEMPLATE, { ...M31, PANEL: "1-2" }),
+     "M31/Light_M31_1-2_Ha_0001.fits");
+});
+test("an unset PANEL drops out - no double underscore (matches Python golden)", () => {
+  eq(renderTemplatePreview(PANEL_TEMPLATE, M31), "M31/Light_M31_Ha_0001.fits");
+  eq(renderTemplatePreview(PANEL_TEMPLATE, { ...M31, PANEL: "" }),
+     "M31/Light_M31_Ha_0001.fits");
+});
+test("PANEL value is sanitized strict, like FILTER", () => {
+  eq(renderTemplatePreview("$$TARGET$$/$$PANEL$$_$$FRAMENR$$", { ...M31, PANEL: "../1 2" }),
+     "M31/1_2_0001.fits");
+});
+test("PANEL is an offered token", () => {
+  assert((NAMING_TOKENS as readonly string[]).includes("PANEL"), "NAMING_TOKENS lacks PANEL");
 });
 
 // ---------------------------------------------------------------- report

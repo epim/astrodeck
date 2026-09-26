@@ -247,6 +247,9 @@ test("the horizon legend prints the SITE's number, and says when there is none",
 });
 
 test("the mosaic note says where the panels actually go", () => {
+  // WHERE they go is pinned here; the ORDER they are shot in (panel-first, #154)
+  // is pinned with every other Sky mosaic string in
+  // `hubs/sky/__tests__/mosaicCopyPanelFirst.test.ts`.
   const n = mosaicPlanNote(6, 3, 2);
   assert(/6 panels/.test(n), `the note must name the count: "${n}"`);
   assert(/3×2/.test(n), "and the grid");

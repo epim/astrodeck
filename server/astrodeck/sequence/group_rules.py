@@ -1,0 +1,986 @@
+"""The mosaic group driver's pure decisions (mosaic spec 5.1, 5.3, 5.6 steps 4
+and 7, 5.7, 1.6, Appendix A.4; U-01, U-04, #189).
+
+The S2 group driver in ``_run_scheduled`` hops a mosaic's panels in passes.
+Every decision it makes that needs no device, no clock and no engine lives
+here, so each can be pinned by a test that runs in milliseconds and names the
+mutation it catches, and so the engine's own suite can spend its simulator
+time on the wiring instead of the arithmetic:
+
+* :class:`PanelDeferred`: the one exception a hop raises when a panel cannot be
+  shot now but may be on the next pass (5.6 steps 4, 5 and 7).
+* :class:`VisitBound`: when a visit ends, at a round boundary and before each
+  frame (5.3).
+* :class:`GroupRun`: the spec's ``_GroupRun``, and what each visit's outcome
+  does to the panel and its counters (the 5.1 table), with the guide-start
+  pass rule (5.6 step 7) and the pass boundary (5.1).
+* :func:`meridian_eligibility`: which panels the one-pier-change rule lets
+  shoot (5.7).
+* the pre-flip idle of 5.7 cost 1 and Appendix A.4.
+* :func:`forward_clear_ts`: the 60 s forward scan behind ``group_ready_ts``
+  (1.6).
+* :func:`angle_decision`: what an angle verdict means for the panel (5.6 step
+  4).
+
+NO ENGINE IMPORT. The engine imports this module, never the reverse, and the
+constants the engine owns (``FLIP_FRAME_MARGIN_S``, the overhead EMA, the hop
+EMA, the plan's flip lead) arrive as arguments. A decision table that reached
+into the engine for a number would grade whatever the engine happened to hold,
+and its tests would need a hub.
+
+NOTHING HERE IS SITE DATA, AND NOTHING HERE SAYS ANY. The meridian rule takes
+hours to each panel's flip point, which are site-derived; its reasons are
+words and carry none of those numbers (6.9). The pre-flip idle scales with the
+hop and the lead, not with the site (A.4), so it may be shown to every role.
+"""
+from __future__ import annotations
+
+import math
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any, Literal
+
+#: Seconds an all-deferred pass waits before the next one (5.1 pass boundary,
+#: item 2). Long enough for the transient faults a deferral names (a cloud
+#: over the guide star, a centring solve on a thin field) to have a chance to
+#: clear, short enough that a 3x2 at the default cycle loses under a third of
+#: one pass. ``max_failed_visits`` bounds how often it can happen per panel.
+DEFER_WAIT_S = 300.0
+
+#: Seconds between re-evaluations of a panel the reachability verdict tagged
+#: ``wait`` (5.1 selection, item 1). A CADENCE, NEVER A DEADLINE: it is how
+#: often the scheduler asks again, and the idle-clock park-hold, not this
+#: number, bounds how long the mount tracks unwatched.
+REACH_RECHECK_S = 60.0
+
+#: Solar seconds per sidereal second: the sidereal day (86164.0905 s) over the
+#: solar day. An hour of RA passes the meridian in one sidereal hour, which is
+#: this much shorter than a clock hour, so an RA span converts to clock time by
+#: this factor (A.4).
+SOLAR_PER_SIDEREAL = 0.9972696
+
+
+def _finite(name: str, value: Any) -> float:
+    """``value`` as a finite float, or ``ValueError``.
+
+    Every comparison with NaN is false, so a NaN reaching any rule below would
+    pass or fail it silently, in whichever direction that comparison happened
+    to face. A non-finite argument is a caller bug and says so.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a finite number, got {value!r}") from None
+    if not math.isfinite(f):
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+    return f
+
+
+def _nonneg(name: str, value: Any) -> float:
+    f = _finite(name, value)
+    if f < 0.0:
+        raise ValueError(f"{name} must not be negative, got {value!r}")
+    return f
+
+
+def _count(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative int, got {value!r}")
+    return value
+
+
+def _visits(n: int, adjective: str = "") -> str:
+    """A count of visits in words, "3 consecutive visits" or "1 consecutive
+    visit": ``max_failed_visits`` may be 1, and an alert is read by the
+    operator."""
+    return f"{n} {adjective}visit{'' if n == 1 else 's'}"
+
+
+# ---------------------------------------------------------------- PanelDeferred
+
+#: The kind a failed guider start carries. It is the one kind a rule reads:
+#: the guide-start pass rule (5.6 step 7) asks whether every attempted panel
+#: failed with it.
+GUIDE_START = "guide_start"
+
+#: Every kind a deferral may carry. A closed set, because the guide rule
+#: matches on a spelling: a deferral spelt ``"centering"`` or ``"guide-start"``
+#: by a later author would otherwise pass as an unknown kind the rule silently
+#: ignores. The hop raises:
+#:
+#: - ``"centring"``: ``centered: False`` under ``require_centred`` (5.6 step 4)
+#: - ``"rotation"``: ``rotation_skipped`` or ``rotation_unavailable`` with
+#:   ``rotate`` set (5.6 step 4)
+#: - ``"angle"``: the sky angle is off, or was not measured, in a case that
+#:   defers (:func:`angle_decision`)
+#: - ``"pier_side"``: the side read after the goto contradicts the group's
+#:   (5.6 step 5)
+#: - ``"guide_start"``: the plan asks for guiding and the start failed or no
+#:   guider is connected (5.6 step 7)
+#: - ``"guide_lost"``: a guiding loss mid-visit that the #72 recovery bound
+#:   gave up on (5.6 step 7, the extension marked for the owner)
+DEFERRAL_KINDS = frozenset({"centring", "rotation", "angle", "pier_side",
+                            GUIDE_START, "guide_lost"})
+
+
+class PanelDeferred(Exception):
+    """This panel cannot be shot now; try it again on the next pass (5.1 table,
+    row 4).
+
+    Raised by the hop's group checks, and by a guiding loss the recovery gave
+    up on. It is NOT a :class:`StopTarget` (which sets a target aside for the
+    night) and never a safety abort: the group driver catches it per visit,
+    marks the panel visited, and counts it toward ``max_failed_visits``
+    (:meth:`GroupRun.visit_outcome`). The driver must catch it BEFORE any
+    broad ``except Exception`` on the visit path, or a deferral becomes an
+    error.
+
+    ``reason`` is the cause in words, as the alert will read it ("guiding did
+    not start"). ``last_error`` is what the failing call reported, verbatim,
+    because the set-aside alert must carry it (5.1: "names the panel, the
+    reason and the last error"). ``kind`` is one of :data:`DEFERRAL_KINDS`.
+    """
+
+    def __init__(self, reason: str, *, kind: str, last_error: str = ""):
+        if kind not in DEFERRAL_KINDS:
+            raise ValueError(
+                f"PanelDeferred kind must be one of {sorted(DEFERRAL_KINDS)}, "
+                f"got {kind!r}")
+        if not str(reason).strip():
+            raise ValueError("a PanelDeferred must say why in words")
+        self.reason = str(reason)
+        self.kind = kind
+        self.last_error = str(last_error or "")
+        super().__init__(f"{self.reason}: {self.last_error}"
+                         if self.last_error else self.reason)
+
+
+# ------------------------------------------------------------------ VisitBound
+
+@dataclass(frozen=True)
+class VisitBound:
+    """How long one visit to a panel may last (5.3). Engine-internal, never
+    persisted.
+
+    ``passes``: rounds of the panel's cycle per visit, for a group member
+    (``TargetGroup.visit_passes``). ``None`` for a bounded follower (1.6),
+    whose visit ends only at its deadline or its completion.
+
+    ``min_s``: the visit lasts at least this long, checked at round
+    boundaries (``TargetGroup.visit_min_s``). It extends a visit and never
+    shortens one: a visit that has run its minimum still owes its passes.
+
+    ``deadline_ts``: end the visit at the first frame boundary that cannot fit
+    the next frame. The panel's flip point (5.7) or ``group_ready_ts`` (1.6).
+
+    Both checks sit at step boundaries in ``_run_steps``, never inside
+    ``_run_step``, so an exposure is never cut short.
+    """
+
+    passes: int | None
+    min_s: float = 0.0
+    deadline_ts: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.passes is not None and (
+                isinstance(self.passes, bool) or not isinstance(self.passes, int)
+                or self.passes < 1):
+            raise ValueError(
+                f"passes must be None or an int of at least 1, got {self.passes!r}")
+        _nonneg("min_s", self.min_s)
+        if self.deadline_ts is not None:
+            _finite("deadline_ts", self.deadline_ts)
+
+    def ends_at_round(self, *, rounds: int, elapsed_s: float,
+                      complete: bool) -> bool:
+        """Whether the visit ends at this round boundary.
+
+        ``rounds`` is the number of rounds finished this visit; ``elapsed_s``
+        is measured from the visit's first exposure, so the hop does not eat
+        into the visit (5.3). A complete panel always ends its visit.
+
+        BOTH the passes and the minimum must be met. With either alone,
+        ``visit_min_s`` would cut a two-pass visit short after one long pass,
+        or one pass would end a visit the plan asked to last 20 minutes.
+        """
+        _count("rounds", rounds)
+        elapsed = _finite("elapsed_s", elapsed_s)
+        if complete:
+            return True
+        if self.passes is None:
+            # A follower: the round rule never ends it; its deadline does.
+            return False
+        return rounds >= self.passes and elapsed >= self.min_s
+
+    def next_frame_fits(self, *, now: float, exposure_s: float,
+                        overhead_s: float, margin_s: float) -> bool:
+        """Whether the next frame ends before the deadline (5.3).
+
+        ``now + exposure + overhead + margin <= deadline``. ``overhead_s`` is
+        the engine's per-frame overhead EMA and ``margin_s`` its
+        ``FLIP_FRAME_MARGIN_S``: the same budget ``_maybe_meridian_flip`` uses
+        for its frame window, so a visit bounded by a flip point ends where
+        the flip gate would have drawn the line. The WHOLE frame is counted,
+        because the deadline is the moment the frame must be over by, not the
+        moment it may start.
+        """
+        t = _finite("now", now)
+        need = (_nonneg("exposure_s", exposure_s)
+                + _nonneg("overhead_s", overhead_s)
+                + _nonneg("margin_s", margin_s))
+        if self.deadline_ts is None:
+            return True
+        return t + need <= self.deadline_ts
+
+
+# -------------------------------------------------------------------- GroupRun
+
+VisitActionKind = Literal["remove", "requeue", "set_aside"]
+
+
+@dataclass(frozen=True)
+class VisitAction:
+    """What :meth:`GroupRun.visit_outcome` decided for the panel.
+
+    ``remove``: the panel is complete; take it out of ``remaining`` and run its
+    ``on_target_complete`` rules. ``requeue``: move it behind the group's
+    unvisited members. ``set_aside``: skip it tonight, with a WARNING alert
+    carrying ``reason``, a ``Session.set_aside`` record and
+    ``reporter.mark_skipped``; it is retried the next night. ``reason`` is the
+    decision in words, for the log or the alert.
+    """
+
+    action: VisitActionKind
+    reason: str
+
+
+PassBoundary = Literal["set_aside_all", "defer_wait", "next_pass"]
+
+
+@dataclass(frozen=True)
+class PassEnd:
+    """What :meth:`GroupRun.close_pass` decided at a pass boundary.
+
+    ``boundary``:
+
+    - ``"guiding_action"``: every panel attempted this pass (at least two)
+      failed to start guiding. The rig is to blame, no per-panel counter
+      moved, and the plan's ``guiding_action`` decides, exactly as for a
+      single target: abort ends the run, skip sets the group aside
+      (:meth:`GroupRun.set_aside_all`), warn shoots the panels unguided. Then
+      :meth:`GroupRun.start_pass`.
+    - ``"set_aside_all"``: the group anti-spin set every live member aside
+      tonight.
+    - ``"none_live"``: no member is live any more; every one is complete or
+      set aside tonight, the last of them by a failure bound this boundary
+      counted. There is nothing to wait for and no pass to start. Without
+      this, a group whose last panel was just set aside would read as an
+      all-deferred pass and wait ``DEFER_WAIT_S`` for nothing.
+    - ``"defer_wait"``: ``await _wait_until(now + DEFER_WAIT_S)``, then
+      :meth:`GroupRun.start_pass`.
+    - ``"next_pass"``: :meth:`GroupRun.start_pass` and re-sort the group's
+      slice of ``remaining``.
+
+    ``set_aside``: ``(target_id, reason)`` for every panel set aside at this
+    boundary, each owed its own warning alert and ``Session.set_aside``
+    record. ``reason``: the boundary in words, for the log.
+    """
+
+    boundary: PassBoundary | Literal["guiding_action", "none_live"]
+    set_aside: tuple[tuple[str, str], ...]
+    reason: str
+
+
+def guide_start_pass_verdict(attempted: int, failed: int) -> Literal["rig", "panel"]:
+    """Whose fault is a pass's failed guide starts (5.6 step 7)?
+
+    ``attempted`` counts the panels whose hop reached the guider start this
+    pass, and ``failed`` those whose start failed. At least two attempted and
+    every one failed is ``"rig"``: a guider that fails on every panel is the
+    rig's fault, not a panel's, the same reasoning as "when every member
+    rejects, the sky is to blame" (5.1). Anything else is ``"panel"``: one
+    failure out of one attempt proves nothing about the guider, and a failure
+    beside a start that worked is that panel's.
+
+    WHY IT MATTERS: charging a dead guider to the panels costs three passes of
+    hops (about 109 min on a 3x2) before the panel rule sets them all aside;
+    charging it to the rig costs one pass (about 33 min), after which
+    ``guiding_action`` decides.
+    """
+    _count("attempted", attempted)
+    _count("failed", failed)
+    if failed > attempted:
+        raise ValueError(
+            f"failed ({failed}) cannot exceed attempted ({attempted})")
+    if attempted >= 2 and failed == attempted:
+        return "rig"
+    return "panel"
+
+
+def pass_boundary(exposures: int, deferrals: int) -> PassBoundary:
+    """What follows the end of a pass (5.1 pass boundary).
+
+    - No exposures and no deferrals: ``"set_aside_all"``. A full pass shot
+      nothing and nothing said why it could not, so another pass would spin.
+    - No exposures, some deferrals: ``"defer_wait"`` (``DEFER_WAIT_S``), then a
+      new pass. ``max_failed_visits`` bounds this per panel.
+    - Otherwise ``"next_pass"``.
+
+    EXPOSURES, accepted plus rejected, never accepted frames: a clouded pass of
+    rejects is a pass that shot, and ending the mosaic on it would hand one
+    cloud the rest of the night. The reject guards own clouds.
+    """
+    _count("exposures", exposures)
+    _count("deferrals", deferrals)
+    if exposures == 0 and deferrals == 0:
+        return "set_aside_all"
+    if exposures == 0:
+        return "defer_wait"
+    return "next_pass"
+
+
+class GroupRun:
+    """The group driver's per-group state for one run: the spec's
+    ``_GroupRun`` (5.1). Never persisted; a resume recomputes it from the
+    ledger, except ``set_aside``, which the engine also writes to
+    ``Session.set_aside`` so a same-night crash-resume does not retry those
+    panels.
+
+    ``members`` maps each panel's target id to its label ("1-2"), in the
+    group's order; the label is what every sentence names.
+
+    Fields (the spec's, plus the bookkeeping they need):
+
+    - ``pass_no``, ``visited``: the pass and the panels visited in it.
+    - ``exposures_this_pass``, ``deferred_this_pass``: the two counts the pass
+      boundary reads. The spec keeps ``exposures_at_pass_start`` and diffs the
+      ledger; summing the visits' own counts is the same number without a
+      ledger walk.
+    - ``failed``, ``reject_visits``: the two consecutive-failure counters.
+    - ``set_aside``: target id to reason, for tonight.
+    - ``flipped``, ``acquired``, ``angle_verified``: set by the engine (5.7,
+      5.6 steps 4 and 6).
+    """
+
+    def __init__(self, members: Mapping[str, str], *, max_failed_visits: int):
+        if not members:
+            raise ValueError("a group needs at least one member")
+        if (isinstance(max_failed_visits, bool)
+                or not isinstance(max_failed_visits, int)
+                or max_failed_visits < 1):
+            raise ValueError(
+                f"max_failed_visits must be an int of at least 1, "
+                f"got {max_failed_visits!r}")
+        self.members: dict[str, str] = {str(k): str(v) for k, v in members.items()}
+        self.max_failed_visits = max_failed_visits
+        self.pass_no = 1
+        self.visited: set[str] = set()
+        self.exposures_this_pass = 0
+        self.deferred_this_pass = 0
+        self.failed: dict[str, int] = {p: 0 for p in self.members}
+        self.reject_visits: dict[str, int] = {p: 0 for p in self.members}
+        self.set_aside: dict[str, str] = {}
+        self.completed: set[str] = set()
+        self.flipped = False
+        self.acquired = False
+        self.angle_verified = False
+        # The reject rule's window, "since this panel's previous visit", on a
+        # visit counter rather than the clock: two visits can share a clock
+        # second on a fake clock, and the order of visits is what the rule
+        # is about.
+        self._seq = 0
+        self._last_visit: dict[str, int] = {}
+        self._last_accept: dict[str, int] = {}
+        # The kinds in each panel's current failure streak, so the set-aside
+        # sentence does not claim three failures of the last one's kind.
+        self._streak_kinds: dict[str, set[str]] = {p: set() for p in self.members}
+        # The guide-start pass rule's ledger for the current pass.
+        self.guide_attempts = 0
+        self.guide_failures = 0
+        self._held: list[tuple[str, PanelDeferred]] = []
+
+    # -- membership
+
+    def is_live(self, panel: str) -> bool:
+        """Still in play tonight: a member, not complete, not set aside."""
+        return (panel in self.members and panel not in self.completed
+                and panel not in self.set_aside)
+
+    def live(self) -> list[str]:
+        """The live members, in the group's order."""
+        return [p for p in self.members if self.is_live(p)]
+
+    def set_aside_panel(self, panel: str, reason: str) -> None:
+        """Set one panel aside tonight for a cause the engine decided: its
+        floor under ``on_floor = advance``, a pier-side change with flips off
+        (5.1 selection, item 1)."""
+        self._check_live(panel)
+        self.set_aside[panel] = str(reason)
+
+    def set_aside_all(self, reason: str) -> list[str]:
+        """Set every live member aside tonight (``guiding_action`` skip after a
+        rig-fault pass, a fixed camera's angle beyond tolerance). Returns the
+        panels it set aside."""
+        panels = self.live()
+        for p in panels:
+            self.set_aside[p] = str(reason)
+        return panels
+
+    def _check_live(self, panel: str) -> None:
+        if panel not in self.members:
+            raise ValueError(f"{panel!r} is not a member of this group")
+        if not self.is_live(panel):
+            raise ValueError(f"{self.members[panel]} is not live: it is "
+                             f"complete or set aside tonight")
+
+    # -- one visit
+
+    def visit_outcome(self, panel: str, *, complete: bool, exposures: int,
+                      accepted: int, deferred: PanelDeferred | None = None,
+                      guide_started: bool = False) -> VisitAction:
+        """Apply one visit's outcome to the panel (the 5.1 table).
+
+        ``complete``: every step of the panel met its count. ``exposures``:
+        frames taken this visit, accepted plus rejected. ``accepted``: frames
+        accepted this visit. ``deferred``: the ``PanelDeferred`` that ended the
+        visit, if one did. ``guide_started``: the plan asks for guiding and
+        this hop's guider start succeeded (the guide rule counts it as an
+        attempt that worked).
+
+        - complete: remove it.
+        - at least one accepted frame: requeue, and reset ``failed`` and
+          ``reject_visits``. The bounds are on CONSECUTIVE failures; a panel
+          that banks a frame has shown it can be shot tonight.
+        - exposures taken, none accepted, while another live member accepted
+          a frame since this panel's previous visit: requeue and add one to
+          ``reject_visits``; at ``max_failed_visits`` set it aside. When
+          every member rejects, the sky is to blame and nothing moves: the
+          night guard and the cloud hold own that case.
+        - ``PanelDeferred``: mark it visited and add one to ``failed`` and to
+          ``deferred_this_pass``; at ``max_failed_visits`` set it aside with a
+          reason naming the panel, the cause and the last error. A failed
+          guide start is counted when the pass closes instead, because only
+          the whole pass says whether it was the panel's fault or the rig's
+          (:meth:`close_pass`). A deferral after banked frames (a guiding loss
+          mid-visit) resets first and then counts, so it starts a new streak
+          of one.
+
+        StopTarget, JumpTarget, SafetyAbort, NightQualityStop and cancellation
+        never reach here: they are handled or propagate as they do today.
+        """
+        self._check_live(panel)
+        exposures = _count("exposures", exposures)
+        accepted = _count("accepted", accepted)
+        if accepted > exposures:
+            raise ValueError(
+                f"accepted ({accepted}) cannot exceed exposures ({exposures})")
+        guide_failed = deferred is not None and deferred.kind == GUIDE_START
+        if guide_failed and guide_started:
+            raise ValueError("a guide start cannot both succeed and fail")
+        label = self.members[panel]
+
+        self._seq += 1
+        previous = self._last_visit.get(panel, 0)
+        self._last_visit[panel] = self._seq
+        self.exposures_this_pass += exposures
+        if accepted > 0:
+            self._last_accept[panel] = self._seq
+        if guide_failed:
+            self.guide_attempts += 1
+            self.guide_failures += 1
+        elif guide_started:
+            self.guide_attempts += 1
+
+        if complete:
+            # Completion wins over a deferral raised after the last frame: the
+            # panel owes nothing, so there is nothing to retry.
+            self.completed.add(panel)
+            return VisitAction("remove", f"panel {label} complete")
+
+        self.visited.add(panel)
+        if accepted > 0:
+            self.failed[panel] = 0
+            self.reject_visits[panel] = 0
+            self._streak_kinds[panel] = set()
+
+        if deferred is not None:
+            self.deferred_this_pass += 1
+            if guide_failed:
+                self._held.append((panel, deferred))
+                return VisitAction(
+                    "requeue",
+                    f"{self._deferral_words(label, deferred)}; retried on the "
+                    f"next pass (counted when the pass ends: a guider that "
+                    f"fails on every panel is the rig's fault)")
+            return self._count_failure(panel, deferred)
+
+        if accepted > 0:
+            return VisitAction(
+                "requeue", f"{label}: {accepted} of {exposures} accepted this visit")
+
+        if exposures > 0:
+            if self._another_live_member_accepted_since(panel, previous):
+                self.reject_visits[panel] += 1
+                n = self.reject_visits[panel]
+                if n >= self.max_failed_visits:
+                    reason = (f"{label} rejected every frame for {_visits(n)} "
+                              f"while the other panels were accepted")
+                    self.set_aside[panel] = reason
+                    return VisitAction("set_aside", reason)
+                return VisitAction(
+                    "requeue",
+                    f"{label} rejected every frame this visit while another "
+                    f"panel was accepted ({n} of {self.max_failed_visits})")
+            return VisitAction(
+                "requeue",
+                f"{label} rejected every frame, and no other panel was "
+                f"accepted since its last visit: the sky, not the panel")
+
+        return VisitAction("requeue", f"{label} took no exposures this visit")
+
+    def _another_live_member_accepted_since(self, panel: str,
+                                            previous: int) -> bool:
+        return any(
+            q != panel and self.is_live(q) and self._last_accept.get(q, 0) > previous
+            for q in self.members)
+
+    @staticmethod
+    def _deferral_words(label: str, deferred: PanelDeferred) -> str:
+        words = f"{deferred.reason} on {label}"
+        return f"{words}: {deferred.last_error}" if deferred.last_error else words
+
+    def _count_failure(self, panel: str, deferred: PanelDeferred) -> VisitAction:
+        label = self.members[panel]
+        self.failed[panel] += 1
+        self._streak_kinds[panel].add(deferred.kind)
+        n = self.failed[panel]
+        if n < self.max_failed_visits:
+            return VisitAction(
+                "requeue",
+                f"{self._deferral_words(label, deferred)}; retried on the next "
+                f"pass ({n} of {self.max_failed_visits} consecutive)")
+        tail = f": {deferred.last_error}" if deferred.last_error else ""
+        if len(self._streak_kinds[panel]) == 1:
+            reason = (f"{deferred.reason} on {label} on {_visits(n, 'consecutive ')}"
+                      f"{tail}")
+        else:
+            reason = (f"{label} was deferred on {_visits(n, 'consecutive ')}, "
+                      f"the last because {deferred.reason}{tail}")
+        self.set_aside[panel] = reason
+        return VisitAction("set_aside", reason)
+
+    # -- the pass
+
+    def close_pass(self) -> PassEnd:
+        """Decide the pass boundary: the guide-start rule first, then the
+        held guide deferrals, then :func:`pass_boundary`.
+
+        Call it when no unvisited member is eligible but a visited one is
+        (5.1). The guide rule comes first because a rig-fault pass must move
+        no counter, and a rig-fault pass is exactly the one whose zero
+        exposures and all-deferred visits would otherwise read as a deferral
+        wait. Nothing is cleared here; :meth:`start_pass` begins the next
+        pass.
+        """
+        held, self._held = self._held, []
+        attempts, failures = self.guide_attempts, self.guide_failures
+        if guide_start_pass_verdict(attempts, failures) == "rig":
+            return PassEnd(
+                "guiding_action", (),
+                f"guiding did not start on any of the {attempts} panels tried "
+                f"this pass: the guider's fault, not a panel's. No panel's "
+                f"failure count moved; the plan's guiding_action decides")
+
+        set_aside: list[tuple[str, str]] = []
+        for panel, deferred in held:
+            if not self.is_live(panel):
+                continue
+            act = self._count_failure(panel, deferred)
+            if act.action == "set_aside":
+                set_aside.append((panel, act.reason))
+
+        live = self.live()
+        if not live:
+            return PassEnd("none_live", tuple(set_aside),
+                           "no panel is left to shoot tonight: every one is "
+                           "complete or set aside")
+        boundary = pass_boundary(self.exposures_this_pass, self.deferred_this_pass)
+        if boundary == "set_aside_all":
+            reason = (f"a full pass over {len(live)} panels took no exposures; "
+                      f"setting the mosaic aside for tonight")
+            for p in live:
+                self.set_aside[p] = reason
+                set_aside.append((p, reason))
+            return PassEnd(boundary, tuple(set_aside), reason)
+        if boundary == "defer_wait":
+            return PassEnd(
+                boundary, tuple(set_aside),
+                f"pass {self.pass_no} took no exposures and deferred "
+                f"{self.deferred_this_pass} visits; waiting "
+                f"{DEFER_WAIT_S:.0f} s before the next pass")
+        return PassEnd(
+            boundary, tuple(set_aside),
+            f"pass {self.pass_no} ended with {self.exposures_this_pass} "
+            f"exposures and {self.deferred_this_pass} deferrals")
+
+    def start_pass(self) -> None:
+        """Begin the next pass: clear ``visited`` and the pass's counts.
+
+        Refuses while guide deferrals are held, because that means the pass
+        was never closed and those failures would be dropped uncounted.
+        """
+        if self._held:
+            raise RuntimeError(
+                "close_pass() first: this pass still holds guide-start "
+                "deferrals that only the pass boundary can count")
+        self.pass_no += 1
+        self.visited.clear()
+        self.exposures_this_pass = 0
+        self.deferred_this_pass = 0
+        self.guide_attempts = 0
+        self.guide_failures = 0
+
+
+# ------------------------------------------------------- meridian (5.7), hours
+
+@dataclass(frozen=True)
+class PanelMeridian:
+    """One panel's facts for the meridian rule, in hours.
+
+    ``h_p``: ``schedule.hours_to_meridian_flip(panel.ra_hours, lon)``, positive
+    east of the meridian and at or below 0 after the crossing. ``f_h``: that
+    panel's first owed frame, exposure plus the per-frame overhead EMA plus
+    ``FLIP_FRAME_MARGIN_S``. ``flip_can_be_skipped``: what
+    ``schedule.flip_can_be_skipped(dec, lat, side)`` says for the panel.
+    """
+
+    h_p: float
+    f_h: float
+    flip_can_be_skipped: bool = False
+
+
+@dataclass(frozen=True)
+class MeridianVerdict:
+    """The meridian rule's answer for one panel.
+
+    ``eligible``: the rule lets it shoot now. ``deadline_h``: hours from now
+    to its flip point, the visit's ``deadline_ts`` (5.3); ``None`` when no
+    flip point bounds the visit. ``wake_h``: hours from now until a waiting
+    panel is worth asking again (its crossing); ``None`` when eligible.
+    ``reason``: words only, never the hours (6.9).
+    """
+
+    eligible: bool
+    deadline_h: float | None
+    wake_h: float | None
+    reason: str
+
+
+def meridian_eligibility(panels: Mapping[str, PanelMeridian], *, lead_h: float,
+                         hop_h: float, flipped: bool,
+                         meridian_flip: bool,
+                         crossed_h: float = 0.0) -> dict[str, MeridianVerdict]:
+    """At most one pier change per group per night: the 5.7 hysteresis table.
+
+    ``lead_h`` is the PLAN's flip lead in hours (``_plan_flip_lead_s() /
+    3600``), NEVER the learned one. ``_flip_lead_s`` returns 0 for a mount that
+    cannot flip early, which is right for when to attempt a flip and wrong as a
+    margin: the AM5 stops tracking 4.7 to 7.6 min before transit, so a
+    pre-flip visit measured against a zero lead runs into the mount's own
+    limit. ``hop_h`` is the hop EMA (150 s until measured). ``flipped``: the
+    group changed pier side tonight. ``meridian_flip``: the plan's flag.
+
+    Not flipped:
+
+    - a pre-flip panel (``h_p > 0``) with room for a hop and one frame before
+      its flip point, ``h_p - lead_h >= hop_h + f_h``, is eligible, with
+      ``deadline_h = h_p - lead_h``: the visit ends at a frame boundary
+      before the flip point.
+    - a pre-flip panel without that room waits, waking at its crossing
+      (``h_p``).
+    - a post-meridian panel (``h_p <= 0``) is eligible only while no pre-flip
+      panel is. Shooting it first would flip the group, and going back to a
+      pre-flip panel would be a second pier change.
+
+    Flipped: only post-meridian panels are eligible; every other panel waits
+    for its crossing.
+
+    The rule is off for a panel whose flip ``flip_can_be_skipped``, and for
+    every panel when ``meridian_flip`` is off: eligible, with no deadline.
+    Such a panel does not hold the post-meridian panels back, since it never
+    changes pier side.
+
+    ``crossed_h`` (T18) is how far past its crossing a panel must be before
+    it counts as past the meridian (``h_p <= -crossed_h``); in the band just
+    past the crossing it waits until it leaves it, and a panel with no room
+    before its flip point wakes there too. A hop right AT the crossing is a
+    coin toss for the mount's side: the mount judges the hour angle with its
+    own clock, longitude and pointing model, and the simulator's goto alone
+    lands 7 s of RA off until it is synced, enough to put the target back
+    east and the tube on the pre-flip side, which the hop's side check then
+    defers. The default 0 is the rule as the spec writes it.
+
+    THE HOURS ARE THE COUNTDOWN'S HOURS. ``h_p`` counts hour angle, which runs
+    0.27% faster than the clock, and ``deadline_h`` and ``wake_h`` are hours
+    of that countdown. A caller that turns ``deadline_h`` into a clock time
+    converts it (``* SOLAR_PER_SIDEREAL``; `SequenceEngine._meridian_now`
+    does). Taken as clock hours without conversion, as T18 first did, the
+    deadline drifts past the flip gate's line: the frame loop's gate
+    re-reads the countdown at every frame (``ttf_h * 3600 - lead_s``), so the
+    two part by 0.27% of the visit, under 10 s an hour, and at some phases
+    the gate, not the deadline, ended a long visit with a flip attempt and a
+    frame past the flip point (T18 verifier). A wake taken as clock hours
+    lands late by the same fraction, the safe side of a crossing.
+    """
+    lead = _nonneg("lead_h", lead_h)
+    hop = _nonneg("hop_h", hop_h)
+    crossed = _nonneg("crossed_h", crossed_h)
+    facts = {k: (_finite(f"h_p of {k}", v.h_p), _nonneg(f"f_h of {k}", v.f_h),
+                 bool(v.flip_can_be_skipped))
+             for k, v in panels.items()}
+
+    out: dict[str, MeridianVerdict] = {}
+    post: list[str] = []
+    # When each pre-flip-eligible panel runs out of room, for the wake of a
+    # post-meridian panel it holds back.
+    pre_room_left: list[float] = []
+    for k, (h_p, f_h, skippable) in facts.items():
+        if not meridian_flip or skippable:
+            out[k] = MeridianVerdict(
+                True, None, None,
+                "the meridian rule is off" + (
+                    " for this panel: its flip can be skipped" if skippable
+                    and meridian_flip else ": meridian flips are off"))
+            continue
+        if flipped:
+            if h_p <= -crossed:
+                out[k] = MeridianVerdict(
+                    True, None, None,
+                    "past the meridian, on the side the group flipped to")
+            else:
+                out[k] = MeridianVerdict(
+                    False, None, h_p + crossed,
+                    "the group has flipped; this panel waits for its meridian "
+                    "crossing, since going back would be a second pier change")
+            continue
+        if h_p <= -crossed:
+            post.append(k)
+            continue
+        if h_p <= 0.0:
+            out[k] = MeridianVerdict(
+                False, None, h_p + crossed,
+                "just past its meridian crossing; waiting until the mount's "
+                "side there is not in doubt")
+            continue
+        room = h_p - lead
+        if room >= hop + f_h:
+            out[k] = MeridianVerdict(
+                True, room, None,
+                "before the meridian with room for a hop and a frame; the "
+                "visit ends before its flip point")
+            pre_room_left.append(room - hop - f_h)
+        else:
+            out[k] = MeridianVerdict(
+                False, None, h_p + crossed,
+                "too little room before its flip point for a hop and one "
+                "frame; waiting for its meridian crossing")
+
+    for k in post:
+        if pre_room_left:
+            out[k] = MeridianVerdict(
+                False, None, max(pre_room_left),
+                "past the meridian, held while a panel before the meridian "
+                "can still shoot, so the group changes pier side once")
+        else:
+            out[k] = MeridianVerdict(
+                True, None, None,
+                "past the meridian, and no panel before the meridian can "
+                "shoot")
+    return {k: out[k] for k in facts}
+
+
+# ------------------------------------------------ the pre-flip idle (5.7, A.4)
+
+def ra_span_sidereal_h(ra_hours: Iterable[float]) -> float:
+    """The RA span of the panel centres, in hours of RA (sidereal hours).
+
+    The shortest arc of the 24 h circle that holds every centre: a mosaic at
+    RA 0 h has centres either side of 24 h, and ``max - min`` would call a
+    12-minute grid 23.8 hours wide.
+    """
+    ras = sorted(_finite("ra_hours", r) % 24.0 for r in ra_hours)
+    if not ras:
+        raise ValueError("ra_span_sidereal_h needs at least one RA")
+    # The largest gap between neighbours, the wrap included, is the part of
+    # the circle the grid does not cover.
+    gaps = [b - a for a, b in zip(ras, ras[1:])]
+    gaps.append(ras[0] + 24.0 - ras[-1])
+    return 24.0 - max(gaps)
+
+
+def ra_span_solar_h(ra_hours: Iterable[float]) -> float:
+    """The RA span of the panel centres in clock hours: how long the meridian
+    takes to sweep from the first centre to the last (A.4)."""
+    return ra_span_sidereal_h(ra_hours) * SOLAR_PER_SIDEREAL
+
+
+def whole_visit_s(*, passes: int, pass_shutter_s: float, frames_per_pass: int,
+                  overhead_s: float, hop_s: float) -> float:
+    """One visit that must fit whole, in seconds (A.4): ``passes x (shutter +
+    frames x overhead) + hop``. On the shipped default cycle (780 s of
+    shutter, 7 frames) at 10 s of overhead and a 150 s hop: 1000 s for one
+    pass."""
+    if isinstance(passes, bool) or not isinstance(passes, int) or passes < 1:
+        raise ValueError(f"passes must be an int of at least 1, got {passes!r}")
+    frames = _count("frames_per_pass", frames_per_pass)
+    return (passes * (_nonneg("pass_shutter_s", pass_shutter_s)
+                      + frames * _nonneg("overhead_s", overhead_s))
+            + _nonneg("hop_s", hop_s))
+
+
+def preflip_idle_cut_h(*, lead_h: float, hop_h: float, f_h: float,
+                       span_h: float) -> float:
+    """The pre-flip idle with cut visits (5.7 cost 1), in hours:
+    ``max(0, lead + hop + f - span)``.
+
+    Nothing in the group is eligible from the moment the last pre-flip panel
+    runs out of room (a hop and one frame before its flip point) until the
+    first panel crosses; the panels' spread in RA covers part of that gap.
+    ``span_h`` is :func:`ra_span_solar_h` of the live panel centres.
+    """
+    return max(0.0, _nonneg("lead_h", lead_h) + _nonneg("hop_h", hop_h)
+               + _nonneg("f_h", f_h) - _nonneg("span_h", span_h))
+
+
+def preflip_idle_whole_h(*, visit_h: float, lead_h: float,
+                         span_h: float) -> float:
+    """The pre-flip idle if a visit had to fit whole (no deadline), in hours:
+    ``max(0, visit + lead - span)`` (A.4). What the deadline saves."""
+    return max(0.0, _nonneg("visit_h", visit_h) + _nonneg("lead_h", lead_h)
+               - _nonneg("span_h", span_h))
+
+
+# ----------------------------------------------- forward_clear_ts (1.6), 60 s
+
+def forward_clear_ts(clear: Callable[[float], bool], now: float, horizon_s: float,
+                     step_s: float = REACH_RECHECK_S) -> float | None:
+    """The first instant on a ``step_s`` grid from ``now`` at which
+    ``clear(t)`` is true, or ``None`` if none is within ``horizon_s``.
+
+    ``group_ready_ts`` (1.6) takes, for a panel blocked by its floor or the
+    mask, the projected time it clears, scanned in 60 s steps over the same
+    predicate as ``_mount_floor_verdict``, in the shape of
+    ``schedule._time_to_gate``. ``now`` itself is asked first, so a panel
+    clear now answers ``now``. A panel with no clearing time tonight answers
+    ``None`` and does not bound ``group_ready_ts``.
+
+    A BLOCKED PANEL NEVER ANSWERS ``now``. That would make ``group_ready_ts``
+    the present, hand a bounded follower a deadline it has already reached,
+    and turn the wait into a hot loop of selections that shoot nothing.
+    """
+    t0 = _finite("now", now)
+    horizon = _nonneg("horizon_s", horizon_s)
+    step = _finite("step_s", step_s)
+    if step <= 0.0:
+        raise ValueError(f"step_s must be positive, got {step_s!r}")
+    # A tiny tolerance so a horizon that is a whole number of steps includes
+    # its last step despite float division.
+    steps = int(horizon / step + 1e-9)
+    for i in range(steps + 1):
+        t = t0 + i * step
+        if clear(t):
+            return t
+    return None
+
+
+# ------------------------------------------------ angle_decision (5.6 step 4)
+
+AngleAction = Literal["shoot", "shoot_logged", "warn", "defer", "set_group_aside"]
+
+
+@dataclass(frozen=True)
+class AngleDecision:
+    """What an angle verdict means for this panel.
+
+    ``shoot``: carry on. ``shoot_logged``: carry on, and log ``why``.
+    ``warn``: carry on with a warning alert. ``defer``: raise
+    ``PanelDeferred(kind="angle")``. ``set_group_aside``: set the whole group
+    aside tonight with a warning alert that carries the verdict's numbers.
+    ``why``: the policy in words; the verdict's own reason carries the
+    angles, and the engine joins the two.
+    """
+
+    action: AngleAction
+    why: str
+
+
+def angle_decision(kind: str, *, rotate: bool, angle_verified: bool,
+                   rotator_evidence: bool, shoot_anyway: bool,
+                   single_panel: bool) -> AngleDecision:
+    """Every 5.6 step 4 case, from ``angle_check.angle_verdict``'s ``kind``.
+
+    ``rotate``: ``TargetGroup.rotate``, a rotator turns the camera to the
+    layout angle (False: the camera is fixed). ``angle_verified``:
+    ``GroupRun.angle_verified``, a hop earlier tonight measured this fixed
+    camera within tolerance. ``rotator_evidence``: rotate mode with a
+    calibrated rotator that reports its target position and no
+    ``rotation_skipped``; meaningless for a fixed camera, which has no rotator
+    to read. ``shoot_anyway``: the group's "Shoot anyway". ``single_panel``: a
+    1x1 block with a planned angle.
+
+    - ``ok``: shoot.
+    - ``off``: a fixed camera sets the group aside at once, because it cannot
+      fix itself; a rotator defers the panel.
+    - ``no_measurement``, which is neither ``ok`` nor ``off``: a fixed camera
+      verified tonight shoots and logs, since it cannot turn between hops; one
+      never verified defers, because tiles are never laid blind; a rotator
+      whose own read is the evidence shoots with a warning; any other rotator
+      defers.
+    - "Shoot anyway" turns every refusal into a warning, and a 1x1 block only
+      ever warns.
+    """
+    if kind not in ("ok", "off", "no_measurement"):
+        raise ValueError(f"unknown angle verdict kind {kind!r}")
+    if kind == "ok":
+        return AngleDecision("shoot", "the camera is at the mosaic's angle")
+
+    refusal: AngleDecision
+    if kind == "off":
+        if rotate:
+            refusal = AngleDecision(
+                "defer", "the rotator did not bring the camera to the "
+                         "mosaic's angle; the panel is retried on the next "
+                         "pass")
+        else:
+            refusal = AngleDecision(
+                "set_group_aside", "a fixed camera cannot turn itself: turn "
+                                   "the camera or re-frame at the measured "
+                                   "angle")
+    elif not rotate:
+        if angle_verified:
+            return AngleDecision(
+                "shoot_logged", "angle not re-measured on this hop; the "
+                                "camera is fixed and was measured at the "
+                                "mosaic's angle earlier tonight")
+        refusal = AngleDecision(
+            "defer", "angle not measured on this hop, and this fixed camera "
+                     "has not been measured tonight: tiles are never laid "
+                     "blind")
+    elif rotator_evidence:
+        return AngleDecision(
+            "warn", "angle not measured on this hop; shooting on the "
+                    "calibrated rotator's own report that it reached the "
+                    "mosaic's angle")
+    else:
+        refusal = AngleDecision(
+            "defer", "angle not measured on this hop, and the rotator gave "
+                     "no evidence that it reached the mosaic's angle")
+
+    if shoot_anyway:
+        return AngleDecision("warn", f"{refusal.why} (shooting anyway, as "
+                                     f"this mosaic asks)")
+    if single_panel:
+        return AngleDecision("warn", f"{refusal.why} (a single panel has no "
+                                     f"neighbours to leave a hole beside, so "
+                                     f"it only warns)")
+    return refusal

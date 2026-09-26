@@ -843,12 +843,19 @@ def brief(graph: FlowGraph | None) -> str:
     # condition also fired on a WIRED floor port, so a graph that wired the port
     # and then chose "Keep imaging" got this paragraph promising the opposite of
     # what its own dial said - and for a while nothing implemented either.
+    #
+    # WORDED AS THE ENGINE'S FLOOR LINE IS (#208, #189 S2). Since S2 the floor
+    # advance is a `Session.set_aside` record under tonight's night key, which
+    # a restart or an auto-resume tonight reads back and a run on any other
+    # night ignores. Before S2 this sentence promised more than engine memory
+    # kept. test_set_aside_promises.py maps it to the tests that prove each
+    # half.
     if pool is not None and str(pool.params.get("onFloor") or "").strip() \
             .lower().startswith("advance"):
         seg.append(f"If the active target sinks to the "
-                   f"{pool.params.get('minAlt')}° floor, it is set aside - "
-                   f"resumed the next night, not retried tonight - and the next "
-                   f"best takes over.")
+                   f"{pool.params.get('minAlt')}° floor, it is set aside for "
+                   f"tonight - a restart tonight does not retry it, the next "
+                   f"night does - and the next best takes over.")
 
     if cw is not None:
         t = (f"If cloud cover above {cw.params.get('threshold')}% is detected, "

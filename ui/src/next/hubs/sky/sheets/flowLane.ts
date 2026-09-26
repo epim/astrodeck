@@ -101,6 +101,13 @@ export function parseMosaicParam(raw: string): { cols: number; rows: number } | 
  * mosaic mechanism is N plan targets sharing a `mosaic_group`, so the panels are
  * real and the STAGE is not - which is what the footnote says, on the card,
  * rather than in a release note nobody reads.
+ *
+ * The summary names the ORDER, because that is the claim an operator plans a
+ * night around. It used to end "cycle panels each pass" (#154), and nothing
+ * cycles: the engine shoots each plan target to completion before the next, so
+ * the panels go one at a time. It is the first thing after the count and the
+ * overlap so the ellipsis on a phone cuts the tail, not the order; what a short
+ * night costs rides in the footnote, which wraps.
  */
 export function withMosaicCard(
   cards: LaneCard[],
@@ -112,7 +119,7 @@ export function withMosaicCard(
   const card: LaneCard = {
     id: "mosaic",
     label: `MOSAIC ${cols}×${rows}`,
-    sum: `${panels} panels · 15% overlap · centre per panel · cycle panels each pass`,
+    sum: `${panels} panels · 15% overlap · one panel at a time, each to completion`,
     colorVar: "--accent-dim",
     footnote: MOSAIC_FOOTNOTE,
   };

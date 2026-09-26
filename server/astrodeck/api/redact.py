@@ -20,7 +20,8 @@ other event's precise-site keys are gated on view.site_precise.
 
 These helpers were originally nested closures inside ``api.app.create_app``.
 They are extracted here -- module-level and IMPORT-LIGHT (only ``..auth`` for
-``Principal``/``CAP_VIEW_SITE_PRECISE``/``CAP_VIEW_WEATHER`` + stdlib) -- so
+``Principal``/``CAP_VIEW_SITE_PRECISE``/``CAP_VIEW_WEATHER``, ``..events`` for
+the one ``site_derived`` predicate (a stdlib-only module) + stdlib) -- so
 BOTH the on-LAN /ws handler (``api.app``) AND the relay-tunneled /ws handler
 (``remote.relay_client``) share ONE implementation. ``api.app`` already imports
 ``remote.relay_client``, so relay_client importing the helpers back out of
@@ -31,6 +32,7 @@ from __future__ import annotations
 from ..auth.capabilities import (CAP_CONFIG_BACKEND, CAP_VIEW_SITE_DERIVED,
                                  CAP_VIEW_SITE_PRECISE, CAP_VIEW_WEATHER)
 from ..auth.principal import Principal
+from ..events import is_site_derived
 
 # How often the long-lived /ws socket RE-authenticates its principal (seconds).
 # Auth is otherwise only checked at accept, so a revoked jti (POST
@@ -454,6 +456,103 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
     return payload
 
 
+# ------------------------------------------- lines and state TIMED by the site
+# The other site-derived channel, and no stripper above can close it, because
+# it is not in any value. It is in WHEN something is said (spec 6.9, #166). A
+# line logged as a mosaic panel is acquired at its computed meridian crossing
+# timestamps the transit of a known RA. That is the local sidereal time, and
+# the LST at a known instant is the longitude: the arithmetic that made
+# ``hours_to_flip`` a longitude above, done by the reader with a clock instead
+# of a field. The words can be as clean as "1-3 waits for the meridian" and the
+# line still carries the site in its ``ts``.
+#
+# So such a line is FLAGGED where it is logged (``bus.log(...,
+# site_derived=True)``, which sets ``data.site_derived``), and every seam that
+# serves a line drops it whole for a principal without ``view.site_derived``:
+# the ring (``_redact_log_rows_for``), the night read and both exports (the
+# night reader's ``include_site_derived``), and both WS lanes
+# (``_redact_ws_event``). Dropped, not reworded: an edited line still arrives
+# at the same moment. The night log FILE keeps it; the file is not a serving
+# seam, and the morning-after record needs every line.
+
+
+def _redact_log_rows_for(rows: list, principal: Principal | None) -> list:
+    """Log rows (``Event.to_json()`` dicts from the ring) with every row
+    flagged ``site_derived`` removed for a principal lacking
+    ``view.site_derived``. A holder gets ``rows`` itself.
+
+    The caller applies ``level`` and ``limit`` AFTER this, never before. A
+    viewer polling ``?limit=1`` over a list sliced first would see the answer
+    go empty at the moment a flagged line lands, and that moment is the thing
+    withheld."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return rows
+    return [r for r in rows if not is_site_derived(r)]
+
+
+#: The two ``state.group`` fields that name WHICH panel and pass a mosaic group
+#: is on (spec 5.10). While the group waits on the meridian rule, both are
+#: timed by the crossing: the panel held for the meridian, and then the hop
+#: that ends the wait, change at the moment a known RA transits, and a viewer
+#: watching ``panel`` go from "1-3" to "2-1" has read that transit off the
+#: clock, which is the longitude again.
+_GROUP_TIMED_KEYS = ("panel", "pass")
+
+
+def _withhold_group_timing(state: dict) -> dict:
+    """``state`` with ``group.panel`` and ``group.pass`` ABSENT (not null)
+    while ``group.meridian_wait`` is true, for a principal lacking
+    ``view.site_derived``. The caller has already decided the principal.
+
+    Returns ``state`` ITSELF when nothing is withheld (no ``group`` key, a
+    null group, a group not waiting), so a state with no group is served byte
+    for byte as it was. Otherwise a NEW state around a NEW group: ``state`` is
+    the engine's own ``engine.state`` behind the GET route, and a WS event's
+    ``data`` is shared by every subscriber, so a pop through either would take
+    the panel from the next operator, and from the engine, too.
+
+    Every other group field stays (its id, name, progress and set-aside
+    panels): the sheet a viewer watches still shows the group, just not which
+    panel it is holding for the crossing. ``meridian_wait`` stays with them;
+    it says a wait is on, not when it ends.
+
+    A truthy ``meridian_wait`` counts, not only ``True``, and a group that is
+    not a dict cannot be key-stripped, so it goes whole: this module's rule for
+    a shape it does not recognise is to fail closed."""
+    if "group" not in state:
+        return state
+    group = state["group"]
+    if group is None:
+        return state
+    if not isinstance(group, dict):
+        return {k: v for k, v in state.items() if k != "group"}
+    if not group.get("meridian_wait"):
+        return state
+    if not any(k in group for k in _GROUP_TIMED_KEYS):
+        return state
+    return {**state, "group": {k: v for k, v in group.items()
+                               if k not in _GROUP_TIMED_KEYS}}
+
+
+def _redact_sequence_for(payload: dict, principal: Principal | None) -> dict:
+    """A sequence state served to ``principal``: ``GET /api/sequence/state``
+    and the monitor snapshot's ``sequence``. The WS ``sequence`` event takes
+    the same helper inside ``_redact_ws_event``, so the three seams cannot
+    disagree (spec 5.10). A holder of ``view.site_derived`` gets ``payload``
+    itself; see ``_withhold_group_timing`` for what a non-holder loses.
+
+    Never raises: on any error a non-holder gets the state without its
+    ``group`` rather than a 500."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    try:
+        return _withhold_group_timing(payload)
+    except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
+        return {k: v for k, v in payload.items() if k != "group"}
+
+
 def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     """Strip precise site keys in a broadcast WS event for a principal lacking
     ``view.site_precise``. The bus ``Event.data`` is SHARED across every
@@ -495,7 +594,19 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     framing, the sky panel — is gated on
     ``view.site_precise`` rather than redacted, because there is nothing left of
     it once the answer is removed. Adding a derived value to a viewer-visible
-    payload is a capability decision, not a formatting one."""
+    payload is a capability decision, not a formatting one.
+
+    AND THE MOMENT OF AN EVENT CAN BE THE SITE (spec 6.9, #166). An event
+    flagged ``site_derived`` is DROPPED (``None``) for a principal lacking
+    ``view.site_derived``, before anything else is decided: no stripping of
+    its fields could make it safe, because it would still arrive at the
+    moment the site set. Any event type, not only ``log``: the flag says
+    when-it-happened is the site, whatever the event is. A ``sequence``
+    event's ``group.panel``/``group.pass`` are withheld while the group waits
+    on the meridian rule (5.10), by the same helper as the GET route."""
+    if is_site_derived(ev_json) and not (
+            principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)):
+        return None
     if ev_json.get("type") == "weather":
         if principal is not None and principal.has(CAP_VIEW_WEATHER):
             return ev_json  # holder (operator or admin): verbatim, unstripped
@@ -555,6 +666,15 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
                 else:
                     new_data = new_data if new_data is not None else dict(data)
                     new_data.pop(key, None)   # unexpected shape -> fail CLOSED
+        # state.group's panel and pass while the group waits on the meridian
+        # rule (spec 5.10): the GET route's helper, so the two cannot
+        # disagree. It returns its argument untouched when nothing is
+        # withheld, and a new dict otherwise, so ``data`` is never written.
+        if not has_derived and ev_json.get("type") == "sequence":
+            base = new_data if new_data is not None else data
+            withheld = _withhold_group_timing(base)
+            if withheld is not base:
+                new_data = withheld
         cfg = data.get("config")
         if not has_precise and isinstance(cfg, dict) and "site" in cfg:
             base = new_data if new_data is not None else dict(data)
@@ -582,6 +702,8 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         if not has_derived:
             for key, _strip in _DERIVED_NODES:
                 safe.pop(key, None)
+            if ev_json.get("type") == "sequence":
+                safe.pop("group", None)
         if not has_weather:
             _panic_scrub_weather(safe)
         cfg = safe.get("config")
@@ -830,6 +952,8 @@ __all__ = [
     "_redact_switch_ports_for",
     "_redact_site_for",
     "_redact_ws_event",
+    "_redact_log_rows_for",
+    "_redact_sequence_for",
     "_redact_resume_arm_for",
     "_redact_drivers_for",
     "_redact_profile_for",

@@ -34,11 +34,25 @@ import { MOSAIC_CHOICES, ROTS, commandedPa, framingMeta } from "./mosaic";
 const MONO = "'IBM Plex Mono', ui-monospace, monospace";
 const DISPLAY = "'Chakra Petch', system-ui, sans-serif";
 
+/**
+ * The sentence under the picker, which is where the panel ORDER is promised.
+ *
+ * It used to say the flow "centres on each panel in turn and cycles panels
+ * every pass, so a clouded-out night still leaves every panel with data"
+ * (#154). Nothing kept that. The flow is saved for the framing centre only;
+ * GENERATE FLOW queues the panels as classic Plan targets sharing one
+ * `mosaic_group`, and the engine runs each target to completion before it picks
+ * the next. So the panels are shot panel-first, and a short night costs the
+ * LAST panels, not a share of every panel. The sentence now says that, and
+ * `mosaicCopyPanelFirst.test.ts` holds it there until S6 retires this door for
+ * "Send to Flow Wizard" (#196), whose TARGET block really does rotate.
+ */
 export const FRAMING_NOTE =
   "Drag the sky to shift the frame, turn the dial to rotate the camera. " +
-  "DONE keeps the framing: it stays on the sky and goes into the flow. " +
-  "Panels overlap 15%; the flow centres on each panel in turn and cycles panels " +
-  "every pass, so a clouded-out night still leaves every panel with data. " +
+  "DONE keeps the framing: it stays on the sky, and its centre and angle go into the flow. " +
+  "Panels overlap 15%. GENERATE FLOW sends them to the Plan as targets in one mosaic group, " +
+  "and the engine shoots each panel to completion before it starts the next, so a night " +
+  "cut short leaves the last panels short. " +
   "The dashed outline is the object's catalogued extent.";
 
 export interface FramingCardProps {

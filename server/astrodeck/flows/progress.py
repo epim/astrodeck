@@ -32,7 +32,19 @@ here is a number an operator acts on:
   the count mode decides what fills a quota, and an orphaned frame fills
   none. It is a file on disk the flow no longer has a step for, which is how
   CONTINUE's dropped-steps refusal counts it too
-  (``continuation.plan_replace_report``).
+  (``continuation.plan_replace_report``), with one difference S3 settles: a
+  skipped panel's steps are not dropped there (spec 5.9), and here they
+  are counted with the rest until S3 compiles a skip and the modal draws the
+  panel as skipped. No compile names a skipped panel before S3.
+* A LOCKED ANGLE IS SHOWN WHERE IT CAME FROM (Revision 2, owner ruling 9).
+  An unframed TARGET takes the position angle its first plate solve
+  measured, and from then on every run commands it, so the flow editor must
+  show it rather than leave it a hidden fact. A panel whose target the
+  session holds a lock for carries ``locked_angle``: the angle, and the
+  words ``LOCK_SOURCE`` says it came from. A TARGET block carries it too
+  when every one of its panels is locked to that one angle. The key is
+  absent when there is no lock, so every answer without one is the answer
+  S1 gave.
 * NOTHING DERIVED FROM THE SITE (spec 6.9). The route is ``CAP_VIEW_STATUS``
   and a viewer can read it. This function takes no site, no clock and no
   config, so it cannot compute an altitude or a transit time; the keys it
@@ -41,12 +53,15 @@ here is a number an operator acts on:
   TARGET known only by its name (``tonight.resolve_target``, #229), which is
   a catalogue constant ("M31", "Jupiter"). The lookup computes a position as
   well, and for a body that position comes from the clock and, for the Moon,
-  the site; it is thrown away here, never used and never emitted.
+  the site; it is thrown away here, never used and never emitted. A lock's
+  times are never emitted either: when the first solve ran is when the run
+  first reached the target, a moment its altitude at the site decides.
 
 Pure otherwise: no devices, no store, and no clock or config of its own.
 """
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from . import identity, tonight
@@ -54,6 +69,14 @@ from . import identity, tonight
 if TYPE_CHECKING:                       # pragma: no cover - typing only
     from ..sequence.models import SequencePlan, Target
     from ..sequence.session import Session
+
+
+#: Where a locked angle came from, in the words the flow editor shows (owner
+#: ruling 9: "whatever the first angle of the first shot is, is locked").
+#: The route says it itself rather than forwarding the ``source`` text the
+#: engine stored with the lock: that text is free, a viewer reads this
+#: answer, and nothing here can vet free text for a time or a place.
+LOCK_SOURCE = "measured by the first shot's plate solve"
 
 
 def flow_progress(compiled: dict, plan: "SequencePlan",
@@ -69,7 +92,9 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
         {flow_id,
          session: null | {id, status, nights, count_mode},
          blocks: [{node_id, name, kind: "target" | "pool", banked, owed, total,
+                   [locked_angle: {pa_deg, source}],
                    panels: [{target_id, name, row, col, banked, owed, total,
+                             [locked_angle: {pa_deg, source}],
                              steps: [{step_id, filter, frame_type, exposure_s,
                                       count, banked, owed}]}]}],
          orphaned: {frames, steps}}
@@ -79,6 +104,10 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
     of candidates, not a grid. A panel whose entry ``to_plan`` dropped has
     ``target_id`` null and no steps, so it owes nothing, which is what the plan
     will shoot for it. ``nights`` is how many nights the session has run.
+
+    ``locked_angle`` is present only where there is a lock (``_locked``,
+    ``_block_lock``): ``pa_deg`` in the CROTA2 convention the session stored,
+    and ``source``, ``LOCK_SOURCE``. Never the lock's times.
 
     ``orphaned`` counts every one of the session's frames whose step id is in
     no step of ``plan``, whatever the count mode, and how many distinct step
@@ -120,6 +149,9 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
                 "banked": 0, "owed": 0, "total": 0, "panels": []}
             blocks.append(block)
         panel = _panel(target, name, counts, grid=not is_pool)
+        lock = _locked(session, target)
+        if lock is not None:
+            panel["locked_angle"] = lock
         block["panels"].append(panel)
         for field in ("banked", "owed", "total"):
             block[field] += panel[field]
@@ -128,6 +160,10 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
             # A POOL node has no name of its own: its members ARE what the
             # operator typed on it, so the block reads as its members box.
             block["name"] = ", ".join(p["name"] for p in block["panels"])
+        else:
+            lock = _block_lock(block["panels"])
+            if lock is not None:
+                block["locked_angle"] = lock
     _refuse_a_foreign_plan(compiled, plan, blocks, flow_id)
     return {"flow_id": flow_id,
             "session": _summary(session),
@@ -178,6 +214,50 @@ def _summary(session: "Session | None") -> dict | None:
     return {"id": session.id, "status": session.status,
             "nights": len(session.nights),
             "count_mode": session.plan.count_mode}
+
+
+def _locked(session: "Session | None",
+            target: "Target | None") -> dict | None:
+    """``{pa_deg, source}`` for the angle ``session`` has locked ``target``
+    to (owner ruling 9), or None when it has none.
+
+    Read through ``Session.locked_angle``, keyed by the target id this compile
+    names: a re-frame re-keys the ids (spec 3.3, ruling 3), and the lock the
+    old ids hold is then nobody's here, which is the one way a lock is
+    cleared. 0 is a real position angle, so it is shown like any other.
+
+    Only the angle is taken from the record. Its ``solved_at`` and
+    ``exposed_at`` are the lock's times, which a viewer may not read (see
+    the module docstring), and its ``source`` is free text (``LOCK_SOURCE``).
+    A record whose angle is not a finite number is shown as no lock:
+    ``lock_angle`` never writes one, a hand-edited file can, and NaN in the
+    answer would fail the route's JSON rendering for every reader."""
+    if session is None or target is None:
+        return None
+    lock = session.locked_angle(target.id)
+    if not isinstance(lock, dict):
+        return None
+    pa = lock.get("pa_deg")
+    if (isinstance(pa, bool) or not isinstance(pa, (int, float))
+            or not math.isfinite(pa)):
+        return None
+    return {"pa_deg": float(pa), "source": LOCK_SOURCE}
+
+
+def _block_lock(panels: list[dict]) -> dict | None:
+    """A TARGET block's locked angle: the one every panel the plan holds is
+    locked to, or None. A single target is one panel, so this is that
+    panel's lock. A block some of whose panels are unlocked, or locked to
+    different angles, has no one angle to show, and each panel shows its
+    own. A POOL block is never asked: its members are separate objects, not
+    one field, so their angles agreeing would mean nothing."""
+    held = [p for p in panels if p["target_id"] is not None]
+    locks = [p.get("locked_angle") for p in held]
+    if not locks or any(lock is None for lock in locks):
+        return None
+    if len({lock["pa_deg"] for lock in locks}) != 1:
+        return None
+    return dict(locks[0])
 
 
 def _single(plan: "SequencePlan", entry: dict, *, flow_id: str,

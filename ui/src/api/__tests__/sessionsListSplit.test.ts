@@ -5,8 +5,11 @@
 //
 // THE LIST. `GET /api/sessions` now also lists files the store cannot read,
 // as `{id, name, status: "unreadable", unreadable: <reason>, updated_ts}`
-// (server `session.py` `_unreadable_row`). Two lists draw them on purpose (the
-// classic SessionsPanel and the #/next Gallery, through `listSessionRows`).
+// (server `session.py` `_unreadable_row`), plus `backup: true` while a `.bak`
+// sits beside the file (#266; the confirm copy that reads it is held in
+// components/sequence/__tests__/sessionsDeleteCopy.test.ts). Two lists draw
+// them on purpose (the classic SessionsPanel and the #/next Gallery, through
+// `listSessionRows`).
 // Every other reader goes through `listSessions` and was written for a row
 // with a name, counts and a timestamp: the Now screen's session lookup, the
 // files sheet's picker, the plan editor's sessions section and Settings'

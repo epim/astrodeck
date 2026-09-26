@@ -123,9 +123,13 @@ export const AUTOMATION_HINT: Partial<Record<AutomationKey, string>> = {
     + "needed. Rejected frames stay on disk for regrading.",
   max_eccentricity: "Rejects a frame whose stars are too elongated - trailing, "
     + "tilt or coma - measured as the median star eccentricity.",
+  // Set aside for the night, as the engine says it and as SequenceView.tsx's
+  // tooltip does; server/tests/test_set_aside_promises.py maps the sentence to
+  // the tests that prove it (#208).
   max_consecutive_rejects: "Accepted-count mode only: after this many rejects in "
-    + "a row on one step, move to the next step. The shortfall stays in the "
-    + "session ledger for another night.",
+    + "a row on one step, that step is set aside for tonight and the run moves "
+    + "on. Its shortfall stays owed in the session ledger: a restart tonight "
+    + "does not retry it, the next night does.",
   max_consecutive_rejects_night: "Accepted-count mode only: after this many "
     + "rejects in a row across targets - the counter resets on any accepted "
     + "frame - end the night early and leave the session resumable.",

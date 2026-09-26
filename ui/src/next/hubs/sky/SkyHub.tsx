@@ -94,6 +94,7 @@ import {
   OSC_LABEL, finishLabel, hoursLabel, oscCount, resolveQuickHours, wheelModel,
 } from "./sheets/quickModel";
 import { hoursToDawn } from "./sheets/quickNightArc";
+import { framingKeptDetail } from "./sheets/quickCopy";
 import { getPackStatus } from "../../../api/backends";
 import {
   useConfig,
@@ -562,13 +563,12 @@ export function SkyHub(): JSX.Element {
     // quick sheet turns them into plan targets on GENERATE FLOW (plan H.6: the
     // engine's mosaic mechanism IS N targets sharing a `mosaic_group`, not a
     // flow stage) - so the sentence names the button that does it and the shape
-    // it will take, rather than a stage that does not exist.
+    // it will take, rather than a stage that does not exist. The words, and the
+    // panel-first order they promise (#275), are `framingKeptDetail`'s.
     enqueueToast({
       level: "success",
       title: `Framing kept - ${frameText(cols, rows, f.rotation_deg)}.`,
-      detail: panels.length > 1
-        ? `GENERATE FLOW queues all ${panels.length} panels as plan targets, one pass each.`
-        : "GENERATE FLOW centres the night here instead of on the catalogue position.",
+      detail: framingKeptDetail(panels.length),
     });
   }, [fov.fov_x_deg, fov.fov_y_deg, setFraming, enqueueToast]);
 

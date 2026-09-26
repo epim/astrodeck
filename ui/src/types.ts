@@ -784,6 +784,10 @@ export interface SequenceState {
   // PRESENT) until the first target starts, so it must admit null, not just
   // undefined. The other fields are pydantic str/int-typed: never null.
   session?: { id: string; name: string; count_mode: string; accepted: number; target?: string | null };
+  /** The mosaic group the active target belongs to (S2, spec 5.10). ABSENT
+   *  whenever it belongs to none, so every payload without a group is the
+   *  payload it always was. */
+  group?: SequenceGroupState;
   // Terminal reason — drives the run-complete Badge + Report end-reason icon.
   // "incomplete" = the run did everything it was told to and the plan is still
   // short (a target set aside by its altitude floor, a missed start, a skip
@@ -812,6 +816,34 @@ export interface SequenceState {
       reason: string;
     };
   };
+}
+
+/** `SequenceState.group`: the published state of the mosaic group being shot
+ *  (#189 S2, spec 5.10). Words and counts only: the run publishes no time to
+ *  set and no meridian time anywhere, and the meridian wait is only the
+ *  `meridian_wait` flag below, not a topic of its own.
+ *
+ *  `panel` and `pass` are OPTIONAL because they are withheld from a principal
+ *  without `view.site_derived` while the group waits on the meridian rule: the
+ *  moment a panel is announced after that wait timestamps a transit, which
+ *  gives away the site's longitude (spec 6.9). `meridian_wait` says that is
+ *  what is happening, so a screen can say why they are missing rather than
+ *  showing a stale panel. */
+export interface SequenceGroupState {
+  id: string;
+  name: string;
+  mode: "rotate" | "sequential";
+  /** The pass over the panels, counted from 1. */
+  pass?: number;
+  /** The panel label, "<row>-<col>" counted from 1, e.g. "2-3". */
+  panel?: string;
+  visit_elapsed_s: number;
+  panels_done: number;
+  panels_total: number;
+  /** Panels set aside tonight, each with its reason in words. */
+  set_aside: { panel: string; reason: string }[];
+  /** True while the group waits for a panel's meridian crossing. */
+  meridian_wait: boolean;
 }
 
 export interface CoolerInfo {
@@ -1034,9 +1066,57 @@ export interface Target {
   // --- atlas (additive; nullable so existing plans deserialize unchanged) ---
   rotation_deg?: number;    // target camera angle (PA) — guidance only, no rotator in rig
   mosaic_group?: string;    // e.g. "M31" to group panels in the Plan UI
+  // --- centring and hop focus (S1: #170 U-03, #189 U-05; additive). null
+  //     means "exactly today's call": the hub's own 1.2 arcmin and 3 attempts,
+  //     and a sweep at every target start. Server: sequence/models.py Target.
+  center_tolerance_arcmin?: number | null;
+  center_attempts?: number | null;
+  autofocus_skip_if_fresh?: boolean;
+  // --- mosaic panels (S2: #189, spec 3.4; additive). The panel's 0-based
+  //     place in its block's grid (row 0 col 0 is panel "1-1"), null on a
+  //     target that is not a panel. `after_group` is the id of a TargetGroup
+  //     this target waits for ("Wait for the mosaic", spec 1.6).
+  panel_row?: number | null;
+  panel_col?: number | null;
+  after_group?: string | null;
   // --- automation (Batch-4b; additive — backfilled with defaultSchedule() so old
   //     plans deserialize unchanged, see store.defaultSchedule / C1-27). ---
   schedule?: Schedule;
+}
+
+/** One TARGET block with a grid, as the engine runs it (#189 U-01, spec 3.4).
+ *  Mirrors server `sequence/models.py` `TargetGroup` field for field; the
+ *  server test `test_types_mirror_groups.py` holds the two together.
+ *
+ *  Its members are the targets whose `mosaic_group` equals `id`. A plan's
+ *  groups are written by the flow compile, never by a client, and the server
+ *  sends every field (pydantic defaults), so none is optional here. */
+export interface TargetGroup {
+  id: string;
+  name: string;
+  kind: "mosaic";
+  /** "rotate" visits each panel in turn and comes back (the loop wire);
+   *  "sequential" runs a panel to completion before the next. */
+  mode: "rotate" | "sequential";
+  /** Full filter passes per visit, 1 to 20. */
+  visit_passes: number;
+  /** A visit's floor in seconds, 0 to 10800, checked at round boundaries. */
+  visit_min_s: number;
+  order: "least_complete" | "setting_first" | "grid";
+  /** A panel that does not centre is deferred, never shot off its tile. */
+  require_centred: boolean;
+  /** Consecutive failed visits, 1 to 20, before a panel is set aside tonight. */
+  max_failed_visits: number;
+  /** Layout angle in the CROTA2 convention (#145); null when none is set. */
+  pa_deg: number | null;
+  /** True when the members carry rotation_deg = pa_deg. */
+  rotate: boolean;
+  /** null disables the angle check. */
+  angle_tolerance_deg: number | null;
+  /** Target ids of the skipped panels, which are not members (spec 5.9). */
+  skipped_ids: string[];
+  /** Provenance only (rows, cols, overlap, fov, key); nothing steers by it. */
+  geometry: Record<string, unknown>;
 }
 
 export interface SequencePlan {
@@ -1071,6 +1151,9 @@ export interface SequencePlan {
   max_eccentricity?: number | null;              // per-frame median-ecc ceiling, 0..1 (0 = off)
   // --- conditional sequencer (PRO-3; additive/optional — [] / absent === today) ---
   instructions?: Instruction[];
+  // --- mosaic groups (S2: #189, spec 3.4; additive/optional — [] / absent ===
+  //     today). One entry per TARGET block with a grid, written by the compile.
+  groups?: TargetGroup[];
 }
 
 // ============================================================================
@@ -2392,6 +2475,39 @@ export interface Session {
   nights: string[];
   frames: SessionFrame[];
   auto_resume: boolean;
+  // --- S2 (#189, #208; additive, SESSION_SCHEMA still 1). Optional because a
+  //     server older than S2 does not send them.
+  /** Panels and steps set aside, each with the night it happened under. Only
+   *  the current night's records mean "not retried tonight"; the rest are
+   *  history, and those panels are retried. */
+  set_aside?: SetAsideRecord[];
+  /** Ruling 9's locked angles, by target id: the first solve's angle for an
+   *  unframed TARGET, commanded from then on like a planned one. */
+  locked_angles?: Record<string, LockedAngle>;
+}
+
+/** One `Session.set_aside` entry, as `Session.note_set_aside` writes it. */
+export interface SetAsideRecord {
+  target_id: string;
+  /** null when the whole panel was set aside; a step id for the reject guard. */
+  step_id: string | null;
+  /** Words only, for the report. */
+  reason: string;
+  /** The night key (`YYYY-MM-DD`, noon to noon) it was set aside under. */
+  night: string;
+}
+
+/** One `Session.locked_angles` value, as `Session.lock_angle` writes it. The
+ *  first lock wins, so this is the angle every later night commands. */
+export interface LockedAngle {
+  /** Degrees, CROTA2 convention. 0 is a real angle, never "unset". */
+  pa_deg: number;
+  /** Unix seconds when the solve that measured it finished. */
+  solved_at: number;
+  /** Unix seconds when that solve's frame was exposed; null when unknown. */
+  exposed_at: number | null;
+  /** Which solve measured it, in words, for "where the angle came from". */
+  source: string;
 }
 
 export interface SessionRow {

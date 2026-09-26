@@ -21,7 +21,10 @@ temperature, with no light on it. In order of preference:
      calibrated with;
   2. otherwise a bias master at that gain, offset and binning, plus the
      smallest dark current the doubling law allows (see ``reference_for``);
-  3. otherwise no reference, and no verdict.
+  3. otherwise, when the library was read and holds neither, the same as 2
+     with a frame the camera shoots itself, at its shortest exposure, in
+     place of the bias master (THE SELF-REFERENCE, below);
+  4. otherwise no reference, and no verdict.
 
 The verdicts (``classify``):
 
@@ -73,6 +76,58 @@ as a cap. For a solve exposure the default window moves the dark part by a
 few ADU. It is not modelled, because splitting the dark part off the pedestal
 needs a bias, and the dark path does not ask for one.
 
+THE SELF-REFERENCE (#262, S2 orchestrator ruling 2, owner list item 20). On
+the rig nothing had shot a bias or a dark at the solve's readout, so option 2
+had nothing to stand on and the check gave no verdict on the very night it
+was built for. So when the library was read and holds neither a dark master
+for the frame nor a bias master at its readout, ``failed_solve_error`` shoots
+one frame itself, straight away: at the camera's SHORTEST exposure, at the
+failed frame's gain, offset and binning, shutter closed, under the hub's
+exposure guard, bounded. That frame stands in for the missing bias master,
+and ``reference_for`` draws the floor and the ceiling from it exactly as from
+a master: plus the least and the most dark current the doubling law allows,
+measured from a dark at that readout when the library has one, and no
+ceiling without one.
+
+WHY THE SHORTEST EXPOSURE, and never the frame's own. The CMOS cameras this
+project drives mostly have no shutter, so "shutter closed" is a request the
+sensor cannot honour. Shot at the frame's 12 s through an open optic, the
+self-shot is a picture of the same sky, and would call it no light, the one
+error this module must not make; through a cap it is a dark, and matches
+every capped frame whatever its dark current. At the shortest exposure the
+sky and the dark current both vanish: a sky that lifts the 12 s frame by the
+3 ADU band lifts a 1 ms frame by 3 x 0.001 / 12 = 0.00025 ADU, and one bright
+enough to put a single ADU into 1 ms puts 12 000 into the 12 s frame, far past
+any ceiling. What is left is the pedestal, which is what a bias master
+measures.
+
+WHAT IT DOES NOT BOUND. Some CMOS cameras read a slightly different pedestal
+at their shortest exposures than at long ones, which is why some imagers
+calibrate with dark flats rather than bias frames. A self-shot that reads
+BELOW the long-exposure pedestal only pushes capped frames out of the band;
+one that reads ABOVE it raises the floor by the difference, and a sky fainter
+than that could read as a cap. It is not measured, for the reason option 1's
+window is not: there is nothing at that readout to measure it against. Nor
+does it answer the #262 safety review's question, which it makes live on
+every night rather than on the night an operator shoots a master: whether
+thick overcast over a dark site, with no Moon, can sit within the band of a
+cold sensor's pedestal. The band has been held only against a lit overcast
+(``tests/fixtures/star_noise/blank_overcast.npz``).
+
+KEPT FOR THE NIGHT. A pedestal does not move between one failed solve and the
+next, and a self-shot on every failure would add an exposure and a download
+to each of the recovery ladder's retries. So one is kept per camera, gain,
+offset, binning, band of sensor temperature (``SELF_REFERENCE_BAND_C``) and
+night (``events.night_key``), in process memory: a fact learned about
+tonight's hardware, which the next night asks for again. A shot beside a
+failed frame bright enough that light may have reached the shot too (at
+dusk, under a lit panel) judges that frame and is not kept, so a later dark
+frame is never judged against light (``SELF_REFERENCE_KEEP_LIGHT_ADU``). A
+self-shot that fails, runs past its bound or returns a buffer is no
+reference, and is not kept, so the next failure tries again; it is never a
+crash of the solve path and never a no-light verdict. A cancel that lands
+while it exposes propagates.
+
 WHO CALLS IT. Every solve path that exposes its own frame and raises on a
 failed solve, through ``failed_solve_error``: ``Hub.solve_and_sync`` (which
 covers auto-resume's recovery solve, goto centring and the solve route),
@@ -98,7 +153,7 @@ import numpy as np
 from ..calibration.matcher import (LightNeed, MasterRecord, MatchTolerance,
                                    best_master)
 from ..devices.base import DeviceError
-from ..events import bus
+from ..events import bus, night_key
 
 #: The three verdicts ``classify`` returns.
 NO_LIGHT = "no_light"
@@ -201,6 +256,56 @@ K_SIGMA = 3.0
 DARK_DOUBLING_FAST_C = 5.0
 DARK_DOUBLING_SLOW_C = 7.0
 
+#: How a failure message and the evidence line name the self-reference (see
+#: the module docstring). Words only: it rides a hold's reason.
+SELF_REFERENCE_WORDS = "the shortest-exposure frame that stands in for a bias"
+
+#: The self-shot's exposure when the camera reports no minimum of its own
+#: (``min_exposure_s``), in seconds. No backend reports one today: the native
+#: SDKs take microseconds, and ASCOM's ExposureMin is not read. 1 ms is inside
+#: what every camera here accepts and short enough that neither sky nor dark
+#: current puts a measurable ADU into it (the module docstring does the sum).
+#: A camera that refuses it fails the self-shot, which is no reference: the
+#: behaviour before #262.
+SELF_REFERENCE_FALLBACK_S = 0.001
+
+#: The bound on the self-shot's exposure, download included, in seconds. A
+#: 1 ms frame is normally a few seconds of download. The bound is set by the
+#: camera's own worst case instead: the Alpaca camera polls ``imageready`` for
+#: the exposure plus 30 s (``devices.alpaca._IMAGEREADY_POLL_MARGIN_S``), then
+#: downloads through a client whose per-request timeout is 30 s. So a camera
+#: that is merely slow gives up by its own rules first, and the bound cuts only
+#: one that has stopped answering. Read at call time, so a test can shrink it.
+SELF_REFERENCE_TIMEOUT_S = 60.0
+
+#: The width of the sensor-temperature bands a self-reference is kept per, in
+#: C: the matcher's default temperature tolerance, so a self-shot is reused
+#: across the span a dark master is accepted across (``MatchTolerance``).
+SELF_REFERENCE_BAND_C = MatchTolerance().temp_tol_c
+
+#: The most light a self-shot may have caught and still be kept for the
+#: night, in ADU: a tenth of ``OFFSET_STABILITY_ADU``, so a kept shot moves
+#: the no-light band's centre by at most 0.1 ADU against its 3 ADU half-width.
+#:
+#: WHY A KEPT SHOT IS ASKED THIS. "At the shortest exposure the sky vanishes"
+#: holds for a night sky, not for every sky a solve can fail under. A 1 ms
+#: shot beside a solve that failed at dusk, under a lit flat panel or with the
+#: dome lights on catches a few ADU of that light; the frame it was taken for
+#: reads thousands of ADU above it and is judged safely, but a shot kept for
+#: the night would carry those ADU into every later verdict at that readout,
+#: and a faint night sky that many ADU over the pedestal would then read as a
+#: capped optic, the one error this module must not make. The failed frame
+#: bounds it (``_light_share``): whatever lifts it above the shot, scaled to
+#: the shot's length, is the most light the shot can hold. A capped frame or
+#: a night sky puts well under this into a 1 ms shot (the #251 frame's 11 ADU
+#: over 12 s is 0.001 ADU); a 12 s frame must read some 1200 ADU over the shot
+#: before the shot is refused. Clipping understates a saturated frame's light,
+#: but at 1 ms a frame clipped at the top of a 16-bit range is still refused
+#: at any solve exposure under ten minutes (65 000 x 0.001 / 600 = 0.11); a
+#: camera that reported a far shorter minimum would narrow that, and none
+#: reports one today (``SELF_REFERENCE_FALLBACK_S``).
+SELF_REFERENCE_KEEP_LIGHT_ADU = OFFSET_STABILITY_ADU / 10.0
+
 
 @dataclass(frozen=True)
 class Reference:
@@ -228,6 +333,21 @@ class Reference:
     def top(self) -> float:
         """The most the no-light median could be."""
         return self.level if self.ceiling is None else self.ceiling
+
+
+@dataclass(frozen=True)
+class SelfBias:
+    """What a self-shot read (#262): ``level`` its median in ADU, ``detail``
+    what the evidence line prints about it (the exposure and readout, and
+    whether it was shot just now or kept from earlier tonight)."""
+    level: float
+    detail: str
+
+
+#: The self-references taken tonight, keyed by ``_self_reference_key``:
+#: (camera name, gain, offset, binning, temperature band, night). Written on
+#: the event loop only. Holds one night at a time: a write drops the others.
+_SELF_REFERENCES: dict[tuple, SelfBias] = {}
 
 
 @dataclass(frozen=True)
@@ -447,14 +567,17 @@ def _settings(need: LightNeed) -> str:
 
 def reference_for(frame: Any, masters: Iterable[MasterRecord], *,
                   tol: MatchTolerance | None = None,
-                  level_of: Callable[[MasterRecord], float | None] = master_level
+                  level_of: Callable[[MasterRecord], float | None] = master_level,
+                  self_bias: SelfBias | None = None
                   ) -> tuple[Reference | None, str]:
     """``(reference, why_not)`` for ``frame``: the median it would read with
     no light on it, or None and the reason, in words, that nothing can say.
 
     ``frame`` needs ``exposure_s``, ``gain``, ``offset``, ``binning`` and
     ``temperature_c`` (a ``CameraFrame``). ``level_of`` reads a master's
-    median; the tests hand in a table."""
+    median; the tests hand in a table. ``self_bias`` is a self-shot's level
+    (#262), used in place of a bias master only when the library has none
+    at this readout; ``failed_solve_error`` shoots it."""
     masters = list(masters)
     need = _need(frame)
     # 1. THE DARK MASTER FOR THESE SETTINGS. The matcher's own rule and
@@ -480,7 +603,22 @@ def reference_for(frame: Any, masters: Iterable[MasterRecord], *,
     #    itself and a capped frame with real dark current reads above it.
     bias = _nearest_bias(need, masters)
     bias_level = None if bias is None else level_of(bias)
-    if bias_level is None:
+    if bias_level is not None:
+        source = ("the bias master plus the least dark current the doubling "
+                  "law allows")
+        what = f"bias master {bias.id}"
+    elif self_bias is not None:
+        # 3. THE SELF-REFERENCE IN PLACE OF THE BIAS MASTER (#262, S2
+        #    orchestrator ruling 2). Only when the library has no bias at
+        #    this readout, and it is a bias like any other from here on: the
+        #    floor and the ceiling below are drawn from it as from a master,
+        #    so a dark at this readout still measures the rate, and without
+        #    one there is still no ceiling.
+        bias_level = self_bias.level
+        source = (f"{SELF_REFERENCE_WORDS}, plus the least dark current the "
+                  f"doubling law allows")
+        what = self_bias.detail
+    else:
         return None, (f"the calibration library has no dark master for this "
                       f"frame's exposure, {_settings(need)} and temperature, "
                       f"and no bias master at {_settings(need)}")
@@ -504,11 +642,49 @@ def reference_for(frame: Any, masters: Iterable[MasterRecord], *,
         how = (f"dark current {rate:.4f} ADU/s from dark master {anchor.id}, "
                f"scaled {gap:+.1f} C at one doubling per {doubling:g} C "
                f"to {dark_lo:.1f} ADU")
-    return Reference(level=bias_level + dark_lo,
-                     source="the bias master plus the least dark current "
-                            "the doubling law allows",
-                     detail=f"bias master {bias.id}; {how}",
+    return Reference(level=bias_level + dark_lo, source=source,
+                     detail=f"{what}; {how}",
                      ceiling=bias_level + dark_hi), ""
+
+
+def _verdict(data: Any, ref: Reference | None, why: str) -> LightVerdict:
+    """``classify``, with the reason a missing reference gives replaced by
+    ``why``: the library knows WHICH master is missing, and that is the
+    sentence that tells the operator what to shoot."""
+    verdict = classify(data, ref)
+    if verdict.why == NO_REFERENCE_WHY:
+        verdict = replace(verdict, why=why)
+    return verdict
+
+
+def _look(frame: Any, library: Any, tol: MatchTolerance | None
+          ) -> tuple[LightVerdict | None, list[MasterRecord] | None, str]:
+    """The verdict the library alone can give, as ``(verdict, None, "")``;
+    or ``(None, masters, why)`` when it was read and holds no master at the
+    frame's readout, the one case a self-reference stands in for (#262).
+    Blocking: masters are read from disk. Never raises for a missing or
+    unreadable library; that is no reference."""
+    data = getattr(frame, "data", None)
+    if frame is None or data is None:
+        return LightVerdict(UNKNOWN, why="there is no frame to measure"), \
+            None, ""
+    if not getattr(frame, "data_is_linear", True):
+        # A NINA-rendered preview is an 8-bit stretch of the frame, so its
+        # levels say nothing about ADU.
+        return LightVerdict(UNKNOWN, why="the frame is a rendered preview, "
+                                         "not linear sensor data"), None, ""
+    if library is None:
+        return _verdict(data, None, "no calibration library is loaded"), \
+            None, ""
+    try:
+        masters = list(library.list_masters())
+    except Exception:                          # noqa: BLE001 - no reference
+        return _verdict(data, None, "the calibration library could not be "
+                                    "read"), None, ""
+    ref, why = reference_for(frame, masters, tol=tol)
+    if ref is None:
+        return None, masters, why
+    return _verdict(data, ref, ""), None, ""
 
 
 def judge_frame(frame: Any, library: Any,
@@ -516,30 +692,19 @@ def judge_frame(frame: Any, library: Any,
     """The verdict on a failed solve's frame, reading the reference from
     ``library`` (a ``CalibrationLibrary``, or anything with
     ``list_masters()``). Blocking: masters are read from disk. Never raises
-    for a missing or unreadable library; that is no reference."""
-    data = getattr(frame, "data", None)
-    if frame is None or data is None:
-        return LightVerdict(UNKNOWN, why="there is no frame to measure")
-    if not getattr(frame, "data_is_linear", True):
-        # A NINA-rendered preview is an 8-bit stretch of the frame, so its
-        # levels say nothing about ADU.
-        return LightVerdict(UNKNOWN, why="the frame is a rendered preview, "
-                                         "not linear sensor data")
-    if library is None:
-        ref, why = None, "no calibration library is loaded"
-    else:
-        try:
-            masters = library.list_masters()
-        except Exception:                      # noqa: BLE001 - no reference
-            ref, why = None, "the calibration library could not be read"
-        else:
-            ref, why = reference_for(frame, masters, tol=tol)
-    verdict = classify(data, ref)
-    if verdict.why == NO_REFERENCE_WHY:
-        # The library knows WHICH master is missing, and that is the sentence
-        # that tells the operator what to shoot.
-        verdict = replace(verdict, why=why)
-    return verdict
+    for a missing or unreadable library; that is no reference. Shoots no
+    self-reference, which needs the event loop and the camera: that is
+    ``failed_solve_error``'s."""
+    verdict, _masters, why = _look(frame, library, tol)
+    return verdict if verdict is not None else _verdict(frame.data, None, why)
+
+
+def _judge_against(frame: Any, masters: list[MasterRecord],
+                   tol: MatchTolerance | None, bias: SelfBias) -> LightVerdict:
+    """The verdict with ``bias``, a self-shot, standing in for the bias
+    master the library lacks. Blocking, like ``judge_frame``."""
+    ref, why = reference_for(frame, masters, tol=tol, self_bias=bias)
+    return _verdict(frame.data, ref, why)
 
 
 def error_for(verdict: LightVerdict, solver_message: str,
@@ -581,6 +746,134 @@ def _tolerance() -> MatchTolerance:
         return MatchTolerance()
 
 
+def _min_exposure_s(cam: Any) -> float:
+    """The camera's shortest exposure, in seconds: its ``min_exposure_s``
+    when it reports a positive number, else ``SELF_REFERENCE_FALLBACK_S``."""
+    try:
+        s = float(getattr(cam, "min_exposure_s", None))
+    except (TypeError, ValueError):
+        return SELF_REFERENCE_FALLBACK_S
+    return s if math.isfinite(s) and s > 0 else SELF_REFERENCE_FALLBACK_S
+
+
+def _self_reference_key(cam: Any, frame: Any) -> tuple:
+    """What a kept self-reference is good for: this camera, the failed
+    frame's gain, offset and binning, its ``SELF_REFERENCE_BAND_C`` band of
+    sensor temperature (None when the temperature is unknown or not a
+    number), and tonight."""
+    try:
+        temp = float(getattr(frame, "temperature_c", None))
+    except (TypeError, ValueError):
+        temp = math.nan
+    band = (math.floor(temp / SELF_REFERENCE_BAND_C) if math.isfinite(temp)
+            else None)
+    return (str(getattr(cam, "name", "")), int(frame.gain), int(frame.offset),
+            int(frame.binning), band, night_key())
+
+
+def _light_share(frame: Any, level: float, seconds: float) -> float:
+    """The most light, in ADU, a self-shot ``seconds`` long that read
+    ``level`` can have caught beside the failed ``frame``: all of the frame's
+    rise above it, taken as light arriving at a steady rate, scaled to the
+    self-shot's length. Dark current is counted in with the light, which only
+    makes the bound larger. Infinite when nothing bounds it: a frame with no
+    pixels, a buffer, or no exposure to scale by. Blocking: one median."""
+    stats = frame_stats(getattr(frame, "data", None))
+    try:
+        exposure = float(frame.exposure_s)
+    except (TypeError, ValueError):
+        return math.inf
+    if stats is None or stats[3] or not (math.isfinite(exposure)
+                                         and exposure > 0):
+        return math.inf
+    return max(0.0, stats[0] - level) * seconds / exposure
+
+
+def _remember(key: tuple, bias: SelfBias) -> None:
+    """Keep ``bias`` for the rest of the night, and drop every other night's
+    (the night is the key's last part), so the cache never grows past one."""
+    for old in [k for k in _SELF_REFERENCES if k[-1] != key[-1]]:
+        del _SELF_REFERENCES[old]
+    _SELF_REFERENCES[key] = bias
+
+
+async def _self_reference(frame: Any, hub: Any
+                          ) -> tuple[SelfBias | None, str, str]:
+    """``(bias, why_not, said)``: tonight's self-reference for ``frame``'s
+    readout, from the cache or shot now, or None, the reason in words, and
+    what the camera said when it raised (#262, S2 orchestrator ruling 2,
+    owner list item 20; the module docstring says why each choice).
+
+    TOTAL but for a cancel. Every way a self-shot can fail is no reference,
+    worded after ``SELF_REFERENCE_WORDS``: a failure message is a hold's
+    reason, so ``why_not`` is words only, and the camera's own text, which
+    may carry a number, rides the evidence line as ``said``. A cancel
+    (``ResumeArm.stop_recovery`` cancels the ladder's step) is not a failure:
+    ``except Exception`` does not catch it, so it propagates, and the guard's
+    ``async with`` frees the camera on its way out."""
+    devices = getattr(hub, "devices", None) or {}
+    cam = devices.get("camera")
+    if cam is None or not getattr(cam, "connected", False):
+        return (None, f"there is no connected camera to shoot "
+                      f"{SELF_REFERENCE_WORDS}", "")
+    key = _self_reference_key(cam, frame)
+    kept = _SELF_REFERENCES.get(key)
+    if kept is not None:
+        return replace(kept, detail=f"{kept.detail}, kept from earlier "
+                                    f"tonight"), "", ""
+    seconds = _min_exposure_s(cam)
+    gain, offset, binning = int(frame.gain), int(frame.offset), \
+        int(frame.binning)
+    try:
+        # THE GUARD IS FREE HERE at all four solve paths, which close their
+        # own ``exposure_guard`` before the solve and so before this. It is
+        # non-blocking: a camera some other path holds refuses the self-shot
+        # ("camera is busy"), which is no reference, and nothing waits.
+        async with hub.exposure_guard("no-light reference"):
+            shot = await asyncio.wait_for(
+                cam.expose(seconds, gain, offset, binning=binning,
+                           light=False),
+                SELF_REFERENCE_TIMEOUT_S)
+    except (asyncio.TimeoutError, TimeoutError):
+        return None, f"{SELF_REFERENCE_WORDS} timed out", ""
+    except Exception as e:                     # noqa: BLE001 - no reference
+        return (None, f"{SELF_REFERENCE_WORDS} failed",
+                str(e) or type(e).__name__)
+    data = getattr(shot, "data", None)
+    if data is None:
+        return None, f"{SELF_REFERENCE_WORDS} returned no frame", ""
+    if not getattr(shot, "data_is_linear", True):
+        return (None, f"{SELF_REFERENCE_WORDS} is a rendered preview, not "
+                      f"linear sensor data", "")
+    try:
+        stats = await asyncio.to_thread(frame_stats, data)
+    except Exception as e:                     # noqa: BLE001 - no reference
+        return (None, f"{SELF_REFERENCE_WORDS} could not be measured",
+                str(e) or type(e).__name__)
+    if stats is None:
+        return None, f"{SELF_REFERENCE_WORDS} has no pixels to measure", ""
+    median, _sigma, _n, constant = stats
+    if constant:
+        # A buffer at whatever level it holds would stand in for the bias
+        # with a band of nothing but its own sigma, as ``classify`` says.
+        return (None, f"{SELF_REFERENCE_WORDS} read every pixel the same, so "
+                      f"it is a buffer, not an exposure", "")
+    bias = SelfBias(level=median, detail=(
+        f"self-reference {seconds:g} s at gain {gain}, offset {offset}, "
+        f"bin {binning}"))
+    # KEPT ONLY WHEN LIGHT CANNOT HAVE REACHED IT (see
+    # ``SELF_REFERENCE_KEEP_LIGHT_ADU``). This frame is judged against the
+    # shot either way: light in the shot only raises this frame's floor
+    # toward a frame that reads far above it.
+    share = await asyncio.to_thread(_light_share, frame, median, seconds)
+    if share > SELF_REFERENCE_KEEP_LIGHT_ADU:
+        return replace(bias, detail=(
+            f"{bias.detail}, shot just now and not kept: the failed frame "
+            f"reads bright enough that light may have reached it")), "", ""
+    _remember(key, bias)
+    return replace(bias, detail=f"{bias.detail}, shot just now"), "", ""
+
+
 async def failed_solve_error(frame: Any, result: Any, *, prefix: str,
                              hub: Any) -> FailedSolveError:
     """THE ONE CALL a solve path makes on a failed solve, and raises:
@@ -594,16 +887,38 @@ async def failed_solve_error(frame: Any, result: Any, *, prefix: str,
     line with the numbers, and returns the exception to raise:
     ``NoLightError`` for a no-light verdict, ``FailedSolveError`` otherwise.
 
+    WHEN THE LIBRARY HOLDS NOTHING AT THE FRAME'S READOUT, it shoots the
+    self-reference first (#262, S2 orchestrator ruling 2, owner list item
+    20): one frame at ``hub.devices["camera"]``'s shortest exposure, at the
+    frame's gain, offset and binning, shutter closed, under
+    ``hub.exposure_guard``, within ``SELF_REFERENCE_TIMEOUT_S``, or tonight's
+    kept one. Only then: a hub with no library loaded, or one that could not
+    be read, takes none, because the self-shot stands in for a master the
+    library LACKS and says nothing about a library nobody could read (the
+    app always loads one, ``api/app.py``).
+
     A level check that itself fails is no verdict, never a no-light one, and
-    never a crash of the solve path it was asked to explain."""
+    never a crash of the solve path it was asked to explain. A cancel that
+    lands during the self-shot propagates."""
     library = getattr(hub, "master_library", None)
+    said = ""
     try:
-        verdict = await asyncio.to_thread(judge_frame, frame, library,
-                                          _tolerance())
+        tol = _tolerance()
+        verdict, masters, why = await asyncio.to_thread(_look, frame, library,
+                                                        tol)
+        if verdict is None:
+            bias, why_not, said = await _self_reference(frame, hub)
+            if bias is None:
+                verdict = await asyncio.to_thread(
+                    _verdict, frame.data, None, f"{why}; {why_not}")
+            else:
+                verdict = await asyncio.to_thread(_judge_against, frame,
+                                                  masters, tol, bias)
     except Exception as e:                     # noqa: BLE001 - see docstring
         verdict = LightVerdict(UNKNOWN, why="the level check itself failed")
         bus.log("warning", f"solve light check failed: {e}", "solve")
-    bus.log("info", f"failed solve, light check: {verdict.evidence()}",
+    tail = f" (the camera said: {said})" if said else ""
+    bus.log("info", f"failed solve, light check: {verdict.evidence()}{tail}",
             "solve")
     return error_for(verdict, str(getattr(result, "message", "") or ""),
                      prefix)
