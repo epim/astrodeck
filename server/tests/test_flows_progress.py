@@ -680,6 +680,73 @@ class TestAForeignPlanIsRefused:
         assert sum(b["owed"] for b in got["blocks"]) == plan.total_frames()
 
 
+class TestASingleTargetIsKeyedAsToPlanKeysIt:
+    """Since S3 ``to_plan`` keys a 1x1 block on its stored ANCHOR when it has
+    one (a nudge the save carried keeps its ids) and on the angle it is LAID
+    OUT at, which for "Camera fixed at PA" is a PA the rotator is never told
+    (spec 3.3, ruling 3). ``_single`` has to ask the same question, or the
+    card finds no target and ``_refuse_a_foreign_plan`` fails the whole
+    answer with a 500."""
+
+    @staticmethod
+    def _target_graph(**params):
+        return FlowGraph(
+            nodes=[_n("t", "target", name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09", **params),
+                   _n("c", "capture", x=100, filter="L", exposure=60,
+                      gain=100, bin="1", count=5, goal=0)],
+            edges=[_e("t", "target", "c", "run")])
+
+    def test_a_camera_fixed_at_a_pa_is_found(self):
+        """Mutant "key on the commanded angle" (``_single`` keys on the plan
+        target's ``rotation_deg``, which is None for a fixed camera, as S1
+        did) failed:
+            E   ValueError: 1 plan target(s) match no block of this compile
+                (M31): the plan was not compiled from it with
+                flow_id='flow-progress-a', so every count read against it
+                would be wrong
+        """
+        graph = self._target_graph(rotation=30, angle="Camera fixed at PA")
+        compiled, plan = _compile(graph)
+        target = plan.targets[0]
+        assert target.rotation_deg is None, \
+            "premise: a fixed camera commands no angle"
+        got = flow_progress(compiled, plan,
+                            _session(plan, _frames(target.steps[0].id, 2)),
+                            flow_id=FLOW)
+        assert got["blocks"][0]["panels"][0]["target_id"] == target.id
+        assert got["blocks"][0]["banked"] == 2
+
+    def test_a_nudged_target_is_found_through_its_anchor(self):
+        """The save carried a 1' nudge, so the anchor is the old position and
+        the ids are the ones the frames were banked on.
+
+        Mutant "no anchor for a single target" (``_single`` passes no
+        anchor, so it keys the position the block is drawn at now) failed:
+            E   ValueError: 1 plan target(s) match no block of this compile
+                (M31): the plan was not compiled from it with
+                flow_id='flow-progress-a', so every count read against it
+                would be wrong
+        """
+        from astrodeck.catalog.coords import parse_dec, parse_ra
+        anchor = identity.anchor_for(
+            {"name": "M31", "ra": "00h 42m 44s", "dec": "+41 16 09"},
+            parse_ra("00h 42m 44s"), parse_dec("+41 16 09"), None,
+            canonical=None)
+        graph = self._target_graph(rotation=-1, frameAnchor=anchor)
+        graph.nodes[0].params["dec"] = "+41 17 09"
+        compiled, plan = _compile(graph)
+        target = plan.targets[0]
+        assert target.id == identity.target_id(identity.group_id(
+            FLOW, "t", identity.anchor_key(anchor))), \
+            "premise: to_plan keyed the target on its anchor"
+        got = flow_progress(compiled, plan,
+                            _session(plan, _frames(target.steps[0].id, 3)),
+                            flow_id=FLOW)
+        assert got["blocks"][0]["panels"][0]["target_id"] == target.id
+        assert got["blocks"][0]["banked"] == 3
+
+
 class TestThePayloadCarriesNoSiteData:
     """The route is ``CAP_VIEW_STATUS`` and a viewer can read it (spec 6.9).
     A key-name filter downstream cannot withhold a value this function computes

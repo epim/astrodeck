@@ -19,24 +19,40 @@ says whether light reached the sensor (``astrodeck.solve.light``), and on a
 
 A cloud verdict keeps today's ten-minute retry and sends no alert.
 
+ONLY A DARK MASTER EARNS THE HOURLY RETRY (#308, S3 orchestrator ruling 8).
+A verdict judged against a bias master or against the frame the check shot
+itself (#262) stands on a floor drawn from a pedestal, and #308 records that
+nobody has measured whether a thick overcast over a dark site with no Moon
+can read inside that band. So the hourly backoff follows the verdict's
+``reference_kind``: a dark master's spell retries after ten minutes and then
+hourly; every other no-light spell sends its one alert and keeps the
+ten-minute retry, and its alert says so. The last section holds that.
+
 Each case names the mutation that turns it red and the failure it produced,
 verbatim, from a run of that mutant against a byte copy of the file.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
+from astropy.io import fits
 
 from _simhub import sim_hub  # noqa: F401 (fixture import)
+from astrodeck.calibration.matcher import MasterRecord
+from astrodeck.devices.base import CameraFrame
+from astrodeck.hub import Hub
 from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.models import ExposureStep, Target
 from astrodeck.sequence.resume_arm import (NO_LIGHT_RETRY_S, RETRY_INTERVAL_S,
                                            ResumeArm)
 from astrodeck.sequence.session import Session, session_store
 from astrodeck.solve import light
+from astrodeck.solve.base import SolveResult
 
 T0 = 1_700_000_000.0
 
@@ -52,12 +68,15 @@ def _plan() -> SequencePlan:
 
 def _dark_error() -> light.NoLightError:
     """What ``solve_and_sync`` raises through a cap, built by the real
-    classifier from a #251-shaped frame. Numbers are put in its text on
-    purpose: the hold must not carry them."""
+    classifier from a #251-shaped frame, judged against a dark master for
+    its settings (the one kind that backs off hourly, #308). Numbers are put
+    in its text on purpose: the hold must not carry them."""
     rng = np.random.default_rng(251)
     frame = np.clip(np.rint(rng.normal(251.0, 9.0, (200, 300))), 0,
                     65535).astype(np.uint16)
-    v = light.classify(frame, light.Reference(level=250.0))
+    v = light.classify(frame, light.Reference(
+        level=250.0, source="the dark master for these settings",
+        kind=light.DARK_MASTER))
     assert v.kind == light.NO_LIGHT, v
     e = light.error_for(v, "Not enough stars.", "plate solve failed")
     return light.NoLightError(f"{e} [median {v.median:.0f} ADU]", v)
@@ -80,7 +99,9 @@ class _Rig:
     """The ladder around the solve, held still: focus trusted, the slew-limit
     gate passing, and the re-centring goto failing, so a solve that SUCCEEDS
     ends in an ordinary ten-minute refusal and no run starts. The solve plays
-    ``script``: ``"dark"``, ``"cloud"``, ``"unknown"`` or ``"solved"``."""
+    ``script``: ``"dark"``, ``"cloud"``, ``"unknown"``, ``"solved"``, or an
+    exception to raise as it is (the kinds section builds them through the
+    real ``failed_solve_error``)."""
 
     def __init__(self, hub, monkeypatch, script):
         from astrodeck.devices import fingerprint as _fp
@@ -102,6 +123,8 @@ class _Rig:
         async def solve(*a, **kw):
             self.solves += 1
             step = self.script.pop(0)
+            if isinstance(step, BaseException):
+                raise step
             if step == "dark":
                 raise _dark_error()
             if step in (light.CLOUD, light.UNKNOWN):
@@ -403,3 +426,277 @@ async def test_a_disarm_ends_the_spell(sim_hub, monkeypatch, bus_lines):
     assert rig.solves == 2, "premise: the disarm cleared the backoff"
     assert len(_alerts(bus_lines)) == 2, _alerts(bus_lines)
     assert rig.arm._retry_at == T0 + 120 + RETRY_INTERVAL_S
+
+
+# ===================================== #308: what the no-light verdict stood on
+#
+# Each error below is raised by the REAL ``failed_solve_error`` on a capped
+# 251 ADU frame at the #251 solve's settings, judged against a library that
+# holds the reference the case names, so the kind reaches ResumeArm the way
+# it does on the rig: through the classifier, not written into the error.
+
+#: The solve frame's shape; the medians are what matter.
+_SHAPE = (200, 300)
+
+
+@pytest.fixture
+def no_kept_self_shots():
+    """No case inherits another's kept self-reference (``light`` keeps one
+    per camera, readout and night, in process memory)."""
+    light._SELF_REFERENCES.clear()
+    yield
+    light._SELF_REFERENCES.clear()
+
+
+def _capped(seed: int, level: float = 251.0) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    return np.clip(np.rint(rng.normal(level, 9.0, _SHAPE)), 0,
+                   65535).astype(np.uint16)
+
+
+def _solve_frame(seed: int) -> CameraFrame:
+    """A capped recovery-solve frame: 12 s, gain 200, offset 30, bin 2, at
+    18.5 C, as on 2026-09-24."""
+    return CameraFrame(data=_capped(seed), exposure_s=12.0, gain=200,
+                       offset=30, binning=2, bayer_pattern=None,
+                       temperature_c=18.5, timestamp=0.0, data_is_linear=True)
+
+
+def _master_on_disk(tmp_path: Path, kind: str, level: float, *,
+                    gain: int = 200) -> MasterRecord:
+    path = tmp_path / f"{kind.lower()}_{level:g}_g{gain}.fits"
+    rng = np.random.default_rng(7)
+    fits.PrimaryHDU((level + rng.normal(0, 0.5, (64, 64)))
+                    .astype(np.float32)).writeto(path, overwrite=True)
+    return MasterRecord(id=path.stem, frame_type=kind,
+                        exposure_s=0.0 if kind == "BIAS" else 12.0,
+                        gain=gain, offset=30, temp_c=18.5, binning=2,
+                        filter="", frame_count=20, path=str(path),
+                        built_ts=1.0)
+
+
+class _Library:
+    def __init__(self, masters):
+        self._masters = masters
+
+    def list_masters(self):
+        return list(self._masters)
+
+
+class _CappedCam:
+    """A capped, shutterless camera: every exposure reads 251 ADU."""
+    name = "capped camera"
+    connected = True
+
+    def __init__(self):
+        self.shots = 0
+
+    async def expose(self, seconds, gain, offset, binning=1, light=True,
+                     save=False, target=""):
+        self.shots += 1
+        return CameraFrame(data=_capped(1000 + self.shots),
+                           exposure_s=seconds, gain=gain, offset=offset,
+                           binning=binning, bayer_pattern=None,
+                           temperature_c=18.5, timestamp=0.0,
+                           data_is_linear=True)
+
+
+class _LightHub:
+    """What ``failed_solve_error`` reads of a hub, with the REAL guard."""
+    exposure_guard = Hub.exposure_guard
+
+    def __init__(self, library):
+        self.master_library = library
+        self.devices = {"camera": _CappedCam()}
+        self._capture_lock = asyncio.Lock()
+        self._capture_busy = None
+
+
+async def _no_light_errors(kind: str, tmp_path: Path,
+                           n: int) -> list[light.NoLightError]:
+    """``n`` no-light errors judged against a reference of ``kind``: the
+    dark master for the frame's settings, a bias master at its readout, or
+    (the library holding a bias at another gain only) the frame the check
+    shoots itself."""
+    library = {
+        light.DARK_MASTER: [_master_on_disk(tmp_path, "DARK", 251.0)],
+        light.BIAS_MASTER: [_master_on_disk(tmp_path, "BIAS", 251.0)],
+        light.SELF_SHOT: [_master_on_disk(tmp_path, "BIAS", 240.0, gain=150)],
+    }[kind]
+    hub = _LightHub(_Library(library))
+    out = []
+    for i in range(n):
+        e = await light.failed_solve_error(
+            _solve_frame(i), SolveResult(False, message="Not enough stars."),
+            prefix="plate solve failed", hub=hub)
+        assert isinstance(e, light.NoLightError), e
+        assert e.reference_kind == kind, (e.reference_kind, e.verdict)
+        out.append(e)
+    return out
+
+
+async def _waits(rig: _Rig, n: int) -> list[float]:
+    """Tick at each retry in turn, ``n`` times, and return the wait each
+    tick set before the next attempt."""
+    t, waits = T0, []
+    for _ in range(n):
+        await rig.tick_at(t)
+        waits.append(rig.arm._retry_at - t)
+        t = rig.arm._retry_at
+    return waits
+
+
+async def test_a_dark_master_verdict_backs_off_hourly(
+        sim_hub, monkeypatch, bus_lines, tmp_path, no_kept_self_shots):
+    """Three no-light verdicts, each judged against the dark master for the
+    solve's settings: one alert, a first retry after ten minutes, then
+    hourly, the #251 behaviour, now earned by the kind.
+
+    RED under mutant "never hourly" (``_no_light_backoff``'s ``hourly``
+    made False, whatever the kind), observed verbatim:
+
+        E   AssertionError: [600.0, 600.0, 600.0]
+        E   assert [600.0, 600.0, 600.0] == [600.0, 3600.0, 3600.0]
+        E     At index 1 diff: 600.0 != 3600.0
+        E     Use -v to get more diff
+    """
+    _arm()
+    rig = _Rig(sim_hub, monkeypatch,
+               await _no_light_errors(light.DARK_MASTER, tmp_path, 3))
+    waits = await _waits(rig, 3)
+    assert waits == [RETRY_INTERVAL_S, NO_LIGHT_RETRY_S,
+                     NO_LIGHT_RETRY_S], waits
+    alerts = _alerts(bus_lines)
+    assert len(alerts) == 1, alerts
+    assert f"then every {int(NO_LIGHT_RETRY_S / 60)} min" in alerts[0], alerts
+
+
+async def test_a_self_shot_verdict_keeps_the_ten_minute_retry_with_one_alert(
+        sim_hub, monkeypatch, bus_lines, tmp_path, no_kept_self_shots):
+    """Three no-light verdicts, each judged against the frame the check shot
+    itself: exactly one alert, and ten minutes every time, since only a dark
+    master is sure enough to wait an hour on (#308). The alert says it looks
+    again every ten minutes and promises no hourly retry. The hold is the
+    no-light hold, in words, keeping its ``since``.
+
+    RED under mutant "back off on any reference" (``_no_light_backoff``
+    answers ``NO_LIGHT_RETRY_S`` for every verdict after a spell's first,
+    whatever its kind), observed verbatim:
+
+        E   AssertionError: [600.0, 3600.0, 3600.0]
+        E   assert [600.0, 3600.0, 3600.0] == [600.0, 600.0, 600.0]
+        E     At index 1 diff: 3600.0 != 600.0
+        E     Use -v to get more diff
+
+    RED under mutant "no alert for a self-shot" (the spell's alert said only
+    for a dark master's verdict; the spell still opens), observed verbatim:
+
+        E   AssertionError: []
+        E   assert 0 == 1
+        E    +  where 0 = len([])
+    """
+    _arm()
+    rig = _Rig(sim_hub, monkeypatch,
+               await _no_light_errors(light.SELF_SHOT, tmp_path, 3))
+    waits = await _waits(rig, 3)
+    assert waits == [RETRY_INTERVAL_S] * 3, waits
+    alerts = _alerts(bus_lines)
+    assert len(alerts) == 1, alerts
+    assert f"every {int(RETRY_INTERVAL_S / 60)} min" in alerts[0], alerts
+    assert f"{int(NO_LIGHT_RETRY_S / 60)} min" not in alerts[0], alerts
+    assert light.NO_LIGHT_WORDS in rig.arm.hold["reason"], rig.arm.hold
+    assert rig.arm.hold["since"] == T0, rig.arm.hold
+
+
+async def test_a_bias_master_verdict_keeps_the_ten_minute_retry(
+        sim_hub, monkeypatch, bus_lines, tmp_path, no_kept_self_shots):
+    """Two no-light verdicts judged against a bias master at the solve's
+    readout: one alert, ten minutes both times. A bias is a floor, not the
+    frame's no-light level, as the self-shot is.
+
+    RED under mutant "a bias master backs off" (the hourly retry asked of
+    ``kind in (DARK_MASTER, BIAS_MASTER)``), observed verbatim:
+
+        E   AssertionError: [600.0, 3600.0]
+        E   assert [600.0, 3600.0] == [600.0, 600.0]
+        E     At index 1 diff: 3600.0 != 600.0
+        E     Use -v to get more diff
+    """
+    _arm()
+    rig = _Rig(sim_hub, monkeypatch,
+               await _no_light_errors(light.BIAS_MASTER, tmp_path, 2))
+    waits = await _waits(rig, 2)
+    assert waits == [RETRY_INTERVAL_S] * 2, waits
+    assert len(_alerts(bus_lines)) == 1, _alerts(bus_lines)
+
+
+@pytest.mark.parametrize("between", [light.CLOUD, "solved"])
+async def test_light_ends_a_self_shot_spell_as_it_ends_any(
+        sim_hub, monkeypatch, bus_lines, tmp_path, no_kept_self_shots,
+        between):
+    """Control: a self-shot's spell is the one spell there is. A cloud
+    verdict or a solve that works between two self-shot verdicts ends it, so
+    the second verdict is a new spell with its own alert, and every retry is
+    ten minutes, as today.
+
+    RED under mutant "light does not end the spell" (``tick``'s
+    ``self._no_light_spell = None`` on a "lit" ladder removed), observed
+    verbatim, for both parameters (the ``where`` lines after these are
+    left out; re-run by the S3 verifier when the alert's last sentence
+    changed):
+
+        E   AssertionError: ["auto-resume for 'cap': no light: the optic is capped, covered or obstructed. Its recovery plate solve read the camer... looks again every 10 min, and backs off to hourly only once a dark master for those settings gives the same verdict."]
+        E   assert 1 == 2
+    """
+    _arm()
+    first, second = await _no_light_errors(light.SELF_SHOT, tmp_path, 2)
+    rig = _Rig(sim_hub, monkeypatch, [first, between, second])
+    waits = await _waits(rig, 3)
+    assert rig.solves == 3
+    assert waits == [RETRY_INTERVAL_S] * 3, waits
+    assert len(_alerts(bus_lines)) == 2, _alerts(bus_lines)
+
+
+async def test_each_verdict_in_a_spell_waits_by_its_own_kind(
+        sim_hub, monkeypatch, bus_lines, tmp_path, no_kept_self_shots):
+    """A spell whose reference changes kind: the sensor cools into a dark
+    master's temperature band after the self-shot opened the spell, then
+    warms out of it again. Still one spell and one alert; the first retry is
+    ten minutes, as every spell's is, and each later verdict waits by the
+    kind of reference IT was judged against: hourly behind the dark master,
+    ten minutes behind the self-shot. So a verdict the evidence has grown
+    sure of backs off, and one it has grown less sure of does not.
+
+    THE ONE ALERT MUST STILL BE TRUE when the spell goes hourly. It was
+    sent on the self-shot, so it promises ten minutes, and it must say that
+    promise lasts only until a dark master gives the same verdict: the
+    retry after it waits an hour, and no second alert comes to say so.
+
+    RED under mutant "the spell's first kind rules" (``_no_light_backoff``
+    keeps the kind the spell opened with and waits by it on every later
+    verdict), observed verbatim:
+
+        E   AssertionError: [600.0, 600.0, 600.0, 600.0]
+        E   assert [600.0, 600.0, 600.0, 600.0] == [600.0, 3600.0, 3600.0, 600.0]
+        E     At index 1 diff: 600.0 != 3600.0
+        E     Use -v to get more diff
+
+    RED under mutant "the alert promises ten minutes for good" (the
+    self-shot alert's last sentence back to "... every 10 min rather than
+    hourly.", its words before the S3 verifier's fix), observed verbatim:
+
+            assert "hourly only once a dark master" in alerts[0], alerts[0]
+        E   AssertionError: auto-resume for 'cap': no light: the optic is capped, covered or obstructed. Its recovery plate solve read the camera at its no-light level as a frame it shot itself at the camera's shortest exposure measures it, so nothing will be imaged until the optic is uncovered. With no dark master for the solve's settings a very dark overcast could read the same, so it looks again every 10 min rather than hourly.
+        E   assert 'hourly only once a dark master' in "auto-resume for 'cap': no light: the optic is capped, covered or obstructed. Its recovery plate solve read the camera... for the solve's settings a very dark overcast could read the same, so it looks again every 10 min rather than hourly."
+    """
+    _arm()
+    selfshot = await _no_light_errors(light.SELF_SHOT, tmp_path, 2)
+    dark = await _no_light_errors(light.DARK_MASTER, tmp_path, 2)
+    rig = _Rig(sim_hub, monkeypatch,
+               [selfshot[0], dark[0], dark[1], selfshot[1]])
+    waits = await _waits(rig, 4)
+    assert waits == [RETRY_INTERVAL_S, NO_LIGHT_RETRY_S, NO_LIGHT_RETRY_S,
+                     RETRY_INTERVAL_S], waits
+    alerts = _alerts(bus_lines)
+    assert len(alerts) == 1, alerts
+    assert "hourly only once a dark master" in alerts[0], alerts[0]

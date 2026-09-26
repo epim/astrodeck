@@ -122,16 +122,52 @@ class TestTheGeneratedGraph:
                                                   NGC6946["dec"])
 
     def test_it_is_the_proven_deep_sky_shape(self):
-        """Dusk window, target, slew + center, autofocus, guide, the capture
-        stage, session report -- plus the relative HFR watchdog and a safety
-        monitor that aborts and parks."""
+        """Dusk window, target, autofocus, guide, the capture stage, session
+        report -- plus the relative HFR watchdog and a safety monitor that
+        aborts and parks.
+
+        NO SLEW + CENTER since S3 (#189 U-09, spec 1.7): the TARGET block
+        centres, and the stage's settings never reached the run. RED under
+        mutant "SLEW left in the lane" (wizard.py appends ``"slew"`` before
+        ``"autofocus"`` again), observed verbatim:
+
+            E   AssertionError: ['dusk', 'target', 'slew', 'autofocus',
+                'guide', 'cycle', ...]
+            E   assert 'slew' not in ['dusk', 'target', 'slew', 'autofocus',
+                'guide', 'cycle', ...]
+
+        (and ``test_a_guided_quick_flow_has_no_issues_at_all`` with it, on
+        doctor L1's note).
+        """
         rec = wizard.quick(NGC6946, 10, ["L"])
         types = [n.type for n in rec.graph.nodes]
-        for want in ("dusk", "target", "slew", "autofocus", "guide", "cycle",
+        for want in ("dusk", "target", "autofocus", "guide", "cycle",
                      "report", "condition", "refocus", "safety", "abort"):
             assert want in types, f"a quick flow with no {want}: {types}"
+        assert "slew" not in types, types
         cond = _node(rec, "condition").params
         assert cond["when"] == "HFR above (x focus)" and cond["threshold"] == 1.3
+
+    def test_its_target_is_created_and_counts_accepted_subs(self):
+        """The quick flow's TARGET is made by the wizard, so it carries the
+        Created-as column (spec 3.1): accepted subs only (Revision 2 ruling
+        2), and no angle beyond "Any angle" (ruling 9), under the picker's
+        name and coordinates. Its plan counts accepted subs.
+
+        RED under mutant "the wizard reads the missing-key defaults"
+        (``_Canvas.add`` takes ``default_params``), observed verbatim:
+
+            E   KeyError: 'angle'
+
+        (the missing-key defaults have no `angle` at all: it is derived).
+        """
+        rec = wizard.quick(NGC6946, 4, ["L", "R"])
+        t = _node(rec, "target").params
+        assert (t["counts"], t["angle"], t["rotation"]) == (
+            "Accepted subs", "Any angle", -1)
+        plan, _ = to_sequence_plan(compile_plan(rec.graph, rec.name),
+                                   rec.graph)
+        assert plan.count_mode == "accepted"
 
     def test_the_watchdog_is_fed_by_the_cycle_and_fires_the_refocus(self):
         """A CONDITION with nothing wired into `events` never fires, and one

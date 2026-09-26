@@ -42,6 +42,7 @@ observer is, so we must not pretend to know when their night is").
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -50,9 +51,10 @@ from typing import Any
 
 from ..sequence.schedule import (hours_to_meridian_flip, observing_night,
                                  prev_sun_event)
-from .compile import compile_plan
+from .compile import (_grid_of, compile_plan, is_multi_panel, loop_wires,
+                      parse_skip)
 from .models import FlowGraph
-from .nodes import parse_cycle_plan
+from .nodes import parse_cycle_plan, target_angle
 
 #: Fallback imaging twilight when neither the caller nor the config has one.
 #: Same number ``schedule.observing_night`` falls back to; duplicated rather
@@ -73,6 +75,11 @@ CURVE_STEP_MIN = 10
 #: row names its tone and the UI maps it to the token ladder.
 TONE_TEXT, TONE_DIM, TONE_FAINT = "text", "dim", "faint"
 TONE_GOOD, TONE_WARN, TONE_BAD = "good", "warn", "bad"
+
+#: What ``resolve_tonight``'s ``progress`` takes: the flow's progress answer
+#: (``progress.flow_progress``'s), a callable returning it, or None.
+ProgressSource = (Callable[[], Mapping[str, Any] | None] | Mapping[str, Any]
+                  | None)
 
 _NO_SITE = ("No observatory site is set, so there is no night to resolve - "
             "nothing below would be about where you are.")
@@ -469,7 +476,9 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
                     frames_by_target: Callable[
                         [], Mapping[str, Mapping[str, int]]] | None = None,
                     resolve_name: Callable[[str], tuple[float, float] | None] | None = None,
-                    step_min: int = CURVE_STEP_MIN) -> dict:
+                    step_min: int = CURVE_STEP_MIN,
+                    hop_cost_s: float | None = None,
+                    progress: ProgressSource = None) -> dict:
     """Everything the Tonight panel draws, for one flow, at one instant.
 
     ``plan`` is a compiled plan (``compile.compile_plan``) or the graph itself,
@@ -482,6 +491,28 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
     ``captures/reports`` lazily and this function can stay pure; the default is
     NO LEDGER, and a budget row then says the goal and tonight's contribution
     and explicitly does not claim a banked figure.
+
+    ``hop_cost_s`` is the MEASURED mean cost of one hop between targets, in
+    seconds (``SequenceEngine.measured_cost("hop")``'s mean, #189 S3), or
+    None while nothing has measured one. Only a mosaic reads it: its budget
+    rows add the hops (``_budget``) and its brief sentence names the cost
+    (``brief``). None is never replaced by the engine's 150 s seed: a seed is
+    a guess, and the brief says "not measured yet" instead.
+
+    ``progress`` is the flow's progress answer, ``progress.flow_progress``'s,
+    or a callable returning it (read lazily, and only for a flow with a
+    mosaic). The CAMPAIGN tab's per-panel rows come from it (``_campaign``),
+    with no pool required. None, or a callable that raises, is no progress:
+    the rows are left out and the note says so.
+
+    A MULTI-PANEL TARGET IS ONE BLOCK (spec 3.2, #189 U-10). Its compiled
+    entry is one entry, so it gets ONE ``compute_night``, on its centre, like
+    any target: one curve, one window, one flip. Its row adds ``mosaic``
+    (``_mosaic_night``): each shot panel's peak altitude, stamped by
+    ``framing._stamp_transit_alt`` on the panel centres ``compute_mosaic``
+    lays out, and the ``band`` the timeline draws from the worst and the
+    best of them. Single targets and pool members carry no such key, so
+    their answer is what it was.
 
     Returns ``{ok, reason, now_unix, twilight_deg, night, flats, moon, targets,
     budget, story}``; on failure ``ok`` is False, ``reason`` says why in a
@@ -542,9 +573,14 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
                 "transit_alt": None, "transit_in_daylight": None,
                 "meridian_flip_unix": None, "moon_sep_deg": None,
                 "never_rises": None,
+                **_mosaic_key(entry, None, date),
             })
             continue
         ra_h, dec_d = coords
+        # ONE PER BLOCK, a mosaic's included (spec 3.2): the block's centre
+        # gives its curve, window and flip. Its panels' spread is the peak
+        # altitude `_mosaic_key` stamps on each, which is a far cheaper pass
+        # than a night per panel and is the number the modal already shows.
         night = compute_night(ra_h, dec_d, date=date, step_min=step_min,
                               alt_limit=floor, site=sd)
         dark_start, dark_end = night["dark_start_unix"], night["dark_end_unix"]
@@ -572,6 +608,7 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
             "meridian_flip_unix": _flip_unix(ra_h, lon, t_now, dusk, dawn),
             "moon_sep_deg": night["moon"]["separation_deg"],
             "never_rises": night["never_rises_above_limit"],
+            **_mosaic_key(entry, coords, date),
         })
 
     flats = None
@@ -582,7 +619,7 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
                  "window": df.get("window"), "adu_target": df.get("adu_target"),
                  "count": df.get("count"), "method": df.get("method")}
 
-    budget = _budget(plan_dict, banked)
+    budget = _budget(plan_dict, banked, hop_cost_s)
 
     out = {
         "ok": True,
@@ -602,8 +639,8 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
         # The CAMPAIGN tab and the STORY tab's brief. Both read the GRAPH, not
         # the compile, so both are empty when a caller hands in a plan dict -
         # the same rule the dawn story already follows for the report sink.
-        "campaign": _campaign(graph, frames_by_target),
-        "brief": brief(graph),
+        "campaign": _campaign(graph, frames_by_target, progress),
+        "brief": brief(graph, hop_cost_s=hop_cost_s),
     }
     out["story"] = _story(out, plan_dict, graph)
     return out
@@ -641,10 +678,234 @@ def _flip_unix(ra_hours: float, lon: float, t_now: float,
     return flip if dusk <= flip <= dawn else None
 
 
+# --------------------------------------------------------------------- mosaics
+#
+# Spec 3.2, S3 item 5, #189 U-10. A multi-panel TARGET compiles to ONE entry,
+# and Tonight treats it as one block: one night on its centre, and on top of
+# that each shot panel's peak altitude and the band the timeline draws from
+# the worst and the best of them.
+
+def _mosaic_grid(entry: dict) -> tuple[int, int, set[tuple[int, int]]] | None:
+    """``(rows, cols, skipped)`` for a compiled mosaic entry, the skipped
+    panels as 0-based ``(row, col)`` cells, or None for any other entry.
+
+    The compile writes ``skip`` 1-based and only with cells of its own grid
+    (``compile.parse_skip``); a cell outside the grid, which only a compiled
+    dict built by hand could hold, skips nothing, as ``to_plan`` skips
+    nothing for it."""
+    m = entry.get("mosaic")
+    if not m or entry.get("pool_rank") is not None:
+        return None
+    rows = max(1, int(_num(m.get("rows"), 1)))
+    cols = max(1, int(_num(m.get("cols"), 1)))
+    skip: set[tuple[int, int]] = set()
+    for cell in m.get("skip") or []:
+        try:
+            r, c = int(cell[0]) - 1, int(cell[1]) - 1
+        except (TypeError, ValueError, IndexError):
+            continue
+        if 0 <= r < rows and 0 <= c < cols:
+            skip.add((r, c))
+    return rows, cols, skip
+
+
+def _live_panels(entry: dict) -> int | None:
+    """How many panels a mosaic entry shoots (its grid less its skips), or
+    None for an entry that is not a mosaic."""
+    grid = _mosaic_grid(entry)
+    return None if grid is None else grid[0] * grid[1] - len(grid[2])
+
+
+def _panel_label(row: int, col: int) -> str:
+    """A panel as the operator names it: 1-based "row-col", the suffix
+    ``to_plan`` gives each panel's target, so "2-1" here is the row the
+    Plan and the log call "M31 2-1"."""
+    return f"{row + 1}-{col + 1}"
+
+
+def _run_sync(coro: Any) -> Any:
+    """Run a coroutine to its end from this synchronous module.
+
+    ``framing._stamp_transit_alt`` is async (the mosaic route awaits it), and
+    this resolver runs on a worker thread (the route's ``to_thread``), where
+    no loop is running, so ``asyncio.run`` serves. A caller already inside a
+    running loop cannot use ``asyncio.run``; the coroutine then gets a loop
+    of its own on a one-off thread, rather than a RuntimeError out of the
+    Tonight panel."""
+    import asyncio
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _mosaic_key(entry: dict, coords: tuple[float, float] | None,
+                date: str) -> dict:
+    """``{"mosaic": ...}`` for a mosaic's Tonight row, ``{}`` for every other
+    row, so a single target's and a pool member's rows keep their keys."""
+    night = _mosaic_night(entry, coords, date)
+    return {} if night is None else {"mosaic": night}
+
+
+def _mosaic_night(entry: dict, coords: tuple[float, float] | None,
+                  date: str) -> dict | None:
+    """A mosaic block's panels tonight, or None for an entry that is not one::
+
+        {rows, cols, live, skipped: ["2-1", ...],
+         panels: [{panel, row, col, transit_alt | transit_alt_error}],
+         band: null | {worst: {panel, row, col, transit_alt}, best: {...}},
+         [reason]}
+
+    THE PANELS ARE THE RUN'S. They are laid out by ``framing.compute_mosaic``
+    from the block's centre, grid, overlap, field and layout angle, the one
+    projection ``to_plan`` expands the block with (spec 3.3: "there is no
+    third copy"), read through ``to_plan``'s own ``_angles`` and
+    ``_mosaic_numbers``, so the panels here are the panels the run slews to.
+    A skipped panel is not shot, so it is listed in ``skipped`` and not
+    stamped.
+
+    THE PEAK ALTITUDES ARE ``framing._stamp_transit_alt``'s, the per-panel
+    stamp the mosaic route and the modal's altitude column use, run on the
+    panel centres for the night this resolver pinned (``date``). A panel it
+    could not answer for carries its ``transit_alt_error``, the same words the
+    modal shows, never a gap. It reads the site the hub holds, which is the
+    site the route passes here (``hub.site``); a direct caller that resolves
+    the night for another site gets panel altitudes for the hub's, until the
+    stamp takes a site of its own (#336).
+
+    THE BAND is the reduction ``mosaicNightSummary`` makes in the UI: the
+    lowest and the highest peak among the panels answered, so the timeline
+    can draw the spread the centre's one curve cannot show. Ties go to the
+    panel first in grid order. None when no panel is answered.
+
+    NOTHING PLACED IS NOT GUESSED. With no coordinates, no camera field (M1),
+    no angle (M2) or a grid ``to_plan`` would refuse, the panels cannot be
+    laid out, so ``panels`` is empty, ``band`` is None and ``reason`` says
+    why. The run refuses the same graph; Tonight still draws its centre."""
+    grid = _mosaic_grid(entry)
+    if grid is None:
+        return None
+    rows, cols, skip = grid
+    out: dict = {"rows": rows, "cols": cols,
+                 "live": rows * cols - len(skip),
+                 "skipped": [_panel_label(r, c) for r, c in sorted(skip)],
+                 "panels": [], "band": None}
+    why = ""
+    if coords is None:
+        why = "the block has no coordinates, so no panel can be placed"
+    else:
+        # Lazy, both: `catalog.framing` is the Atlas router and loads the auth
+        # layer, and `to_plan` imports this module, so neither is a top-level
+        # import here (`to_plan._expand_mosaic` imports framing the same way).
+        from ..catalog import framing
+        from .to_plan import GraphNotRunnable, _angles, _mosaic_numbers
+        try:
+            nums = _mosaic_numbers(entry)
+        except GraphNotRunnable as e:
+            nums, why = None, str(e)
+        layout = _angles(entry)[1]
+        if nums is not None and layout is None:
+            why = ("the block has no camera angle, and a grid is laid out at "
+                   "one, so its panels cannot be placed")
+        elif nums is not None and not (
+                (nums["fov_x"] or 0) > 0 and (nums["fov_y"] or 0) > 0):
+            why = ("the block has not recorded a camera field, so its panels "
+                   "cannot be placed")
+        elif nums is not None:
+            spec = {"ra_hours": coords[0], "dec_deg": coords[1],
+                    "rows": nums["rows"], "cols": nums["cols"],
+                    "overlap": nums["overlap"] / 100.0,
+                    "rotation_deg": layout, "fov_x_deg": nums["fov_x"],
+                    "fov_y_deg": nums["fov_y"]}
+            panels = [{"row": p["row"], "col": p["col"],
+                       "ra_hours": p["ra_hours"], "dec_deg": p["dec_deg"]}
+                      for p in framing.compute_mosaic(spec)["panels"]
+                      if (p["row"], p["col"]) not in skip]
+            _run_sync(framing._stamp_transit_alt(panels, date))
+            panels.sort(key=lambda p: (p["row"], p["col"]))
+            out["panels"] = [
+                {"panel": _panel_label(p["row"], p["col"]),
+                 "row": p["row"], "col": p["col"],
+                 **{k: p[k] for k in ("transit_alt", "transit_alt_error")
+                    if k in p}}
+                for p in panels]
+            out["band"] = _band(out["panels"])
+    if why:
+        out["reason"] = why
+    return out
+
+
+def _band(panels: list[dict]) -> dict | None:
+    """``{worst, best}``: the panels with the lowest and the highest peak
+    altitude among those answered, first in grid order on a tie (``panels``
+    arrives in grid order), or None when none is answered."""
+    answered = [p for p in panels if "transit_alt" in p]
+    if not answered:
+        return None
+
+    def ref(p: dict) -> dict:
+        return {k: p[k] for k in ("panel", "row", "col", "transit_alt")}
+
+    worst = min(answered, key=lambda p: p["transit_alt"])
+    best = max(answered, key=lambda p: p["transit_alt"])
+    return {"worst": ref(worst), "best": ref(best)}
+
+
 # ---------------------------------------------------------------- the ledger row
 
-def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None
-            ) -> list[dict]:
+def _measured(hop_cost_s: Any) -> float | None:
+    """A hop cost worth pricing with: a finite number of seconds above 0, or
+    None. Anything else is "not measured", never a zero-cost hop."""
+    if isinstance(hop_cost_s, bool) or not isinstance(hop_cost_s, (int, float)):
+        return None
+    return float(hop_cost_s) if math.isfinite(hop_cost_s) and hop_cost_s > 0 \
+        else None
+
+
+def _per_panel_s(step: dict) -> float:
+    """One panel's shutter seconds for a compiled step: a capture's exposure
+    times its count, a FILTER CYCLE's slot exposures times its cycles and
+    subs per pass (the counts ``to_plan._cycle_steps`` gives each slot)."""
+    if step.get("strategy") == "cycle":
+        per = max(1, int(_num(step.get("cycles"), 1))) * max(
+            1, int(_num(step.get("per_cycle"), 1)))
+        return sum(_num(s.get("exposure_s")) for s in step.get("slots") or []) \
+            * per
+    return _num(step.get("exposure_s")) * _num(step.get("count"))
+
+
+def _visits_per_panel(entry: dict) -> int:
+    """How many visits, each one hop, one panel of a mosaic takes to shoot
+    its whole quota.
+
+    The engine's own rule for the visits a member owes (``SequenceEngine.
+    _visits_owed``), with nothing banked: panel-first (no loop wire) is one
+    visit; rotating, a visit makes ``passes`` rounds, and a panel owes as
+    many rounds as its most-served step needs, ``count / per_visit`` rounded
+    up (a cycle's slot owes ``cycles``, a capture inside the loop its
+    ``count``). ``minVisit`` can only lengthen a visit and is left out, as
+    the engine leaves it out: an honest upper bound on the hops."""
+    if entry.get("loop") is not True:
+        return 1
+    rounds = 0
+    for step in entry.get("steps") or []:
+        if step.get("strategy") == "cycle":
+            owed = max(1, int(_num(step.get("cycles"), 1)))
+        else:
+            count = max(0, int(_num(step.get("count"))))
+            per = max(1, int(_num(step.get("per_visit"), 1) or 1))
+            owed = -(-count // per)
+        rounds = max(rounds, owed)
+    passes = max(1, int(_num((entry.get("mosaic") or {}).get("passes"), 1)
+                        or 1))
+    return max(1, -(-rounds // passes))
+
+
+def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None,
+            hop_cost_s: float | None = None) -> list[dict]:
     """Banked-vs-goal integration per filter, plus what tonight adds.
 
     ONE ROW PER DISTINCT STEP, not per target. ``compile_plan`` copies every
@@ -653,7 +914,29 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None
     (that is what "best available" means). Summing per target would promise
     four times the integration the rig can deliver, which is the direction of
     error that costs a project a week.
+
+    A MOSAIC IS THE OPPOSITE CASE (spec S3 item 5, #189 U-10). Its one
+    compiled entry stands for every panel it shoots, and EVERY panel owes the
+    step, each its own quota (spec 1.3 item 3), so its row is ``live`` panels
+    times the per-panel figure: ``goal_h`` and ``tonight_h`` both, since the
+    goal was set on a step every panel carries. Deduped like a pool, a 3x2
+    would promise one panel's hours for six panels' work, the same error in
+    the other direction. A mosaic's rows are its own: the scoping rule gives
+    its stages to it alone (spec 1.5), so they are neither deduped against
+    another entry's nor used to dedupe one. They add two keys:
+
+    * ``panels``, the live count the figures are multiplied by;
+    * ``hop_h``, the time spent moving between panels, when a MEASURED hop
+      cost is passed, else None. The block's hops are its panels times the
+      visits each takes (``_visits_per_panel``), priced at the measured
+      cost; a visit shoots every step of the block, so the hops are shared,
+      and each row carries its share by shutter time, which keeps the rows
+      of a block from counting one hop twice. ``tonight_h`` stays shutter
+      time alone: "tonight adds 2 h of Ha" is a claim about integration.
+
+    Single targets and pool members keep exactly the rows they had.
     """
+    hop_s = _measured(hop_cost_s)
     have_ledger = banked is not None
     bank: Mapping[str, float] = {}
     if banked is not None:
@@ -668,6 +951,17 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None
     seen: set[tuple] = set()
     rows: list[dict] = []
     for target in plan.get("targets") or []:
+        live = _live_panels(target)
+        if live == 0:
+            # Every panel skipped: `to_plan` leaves the block out of the plan,
+            # so it adds nothing tonight, and a "0 h goal" row would read as
+            # an unmeetable goal rather than an absent one.
+            continue
+        block_s = hops_h = 0.0
+        if live is not None:
+            block_s = sum(_per_panel_s(s) for s in target.get("steps") or [])
+            if hop_s is not None:
+                hops_h = live * _visits_per_panel(target) * hop_s / 3600.0
         for step in target.get("steps") or []:
             goal = _num(step.get("integration_goal_h"))
             if goal <= 0.0:
@@ -675,19 +969,27 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None
             sig = (step.get("filter"), step.get("exposure_s"),
                    step.get("gain"), step.get("binning"), step.get("count"),
                    goal)
-            if sig in seen:
-                continue
-            seen.add(sig)
+            if live is None:
+                if sig in seen:
+                    continue
+                seen.add(sig)
             filt = str(step.get("filter") or "—")
             tonight_h = _num(step.get("exposure_s")) * _num(step.get("count")) / 3600.0
-            rows.append({
+            row = {
                 "filter": filt,
-                "goal_h": round(goal, 2),
+                "goal_h": round(goal if live is None else goal * live, 2),
                 "banked_h": (round(_num(bank.get(filt)), 2) if have_ledger
                              else None),
-                "tonight_h": round(tonight_h, 2),
+                "tonight_h": round(tonight_h if live is None
+                                   else tonight_h * live, 2),
                 "has_ledger": have_ledger,
-            })
+            }
+            if live is not None:
+                row["panels"] = live
+                row["hop_h"] = (None if hop_s is None else round(
+                    hops_h * (_per_panel_s(step) / block_s if block_s > 0
+                              else 1.0), 2))
+            rows.append(row)
     return rows
 
 
@@ -737,7 +1039,66 @@ def _join_and(parts: list[str]) -> str:
     return ", ".join(parts[:-1]) + ", and " + parts[-1]
 
 
-def brief(graph: FlowGraph | None) -> str:
+def _duration(seconds: float) -> str:
+    """"2 m 40 s", or "45 s" under a minute: the hop cost as the modal's
+    readout writes it (spec 2.4), rounded to the second."""
+    minutes, secs = divmod(int(round(seconds)), 60)
+    return f"{minutes} m {secs} s" if minutes else f"{secs} s"
+
+
+def _mosaic_sentences(g: FlowGraph, block, hop_cost_s: float | None) -> str:
+    """One multi-panel TARGET, read back: its grid, the panels it skips, its
+    overlap and angle, whether its panels rotate every pass (the loop wire,
+    ``compile.loop_wires``, the compile's own reading) or run one at a time,
+    and what a hop between them costs (S3 item 5, spec 1.2, 1.4, 3.3).
+
+    Every number is the node's param as typed, except the panel counts, which
+    are the grid's and the skip list's, read by the compile's own
+    ``_grid_of`` and ``parse_skip`` so the brief cannot count a panel the
+    compile does not. The hop is the MEASURED cost or the words "not measured
+    yet", never the engine's seed."""
+    p = block.params
+    rows, cols = _grid_of(block)
+    skip, _unread = parse_skip(p.get("skip"), rows, cols)
+    total = rows * cols
+    name = str(p.get("name") or "").strip() or "This TARGET"
+    t = f"{name} is a {rows}x{cols} mosaic"
+    if skip:
+        gone = _join_and([f"{r}-{c}" for r, c in skip])
+        t += (f" shooting {total - len(skip)} of its {total} panels "
+              f"({gone} skipped)")
+    else:
+        t += f" of {total} panels"
+    t += f" at {p.get('overlap')}% overlap"
+    angle = target_angle(p)
+    if angle == "Rotate to PA":
+        t += (f", laid out at PA {p.get('rotation')}° with the rotator "
+              f"turned to it at every panel")
+    elif angle == "Camera fixed at PA":
+        t += (f", laid out at PA {p.get('rotation')}° with the camera fixed "
+              f"there by hand, and the run checks the angle at every panel")
+    else:
+        t += ", at no set angle, so its panels will not tile and it cannot run"
+    seg = [t + "."]
+    order = str(p.get("order") or "").lower()
+    if loop_wires(g, block):
+        passes = p.get("passes")
+        seg.append(f"After {passes} pass{'' if str(passes) == '1' else 'es'} "
+                   f"of its filters on a panel it moves on to the next "
+                   f"({order}), and comes back until every panel has its "
+                   f"subs.")
+    else:
+        seg.append(f"It shoots one panel at a time, each finished before the "
+                   f"next ({order}).")
+    hop = _measured(hop_cost_s)
+    seg.append(f"A hop between panels takes about {_duration(hop)}, as "
+               f"measured on this rig." if hop is not None else
+               "The hop between panels has not been measured on this rig "
+               "yet.")
+    return " ".join(seg)
+
+
+def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None) -> str:
     """The STORY tab's mechanical brief: the graph, read back as prose.
 
     "Generated deterministically from the graph, sentence per capability, params
@@ -755,6 +1116,17 @@ def brief(graph: FlowGraph | None) -> str:
     compile drops something (the `unmapped` list), the brief will still describe
     it - that gap is the compile's to report, and it does, rather than this
     quietly omitting a stage the operator can plainly see on the canvas.
+
+    NO SLEW SENTENCE (S3, spec 1.7). It read "slews and plate-solves to
+    within {tol}′ ({solver})" off a SLEW + CENTER node, whose tolerance and
+    solver never reached the run: every run centred to the hub's 0.02 deg,
+    and since S3 to the TARGET's own centring. A legacy SLEW left on a canvas
+    is the doctor's to name (L1), not a promise for the brief to repeat.
+
+    A MOSAIC GETS ITS OWN SENTENCES (``_mosaic_sentences``), one set per
+    multi-panel TARGET, after the target sentence. ``hop_cost_s`` is the
+    measured hop cost the route injects; with none, they say it is not
+    measured yet.
     """
     if graph is None:
         return ""
@@ -764,7 +1136,7 @@ def brief(graph: FlowGraph | None) -> str:
     cyc, cap, rep = n("cycle"), n("capture"), n("report")
     cw, hold, cq, pc = n("cloudwatch"), n("holdresume"), n("calib"), n("parkclose")
     saf, dome, df = n("safety"), n("dome"), n("duskflats")
-    guide, af, slew = n("guide"), n("autofocus"), n("slew")
+    guide, af = n("guide"), n("autofocus")
     seg: list[str] = []
 
     if dusk is not None:
@@ -795,11 +1167,10 @@ def brief(graph: FlowGraph | None) -> str:
                    f"moon (if up), within {p.get('maxHA')} h of the meridian.")
     elif tgt is not None:
         seg.append(f"{lead}arms {tgt.params.get('name')}.")
+    seg.extend(_mosaic_sentences(g, b, hop_cost_s)
+               for b in g.nodes if is_multi_panel(b))
 
     rig: list[str] = []
-    if slew is not None:
-        rig.append(f"slews and plate-solves to within {slew.params.get('tol')}′ "
-                   f"({slew.params.get('solver')})")
     if af is not None:
         rig.append(f"autofocuses ({str(af.params.get('method')).lower()})")
     if guide is not None:
@@ -975,13 +1346,112 @@ _DAWN = ("Dawn parks the mount and warms the camera - the dome is not driven "
          "where the ledger left off.")
 
 
+#: The CAMPAIGN note's words for the forecast nobody makes, said once so the
+#: pool's note and a mosaic's cannot drift apart.
+_NOT_FORECAST = ("Nights to finish are not forecast - clear-sky prediction "
+                 "that far out is not something this rig models.")
+
+
+def _read_progress(progress: ProgressSource) -> Mapping[str, Any] | None:
+    """The progress answer, called if it is a callable; None when there is
+    none or reading it failed. A progress read that raises (a session file
+    that will not load, ``flow_progress`` refusing a plan it cannot account
+    for) is NO PROGRESS, as a ledger that raises is no ledger: the tab must
+    not claim a count, and must not take the Tonight panel down with it."""
+    if progress is None:
+        return None
+    try:
+        got = progress() if callable(progress) else progress
+    except Exception:       # noqa: BLE001 - see the docstring: no count, no 500
+        return None
+    return got if isinstance(got, Mapping) else None
+
+
+def _panel_rows(mosaics: list, progress: ProgressSource) -> list[dict] | None:
+    """The CAMPAIGN tab's rows for a flow's mosaics, one per panel, from the
+    progress answer (``progress.flow_progress``), or None with no progress.
+
+    A row is ``{block, name, row, col, banked, owed, total, done, pct,
+    skipped}``: a shot panel's numbers are the progress answer's own subs,
+    banked (capped at each step's count), owed and total, counted by the
+    session's count mode, so the tab and the card's chip can never disagree;
+    ``done`` is a panel that owes nothing. A skipped panel follows its
+    block's shot panels with ``skipped`` true, owing nothing and holding
+    ``banked``, what the ledger has on it, so the skip does not hide the
+    subs that re-enabling it brings back.
+
+    SUBS, NOT CYCLES. A pool member's row counts complete cycles, because the
+    pool's quota is set in cycles; a panel's quota is its steps' counts, and
+    the progress answer counts those in subs. Only the blocks that are a
+    multi-panel TARGET in THIS graph are read, by node id, so an answer for
+    another flow puts no row here."""
+    answer = _read_progress(progress)
+    if answer is None:
+        return None
+    ids = {n.id for n in mosaics}
+    rows: list[dict] = []
+    for block in answer.get("blocks") or []:
+        node_id = block.get("node_id")
+        if node_id not in ids:
+            continue
+        for p in block.get("panels") or []:
+            banked = int(_num(p.get("banked")))
+            owed = int(_num(p.get("owed")))
+            total = int(_num(p.get("total")))
+            rows.append({
+                "block": node_id, "name": p.get("name"),
+                "row": p.get("row"), "col": p.get("col"),
+                "banked": banked, "owed": owed, "total": total,
+                "done": total > 0 and owed == 0,
+                "pct": min(100, round(100 * banked / total)) if total else None,
+                "skipped": False})
+        for p in block.get("skipped") or []:
+            rows.append({
+                "block": node_id, "name": p.get("name"),
+                "row": p.get("row"), "col": p.get("col"),
+                "banked": int(_num(p.get("banked"))), "owed": 0, "total": 0,
+                "done": False, "pct": None, "skipped": True})
+    return rows
+
+
+def _panels_clause(rows: list[dict] | None) -> str:
+    """The note's sentence about a flow's mosaic panels: how many are done,
+    the subs banked of the subs asked, and what the skipped ones hold; or
+    that no progress was read, so no count is claimed."""
+    if rows is None:
+        return ("No progress was read for this flow's mosaic, so no panel's "
+                "count is claimed.")
+    shot = [r for r in rows if not r["skipped"]]
+    skipped = [r for r in rows if r["skipped"]]
+    done = sum(1 for r in shot if r["done"])
+    t = (f"{done} of {len(shot)} mosaic panels done, "
+         f"{sum(r['banked'] for r in shot)} of {sum(r['total'] for r in shot)}"
+         f" subs banked")
+    if skipped:
+        held = sum(r["banked"] for r in skipped)
+        one = len(skipped) == 1
+        t += (f"; {len(skipped)} skipped panel{'' if one else 's'} "
+              f"hold{'s' if one else ''} {held} more, which come back when "
+              f"re-enabled")
+    return t + "."
+
+
 def _campaign(graph: FlowGraph | None,
-              frames_by_target: Callable[[], Mapping[str, Mapping[str, int]]] | None
-              ) -> dict:
-    """The CAMPAIGN tab: how much of the pool's quota each member has banked.
+              frames_by_target: Callable[[], Mapping[str, Mapping[str, int]]] | None,
+              progress: ProgressSource = None) -> dict:
+    """The CAMPAIGN tab: how much of the pool's quota each member has banked,
+    and how far each panel of a mosaic has got.
 
     Returns ``{is_campaign, has_pool, has_ledger, quota, members[], note}``.
     A member row is ``{name, banked, quota, done, pct}``.
+
+    A MOSAIC NEEDS NO POOL (S3 item 5, #189 U-10). A flow with a multi-panel
+    TARGET adds ``panels``, one row per panel from the injected ``progress``
+    (``_panel_rows``), and ``has_progress``; with no pool its answer is the
+    panels' (``has_pool`` stays False, because there is none, and the note
+    speaks of panels), where it used to be "campaigns need one" and nothing
+    else. A flow with no mosaic never reads ``progress`` and answers exactly
+    as it did.
 
     A CYCLE IS THE UNIT, and it is complete only when EVERY slot in the table
     has its subs. So a member's banked cycles is the MINIMUM over the slots of
@@ -1004,10 +1474,20 @@ def _campaign(graph: FlowGraph | None,
     pool = _first(g, "pool")
     dusk = _first(g, "dusk")
     cyc = _first(g, "cycle")
-    is_campaign = bool(
-        pool is not None and dusk is not None
+    mosaics = [n for n in g.nodes if is_multi_panel(n)] if g is not None else []
+    repeats = bool(
+        dusk is not None
         and str(dusk.params.get("repeat") or "Single night") != "Single night")
+    is_campaign = pool is not None and repeats
 
+    if pool is None and mosaics:
+        rows = _panel_rows(mosaics, progress)
+        clause = _panels_clause(rows)
+        return {"is_campaign": repeats, "has_pool": False, "has_ledger": False,
+                "quota": 0, "members": [],
+                "note": (f"{clause} {_NOT_FORECAST} {_DAWN}" if rows is not None
+                         else f"{clause} {_DAWN}"),
+                "panels": rows or [], "has_progress": rows is not None}
     if pool is None:
         return {"is_campaign": False, "has_pool": False, "has_ledger": False,
                 "quota": 0, "members": [],
@@ -1066,9 +1546,16 @@ def _campaign(graph: FlowGraph | None,
                 f"finish are not forecast - clear-sky prediction that far out is "
                 f"not something this rig models. {_DAWN}")
 
-    return {"is_campaign": is_campaign, "has_pool": True,
-            "has_ledger": has_ledger, "quota": quota, "members": members,
-            "note": note}
+    out = {"is_campaign": is_campaign, "has_pool": True,
+           "has_ledger": has_ledger, "quota": quota, "members": members,
+           "note": note}
+    if mosaics:
+        # A pool AND a mosaic: the pool's answer, with the panels beside its
+        # members and one sentence about them after its note.
+        rows = _panel_rows(mosaics, progress)
+        out.update(note=f"{note} {_panels_clause(rows)}", panels=rows or [],
+                   has_progress=rows is not None)
+    return out
 
 
 def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
@@ -1189,20 +1676,31 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
         rules.append(row(None, "IF unsafe (or a stale reading) → abort, park, "
                                "warm, close — fail closed", TONE_BAD, "ANY"))
 
-    # 9. the budget
+    # 9. the budget. A mosaic's row (it has `panels`) says the figures are
+    #    every panel's, and what moving between them costs once measured.
     for b in out["budget"]:
+        panels = hops = ""
+        if "panels" in b:
+            n = b["panels"]
+            panels = f" across {n} panel{'' if n == 1 else 's'}"
+            hops = (f", plus ≈{b['hop_h']:g} h moving between panels"
+                    if b["hop_h"] is not None else
+                    ", before the moves between panels, which no hop "
+                    "measured on this rig can price yet")
         if b["has_ledger"]:
             rules.append(row(
                 None,
                 f"{b['filter']}: {b['banked_h']:g} h banked / {b['goal_h']:g} h "
-                f"goal — tonight adds ≈{b['tonight_h']:g} h; the session ledger "
-                f"resumes the remainder next clear night", TONE_GOOD, "BUDGET"))
+                f"goal{panels} — tonight adds ≈{b['tonight_h']:g} h{hops}; the "
+                f"session ledger resumes the remainder next clear night",
+                TONE_GOOD, "BUDGET"))
         else:
             rules.append(row(
                 None,
-                f"{b['filter']}: {b['goal_h']:g} h goal — tonight adds "
-                f"≈{b['tonight_h']:g} h. No session ledger was read, so nothing "
-                f"here is counted as already banked", TONE_GOOD, "BUDGET"))
+                f"{b['filter']}: {b['goal_h']:g} h goal{panels} — tonight adds "
+                f"≈{b['tonight_h']:g} h{hops}. No session ledger was read, so "
+                f"nothing here is counted as already banked", TONE_GOOD,
+                "BUDGET"))
 
     # 10. dawn. The report clause is only claimed when the GRAPH was supplied —
     # a session-report sink compiles to nothing, so a plan alone cannot know

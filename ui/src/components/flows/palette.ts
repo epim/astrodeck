@@ -13,7 +13,13 @@
 // Sources: MILESTONE2-CONTRACT.md §C.7 (group names + order, and the §G-3
 // dispute), README.md §3 line 65, "AstroDeck Flows.dc.html" line 1456,
 // server/astrodeck/flows/nodes.py `PALETTE_GROUPS`.
+//
+// LEGACY TYPES ARE NOT OFFERED (spec 1.7). SLEW + CENTER is part of the TARGET
+// block now: it still loads, so a saved graph keeps working, but the rail no
+// longer offers it. The exhaustiveness proof below therefore covers every
+// NON-legacy type, and a second check refuses a legacy type in the rail.
 import type { FlowNodeType } from "./flowsTypes";
+import type { LegacyNodeType } from "./nodeDefs";
 
 export interface PaletteGroup {
   /** The rail's group heading, rendered VERBATIM.
@@ -100,11 +106,14 @@ export const PALETTE_ITEM_ORDER_DISPUTED: readonly string[] = [
  * a capture stage that interleaves, not a loop construct. It used to be filed
  * under LOGIC, which read as though the graph had a loop primitive — the export
  * is explicit that it does not.
+ *
+ * RIG OPS no longer starts with SLEW + CENTER, the one departure from the
+ * prototype's array, and a ruled one (spec 1.7): it is a legacy type now.
  */
 export const PALETTE_GROUPS = [
   { label: "SOURCES", types: ["dusk", "target", "safety", "cloudwatch"] },
   { label: "EQUIPMENT", types: ["dome", "flatpanel"] },
-  { label: "RIG OPS", types: ["slew", "autofocus", "guide", "capture", "cycle", "duskflats", "calib"] },
+  { label: "RIG OPS", types: ["autofocus", "guide", "capture", "cycle", "duskflats", "calib"] },
   { label: "LOGIC", types: ["condition", "pool"] },
   { label: "ACTIONS + SINKS", types: ["notify", "refocus", "holdresume", "parkclose", "abort", "report"] },
 ] as const satisfies readonly PaletteGroup[];
@@ -114,26 +123,34 @@ export const PALETTE_GROUPS = [
  *  A type missing from this list is a node the operator cannot create — the
  *  graph can still contain one (a preset, a saved flow, the server), so the
  *  failure is silent: the stage renders on the canvas and simply cannot be
- *  added again. */
+ *  added again. That is exactly what a legacy type is meant to do, and the
+ *  only case where it is allowed. */
 export const PALETTE_TYPES: readonly FlowNodeType[] =
   PALETTE_GROUPS.flatMap((g) => g.types);
 
 type PalettedNodeType = (typeof PALETTE_GROUPS)[number]["types"][number];
 
-/** Node types in the union that no group offers. `never` while the palette is
- *  complete. */
-export type NodeTypeMissingFromPalette = Exclude<FlowNodeType, PalettedNodeType>;
+/** Non-legacy node types in the union that no group offers. `never` while the
+ *  palette is complete. */
+export type NodeTypeMissingFromPalette =
+  Exclude<FlowNodeType, PalettedNodeType | LegacyNodeType>;
 /** Anything in the palette that is not a node type. `never` while the palette
  *  is honest. */
 export type PaletteTypeWithNoNode = Exclude<PalettedNodeType, FlowNodeType>;
+/** A legacy type the palette still offers. `never` while the rail hides them:
+ *  offering one would let the operator build what spec 1.7 folded into the
+ *  TARGET block. */
+export type PaletteOffersLegacyType = Extract<PalettedNodeType, LegacyNodeType>;
 
 /**
- * Compile-time proof that the palette covers `FlowNodeType` exactly.
+ * Compile-time proof that the palette covers every NON-LEGACY `FlowNodeType`
+ * exactly, and offers no legacy one.
  *
- * The annotation resolves to `true` only while both gap types are `never`; add a
- * 20th member to `FlowNodeType` and forget it here, and the annotation becomes
- * `false`, the initialiser stops assigning, and `tsc --noEmit` fails on THIS
- * line rather than nowhere at all.
+ * The annotation resolves to `true` only while all three gap types are
+ * `never`; add a 22nd member to `FlowNodeType` and forget it here, or put
+ * SLEW + CENTER back in a group, and the annotation becomes `false`, the
+ * initialiser stops assigning, and `tsc --noEmit` fails on THIS line rather
+ * than nowhere at all.
  *
  * Exported for two reasons: `noUnusedLocals` is on, so a local guard would have
  * to be deleted; and `tsx` strips types without checking them, so `npm test`
@@ -142,5 +159,7 @@ export type PaletteTypeWithNoNode = Exclude<PalettedNodeType, FlowNodeType>;
  * Nothing reads the value.
  */
 export const PALETTE_COVERS_EVERY_NODE_TYPE: [NodeTypeMissingFromPalette] extends [never]
-  ? [PaletteTypeWithNoNode] extends [never] ? true : false
+  ? [PaletteTypeWithNoNode] extends [never]
+    ? [PaletteOffersLegacyType] extends [never] ? true : false
+    : false
   : false = true;

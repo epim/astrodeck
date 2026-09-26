@@ -74,9 +74,18 @@ def _dirty(store: ConfigStore, cfg_dir, cap):
     (cap / "sessions" / "s1.json").write_text('{"id":"s1"}')
     (cap / "reports").mkdir()
     (cap / "reports" / "r1.json").write_text('{"id":"r1"}')
-    # NOT data, NOT setup: install assets/caches that must survive both modes
+    # NOT data, NOT setup: install assets/caches that must survive both modes.
+    # exist_ok (#201): ``logs`` is the night log's own folder, and since S3's
+    # capture-root isolation (conftest ``_point_the_capture_root_at``) every
+    # test has a fresh ``NightLogWriter`` whose first line creates ``logs/``
+    # under whatever root is current. A client's lifespan log line can reach
+    # this test's root before this line runs: measured on this file alone,
+    # -n0, a bare ``mkdir()`` failed 6 of 11 runs with FileExistsError
+    # [WinError 183] on ...\captures\logs, and 0 of 8 with ``exist_ok``
+    # (S3-X's verifier); measured again in the integration of S3, in a
+    # private copy: 5 of 8 runs red bare, and 0 of 5 with ``exist_ok``.
     for name in PRESERVED_CAPTURE_ENTRIES:
-        (cap / name).mkdir()
+        (cap / name).mkdir(exist_ok=True)
         (cap / name / "keepme").write_text("x")
 
 

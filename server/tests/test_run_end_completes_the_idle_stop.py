@@ -410,6 +410,63 @@ async def test_an_abort_in_the_run_s_end_does_not_replace_the_ending(
         await run.close()
 
 
+async def test_control_a_failure_still_completes_the_stop(
+        sim_hub, monkeypatch, bus_lines):
+    """CONTROL for #305 and #311 (S3), which changed only the wind-down's
+    park: a failure still completes the stop (H3 orchestrator ruling 5). The
+    scheduler raises while the first attempt's guider stop is out, on a plan
+    that DOES park when done. A failure does not park (`_safe_stop` touches no
+    mount), so it hands nothing to a park: the run's end lets the first
+    attempt finish, the idle-stop task sends the stop, and no park is asked.
+    Its sibling for an operator's Abort mid-run is
+    `test_an_abort_still_sends_the_stop` [during the wait].
+
+    Mutant "every ending parks" (`_ending_parks` answers True for any
+    exception): RED (observed) -
+        AssertionError: the failure handed the idle stop to a park that never
+        came: set_tracking(False) after the run's end at [] s, parks [], and
+        the mount is still tracking
+    """
+    n = _Night(sim_hub, monkeypatch, park=True, hold_at_end=True)
+    run = n.run
+    engine = run.engine
+    gate = asyncio.Event()
+    asked = n.guider_parked_on(gate, monkeypatch)
+    real_safety_gate = engine._safety_gate
+
+    async def safety_gate(*a, **kw):
+        if asked and not run.frozen.is_set():
+            raise RuntimeError("the scheduler fell over")
+        return await real_safety_gate(*a, **kw)
+
+    monkeypatch.setattr(engine, "_safety_gate", safety_gate)
+    engine.start(n.plan)
+    try:
+        await n.until(n.at_end.is_set, "the failure ended the scheduler")
+        i_end, _ended = n.ends[0]
+        assert asked and not gate.is_set() and n.wound == [], (
+            "premise: the first attempt was still out when the failure "
+            "reached the run's end")
+        gate.set()
+        n.resume.set()
+        await n.until(lambda: not engine.running, "the run ended")
+        assert engine.state.get("state") == "error", (
+            f"premise: the failure ended it: {engine.state}")
+        offs = n.offs_after(i_end)
+        assert [w for _t, w in offs] == ["retry"] and n.parks == [], (
+            f"the failure handed the idle stop to a park that never came: "
+            f"set_tracking(False) after the run's end at {offs} s, parks "
+            f"{n.parks}, and the mount is "
+            f"{'still' if run.tracking() else 'not'} tracking")
+        assert run.tracking() is False
+        assert engine._idle_stop_task is None
+    finally:
+        gate.set()
+        if n.resume is not None:
+            n.resume.set()
+        await run.close()
+
+
 # ------------------------------------------------ what the end asks and says
 
 async def test_an_unconfirmed_stop_is_asked_once_more_and_said_once(

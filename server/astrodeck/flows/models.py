@@ -56,6 +56,48 @@ MY_FLOWS_FOLDER = "My flows"
 FLOW_LOOP_REFUSAL = ("this flow loops back on itself at {src} -> {dst}; "
                      "a flow lane runs once")
 
+#: Flow-level settings: one answer per FLOW, not per block (spec 1.6, Revision
+#: 2 ruling 1). ``{key: {"default": missing-key value, "options": [...]}}``.
+#:
+#: ONE TABLE, READ THROUGH ONE RESOLVER (:func:`resolve_setting`), for the
+#: same reason node params have one: a graph saved before a setting existed
+#: must read as what it meant then, and a default restated at each call site
+#: drifts. Stored as FLAT SCALARS in ``FlowGraph.settings`` (flowsTypes.ts
+#: types them so), and never written by a read: a flow saved without settings
+#: round-trips without them.
+#:
+#: `whenWaiting` decides what the run does while every live panel of a mosaic
+#: cannot be shot. The owner's default: "No sense in wasting time due to an
+#: obstruction", so later targets fill the gap and hand the cursor back when a
+#: panel is due. There is no older meaning to preserve: no graph had a
+#: multi-panel block before S3, and the setting does nothing without one.
+#:
+#: A JSON-shaped literal on purpose (double quotes, lists): the UI mirror in
+#: `flowsTypes.ts` is pinned against THIS text by flowSettingsParity.test.ts,
+#: which parses it rather than trusting a third copy.
+FLOW_SETTINGS: dict[str, dict] = {
+    "whenWaiting": {
+        "default": "Shoot later targets, then come back",
+        "options": ["Shoot later targets, then come back",
+                    "Wait for the mosaic"],
+    },
+}
+
+
+def resolve_setting(settings: dict | None, key: str):
+    """The value a flow's setting means: the stored one when it is one of the
+    declared options, otherwise the declared default.
+
+    A key nobody declared raises ``KeyError``: asking for it is a programming
+    error, not an operator's. A value this build does not know (a newer build's
+    third choice, a hand-written typo) reads as the default, because the engine
+    has only the declared behaviours to run; the stored value is left in place
+    so the build that wrote it reads it back.
+    """
+    spec = FLOW_SETTINGS[key]
+    value = (settings or {}).get(key)
+    return value if value in spec["options"] else spec["default"]
+
 
 class FlowNode(BaseModel):
     id: str
@@ -108,6 +150,31 @@ class FlowEdge(BaseModel):
 class FlowGraph(BaseModel):
     nodes: list[FlowNode] = Field(default_factory=list, max_length=400)
     edges: list[FlowEdge] = Field(default_factory=list, max_length=800)
+    #: Flow-level settings, flat scalars keyed as in :data:`FLOW_SETTINGS`.
+    #: Empty by default and on every graph saved before S3; read them through
+    #: :meth:`setting`, never by indexing, so a missing key means the default.
+    #: Unknown keys are kept, not dropped, so a round trip through this build
+    #: does not erase what a newer one wrote.
+    settings: dict = Field(default_factory=dict, max_length=32)
+
+    @field_validator("settings")
+    @classmethod
+    def _flat_scalars(cls, v: dict) -> dict:
+        # FLAT, because the editor draws one control per setting and the TS
+        # mirror types a setting as a scalar; a nested value is a setting no
+        # control can show. Strict here, like edges and unlike params: it is a
+        # shape the graph cannot be drawn with, not a bad value for one knob.
+        # None is a scalar too (JSON null), and reads as the default.
+        for key, value in v.items():
+            if value is not None and not isinstance(value, (str, int, float)):
+                raise ValueError(
+                    f"flow setting {key!r} must be a flat scalar (text, a "
+                    f"number, true/false or null), not {type(value).__name__}")
+        return v
+
+    def setting(self, key: str):
+        """This flow's value for one setting, missing-key default applied."""
+        return resolve_setting(self.settings, key)
 
     def node(self, node_id: str) -> FlowNode | None:
         for n in self.nodes:

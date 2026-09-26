@@ -318,7 +318,12 @@ async def test_m31_frames_filed_as_m16_are_never_adopted_onto_m16(rig):
         assert "arcmin" in u["reason"], u
     assert _bytes(old.id) == original, "a refusal wrote the session"
 
-    r = await rig.run(fid, adopt=True, accept_dropped=True)
+    # ``accept_recount`` since the integration of S3: the flow was saved, so
+    # it counts accepted subs (Revision 2 ruling 2), and this pre-S1 session
+    # counted every sub taken. Without it the recount 409 (spec 5.9, the
+    # question test_flows_continue asks) answers before the start.
+    r = await rig.run(fid, adopt=True, accept_dropped=True,
+                      accept_recount=True)
 
     assert r.status_code == 200, r.text
     start = rig.starts[-1]

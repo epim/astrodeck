@@ -14,9 +14,16 @@ WHAT IS IN AN ID, AND WHAT IS LEFT OUT, IS THE DESIGN. Each choice is a rule:
 
 * the GEOMETRY is in (``geometry_key``). A target moved elsewhere is a
   different field, and crediting the old field's frames to it is the flaw D5
-  removes. S1 has no anchor, so every move re-keys; S3 keys on the block's
-  anchor instead and carries a nudge (``reframe_carry``). ``skip`` is never in
-  it: skipping a panel must not re-key its neighbours.
+  removes. ``skip`` is never in it: skipping a panel must not re-key its
+  neighbours.
+* ...but the geometry keyed is the block's ANCHOR, not the geometry it is
+  drawn at now (#189 Revision 2 ruling 3). The anchor is the geometry the
+  counts started at; the save keeps it while ``framing.reframe_carry`` says a
+  re-frame moved every panel corner less than half the overlap, so a nudge
+  keeps the counts, and replaces it otherwise. S1 had no anchor, so every
+  move re-keyed. The anchor is STORED AS THE TEXT THE KEY HASHES
+  (``anchor_for``), so the key of a block's first anchor is S1's key of the
+  same geometry, byte for byte, and no id moves when S3 ships.
 * ...unless the TARGET has a NAME and no typed coordinates (``target_key``).
   Its coordinates are then the catalogue's answer at the compile's ``when``,
   and for a planet, the Moon or a comet that answer moves by the hour (a
@@ -44,7 +51,10 @@ WHAT IS IN AN ID, AND WHAT IS LEFT OUT, IS THE DESIGN. Each choice is a rule:
 THE RECIPE IS A STORED CONTRACT. A banked frame is filed under one of these
 ids, so changing NS_FLOWS, a precision, a separator or the order of a field
 orphans every campaign ever saved. ``tests/test_flows_identity.py`` pins each
-of them with golden vectors that S3 builds on.
+of them with golden vectors that S3 builds on. The anchor is stored as well,
+in the node's ``frameAnchor``, so ``anchor_geometry`` must go on reading every
+anchor ever written; the key is made from the geometry the text holds, not
+from its bytes, so its spelling can change without orphaning anything.
 
 Pure: no devices, no config, no clock.
 """
@@ -52,6 +62,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 
 #: The namespace of every flow id. FIXED FOREVER, for the reason above.
@@ -90,6 +101,15 @@ STEP_PLACES = 6
 #: target ids. The name is hashed as well, so a collision without the prefix
 #: would take a 64-bit coincidence; with it there is nothing to coincide.
 NAME_KEY_PREFIX = "name:"
+
+#: The fields every anchor holds whatever its kind: what the field LOOKS like,
+#: as ``_shape`` spells them. A typed block's anchor adds WHERE it is
+#: (``ra_hours``, ``dec_deg``); a name-keyed block's adds WHAT it is
+#: (``name``, the catalogue's canonical identity) and no position, because
+#: that is the catalogue's answer and a planet's moves by the hour.
+SHAPE_FIELDS = ("rows", "cols", "overlap", "rotation_deg", "fov_x", "fov_y")
+_GEOMETRY_ANCHOR = frozenset(("ra_hours", "dec_deg", *SHAPE_FIELDS))
+_NAME_ANCHOR = frozenset(("name", *SHAPE_FIELDS))
 
 
 def fixed(value: float, places: int) -> str:
@@ -212,16 +232,195 @@ def typed_coordinates(entry: dict) -> bool:
     return bool(entry.get("ra") and entry.get("dec"))
 
 
+def _identity_of(entry: dict, canonical: str | None) -> str | None:
+    """The canonical identity a TARGET is keyed on, or None when it is keyed
+    on its geometry: the one reading ``target_key`` and ``anchor_for`` share,
+    so a block's anchor and its key can never disagree on which kind it is.
+
+    REFUSES TO GUESS. A name-keyed entry with no ``canonical`` raises
+    ``ValueError`` rather than falling back to the typed name or to the
+    geometry: either fallback mints an id the other side of the seam does not
+    (``to_plan`` drops an entry the catalogue cannot resolve before keying it,
+    and ``progress._single`` does not ask), so a caller that forgot to resolve
+    would name steps no ledger holds."""
+    name = str(entry.get("name") or "").strip()
+    if not name or typed_coordinates(entry):
+        return None
+    # Keyed AS GIVEN: the resolver hands back a trimmed catalogue id, and a
+    # second trim here would hide a caller that asked the catalogue about an
+    # untrimmed name. Blank is no identity at all.
+    if canonical is None or not str(canonical).strip():
+        raise ValueError(
+            f"TARGET {name!r} has no typed coordinates, so it is keyed on "
+            f"the catalogue's canonical identity for its name, and none "
+            f"was given: resolve the name (tonight.resolve_target) first")
+    return str(canonical)
+
+
+def anchor_for(entry: dict, ra_hours: float, dec_deg: float,
+               rotation_deg: float | None, *, canonical: str | None,
+               rows: int = SINGLE_ROWS, cols: int = SINGLE_COLS,
+               overlap: float = SINGLE_OVERLAP,
+               fov_x: float = SINGLE_FOV_X,
+               fov_y: float = SINGLE_FOV_Y) -> str:
+    """The anchor of a TARGET block as it is drawn NOW: the text the save
+    writes as a block's first anchor, and as its new one when a re-frame
+    restarts the counts (spec 3.3, ruling 3).
+
+    IT IS THE TEXT THE KEY HASHES. A typed block's anchor is
+    ``canonical_geometry``; a name-keyed block's is ``canonical_name`` of the
+    catalogue's canonical identity, its grid and its angle, with no
+    coordinates. So ``anchor_key`` of a first anchor is the key the block had
+    with no anchor at all, which is S1's key: writing it moves no id. Which
+    kind is decided by ``_identity_of``, as ``target_key`` decides it, from
+    the entry's ``name``, ``ra`` and ``dec`` (a node's params carry the same
+    three, so the save can pass those).
+
+    ``rotation_deg`` is the angle the grid is LAID OUT at, None or negative
+    for any angle, and the grid is the block's (overlap as a FRACTION, fields
+    in bin-1 degrees). For a "camera fixed at" block that is the planned
+    angle, which the run never commands but which placed every panel."""
+    shape = dict(rows=rows, cols=cols, overlap=overlap, fov_x=fov_x,
+                 fov_y=fov_y)
+    name = _identity_of(entry, canonical)
+    if name is not None:
+        return canonical_name(name, rotation_deg, **shape)
+    return canonical_geometry(ra_hours, dec_deg, rotation_deg, **shape)
+
+
+def _anchor_number(held: dict, key: str) -> float:
+    """One number of an anchor. ``fixed`` writes each as a string, and a
+    plain JSON number is read too; a bool, a non-number or a non-finite
+    value is not a geometry."""
+    value = held[key]
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"anchor field {key!r} is not a number: {value!r}")
+    try:
+        number = float(value)
+    except ValueError:
+        raise ValueError(
+            f"anchor field {key!r} is not a number: {value!r}") from None
+    if not math.isfinite(number):
+        raise ValueError(f"anchor field {key!r} is not finite: {value!r}")
+    return number
+
+
+def anchor_geometry(anchor: str | None) -> dict | None:
+    """The geometry an anchor holds, read back from its text.
+
+    A typed anchor gives ``{ra_hours, dec_deg, rotation_deg, rows, cols,
+    overlap, fov_x, fov_y}``, a named one ``{name, rotation_deg, rows, cols,
+    overlap, fov_x, fov_y}``: numbers as floats, the grid as integers, and
+    "any angle" as None. That is the shape ``framing.reframe_carry`` takes.
+
+    Blank (or None) is NO ANCHOR YET, answered as None: a block saved before
+    S3, or never saved, whose current geometry is its anchor (spec 3.3).
+
+    ANYTHING ELSE THAT IS NOT AN ANCHOR IS REFUSED with ``ValueError``,
+    naming what is wrong: text that is not JSON, a missing or an unknown
+    field (a ``skip`` in an anchor would put skip back into the identity),
+    a grid of fewer than one row, a declination off the sphere. The server
+    alone writes anchors, so a malformed one is a corrupted file, and a key
+    guessed from it would file frames under ids nothing else can find.
+    Formatting is not checked: the key is made from the geometry
+    (``anchor_key``), so key order and number spelling do not matter."""
+    if anchor is None or not str(anchor).strip():
+        return None
+    try:
+        held = json.loads(anchor)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"an anchor is canonical JSON, and this is not "
+                         f"JSON ({e}): {anchor!r}") from None
+    if not isinstance(held, dict):
+        raise ValueError(f"an anchor is a JSON object, not {anchor!r}")
+    fields = frozenset(held)
+    if fields not in (_GEOMETRY_ANCHOR, _NAME_ANCHOR):
+        raise ValueError(
+            f"not an anchor: it holds {sorted(fields)}, and an anchor holds "
+            f"{sorted(_GEOMETRY_ANCHOR)} or {sorted(_NAME_ANCHOR)}")
+    out: dict = {}
+    if fields == _NAME_ANCHOR:
+        name = held["name"]
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"a named anchor names no object: {name!r}")
+        out["name"] = name
+    else:
+        out["ra_hours"] = _anchor_number(held, "ra_hours")
+        out["dec_deg"] = _anchor_number(held, "dec_deg")
+        if not -90.0 <= out["dec_deg"] <= 90.0:
+            raise ValueError(f"anchor declination {out['dec_deg']!r} is off "
+                             f"the sphere")
+    rotation = held["rotation_deg"]
+    out["rotation_deg"] = (None if rotation is None
+                           else _anchor_number(held, "rotation_deg"))
+    for key in ("rows", "cols"):
+        count = held[key]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError(f"anchor {key} must be a whole number of at "
+                             f"least 1, not {count!r}")
+        out[key] = count
+    out["overlap"] = _anchor_number(held, "overlap")
+    if not 0.0 <= out["overlap"] < 1.0:
+        raise ValueError(f"anchor overlap is a fraction in [0, 1), not "
+                         f"{out['overlap']!r}")
+    for key in ("fov_x", "fov_y"):
+        out[key] = _anchor_number(held, key)
+        if out[key] < 0.0:
+            raise ValueError(f"anchor {key} is negative: {out[key]!r}")
+    return out
+
+
+def anchor_key(anchor: str) -> str:
+    """The key a block's ids hang off, made from its anchor: ``geometry_key``
+    of a typed anchor's geometry, ``name_key`` of a named one's identity,
+    each with the anchor's own grid and angle. Made from the geometry the
+    text holds, re-spelt canonically, so it equals the hash of the text
+    whenever the text is canonical, which is how the server writes it.
+
+    A blank anchor has no key and raises ``ValueError``, as a malformed one
+    does (``anchor_geometry``); ``target_key`` is what falls back to the
+    current geometry when there is no anchor."""
+    held = anchor_geometry(anchor)
+    if held is None:
+        raise ValueError("a blank anchor has no key: key the block's current "
+                         "geometry (target_key does)")
+    shape = {k: held[k] for k in ("rows", "cols", "overlap", "fov_x",
+                                  "fov_y")}
+    if "name" in held:
+        return name_key(held["name"], held["rotation_deg"], **shape)
+    return geometry_key(held["ra_hours"], held["dec_deg"],
+                        held["rotation_deg"], **shape)
+
+
 def target_key(entry: dict, ra_hours: float, dec_deg: float,
-               rotation_deg: float | None, *, canonical: str | None) -> str:
-    """The key a single TARGET's group id is made from, decided from its
+               rotation_deg: float | None, *, canonical: str | None,
+               anchor: str | None = None,
+               rows: int = SINGLE_ROWS, cols: int = SINGLE_COLS,
+               overlap: float = SINGLE_OVERLAP,
+               fov_x: float = SINGLE_FOV_X,
+               fov_y: float = SINGLE_FOV_Y) -> str:
+    """The key a TARGET block's group id is made from, decided from its
     compiled ``entry``. The ONE place this is decided: ``to_plan._identify``
     mints the id through it and ``progress._single`` finds the id again
     through it, and two copies of the rule would let a card read "nothing
     banked" against the ledger of a live campaign.
 
-    Typed coordinates: ``geometry_key`` of the field, as S1 keyed every
-    TARGET, and ``canonical`` is not read. A name and no typed coordinates:
+    THE ANCHOR FIRST (#189 Revision 2 ruling 3). With an ``anchor``, the
+    block's stored ``frameAnchor``, the key is ``anchor_key`` of it: the
+    geometry the counts started at, which the save keeps while a re-frame
+    moves every panel corner less than half the overlap. That is what lets a
+    nudge keep the ids and the banked frames. The anchor is used only when it
+    is THIS block's: a named block's must name the identity its name resolves
+    to now, and a typed block's must hold coordinates. Any other anchor is
+    stale (the save re-anchors on both changes), and keying on it would
+    credit one object's frames to another, the flaw D5 removes; the block is
+    then keyed on what it is drawn as, and CONTINUE's dropped-steps refusal
+    guards the ledger.
+
+    With no anchor (blank or None: an unsaved preview, a block saved before
+    S3) the CURRENT geometry is the anchor, keyed with the grid passed in:
+    typed coordinates on ``geometry_key`` of the field, as S1 keyed every
+    TARGET, and ``canonical`` not read; a name and no typed coordinates on
     ``name_key`` of ``canonical``, the catalogue's canonical identity for the
     name (``tonight.resolve_target``: the catalogue id of a fixed row, the
     canonical body name of a moving one), which the caller resolved (#229).
@@ -229,31 +428,24 @@ def target_key(entry: dict, ra_hours: float, dec_deg: float,
     compile's ``when``, and that answer moves: keyed on it, every compile
     named new steps and night two banked on nothing night one shot (#189 A5).
     Keyed on the name as typed, "M 31" and "M31" were two campaigns of one
-    object, and a spelling edit restarted the counts.
-
-    REFUSES TO GUESS. A name-keyed entry with no ``canonical`` raises
-    ``ValueError`` rather than falling back to the typed name or to the
-    geometry: either fallback mints an id the other side of the seam does not
-    (``to_plan`` drops an entry the catalogue cannot resolve before keying it,
-    and ``progress._single`` does not ask), so a caller that forgot to resolve
-    would name steps no ledger holds.
+    object, and a spelling edit restarted the counts. A name-keyed entry with
+    no ``canonical`` raises ``ValueError`` (``_identity_of``), anchor or not.
 
     ``rotation_deg`` is keyed either way, as the target carries it (None for
     any angle), so setting an angle re-frames a named field as it re-frames a
-    typed one (spec 3.3). S1 has no grid on a TARGET, so both keys take the
-    single-target shape; S3 passes the block's grid to the same two keys."""
-    name = str(entry.get("name") or "").strip()
-    if name and not typed_coordinates(entry):
-        # Keyed AS GIVEN: the resolver hands back a trimmed catalogue id, and
-        # a second trim here would hide a caller that asked the catalogue
-        # about an untrimmed name. Blank is no identity at all.
-        if canonical is None or not str(canonical).strip():
-            raise ValueError(
-                f"TARGET {name!r} has no typed coordinates, so it is keyed on "
-                f"the catalogue's canonical identity for its name, and none "
-                f"was given: resolve the name (tonight.resolve_target) first")
-        return name_key(str(canonical), rotation_deg)
-    return geometry_key(ra_hours, dec_deg, rotation_deg)
+    typed one (spec 3.3). The grid defaults to the single-target shape, so a
+    caller that passes neither an anchor nor a grid gets S1's key exactly."""
+    name = _identity_of(entry, canonical)
+    held = anchor_geometry(anchor)
+    # `.get("name")` is None for a typed anchor and `name` is None for a typed
+    # entry, so one comparison says "the same kind, and the same object".
+    if held is not None and held.get("name") == name:
+        return anchor_key(anchor)
+    shape = dict(rows=rows, cols=cols, overlap=overlap, fov_x=fov_x,
+                 fov_y=fov_y)
+    if name is not None:
+        return name_key(name, rotation_deg, **shape)
+    return geometry_key(ra_hours, dec_deg, rotation_deg, **shape)
 
 
 def _id(name: str) -> str:

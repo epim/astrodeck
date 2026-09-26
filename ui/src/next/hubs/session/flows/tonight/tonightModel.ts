@@ -20,6 +20,7 @@
 
 import { accessPhrase } from "../../../../../lib/caps";
 import { fmtClock } from "../../../../../lib/eta";
+import { mosaicBand } from "../../../../../lib/flowsApi";
 import { fmtTime } from "../../../../../lib/visibility";
 import type { TonightTab } from "../../../../../components/flows/flowsTypes";
 import type {
@@ -161,7 +162,12 @@ export function readTonight(payload: Record<string, unknown> | null): TonightRea
       const w = rec(t.window);
       const start = w ? num(w.start_unix) : null;
       const end = w ? num(w.end_unix) : null;
+      // A mosaic block's band (#189 S3), through the one reader both
+      // timelines share. The key is added only when there IS a band, so a
+      // single target's row and a pool member's read exactly as they did.
+      const band = mosaicBand(t.mosaic);
       return {
+        ...(band ? { band } : {}),
         label: str(t.label) || str(t.name),
         window: start !== null && end !== null
           ? { start_unix: start, end_unix: end } : null,

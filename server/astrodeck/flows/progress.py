@@ -32,10 +32,17 @@ here is a number an operator acts on:
   the count mode decides what fills a quota, and an orphaned frame fills
   none. It is a file on disk the flow no longer has a step for, which is how
   CONTINUE's dropped-steps refusal counts it too
-  (``continuation.plan_replace_report``), with one difference S3 settles: a
-  skipped panel's steps are not dropped there (spec 5.9), and here they
-  are counted with the rest until S3 compiles a skip and the modal draws the
-  panel as skipped. No compile names a skipped panel before S3.
+  (``continuation.plan_replace_report``). A SKIPPED PANEL'S FRAMES ARE NOT
+  ORPHANED (S3, spec 5.9, 2.5): skipping is not a change of identity, so
+  re-enabling the panel brings its step ids and its frames back. They are
+  shown on the block's ``skipped`` entry for that panel instead, found by
+  the frame's target id as ``plan_replace_report`` finds them.
+* A MOSAIC'S PANELS ARE FOUND THROUGH ITS PLAN GROUP (S3, spec 3.3). The
+  group's id is recomputed from the block's anchor with the functions
+  ``to_plan`` minted it with (``identity.group_id`` over ``_block_key``), and
+  the panels are the plan targets whose ``mosaic_group`` is that id, never
+  the targets whose names look like the block's: two blocks may share a
+  name, and a panel's name is only its label.
 * A LOCKED ANGLE IS SHOWN WHERE IT CAME FROM (Revision 2, owner ruling 9).
   An unframed TARGET takes the position angle its first plate solve
   measured, and from then on every run commands it, so the flow editor must
@@ -48,7 +55,9 @@ here is a number an operator acts on:
 * NOTHING DERIVED FROM THE SITE (spec 6.9). The route is ``CAP_VIEW_STATUS``
   and a viewer can read it. This function takes no site, no clock and no
   config, so it cannot compute an altitude or a transit time; the keys it
-  emits are pinned to an allow-list by ``tests/test_flows_progress.py``.
+  emits are pinned to an allow-list by ``tests/test_flows_progress.py`` (a
+  mosaic's by ``tests/test_flows_progress_mosaic.py``, which also moves the
+  site and checks that no number in the answer moves with it, the #19 way).
   The one outside answer it reads is the catalogue's canonical IDENTITY of a
   TARGET known only by its name (``tonight.resolve_target``, #229), which is
   a catalogue constant ("M31", "Jupiter"). The lookup computes a position as
@@ -65,9 +74,16 @@ import math
 from typing import TYPE_CHECKING
 
 from . import identity, tonight
+# ONE READING OF A BLOCK'S KEY. `to_plan` mints every id from these: the
+# coordinates (`_coords`), the layout angle (`_angles`), the grid
+# (`_mosaic_numbers`) and the key over the anchor (`_block_key`). Asked the
+# same question through a second copy, a rounding or a percent read as a
+# fraction would key the card on ids no ledger holds, and every panel would
+# read "nothing banked" against a live campaign.
+from .to_plan import _angles, _block_key, _coords, _mosaic_numbers
 
 if TYPE_CHECKING:                       # pragma: no cover - typing only
-    from ..sequence.models import SequencePlan, Target
+    from ..sequence.models import SequencePlan, Target, TargetGroup
     from ..sequence.session import Session
 
 
@@ -105,6 +121,20 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
     ``target_id`` null and no steps, so it owes nothing, which is what the plan
     will shoot for it. ``nights`` is how many nights the session has run.
 
+    A MOSAIC (a TARGET block with a grid, S3) has one panel per panel the
+    plan shoots, in the plan's order, each at its own 0-based ``row`` and
+    ``col``, and the block adds two keys no other block carries::
+
+        grid: {rows, cols},
+        skipped: [{target_id, name, row, col, banked}]
+
+    ``skipped`` lists, in grid order, the panels the operator skipped
+    (``TargetGroup.skipped_ids``). They owe nothing while skipped and are in
+    none of the block's sums, and ``banked`` is what the ledger holds on the
+    panel, counted by the session's count mode, so a skip never hides what
+    re-enabling the panel brings back (``_skipped``). A block ``to_plan``
+    dropped whole (no coordinates, or every panel skipped) has no panels.
+
     ``locked_angle`` is present only where there is a lock (``_locked``,
     ``_block_lock``): ``pa_deg`` in the CROTA2 convention the session stored,
     and ``source``, ``LOCK_SOURCE``. Never the lock's times.
@@ -131,6 +161,15 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
         node_id = str(entry.get("node_id") or "")
         name = str(entry.get("name") or "").strip()
         is_pool = entry.get("pool_rank") is not None
+        if entry.get("mosaic") and not is_pool:
+            # One compiled entry is the whole block, so it is one block here
+            # whatever its node id; `to_plan` gives an id-less entry uuid4s,
+            # which `_mosaic` cannot find and `_refuse_a_foreign_plan` skips.
+            block = _mosaic(plan, entry, counts, session, flow_id=flow_id,
+                            node_id=node_id, name=name)
+            block_of[node_id or f"#{index}"] = block
+            blocks.append(block)
+            continue
         if is_pool:
             target = _member(plan_by_id=by_id, flow_id=flow_id,
                              node_id=node_id, name=name,
@@ -148,7 +187,8 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
                 "kind": "pool" if is_pool else "target",
                 "banked": 0, "owed": 0, "total": 0, "panels": []}
             blocks.append(block)
-        panel = _panel(target, name, counts, grid=not is_pool)
+        panel = _panel(target, name, counts,
+                       at=(None, None) if is_pool else (0, 0))
         lock = _locked(session, target)
         if lock is not None:
             panel["locked_angle"] = lock
@@ -165,10 +205,11 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
             if lock is not None:
                 block["locked_angle"] = lock
     _refuse_a_foreign_plan(compiled, plan, blocks, flow_id)
+    skipped = {s["target_id"] for b in blocks for s in b.get("skipped", ())}
     return {"flow_id": flow_id,
             "session": _summary(session),
             "blocks": blocks,
-            "orphaned": _orphaned(plan, session)}
+            "orphaned": _orphaned(plan, session, skipped)}
 
 
 def _refuse_a_foreign_plan(compiled: dict, plan: "SequencePlan",
@@ -284,9 +325,16 @@ def _single(plan: "SequencePlan", entry: dict, *, flow_id: str,
     each caller's own, a body and a fixed row tied on a name's best rank
     could swap between the two. A name the catalogue does not know was
     dropped by ``to_plan``, and is None here. Either way it is the block's
-    1x1 grid at r0c0. A key on anything else (the anchor S3 brings, a panel's
-    row and col) has to be matched here the same way ``to_plan`` mints it, or
-    every block reads "nothing banked"."""
+    1x1 grid at r0c0.
+
+    KEYED AS ``to_plan`` KEYS A 1x1 BLOCK SINCE S3 (#189, spec 3.3): on its
+    stored ANCHOR when the anchor is this block's, so a nudge the save carried
+    finds the ids the counts were banked on, and on the angle the block is
+    LAID OUT at (``_angles``), which for "Camera fixed at PA" is the planned
+    angle the rotator is never told. Keyed on the commanded angle, as S1 did,
+    a fixed-camera block matched nothing, and neither did a nudged one, and
+    ``_refuse_a_foreign_plan`` then failed the whole answer. With no anchor
+    and a commanded angle the key is S1's, byte for byte."""
     canonical = None
     if not identity.typed_coordinates(entry):
         name = str(entry.get("name") or "").strip()
@@ -294,13 +342,129 @@ def _single(plan: "SequencePlan", entry: dict, *, flow_id: str,
         if hit is None:
             return None
         canonical = hit.identity
+    layout = _angles(entry)[1]
     for target in plan.targets:
-        key = identity.target_key(entry, target.ra_hours, target.dec_deg,
-                                  target.rotation_deg, canonical=canonical)
+        key = _block_key(entry, target.ra_hours, target.dec_deg, layout,
+                         canonical, anchor=entry.get("frame_anchor"))
         group = identity.group_id(flow_id, node_id, key)
         if identity.target_id(group, 0, 0) == target.id:
             return target
     return None
+
+
+def _group(plan: "SequencePlan", entry: dict, *, flow_id: str,
+           node_id: str) -> "tuple[str | None, TargetGroup | None]":
+    """``(group id, group)`` for a mosaic entry: the id ``to_plan`` gave the
+    block's ``TargetGroup``, and that group in ``plan``, or None for either.
+
+    THE ID IS RECOMPUTED, NEVER LOOKED UP BY NAME OR PLACE. ``to_plan``
+    minted it as ``identity.group_id(flow_id, node_id, key)`` over
+    ``_block_key``: the block's anchor first, its current geometry and grid
+    otherwise (spec 3.3, ruling 3). The same four helpers answer the same
+    question here, with the same inputs: the entry's coordinates as
+    ``_coords`` parses or resolves them, the layout angle, and the grid with
+    the overlap as a fraction. The node id is in the id, so no other block's
+    group can match, whatever it is called.
+
+    No id without a node id or a flow id (``to_plan`` gave the group a
+    uuid4 then), nor for an entry ``to_plan`` dropped for want of
+    coordinates. The group is None as well when the id names none, which is
+    a block whose every panel is skipped: ``to_plan`` emits no group of no
+    members."""
+    if not flow_id or not node_id:
+        return None, None
+    coords = _coords(entry, None)
+    if coords is None:
+        return None, None
+    ra_hours, dec_deg, canonical = coords
+    nums = _mosaic_numbers(entry)
+    key = _block_key(entry, ra_hours, dec_deg, _angles(entry)[1], canonical,
+                     anchor=entry["mosaic"].get("frame_anchor"),
+                     grid=dict(rows=nums["rows"], cols=nums["cols"],
+                               overlap=nums["overlap"] / 100.0,
+                               fov_x=nums["fov_x"], fov_y=nums["fov_y"]))
+    gid = identity.group_id(flow_id, node_id, key)
+    return gid, next((g for g in plan.groups if g.id == gid), None)
+
+
+def _mosaic(plan: "SequencePlan", entry: dict, counts: dict[str, int],
+            session: "Session | None", *, flow_id: str, node_id: str,
+            name: str) -> dict:
+    """The block entry of a mosaic: its panels found through its plan group
+    (``_group``), in the plan's order, and the panels it skipped.
+
+    A panel is a plan target whose ``mosaic_group`` is the group's id and
+    nothing else: its name is a label the operator can repeat on another
+    block, and a second block called "Veil" would otherwise take this one's
+    frames. A block with no group in the plan has no panels, and a target
+    of it the plan does hold then goes unclaimed, which
+    ``_refuse_a_foreign_plan`` refuses rather than read as nothing banked."""
+    gid, group = _group(plan, entry, flow_id=flow_id, node_id=node_id)
+    rows = int(entry["mosaic"].get("rows") or 1)
+    cols = int(entry["mosaic"].get("cols") or 1)
+    block: dict = {"node_id": node_id, "name": name, "kind": "target",
+                   "banked": 0, "owed": 0, "total": 0, "panels": [],
+                   "grid": {"rows": rows, "cols": cols}}
+    for target in plan.targets:
+        if group is None or target.mosaic_group != group.id:
+            continue
+        panel = _panel(target, name, counts,
+                       at=(target.panel_row, target.panel_col))
+        lock = _locked(session, target)
+        if lock is not None:
+            panel["locked_angle"] = lock
+        block["panels"].append(panel)
+        for field in ("banked", "owed", "total"):
+            block[field] += panel[field]
+    block["skipped"] = _skipped(entry, gid, group, name, rows, cols, counts,
+                                session)
+    return block
+
+
+def _skipped(entry: dict, gid: str | None, group: "TargetGroup | None",
+             name: str, rows: int, cols: int, counts: dict[str, int],
+             session: "Session | None") -> list[dict]:
+    """The panels a mosaic skips, in grid order, each with what the ledger
+    holds on it (spec 2.5: "re-enabling a panel restores its progress").
+
+    WHICH PANELS: the group's ``skipped_ids``, the ids ``to_plan`` named for
+    CONTINUE (spec 5.9). A block whose every panel is skipped has no group,
+    so its panels are the compile's ``skip`` list, each id minted the way
+    ``to_plan`` mints a panel's, ``identity.target_id(group, row, col)``.
+    Row and col come from matching the id against every cell of the grid.
+
+    WHAT IS BANKED: the frames whose target id is the panel's, counted by the
+    session's count mode (``Session._counts``, one rule with every other
+    count here), found by target id as ``plan_replace_report`` finds a
+    skipped panel's frames. NOT capped at a step's count, as a live panel's
+    are: the plan holds no steps for a skipped panel, so there is no count to
+    cap at, and the engine stops a step at its count, so the ledger rarely
+    holds more. A frame of the panel on a recipe that has since changed is
+    counted too; re-enabling the panel will not bring that one back, and
+    CONTINUE asks about it then (``plan_replace_report``)."""
+    if gid is None:
+        return []
+    if group is not None:
+        ids = list(group.skipped_ids)
+    else:
+        ids = [identity.target_id(gid, int(r) - 1, int(c) - 1)
+               for r, c in (entry["mosaic"].get("skip") or [])]
+    cell = {identity.target_id(gid, r, c): (r, c)
+            for r in range(rows) for c in range(cols)}
+    on: dict[str, set[str]] = {}
+    for f in (session.frames if session is not None else []):
+        on.setdefault(f.target_id, set()).add(f.step_id)
+    out: list[dict] = []
+    for tid in ids:
+        row, col = cell.get(tid, (None, None))
+        label = f"{row + 1}-{col + 1}" if row is not None else "?"
+        out.append({"target_id": tid,
+                    "name": f"{name} {label}" if name else label,
+                    "row": row, "col": col,
+                    "banked": sum(counts.get(sid, 0)
+                                  for sid in on.get(tid, ()))})
+    out.sort(key=lambda p: (p["row"] is None, p["row"] or 0, p["col"] or 0))
+    return out
 
 
 def _member(*, plan_by_id: dict[str, "Target"], flow_id: str, node_id: str,
@@ -328,7 +492,10 @@ def _member(*, plan_by_id: dict[str, "Target"], flow_id: str, node_id: str,
 
 
 def _panel(target: "Target | None", name: str, counts: dict[str, int], *,
-           grid: bool) -> dict:
+           at: tuple[int | None, int | None]) -> dict:
+    """One panel's entry. ``at`` is its ``(row, col)``: ``(0, 0)`` for a
+    single target, a mosaic panel's own place, ``(None, None)`` for a pool
+    member, which has no place in any grid."""
     steps: list[dict] = []
     for step in (target.steps if target is not None else []):
         # Capped at the count: frames past it are real subs on a live step,
@@ -341,17 +508,34 @@ def _panel(target: "Target | None", name: str, counts: dict[str, int], *,
                       "banked": banked, "owed": step.count - banked})
     return {"target_id": target.id if target is not None else None,
             "name": target.name if target is not None else name,
-            "row": 0 if grid else None, "col": 0 if grid else None,
+            "row": at[0], "col": at[1],
             "banked": sum(s["banked"] for s in steps),
             "owed": sum(s["owed"] for s in steps),
             "total": sum(s["count"] for s in steps),
             "steps": steps}
 
 
-def _orphaned(plan: "SequencePlan", session: "Session | None") -> dict:
+def _orphaned(plan: "SequencePlan", session: "Session | None",
+              skipped: set[str]) -> dict:
+    """Frames on steps no plan step has, and how many steps they sit on.
+
+    A frame on a SKIPPED panel is not one (S3, spec 5.9): the panel's
+    ``skipped`` entry shows it, and re-enabling the panel brings it back.
+    ``skipped`` is the target ids the blocks list as skipped, so a frame is
+    shown in one place, never as held and lost at once. It is recognised by
+    its target id, as ``continuation.plan_replace_report`` recognises it
+    through the groups' ``skipped_ids``, so the card and CONTINUE's
+    dropped-steps question agree about which frames are lost, with one
+    exception: a block whose every panel is skipped has no group in the
+    plan, so ``plan_replace_report`` cannot see its skip and counts its
+    frames as dropped, where this, reading the compile's skip list, shows
+    them on the block (#335). A plan that skips nothing reads as it always
+    did."""
     if session is None:
         return {"frames": 0, "steps": 0}
     live = {s.id for t in plan.targets for s in t.steps}
-    lost = {sid: n for sid, n in session.recorded_by_step().items()
-            if sid not in live}
+    lost: dict[str, int] = {}
+    for f in session.frames:
+        if f.step_id not in live and f.target_id not in skipped:
+            lost[f.step_id] = lost.get(f.step_id, 0) + 1
     return {"frames": sum(lost.values()), "steps": len(lost)}

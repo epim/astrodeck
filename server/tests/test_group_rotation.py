@@ -37,8 +37,6 @@ from astrodeck.sequence.session import Session, SessionFrame, session_store
 from test_idle_park_hold import sim_hub, temp_store  # noqa: F401
 
 SNAKE = ["1-1", "1-2", "2-2", "2-1"]
-PANEL_KEYS = {"id", "name", "mode", "pass", "panel", "visit_elapsed_s",
-              "panels_done", "panels_total", "set_aside", "meridian_wait"}
 
 
 def _name(label: str) -> str:
@@ -94,6 +92,50 @@ def _first_difference(got: str, want: str) -> str:
 
 # ------------------------------------------------------------ the golden trace
 
+#: What S3's compile moved in the golden flow plan's fixture, and the value
+#: each held when the trace was recorded. S3-CP gave every TARGET its own
+#: centring (#170: 1.2 arcmin and 3 tries, the hub's own 0.02 deg and 3, so
+#: the run centres exactly as before), and S3-W made the flow count accepted
+#: subs (Revision 2 ruling 2). Neither is the group driver this test grades.
+S3_GOLDEN_PLAN = {"count_mode": ("accepted", "attempts")}
+S3_GOLDEN_TARGET = {"center_tolerance_arcmin": (1.2, None),
+                    "center_attempts": (3, None)}
+
+
+def _golden_as_recorded():
+    """The golden flow plan as it was when the trace was recorded: the
+    fixture with S3's two re-pins put back.
+
+    RE-PINNED IN THE INTEGRATION OF S3. Until then this test ran the fixture
+    as it is, and S3's re-pin of ngc7331_quick.json turned it red on the
+    first published state (``count_mode`` "accepted" against the recorded
+    "attempts"). Putting the two values back, rather than re-recording the
+    trace, keeps the trace what its "about" says it is (recorded before the
+    S2 group driver). BOUNDED: the fixture must carry exactly S3's values, so
+    any other drift of the fixture still reaches the byte comparison.
+
+    RED under mutant "the fixture drifts once more" (in a private scratch
+    copy of the fixture, the first target's ``center_attempts`` 3 made 4),
+    observed:
+
+        AssertionError: premise: the fixture holds S3's center_attempts
+        assert 4 == 3
+    """
+    plan = golden_flow_plan()
+    for key, (s3, before) in S3_GOLDEN_PLAN.items():
+        assert getattr(plan, key) == s3, (
+            f"premise: the fixture holds S3's {key}")
+    updates = {k: before for k, (_s3, before) in S3_GOLDEN_PLAN.items()}
+    targets = []
+    for t in plan.targets:
+        for key, (s3, before) in S3_GOLDEN_TARGET.items():
+            assert getattr(t, key) == s3, (
+                f"premise: the fixture holds S3's {key}")
+        targets.append(t.model_copy(update={
+            k: before for k, (_s3, before) in S3_GOLDEN_TARGET.items()}))
+    return plan.model_copy(update={**updates, "targets": targets})
+
+
 @pytest.mark.parametrize("name", ["golden", "plain"])
 async def test_a_plan_without_groups_runs_byte_for_byte_as_before(
         group_hub, monkeypatch, name):
@@ -121,7 +163,8 @@ async def test_a_plan_without_groups_runs_byte_for_byte_as_before(
         _confident":false,"eta_s":552,"events_cost_s":300,"frame_started_at_ms
         ":null,"frames_done":0,"frame
     """
-    plan = golden_flow_plan() if name == "golden" else plain_mosaic_plan()
+    plan = (_golden_as_recorded() if name == "golden"
+            else plain_mosaic_plan())
     night = await _night(group_hub, monkeypatch, plan, wall_s=120.0)
     assert night.done, f"premise: the run ended: {night.trace[-3:]}"
     got, want = night.trace_text(), _expected_trace(name)
@@ -442,9 +485,10 @@ async def test_a_rotation_that_did_not_happen_defers_the_panel(
         group_hub, monkeypatch, flag):
     """A rotating mosaic (``rotate`` set, members at PA 30): the hop's
     centring comes back with ``flag`` on panel 1-2's first visit. That visit
-    shoots nothing and 1-2 is retried on the next pass, where it shoots
-    (spec 5.6 step 4). The control is a group that does not rotate: the same
-    flag defers nothing.
+    shoots nothing and 1-2 is retried first on the next pass, at visit 4
+    counted from 0 (``visits()[4]``), where it shoots (spec 5.6 step 4, 5.1
+    pass boundary item 3). The control is a group that does not rotate: the
+    same flag defers nothing, and its night runs to its end.
 
     MUTANT "rotation flags ignored" (the two rotation checks in
     `_group_hop_checks` deleted): RED on both flags (observed):
@@ -452,6 +496,25 @@ async def test_a_rotation_that_did_not_happen_defers_the_panel(
         ('M31 2-2', ('L', 'R')), ('M31 2-1', ('L', 'R')), ('M31 1-1', ('L',
         'R'))]
         assert ('M31 1-2', ('L', 'R')) == ('M31 1-2', ())
+    MUTANT "no re-sort at the pass boundary" (the `_resort_group` call at
+    the end of `_close_group_pass` deleted, #318): pass 2 keeps pass 1's
+    order and 1-2 is retried at visit 5, which the ">= 4" this case had
+    before #318 let through. RED on both flags (observed):
+        AssertionError: [('M31 1-1', ('L', 'R')), ('M31 1-2', ()), ('M31
+        2-2', ('L', 'R')), ('M31 2-1', ('L', 'R')), ('M31 1-1', ('L', 'R')),
+        ('M31 1-2', ('L', 'R')), ...]
+        assert ([5, 9, 12] and 5 == 4)
+    MUTANT "the control night cut short" (the control's `_night` given
+    ``horizon_s=200.0``, so it stops in its fourth visit of twelve): RED on
+    both flags (observed), where the control without its ``night.done``
+    line passed both:
+        AssertionError: [[180.0, 'slew', 21.618021, 40.4], [180.0, 'state',
+        {'detail': 'M31 2-1: L 30s  [1/3]', 'group': {'id': 'm31-mosaic',
+        ...rogress', 'session', 'sky', ...], 'plan_name': 'M31 mosaic', ...}],
+        [180.0, 'capture', 'M31 2-1', 'L', 30.0, 100, ...]]
+        assert False
+         +  where False = <_group_harness.Night object at
+        0x0000024FAA83CB30>.done
     """
     def goto(who, n, result):
         if who == _name("1-2") and n == 1:
@@ -464,11 +527,18 @@ async def test_a_rotation_that_did_not_happen_defers_the_panel(
     visits = night.visits()
     assert visits[1] == (_name("1-2"), ()), visits[:5]
     first = [i for i, (t, f) in enumerate(visits) if t == _name("1-2") and f]
-    assert first and first[0] >= 4, visits
+    # THE RETRY IS THE NEXT PASS'S FIRST VISIT, visit 4 counted from 0
+    # (#318; spec 5.1 pass boundary item 3). At the boundary 1-2 holds
+    # nothing and every other panel one L and one R, so the re-sort, least
+    # complete first, starts pass 2 on 1-2. Without the re-sort the requeue
+    # leaves pass 2 in pass 1's order and 1-2 comes second, at visit 5,
+    # which ">= 4" let through.
+    assert first and first[0] == 4, visits
     assert _shot(night, "1-2") == ["L", "R"] * 3
 
     control = grid_plan()
     night = await _night(group_hub, monkeypatch, control, goto=goto)
+    assert night.done, night.trace[-3:]
     assert night.visits()[1] == (_name("1-2"), ("L", "R")), night.visits()[:3]
 
 
@@ -1061,11 +1131,17 @@ async def test_sequential_mode_runs_each_panel_to_completion_in_turn(
 async def test_the_group_state_is_published_only_while_a_member_is_active(
         group_hub, monkeypatch):
     """A plain target before the mosaic and one after it. While a panel is
-    the active target the state carries ``group`` in the 5.10 shape, with
-    ``meridian_wait`` False; before, after and at the end it carries none.
-    The frames say which mosaic and which panel: ``hub.capture`` gets
-    ``mosaic`` and ``panel`` for a member's light and neither for the plain
-    targets (U-08).
+    the active target the state carries ``group``, with ``meridian_wait``
+    False; before, after and at the end it carries none. The frames say
+    which mosaic and which panel: ``hub.capture`` gets ``mosaic`` and
+    ``panel`` for a member's light and neither for the plain targets (U-08).
+
+    ``group``'s key set is not copied here. test_types_mirror_groups.py
+    captures the published ``state.group`` on this harness and holds its
+    keys to types.ts's ``SequenceGroupState`` both ways round, and
+    test_mosaic_spec_claims.py holds the spec's 5.10 list to `_group_state`
+    (#318: a hand-written copy here was a second source that nothing tied
+    to the engine).
 
     MUTANT "group never cleared" (the pop of ``group`` in `_set_state`
     deleted): the last panel rides into the plain target's publishes. RED
@@ -1097,7 +1173,6 @@ async def test_the_group_state_is_published_only_while_a_member_is_active(
             assert c["extra"] == {}, c
         else:
             g = c["group"]
-            assert set(g) == PANEL_KEYS, g
             assert g["id"] == "m31-mosaic" and g["name"] == GROUP_NAME, g
             assert g["mode"] == "rotate" and g["meridian_wait"] is False, g
             assert g["panel"] == _label(c["target"]), (g, c["target"])
@@ -1159,7 +1234,9 @@ async def test_the_eta_prices_the_visits_still_to_make(
 async def test_a_member_dropped_for_this_run_leaves_its_group_too(
         group_hub, monkeypatch):
     """A member that leaves ``remaining`` by a route that is not a visit (a
-    ``skip_target`` rule, a missed start, a plain StopTarget) is no longer
+    ``skip_target`` rule, a missed start, its frozen window closing; since
+    #316 a plain StopTarget from a visit defers the panel instead, see
+    test_group_plain_stop_defers.py) is no longer
     live in its group: the published ``set_aside`` names it with its reason,
     in words, so the Monitor and the pass rules see the group as it now is.
     Such a drop lasts this run and is not recorded for the night, as it

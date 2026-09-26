@@ -149,12 +149,14 @@ from ..flows.continuation import (AdoptEvidence, AdoptMatches, adopt_detail,
 # different set of instants from the set the match reads (#249).
 from ..flows.continuation import _capture_times, _describe
 from ..flows.doctor import check as flow_doctor
-from ..flows.models import MY_FLOWS_FOLDER, FlowGraph, FlowRecord
+from ..flows.models import (MY_FLOWS_FOLDER, FlowGraph, FlowRecord,
+                            MigrationNote)
 from ..flows.progress import flow_progress
+from ..flows.rig import RigFacts
 from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
 from ..flows import wizard as flow_wizard
-from ..flows.to_plan import (GraphNotRunnable, blocking_reasons, losses,
-                             to_sequence_plan)
+from ..flows.to_plan import (GRID_MAX, OVERLAP_MAX_PCT, GraphNotRunnable,
+                             blocking_reasons, losses, to_sequence_plan)
 from ..flows.tonight import (banked_hours_from_reports,
                              frames_by_target_from_reports,
                              resolve_tonight)
@@ -1971,6 +1973,77 @@ class FlowWizardBody(BaseModel):
     target: str = ""
     #: Only consulted for an unguided lane; the generator picks a safe default.
     unguided_exposure_s: float | None = Field(None, gt=0, le=3600)
+    #: THE MOSAIC KIND'S ANSWERS (#189 spec 1.8, #196). The generator refuses
+    #: them with any other kind, and refuses a grid of one panel, a missing
+    #: angle, and "Rotate to PA" on a rig with no rotator; the route answers
+    #: those 422. What is checked HERE is each answer on its own, against
+    #: the wizard's constants, because with no optics the generator answers
+    #: one target and never reads the grid: without the door a malformed
+    #: grid would come back 200 as a single target. The camera field and the
+    #: measured angle are NOT answers: the route injects them from the rig,
+    #: and a client cannot send either.
+    rows: int | None = None
+    cols: int | None = None
+    #: Percent, as a TARGET holds it; None takes the wizard's default.
+    overlap_pct: float | None = None
+    angle_mode: str | None = None
+    #: The position angle the grid is laid out at, degrees.
+    pa_deg: float | None = None
+    #: USE MEASURED: lay the grid out at the angle the last solve measured.
+    use_measured: bool = False
+
+    @field_validator("rows", "cols", mode="before")
+    @classmethod
+    def _grid_side(cls, v):
+        # Before pydantic's int coercion, which would take True as 1 and "2"
+        # as 2: the generator refuses both spellings, and so does the door.
+        # A whole float (2.0) is a whole number to both, and is taken as 2.
+        if v is None:
+            return v
+        if (isinstance(v, bool) or not isinstance(v, (int, float))
+                or not math.isfinite(v) or not float(v).is_integer()
+                or not flow_wizard.GRID_MIN <= v <= GRID_MAX):
+            raise ValueError(f"a side of a mosaic's grid is a whole number "
+                             f"from {flow_wizard.GRID_MIN} to {GRID_MAX}, "
+                             f"not {v!r}")
+        return int(v)
+
+    # The overlap and the PA are checked BEFORE pydantic's float coercion,
+    # as the grid's sides are: coerced, ``true`` arrives as 1.0 and "30" as
+    # 30.0, and the generator, which refuses a bool or a string for either,
+    # never sees what was sent. A PA of 1.0 that nobody typed is a default
+    # angle nobody chose, the I-04 defect (spec 1.8, #344).
+    @field_validator("overlap_pct", mode="before")
+    @classmethod
+    def _overlap_pct(cls, v):
+        if v is not None and (isinstance(v, bool)
+                              or not isinstance(v, (int, float))
+                              or not math.isfinite(v)
+                              or not flow_wizard.OVERLAP_MIN_PCT <= v
+                              <= OVERLAP_MAX_PCT):
+            raise ValueError(f"a mosaic's overlap is a percentage from "
+                             f"{flow_wizard.OVERLAP_MIN_PCT:g} to "
+                             f"{OVERLAP_MAX_PCT:g}, not {v!r}")
+        return v
+
+    @field_validator("angle_mode")
+    @classmethod
+    def _mosaic_angle(cls, v):
+        if v is not None and v not in flow_wizard.MOSAIC_ANGLES:
+            raise ValueError(
+                f"a mosaic is laid out at one camera angle, so its angle is "
+                + " or ".join(repr(a) for a in flow_wizard.MOSAIC_ANGLES)
+                + f", not {v!r}")
+        return v
+
+    @field_validator("pa_deg", mode="before")
+    @classmethod
+    def _finite_pa(cls, v):
+        if v is not None and (isinstance(v, bool)
+                              or not isinstance(v, (int, float))
+                              or not math.isfinite(v)):
+            raise ValueError(f"a PA is a finite number of degrees, not {v!r}")
+        return v
 
     @field_validator("kind")
     @classmethod
@@ -2040,6 +2113,52 @@ class FlowSaveBody(BaseModel):
     flow: FlowRecord
 
 
+#: What a SAVE'S answer says in ``migrated`` when the save switched a TARGET
+#: or POOL to counting accepted subs (#189 Revision 2, ruling 2). The ruling
+#: fixes the UI's words, "now counts accepted subs only", and both editors
+#: print their own line for the ``counts`` key; this is the sentence for a
+#: caller with no line of its own (the API, a script). A MigrationNote, not
+#: the bare "counts" the ruling writes, so the answer stays a record a client
+#: may send straight back: ``FlowRecord.migrated`` refuses a bare string, and
+#: a save drops whatever ``migrated`` it is sent.
+COUNTS_SWITCHED_NOTE = (
+    "now counts accepted subs only: this save switched every TARGET and POOL "
+    "that counted every sub taken, rejected ones included")
+
+#: Ruling 2's second sentence, verbatim, added to the read's counts note when
+#: the session Run would continue is dormant. The ledger is counted by its
+#: frozen plan's ``count_mode`` (spec 5.9), so a save does not recount it:
+#: the first CONTINUE asks, with both totals (``accept_recount``).
+COUNTS_DORMANT_ADDENDUM = "Its armed session keeps its count until you CONTINUE."
+
+#: ``prepare_save``'s ``migrated`` keys, and what the answer says for each.
+_SAVE_NOTES = {"counts": COUNTS_SWITCHED_NOTE}
+
+
+def _save_answer(record: FlowRecord, migrated: list[str],
+                 reanchored: list[dict]) -> dict:
+    """What every save route answers: the record as stored, with what THIS
+    save did to it (``FlowStore.save_and_report``, rulings 2 and 3).
+
+    * ``migrated``: one note per rule the save applied, ``counts`` when it
+      switched a TARGET or POOL to accepted subs. Empty when it changed
+      nothing, so the answer never repeats what an earlier save did.
+    * ``reanchored``: every block whose counts the save restarted,
+      ``{node_id, max_move_deg, threshold_deg}``, so a raw field edit that
+      restarts a campaign is said when it is made, not nights later as
+      CONTINUE's dropped-steps question.
+
+    BUILT BY HAND, SO BY ALIAS. The routes used to return the record and let
+    FastAPI dump it by alias; ``FlowEdge``'s source is ``from_`` with alias
+    ``from``, and a dump without ``by_alias`` would answer every wire as
+    ``from_``, which the editor stores and would send back wireless."""
+    body = record.model_dump(mode="json", by_alias=True)
+    body["migrated"] = [MigrationNote(key=k, note=_SAVE_NOTES.get(k, k))
+                        .model_dump() for k in migrated]
+    body["reanchored"] = [dict(r) for r in reanchored]
+    return body
+
+
 class FlowFolderRenameBody(BaseModel):
     """Re-parent every flow in ``name`` to ``new_name``. Not a directory
     rename — a folder is a field on the record, so this is the only thing
@@ -2087,6 +2206,15 @@ class FlowRunBody(BaseModel):
     adopt: bool = False
     accept_dropped: bool = False
     accept_recount: bool = False
+
+
+class ResumeBody(BaseModel):
+    """Optional body of ``POST /api/sessions/{id}/resume`` and ``POST
+    /api/sequence/recover`` (#291). ``force`` is a start's ``force``: it
+    waives the horizon pre-flight, never the Sun. The body is optional, so a
+    caller that sends none resumes exactly as it did before the two routes
+    ran the pre-flight at all."""
+    force: bool = False
 
 
 class SessionPatchBody(BaseModel):
@@ -3900,9 +4028,12 @@ def create_app(*, bind_host: str | None = None,
         return None
 
     def _start_preflight(plan: SequencePlan, *, force: bool) -> list[dict]:
-        """The horizon and Sun pre-flight of the two start paths that run one,
-        ``/api/sequence/start`` and ``/api/flows/{id}/run``: one helper, so the
-        two cannot drift (spec 6.3; #132). Raises 409 for a refusal. Returns
+        """The horizon and Sun pre-flight of the HTTP start paths,
+        ``/api/sequence/start`` and ``/api/flows/{id}/run``, and of the two
+        that resume a stored session, ``/api/sessions/{id}/resume`` and
+        ``/api/sequence/recover``, which hand it only the targets the session
+        still owes (``_owed_plan``; #291): one helper, so the four cannot
+        drift (spec 6.3; #132). Raises 409 for a refusal. Returns
         the panels of a mosaic group that are below the horizon now and did
         not refuse the start, for the caller to name in its response and its
         log line (``_name_panels_below``) once the run has started.
@@ -4021,6 +4152,29 @@ def create_app(*, bind_host: str | None = None,
                     f"mosaic '{name}': {which} below the horizon now; "
                     f"started, since {up} of its {n} panels "
                     f"{'is' if up == 1 else 'are'} not", "sequence")
+
+    def _owed_plan(s: Session) -> SequencePlan:
+        """``s``'s plan cut to the targets that still owe frames, for the
+        pre-flight of the two routes that resume a stored session,
+        ``/api/sessions/{id}/resume`` and ``/api/sequence/recover`` (#291).
+
+        OWED, NOT EVERY TARGET. A dormant session is usually part done, and
+        a target that owes nothing is not one the run will slew to. Checked
+        with the rest, a finished target that has since set would refuse
+        the resume of everything the session still owes, and a finished
+        panel that is up would carry a group whose every owed panel is below
+        the horizon past the every-panel rule. So both ``_start_preflight``
+        and ``_name_panels_below`` are handed this plan, and a group's rule
+        and its logged count are over the panels still owed.
+
+        "Owes" is ``Session.remaining``, counted as the frozen plan's
+        ``count_mode`` counts, the same count ``done_map`` seeds the engine
+        with. The groups ride along whole, so a member keeps its group. A
+        copy: the session's own plan is what ``engine.start`` is handed."""
+        left = s.remaining()
+        return s.plan.model_copy(update={"targets": [
+            t for t in s.plan.targets
+            if any(left.get(st.id, 0) > 0 for st in t.steps)]})
 
     def _merge_alert_verified(incoming: list[AlertSink]) -> list[AlertSink]:
         """Reset ``verified`` to False on any sink whose delivery identity
@@ -5311,9 +5465,10 @@ def create_app(*, bind_host: str | None = None,
     # persists a compiled plan, and every read compiles fresh. ORDERING MATTERS
     # twice below; both places say so where they sit.
 
-    async def _persist_flow(record: FlowRecord) -> FlowRecord:
-        """One writer for POST and PUT, because the field-ownership policy is
-        the thing that must not drift between them.
+    async def _persist_flow(record: FlowRecord) -> dict:
+        """One writer for POST, PUT, the wizard and the quick flow, because
+        the field-ownership policy is the thing that must not drift between
+        them.
 
         FlowRecord carries four fields the store does not defend: ``created_ts``
         (nothing writes it), ``last_run`` and ``last_result`` (nothing on the
@@ -5321,6 +5476,16 @@ def create_app(*, bind_host: str | None = None,
         exception). The library cards RENDER last_run/last_result — so a client
         that PUTs ``last_result: "ok"`` onto a flow that has never run gets a
         green card for free. All four are re-derived from the stored record.
+
+        THE SAVE RULES RIDE THE STORE'S ONE WRITER (#189 Revision 2 rulings 2
+        and 3, spec 3.3): ``save_and_report`` runs ``save_rules.prepare_save``
+        against the file it replaces, so every TARGET and POOL is written
+        counting accepted subs and every TARGET's ``frameAnchor`` is the
+        server's. This answers with what that did (``_save_answer``):
+        ``migrated`` when the counts were switched, ``reanchored`` for every
+        block whose counts restarted. ``save`` would apply the same rules and
+        throw the report away, and the report is the only place a restarted
+        campaign is said at the moment it is caused.
         """
         try:
             prior = await asyncio.to_thread(flow_store.get, record.id)
@@ -5333,7 +5498,8 @@ def create_app(*, bind_host: str | None = None,
             "last_result": prior.last_result if prior else "",
         })
         try:
-            return await asyncio.to_thread(flow_store.save, record)
+            stored, migrated, reanchored = await asyncio.to_thread(
+                flow_store.save_and_report, record)
         except ReadOnlyFlow as e:
             raise HTTPException(403, detail={"detail": str(e), "code": e.code})
         except FlowLibraryFull as e:
@@ -5346,6 +5512,7 @@ def create_app(*, bind_host: str | None = None,
         except ValueError as e:
             raise HTTPException(422, detail={"detail": str(e),
                                              "code": getattr(e, "code", "invalid")})
+        return _save_answer(stored, migrated, reanchored)
 
     def _camera_can_cool() -> bool:
         """Does this rig have a TEC? Live off the connected camera, and from the
@@ -5369,6 +5536,79 @@ def create_app(*, bind_host: str | None = None,
             return bool(getattr(cam, "can_cool", False))
         return bool(config_store.cfg().camera_can_cool_seen)
 
+    def _profile_has_rotator() -> bool | None:
+        """Whether the rig has a rotator, as M8 and the wizard ask it: True,
+        False, or None for "nobody knows".
+
+        TRUE ON EVIDENCE: a rotator connected now, or a rotator row in the
+        active profile. FALSE only when the answer is written down: a profile
+        that lists its devices one by one on the native backend, with no
+        rotator among them, because a native role with no row has no address
+        and cannot connect. Everything else is None: no active profile, or a
+        primary (the simulator, NINA) that may fill the role itself. A None
+        is not a "no": M8 says nothing and the wizard offers "Rotate to PA",
+        where a False read off a rig nobody described would have both refuse
+        a rotator that is there."""
+        rot = hub.devices.get("rotator")
+        if rot is not None and getattr(rot, "connected", False):
+            return True
+        profile = hub._active_profile()
+        if profile is None:
+            return None
+        if any(d.role == "rotator" for d in profile.devices):
+            return True
+        primary = profile.primary_backend or profile._derived_primary()
+        if primary == "native" and profile.devices and not profile.nina_host:
+            return False
+        return None
+
+    def _rig_facts() -> RigFacts:
+        """What the flow compile knows about the live rig, as ONE value
+        (``flows.rig``; #189 spec 3.3, 1.8). The compile, the doctor and the
+        wizard are pure, so the route reads the rig for them, as it reads
+        ``cool_to``:
+
+        * ``fov_deg``: the imaging camera's field at BIN 1, off
+          ``hub.effective_optics`` (the profile's optics, else the rig's,
+          else the connected camera's sensor), because a block's
+          ``fovX``/``fovY`` snapshot is bin 1 and the two are compared (M5).
+          None while the optics are not known, never ``(0, 0)``: a zero field
+          is a camera that images nothing, and ``RigFacts`` refuses it.
+        * ``hop_cost_s``/``hop_samples``: ``engine.measured_cost("hop")``,
+          None and 0 until a hop has been measured. Never the engine's 150 s
+          seed: the doctor's M10 and the brief speak only of a measured cost.
+        * ``has_rotator``: ``_profile_has_rotator``.
+        * ``reject_guards_off``: both reject guards resolved off by
+          ``resolve_policy``, the resolution ``quota_unbounded`` reads. A
+          flow plan never sets either guard, so the rig's standards decide,
+          and a bare plan asks for them without compiling anything.
+
+        On the event loop, like ``_camera_can_cool``: it reads the device
+        map, and a caller on a worker thread is handed the value."""
+        optics = hub.effective_optics()
+        fov = None
+        x, y = optics.get("fov_w_deg"), optics.get("fov_h_deg")
+        if (optics.get("have_optics") and isinstance(x, (int, float))
+                and isinstance(y, (int, float)) and math.isfinite(x)
+                and math.isfinite(y) and x > 0 and y > 0):
+            fov = (float(x), float(y))
+        profile = hub._active_profile()
+        where = (f"profile {profile.name}"
+                 if profile is not None and profile.optics is not None
+                 else "the rig's optics")
+        measured = getattr(engine, "measured_cost", None)
+        hop = measured("hop") if callable(measured) else None
+        policy = resolve_policy(SequencePlan(), config_store.cfg())
+        return RigFacts(
+            fov_deg=fov,
+            fov_from=(f"{where}, matched {time.strftime('%Y-%m-%d')}"
+                      if fov is not None else ""),
+            hop_cost_s=hop[0] if hop else None,
+            hop_samples=hop[1] if hop else 0,
+            has_rotator=_profile_has_rotator(),
+            reject_guards_off=not (policy.max_consecutive_rejects
+                                   or policy.max_consecutive_rejects_night))
+
     async def _compile_payload(graph: FlowGraph, name: str, *,
                                flow_id: str = "") -> dict:
         """``{plan, structural, issues, unmapped}``.
@@ -5391,9 +5631,15 @@ def create_app(*, bind_host: str | None = None,
           carry. This is the list that stops a graph feature being silently
           inert, and it is the reason this endpoint is worth calling before a
           run rather than after one.
+
+        ONE READING OF THE RIG (``_rig_facts``, spec 3.3), handed to the plan
+        and to the doctor as the same object: M5's loss in ``unmapped`` and
+        its warning in ``issues`` are then two sentences about one field,
+        never about two reads of it taken a moment apart.
         """
         structural = graph.validation_errors()
         compiled = compile_plan(graph, name)
+        rig = _rig_facts()
         unmapped: list[dict] = []
         geometry_issues: list[dict] = []
         try:
@@ -5408,7 +5654,8 @@ def create_app(*, bind_host: str | None = None,
                 cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
                 camera_can_cool=_camera_can_cool(),
                 closes_on_unsafe=bool(
-                    config_store.cfg().safety.close_dome_on_unsafe))
+                    config_store.cfg().safety.close_dome_on_unsafe),
+                rig=rig)
             groups, note = await capture_geometry.inventory()
             geometry_issues = [{"text": text, "level": "warn"} for text in
                                capture_geometry.plan_warnings(_plan, groups)]
@@ -5426,11 +5673,13 @@ def create_app(*, bind_host: str | None = None,
                 # whether THIS mount's unguided tracking can hold the sub the
                 # graph asks for, which is a driver capability, not a config
                 # value. None on a disconnected rig -- the rule simply does
-                # not run, same as `standards=None`.
+                # not run, same as `standards=None`. WITH the rig facts the
+                # plan was compiled with (M5, M8, M9, M10), the same object.
                 "issues": [i.to_json() for i in
                            flow_doctor(graph,
                                        standards=config_store.cfg().standards,
-                                       mount=hub.devices.get("telescope"))] + geometry_issues,
+                                       mount=hub.devices.get("telescope"),
+                                       rig=rig)] + geometry_issues,
                 "unmapped": unmapped}
 
     @app.get("/api/flows", dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -5472,9 +5721,10 @@ def create_app(*, bind_host: str | None = None,
         The generator lives in ``flows/wizard.py`` and stays there. This route
         is the missing wire, not a second implementation: it validates the
         answers against the generator's own constants, calls
-        ``generate_record``, and persists through ``_persist_flow`` -- the same
-        writer POST /api/flows and PUT use, so the four server-owned fields are
-        re-derived here exactly as they are everywhere else.
+        ``generate_answer`` (the record and its notes), and persists through
+        ``_persist_flow`` -- the same writer POST /api/flows and PUT use, so
+        the four server-owned fields are re-derived here exactly as they are
+        everywhere else, and the save rules are applied and reported.
 
         SAVED, not returned unsaved. The sheet's next act is to open the flow in
         the editor, and a generated graph the operator has to save by hand is a
@@ -5482,11 +5732,39 @@ def create_app(*, bind_host: str | None = None,
 
         CAP_CONTROL_CAPTURE matches POST /api/flows for the same reason it does
         there: somebody who may compose a graph may compose this one.
+
+        THE MOSAIC KIND (#189 spec 1.8, #196) takes the grid and the angle as
+        answers, and two RIG FACTS the route injects, never the client: the
+        live camera field and the rotator (``_rig_facts``, the value the
+        compile reads), and the angle the last solve measured
+        (``hub.last_sky_angle``, ``status.sky_angle``'s PA) for USE MEASURED.
+        With no optics the generator answers one target; the answer's
+        ``notes`` say why (``wizard.NO_OPTICS_REASON``), as do any other
+        notes it has (a name the catalogue does not know). A refusal of the
+        generator's (a grid with another kind, one panel, no angle, "Rotate
+        to PA" with no rotator) is a 422 naming it, not a 500.
         """
-        record = await asyncio.to_thread(
-            flow_wizard.generate_record,
-            body.kind, body.options, body.target, body.unguided_exposure_s)
-        return await _persist_flow(record)
+        sky = getattr(hub, "last_sky_angle", None)
+        measured = sky.get("pa_deg") if isinstance(sky, dict) else None
+        if not (isinstance(measured, (int, float))
+                and not isinstance(measured, bool)
+                and math.isfinite(measured)):
+            measured = None
+        try:
+            answer = await asyncio.to_thread(
+                flow_wizard.generate_answer,
+                body.kind, body.options, body.target,
+                body.unguided_exposure_s,
+                rows=body.rows, cols=body.cols, overlap_pct=body.overlap_pct,
+                angle_mode=body.angle_mode, pa_deg=body.pa_deg,
+                use_measured=body.use_measured, rig=_rig_facts(),
+                measured_pa_deg=measured)
+        except ValueError as e:
+            raise HTTPException(422, detail={"detail": str(e),
+                                             "code": "invalid_wizard_answer"})
+        out = await _persist_flow(answer.record)
+        out["notes"] = list(answer.notes)
+        return out
 
     def _rig_wheel() -> list[str] | None:
         """The connected wheel's usable slot names, or None when there is none.
@@ -5567,13 +5845,14 @@ def create_app(*, bind_host: str | None = None,
         if not body.run:
             return {"flow": saved, "started": False}
         try:
-            started = await run_flow(saved.id, FlowRunBody(accept_unmapped=True))
+            started = await run_flow(saved["id"],
+                                     FlowRunBody(accept_unmapped=True))
         except HTTPException as e:
             detail = e.detail
             if isinstance(detail, dict):
-                detail = {**detail, "flow_id": saved.id, "saved": True}
+                detail = {**detail, "flow_id": saved["id"], "saved": True}
             else:
-                detail = {"detail": str(detail), "flow_id": saved.id,
+                detail = {"detail": str(detail), "flow_id": saved["id"],
                           "saved": True}
             raise HTTPException(e.status_code, detail=detail) from None
         return {"flow": saved, "started": True, "run": started}
@@ -5642,7 +5921,7 @@ def create_app(*, bind_host: str | None = None,
         return await _compile_payload(body.graph or FlowGraph(), body.name or "")
 
     def _flow_progress_payload(rec: FlowRecord, flow_id: str,
-                               camera_can_cool: bool) -> dict:
+                               camera_can_cool: bool, rig: RigFacts) -> dict:
         """The progress answer for one stored flow. Synchronous, so the route
         can run all of it on a worker thread.
 
@@ -5661,7 +5940,9 @@ def create_app(*, bind_host: str | None = None,
         test_a_run_without_a_temperature_says_so.py parse them). They are all
         config reads except ``camera_can_cool``, which asks the connected
         camera and so is asked on the event loop, where the run and the
-        preview ask it, and handed in.
+        preview ask it, and handed in. ``rig`` likewise (``_rig_facts``, the
+        device map): it moves only M5's loss, which this answer never reads,
+        and it is passed so the call is the run's call.
 
         NOT THE SESSION'S FROZEN PLAN. The card shows what the flow owes as it
         stands now; a step the operator has since changed or removed is a new
@@ -5682,7 +5963,8 @@ def create_app(*, bind_host: str | None = None,
             cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
             camera_can_cool=camera_can_cool,
             closes_on_unsafe=bool(
-                config_store.cfg().safety.close_dome_on_unsafe))
+                config_store.cfg().safety.close_dome_on_unsafe),
+            rig=rig)
         session = session_store.current_for_flow(flow_id)
         return flow_progress(compiled, plan, session, flow_id=flow_id)
 
@@ -5733,7 +6015,7 @@ def create_app(*, bind_host: str | None = None,
             raise HTTPException(404, detail={"code": "not_found"})
         try:
             return await asyncio.to_thread(_flow_progress_payload, rec, flow_id,
-                                           _camera_can_cool())
+                                           _camera_can_cool(), _rig_facts())
         except GraphNotRunnable as e:
             raise HTTPException(422, detail={"detail": str(e), "code": e.code})
 
@@ -5745,11 +6027,30 @@ def create_app(*, bind_host: str | None = None,
         FlowEdge's source field is ``from_`` with ``alias="from"``, and FastAPI
         serialises response models by alias. Hand-building this with
         ``model_dump()`` instead would emit ``from_``, and every wire in the
-        canvas would vanish with no error anywhere."""
+        canvas would vanish with no error anywhere.
+
+        WHAT A DORMANT SESSION KEEPS (#189 Revision 2, ruling 2). While a
+        TARGET or POOL counts every sub taken, the read carries the store's
+        ``counts`` note, and saving switches the flow. The session Run would
+        continue does not switch with it: its ledger is counted by its frozen
+        plan's ``count_mode`` until CONTINUE recounts it, which asks first
+        (spec 5.9). So when that session (``current_for_flow``, the one Run
+        and the progress chip both read) is dormant, the note says so too,
+        in the ruling's words. The session store is asked only when the note
+        is there, so a current flow's read costs what it did."""
         try:
-            return await asyncio.to_thread(flow_store.get, flow_id)
+            rec = await asyncio.to_thread(flow_store.get, flow_id)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
+        if any(n.key == "counts" for n in rec.migrated):
+            latest = await asyncio.to_thread(session_store.current_for_flow,
+                                             flow_id)
+            if latest is not None and latest.status == "dormant":
+                rec = rec.model_copy(update={"migrated": [
+                    n.model_copy(update={
+                        "note": f"{n.note} {COUNTS_DORMANT_ADDENDUM}"})
+                    if n.key == "counts" else n for n in rec.migrated]})
+        return rec
 
     @app.put("/api/flows/{flow_id}",
              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
@@ -5807,11 +6108,21 @@ def create_app(*, bind_host: str | None = None,
         Off the event loop: this runs one astropy ephemeris pass PER RESOLVED
         TARGET, so a four-member pool is four passes and the first call also pays
         the lazy astropy import.
+
+        A MOSAIC READS TWO MORE THINGS (#189 S3 item 5). Its CAMPAIGN rows
+        are per panel, from the flow's progress answer: the one
+        ``GET /api/flows/{id}/progress`` gives, handed in as a callable that
+        ``resolve_tonight`` calls only for a flow with a mosaic, on its
+        worker thread. And its budget and brief add the hops, at the cost the
+        engine MEASURED (``RigFacts.hop_cost_s``, None until a hop is timed,
+        never the engine's seed). The device reads are made here, on the
+        loop, and the values handed over, as the progress route does.
         """
         try:
             rec = await asyncio.to_thread(flow_store.get, flow_id)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
+        can_cool, rig = _camera_can_cool(), _rig_facts()
         return await asyncio.to_thread(
             resolve_tonight, rec.graph, hub.site, name=rec.name,
             banked=lambda: banked_hours_from_reports(
@@ -5821,7 +6132,10 @@ def create_app(*, bind_host: str | None = None,
             # wants accepted frames per filter PER TARGET, because a pool member
             # is retired by its own quota and nobody else's.
             frames_by_target=lambda: frames_by_target_from_reports(
-                SessionReporter.list_reports()))
+                SessionReporter.list_reports()),
+            hop_cost_s=rig.hop_cost_s,
+            progress=lambda: _flow_progress_payload(rec, flow_id, can_cool,
+                                                    rig))
 
     @app.post("/api/flows/{flow_id}/run",
               dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
@@ -5863,12 +6177,18 @@ def create_app(*, bind_host: str | None = None,
             # `flow_id` makes the target and step ids deterministic (spec 3.3):
             # the same flow compiles to the same ids on every night, which is
             # what lets the continue below find last night's frames by step id.
+            #
+            # `rig`: the rig facts the preview compiled with (spec 3.3). A
+            # mosaic framed for a field the camera now fitted cannot cover is
+            # M5's LOSS, so it lands in `unmapped` and the gate below refuses
+            # the run until the operator accepts it (spec 1.8).
             plan, unmapped = to_sequence_plan(
                 compiled, rec.graph, flow_id=flow_id,
                 cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
                 camera_can_cool=_camera_can_cool(),
                 closes_on_unsafe=bool(
-                    config_store.cfg().safety.close_dome_on_unsafe))
+                    config_store.cfg().safety.close_dome_on_unsafe),
+                rig=_rig_facts())
         except GraphNotRunnable as e:
             raise HTTPException(422, detail={"detail": str(e), "code": e.code})
 
@@ -6168,7 +6488,8 @@ def create_app(*, bind_host: str | None = None,
     @app.post("/api/sessions/{session_id}/resume",
               dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"SequenceEngine.start"})
-    async def resume_session(session_id: str):
+    async def resume_session(session_id: str,
+                             body: ResumeBody | None = None):
         try:
             s = await asyncio.to_thread(session_store.load, session_id)
         except KeyError:
@@ -6189,6 +6510,18 @@ def create_app(*, bind_host: str | None = None,
                 "count_mode=accepted with both reject guards disabled and no "
                 "stop boundary can run unbounded — set max_consecutive_rejects, "
                 "max_consecutive_rejects_night, a stop time, or max_run_min")
+        # THE START'S SKY CHECKS, which a resume never ran (#291; spec 6.3,
+        # 5.9 "every existing guard still applies"). The stored plan was
+        # checked when it first started, which can be nights ago, so the sky
+        # it was checked against is gone; and without this, resuming a
+        # session was the way around the Sun check, the one that costs a
+        # sensor rather than a night. The same helper and 409s as a start:
+        # the Sun is never waived, the horizon is waived by ``force``, and a
+        # group refuses only when every panel is below. Over the targets
+        # the session still owes, not the whole plan (``_owed_plan``).
+        owed = _owed_plan(s)
+        below_horizon = _start_preflight(owed,
+                                         force=bool(body and body.force))
         try:
             hub.require("camera")
             _refuse_while_resume_recovers()          # no await until the start
@@ -6199,7 +6532,14 @@ def create_app(*, bind_host: str | None = None,
                 s.plan, config_store.cfg().cooling.setpoint_c), session=s)
         except DeviceError as e:
             raise _err(e)
-        return {"resumed": True, "remaining": sum(s.remaining().values())}
+        # Named once the engine is going, as a start names them: a refused
+        # resume says nothing.
+        _name_panels_below(owed, below_horizon)
+        out = {"resumed": True, "remaining": sum(s.remaining().values())}
+        if below_horizon:
+            # Absent when none is, so every other answer is unchanged.
+            out["below_horizon"] = below_horizon
+        return out
 
     @app.patch("/api/sessions/{session_id}",
                dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
@@ -8612,7 +8952,7 @@ def create_app(*, bind_host: str | None = None,
 
     @app.post("/api/sequence/recover", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"SequenceEngine.start"})
-    async def sequence_recover():
+    async def sequence_recover(body: ResumeBody | None = None):
         s = session_store.recoverable()
         if s is None:
             raise HTTPException(404, "no resumable sequence found")
@@ -8627,6 +8967,13 @@ def create_app(*, bind_host: str | None = None,
                 "count_mode=accepted with both reject guards disabled and no "
                 "stop boundary can run unbounded — set max_consecutive_rejects, "
                 "max_consecutive_rejects_night, a stop time, or max_run_min")
+        # The start's horizon and Sun pre-flight over what the session still
+        # owes, exactly as /api/sessions/{id}/resume runs it (#291): this is
+        # the same resume by another door, and a door without the Sun check
+        # is the one a stale plan walks through.
+        owed = _owed_plan(s)
+        below_horizon = _start_preflight(owed,
+                                         force=bool(body and body.force))
         try:
             hub.require("camera")
             _refuse_while_resume_recovers()          # no await until the start
@@ -8636,8 +8983,12 @@ def create_app(*, bind_host: str | None = None,
                 s.plan, config_store.cfg().cooling.setpoint_c), session=s)
         except DeviceError as e:
             raise _err(e)
-        return {"resumed": True,
-                "frames_remaining": sum(s.remaining().values())}
+        _name_panels_below(owed, below_horizon)      # once it has started
+        out = {"resumed": True,
+               "frames_remaining": sum(s.remaining().values())}
+        if below_horizon:
+            out["below_horizon"] = below_horizon     # absent when none is
+        return out
 
     # -------------------------------------------------------------- polar align
 

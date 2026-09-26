@@ -141,7 +141,7 @@ The headline deliverable. Each row links a nightly concept (from the onboarding 
 | **Guiding (PHD2)** | Guide | Start/Stop Guiding, Dither | `guider{guiding,rms_ra,rms_dec,rms_total,snr,recent[]}` | `POST /api/guide/{start,stop,dither}` | `guide` | **control.guide** |
 | **Filters / filter wheel** | Capture→Filter, Plan steps | filter buttons; per-step filter select | `filterwheel{position,names}` | `POST /api/filterwheel/position` | `status` | **control.capture** |
 | **Capture frames** | Capture | Single/Loop/Stop, exp/gain/offset/bin | `looping`, `preview{…,hfr,stars,histogram,auto_levels}` | `POST /api/capture`, `…/loop`, `…/stop` | `preview`, `capture_loop` | **control.capture** |
-| **Framing / FOV / mosaic** | Atlas | survey, FOV, rows/cols/overlap, camera angle | `framing` (client), `optics{image_scale,fov_*}` | `POST /api/framing/mosaic`, `PUT /api/optics` | — | **config.site_optics** (optics) |
+| **Framing / FOV / mosaic** | Atlas | survey, FOV, rows/cols/overlap, camera angle | `framing` (client), `optics{image_scale,fov_*}` | `POST /api/framing/mosaic`, `PUT /api/optics` | — | **view.site_derived** (mosaic), **config.site_optics** (optics) |
 | **Plan & automation** | Plan | targets, steps, automation toggles | `plan` (client), `sequence` state | `POST /api/plans`, `…/import`, `POST /api/sequence/preflight` | `sequence` | **control.capture** (plan), **control.mount** (run) |
 | **Run the night** | Plan, Monitor | Run/Pause/Resume/Abort, Resume-from | `sequence{state,progress{…},target,plan_name,live}`, `schedule.state` | `POST /api/sequence/{start,pause,resume,abort,recover}` (`force`) | `sequence` | **control.mount** |
 | **Meridian flip** | Monitor→Countdowns | (automatic) | `meridian{status,hours_to_flip,flip_enabled,pier_side}` | (engine-driven; toggle in plan) | `status`, `mount` | — |
@@ -149,7 +149,7 @@ The headline deliverable. Each row links a nightly concept (from the onboarding 
 | **Power / dew** | Power | output ON/OFF, dew PWM | switch ports (`/api/switch/ports`) | `POST /api/switch/set` | (5 s poll) | **control.power** |
 | **Identity / who am I** | Header RoleBadge, Settings→Account | sign in/out | `principal{role,email,caps}` | `GET /api/me`, `/auth/login`, `POST /auth/logout` | — | — |
 
-> **Atlas compute caveat (security seam):** `POST /api/framing/mosaic` and `POST /api/visibility/order` are intentionally **un-capability-gated** (stateless compute). Fine today; flag for the rebuild's threat model.
+> **Atlas compute is gated (security seam):** `POST /api/framing/mosaic` and `POST /api/visibility/order` both require **view.site_derived** (`CAP_VIEW_SITE_DERIVED`, declared on the routes in `server/astrodeck/catalog/framing.py` and `catalog/visibility.py`). Stateless is not secret-free: their per-panel `transit_alt` and visibility answers are functions of the observing site, and the 2026-08-01 cross-cut review recovered the latitude from the framing route when it was open to anyone. Operators and admins hold the capability; a viewer does not, so a viewer-facing Atlas cannot call either route. This line used to call both routes un-gated, which would have led a rebuild to treat a site-derived route as viewer-safe (#169).
 
 ---
 

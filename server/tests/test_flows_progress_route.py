@@ -925,6 +925,13 @@ class TestContinue:
             assert None is not None
 
         Mutation "no session" fails at the same line.
+
+        RE-PINNED IN THE INTEGRATION OF S3: both session reads say
+        ``count_mode`` "accepted" where they said "attempts". The flow is
+        saved through the route, and since S3 every save writes "Accepted
+        subs" into its TARGETs and POOLs (Revision 2 ruling 2), so the run it
+        starts counts accepted subs. Every frame here is accepted, so the
+        counts themselves do not move.
         """
         api, engine, night = rig
         fid = await api.save_flow(LR)
@@ -947,7 +954,7 @@ class TestContinue:
         await engine._task
         one = await api.ok(fid)
         assert one["session"] == {"id": sid, "status": "dormant",
-                                  "nights": 1, "count_mode": "attempts"}
+                                  "nights": 1, "count_mode": "accepted"}
         assert _steps(one) == _steps(live)
 
         r = await api.client.post(f"/api/flows/{fid}/run", json={})
@@ -959,7 +966,7 @@ class TestContinue:
 
         two = await api.ok(fid)
         assert two["session"] == {"id": sid, "status": "active",
-                                  "nights": 2, "count_mode": "attempts"}
+                                  "nights": 2, "count_mode": "accepted"}
         assert _steps(two) == _steps(one)
 
         _bank(engine, [0])

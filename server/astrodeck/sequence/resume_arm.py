@@ -63,10 +63,20 @@ failed with "Not enough stars." every ten minutes from 19:59 to past 22:24
 under a clear sky, because the optic was covered, and nobody was told. The
 solve now says whether light reached the sensor (``solve.light``). On a
 ``NoLightError`` the ladder sends one push alert per session per no-light
-spell, retries first after ``RETRY_INTERVAL_S`` and then every
-``NO_LIGHT_RETRY_S``, and holds in words; a solve that works or a cloud
-verdict ends the spell, and so does the end of the night. A cloud verdict
-keeps the ten-minute retry and sends nothing, as before. See ``tick``.
+spell, retries first after ``RETRY_INTERVAL_S``, and holds in words; a solve
+that works or a cloud verdict ends the spell, and so does the end of the
+night. A cloud verdict keeps the ten-minute retry and sends nothing, as
+before. See ``tick``.
+
+ONLY A DARK MASTER EARNS THE HOURLY RETRY (#308, S3 orchestrator ruling 8).
+The retries after a spell's first come every ``NO_LIGHT_RETRY_S`` only when
+the verdict was judged against the dark master for the solve's settings,
+the one reference that IS that frame's no-light level. A bias master or the
+frame the check shoots itself (#262) is a floor drawn from a pedestal, and
+whether a thick overcast over a dark site can read inside its band has never
+been measured, so every other no-light verdict keeps the ten-minute retry
+after its one alert, and the alert says so. The kind is asked of the error
+(``NoLightError.reference_kind``), never read out of its words.
 
 THE RE-CENTRE GOES WHERE THE RUN WILL SHOOT, AT ITS ANGLE (#159, I-13;
 mosaic spec 5.9, 3.4, Revision 2 ruling 9). The ladder used to slew to the
@@ -78,6 +88,20 @@ the whole resume while the target the run would shoot stood high. Now
 order it takes it, the ladder re-centres on the first of those that clears
 its floor and the slew limits, and ``commanded_rotation`` gives it the
 planned angle or the locked one. See step 3 of ``_recover``.
+
+AND THROUGH THE RUN'S GATING (#283). With the site set, each candidate is
+asked ``schedule.gating_status``, the question the run asks before it shoots
+a target: a closed window or a target that never clears its start floor
+tonight is dropped, and a ready target is tried before one waiting on the
+clock, its altitude or a constraint. Without it, a session whose only owing
+target's window had closed, beside a complete target whose window was open,
+was re-centred and started every minute, and each run ended at once.
+
+A NIGHT WITH NOTHING TO SHOOT IS SAID ONCE (#284). That refusal
+(``NOTHING_TONIGHT``) is a decided outcome, not a wait for the sky, so it is
+latched per session and night: one warning, then quiet re-checks, and at the
+window's close one info line that the session's remaining work was set aside
+for the night, never the urgent "gave up" line meant for a real loss.
 """
 from __future__ import annotations
 
@@ -88,7 +112,9 @@ import time
 from ..config import config_store
 from ..devices.base import GotoRefused
 from ..events import bus, night_key
-from ..solve.light import CLOUD, NO_LIGHT_WORDS, FailedSolveError, NoLightError
+from ..solve.light import (BIAS_MASTER, CLOUD, DARK_MASTER, EXPLICIT,
+                           NO_LIGHT_WORDS, SELF_SHOT, FailedSolveError,
+                           NoLightError)
 from . import schedule
 from .models import (Target, TargetGroup, duplicate_name_warning,
                      plan_identity_errors, quota_unbounded, replan_cooling)
@@ -111,7 +137,20 @@ RETRY_INTERVAL_S = 600.0
 #: an hour for the rig to notice. A wrong no-light verdict, which the
 #: classifier works hard never to give, costs at most this long under a sky
 #: that has cleared.
+#:
+#: ONLY FOR A VERDICT A DARK MASTER STANDS BEHIND (#308, S3 orchestrator
+#: ruling 8; ``_no_light_backoff``). Every other no-light verdict keeps
+#: RETRY_INTERVAL_S: its reference is a floor, and a wrong verdict on it would
+#: cost this hour under a sky nobody has measured it against.
 NO_LIGHT_RETRY_S = 3600.0
+
+#: How the no-light alert names a reference that is not a dark master, so it
+#: can say why it keeps looking every ten minutes (#308). Words only.
+_NO_LIGHT_BASIS = {
+    BIAS_MASTER: "a bias master",
+    SELF_SHOT: "a frame it shot itself at the camera's shortest exposure",
+    EXPLICIT: "a reference it was handed",
+}
 
 #: Consecutive crashes of ONE session before auto-resume stops trying and stows
 #: the rig. Three, because two is inside the range of genuinely transient faults
@@ -228,10 +267,23 @@ def resume_expected_tonight(hub, now: float | None = None) -> Session | None:
     return armed
 
 
-#: The refusal for a session that has nothing to shoot tonight (#159). Words
-#: only, like every reason ``_recover`` returns (#233).
-NOTHING_TONIGHT = ("everything this session still owes is set aside for "
-                   "tonight; not slewing until the next night")
+#: The refusal for a session that has nothing to shoot tonight (#159, #283).
+#: Words only, like every reason ``_recover`` returns (#233).
+#:
+#: IT NAMES THE THREE WAYS, NOT WHICH ONE. Since #283 a target can be out of
+#: tonight by its gating as well as by a set-aside record, and a window that
+#: closed at dawn or a floor never cleared from this site is a fact computed
+#: from the site. A sentence that listed each target's own reason would say
+#: that fact beside a target and a time; this one says only what the refusal
+#: itself already says, that something ruled the night out.
+NOTHING_TONIGHT = ("nothing this session still owes can be shot tonight: "
+                   "what it owes is set aside for tonight, past its observing "
+                   "window or never above its start floor; not slewing until "
+                   "the next night")
+
+#: The gating states the run drops a target for without shooting it
+#: (``_run_scheduled``), and so the re-centre leaves out (#283).
+_DROPPED_STATES = ("window_closed", "never_rises")
 
 
 def _owes(target: Target, remaining: dict[str, int]) -> bool:
@@ -317,8 +369,70 @@ def _group_order(group: TargetGroup, members: list[Target],
         return list(live)
 
 
+def _past_meridian_first(panels: list[Target], site,
+                         now: float) -> list[Target]:
+    """``panels``, a flipped group's live panels in the run's order, with the
+    ones past the meridian first and each part in its own order (#312, spec
+    5.7, 5.9).
+
+    PAST THE MERIDIAN AS THE RUN COUNTS IT: at least ``MERIDIAN_SIDE_MARGIN_S``
+    past the crossing (``schedule.hours_to_meridian_flip`` at or below minus
+    that band), where the side a goto lands on is not in doubt. A panel just
+    past its crossing waits in the run too
+    (`group_rules.meridian_eligibility`).
+
+    WHY. The run reads tonight's record back and shoots only the flipped
+    group's panels past the meridian; a panel before it waits for its
+    crossing. Re-centred on that panel, the ladder's goto would land the
+    mount on the side the group left, and the run's first hop would then
+    cross the pier again: two slews across it for no frame. Ordered, not
+    filtered: with no panel past the meridian yet, the run waits for the
+    first crossing, and the ladder still has a panel to re-centre on.
+
+    SITE-DERIVED and used here only, never said: the answer is an order.
+    Called only once ``recentre_candidates`` has found the site set (its
+    ``gate``, the one guard, as for the run's gating); a longitude or an
+    hour angle that cannot be read leaves the order as it is."""
+    from ..site_gate import site_get
+    from .engine import MERIDIAN_SIDE_MARGIN_S
+    band_h = MERIDIAN_SIDE_MARGIN_S / 3600.0
+    try:
+        lon = float(site_get(site)("longitude"))
+    except (TypeError, ValueError):
+        return list(panels)
+
+    def past(t: Target) -> bool:
+        try:
+            return schedule.hours_to_meridian_flip(t.ra_hours, lon,
+                                                   now) <= -band_h
+        except (TypeError, ValueError):
+            return False
+
+    marks = [past(t) for t in panels]
+    return ([t for t, p in zip(panels, marks) if p]
+            + [t for t, p in zip(panels, marks) if not p])
+
+
+def _gating_state(target: Target, site, twilight_deg: float,
+                  now: float) -> str:
+    """``schedule.gating_status``'s state for ``target`` at ``now``, the
+    window resolved at ``now`` as the run resolves and freezes it at its
+    start, which follows the ladder within moments.
+
+    A site the schedule cannot read answers "ready", the answer that
+    changes nothing: the same fallback ``ResumeArm._walk`` makes for the
+    same errors, since only a test double's site lacks the numbers."""
+    try:
+        return schedule.gating_status(target, site, twilight_deg,
+                                      now)["state"]
+    except (KeyError, TypeError, ValueError):
+        return "ready"
+
+
 def recentre_candidates(session: Session, night: str,
-                        walk: list[Target] | None = None) -> list[Target]:
+                        walk: list[Target] | None = None, *,
+                        site=None, twilight_deg: float = -12.0,
+                        now: float | None = None) -> list[Target]:
     """The light targets the run can still shoot on the night ``night``
     (an ``events.night_key``), in the order the run takes them: what the
     recovery ladder may re-centre on (#159, spec 5.9).
@@ -339,18 +453,53 @@ def recentre_candidates(session: Session, night: str,
       tonight (the target is skipped with it), and either way the run does
       not shoot it tonight until the group is complete (spec 1.6).
 
-    What this does not model is the rest of the run's gating
-    (``schedule.gating_status``, #283): a target whose window has not opened
-    yet, or has closed, or that a moon or hour-angle constraint holds, is
-    still a candidate here, where the run would pass it by. The ladder asks
-    each candidate only today's two questions, its start floor and the slew
-    limits. Nothing moves the mount on this order but the one re-centre, and
-    the run acquires its own first target, so such a miss costs a slew, not
-    a frame; #283 also records the restart loop a closed window can cause.
+    * THE RUN'S GATING (#283), when ``site`` is set (``site_is_set``) and
+      ``now`` is given: each live candidate is asked
+      ``schedule.gating_status`` at ``now``, the question ``_run_scheduled``
+      asks of every target before it shoots it. A ``window_closed`` or
+      ``never_rises`` candidate is left out, as the run drops it unshot, and
+      READY candidates come before WAITING ones, whatever they wait on (the
+      clock, their altitude, a moon or hour-angle constraint), each part in
+      the order above, as the run takes the first ready target in its order.
+      Without this, a session whose one owing target's window had closed,
+      beside a complete target whose window was open, passed ``window_open``
+      (it asks ANY target's window), was re-centred on the closed target and
+      started, and the run dropped it and ended: every minute until the
+      window or the night closed.
+    * A GROUP THAT CHANGED PIER SIDE TONIGHT (#312, S3 orchestrator ruling
+      4), when the site is set and ``now`` is given: its record for
+      ``night`` (``Session.group_pier_on``) says it is flipped, so the run,
+      which reads the same record back, shoots only its panels past the
+      meridian, and a panel before the meridian waits for its crossing. Its
+      panels past the meridian come first, each part in the panel order
+      (`_past_meridian_first`), so the re-centre lands on the side the group
+      is on instead of taking it back across the pier before the run starts.
+    * AN UNSET SITE GATES NOTHING (#121). A window resolved at the 0,0
+      default is a window somewhere else, and refusing on it would strand
+      every resume on a rig whose site is not configured; the run's own
+      checks still apply once it starts. The ladder's own start-floor check
+      makes the same tri-state choice. Nor does it order by the meridian: an
+      hour angle at the 0,0 default is somewhere else's too.
 
-    Pure: it reads the session and the walk and nothing else, and it takes
-    the night key as an argument so the answer depends on the caller's
-    clock."""
+    What this still does not model: the run's placement of a group's
+    followers behind its panels (#283's comment), and the ladder commanding
+    a locked angle with no rotator connected (#295).
+
+    Pure: it reads the session, the walk, the site and the clock it is
+    handed and nothing else, and it takes the night key as an argument so
+    the answer depends on the caller's clock. Called without ``site`` and
+    ``now`` it applies no gating, the answer before #283."""
+    from ..site_gate import site_is_set
+    gate = site is not None and now is not None and site_is_set(site)
+    states: dict[str, str] = {}
+
+    def state(t: Target) -> str:
+        if not gate:
+            return "ready"
+        if t.id not in states:
+            states[t.id] = _gating_state(t, site, twilight_deg, now)
+        return states[t.id]
+
     plan = session.plan
     remaining = session.remaining()
     records = session.set_aside_on(night)
@@ -364,8 +513,17 @@ def recentre_candidates(session: Session, night: str,
             last_ts[f.target_id] = f.ts
 
     def live(t: Target) -> bool:
+        # The gating is asked last, so only a target that owes frames and
+        # is not set aside costs a window resolution and an altitude scan.
         return (not t.calibration and _owes(t, remaining)
-                and not _set_aside_tonight(t, remaining, records))
+                and not _set_aside_tonight(t, remaining, records)
+                and state(t) not in _DROPPED_STATES)
+
+    pier_on = getattr(session, "group_pier_on", None)
+
+    def flipped_tonight(group: TargetGroup) -> bool:
+        rec = pier_on(group.id, night) if pier_on is not None else None
+        return bool(rec and rec.get("flipped"))
 
     out: list[Target] = []
     placed: set[str] = set()
@@ -376,12 +534,24 @@ def recentre_candidates(session: Session, night: str,
                 placed.add(group.id)
                 members = [m for m in plan.targets
                            if m.mosaic_group == group.id]
-                out.extend(_group_order(group, members,
-                                        [m for m in members if live(m)],
-                                        done, last_ts))
+                ordered = _group_order(group, members,
+                                       [m for m in members if live(m)],
+                                       done, last_ts)
+                if gate and flipped_tonight(group):
+                    ordered = _past_meridian_first(ordered, site, now)
+                out.extend(ordered)
             continue
         if live(t) and t.after_group not in owing_groups:
             out.append(t)
+    # A GROUP THAT OWES STILL HOLDS ITS ``after_group`` TARGETS when the
+    # gating has dropped every live panel: ``_follower_gate`` skips such a
+    # target for the night while its group can shoot nothing more tonight
+    # and is not complete, so the run does not shoot it either.
+    if gate:
+        # Stable, so each part keeps the walk's order and a group's panels
+        # keep the panel order within it.
+        out = ([t for t in out if state(t) == "ready"]
+               + [t for t in out if state(t) != "ready"])
     return out
 
 
@@ -389,16 +559,22 @@ def nothing_to_shoot_tonight(session: Session,
                              candidates: list[Target]) -> bool:
     """True when the run would shoot nothing tonight although the session
     still owes light frames: no candidate (``recentre_candidates``), a light
-    target that owes frames, and no calibration owed.
+    target that owes frames, and no calibration owed. Nothing this session
+    still owes can be shot tonight: each owing light target is set aside
+    for tonight, waits on a group that is, or, with the site set, has a
+    window that closed or never clears its start floor tonight (#283).
 
-    WHY THIS REFUSES (#159). A run does not retry what is set aside for its
-    night (spec 3.4), so started, such a run has nothing to shoot: it ends,
-    the session stays dormant and armed, and the next tick, a minute later,
-    would run the ladder and start it again, all night. Refused, it holds in
-    words on the ten-minute retry, and the next night's key reads none of
-    tonight's records. A session that owes no light frame at all is not this
-    case: calibration-only work starts, and so does a session that owes
-    nothing, which the run then completes."""
+    WHY THIS REFUSES (#159, #283). A run does not retry what is set aside
+    for its night (spec 3.4) and drops a target whose window has closed, so
+    started, such a run has nothing to shoot: it ends, the session stays
+    dormant and armed, and the next tick, a minute later, would run the
+    ladder and start it again, all night. Refused, it holds in words
+    (``NOTHING_TONIGHT``, no numbers, #233) on the ten-minute retry, said
+    once a night (#284, ``ResumeArm.tick``), and the next night's key reads
+    none of tonight's records and resolves its own windows. A session that
+    owes no light frame at all is not this case: calibration-only work
+    starts, and so does a session that owes nothing, which the run then
+    completes."""
     if candidates:
         return False
     remaining = session.remaining()
@@ -526,9 +702,28 @@ class ResumeArm:
         #: The session whose no-light spell is open, i.e. the one that has
         #: had its alert (#251). The latch that makes it ONE alert per
         #: session per spell, and what tells the first retry of a spell (ten
-        #: minutes) from the later ones (hourly). Cleared when a solve shows
-        #: light, when nothing is armed, and when the window closes.
+        #: minutes) from the later ones (hourly, on a dark master's verdict,
+        #: #308). Cleared when a solve shows light, when nothing is armed, and
+        #: when the window closes.
         self._no_light_spell: str | None = None
+        #: The ``reference_kind`` of this tick's no-light verdict (#308), set
+        #: by ``_recover`` beside ``_ladder_light = "dark"`` and cleared by
+        #: ``tick`` before each ladder, for ``_ladder_light``'s reason.
+        self._ladder_dark_kind: str | None = None
+        #: True when this tick's ``_recover`` refused ``NOTHING_TONIGHT``
+        #: (#284). Set there, cleared by ``tick`` before each ladder, and
+        #: kept off ``_recover``'s ``str | None`` answer for the same reason.
+        self._ladder_nothing_tonight = False
+        #: ``(session id, night key)`` whose ``NOTHING_TONIGHT`` refusal has
+        #: been said (#284): the latch that makes it one warning a night and
+        #: quiet re-checks after. Cleared when nothing is armed and on a
+        #: start, so a re-arm or a changed night is heard about again.
+        self._nothing_tonight_said: tuple[str, str] | None = None
+        #: The session whose CURRENT hold is the ``NOTHING_TONIGHT`` refusal,
+        #: or None (#284). Kept by ``_set_hold`` and ``_clear_hold``, so it
+        #: always answers for the last refusal, which is what the window's
+        #: close reads to choose its line.
+        self._held_nothing_tonight: str | None = None
 
     @property
     def recovering(self) -> bool:
@@ -695,7 +890,8 @@ class ResumeArm:
                 "sequence")
 
     def _set_hold(self, session, reason: str, retry_at: float = 0.0,
-                  site_detail: str | None = None) -> None:
+                  site_detail: str | None = None, *,
+                  nothing_tonight: bool = False) -> None:
         """Record the current refusal, preserving ``since`` while the reason
         stands so the UI can say how long it has been waiting.
 
@@ -704,7 +900,14 @@ class ResumeArm:
         so every other hold keeps the shape it always had. It does not take
         part in ``since``: the altitude in it changes on every retry while
         the words stay, and a floor hold now keeps its ``since`` across the
-        retries that used to restamp it."""
+        retries that used to restamp it.
+
+        ``nothing_tonight`` marks the ``NOTHING_TONIGHT`` refusal (#284).
+        Every hold passes through here, so ``_held_nothing_tonight`` is true
+        exactly while the latest hold is that one. It is not in the
+        published dict, which keeps its shape."""
+        self._held_nothing_tonight = (getattr(session, "id", None)
+                                      if nothing_tonight else None)
         prior = self.hold or {}
         same = prior.get("reason") == reason and prior.get("session_id") == getattr(session, "id", "")
         self.hold = {
@@ -720,11 +923,13 @@ class ResumeArm:
 
     def _clear_hold(self) -> None:
         self.hold = None
+        self._held_nothing_tonight = None
 
-    def _no_light_backoff(self, session) -> float:
+    def _no_light_backoff(self, session, kind: str | None = None) -> float:
         """The wait before the next attempt after a no-light verdict on
-        ``session``'s recovery solve, sending the spell's one alert when this
-        verdict opens the spell (#251).
+        ``session``'s recovery solve, judged against a reference of ``kind``
+        (``NoLightError.reference_kind``), sending the spell's one alert when
+        this verdict opens the spell (#251).
 
         THE ALERT IS AN ERROR LINE, because that is the level the alert
         pipeline delivers to a sink left at its defaults: ``bus.log`` becomes
@@ -732,24 +937,53 @@ class ResumeArm:
         subscribes to "error" and not to "warning". A warning here would be
         one more line in the log nobody read on 2026-09-24.
 
-        ONCE PER SESSION PER SPELL. The spell is the run of no-light verdicts
-        with no evidence of light between them; ``tick`` ends it on a solve
-        that worked or a cloud verdict, and at the end of the night. A
-        failure nothing could judge, or a refusal before the solve, is no
-        evidence either way and leaves it open.
+        ONCE PER SESSION PER SPELL, whatever the kind. The spell is the run
+        of no-light verdicts with no evidence of light between them; ``tick``
+        ends it on a solve that worked or a cloud verdict, and at the end of
+        the night. A failure nothing could judge, or a refusal before the
+        solve, is no evidence either way and leaves it open.
 
-        TEN MINUTES, THEN HOURLY: see ``NO_LIGHT_RETRY_S``."""
+        TEN MINUTES, THEN HOURLY, ON A DARK MASTER ONLY (#308, S3
+        orchestrator ruling 8): see ``NO_LIGHT_RETRY_S``. A verdict judged
+        against a bias master, a self-shot or a reference handed in, or one
+        whose kind nobody stated (``kind`` None, the default), keeps the
+        ten-minute retry on every verdict, and its alert says so and why.
+        The first retry of a spell is ten minutes either way; a later
+        verdict takes its own kind's wait, so a spell whose reference turns
+        into a dark master as the sensor cools into one's band backs off
+        from then on, and one whose dark master drops out of the band
+        goes back to ten minutes. So the alert of a spell opened on any
+        other kind promises ten minutes only until a dark master gives the
+        same verdict: a sensor that cools into a dark master's band mid-spell
+        does exactly that, and an alert that said "rather than hourly" was
+        then broken by the next retry, without a word."""
+        hourly = kind == DARK_MASTER
         if self._no_light_spell == getattr(session, "id", None):
-            return NO_LIGHT_RETRY_S
+            return NO_LIGHT_RETRY_S if hourly else RETRY_INTERVAL_S
         self._no_light_spell = getattr(session, "id", None)
-        bus.log("error",
-                f"auto-resume for '{session.name}': {NO_LIGHT_WORDS}. Its "
-                f"recovery plate solve read the camera at the level it reads "
-                f"in the dark, so nothing will be imaged until the optic is "
-                f"uncovered. It looks again in "
-                f"{int(RETRY_INTERVAL_S / 60)} min, then every "
-                f"{int(NO_LIGHT_RETRY_S / 60)} min while it stays dark.",
-                "sequence")
+        if hourly:
+            bus.log("error",
+                    f"auto-resume for '{session.name}': {NO_LIGHT_WORDS}. Its "
+                    f"recovery plate solve read the camera at the level it "
+                    f"reads in the dark, so nothing will be imaged until the "
+                    f"optic is uncovered. It looks again in "
+                    f"{int(RETRY_INTERVAL_S / 60)} min, then every "
+                    f"{int(NO_LIGHT_RETRY_S / 60)} min while it stays dark.",
+                    "sequence")
+        else:
+            basis = _NO_LIGHT_BASIS.get(kind, "a reference that is not a "
+                                              "dark master")
+            bus.log("error",
+                    f"auto-resume for '{session.name}': {NO_LIGHT_WORDS}. Its "
+                    f"recovery plate solve read the camera at its no-light "
+                    f"level as {basis} measures it, so nothing will be "
+                    f"imaged until the optic is uncovered. With no dark "
+                    f"master for the solve's settings a very dark overcast "
+                    f"could read the same, so it looks again every "
+                    f"{int(RETRY_INTERVAL_S / 60)} min, and backs off to "
+                    f"hourly only once a dark master for those settings "
+                    f"gives the same verdict.",
+                    "sequence")
         return RETRY_INTERVAL_S
 
     def start(self) -> None:
@@ -825,6 +1059,9 @@ class ResumeArm:
             self._clear_hold()
             self._gave_up_for = None
             self._no_light_spell = None     # nothing to be dark for (#251)
+            # A re-arm is somebody asking the rig to try again, who should
+            # hear what it finds, as a no-light spell's re-alert does (#284).
+            self._nothing_tonight_said = None
             # SAY SO WHEN THERE IS AN INTERRUPTED RUN NOBODY WILL RESTART.
             #
             # This used to be a bare return, and on 2026-08-11 that cost 25
@@ -859,6 +1096,9 @@ class ResumeArm:
             # tomorrow, and the window reopening is already "a fresh night"
             # to this tick (``_gave_up_for`` below).
             self._no_light_spell = None
+            # Read BEFORE the hold below replaces it: was the last refusal
+            # "nothing to shoot tonight" (#284)?
+            set_aside = self._held_nothing_tonight == armed.id
             # THE MOST COMMON HOLD, and the one the log ring cannot answer for:
             # the branch below latches per session and logs exactly ONCE, so
             # forty minutes later there is nothing left to read. Recorded every
@@ -868,7 +1108,21 @@ class ResumeArm:
                            "it is not dark enough yet"
                            + (f", and this session still owes {owed} frame"
                               f"{'' if owed == 1 else 's'}" if owed else ""))
-            if self._retry_at and self._gave_up_for != armed.id:
+            if self._retry_at and self._gave_up_for != armed.id and set_aside:
+                # NOT A GIVE-UP (#284). The session held because nothing it
+                # owes could be shot tonight, which is the run's decision
+                # (set aside) or the plan's (a window, a floor), made before
+                # the night ended, not a start dawn beat. The urgent error
+                # below is for a real loss, and a sink delivers it as one; so
+                # this says what happened, once, at info level.
+                self._gave_up_for = armed.id
+                self._retry_at = 0.0
+                bus.log("info", f"auto-resume: nothing '{armed.name}' still "
+                                f"owes could be shot tonight, so its "
+                                f"remaining work was set aside for the "
+                                f"night. It stays armed and tries again when "
+                                f"the next night's window opens.", "sequence")
+            elif self._retry_at and self._gave_up_for != armed.id:
                 # the window closed while we were mid-backoff: dawn beat us.
                 self._gave_up_for = armed.id
                 self._retry_at = 0.0
@@ -1010,6 +1264,8 @@ class ResumeArm:
         self._recentred = None
         self._refusal_site_detail = None
         self._ladder_light = None
+        self._ladder_dark_kind = None
+        self._ladder_nothing_tonight = False
         self._stop_why = None
         self._ladder_session = armed
         self._ladder_step = "starting"
@@ -1072,12 +1328,30 @@ class ResumeArm:
             # here, it would reach that viewer through the ring instead.
             backoff = RETRY_INTERVAL_S
             if self._ladder_light == "dark":
-                backoff = self._no_light_backoff(armed)
-            bus.log("warning", f"auto-resume held: {refusal} — retrying in "
-                               f"{int(backoff / 60)} min", "sequence")
+                backoff = self._no_light_backoff(armed, self._ladder_dark_kind)
+            if not self._ladder_nothing_tonight:
+                bus.log("warning", f"auto-resume held: {refusal} — retrying "
+                                   f"in {int(backoff / 60)} min", "sequence")
+            elif self._nothing_tonight_said != (armed.id, night_key(now)):
+                # SAID ONCE A NIGHT, THEN QUIET (#284). Nothing can change
+                # within the night on its own: set-aside records are only
+                # added and a closed window stays closed, and the run already
+                # said so when it set each target aside. A warning per retry
+                # was a push every ten minutes to a sink that takes warnings.
+                # The re-checks go on, silently, on the same retry, because an
+                # operator can still change the answer (a PATCHed plan), and
+                # the hold stands on the Monitor all the while. Keyed on the
+                # session AND the night, so the next night's first refusal is
+                # news again, as a no-light spell's is.
+                self._nothing_tonight_said = (armed.id, night_key(now))
+                bus.log("warning", f"auto-resume held: {refusal} — checking "
+                                   f"again every {int(backoff / 60)} min, "
+                                   f"without a word, until the night ends",
+                        "sequence")
             self._retry_at = now + backoff
             self._set_hold(armed, refusal, self._retry_at,
-                           site_detail=self._refusal_site_detail)
+                           site_detail=self._refusal_site_detail,
+                           nothing_tonight=self._ladder_nothing_tonight)
             return
         # WHAT WAS READ BEFORE THE LADDER IS STALE AFTER IT (#211).
         #
@@ -1164,6 +1438,9 @@ class ResumeArm:
                 return
         self._retry_at = 0.0
         self._clear_hold()
+        # A start changed the night: a later "nothing to shoot tonight" for
+        # this session is new, and is said (#284).
+        self._nothing_tonight_said = None
         bus.log("info", f"auto-resume: '{fresh.name}' resumed", "sequence")
 
     def _still_startable(self, armed: Session) -> tuple[Session | None, str]:
@@ -1331,10 +1608,19 @@ class ResumeArm:
         # for why it is refused at all). Step 3 re-centres on these. The
         # night key is ``events.night_key`` of the injected clock, the key
         # ``Session.note_set_aside`` records are written under (3.4).
+        #
+        # THROUGH THE RUN'S GATING (#283): the live site, the operator's
+        # twilight and the same clock, so a closed window drops its target
+        # here as the run would drop it, and a ready target is tried first.
+        # ``recentre_candidates`` applies none of it while the site is unset
+        # (#121).
         now = self._clock()
-        candidates = recentre_candidates(session, night_key(now),
-                                         self._walk(session, now))
+        candidates = recentre_candidates(
+            session, night_key(now), self._walk(session, now),
+            site=getattr(self.hub, "site", None),
+            twilight_deg=cfg.safety.twilight_deg if cfg else -12.0, now=now)
         if nothing_to_shoot_tonight(session, candidates):
+            self._ladder_nothing_tonight = True
             return NOTHING_TONIGHT
 
         # 0. IS IT SAFE TO BE OUT AT ALL — before anything moves.
@@ -1472,14 +1758,17 @@ class ResumeArm:
                 self._ladder_step = "solve"
                 await self.hub.solve_and_sync(
                     exposure_s=RECOVERY_SOLVE_EXPOSURE_S)
-            except NoLightError:
+            except NoLightError as e:
                 # THE CAMERA IS IN THE DARK (#251), which is not the cloud
                 # the words below describe. ``tick`` alerts once and backs
-                # off. The reason is words only, not the error's text, which
-                # carries the solver's own words and whatever numbers they
-                # hold: the hold must keep its ``since`` across the hourly
-                # retries, and it is read by a viewer.
+                # off, hourly only when a dark master stands behind the
+                # verdict, so the kind of reference goes with it (#308). The
+                # reason is words only, not the error's text, which carries
+                # the solver's own words and whatever numbers they hold: the
+                # hold must keep its ``since`` across the retries, and it is
+                # read by a viewer.
                 self._ladder_light = "dark"
+                self._ladder_dark_kind = e.reference_kind
                 return (f"{NO_LIGHT_WORDS}, so the blind plate solve after "
                         f"the restart cannot say where the mount points; not "
                         f"slewing")

@@ -8,7 +8,9 @@ lead before transit, and its visit ends at the frame boundary before that
 point. A panel past the meridian is eligible only while no pre-flip panel
 is; the hop that takes the first one is the group's pier change, read back
 from the mount, never assumed. After it only panels past the meridian are
-shot, and the rest wait for their crossings.
+shot, and the rest wait for their crossings. Every case here is one run; a
+restart the same night keeps the one change through ``Session.group_pier``
+(#312), and those cases are in test_group_pier_state_persisted.py.
 
 Every case runs the real `_run_scheduled` on the clocked simulator
 (tests/_group_harness.py) with ``coords_clock``: the meridian countdown and

@@ -173,6 +173,14 @@ GOLDEN_SHA256_BEFORE_S2 = \
 S2_PLAN_KEYS = {"groups": []}
 S2_TARGET_KEYS = {"panel_row": None, "panel_col": None, "after_group": None}
 
+#: The values S3's compile moved in the golden (S3-CP: a TARGET's own
+#: centring, #170; S3-W: accepted subs, Revision 2 ruling 2), each as
+#: ``(S3's value, the value before S3)``. Unlike S2's, these fields existed
+#: before, so they are put back rather than taken off.
+S3_PLAN_VALUES = {"count_mode": ("accepted", "attempts")}
+S3_TARGET_VALUES = {"center_tolerance_arcmin": (1.2, None),
+                    "center_attempts": (3, None)}
+
 
 def test_the_golden_moved_by_the_s2_keys_and_nothing_else():
     """THE RE-PIN, BOUNDED FROM BOTH SIDES. The golden gained the four keys at
@@ -201,6 +209,18 @@ def test_the_golden_moved_by_the_s2_keys_and_nothing_else():
 
     RED under mutant "one more Target key" (``panel_label: str = ""`` added
     beside the three), on the last assertion, with the same diff.
+
+    EXTENDED IN THE INTEGRATION OF S3: S3 re-pinned the golden's count mode
+    and centring (``S3_PLAN_VALUES``, ``S3_TARGET_VALUES``), so those are put
+    back to their earlier values before the hash, after checking the golden
+    holds exactly S3's. Every other field still reaches the S1 hash. The
+    model check moved above the hash, since it compares with the golden as
+    it is, S3's values included. RED under mutant "S3 moved one more field"
+    (in a private scratch copy of the golden, the first target's
+    ``autofocus_first`` true made false), observed:
+
+        E   AssertionError: assert '7c3282366c48...83edcfd32ca14' ==
+            'd9ce9109734a...c1bb76100b0c3'
     """
     want = json.loads(GOLDEN.read_text(encoding="utf-8"))
     before = copy.deepcopy(want)
@@ -208,10 +228,17 @@ def test_the_golden_moved_by_the_s2_keys_and_nothing_else():
     for target in before["targets"]:
         assert {k: target.pop(k, "<absent>") for k in S2_TARGET_KEYS} == \
             S2_TARGET_KEYS
+    assert SequencePlan.model_validate(before).model_dump(mode="json") == want
+    for k, (s3, earlier) in S3_PLAN_VALUES.items():
+        assert before[k] == s3, f"premise: the golden holds S3's {k}"
+        before[k] = earlier
+    for target in before["targets"]:
+        for k, (s3, earlier) in S3_TARGET_VALUES.items():
+            assert target[k] == s3, f"premise: the golden holds S3's {k}"
+            target[k] = earlier
     blob = json.dumps(before, sort_keys=True)
     assert hashlib.sha256(blob.encode("utf-8")).hexdigest() == \
         GOLDEN_SHA256_BEFORE_S2
-    assert SequencePlan.model_validate(before).model_dump(mode="json") == want
 
 
 # ------------------------------------------------------------ builders

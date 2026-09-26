@@ -45,6 +45,8 @@ from typing import Any, Literal
 #: over the guide star, a centring solve on a thin field) to have a chance to
 #: clear, short enough that a 3x2 at the default cycle loses under a third of
 #: one pass. ``max_failed_visits`` bounds how often it can happen per panel.
+#: The members wait it out as waiters (`GroupRun.defer_next_pass`), so a
+#: ready follower may fill it (#304).
 DEFER_WAIT_S = 300.0
 
 #: Seconds between re-evaluations of a panel the reachability verdict tagged
@@ -103,6 +105,37 @@ def _visits(n: int, adjective: str = "") -> str:
 #: failed with it.
 GUIDE_START = "guide_start"
 
+#: The kind a member's visit carries when its guiding was lost mid-visit and
+#: the #72 recovery bound gave up on it (#303, S3 orchestrator ruling 6; spec
+#: 5.6 step 7). A single target takes the rig's ``guiding_action`` there:
+#: abort ends the run, skip drops it, warn shoots on unguided. Each leaves a
+#: hole in a mosaic, or tiles it with trailed frames, and the next hop
+#: restarts guiding anyway, so a panel defers instead, whatever the action
+#: says, as a failed guide start does. It is NOT counted by the guide-start
+#: pass rule: the hop's start worked, so the guider was not dead, and the
+#: visit is counted at once like any other deferral.
+GUIDE_LOST = "guide_lost"
+
+#: The kind a member's visit carries when a gate ended it the way it ends a
+#: single target, with a plain ``StopTarget`` (#316, S3 orchestrator ruling
+#: 5): an autofocus that failed under ``af_failure_action = skip``, a mount
+#: that would not track again after its one recovery, a flip still owed at
+#: the end of its hold, the mount's floor reached during a cloud hold. (A
+#: guider the #72 recovery bound gave up on under skip was one until #303:
+#: the recovery now defers a member itself, as :data:`GUIDE_LOST`, under
+#: every action.) A single target is dropped for the run on any of them. A
+#: panel is not: each can clear by the next pass, a rotation later (a sweep
+#: beaten by a passing cloud, a limit the sky has carried the panel away
+#: from), and dropping the panel leaves a hole in the mosaic for the rest of
+#: the night, which the owner's ruling 5 says not to do when we do not have
+#: to. So it defers, shares
+#: ``max_failed_visits`` with every other kind, and is set aside tonight,
+#: with the warning alert, only after that many consecutive passes. Two
+#: stops never defer and are not this kind: the frozen stop window (every
+#: panel shares it, and the all-closed path ends them all) and a panel below
+#: its own floor (``FloorStop``, set aside tonight at once).
+TARGET_STOP = "target_stop"
+
 #: Every kind a deferral may carry. A closed set, because the guide rule
 #: matches on a spelling: a deferral spelt ``"centering"`` or ``"guide-start"``
 #: by a later author would otherwise pass as an unknown kind the rule silently
@@ -117,19 +150,25 @@ GUIDE_START = "guide_start"
 #:   (5.6 step 5)
 #: - ``"guide_start"``: the plan asks for guiding and the start failed or no
 #:   guider is connected (5.6 step 7)
-#: - ``"guide_lost"``: a guiding loss mid-visit that the #72 recovery bound
-#:   gave up on (5.6 step 7, the extension marked for the owner)
+#: - ``"guide_lost"`` (:data:`GUIDE_LOST`): a guiding loss mid-visit that the
+#:   #72 recovery bound gave up on, raised by the frame loop's recovery
+#:   (5.6 step 7, S3 orchestrator ruling 6)
+#:
+#: and the group driver makes ``"target_stop"`` (:data:`TARGET_STOP`) from a
+#: plain ``StopTarget`` raised anywhere in the visit, at the hop or in the
+#: frame loop.
 DEFERRAL_KINDS = frozenset({"centring", "rotation", "angle", "pier_side",
-                            GUIDE_START, "guide_lost"})
+                            GUIDE_START, GUIDE_LOST, TARGET_STOP})
 
 
 class PanelDeferred(Exception):
     """This panel cannot be shot now; try it again on the next pass (5.1 table,
     row 4).
 
-    Raised by the hop's group checks, and by a guiding loss the recovery gave
-    up on. It is NOT a :class:`StopTarget` (which sets a target aside for the
-    night) and never a safety abort: the group driver catches it per visit,
+    Raised by the hop's group checks, and made by the group driver from a
+    plain ``StopTarget`` a gate raised in the visit (:data:`TARGET_STOP`,
+    #316). It is NOT a :class:`StopTarget` (which drops a single target for
+    the run) and never a safety abort: the group driver catches it per visit,
     marks the panel visited, and counts it toward ``max_failed_visits``
     (:meth:`GroupRun.visit_outcome`). The driver must catch it BEFORE any
     broad ``except Exception`` on the visit path, or a deferral becomes an
@@ -276,8 +315,10 @@ class PassEnd:
       counted. There is nothing to wait for and no pass to start. Without
       this, a group whose last panel was just set aside would read as an
       all-deferred pass and wait ``DEFER_WAIT_S`` for nothing.
-    - ``"defer_wait"``: ``await _wait_until(now + DEFER_WAIT_S)``, then
-      :meth:`GroupRun.start_pass`.
+    - ``"defer_wait"``: :meth:`GroupRun.defer_next_pass` holds every live
+      member until ``now + DEFER_WAIT_S``, and :meth:`GroupRun.start_pass`
+      begins the next pass behind that wait (#304: the wait is a state the
+      scheduler waits on, never a sleep inside the boundary).
     - ``"next_pass"``: :meth:`GroupRun.start_pass` and re-sort the group's
       slice of ``remaining``.
 
@@ -317,6 +358,40 @@ def guide_start_pass_verdict(attempted: int, failed: int) -> Literal["rig", "pan
     return "panel"
 
 
+def no_guider_defers(*, live: int, require_guiding: bool) -> bool:
+    """Does a member whose plan asks for guiding, finding NO GUIDER CONNECTED
+    at its hop, defer (5.6 step 7), or follow the plain-target rule (#315, S3
+    orchestrator ruling 6)?
+
+    ``live`` counts the group's live members, this one included, so it is at
+    least 1. ``require_guiding`` is the rig's escalation setting.
+
+    Two or more live, or guiding required: defer, S2's rule. With one live
+    panel and guiding optional: no, the panel is shot unguided with the
+    plain target's warning, exactly as the same target outside a group is.
+
+    WHY THE LAST PANEL IS DIFFERENT. A deferral is a bet that the guider is
+    the panel's problem, and the guide-start pass rule settles the bet: at
+    least two panels tried and every one failed is the rig's fault, and
+    ``guiding_action`` decides (:func:`guide_start_pass_verdict`). One live
+    panel can never make two attempts in a pass, so that verdict can never
+    come. With guiding optional and no guider there at all, such a panel
+    deferred on every hop, waited ``DEFER_WAIT_S`` after each pass of
+    nothing, and was set aside after ``max_failed_visits`` passes: about 15
+    minutes, then the night, lost to a guider the rig said it could do
+    without. A missing guider is a fact about the rig, not about the panel.
+
+    A guider that is connected and fails to start still defers, whatever
+    ``live`` is: that failure can be the panel's guide star. Required
+    guiding still defers too: the ruling is for guiding the rig marked
+    optional, where the plain-target rule shoots unguided.
+    """
+    live = _count("live", live)
+    if live < 1:
+        raise ValueError("the member asking is live, so live is at least 1")
+    return bool(require_guiding) or live >= 2
+
+
 def pass_boundary(exposures: int, deferrals: int) -> PassBoundary:
     """What follows the end of a pass (5.1 pass boundary).
 
@@ -344,7 +419,9 @@ class GroupRun:
     ``_GroupRun`` (5.1). Never persisted; a resume recomputes it from the
     ledger, except ``set_aside``, which the engine also writes to
     ``Session.set_aside`` so a same-night crash-resume does not retry those
-    panels.
+    panels, and ``flipped``, which it writes with the group's side to
+    ``Session.group_pier`` so the same restart keeps one pier change a night
+    (#312).
 
     ``members`` maps each panel's target id to its label ("1-2"), in the
     group's order; the label is what every sentence names.
@@ -359,7 +436,12 @@ class GroupRun:
     - ``failed``, ``reject_visits``: the two consecutive-failure counters.
     - ``set_aside``: target id to reason, for tonight.
     - ``flipped``, ``acquired``, ``angle_verified``: set by the engine (5.7,
-      5.6 steps 4 and 6).
+      5.6 steps 4 and 6). ``flipped`` is also read back at a same-night
+      restart from ``Session.group_pier`` (#312), so it is the one field here
+      a resume does not recompute from the ledger.
+    - ``defer_until``: the end of the deferral wait an all-deferred pass
+      began (:meth:`defer_next_pass`, #304), or None. A clock time the engine
+      hands in; nothing here reads a clock.
     """
 
     def __init__(self, members: Mapping[str, str], *, max_failed_visits: int):
@@ -384,6 +466,7 @@ class GroupRun:
         self.flipped = False
         self.acquired = False
         self.angle_verified = False
+        self.defer_until: float | None = None
         # The reject rule's window, "since this panel's previous visit", on a
         # visit counter rather than the clock: two visits can share a clock
         # second on a fake clock, and the order of visits is what the rule
@@ -465,31 +548,17 @@ class GroupRun:
           mid-visit) resets first and then counts, so it starts a new streak
           of one.
 
-        StopTarget, JumpTarget, SafetyAbort, NightQualityStop and cancellation
-        never reach here: they are handled or propagate as they do today.
+        A plain StopTarget reaches here as a ``PanelDeferred`` of kind
+        :data:`TARGET_STOP`, made by the driver (#316). A floor stop, a
+        JumpTarget, a SafetyAbort, a NightQualityStop and cancellation never
+        do: they are handled or propagate as they do today, a floor stop's
+        counts handed over by :meth:`note_visit` (#288).
         """
-        self._check_live(panel)
-        exposures = _count("exposures", exposures)
-        accepted = _count("accepted", accepted)
-        if accepted > exposures:
-            raise ValueError(
-                f"accepted ({accepted}) cannot exceed exposures ({exposures})")
         guide_failed = deferred is not None and deferred.kind == GUIDE_START
-        if guide_failed and guide_started:
-            raise ValueError("a guide start cannot both succeed and fail")
+        previous = self._record(panel, exposures=exposures, accepted=accepted,
+                                guide_failed=guide_failed,
+                                guide_started=guide_started)
         label = self.members[panel]
-
-        self._seq += 1
-        previous = self._last_visit.get(panel, 0)
-        self._last_visit[panel] = self._seq
-        self.exposures_this_pass += exposures
-        if accepted > 0:
-            self._last_accept[panel] = self._seq
-        if guide_failed:
-            self.guide_attempts += 1
-            self.guide_failures += 1
-        elif guide_started:
-            self.guide_attempts += 1
 
         if complete:
             # Completion wins over a deferral raised after the last frame: the
@@ -537,6 +606,57 @@ class GroupRun:
                 f"accepted since its last visit: the sky, not the panel")
 
         return VisitAction("requeue", f"{label} took no exposures this visit")
+
+    def note_visit(self, panel: str, *, exposures: int, accepted: int,
+                   guide_started: bool = False) -> None:
+        """Count a visit whose outcome the ENGINE decided, before it acts on
+        it (#288): a panel that sank below its own floor mid-visit
+        (``FloorStop``), which the engine sets aside tonight at once.
+
+        The visit's frames were shot this pass all the same, so they are
+        counted as any visit's are: its exposures toward the pass boundary,
+        a guider start that worked toward the guide-start pass rule, and its
+        accepted frames into the reject rule's record (which reads only live
+        members, so for a panel set aside at once they change no verdict).
+        Nothing is decided here, and the panel is left live for the engine
+        to set aside (:meth:`set_aside_panel`).
+
+        WHY IT MATTERS: before it, a pass whose only exposures came from such
+        a visit read as a pass of none: a ``DEFER_WAIT_S`` wait when the other
+        visits deferred, the group anti-spin (every live member set aside
+        tonight) when they took nothing; and a guider that started on the
+        floor-stopped panel was missing from a pass that could then read as
+        the guider's fault.
+        """
+        self._record(panel, exposures=exposures, accepted=accepted,
+                     guide_failed=False, guide_started=guide_started)
+
+    def _record(self, panel: str, *, exposures: int, accepted: int,
+                guide_failed: bool, guide_started: bool) -> int:
+        """The bookkeeping every visit makes, whoever decides its outcome
+        (:meth:`visit_outcome`, :meth:`note_visit`): one definition, so the
+        two cannot come to count a visit differently. Returns the sequence
+        number of the panel's previous visit, the reject rule's window."""
+        self._check_live(panel)
+        exposures = _count("exposures", exposures)
+        accepted = _count("accepted", accepted)
+        if accepted > exposures:
+            raise ValueError(
+                f"accepted ({accepted}) cannot exceed exposures ({exposures})")
+        if guide_failed and guide_started:
+            raise ValueError("a guide start cannot both succeed and fail")
+        self._seq += 1
+        previous = self._last_visit.get(panel, 0)
+        self._last_visit[panel] = self._seq
+        self.exposures_this_pass += exposures
+        if accepted > 0:
+            self._last_accept[panel] = self._seq
+        if guide_failed:
+            self.guide_attempts += 1
+            self.guide_failures += 1
+        elif guide_started:
+            self.guide_attempts += 1
+        return previous
 
     def _another_live_member_accepted_since(self, panel: str,
                                             previous: int) -> bool:
@@ -639,6 +759,34 @@ class GroupRun:
         self.deferred_this_pass = 0
         self.guide_attempts = 0
         self.guide_failures = 0
+
+    # -- the deferral wait (#304)
+
+    def defer_next_pass(self, now: float) -> float:
+        """Hold every live member until ``now + DEFER_WAIT_S``, the wait a
+        ``defer_wait`` boundary begins (5.1 pass boundary, item 2), and
+        return that time.
+
+        THE WAIT IS A STATE, NOT A SLEEP (#304). S2 slept it out inside the
+        pass boundary, so for five minutes the scheduler could choose
+        nothing: a follower that could have filled the gap waited it out
+        with the group, which is exactly the idle the owner's default ("shoot
+        later targets, then come back") exists to spend. Held here, the
+        members are waiters with a wake time like any other, the scheduler's
+        own wait runs (the safety gate and the idle watch with it), and a
+        ready follower may take the gap in a visit bounded by this time.
+
+        ``max_failed_visits`` still bounds how often it happens per panel:
+        nothing here touches the failure counts."""
+        self.defer_until = _finite("now", now) + DEFER_WAIT_S
+        return self.defer_until
+
+    def deferring(self, now: float) -> bool:
+        """Is the group inside a deferral wait at ``now``? Its end is
+        exclusive: at ``defer_until`` the members are free again, the moment
+        the wait path wakes on."""
+        return (self.defer_until is not None
+                and _finite("now", now) < self.defer_until)
 
 
 # ------------------------------------------------------- meridian (5.7), hours

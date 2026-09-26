@@ -59,12 +59,19 @@ THE_TEN = [
     "nodes.cycle.reject", "instructions[*].message",
 ]
 
+#: The nine of them the quick flow still draws. S3 took SLEW + CENTER out of
+#: every wizard lane (#189 U-09, spec 1.7): centring is part of the TARGET
+#: block, and the stage's settings never reached the run, which is what its
+#: row said. So the row went with the stage rather than being demoted, and
+#: the legacy stage's own sentence (a saved flow still draws one) is graded in
+#: test_flows_to_plan.py's TestTheLegacySlewNote.
+THE_NINE = [k for k in THE_TEN if k != "nodes.slew"]
+
 #: The value the operator typed that each row has to name back at them. A row
 #: that says "the settings do not reach the run" is unfalsifiable; a row that
 #: says "settle below 1.5 arcsec" can be checked against the card.
 OWN_VALUES = {
     "nodes.safety": ["Cloud + rain sensor", "Unsafe (fail closed)"],
-    "nodes.slew": ["0.5", "ASTAP"],
     "nodes.autofocus": ["12", "9", "V-curve sweep"],
     "nodes.guide": ["1.5", "3", "PHD2"],
     "nodes.report": ["captures/sessions/", "JSON + FITS index"],
@@ -98,13 +105,34 @@ def compiled():
 
 # --------------------------------------------------------------- the ten rows
 
-def test_the_rigs_own_flow_still_reports_all_ten(compiled):
+def test_the_rigs_own_flow_still_reports_the_nine_it_still_draws(compiled):
     """The premise. Demoting a row to ``note`` must not be done by deleting it:
     a setting the compile drops is still a setting the operator has to be told
-    about (`test_a_dropped_setting_is_never_silent`)."""
+    about (`test_a_dropped_setting_is_never_silent`). Nine, since S3 took the
+    SLEW stage itself out of the lane (`THE_NINE`)."""
     _rec, _plan, rows = compiled
-    missing = [k for k in THE_TEN if k not in rows]
+    missing = [k for k in THE_NINE if k not in rows]
     assert not missing, f"rows went silent instead of quiet: {missing}"
+
+
+def test_the_slew_row_left_with_the_slew_stage(compiled):
+    """The tenth row is gone because its stage is (S3, spec 1.7), not because
+    it was hushed: the quick flow draws no SLEW + CENTER, and so nothing about
+    one. Held here so the nine above are known to be all there is.
+
+    RED under mutant "SLEW left in the lane" (wizard.py's lane appends
+    ``"slew"`` before ``"autofocus"`` again), observed verbatim:
+
+        E   AssertionError: assert 'slew' not in ['dusk', 'target', 'slew',
+            'autofocus', 'guide', 'cycle', ...]
+
+    The golden and ``test_s3w_switched_the_count_and_moved_nothing_else``
+    stay green under it, as they must: the plan does not move.
+    """
+    rec, _plan, rows = compiled
+    assert "slew" not in [n.type for n in rec.graph.nodes]
+    assert "nodes.slew" not in rows, rows["nodes.slew"]
+    assert sorted(rows) == sorted(THE_NINE), sorted(rows)
 
 
 def test_a_clean_flow_prints_no_losses_at_all(compiled):
@@ -119,13 +147,13 @@ def test_a_clean_flow_prints_no_losses_at_all(compiled):
                     for r in losses(list(rows.values()))))
 
 
-@pytest.mark.parametrize("key", THE_TEN)
+@pytest.mark.parametrize("key", THE_NINE)
 def test_each_of_the_ten_is_a_note(compiled, key):
     _rec, _plan, rows = compiled
     assert rows[key]["level"] == "note", rows[key]
 
 
-@pytest.mark.parametrize("key", THE_TEN)
+@pytest.mark.parametrize("key", THE_NINE)
 def test_each_of_the_ten_splits_the_card_three_ways(compiled, key):
     """``carried`` / ``ignored`` / ``source``, all three, all non-empty. A row
     with only a sentence is a row the operator cannot act on: it does not say
@@ -141,7 +169,7 @@ def test_each_of_the_ten_splits_the_card_three_ways(compiled, key):
         f"{key} does not say where the real value lives: {row}"
 
 
-@pytest.mark.parametrize("key", THE_TEN)
+@pytest.mark.parametrize("key", THE_NINE)
 def test_each_of_the_ten_names_the_operators_own_values(compiled, key):
     """From the NODE'S params, not from the shipped defaults. The wizard's
     exposures and sub count differ from every default in `nodes.py`, so a row
@@ -153,7 +181,7 @@ def test_each_of_the_ten_names_the_operators_own_values(compiled, key):
         assert value in text, f"{key} never names {value!r}: {text}"
 
 
-@pytest.mark.parametrize("key", THE_TEN)
+@pytest.mark.parametrize("key", THE_NINE)
 def test_none_of_the_ten_still_carries_the_blanket_sentence(compiled, key):
     """The sentence itself, retired. It was wrong twice and unhelpful eight
     times, and a row that still says it has not been rewritten - it has been
@@ -339,7 +367,63 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
 #: verbatim:
 #:
 #:     AssertionError: assert '0a20172d4b9e...4de7ec32ff4fc' == 'd9ce9109734a...c1bb76100b0c3'
+#:
+#: MOVED A FOURTH TIME, ON PURPOSE (S3, the compile task: #170, #189 U-09).
+#: Every TARGET's centring now reaches the run (spec 3.3), so
+#: ``targets[0]`` carries ``center_tolerance_arcmin`` 1.2 and
+#: ``center_attempts`` 3 where S1 left null and null, and the fixture moved
+#: by exactly those two values (a diff of the regenerated dump against the S2
+#: fixture shows those two lines and nothing else). They are the TARGET's
+#: missing-key ``centerTol`` and ``centerTries``, which are the hub's own
+#: 0.02 deg and 3 attempts, the numbers every flow already centred to, so the
+#: night did not move. ``test_s3_set_the_centring_and_moved_nothing_else``
+#: holds that against the S2 hash. RED against the fixture as S2 left it,
+#: before it was edited, observed verbatim (the S1 and S2 cases failed with
+#: it, on the two values and on the S1 hash):
+#:
+#:     AssertionError: assert {'apply_filte...s': None, ...} == {'apply_filte...s': None, ...}
+#:       Omitting 27 identical items, use -vv to show
+#:       Differing items:
+#:       {'targets': [{'acquisition': 'cycle', 'after_group': None,
+#:           'autofocus_first': True, 'autofocus_skip_if_fresh': False,
+#:           ...}]} != {'targets': [{'acquisition': 'cycle', 'after_group':
+#:           None, 'autofocus_first': True, 'autofocus_skip_if_fresh': False,
+#:           ...}]}
+#:
+#: MOVED A FIFTH TIME, ON PURPOSE (S3, the wizard task: #189 U-09, Revision 2
+#: ruling 2, spec 1.7). The quick wizard now CREATES its nodes
+#: (``nodes.create_params``) and draws no SLEW + CENTER. A created TARGET
+#: counts accepted subs only, so the plan's ``count_mode`` went from
+#: "attempts" to "accepted", and the fixture moved by exactly that one value
+#: (a diff of the regenerated dump against the fixture as the compile task
+#: left it shows that line and nothing else). Dropping SLEW moved nothing in
+#: the plan, because nothing it held ever reached the run (its unmapped row
+#: went with it: `test_the_slew_row_left_with_the_slew_stage`). Every sub the
+#: grader rejects no longer fills a quota, which is the change ruling 2
+#: asked for; every frame and every rule is the same.
+#: ``test_s3w_switched_the_count_and_moved_nothing_else`` holds that against
+#: the compile task's hash. RED against the fixture as the compile task left
+#: it, before it was edited, observed verbatim:
+#:
+#:     AssertionError: assert {'apply_filte...s': None, ...} == {'apply_filte...s': None, ...}
+#:       Omitting 27 identical items, use -vv to show
+#:       Differing items:
+#:       {'count_mode': 'accepted'} != {'count_mode': 'attempts'}
 GOLDEN_SHA256 = \
+    "d5da5240f8c7d539700cc1502b5d840ebb73974f7f2c97857519aafd8698dea4"
+
+#: The hash as the S3 compile task left it. With the count mode set back to
+#: "attempts", the compiled plan must hash to exactly this.
+GOLDEN_SHA256_BEFORE_S3W = \
+    "06994be412fec6bc256c14b3a309e0fcfddc4628c1a4c89b42b2bfe5acf28446"
+
+#: The one value the S3 wizard task moved on the plan, and what it was.
+S3W_COUNT = {"count_mode": "accepted"}
+S3W_COUNT_BEFORE = {"count_mode": "attempts"}
+
+#: The hash as S2 left it. With the S3 centring set back to null, the
+#: compiled plan must hash to exactly this.
+GOLDEN_SHA256_BEFORE_S3 = \
     "0a20172d4b9e422fab169d5113fb25ec00597bb33e4198e37e54de7ec32ff4fc"
 
 #: The hash as S1 left it. With the four S2 keys taken off, the compiled plan
@@ -360,6 +444,32 @@ S1_KEYS = {"center_tolerance_arcmin": None, "center_attempts": None,
 #: three on ``targets[0]``.
 S2_PLAN_KEYS = {"groups": []}
 S2_TARGET_KEYS = {"panel_row": None, "panel_col": None, "after_group": None}
+
+
+#: The two values S3 sets on ``targets[0]``, and what S1 and S2 left there.
+S3_CENTRING = {"center_tolerance_arcmin": 1.2, "center_attempts": 3}
+S3_CENTRING_BEFORE = {"center_tolerance_arcmin": None,
+                      "center_attempts": None}
+
+
+def _undo_s3w_count(got: dict) -> dict:
+    """The S3 wizard task's count mode, set back in place to what the compile
+    task left ("attempts"), with what it held. Every older case undoes it
+    first, so each still bounds its own keys and nothing else."""
+    taken = {k: got.get(k, "<absent>") for k in S3W_COUNT}
+    got.update(S3W_COUNT_BEFORE)
+    return taken
+
+
+def _undo_s3_centring(got: dict) -> dict:
+    """The S3 centring on ``targets[0]``, set back in place to what S2 left
+    (null, null), with what each held (``"<absent>"`` for a key the dump did
+    not carry). The S1 and S2 cases undo it first, so each still bounds its
+    own keys and nothing else."""
+    target = got["targets"][0]
+    taken = {k: target.get(k, "<absent>") for k in S3_CENTRING}
+    target.update(S3_CENTRING_BEFORE)
+    return taken
 
 
 def _take_off_s2_keys(got: dict) -> dict:
@@ -415,6 +525,13 @@ def test_s1_added_three_keys_and_moved_nothing_else(compiled):
     them), so this case still bounds S1's own three. Its original mutant,
     "panel_row rides along", is now the real code and no longer a mutant.
 
+    UPDATED FOR S3 (the compile task), which moved the dump on purpose: the
+    S3 centring is set back to null first (``_undo_s3_centring``;
+    ``test_s3_set_the_centring_and_moved_nothing_else`` grades it). And for
+    the S3 wizard task: its count mode is set back first
+    (``_undo_s3w_count``; ``test_s3w_switched_the_count_and_moved_nothing_
+    else`` grades it).
+
     RED under mutant "panel_label rides along" (``panel_label: str | None =
     None`` added to ``Target``, a field neither slice added, with the fixture
     and ``GOLDEN_SHA256`` regenerated to match, so the test above stays
@@ -431,6 +548,8 @@ def test_s1_added_three_keys_and_moved_nothing_else(compiled):
     """
     _rec, plan, _rows = compiled
     got = _blank_ids(plan.model_dump(mode="json"))
+    _undo_s3w_count(got)
+    _undo_s3_centring(got)
     _take_off_s2_keys(got)
     target = got["targets"][0]
     assert {k: target.pop(k, "<absent>") for k in S1_KEYS} == S1_KEYS
@@ -445,7 +564,8 @@ def test_s2_added_four_keys_and_moved_nothing_else(compiled):
     their defaults, the values that keep a plan with no groups the plan the
     engine ran before S2; with them taken off the plan is the S1 plan exactly.
     A quick flow compiles no group before S3, so any other value here would
-    be a changed night.
+    be a changed night. (Nor after it: the quick flow has no grid. S3's
+    centring is set back to null first, as in the S1 case.)
 
     RED under mutant "panel_label rides along" (``panel_label: str | None =
     None`` added to ``Target``, with the fixture and ``GOLDEN_SHA256``
@@ -466,10 +586,81 @@ def test_s2_added_four_keys_and_moved_nothing_else(compiled):
     """
     _rec, plan, _rows = compiled
     got = _blank_ids(plan.model_dump(mode="json"))
+    _undo_s3w_count(got)
+    _undo_s3_centring(got)
     assert _take_off_s2_keys(got) == {**S2_PLAN_KEYS, **S2_TARGET_KEYS}
     blob = json.dumps(got, sort_keys=True)
     assert hashlib.sha256(blob.encode("utf-8")).hexdigest() == \
         GOLDEN_SHA256_BEFORE_S2
+
+
+def test_s3_set_the_centring_and_moved_nothing_else(compiled):
+    """THE FOURTH MOVE, BOUNDED THE SAME WAY (S3, the compile task; #170).
+    The quick flow's TARGET tells the run its centring, 1.2 arcmin and 3
+    tries, and with those two set back to null the plan is the S2 plan
+    exactly: every other field, the steps and the rules included. The quick
+    flow has no grid, so the mosaic path must add nothing else to it: not a
+    group, not a panel field, not a count mode.
+
+    RED under mutant "one more field on every Target" (the plain target
+    also gets ``autofocus_skip_if_fresh = True``), observed verbatim (the
+    golden and the S1 and S2 cases went red with it):
+
+        E   AssertionError: assert 'ff8fb7f9fbdc...8151b58517525' ==
+            '0a20172d4b9e...4de7ec32ff4fc'
+
+    RED under mutant "centring never reaches the Target"
+    (``to_plan._centring`` reads no ``centre``), observed on the first
+    assertion:
+
+        E   AssertionError: assert {'center_atte...arcmin': None} ==
+            {'center_atte..._arcmin': 1.2}
+        E     Differing items:
+        E     {'center_attempts': None} != {'center_attempts': 3}
+        E     {'center_tolerance_arcmin': None} != {'center_tolerance_arcmin': 1.2}
+
+    UPDATED FOR THE S3 WIZARD TASK, which moved the count mode on purpose:
+    it is set back first (``_undo_s3w_count``), so this case still bounds
+    the centring and nothing else. Its "not a count mode" above still holds
+    of the mosaic path; the count mode came from the created TARGET.
+    """
+    _rec, plan, _rows = compiled
+    got = _blank_ids(plan.model_dump(mode="json"))
+    _undo_s3w_count(got)
+    assert _undo_s3_centring(got) == S3_CENTRING
+    blob = json.dumps(got, sort_keys=True)
+    assert hashlib.sha256(blob.encode("utf-8")).hexdigest() == \
+        GOLDEN_SHA256_BEFORE_S3
+
+
+def test_s3w_switched_the_count_and_moved_nothing_else(compiled):
+    """THE FIFTH MOVE, BOUNDED THE SAME WAY (S3, the wizard task; #189 U-09,
+    Revision 2 ruling 2, spec 1.7). The quick flow's TARGET is created, so it
+    counts accepted subs, and its lane has no SLEW + CENTER. With the count
+    mode set back to "attempts" the plan is the compile task's plan exactly:
+    every frame, every step id's shape, the centring and every rule included.
+    Dropping the stage moved nothing, because nothing it held reached the
+    run.
+
+    RED under mutant "the quick flow reads the missing-key defaults"
+    (wizard.py's ``_Canvas.add`` takes ``default_params`` again), observed
+    verbatim on the first assertion (the golden went red with it):
+
+        E   AssertionError: assert {'count_mode': 'attempts'} ==
+            {'count_mode': 'accepted'}
+        E     Differing items:
+        E     {'count_mode': 'attempts'} != {'count_mode': 'accepted'}
+
+    Under mutant "SLEW left in the lane" this case stays GREEN, as it must:
+    the plan does not move, and `test_the_slew_row_left_with_the_slew_stage`
+    is the case that goes red for it.
+    """
+    _rec, plan, _rows = compiled
+    got = _blank_ids(plan.model_dump(mode="json"))
+    assert _undo_s3w_count(got) == S3W_COUNT
+    blob = json.dumps(got, sort_keys=True)
+    assert hashlib.sha256(blob.encode("utf-8")).hexdigest() == \
+        GOLDEN_SHA256_BEFORE_S3W
 
 
 def test_the_golden_is_the_flow_this_file_is_about(compiled):

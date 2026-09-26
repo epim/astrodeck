@@ -59,7 +59,8 @@ from astrodeck.flows.continuation import (AMBIGUOUS, NO_MATCH, adopt_matches,
                                           apply_adoption, dropped_detail,
                                           plan_replace_report, recount,
                                           recount_detail, saved_before_s1)
-from astrodeck.flows.models import FlowGraph
+from astrodeck.flows.models import FlowGraph, FlowRecord
+from astrodeck.flows.save_rules import prepare_save
 from astrodeck.flows.store import FlowStore
 from astrodeck.flows.to_plan import to_sequence_plan
 from astrodeck.hub import Hub
@@ -110,8 +111,18 @@ def _reframed(graph: dict, *, ra: str) -> dict:
 
 def _compiled(graph: dict, flow_id: str) -> SequencePlan:
     """The plan ``run_flow`` compiles for this graph: the same compile and the
-    same ``flow_id``, so the same ids."""
-    g = FlowGraph.model_validate(graph)
+    same ``flow_id``, so the same ids.
+
+    AS THE SAVE STORES IT (the integration of S3). ``run_flow`` compiles the
+    STORED flow, and since S3 every save writes "Accepted subs" into every
+    TARGET and POOL (Revision 2 ruling 2, ``save_rules.prepare_save``), so
+    the plan it runs counts accepted subs. This helper compiled the graph as
+    the test wrote it, which counted every sub taken, and so named a
+    ``count_mode`` no run of a saved flow has. The ids are the same either
+    way (checked: the save's implicit anchor for a single panel is S1's
+    shape), so only ``count_mode`` moved."""
+    g = prepare_save(FlowRecord(name="x", graph=FlowGraph.model_validate(
+        graph)), None)[0].graph
     plan, _ = to_sequence_plan(compile_plan(g, "x"), g, flow_id=flow_id)
     return plan
 
@@ -887,6 +898,20 @@ class TestContinue:
             to steps this flow no longer has; they stay on disk',
             'dropped_frames': 5, 'session_id': '6b35aa6cd17748a491324734dd267c04'}
             assert 'dropped_steps' == 'adopt'
+
+        and observed again after the integration of S3 re-pinned the recount
+        step in (the recount question now comes before the dropped one):
+
+            AssertionError: {'after': 5, 'before': 5, 'code': 'recount',
+            'detail': 'this session counted every sub taken (5); counting
+            accepted subs makes it 5', ...}
+            assert 'recount' == 'adopt'
+
+        The recount step itself is RED under mutants "no recount check" and
+        "recount skipped when adopting" (below), each observed at it:
+
+            E   Differing items:
+            E   {'code': 'dropped_steps'} != {'code': 'recount'}
         """
         fid = await rig.save_flow(LR)
         old_l, old_r1, old_r2, old_ha = (
@@ -921,15 +946,32 @@ class TestContinue:
         assert session_store.load(old.id).auto_resume is True, (
             "the pre-S1 session was disarmed")
 
-        # ADOPT alone: what did not match still holds frames -> rule (c).
+        # ADOPT alone: the recount question comes next (rule (b)). The flow
+        # was saved on S3, so it counts accepted subs (ruling 2), and the
+        # pre-S1 session counted every sub taken. RE-PINNED IN THE
+        # INTEGRATION OF S3: before S3 the saved flow counted every sub too,
+        # and ADOPT alone went straight to rule (c). All five frames were
+        # accepted, so both totals are 5.
         r = await rig.run(fid, adopt=True)
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == {
+            "code": "recount",
+            "detail": recount_detail("attempts", "accepted", 5, 5),
+            "before": 5, "after": 5, "session_id": old.id}
+        assert not _bak(old.id).exists(), "a refused adopt wrote a backup"
+        assert _bytes(old.id) == original
+
+        # ADOPT and the recount accepted: what did not match still holds
+        # frames -> rule (c).
+        r = await rig.run(fid, adopt=True, accept_recount=True)
         assert r.status_code == 409 and \
             r.json()["detail"]["code"] == "dropped_steps", r.text
         assert r.json()["detail"]["dropped_frames"] == 3
         assert not _bak(old.id).exists(), "a refused adopt wrote a backup"
         assert _bytes(old.id) == original
 
-        r = await rig.run(fid, adopt=True, accept_dropped=True)
+        r = await rig.run(fid, adopt=True, accept_recount=True,
+                          accept_dropped=True)
 
         assert r.status_code == 200, r.text
         assert _bak(old.id).read_bytes() == original, (
@@ -987,8 +1029,12 @@ class TestContinue:
             raise OSError(28, "No space left on device")
 
         monkeypatch.setattr(SessionStore, "backup", no_room)
+        # ``accept_recount`` since the integration of S3: the saved flow
+        # counts accepted subs and this pre-S1 session every sub taken, so
+        # without it the recount 409 answers before the backup is tried.
         with pytest.raises(OSError):
-            await rig.run(fid, adopt=True, accept_dropped=True)
+            await rig.run(fid, adopt=True, accept_dropped=True,
+                          accept_recount=True)
         assert rig.starts == [], "ADOPT started without its backup"
         assert _bytes(old.id) == original
 
@@ -1059,20 +1105,39 @@ class TestContinue:
         assert not _bak(one.id).exists()
 
     async def test_a_count_mode_change_asks_with_both_totals(self, rig):
-        """The session counted accepted subs (it was started while the flow
-        asked for them); tonight's compile counts every sub taken.
+        """The session counted every sub taken (it was started before S3,
+        when a flow had no ``counts``); tonight's compile counts accepted
+        subs, because the save switched the flow (ruling 2). This is the
+        common way to reach the row (spec 5.9): the first CONTINUE after an
+        old flow is saved answers with both totals before anything is
+        recounted.
+
+        RE-PINNED IN THE INTEGRATION OF S3, direction reversed. Before S3 a
+        saved flow counted every sub taken, so the test made the SESSION
+        count accepted subs; since S3 every save writes "Accepted subs", so
+        the session is the one that counts every sub. The first night
+        through the route now counts accepted subs too, which the premise
+        says.
 
         RED under mutant "no recount check" (the ``recount`` refusal removed
-        from ``_continue_flow_session``):
+        from ``_continue_flow_session``), observed before the re-pin:
 
             AssertionError: {"started":true,...,"frames":5,"unmapped":[],
             "session":{"id":"d93614e055bf4970bd0990677b66cc7e","night":2,
             "continued":true,"kept":2,"new":0,"dropped":0}}
             assert 200 == 409
+
+        and after it, the same line:
+
+            AssertionError: {"started":true,...,"frames":5,"unmapped":[],
+            "session":{"id":"fb17825eb97b476a8b9d87a5d1f19c0b","night":2,
+            "continued":true,"kept":2,"new":0,"dropped":0}}
         """
         fid = await rig.save_flow(LR)
         one = await rig.night_one(fid, [0, 0, 0], rejected=(1,))
-        one.plan.count_mode = "accepted"
+        assert one.plan.count_mode == "accepted", (
+            "premise: the saved flow's first night counts accepted subs")
+        one.plan.count_mode = "attempts"
         session_store.save(one)
         before = _bytes(one.id)
 
@@ -1081,16 +1146,16 @@ class TestContinue:
         assert r.status_code == 409, r.text
         assert r.json()["detail"] == {
             "code": "recount",
-            "detail": "this session counted accepted subs (2); counting every "
-                      "sub taken makes it 3",
-            "before": 2, "after": 3, "session_id": one.id}
+            "detail": "this session counted every sub taken (3); counting "
+                      "accepted subs makes it 2",
+            "before": 3, "after": 2, "session_id": one.id}
         assert _bytes(one.id) == before and len(rig.starts) == 1
 
         r = await rig.run(fid, accept_recount=True)
 
         assert r.status_code == 200, r.text
         assert rig.starts[-1].session_id == one.id
-        assert rig.starts[-1].count_mode == "attempts"
+        assert rig.starts[-1].count_mode == "accepted"
 
     async def test_adopting_does_not_skip_the_recount_question(self, rig):
         """ADOPT answers one question, not the next one. A pre-S1 session
@@ -1120,12 +1185,20 @@ class TestContinue:
             "binning":1,"frames":1,"reason":"no step in this flow matches
             it"}]}}}
             assert 200 == 409
+
+        Observed again after the integration of S3 reversed the direction,
+        the same answer (``"adopted":{"matched":2,...}``, 200 == 409).
         """
+        # RE-PINNED IN THE INTEGRATION OF S3, direction reversed: the saved
+        # flow counts accepted subs since S3 (ruling 2), so the pre-S1
+        # session is the one that counts every sub taken, which is what a
+        # pre-S1 flow session did. The totals swap with it (3 before, 2
+        # after, where they were 2 and 3).
         fid = await rig.save_flow(LR)
         tonight = _compiled(LR, fid)
         here = tonight.targets[0]
-        assert tonight.count_mode == "attempts", (
-            "premise: tonight's compile counts every sub taken")
+        assert tonight.count_mode == "accepted", (
+            "premise: tonight's compile counts accepted subs")
         old_l = ExposureStep(filter="L", exposure_s=0.05, count=3)
         old_ha = ExposureStep(filter="Ha", exposure_s=0.05, count=2)
         t = Target(name="M42", ra_hours=here.ra_hours, dec_deg=here.dec_deg,
@@ -1133,7 +1206,7 @@ class TestContinue:
         old = Session(name="pre-S1", created_ts=1.0, status="dormant",
                       origin="flow", origin_id=fid,
                       plan=SequencePlan(name="pre-S1", targets=[t],
-                                        count_mode="accepted"))
+                                        count_mode="attempts"))
         old.frames += [SessionFrame(target_id=t.id, step_id=old_l.id),
                        SessionFrame(target_id=t.id, step_id=old_l.id,
                                     auto_accepted=False),
@@ -1151,8 +1224,8 @@ class TestContinue:
         assert r.status_code == 409, r.text
         assert r.json()["detail"] == {
             "code": "recount",
-            "detail": recount_detail("accepted", "attempts", 2, 3),
-            "before": 2, "after": 3, "session_id": old.id}
+            "detail": recount_detail("attempts", "accepted", 3, 2),
+            "before": 3, "after": 2, "session_id": old.id}
         assert not _bak(old.id).exists(), "a refused adopt wrote a backup"
         assert _bytes(old.id) == original, "a refusal wrote the session"
         assert rig.starts == [], "a refusal reached engine.start"

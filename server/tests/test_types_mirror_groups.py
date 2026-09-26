@@ -17,10 +17,22 @@ What is compared, and against what:
 * The set-aside record and the locked angle are plain dicts on ``Session``,
   so their TS types are compared with the keys the ``Session`` helpers
   actually write.
-* ``SequenceGroupState`` has no model yet (the engine publishes it later in
-  S2), so it is compared with the shape spec 5.10 gives ``state.group``, plus
-  the ``meridian_wait`` flag. When ``_set_state`` publishes ``group``, that is
-  the source to compare with instead.
+* ``SequenceGroupState`` has no model: it is a dict `_group_state` builds and
+  `_set_state` publishes. So it is compared with a real ``state.group``,
+  captured from the bus while the fixture mosaic runs on the clocked harness
+  (tests/_group_harness.py), in both directions, its set-aside record too,
+  and each published value against the TS type it is declared with (#318).
+  Until #318 it was compared with the spec text's ``group = {...}``, and
+  test_group_rotation.py kept a second hand-written copy of the keys, so the
+  engine, the spec and the mirror were tied only through two copies. Now the
+  engine is the one source: this file ties the mirror to what the engine
+  publishes, and test_mosaic_spec_claims.py's 5.10 case ties the top-level
+  keys of the spec's ``group = {...}`` to the dict `_group_state` builds.
+  That case strips the spec's ``set_aside: [{panel, reason}]`` before it
+  compares the top-level keys, and since S3-SPEC5 it checks the record's own
+  keys separately. The capture night always has a current panel, so a
+  second night, one that waits before its first visit, grades the ``panel:
+  null`` a group publishes with no current member (the integration of S3).
 
 Every test that guards a branch names the mutant it kills and quotes the
 failure that mutant produced, observed in a private copy of the tree (a copy
@@ -37,13 +49,14 @@ from pathlib import Path
 
 import pytest
 
-from astrodeck.sequence.models import SequencePlan, Target, TargetGroup
+from _group_harness import (GROUP_NAME, Night, grid_plan,  # noqa: F401
+                            group_hub, group_store)
+from astrodeck.sequence.models import (Instruction, SequencePlan, Target,
+                                       TargetGroup)
 from astrodeck.sequence.session import Session
 
 _ROOT = Path(__file__).resolve().parents[2]
 TYPES_TS = _ROOT / "ui" / "src" / "types.ts"
-SPEC = (_ROOT / "docs" / "superpowers" / "specs"
-        / "2026-09-23-flows-mosaic-target-block-design.md")
 
 pytestmark = pytest.mark.skipif(
     not TYPES_TS.exists(), reason="ui/ not present (server-only checkout)")
@@ -434,41 +447,260 @@ def test_the_record_types_are_the_keys_the_helpers_write():
 
 # ------------------------------------------------ the published state
 
-def _spec_group_shape() -> tuple[set[str], set[str]]:
-    """The top-level names of 5.10's ``group = {...}`` and the names inside
-    its ``set_aside: [{...}]``, read from the spec itself."""
-    text = SPEC.read_text(encoding="utf-8")
-    m = re.search(r"gains `group = (\{.*?\})`", text)
-    assert m, "spec 5.10 no longer spells `group = {...}`"
-    body = m.group(1)[1:-1]
-    parts, depth, cur = [], 0, ""
-    for ch in body:
-        depth += {"{": 1, "[": 1, "}": -1, "]": -1}.get(ch, 0)
-        if ch == "," and depth == 0:
-            parts.append(cur)
-            cur = ""
-        else:
-            cur += ch
-    parts.append(cur)
-    names = {p.split(":", 1)[0].strip() for p in parts}
-    inner = next(p for p in parts if p.strip().startswith("set_aside"))
-    inner_names = {n.strip() for n in
-                   re.search(r"\{(.*)\}", inner).group(1).split(",")}
-    return names, inner_names
+def _capture_plan() -> SequencePlan:
+    """The fixture 2x2 of L and R, one frame a filter, with a
+    ``skip_target`` rule that drops panel 2-1 at the night's first frame
+    (the harness reports an HFR of 2.0, over the rule's 1.0). Every publish
+    after it carries a ``set_aside`` record, so the record's own keys are
+    graded as well as the state's."""
+    return grid_plan(panel_kw={"count": 1}, instructions=[Instruction(
+        id="skip-rule", trigger="on_hfr_above", threshold=1.0, once=True,
+        action="skip_target", target_arg=f"{GROUP_NAME} 2-1")])
 
 
-@pytest.mark.skipif(not SPEC.exists(), reason="docs/ not present")
-def test_the_group_state_type_has_the_5_10_shape():
-    """5.10's fields, plus ``meridian_wait``: the flag that tells a viewer's
-    screen why ``panel`` and ``pass`` are withheld (6.9), so both of those are
-    optional. ``mode`` spells the group's modes.
+async def _published_group_states(hub, monkeypatch) -> list[dict]:
+    """Every ``state.group`` the engine published over one clocked night of
+    the capture plan, taken from the bus as it fanned each publish out: the
+    payload `_set_state` hands `bus.publish`, built by `_group_state`.
 
-    RED under mutant "drop meridian_wait from types.ts":
+    GET /api/sequence/state, the monitor snapshot and the WS lane serve that
+    dict whole to a principal who may see the site.
+    `api.redact._withhold_group_timing` takes ``panel`` and ``pass`` out
+    only across a meridian wait, which is why types.ts marks those two
+    optional; this night has no meridian wait, so nothing is taken out."""
+    night = Night(hub, monkeypatch)
+    try:
+        done = await night.run(_capture_plan())
+    finally:
+        await night.close()
+    assert done, f"premise: the capture night ended: {night.trace[-3:]}"
+    return [e["data"]["group"] for e in night.events
+            if e["type"] == "sequence"
+            and isinstance(e["data"].get("group"), dict)]
 
-        E   AssertionError: assert {'id', 'mode'...s_total', ...} ==
-            {'id', 'merid...ls_done', ...}
-        E     Extra items in the right set:
-        E     'meridian_wait'
+
+def _ts_admits(value, ts_type: str) -> bool:
+    """Does the TS type text ``ts_type`` admit ``value`` as JSON carries it?
+    A string passes ``string`` or a quoted choice that spells it, a list an
+    array type and a dict an object type; None needs ``null``."""
+    words = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", _mask_strings(ts_type)))
+    if value is None:
+        return "null" in words
+    if isinstance(value, bool):
+        return "boolean" in words
+    if isinstance(value, (int, float)):
+        return "number" in words
+    if isinstance(value, str):
+        return "string" in words or value in _quoted(ts_type)
+    if isinstance(value, list):
+        return ts_type.strip().endswith("[]")
+    if isinstance(value, dict):
+        return ts_type.strip().startswith("{")
+    return False
+
+
+def _drift(what: str, published: set[str], declared: set[str]) -> str:
+    return (f"{what} drifted: the engine publishes "
+            f"{sorted(published - declared)}, which types.ts does not "
+            f"declare, and types.ts declares {sorted(declared - published)}, "
+            f"which the engine never publishes")
+
+
+def test_the_type_check_reads_json_as_ts_types_it():
+    """`_ts_admits` decides whether a published value fits its TS type, so
+    it is guarded like the parser: if it admitted everything, the value
+    check below could not fail. A bool is not a number (Python says it is),
+    a quoted choice admits only what it spells, and null needs ``null``.
+
+    RED under mutant "a bool reads as a number" (the ``bool`` arm of
+    `_ts_admits` deleted, so True falls to the ``(int, float)`` arm; the
+    capture test below goes red with it, on ``meridian_wait``):
+
+        E   AssertionError: assert (False)
+        E    +  where False = _ts_admits(True, 'boolean')
+
+    RED under mutant "any string passes a quoted choice" (the str arm
+    answering True):
+
+        E   assert not True
+        E    +  where True = _ts_admits('mosaic', '"rotate" | "sequential"')
+    """
+    assert _ts_admits(True, "boolean") and not _ts_admits(True, "number")
+    assert _ts_admits(3, "number") and not _ts_admits(3, "string")
+    assert _ts_admits("rotate", '"rotate" | "sequential"')
+    assert not _ts_admits("mosaic", '"rotate" | "sequential"')
+    assert _ts_admits(None, "string | null") and not _ts_admits(None, "string")
+    assert _ts_admits([], "{ panel: string }[]")
+    assert not _ts_admits([], "string")
+    assert _ts_admits({}, "{ panel: string }") and not _ts_admits({}, "number")
+
+
+async def test_the_group_state_type_is_what_the_engine_publishes(
+        group_hub, monkeypatch):
+    """Every ``state.group`` the engine published on a real night of the
+    fixture mosaic has exactly the keys of types.ts's
+    ``SequenceGroupState``, and every set-aside record in it exactly the
+    keys of its ``set_aside`` element, both ways round: a key the engine
+    adds that the mirror lacks is data no screen can read, and a key the
+    mirror declares that the engine never sends reads undefined for ever.
+    Each published value is also one its TS type admits (#318).
+
+    RED under the engine mutant "add a key to _group_state" (``"visits_owed":
+    0`` added to the dict `_group_state` returns, in a scratch copy of
+    server/):
+
+        E   AssertionError: SequenceGroupState drifted: the engine publishes
+            ['visits_owed'], which types.ts does not declare, and types.ts
+            declares [], which the engine never publishes
+
+    RED under the UI mutant "drop a key from the TS interface" (the
+    ``visit_elapsed_s: number;`` line deleted from ``SequenceGroupState``,
+    in a scratch copy of ui/src/types.ts):
+
+        E   AssertionError: SequenceGroupState drifted: the engine publishes
+            ['visit_elapsed_s'], which types.ts does not declare, and types.ts
+            declares [], which the engine never publishes
+
+    The other way round, RED under "drop a key from _group_state" (its
+    ``"visit_elapsed_s"`` entry deleted):
+
+        E   AssertionError: SequenceGroupState drifted: the engine publishes
+            [], which types.ts does not declare, and types.ts declares
+            ['visit_elapsed_s'], which the engine never publishes
+
+    and under "add a key to the TS interface" (``eta_s: number;`` added to
+    ``SequenceGroupState``):
+
+        E   AssertionError: SequenceGroupState drifted: the engine publishes
+            [], which types.ts does not declare, and types.ts declares
+            ['eta_s'], which the engine never publishes
+
+    The set-aside record, RED under "a set-aside record gains a key"
+    (``"since": 0`` added to each record `_group_state` builds):
+
+        E   AssertionError: SequenceGroupState.set_aside[] drifted: the engine
+            publishes ['since'], which types.ts does not declare, and types.ts
+            declares [], which the engine never publishes
+
+    and under "the TS set-aside record loses reason" (``set_aside: { panel:
+    string }[];``):
+
+        E   AssertionError: SequenceGroupState.set_aside[] drifted: the engine
+            publishes ['reason'], which types.ts does not declare, and
+            types.ts declares [], which the engine never publishes
+
+    The values, RED under "visit_elapsed_s typed string in types.ts":
+
+        E   AssertionError: types.ts types these otherwise:
+            {'visit_elapsed_s': (0, 'string')}
+
+    and under the engine mutant "meridian_wait published as the wait's
+    phase" (``self._meridian_wait.get(gid)``, None while there is no wait,
+    for ``gid in self._meridian_wait``):
+
+        E   AssertionError: types.ts types these otherwise: {'meridian_wait':
+            (None, 'boolean')}
+
+    The premise, RED under "the capture reads no publishes" (the capture
+    keeping ``e["type"] == "state"``, a type the bus never fans out):
+
+        E   AssertionError: premise: 0 group publishes carrying 0 set-aside
+            records
+    """
+    published = await _published_group_states(group_hub, monkeypatch)
+    records = [r for g in published for r in g["set_aside"]]
+    assert published and records, (
+        f"premise: {len(published)} group publishes carrying "
+        f"{len(records)} set-aside records")
+    ts = _interface("SequenceGroupState")
+    ts_record = _members(ts["set_aside"].strip()[1:-3])
+    for g in published:
+        assert set(g) == set(ts), _drift("SequenceGroupState", set(g), set(ts))
+        wrong = {k: (g[k], ts[k]) for k in g if not _ts_admits(g[k], ts[k])}
+        assert not wrong, f"types.ts types these otherwise: {wrong}"
+    for r in records:
+        assert set(r) == set(ts_record), _drift(
+            "SequenceGroupState.set_aside[]", set(r), set(ts_record))
+        wrong = {k: (r[k], ts_record[k]) for k in r
+                 if not _ts_admits(r[k], ts_record[k])}
+        assert not wrong, f"types.ts types these otherwise: {wrong}"
+
+
+async def test_a_group_waiting_before_its_first_panel_types_what_it_publishes(
+        group_store, group_hub, monkeypatch):
+    """The capture night above always has a current panel, so it never
+    reaches `_group_state`'s other arm: with no member current (a group
+    entered through a wait, here a one-panel mosaic behind a horizon mask it
+    clears 15 min into the night, test_group_reach's night) the engine
+    publishes ``panel: None``. types.ts typed it ``panel?: string``, which a
+    screen reading it would take for a label; since the integration of S3
+    it is ``string | null`` (#318's residual, found by S3-R318's verifier,
+    who ran this night through `_ts_admits` and saw 15 of 25 publishes red).
+
+    RED under the engine mutant "the no-current-member arm publishes panel
+    as a number" (``else None`` made ``else 12345`` in `_group_state`, in a
+    private scratch copy of server/), which the capture test above cannot
+    see (the file's other 14 tests passed under it), observed:
+
+        E   AssertionError: types.ts types these otherwise: {'panel':
+            (12345, 'string | null')}
+
+    RED under the UI mutant "panel typed string" (``panel?: string;`` put
+    back in a scratch copy of ui/src/types.ts), observed:
+
+        E   AssertionError: types.ts types these otherwise: {'panel':
+            (None, 'string')}
+    """
+    from _group_harness import LAT, LON, T0, ra_at
+    from astrodeck.catalog.coords import altaz
+    from astrodeck.config import SafetyConfig
+    ra, dec = ra_at(-2.0), 40.0
+    clear_at = T0 + 900.0
+    mask, _az = altaz(ra, dec, LAT, LON, clear_at)
+    assert altaz(ra, dec, LAT, LON, T0)[0] < mask, (
+        "premise: the panel starts behind the mask")
+    group_store.set_safety(SafetyConfig(enabled=False,
+                                        horizon=[(0.0, mask), (360.0, mask)]))
+    night = Night(group_hub, monkeypatch)
+    try:
+        done = await night.run(grid_plan(rows=1, cols=1,
+                                         panel_kw={"count": 2}))
+    finally:
+        await night.close()
+    assert done, f"premise: the mask night ended: {night.trace[-3:]}"
+    published = [e["data"]["group"] for e in night.events
+                 if e["type"] == "sequence"
+                 and isinstance(e["data"].get("group"), dict)]
+    # The premise asks for publishes with no panel LABEL, not for None: a
+    # premise that looked for None would fail first under the mutant below,
+    # and the type check would then grade nothing.
+    waiting = [g for g in published if not isinstance(g["panel"], str)]
+    assert waiting and len(waiting) < len(published), (
+        f"premise: {len(waiting)} of {len(published)} publishes with no "
+        f"current panel; the night must wait and then shoot")
+    ts = _interface("SequenceGroupState")
+    for g in published:
+        assert set(g) == set(ts), _drift("SequenceGroupState", set(g), set(ts))
+        wrong = {k: (g[k], ts[k]) for k in g if not _ts_admits(g[k], ts[k])}
+        assert not wrong, f"types.ts types these otherwise: {wrong}"
+
+
+def test_the_group_state_type_withholds_panel_and_pass_and_nothing_else():
+    """``panel`` and ``pass`` are optional, because they are withheld from a
+    principal without the site-derived view across a meridian wait (6.9),
+    and nothing else is. ``meridian_wait``, the flag that tells a viewer's
+    screen why they are missing, is a plain required boolean, and ``mode``
+    spells the group's modes. (Which keys there are is the capture test's.)
+
+    RED under mutant "mode loses sequential in types.ts" (``mode:
+    "rotate";`` in ``SequenceGroupState``):
+
+        E   AssertionError: assert {'rotate'} == {'rotate', 'sequential'}
+
+    RED under mutant "drop meridian_wait from types.ts" (its line deleted;
+    the capture test above goes red with it):
+
+        E   KeyError: 'meridian_wait'
 
     RED under mutant "panel required, a later interface declares panel?"
     (``panel: string`` in ``SequenceGroupState``, and an interface after it
@@ -492,10 +724,7 @@ def test_the_group_state_type_has_the_5_10_shape():
         E     Extra items in the left set:
         E     'meridian_wait'
     """
-    names, inner = _spec_group_shape()
     ts = _interface("SequenceGroupState")
-    assert set(ts) == names | {"meridian_wait"}
-    assert set(_members(ts["set_aside"].strip()[1:-3])) == inner
     assert _quoted(ts["mode"]) == _literals(
         TargetGroup.model_fields["mode"].annotation)
     assert ts["meridian_wait"] == "boolean"

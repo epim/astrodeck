@@ -5,7 +5,7 @@ must pass the doctor." The wizard is how most flows will be born and how the
 first one always is, so a generated graph that arrives already warning about
 untrailed stars or skipped flats teaches a new operator, on their very first
 night, that the doctor's warnings are decoration. That is why the headline test
-here is a MATRIX — all three kinds × all 64 subsets of the six automation chips,
+here is a MATRIX — every kind × all 64 subsets of the six automation chips,
 every combination the sheet can produce — and not a happy path.
 
 Everything else in this file exists because the graph is a promise about a
@@ -16,15 +16,23 @@ would cost in the field.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
+from astrodeck.catalog.coords import parse_dec, parse_ra
+from astrodeck.flows import tonight
 from astrodeck.flows.compile import compile_plan, flow_order
 from astrodeck.flows.doctor import check
+from astrodeck.flows.nodes import NODE_DEFS
+from astrodeck.flows.to_plan import GraphNotRunnable, to_sequence_plan
 from astrodeck.flows.wizard import (
-    AUTOMATION_OPTIONS, DEFAULT_OPTIONS, KIND_DEEP_SKY, KIND_EAA, KIND_POOL,
-    KINDS, OPT_CLOUD_DODGE, OPT_DOME, OPT_DUSK_FLATS, OPT_GUIDING, OPT_NOTIFY,
-    OPT_WATCHDOG, UNGUIDED_EXPOSURE_DEFAULT, flow_name, generate,
-    generate_record)
+    AUTOMATION_OPTIONS, DEFAULT_OPTIONS, KIND_DEEP_SKY, KIND_EAA, KIND_MOSAIC,
+    KIND_POOL, KINDS, NO_TARGET_NOTE, OPT_CLOUD_DODGE, OPT_DOME,
+    OPT_DUSK_FLATS, OPT_GUIDING, OPT_NOTIFY, OPT_WATCHDOG,
+    UNGUIDED_EXPOSURE_DEFAULT, _sexagesimal, flow_name, generate,
+    generate_answer, generate_record)
 
 #: A node card is 188px wide (README §3); the generator's rows are 200px apart.
 NODE_W, NODE_H = 188.0, 160.0
@@ -34,8 +42,14 @@ NODE_W, NODE_H = 188.0, 160.0
 TARGET_INPUTS = ("", "M16", "M16, M17, M8, NGC 6946")
 
 _SHORT = {KIND_DEEP_SKY: "deepsky", KIND_POOL: "pool", KIND_EAA: "eaa",
+          KIND_MOSAIC: "mosaic",
           OPT_GUIDING: "guide", OPT_DUSK_FLATS: "flats", OPT_DOME: "dome",
           OPT_CLOUD_DODGE: "dodge", OPT_WATCHDOG: "hfr", OPT_NOTIFY: "notify"}
+
+#: The kinds the sheet has always offered. The Mosaic kind (S3) answers with
+#: a single target in this file's matrix, because nothing here hands it a
+#: camera field; test_flows_wizard_mosaic.py grades it as a mosaic.
+THREE_KINDS = (KIND_DEEP_SKY, KIND_POOL, KIND_EAA)
 
 
 def _subsets(items):
@@ -43,7 +57,26 @@ def _subsets(items):
         yield frozenset(x for i, x in enumerate(items) if mask & (1 << i))
 
 
-#: Every answer the sheet can produce: 3 kinds × 64 chip subsets.
+@pytest.fixture(autouse=True)
+def _one_catalogue_search_per_name(monkeypatch):
+    """Since S3 a typed name is resolved through the catalogue (#190), and
+    the search behind ``tonight.resolve_target`` costs about 20 ms a call;
+    the matrices here ask it the same three names hundreds of times. The
+    REAL resolver answers each (name, instant) once per test and its answer
+    is replayed; nothing is stubbed, and a test that replaces the resolver
+    itself still can."""
+    real, memo = tonight.resolve_target, {}
+
+    def once(name, when=None):
+        if (name, when) not in memo:
+            memo[(name, when)] = real(name, when)
+        return memo[(name, when)]
+
+    monkeypatch.setattr(tonight, "resolve_target", once)
+
+
+#: Every answer the route takes: the four kinds × 64 chip subsets. With no
+#: camera field here the Mosaic kind answers as one target (see THREE_KINDS).
 EVERY_ANSWER = [
     pytest.param(
         kind, opts,
@@ -149,10 +182,29 @@ class TestTheFlowLane:
     def test_the_lane_runs_in_the_order_the_night_does(self):
         """Not just present — ORDERED. The flow lane compiles to the run
         cursor's itinerary, so a graph that focuses after it starts capturing
-        would shoot the first frames out of focus."""
+        would shoot the first frames out of focus.
+
+        With no SLEW + CENTER since S3 (spec 1.7): the TARGET block centres,
+        with the tolerance and tries it carries, and the stage's own settings
+        never reached the run. RED under mutant "SLEW left in the lane"
+        (``lane_types += ["slew", "autofocus"]`` again), observed verbatim:
+
+            E   AssertionError: assert ['dusk', 'tar...capture', ...] ==
+                ['dusk', 'tar...re', 'report']
+            E     At index 2 diff: 'slew' != 'autofocus'
+            E     Left contains one more item: 'report'
+        """
         graph = generate(KIND_DEEP_SKY, {OPT_GUIDING}, "M31")
         assert [n.type for n in flow_order(graph)] == [
-            "dusk", "target", "slew", "autofocus", "guide", "capture", "report"]
+            "dusk", "target", "autofocus", "guide", "capture", "report"]
+
+    @pytest.mark.parametrize("kind", KINDS)
+    def test_no_kind_draws_a_slew_stage(self, kind):
+        """Every lane, the quick flow's included (it is this builder): a
+        SLEW + CENTER in a generated graph is a stage whose settings do
+        nothing, and doctor L1 would say so on the operator's first flow."""
+        for opts in _subsets(AUTOMATION_OPTIONS):
+            assert "slew" not in _types(generate(kind, opts, "M31")), opts
 
     def test_dome_and_dusk_flats_take_their_place_before_the_target(self):
         """The shutter has to be open and the twilight flats have to be taken
@@ -417,5 +469,324 @@ class TestTheAnswers:
     def test_the_sheet_opens_on_answers_that_generate_a_clean_night(self):
         """The prototype's own defaults (Deep-sky + Guiding + HFR watchdog) are
         what somebody gets by pressing GENERATE FLOW without touching anything
-        else."""
+        else. Not "nothing above note": nothing. Since S3 that includes doctor
+        L1, the note a SLEW + CENTER draws, which the wizard's own lane used
+        to earn on every generated flow."""
         assert check(generate(KIND_DEEP_SKY, DEFAULT_OPTIONS, "M31")) == []
+
+
+# ======================================================== slice S3 (#189, #190)
+
+#: The keys S3 moves on a generated TARGET on purpose, each graded by its own
+#: case below: `counts` and `angle` are the Created-as column (Revision 2
+#: rulings 2 and 9), and `name`, `ra` and `dec` start blank and are filled
+#: from the answer (#190). A POOL's `counts` likewise.
+_S3_TARGET_KEYS = {"name", "ra", "dec", "counts", "angle"}
+_S3_POOL_KEYS = {"counts"}
+
+#: The pre-S3 generator's graph for every three-answer body (THREE_KINDS x
+#: all 64 chip subsets x TARGET_INPUTS, in that order), MINUS SLEW, hashed.
+#: Computed in a scratch copy from a dump of the generator as it stood before
+#: S3, through a transform written there and not here: drop the one SLEW, wire
+#: its flow parent's output to its flow child's input, renumber the nodes n1..
+#: and the wires we0.. in order, and pull every lane card after it one lane
+#: pitch (228 px) left. Each graph is ``_s3_normal``'d and dumped with sorted
+#: keys, one per line.
+THREE_ANSWER_GRAPHS_SHA256 = \
+    "36890d1771aacef29a42885728ebb96eb04f0980537082c32cb9e0a4d7f6a2df"
+
+#: The pre-S3 generator's PLAN for every three-answer body with target "M31"
+#: (THREE_KINDS x all 64 chip subsets), ids blanked, hashed the same way.
+#: The TARGET's coordinates are held at the node's old M31 default, which is
+#: what the pre-S3 generator wrote for a name, so the only thing S3 may move
+#: is the count mode.
+WIZARD_PLANS_SHA256 = \
+    "211e6eac49ebf45c013f3665685ab7ad2f5fc5ee3fe5a2d211b9cde0ec3ee8e0"
+
+#: The pre-S3 TARGET's missing-key coordinates: M31's, verbatim.
+_OLD_M31 = ("00h 42m 44s", "+41° 16′ 09″")
+
+#: Any fixed instant: pool members are placed by the catalogue at it.
+_WHEN = 1788313689.0
+
+
+def _s3_normal(graph) -> dict:
+    """A graph's dump without the keys S3 moves on purpose (above)."""
+    out = graph.model_dump(mode="json", by_alias=True)
+    for n in out["nodes"]:
+        drop = (_S3_TARGET_KEYS if n["type"] == "target"
+                else _S3_POOL_KEYS if n["type"] == "pool" else set())
+        n["params"] = {k: v for k, v in n["params"].items() if k not in drop}
+    return out
+
+
+def _digest(blobs: list[str]) -> str:
+    return hashlib.sha256("\n".join(blobs).encode("utf-8")).hexdigest()
+
+
+def _blank(node):
+    if isinstance(node, dict):
+        return {k: ("" if k == "id" else _blank(v)) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_blank(v) for v in node]
+    return node
+
+
+class TestTheThreeAnswersAreTodaysGraphLessSlew:
+    """THE CONTROL (spec S3 item 4; Revision 2 ruling 4: "a body with only the
+    three original answers generates exactly today's graph"). S3 took SLEW +
+    CENTER out and made every node a created one, and nothing else."""
+
+    def test_every_three_answer_graph_is_the_pre_s3_one_less_slew(self):
+        """Graded against the PRE-S3 GENERATOR'S OWN OUTPUT, not against a
+        rebuild of it written beside this code: see
+        ``THREE_ANSWER_GRAPHS_SHA256``. The keys S3 moves on purpose are left
+        out here and graded by the cases after this class.
+
+        RED under mutant "the rules row moves" (``_RULES_Y = 400.0``, a
+        change to the graph that is not the SLEW's), observed verbatim:
+
+            E   AssertionError: assert '1b09134648e5...c1d0e5a4c17cf' ==
+                '36890d1771aa...9e0a4d7f6a2df'
+
+        RED under mutant "SLEW left in the lane", observed verbatim:
+
+            E   AssertionError: assert '4efc9e790028...16ac5851b6a1c' ==
+                '36890d1771aa...9e0a4d7f6a2df'
+        """
+        blobs = [json.dumps(_s3_normal(generate(kind, opts, target)),
+                            sort_keys=True)
+                 for kind in THREE_KINDS
+                 for opts in _subsets(AUTOMATION_OPTIONS)
+                 for target in TARGET_INPUTS]
+        assert len(blobs) == 3 * 64 * 3
+        assert _digest(blobs) == THREE_ANSWER_GRAPHS_SHA256
+
+    def test_the_default_answers_draw_this_graph(self):
+        """The same claim for the answers the sheet opens on, readable: the
+        pre-S3 graph had n3 SLEW + CENTER at x 486 between the TARGET and
+        AUTOFOCUS, and every lane card after it one pitch right. A failure of
+        the digest above that is also a failure here says where."""
+        g = generate(KIND_DEEP_SKY, DEFAULT_OPTIONS, "M31")
+        assert [(n.id, n.type, n.x, n.y) for n in g.nodes] == [
+            ("n1", "dusk", 30.0, 60.0), ("n2", "target", 258.0, 60.0),
+            ("n3", "autofocus", 486.0, 60.0), ("n4", "guide", 714.0, 60.0),
+            ("n5", "capture", 942.0, 60.0), ("n6", "report", 1170.0, 60.0),
+            ("n7", "condition", 30.0, 380.0), ("n8", "refocus", 280.0, 380.0)]
+        assert [(e.id, e.from_, e.fromPort, e.to, e.toPort)
+                for e in g.edges] == [
+            ("we0", "n1", "window", "n2", "arm"),
+            ("we1", "n2", "target", "n3", "run"),
+            ("we2", "n3", "focused", "n4", "run"),
+            ("we3", "n4", "guiding", "n5", "run"),
+            ("we4", "n5", "complete", "n6", "session"),
+            ("we5", "n5", "frame", "n7", "events"),
+            ("we6", "n7", "fire", "n8", "do")]
+
+    def test_dropping_slew_moved_no_wizard_plan_but_its_count(self):
+        """Spec 1.7: "A test pins that their compiled plans are unchanged".
+        Every three-answer plan for "M31", with the coordinates the pre-S3
+        generator wrote for it, is the pre-S3 plan exactly once its count
+        mode is set back to "attempts" (``WIZARD_PLANS_SHA256``). The count
+        mode is the deliberate switch: a created TARGET counts accepted subs
+        (ruling 2), and every plan here must carry it.
+
+        RED under mutant "the unguided sub goes to 45 s"
+        (``UNGUIDED_EXPOSURE_DEFAULT = 45``, a change to the night that is
+        not the SLEW's), observed verbatim:
+
+            E   AssertionError: assert 'aba98f28c140...65cce3765ba8c' ==
+                '211e6eac49eb...9cde0ec3ee8e0'
+
+        RED under mutant "the wizard reads the missing-key defaults"
+        (``_Canvas.add`` takes ``default_params``), on the count mode,
+        observed verbatim:
+
+            E   AssertionError: ('Deep-sky target', [])
+            E   assert 'attempts' == 'accepted'
+        """
+        blobs = []
+        for kind in THREE_KINDS:
+            for opts in _subsets(AUTOMATION_OPTIONS):
+                g = generate(kind, opts, "M31", coords=_OLD_M31)
+                plan, _ = to_sequence_plan(compile_plan(g, "w"), g,
+                                           when=_WHEN)
+                got = _blank(plan.model_dump(mode="json"))
+                assert got["count_mode"] == "accepted", (kind, sorted(opts))
+                got["count_mode"] = "attempts"
+                blobs.append(json.dumps(got, sort_keys=True))
+        assert _digest(blobs) == WIZARD_PLANS_SHA256
+
+
+class TestEveryNodeIsCreated:
+    """Spec 3.1: a node the wizard makes is CREATED, through
+    ``nodes.create_params``, never read through the missing-key defaults,
+    which keep the meaning a key had before it existed."""
+
+    @pytest.mark.parametrize("kind", KINDS)
+    def test_every_created_key_holds_its_created_value(self, kind):
+        """Every node of every answer carries each key of its type's
+        Created-as column at the created value, except the keys the answer
+        itself writes (a TARGET's name and coordinates).
+
+        RED under mutant "the wizard reads the missing-key defaults"
+        (``_Canvas.add`` takes ``default_params``), observed verbatim:
+
+            E   AssertionError: [([], '', 'target', 'angle', None), ([], '',
+                'target', 'counts', 'Every sub taken'), ([], 'M16', 'target',
+                'angle', None), ([], 'M16', 'target', 'counts', 'Every sub
+                taken'), ([], 'M16, M17, M8, NGC 6946', 'target', 'angle',
+                None)]
+
+        (for [Deep-sky target]; [Best of several] names the POOL's counts,
+        "Every sub taken", the same way).
+        """
+        answered = {"target": {"name", "ra", "dec"}}
+        problems = []
+        for opts in _subsets(AUTOMATION_OPTIONS):
+            for target in TARGET_INPUTS:
+                for n in generate(kind, opts, target).nodes:
+                    for key, want in NODE_DEFS[n.type].created_as.items():
+                        if key in answered.get(n.type, ()):
+                            continue
+                        if n.params.get(key) != want:
+                            problems.append((sorted(opts), target, n.type,
+                                             key, n.params.get(key)))
+        assert not problems, problems[:5]
+
+    def test_a_generated_target_counts_accepted_subs_and_names_no_angle(self):
+        """Rulings 2 and 9, read off one node."""
+        t = next(n for n in generate(KIND_DEEP_SKY, DEFAULT_OPTIONS,
+                                     "M31").nodes if n.type == "target")
+        assert (t.params["counts"], t.params["angle"],
+                t.params["rotation"]) == ("Accepted subs", "Any angle", -1)
+
+
+def _target(graph):
+    return next(n for n in graph.nodes if n.type == "target")
+
+
+class TestATypedNameIsResolved:
+    """#190: NEW FLOW for M16 slewed to Andromeda and filed the frames as
+    M16, because the wizard wrote the typed name over a TARGET that kept its
+    shipped M31 coordinates. The node is created blank now, and a typed name
+    is resolved through the catalogue, the one resolver `to_plan` places a
+    name-only TARGET with."""
+
+    def test_m16_points_the_run_at_m16(self):
+        """At both levels: the node carries M16's coordinates, and the plan
+        the run is handed points there, nowhere near M31's +41.
+
+        RED under mutant "M31 default coordinates" (the TARGET keeps the
+        node's missing-key M31 coordinates under a typed name, the pre-fix
+        behaviour: ``_resolve_name`` not asked, and ``where`` set to
+        ``NODE_DEFS["target"].params`` ra and dec), observed verbatim:
+
+            E   AssertionError: assert 17.60107777777778 < (0.1 / 3600)
+            E    +  where 17.60107777777778 = abs((0.7122222222222222 -
+                18.3133))
+            E    +    where 0.7122222222222222 = parse_ra('00h 42m 44s')
+        """
+        hit = tonight.resolve_target("M16")
+        g = generate(KIND_DEEP_SKY, DEFAULT_OPTIONS, "M16")
+        t = _target(g)
+        assert t.params["name"] == "M16"
+        assert abs(parse_ra(t.params["ra"]) - hit.ra_hours) < 0.1 / 3600
+        assert abs(parse_dec(t.params["dec"]) - hit.dec_deg) < 1.0 / 3600
+        plan, _ = to_sequence_plan(compile_plan(g, "w"), g, when=_WHEN)
+        [pt] = plan.targets
+        assert (pt.name, round(pt.ra_hours, 3), round(pt.dec_deg, 2)) == (
+            "M16", round(hit.ra_hours, 3), round(hit.dec_deg, 2))
+        assert abs(pt.dec_deg - parse_dec(_OLD_M31[1])) > 50, (
+            "the run would slew to Andromeda")
+
+    @pytest.mark.parametrize("kind,name", [(KIND_EAA, "M27"),
+                                           (KIND_MOSAIC, "NGC 6946")])
+    def test_every_kind_with_a_target_resolves_it(self, kind, name):
+        """EAA's TARGET had the same fault, and the Mosaic kind answered as
+        one target (no camera field here) is a TARGET too."""
+        hit = tonight.resolve_target(name)
+        t = _target(generate(kind, set(), name))
+        assert abs(parse_dec(t.params["dec"]) - hit.dec_deg) < 1.0 / 3600
+
+    def test_a_moving_body_is_left_to_the_compile(self, monkeypatch):
+        r"""A planet's coordinates are the catalogue's answer at one instant;
+        written down, they point tomorrow's run at where it was when the
+        wizard ran. So the node stays name-only and the compile places it at
+        the run's own instant.
+
+        RED under mutant "write a moving body's coordinates" (the ``if
+        hit.moves`` branch taken out of ``_resolve_name``), observed
+        verbatim:
+
+            E   assert ('Jupiter', '...15° 52\' 51"') == ('Jupiter', '', '')
+            E     At index 1 diff: '09h 23m 54.9s' != ''
+        """
+        g = generate(KIND_DEEP_SKY, DEFAULT_OPTIONS, "Jupiter")
+        t = _target(g)
+        assert (t.params["name"], t.params["ra"], t.params["dec"]) == (
+            "Jupiter", "", "")
+        plan, _ = to_sequence_plan(compile_plan(g, "w"), g, when=_WHEN)
+        hit = tonight.resolve_target("Jupiter", _WHEN)
+        assert abs(plan.targets[0].ra_hours - hit.ra_hours) < 1e-9
+
+    def test_a_name_the_catalogue_lacks_is_left_blank_and_said(self):
+        """Refused by the run for want of coordinates, and the answer says
+        why; never M31's. Not refused by the wizard: the sheet's own
+        placeholder invites a comma list, and the flow is the operator's to
+        finish in the editor.
+
+        RED under mutant "no note for an unknown name" (``_resolve_name``
+        answers ``(None, None)`` for it), observed verbatim:
+
+            E   assert () == ('the catalog... before RUN',)
+            E     Right contains one more item: "the catalogue has no 'M16,
+                M17', so its TARGET has no coordinates: type its RA and Dec
+                in the editor before RUN"
+        """
+        ans = generate_answer(KIND_DEEP_SKY, DEFAULT_OPTIONS, "M16, M17")
+        t = _target(ans.record.graph)
+        assert (t.params["ra"], t.params["dec"]) == ("", "")
+        assert ans.notes == ("the catalogue has no 'M16, M17', so its TARGET "
+                             "has no coordinates: type its RA and Dec in the "
+                             "editor before RUN",)
+        g = ans.record.graph
+        with pytest.raises(GraphNotRunnable, match="no target the run could"):
+            to_sequence_plan(compile_plan(g, "w"), g, when=_WHEN)
+
+    def test_no_name_is_a_blank_target_and_a_note(self):
+        """Nothing typed used to mean M31, a target nobody chose."""
+        ans = generate_answer(KIND_DEEP_SKY, DEFAULT_OPTIONS, "")
+        t = _target(ans.record.graph)
+        assert (t.params["name"], t.params["ra"], t.params["dec"]) == (
+            "", "", "")
+        assert ans.notes == (NO_TARGET_NOTE,)
+
+    def test_given_coordinates_win_and_the_catalogue_is_not_asked(
+            self, monkeypatch):
+        """The quick flow and the Sky door hand over coordinates; they are
+        written as given, and the name is not looked up behind them."""
+        def _no(*a, **k):
+            raise AssertionError("the catalogue was asked despite coordinates")
+        monkeypatch.setattr(tonight, "resolve_target", _no)
+        t = _target(generate(KIND_DEEP_SKY, set(), "NGC 6946",
+                             coords=("20h 34m 52s", "+60 09 14")))
+        assert (t.params["ra"], t.params["dec"]) == ("20h 34m 52s",
+                                                     "+60 09 14")
+
+    def test_the_written_coordinates_never_read_sixty_seconds(self):
+        r"""``_sexagesimal`` rounds before it splits. The card formatters
+        truncate the minutes and round the seconds, so 42m 59.97s would be
+        written "42m 60.0s".
+
+        RED under mutant "the card formatters" (``format_ra`` and
+        ``format_dec`` in place of the FITS ones), observed verbatim:
+
+            E   assert ('00h 44m 60....° 59\' 59.7"') ==
+                ('00h 45m 00....42° 00\' 00"')
+            E     At index 0 diff: '00h 44m 60.0s' != '00h 45m 00.0s'
+        """
+        ra, dec = _sexagesimal(0.75 - 0.03 / 3600, 42.0 - 0.3 / 3600)
+        assert (ra, dec) == ("00h 45m 00.0s", "+42° 00' 00\"")
+        assert abs(parse_ra(ra) - 0.75) < 0.05 / 3600
+        assert abs(parse_dec(dec) - 42.0) < 0.5 / 3600

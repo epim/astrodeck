@@ -19,6 +19,7 @@ spreading further than it should.
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 
 import pytest
@@ -964,3 +965,280 @@ class TestTheShippedExamples:
         first, second = _plan(ex.graph, ex.id), _plan(ex.graph, ex.id)
         assert plan_identity_errors(first) == []
         assert _ids(first) == _ids(second)
+
+
+# ---------------------------------------------------------------- the anchor
+
+def _grid(**over):
+    """The task's 3x2 of 2.0 x 1.33 deg at 25%, as ``target_key`` takes a
+    grid: overlap as a FRACTION, fields in bin-1 degrees."""
+    grid = dict(rows=2, cols=3, overlap=0.25, fov_x=2.0, fov_y=1.33)
+    grid.update(over)
+    return grid
+
+
+#: A TARGET with typed coordinates, and one with only a name, as the compile
+#: hands them to ``target_key`` (only ``name``, ``ra`` and ``dec`` are read).
+TYPED = {"name": "M31", "ra": "00h 42m 44s", "dec": "+41 16 09"}
+NAMED = {"name": "jupiter", "ra": "", "dec": ""}
+
+
+class TestTheAnchor:
+    """S3's identity: a block's ids hang off its ANCHOR, the geometry its
+    counts started at, not the geometry it is drawn at now (#189 Revision 2
+    ruling 3, spec 3.3).
+
+    The anchor is STORED AS THE TEXT THE KEY ALREADY HASHES: a typed block's
+    anchor is ``canonical_geometry``, a name-keyed block's is
+    ``canonical_name`` (its canonical identity, grid and angle, and no
+    coordinates, because those are the catalogue's answer and move). So the
+    key of an anchor is S1's key of the same geometry, byte for byte, and a
+    flow keyed on S1 and saved on S3, whose first anchor is its current
+    geometry, keeps every id: no migration.
+
+    ``framing.reframe_carry`` decides when the anchor is kept (its tests are
+    ``test_framing_reframe_carry.py``); these pin what keying on it means.
+    """
+
+    def test_a_typed_anchor_is_the_canonical_geometry_and_keys_as_s1(self):
+        """The GRID golden vector above, now as a stored anchor: its key is
+        the vector's key, computed from the text with plain ``hashlib``.
+
+        Mutant "anchor keyed on its text as stored" (``anchor_key`` hashes
+        the text it is given instead of the canonical form of the geometry
+        it holds) failed the reordered copy:
+            AssertionError: assert '3e09f3274d07ca14' == '1857d50ead89e1b1'
+        """
+        grid = TestGoldenVectors.GRID
+        text = identity.anchor_for(TYPED, 20.75, -12.5, 23.4, canonical=None,
+                                   rows=3, cols=2, overlap=0.15, fov_x=2.0,
+                                   fov_y=1.33)
+        assert text == grid
+        assert identity.anchor_key(text) == "1857d50ead89e1b1" == \
+            hashlib.sha256(grid.encode()).hexdigest()[:16]
+        # The key is the geometry's, not the bytes': the same anchor with its
+        # keys in another order and its numbers unpadded keys the same.
+        loose = json.dumps(dict(reversed(json.loads(grid).items())))
+        loose = loose.replace('"2.00000"', "2").replace('"1.33000"', "1.33")
+        assert loose != grid
+        assert identity.anchor_key(loose) == "1857d50ead89e1b1"
+
+    def test_a_named_anchor_is_its_canonical_identity_grid_and_angle(self):
+        """The NAME golden vector above, as a stored anchor. The canonical
+        identity is the catalogue's, handed in by the caller, never the name
+        as typed ("jupiter").
+
+        Mutant "a named anchor spelled as a geometry" (``anchor_for`` always
+        writes ``canonical_geometry``) failed:
+            - {"cols":1,"fov_x":"0.00000","fov_y":"0.00000","name":"Jupiter",
+              "overlap":"0.2500","rotation_deg":null,"rows":1}
+            + {"cols":1,"dec_deg":"2.000000","fov_x":"0.00000",
+              "fov_y":"0.00000","overlap":"0.2500","ra_hours":"1.000000",
+              "rotation_deg":null,"rows":1}
+        """
+        text = identity.anchor_for(NAMED, 1.0, 2.0, None, canonical="Jupiter")
+        assert text == TestGoldenVectors.NAME
+        assert identity.anchor_key(text) == "name:eac5522c2c291515"
+        with pytest.raises(ValueError, match="canonical identity"):
+            identity.anchor_for(NAMED, 1.0, 2.0, None, canonical=None)
+
+    def test_the_geometry_an_anchor_holds(self):
+        """Read back as numbers, the grid as integers, "any angle" as None;
+        a named anchor holds no coordinates at all.
+
+        Mutant "null read as angle 0" failed:
+            Differing items:
+            {'rotation_deg': 0.0} != {'rotation_deg': None}
+        Mutant "fields crossed" (``fov_x`` read from the text's ``fov_y`` and
+        the reverse) failed:
+            {'fov_x': 1.33} != {'fov_x': 2.0}
+            {'fov_y': 2.0} != {'fov_y': 1.33}
+        """
+        assert identity.anchor_geometry(TestGoldenVectors.GRID) == {
+            "ra_hours": 20.75, "dec_deg": -12.5, "rotation_deg": 23.4,
+            "rows": 3, "cols": 2, "overlap": 0.15, "fov_x": 2.0,
+            "fov_y": 1.33}
+        assert identity.anchor_geometry(TestGoldenVectors.NAME) == {
+            "name": "Jupiter", "rotation_deg": None, "rows": 1, "cols": 1,
+            "overlap": 0.25, "fov_x": 0.0, "fov_y": 0.0}
+
+    def test_no_anchor_and_not_an_anchor(self):
+        """Blank is "no anchor yet" (a block saved before S3), None to the
+        caller; text that is not an anchor is refused, not guessed at.
+
+        Mutant "anything parses" (unknown or missing keys accepted) failed,
+        a KeyError where the refusal should be:
+            KeyError: 'ra_hours'
+        """
+        assert identity.anchor_geometry("") is None
+        assert identity.anchor_geometry("  ") is None
+        assert identity.anchor_geometry(None) is None
+        grid = TestGoldenVectors.GRID
+        for bad in ("not json", "[]", '{"rows": 2}',
+                    grid.replace('"rows":3', '"rows":0'),
+                    grid.replace('"rows":3', '"rows":2.5'),
+                    grid.replace('"dec_deg":"-12.500000"', '"dec_deg":"95"'),
+                    grid.replace('"cols":2', '"cols":2,"skip":"1-1"'),
+                    grid.replace('"ra_hours":"20.750000",', ''),
+                    grid.replace('"fov_x":"2.00000"', '"fov_x":"nan"')):
+            with pytest.raises(ValueError):
+                identity.anchor_geometry(bad)
+
+    @pytest.mark.parametrize("base, old, new, why", [
+        ("GRID", '"overlap":"0.1500"', '"overlap":"1.0000"', "a fraction"),
+        ("GRID", '"overlap":"0.1500"', '"overlap":"-0.1000"', "a fraction"),
+        ("GRID", '"fov_x":"2.00000"', '"fov_x":"-2.00000"', "negative"),
+        ("NAME", '"name":"Jupiter"', '"name":" "', "names no object"),
+        ("NAME", '"name":"Jupiter"', '"name":5', "names no object"),
+        ("GRID", '"ra_hours":"20.750000"', '"ra_hours":true', "not a number"),
+        ("GRID", '"rows":3', '"rows":true', "whole number"),
+    ], ids=["overlap 1", "overlap negative", "fov negative", "blank name",
+            "name not text", "bool ra", "bool rows"])
+    def test_each_refusal_says_what_is_wrong(self, base, old, new, why):
+        """Each field check of ``anchor_geometry`` refuses on its own, for its
+        own reason. A key made from an anchor with a negative field, an
+        overlap of 100% or a nameless object would file frames under an id
+        nothing else can find, and ``true`` is not the number 1 or one row,
+        although Python's ``bool`` is an ``int``.
+
+        Added by the S3-G verifier: each mutant below survived the tests
+        above, and each turned exactly its own row red (private copy,
+        scratchpad s3-G-verify-mut):
+          Mutant "no overlap range check" failed [overlap 1] and
+          [overlap negative]:
+            Failed: DID NOT RAISE <class 'ValueError'>
+          Mutant "no negative fov check" failed [fov negative]:
+            Failed: DID NOT RAISE <class 'ValueError'>
+          Mutant "blank name accepted" failed [blank name] and
+          [name not text]:
+            Failed: DID NOT RAISE <class 'ValueError'>
+          Mutant "bool is a number" (no ``isinstance(value, bool)`` in
+          ``_anchor_number``) failed [bool ra]:
+            Failed: DID NOT RAISE <class 'ValueError'>
+          Mutant "bool is a count" failed [bool rows]:
+            Failed: DID NOT RAISE <class 'ValueError'>
+        """
+        text = getattr(TestGoldenVectors, base)
+        assert old in text, "premise: the golden vector holds the field"
+        with pytest.raises(ValueError, match=why):
+            identity.anchor_geometry(text.replace(old, new))
+        # Control: the untouched vector reads back.
+        assert identity.anchor_geometry(text) is not None
+
+    def test_a_nudge_under_the_threshold_keeps_the_key(self):
+        """THE CARRY. The 3x2 moved 6' north: ``reframe_carry`` keeps the
+        anchor, and the block keyed on it keeps its key, so its target and
+        step ids, so its banked frames.
+
+        Mutant "key on the current geometry" (``target_key`` ignores the
+        anchor it is handed) failed:
+            AssertionError: assert 'f1cb71f38c5759b5' == 'ec268dd074dfdaec'
+        """
+        from astrodeck.catalog import framing
+        anchor = identity.anchor_for(TYPED, 0.7122, 41.0, 30.0,
+                                     canonical=None, **_grid())
+        nudged = 41.0 + 6.0 / 60.0
+        verdict = framing.reframe_carry(anchor, {
+            "ra_hours": 0.7122, "dec_deg": nudged, "rotation_deg": 30.0,
+            **_grid()})
+        assert verdict["carry"] is True, "premise: 6' is under 9.975'"
+        kept = identity.target_key(TYPED, 0.7122, nudged, 30.0,
+                                   canonical=None, anchor=anchor, **_grid())
+        assert kept == identity.anchor_key(anchor) == identity.target_key(
+            TYPED, 0.7122, 41.0, 30.0, canonical=None, **_grid())
+        # ...and it is the anchor that decided, not an accident of keys: the
+        # nudged geometry has a key of its own.
+        assert identity.target_key(TYPED, 0.7122, nudged, 30.0,
+                                   canonical=None, **_grid()) != kept
+
+    def test_the_grid_is_in_the_key(self):
+        """``target_key`` takes the grid: with no anchor it keys the current
+        geometry's grid, as ``geometry_key`` and ``name_key`` do.
+
+        Mutant "grid dropped by target_key" (the single-target shape keyed
+        whatever grid is passed) failed:
+            AssertionError: assert '1fb1fbfb5da58cad' == 'ec268dd074dfdaec'
+        """
+        assert identity.target_key(TYPED, 0.7122, 41.0, 30.0, canonical=None,
+                                   **_grid()) == identity.geometry_key(
+            0.7122, 41.0, 30.0, **_grid())
+        assert identity.target_key(NAMED, 0.7122, 41.0, 30.0,
+                                   canonical="Jupiter", **_grid()) == \
+            identity.name_key("Jupiter", 30.0, **_grid())
+        assert identity.geometry_key(0.7122, 41.0, 30.0, **_grid()) != \
+            identity.geometry_key(0.7122, 41.0, 30.0, **_grid(rows=3))
+
+    def test_an_anchor_that_is_not_this_blocks_is_not_used(self):
+        """A named block's anchor must name the object its name resolves to
+        now, and a typed block's must hold coordinates; any other anchor is
+        stale (the save re-anchors on both changes), and keying on it would
+        credit one object's frames to another, the flaw D5 removes. The
+        block keys on what it is drawn as, and CONTINUE's dropped-steps
+        refusal guards the ledger.
+
+        Mutant "trust any anchor" (``target_key`` keys every non-blank
+        anchor) failed, Jupiter keyed on Saturn's anchor:
+            AssertionError: assert 'name:b3cb82cbd7aef6df' ==
+            'name:11da8801ffdf3e29'
+        """
+        saturn = identity.anchor_for(NAMED, 0.0, 0.0, 30.0,
+                                     canonical="Saturn", **_grid())
+        typed = identity.anchor_for(TYPED, 0.7122, 41.0, 30.0, canonical=None,
+                                    **_grid())
+        now_named = identity.name_key("Jupiter", 30.0, **_grid())
+        assert identity.target_key(NAMED, 1.0, 2.0, 30.0, canonical="Jupiter",
+                                   anchor=saturn, **_grid()) == now_named
+        assert identity.target_key(NAMED, 1.0, 2.0, 30.0, canonical="Jupiter",
+                                   anchor=typed, **_grid()) == now_named
+        assert identity.target_key(TYPED, 5.0, 10.0, 30.0, canonical=None,
+                                   anchor=saturn, **_grid()) == \
+            identity.geometry_key(5.0, 10.0, 30.0, **_grid())
+        # Control: the named block's own anchor IS used, wherever the
+        # catalogue puts the body now and whatever the grid is drawn as.
+        jupiter = identity.anchor_for(NAMED, 0.0, 0.0, 30.0,
+                                      canonical="Jupiter", **_grid())
+        assert identity.target_key(NAMED, 9.0, -9.0, 30.0,
+                                   canonical="Jupiter", anchor=jupiter,
+                                   **_grid(overlap=0.3)) == \
+            identity.anchor_key(jupiter)
+
+
+class TestS1IdsAreUnchanged:
+    """The control S3's anchor must not move: every S1 single-target id (no
+    grid, no anchor) is byte-identical, and so is one whose first anchor has
+    just been written from its current geometry."""
+
+    @pytest.mark.parametrize("ra, dec, rotation", [
+        (0.7122222222, 41.2691666667, None), (5.5, -5.4, 0.0),
+        (23.9999999, 89.0, 359.9996), (12.0, 0.0, -1.0), (1.0, -0.0, 181.25)])
+    def test_no_anchor_and_no_grid_is_s1s_key(self, ra, dec, rotation):
+        """Mutant "target_key's overlap default read as a percent"
+        (``overlap: float = 25``) failed every row, for example:
+            AssertionError: assert 'b14cca3daef9035d' == '7aa8577027b1741c'
+            AssertionError: assert '21feb9197c2a76e5' == 'c8d37155e70c48e6'
+        """
+        s1 = identity.geometry_key(ra, dec, rotation)
+        assert identity.target_key(TYPED, ra, dec, rotation,
+                                   canonical=None) == s1
+        first = identity.anchor_for(TYPED, ra, dec, rotation, canonical=None)
+        assert identity.anchor_key(first) == s1
+        assert identity.target_key(TYPED, ra, dec, rotation, canonical=None,
+                                   anchor=first) == s1
+        assert identity.target_key(NAMED, ra, dec, rotation,
+                                   canonical="Jupiter") == \
+            identity.name_key("Jupiter", rotation)
+
+    def test_the_golden_single_target_through_every_path(self):
+        """The SINGLE golden vector is the key of a single target with no
+        anchor, with a blank one, and with the anchor its first save writes.
+
+        Mutant "target_key's overlap default read as a percent" failed:
+            AssertionError: assert 'b14cca3daef9035d' == '7aa8577027b1741c'
+        """
+        key = "7aa8577027b1741c"
+        args = (TYPED, 0.7122222222, 41.2691666667, None)
+        assert identity.target_key(*args, canonical=None) == key
+        assert identity.target_key(*args, canonical=None, anchor="") == key
+        first = identity.anchor_for(*args, canonical=None)
+        assert first == TestGoldenVectors.SINGLE
+        assert identity.target_key(*args, canonical=None, anchor=first) == key
