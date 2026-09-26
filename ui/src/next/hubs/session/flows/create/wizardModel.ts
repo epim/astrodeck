@@ -10,7 +10,7 @@
 // Pure and separate from `wizard.tsx` so the payload the sheet sends can be
 // graded without a DOM.
 
-import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
+import { createParams } from "../../../../../components/flows/nodeDefs";
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
 
 /** Question 1. Order and labels from the flows contract; `Deep-sky target` is
@@ -61,11 +61,17 @@ export const WIZARD_NOTE =
 export const BLANK_NAME = "Untitled flow";
 export const BLANK_TAGLINE = "Started blank";
 
-// A TARGET and a SLEW, unwired, at these coordinates. Two nodes rather than
-// none because an empty canvas gives the operator nothing to drag a wire from.
-const BLANK_NODES: ReadonlyArray<{ type: "target" | "slew"; x: number; y: number }> = [
+// A TARGET and a CAPTURE LOOP, unwired, at these coordinates. Two nodes rather
+// than none because an empty canvas gives the operator nothing to drag a wire
+// from. It drew a SLEW until the integration of mosaic S3: SLEW + CENTER is
+// part of the TARGET block now, a legacy type the palette no longer offers
+// (spec 1.7), so a blank flow opened with L1's note telling the operator to
+// delete it (#340). Both nodes are CREATED, so they take `createParams`: a
+// TARGET with no name and no coordinates, not M31's (#190), counting accepted
+// subs (ruling 2).
+export const BLANK_NODES: ReadonlyArray<{ type: "target" | "capture"; x: number; y: number }> = [
   { type: "target", x: 60, y: 120 },
-  { type: "slew", x: 320, y: 120 },
+  { type: "capture", x: 320, y: 120 },
 ];
 
 // Node ids are minted client-side and are only local handles. Prefixed for the
@@ -81,6 +87,6 @@ export function blankNodes(): FlowNodeRec[] {
     type: n.type,
     x: n.x,
     y: n.y,
-    params: { ...NODE_DEFS[n.type].params },
+    params: createParams(n.type),
   }));
 }

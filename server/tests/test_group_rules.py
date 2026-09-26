@@ -9,7 +9,7 @@ lasts, when a blocked panel clears, and what an angle verdict means for the
 panel. Each is pinned here against a named mutation of that module, run from a
 private scratch copy of ``server/`` (never the shared tree), with the observed
 failure recorded in the test. The mutants the plan named are below; every other
-test names its own as well (54 in all, none surviving):
+test names its own as well (59 in all, none surviving):
 
 * ``VisitBound``: "or instead of and" and "deadline checked without the frame";
 * ``GroupRun.visit_outcome``: "count all zero-accept visits", "no failure
@@ -25,7 +25,10 @@ test names its own as well (54 in all, none surviving):
   converted to solar" and "linear span" across 0 h;
 * ``forward_clear_ts``: "returns now when blocked";
 * ``angle_decision``: "no_measurement read as ok" and "no_measurement read as
-  off".
+  off";
+* the last live panel with no guider (#315, S3 orchestrator ruling 6): "defer
+  the last panel too", and the guiding loss (#303) beside it: "a lost guider
+  is a failed start".
 
 The controls are the cases where nothing should change: a visit that has met
 its passes and its minimum, a frame that fits the deadline exactly, a pass
@@ -43,6 +46,7 @@ from astrodeck.catalog.framing import compute_mosaic
 from astrodeck.sequence import group_rules
 from astrodeck.sequence.group_rules import (
     DEFER_WAIT_S,
+    GUIDE_LOST,
     GUIDE_START,
     REACH_RECHECK_S,
     SOLAR_PER_SIDEREAL,
@@ -54,6 +58,7 @@ from astrodeck.sequence.group_rules import (
     forward_clear_ts,
     guide_start_pass_verdict,
     meridian_eligibility,
+    no_guider_defers,
     pass_boundary,
     preflip_idle_cut_h,
     preflip_idle_whole_h,
@@ -766,6 +771,91 @@ def test_a_held_deferral_of_a_panel_set_aside_since_is_not_counted_again():
     assert end.set_aside == ()
     assert run.set_aside["p0"] == why
     assert run.failed["p0"] == 2
+
+
+# ---------------------------------------------------------------------------
+# The last live panel with no guider (#315) and a guiding loss (#303), S3
+# orchestrator ruling 6
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("live", "require_guiding", "expected"),
+    [
+        pytest.param(1, False, False, id="last live panel, guiding optional"),
+        pytest.param(1, True, True, id="last live panel, guiding required"),
+        pytest.param(2, False, True, id="two live, guiding optional"),
+        pytest.param(2, True, True, id="two live, guiding required"),
+        pytest.param(9, False, True, id="nine live, guiding optional"),
+    ],
+)
+def test_no_guider_defers_all_but_the_last_live_panel_of_an_optional_guider(
+        live, require_guiding, expected):
+    """With no guider connected, a member defers (S2's rule) unless it is its
+    group's only live panel and the rig marks guiding optional: then it is a
+    plain target and shoots unguided with the plain target's warning. One
+    live panel can never make the two attempts the rig verdict needs
+    (`guide_start_pass_verdict`), so under S2 it deferred until it was set
+    aside, where the same target outside a group shoots on.
+
+    MUTATION "defer the last panel too" (``return True``). Observed, on the
+    first row alone:
+        AssertionError: assert True is False
+    MUTATION "required guiding lets the last panel through too" (``return
+    live >= 2``). Observed, on the second row alone:
+        AssertionError: assert False is True
+    MUTATION "every panel is a plain target" (``return
+    bool(require_guiding)``). Observed, on the two optional rows of two and
+    nine:
+        AssertionError: assert False is True
+    """
+    assert no_guider_defers(live=live,
+                            require_guiding=require_guiding) is expected
+
+
+def test_no_guider_defers_refuses_a_count_that_cannot_be():
+    """The member asking is live, so there is at least one; a count that is
+    not a non-negative int is a caller bug and says so, rather than reading
+    as "the last panel" and shooting a mosaic unguided.
+
+    MUTATION "no floor at one" (the ``live < 1`` check dropped). Observed:
+        Failed: DID NOT RAISE <class 'ValueError'>
+    """
+    for bad in (0, -1, True, 1.0, None):
+        with pytest.raises(ValueError):
+            no_guider_defers(live=bad, require_guiding=False)
+
+
+def test_a_guiding_loss_counts_at_once_and_is_not_the_guiders_fault():
+    """A ``guide_lost`` deferral (#303) follows a hop whose guider START
+    WORKED, so it is not a failed start: it is counted when the visit ends,
+    like any deferral, and never held for the pass rule. A pass where one
+    panel's start failed and the other's guiding was lost mid-visit is one
+    failure out of two attempts, the panel's fault, not a dead guider's.
+    What the engine hands over is the kind the frame loop's recovery raises
+    and the hop's start that worked (`_visit_panel`).
+
+    MUTATION "a lost guider is a failed start" (``guide_failed`` true for
+    ``GUIDE_LOST`` as well as ``GUIDE_START`` in ``visit_outcome``).
+    Observed, on the visit that reports the loss:
+        ValueError: a guide start cannot both succeed and fail
+    """
+    assert GUIDE_LOST == "guide_lost"
+    assert GUIDE_LOST in group_rules.DEFERRAL_KINDS
+    run = _run()
+    lost = PanelDeferred("guiding was lost and did not recover",
+                         kind=GUIDE_LOST,
+                         last_error="guiding could not be kept after 2 "
+                                    "recovery attempts without a frame")
+    act = run.visit_outcome("p1", complete=False, exposures=3, accepted=0,
+                            deferred=lost, guide_started=True)
+    assert act.action == "requeue"
+    assert run.failed["p1"] == 1, "counted at once, not held for the pass"
+    assert "(1 of 3 consecutive)" in act.reason, act.reason
+    run.visit_outcome("p0", complete=False, exposures=0, accepted=0,
+                      deferred=_guide_fail())
+    end = run.close_pass()
+    assert end.boundary == "next_pass", end
+    assert run.failed == {"p0": 1, "p1": 1, "p2": 0}
 
 
 # ---------------------------------------------------------------------------

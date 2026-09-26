@@ -34,7 +34,8 @@ import { readFileSync } from "node:fs";
 };
 
 const { createFlowsActions, FLOWS_INIT, LOG_RING } = await import("../flowsSlice");
-const { NODE_DEFS } = await import("../nodeDefs");
+const { NODE_DEFS, createParams } = await import("../nodeDefs");
+const { PALETTE_GROUPS } = await import("../palette");
 type FlowsHost = import("../flowsSlice").FlowsHost;
 type FlowsState = import("../flowsSlice").FlowsState;
 type FlowGraphRec = import("../flowsTypes").FlowGraphRec;
@@ -54,14 +55,19 @@ function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(m
  *  the campaign's two event feeds into one input, for one. */
 function harness(graph?: FlowGraphRec) {
   let state: FlowsHost;
+  // How many writes replaced the graph: "in the same write" is countable.
+  let graphWrites = 0;
   const set = (fn: (s: FlowsHost) => Partial<FlowsHost>) => {
+    const before = state.flows.graph;
     state = { ...state, ...fn(state) } as FlowsHost;
+    if (state.flows.graph !== before) graphWrites++;
   };
   const get = () => state;
   const actions = createFlowsActions(set, get);
   state = { ...actions, flows: { ...FLOWS_INIT, ...(graph ? { graph } : {}) } } as FlowsHost;
   return {
     get flows(): FlowsState { return state.flows; },
+    get graphWrites(): number { return graphWrites; },
     a: actions,
   };
 }
@@ -135,6 +141,35 @@ test("deleting an edge leaves both its nodes alone", () => {
   assert(h.flows.graph.edges.length === 0, "edge gone");
 });
 
+// The flow's own settings (`FlowGraphRec.settings`, spec 1.6: `whenWaiting`)
+// live on the graph beside its nodes and wires, so an action that rebuilds
+// the graph must carry them. Until the integration of S3 the node-delete arm
+// built `{ nodes, edges }` from scratch while the edge-delete arm spread the
+// graph, so deleting a stage in the editor and saving silently put a flow
+// back on the default wait behaviour (found by S3-V's verifier).
+//
+// RED before the fix, observed on the node-delete arm as it was (and so
+// under the named mutant "node delete rebuilds the graph", `{ ...g, nodes:`
+// put back to `{ nodes:`):
+//   x deleting a node or an edge keeps the flow's settings: deleting a node
+//     dropped the flow's settings: undefined
+test("deleting a node or an edge keeps the flow's settings", () => {
+  const settings = { whenWaiting: "Wait for the mosaic" };
+  const h = harness({ nodes: [], edges: [], settings });
+  const [a, b, c] = withGraph(h, ["target", "capture", "report"]);
+  assert(JSON.stringify(h.flows.graph.settings) === JSON.stringify(settings),
+    "premise: adding nodes kept the settings");
+  h.a.flowsConnect(a, "target", b, "run");
+  h.a.flowsSelect({ kind: "node", id: c });
+  h.a.flowsDeleteSel();
+  assert(JSON.stringify(h.flows.graph.settings) === JSON.stringify(settings),
+    `deleting a node dropped the flow's settings: ${JSON.stringify(h.flows.graph.settings)}`);
+  h.a.flowsSelect({ kind: "edge", id: h.flows.graph.edges[0].id });
+  h.a.flowsDeleteSel();
+  assert(JSON.stringify(h.flows.graph.settings) === JSON.stringify(settings),
+    `deleting an edge dropped the flow's settings: ${JSON.stringify(h.flows.graph.settings)}`);
+});
+
 test("deleting the node being edited closes the sheet", () => {
   const h = harness();
   const [a] = withGraph(h, ["target"]);
@@ -176,6 +211,49 @@ test("a new node starts from the vocabulary's defaults, not an empty object", ()
     JSON.stringify(h.flows.graph.nodes[0].params)
       === JSON.stringify(NODE_DEFS.capture.params),
     "a node with no params renders every field blank and compiles to nothing");
+});
+
+// ──────────────────────────────── a palette drop is a CREATION (spec 3.1)
+//
+// `NODE_DEFS[type].params` are the MISSING-KEY defaults: what a saved node is
+// read as when it lacks a key, so they keep the meaning each key had before
+// it existed. A node the operator drops is new and takes `createParams(type)`,
+// which overlays the "Created as" column (Revision 2, rulings 2 and 9; #190).
+// Both editors' palettes add through flowsAddNode: the classic FlowPalette
+// (through FlowEditor's onPick) and the #/next FlowPaletteRail.
+
+test("a palette-dropped TARGET counts accepted subs, has any angle and no coordinates", () => {
+  // MUTANT "params from def.params" (flowsSlice.ts flowsAddNode:
+  // `createParams(type)` -> `{ ...NODE_DEFS[type].params }`, the code before
+  // this slice). Observed (32 passed, 2 failed; this case and the every-type
+  // case below):
+  //   x a palette-dropped TARGET counts accepted subs, has any angle and no coordinates: counts: expected "Accepted subs", got "Every sub taken"; angle: expected "Any angle", got undefined; name: expected "", got "M31 - Andromeda"; ra: expected "", got "00h 42m 44s"; dec: expected "", got "+41° 16′ 09″"
+  const h = harness();
+  withGraph(h, ["target"]);
+  const p = h.flows.graph.nodes[0].params;
+  const want: Record<string, string | number> = {
+    counts: "Accepted subs", angle: "Any angle", rotation: -1, name: "", ra: "", dec: "",
+  };
+  const bad = Object.entries(want).filter(([k, v]) => p[k] !== v)
+    .map(([k, v]) => `${k}: expected ${JSON.stringify(v)}, got ${JSON.stringify(p[k])}`);
+  assert(bad.length === 0, bad.join("; "));
+});
+
+test("every palette type is created from createParams, the POOL's accepted subs included", () => {
+  // Every type the palette offers, dropped once. A type with no "Created as"
+  // column is created with its missing-key defaults, so the CAPTURE case
+  // above still holds; the two with one (TARGET and POOL) differ.
+  // Under "params from def.params", observed:
+  //   x every palette type is created from createParams, the POOL's accepted subs included: target, pool are not their createParams
+  const types = PALETTE_GROUPS.flatMap((g) => g.types);
+  const h = harness();
+  withGraph(h, types);
+  const off = h.flows.graph.nodes
+    .filter((n) => JSON.stringify(n.params) !== JSON.stringify(createParams(n.type)))
+    .map((n) => n.type);
+  assert(off.length === 0, `${off.join(", ")} are not their createParams`);
+  assert(h.flows.graph.nodes.find((n) => n.type === "pool")?.params.counts === "Accepted subs",
+    "a new POOL must count accepted subs, or a pool-only flow is the one new flow that counts rejects");
 });
 
 // ─────────────────────────────────────────────────────────────── tap-to-wire
@@ -610,6 +688,207 @@ test("tapping cycle.complete then target.arm is refused: graph unchanged, senten
   assert(last?.msg === "this flow loops back on itself at FILTER CYCLE -> TARGET; a flow lane runs once",
     `the refusal must reach the flow log in the server's words, got ${JSON.stringify(last?.msg)}`);
   assert(last.tone === "warn", `the refusal is a warning, got tone ${JSON.stringify(last.tone)}`);
+});
+
+// ─────────────────── the panel loop follows the lane's tail (spec 1.5 item 6)
+//
+// A mosaic rotates only through its loop wire, `<tail>.pass -> <target>.next`,
+// and the wire means what it says only while it leaves the LAST stage of the
+// block's panel lane: from an earlier stage it is M12, a danger, because the
+// stages after it would be shot once per panel with nothing to say when. So
+// appending a stage after the tail - the one wire an operator draws to add a
+// filter pass to every panel - would silently break a working mosaic. Spec
+// 1.4 names this as one of the moments the editor places the wire itself, and
+// 1.4 also says it is never ADDED as a side effect: the connect MOVES a loop
+// wire the lane already has, and only then.
+
+/** DUSK -> TARGET -> FILTER CYCLE, the cycle's pass wire looping back to the
+ *  TARGET, a CAPTURE LOOP and a SESSION REPORT waiting unwired. */
+function mosaicLane(opts: { rows?: number; cols?: number; loop?: boolean } = {}): FlowGraphRec {
+  const { rows = 3, cols = 2, loop = true } = opts;
+  return {
+    nodes: [
+      { id: "d", type: "dusk", x: 0, y: 0, params: {} },
+      { id: "t", type: "target", x: 250, y: 0, params: { name: "M31", rows, cols } },
+      { id: "cy", type: "cycle", x: 500, y: 0, params: {} },
+      { id: "ha", type: "capture", x: 750, y: 0, params: {} },
+      { id: "r", type: "report", x: 1000, y: 0, params: {} },
+    ],
+    edges: [
+      { id: "k1", from: "d", fromPort: "window", to: "t", toPort: "arm" },
+      { id: "k2", from: "t", fromPort: "target", to: "cy", toPort: "run" },
+      ...(loop ? [{ id: "loop", from: "cy", fromPort: "pass", to: "t", toPort: "next" }] : []),
+    ],
+  };
+}
+
+const wires = (g: FlowGraphRec) =>
+  g.edges.map((e) => `${e.from}.${e.fromPort}->${e.to}.${e.toPort}`).join(", ");
+const passWires = (g: FlowGraphRec) => g.edges.filter((e) => e.fromPort === "pass");
+
+test("appending a CAPTURE after a mosaic's last stage moves the loop wire to it, in the same write", () => {
+  // MUTANT "no move" (flowsSlice.ts flowsConnect: the new edges written as
+  // drawn, `carryLoopWire` not called). Observed (31 passed, 3 failed; this
+  // case, the chain case and the already-looped case below):
+  //   x appending a CAPTURE after a mosaic's last stage moves the loop wire to it, in the same write: the loop wire must leave the new last stage ha, wires now: d.window->t.arm, t.target->cy.run, cy.pass->t.next, cy.complete->ha.run
+  //
+  // MUTANT "move in a second write" (the drawn wire written, then the move as
+  // a set of its own). Observed (33 passed, 1 failed):
+  //   x appending a CAPTURE after a mosaic's last stage moves the loop wire to it, in the same write: one connect must be one graph write (one dirty/compile cycle), got 2
+  const h = harness(mosaicLane());
+  const before = h.flows.graph.edges;
+  h.a.flowsConnect("cy", "complete", "ha", "run");
+  const g = h.flows.graph;
+  const pass = passWires(g);
+  assert(pass.length === 1 && pass[0].from === "ha" && pass[0].to === "t" && pass[0].toPort === "next",
+    `the loop wire must leave the new last stage ha, wires now: ${wires(g)}`);
+  assert(pass[0].id === "loop",
+    "the loop wire is MOVED, keeping its id, so a selected loop wire stays selected");
+  assert(g.edges.some((e) => e.from === "cy" && e.fromPort === "complete" && e.to === "ha"),
+    "the wire the operator drew is there");
+  assert(g.edges.length === before.length + 1, `one wire drawn is one wire more, wires now: ${wires(g)}`);
+  assert(h.graphWrites === 1,
+    `one connect must be one graph write (one dirty/compile cycle), got ${h.graphWrites}`);
+});
+
+test("appending a drawn chain moves the loop wire to the chain's END, not the stage just wired", () => {
+  // The CAPTURE already feeds a second FILTER CYCLE; wiring the CAPTURE after
+  // the tail makes that cycle the lane's last stage, and 1.5 says the loop
+  // leaves the LAST stage.
+  //
+  // MUTANT "move to the stage just wired" (carryLoopWire: `to` instead of the
+  // lane's new tail). Observed (33 passed, 1 failed):
+  //   x appending a drawn chain moves the loop wire to the chain's END, not the stage just wired: the loop wire must leave cy2, wires now: d.window->t.arm, t.target->cy.run, ha.pass->t.next, ha.complete->cy2.run, cy.complete->ha.run
+  const g0 = mosaicLane();
+  g0.nodes.push({ id: "cy2", type: "cycle", x: 1000, y: 200, params: {} });
+  g0.edges.push({ id: "k3", from: "ha", fromPort: "complete", to: "cy2", toPort: "run" });
+  const h = harness(g0);
+  h.a.flowsConnect("cy", "complete", "ha", "run");
+  const pass = passWires(h.flows.graph);
+  assert(pass.length === 1 && pass[0].from === "cy2",
+    `the loop wire must leave cy2, wires now: ${wires(h.flows.graph)}`);
+});
+
+test("a new last stage that already carries its own loop wire keeps one loop wire, not two", () => {
+  // The operator drew the CAPTURE's pass wire into the TARGET first and then
+  // wired the CAPTURE after the cycle. Moving the cycle's wire as well would
+  // leave two loop wires into one `next` (the doctor's "one is enough").
+  //
+  // MUTANT "always move" (carryLoopWire: the already-looped check deleted).
+  // Observed (33 passed, 1 failed):
+  //   x a new last stage that already carries its own loop wire keeps one loop wire, not two: expected one loop wire from ha, wires now: d.window->t.arm, t.target->cy.run, ha.pass->t.next, ha.pass->t.next, cy.complete->ha.run
+  const g0 = mosaicLane();
+  g0.edges.push({ id: "own", from: "ha", fromPort: "pass", to: "t", toPort: "next" });
+  const h = harness(g0);
+  h.a.flowsConnect("cy", "complete", "ha", "run");
+  const pass = passWires(h.flows.graph);
+  assert(pass.length === 1 && pass[0].from === "ha",
+    `expected one loop wire from ha, wires now: ${wires(h.flows.graph)}`);
+});
+
+// CONTROLS: the connect adds the drawn wire and nothing else.
+
+test("control: a 1x1 block gains no wire and keeps its pass wire where it was", () => {
+  // One panel has nothing to rotate between (the doctor's M4 note), so there
+  // is no loop to carry.
+  //
+  // MUTANT "every block is a mosaic" (carryLoopWire: the isMultiPanel check
+  // deleted). Observed (33 passed, 1 failed):
+  //   x control: a 1x1 block gains no wire and keeps its pass wire where it was: a single target's pass wire moved, wires now: d.window->t.arm, t.target->cy.run, ha.pass->t.next, cy.complete->ha.run
+  const h = harness(mosaicLane({ rows: 1, cols: 1 }));
+  const before = h.flows.graph.edges;
+  h.a.flowsConnect("cy", "complete", "ha", "run");
+  const g = h.flows.graph;
+  assert(passWires(g).length === 1 && passWires(g)[0] === before[2],
+    `a single target's pass wire moved, wires now: ${wires(g)}`);
+  assert(g.edges.length === before.length + 1 && before.every((e) => g.edges.includes(e)),
+    `the connect must add the drawn wire and touch nothing else, wires now: ${wires(g)}`);
+});
+
+test("control: a mosaic lane with no loop wire gains none when a stage is appended", () => {
+  // Without the wire the block runs panel-first (spec 1.4, "when it is
+  // deleted"), and the operator's choice survives an append.
+  //
+  // MUTANT "add when missing" (carryLoopWire: a lane with no loop wire gets a
+  // new one from the new tail). Observed (33 passed, 1 failed):
+  //   x control: a mosaic lane with no loop wire gains none when a stage is appended: a loop wire appeared: d.window->t.arm, t.target->cy.run, cy.complete->ha.run, ha.pass->t.next
+  const h = harness(mosaicLane({ loop: false }));
+  const before = h.flows.graph.edges;
+  h.a.flowsConnect("cy", "complete", "ha", "run");
+  const g = h.flows.graph;
+  assert(passWires(g).length === 0, `a loop wire appeared: ${wires(g)}`);
+  assert(g.edges.length === before.length + 1, `wires now: ${wires(g)}`);
+});
+
+test("control: wiring the last stage into a REPORT leaves the loop wire on the last stage", () => {
+  // A REPORT is not a stage: the lane and its tail are unchanged, and this is
+  // the wire that says what runs next.
+  //
+  // MUTANT "move on any wire from the tail" (carryLoopWire: the loop wire
+  // re-pointed at `to`, whatever it is, whenever the tail gains a flow wire).
+  // Observed (31 passed, 3 failed; the chain case above and the AUTOFOCUS
+  // control below are the others):
+  //   x control: wiring the last stage into a REPORT leaves the loop wire on the last stage: wires now: d.window->t.arm, t.target->cy.run, r.pass->t.next, cy.complete->r.session
+  //
+  // MUTANT "no new-tail-is-old check" (carryLoopWire: `tail.id === from`
+  // deleted, so a connect that leaves the tail where it was is read as one
+  // that found it already looped, and drops its loop wire). Observed (33
+  // passed, 1 failed):
+  //   x control: wiring the last stage into a REPORT leaves the loop wire on the last stage: wires now: d.window->t.arm, t.target->cy.run, cy.complete->r.session
+  const h = harness(mosaicLane());
+  const loop = h.flows.graph.edges[2];
+  h.a.flowsConnect("cy", "complete", "r", "session");
+  const g = h.flows.graph;
+  assert(passWires(g).length === 1 && passWires(g)[0] === loop, `wires now: ${wires(g)}`);
+});
+
+test("control: re-drawing the wire into the last stage from its own parent leaves the loop wire alone", () => {
+  // The operator drags AUTOFOCUS "focused" onto FILTER CYCLE "run" a second
+  // time. The connect replaces that wire with an identical one, so the lane,
+  // its tail and its loop are what they were. Only a wire drawn out of the
+  // TAIL can append a stage, so nothing is carried.
+  //
+  // MUTANT "no from-is-tail check" (carryLoopWire: `if (laneTail(graph,
+  // owner.id)?.id !== from) return edges;` deleted). The lane's tail after the
+  // connect is the tail before it, which already carries the loop, so the
+  // "keeps its own wire" branch drops that wire as if it were an old tail's,
+  // and the mosaic silently goes panel-first. Observed (33 passed, 1 failed):
+  //   x control: re-drawing the wire into the last stage from its own parent leaves the loop wire alone: re-drawing a wire must leave the mosaic's loop where it was, wires now: d.window->t.arm, t.target->af.run, af.focused->cy.run
+  const g0 = mosaicLane();
+  g0.nodes.push({ id: "af", type: "autofocus", x: 375, y: 0, params: {} });
+  g0.edges[1] = { id: "k2", from: "t", fromPort: "target", to: "af", toPort: "run" };
+  g0.edges.push({ id: "k3", from: "af", fromPort: "focused", to: "cy", toPort: "run" });
+  const h = harness(g0);
+  const loop = g0.edges.find((e) => e.id === "loop");
+  h.a.flowsConnect("af", "focused", "cy", "run");
+  const g = h.flows.graph;
+  assert(passWires(g).length === 1 && passWires(g)[0] === loop,
+    `re-drawing a wire must leave the mosaic's loop where it was, wires now: ${wires(g)}`);
+  assert(g.edges.length === g0.edges.length,
+    `a re-drawn wire replaces itself, wires now: ${wires(g)}`);
+});
+
+test("control: appending an AUTOFOCUS after the last stage leaves the loop wire on the cycle", () => {
+  // AUTOFOCUS has no "pass done" output, so there is no wire it could give.
+  // The loop stays where it was (the doctor names that lane: M12), rather
+  // than become a wire from a port AUTOFOCUS lacks, which the server refuses
+  // on save ("autofocus has no output port 'pass'") and so blocks every save.
+  //
+  // MUTANT "no pass-port check" (carryLoopWire: the check that the new tail
+  // has a `pass` output deleted). Observed (33 passed, 1 failed):
+  //   x control: appending an AUTOFOCUS after the last stage leaves the loop wire on the cycle: a wire leaves a port its node does not have, wires now: d.window->t.arm, t.target->cy.run, af.pass->t.next, cy.complete->af.run
+  const g0 = mosaicLane();
+  g0.nodes.push({ id: "af", type: "autofocus", x: 750, y: 200, params: {} });
+  const h = harness(g0);
+  const loop = g0.edges[2];
+  h.a.flowsConnect("cy", "complete", "af", "run");
+  const g = h.flows.graph;
+  const byId = new Map(g.nodes.map((n) => [n.id, n]));
+  const orphan = g.edges.filter((e) =>
+    !NODE_DEFS[byId.get(e.from)!.type].outs.some((p) => p.id === e.fromPort));
+  assert(orphan.length === 0,
+    `a wire leaves a port its node does not have, wires now: ${wires(g)}`);
+  assert(passWires(g).length === 1 && passWires(g)[0] === loop, `wires now: ${wires(g)}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

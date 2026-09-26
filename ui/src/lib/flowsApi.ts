@@ -213,6 +213,19 @@ export interface FlowProgressPanel {
   steps: FlowProgressStep[];
 }
 
+/** A panel the operator skipped on a mosaic block (#189 S3). It owes nothing
+ *  while skipped and is in none of the block's sums, and it is NOT one of the
+ *  block's `panels`. `banked` is what the ledger still holds on it, counted by
+ *  the session's count mode, so re-enabling the panel brings those subs back.
+ *  Row and col are null only for an id that matches no cell of the grid. */
+export interface FlowProgressSkipped {
+  target_id: string;
+  name: string;
+  row: number | null;
+  col: number | null;
+  banked: number;
+}
+
 /** One canvas node: `node_id` is the node's id, which is how a card finds its
  *  own block. */
 export interface FlowProgressBlock {
@@ -222,7 +235,16 @@ export interface FlowProgressBlock {
   banked: number;
   owed: number;
   total: number;
+  /** A mosaic's panels are the ones the plan SHOOTS, in the plan's order, each
+   *  at its own 0-based row and col; a skipped panel is listed in `skipped`
+   *  instead (server `progress._mosaic`). */
   panels: FlowProgressPanel[];
+  /** Present only on a MOSAIC block, a TARGET with a grid (#189 S3): the grid
+   *  as the operator drew it, skipped panels included. Its presence is how a
+   *  reader tells a mosaic from a single target, whose block never has it. */
+  grid?: { rows: number; cols: number };
+  /** Present only on a mosaic block, in grid order. */
+  skipped?: FlowProgressSkipped[];
 }
 
 export interface FlowProgressSession {
@@ -244,6 +266,88 @@ export interface FlowProgress {
    *  recipe is a new step id), and how many step ids they sit on. They fill
    *  no quota, so they are in NO block's `banked`. */
   orphaned: { frames: number; steps: number };
+}
+
+// ------------------------------------------ GET /api/flows/{id}/tonight: mosaic
+// The Tonight answer is `Record<string, unknown>` at the store boundary on
+// purpose (flowsSlice: it is large and only the Tonight surfaces read it), so
+// these types describe the one key S3 added to a target row rather than the
+// whole answer. Server `flows/tonight.py::_mosaic_night`, whose docstring is
+// the contract. Every altitude here is f(site), which is why the route is
+// `CAP_VIEW_SITE_DERIVED` and why nothing below may reach a surface a viewer
+// can open.
+
+/** One panel of a mosaic's band: 1-based "row-col" as the Plan and the log
+ *  name it ("2-1"), 0-based row and col, and its PEAK altitude tonight in
+ *  degrees (`framing._stamp_transit_alt`, sampled on the panel's centre). */
+export interface TonightBandPanel {
+  panel: string;
+  row: number;
+  col: number;
+  transit_alt: number;
+}
+
+/** The lowest and the highest peak among a mosaic's answered panels, first in
+ *  grid order on a tie: the spread the block's one centre curve cannot show. */
+export interface TonightMosaicBand {
+  worst: TonightBandPanel;
+  best: TonightBandPanel;
+}
+
+/** A multi-panel TARGET's `mosaic` key on its Tonight row. Absent from a
+ *  single target's row and a pool member's. `band` is null when no panel was
+ *  answered, and `reason` then says why no panel could be placed at all. */
+export interface TonightMosaic {
+  rows: number;
+  cols: number;
+  /** The grid less its skips. */
+  live: number;
+  /** "r-c" labels of the skipped panels, which are not stamped. */
+  skipped: string[];
+  panels: {
+    panel: string; row: number; col: number;
+    transit_alt?: number; transit_alt_error?: string;
+  }[];
+  band: TonightMosaicBand | null;
+  reason?: string;
+}
+
+/** A band edge, or null unless every field is what the contract says. */
+function bandPanel(v: unknown): TonightBandPanel | null {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const p = v as Record<string, unknown>;
+  const n = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+  if (typeof p.panel !== "string" || p.panel === "") return null;
+  if (!n(p.row) || !n(p.col) || !n(p.transit_alt)) return null;
+  return { panel: p.panel, row: p.row, col: p.col, transit_alt: p.transit_alt };
+}
+
+/** The band a Tonight target row's `mosaic` value carries, or null.
+ *
+ *  THE ONE READING BOTH TIMELINES SHARE, for the same reason `unreadableReason`
+ *  is one: the classic panel and the #/next sheet each read the Tonight answer
+ *  with a reader of their own, and a second reading of the band is how one
+ *  timeline comes to draw a spread the other does not.
+ *
+ *  THE SERVER'S REDUCTION, NOT A SECOND ONE. `tonight.py::_band` already picks
+ *  the worst and the best panel the way `mosaicNightSummary` does (the lowest
+ *  and highest answered peak), so this reads its answer and re-derives
+ *  nothing from `panels`: a copy of the reduction here would be a second rule
+ *  for which panel limits the night.
+ *
+ *  Total: a row with no `mosaic` (a single target, a pool member), a band the
+ *  server sent null (no panel answered), or a band with any field missing or
+ *  not a finite number is "no band", never a strip drawn at 0 degrees. So is
+ *  a band whose worst edge peaks above its best, which no answer of `_band`
+ *  can be: a timeline cannot draw an upside-down spread truthfully. */
+export function mosaicBand(mosaic: unknown): TonightMosaicBand | null {
+  if (mosaic === null || typeof mosaic !== "object" || Array.isArray(mosaic)) return null;
+  const band = (mosaic as Record<string, unknown>).band;
+  if (band === null || typeof band !== "object" || Array.isArray(band)) return null;
+  const worst = bandPanel((band as Record<string, unknown>).worst);
+  const best = bandPanel((band as Record<string, unknown>).best);
+  if (!worst || !best || worst.transit_alt > best.transit_alt) return null;
+  return { worst, best };
 }
 
 // Spelled out, not composed. `${FLOWS_BASE}/folders` reads the same to a human

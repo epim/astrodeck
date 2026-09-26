@@ -26,9 +26,11 @@ unrunnable night look runnable.
 """
 from __future__ import annotations
 
+import re
+
 from ..devices.base import DomePolicy
-from .models import FlowGraph, FlowNode
-from .nodes import parse_cycle_plan, port_kind
+from .models import FlowEdge, FlowGraph, FlowNode
+from .nodes import NODE_DEFS, parse_cycle_plan, port_kind, target_angle
 
 #: Trigger vocabulary, and what the engine can now do with it.
 #:
@@ -129,6 +131,630 @@ def _num(v, default=0):
         return default
 
 
+# ------------------------------------------------------------ the panel lane
+#
+# Spec 2026-09-23 (flows mosaic) 1.5 and D2, #151, #189. A mosaic is one TARGET
+# block whose stages are shot on every panel, so the compile has to know which
+# stages are the block's. The canvas-order rule (every stage goes to every
+# target seen earlier) cannot say: a CAPTURE drawn after a second TARGET would
+# be shot on all six M31 panels too. These functions answer it from the wires,
+# and they are pure, because compile, to_plan and the doctor (M3, M4, M12, M13)
+# all ask the same question and must get one answer.
+
+#: LANE NODES (spec 1.5 item 1): the stages that happen TO a panel. AUTOFOCUS
+#: and GUIDE are in because their effect is re-established on every hop (5.6).
+#: Legacy SLEW is in because every saved flow and every Example still draws it
+#: between the TARGET and its stages (1.7); if it ended the lane, all of those
+#: stages would belong to no target. Every other node with a flow port (DOME,
+#: DUSK FLATS, REPORT, DUSK, a TARGET or a POOL) ends a lane.
+LANE_TYPES: frozenset[str] = frozenset(
+    {"autofocus", "guide", "slew", "capture", "cycle"})
+
+#: The blocks a lane hangs off.
+OWNER_TYPES: frozenset[str] = frozenset({"target", "pool"})
+
+#: The loop wire's two ends (D2): ``<tail>.pass -> <block>.next``. MATCHED AS
+#: STRINGS, not through ``port_kind``, so the lane reads the same graph whether
+#: or not the node vocabulary declares the two ports yet, and a wire the
+#: operator drew is never ignored because of which build is reading it.
+PASS_PORT = "pass"
+NEXT_PORT = "next"
+
+
+def _grid_dim(value) -> int:
+    """One side of a TARGET's grid, read defensively (spec 3.1): missing means
+    1, the meaning every flow saved before mosaics has. Anything that is not a
+    whole number of at least 1 (text, 0, a negative, 1.9, NaN, infinity) also
+    reads as 1, so a hand-edited file cannot flip a whole graph's scoping rule
+    with a string."""
+    v = _num(value, 1)
+    return v if isinstance(v, int) and v >= 1 else 1
+
+
+def is_multi_panel(node: FlowNode) -> bool:
+    """True for a TARGET block with more than one panel (rows x cols > 1).
+
+    A POOL has no grid, so rows and cols on one (only a hand-edited file could
+    carry them) never make it a mosaic."""
+    if node.type != "target":
+        return False
+    params = node.params or {}
+    return _grid_dim(params.get("rows")) * _grid_dim(params.get("cols")) > 1
+
+
+def _flow_wire(graph_nodes: dict[str, FlowNode], e: FlowEdge
+               ) -> tuple[FlowNode, FlowNode] | None:
+    """The two ends of ``e`` when it is a FLOW wire at both ends, else None.
+
+    Both ends, not just the source as ``flow_order`` reads it: a wire from a
+    flow output into an event input is refused by validation, and treating it
+    as a step of the cursor would make the TARGET it enters (through ``next``)
+    the child of its own tail."""
+    src, dst = graph_nodes.get(e.from_), graph_nodes.get(e.to)
+    if src is None or dst is None:
+        return None
+    if (port_kind(src.type, e.fromPort, "out") != "flow"
+            or port_kind(dst.type, e.toPort, "in") != "flow"):
+        return None
+    return src, dst
+
+
+def _lane_index(graph: FlowGraph
+                ) -> tuple[dict[str, FlowNode], dict[str, list[FlowNode]]]:
+    """``(nodes by id, flow parents by child id)``, built once per question.
+
+    Parents are deduplicated by node: the same wire drawn twice from one
+    parent is still one chain. A duplicate node id keeps its first node, as
+    ``FlowGraph.node`` does."""
+    by_id: dict[str, FlowNode] = {}
+    for n in graph.nodes:
+        by_id.setdefault(n.id, n)
+    parents: dict[str, list[FlowNode]] = {}
+    for e in graph.edges:
+        ends = _flow_wire(by_id, e)
+        if ends is None:
+            continue
+        src, dst = ends
+        ups = parents.setdefault(dst.id, [])
+        if all(p.id != src.id for p in ups):
+            ups.append(src)
+    return by_id, parents
+
+
+def _walk_to_owner(node_id: str, by_id: dict[str, FlowNode],
+                   parents: dict[str, list[FlowNode]]
+                   ) -> tuple[FlowNode | None, int]:
+    """``owner_of``'s walk, plus how many wires it climbed to get there.
+
+    THE SEEN-SET IS WHAT MAKES THIS RETURN. Two stages feeding each other with
+    nothing feeding them each have exactly one flow parent, so a walk with no
+    memory goes round them for ever. Validation refuses such a loop at save
+    and /run, but the compile routes compile half-built graphs, so this walk
+    meets whatever an editor holds."""
+    node = by_id.get(node_id)
+    if node is None or node.type not in LANE_TYPES:
+        return None, 0
+    seen = {node.id}
+    cur, depth = node, 0
+    while True:
+        ups = parents.get(cur.id, [])
+        if len(ups) != 1:
+            # No parent: the chain ran out. Two: two answers, and choosing one
+            # would hand the stage to a block by edge order. Only a graph built
+            # outside the editor has two (validation refuses it).
+            return None, 0
+        up = ups[0]
+        depth += 1
+        if up.type in OWNER_TYPES:
+            return up, depth
+        if up.type not in LANE_TYPES or up.id in seen:
+            return None, 0
+        seen.add(up.id)
+        cur = up
+
+
+def owner_of(graph: FlowGraph, node_id: str) -> FlowNode | None:
+    """The TARGET or POOL a lane node belongs to, or None (spec 1.5 item 3).
+
+    A CHAIN WALK: the node's single flow parent, then that parent's, through
+    lane nodes only, to the first TARGET or POOL. It is None when the walk
+    reaches any other node type (TARGET -> CYCLE -> DOME -> CAPTURE: DOME ends
+    the lane, so the CAPTURE is nobody's, which is M13), runs out of parents,
+    or meets two. A node that is not itself a lane node (a DOME, a REPORT, a
+    TARGET) is in no lane and is owned by nobody.
+
+    This is NOT the doctor's ``_flow_upstream_types``. That collects every
+    type upstream through any node, which answers "did the cursor pass a
+    guider?" but cannot name a nearest owner: it would find the TARGET above
+    the DOME and hand the CAPTURE to all six panels."""
+    return _walk_to_owner(node_id, *_lane_index(graph))[0]
+
+
+def _lane_members(graph: FlowGraph, owner: FlowNode | str | None
+                  ) -> list[tuple[int, FlowNode]]:
+    """``(depth, node)`` for every lane node ``owner_of`` gives to ``owner``,
+    nearest first, then canvas x, y and id.
+
+    DEFINED BY OWNERSHIP, not by a second forward walk. The spec defines the
+    lane as the lane nodes reachable from the block through lane nodes; with
+    at most one flow input per node that is the same set. Where a graph built
+    outside the editor breaks that (two wires into one stage), a forward walk
+    would put a stage in the lane that ``owner_of`` gives to nobody, and the
+    lane the doctor checks would not be the lane the compile scopes."""
+    oid = owner if isinstance(owner, str) else getattr(owner, "id", None)
+    if oid is None:
+        return []
+    by_id, parents = _lane_index(graph)
+    out: list[tuple[int, FlowNode]] = []
+    for n in by_id.values():
+        up, depth = _walk_to_owner(n.id, by_id, parents)
+        if up is not None and up.id == oid:
+            out.append((depth, n))
+    out.sort(key=lambda dn: (dn[0], dn[1].x, dn[1].y, dn[1].id))
+    return out
+
+
+def panel_lane(graph: FlowGraph, owner: FlowNode | str | None
+               ) -> list[FlowNode]:
+    """The block's panel lane (spec 1.5 item 2): every lane node it owns,
+    nearest first. For an unbranched lane that is chain order."""
+    return [n for _, n in _lane_members(graph, owner)]
+
+
+def lane_branched(graph: FlowGraph, owner: FlowNode | str | None) -> bool:
+    """True when the lane is not one chain: the block, or a stage in it, feeds
+    two lane nodes (spec 1.5 item 4, M12). Every member has one parent and
+    that parent is the block or another member, so the lane is a tree rooted
+    at the block, and a tree is a chain exactly when no two members sit at the
+    same distance from its root. A sibling that is not a lane node (a DOME off
+    the TARGET) is outside the lane and branches nothing."""
+    depths = [d for d, _ in _lane_members(graph, owner)]
+    return len(depths) != len(set(depths))
+
+
+def lane_tail(graph: FlowGraph, owner: FlowNode | str | None
+              ) -> FlowNode | None:
+    """The lane's last stage, the one the loop wire must leave (spec 1.5 items
+    4-5): the member whose output feeds no lane node. None for an empty lane,
+    and None for a branched one, where "the last stage" has two answers and
+    choosing one would put the loop on a stage the operator did not mean.
+
+    Any lane node can be the tail, AUTOFOCUS and GUIDE included; only CAPTURE
+    LOOP and FILTER CYCLE have a ``pass`` output, so a lane ending on one of
+    the others has no loop wire to give, which the doctor names."""
+    members = _lane_members(graph, owner)
+    if not members:
+        return None
+    depths = [d for d, _ in members]
+    if len(depths) != len(set(depths)):
+        return None
+    return members[-1][1]
+
+
+def lane_next(graph: FlowGraph, owner: FlowNode | str | None
+              ) -> list[FlowNode]:
+    """What runs after the block (spec 1.5 item 6, 1.6): the nodes the tail's
+    flow output feeds, in canvas order. Never a stage by construction, since a
+    lane node wired after the tail is in the lane and is the tail instead.
+    Empty when there is no tail."""
+    tail = lane_tail(graph, owner)
+    if tail is None:
+        return []
+    by_id, _ = _lane_index(graph)
+    out: list[FlowNode] = []
+    for e in graph.edges:
+        if e.from_ != tail.id:
+            continue
+        ends = _flow_wire(by_id, e)
+        if ends is not None and all(n.id != ends[1].id for n in out):
+            out.append(ends[1])
+    return sorted(out, key=lambda n: (n.x, n.y, n.id))
+
+
+def loop_wires(graph: FlowGraph, owner: FlowNode | str | None
+               ) -> list[FlowEdge]:
+    """The loop wires of a block (D2, spec 1.4 item 1): ``pass`` event wires
+    from its lane's TAIL into its own ``next``.
+
+    A pass wire from an earlier stage of the lane is not one (M12: the stages
+    after it would be shot once per panel with nothing to say when), and nor
+    is one from a stage in another block's lane (M4). Structural only: whether
+    the block has more than one panel to rotate between is the caller's
+    question (a loop on a 1x1 block is M4's note)."""
+    oid = owner if isinstance(owner, str) else getattr(owner, "id", None)
+    tail = lane_tail(graph, owner)
+    if oid is None or tail is None:
+        return []
+    return [e for e in graph.edges
+            if e.from_ == tail.id and e.fromPort == PASS_PORT
+            and e.to == oid and e.toPort == NEXT_PORT]
+
+
+def _stage_label(node: FlowNode) -> str:
+    """How a scope note names a stage: its card label, and a CAPTURE LOOP's
+    filter, which is what tells two of them apart on a canvas."""
+    if node.type == "capture":
+        filt = str(node.params.get("filter") or "").strip()
+        return f"CAPTURE LOOP {filt}" if filt else "CAPTURE LOOP"
+    d = NODE_DEFS.get(node.type)
+    return node.type if d is None else d.label
+
+
+def _entry_names(entries: list[dict]) -> str:
+    names: list[str] = []
+    for t in entries:
+        name = str(t.get("name") or "").strip() or "an unnamed target"
+        if name not in names:
+            names.append(name)
+    return ", ".join(names)
+
+
+def _scope_note(stage: FlowNode, owner: FlowNode | None, mine: list[dict],
+                others: list[dict]) -> dict:
+    """The compile's note for a stage the two rules assign differently (spec
+    1.5): which block the wires give it to, and which targets canvas order
+    would have added. A stage the wires give to nobody compiles to nothing,
+    which canvas order never did, so that one is a warn."""
+    stage_name = _stage_label(stage)
+    was = _entry_names(others)
+    if owner is None or not mine:
+        return {"node_id": stage.id, "level": "warn", "text": (
+            f"{stage_name} belongs to no TARGET, so it shoots nothing: its "
+            f"wires do not lead back to a TARGET or POOL through lane stages "
+            f"alone. By canvas order it would have been shot on {was}. Give "
+            f"it a TARGET.")}
+    block = (f"TARGET {_entry_names(mine)}" if owner.type == "target"
+             else f"{NODE_DEFS['pool'].label} ({_entry_names(mine)})")
+    return {"node_id": stage.id, "level": "note", "text": (
+        f"{stage_name} is shot on {block} only: in a flow with a mosaic, a "
+        f"stage belongs to the block its wires lead back to. By canvas order "
+        f"it would also have been shot on {was}.")}
+
+
+# ------------------------------------------------- the block's compile entry
+#
+# Spec 3.2, #189 (U-09), #170, #151. A TARGET node still emits ONE entry, so
+# the PLAN tab shows one block as one mosaic, and `to_plan` expands it into
+# panels and a group (spec 3.3). Everything below reads a node's params and
+# nothing else: no devices, no config, no clock.
+
+#: TARGET's `angle` choices (``nodes.TARGET_ANGLES``) as the compile spells
+#: them. Keyed on the stored words, which are never reworded.
+ANGLE_CODES: dict[str, str] = {"Any angle": "any", "Rotate to PA": "rotate",
+                               "Camera fixed at PA": "fixed"}
+
+#: The `counts` value that asks for accepted subs (``nodes.COUNT_MODES[1]``).
+ACCEPTED_SUBS = "Accepted subs"
+
+#: The `ifNotCentred` choice that lets a mosaic panel shoot off its tile.
+SHOOT_ANYWAY = "Shoot anyway"
+
+#: One entry of a TARGET's `skip` text: "<row>-<col>", both 1-based.
+_SKIP_RE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+
+
+def angle_code(params: dict) -> str:
+    """``"any"``, ``"rotate"`` or ``"fixed"`` for a TARGET's params (spec 3.2).
+
+    The stored `angle` when it is one this build offers, otherwise the one
+    ``nodes.target_angle`` derives from `rotation`: a negative rotation is any
+    angle, anything else a PA to rotate to. DERIVED, never defaulted, so a
+    block saved before `angle` existed keeps commanding the PA it always
+    commanded (ruling 9: the M31 Example stays at Rotate to PA 23.4). A value
+    this build does not know (a newer build's fourth choice, a hand edit) is
+    read the same way, as the block's rotation alone says it: guessing any of
+    the three from unknown words would be inventing."""
+    code = ANGLE_CODES.get(str(target_angle(params)).strip())
+    if code is None:
+        code = ANGLE_CODES[target_angle({"rotation": (params or {})
+                                         .get("rotation")})]
+    return code
+
+
+def count_mode_of(params: dict) -> str:
+    """``plan.count_mode``'s word for a TARGET's or POOL's `counts` (Revision
+    2 ruling 2): "accepted" for "Accepted subs", "attempts" for anything else.
+
+    Anything else, and not only "Every sub taken", because that is the
+    MISSING-KEY meaning (spec 3.1): a block saved before the key existed
+    counted every sub it took, and so does one whose value this build cannot
+    read. The save rewrites the key to "Accepted subs" (ruling 2); the
+    compile never does, so a flow nobody has saved compiles as it ran."""
+    value = str((params or {}).get("counts") or "").strip().lower()
+    return "accepted" if value == ACCEPTED_SUBS.lower() else "attempts"
+
+
+def parse_skip(text, rows: int, cols: int) -> tuple[list[list[int]], list[str]]:
+    """``(skip, unread)`` for a TARGET's `skip` text, e.g. ``"3-1, 3-2"``.
+
+    ``skip`` is ``[[row, col], ...]``, 1-based as the operator writes them,
+    each panel once, in grid order. ``unread`` holds every entry that names
+    no panel of this grid (not "r-c", a zero, a row past the last), so the
+    compile can say so: a skip that silently skipped nothing would shoot a
+    panel the operator took out, and one that guessed would take out a panel
+    they meant to keep. Commas and semicolons both separate entries."""
+    skip: set[tuple[int, int]] = set()
+    unread: list[str] = []
+    for chunk in re.split(r"[,;]", str(text or "")):
+        token = chunk.strip()
+        if not token:
+            continue
+        m = _SKIP_RE.match(token)
+        if m is None:
+            unread.append(token)
+            continue
+        r, c = int(m.group(1)), int(m.group(2))
+        if not (1 <= r <= rows and 1 <= c <= cols):
+            unread.append(token)
+            continue
+        skip.add((r, c))
+    return [[r, c] for r, c in sorted(skip)], unread
+
+
+def _grid_of(node: FlowNode) -> tuple[int, int]:
+    params = node.params or {}
+    return _grid_dim(params.get("rows")), _grid_dim(params.get("cols"))
+
+
+def _block_name(node: FlowNode) -> str:
+    """How a sentence names a block: TARGET and its name, or its members for
+    a POOL, which has no name of its own."""
+    if node.type == "pool":
+        return f"{NODE_DEFS['pool'].label} ({node.params.get('members') or ''})"
+    name = str((node.params or {}).get("name") or "").strip()
+    return f"TARGET {name}" if name else "an unnamed TARGET"
+
+
+def _loop_edge_keys(graph: FlowGraph) -> set[tuple[str, str, str, str]]:
+    """The LEGAL loop wires of the graph (spec 1.4 item 1): a pass wire from
+    the tail of a MULTI-PANEL block's lane into that block's `next`. Keyed by
+    their four ends, so two copies of one wire (the doctor's "one is enough")
+    are both the loop.
+
+    A loop wire into a 1x1 block is not one: there is nothing to rotate
+    between (M4's note), so it is left to the instructions pass, where
+    ``to_plan`` reports it as a rule that will not run, like any other pass
+    wire that means nothing."""
+    keys: set[tuple[str, str, str, str]] = set()
+    for n in graph.nodes:
+        if is_multi_panel(n):
+            for e in loop_wires(graph, n):
+                keys.add((e.from_, e.fromPort, e.to, e.toPort))
+    return keys
+
+
+def _followers(graph: FlowGraph) -> dict[str, str]:
+    """``{node id: mosaic node id}`` for every TARGET or POOL a multi-panel
+    block's tail feeds, directly or further down the flow lane (spec 1.6:
+    "targets reachable from it are followers of the group").
+
+    A target downstream of two mosaics follows the NEAREST, the one fewer
+    flow wires away: A -> B -> C makes C follow B and B follow A, which is
+    the order the gates open in. A block with no stage is its own tail, so
+    what it feeds follows it; a branched lane has no tail and so no
+    followers (M12 refuses the graph). Empty for a graph with no mosaic."""
+    blocks = sorted((n for n in graph.nodes if is_multi_panel(n)),
+                    key=lambda n: (n.x, n.y, n.id))
+    if not blocks:
+        return {}
+    by_id, _parents = _lane_index(graph)
+    children: dict[str, list[FlowNode]] = {}
+    for e in graph.edges:
+        ends = _flow_wire(by_id, e)
+        if ends is not None:
+            kids = children.setdefault(ends[0].id, [])
+            if all(k.id != ends[1].id for k in kids):
+                kids.append(ends[1])
+    best: dict[str, tuple[int, int, str]] = {}
+    for rank, block in enumerate(blocks):
+        if panel_lane(graph, block):
+            starts = lane_next(graph, block)
+        elif lane_branched(graph, block):
+            starts = []
+        else:
+            starts = list(children.get(block.id, []))
+        # Breadth first, with a seen-set: the compile routes compile a graph
+        # validation would refuse, loops included.
+        seen: set[str] = {block.id}
+        frontier = [(n, 0) for n in starts]
+        while frontier:
+            node, depth = frontier.pop(0)
+            if node.id in seen:
+                continue
+            seen.add(node.id)
+            if node.type in OWNER_TYPES:
+                was = best.get(node.id)
+                if was is None or (depth, rank) < was[:2]:
+                    best[node.id] = (depth, rank, block.id)
+            frontier.extend((k, depth + 1) for k in children.get(node.id, []))
+    return {nid: held[2] for nid, held in best.items()}
+
+
+def lane_refusals(graph: FlowGraph) -> list[dict]:
+    """The wire shapes a graph with a mosaic cannot run, as ``{code, node_id,
+    text}`` (spec 1.5, 1.8). ``to_plan`` raises ``GraphNotRunnable`` on any
+    of them, and the doctor's M12 and M13 are the same findings:
+
+    * M12, a multi-panel block's lane BRANCHES (the block or a stage feeds
+      two stages): "the last stage" has two answers and the panels no single
+      order;
+    * M12, a pass wire into the block's `next` leaves a stage of its lane
+      that is NOT THE TAIL: the stages after it would be shot once per panel
+      with nothing to say when;
+    * M13, a CAPTURE LOOP or FILTER CYCLE BELONGS TO NO BLOCK (``owner_of``
+      is None) in a graph with a mosaic: the wire rule gives it to nobody,
+      so it would shoot nothing, where canvas order would have put it on
+      every panel of the mosaic above it.
+
+    Empty for a graph with no multi-panel block: none of the three can
+    happen under the canvas-order rule, which that graph keeps (spec 1.5).
+
+    Read through the missing-key defaults, as ``compile_plan`` reads the
+    graph, so a sentence names a stage as its card shows it (a CAPTURE LOOP
+    with no stored filter is the card's "L")."""
+    graph = graph.with_defaults()
+    blocks = sorted((n for n in graph.nodes if is_multi_panel(n)),
+                    key=lambda n: (n.x, n.y, n.id))
+    if not blocks:
+        return []
+    by_id, parents = _lane_index(graph)
+    out: list[dict] = []
+    for block in blocks:
+        name = _block_name(block)
+        if lane_branched(graph, block):
+            members = _lane_members(graph, block)
+            depths = [d for d, _ in members]
+            fork = min(d for d in depths if depths.count(d) > 1)
+            both = [_stage_label(n) for d, n in members if d == fork]
+            out.append({"code": "M12", "node_id": block.id, "text": (
+                f"the {name} panel lane branches: {' and '.join(both)} both "
+                f"follow the same stage, so no stage is the last one and the "
+                f"panels have no single order. Make the lane one chain, or "
+                f"give the second branch its own TARGET.")})
+            continue
+        lane = panel_lane(graph, block)
+        tail = lane[-1] if lane else None
+        seen: set[str] = set()
+        for e in graph.edges:
+            if (e.fromPort != PASS_PORT or e.to != block.id
+                    or e.toPort != NEXT_PORT or tail is None
+                    or e.from_ == tail.id or e.from_ in seen):
+                continue
+            at = next((i for i, n in enumerate(lane) if n.id == e.from_), None)
+            if at is None:
+                continue        # another block's stage: M4's warning, not this
+            seen.add(e.from_)
+            after = lane[at + 1:]
+            later = " and ".join(_stage_label(n) for n in after)
+            one = len(after) == 1
+            out.append({"code": "M12", "node_id": e.from_, "text": (
+                f"the loop wire starts at {_stage_label(lane[at])}, but "
+                f"{later} {'comes' if one else 'come'} after it in the "
+                f"{name} panel lane. Start the loop wire at "
+                f"{_stage_label(tail)} to shoot every stage on every panel, "
+                f"or give {later} a TARGET of {'its' if one else 'their'} "
+                f"own.")})
+    for n in sorted(graph.nodes, key=lambda n: (n.x, n.y, n.id)):
+        if n.type not in ("capture", "cycle"):
+            continue
+        if _walk_to_owner(n.id, by_id, parents)[0] is not None:
+            continue
+        out.append({"code": "M13", "node_id": n.id,
+                    "text": _no_owner_text(n, by_id, parents)})
+    return out
+
+
+def _no_owner_text(stage: FlowNode, by_id: dict[str, FlowNode],
+                   parents: dict[str, list[FlowNode]]) -> str:
+    """M13's sentence, naming what cut the stage off: the first node up its
+    chain that ends a lane, or that nothing leads into it at all."""
+    label = _stage_label(stage)
+    cur, seen = stage, {stage.id}
+    while True:
+        ups = parents.get(cur.id, [])
+        if not ups:
+            why = "nothing leads into it"
+            break
+        if len(ups) > 1:
+            why = "two wires lead into it, so it has no single lane"
+            break
+        up = ups[0]
+        if up.type not in LANE_TYPES:
+            d = NODE_DEFS.get(up.type)
+            why = f"{up.type if d is None else d.label} ends the lane above it"
+            break
+        if up.id in seen:
+            why = "its lane loops back on itself"
+            break
+        seen.add(up.id)
+        cur = up
+    return (f"{label} belongs to no TARGET: {why}. In a flow with a mosaic a "
+            f"stage is shot only on the block its wires lead back to, so it "
+            f"would shoot nothing. Give it a TARGET.")
+
+
+def _target_entry(n: FlowNode, graph: FlowGraph, loop_keys: set,
+                  follows: str | None, notes: list[dict]) -> dict:
+    """One TARGET node's compile entry (spec 3.2), steps still empty.
+
+    ``mosaic`` is None for a block of one panel and the grid otherwise, so a
+    single target reads as one: its centring and count mode are the whole of
+    what S3 adds to it. ``loop`` is True only for a multi-panel block with a
+    legal loop wire, the wire the instructions pass then leaves out."""
+    params = n.params or {}
+    rows, cols = _grid_of(n)
+    entry: dict = {
+        "name": params.get("name"),
+        "ra": params.get("ra"),
+        "dec": params.get("dec"),
+        # DEFAULT -1, NOT 0. -1 is "no angle constraint" (see to_plan's
+        # rotation block); 0 is north-up, a real position angle somebody
+        # may well want. An unparseable or empty field must fall to "no
+        # constraint" — falling to 0 would silently command the rotator to
+        # PA 0 on every target of every flow whose angle box was left blank.
+        "rotation_deg": _num(params.get("rotation"), -1),
+        # THE BLOCK THIS CAME FROM (#189 S1, spec 3.2). `to_plan` keys the
+        # target's deterministic id on it, so a flow compiled on night two
+        # names the targets night one banked frames against. The canvas node
+        # id is the one thing about a block that an edit never changes; the
+        # name and the coordinates both can.
+        "node_id": n.id,
+        "angle": angle_code(params),
+        "mosaic": None,
+        "loop": False,
+        # THE CENTRING THE RUN WILL USE (#170). A number that is not one is
+        # None, which `to_plan` leaves unset, so the run centres to the
+        # hub's own 0.02 deg and 3 attempts: exactly the missing-key values,
+        # 1.2 arcmin and 3, and never a number the compile made up.
+        "centre": {"tol_arcmin": _num(params.get("centerTol"), None),
+                   "attempts": _num(params.get("centerTries"), None)},
+        "count_mode": count_mode_of(params),
+    }
+    if rows * cols > 1:
+        skip, unread = parse_skip(params.get("skip"), rows, cols)
+        if unread:
+            notes.append({"node_id": n.id, "level": "warn", "text": (
+                f"{_block_name(n)}: skip {', '.join(repr(u) for u in unread)} "
+                f"names no panel of this {rows}x{cols} grid, so nothing is "
+                f"skipped for it. A panel is written row-column, from 1-1 to "
+                f"{rows}-{cols}.")})
+        entry["mosaic"] = {
+            "rows": rows, "cols": cols,
+            # A percent, as the block holds it; `to_plan` divides by 100.
+            # None for a value that is not a number: `to_plan` refuses it,
+            # where a guessed overlap would tile panels nobody framed.
+            "overlap": _num(params.get("overlap"), None),
+            "fov_x": _num(params.get("fovX"), None),
+            "fov_y": _num(params.get("fovY"), None),
+            "fov_from": str(params.get("fovFrom") or ""),
+            "skip": skip,
+            # The operator's words; `to_plan` maps them onto the engine's.
+            "order": str(params.get("order") or ""),
+            "passes": _num(params.get("passes"), None),
+            "visit_min": _num(params.get("minVisit"), None),
+            # "Auto" and "Skip it this pass" both keep a panel on its tile:
+            # Auto means skip for a mosaic panel (spec 2.4 CENTRING).
+            "require_centred": (str(params.get("ifNotCentred") or "").strip()
+                                != SHOOT_ANYWAY),
+            # ONE ANSWER PER FLOW (Revision 2 ruling 1), copied onto every
+            # block so the engine reads it per group, as it did before.
+            "when_waiting": graph.setting("whenWaiting"),
+            "frame_anchor": str(params.get("frameAnchor") or ""),
+        }
+        entry["loop"] = any(k[2] == n.id for k in loop_keys)
+    else:
+        # A 1x1 block's anchor rides on the entry (spec 3.3), so a nudge the
+        # save carried keeps its id for a single target as for a mosaic.
+        entry["frame_anchor"] = str(params.get("frameAnchor") or "")
+    if follows is not None:
+        # Spec 3.2 lacks this key (S3-SPEC3 records it): the multi-panel
+        # block this one follows, whose `when_waiting` decides whether it
+        # waits for the group (spec 1.6).
+        entry["follows"] = follows
+    entry["steps"] = []
+    return entry
+
+
 def _trigger_for(node: FlowNode, from_port: str) -> str:
     """The `when` string for an event edge leaving ``node``.
 
@@ -155,6 +781,14 @@ def _trigger_for(node: FlowNode, from_port: str) -> str:
     if node.type == "safety":
         return "on_unsafe"
     if node.type in ("capture", "cycle"):
+        if from_port == PASS_PORT:
+            # THE LOOP WIRE'S TRIGGER (spec 1.3 item 1). "Pass done" is
+            # structure, never a situation: `to_plan` consumes the wire from a
+            # lane's tail into its TARGET's `next` as the group's rotate mode,
+            # and a pass wire anywhere else is reported as a rule that will
+            # not run. Before this branch it compiled to `on_frame_graded`, a
+            # rule that would fire on every graded frame.
+            return f"{node.type}.pass"
         return "on_frame_graded"
     if node.type == "flatpanel":
         return "on_panel_ready"
@@ -173,39 +807,79 @@ def _trigger_for(node: FlowNode, from_port: str) -> str:
 
 
 def compile_plan(graph: FlowGraph, name: str = "") -> dict:
-    """The compiled plan: schedule + targets + automation + instructions."""
+    """The compiled plan: schedule + targets + automation + instructions.
+
+    WHICH TARGETS A STAGE GOES TO depends on the graph (spec 1.5):
+
+    * With no multi-panel TARGET, the canvas-order rule, byte for byte: every
+      capture or cycle stage goes to every target seen earlier in the walk.
+      Every Example and every flow saved before mosaics compiles as it did.
+      Its leak (a stage after a second TARGET reaches the first) is its own
+      defect, I-05, and changing it here would change saved nights.
+    * With one, EVERY stage in the graph goes to its ``owner_of`` block only,
+      and a stage with no owner goes nowhere (the doctor's M13 makes that
+      loud). The switch covers the whole graph because a mosaic is where the
+      leak costs most: one stray CAPTURE becomes a quota on every panel.
+
+    Each stage the two rules assign differently gets an entry in ``notes``
+    that names it, so the operator reads what the switch changed rather than
+    finding it in the plan. ``notes`` is ABSENT when empty, as ``campaign``
+    is, which is what keeps a plan with no mosaic byte-identical.
+
+    EVERY TARGET ENTRY CARRIES THE BLOCK (spec 3.2, ``_target_entry``): its
+    ``angle``, its grid as ``mosaic`` (None for one panel), ``loop``, its
+    ``centre`` and its ``count_mode``; a POOL member carries its pool's
+    ``count_mode``. A TARGET or POOL a mosaic's tail feeds carries
+    ``follows``, the mosaic's node id. The legal loop wire is consumed as
+    ``loop`` and never emitted as a rule. In a graph with no mosaic the
+    entries gain those keys and nothing else moves, and ``to_plan`` turns
+    them into the same plan plus the centring (the controls in
+    ``test_flows_compile.py`` and ``test_flows_to_plan.py``)."""
     graph = graph.with_defaults()
     order = flow_order(graph)
 
     targets: list[dict] = []
+    # The entries each TARGET or POOL node emitted, by node id: what a stage
+    # scoped by its wires is appended to.
+    by_block: dict[str, list[dict]] = {}
+    scoping = (_lane_index(graph)
+               if any(is_multi_panel(n) for n in graph.nodes) else None)
+    notes: list[dict] = []
+    # The loop wires the instructions pass leaves out, the blocks they make
+    # rotate, and who follows which mosaic. All three are empty in a graph
+    # with no mosaic, which is what keeps its compile what it was.
+    loop_keys = _loop_edge_keys(graph) if scoping is not None else set()
+    looped = {k[2] for k in loop_keys}
+    followers = _followers(graph) if scoping is not None else {}
+
+    def receivers(stage: FlowNode) -> tuple[list[dict], FlowNode | None]:
+        """The target entries ``stage``'s step is appended to, and the block
+        its wires give it to (None under the canvas-order rule)."""
+        if scoping is None:
+            return targets, None
+        owner = _walk_to_owner(stage.id, *scoping)[0]
+        mine = [] if owner is None else by_block.get(owner.id, [])
+        # The owner precedes its stages in a topological walk, so ``mine`` is
+        # always a subset of the targets seen so far; the rest are what canvas
+        # order would have added.
+        others = [t for t in targets if not any(t is m for m in mine)]
+        if others:
+            notes.append(_scope_note(stage, owner, mine, others))
+        return mine, owner
+
     for n in order:
         if n.type == "target":
-            targets.append({
-                "name": n.params.get("name"),
-                "ra": n.params.get("ra"),
-                "dec": n.params.get("dec"),
-                # DEFAULT -1, NOT 0. -1 is "no angle constraint" (see
-                # to_plan's rotation block); 0 is north-up, a real position
-                # angle somebody may well want. An unparseable or empty field
-                # must fall to "no constraint" — falling to 0 would silently
-                # command the rotator to PA 0 on every target of every flow
-                # whose angle box was left blank.
-                "rotation_deg": _num(n.params.get("rotation"), -1),
-                # THE BLOCK THIS CAME FROM (#189 S1, spec 3.2). `to_plan` keys
-                # the target's deterministic id on it, so a flow compiled on
-                # night two names the targets night one banked frames against.
-                # The canvas node id is the one thing about a block that an
-                # edit never changes; the name and the coordinates both can.
-                "node_id": n.id,
-                "steps": [],
-            })
+            entry = _target_entry(n, graph, loop_keys, followers.get(n.id),
+                                  notes)
+            targets.append(entry)
+            by_block.setdefault(n.id, []).append(entry)
         elif n.type == "pool":
             # A pool expands to one target per candidate, carrying the shared
             # constraint set and its rank. The scheduler picks between them at
             # run time; the compile just states who is eligible.
             members = [m.strip() for m in str(n.params.get("members") or "").split(",")]
             for i, m in enumerate([x for x in members if x]):
-                targets.append({
+                entry = {
                     "name": m, "pool_rank": i + 1,
                     # The POOL's node id on every member: a member's id is keyed
                     # on the pool and the member's NAME, never its rank, so
@@ -229,14 +903,24 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                                  else "keep"),
                     "min_moon_sep_deg": _num(n.params.get("moonSep")),
                     "max_hour_angle_h": _num(n.params.get("maxHA")),
-                    "steps": [],
-                })
+                    # The POOL's `counts`, which ruling 2 treats as TARGET's:
+                    # one plan-wide count mode, so every block says what it
+                    # asks for and `to_plan` settles it (M7).
+                    "count_mode": count_mode_of(n.params),
+                }
+                if n.id in followers:
+                    entry["follows"] = followers[n.id]
+                entry["steps"] = []
+                targets.append(entry)
+                by_block.setdefault(n.id, []).append(entry)
         elif n.type == "capture":
-            # EVERY target so far gets this step. That is the prototype's
-            # semantics and it is what makes a pool night work: four candidates
-            # and one capture loop means all four are shot the same way, which
-            # is the only reading under which "best available" can substitute
-            # one for another mid-night.
+            # EVERY target so far gets this step, in a graph with no mosaic
+            # (`receivers`; with one, only the stage's own block). That is the
+            # prototype's semantics and it is what makes a pool night work:
+            # four candidates and one capture loop means all four are shot the
+            # same way, which is the only reading under which "best available"
+            # can substitute one for another mid-night. The wire rule keeps
+            # that, since every member of a pool is the pool's.
             step = {
                 "filter": n.params.get("filter"),
                 "exposure_s": _num(n.params.get("exposure")),
@@ -252,7 +936,14 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             goal = _num(n.params.get("goal"))
             if goal:
                 step["integration_goal_h"] = goal
-            for t in targets:
+            mine, owner = receivers(n)
+            if owner is not None and owner.id in looped:
+                # INSIDE THE CIRCLE A CAPTURE IS A ONE-SLOT CYCLE (spec 1.3
+                # item 4): one frame per pass on every panel, so a mono lane
+                # needs no FILTER CYCLE of one filter to rotate. `to_plan`
+                # marks the panels `acquisition = "cycle"` for the loop.
+                step["per_visit"] = 1
+            for t in mine:
                 # a copy per target: they are independently editable downstream,
                 # and a shared dict would make one target's edit rewrite them all
                 t["steps"].append(dict(step))
@@ -279,7 +970,7 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 # Every slot step `to_plan` expands from this stage carries it.
                 "node_id": n.id,
             }
-            for t in targets:
+            for t in receivers(n)[0]:
                 t["steps"].append({**step, "slots": [dict(s) for s in slots]})
 
     dusk = next((n for n in graph.nodes if n.type == "dusk"), None)
@@ -371,6 +1062,14 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
         if (src.type == "flatpanel" and dst is not None
                 and dst.type == "calib" and e.toPort == "panel"):
             continue
+        # THE LOOP WIRE IS STRUCTURE, NOT A RULE (spec 1.4 item 3). A legal
+        # one is the block's `loop`, which `to_plan` turns into the group's
+        # rotate mode; emitted here as well it would become "this rule will
+        # not run", a loss the operator would have to accept for the one
+        # wire that works. The calib wires `plan_extras` honours are the
+        # precedent. Any other pass wire is still emitted, and reported.
+        if (e.from_, e.fromPort, e.to, e.toPort) in loop_keys:
+            continue
         # THE DESTINATION PORT IS PART OF THE RULE, not decoration.
         #
         # A HOLD / RESUME node has two inputs, `pause` and `resume`, and the M16
@@ -409,4 +1108,8 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     # verbatim — a null there reads as "campaign: broken" to an operator.
     if plan_campaign is not None:
         out["campaign"] = plan_campaign
+    # Absent when empty for the same reason, and because an empty list on
+    # every compile would change the plan of every flow that has no mosaic.
+    if notes:
+        out["notes"] = notes
     return out

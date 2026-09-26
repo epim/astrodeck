@@ -132,6 +132,9 @@ const {
 const { clearMountedFlowCanvas, flowCanvasDropPoint, setMountedFlowCanvas } =
   await import("../canvasMount");
 const { resetRouterCacheForTests } = await import("../../../../../router");
+const { FlowPaletteRail } = await import("../../inspector/FlowPaletteRail");
+const { FlowPalette } = await import("../../../../../../components/flows/FlowPalette");
+const { createParams } = await import("../../../../../../components/flows/nodeDefs");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -1015,6 +1018,63 @@ await testAsync("the phone stage list uses the same words as the canvas", async 
   const rig = all('[data-testid="flow-stage-rig"]').map((el: any) => String(el.textContent));
   assert(rig.includes(`${RIG_VALUE_PREFIX}AstroDeck native`),
     `the phone row never names the rig's own guider, got ${JSON.stringify(rig)}`);
+});
+
+// ================================ a palette drop CREATES a node (spec 3.1)
+//
+// A TARGET dropped from a palette is a new block, written with the type's
+// "Created as" column (`createParams`): accepted subs only (Revision 2, ruling
+// 2), any angle, and no name or coordinates - never M31's, which is what the
+// missing-key defaults carry (#190's defect, by the palette's door). Both
+// editors' palettes are pressed: the #/next rail beside this canvas, and the
+// classic `components/flows/FlowPalette`, the rail the classic FlowEditor
+// docks. (The editor itself may not be imported under next/, by the R7 parity
+// rule; the palette's own add and the editor's `onPick` both call
+// `flowsAddNode` with nothing but a drop point.) A palette that grew its own
+// node builder would be caught here.
+//
+// MUTANT "params from def.params" (flowsSlice.ts flowsAddNode:
+// `createParams(type)` -> `{ ...NODE_DEFS[type].params }`). Observed
+// ("canvasDom.test: 34/35 passed"), the #/next rail first:
+//   x a TARGET dropped from either editor's palette is a created block, not M31: the #/next palette rail: counts "Every sub taken", angle undefined, name "M31 - Andromeda", ra "00h 42m 44s", dec "+41° 16′ 09″"
+// The first door's failure ends the case, so the same mutant was also run on
+// a scratch copy of this file with the two doors swapped. Observed:
+//   x a TARGET dropped from either editor's palette is a created block, not M31: the classic editor's palette: counts "Every sub taken", angle undefined, name "M31 - Andromeda", ra "00h 42m 44s", dec "+41° 16′ 09″"
+await testAsync("a TARGET dropped from either editor's palette is a created block, not M31", async () => {
+  const doors: [string, () => any, string][] = [
+    ["the #/next palette rail",
+     () => createElement(FlowPaletteRail as any, { variant: "rail" }),
+     '[data-testid="palette-type-target"]'],
+    ["the classic editor's palette",
+     () => createElement(FlowPalette as any, { variant: "rail" }),
+     '[data-palette-type="target"]'],
+  ];
+  // Desktop, where both editors dock their palette as a rail.
+  viewportW = 1440;
+  try {
+    for (const [door, render, sel] of doors) {
+      seed("admin", ADMIN_CAPS);
+      await mount(render());
+      const press = container.querySelector(sel);
+      assert(press != null, `${door}: no TARGET item to press - the fixture is wrong, not the drop`);
+      const before = new Set(useStore.getState().flows.graph.nodes.map((n: any) => n.id));
+      click(press);
+      await settle();
+      const added = useStore.getState().flows.graph.nodes.filter((n: any) => !before.has(n.id));
+      eq(added.length, 1, `${door}: one press must add exactly one stage`);
+      const p = added[0].params;
+      const want: Record<string, string | number> = {
+        counts: "Accepted subs", angle: "Any angle", rotation: -1, name: "", ra: "", dec: "",
+      };
+      const off = Object.keys(want).filter((k) => p[k] !== want[k]);
+      assert(off.length === 0,
+        `${door}: ${off.map((k) => `${k} ${JSON.stringify(p[k])}`).join(", ")}`);
+      eq(JSON.stringify(p), JSON.stringify(createParams("target")),
+        `${door}: the new block is not exactly createParams("target")`);
+    }
+  } finally {
+    viewportW = 820;
+  }
 });
 
 act(() => { root.unmount(); });

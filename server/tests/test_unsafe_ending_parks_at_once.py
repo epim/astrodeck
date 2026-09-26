@@ -18,7 +18,12 @@ that parks (every unsafe one, and any other whose plan parks when done)
 cancels the idle-stop task without awaiting it, fenced, and asks the park at
 once (`_hand_idle_stop_to_the_park`). The wind-down starts its own guider stop
 first and reaps it, bounded, after the park and the roof close, so nothing
-but the park stands between the ending and the roof. A guider stop that eats
+but the park stands between the ending and the roof. SINCE S3 (#311, S3
+orchestrator ruling 3) the park itself waits for that stop, but only up to
+``WIND_DOWN_GUIDER_STOP_S``, as long as one guide pulse can take to end: a
+park that begins inside a pulse is lost on the AM5. So "at once" below means
+at once when the guider answers, and the cap when it does not
+(test_wind_down_guider_stop_before_park.py). A guider stop that eats
 the cancel (the #235 shape) sends no ``set_tracking(False)`` once the park is
 asked. A park that fails or times out is a wind-down that did not park: after
 the roof-close attempt the mount is asked, once and bounded, to stop tracking,
@@ -57,6 +62,8 @@ from test_run_end_completes_the_idle_stop import _Night
 #: the idle clock decided the stop (Alpha's 30 s frame, then ``TEARDOWN``).
 RAIN_AT = 300.0
 GUIDE_S = engine_mod.GUIDE_OP_TIMEOUT_S
+#: How long the park waits for a guider stop that does not answer (#311).
+CAP = engine_mod.WIND_DOWN_GUIDER_STOP_S
 FINISH = engine_mod.IDLE_STOP_FINISH_S
 POLL = engine_mod.IDLE_STOP_FINISH_POLL_S
 #: "At once", in fake seconds: nothing on the way to the park sleeps.
@@ -376,21 +383,31 @@ async def test_the_roof_close_waits_on_nothing_but_the_park(
     """The roof closes on unsafe (``close_dome_on_unsafe``), so the rain
     ends the run through the park-and-close wind-down. The idle stop's first
     attempt is still out, as in (a), and the wind-down's own guider stop does
-    not answer either. The park and the roof close are both asked at once,
-    before ``GUIDE_OP_TIMEOUT_S``: the guider stop is asked first and not
-    awaited ahead of them, and the wind-down reaps it after the close,
-    bounded, returning no later than its bound. The roof closes over the
-    parked mount (`close_observatory` refuses otherwise).
+    not answer either. The park and the roof close are both asked well
+    before ``GUIDE_OP_TIMEOUT_S``: the guider stop is asked first and waited
+    for only up to ``WIND_DOWN_GUIDER_STOP_S``, and the wind-down reaps it
+    after the close, bounded, returning no later than its bound. The roof
+    closes over the parked mount (`close_observatory` refuses otherwise).
+
+    AMENDED TO S3 ORCHESTRATOR RULING 3 (#311). This held the park and the
+    close "at once", within a second of the spell's end. The park now waits
+    for the guider stop, bounded, so with a guider that does not answer both
+    are asked exactly at the cap, and still long before the guider's own
+    bound; the roof close still waits for nothing but the park. Under the
+    new code, with the old assertion, it failed (observed) -
+        AssertionError: park() at 4.5 s and the roof close at 4.5 s after the
+        spell ended; both must be asked before the 120 s guider bound: the
+        wind-down's guider stop held them
 
     Mutant "guider stop awaited before the park" (`_wind_down` awaits
     ``self._stop_guiding_quietly()`` before `_wind_down_park_and_close`, as
-    it did before the ruling): RED (observed) -
+    it did before #270): RED (observed) -
         AssertionError: park() at 120.0 s and the roof close at 120.0 s
-        after the spell ended; both must be asked before the 120 s guider
-        bound: the wind-down's guider stop held them
+        after the spell ended; both must be asked at the 4.5 s cap, long
+        before the 120 s guider bound: the wind-down's guider stop held them
     Mutant "no reap" (the two `_reap_by` calls in `_wind_down` deleted):
     RED (observed) -
-        AssertionError: the wind-down returned at 0.0 s with its guider stop
+        AssertionError: the wind-down returned at 4.5 s with its guider stop
         still out (over at [] s): it was not reaped
     """
     dome = sim_hub.devices.get("dome")
@@ -412,10 +429,11 @@ async def test_the_roof_close_waits_on_nothing_but_the_park(
         assert parks and closes, (
             f"premise: a park and a roof close: {e.events}")
         rel = [round(t - ended, 1) for t in (parks[0], closes[0])]
-        assert max(rel) <= AT_ONCE, (
+        assert max(abs(r - CAP) for r in rel) < 1e-6, (
             f"park() at {rel[0]} s and the roof close at {rel[1]} s after "
-            f"the spell ended; both must be asked before the {GUIDE_S:.0f} s "
-            f"guider bound: the wind-down's guider stop held them")
+            f"the spell ended; both must be asked at the {CAP:g} s cap, long "
+            f"before the {GUIDE_S:.0f} s guider bound: the wind-down's guider "
+            f"stop held them")
         order = [w for w, _t in e.events
                  if w in ("guider stop", "park", "close")]
         assert order[:3] == ["guider stop", "park", "close"], (
@@ -492,15 +510,18 @@ async def test_an_abort_in_a_natural_park_leaves_no_task_behind(
     them once the cancel has unwound the wind-down, and a guider stop left
     parked there would ask the guider something after the run's teardown.
 
-    WHAT THIS DOES NOT HOLD: the mount. The park was cancelled before it
-    reached the mount and the idle stop had been handed to it, so the mount
-    is left tracking. Under H3 the stop was completed before the park; the
-    window is #270's own, the implementer's residual (1), and it is the
-    orchestrator's to rule on and file, not this test's to enshrine.
+    AMENDED FOR #305. This test used to say what it did not hold: the mount,
+    which the Abort's cancel left tracking by cutting the park the idle stop
+    had been handed to. The park is now shielded (#305), so the Abort waits
+    for it: the park is released here only once the cancel has landed, and
+    the mount ends parked. Before this amendment the test still passed under
+    the shield, but only after the park's real 240 s ``PARK_TIMEOUT_S``, the
+    park double never answering. The #305 cases themselves are
+    test_wind_down_abort_during_natural_park.py's.
 
     Mutant "no cleanup on a cancelled wind-down" (the ``except
     BaseException:`` clause in `_wind_down` that cancels the guider stop and
-    the handed task deleted): RED (observed, the verifier's round) -
+    the handed task deleted): RED (observed) -
         AssertionError: the wind-down's guider stop outlived the Abort that
         unwound the wind-down: asked at [0.0] s after the run ended, over at
         [] s
@@ -515,11 +536,12 @@ async def test_an_abort_in_a_natural_park_leaves_no_task_behind(
 
     async def park():
         in_park.set()
-        await never.wait()          # in flight until the Abort cuts it
+        await never.wait()          # in flight until the test releases it
         return await real_park()
 
     monkeypatch.setattr(tel, "park", park)
     e.engine.start(e.n.plan)
+    aborting = None
     try:
         await e.n.until(in_park.is_set, "the natural end's park was asked")
         assert [(s, r) for _t, s, r in e.terminal] == [
@@ -530,7 +552,14 @@ async def test_an_abort_in_a_natural_park_leaves_no_task_behind(
         asked = e.at("guider stop")
         assert asked and not e.at("guider over"), (
             f"premise: the wind-down's guider stop is out: {e.events}")
-        await e.engine.abort()
+        aborting = asyncio.ensure_future(e.engine.abort())
+        for _ in range(20):                 # let the cancel land in the park
+            await e.run._real_sleep(0)
+        assert not aborting.done(), (
+            "premise: the Abort waits for the park it landed in (#305)")
+        never.set()                         # the park comes back
+        await asyncio.wait_for(aborting, 60.0)
+        assert tel.rig.parked, "the park the Abort landed in did not finish"
         over = e.at("guider over")
         assert over, (
             f"the wind-down's guider stop outlived the Abort that unwound the "
@@ -544,6 +573,8 @@ async def test_an_abort_in_a_natural_park_leaves_no_task_behind(
     finally:
         never.set()
         gate.set()
+        if aborting is not None and not aborting.done():
+            await asyncio.gather(aborting, return_exceptions=True)
         await e.run.close()
 
 

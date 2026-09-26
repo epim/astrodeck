@@ -145,6 +145,12 @@ class Target(BaseModel):
     # ``state.group.panel`` and the report all read it here. None on every
     # target that is not a TARGET block's panel, which is every target saved
     # before S2.
+    #
+    # No ``ge=0`` bound, although a negative index cannot run (#287: the
+    # member's first light frame raises in ``naming.panel_label``). A bound
+    # is a validator, and a stored session that fails validation vanishes
+    # from the store without a word; ``plan_identity_errors`` refuses it at
+    # the start instead, and the session stays listed and fixable.
     panel_row: int | None = None
     panel_col: int | None = None
     # "Wait for the mosaic" (spec 1.6): the id of a TargetGroup this target
@@ -152,7 +158,8 @@ class Target(BaseModel):
     # group is set aside tonight it is skipped (not done); once the group is
     # complete it is ready. None is today's scheduling: no target waits for
     # another. ``plan_identity_errors`` refuses an id that names no group,
-    # because a gate on nothing would never open.
+    # because a gate on nothing would never open, and for the same reason a
+    # member's gate on its own group and a cycle of gates between groups.
     after_group: str | None = None
     # --- autorun scheduling (Batch 4b; additive — default = run-now) ---
     schedule: Schedule = Field(default_factory=Schedule)
@@ -170,7 +177,9 @@ class TargetGroup(BaseModel):
 
     ``id`` has no default, unlike every other model's here: it is the key the
     members repeat, and a group whose id were minted fresh would name no
-    member at all."""
+    member at all. For the same reason it must be the plan's only group with
+    that id (``plan_identity_errors``): every lookup by id would answer for
+    whichever entry it met first."""
     id: str
     name: str = ""                           # the block's name, for the log
     kind: Literal["mosaic"] = "mosaic"
@@ -201,7 +210,8 @@ class TargetGroup(BaseModel):
     angle_tolerance_deg: float | None = None
     # Target ids of the panels the operator skipped. They are not members
     # (the compile drops them), and CONTINUE reads this to tell a skipped
-    # panel from a dropped one (spec 5.9).
+    # panel from a dropped one (spec 5.9). A target that is both is refused
+    # at the start (``plan_identity_errors``).
     skipped_ids: list[str] = []
     # Provenance only (rows, cols, overlap, fov, key): nothing steers by it.
     geometry: dict = {}
@@ -573,6 +583,87 @@ def _repeats(keys: list[str]) -> dict[str, list[int]]:
     return {key: at for key, at in seen.items() if len(at) > 1}
 
 
+def _gate_cycles(plan: SequencePlan) -> list[tuple[list[str], list[str]]]:
+    """Each cycle of ``after_group`` gates between groups, as ``(groups,
+    path)``: the groups caught in it in plan order, and one way round it from
+    the first of them, ``[a, b, a]``. [] when the gates run one way.
+
+    A member's gate holds its WHOLE group, not just the member: the group is
+    done only when every panel is (spec 1.6), and the gated panel is one of
+    them. So the edge runs from the member's own group to the group it waits
+    for, and two groups whose members wait on each other are a cycle although
+    no single target waits on itself. A follower in no group is no edge:
+    nothing waits for it. This is the plan as written, which is what a start
+    check grades: the engine does not read a member's gate yet (#330), and
+    the compile writes one on every panel of a mosaic that waits for another.
+
+    A member's gate on its own group is left out. It is a cycle of one, and
+    ``plan_identity_errors`` gives it a sentence of its own that names the
+    target; counting it here would refuse the same gate twice.
+
+    Groups that reach each other form one entry, however many ways round
+    them there are, so a plan is refused once per knot and not once per
+    group in it. A plan holds a handful of groups, so reachability from each
+    one is cheap, and it reads more plainly than an SCC algorithm would."""
+    order = list(dict.fromkeys(g.id for g in plan.groups))
+    edges: dict[str, dict[str, None]] = {gid: {} for gid in order}
+    for t in plan.targets:
+        if (t.mosaic_group in edges and t.after_group in edges
+                and t.after_group != t.mosaic_group):
+            edges[t.mosaic_group][t.after_group] = None
+
+    def reached_from(start: str) -> set[str]:
+        seen: set[str] = set()
+        todo = list(edges[start])
+        while todo:
+            gid = todo.pop()
+            if gid not in seen:
+                seen.add(gid)
+                todo.extend(edges[gid])
+        return seen
+
+    reach = {gid: reached_from(gid) for gid in order}
+    cycles: list[tuple[list[str], list[str]]] = []
+    placed: set[str] = set()
+    for gid in order:
+        # On a cycle exactly when its gates lead back to it.
+        if gid in placed or gid not in reach[gid]:
+            continue
+        knot = [h for h in order if h in reach[gid] and gid in reach[h]]
+        placed.update(knot)
+        cycles.append((knot, _shortest_way_round(gid, edges)))
+    return cycles
+
+
+def _shortest_way_round(start: str, edges: dict[str, dict[str, None]]
+                        ) -> list[str]:
+    """The fewest gates from ``start`` back to itself, ``[start, ..., start]``,
+    breadth first in plan order so the sentence is the same every time.
+    Called only for a group on a cycle, so the way round exists."""
+    came_from: dict[str, str] = {}
+    frontier = [start]
+    while frontier:
+        following: list[str] = []
+        for gid in frontier:
+            for to in edges[gid]:
+                if to == start:
+                    back = [gid]
+                    while back[-1] != start:
+                        back.append(came_from[back[-1]])
+                    return back[::-1] + [start]
+                if to not in came_from:
+                    came_from[to] = gid
+                    following.append(to)
+        frontier = following
+    return [start, start]                   # pragma: no cover - see above
+
+
+def _and_list(items: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    return items[0] if len(items) == 1 else \
+        f"{', '.join(items[:-1])} and {items[-1]}"
+
+
 def plan_identity_errors(plan: SequencePlan) -> list[str]:
     """Why ``plan`` must not start, one sentence per problem, or [] (#156,
     spec 3.5). Pure: every problem at once, so a plan is fixed in one pass
@@ -585,14 +676,30 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
       by step id alone (``Session.accepted_by_step``), so one step's frames
       would count for every copy, and in accepted mode copies 2 to N read
       complete the moment the first finishes;
+    * a repeated GROUP ID (#307). Members, ``after_group`` gates, the group
+      runs and the set-aside records all find a group by its id, and would
+      answer for whichever entry they met first;
     * a GROUP WITH NO MEMBERS: no target's ``mosaic_group`` equals its id.
       Every panel skipped, or a hand edit; the group driver would run a mosaic
       of nothing;
+    * a MEMBER LISTED IN ITS OWN GROUP'S ``skipped_ids`` (#307). A skipped
+      panel is dropped by the compile and is no member (spec 5.9), so the
+      engine and CONTINUE would disagree about whether it is shot. Another
+      group's list says nothing about it;
     * a CALIBRATION TARGET IN A GROUP. Darks, bias and flats skip the slew,
       the centring, the focus and the guider, and a member is hopped to,
       centred and angle-checked, so the two cannot both hold. A calibration
       target whose ``mosaic_group`` names no group is in no group;
     * an ``after_group`` THAT NAMES NO GROUP: a gate on nothing never opens;
+    * a MEMBER WHOSE ``after_group`` IS ITS OWN GROUP (#307): it waits while
+      its group has live members, and it is one of them;
+    * a CYCLE OF ``after_group`` GATES between groups (#307), a mutual pair
+      included: the same gate that never opens, reached round a loop rather
+      than through a missing id (``_gate_cycles``);
+    * a NEGATIVE ``panel_row`` OR ``panel_col`` (#287). The member's first
+      light frame names its panel with ``naming.panel_label``, which raises
+      for it, and the run ends in ``error`` there. Checked on every target,
+      member or not: the grid position is 0-based wherever it is set;
     * a repeated target NAME that an enabled instruction names. A jump resolves
       the first target with the name and an ``only_target`` gate fires on every
       one, so the rule cannot say which it meant;
@@ -609,11 +716,12 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
     ``mosaic_group`` with no group entry and keeps today's behaviour, and its
     stored sessions must keep resuming.
 
-    CALLED ON EVERY ``engine.start`` PATH, NEVER A MODEL VALIDATOR. ``SessionStore
-    .load_all`` and ``active`` skip a file that fails validation without a word,
-    so a validator would make every stored session holding such a plan vanish
-    on upgrade - out of the list, out of ``recoverable`` and ``armed`` - where a
-    refused start keeps it listed and says why."""
+    CALLED ON EVERY ``engine.start`` PATH, NEVER A MODEL VALIDATOR, and never
+    a ``Field`` bound either, which is a validator by another name.
+    ``SessionStore.load_all`` and ``active`` skip a file that fails validation
+    without a word, so a validator would make every stored session holding
+    such a plan vanish on upgrade - out of the list, out of ``recoverable``
+    and ``armed`` - where a refused start keeps it listed and says why."""
     targets = plan.targets
     errors: list[str] = []
     for tid, at in _repeats([t.id for t in targets]).items():
@@ -625,13 +733,30 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
         where = ", ".join(f"{steps[i][0]!r} step {steps[i][1]}" for i in at)
         errors.append(f"step id {sid!r} is used by {len(at)} steps ({where}), "
                       f"and frames are counted by step id alone")
-    group_ids = {g.id for g in plan.groups}
+    groups = plan.groups
+    for gid, at in _repeats([g.id for g in groups]).items():
+        names = ", ".join(repr(groups[i].name) if groups[i].name else "unnamed"
+                          for i in at)
+        errors.append(f"group id {gid!r} is used by {len(at)} groups "
+                      f"({names}), and members, gates and set-aside records "
+                      f"find a group by its id alone")
+    group_ids = {g.id for g in groups}
     members = {t.mosaic_group for t in targets}
-    for g in plan.groups:
+    for g in groups:
         if g.id not in members:
             label = f"group {g.id!r}" + (f" ({g.name!r})" if g.name else "")
             errors.append(f"{label} has no members: no target's mosaic_group "
                           f"names it, so it is not a mosaic")
+    # Keyed by group id, so a target is read against its OWN group's list
+    # only, and against every entry of a repeated id (refused above anyway).
+    skipped: dict[str, set[str]] = {}
+    for g in groups:
+        skipped.setdefault(g.id, set()).update(g.skipped_ids)
+    for t in targets:
+        if t.id in skipped.get(t.mosaic_group, ()):
+            errors.append(f"target {t.name!r} is in group {t.mosaic_group!r} "
+                          f"and in its skipped_ids; a skipped panel is not "
+                          f"shot, and a member is")
     for t in targets:
         if t.calibration and t.mosaic_group in group_ids:
             errors.append(f"calibration target {t.name!r} is in group "
@@ -639,9 +764,34 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
                           f"where the mount is, and a group member is a "
                           f"mosaic panel")
     for t in targets:
-        if t.after_group is not None and t.after_group not in group_ids:
+        if t.after_group is None:
+            continue
+        if t.after_group not in group_ids:
             errors.append(f"target {t.name!r} waits for group "
                           f"{t.after_group!r}, and the plan has no such group")
+        elif t.after_group == t.mosaic_group:
+            errors.append(f"target {t.name!r} is in group {t.mosaic_group!r} "
+                          f"and waits for it: it waits for itself, so the "
+                          f"gate never opens")
+    names_of: dict[str, str] = {}
+    for g in groups:
+        names_of.setdefault(g.id, g.name)
+    for knot, way_round in _gate_cycles(plan):
+        listed = _and_list([f"{gid!r}" + (f" ({names_of[gid]!r})"
+                                          if names_of[gid] else "")
+                            for gid in knot])
+        errors.append(f"groups {listed} wait for each other "
+                      f"({' -> '.join(repr(gid) for gid in way_round)}): a "
+                      f"member's after_group holds its whole group, so none "
+                      f"of their gates ever opens")
+    for t in targets:
+        below = [f"{axis} {at}"
+                 for axis, at in (("row", t.panel_row), ("col", t.panel_col))
+                 if at is not None and at < 0]
+        if below:
+            errors.append(f"target {t.name!r} has panel "
+                          f"{' and '.join(below)}; panel rows and columns "
+                          f"are 0-based")
     named = _names_rules_resolve(plan)
     for name, at in _repeats([t.name for t in targets]).items():
         # One sentence per name. A rule naming it is the sharper reason.

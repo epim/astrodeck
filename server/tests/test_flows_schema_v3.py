@@ -65,14 +65,22 @@ def client(tmp_path, monkeypatch):
 
 
 def _graph(rotation=-1) -> dict:
-    """dusk -> target -> capture, only node types this build knows."""
+    """dusk -> target -> capture, only node types this build knows.
+
+    The TARGET says ``counts: "Accepted subs"`` so that a read of it raises
+    only the note this file is about. A TARGET with no ``counts`` key counts
+    every sub taken, and from FLOW_SCHEMA 4 every read of one says ruling 2's
+    ``counts`` note as well, whatever the file's version (that note, and the
+    two notes side by side, are test_flows_schema_v4's). The 23.4 migration
+    reads ``rotation`` alone, so the extra key changes nothing it decides."""
     return {
         "nodes": [
             {"id": "d", "type": "dusk", "x": 30, "y": 60,
              "params": {"offset": -30, "stop": "Dawn", "minAlt": 30}},
             {"id": "t", "type": "target", "x": 260, "y": 60,
              "params": {"name": "NGC 7129", "ra": "21h 42m 30s",
-                        "dec": "+66 06 00", "rotation": rotation}},
+                        "dec": "+66 06 00", "rotation": rotation,
+                        "counts": "Accepted subs"}},
             {"id": "c", "type": "capture", "x": 490, "y": 60,
              "params": {"filter": "L", "exposure": 120, "gain": 100,
                         "bin": "1", "count": 12, "goal": 0}},
@@ -109,12 +117,10 @@ def _notes(record: FlowRecord) -> list[dict]:
 # ================================================================ #150, the read
 
 class TestTheOldPaletteDefaultMigrates:
-    def test_the_schema_is_3(self):
-        """RED under mutant "FLOW_SCHEMA left at 2":
-
-            assert 2 == 3
-        """
-        assert FLOW_SCHEMA == 3
+    # `test_the_schema_is_3` pinned FLOW_SCHEMA == 3 here. The mosaic slice
+    # raised it to 4 (#189, spec 3.6), and the pin moved to
+    # test_flows_schema_v4, which owns what 4 means. What stays here is the
+    # 23.4 step, unchanged: a v1 or v2 file is still older than 3.
 
     def test_the_note_says_what_happened_and_what_to_do(self):
         """Pinned verbatim: the operator reads this on every read until they
@@ -228,7 +234,11 @@ class TestTheNoteIsNeverPersisted:
         """The note travels on ``GET /api/flows/{id}`` (FastAPI serialises the
         record with the same dump the writer uses, which is why the field is
         not ``Field(exclude=True)``), and the save strips it: the file is
-        schema 3, the angle -1, no ``migrated`` key, and the next GET is quiet.
+        current, the angle -1, no ``migrated`` key, and the next GET is quiet.
+        "Current" is 4 since the mosaic slice: this TARGET counts accepted
+        subs, a meaning a v3 build would misread (``store.schema_for``). It
+        was 3 when this test was written; any version of 3 or more is what
+        marks the -1 as the operator's.
 
         RED under mutant "persist migrated" (the writer dumps the field):
 
@@ -251,7 +261,7 @@ class TestTheNoteIsNeverPersisted:
         assert put.status_code == 200, put.text
 
         on_disk = json.loads(path.read_text(encoding="utf-8"))
-        assert on_disk["schema_version"] == 3
+        assert on_disk["schema_version"] == FLOW_SCHEMA == 4
         target = next(n for n in on_disk["flow"]["graph"]["nodes"]
                       if n["type"] == "target")
         assert target["params"]["rotation"] == -1

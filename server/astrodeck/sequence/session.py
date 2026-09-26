@@ -20,6 +20,7 @@ import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -146,7 +147,26 @@ class Session(BaseModel):
     # (spec 3.3, ruling 3), which is the one thing that clears a lock.
     # Written only through ``lock_angle``, where the first lock wins.
     locked_angles: dict[str, dict] = Field(default_factory=dict)
-    # Both are additive with SESSION_SCHEMA still 1. There is no
+    # A GROUP'S PIER STATE FOR THE NIGHT (#312, S3 orchestrator ruling 4;
+    # spec 3.4, 5.7): ``{group_id: {night, flipped, side, verified}}``, the
+    # latest for each group. ``flipped``: the group made its one pier change
+    # that night. ``side``: the pier side its hops measured ("east", "west",
+    # or None when the change could not be read). ``verified``: that side was
+    # read differing from one measured before the meridian, the only side a
+    # later hop may disarm its flip latch on. The engine keeps all of this in
+    # memory for the run, and a crash, a /recover or an auto-resume is a new
+    # run: without the record a restart after the pier change started the
+    # group unflipped, went back to a panel before the meridian, and changed
+    # pier side a second time that night. ``group_pier_on`` reads one night's;
+    # another night's record is history, and the group starts that night
+    # unflipped. Plain dicts, as ``set_aside`` is, for the same reason, and
+    # typed ``Any`` beneath the group id, looser still: a value that is not
+    # a dict at all (a hand edit) is read as no record by ``group_pier_on``,
+    # where ``dict`` would fail the whole file's validation and the session,
+    # ledger and all, would vanish from every scan over one pier record.
+    # Written only through ``note_group_pier``.
+    group_pier: dict[str, Any] = Field(default_factory=dict)
+    # All three are additive with SESSION_SCHEMA still 1. There is no
     # ``extra="forbid"`` here, so a build that predates them loads this file
     # and ignores them (it then retries set-aside panels, today's behaviour),
     # and this build reads a file without them as empty.
@@ -213,6 +233,42 @@ class Session(BaseModel):
         """``target_id``'s lock, or None when it has none. Never a default
         angle: 0 is a real position angle."""
         return self.locked_angles.get(target_id)
+
+    def note_group_pier(self, group_id: str, *, night: str, flipped: bool,
+                        side: str | None, verified: bool) -> dict:
+        """Record ``group_id``'s pier state for the night ``night`` and return
+        the record (#312). It REPLACES the group's last record: the state is
+        one fact that moves forward through a night (the first side measured,
+        then the pier change), and a restart wants only the latest.
+
+        ``night`` is the ``events.night_key()`` of the moment, as a set-aside
+        record's is, and an empty one is refused for the same reason: no
+        night would ever read it. ``side`` is "east", "west" or None (the
+        side could not be read); anything else is refused, because a side
+        the engine could not have measured is not a record of a measurement.
+        A side that is None cannot be ``verified``."""
+        if not night:
+            raise ValueError(
+                f"a group's pier record needs the night it applies to "
+                f"(events.night_key()), got {night!r}")
+        if side not in ("east", "west", None):
+            raise ValueError(
+                f"a pier side is 'east', 'west' or None (unread), got "
+                f"{side!r}")
+        record = {"night": night, "flipped": bool(flipped), "side": side,
+                  "verified": bool(verified) and side is not None}
+        self.group_pier[group_id] = record
+        return record
+
+    def group_pier_on(self, group_id: str, night: str) -> dict | None:
+        """``group_id``'s pier record when it was written on the night
+        ``night``, else None: a record from another night is history, and
+        the group starts that night unflipped (#312). A record that is not
+        a dict (the session is a JSON file anyone can edit) reads as none."""
+        rec = self.group_pier.get(group_id)
+        if not isinstance(rec, dict) or rec.get("night") != night:
+            return None
+        return rec
 
     # ---- derived helpers (mode-aware per the FROZEN plan's count_mode) -------
     def accepted_by_step(self) -> dict[str, int]:

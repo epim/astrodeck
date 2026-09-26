@@ -72,14 +72,22 @@ def client(tmp_path, monkeypatch):
 
 
 def _graph(rotation) -> dict:
-    """dusk -> target -> capture, node types this build knows."""
+    """dusk -> target -> capture, node types this build knows.
+
+    ``counts: "Accepted subs"`` so the only note a read raises is the 23.4
+    one these tests follow: without the key the TARGET counts every sub
+    taken and, from FLOW_SCHEMA 4, every read says ruling 2's ``counts``
+    note too (test_flows_schema_v4 follows that one through the same three
+    edits). The raw edits never read params, so the key changes none of
+    what is asserted about them."""
     return {
         "nodes": [
             {"id": "d", "type": "dusk", "x": 30, "y": 60,
              "params": {"offset": -30, "stop": "Dawn", "minAlt": 30}},
             {"id": "t", "type": "target", "x": 260, "y": 60,
              "params": {"name": "NGC 7129", "ra": "21h 42m 30s",
-                        "dec": "+66 06 00", "rotation": rotation}},
+                        "dec": "+66 06 00", "rotation": rotation,
+                        "counts": "Accepted subs"}},
             {"id": "c", "type": "capture", "x": 490, "y": 60,
              "params": {"filter": "L", "exposure": 120, "gain": 100,
                         "bin": "1", "count": 12, "goal": 0}},
@@ -549,6 +557,11 @@ class TestADamagedExampleFileIsOneRow:
 
             AssertionError: premise: m16's file shadows it
             assert 7 == 6
+
+        (Both recorded with seven Examples. The integration of S3 wrote the
+        premise as ``len(examples()) - 1``, as the test further down already
+        does, when S3-W added the eighth, example-m31-mosaic: the pin was on
+        "every Example but the shadowed one", never on the number seven.)
         """
         _damage_m16(tmp_path / "flows", "truncated")
         _put_file(tmp_path / "flows", "good", 3, folder="Winter")
@@ -557,7 +570,8 @@ class TestADamagedExampleFileIsOneRow:
         counts = {f["name"]: f["count"]
                   for f in client.get("/api/flows/folders").json()}
         assert counts == dict(shown)
-        assert counts[EXAMPLES_FOLDER] == 6, "premise: m16's file shadows it"
+        assert counts[EXAMPLES_FOLDER] == len(examples()) - 1, (
+            "premise: m16's file shadows it")
 
     def test_delete_removes_the_file_and_the_example_comes_back(
             self, client, tmp_path):

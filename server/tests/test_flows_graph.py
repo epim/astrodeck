@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from astrodeck.flows import NODE_DEFS, PALETTE_GROUPS, check, port_kind
+from astrodeck.flows import LEGACY_TYPES, NODE_DEFS, PALETTE_GROUPS, check, port_kind
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode, FlowRecord
 
 
@@ -25,12 +25,27 @@ def _e(src: str, sp: str, dst: str, dp: str) -> FlowEdge:
 
 class TestVocabulary:
     def test_every_palette_entry_is_a_real_node(self):
+        """The palette offers every type exactly once, EXCEPT the legacy ones.
+
+        DELIBERATE PIN CHANGE (mosaic S3, spec 1.7): this compared the palette
+        with the whole of NODE_DEFS. SLEW + CENTER is part of the TARGET block
+        now, so it is in LEGACY_TYPES: it still loads (21 types, 1 legacy) and
+        is no longer offered (20 in the palette).
+
+        Mutant 'slew left in PALETTE_GROUPS' (RIG OPS restored to start with
+        "slew"), observed:
+
+            E       AssertionError: palette and table disagree: only in
+                    palette {'slew'}, only in table set()
+        """
         listed = [t for _group, types in PALETTE_GROUPS for t in types]
-        assert set(listed) == set(NODE_DEFS), (
+        offered = set(NODE_DEFS) - LEGACY_TYPES
+        assert set(listed) == offered, (
             f"palette and table disagree: only in palette "
-            f"{set(listed) - set(NODE_DEFS)}, only in table "
-            f"{set(NODE_DEFS) - set(listed)}")
+            f"{set(listed) - offered}, only in table "
+            f"{offered - set(listed)}")
         assert len(listed) == len(set(listed)), "a node appears twice in the palette"
+        assert len(NODE_DEFS) == 21 and LEGACY_TYPES == {"slew"}
 
     def test_the_five_palette_groups_are_the_readmes(self):
         assert [g for g, _ in PALETTE_GROUPS] == [
@@ -46,6 +61,11 @@ class TestVocabulary:
         ("cloudwatch", "clear", "out", "event"),
         ("capture", "complete", "out", "flow"),
         ("capture", "frame", "out", "event"),      # the one node with both
+        # The mosaic loop (spec 1.2, 1.3): both ends are EVENT ports, which is
+        # what lets the wire point back up the lane without a flow loop.
+        ("capture", "pass", "out", "event"),
+        ("cycle", "pass", "out", "event"),
+        ("target", "next", "in", "event"),
         ("calib", "do", "in", "event"),
         ("calib", "panel", "in", "event"),
         ("holdresume", "pause", "in", "event"),
@@ -86,7 +106,18 @@ class TestVocabulary:
         the engine: it demanded four wires that `to_plan.REDUNDANT_PORTS`
         documents as doing nothing, so an operator who followed the advice
         drew a wire the very next panel called redundant. Each entry below
-        names why its absence costs nothing."""
+        names why its absence costs nothing.
+
+        DELIBERATE PIN CHANGE (mosaic S3, spec 1.2): TARGET's `next` joined.
+        Only a mosaic's panel loop wires it, so a single target, and a mosaic
+        shot panel-first, leave it empty and lose nothing.
+
+        Mutant 'next left out of optional_ins' (TARGET's `optional_ins`
+        removed), observed:
+
+            E         Extra items in the right set:
+            E         ('target', 'next')
+        """
         opt = {(t, p) for t, d in NODE_DEFS.items() for p in d.optional_ins}
         assert opt == {
             ("calib", "panel"),        # rule 7 — flats get skipped, and it says so
@@ -95,6 +126,7 @@ class TestVocabulary:
             ("holdresume", "resume"),  # the hold releases itself
             ("parkclose", "do"),       # the night ends parked+shut regardless
             ("pool", "advance"),       # the scheduler advances the pool itself
+            ("target", "next"),        # only the panel loop uses it
         }, opt
 
     def test_every_optional_input_is_a_real_port(self):

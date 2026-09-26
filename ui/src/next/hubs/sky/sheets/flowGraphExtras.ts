@@ -35,7 +35,7 @@
 //
 // Every function is PURE: graph in, new graph out, nothing mutated, no fetch.
 
-import { NODE_DEFS } from "../../../../components/flows/nodeDefs";
+import { NODE_DEFS, createParams } from "../../../../components/flows/nodeDefs";
 import type {
   FlowEdgeRec, FlowGraphRec, FlowNodeRec, FlowNodeType,
 } from "../../../../components/flows/flowsTypes";
@@ -58,11 +58,15 @@ function mintEdgeId(g: FlowGraphRec, tag: string): string {
   return id;
 }
 
-/** The node vocabulary's own defaults for a type, copied so the caller's edits
- *  cannot reach back into `NODE_DEFS`. This is where the U+2212 window string
- *  comes from (trap 3). */
+/** The params a node this sheet ADDS is created with (`createParams`: the
+ *  vocabulary's defaults with its "Created as" column over them), a fresh copy
+ *  so the caller's edits cannot reach back into `NODE_DEFS`. This is where the
+ *  U+2212 window string comes from (trap 3). A created POOL counts accepted
+ *  subs (mosaic S3, Revision 2 ruling 2); until the integration of S3 this
+ *  read the MISSING-KEY defaults, which count every sub taken, and only the
+ *  save's switch made the pool it adds count accepted subs. */
 function defaultParams(type: FlowNodeType): Record<string, string | number> {
-  return { ...NODE_DEFS[type].params };
+  return createParams(type);
 }
 
 function firstFlowOut(type: FlowNodeType): string | null {

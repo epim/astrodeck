@@ -16,7 +16,7 @@
 import type { CSSProperties, JSX, ReactNode } from "react";
 
 import { useStore } from "../../../../../store";
-import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
+import { NODE_DEFS, fieldValue } from "../../../../../components/flows/nodeDefs";
 import { ActionButton, Label, LockNote, Mono } from "../../../../ui";
 import { FlowFieldRow, type FlowFieldVariant } from "./FlowFieldRow";
 import { RIG_VALUE_PREFIX, rigValueFor } from "./issues";
@@ -93,7 +93,12 @@ export function FlowNodeEditor({
           nodeId={node.id}
           nodeType={node.type}
           field={f}
-          value={node.params[f.key]}
+          // `fieldValue`, not the raw param: TARGET's `angle` has no missing-
+          // key default (the server derives it from `rotation`), so a stored
+          // block with a real PA and no `angle` key would show no choice here
+          // while the run commands "Rotate to PA". Display only; nothing is
+          // written until the operator picks (mosaic S3, spec 3.1).
+          value={fieldValue(f, node.params)}
           variant={variant}
           lockedReason={lockedReason}
           onExplain={onExplain}

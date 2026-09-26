@@ -59,6 +59,19 @@ wind-down, which the group driver does not touch, and which reads things
 (an armed resume's window, the cooler) that have no place in a comparison
 that must be byte for byte.
 
+THE SPIN WATCHDOG (#319). `Night.run` bounds a night in real time by polling
+between ``await asyncio.sleep(0.01)`` calls, and that bound can only run while
+the event loop gets control back. A scheduler loop that never reaches an await
+that suspends never hands it back: a mutant of that shape held two xdist
+workers at 100% of a core until an outer timeout killed the run, and pytest
+printed nothing for either. So `Night.run` also arms a thread that watches the
+loop from outside it. When the loop has stayed away ``SPIN_BOUND_S`` real
+seconds, the thread dumps every thread's stack with faulthandler and raises
+`SpinNeverYielded` into the thread running the loop, which breaks the spin;
+the next time the loop comes back, `Night.run` fails the test with a message
+naming the frame that was spinning and carrying the dump. Its cases are in
+test_group_harness_watchdog.py.
+
 THE SITE IS A FIXTURE, 40 N 74 W, and not anybody's rig. ``T0`` is a fixed
 instant, 2026-09-02 01:48:09 UTC, at which the fixture site is dark for five
 hours and NGC 7331 stands 3 h east of its meridian at 54 degrees, so the
@@ -70,11 +83,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
+import faulthandler
 import heapq
 import itertools
 import json
+import os
 import sys
+import tempfile
+import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Callable
 
@@ -98,6 +117,15 @@ T0 = 1788313689.0
 TERMINAL = ("complete", "aborted", "error")
 #: A night never runs past this much fake time; reaching it fails the test.
 HORIZON_S = 16 * 3600.0
+#: How long, in REAL seconds, the event loop may stay away while `Night.run`
+#: waits on a night before the watchdog calls it a spin that never yields
+#: (#319). A working night hands the loop back every few milliseconds: the
+#: longest stretch measured across every test that runs a Night (19 files,
+#: 185 tests, under -n 12 on a 24-thread box with other suites running) was
+#: 0.20 s. Fifty times that is still far from anything a working night does,
+#: and short enough that a spin fails in bounded time instead of holding a
+#: core until somebody notices.
+SPIN_BOUND_S = 10.0
 
 
 def ra_at(ha_h: float, t: float = T0, lon: float = LON) -> float:
@@ -245,9 +273,12 @@ def config_store_as(store: ConfigStore, monkeypatch):
 
 
 @pytest.fixture
-def group_store(tmp_path, monkeypatch):
+def group_store(tmp_path, monkeypatch, request):
     """A config store of the test's own, at the fixture site, with the
-    safety monitor off (the mount limits still gate every slew)."""
+    safety monitor off (the mount limits still gate every slew). Also hands
+    the spin watchdog the pytest config (`_PYTEST_CONFIG`)."""
+    global _PYTEST_CONFIG
+    _PYTEST_CONFIG = request.config
     store = ConfigStore(path=tmp_path / "astrodeck.json")
     store.set_site(Site(name="Fixture", latitude=LAT, longitude=LON,
                         is_default=False))
@@ -397,6 +428,240 @@ def _state_view(payload: dict, t0: float) -> dict:
     return view
 
 
+# --------------------------------------------------------- the spin watchdog
+
+class SpinNeverYielded(BaseException):
+    """Raised INTO the thread running the event loop when the loop has not
+    come back for the watchdog's bound (#319).
+
+    A BaseException, not an Exception. The engine answers an Exception in a
+    step or a gate with an "error" end, or logs it and carries on, and either
+    would hide the spin behind a verdict about something else; its
+    ``except BaseException`` blocks re-raise. The engine's task then ends
+    with this as its exception, and `Night.run`, back in control, fails the
+    test with ``report``, which `_SpinWatchdog` fills in on the class it
+    raises."""
+
+    report = "the event loop did not come back (#319)"
+
+    def __str__(self) -> str:
+        return self.report
+
+
+#: The pytest config, for the watchdog's last resort to get its report out
+#: past the capture (`_SpinWatchdog._last_resort`). Set by ``group_store``;
+#: one object for the whole session, so a module global is enough.
+_PYTEST_CONFIG: Any = None
+
+
+def _raise_in_thread(thread_id: int, exc_type: type[BaseException]) -> int:
+    """Have ``thread_id`` raise ``exc_type`` at its next bytecode.
+
+    `PyThreadState_SetAsyncExc` rather than `_thread.interrupt_main`: the
+    latter raises KeyboardInterrupt, and pytest answers that by ending the
+    whole run, which is the one thing this must not do. The call returns the
+    number of threads it reached, so 0 says the thread had already gone.
+    The thread takes the raise at its next check of the eval breaker: at
+    once when it is spinning, and on return when it is inside a C call
+    (the event loop's poll, a ``time.sleep``)."""
+    return ctypes.pythonapi.PyThreadState_SetAsyncExc(
+        ctypes.c_ulong(thread_id), ctypes.py_object(exc_type))
+
+
+class _SpinWatchdog:
+    """Watch one event loop from outside it, for `Night.run` (#319).
+
+    `pet` is called from the loop's own thread each time `Night.run` gets a
+    turn; the watcher thread wakes a few times a second and compares the
+    last pet with the clock. Everything here is REAL time
+    (`time.monotonic`, the harness's own `time` module, never the night's
+    fake clock), because a spin is a real-time event: the fake clock stops
+    with it.
+
+    When the loop has been away ``bound_s``, the watcher writes the report,
+    faulthandler's dump of every thread included, and raises
+    `SpinNeverYielded` in the loop's thread. If the loop is still away a
+    whole bound after that, the spin swallowed the exception or sits in C
+    code where a raise cannot reach it; then `_last_resort` puts the report
+    where it survives and ends the process with `os._exit`. Under xdist
+    that is a crashed worker, which xdist reports against the running test
+    and replaces, so the run goes on; under -n0 it ends the run, with the
+    report printed. A hang is the one outcome not allowed.
+
+    `stop`, called from the loop's thread, ends the watcher, since a
+    watchdog outliving its run would throw into whatever the test does
+    next. It marks the watchdog stopped and then waits out a raise already
+    under way (the raise happens under the lock, after a last look at the
+    mark), so no raise STARTS after it returns. A raise made just before
+    may still land in the loop's thread afterwards, at its next check of
+    the eval breaker, which is a few bytecodes on; `Night.run` catches one
+    that lands in its own frame or in `stop`, and one that lands later
+    fails the test with the report, which is true: the loop did stay away
+    a whole bound. Neither window is one a test can place a raise in on
+    purpose; they are guarded because the cost of missing one is a
+    watcher left running into the next test."""
+
+    def __init__(self, bound_s: float, what: str) -> None:
+        self.bound_s = float(bound_s)
+        self.what = what
+        self.loop_thread = threading.get_ident()
+        self.beat = time.monotonic()
+        #: The longest the loop stayed away between two pets, in real
+        #: seconds: what a working night's gaps look like, for the control.
+        self.max_away = 0.0
+        #: The failure text, once the watchdog has fired; None until then.
+        self.report: str | None = None
+        self._lock = threading.Lock()
+        self._stopped = False
+        self._halt = threading.Event()
+        self._thread = threading.Thread(target=self._watch, daemon=True,
+                                        name=f"spin watchdog: {what}")
+
+    def start(self) -> None:
+        self.beat = time.monotonic()
+        self._thread.start()
+
+    def pet(self) -> None:
+        now = time.monotonic()
+        self.max_away = max(self.max_away, now - self.beat)
+        self.beat = now
+
+    def stop(self) -> None:
+        self._stopped = True
+        try:
+            with self._lock:         # a raise under way finishes first
+                pass
+        finally:
+            self._halt.set()
+            if self._thread.is_alive():
+                self._thread.join(timeout=5.0)
+
+    def _watch(self) -> None:
+        tick = min(0.25, self.bound_s / 8.0)
+        fired_at: float | None = None
+        while not self._halt.wait(tick):
+            away = time.monotonic() - self.beat
+            if away < self.bound_s:
+                fired_at = None
+                continue
+            with self._lock:
+                if self._stopped:
+                    return
+                if fired_at is None:
+                    if self.report is None:
+                        self.report = self._describe(away)
+                    exc_type = type(SpinNeverYielded.__name__,
+                                    (SpinNeverYielded,),
+                                    {"report": self.report})
+                    _raise_in_thread(self.loop_thread, exc_type)
+                    fired_at = time.monotonic()
+                elif time.monotonic() - fired_at >= self.bound_s:
+                    self._last_resort(away)
+
+    def _describe(self, away: float) -> str:
+        """The failure text: what happened, the frame the loop's thread was
+        in and its chain of frames in the package, and faulthandler's dump
+        of every thread. Names and line numbers only: no variable's value.
+        The first two are read a moment before the dump, so on a spin they
+        can name a neighbouring frame of the same loop."""
+        marker = f"{os.sep}astrodeck{os.sep}"
+
+        def name(fs: traceback.FrameSummary) -> str:
+            k = fs.filename.rfind(marker)
+            path = (fs.filename[k + 1:] if k >= 0
+                    else Path(fs.filename).name)
+            return f"{fs.name} ({path}:{fs.lineno})"
+
+        frame = sys._current_frames().get(self.loop_thread)
+        stack = traceback.extract_stack(frame) if frame is not None else []
+        where = name(stack[-1]) if stack else "an unknown frame"
+        # The package's frames, outermost first. The innermost one alone is
+        # often a helper the loop calls (a log line, a publish), where the
+        # spin passes through rather than where it turns; the chain shows
+        # the loop around it.
+        ours = " > ".join(name(fs) for fs in stack if marker in fs.filename)
+        try:
+            # Through a file because faulthandler writes to a descriptor,
+            # and read back so the dump rides in the failure text, which
+            # reaches the report under any capture mode and under xdist.
+            with tempfile.TemporaryFile("w+", encoding="utf-8",
+                                        errors="replace") as f:
+                faulthandler.dump_traceback(file=f, all_threads=True)
+                f.flush()
+                f.seek(0)
+                dump = f.read()
+        except Exception as exc:  # noqa: BLE001 - the raise must still happen
+            dump = f"(faulthandler could not dump: {type(exc).__name__}: {exc})"
+        lines = [
+            f"{self.what}: the event loop did not come back for {away:.1f} s "
+            f"of real time, against a bound of {self.bound_s:g} s "
+            f"(_group_harness.SPIN_BOUND_S unless the test set its own). "
+            f"A spin that never yields (#319): the engine kept running "
+            f"without reaching an await that suspends, so the night's "
+            f"wall-clock bound (wall_s) could not run either.",
+            f"The loop's thread was spinning in {where}.",
+            f"Its frames in astrodeck, outermost first: {ours or 'none'}.",
+            "Every thread's stack when the watchdog fired, from faulthandler:",
+            dump.rstrip(),
+        ]
+        return "\n".join(lines)
+
+    def _last_resort(self, away: float) -> None:
+        """Put the report where it survives the exit, and exit.
+
+        pytest's fd capture has descriptor 2 pointed at a temporary file
+        while a test runs, and `os._exit` throws that file away unread: a
+        scratch run of the "raise never lands" mutant printed NOTHING under
+        -n0, and under xdist only "worker 'gw0' crashed while running ...".
+        So, with the pytest config ``group_store`` hands over: the capture
+        is suspended, which puts descriptor 2 back on the terminal for a
+        -n0 run; and in an xdist worker, whose stderr does not reach the
+        controller's output on this box (a probe writing to it after the
+        suspend showed nothing), the report is also sent to the controller
+        as a warning on the running test, so it is printed in the run's
+        warnings summary beside xdist's own "crashed while running"."""
+        text = (f"{self.report}\n\nThe raise did not break the spin: the loop "
+                f"has now been away {away:.1f} s. Ending this process so the "
+                f"run can go on (#319).\n")
+        cfg = _PYTEST_CONFIG
+        if cfg is not None:
+            try:
+                capman = cfg.pluginmanager.getplugin("capturemanager")
+                if capman is not None:
+                    capman.suspend_global_capture(in_=False)
+            except Exception:  # noqa: BLE001 - the exit below must happen
+                pass
+            try:
+                _tell_the_xdist_controller(cfg, text)
+            except Exception:  # noqa: BLE001 - the exit below must happen
+                pass
+        try:
+            os.write(2, text.encode("utf-8", "replace"))
+        finally:
+            os._exit(3)
+
+
+def _tell_the_xdist_controller(cfg, text: str) -> None:
+    """Send ``text`` to the xdist controller as a warning recorded on the
+    running test, through the worker's own channel; nothing when this
+    process is not an xdist worker. The send is written to the channel
+    before it returns, so the exit that follows does not lose it."""
+    interactor = next((p for p in cfg.pluginmanager.get_plugins()
+                       if type(p).__name__ == "WorkerInteractor"), None)
+    if interactor is None:
+        return
+    import warnings
+
+    from xdist.remote import serialize_warning_message
+    nodeid = os.environ.get("PYTEST_CURRENT_TEST", "").rsplit(" (", 1)[0]
+    message = warnings.WarningMessage(UserWarning(text), UserWarning,
+                                      __file__, 0)
+    interactor.sendevent(
+        "warning_recorded",
+        warning_message_data=serialize_warning_message(message),
+        when="runtest", nodeid=nodeid, location=None)
+
+
 # ------------------------------------------------------------------- the night
 
 class Night:
@@ -422,10 +687,14 @@ class Night:
     wall clock whatever the night's fake time says. Off by default: the
     golden trace was recorded with it off, and a night far from any meridian
     reads the same either way.
+
+    ``spin_bound_s`` is the spin watchdog's bound for `run` (#319), in real
+    seconds; only the watchdog's own tests shorten it.
     """
 
     def __init__(self, hub, monkeypatch, *, t0: float = T0,
                  horizon_s: float = HORIZON_S,
+                 spin_bound_s: float = SPIN_BOUND_S,
                  stars: Callable[[str, str], int] | None = None,
                  goto: Callable[[str, int, dict], dict] | None = None,
                  guide: Callable[[str, int], bool] | None = None,
@@ -438,6 +707,10 @@ class Night:
         self.t0 = float(t0)
         self.clock = _Clock(time, self.t0)
         self.horizon = self.t0 + horizon_s
+        self.spin_bound_s = float(spin_bound_s)
+        #: The last `run`'s watchdog, kept for a test to read its
+        #: ``max_away``; None before the first run.
+        self.watchdog: _SpinWatchdog | None = None
         self.frozen = asyncio.Event()
         self.engine = engine if engine is not None else SequenceEngine(hub)
         self.stars = stars or (lambda target, filt: 50)
@@ -676,16 +949,45 @@ class Night:
         """Start ``plan`` and wait until the run has ended and wound down.
         False when the harness's WALL-CLOCK bound (``wall_s`` real seconds)
         or the fake horizon comes first: the run was still going, which is
-        the failure a spin produces."""
-        self.engine.start(plan, **start_kw)
-        self.session_id = self.engine._session.id
-        loop = asyncio.get_running_loop()
-        end = loop.time() + wall_s
-        while loop.time() < end and not self.frozen.is_set():
-            if not self.engine.running:
-                return True
-            await self._real_sleep(0.01)
-        return False
+        the failure a spin that yields produces.
+
+        A spin that never yields gives this loop no turn at all, so the
+        bound above never runs. The watchdog armed here catches that one
+        (#319): it breaks the spin, and the turn this loop then gets fails
+        the test with the watchdog's report. Armed before ``start``, since a
+        spin may begin at the first step, and stopped on the way out
+        whatever the way out is."""
+        dog = _SpinWatchdog(self.spin_bound_s, "Night.run")
+        self.watchdog = dog
+        dog.start()
+        try:
+            self.engine.start(plan, **start_kw)
+            self.session_id = self.engine._session.id
+            loop = asyncio.get_running_loop()
+            end = loop.time() + wall_s
+            while loop.time() < end and not self.frozen.is_set():
+                dog.pet()
+                if dog.report is not None:
+                    break
+                if not self.engine.running:
+                    return True
+                await self._real_sleep(0.01)
+            else:
+                return False
+        except SpinNeverYielded:
+            # The raise landed in this frame rather than the engine's: the
+            # loop was back by then, so the report says all there is.
+            pass
+        finally:
+            # Once more if the raise lands in the stop itself: only one is
+            # ever made, and the watcher must not outlive this run.
+            for _attempt in range(3):
+                try:
+                    dog.stop()
+                    break
+                except SpinNeverYielded:
+                    continue
+        pytest.fail(dog.report or SpinNeverYielded.report, pytrace=False)
 
     async def close(self) -> None:
         try:
@@ -695,6 +997,17 @@ class Night:
         finally:
             self._driver.cancel()
             await asyncio.gather(self._driver, return_exceptions=True)
+            # A run the watchdog broke ends with `SpinNeverYielded` as its
+            # task's exception. The failure already carries the report, so
+            # take the exception here, or asyncio logs it again as "Task
+            # exception was never retrieved" when the task is collected,
+            # outside the test's report. Only then: any other exception a
+            # run ends with is left for asyncio to report.
+            task, dog = self.engine._task, self.watchdog
+            if (dog is not None and dog.report is not None
+                    and task is not None and task.done()
+                    and not task.cancelled()):
+                task.exception()
 
     # -------------------------------------------------------------- reading
 

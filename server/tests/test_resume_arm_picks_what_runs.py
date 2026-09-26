@@ -28,7 +28,14 @@ gate is re-centred, with its planned angle, else its locked angle, else none.
 It refuses only when no candidate is shootable, in the first candidate's
 words, which are today's words for a single-target plan. A session with
 nothing to shoot tonight (every light target that owes frames set aside, and
-no calibration owed) is refused before anything moves.
+no calibration owed) is refused before anything moves. Since #283 the
+candidates also pass through the run's gating when the site is set (a closed
+window drops a target, a ready one comes first); that is
+``test_resume_arm_run_gating.py``'s, and every case here that passes a set
+site still holds with it. Since #312 a group whose pier record says it
+flipped tonight offers its panels past the meridian first; that is
+``test_resume_arm_recentre_after_flip.py``'s, and no case here writes a
+pier record, so its order is the panel order.
 
 THE HARNESS. ``_simhub.sim_hub``: the real ``Hub`` on the simulator rig with an
 isolated config and a real (synthetic, 40 N 74 W) site, a real
@@ -94,9 +101,14 @@ LIMITS_WORDS = ("re-centering after restart refused: the target is outside "
                 "this rig's configured slew limits (altitude floor, horizon, "
                 "no-go wedges, pier side or zenith keep-out); not slewing yet")
 
-#: The refusal for a session with nothing to shoot tonight.
-NOTHING_TONIGHT = ("everything this session still owes is set aside for "
-                   "tonight; not slewing until the next night")
+#: The refusal for a session with nothing to shoot tonight, in the words
+#: #283 widened it to (a closed window or a floor never cleared tonight
+#: rules a target out as a set-aside record does). A copy, not an import, so
+#: a change to the words is a change this file sees.
+NOTHING_TONIGHT = ("nothing this session still owes can be shot tonight: "
+                   "what it owes is set aside for tonight, past its observing "
+                   "window or never above its start floor; not slewing until "
+                   "the next night")
 
 #: What the recorded goto answers in place of a real re-centre.
 _CANNED = {"centered": True, "error_arcmin": 0.2, "attempts": 1,
@@ -327,6 +339,14 @@ async def test_targets_come_in_the_order_the_run_walks_them(rig,
 
     RED under mutant "no walk fallback" (``_walk`` lets the site's
     ``KeyError`` out), on the second part, observed verbatim:
+
+            assert await rig.arm(t)._recover(_session([b, a])) is None
+        E   KeyError: 'latitude'
+
+    Since #283 the same site reaches the gating too, which falls back
+    the same way (``_gating_state``). RED under mutant "the gating lets
+    a site error out" (its ``except`` narrowed to one the schedule
+    never raises), on the second part, observed verbatim:
 
             assert await rig.arm(t)._recover(_session([b, a])) is None
         E   KeyError: 'latitude'
@@ -707,23 +727,24 @@ async def test_nothing_to_shoot_tonight_is_refused_before_anything_moves(
     that owes nothing at all is the run's to complete.
 
     RED under mutant "start anyway" (the nothing-tonight refusal removed),
-    which solves and returns None, observed verbatim:
+    which solves and returns None, observed verbatim (this and the next
+    two re-run on 2026-09-25 when #283 widened the words):
 
             assert refusal == NOTHING_TONIGHT, refusal
         E   AssertionError: None
-        E   assert None == 'everything this session still owes is set aside for tonight; not slewing until the next night'
+        E   assert None == 'nothing this session still owes can be shot tonight: what it owes is set aside for tonight, past its observing window or never above its start floor; not slewing until the next night'
 
     RED under mutant "a dark owed still refuses" (calibration owed not
     asked), on the first control, observed verbatim:
 
             assert await rig.arm(T0)._recover(s2) is None
-        E   AssertionError: assert 'everything this session still owes is set aside for tonight; not slewing until the next night' is None
+        E   AssertionError: assert 'nothing this session still owes can be shot tonight: what it owes is set aside for tonight, past its observing window or never above its start floor; not slewing until the next night' is None
 
     RED under mutant "owing light not required" (the refusal asks only that
     no calibration is owed), on the second control, observed verbatim:
 
             assert await rig.arm(T0)._recover(s3) is None
-        E   AssertionError: assert 'everything this session still owes is set aside for tonight; not slewing until the next night' is None
+        E   AssertionError: assert 'nothing this session still owes can be shot tonight: what it owes is set aside for tonight, past its observing window or never above its start floor; not slewing until the next night' is None
     """
     a = _target("t-a", "NGC 604", *NGC604)
     s = _session([a])
@@ -770,11 +791,12 @@ async def test_a_target_that_waits_for_a_live_group_is_not_recentred(rig):
 
     RED under mutant "a set-aside group releases its followers" (only the
     group's live panels hold F back), which re-centres on F on the third
-    part, observed verbatim:
+    part, observed verbatim (re-run on 2026-09-25 when #283 widened the
+    words):
 
             assert refusal == NOTHING_TONIGHT, (refusal, rig.gotos)
         E   AssertionError: (None, [((16.6948, 36.4613), {})])
-        E   assert None == 'everything this session still owes is set aside for tonight; not slewing until the next night'
+        E   assert None == 'nothing this session still owes can be shot tonight: what it owes is set aside for tonight, past its observing window or never above its start floor; not slewing until the next night'
     """
     group, p = _mosaic(floor=FLOOR_DEG)
     f = _target("t-f", "M13", *M13, after=group.id)

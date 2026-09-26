@@ -26,7 +26,31 @@ async def test_operator_abort_does_not_inherit_previous_run_reason(old):
     assert eng.state["end_reason"] == "aborted"
 
 
-async def test_stop_before_new_run_gets_its_first_task_turn():
+async def test_stop_before_new_run_gets_its_first_task_turn(tmp_path,
+                                                            monkeypatch):
+    """The capture root is the test's own ``tmp_path``, and the session and
+    the report the aborted run leaves are asserted to be there (#309).
+
+    This test used to leave both in the developer's real ``captures/`` on
+    every run: 242 "Synthetic immediate stop" sessions, one of the two
+    writers that filled ``captures/sessions`` to 620 files, and a report
+    each in ``captures/reports``. conftest now gives every test a root of
+    its own; this one names its own as well, so what it leaves is checked
+    here and not only by the suite's guard.
+
+    MUTANT "the redirect deleted" (the ``monkeypatch.setattr`` of
+    ``CAPTURE_DIR`` below removed; conftest's per-test root still catches
+    the files, so the real root stayed empty): RED (observed):
+        E   AssertionError: []
+        E   assert False
+        E    +  where False = is_file()
+        E    +    where is_file = ((WindowsPath('C:/Users/bear/AppData/Local/
+        Temp/pytest-of-bear/pytest-19101/test_stop_before_new_run_gets_0') /
+        'sessions') / '63afc0fec3da40c0a270e1c2a0d9d0f5.json').is_file
+    """
+    import astrodeck.hub as hub_module
+    from astrodeck.sequence.session import session_store
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     eng = engine()
     eng._set_state(state="complete", end_reason="dawn_cutoff")
     eng.start(SequencePlan(name="Synthetic immediate stop", guide=False, targets=[
@@ -37,11 +61,16 @@ async def test_stop_before_new_run_gets_its_first_task_turn():
     session_id = eng._session.id
     await eng.abort()
     assert eng.state["state"] == eng.state["end_reason"] == "aborted"
-    from astrodeck.sequence.session import session_store
     stored = session_store.load(session_id)
     assert stored.status == "dormant"
     assert stored.auto_resume is False
     assert eng._report_finalized
+    assert (tmp_path / "sessions" / f"{session_id}.json").is_file(), (
+        sorted(p.relative_to(tmp_path).as_posix()
+               for p in tmp_path.rglob("*") if p.is_file()))
+    assert [p.name for p in (tmp_path / "reports").glob("*.json")
+            if p.name.startswith("Synthetic_immediate_stop-")], (
+        "the aborted run's report is not in this test's capture root")
 
 
 @pytest.mark.parametrize("reason", ["unsafe", "quality", "dawn_cutoff", "error"])

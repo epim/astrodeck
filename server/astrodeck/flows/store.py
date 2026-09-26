@@ -16,6 +16,11 @@ ONLY ``save()`` REWRITES A FILE (carry-over 1, #150). The bookkeeping writers --
 a folder rename or delete, a run's ``touch_run`` -- change their own fields in
 the raw JSON and nothing else, so a file keeps the version it was written at
 until the operator saves it, and the read keeps saying what that version means.
+
+A SAVE APPLIES THE SAVE RULES (``save_rules.prepare_save``, #189 Revision 2
+rulings 2 and 3): ``counts`` becomes "Accepted subs" on every TARGET and POOL,
+and each TARGET's ``frameAnchor`` is decided from the file being replaced,
+never from the client. Here, in the one writer, so every door converges.
 """
 from __future__ import annotations
 
@@ -23,24 +28,47 @@ import copy
 import json
 import time
 from pathlib import Path
+from typing import Callable
 
 from pydantic import ValidationError
 
 from ..config import CONFIG_DIR
 from ..persist import ensure_dir, list_json, read_json, safe_id_path, write_json_atomic
+from .compile import NEXT_PORT, PASS_PORT, is_multi_panel
 from .examples import examples
-from .models import EXAMPLES_FOLDER, MY_FLOWS_FOLDER, FlowRecord
+from .models import EXAMPLES_FOLDER, MY_FLOWS_FOLDER, FlowGraph, FlowRecord
+from .save_rules import (ACCEPTED_SUBS, COUNTED_TYPES, counts_attempts,
+                         prepare_save)
 
 #: 2 -- a target's ``rotation`` of 0 used to mean "no angle constraint"; it now
 #: means position angle 0.
 #: 3 -- a target's ``rotation`` of 23.4 was the palette default, an angle nobody
-#: chose (#150); it now reads "any angle". ``save()`` stamps 3, and nothing
-#: else stamps anything, which is what makes a 23.4 in a v3 file evidence that
-#: somebody saved it on purpose.
+#: chose (#150); it now reads "any angle". ``save()`` stamps 3 or 4, and
+#: nothing else stamps anything, which is what makes a 23.4 in a file of v3 or
+#: later evidence that somebody saved it on purpose.
+#: 4 -- the mosaic block (#189, spec 3.6): meanings a v3 build would misread
+#: (``schema_for``). The v3 -> v4 read changes nothing in the graph.
 #: See ``_migrate`` for why the file version is the only thing that can tell
 #: either pair of readings apart.
-FLOW_SCHEMA = 3
+FLOW_SCHEMA = 4
 FLOWS_DIR = CONFIG_DIR / "flows"
+
+#: What ``save()`` stamps a file whose graph uses no FLOW_SCHEMA 4 meaning
+#: (``schema_for``). Not 4 regardless: a build from S0 to S2 refuses a v4 file
+#: as a future schema, so stamping 4 on a flow it could read correctly would
+#: lock a downgrade out of it for nothing (spec 3.6's downgrade matrix).
+V3_SCHEMA = 3
+
+#: The v4 meanings of a flow-level setting: ``settings`` key -> the value a v3
+#: build, which has no settings at all, would misread. ``whenWaiting``'s other
+#: value is what a v3 build does anyway (it has one behaviour), so only this
+#: one needs the stamp.
+_V4_SETTINGS = {"whenWaiting": "Wait for the mosaic"}
+
+#: The ``angle`` a v3 build would misread: it has no angle choice, commands
+#: the rotator whenever ``rotation`` is 0 or more, and so would turn a fixed
+#: camera to the planned PA (spec 3.6).
+_V4_ANGLE = "Camera fixed at PA"
 
 #: The note for the v2 -> v3 rewrite, said on every read of the file until the
 #: operator saves it (only ``save()`` stamps FLOW_SCHEMA, carry-over 1). It has
@@ -50,6 +78,16 @@ FLOWS_DIR = CONFIG_DIR / "flows"
 ROTATION_234_NOTE = (
     'angle 23.4 was the old palette default and commanded a connected rotator '
     'to PA 23.4; it now reads "any angle". Set it again if you meant it.')
+
+#: Ruling 2's line (#189 Revision 2, verbatim), said on every read while any
+#: TARGET or POOL counts every sub taken. The read never switches it: loading
+#: must not change what a flow means, so the flow keeps counting attempts
+#: until the operator saves it, and the save switches it
+#: (``save_rules.prepare_save``). What the line adds when the flow has a
+#: dormant session is the route's to say; the store knows no sessions.
+COUNTS_NOTE = (
+    "This flow counts every sub taken, rejected ones included. New flows "
+    "count accepted subs only, and saving this flow switches it.")
 
 #: Longest reason an unreadable row carries. It is a card line, not a log.
 _REASON_MAX = 160
@@ -111,6 +149,56 @@ def _schema_of(raw: dict) -> int:
         raise ValueError("its schema version is not a number") from None
 
 
+def _v4_meanings(graph: FlowGraph) -> list[str]:
+    """Every FLOW_SCHEMA 4 meaning ``graph`` uses, by name; empty when a v3
+    build would read the whole graph as this build does (spec 3.6).
+
+    * a multi-panel block: a build before S3 ignores ``rows`` and ``cols``
+      and shoots the centre, as ``compile.is_multi_panel`` reads the grid.
+    * ``angle`` "Camera fixed at PA" (``_V4_ANGLE``).
+    * a loop wire, READ AS ANY WIRE ON THE PANEL LOOP'S PORTS: out of a
+      stage's ``pass`` or into a TARGET's ``next``. Wider than
+      ``compile.loop_wires`` (only a wire from the lane's tail), because what
+      decides the stamp is whether an older build can read the wire, and it
+      has neither port; a pass wire from mid-lane (M12) is no more readable
+      to it than the loop wire.
+    * ``counts`` "Accepted subs" on a TARGET or POOL: a v3 build has no
+      ``counts`` and would count every sub again.
+    * ``settings.whenWaiting`` "Wait for the mosaic" (``_V4_SETTINGS``).
+
+    DUSK's ``autoResume`` "Off" is spec 3.6's sixth meaning; it arrives with
+    the key (#195)."""
+    found: list[str] = []
+    if any(is_multi_panel(n) for n in graph.nodes):
+        found.append("multi-panel block")
+    if any(n.type == "target" and (n.params or {}).get("angle") == _V4_ANGLE
+           for n in graph.nodes):
+        found.append("camera fixed at PA")
+    if any(e.fromPort == PASS_PORT or e.toPort == NEXT_PORT
+           for e in graph.edges):
+        found.append("loop wire")
+    if any(n.type in COUNTED_TYPES
+           and (n.params or {}).get("counts") == ACCEPTED_SUBS
+           for n in graph.nodes):
+        found.append("accepted subs")
+    settings = graph.settings or {}
+    if any(settings.get(k) == v for k, v in _V4_SETTINGS.items()):
+        found.append("wait for the mosaic")
+    return found
+
+
+def schema_for(graph: FlowGraph) -> int:
+    """The version ``save()`` stamps a file holding ``graph``: FLOW_SCHEMA
+    when the graph uses any meaning a v3 build would misread
+    (``_v4_meanings``), otherwise ``V3_SCHEMA``.
+
+    Every save switches ``counts`` to "Accepted subs" (ruling 2), so in
+    practice every flow with a TARGET or POOL saved on this build stamps 4
+    and a build from S0 to S2 refuses it loudly as a future schema. That is
+    the point: such a build would count every sub again."""
+    return FLOW_SCHEMA if _v4_meanings(graph) else V3_SCHEMA
+
+
 def _migrate(raw: dict) -> dict:
     """Bring a stored flow up to ``FLOW_SCHEMA``, and say what that changed.
 
@@ -132,6 +220,20 @@ def _migrate(raw: dict) -> dict:
     changed, so ITS 23.4 was set on purpose and is never rewritten. Only the
     number 23.4 matches (Python's ``==`` does not coerce): a string "23.4" was
     typed into the field, which is a choice.
+
+    v3 -> v4: nothing in the graph. v4 adds meanings (``schema_for``), each
+    behind a key or a value a v3 file cannot hold, so a v3 graph already
+    means under v4 what it meant. DUSK's ``repeat`` -> ``autoResume`` mapping
+    is #195's, and lands with that key.
+
+    THE COUNTS NOTE IS NOT A VERSION STEP (ruling 2). While any TARGET or
+    POOL counts every sub taken (``save_rules.counts_attempts``: no
+    ``counts`` key, "Every sub taken", or a value this build does not offer)
+    the read adds ``COUNTS_NOTE``, whatever the file's version, because the
+    save is what switches it and a v4 file can hold "Every sub taken" too (a
+    hand edit, or an API writer that saved around the store). The value is
+    NEVER rewritten here: a flow that counted attempts yesterday counts
+    attempts until the operator saves it.
 
     A FILE FROM THE FUTURE IS REFUSED (#153). Returning it unchanged -- what
     the old ``>= 2`` early return did -- loads a newer build's flow with this
@@ -175,6 +277,9 @@ def _migrate(raw: dict) -> dict:
                 rewrote = True
         if rewrote:
             notes.append({"key": "rotation", "note": ROTATION_234_NOTE})
+    # v3 -> v4 rewrites nothing (see above), so it has no step here.
+    if any(counts_attempts(n.get("type"), n.get("params")) for n in nodes):
+        notes.append({"key": "counts", "note": COUNTS_NOTE})
     flow["migrated"] = notes
     return flow
 
@@ -220,9 +325,33 @@ def _short_reason(exc: BaseException) -> str:
     return "unreadable: " + reason[:_REASON_MAX]
 
 
+def catalogue_position(name: str) -> tuple[float, float, str] | None:
+    """``save_rules``' resolver: where the shipped catalogue puts a TARGET
+    known only by its name, and the canonical identity it is keyed on, or
+    None when the catalogue has no row.
+
+    Through ``tonight.resolve_target``, THE one resolver (#229), which
+    ``to_plan`` keys the block's ids through too, so the anchor a save writes
+    names the object the compile keys. Asked at ``tonight.IDENTITY_WHEN``:
+    that instant chooses the row whatever instant is passed, and placing the
+    row there too keeps a save from depending on the clock. The position is
+    used only to lay a named anchor out for ``reframe_carry``, which holds no
+    coordinates of its own. Imported and looked up at call time, so the
+    store does not load the catalogue until a name needs it, and a test that
+    replaces the resolver replaces it here as well."""
+    from . import tonight
+    hit = tonight.resolve_target(name, tonight.IDENTITY_WHEN)
+    return None if hit is None else (hit.ra_hours, hit.dec_deg, hit.identity)
+
+
 class FlowStore:
-    def __init__(self, directory: Path | None = None):
+    def __init__(self, directory: Path | None = None, *,
+                 resolve: Callable[[str], tuple[float, float, str] | None]
+                 | None = None):
         self._dir = directory
+        #: How a save places a TARGET known only by its name (``save_rules``'
+        #: ``Resolver``). The catalogue unless a caller injects another.
+        self.resolve = resolve if resolve is not None else catalogue_position
 
     @property
     def dir(self) -> Path:
@@ -404,17 +533,20 @@ class FlowStore:
     # ----------------------------------------------------------------- write
 
     def _write(self, record: FlowRecord) -> None:
-        """``save()``'s serialiser, and ONLY save's: stamped with FLOW_SCHEMA,
-        and WITHOUT ``migrated``. That note is a message about one read;
-        written into the file it would be a property of the flow, and it would
-        stamp a v3 file with a v2 file's finding.
+        """``save()``'s serialiser, and ONLY save's: stamped with the version
+        its graph needs (``schema_for``: 4 when it uses a meaning a v3 build
+        would misread, otherwise 3), and WITHOUT ``migrated``. That note is a
+        message about one read; written into the file it would be a property
+        of the flow, and it would stamp a current file with an old one's
+        finding.
 
         Nothing else may call it. It writes the MIGRATED record, and stamping
         that is right only when the operator has just seen and kept the
         migrated graph -- which is what a save is. The bookkeeping writers use
         ``_edit_raw`` (carry-over 1)."""
         write_json_atomic(self._path(record.id),
-                          {"schema_version": FLOW_SCHEMA, "id": record.id,
+                          {"schema_version": schema_for(record.graph),
+                           "id": record.id,
                            "flow": record.model_dump(by_alias=True,
                                                      exclude={"migrated"})})
 
@@ -507,7 +639,37 @@ class FlowStore:
         self._edit_raw(path, raw, update)
         return True
 
+    def _stored(self, flow_id: str) -> FlowRecord | None:
+        """The flow a save of ``flow_id`` replaces, as this build reads it
+        (migrated, as the compile that keyed its ids read it), or None: no
+        file, a file this build cannot open (it keyed nothing), or a file
+        whose record carries another id, as a copied file can (its nodes
+        are not this flow's, so they lend no anchor)."""
+        try:
+            record = _record_of(read_json(self._path(flow_id)))
+        except Exception:           # noqa: BLE001 - missing, a row, a bad id
+            return None
+        return record if record.id == flow_id else None
+
     def save(self, record: FlowRecord) -> FlowRecord:
+        """Store ``record`` and return it as stored. See ``save_and_report``,
+        which this is with the report left out."""
+        return self.save_and_report(record)[0]
+
+    def save_and_report(self, record: FlowRecord
+                        ) -> tuple[FlowRecord, list[str], list[dict]]:
+        """Store ``record``: ``(record_as_stored, migrated, reanchored)``.
+
+        The save rules run here, in the one writer (``save_rules``, rulings 2
+        and 3): ``counts`` becomes "Accepted subs" on every TARGET and POOL,
+        and every TARGET's ``frameAnchor`` is decided against the file this
+        save replaces, never taken from ``record``. ``migrated`` and
+        ``reanchored`` are ``prepare_save``'s, for the save's answer: the
+        route says "now counts accepted subs only" for the first and names
+        each block whose counts restart for the second.
+
+        After the refusals and the graph's validation, so a refused save
+        costs no catalogue lookup and says nothing it did not do."""
         if record.readonly or any(e.id == record.id for e in examples()):
             raise ReadOnlyFlow("the shipped examples are read-only — "
                                "duplicate one into My flows to edit it")
@@ -526,13 +688,15 @@ class FlowStore:
         errors = record.graph.validation_errors()
         if errors:
             raise ValueError("; ".join(errors))
+        record, migrated, reanchored = prepare_save(
+            record, self._stored(record.id), resolve=self.resolve)
         ensure_dir(self.dir)
         # `migrated` is cleared on the RETURNED record too, so the response to a
         # save never echoes a note, the client's or a stale read's.
         record = record.model_copy(update={"updated_ts": time.time(),
                                            "migrated": []})
         self._write(record)
-        return record
+        return record, migrated, reanchored
 
     def delete(self, flow_id: str) -> bool:
         """Remove the file at ``flow_id``. False when there is none.

@@ -123,6 +123,162 @@ class TestTheBriefQuotesTheGraph:
         assert "None" not in b, f"an unset param reached the prose: {b}"
 
 
+def _n(nid, ntype, x=0.0, **params):
+    return FlowNode(id=nid, type=ntype, x=x, y=0.0, params=params)
+
+
+def _e(a, ap, b, bp):
+    return FlowEdge(**{"from": a, "fromPort": ap, "to": b, "toPort": bp})
+
+
+def _mosaic(*, loop=True, skip="3-1", passes=1, angle="Rotate to PA",
+            slew=False):
+    """dusk -> TARGET M31 3x2 -> [SLEW ->] CYCLE, with the pass wire from the
+    cycle into the block's `next` when ``loop``."""
+    nodes = [_n("d", "dusk"),
+             _n("t", "target", x=100, name="M31", ra="00h 42m 44s",
+                dec="+41 16 09", rows=3, cols=2, overlap=25, rotation=30,
+                angle=angle, fovX=2.0, fovY=1.33, skip=skip, passes=passes,
+                order="Setting first"),
+             _n("y", "cycle", x=300)]
+    edges = [_e("d", "window", "t", "arm")]
+    if slew:
+        nodes.append(_n("s", "slew", x=200, tol=0.5, solver="ASTAP"))
+        edges += [_e("t", "target", "s", "run"), _e("s", "centered", "y", "run")]
+    else:
+        edges.append(_e("t", "target", "y", "run"))
+    if loop:
+        edges.append(_e("y", "pass", "t", "next"))
+    return FlowGraph(nodes=nodes, edges=edges)
+
+
+class TestTheBriefReadsAMosaic:
+    """S3 item 5 and spec 1.7: a multi-panel TARGET gets its own sentences,
+    quoting its params, and the SLEW + CENTER sentence is gone."""
+
+    def test_no_slew_sentence(self):
+        """A legacy SLEW's tolerance and solver never reached the run, so the
+        brief no longer repeats them ("slews and plate-solves to within
+        0.5′ (ASTAP)"). The node is still on the canvas for the doctor.
+
+        Mutant "keep the SLEW clause" (the sentence restored) failed:
+            E   assert 'slews and plate-solves' not in 'This flow a...rows
+                evenly.'
+            E     'slews and plate-solves' is contained here:
+            E       target it slews and plate-solves to within 0.5\\u2032
+                (ASTAP). Capture interleaves one sub per filter per pass - ...
+        """
+        g = _mosaic(slew=True)
+        assert any(n.type == "slew" for n in g.nodes), \
+            "premise: the legacy SLEW is on the canvas"
+        b = brief(g)
+        assert "slews and plate-solves" not in b, b
+        assert "0.5′" not in b and "ASTAP" not in b, b
+
+    def test_the_mosaic_sentence_quotes_the_block(self):
+        """Grid, panels shot and skipped, overlap, angle, order, passes and
+        the hop, each from the node's own params.
+
+        Mutant "no mosaic sentence" (``brief`` never adds one) failed, and in
+        the three tests below that read the sentence:
+            E   AssertionError: 'M31 is a 3x2 mosaic shooting 5 of its 6
+                panels (3-1 skipped) at 25% overlap, laid out at PA 30\\xb0
+                with the rotator turned to it at every panel.' missing from:
+                This flow arms at astronomical dusk (\\u221230 min). It then
+        """
+        b = brief(_mosaic())
+        for part in ("M31 is a 3x2 mosaic shooting 5 of its 6 panels (3-1 "
+                     "skipped) at 25% overlap, laid out at PA 30° with the "
+                     "rotator turned to it at every panel.",
+                     "After 1 pass of its filters on a panel it moves on to "
+                     "the next (setting first), and comes back until every "
+                     "panel has its subs.",
+                     "The hop between panels has not been measured on this "
+                     "rig yet."):
+            assert part in b, f"{part!r} missing from: {b}"
+        two = brief(_mosaic(passes=2, skip=""))
+        assert "of 6 panels at 25% overlap" in two, two
+        assert "After 2 passes of its filters" in two, two
+
+    def test_the_loop_wire_decides_rotating_or_one_at_a_time(self):
+        """With the pass wire the panels rotate every pass; without it they
+        run one at a time (spec 1.4: deleting the wire changes only the
+        mode).
+
+        Mutant "loop wire ignored" (every mosaic read as rotating) failed:
+            E   assert 'It shoots one panel at a time, each finished before
+                the next (setting first).' in 'This flow arms at astronomical
+                dusk (\\u221230 min). It then arms M31. M31 is a 3x2 mosaic
+                shooting 5 of its 6 panels (3-1 ...
+        """
+        b = brief(_mosaic(loop=False))
+        assert "It shoots one panel at a time, each finished before the " \
+               "next (setting first)." in b, b
+        assert "moves on to the next" not in b, b
+
+    def test_a_measured_hop_is_quoted_and_a_seed_never_is(self):
+        """A measured 160 s hop reads "about 2 m 40 s"; no cost, or one that
+        is no measurement, reads "not measured yet", never the engine's
+        150 s seed.
+
+        Mutant "hop cost ignored" (the measured cost never quoted) failed:
+            E   AssertionError: assert 'A hop between panels takes about 2 m
+                40 s, as measured on this rig.' in 'This flow arms at
+                astronomical dusk (\\u221230 min). It then arms M31. M31 is a
+                3x2 mosaic shooting 5 of its 6 panels (3-1 ...
+        """
+        assert "A hop between panels takes about 2 m 40 s, as measured on " \
+               "this rig." in brief(_mosaic(), hop_cost_s=160.0)
+        assert "about 45 s" in brief(_mosaic(), hop_cost_s=45.2)
+        for cost in (None, 0, -1.0, float("nan")):
+            b = brief(_mosaic(), hop_cost_s=cost)
+            assert "has not been measured on this rig yet" in b, (cost, b)
+            assert "150" not in b and "2 m 30 s" not in b, (cost, b)
+
+    def test_a_fixed_camera_says_the_run_checks_the_angle(self):
+        b = brief(_mosaic(angle="Camera fixed at PA"))
+        assert "laid out at PA 30° with the camera fixed there by hand, and " \
+               "the run checks the angle at every panel." in b, b
+        assert "rotator" not in b, b
+
+    def test_a_block_at_no_angle_says_it_cannot_run(self):
+        """A grid at "Any angle" is laid out at no angle, so the brief says
+        its panels will not tile and the run refuses it (M2), rather than
+        naming an angle nobody set.
+
+        Mutant "no words for no angle" (the any-angle clause dropped) failed:
+            E   AssertionError: 'M31 is a 3x2 mosaic shooting 5 of its 6
+                panels (3-1 skipped) at 25% overlap, at no set angle, so its
+                panels will not tile and it cannot run.' missing from: This
+                flow arms at astronomical dusk (\\u221230 min). It then arms
+                M31. M31 is a 3x2 mosaic shooting 5 of its 6 panels (3-1
+                skipped) at 25% overlap. After 1 pass of its filters on a
+                panel it moves on to the next (setting first), ...
+        """
+        b = brief(_mosaic(angle="Any angle"))
+        part = ("M31 is a 3x2 mosaic shooting 5 of its 6 panels (3-1 skipped) "
+                "at 25% overlap, at no set angle, so its panels will not tile "
+                "and it cannot run.")
+        assert part in b, f"{part!r} missing from: {b}"
+        assert "laid out at PA" not in b, b
+
+    def test_control_a_single_target_brief_has_no_mosaic_sentence(self):
+        """A 1x1 block is today's single target: no mosaic words, and a hop
+        cost changes nothing about its brief."""
+        g = _ex("example-m16")
+        assert "mosaic" not in brief(g)
+        assert brief(g, hop_cost_s=160.0) == brief(g)
+
+    @pytest.mark.parametrize("kw", [dict(), dict(loop=False),
+                                    dict(angle="Camera fixed at PA"),
+                                    dict(skip="1-1, 3-2", passes=3)])
+    def test_every_mosaic_brief_is_whole_sentences(self, kw):
+        b = brief(_mosaic(**kw), hop_cost_s=95.0)
+        assert b[0].isupper() and b.endswith("."), b
+        assert "  " not in b and "None" not in b, b
+        assert "—" not in b and "–" not in b, b
+
+
 # =========================================================== the campaign tab
 
 class TestWhatTheCampaignTabWillSay:

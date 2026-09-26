@@ -29,14 +29,33 @@ sheet's own defaults, Guiding + HFR watchdog, are one of the combinations that
 happens to come out clean). Each deviation below is the smallest one that clears
 the rule, and each sets a value the editor itself offers, so nothing generated
 here is unreachable by hand.
+
+WHAT SLICE S3 CHANGED (#189 U-09, #190, #196; spec 1.4, 1.7, 1.8):
+
+  * every node is CREATED, through ``nodes.create_params``, never read through
+    the missing-key defaults. A generated TARGET therefore counts accepted subs
+    and carries no angle nobody chose, and it starts with no name and no
+    coordinates, so a typed name can never land on M31's (Revision 2 rulings 2
+    and 9; #190);
+  * no lane draws SLEW + CENTER any more: centring is part of the TARGET block
+    (spec 1.7), and its settings never reached the run anyway;
+  * a typed name with no coordinates is resolved through the catalogue (#190);
+  * a fourth kind, Mosaic, lays a TARGET out as a grid from the rig's own
+    camera field, at an angle the operator gave or the camera measured, and
+    wires the panel loop from the tail of its lane (spec 1.4, 1.8).
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
+from dataclasses import dataclass
 
-from ..catalog.coords import parse_dec, parse_ra
+from ..catalog.coords import (format_dec_fits, format_ra_fits, parse_dec,
+                              parse_ra)
+from .compile import NEXT_PORT, PASS_PORT, lane_tail
 from .models import MY_FLOWS_FOLDER, FlowEdge, FlowGraph, FlowNode, FlowRecord
-from .nodes import NODE_DEFS, default_params, parse_cycle_plan
+from .nodes import NODE_DEFS, TARGET_ANGLES, create_params, parse_cycle_plan
+from .rig import RigFacts
 
 # ---------------------------------------------------------------- the answers
 # The three questions, verbatim from the sheet (screenshots/09-wizard-new-flow).
@@ -46,7 +65,13 @@ from .nodes import NODE_DEFS, default_params, parse_cycle_plan
 KIND_DEEP_SKY = "Deep-sky target"
 KIND_POOL = "Best of several"
 KIND_EAA = "EAA quick look"
-KINDS: tuple[str, ...] = (KIND_DEEP_SKY, KIND_POOL, KIND_EAA)
+#: The generator behind "Send to Flow Wizard" (#196, spec S3 item 4): one
+#: TARGET block laid out as a grid, with the panel loop wired. Its stepped
+#: sheet lands with the framing modal (S4) and its doors move in S6; until
+#: then it is reached through the same route and the same answers plus the
+#: grid, and the three original kinds generate exactly what they did.
+KIND_MOSAIC = "Mosaic"
+KINDS: tuple[str, ...] = (KIND_DEEP_SKY, KIND_POOL, KIND_EAA, KIND_MOSAIC)
 
 OPT_GUIDING = "Guiding"
 OPT_DUSK_FLATS = "Dusk flats"
@@ -97,7 +122,41 @@ UNGUIDED_EXPOSURE_DEFAULT = 30
 #: Used when the operator generates without typing a target — they get a flow
 #: they can find in the library rather than a second "Untitled flow".
 _FALLBACK_NAME = {KIND_DEEP_SKY: "New deep-sky run", KIND_POOL: "Pool night",
-                  KIND_EAA: "quick look"}
+                  KIND_EAA: "quick look", KIND_MOSAIC: "New mosaic"}
+
+# ---------------------------------------------------------- the mosaic kind
+# EVERY NUMBER THE MOSAIC KIND USES IS NAMED HERE, AT MODULE LEVEL, and the
+# functions that build it hold no numeric literal at all. That is what lets
+# `test_flows_wizard_mosaic` prove, by reading their source, that no angle is
+# ever defaulted: an angle nobody chose is the I-04 defect (23.4 commanding a
+# rotator, #150), and a literal inside the builder is the one place such a
+# default could hide. None of the names below is an angle.
+
+#: TARGET's three angle choices, unpacked so that a fourth added to
+#: ``nodes.TARGET_ANGLES`` fails here, at import, rather than being quietly
+#: offered to a mosaic.
+ANY_ANGLE, ROTATE_TO_PA, CAMERA_FIXED_AT_PA = TARGET_ANGLES
+#: The two a mosaic may use (doctor M2: a grid is laid out at one angle, and
+#: "Any angle" lets every panel land however the camera happens to sit).
+MOSAIC_ANGLES: tuple[str, ...] = (ROTATE_TO_PA, CAMERA_FIXED_AT_PA)
+#: The smallest side a grid may have: one panel. A grid of one panel by one
+#: is a single target, not a mosaic.
+GRID_MIN = 1
+#: The lowest overlap, in percent; the highest is `to_plan.OVERLAP_MAX_PCT`.
+OVERLAP_MIN_PCT = 0.0
+#: A TARGET holds its overlap in percent, `framing.DEFAULT_OVERLAP` is a
+#: fraction.
+_PERCENT = 100.0
+#: A position angle is an angle modulo one turn. Folded into [0, 360) because
+#: a negative `rotation` is "Any angle" to every reader (#150): a measured
+#: -4.8 written as it came would be read as no angle at all.
+_FULL_TURN_DEG = 360.0
+
+#: The wizard's answer when the rig has no camera field (spec 1.8), verbatim.
+#: It never emits a grid it cannot tile (doctor M1): it answers with a single
+#: target and says this.
+NO_OPTICS_REASON = ("set the camera and focal length in Settings > Optics to "
+                    "plan a mosaic")
 
 
 class _Canvas:
@@ -116,9 +175,15 @@ class _Canvas:
         self._wired = 0
 
     def add(self, node_type: str, x: float, y: float) -> FlowNode:
+        # CREATED, not loaded (spec 3.1): `create_params` overlays the node's
+        # Created-as column on its missing-key defaults. The defaults keep
+        # the meaning a key had before it existed, for flows saved before it;
+        # a node the wizard makes is new, so it takes the new choices, and a
+        # TARGET starts with no name, no coordinates, no angle and accepted
+        # subs only (Revision 2 rulings 2 and 9, #190).
         self._minted += 1
         node = FlowNode(id=f"n{self._minted}", type=node_type,
-                        x=float(x), y=float(y), params=default_params(node_type))
+                        x=float(x), y=float(y), params=create_params(node_type))
         self.nodes.append(node)
         return node
 
@@ -195,6 +260,211 @@ def _checked(kind: str, options: Iterable[str] | None) -> tuple[str, frozenset[s
     return kind, opts
 
 
+#: What the wizard says when a TARGET was given no name and no coordinates.
+#: The node is left blank, as a palette drop leaves it, and the run refuses it
+#: ("no target the run could point at") rather than guessing one: before S3
+#: the blank was filled with M31's, a default nobody chose (#190).
+NO_TARGET_NOTE = ("no target was named, so the TARGET has no name and no "
+                  "coordinates: set them in the editor before RUN")
+
+
+def _sexagesimal(ra_hours: float, dec_deg: float) -> tuple[str, str]:
+    """``(ra, dec)`` as a TARGET card writes them, ``"00h 42m 44.3s"`` and
+    ``"+41° 16' 08\\""``, from a catalogue row's decimal hours and degrees.
+
+    THROUGH THE FITS FORMATTERS, which round before they split. The card
+    formatters (``format_ra``, ``format_dec``) truncate the minutes and round
+    the seconds, so 42m 59.97s prints as "42m 60.0s". Both strings parse back
+    through ``parse_ra``/``parse_dec`` to within 0.05 s of time and half an
+    arcsecond of the row, far inside any centring tolerance."""
+    h, m, s = format_ra_fits(ra_hours).split()
+    d, am, asec = format_dec_fits(dec_deg).split()
+    return f"{h}h {m}m {s}s", f"{d}° {am}' {asec}\""
+
+
+def _resolve_name(name: str) -> tuple[tuple[str, str] | None, str | None]:
+    """``(coords, note)`` for a TARGET given a name and no coordinates (#190).
+
+    THROUGH THE ONE RESOLVER, ``tonight.resolve_target``: the one ``to_plan``
+    places a name-only TARGET with and keys its ids on, so the wizard and the
+    run cannot pick two objects for one name. Looked up on the module at call
+    time, as ``to_plan`` does, so a test that replaces it replaces it for all.
+
+    * A FIXED ROW (a deep-sky object, a star) gets its coordinates written onto
+      the node. The card then shows where the run will point, and the doctor's
+      convergence and angle rules, which measure typed coordinates only, can
+      measure a mosaic of it.
+    * A MOVING BODY (a planet, the Moon, a comet, a satellite) gets none. Its
+      coordinates are the catalogue's answer at one instant, and written down
+      they would point tomorrow's run at where it was when the wizard ran. Left
+      name-only, the compile places it where it is at each run (spec 3.3).
+    * A NAME THE CATALOGUE DOES NOT KNOW gets none, and a note that says so.
+      The node keeps the name the operator typed and the run refuses it for
+      want of coordinates, which is what #190 asked for: before S3 it would
+      have slewed to M31 and filed the frames under the typed name."""
+    from . import tonight       # loads the sequence package, so only when asked
+    hit = tonight.resolve_target(name)
+    if hit is None:
+        return None, (f"the catalogue has no {name!r}, so its TARGET has no "
+                      f"coordinates: type its RA and Dec in the editor before "
+                      f"RUN")
+    if hit.moves:
+        return None, None
+    return _sexagesimal(hit.ra_hours, hit.dec_deg), None
+
+
+def _mosaic_answers_belong(kind: str, **answers) -> None:
+    """Refuse a grid or an angle given with a kind that is not Mosaic.
+
+    Refused rather than dropped, for ``_checked``'s reason: a client that sent
+    a 3x2 with "Deep-sky target" would otherwise get one panel back looking
+    exactly like the mosaic it asked for. The rig facts (``rig``,
+    ``measured_pa_deg``) are not answers, and the route may pass them with any
+    kind."""
+    if kind == KIND_MOSAIC:
+        return
+    given = sorted(k for k, v in answers.items()
+                   if v is not None and v is not False)
+    if given:
+        raise ValueError(f"{', '.join(given)} belong to the {KIND_MOSAIC!r} "
+                         f"kind; this is {kind!r}")
+
+
+def _mosaic_grid(rows, cols, overlap_pct) -> tuple[int, int, float]:
+    """``(rows, cols, overlap in percent)``, checked against the bounds the
+    compile and the projection hold (``to_plan.GRID_MAX`` and
+    ``OVERLAP_MAX_PCT``), so a grid the wizard writes is one the run takes.
+
+    The overlap defaults to ``framing.DEFAULT_OVERLAP``, the one server
+    constant for it (spec 2.4); rows and cols have no default, because a grid
+    is the one thing a mosaic answer is for."""
+    from ..catalog import framing
+    from .to_plan import GRID_MAX, OVERLAP_MAX_PCT
+    sides: list[int] = []
+    for what, value in (("rows", rows), ("cols", cols)):
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or not float(value).is_integer()
+                or not GRID_MIN <= value <= GRID_MAX):
+            raise ValueError(f"a mosaic's {what} is a whole number from "
+                             f"{GRID_MIN} to {GRID_MAX}, not {value!r}")
+        sides.append(int(value))
+    n_rows, n_cols = sides
+    if n_rows == n_cols == GRID_MIN:
+        raise ValueError(f"a grid of {GRID_MIN} x {GRID_MIN} is a single "
+                         f"target, not a mosaic; use the "
+                         f"{KIND_DEEP_SKY!r} kind")
+    if overlap_pct is None:
+        overlap = framing.DEFAULT_OVERLAP * _PERCENT
+    else:
+        overlap = overlap_pct
+        if (isinstance(overlap, bool) or not isinstance(overlap, (int, float))
+                or not math.isfinite(overlap)
+                or not OVERLAP_MIN_PCT <= overlap <= OVERLAP_MAX_PCT):
+            raise ValueError(f"a mosaic's overlap is a percentage from "
+                             f"{OVERLAP_MIN_PCT:g} to {OVERLAP_MAX_PCT:g}, "
+                             f"not {overlap_pct!r}")
+    # 25, not 25.0, in the node's params: the inspector renders it.
+    return n_rows, n_cols, (int(overlap) if float(overlap).is_integer()
+                            else float(overlap))
+
+
+def _mosaic_angle(angle_mode, pa_deg, use_measured, measured_pa_deg,
+                  rig: RigFacts | None) -> tuple[str, float]:
+    """``(angle, pa_deg)`` for a mosaic: the operator's PA, or the angle the
+    camera measured (USE MEASURED), and NEVER A DEFAULT (spec 1.8).
+
+    A mosaic with no angle cannot tile (doctor M2), and an angle nobody chose
+    is the I-04 defect: 23.4, the M31 Example's angle copied in as a palette
+    default, commanded every connected rotator to it (#150). So when neither
+    is given the answer is a refusal naming both ways to give one.
+
+    ``measured_pa_deg`` is a rig fact the route injects from the last solve's
+    sky angle (``status.sky_angle``). Asked for with none recorded, it is a
+    refusal too: a fixed camera laid out at a guessed angle holds the mosaic at
+    its first panel (spec 5.6).
+
+    "Rotate to PA" is refused when the rig says it has no rotator: the modal
+    locks that choice with a reason (spec 2.4), and a generated graph must not
+    offer what the editor would not. An unknown rotator (``has_rotator`` None)
+    is not a "no"."""
+    if angle_mode not in MOSAIC_ANGLES:
+        raise ValueError(
+            f"a mosaic is laid out at one camera angle, so its angle is "
+            f"{' or '.join(repr(a) for a in MOSAIC_ANGLES)}, not "
+            f"{angle_mode!r}")
+    if (angle_mode == ROTATE_TO_PA and rig is not None
+            and rig.has_rotator is False):
+        raise ValueError(
+            f"the active profile has no rotator, so nothing can turn the "
+            f"camera to a PA: choose {CAMERA_FIXED_AT_PA!r} and lay the grid "
+            f"out at the angle the camera sits at")
+    if use_measured:
+        if pa_deg is not None:
+            raise ValueError("give a PA or ask for the angle the camera "
+                             "measured, not both")
+        if measured_pa_deg is None:
+            raise ValueError("the camera has no measured angle yet: no "
+                             "centring solve has recorded one. Type the PA")
+        value, what = measured_pa_deg, "the measured angle"
+    else:
+        if pa_deg is None:
+            raise ValueError("a mosaic is laid out at one camera angle: type "
+                             "the PA, or use the angle the camera measured")
+        value, what = pa_deg, "the PA"
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value)):
+        raise ValueError(f"{what} is a finite number of degrees, not "
+                         f"{value!r}")
+    return angle_mode, float(value) % _FULL_TURN_DEG
+
+
+#: Where a generated block's camera field came from, when the route's rig
+#: facts carry no provenance line of their own.
+_FOV_FROM_LIVE = "the rig's live optics when the wizard planned it"
+
+
+def _mosaic_params(rows, cols, overlap_pct, angle_mode, pa_deg, use_measured,
+                   measured_pa_deg, rig: RigFacts | None
+                   ) -> tuple[dict | None, str | None]:
+    """``(params, reason)``: the TARGET params that make it a grid, or None
+    and the reason it stays one target.
+
+    THE CAMERA FIELD COMES FROM THE RIG (spec 1.8): ``rig.fov_deg``, the live
+    effective optics at bin 1, which is what the modal's MATCH CAMERA
+    snapshots. With none there is nothing to tile from, so the answer is a
+    single target and ``NO_OPTICS_REASON``, never a grid of 0 x 0 degree
+    panels (doctor M1). Checked FIRST: without a field the grid and the angle
+    cannot be used at all, and a refusal about an angle that would be thrown
+    away would hide the one thing the operator has to fix."""
+    field = None if rig is None else rig.fov_deg
+    if field is None:
+        return None, NO_OPTICS_REASON
+    n_rows, n_cols, overlap = _mosaic_grid(rows, cols, overlap_pct)
+    angle, pa = _mosaic_angle(angle_mode, pa_deg, use_measured,
+                              measured_pa_deg, rig)
+    fov_x, fov_y = field
+    return {"rows": n_rows, "cols": n_cols, "overlap": overlap,
+            "fovX": fov_x, "fovY": fov_y,
+            "fovFrom": rig.fov_from or _FOV_FROM_LIVE,
+            "angle": angle, "rotation": pa}, None
+
+
+def _wire_the_loop(canvas: "_Canvas", target: FlowNode) -> None:
+    """The panel loop (spec 1.4): ``<tail>.pass -> target.next``, from the
+    TAIL of the block's panel lane as ``compile.lane_tail`` finds it, the same
+    function the compile and the doctor read the lane with, so the wire the
+    wizard draws is the wire they call the loop (M3 silent, M12 silent).
+
+    The wizard's lane always ends its panel lane on the capture stage (the
+    REPORT after it ends the lane), and both capture stages have a `pass`
+    output; a lane without one is a bug here, not an answer to give."""
+    tail = lane_tail(canvas.graph(), target)
+    if tail is None or NODE_DEFS[tail.type].port(PASS_PORT, "out") is None:
+        raise RuntimeError(f"the wizard's panel lane ended on {tail!r}, "
+                           f"which has no {PASS_PORT!r} output")
+    canvas.wire(tail, PASS_PORT, target, NEXT_PORT)
+
+
 def generate(kind: str = KIND_DEEP_SKY,
              options: Iterable[str] | None = None,
              target: str = "",
@@ -203,7 +473,15 @@ def generate(kind: str = KIND_DEEP_SKY,
              cycle_plan: str = "",
              cycles: int = 1,
              coords: tuple[str, str] | None = None,
-             safety_abort: bool = False) -> FlowGraph:
+             safety_abort: bool = False,
+             rows: int | None = None,
+             cols: int | None = None,
+             overlap_pct: float | None = None,
+             angle_mode: str | None = None,
+             pa_deg: float | None = None,
+             use_measured: bool = False,
+             rig: RigFacts | None = None,
+             measured_pa_deg: float | None = None) -> FlowGraph:
     """The graph for one set of wizard answers.
 
     ``kind`` is one of :data:`KINDS`, ``options`` any subset of
@@ -215,11 +493,13 @@ def generate(kind: str = KIND_DEEP_SKY,
     tolerance, neither of which this function can see.
 
     Shape (§9): the flow lane is dusk → [dome] → [dusk flats] → target|pool →
-    slew → autofocus → [guide] → capture → report, laid out left to right in the
+    autofocus → [guide] → capture → report, laid out left to right in the
     order the night runs; underneath it sits a rules row of whatever the chips
     asked for. Guide is skipped for EAA whether or not the chip is lit, because
     a 4-second sub does not need one and paying the settle time per frame would
-    make a live view stutter.
+    make a live view stutter. There is NO SLEW + CENTER (spec 1.7, S3): the
+    TARGET block centres, with the tolerance and tries it carries, and the
+    stage's own settings never reached the run.
 
     FOUR KEYWORD-ONLY EXTRAS, all inert at their defaults, exist so ``quick()``
     below can reuse THIS builder instead of drawing a second deep-sky graph:
@@ -227,23 +507,60 @@ def generate(kind: str = KIND_DEEP_SKY,
     * ``cycle_plan`` -- a FILTER CYCLE slot table (``"L 60, R 60, …"``). When it
       is given the capture stage is a FILTER CYCLE carrying it rather than a
       CAPTURE LOOP, and every rule that hangs off the capture stage (the HFR
-      watchdog's ``frame`` wire, the doctor's guide/focus/slew checks) follows
-      it there, because both node types are capture stages.
+      watchdog's ``frame`` wire, the doctor's guide/focus checks) follows it
+      there, because both node types are capture stages.
     * ``cycles`` -- that cycle's pass count (``perCycle`` stays 1).
-    * ``coords`` -- ``(ra, dec)`` written onto the TARGET node. The wizard's own
-      sheet only collects a name, so it passes None and the node keeps the
-      catalogue-shaped default it has always had.
+    * ``coords`` -- ``(ra, dec)`` written onto the TARGET node as given. With
+      None, a typed name is resolved through the catalogue (``_resolve_name``,
+      #190); the node itself starts with no coordinates at all.
     * ``safety_abort`` -- mint the SAFETY MONITOR → ABORT + PARK pair even with
       no dome and no notify chip. It is the same ``_safety_pair`` the dome
       branch uses, so a graph never ends up with two monitors.
 
+    THE MOSAIC KIND'S ANSWERS (spec 1.8, S3 item 4), refused with any other
+    kind: ``rows`` and ``cols`` (1 to ``to_plan.GRID_MAX``, more than one
+    panel), ``overlap_pct`` (percent; None takes ``framing.DEFAULT_OVERLAP``),
+    ``angle_mode`` (:data:`MOSAIC_ANGLES`), and either ``pa_deg`` or
+    ``use_measured``. And two rig facts the route injects, never answers:
+    ``rig`` (``RigFacts``; its ``fov_deg`` is the camera field the grid is
+    tiled from, its ``has_rotator`` gates "Rotate to PA") and
+    ``measured_pa_deg`` (the sky angle the last centring solve recorded, for
+    USE MEASURED). See ``_mosaic_params`` for what each does when missing.
+
     A SECOND BUILDER IS THE THING THIS MODULE EXISTS TO PREVENT. The header
     above names drift between two implementations of one rule set as what this
     project keeps re-finding; a "quick" generator that drew its own dusk →
-    target → slew → autofocus → guide → report lane would be exactly that, and
-    it would drift on the first deviation the doctor forces on one of them.
+    target → autofocus → guide → report lane would be exactly that, and it
+    would drift on the first deviation the doctor forces on one of them. The
+    mosaic kind is this builder too, for the same reason.
     """
+    return _generate(
+        kind, options, target, unguided_exposure_s, cycle_plan=cycle_plan,
+        cycles=cycles, coords=coords, safety_abort=safety_abort, rows=rows,
+        cols=cols, overlap_pct=overlap_pct, angle_mode=angle_mode,
+        pa_deg=pa_deg, use_measured=use_measured, rig=rig,
+        measured_pa_deg=measured_pa_deg)[0]
+
+
+def _generate(kind, options, target, unguided_exposure_s, *, cycle_plan,
+              cycles, coords, safety_abort, rows, cols, overlap_pct,
+              angle_mode, pa_deg, use_measured, rig, measured_pa_deg
+              ) -> tuple[FlowGraph, list[str]]:
+    """``generate``'s graph and the notes that go with it: why a mosaic was
+    answered as one target, why a TARGET has no coordinates. ``generate``
+    documents every argument."""
     kind, opts = _checked(kind, options)
+    _mosaic_answers_belong(kind, rows=rows, cols=cols,
+                           overlap_pct=overlap_pct, angle_mode=angle_mode,
+                           pa_deg=pa_deg, use_measured=use_measured)
+    notes: list[str] = []
+    layout: dict | None = None
+    if kind == KIND_MOSAIC:
+        layout, why = _mosaic_params(rows, cols, overlap_pct, angle_mode,
+                                     pa_deg, use_measured, measured_pa_deg,
+                                     rig)
+        if why is not None:
+            notes.append(why)
     tname = (target or "").strip()
     # A garbled or non-positive override falls back to the default rather than
     # being honoured: an exposure of 0 compiles to a step that captures nothing,
@@ -269,7 +586,9 @@ def generate(kind: str = KIND_DEEP_SKY,
     if OPT_DUSK_FLATS in opts:
         lane_types.append("duskflats")
     lane_types.append("pool" if kind == KIND_POOL else "target")
-    lane_types += ["slew", "autofocus"]
+    # No "slew" (spec 1.7): the TARGET block centres. Every stage after it is
+    # in its panel lane, which is what a mosaic's loop needs.
+    lane_types.append("autofocus")
     guided = kind != KIND_EAA and OPT_GUIDING in opts
     if guided:
         lane_types.append("guide")
@@ -284,13 +603,22 @@ def generate(kind: str = KIND_DEEP_SKY,
         if node.type == "target":
             if tname:
                 node.params["name"] = tname
-            if coords is not None:
-                # THE COORDINATES ARE THE RUNNABLE PART. A TARGET whose name was
-                # replaced and whose ra/dec were not still points at M31 -- the
-                # node's default -- so the night would slew to Andromeda and file
-                # the frames under the name the operator typed. `to_plan` reads
-                # ra/dec and never the name, so this is not cosmetic.
-                node.params["ra"], node.params["dec"] = coords
+            # THE COORDINATES ARE THE RUNNABLE PART. A name alone used to
+            # leave the node's shipped M31 coordinates in place, so NEW FLOW
+            # for M16 slewed to Andromeda and filed the frames as M16 (#190).
+            # The node is created blank now, and a typed name is resolved
+            # through the catalogue; one it cannot place stays blank, which
+            # the run refuses rather than guessing.
+            where = coords
+            if where is None:
+                where, why = (_resolve_name(tname) if tname
+                              else (None, NO_TARGET_NOTE))
+                if why is not None:
+                    notes.append(why)
+            if where is not None:
+                node.params["ra"], node.params["dec"] = where
+            if layout is not None:
+                node.params.update(layout)
         elif node.type == "pool" and tname.find(",") > 0:
             # A LIST replaces the pool's candidates; a single name does not.
             # Transcribed — one name is not a pool, and overwriting four
@@ -315,6 +643,14 @@ def generate(kind: str = KIND_DEEP_SKY,
             # ONE SUB PER FILTER PER PASS. `cycles` is then literally "how many
             # subs of each filter", which is the number the operator typed.
             node.params["perCycle"] = 1
+
+    if layout is not None:
+        # THE CIRCLE THE OWNER ASKED FOR (spec 1.4): the wizard's mosaic is
+        # one of the named moments the loop wire is added, so its panels
+        # rotate every pass, and a night cut short leaves every panel
+        # started rather than the last ones empty (doctor M3). Wired before
+        # the rules row so its edge id sits with the lane's.
+        _wire_the_loop(canvas, next(n for n in lane if n.type == "target"))
 
     # ------------------------------------------------------------ rules row
     rules_x = _RULES_X0
@@ -390,7 +726,7 @@ def generate(kind: str = KIND_DEEP_SKY,
                     canvas, paired_with_cloudwatch=cloudwatch is not None)
             canvas.wire(safety, "unsafe", notify, "do")
 
-    return canvas.graph()
+    return canvas.graph(), notes
 
 
 def flow_name(kind: str = KIND_DEEP_SKY, target: str = "") -> str:
@@ -404,20 +740,79 @@ def flow_name(kind: str = KIND_DEEP_SKY, target: str = "") -> str:
     return name[:120]
 
 
+@dataclass(frozen=True)
+class WizardAnswer:
+    """What the wizard answers: the flow, and what it has to say about it.
+
+    ``notes`` are sentences for the operator, in the order they arose: why a
+    mosaic was answered as one target (``NO_OPTICS_REASON``), why a TARGET
+    has no coordinates (a name the catalogue does not know, or no name). A
+    route that drops them hands back a flow whose card and canvas do not say
+    why it is not what was asked for."""
+    record: FlowRecord
+    notes: tuple[str, ...] = ()
+
+
+def generate_answer(kind: str = KIND_DEEP_SKY,
+                    options: Iterable[str] | None = None,
+                    target: str = "",
+                    unguided_exposure_s: float | None = None,
+                    *,
+                    rows: int | None = None,
+                    cols: int | None = None,
+                    overlap_pct: float | None = None,
+                    angle_mode: str | None = None,
+                    pa_deg: float | None = None,
+                    use_measured: bool = False,
+                    rig: RigFacts | None = None,
+                    measured_pa_deg: float | None = None) -> WizardAnswer:
+    """The generated flow as the library stores it, with the wizard's notes.
+
+    The arguments are ``generate``'s (the three answers, the unguided sub
+    length, the mosaic kind's answers and the two injected rig facts); this is
+    the call a route makes when it will show the notes. Raises ValueError for
+    an answer it cannot honour (an unknown kind or chip, a grid or angle with
+    another kind, a mosaic grid out of bounds, a mosaic with no angle, "Rotate
+    to PA" on a rig with no rotator), which a route answers 422.
+
+    A mosaic answered as one target says so on its card too: the tagline is
+    the library card's only line of prose, and a card reading "mosaic" over a
+    single target would be the claim nothing keeps."""
+    graph, notes = _generate(
+        kind, options, target, unguided_exposure_s, cycle_plan="", cycles=1,
+        coords=None, safety_abort=False, rows=rows, cols=cols,
+        overlap_pct=overlap_pct, angle_mode=angle_mode, pa_deg=pa_deg,
+        use_measured=use_measured, rig=rig, measured_pa_deg=measured_pa_deg)
+    tagline = f"Generated by the wizard — {kind.lower()}"
+    if NO_OPTICS_REASON in notes:
+        tagline += f", planned as one target: {NO_OPTICS_REASON}"
+    return WizardAnswer(
+        record=FlowRecord(name=flow_name(kind, target), folder=MY_FLOWS_FOLDER,
+                          tagline=tagline[:400], graph=graph),
+        notes=tuple(notes))
+
+
 def generate_record(kind: str = KIND_DEEP_SKY,
                     options: Iterable[str] | None = None,
                     target: str = "",
-                    unguided_exposure_s: float | None = None) -> FlowRecord:
+                    unguided_exposure_s: float | None = None,
+                    **mosaic_and_rig) -> FlowRecord:
     """The generated flow as the library stores it — graph, name and tagline.
 
-    Lands in My flows, never in Examples: the five fixtures are read-only and a
-    generated flow is the operator's, to edit from the moment it appears.
+    Lands in My flows, never in Examples: the Examples are read-only fixtures
+    and a generated flow is the operator's, to edit from the moment it appears.
+
+    ``generate_answer``'s record, with the same arguments: the four positional
+    answers the route has always passed, and, keyword-only, ``rows``,
+    ``cols``, ``overlap_pct``, ``angle_mode``, ``pa_deg``, ``use_measured``,
+    ``rig`` and ``measured_pa_deg``. A caller with only the three original
+    answers gets exactly the graph those answers have always made, less SLEW +
+    CENTER (spec 1.7) and with created params. A route that must say why a
+    mosaic came back as one target calls ``generate_answer`` instead, for the
+    notes; the record's tagline says it either way.
     """
-    return FlowRecord(
-        name=flow_name(kind, target),
-        folder=MY_FLOWS_FOLDER,
-        tagline=f"Generated by the wizard — {kind.lower()}",
-        graph=generate(kind, options, target, unguided_exposure_s))
+    return generate_answer(kind, options, target, unguided_exposure_s,
+                           **mosaic_and_rig).record
 
 
 # ============================================================== the quick flow

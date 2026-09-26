@@ -21,13 +21,17 @@ import type {
 } from "../../lib/flowsApi";
 import { runIsLive } from "../../lib/lastSessionFrame";
 import type { SequenceState } from "../../types";
-import { NODE_DEFS } from "./nodeDefs";
+import { NODE_DEFS, createParams } from "./nodeDefs";
 import { fitView, type Rect } from "./geometry";
 import { flowLoopRefusal, portKindOf } from "./flowLoop";
+import {
+  NEXT_PORT, PASS_PORT, isMultiPanel, laneTail, loopWires, ownerOf,
+} from "./panelLane";
+import { COUNTS_MIGRATION_KEY } from "./flowsTypes";
 import type {
-  FlowCalHealth, FlowCompileResult, FlowGraphRec, FlowLogLine, FlowNodeType,
-  FlowPhoneTab, FlowRecordRec, FlowRunState, FlowScreen, FlowSelection,
-  PendingWire, TonightTab,
+  FlowCalHealth, FlowCompileResult, FlowEdgeRec, FlowGraphRec, FlowLogLine,
+  FlowNodeType, FlowPhoneTab, FlowReanchored, FlowRecordRec, FlowRunState,
+  FlowScreen, FlowSelection, PendingWire, TonightTab,
 } from "./flowsTypes";
 
 /** Ring size for the run log. README §"State management" says ~120. */
@@ -377,6 +381,133 @@ function migrationNotes(rec: FlowRecordRec): string[] {
     .filter((n): n is string => typeof n === "string" && n !== "");
 }
 
+// ───────────────────────────────────────────────── what a save's answer says
+//
+// Two things a save can do to the counts that nothing on the canvas shows
+// (#189; spec 3.3 and Revision 2, rulings 2 and 3). The server does both in
+// `_persist_flow`, so every writer converges, and names them in its answer:
+//
+//   - `migrated` carries a `counts` entry when the save switched the flow's
+//     TARGETs and POOLs to counting accepted subs only. Before the save both
+//     editors said it would ("saving this flow switches it"); after it, the
+//     log says it did.
+//   - `reanchored` lists every block whose framing moved too far for its
+//     counts to carry: a raw field edit in the inspector (a nudged RA, a
+//     changed field of view) restarts a campaign's counts, and the operator
+//     who typed it would otherwise meet that first as CONTINUE's
+//     dropped-steps question (5.9), nights later.
+//
+// One line each, on the flow log both editors draw. Nothing for an answer
+// without them: an older server's, and every save that changed neither.
+
+/** The line for the counts switch. The ruling fixes the UI's words ("now
+ *  counts accepted subs only"); the rest says what that changes. */
+export const COUNTS_SWITCHED_LINE =
+  "this flow now counts accepted subs only; rejected subs no longer count toward any step";
+
+/** Degrees as the arcminutes the modal and the spec speak in: `14.8'`. */
+const arcmin = (deg: number): string => `${(deg * 60).toFixed(1)}'`;
+
+/** Why a block re-anchored, in words, from the server's numbers or its reason.
+ *  A reason this build does not know gets the one thing every re-anchor has
+ *  in common, rather than a guess. */
+function reanchorWhy(r: FlowReanchored): string {
+  const move = num(r.max_move_deg);
+  const limit = num(r.threshold_deg);
+  // "Framing", not "panels": a single target re-anchors too (its one panel's
+  // corners move when it turns), and "its panels" would misname it.
+  if (move !== null && limit === 0) {
+    // No camera field recorded means no measure of "a little" (spec 3.3), and
+    // "a move under 0.0'" would read as a broken number.
+    return `its framing moved ${arcmin(move)}, and with no camera field recorded no move carries counts over`;
+  }
+  if (move !== null && limit !== null) {
+    return `its framing moved ${arcmin(move)}, and its grid carries counts over only for a move under ${arcmin(limit)}`;
+  }
+  switch (r.reason) {
+    case "grid": return "its rows or columns changed";
+    case "angle": return "its angle changed between any angle and a set one";
+    case "identity": return "it now names a different object";
+    default: return "its framing changed";
+  }
+}
+
+/** The flow-log lines a save's answer asks for, in order: the counts switch
+ *  (once, however many entries say it), then one line per re-anchored block.
+ *  `graph` names the blocks: the saved graph, whose node ids the answer
+ *  uses. Read defensively, as `migrationNotes` is: the answer is the network's. */
+export function saveAnswerLines(
+  saved: FlowRecordRec, graph: FlowGraphRec,
+): { msg: string; tone: FlowLogLine["tone"] }[] {
+  const lines: { msg: string; tone: FlowLogLine["tone"] }[] = [];
+  const migrated = saved.migrated as unknown;
+  if (Array.isArray(migrated) && migrated.some((m) => m === COUNTS_MIGRATION_KEY
+      || (m && typeof m === "object" && (m as { key?: unknown }).key === COUNTS_MIGRATION_KEY))) {
+    lines.push({ msg: COUNTS_SWITCHED_LINE, tone: "info" });
+  }
+  const reanchored = saved.reanchored as unknown;
+  if (Array.isArray(reanchored)) {
+    const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+    for (const r of reanchored as FlowReanchored[]) {
+      if (!r || typeof r !== "object") continue;
+      const node = nodes.find((n) => n.id === r.node_id);
+      const name = String(node?.params?.name ?? "").trim();
+      const who = name ? `TARGET "${name}"` : "a TARGET with no name";
+      // WARN: the operator's banked subs stop counting toward this block.
+      lines.push({
+        msg: `${who} starts counting from zero: ${reanchorWhy(r)}. The subs it banked stay on disk.`,
+        tone: "warn",
+      });
+    }
+  }
+  return lines;
+}
+
+// ───────────────────────────────────────── the panel loop follows the tail
+//
+// Spec 1.5 item 6 and 1.4 ("when the wire is added"). A mosaic rotates through
+// its loop wire, `<tail>.pass -> <target>.next`, and that wire is only the
+// loop while it leaves the LAST stage of the block's panel lane: from an
+// earlier stage it is M12, a danger, because every stage after it would be
+// shot once per panel with nothing to say when. Appending a stage after the
+// last one (an Ha pass added to every panel) would therefore leave the loop
+// mid-lane without a word, so the connect that appends the stage carries it.
+//
+// It MOVES a wire the lane already has and never adds one (1.4: the wire "is
+// never added as a side effect of connecting something else"). No move for a
+// 1x1 block (nothing to rotate between), for a lane with no loop wire (the
+// operator chose panel-first), for a wire from anything but the tail, or when
+// the new tail is a stage with no `pass` output to give (AUTOFOCUS, GUIDE:
+// the doctor names that lane instead).
+
+/** `edges` (the graph after the connect) with the loop wire carried to the
+ *  lane's new tail when the wire just drawn out of `from` appended a stage to
+ *  a multi-panel block's lane; otherwise `edges` itself, the same array.
+ *  `graph` is the graph BEFORE the connect: the tail is the one the operator
+ *  drew from. */
+function carryLoopWire(
+  graph: FlowGraphRec, edges: FlowEdgeRec[], from: string,
+): FlowEdgeRec[] {
+  const owner = ownerOf(graph, from);
+  if (!owner || !isMultiPanel(owner)) return edges;
+  if (laneTail(graph, owner.id)?.id !== from) return edges;
+  const loops = new Set(loopWires(graph, owner.id));
+  if (loops.size === 0) return edges;
+  const tail = laneTail({ nodes: graph.nodes, edges }, owner.id);
+  if (!tail || tail.id === from
+      || !NODE_DEFS[tail.type]?.outs.some((p) => p.id === PASS_PORT)) return edges;
+  // A new tail the operator already looped (its pass wire drawn before it was
+  // wired in) keeps its own wire, and the old tail's goes: two loop wires into
+  // one `next` is the doctor's "one is enough", not a better loop.
+  const looped = edges.some((e) => e.from === tail.id && e.fromPort === PASS_PORT
+    && e.to === owner.id && e.toPort === NEXT_PORT);
+  return looped
+    ? edges.filter((e) => !loops.has(e))
+    // The same wire, re-sourced: its id survives, so a selected loop wire
+    // stays selected, and every other edge keeps its identity.
+    : edges.map((e) => (loops.has(e) ? { ...e, from: tail.id } : e));
+}
+
 export function createFlowsActions(
   set: SetFn, get: GetFn, api?: FlowsStoreApi,
 ): FlowsActions {
@@ -600,10 +731,26 @@ export function createFlowsActions(
         if (!cur || cur.id !== record.id) return;
         const renamed = cur.name !== record.name;
         const edited = get().flows.graph !== graph;
+        // THE NOTES ARE THE ANSWER'S, NOT THE FLOW'S. They are said once below,
+        // and the record kept here is what the next SAVE sends back. The
+        // server's model takes `migrated` as MigrationNote objects and refuses
+        // the bare "counts" the spec writes, so a note kept here would make
+        // every later save a 422, and a close, which does not wait for its
+        // save to succeed, would then drop the edit.
+        const kept: FlowRecordRec = { ...saved };
+        delete kept.migrated;
+        delete kept.reanchored;
         set((s) => patch(s, {
-          record: renamed ? { ...saved, name: cur.name } : saved,
+          record: renamed ? { ...kept, name: cur.name } : kept,
           dirty: edited || renamed,
         }));
+        // What the save did to the counts, said once (`saveAnswerLines`).
+        // AFTER the stale check above: an answer for a flow no longer open
+        // would land on another flow's log, and CONTINUE's dropped-steps
+        // question still guards that flow's ledger when it next runs.
+        for (const line of saveAnswerLines(saved, saved.graph ?? graph)) {
+          get().flowsAppendLog(line.msg, line.tone);
+        }
         // What the server counts is the STORED graph, and the save just
         // changed it: a new exposure is a new step id with nothing banked.
         void fetchProgress();
@@ -626,10 +773,16 @@ export function createFlowsActions(
 
     // ─────────────────────────────────────────────────────────── graph edits
     flowsAddNode: (type, at) => set((s) => {
-      const def = NODE_DEFS[type];
+      // A DROP IS A CREATION, so the node is written with `createParams`: the
+      // missing-key defaults overlaid with the type's "Created as" column
+      // (spec 3.1). The defaults alone are what a SAVED node lacking a key is
+      // read as, and they keep each key's old meaning: a TARGET built from
+      // them counted rejected subs and carried M31's name and coordinates, so
+      // one renamed M16 and run slewed to Andromeda, #190's defect through the
+      // palette's door. Both editors' palettes drop through here.
       const node = {
         id: nextNodeId(), type, x: at.x, y: at.y,
-        params: { ...def.params },
+        params: createParams(type),
       };
       return touch(s, { ...s.flows.graph,
                         nodes: [...s.flows.graph.nodes, node] });
@@ -667,7 +820,9 @@ export function createFlowsActions(
         // node that is gone is exactly what FlowGraph.validation_errors()
         // refuses, so the graph would stop compiling and the operator would be
         // told their graph is broken by an action they took on purpose.
-        : { nodes: g.nodes.filter((n) => n.id !== sel.id),
+        // `...g` as the edge arm has it: the graph also carries the flow's
+        // own settings (spec 1.6), which a rebuilt `{ nodes, edges }` dropped.
+        : { ...g, nodes: g.nodes.filter((n) => n.id !== sel.id),
             edges: g.edges.filter((e) => e.from !== sel.id && e.to !== sel.id) };
       return { flows: { ...s.flows, graph, dirty: true, sel: null,
                         editNode: s.flows.editNode === sel.id
@@ -703,12 +858,13 @@ export function createFlowsActions(
         // nothing said so. An input whose lane cannot be resolved is not a flow
         // input, so it is never cleared either.
         const flowInput = portKindOf(g.nodes, to, toPort, "in") === "flow";
-        return touch(s, {
-          ...g,
-          edges: g.edges
-            .filter((e) => !(flowInput && e.to === to && e.toPort === toPort))
-            .concat([{ id: nextEdgeId(), from, fromPort, to, toPort }]),
-        });
+        const edges = g.edges
+          .filter((e) => !(flowInput && e.to === to && e.toPort === toPort))
+          .concat([{ id: nextEdgeId(), from, fromPort, to, toPort }]);
+        // IN THE SAME WRITE as the wire that caused it: one graph edit, one
+        // dirty/compile cycle, and no moment at which the compile sees a
+        // mosaic whose loop leaves a stage in the middle of its lane.
+        return touch(s, { ...g, edges: carryLoopWire(g, edges, from) });
       });
     },
 

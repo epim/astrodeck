@@ -65,9 +65,22 @@ function near(a: number, b: number, tol: number, msg = ""): void {
 // and their ORDER matter to geometry — an output's row index is offset by the
 // input count of the same node, so a table with the right ports in the wrong
 // order would put every output wire on the wrong row.
+//
+// RE-TRANSCRIBED IN THE INTEGRATION OF MOSAIC S3 (#189): TARGET gained the
+// optional input `next` and CAPTURE LOOP and FILTER CYCLE the output `pass`
+// (spec 1.2), each LAST in its list, so no existing port moved row. The
+// capture card grows one row (3 -> 4), which the row and height pins below
+// now say; the §D.2 worked fit is unchanged, because the M16 bbox's binding
+// bottom edge is not a capture card. The re-pin is held by the parity test
+// below: RED under mutant "capture pass port missing" (in a private scratch
+// copy, `_e("pass", "pass done")` dropped from CAPTURE LOOP's outs in
+// nodeDefs.ts), observed:
+//   ✗ the fixture port table still matches NODE_DEFS — ids and ORDER, both
+//     ways: capture ports (in | out): expected run | complete,frame, got run |
+//     complete,frame,pass
 const PORTS: PortTable = {
   dusk: { ins: [], outs: [{ id: "window" }, { id: "nightend" }] },
-  target: { ins: [{ id: "arm" }], outs: [{ id: "target" }] },
+  target: { ins: [{ id: "arm" }, { id: "next" }], outs: [{ id: "target" }] },
   safety: { ins: [], outs: [{ id: "unsafe" }] },
   cloudwatch: { ins: [], outs: [{ id: "in" }, { id: "clear" }] },
   dome: { ins: [{ id: "run" }], outs: [{ id: "open" }] },
@@ -77,14 +90,17 @@ const PORTS: PortTable = {
   guide: { ins: [{ id: "run" }], outs: [{ id: "guiding" }] },
   capture: {
     ins: [{ id: "run" }],
-    outs: [{ id: "complete" }, { id: "frame" }],
+    outs: [{ id: "complete" }, { id: "frame" }, { id: "pass" }],
   },
   duskflats: { ins: [{ id: "run" }], outs: [{ id: "done" }] },
   calib: {
     ins: [{ id: "do" }, { id: "stop" }, { id: "panel" }],
     outs: [],
   },
-  cycle: { ins: [{ id: "run" }], outs: [{ id: "complete" }, { id: "frame" }] },
+  cycle: {
+    ins: [{ id: "run" }],
+    outs: [{ id: "complete" }, { id: "frame" }, { id: "pass" }],
+  },
   pool: {
     ins: [{ id: "arm" }, { id: "advance" }],
     outs: [{ id: "target" }, { id: "floor" }],
@@ -128,7 +144,8 @@ test("NODE_DEFS is usable as geometry's PortTable at run time, not just to tsc",
   // A structural type says the shape fits; it does not say the values are
   // there. Anchor a real port through the real vocabulary.
   const p = portPos(mk("n7", "capture", 620, 320), "frame", "out", NODE_DEFS_IS_A_PORT_TABLE, "desktop");
-  // capture is ins:[run], outs:[complete, frame] — "frame" is row 2 of 3.
+  // capture is ins:[run], outs:[complete, frame, pass] — "frame" is row 2
+  // of 4 (`pass`, added in S3, is last, so "frame" did not move).
   eq(p?.x, 620 + NODE_W_WIDE, "capture.frame anchors at the card's right edge");
   eq(p?.y, 320 + 37 + 2 * 20 + 10, "capture.frame sits on the third port row");
 });
@@ -189,14 +206,14 @@ test("nodeW is device-based: 188 desktop/tablet, 150 phone", () => {
 test("nodeRows counts inputs THEN outputs, never interleaved", () => {
   eq(nodeRows(byId("n1"), PORTS), 2, "dusk: 0 in + 2 out");
   eq(nodeRows(byId("n4"), PORTS), 2, "slew: 1 in + 1 out");
-  eq(nodeRows(byId("n7"), PORTS), 3, "capture: 1 in + 2 out");
+  eq(nodeRows(byId("n7"), PORTS), 4, "capture: 1 in + 3 out (S3 added `pass`)");
   eq(nodeRows(byId("n15"), PORTS), 3, "calib: 3 in + 0 out");
 });
 
 test("nodeLayoutHeight is 37 + rows·20 + 26 (the FIT budget, not the DOM)", () => {
   eq(nodeLayoutHeight(byId("n1"), PORTS), 103, "2 rows (dusk gained `night ends`)");
   eq(nodeLayoutHeight(byId("n4"), PORTS), 103, "2 rows");
-  eq(nodeLayoutHeight(byId("n7"), PORTS), 123, "3 rows");
+  eq(nodeLayoutHeight(byId("n7"), PORTS), 143, "4 rows (S3 added `pass`)");
   // The +8 sibling formula belongs to autoLayout.ts; if this file ever drifts
   // to +8 the fit zoom leaves 46% and every reference capture stops matching.
   assert(
@@ -207,7 +224,7 @@ test("nodeLayoutHeight is 37 + rows·20 + 26 (the FIT budget, not the DOM)", () 
 
 test("fitViewHeight is the same function under §C.5's name", () => {
   eq(fitViewHeight, nodeLayoutHeight, "one implementation, two names");
-  eq(fitViewHeight(byId("n7"), PORTS), 123);
+  eq(fitViewHeight(byId("n7"), PORTS), 143);
 });
 
 // ------------------------------------------------------------- port anchors

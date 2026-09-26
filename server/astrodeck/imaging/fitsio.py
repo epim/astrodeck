@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import math
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 from astropy.io import fits
 
@@ -67,15 +69,117 @@ def _finite(x) -> bool:
     return True
 
 
+#: Typographic dashes and quotes, mapped to the ASCII a keyboard types for
+#: them. A phone's autocorrect turns a typed hyphen into an en dash and a typed
+#: apostrophe into a curly one, so "Veil - east" arrives with an en dash in it
+#: (#277): the operator meant the hyphen, and a '?' there would read as
+#: corruption. Listed because NFKD leaves every one of them alone; none has a
+#: compatibility decomposition to fold through.
+_TYPOGRAPHIC = {
+    # hyphen, non-breaking hyphen, figure dash, en dash, em dash, horizontal
+    # bar, minus sign
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-",
+    "\u2014": "-", "\u2015": "-", "\u2212": "-",
+    # single quotes and apostrophes: curly, low, reversed, prime, single
+    # guillemets, the spacing acute and the modifier-letter apostrophe
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
+    "\u2032": "'", "\u2039": "'", "\u203a": "'", "\u00b4": "'",
+    "\u02bc": "'",
+    # double quotes: curly, low, reversed, double prime, guillemets
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"',
+    "\u2033": '"', "\u00ab": '"', "\u00bb": '"',
+}
+
+
+def _ascii_fold(text: str) -> str:
+    """``text`` as the printable ASCII a FITS header value may hold: the ONE
+    fold every free-text card ``save_fits`` writes goes through (#277).
+
+    Printable ASCII passes unchanged, so every value a header could already
+    carry is written exactly as before. Anything else, character by
+    character:
+
+      * a typographic dash or quote becomes its ASCII form (``_TYPOGRAPHIC``);
+      * an accented letter is transliterated: NFKD, combining marks dropped,
+        so an e-acute reads "e" and fullwidth letters read as ASCII ones;
+      * anything else becomes ONE '?' per character typed, so a name in
+        Cyrillic keeps its shape ("M31 ?????????"), and a Hangul syllable,
+        which NFKD splits into two or three jamo, is still one '?'.
+
+    '?' and not nothing, unlike the dark check's evidence fold
+    (``darks._ascii_card``), which drops what it cannot map because a stray
+    '?' in the middle of an evidence sentence reads as corruption. A NAME is
+    different: with its Cyrillic dropped, "M31 <name in Cyrillic>" becomes
+    plain "M31", which a stacker grouping by OBJECT files with the galaxy's
+    own frames. The name as typed survives beside it in ``OBJUTF8``."""
+    out: list[str] = []
+    for ch in text:
+        if " " <= ch <= "~":
+            out.append(ch)
+        elif ch in _TYPOGRAPHIC:
+            out.append(_TYPOGRAPHIC[ch])
+        else:
+            parts = "".join(
+                _TYPOGRAPHIC.get(c, c)
+                for c in unicodedata.normalize("NFKD", ch)
+                if not unicodedata.category(c).startswith("M"))
+            if parts:
+                out.append(parts if all(" " <= c <= "~" for c in parts)
+                           else "?")
+            # No parts: a combining mark on its own, an accent with no letter
+            # under it. Dropped, exactly as it is when it sits on one.
+    return "".join(out)
+
+
+def _card_text(value: str | None) -> str:
+    """A free-text card's value (OBJECT, FILTER, TELESCOP, INSTRUME), folded
+    by ``_ascii_fold``; ``""`` when nothing but blanks is left, and the card is
+    then omitted, never written blank. NOT stripped: an ASCII value is written
+    byte for byte as it always was, blanks and all."""
+    if value is None:
+        return ""
+    folded = _ascii_fold(str(value))
+    return folded if folded.strip() else ""
+
+
 def _header_text(value: str | None) -> str:
-    """``value`` as a header string: printable ASCII, stripped; ``""`` for
-    nothing. The fold is the dark check's (``darks._ascii_card``), imported
-    only when there is something to fold, so a frame that is not a panel pays
-    no import for it."""
+    """``value`` as a header string: folded by ``_ascii_fold`` and stripped;
+    ``""`` for nothing. MOSAIC and PANEL, written stripped since they
+    existed."""
     if not value or not str(value).strip():
         return ""
-    from .darks import _ascii_card
-    return _ascii_card(str(value)).strip()
+    return _ascii_fold(str(value).strip()).strip()
+
+
+#: The target's name as typed, whenever the fold changed it (#277). astropy
+#: refuses raw UTF-8 in every card, HISTORY and COMMENT included, so no card
+#: can carry the name as typed; this one carries it percent-encoded: UTF-8,
+#: every byte outside RFC 3986's unreserved ``A-Za-z0-9-._~`` escaped, blanks
+#: too, so a trailing blank survives a format that discards trailing blanks.
+#: A long name becomes a long-string (CONTINUE) card, which astropy writes and
+#: reads without being asked. Never written for an ASCII name, so that header
+#: is exactly what it always was.
+OBJECT_UTF8 = "OBJUTF8"
+_OBJECT_UTF8_COMMENT = "OBJECT as typed: UTF-8, percent-encoded"
+
+
+def _encoded_name(name: str) -> str:
+    """``name`` as ``OBJUTF8`` carries it. ``errors="replace"`` is for the
+    one thing that is not text: a lone surrogate, which a JSON body can carry
+    (``"\\ud800"``) and Python decodes as given. It has no UTF-8, so it is
+    carried as '?', the mark OBJECT gives it too, rather than failing the
+    capture. Every real character round-trips exactly."""
+    return quote(name, safe="", errors="replace")
+
+
+def full_object_name(header) -> str:
+    """The target's name as the operator typed it, from a header ``save_fits``
+    wrote: ``OBJUTF8`` decoded when the frame carries one, else ``OBJECT``,
+    else ``""``. The one decoder of the card, for readers."""
+    encoded = header.get(OBJECT_UTF8)
+    if encoded:
+        return unquote(str(encoded), errors="replace")
+    return str(header.get("OBJECT", "") or "")
 
 
 def _with_comment(value: str, comment: str):
@@ -104,7 +208,11 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     ``mosaic`` and ``panel`` are a mosaic panel's provenance (#189 U-08): the
     group (``naming.mosaic_label``) and the 1-based ``row-col`` label
     (``naming.panel_label``). Each card is written only when its value is set,
-    so a frame that is not a panel has exactly the header it always had."""
+    so a frame that is not a panel has exactly the header it always had.
+
+    Every free-text value (``target``, ``filter_name``, ``telescope``,
+    ``instrument``, ``mosaic``, ``panel``) goes through ``_ascii_fold``, so no
+    name anybody typed can fail the write (#277); ASCII passes unchanged."""
     hdu = fits.PrimaryHDU(frame.data)
     hdr = hdu.header
     hdr["EXPTIME"] = (frame.exposure_s, "Exposure time (s)")
@@ -132,10 +240,21 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
         hdr["CCD-TEMP"] = (frame.temperature_c, "Sensor temperature (C)")
     if frame.bayer_pattern:
         hdr["BAYERPAT"] = frame.bayer_pattern
-    if target:
-        hdr["OBJECT"] = target
-    if filter_name:
-        hdr["FILTER"] = filter_name
+    # NAMES SOMEBODY TYPED, FOLDED (#277): the target, the wheel slot, and
+    # below the optics and the camera. astropy raises on any value outside
+    # printable ASCII, so writing one as typed made a single en dash fail every
+    # saved frame of the night, and a header write must never fail a capture.
+    # ASCII passes unchanged. When the fold changed the target's name, OBJUTF8
+    # keeps the name as typed, right beside OBJECT.
+    object_text = _card_text(target)
+    if object_text:
+        hdr["OBJECT"] = object_text
+        if object_text != str(target):
+            hdr[OBJECT_UTF8] = _with_comment(_encoded_name(str(target)),
+                                             _OBJECT_UTF8_COMMENT)
+    filter_text = _card_text(filter_name)
+    if filter_text:
+        hdr["FILTER"] = filter_text
     # WHICH MOSAIC AND WHICH PANEL (#189 U-08). A stacker that groups by OBJECT
     # or by folder cannot tell two panels of one mosaic from two targets, or
     # worse from one target, and co-adds two pieces of sky; these two cards let
@@ -155,10 +274,12 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
         hdr["RA"] = (ra_hours * 15.0, "RA of telescope (deg, J2000)")
     if dec_deg is not None:
         hdr["DEC"] = (dec_deg, "Dec of telescope (deg, J2000)")
-    if telescope:
-        hdr["TELESCOP"] = telescope
-    if instrument:
-        hdr["INSTRUME"] = instrument
+    telescope_text = _card_text(telescope)
+    if telescope_text:
+        hdr["TELESCOP"] = telescope_text
+    instrument_text = _card_text(instrument)
+    if instrument_text:
+        hdr["INSTRUME"] = instrument_text
 
     m = meta or FrameMeta()
     # --- optics ---

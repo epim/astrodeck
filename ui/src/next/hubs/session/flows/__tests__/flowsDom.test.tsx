@@ -147,6 +147,9 @@ let libraryFails = false;
  *  A 404 is the ordinary case (a flow deleted from another browser, a stale
  *  bookmark) and it is the one that used to run the WRONG flow. */
 const openFails = new Set<string>();
+/** Merged into the next `PUT /api/flows/{id}` answers: the notes a save's
+ *  answer carries about the counts (`migrated`, `reanchored`, #189). */
+let putNotes: Record<string, unknown> = {};
 
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
@@ -189,7 +192,7 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
     const id = one[1];
     // PUT is `flowsApi.save` - the request the whole save path exists to make.
     // It echoes what it was handed, as the server does.
-    if (method === "PUT") return ok({ ...FLOW_RECORD, ...(body?.flow ?? {}), id });
+    if (method === "PUT") return ok({ ...FLOW_RECORD, ...(body?.flow ?? {}), id, ...putNotes });
     if (openFails.has(id)) {
       return {
         ok: false, status: 404, statusText: "Not Found",
@@ -236,6 +239,7 @@ const { flowInspectorSheets } = await import("../inspector/sheets");
 const { flowTonightSheets } = await import("../tonight");
 const { flowCreateSheets } = await import("../create");
 const { SHEET_ENTRIES } = await import("../../../index");
+const { COUNTS_SWITCHED_LINE } = await import("../../../../../components/flows/flowsSlice");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -806,6 +810,50 @@ await testAsync("a phone that loses its stage sheet to the chip still stores the
   assert(asked.slice(from).some((a) => a.method === "PUT" && a.url === "/api/flows/quick-m31"),
     "the phone was left holding an edited flow with no editor on screen and never stored it");
   eq(useStore.getState().flows.dirty, false, "and the store still calls it dirty afterwards");
+});
+
+// ================ 8b3. what a save did to the counts is on the operator's log
+
+await testAsync("SAVE's answer about the counts reaches the log strip, through the real fetch", async () => {
+  // The server's save can switch a flow to counting accepted subs only and
+  // restart a re-framed block's counts (#189; spec 3.3, Revision 2 rulings 2
+  // and 3), and says so in its answer. Nothing on the canvas shows either, so
+  // the log strip under it is the only place the operator can read it. This
+  // goes through the real `flowsApi.save` and fetch decoding, where a client
+  // that kept only the record's known keys would drop both notes unseen.
+  //
+  // MUTANT "ignore migrated on save" (flowsSlice.ts saveAnswerLines: the
+  // `migrated` read deleted). Observed ("flowsDom.test: 41/42 passed"; the
+  // leading clock is the log line's timestamp):
+  //   x SAVE's answer about the counts reaches the log strip, through the real fetch: the counts switch is not on the log strip: "22:22:02TARGET \"M31\" starts counting from zero: its rows or columns changed. The subs it banked stay on disk."
+  //
+  // MUTANT "ignore reanchored on save" (saveAnswerLines: the `reanchored`
+  // loop skipped). Observed ("flowsDom.test: 41/42 passed"):
+  //   x SAVE's answer about the counts reaches the log strip, through the real fetch: the re-anchored block is not on the log strip: "22:22:09this flow now counts accepted subs only; rejected subs no longer count toward any step"
+  viewportW = 1024;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  await editOpenFlow("target");
+  const block = useStore.getState().flows.graph.nodes[0].id;
+  await act(async () => { useStore.getState().flowsSetParam(block, "name", "M31"); });
+  putNotes = {
+    migrated: [{ key: "counts", note: "counts switched to Accepted subs" }],
+    reanchored: [{ node_id: block, max_move_deg: null, threshold_deg: null, reason: "grid" }],
+  };
+  try {
+    click(tid("flow-save"));
+    await settle();
+  } finally {
+    putNotes = {};
+  }
+  eq(useStore.getState().flows.dirty, false, "precondition: the save did not complete");
+  click(tid("flow-log-toggle"));
+  const text = String(tid("flow-log-body")?.textContent ?? "");
+  click(tid("flow-log-toggle"));
+  assert(text.includes(COUNTS_SWITCHED_LINE),
+    `the counts switch is not on the log strip: ${JSON.stringify(text)}`);
+  assert(text.includes('TARGET "M31" starts counting from zero: its rows or columns changed.'),
+    `the re-anchored block is not on the log strip: ${JSON.stringify(text)}`);
 });
 
 // ============================ 8c. RUN on a row runs the flow on that row

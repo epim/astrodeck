@@ -9,8 +9,11 @@ the e2e test ``importorskip``s.
 from __future__ import annotations
 
 import asyncio
+import itertools
+import os
+import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import pytest
 
@@ -40,6 +43,16 @@ if _RELAY_DIR.is_dir():
 _root_str = str(_REPO_ROOT)
 if _root_str not in sys.path:
     sys.path.insert(0, _root_str)
+
+#: The capture roots no test may write under (#309): the repo's captures/,
+#: which is ``hub.CAPTURE_DIR``'s default, and ASTRODECK_CAPTURE_DIR when
+#: the run was started with it. Read here, at conftest import, before any
+#: fixture has set that variable for a test.
+_CAPTURE_ENV_AT_START = (os.environ.get("ASTRODECK_CAPTURE_DIR") or "").strip()
+_REAL_CAPTURE_ROOTS: tuple[Path, ...] = tuple(dict.fromkeys(
+    [_REPO_ROOT / "captures"]
+    + ([Path(_CAPTURE_ENV_AT_START).resolve()] if _CAPTURE_ENV_AT_START
+       else [])))
 
 
 @pytest.fixture(autouse=True)
@@ -340,6 +353,173 @@ def _no_inherited_focus_calibration():
         path.unlink(missing_ok=True)
 
 
+class _CaptureRoots:
+    """Where the capture root is while the suite runs (#309); state shared by
+    the two fixtures below and read by test_capture_root_isolated.py."""
+
+    #: The capture roots as this process found them, which no test may
+    #: write under: `_REAL_CAPTURE_ROOTS` and ``hub.CAPTURE_DIR`` as it was
+    #: before the session fixture moved it.
+    real: tuple[Path, ...] = ()
+    #: The temporary directory every capture root of this session is made
+    #: in: ``session`` for the session's own, ``t<n>`` for each test's.
+    #: None outside a session.
+    parent: Path | None = None
+    serial = itertools.count()
+    #: ``module.attr`` of every binding the last sweep moved, so a test can
+    #: assert that the sweep took rather than trust it.
+    moved: list[str] = []
+    #: module name -> (the module, the names in it that held a path when it
+    #: was first swept). Reading every global of every module for every
+    #: test cost 1.2 ms a test; a module is read whole once, and again only
+    #: if it is re-imported. What a cached module could hide is a global
+    #: that becomes a path later, and that path would be built from
+    #: ``hub.CAPTURE_DIR``, which during a session never names a real root:
+    #: at worst a stale temporary root, never the developer's captures.
+    path_names: dict[str, tuple[object, tuple[str, ...]]] = {}
+
+
+def _under_a_capture_root(value: PurePath) -> PurePath | None:
+    """``value``'s path below the capture root it sits in, or None when it
+    is under none. A root is a real one, or any root this session handed
+    out: a module first imported during a test binds that test's root, and
+    must be moved on like one that bound the real root."""
+    for root in _CaptureRoots.real:
+        if value == root or value.is_relative_to(root):
+            return value.relative_to(root)
+    parent = _CaptureRoots.parent
+    if parent is not None and value.is_relative_to(parent):
+        parts = value.relative_to(parent).parts
+        if parts:
+            return PurePath(*parts[1:])
+    return None
+
+
+def _point_the_capture_root_at(mp: pytest.MonkeyPatch, root: Path) -> list[str]:
+    """Point every capture-root seam at ``root``, through ``mp``, and return
+    the bindings moved.
+
+    * ``hub.CAPTURE_DIR``, which everything that resolves the root at call
+      time reads: the session store (``sessions/``), the report store, the
+      night log, the gallery, the frame counter, the fingerprint.
+    * Every binding made from it at import: ``from ..hub import
+      CAPTURE_DIR`` and paths built on it (``PACK_ROOT``,
+      ``_SURVEY_CACHE_DIR``, ``_WEATHER_TILE_CACHE_DIR`` today). Found by
+      SWEEPING the loaded ``astrodeck`` modules for a path under a capture
+      root, never by a list: a list is what the #227 class keeps getting
+      wrong (see test_isolation_of_module_singletons), and a module added
+      tomorrow is swept without anyone remembering this exists.
+    * ASTRODECK_CAPTURE_DIR, so a server a test starts in a child process
+      resolves the same root.
+    * The bus's night-log writer. It remembers the night it last wrote and
+      creates ``logs/`` only when the night changes, so moved to a fresh
+      root it would fail its first write, pause, and publish a "paused"
+      line into whatever test came next. A fresh writer per root is the
+      writer a fresh process would have."""
+    import astrodeck.hub as hub_mod
+    from astrodeck import events
+    root.mkdir(parents=True, exist_ok=True)
+    mp.setattr(hub_mod, "CAPTURE_DIR", root)
+    moved = ["astrodeck.hub.CAPTURE_DIR"]
+    cache = _CaptureRoots.path_names
+    for name, mod in list(sys.modules.items()):
+        if mod is None or not (name == "astrodeck"
+                               or name.startswith("astrodeck.")):
+            continue
+        seen = cache.get(name)
+        if seen is None or seen[0] is not mod:
+            try:
+                names = tuple(attr for attr, value in list(vars(mod).items())
+                              if isinstance(value, PurePath))
+            except TypeError:
+                continue
+            cache[name] = seen = (mod, names)
+        for attr in seen[1]:
+            value = getattr(mod, attr, None)
+            if not isinstance(value, PurePath):
+                continue
+            rel = _under_a_capture_root(value)
+            if rel is None:
+                continue
+            new = root / rel
+            if new != value:
+                mp.setattr(mod, attr, new)
+                moved.append(f"{name}.{attr}")
+    mp.setenv("ASTRODECK_CAPTURE_DIR", str(root))
+    writer = events.bus.night_log
+    if writer is not None:
+        mp.setattr(events.bus, "night_log",
+                   events.NightLogWriter(keep_nights=writer.keep_nights))
+    return moved
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _never_touch_the_real_captures():
+    """Point the capture root at a throwaway directory for the WHOLE session,
+    so nothing a test does, nor a module- or session-scoped fixture set up
+    before any test's own fixture, reaches the developer's real
+    ``captures/`` (#309).
+
+    It did, for months. The session store, the report store and the night
+    log all resolve ``hub.CAPTURE_DIR`` live, and a test that did not point
+    it elsewhere wrote into the repo's ``captures/``: 620 files in
+    ``captures/sessions`` on 2026-09-25, most of them from two tests
+    (``test_nonphotosphere_issue_batch.py``'s "Synthetic immediate stop"
+    and ``test_abort_stays_aborted.py``'s plan "p" of one target "T"), with
+    the reports those runs finalized in ``captures/reports`` and every bus
+    log line in ``captures/logs``. It is not inert: auto-resume's armed
+    scan, the Sessions panel and ``load_all`` read that store, and a
+    wind-down timing test that parsed all 620 files failed its bound under
+    load. Tests also rewrote what other tests had left: 357 of the plan "p"
+    sessions, saved "active" by a test that never ran them, carry
+    ``crash_resumes`` 1, which for such a session only the boot sweep
+    writes (in an app lifespan some later test entered).
+
+    The per-test fixture below is what a test sees; this one covers what
+    runs outside any test's fixtures, and the session guard
+    (`_TheRealCapturesStayUntouched`) checks the whole run afterwards."""
+    import tempfile
+
+    import astrodeck.hub as hub_mod
+    _CaptureRoots.real = tuple(dict.fromkeys(
+        (*_REAL_CAPTURE_ROOTS, Path(hub_mod.CAPTURE_DIR))))
+    with tempfile.TemporaryDirectory(prefix="astrodeck-test-captures-",
+                                     ignore_cleanup_errors=True) as d:
+        _CaptureRoots.parent = Path(d)
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                _point_the_capture_root_at(mp, Path(d) / "session")
+                yield
+        finally:
+            _CaptureRoots.parent = None
+
+
+@pytest.fixture(autouse=True)
+def _captures_are_the_tests_own(_never_touch_the_real_captures, monkeypatch):
+    """Every test gets a capture root of its own, empty, under the session's
+    temporary directory, and every capture-root seam points at it
+    (`_point_the_capture_root_at`). Yields the root.
+
+    Not the test's ``tmp_path``: a test that lists its ``tmp_path`` would
+    then find a ``logs/`` a night-log line made there, and requesting
+    ``tmp_path`` for every test in the suite makes a numbered directory
+    that pytest keeps. A test that points ``hub.CAPTURE_DIR`` at its own
+    ``tmp_path``, as hundreds do, still wins: its monkeypatch comes after
+    this one and is undone before it.
+
+    Removed at teardown (a test that captures real simulator frames leaves
+    megabytes), which is also why a test must not rely on another's.
+
+    Its name sorts after ``_a_test_leaves_the_config_as_it_found_it`` and
+    ahead of the other autouse fixtures here, so it is what sets up
+    ``monkeypatch`` for every test, and the config guard still sets up
+    first (see that fixture)."""
+    root = _CaptureRoots.parent / f"t{next(_CaptureRoots.serial)}"
+    _CaptureRoots.moved = _point_the_capture_root_at(monkeypatch, root)
+    yield root
+    shutil.rmtree(root, ignore_errors=True)
+
+
 @pytest.fixture(autouse=True)
 def _reset_hub_singleton_locks():
     """Test-isolation seam: ``astrodeck.hub.hub`` is a process-wide singleton, but
@@ -528,8 +708,129 @@ class _TheTreeMustNotMove:
         return result
 
 
+class _TheRealCapturesStayUntouched:
+    """Fail the run, once, naming every file under the real capture roots
+    that was created, changed or removed while it ran (#309).
+
+    The fixtures above give every test its own capture root; this is the
+    check that they worked, for the whole run, including what no fixture
+    covers (a module that writes at import, a child process started with
+    its own environment, a helper that computes the repo's ``captures/``
+    for itself). Created, changed AND removed: the night log's leak was
+    appends to a file that already existed, and a session store over its
+    soft quota prunes the developer's oldest sessions.
+
+    A plugin, for the reasons `_TheTreeMustNotMove` gives: only the process
+    that owns the run acts (the xdist controller, or a -n0 run's one
+    process), since the files are one set whichever worker wrote them, and
+    the verdict is one block after pytest's counts line, with exit status 1
+    for a run that would have exited 0. The listing is taken at session
+    start and again at the end (about 6000 files here, well under a second
+    with ``os.scandir``).
+
+    It cannot tell who wrote a file. Anything else writing into the same
+    ``captures/`` during the run (a server started from this checkout, a
+    suite running an older conftest) is named too, and the report says so.
+    To find the writer, open the file: a session names its plan, a report
+    its target. Names only in the output, never contents.
+
+    Its cases are in test_capture_root_isolated.py."""
+
+    HEADLINE = "A TEST RUN WROTE INTO THE REAL captures/ (issue #309)"
+    #: How many names each list prints before "and N more".
+    SHOWN = 25
+
+    def __init__(self, roots: tuple[Path, ...]) -> None:
+        self.roots = roots
+        #: (root index, path under it) -> (mtime_ns, size) at session start;
+        #: None in a process that is not the run's.
+        self._before: dict[tuple[int, str], tuple[int, int]] | None = None
+
+    def listing(self) -> dict[tuple[int, str], tuple[int, int]]:
+        """Every file under every root, keyed by root and relative path."""
+        out: dict[tuple[int, str], tuple[int, int]] = {}
+        for i, root in enumerate(self.roots):
+            stack = [str(root)]
+            while stack:
+                here = stack.pop()
+                try:
+                    entries = list(os.scandir(here))
+                except OSError:
+                    continue
+                for e in entries:
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                            continue
+                        st = e.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    rel = Path(os.path.relpath(e.path, root)).as_posix()
+                    out[(i, rel)] = (st.st_mtime_ns, st.st_size)
+        return out
+
+    def moved(self, before, after) -> tuple[list[str], list[str], list[str]]:
+        """(created, changed, removed), each as ``<root>/<path>`` names."""
+        def name(key: tuple[int, str]) -> str:
+            return f"{self.roots[key[0]].as_posix()}/{key[1]}"
+        created = sorted(name(k) for k in after if k not in before)
+        changed = sorted(name(k) for k in after
+                         if k in before and after[k] != before[k])
+        removed = sorted(name(k) for k in before if k not in after)
+        return created, changed, removed
+
+    def report(self, created, changed, removed) -> list[str]:
+        """The block's body lines, one list per kind, capped with a count."""
+        def line(label: str, names: list[str]) -> str:
+            shown = ", ".join(names[:self.SHOWN]) or "none"
+            more = len(names) - self.SHOWN
+            return (f"  {label} ({len(names)}): {shown}"
+                    + (f", and {more} more" if more > 0 else ""))
+        return [
+            "The developer's real sessions, reports, night logs and frames "
+            "live under these roots, and every test has a capture root of "
+            "its own (conftest's _captures_are_the_tests_own), so a file "
+            "that moved here was written around it: by a module or a "
+            "process that computes the root for itself, or by something "
+            "else writing here while the suite ran (a server started from "
+            "this checkout). Open a file to find its writer: a session "
+            "names its plan.",
+            line("created", created),
+            line("changed", changed),
+            line("removed", removed),
+        ]
+
+    def pytest_sessionstart(self, session: pytest.Session) -> None:
+        if hasattr(session.config, "workerinput"):
+            return
+        self._before = self.listing()
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_sessionfinish(self, session: pytest.Session):
+        result = yield
+        if self._before is None:
+            return result
+        created, changed, removed = self.moved(self._before, self.listing())
+        if not (created or changed or removed):
+            return result
+        if session.exitstatus == pytest.ExitCode.OK:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        body = self.report(created, changed, removed)
+        tr = session.config.pluginmanager.get_plugin("terminalreporter")
+        if tr is None:
+            sys.stderr.write("\n".join([self.HEADLINE, *body]) + "\n")
+        else:
+            tr.write_sep("=", self.HEADLINE, red=True, bold=True)
+            for text in body:
+                tr.write_line(text)
+        return result
+
+
 def pytest_configure(config):
     # Registered at configure time, so it is in place for pytest_sessionstart,
     # which is before collection imports anything (see the class).
     config.pluginmanager.register(
         _TheTreeMustNotMove(_SERVER_DIR / "astrodeck"), "astrodeck-tree-guard")
+    config.pluginmanager.register(
+        _TheRealCapturesStayUntouched(_REAL_CAPTURE_ROOTS),
+        "astrodeck-captures-guard")

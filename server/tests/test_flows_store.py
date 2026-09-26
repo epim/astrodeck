@@ -24,13 +24,17 @@ def store(tmp_path, monkeypatch):
 
 
 class TestTheShippedExamples:
-    def test_there_are_seven(self):
+    def test_there_are_eight(self):
         """Pinned, not counted loosely. The seed library IS the acceptance
         corpus: an example that quietly disappears takes its coverage with it,
-        and one that quietly appears has never been looked at by a human."""
+        and one that quietly appears has never been looked at by a human.
+
+        Seven until S3: S3-W added the eighth, example-m31-mosaic, the 3x2
+        rotating mosaic the slice was built around (spec 8, S3 item 4), and
+        the integration of S3 re-pinned the list, and the name, for it."""
         assert [e.id for e in examples()] == [
             "example-campaign", "example-m31", "example-m16", "example-cycle",
-            "example-pool", "example-nb", "example-eaa"]
+            "example-pool", "example-nb", "example-eaa", "example-m31-mosaic"]
 
     @pytest.mark.parametrize("ex", examples(), ids=lambda e: e.id)
     def test_each_one_is_structurally_valid(self, ex):

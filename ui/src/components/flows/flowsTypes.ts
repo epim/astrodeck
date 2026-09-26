@@ -44,17 +44,84 @@ export interface FlowEdgeRec {
   toPort: string;
 }
 
+/** Mirrors the server's `FlowGraph.settings`: flow-level settings, FLAT
+ *  SCALARS keyed as in `FLOW_SETTINGS` (null reads as the default). */
+export type FlowSettingsRec = Record<string, string | number | boolean | null>;
+
 export interface FlowGraphRec {
   nodes: FlowNodeRec[];
   edges: FlowEdgeRec[];
+  /** OPTIONAL, and read only through `flowSetting`. Every graph saved before
+   *  the mosaic slice has none, an older server does not send it, and every
+   *  graph built on this side as `{ nodes, edges }` omits it; a missing key
+   *  means the setting's default. Carry it through edits by spreading the
+   *  graph, or a save drops what the operator chose. */
+  settings?: FlowSettingsRec;
+}
+
+/** Mirrors models.py `FLOW_SETTINGS`: each flow-level setting's missing-key
+ *  default and its choices. `__tests__/flowSettingsParity.test.ts` PARSES
+ *  models.py and compares, because a default that drifts here would have the
+ *  editor show one behaviour while the engine runs the other.
+ *
+ *  `whenWaiting` (spec 1.6, Revision 2 ruling 1) is what the run does while
+ *  every live panel of a mosaic cannot be shot, for every mosaic in the flow. */
+export const FLOW_SETTINGS = {
+  whenWaiting: {
+    default: "Shoot later targets, then come back",
+    options: ["Shoot later targets, then come back", "Wait for the mosaic"],
+  },
+} as const satisfies Record<string, { default: string; options: readonly string[] }>;
+
+export type FlowSettingKey = keyof typeof FLOW_SETTINGS;
+
+/** A flow's value for one setting. Mirrors models.py `resolve_setting`: the
+ *  stored value when it is one of the declared options, otherwise the
+ *  default — so a missing key, null, or a value this build does not know all
+ *  read as the default, as the engine will run them. */
+export function flowSetting(
+  settings: FlowSettingsRec | undefined, key: FlowSettingKey,
+): string {
+  const spec = FLOW_SETTINGS[key];
+  const v = settings?.[key];
+  return typeof v === "string" && (spec.options as readonly string[]).includes(v)
+    ? v : spec.default;
 }
 
 /** One thing the server's read changed in a stored flow (server
  *  `MigrationNote`). `key` names what moved (`rotation` for FLOW_SCHEMA 3's
- *  23.4 rewrite, #150); `note` is the sentence to show the operator. */
+ *  23.4 rewrite, #150); `note` is the sentence to show the operator.
+ *
+ *  A SAVE'S answer carries one too, keyed `counts` (`COUNTS_MIGRATION_KEY`):
+ *  the save switched every TARGET and POOL to counting accepted subs only
+ *  (spec Revision 2, ruling 2). The editor says that in its own words
+ *  (`flowsSlice` `saveAnswerLines`), because the ruling fixes what the UI says. */
 export interface FlowMigrationNote {
   key: string;
   note: string;
+}
+
+/** The `migrated` key a save's answer uses for the counts switch. The spec
+ *  writes that answer as `migrated: ["counts"]`; the record model carries
+ *  `MigrationNote` objects, so the editor reads either spelling. */
+export const COUNTS_MIGRATION_KEY = "counts";
+
+/** One block a SAVE re-anchored (server `_persist_flow` through
+ *  `framing.reframe_carry`; spec 3.3, Revision 2 ruling 3): its framing moved
+ *  too far for its counts to carry, so its step ids, and its counts, start
+ *  again. The subs already banked stay on disk under the old ids.
+ *
+ *  `max_move_deg` and `threshold_deg` are in degrees: the largest distance any
+ *  panel corner moved, and the move this grid carries counts under. Either is
+ *  null when no move was measured (a grid or angle change re-anchors outright).
+ *  `reason` is `reframe_carry`'s own word for why (`move`, `grid`, `angle`,
+ *  `identity`) when the server sends it; the spec's list names only the three
+ *  fields before it, so it is optional. */
+export interface FlowReanchored {
+  node_id: string;
+  max_move_deg: number | null;
+  threshold_deg: number | null;
+  reason?: string;
 }
 
 export interface FlowRecordRec {
@@ -72,8 +139,12 @@ export interface FlowRecordRec {
    *  persisted: the server strips it on every write, so it is on each GET until
    *  the file is next written (a save, or a run's `touch_run`, which logs it),
    *  and gone from the written record. Optional because an older server does
-   *  not send it. */
+   *  not send it. A save's answer uses it for the counts switch only. */
   migrated?: FlowMigrationNote[];
+  /** On a SAVE'S answer only: every block that save re-anchored, for
+   *  `flowsSave` to put on the flow log. Absent from a read, and from an older
+   *  server's answer. */
+  reanchored?: FlowReanchored[];
 }
 
 /** A wire being dragged.

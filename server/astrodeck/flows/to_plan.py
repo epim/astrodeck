@@ -31,14 +31,19 @@ classifies and reports; the route decides. See ``blocking_reasons``.
 """
 from __future__ import annotations
 
+import copy
+import math
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
+from uuid import uuid4
 
 from ..catalog.coords import parse_dec, parse_ra
 from ..sequence.models import ActionKind, SequencePlan, TriggerKind
 from . import identity, tonight
+from .compile import lane_refusals
 from .models import FlowGraph
+from .rig import RigFacts
 
 #: The engine's real vocabularies, read off the ``Literal`` types rather than
 #: retyped. A hand-copied list is a claim that silently stops being true the
@@ -359,22 +364,27 @@ NODE_SETTINGS: dict[str, SettingsNote] = {
                "rig's safety monitor and acts on an unsafe reading, with or "
                "without this node on the canvas. {Ignored} come from {source} "
                "instead."),
-    # The tolerance and the attempt count are `hub.goto_and_center`'s own
-    # defaults (0.02 deg, 3), not config - so "where the real value lives" is
-    # the centring loop itself, and saying Settings would send someone looking
-    # for a box that does not exist.
+    # LEGACY SINCE S3 (spec 1.7): centring is part of the TARGET block, whose
+    # `centerTol` and `centerTries` reach the run as each target's
+    # `center_tolerance_arcmin` and `center_attempts` (#170). So "where the
+    # real value lives" is the TARGET's CENTRING section now. This node's own
+    # numbers never reached a run (the hub's 0.02 deg and 3 did), and they
+    # are deliberately NOT carried onto the TARGET: `tol 0.5` would silently
+    # tighten the centring of every flow saved with this card on it.
     "slew": SettingsNote(
         carried=(("", "the slew and the plate-solve centring themselves: every "
                       "target is centred before its first frame"),),
         ignored=(("tol", "the {value} arcmin tolerance"),
                  ("retries", "the {value} centring attempts"),
                  ("solver", "the solver name {value}")),
-        source="the run's own centring loop (1.2 arcmin, at most 3 attempts, "
-               "the rig's configured solver)",
-        detail="SLEW + CENTER happens on every target: the run slews and "
-               "plate-solve centres before the first frame, with or without "
-               "this node on the canvas. {Ignored} come from {source} "
-               "instead."),
+        source="the TARGET block's CENTRING settings (1.2 arcmin and 3 tries "
+               "unless set there; the rig's configured solver)",
+        detail="SLEW + CENTER is part of the TARGET block now: the run slews "
+               "and plate-solve centres every target before its first frame, "
+               "with or without this node on the canvas. {Ignored} never "
+               "reached the run and are not carried; the tolerance and tries "
+               "come from {source}. Delete this stage and set centring on the "
+               "TARGET."),
     "autofocus": SettingsNote(
         carried=(("", "the autofocus itself: the run focuses at each target's "
                       "start, and again whenever a rule or the temperature "
@@ -618,13 +628,20 @@ def _steps(entry: dict, target_name: str, out: list[dict]) -> list[dict]:
 
 def _identify(target: dict, entry: dict, *, flow_id: str, is_pool: bool,
               members_seen: dict[str, set[str]],
-              canonical: str | None = None) -> None:
+              canonical: str | None = None, key: str | None = None,
+              tid: str | None = None) -> None:
     """Give ``target`` and its steps deterministic ids, in place (spec 3.3).
 
     ``canonical`` is the catalogue's canonical identity for the entry's name,
     as ``_coords`` resolved it, or None for typed coordinates. A single
     TARGET with only a name is keyed on it (#229); a POOL member keeps its
     typed-name key, which the ruling left alone.
+
+    ``key`` is the block's key when the caller has made it (``_block_key``:
+    the anchor first, then the current geometry), and ``tid`` a mosaic
+    panel's id, ``identity.target_id(group, row, col)``, which the caller
+    minted with its group's; a panel's steps are keyed on it here like any
+    target's.
 
     Every step arrives carrying its stage's ``node_id`` (the compile put it
     there); it is taken off here whatever happens, because it is a compile
@@ -643,27 +660,29 @@ def _identify(target: dict, entry: dict, *, flow_id: str, is_pool: bool,
     beside two M31s cannot collide with the second copy's suffix."""
     stages = [str(s.pop("node_id", None) or "") for s in target["steps"]]
     node_id = str(entry.get("node_id") or "")
-    if not flow_id or not node_id:
+    if tid is None and (not flow_id or not node_id):
         return
-    if is_pool:
+    if tid is None and is_pool:
         used = members_seen.setdefault(node_id, set())
         occurrence = 0
         while identity.member_key(target["name"], occurrence) in used:
             occurrence += 1
         used.add(identity.member_key(target["name"], occurrence))
         tid = identity.member_id(flow_id, node_id, target["name"], occurrence)
-    else:
-        # A single TARGET is its block's 1x1 grid, keyed on the geometry it is
-        # at NOW. S1 has no anchor, so any move re-keys and the counts restart;
-        # S3 keys on the anchor and carries a small nudge. A TARGET with only
-        # a NAME is keyed on the catalogue's canonical identity for it
-        # instead: its geometry is the catalogue's answer at `when`, which
+    elif tid is None:
+        # A single TARGET is its block's 1x1 grid. Since S3 it is keyed on its
+        # ANCHOR when it has one (`_block_key`), so a nudge the save carried
+        # keeps the counts; with none, on the geometry it is at NOW. A TARGET
+        # with only a NAME is keyed on the catalogue's canonical identity for
+        # it instead: its geometry is the catalogue's answer at `when`, which
         # moves (#189 A5), and the name as typed is one spelling of many
         # (#229). `target_key` decides which, and `progress._single` asks it
         # the same question with the same resolver's answer.
-        key = identity.target_key(entry, target["ra_hours"],
-                                  target["dec_deg"], target["rotation_deg"],
-                                  canonical=canonical)
+        if key is None:
+            key = identity.target_key(entry, target["ra_hours"],
+                                      target["dec_deg"],
+                                      target["rotation_deg"],
+                                      canonical=canonical)
         tid = identity.target_id(identity.group_id(flow_id, node_id, key), 0, 0)
     target["id"] = tid
     seen: Counter[tuple[str, str]] = Counter()
@@ -1104,12 +1123,373 @@ def plan_extras(compiled: dict) -> dict:
     return out
 
 
+# ------------------------------------------------------ blocks and mosaics
+#
+# Spec 3.3, #189 (U-09), #170, #151. A TARGET entry with a grid becomes one
+# Target per panel and one TargetGroup; a TARGET of one panel stays one plain
+# Target, with its centring. The panels are laid out by
+# `framing.compute_mosaic`, the one projection (spec 3.3: "there is no third
+# copy"), so the run slews to exactly what the Atlas previewed.
+
+#: A TARGET's `order` (spec 3.1) -> ``TargetGroup.order``. The operator's
+#: words, stored verbatim and never reworded; a value this build does not
+#: offer reads as the missing-key default, least complete first.
+GROUP_ORDERS: dict[str, str] = {"Least complete first": "least_complete",
+                                "Setting first": "setting_first",
+                                "Grid order": "grid"}
+
+#: The flow setting (spec 1.6) under which a mosaic's followers wait for it
+#: (``Target.after_group``). The default lets them fill the gaps instead,
+#: which the engine does from plan order with no field at all.
+WAIT_FOR_THE_MOSAIC = "Wait for the mosaic"
+
+#: ``Target``'s own bounds on the centring it carries (#170): above 0 and at
+#: most 30 arcmin, 1 to 10 attempts. Checked here so a bad canvas number is a
+#: refusal the editor can show, not a ValidationError out of /run.
+CENTRE_TOL_MAX_ARCMIN = 30.0
+CENTRE_ATTEMPTS_MAX = 10
+
+#: ``TargetGroup``'s and ``MosaicSpecIn``'s bounds on what a block's grid
+#: holds (spec 3.1): 1 to 10 panels a side, overlap 0 to 50 percent, 1 to 20
+#: passes per visit, 0 to 180 minutes a visit.
+GRID_MAX = 10
+OVERLAP_MAX_PCT = 50.0
+PASSES_MAX = 20
+VISIT_MAX_MIN = 180.0
+
+
+def _number(value) -> float | None:
+    """``value`` as a finite float, or None for anything that is not one (a
+    bool is not a number here: True is not an angle)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _whole(value) -> int | None:
+    number = _number(value)
+    return int(number) if number is not None and number.is_integer() else None
+
+
+def _block_label(entry: dict) -> str:
+    """How a sentence names the block an entry came from."""
+    name = str(entry.get("name") or "").strip()
+    if entry.get("pool_rank") is not None:
+        return f"TARGET POOL member {name or '?'}"
+    return f"TARGET {name}" if name else "an unnamed TARGET"
+
+
+def _angles(entry: dict) -> tuple[str, float | None, float | None]:
+    """``(angle, layout, commanded)`` for a compiled entry.
+
+    ``layout`` is the angle the block is LAID OUT at, the one its panels and
+    its identity are made from (``identity.anchor_for``: for "camera fixed
+    at" the planned angle, never commanded, which still placed every
+    panel). ``commanded`` is what the rotator is told, only for "rotate"
+    (spec 3.3: "the PA when angle == 'rotate', otherwise None").
+
+    NEGATIVE MEANS "NO ANGLE CONSTRAINT". 0 IS A POSITION ANGLE. This used
+    to read 0 as the sentinel, on the reasoning that 0 is what an untouched
+    field compiles to. PA 0 is north up, the angle most people frame at and
+    the one a mosaic is planned around, and a field whose most common value
+    cannot be expressed is a field that lies (#150). -1 is what the UI writes
+    for "any angle"; a rotator cannot be commanded to a negative PA, so no
+    real value is displaced.
+
+    An entry with no ``angle`` (a compiled dict older than S3, or built by
+    hand) reads its rotation alone, as every run before S3 did: a PA of 0 or
+    more is commanded."""
+    rotation = _number(entry.get("rotation_deg"))
+    if rotation is not None and rotation < 0:
+        rotation = None
+    angle = entry.get("angle")
+    if angle not in ("any", "rotate", "fixed"):
+        angle = "any" if rotation is None else "rotate"
+    layout = None if angle == "any" else rotation
+    return angle, layout, (layout if angle == "rotate" else None)
+
+
+def _centring(entry: dict) -> dict:
+    """The ``Target`` fields a block's ``centre`` sets (#170), or ``{}``.
+
+    A value the compile read as None is left unset, so the run centres to
+    the hub's own 0.02 deg and 3 attempts, which are the missing-key 1.2
+    arcmin and 3. A number outside ``Target``'s bounds is refused, naming
+    the block, rather than raising a ValidationError out of the run."""
+    centre = entry.get("centre")
+    if not isinstance(centre, dict):
+        return {}
+    label = _block_label(entry)
+    out: dict = {}
+    tol = centre.get("tol_arcmin")
+    if tol is not None:
+        number = _number(tol)
+        if number is None or not 0 < number <= CENTRE_TOL_MAX_ARCMIN:
+            raise GraphNotRunnable(
+                f"{label}: a centring tolerance of {tol!r} arcmin cannot be "
+                f"used - it must be above 0 (a residual of exactly 0 is never "
+                f"reached) and at most {CENTRE_TOL_MAX_ARCMIN:g} arcmin")
+        out["center_tolerance_arcmin"] = number
+    tries = centre.get("attempts")
+    if tries is not None:
+        whole = _whole(tries)
+        if whole is None or not 1 <= whole <= CENTRE_ATTEMPTS_MAX:
+            raise GraphNotRunnable(
+                f"{label}: {tries!r} centring tries cannot be used - it must "
+                f"be a whole number from 1 to {CENTRE_ATTEMPTS_MAX}")
+        out["center_attempts"] = whole
+    return out
+
+
+def _mosaic_refusals(compiled: dict, graph: FlowGraph | None) -> list[str]:
+    """Why a graph with a mosaic cannot become a plan at all (spec 1.8), one
+    sentence each, every one at once:
+
+    * M1, a multi-panel block with no camera field: panels are tiled from
+      the field, and 0 x 0 tiles them onto one spot;
+    * M2, a multi-panel block at "any angle": a grid is laid out at one
+      angle, and panels shot at whatever angle the camera sits at do not
+      tile;
+    * M12 and M13, the wire shapes ``compile.lane_refusals`` names: a
+      branched lane, a loop wire from a stage that is not the tail, a stage
+      that belongs to no block. Those need the GRAPH, which both production
+      callers pass; a graph-less caller gets M1 and M2 only."""
+    out: list[str] = []
+    if graph is not None:
+        out.extend(r["text"] for r in lane_refusals(graph))
+    for entry in compiled.get("targets") or []:
+        mosaic = entry.get("mosaic")
+        if not mosaic or entry.get("pool_rank") is not None:
+            continue
+        label = _block_label(entry)
+        fov = [_number(mosaic.get("fov_x")), _number(mosaic.get("fov_y"))]
+        if any(f is None or f <= 0 for f in fov):
+            out.append(f"{label}: frame this block: panels are tiled from "
+                       f"the camera's field, and this block has not recorded "
+                       f"one.")
+        if _angles(entry)[1] is None:
+            out.append(f"{label}: a mosaic is laid out at one camera angle, "
+                       f"and with no angle the panels will not tile. Lock an "
+                       f"angle, or use the angle the camera measured.")
+    return out
+
+
+def _block_key(entry: dict, ra_hours: float, dec_deg: float,
+               layout: float | None, canonical: str | None, *,
+               anchor, grid: dict | None = None) -> str:
+    """The key a block's ids hang off (spec 3.3): ``identity.target_key``
+    with the block's ANCHOR, the geometry its counts started at, and its
+    grid. With no anchor (an unsaved preview, a flow saved before S3) the
+    current geometry is the anchor; a 1x1 block passes no grid, so a single
+    target saved before S3 keys exactly as S1 keyed it.
+
+    A STORED ANCHOR THAT CANNOT BE READ REFUSES THE PLAN. The server alone
+    writes it, so it is a damaged file, and a key guessed from it would file
+    tonight's frames under ids no ledger holds (``identity.anchor_geometry``
+    says the same)."""
+    try:
+        return identity.target_key(entry, ra_hours, dec_deg, layout,
+                                   canonical=canonical, anchor=anchor or None,
+                                   **(grid or {}))
+    except ValueError as e:
+        raise GraphNotRunnable(
+            f"{_block_label(entry)}: its stored frame anchor cannot be read "
+            f"({e}), so its panels cannot be matched to the frames already "
+            f"banked. The server writes it at save, so the file is damaged") \
+            from None
+
+
+def _mosaic_numbers(entry: dict) -> dict:
+    """A mosaic entry's grid, checked against the bounds the group and the
+    projection hold (``GRID_MAX`` and the rest). A value outside them, or
+    one the compile could not read as a number (None), is refused naming
+    the block and the field: guessing an overlap or a pass count would
+    shoot a layout nobody framed."""
+    m = entry["mosaic"]
+    label = _block_label(entry)
+
+    def bounded(key: str, low: float, high: float, what: str, *,
+                whole: bool = False):
+        value = _whole(m.get(key)) if whole else _number(m.get(key))
+        if value is None or not low <= value <= high:
+            raise GraphNotRunnable(
+                f"{label}: {what} of {m.get(key)!r} cannot be used - it must "
+                f"be {'a whole number ' if whole else ''}from {low:g} to "
+                f"{high:g}")
+        return value
+
+    return {"rows": bounded("rows", 1, GRID_MAX, "a grid of rows", whole=True),
+            "cols": bounded("cols", 1, GRID_MAX, "a grid of columns",
+                            whole=True),
+            "overlap": bounded("overlap", 0, OVERLAP_MAX_PCT,
+                               "an overlap (percent)"),
+            "passes": bounded("passes", 1, PASSES_MAX,
+                              "a number of passes per visit", whole=True),
+            "visit_min": bounded("visit_min", 0, VISIT_MAX_MIN,
+                                 "a visit (minutes)"),
+            "fov_x": _number(m.get("fov_x")), "fov_y": _number(m.get("fov_y"))}
+
+
+def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
+                   dec_deg: float, canonical: str | None, base_schedule: dict,
+                   flow_id: str, unmapped: list[dict],
+                   rig: RigFacts | None) -> tuple[list[dict], dict | None]:
+    """``(panels, group)`` for one multi-panel TARGET entry (spec 3.3).
+
+    One Target per panel ``framing.compute_mosaic`` lays out, in its order
+    (rows from the top, snaking), SKIPPED PANELS DROPPED. Each is named
+    "<name> <row>-<col>" 1-based and carries its 0-based ``panel_row`` and
+    ``panel_col``, the group's id as ``mosaic_group``, the rotator's PA only
+    for "rotate", ``acquisition = "cycle"`` when a stage cycles or the loop
+    wire rotates the panels, the block's centring, ``autofocus_skip_if_fresh``
+    (a hop does not move the focuser, spec 5.6) and the dusk schedule.
+
+    The group's id is ``identity.group_id`` over the block's key
+    (``_block_key``: its anchor), so a panel's id, ``target_id(group, row,
+    col)``, is a function of the flow, the block, the anchor and the panel,
+    and ``skip`` is in none of them: skipping a panel moves its id into the
+    group's ``skipped_ids`` and leaves every other id where it was. Without a
+    flow id (an unsaved preview) the group id is a fresh uuid4 and the
+    panels' ids follow it: fresh on each compile, as uuid4s are, but agreeing
+    with each other.
+
+    A block whose every panel is skipped shoots nothing: it is dropped with a
+    warn, not emitted as a group of no members, which ``plan_identity_errors``
+    would refuse at every start path."""
+    # Imported here, not at the top: `catalog.framing` is the Atlas's router,
+    # and importing it loads the auth layer, which a plan with no mosaic has
+    # no use for (framing imports `sequence` lazily for the same reason).
+    from ..catalog import framing
+
+    label = _block_label(entry)
+    m = entry["mosaic"]
+    nums = _mosaic_numbers(entry)
+    angle, layout, commanded = _angles(entry)
+    overlap = nums["overlap"] / 100.0
+    spec = {"ra_hours": ra_hours, "dec_deg": dec_deg, "rows": nums["rows"],
+            "cols": nums["cols"], "overlap": overlap, "rotation_deg": layout,
+            "fov_x_deg": nums["fov_x"], "fov_y_deg": nums["fov_y"]}
+    layout_panels = framing.compute_mosaic(spec)["panels"]
+    key = _block_key(entry, ra_hours, dec_deg, layout, canonical,
+                     anchor=m.get("frame_anchor"),
+                     grid=dict(rows=nums["rows"], cols=nums["cols"],
+                               overlap=overlap, fov_x=nums["fov_x"],
+                               fov_y=nums["fov_y"]))
+    node_id = str(entry.get("node_id") or "")
+    group_id = (identity.group_id(flow_id, node_id, key)
+                if flow_id and node_id else uuid4().hex)
+    skip = {(int(r) - 1, int(c) - 1) for r, c in (m.get("skip") or [])}
+    steps = _steps(entry, name or "?", unmapped)
+    cycles = entry.get("loop") is True or any(
+        (s or {}).get("strategy") == "cycle"
+        for s in (entry.get("steps") or []))
+    centring = _centring(entry)
+    panels: list[dict] = []
+    skipped_ids: list[str] = []
+    for p in layout_panels:
+        row, col = p["row"], p["col"]
+        tid = identity.target_id(group_id, row, col)
+        if (row, col) in skip:
+            skipped_ids.append(tid)
+            continue
+        panel = {"name": (f"{name} {row + 1}-{col + 1}" if name
+                          else f"{row + 1}-{col + 1}"),
+                 "ra_hours": p["ra_hours"], "dec_deg": p["dec_deg"],
+                 "rotation_deg": commanded,
+                 "schedule": _target_schedule(base_schedule, entry,
+                                              is_pool=False),
+                 "steps": copy.deepcopy(steps),
+                 "mosaic_group": group_id, "panel_row": row,
+                 "panel_col": col, "autofocus_skip_if_fresh": True,
+                 **centring}
+        if cycles:
+            panel["acquisition"] = "cycle"
+        _identify(panel, entry, flow_id=flow_id, is_pool=False,
+                  members_seen={}, tid=tid)
+        panels.append(panel)
+    if not panels:
+        unmapped.append(_note(
+            f"targets[{name or '?'}].mosaic.skip",
+            f"every panel of {label} is skipped, so it shoots nothing and "
+            f"is left out of the plan"))
+        return [], None
+    fov_x, fov_y = nums["fov_x"], nums["fov_y"]
+    if rig is not None and rig.fov_deg is not None:
+        # M5's LOSS (spec 1.8): the camera on the rig now images less than
+        # one step of the grid, so neighbouring panels would not meet. The
+        # compile never re-tiles from the live optics - the snapshot is
+        # what the engine slews to - so the operator re-frames.
+        live_x, live_y = rig.fov_deg
+        if live_x < fov_x * (1 - overlap) or live_y < fov_y * (1 - overlap):
+            unmapped.append(_note(
+                f"targets[{name or '?'}].mosaic.fov",
+                f"framed for {fov_x:.2f} x {fov_y:.2f} deg; this camera now "
+                f"images {live_x:.2f} x {live_y:.2f} deg, so the panels would "
+                f"leave gaps. Re-frame."))
+    group = {
+        "id": group_id, "name": name, "kind": "mosaic",
+        "mode": "rotate" if entry.get("loop") is True else "sequential",
+        "visit_passes": nums["passes"],
+        "visit_min_s": nums["visit_min"] * 60.0,
+        "order": GROUP_ORDERS.get(str(m.get("order") or "").strip(),
+                                  "least_complete"),
+        # Only "Shoot anyway" lets a panel shoot off its tile.
+        "require_centred": m.get("require_centred") is not False,
+        "pa_deg": layout,
+        "rotate": angle == "rotate",
+        # A.2 with convergence's share taken first (Revision 1): how far the
+        # camera may sit off `pa_deg` before the corner overlap runs out.
+        "angle_tolerance_deg": framing.angle_tolerance_deg(spec),
+        "skipped_ids": skipped_ids,
+        # Provenance only; `_group_cols` reads `cols` as a fallback.
+        "geometry": {"rows": nums["rows"], "cols": nums["cols"],
+                     "overlap": overlap, "fov_x": fov_x, "fov_y": fov_y,
+                     "fov_from": str(m.get("fov_from") or ""), "key": key},
+    }
+    return panels, group
+
+
+def _count_mode(built: list[tuple[dict, list[dict]]], out: list[dict]) -> str:
+    """``plan.count_mode`` for the blocks that made it into the plan (spec
+    3.3): "accepted" when ANY asks for accepted subs. The count mode is one
+    setting for the whole plan (``SequencePlan.count_mode``), so blocks that
+    disagree cannot both be honoured, and the loser is M7, a loss: a block
+    that counts every sub would reach its quota on frames the grader threw
+    away, or one that counts accepted subs would stop early. An entry with
+    no ``count_mode`` (compiled before S3) counts every sub, as it did."""
+    # One ask per BLOCK: a pool's members all carry the pool's words.
+    asks: dict[str, dict] = {}
+    for entry, targets in built:
+        if not targets:
+            continue
+        block = str(entry.get("node_id") or "") or f"#{id(entry)}"
+        ask = asks.setdefault(block, {
+            "pool": entry.get("pool_rank") is not None, "names": [],
+            "label": _block_label(entry),
+            "mode": ("accepted" if entry.get("count_mode") == "accepted"
+                     else "attempts")})
+        ask["names"].append(str(entry.get("name") or "").strip() or "?")
+    labels = {b: (f"TARGET POOL ({', '.join(a['names'])})" if a["pool"]
+                  else a["label"]) for b, a in asks.items()}
+    accepted = [labels[b] for b, a in asks.items() if a["mode"] == "accepted"]
+    counting = [labels[b] for b, a in asks.items() if a["mode"] == "attempts"]
+    if accepted and counting:
+        out.append(_note(
+            "count_mode",
+            f"this plan counts accepted subs because {_and_list(accepted)} "
+            f"{'asks' if len(accepted) == 1 else 'ask'} for it; "
+            f"{_and_list(counting)}'s 'every sub taken' cannot be honoured in "
+            f"the same run"))
+    return "accepted" if accepted else "attempts"
+
+
 def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                      flow_id: str = "",
                      when: float | None = None,
                      cool_to: float | None = None,
                      camera_can_cool: bool = False,
-                     closes_on_unsafe: bool = False
+                     closes_on_unsafe: bool = False,
+                     rig: RigFacts | None = None
                      ) -> tuple[SequencePlan, list[dict]]:
     """``(plan, unmapped)`` for a compiled flow.
 
@@ -1144,14 +1524,38 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     plan on an uncooled camera earns nothing. The default is False so a caller
     that cannot answer stays silent rather than nagging.
 
+    ``rig`` is what the route knows about the live rig (``flows.rig``),
+    injected for the same reason. Only M5 reads it here: a mosaic framed for
+    a field the camera no longer images leaves gaps, which is a loss. None,
+    the default, knows nothing and reports nothing.
+
+    A TARGET ENTRY WITH A GRID becomes one Target per panel and one
+    ``TargetGroup`` (``_expand_mosaic``, spec 3.3); one of a single panel
+    stays one plain Target, with its centring. A target a mosaic's tail feeds
+    waits for the mosaic's group (``after_group``) only when the flow says
+    "Wait for the mosaic"; otherwise the engine lets it fill the mosaic's
+    gaps, from plan order. ``plan.count_mode`` is "accepted" when any block
+    asks for it, and a block that disagrees is M7, a loss.
+
     Raises :class:`GraphNotRunnable` when there is nothing runnable here - no
-    targets at all, or a capture step with no exposure or no frames.
+    targets at all, or a capture step with no exposure or no frames - and
+    for a mosaic that cannot run (M1, M2, M12, M13; ``_mosaic_refusals``),
+    every such sentence at once.
     """
+    refusals = _mosaic_refusals(compiled, graph)
+    if refusals:
+        raise GraphNotRunnable(" ".join(refusals))
     unmapped: list[dict] = []
     base_schedule = {k: v for k, v in (compiled.get("schedule") or {}).items()
                      if k in SCHEDULE_KEYS}
 
     targets: list[dict] = []
+    groups: list[dict] = []
+    # Each entry with the targets it became, for the count mode and the
+    # followers, which are settled once every block is built.
+    built: list[tuple[dict, list[dict]]] = []
+    # A mosaic's node id -> its group, for the targets that follow it.
+    group_of: dict[str, dict] = {}
     pooled = 0
     members_seen: dict[str, set[str]] = {}
     for entry in compiled.get("targets") or []:
@@ -1167,29 +1571,34 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             continue
         ra_hours, dec_deg, canonical = coords
 
-        # NEGATIVE MEANS "NO ANGLE CONSTRAINT". 0 IS A POSITION ANGLE.
-        #
-        # This used to read 0 as the sentinel, on the reasoning that 0 is what an
-        # untouched field compiles to and that "a wrong None costs an operator
-        # who really wanted PA 0 an unconstrained angle". Both halves were
-        # wrong-headed: PA 0 is a perfectly ordinary answer - it is north up,
-        # the angle most people frame at and the one a mosaic is planned around
-        # - and a field whose most common value cannot be expressed is a field
-        # that lies. It also cost every flow a permanent advisory line, because
-        # the warning fired on the DEFAULT.
-        #
-        # So the sentinel is anything below zero. -1 is what the UI writes for
-        # "any angle"; a rotator cannot be commanded to a negative PA, so no
-        # real value is displaced, and an operator who types 0 now gets 0.
-        rotation = entry.get("rotation_deg")
-        if rotation is None or (isinstance(rotation, (int, float)) and rotation < 0):
-            rotation = None
+        if entry.get("mosaic") and not is_pool:
+            panels, group = _expand_mosaic(
+                entry, name=name, ra_hours=ra_hours, dec_deg=dec_deg,
+                canonical=canonical, base_schedule=base_schedule,
+                flow_id=flow_id, unmapped=unmapped, rig=rig)
+            if group is not None:
+                groups.append(group)
+                group_of[str(entry.get("node_id") or "")] = {
+                    **group, "when_waiting": entry["mosaic"].get(
+                        "when_waiting")}
+            targets.extend(panels)
+            built.append((entry, panels))
+            continue
+
+        # The angle the rotator is told (`_angles`: negative is no angle, 0 is
+        # north up, and only "rotate" commands one) and the one the block is
+        # laid out at, which keys it.
+        _angle, layout, rotation = _angles(entry)
 
         target = {"name": name, "ra_hours": ra_hours, "dec_deg": dec_deg,
                   "rotation_deg": rotation,
                   "schedule": _target_schedule(base_schedule, entry,
                                                is_pool=is_pool),
                   "steps": _steps(entry, name or "?", unmapped)}
+        if not is_pool:
+            # #170: the TARGET's own centring reaches the run. A legacy SLEW's
+            # tolerance does not (spec 1.7; `NODE_SETTINGS["slew"]`).
+            target.update(_centring(entry))
         if any((s or {}).get("strategy") == "cycle"
                for s in (entry.get("steps") or [])):
             # The FILTER CYCLE reaches the engine. `_cycle_steps` put `per_visit`
@@ -1202,10 +1611,29 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             # whose target says blocks is a plan nobody can read, and keeping two
             # keys in step is how that happens.
             target["acquisition"] = "cycle"
+        key = None
+        if not is_pool and flow_id and entry.get("node_id"):
+            # The anchor first (spec 3.3, ruling 3), and no grid: a single
+            # target with no anchor keys exactly as S1 keyed it.
+            key = _block_key(entry, ra_hours, dec_deg, layout, canonical,
+                             anchor=entry.get("frame_anchor"))
         _identify(target, entry, flow_id=flow_id, is_pool=is_pool,
-                  members_seen=members_seen, canonical=canonical)
+                  members_seen=members_seen, canonical=canonical, key=key)
         targets.append(target)
+        built.append((entry, [target]))
         pooled += 1 if is_pool else 0
+
+    # FOLLOWERS WAIT ONLY WHEN THE FLOW SAYS SO (spec 1.6). Under the default
+    # a follower needs no field: the engine treats every target after a
+    # group in plan order as its follower and lets it fill the group's gaps,
+    # bounded. A mosaic dropped from the plan has no group to wait for, and a
+    # gate on a group that is not there would never open
+    # (`plan_identity_errors` refuses it), so its followers run as targets.
+    for entry, made in built:
+        group = group_of.get(str(entry.get("follows") or ""))
+        if group is not None and group["when_waiting"] == WAIT_FOR_THE_MOSAIC:
+            for t in made:
+                t["after_group"] = group["id"]
 
     if not targets:
         raise GraphNotRunnable(
@@ -1231,6 +1659,10 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         "instructions": _instructions(compiled, unmapped),
         **plan_extras(compiled),
     }
+    if _count_mode(built, unmapped) == "accepted":
+        fields["count_mode"] = "accepted"
+    if groups:
+        fields["groups"] = groups
     # THE GUIDE NODE MEANS WHAT IT DRAWS (#239 stage C).
     #
     # `guide` was never set here, so every flow-built night guided - a graph

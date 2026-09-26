@@ -15,7 +15,7 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store";
 import { Field, LockedNote } from "../ui";
-import { NODE_DEFS } from "./nodeDefs";
+import { NODE_DEFS, fieldValue } from "./nodeDefs";
 import CalibrationMatrix from "./CalibrationMatrix";
 import FlowFieldRow, { type FieldVariant } from "./FlowFieldRow";
 // `FlowIssue` / `FlowUnmapped` live in the api client — flowsTypes re-exports
@@ -155,7 +155,12 @@ function InspectorNode({ id, variant }: { id: string; variant: FieldVariant }) {
           key={`${node.id}:${f.key}`}
           nodeId={node.id}
           field={f}
-          value={node.params[f.key]}
+          // `fieldValue`, not the raw param: TARGET's `angle` has no missing-
+          // key default (the server derives it from `rotation`), so a stored
+          // block with a real PA and no `angle` key would show a blank select
+          // here while the run commands "Rotate to PA". Display only; nothing
+          // is written until the operator picks (mosaic S3, spec 3.1).
+          value={fieldValue(f, node.params)}
           variant={variant}
         />
       ))}

@@ -23,6 +23,11 @@
 //      flow's record with another flow's answer. The reads WHILE the open
 //      flow's run shoots (#214) are graded in flowProgressLive.test.ts, and a
 //      save that must not clear `dirty` (#215) in flowsSaveRace.test.ts.
+//   4. A MOSAIC READS IN PANELS (#189 S3, task S3-U2). A TARGET block with a
+//      grid reads "4/6 panels done" on both cards: the panels that owe
+//      nothing, over the panels the run shoots, never the skipped ones; and
+//      the single target and the pool of the same recorded answers read
+//      exactly as S1 drew them.
 //
 // Every guarded case names the mutant it kills and quotes the failure that
 // mutant produced when it was run from a byte-for-byte backup of the file it
@@ -531,20 +536,23 @@ const CHIP_SEL: Record<Which, string> = {
 
 /** A parent with NO store subscription, so anything that re-renders after a
  *  store write re-rendered because the card itself asked to. */
-function Deck({ which, phone = false }: { which: Which; phone?: boolean }) {
+function Deck({ which, phone = false, nodes = NODES }: {
+  which: Which; phone?: boolean; nodes?: FlowNodeRec[];
+}) {
   return createElement(Fragment, null,
-    NODES.map((n) => createElement(CARD[which] as any, { key: n.id, node: n, phone })));
+    nodes.map((n) => createElement(CARD[which] as any, { key: n.id, node: n, phone })));
 }
 
-function mount(which: Which, flows: Partial<FlowsState>, phone = false): void {
+function mount(which: Which, flows: Partial<FlowsState>, phone = false,
+               nodes: FlowNodeRec[] = NODES): void {
   act(() => root.render(null));
   act(() => {
     useStore.setState({
-      flows: { ...FLOWS_INIT, graph: { nodes: NODES, edges: [] }, ...flows },
+      flows: { ...FLOWS_INIT, graph: { nodes, edges: [] }, ...flows },
     } as any);
   });
   for (const k of Object.keys(renders)) renders[k] = 0;
-  act(() => root.render(createElement(Deck, { which, phone })));
+  act(() => root.render(createElement(Deck, { which, phone, nodes })));
 }
 
 function setFlows(p: Partial<FlowsState>): void {
@@ -655,6 +663,643 @@ await test("[classic] on the phone tier the chip is hidden with the footer", () 
     "the 150 px card drew the chip; the phone tier has no footer line, and the "
     + "auto-graph's layout budgets room for none");
 });
+
+// ============================================== 4. A MOSAIC READS IN PANELS
+//
+// #189 S3 (spec 1.2): a TARGET block with a grid reads "N/M panels done", N
+// the panels whose `owed` is 0 and M the panels the plan SHOOTS, which the
+// route's `panels` already is: a skipped panel is listed in the block's
+// `skipped` and never in `panels`. Both canvases, from the one formatter.
+// This section's mutants were run in a private copy of ui/
+// (scratchpad/s3-u2-readouts-m5q8/mut/), never in the shared tree, each file
+// restored from a byte backup and hash-checked after each run.
+//
+// RECORDED, NOT HAND-WRITTEN. The two answers below are the progress route's
+// own (`flows/progress.py::flow_progress`, as S3-T left it), recorded in
+// scratchpad/s3-u2-readouts-m5q8/record.py exactly the way the route builds
+// one: a graph of DUSK -> TARGET M16 (a grid, rotating, loop wire from its
+// CAPTURE) -> CAPTURE Ha 300 s x 2 -> TARGET M31 (single) -> CAPTURE ->
+// POOL M13, M92 -> CAPTURE, compiled with `compile_plan`, expanded by
+// `to_sequence_plan(flow_id=...)`, and a dormant accepted-mode Session of
+// that plan holding frames on chosen panels. Nothing site-derived is in
+// them (the route is CAP_VIEW_STATUS). Re-record, never hand-edit: a
+// hand-made fixture tests the answer its author imagined.
+//
+//  - PROGRESS_2X3: a 2x3, every panel shot; 1-1, 1-3, 2-2 and 2-1 banked
+//    their 2 subs, 1-2 one, 2-3 none. M31 holds 3 of 5, M13 2 of 5.
+//  - PROGRESS_2X4_SKIPS: a 2x4 with 1-4 and 2-4 skipped; 1-1 and 2-3 done,
+//    1-2 one sub, and the skipped 1-4 still holding the 2 subs it banked
+//    before it was skipped. M31 holds all 5.
+
+const PROGRESS_2X3: FlowProgress = {
+  "flow_id": "flow-s3u2-readouts",
+  "session": {"id": "s-1", "status": "dormant", "nights": 2, "count_mode": "accepted"},
+  "blocks": [
+    {
+      "node_id": "t",
+      "name": "M16",
+      "kind": "target",
+      "banked": 9,
+      "owed": 3,
+      "total": 12,
+      "panels": [
+        {
+          "target_id": "bbce1f80f6ba544ea71271dd6136e60a",
+          "name": "M16 1-1",
+          "row": 0,
+          "col": 0,
+          "banked": 2,
+          "owed": 0,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "4872c877290157328cd49689b7db28e9",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 2,
+              "owed": 0
+            }
+          ]
+        },
+        {
+          "target_id": "3ff4f91287eb526891b049976a413b16",
+          "name": "M16 1-2",
+          "row": 0,
+          "col": 1,
+          "banked": 1,
+          "owed": 1,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "cbefba6aee085b2d9eb5d97157fd6f1d",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 1,
+              "owed": 1
+            }
+          ]
+        },
+        {
+          "target_id": "bb226e5c15f854cdb88cec2a7a3c97df",
+          "name": "M16 1-3",
+          "row": 0,
+          "col": 2,
+          "banked": 2,
+          "owed": 0,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "72ffcf511845515686a539c462745abf",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 2,
+              "owed": 0
+            }
+          ]
+        },
+        {
+          "target_id": "c77bc7c532ce505d8069ac65dceabdbc",
+          "name": "M16 2-3",
+          "row": 1,
+          "col": 2,
+          "banked": 0,
+          "owed": 2,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "3af255a3c2a1555bb4616a072e4865ec",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 0,
+              "owed": 2
+            }
+          ]
+        },
+        {
+          "target_id": "615361c3abf15cb4b9169e335551e401",
+          "name": "M16 2-2",
+          "row": 1,
+          "col": 1,
+          "banked": 2,
+          "owed": 0,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "a4666806dff35e62932a2f1d26b57e0e",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 2,
+              "owed": 0
+            }
+          ]
+        },
+        {
+          "target_id": "e695cab515675ce2ae546d7320968a67",
+          "name": "M16 2-1",
+          "row": 1,
+          "col": 0,
+          "banked": 2,
+          "owed": 0,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "ca222273b62b50f8a92eea7bd8d4f62b",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 2,
+              "owed": 0
+            }
+          ]
+        }
+      ],
+      "grid": {"rows": 2, "cols": 3},
+      "skipped": []
+    },
+    {
+      "node_id": "u",
+      "name": "M31",
+      "kind": "target",
+      "banked": 3,
+      "owed": 2,
+      "total": 5,
+      "panels": [
+        {
+          "target_id": "21a3decb9ab05c73bdfadaff9d209d98",
+          "name": "M31",
+          "row": 0,
+          "col": 0,
+          "banked": 3,
+          "owed": 2,
+          "total": 5,
+          "steps": [
+            {
+              "step_id": "b4d77a16cbf950f6b0737ca946d6f217",
+              "filter": "L",
+              "frame_type": "Light",
+              "exposure_s": 60.0,
+              "count": 5,
+              "banked": 3,
+              "owed": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "node_id": "p",
+      "name": "M13, M92",
+      "kind": "pool",
+      "banked": 2,
+      "owed": 8,
+      "total": 10,
+      "panels": [
+        {
+          "target_id": "f926755fa56d5b83b7dbe7fe4b7e097b",
+          "name": "M13",
+          "row": null,
+          "col": null,
+          "banked": 2,
+          "owed": 3,
+          "total": 5,
+          "steps": [
+            {
+              "step_id": "08144402b8095934bcc77006f3c5e0b9",
+              "filter": "L",
+              "frame_type": "Light",
+              "exposure_s": 60.0,
+              "count": 5,
+              "banked": 2,
+              "owed": 3
+            }
+          ]
+        },
+        {
+          "target_id": "bb5cd3fa03405b6ea12b4a906cead261",
+          "name": "M92",
+          "row": null,
+          "col": null,
+          "banked": 0,
+          "owed": 5,
+          "total": 5,
+          "steps": [
+            {
+              "step_id": "98e06c9ca1af5556a49190c3ef853c85",
+              "filter": "L",
+              "frame_type": "Light",
+              "exposure_s": 60.0,
+              "count": 5,
+              "banked": 0,
+              "owed": 5
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "orphaned": {"frames": 0, "steps": 0}
+};
+
+const PROGRESS_2X4_SKIPS: FlowProgress = {
+  "flow_id": "flow-s3u2-readouts",
+  "session": {"id": "s-1", "status": "dormant", "nights": 2, "count_mode": "accepted"},
+  "blocks": [
+    {
+      "node_id": "t",
+      "name": "M16",
+      "kind": "target",
+      "banked": 5,
+      "owed": 7,
+      "total": 12,
+      "panels": [
+        {
+          "target_id": "63335b38d798546f86e29cd551aae2a8",
+          "name": "M16 1-1",
+          "row": 0,
+          "col": 0,
+          "banked": 2,
+          "owed": 0,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "dd48f0e69b2659d7aae305f155652ed9",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 2,
+              "owed": 0
+            }
+          ]
+        },
+        {
+          "target_id": "5fcac8705d2b5148a9d7df30c2d30565",
+          "name": "M16 1-2",
+          "row": 0,
+          "col": 1,
+          "banked": 1,
+          "owed": 1,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "f1579218339652129e6699885d6ab7dc",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 1,
+              "owed": 1
+            }
+          ]
+        },
+        {
+          "target_id": "dea547f516b8510e9443cdea05392312",
+          "name": "M16 1-3",
+          "row": 0,
+          "col": 2,
+          "banked": 0,
+          "owed": 2,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "42b338f0b23b5dc3a655d4faf2107a76",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 0,
+              "owed": 2
+            }
+          ]
+        },
+        {
+          "target_id": "857edf34d56d5ab18d451975329669bb",
+          "name": "M16 2-3",
+          "row": 1,
+          "col": 2,
+          "banked": 2,
+          "owed": 0,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "52551cf4781a5d93a7632065cf6193e0",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 2,
+              "owed": 0
+            }
+          ]
+        },
+        {
+          "target_id": "ba07a8d19bd154d5af710664bc406212",
+          "name": "M16 2-2",
+          "row": 1,
+          "col": 1,
+          "banked": 0,
+          "owed": 2,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "79844b200ba053068124ba6288b79bbe",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 0,
+              "owed": 2
+            }
+          ]
+        },
+        {
+          "target_id": "c9fbb82f3ff15ec392e0f1b44623c271",
+          "name": "M16 2-1",
+          "row": 1,
+          "col": 0,
+          "banked": 0,
+          "owed": 2,
+          "total": 2,
+          "steps": [
+            {
+              "step_id": "1ac650e22cc455dfbeb735609ad42a40",
+              "filter": "Ha",
+              "frame_type": "Light",
+              "exposure_s": 300.0,
+              "count": 2,
+              "banked": 0,
+              "owed": 2
+            }
+          ]
+        }
+      ],
+      "grid": {"rows": 2, "cols": 4},
+      "skipped": [
+        {
+          "target_id": "38affd0962c65588a2aa3befca464226",
+          "name": "M16 1-4",
+          "row": 0,
+          "col": 3,
+          "banked": 2
+        },
+        {
+          "target_id": "95b26da0ce4151f3b2a207ca73a08fec",
+          "name": "M16 2-4",
+          "row": 1,
+          "col": 3,
+          "banked": 0
+        }
+      ]
+    },
+    {
+      "node_id": "u",
+      "name": "M31",
+      "kind": "target",
+      "banked": 5,
+      "owed": 0,
+      "total": 5,
+      "panels": [
+        {
+          "target_id": "21a3decb9ab05c73bdfadaff9d209d98",
+          "name": "M31",
+          "row": 0,
+          "col": 0,
+          "banked": 5,
+          "owed": 0,
+          "total": 5,
+          "steps": [
+            {
+              "step_id": "b4d77a16cbf950f6b0737ca946d6f217",
+              "filter": "L",
+              "frame_type": "Light",
+              "exposure_s": 60.0,
+              "count": 5,
+              "banked": 5,
+              "owed": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "node_id": "p",
+      "name": "M13, M92",
+      "kind": "pool",
+      "banked": 0,
+      "owed": 10,
+      "total": 10,
+      "panels": [
+        {
+          "target_id": "f926755fa56d5b83b7dbe7fe4b7e097b",
+          "name": "M13",
+          "row": null,
+          "col": null,
+          "banked": 0,
+          "owed": 5,
+          "total": 5,
+          "steps": [
+            {
+              "step_id": "08144402b8095934bcc77006f3c5e0b9",
+              "filter": "L",
+              "frame_type": "Light",
+              "exposure_s": 60.0,
+              "count": 5,
+              "banked": 0,
+              "owed": 5
+            }
+          ]
+        },
+        {
+          "target_id": "bb5cd3fa03405b6ea12b4a906cead261",
+          "name": "M92",
+          "row": null,
+          "col": null,
+          "banked": 0,
+          "owed": 5,
+          "total": 5,
+          "steps": [
+            {
+              "step_id": "98e06c9ca1af5556a49190c3ef853c85",
+              "filter": "L",
+              "frame_type": "Light",
+              "exposure_s": 60.0,
+              "count": 5,
+              "banked": 0,
+              "owed": 5
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "orphaned": {"frames": 0, "steps": 0}
+};
+
+const mosaicOf = (p: FlowProgress): FlowProgressBlock => {
+  const b = p.blocks.find((x) => x.node_id === "t");
+  if (!b) throw new Error("precondition: the recorded answer has the mosaic block t");
+  return b;
+};
+
+// MUTANT "every panel done when any is" (panelsChip, once it has counted,
+// calls every panel done if any one owes nothing: `if (done > 0) done =
+// panels.length;`). Observed, 28/32 (this case, the skipped case below and
+// both cards' mosaic case):
+//   x a mosaic block reads 'N/M panels done': the panels that owe nothing:
+//     the mosaic's chip counts the panels whose owed is 0, over the panels it
+//     shoots
+//     expected "4/6 panels done"
+//     got      "6/6 panels done"
+// MUTANT "chip by subs for a mosaic" (the `if (isMosaic(block))` branch in
+// progressChip deleted, so a grid reads as S1's sub total). Observed,
+// 27/32 (this case, the skipped and unreadable cases below, and both cards'
+// mosaic case):
+//   x a mosaic block reads 'N/M panels done': the panels that owe nothing:
+//     the mosaic's chip counts the panels whose owed is 0, over the panels it
+//     shoots
+//     expected "4/6 panels done"
+//     got      "9/12 subs"
+await test("a mosaic block reads 'N/M panels done': the panels that owe nothing", () => {
+  const b = mosaicOf(PROGRESS_2X3);
+  eq(b.panels.length, 6, "premise: the recorded 2x3 shoots six panels");
+  eq(b.panels.filter((p) => p.owed === 0).length, 4, "premise: four of them owe nothing");
+  eq(progressChip(PROGRESS_2X3, "t", false), "4/6 panels done",
+    "the mosaic's chip counts the panels whose owed is 0, over the panels it shoots");
+});
+
+// MUTANT "over the whole grid" (M read as grid.rows * grid.cols, the grid as
+// drawn, skipped panels included). Observed, 31/32:
+//   x a skipped panel is in neither number, however much it banked: M is the
+//     six panels the run will shoot; counted over the grid, two panels nobody
+//     will shoot would keep the mosaic from ever reading done
+//     expected "2/6 panels done"
+//     got      "2/8 panels done"
+await test("a skipped panel is in neither number, however much it banked", () => {
+  const b = mosaicOf(PROGRESS_2X4_SKIPS);
+  eq(b.grid?.rows ?? 0, 2, "premise: a 2x4 grid");
+  eq(b.grid?.cols ?? 0, 4, "premise: a 2x4 grid");
+  eq(b.skipped?.length ?? 0, 2, "premise: two panels skipped");
+  eq(b.skipped?.[0]?.banked ?? 0, 2, "premise: the skipped 1-4 still holds 2 subs");
+  eq(progressChip(PROGRESS_2X4_SKIPS, "t", false), "2/6 panels done",
+    "M is the six panels the run will shoot; counted over the grid, two panels nobody "
+    + "will shoot would keep the mosaic from ever reading done");
+});
+
+// CONTROL: the single target and the pool of the SAME recorded answers read
+// exactly as S1 drew them. MUTANT "every TARGET is a mosaic" (isMosaic
+// answers true without a grid). Observed, 17/32 (this control, and every S1
+// case above that draws a TARGET's sub count, each reading "0/1 panels
+// done"):
+//   x CONTROL: the single target and the pool in the same answers read as S1
+//     drew them: M31's chip, S1's formula
+//     expected "3/5 subs"
+//     got      "0/1 panels done"
+await test("CONTROL: the single target and the pool in the same answers read as S1 drew them", () => {
+  eq(progressChip(PROGRESS_2X3, "u", false), "3/5 subs", "M31's chip, S1's formula");
+  eq(progressChip(PROGRESS_2X4_SKIPS, "u", false), "5/5 subs", "M31 complete, still in subs");
+  eq(progressChip(PROGRESS_2X3, "p", false), null, "a POOL block still gets no chip");
+  eq(progressChip(PROGRESS_2X4_SKIPS, "p", false), null, "a POOL block still gets no chip");
+});
+
+// A 1x1 GRID IS A SINGLE TARGET. The route adds `grid` only to a block of
+// more than one panel (server `compile._is_mosaic`, rows x cols > 1), so this
+// is the answer a server could send only by mistake, and isMosaic's
+// docstring promises it still reads in subs: one panel "0/1 panels done" or
+// "1/1 panels done" would hide the sub count S1 draws for exactly that block.
+// The recorded M31 block with a 1x1 grid added, nothing else changed.
+// MUTANT "a 1x1 grid is a mosaic" (isMosaic's `rows * cols > 1` read as
+// `>= 1`), found surviving by the S3-U2 verifier and run in its private copy
+// (scratchpad/s3-u2-verify-k7r2/). Observed, 32/33:
+//   x a 1x1 grid reads as the single target it is, in subs: a 1x1 grid is
+//     one panel: its chip is S1's sub count, not a fraction of panels
+//     expected "3/5 subs"
+//     got      "0/1 panels done"
+await test("a 1x1 grid reads as the single target it is, in subs", () => {
+  const m31 = PROGRESS_2X3.blocks.find((x) => x.node_id === "u");
+  if (!m31) throw new Error("precondition: the recorded answer has the single target u");
+  const oneByOne: FlowProgress = {
+    ...PROGRESS_2X3, blocks: [{ ...m31, grid: { rows: 1, cols: 1 } }],
+  };
+  eq(progressChip(oneByOne, "u", false), "3/5 subs",
+    "a 1x1 grid is one panel: its chip is S1's sub count, not a fraction of panels");
+});
+
+await test("CONTROL: a mosaic keeps S1's gates - no chip while dirty or with no session", () => {
+  eq(progressChip(PROGRESS_2X3, "t", true), null, "an unsaved graph describes another flow");
+  eq(progressChip({ ...PROGRESS_2X3, session: null }, "t", false), null,
+    "a flow that never ran has nothing to count");
+});
+
+// MUTANT "unreadable owed counts as not done" (panelsChip's `if (owed ===
+// null) return null;` deleted, so a panel it cannot read shrinks N without
+// a word). Observed, 31/32:
+//   x a mosaic answer that cannot be counted draws no chip and never throws:
+//     a panel whose owed cannot be read cannot be counted done or not done
+//     expected null
+//     got      "4/6 panels done"
+// MUTANT "0/0 for a mosaic with no panels" (the `panels.length === 0` test
+// deleted). Observed, 31/32:
+//   x a mosaic answer that cannot be counted draws no chip and never throws:
+//     every panel skipped: '0/0 panels done' is a fraction of nothing
+//     expected null
+//     got      "0/0 panels done"
+await test("a mosaic answer that cannot be counted draws no chip and never throws", () => {
+  const b = mosaicOf(PROGRESS_2X3);
+  const withPanels = (panels: unknown): FlowProgress => ({
+    ...PROGRESS_2X3, blocks: [{ ...b, panels } as any],
+  });
+  eq(progressChip(withPanels(null), "t", false), null, "panels that is not a list");
+  eq(progressChip(withPanels(b.panels.map((p, i) => (i === 1 ? { ...p, owed: undefined } : p))),
+    "t", false), null,
+    "a panel whose owed cannot be read cannot be counted done or not done");
+  eq(progressChip(withPanels([]), "t", false), null,
+    "every panel skipped: '0/0 panels done' is a fraction of nothing");
+});
+
+// ----------------------------------------------- both cards draw the mosaic
+// The recorded answer's own node ids, so the cards find their blocks the way
+// they do on a real canvas.
+const MOSAIC_NODES: FlowNodeRec[] = [
+  { id: "t", type: "target", x: 0, y: 0,
+    params: { ...NODE_DEFS.target.params, name: "M16", rows: 2, cols: 3 } },
+  { id: "u", type: "target", x: 240, y: 0,
+    params: { ...NODE_DEFS.target.params, name: "M31" } },
+  { id: "p", type: "pool", x: 480, y: 0, params: { ...NODE_DEFS.pool.params } },
+];
+const chipOnNode = (which: Which, id: string): string | null =>
+  container.querySelector(`[data-node-id="${id}"]`)?.querySelector(CHIP_SEL[which])
+    ?.textContent ?? null;
+
+for (const which of ["classic", "next"] as const) {
+  // MUTANT "every panel done when any is", on the cards. Observed:
+  //   x [classic] the mosaic card reads its panels, the single target its
+  //     subs: the classic mosaic card's chip
+  //     expected "4/6 panels done"
+  //     got      "6/6 panels done"
+  //   x [next] the mosaic card reads its panels, the single target its subs:
+  //     the next mosaic card's chip
+  //     expected "4/6 panels done"
+  //     got      "6/6 panels done"
+  await test(`[${which}] the mosaic card reads its panels, the single target its subs`, () => {
+    mount(which, { progress: PROGRESS_2X3, dirty: false }, false, MOSAIC_NODES);
+    assert(container.querySelector(`[data-node-id="t"]`),
+      `precondition: the ${which} mosaic card rendered`);
+    eq(chipOnNode(which, "t"), "4/6 panels done", `the ${which} mosaic card's chip`);
+    eq(chipOnNode(which, "u"), "3/5 subs", `the ${which} single target's chip moved`);
+    eq(chipOnNode(which, "p"), null, `the ${which} POOL card drew a chip`);
+  });
+}
 
 // ------------------------------------------------------------------- report
 act(() => { root.unmount(); });

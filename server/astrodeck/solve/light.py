@@ -57,14 +57,15 @@ bias pedestal is whatever the offset setting made it, and a camera's dark level
 at 18.5 C is not its dark level at -10 C.
 
 THE ERRORS ARE NOT SYMMETRIC, and every choice below leans the same way. A
-false "no light" sends one alarming push alert and backs auto-resume off to an
-hourly retry under a sky that may clear in ten minutes. A missed "no light"
-costs exactly what #251 cost, which is what the rig does today. So every
-uncertainty this module bounds from evidence NARROWS the no-light verdict and
-never widens it: a frame the model cannot place falls to today's words. The
-cloud verdict is held to the same rule from the other side, since it too is a
-claim (light is reaching the sensor) that ends a no-light spell: it is given
-only past the ceiling.
+false "no light" sends one alarming push alert and, when a dark master stood
+behind it, backs auto-resume off to an hourly retry under a sky that may clear
+in ten minutes (on any other reference the retry stays at ten minutes, #308).
+A missed "no light" costs exactly what #251 cost, which is what the rig does
+today. So every uncertainty this module bounds from evidence NARROWS the
+no-light verdict and never widens it: a frame the model cannot place falls to
+today's words. The cloud verdict is held to the same rule from the other side,
+since it too is a claim (light is reaching the sensor) that ends a no-light
+spell: it is given only past the ceiling.
 
 ONE UNCERTAINTY IS NOT BOUNDED, and it leans the wrong way. The dark master
 of option 1 is accepted anywhere inside the matcher's window: by default 5 %
@@ -136,6 +137,16 @@ alignment's ``_capture_and_solve``. ``tests/test_failed_solve_says_no_light.py``
 scans for a new one. A no-light verdict raises ``NoLightError``, a
 ``DeviceError``, so every existing caller still catches it, and a caller that
 must act on it (``ResumeArm``) branches on the TYPE, never on the text.
+
+EVERY VERDICT SAYS WHAT IT STANDS ON (#308, S3 orchestrator ruling 8). Only a
+dark master for the frame's own settings IS that frame's no-light level; a
+bias master and a self-shot are floors drawn from a pedestal, and the
+self-shot is the one the #262 safety review's question (above) is open
+against on every night with a failed solve. So a ``Reference`` carries its
+``kind`` as data (``DARK_MASTER``, ``BIAS_MASTER``, ``SELF_SHOT``, or
+``EXPLICIT`` for one handed in), and the exception exposes it as
+``reference_kind``: ResumeArm backs off to its hourly retry only on a verdict
+a dark master stands behind, and asks this, never the evidence line's words.
 
 WHAT IT DOES NOT CHECK. A bound motorised cover or flat panel whose state
 could be read directly is #192's, not this module's: this judges the pixels.
@@ -306,6 +317,18 @@ SELF_REFERENCE_BAND_C = MatchTolerance().temp_tol_c
 #: reports one today (``SELF_REFERENCE_FALLBACK_S``).
 SELF_REFERENCE_KEEP_LIGHT_ADU = OFFSET_STABILITY_ADU / 10.0
 
+#: What a ``Reference`` stands on, as data (#308, S3 orchestrator ruling 8):
+#: the dark library's master for the frame's own settings, a bias master at
+#: its readout, a frame this module shot itself in place of that bias (#262),
+#: or a reference handed in (a test, or a caller that measured its own).
+#: ``source`` says the same thing in words for the evidence line; code asks
+#: this.
+DARK_MASTER = "dark_master"
+BIAS_MASTER = "bias_master"
+SELF_SHOT = "self_shot"
+EXPLICIT = "explicit"
+REFERENCE_KINDS = (DARK_MASTER, BIAS_MASTER, SELF_SHOT, EXPLICIT)
+
 
 @dataclass(frozen=True)
 class Reference:
@@ -322,12 +345,25 @@ class Reference:
     when nothing bounds it from above (a bias with no dark to measure the
     dark current from). ``top`` reads it either way. Kept out of the repr:
     ``LightVerdict.evidence`` prints it, and the recorded test failures that
-    show a reference's repr were taken before it existed."""
+    show a reference's repr were taken before it existed.
+
+    ``kind`` is one of ``REFERENCE_KINDS`` (#308): what a caller that must
+    weigh the verdict asks, since only a dark master is the frame's own
+    no-light level. ``EXPLICIT`` by default, so a reference made by hand
+    never passes for a master. Out of the repr for ``ceiling``'s reason, and
+    checked when made: a misspelt kind would read as "not a dark master"
+    without a word."""
     level: float
     sigma: float = OFFSET_STABILITY_ADU
     source: str = "an explicit reference"
     detail: str = ""
     ceiling: float | None = field(default=None, repr=False)
+    kind: str = field(default=EXPLICIT, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.kind not in REFERENCE_KINDS:
+            raise ValueError(f"a no-light reference's kind is one of "
+                             f"{REFERENCE_KINDS}, not {self.kind!r}")
 
     @property
     def top(self) -> float:
@@ -402,12 +438,20 @@ class FailedSolveError(DeviceError):
         super().__init__(message)
         self.verdict = verdict
 
+    @property
+    def reference_kind(self) -> str | None:
+        """The ``kind`` of the reference the verdict was judged against
+        (#308), or None when there was none to judge against."""
+        ref = self.verdict.reference
+        return None if ref is None else ref.kind
+
 
 class NoLightError(FailedSolveError):
     """A plate solve failed and its frame read at this camera's no-light
     level: the optic is capped, covered or obstructed (#251). A
     ``DeviceError``, so every caller that already survives a failed solve
-    survives this; ResumeArm branches on it to alert once and back off."""
+    survives this; ResumeArm branches on it to alert once, and backs off
+    only when ``reference_kind`` is ``DARK_MASTER`` (#308)."""
 
 
 def frame_stats(data: Any) -> tuple[float, float, int, bool] | None:
@@ -592,7 +636,8 @@ def reference_for(frame: Any, masters: Iterable[MasterRecord], *,
         if level is not None:
             return Reference(level=level, source="the dark master for these "
                                                  "settings",
-                             detail=f"dark master {dark.id}"), ""
+                             detail=f"dark master {dark.id}",
+                             kind=DARK_MASTER), ""
     # 2. A BIAS, PLUS THE LEAST DARK CURRENT THE DOUBLING LAW ALLOWS. The
     #    rate is measured, never assumed: a dark at this readout, at any
     #    exposure and temperature, less the bias, over its exposure. No camera
@@ -607,6 +652,7 @@ def reference_for(frame: Any, masters: Iterable[MasterRecord], *,
         source = ("the bias master plus the least dark current the doubling "
                   "law allows")
         what = f"bias master {bias.id}"
+        kind = BIAS_MASTER
     elif self_bias is not None:
         # 3. THE SELF-REFERENCE IN PLACE OF THE BIAS MASTER (#262, S2
         #    orchestrator ruling 2). Only when the library has no bias at
@@ -618,6 +664,9 @@ def reference_for(frame: Any, masters: Iterable[MasterRecord], *,
         source = (f"{SELF_REFERENCE_WORDS}, plus the least dark current the "
                   f"doubling law allows")
         what = self_bias.detail
+        # ITS OWN KIND, never the bias master's it stands in for: the
+        # self-shot is the reference #308's open question is about.
+        kind = SELF_SHOT
     else:
         return None, (f"the calibration library has no dark master for this "
                       f"frame's exposure, {_settings(need)} and temperature, "
@@ -644,7 +693,7 @@ def reference_for(frame: Any, masters: Iterable[MasterRecord], *,
                f"to {dark_lo:.1f} ADU")
     return Reference(level=bias_level + dark_lo, source=source,
                      detail=f"{what}; {how}",
-                     ceiling=bias_level + dark_hi), ""
+                     ceiling=bias_level + dark_hi, kind=kind), ""
 
 
 def _verdict(data: Any, ref: Reference | None, why: str) -> LightVerdict:

@@ -5,7 +5,9 @@ A FOLLOWER, for S2, is a target that is no member of the group and comes
 after it in plan order (the flow compile defines them from the wiring in
 S3). While the group has live members every follower sorts after them, so
 one is chosen only when every live panel waits: behind a limit, held by the
-meridian rule, or not yet in its window.
+meridian rule, or not yet in its window, and since #304 in the group's
+deferral wait after an all-deferred pass, whose cases are in
+test_group_follower_fills_defer_wait.py.
 
 "SHOOT LATER TARGETS, THEN COME BACK" (the default). Such a follower runs ONE
 visit, bounded by ``group_ready_ts``, the earliest time a live panel becomes

@@ -377,7 +377,24 @@ await testAsync("START BLANK posts a two-node graph through the same save route"
   eq(sent.length, 1, "START BLANK must post a real flow");
   const nodes = sent[0].body?.flow?.graph?.nodes ?? [];
   eq(nodes.length, 2, "an empty canvas gives the operator nothing to drag a wire from");
-  eq(nodes.map((n: any) => n.type).join(","), "target,slew", "a TARGET and a SLEW, unwired");
+  // RE-PINNED IN THE INTEGRATION OF MOSAIC S3 (#340): "target,slew" until
+  // then. SLEW + CENTER is a legacy type since S3 (spec 1.7), so the blank
+  // flow draws a CAPTURE LOOP beside the TARGET, and the TARGET is created
+  // blank (`createParams`), not on M31's coordinates. What each builder
+  // makes is blankFlow.test.ts's; this holds that the button posts it. Both
+  // lines RED in a private scratch copy, observed:
+  //   "START BLANK draws a SLEW" (wizardModel.ts's capture entry made slew):
+  //     x ...: a TARGET and a CAPTURE LOOP, unwired
+  //       expected target,capture
+  //       got      target,slew
+  //   "START BLANK from the missing-key defaults" (`createParams(n.type)`
+  //   put back to `{ ...NODE_DEFS[n.type].params }`):
+  //     x ...: the blank TARGET names no object (#190)
+  //       expected
+  //       got      M31 - Andromeda
+  eq(nodes.map((n: any) => n.type).join(","), "target,capture",
+    "a TARGET and a CAPTURE LOOP, unwired");
+  eq(nodes[0]?.params?.name, "", "the blank TARGET names no object (#190)");
   eq((sent[0].body?.flow?.graph?.edges ?? []).length, 0, "and no wires between them");
 });
 

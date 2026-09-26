@@ -59,6 +59,67 @@ build items. Revision 6's table is held against the sections that carry
 S2's mark, and the #239 check reads S2's labels too. 5.9's skipped-panel
 exemption is S2's as well, and its test above was written with it.
 
+Slice S3 was planned under eight orchestrator rulings, recorded as owner
+list items 22 to 29 (#313, #314, #311, #312, #316, #315 and #303, #277,
+#308) in the slice's first wave, so that every S3 module can cite them by
+the label the spec keeps. The test under "S3's orchestrator rulings" holds
+that record: the eight items, item 19's refinement by S3 orchestrator
+ruling 3 and item 17's by ruling 8, Revision 2's question on ruling 5 that
+ruling 6 answers, and the closing note; and the #239 check reads S3's
+label.
+
+The first wave of S3 then built the flows vocabulary, the panel lane, the
+re-frame carry and a round of fixes, and added Revision 7 and owner list
+item 30, a question it left for the owner. It turned two claims above red,
+6.3's resume routes (#291) and 5.9's no-light backoff (#308), which now
+hold the new code, and made a third unable to fail (5.9's re-centre bullet,
+#283 and #284), which now asks for the new claims and refuses the old. The
+tests under "S3's first wave and Revision 7" hold the rest: 1.5's lane,
+with every worked case computed by the code; 3.1's Created-as column, row
+by row against the vocabulary, and item 30; 3.3's carry; 3.7's UI mirror;
+5.1's and 6.2's ends of a member's visit; 5.6's skip; and Revision 7's
+table against the sections that carry S3's mark.
+
+The second wave of S3 built the compile entry, the expansion and the save,
+the doctor, FLOW_SCHEMA 4, the editor's move of the loop wire, and the
+guide-lost deferral (#303), the last live panel (#315) and the bounded pier
+reads (#314), and Revision 7 gained a row for every section it edited. It
+turned 5.6's S2 claim that the guide-lost deferral is not built red, as
+that claim's mutant had said it would; the claim's test now keeps only
+S2's half, and 5.6's lost-guider test holds the new one in place of the
+first wave's skip test. The tests under "S3's second wave and Revision 7"
+hold the rest: 1.3's pass output, 1.4's loop wire, 1.5 item 6's move, 1.6's
+followers, 1.8's doctor, 3.2's entry, 3.3's expansion and save, 3.6's
+schema and 5.1's pier reads.
+
+The third wave of S3 built the deferral wait a follower fills (#304), the
+per-night pier record and the re-centre that reads it (#312), five more
+identity refusals (#307, #287), the wizard's mosaic kind and the eighth
+Example, Tonight's mosaic branch and the progress route's mosaic answer,
+and ruling 7's FITS cards (#277), and Revision 7 gained a row for every
+section it edited. It turned 1.6's S2 claim that no follower fills the
+deferral wait red, as that claim's mutant had said it would; the claim's
+test now keeps only S2's half, and 1.6's deferral-wait test below holds the
+new one. The tests under "S3's third wave and Revision 7" hold the rest:
+1.2's mosaic answer, 1.7's retired SLEW, the pier record in 3.4, 5.1, 5.7
+and 5.9, 3.5's refusals, S3 items 4 and 5, and owner list item 28.
+
+The fourth wave wired the rig facts into every route that compiles and
+into the wizard, gave the save's answer what the save did, drew the mosaic
+chip and the TIMELINE band, and made the wind-down's park wait for the
+guider and read itself back, closing the two windows S2 left (#311, #305,
+#306). S3-SPEC5 then closed the slice's record: Revision 7 is final and
+titled "slice S3 as built", section 8's S3 says what was built, where its
+tests are and what was not, S1 item 8's "lands in S3" says S3 built it,
+and section 9's I-05, I-43 and I-47 rows and the #190 row say what S3 did.
+The tests under "S3's fourth wave and the close" hold them: 1.2's chip,
+3.3's rig facts and save answer with 1.8's routes, 6.17's wind-down with
+owner list item 24, S1 item 8's skip param, S3's record, and the four rows.
+The tests above that read the old words (the status line, Revision 7, S1
+item 8, the S1 and S2 build items and S3 items 4 and 5) now read the new,
+and 5.10's also holds the set-aside record's own keys, which nothing held
+once S3-R318 tied the UI mirror to the engine instead of the spec.
+
 WHAT THIS CANNOT DO. It reads words, so it proves the spec SAYS a thing, not
 that the thing holds everywhere the spec implies. Where a claim describes
 code, the code half is asserted too, as the shape of that code (a call made,
@@ -83,6 +144,7 @@ import inspect
 import json
 import re
 import textwrap
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -246,7 +308,9 @@ def _handlers(node: ast.Try, name: str) -> list[ast.ExceptHandler]:
 #: string, against which every "not in" below would pass.
 _ANCHORS = {
     "1.2": "The type id stays `target`, category SOURCE, label TARGET.",
+    "1.6": "**The group is done** when every non-skipped panel's every step",
     "3.3": "**Identity.** `NS_FLOWS` is a fixed uuid constant in `to_plan`.",
+    "5.1": "**Sequential mode** (no loop wire) uses the same machinery",
     "3.6": "`_migrate` **refuses** `schema_version > FLOW_SCHEMA`.",
     "5.6": "Every hop is a slew through the one motion path.",
     "5.7": "**Hysteresis.**",
@@ -925,9 +989,10 @@ def test_s1_item_8_and_5_9_say_s2_built_the_skipped_panel_exemption():
     ``dropped``, so CONTINUE's refusal does not count them; and a step of the
     new plan the ledger holds frames on is ``kept``, so a re-enabled panel
     comes back as it was. The ``skip`` param that fills ``skipped_ids``
-    lands in S3. Item 8 and the 5.9 row now say so, and this test holds
-    them to the code: the reader's name from ``continuation``, the field
-    from ``TargetGroup``, and the read itself from the syntax tree, since
+    was left to S3, which has built it. Item 8 and the 5.9 row say so, and
+    this test holds them to the code: the reader's name from
+    ``continuation``, the field from ``TargetGroup``, and the read itself
+    from the syntax tree, since
     the function's docstring names ``skipped_ids`` too and a text search
     would be answered by it.
 
@@ -993,6 +1058,31 @@ def test_s1_item_8_and_5_9_say_s2_built_the_skipped_panel_exemption():
         assert []
 
     Unchanged under the control "an unrelated edit in section 7": 1 passed.
+
+    S3 LANDED the ``skip`` param, and S3-SPEC5 rewrote the "lands in S3"
+    clauses to say S3 built it, as the paragraph above asked; this test now
+    refuses the old clause and keeps S2's half, and
+    test_s1_item_8_and_5_9_say_s3_built_the_skip_param holds S3's.
+
+    RED under mutant "S1 item 8 back to 'lands in S3'":
+
+        AssertionError: S1 item 8 must say: 'S3 built the `skip` param that
+        fills it (3.1; S3, #189)'
+        assert False
+
+    RED under mutant "S1 item 8 keeps the old clause beside the new":
+
+        AssertionError: S1 item 8 still says 'lands in S3'
+        assert False
+
+    RED under mutant "5.9's row back to 'lands in S3'":
+
+        AssertionError: 5.9's dropped-steps row must say: 'and S3 the `skip`
+        param that fills `skipped_ids`'
+        assert False
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
     """
     assert "skipped_ids" in TargetGroup.model_fields, (
         "TargetGroup no longer has skipped_ids; item 8 and 5.9 say it does")
@@ -1000,19 +1090,21 @@ def test_s1_item_8_and_5_9_say_s2_built_the_skipped_panel_exemption():
     item8 = _line(_section("S1:"), "8. ")
     _says(item8, ("`TargetGroup.skipped_ids`", f"`{reader}` reads",
                   "S2 built its server half", "reported as skipped and "
-                  "never as dropped", "The `skip` param that fills it (3.1) "
-                  "lands in S3"), "S1 item 8")
+                  "never as dropped", "S3 built the `skip` param that fills "
+                  "it (3.1; S3, #189)"), "S1 item 8")
     for stale in ("debt carried to S2/S3", "(skipped panels exempt)",
-                  "must read it when both land"):
+                  "must read it when both land", "lands in S3"):
         gone = stale not in item8
         assert gone, f"S1 item 8 still says {stale!r}"
     row = _line(_section("5.9"), "| steps that hold frames would be dropped")
     _says(row, ("any `skipped_ids` of the new plan's groups",
                 f"`{reader}` reads them", "`skipped`, apart from `dropped`",
                 "S2 built this server half of S1 item 8",
-                "lands in S3", "as kept"), "5.9's dropped-steps row")
-    gone = "debt carried" not in row
-    assert gone, "5.9's dropped-steps row still carries the exemption as debt"
+                "and S3 the `skip` param that fills `skipped_ids`",
+                "as kept"), "5.9's dropped-steps row")
+    for stale in ("debt carried", "lands in S3"):
+        gone = stale not in row
+        assert gone, f"5.9's dropped-steps row still says {stale!r}"
     _says(row, ("the `skipped_ids` of the session's own plan",
                 "a panel skipped again is exempt"), "5.9's dropped-steps row")
     # The code half, from the tree: the reader reads ``skipped_ids`` off the
@@ -3275,15 +3367,25 @@ def test_5_9_says_a_no_light_solve_backs_off_and_resume_arm_does(monkeypatch):
     orchestrator ruling 8): the classifier in ``solve/light.py`` judges a
     failed solve frame by its light level; on a no-light verdict ResumeArm
     holds in words, sends one alert per session per spell, and retries once
-    after ``RETRY_INTERVAL_S`` and then every ``NO_LIGHT_RETRY_S`` (both
-    taken from ``resume_arm``); with no reference the frame gets no verdict
-    (#262). ``ResumeArm._no_light_backoff`` answers the first retry, then
-    the hourly one, and says the alert once, as an error line (the level a
-    default alert sink delivers); ResumeArm branches on ``NoLightError``,
-    the type, which is a ``FailedSolveError``.
+    after ``RETRY_INTERVAL_S`` (both intervals taken from ``resume_arm``);
+    with no reference the frame gets no verdict (#262). SINCE S3 (#308, S3
+    orchestrator ruling 8) it says that only a verdict the dark master for
+    the solve's settings stands behind backs off to every
+    ``NO_LIGHT_RETRY_S``; a verdict on any other reference keeps the
+    ``RETRY_INTERVAL_S`` retry on every verdict and its alert says why; and
+    ResumeArm asks the verdict's kind (``NoLightError.reference_kind``, one
+    of ``light.REFERENCE_KINDS``), never its words.
+
+    The code: for every kind in ``light.REFERENCE_KINDS`` and for a kind
+    nobody stated, ``ResumeArm._no_light_backoff`` answers a spell's three
+    waits and says its alert once, as an error line (the level a default
+    alert sink delivers): hourly after the first only for
+    ``DARK_MASTER``; ResumeArm branches on ``NoLightError``, the type,
+    which is a ``FailedSolveError`` carrying ``reference_kind``;
+    ``_recover`` records that kind and ``tick`` hands it to the backoff.
 
     Mutants: the spec in place from a byte backup; code rebound in the test
-    process only (a pytest plugin).
+    process only (a pytest plugin), or edited in a private scratch copy.
 
     RED under mutant "5.9 without the no-light sentence":
 
@@ -3291,75 +3393,132 @@ def test_5_9_says_a_no_light_solve_backs_off_and_resume_arm_does(monkeypatch):
         backs off** (#251, H3 orchestrator ruling 8)'
         assert False
 
-    RED under the code mutant "resume_arm.NO_LIGHT_RETRY_S = 1800.0" (rebound
-    in the test process):
+    RED under the resume_arm.py mutant "NO_LIGHT_RETRY_S = 1800.0" (in the
+    scratch copy):
 
         AssertionError: 5.9 must say: '`NO_LIGHT_RETRY_S` (30 min)'
         assert False
 
-    RED under the code mutant "no backoff" (``ResumeArm._no_light_backoff``
-    rebound to answer RETRY_INTERVAL_S):
+    Before S3 the backoff took no kind and every spell went hourly, and S3's
+    resume_arm.py (#308) turned this test red, as S3-R and S3-SPEC1
+    reported:
 
-        AssertionError: a no-light spell waits [600.0, 600.0, 600.0]; 5.9 says
-        one retry after RETRY_INTERVAL_S, then every NO_LIGHT_RETRY_S
+        AssertionError: a no-light spell waits [600.0, 600.0, 600.0]; 5.9
+        says one retry after RETRY_INTERVAL_S, then every NO_LIGHT_RETRY_S
+
+    RED under mutant "5.9 without the #308 clause" (the sentence as H3 left
+    it):
+
+        AssertionError: 5.9 must say: "when the verdict stood on the dark
+        master for the solve's settings (S3, #308, S3 orchestrator ruling
+        8)"
+        assert False
+
+    RED under the resume_arm.py mutant "hourly for every kind" (in the
+    scratch copy, ``hourly = kind == DARK_MASTER`` made ``hourly =
+    True``):
+
+        AssertionError: a no-light spell judged on 'bias_master' waits
+        [600.0, 3600.0, 3600.0]; 5.9 says [600.0, 600.0, 600.0]
+        assert [600.0, 360..., 3600.0] == [600.0, 600.0, 600.0]
+          At index 1 diff: 3600.0 != 600.0
+          Use -v to get more diff
+
+    RED under the resume_arm.py mutant "no backoff" (in the scratch copy,
+    ``return NO_LIGHT_RETRY_S if hourly else RETRY_INTERVAL_S`` made
+    ``return RETRY_INTERVAL_S``):
+
+        AssertionError: a no-light spell judged on 'dark_master' waits
+        [600.0, 600.0, 600.0]; 5.9 says [600.0, 3600.0, 3600.0]
         assert [600.0, 600.0, 600.0] == [600.0, 3600.0, 3600.0]
-        At index 1 diff: 600.0 != 3600.0
-        Use -v to get more diff
+          At index 1 diff: 600.0 != 3600.0
+          Use -v to get more diff
 
-    RED under the code mutant "an alert on every retry" (``_no_light_backoff``
-    rebound to say the alert each time):
+    RED under the resume_arm.py mutant "tick drops the kind" (in the scratch
+    copy, ``self._no_light_backoff(armed, self._ladder_dark_kind)`` made
+    ``self._no_light_backoff(armed)``):
 
-        AssertionError: a no-light spell said its alert as ['error', 'error',
-        'error', 'error']; 5.9 says one alert per session per spell
-        assert ['error', 'er...ror', 'error'] == ['error']
-        Left contains 3 more items, first extra item: 'error'
-        Use -v to get more diff
+        AssertionError: ResumeArm no longer hands the verdict's
+        reference_kind to its backoff; 5.9 says the kind decides
+        assert ([<ast.Assign object at 0x00000192FF3309D0>] and [])
+
+    RED under the resume_arm.py mutant "an alert on every retry" (in the
+    scratch copy, the alert said again beside the spell's early return, so
+    the waits are unchanged):
+
+        AssertionError: a no-light spell judged on 'dark_master' said its
+        alert as ['error', 'error', 'error']; 5.9 says one alert per session
+        per spell
+        assert ['error', 'error', 'error'] == ['error']
+          Left contains 2 more items, first extra item: 'error'
+          Use -v to get more diff
     """
     from astrodeck.solve import light
     s59 = _section("5.9")
-    retry = (f"`RETRY_INTERVAL_S` "
-             f"({resume_arm_mod.RETRY_INTERVAL_S / 60:g} min)")
-    hourly = (f"`NO_LIGHT_RETRY_S` "
-              f"({resume_arm_mod.NO_LIGHT_RETRY_S / 60:g} min)")
+    ten = resume_arm_mod.RETRY_INTERVAL_S
+    hour = resume_arm_mod.NO_LIGHT_RETRY_S
+    retry = f"`RETRY_INTERVAL_S` ({ten / 60:g} min)"
+    hourly = f"`NO_LIGHT_RETRY_S` ({hour / 60:g} min)"
     _says(s59, ("**A recovery solve that finds no light backs off** (#251, "
                 "H3 orchestrator ruling 8)", "`solve/light.py`", retry,
                 hourly, "one alert per session per spell", "#262",
-                f'"{light.NO_LIGHT_WORDS}"'), "5.9")
+                f'"{light.NO_LIGHT_WORDS}"',
+                "when the verdict stood on the dark master for the solve's "
+                "settings (S3, #308, S3 orchestrator ruling 8)",
+                f"keeps the {ten / 60:g} minute retry on every verdict",
+                "`NoLightError.reference_kind`", "`light.REFERENCE_KINDS`",
+                "never the evidence line's words"), "5.9")
     said: list[tuple[str, str]] = []
     monkeypatch.setattr(resume_arm_mod.bus, "log",
                         lambda level, msg, *a, **k: said.append((level, msg)))
     arm = object.__new__(ResumeArm)
-    arm._no_light_spell = None
     session = SimpleNamespace(id="s1", name="claims")
-    waits = [arm._no_light_backoff(session) for _ in range(3)]
-    assert waits == [resume_arm_mod.RETRY_INTERVAL_S,
-                     resume_arm_mod.NO_LIGHT_RETRY_S,
-                     resume_arm_mod.NO_LIGHT_RETRY_S], (
-        f"a no-light spell waits {waits}; 5.9 says one retry after "
-        f"RETRY_INTERVAL_S, then every NO_LIGHT_RETRY_S")
-    alerts = [lvl for lvl, msg in said if light.NO_LIGHT_WORDS in msg]
-    assert alerts == ["error"], (
-        f"a no-light spell said its alert as {alerts}; 5.9 says one alert "
-        f"per session per spell")
+    assert set(light.REFERENCE_KINDS) == {
+        light.DARK_MASTER, light.BIAS_MASTER, light.SELF_SHOT,
+        light.EXPLICIT}, f"premise: the kinds are {light.REFERENCE_KINDS}"
+    for kind in (*light.REFERENCE_KINDS, None):
+        said.clear()
+        arm._no_light_spell = None
+        waits = [arm._no_light_backoff(session, kind) for _ in range(3)]
+        want = ([ten, hour, hour] if kind == light.DARK_MASTER
+                else [ten, ten, ten])
+        assert waits == want, (f"a no-light spell judged on {kind!r} waits "
+                               f"{waits}; 5.9 says {want}")
+        alerts = [lvl for lvl, msg in said if light.NO_LIGHT_WORDS in msg]
+        assert alerts == ["error"], (
+            f"a no-light spell judged on {kind!r} said its alert as "
+            f"{alerts}; 5.9 says one alert per session per spell")
     caught = [h for t in ast.walk(ast.parse(inspect.getsource(resume_arm_mod)))
               if isinstance(t, ast.Try) for h in _handlers(t, "NoLightError")]
     assert caught and issubclass(light.NoLightError, light.FailedSolveError), (
         "ResumeArm no longer branches on NoLightError by type; 5.9 says the "
         "ladder acts on the no-light verdict")
+    assert isinstance(getattr(light.FailedSolveError, "reference_kind", None),
+                      property), "FailedSolveError has no reference_kind"
+    kept = _assigns(_tree(ResumeArm._recover), "self._ladder_dark_kind",
+                    "e.reference_kind")
+    handed = [c for c in _self_calls(_tree(ResumeArm.tick),
+                                     "_no_light_backoff")
+              if [ast.unparse(a) for a in c.args]
+              == ["armed", "self._ladder_dark_kind"]]
+    assert kept and handed, ("ResumeArm no longer hands the verdict's "
+                             "reference_kind to its backoff; 5.9 says the "
+                             "kind decides")
 
 
 # ------------------------------------------ #239, the rulings code cites
 
 #: A ruling cited by its label: the owner's (Revision 2's "### Ruling N"),
 #: or an orchestrator's (the owner list's "**H2 orchestrator ruling N:",
-#: "**H3 orchestrator ruling N:" or, since S2, "**S2 orchestrator ruling
-#: N:"). ``issues`` is the run of issue numbers written just before the
-#: label in the same parenthesis, "(#224, #225, owner ruling 2 ...)", which
-#: is what the entry must be about.
+#: "**H3 orchestrator ruling N:" or, since S2 and S3, "**S2 orchestrator
+#: ruling N:" and "**S3 orchestrator ruling N:"). ``issues`` is the run of
+#: issue numbers written just before the label in the same parenthesis,
+#: "(#224, #225, owner ruling 2 ...)", which is what the entry must be
+#: about.
 _CITE = re.compile(
     r"(?P<issues>(?:#\d+[,;] ?)*)"
     r"(?<![\w'])(?P<whose>[Oo]wner|H2 orchestrator|H3 orchestrator"
-    r"|S2 orchestrator) "
+    r"|S2 orchestrator|S3 orchestrator) "
     r"rulings? (?P<nums>\d+(?:(?:, and |, | and )\d+)*)\b")
 #: Where a citation says which owner-list item records it.
 _ITEM = re.compile(r'[ ,;(]*(?:spec[ ,;]*)?"?(?:Still waiting on the owner'
@@ -3389,7 +3548,7 @@ def _ruling_entries() -> dict[tuple[str, int], tuple[str, int | None]]:
     None for an owner's ruling)."""
     entries: dict[tuple[str, int], tuple[str, int | None]] = {}
     for line in _section("Still").splitlines():
-        m = re.match(r"(\d+)\. \*\*((?:H[23]|S2) orchestrator) ruling "
+        m = re.match(r"(\d+)\. \*\*((?:H[23]|S[23]) orchestrator) ruling "
                      r"(\d+):", line)
         if m:
             key = (m.group(2), int(m.group(3)))
@@ -3542,12 +3701,85 @@ def test_every_ruling_the_server_cites_is_the_spec_entry_it_names():
           "astrodeck/guide/native.py: '#253, S2 orchestrator ruling 3' names
           no S2 orchestrator ruling 3 the spec records"
           Use -v to get more diff
+
+    SINCE S3 the scan reads "S3 orchestrator ruling N" too, the label of
+    the eight rulings slice S3 was planned under (owner list items 22 to
+    29), and the premise asks for S3's first and last entry. No committed
+    code cited them when the label was taught, so no S3 citation is asked
+    to be found in the tree; a second premise asks the pattern itself to
+    read the label instead. Before this change the scan did not know the
+    label: with the committed test (HEAD) and the ruling 9 mutant below
+    planted, the check passed (1 passed). The mutants ran in a private
+    scratch copy of ``server/`` and the spec, the test importing the
+    scratch package, each file from a byte backup and byte-identical
+    afterwards (sha256).
+
+    The S3-SPEC1 verifier's test mutant "the scan forgets S3's label"
+    (``|S3 orchestrator`` removed from ``_CITE``) PASSED the check without
+    that second premise (2 passed, with the S3 owner list test), although
+    S3's uncommitted code in the tree already cited S3 rulings: every one
+    of those citations went unread. With the premise:
+
+        AssertionError: the scan does not read 'S3 orchestrator ruling N',
+        so no S3 citation is checked
+        assert False
+
+    RED under the engine.py mutant "cite S3 orchestrator ruling 9" (a
+    comment after ``MOUNT_QUERY_TIMEOUT_S``, wrapped over two lines, citing
+    "(#314, S3 orchestrator ruling 9)"):
+
+        AssertionError: astrodeck/sequence/engine.py: '#314, S3 orchestrator
+        ruling 9' names no S3 orchestrator ruling 9 the spec records
+        assert ['astrodeck/s...spec records'] == []
+          Left contains one more item: "astrodeck/sequence/engine.py: '#314,
+          S3 orchestrator ruling 9' names no S3 orchestrator ruling 9 the
+          spec records"
+          Use -v to get more diff
+
+    RED under the engine.py mutant "an S3 citation beside the wrong issue"
+    (the same comment citing "(#312, S3 orchestrator ruling 2)"):
+
+        AssertionError: astrodeck/sequence/engine.py: '#312, S3 orchestrator
+        ruling 2' cites S3 orchestrator ruling 2 beside ['#312'], and the
+        spec's entry names none of them
+        assert ['astrodeck/s...none of them'] == []
+
+    RED under the engine.py mutant "an S3 citation at the wrong item" (the
+    same comment citing "(#314, S3 orchestrator ruling 2, owner list item
+    22)"):
+
+        AssertionError: astrodeck/sequence/engine.py: '#314, S3 orchestrator
+        ruling 2' places S3 orchestrator ruling 2 at owner list item 22; the
+        spec records it as item 23
+        assert ['astrodeck/s...t as item 23'] == []
+
+    RED under the engine.py mutant "cite ruling 6 as an owner ruling" (a
+    comment citing "(#315, owner ruling 6)", the label S3's plan forbids:
+    Revision 2's Ruling 6 is the Flows handoff amendment):
+
+        AssertionError: astrodeck/sequence/engine.py: '#315, owner ruling 6'
+        cites owner ruling 6 beside ['#315'], and the spec's entry names none
+        of them
+        assert ['astrodeck/s...none of them'] == []
+
+    Unchanged under the control "a correct S3 citation, wrapped" (the
+    comment citing "(#314, S3 orchestrator ruling 2, spec "Still waiting on
+    the owner" item 23)" over three lines): 2 passed, with the S3 owner
+    list test.
     """
     entries = _ruling_entries()
-    # Premise: the spec's entries were read, all four kinds of them.
+    # Premise: the spec's entries were read, all five kinds of them.
     assert {("owner", 2), ("H2 orchestrator", 2), ("H2 orchestrator", 12),
             ("H3 orchestrator", 1), ("H3 orchestrator", 9),
-            ("S2 orchestrator", 1)} <= set(entries)
+            ("S2 orchestrator", 1), ("S3 orchestrator", 1),
+            ("S3 orchestrator", 8)} <= set(entries)
+    # Premise: the scan reads S3's label. The tree cannot show it until
+    # S3's code is committed, so the pattern is asked on the shape S3's
+    # code cites a ruling in.
+    s3 = _CITE.search("(#314, S3 orchestrator ruling 2)")
+    reads_s3 = s3 is not None and s3.group("whose") == "S3 orchestrator"
+    assert reads_s3, ("the scan does not read 'S3 orchestrator ruling N', "
+                      "so no S3 citation is checked")
     here = Path(__file__).resolve()
     problems: list[str] = []
     found: set[tuple[str, str, int]] = set()
@@ -3863,6 +4095,55 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
 
         AssertionError: the status line must say: 'slice S2 as built'
         assert False
+
+    Since S3's first wave it names Revision 7 the same way: its sections
+    describe the code after that wave, and those only Revision 6 lists are
+    as S2 left them.
+
+    RED under mutant "the status line without Revision 7" (the line as it
+    stood before Revision 7):
+
+        AssertionError: the status line must say: "slice S3's first wave as
+        built"
+        assert False
+
+    Since S3's second wave, Revision 7 covers both waves, and the line
+    says so.
+
+    RED under mutant "the status line after the first wave only" (the line
+    as S3's first wave left it):
+
+        AssertionError: the status line must say: "slice S3's first two waves
+        as built"
+        assert False
+
+    Since S3's third wave, Revision 7 covers three waves, and the line says
+    so.
+
+    RED under mutant "the status line after the second wave only" (the line
+    as S3's second wave left it):
+
+        AssertionError: the status line must say: "slice S3's first three waves
+        as built"
+        assert False
+
+    Since S3-SPEC5 closed the slice, Revision 7 covers all of S3, and the line
+    names S3 as built and counts no waves.
+
+    RED under mutant "the status line after the third wave only" (the line as
+    S3-SPEC4 left it):
+
+        AssertionError: the status line must say: 'slice S3 as built'
+        assert False
+
+    RED under mutant "the status line counts S3's waves again":
+
+        AssertionError: the status line still counts S3's waves; S3 is built,
+        and Revision 7 records all of it
+        assert not True
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
     """
     status = _line(_spec(), "- Status:")
     blanket = "where the text below describes them, it describes the code" \
@@ -3881,7 +4162,16 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
                    "slice S2 as built", "(Revision 6)",
                    "The sections Revision 6 lists describe the code as it "
                    "stands after S2", "except in the sections Revision 6 "
-                   "lists too"), "the status line")
+                   "lists too", "slice S3 as built", "(Revision 7)",
+                   "and S3, the flows vocabulary, compile, doctor and "
+                   "Tonight, on top of S2", "S3 left what they describe as "
+                   "it was", "The sections Revision 7 lists describe the code "
+                   "as it stands after S3.",
+                   "except in the sections Revision 7 lists too"),
+          "the status line")
+    waves = "waves" in status
+    assert not waves, ("the status line still counts S3's waves; S3 is "
+                       "built, and Revision 7 records all of it")
     preamble = _line(_spec(), "2026-09-24. S0 and S1 are built")
     whole = "brings the body in line" in preamble
     assert not whole, (
@@ -4058,9 +4348,10 @@ def test_6_17_says_a_parking_ending_hands_the_stop_to_its_park():
     the stop's task without awaiting it and moves its fence
     (``_idle_stop_epoch``), the wind-down reaps the tasks bounded by
     ``GUIDE_OP_TIMEOUT_S``, and `_stop_after_a_failed_park` follows a failed
-    park; and it names the two windows left (#305, #306). It no longer
-    says the run's end completes the stop "whether or not the wind-down
-    parks".
+    park; and it names the two windows S2 left (#305, #306), which S3
+    closed (test_6_17_and_item_24_say_the_wind_down_as_s3_built_it holds
+    that). It no longer says the run's end completes the stop "whether or
+    not the wind-down parks".
 
     The code: in ``_run``'s ``finally`` the one ``if parks:`` hands the stop
     over and awaits NOTHING, and only its ``else`` awaits
@@ -4464,6 +4755,31 @@ def test_5_10_says_the_group_state_and_the_visits_as_s2_built_them():
         assert (3, 3, 1, 0) == (3, 2, 1, 0)
           At index 1 diff: 3 != 2
           Use -v to get more diff
+
+    Since S3-SPEC5 it also holds the set-aside record's own keys, which the key
+    list strips: S3-R318 moved the UI mirror's check to the engine, and nothing
+    else held the spec's record.
+
+    RED under mutant "5.10's set-aside record without its reason" (``[{panel,
+    reason}]`` made ``[{panel}]``):
+
+        AssertionError: 5.10 gives a set-aside record ['panel']; _group_state
+        builds ['panel', 'reason']
+        assert (['panel'] and ['panel'] == ['panel', 'reason']
+          Right contains one more item: 'reason'
+          Use -v to get more diff)
+
+    RED under the engine.py mutant "a set-aside record without its reason"
+    (`_group_state`'s ``"reason": r`` dropped):
+
+        AssertionError: 5.10 gives a set-aside record ['panel', 'reason'];
+        _group_state builds ['panel']
+        assert (['panel', 'reason'] and ['panel', 'reason'] == ['panel']
+          Left contains one more item: 'reason'
+          Use -v to get more diff)
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
     """
     from astrodeck.api import redact as redact_mod
     from astrodeck.sequence.models import ExposureStep, Target
@@ -4480,6 +4796,20 @@ def test_5_10_says_the_group_state_and_the_visits_as_s2_built_them():
     assert spec_keys == code_keys, (
         f"5.10 lists state.group as {spec_keys}; _group_state builds "
         f"{code_keys}")
+    # A set-aside record's own keys, which the key list above strips: since
+    # S3-R318 took them out of test_types_mirror_groups (which now ties the
+    # UI to the engine), this is the one check of the spec's record.
+    record = re.search(r"`?set_aside: \[\{([^}]*)\}\]", line)
+    spec_record = (sorted(k.strip() for k in record.group(1).split(","))
+                   if record else [])
+    aside = [v for d in built for k, v in zip(d.keys, d.values)
+             if isinstance(k, ast.Constant) and k.value == "set_aside"]
+    code_record = sorted(k.value for v in aside if isinstance(v, ast.ListComp)
+                         and isinstance(v.elt, ast.Dict)
+                         for k in v.elt.keys)
+    assert spec_record and spec_record == code_record, (
+        f"5.10 gives a set-aside record {spec_record}; _group_state builds "
+        f"{code_record}")
     s510 = _section("5.10")
     _says(s510, ("`_withhold_group_timing`", "absent and not null",
                  "still sees `target` and `detail` change at the crossing "
@@ -4528,16 +4858,23 @@ def test_6_3_says_a_group_is_refused_only_when_every_panel_is_down():
     helper for ``/api/sequence/start`` and ``/api/flows/{id}/run``, refuses
     a group with 409 ``below_horizon`` listing its panels only when every
     panel is down, answers a started run's blocked panels in
-    ``below_horizon``, logs them through `_name_panels_below`, and is not
-    run by ``/api/sessions/{id}/resume`` or ``/api/sequence/recover``
-    (#291). The line refs of the loop it replaced are gone.
+    ``below_horizon``, and logs them through `_name_panels_below`. The line
+    refs of the loop it replaced are gone. SINCE S3 (#291) it says that
+    ``/api/sessions/{id}/resume`` and ``/api/sequence/recover`` run the
+    same pre-flight over what the session still owes (`_owed_plan`), with
+    ``force`` in an optional body (``ResumeBody``); the sentence that said
+    they run neither check is gone.
 
     The code, from ``api/app.py``'s syntax tree: `_start_preflight`'s group
     refusal carries ``code: below_horizon`` and ``panels``, and its entry
     for a started run carries exactly ``group``, ``mosaic``, ``target`` and
-    ``panel``; both start routes call it and `_name_panels_below` and add
-    ``below_horizon`` to their answer; the resume and recover routes call
-    neither. Behaviour is test_group_start_guard.py's.
+    ``panel``; all four routes call it and `_name_panels_below` and add
+    ``below_horizon`` to their answer; the two resume routes hand both the
+    plan `_owed_plan` cut from the session and take ``force`` from an
+    optional ``ResumeBody``, whose ``force`` defaults to False; and
+    `_owed_plan` keeps what ``Session.remaining`` says is still owed.
+    Behaviour is test_group_start_guard.py's and
+    test_resume_recover_preflight.py's.
 
     RED under mutant "6.3 back to the design" (the row as Revision 5 left
     it):
@@ -4553,22 +4890,50 @@ def test_6_3_says_a_group_is_refused_only_when_every_panel_is_down():
         the panels below the horizon; 6.3 says it does
         assert False
 
-    RED under the app.py mutant "resume runs the pre-flight" (a call to
-    `_start_preflight` added to ``resume_session``), the control that the
-    #291 half can fail:
+    Before S3 the resume half asserted that ``resume_session`` and
+    ``sequence_recover`` call no `_start_preflight`, with a mutant that
+    added the call as its control. S3's app.py (#291) made that control
+    the tree, and the test went red with exactly its failure:
 
         AssertionError: resume_session runs the pre-flight now; 6.3 says it
         runs neither check (#291), so the row is stale
         assert not True
+
+    RED under mutant "6.3 back to 'run neither check'" (the row's last
+    sentence as S2 left it):
+
+        AssertionError: 6.3 must say: '`/api/sessions/{id}/resume` and
+        `/api/sequence/recover` run the same pre-flight (S3, #291)'
+        assert False
+
+    RED under the app.py mutant "resume skips the pre-flight" (in
+    ``resume_session``, ``below_horizon = _start_preflight(owed, force=bool(
+    body and body.force))`` made ``below_horizon = []``):
+
+        AssertionError: resume_session no longer runs _start_preflight over
+        _owed_plan(s) with the body's force; 6.3 says it does (#291)
+        assert False
+
+    RED under the app.py mutant "recover checks the whole plan" (in
+    ``sequence_recover``, ``owed = _owed_plan(s)`` made ``owed =
+    s.plan``):
+
+        AssertionError: sequence_recover no longer runs _start_preflight
+        over _owed_plan(s) with the body's force; 6.3 says it does (#291)
+        assert False
     """
     row = _line(_spec(), "| 6.3 |")
     _says(row, ("Built (S2, #132)", "`_start_preflight`",
                 "409 `below_horizon`", "`panels: [{panel, target}]`",
                 "`below_horizon: [{group, mosaic, target, panel}]`",
                 "`_name_panels_below`", "`/api/sessions/{id}/resume` and "
-                "`/api/sequence/recover` run neither check (#291)"), "6.3")
-    stale = "This replaces the all-or-nothing loop" in row
-    assert not stale, "6.3 still describes the start guard as to be built"
+                "`/api/sequence/recover` run the same pre-flight (S3, #291)",
+                "`_owed_plan`", "`ResumeBody`",
+                "waives the horizon and never the Sun"), "6.3")
+    for stale in ("This replaces the all-or-nothing loop",
+                  "run neither check"):
+        kept = stale in row
+        assert not kept, f"6.3 still says {stale!r}"
     pre = _app_def("_start_preflight")
     refusal = "'code': 'below_horizon'" in ast.unparse(pre) and \
         "'panels':" in ast.unparse(pre)
@@ -4588,9 +4953,28 @@ def test_6_3_says_a_group_is_refused_only_when_every_panel_is_down():
         assert wired, (f"{route} no longer runs _start_preflight and names "
                        f"the panels below the horizon; 6.3 says it does")
     for route in ("resume_session", "sequence_recover"):
-        ran = bool(_calls(_app_def(route), "_start_preflight"))
-        assert not ran, (f"{route} runs the pre-flight now; 6.3 says it runs "
-                         f"neither check (#291), so the row is stale")
+        tree = _app_def(route)
+        cut = _assigns(tree, "owed", "_owed_plan(s)")
+        ran = [c for c in _calls(tree, "_start_preflight")
+               if [ast.unparse(a) for a in c.args] == ["owed"]
+               and "body.force" in ast.unparse(
+                   _keyword_node(c, "force") or ast.Constant(None))]
+        named = [c for c in _calls(tree, "_name_panels_below")
+                 if c.args and ast.unparse(c.args[0]) == "owed"]
+        takes = "body: ResumeBody | None=None" in ast.unparse(tree.args)
+        wired = (bool(cut) and bool(ran) and bool(named) and takes
+                 and "'below_horizon'" in ast.unparse(tree))
+        assert wired, (f"{route} no longer runs _start_preflight over "
+                       f"_owed_plan(s) with the body's force; 6.3 says it "
+                       f"does (#291)")
+    tree = ast.parse(APP.read_text(encoding="utf-8"))
+    body = [n for n in tree.body if isinstance(n, ast.ClassDef)
+            and n.name == "ResumeBody"]
+    force = [s for b in body for s in b.body if isinstance(s, ast.AnnAssign)
+             and ast.unparse(s) == "force: bool = False"]
+    assert force, "ResumeBody's force no longer defaults to False"
+    assert ".remaining()" in ast.unparse(_app_def("_owed_plan")), (
+        "_owed_plan no longer cuts the plan by Session.remaining")
 
 
 def test_5_1_and_5_7_say_reach_and_the_meridian_rule_as_s2_built_them():
@@ -4713,17 +5097,22 @@ def test_5_6_says_the_hop_checks_as_s2_built_them():
     U-06), that the goto commands `_commanded_rotation`, that the group
     checks are built (`_group_hop_checks`, `_group_angle_check`,
     `_rotator_evidence`, ``GroupSetAside``, U-04), that the pier-side check
-    is built (`_group_pier_check`, kind ``pier_side``, #136), and that the
-    guide-lost deferral is NOT built (#303). The status line's three
+    is built (`_group_pier_check`, kind ``pier_side``, #136), and that S2
+    did not build the guide-lost deferral (#303). The status line's three
     "today" sentences in 5.6 are left as they were, which the status-line
     test asks.
 
     The code: ``Hub.goto_and_center`` asks the shortcut; `_setup_target`
     asks `_commanded_rotation`; `_group_angle_check` raises
-    ``GroupSetAside`` and asks `_rotator_evidence`; `_group_pier_check`
-    raises ``PanelDeferred`` of kind ``pier_side``; and no call in the
-    engine raises a ``PanelDeferred`` of kind ``guide_lost``, although the
-    kind exists, so building it turns this red until 5.6 step 7 says so.
+    ``GroupSetAside`` and asks `_rotator_evidence`; and `_group_pier_check`
+    raises ``PanelDeferred`` of kind ``pier_side``.
+
+    Until S3's second wave this test also held that no call in the engine
+    raised a ``PanelDeferred`` of kind ``guide_lost``. S3 built one (#303,
+    S3 orchestrator ruling 6), which turned it red exactly as its mutant
+    below says, and 5.6 step 7 now says so: that half moved to
+    ``test_5_6_says_a_lost_guider_defers_the_panel_as_s3_built_it``, and
+    this test keeps only the premise that the kind exists.
 
     RED under mutant "5.6 back to 'A new shortcut (S2)'":
 
@@ -4738,9 +5127,10 @@ def test_5_6_says_the_hop_checks_as_s2_built_them():
         _rotation_already_set; 5.6 says the shortcut is built
         assert []
 
-    RED under the engine mutant "the guide-lost deferral built" (the #72
-    bound's skip arm raising ``PanelDeferred(..., kind="guide_lost")``
-    ahead of its ``StopTarget``), the case where the spec is stale:
+    Before S3, RED under the engine mutant "the guide-lost deferral built"
+    (the #72 bound's skip arm raising ``PanelDeferred(...,
+    kind="guide_lost")`` ahead of its ``StopTarget``), the case where the
+    spec is stale, and the failure S3's second wave then produced for real:
 
         AssertionError: the engine raises a guide_lost deferral now; 5.6
         step 7 says it is not built (#303): say it is
@@ -4787,9 +5177,6 @@ def test_5_6_says_the_hop_checks_as_s2_built_them():
         "step 5 says it does")
     assert "guide_lost" in group_rules.DEFERRAL_KINDS, (
         "premise: PanelDeferred still has the kind guide_lost")
-    built = deferrals(ast.parse(inspect.getsource(engine_mod)), "guide_lost")
-    assert built == [], ("the engine raises a guide_lost deferral now; 5.6 "
-                         "step 7 says it is not built (#303): say it is")
 
 
 def test_3_4_and_ruling_9_say_the_session_and_the_lock_as_s2_built_them():
@@ -4913,22 +5300,36 @@ def test_3_4_and_ruling_9_say_the_session_and_the_lock_as_s2_built_them():
                          f"editor draws it yet' is stale")
 
 
-def test_5_9_says_resume_arm_recentres_on_what_the_run_would_shoot():
+def test_5_9_says_resume_arm_recentres_on_what_the_run_would_shoot(
+        monkeypatch):
     """5.9 says ResumeArm re-centres on the panel the order picks, with its
     rotation (#159): `recentre_candidates` in the run's own order
     (``schedule.schedule_order``) leaving out what is complete, set aside
     tonight or waiting on its group, `commanded_rotation`, and a refusal in
-    words when everything owed is set aside tonight
-    (`nothing_to_shoot_tonight`, #284); and it names what it does not model
-    (#283) and the lock it commands with no rotator (#295). "Today it takes
-    the first non-calibration target" is gone.
+    words when nothing owed can be shot tonight (`nothing_to_shoot_tonight`);
+    and it names the lock it commands with no rotator (#295). "Today it
+    takes the first non-calibration target" is gone. SINCE S3 it says the
+    re-centre asks the run's own gating with the site set (#283), and that
+    the refusal is said once a night and closes the night with an info
+    line (#284); the sentences that said it modelled no gating and
+    re-alerted every ten minutes are gone. S3-R found the two issue numbers
+    this test asked for would have passed on the stale bullet, since the
+    old sentences named them too, so it now asks for the new claims and
+    refuses the old ones.
 
     The code: ``ResumeArm._recover`` asks all three; ``ResumeArm._walk``
-    asks ``schedule_order``; and asked of a session with one complete, one
+    asks ``schedule_order``; asked of a session with one complete, one
     set-aside and one owing target, `recentre_candidates` answers the owing
-    one tonight and the set-aside one again the next night, a session whose
-    only owing target is set aside has nothing to shoot tonight, and a lock
-    is the angle `commanded_rotation` gives an unframed target.
+    one tonight and the set-aside one again the next night; a session whose
+    only owing target is set aside has nothing to shoot tonight; a lock is
+    the angle `commanded_rotation` gives an unframed target. With the site
+    set it drops a closed window and a target that never clears its start
+    floor tonight, and puts a ready target before a waiting one
+    (``schedule.gating_status`` stood in for, so no site is read), and
+    with the site unset or no clock it gates nothing; `NOTHING_TONIGHT`
+    names the three ways and no number; and ``ResumeArm.tick`` keys the
+    refusal's warning on its (session, night) latch and says the night's
+    close as an info line.
 
     RED under mutant "5.9 back to 'Today it takes the first
     non-calibration target'":
@@ -4950,17 +5351,80 @@ def test_5_9_says_resume_arm_recentres_on_what_the_run_would_shoot():
           Differing items:
           {'2026-09-25': ['aside', 'owing']} != {'2026-09-25': ['owing']}
           Use -v to get more diff
+
+    RED under mutant "5.9's bullet as S2 left it" (its #283 and #284
+    sentences put back):
+
+        AssertionError: 5.9's re-centre bullet must say: "the run's own
+        gating (S3, #283; `schedule.gating_status`"
+        assert False
+
+    RED under the resume_arm.py mutant "no gating" (in the scratch copy,
+    ``gate = site is not None and now is not None and site_is_set(site)``
+    made ``gate = False``), re-run by S3-SPEC2's verifier once the
+    ``never_rises`` case below joined the stand-in:
+
+        AssertionError: recentre_candidates picks ['closed', 'never',
+        'later', 'ready'] with the site set; 5.9 says ['ready', 'later']: a
+        closed window and a start floor never cleared tonight left out, a
+        ready target first
+        assert ['closed', 'n...ter', 'ready'] == ['ready', 'later']
+          At index 0 diff: 'closed' != 'ready'
+          Left contains 2 more items, first extra item: 'later'
+          Use -v to get more diff
+
+    RED under the resume_arm.py mutant "never_rises is re-centred on" (in
+    a scratch copy, ``_DROPPED_STATES = ("window_closed", "never_rises")``
+    made ``("window_closed",)``), which passed this test before the
+    stand-in had a ``never_rises`` case (S3-SPEC2's verifier):
+
+        AssertionError: recentre_candidates picks ['ready', 'never',
+        'later'] with the site set; 5.9 says ['ready', 'later']: a closed
+        window and a start floor never cleared tonight left out, a ready
+        target first
+        assert ['ready', 'never', 'later'] == ['ready', 'later']
+          At index 1 diff: 'never' != 'later'
+          Left contains one more item: 'later'
+          Use -v to get more diff
+
+    RED under mutant "5.9 without the floor clause" (", or that never
+    clears its start floor tonight," removed from the bullet):
+
+        AssertionError: 5.9's re-centre bullet must say: 'a target whose
+        window has closed, or that never clears its start floor tonight, is
+        left out'
+        assert False
+
+    RED under the resume_arm.py mutant "said every retry" (in the scratch
+    copy, ``elif self._nothing_tonight_said != (armed.id,
+    night_key(now)):`` made ``elif True:``):
+
+        AssertionError: ResumeArm.tick no longer keys the nothing-tonight
+        warning on its (session, night) latch; 5.9 says it is said once a
+        night (#284)
+        assert False
     """
+    from astrodeck.sequence import schedule
     from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
     from astrodeck.sequence.session import Session, SessionFrame
     bullet = _line(_section("5.9"), "- ResumeArm `_recover` re-centres")
     _says(bullet, ("**with its rotation** (S2, #159)",
                    "`recentre_candidates`", "`schedule.schedule_order`",
                    "`commanded_rotation`", "`nothing_to_shoot_tonight`",
-                   "#283", "#284", "#295", "Before S2 it took"),
-          "5.9's re-centre bullet")
-    stale = "Today it takes the first non-calibration target" in bullet
-    assert not stale, "5.9 still says ResumeArm takes the first target"
+                   "the run's own gating (S3, #283; "
+                   "`schedule.gating_status`",
+                   "a target whose window has closed, or that never clears "
+                   "its start floor tonight, is left out",
+                   "with the site unset it gates nothing (#121)",
+                   "`NOTHING_TONIGHT`",
+                   "said once a night per session (S3, #284)",
+                   "never the \"gave up\" error", "#295",
+                   "Before S2 it took"), "5.9's re-centre bullet")
+    for stale in ("Today it takes the first non-calibration target",
+                  "re-alerts every ten minutes",
+                  "It does not model the rest of the run's gating"):
+        kept = stale in bullet
+        assert not kept, f"5.9's re-centre bullet still says {stale!r}"
     recover = inspect.getsource(ResumeArm._recover)
     for call in ("recentre_candidates(", "nothing_to_shoot_tonight(",
                  "commanded_rotation("):
@@ -4996,6 +5460,54 @@ def test_5_9_says_resume_arm_recentres_on_what_the_run_would_shoot():
     s.lock_angle(owing.id, 33.0, solved_at=1.0, exposed_at=None,
                  source="claims")
     assert resume_arm_mod.commanded_rotation(s, owing) == 33.0
+    # #283: the run's gating, stood in for so that no site is read.
+    states = {"closed": "window_closed", "never": "never_rises",
+              "later": "waiting", "ready": "ready"}
+    monkeypatch.setattr(schedule, "gating_status",
+                        lambda t, site, tw, now: {"state": states[t.name]})
+    gated = Session(status="dormant", plan=SequencePlan(
+        name="p", targets=[target(n) for n in states]))
+
+    def names(**kw) -> list[str]:
+        return [t.name for t in resume_arm_mod.recentre_candidates(
+            gated, "2026-09-25", **kw)]
+
+    got = names(site={"is_default": False}, now=1.0)
+    assert got == ["ready", "later"], (
+        f"recentre_candidates picks {got} with the site set; 5.9 says "
+        f"['ready', 'later']: a closed window and a start floor never "
+        f"cleared tonight left out, a ready target first")
+    for kw in ({}, {"site": {"is_default": True}, "now": 1.0},
+               {"site": {"is_default": False}}):
+        assert names(**kw) == list(states), (
+            f"recentre_candidates gates with {kw}; 5.9 says an unset site "
+            f"gates nothing")
+    shut = Session(status="dormant", plan=SequencePlan(
+        name="p", targets=[target("closed")]))
+    none = resume_arm_mod.recentre_candidates(
+        shut, "2026-09-25", site={"is_default": False}, now=1.0)
+    assert none == [] and resume_arm_mod.nothing_to_shoot_tonight(shut, none)
+    words = resume_arm_mod.NOTHING_TONIGHT
+    three = all(w in words for w in ("set aside for tonight",
+                                     "past its observing window",
+                                     "never above its start floor"))
+    assert three and not re.search(r"\d", words), (
+        f"NOTHING_TONIGHT is {words!r}; 5.9 says it names the three ways "
+        f"and no number")
+    # #284: said once a night, and the night's close is an info line.
+    tick = _tree(ResumeArm.tick)
+    latched = _asks(tick, "self._nothing_tonight_said != (armed.id, "
+                          "night_key(now))") and _assigns(
+        tick, "self._nothing_tonight_said", "(armed.id, night_key(now))")
+    assert latched, ("ResumeArm.tick no longer keys the nothing-tonight "
+                     "warning on its (session, night) latch; 5.9 says it is "
+                     "said once a night (#284)")
+    closing = [c for c in _calls(tick, "log")
+               if c.args and ast.unparse(c.args[0]) == "'info'"
+               and "remaining work was set aside for the night"
+               in ast.unparse(c)]
+    assert closing, ("ResumeArm.tick no longer closes a nothing-tonight "
+                     "night with an info line; 5.9 says it does (#284)")
 
 
 def test_5_8_and_6_15_say_263_and_257_are_fixed():
@@ -5071,28 +5583,31 @@ def test_5_8_and_6_15_say_263_and_257_are_fixed():
 
 
 def test_1_6_5_2_and_5_3_say_the_waits_the_order_and_the_visit_as_built():
-    """1.6 says a follower does not fill a deferral wait yet (#304), and
-    ``group_ready_ts`` is a crossing, a limit's clearing or a gating's
-    opening (`_group_ready_ts`). 5.2 says the scheduler and ResumeArm use
-    the order and the progress route does not yet, with ``SETTING_SCAN_S``
-    and the 60 s scan behind ``setting_first``. 5.3 says `_run_visit` runs
-    a bounded visit, a follower's bound has no passes, a visit its deadline
-    ended before its first frame is not a visit, and a flip-point deadline
-    is in clock seconds (#300).
+    """1.6 says ``group_ready_ts`` is a crossing, a limit's clearing or a
+    gating's opening (`_group_ready_ts`), and names the boundary S2 slept
+    the deferral wait out in (`_close_group_pass`). 5.2 says the scheduler
+    and ResumeArm use the order and the progress route does not yet, with
+    ``SETTING_SCAN_S`` and the 60 s scan behind ``setting_first``. 5.3 says
+    `_run_visit` runs a bounded visit, a follower's bound has no passes, a
+    visit its deadline ended before its first frame is not a visit, and a
+    flip-point deadline is in clock seconds (#300).
 
-    The code: `_close_group_pass` awaits ``_wait_until`` itself for
-    ``DEFER_WAIT_S``, and `_group_ready_ts` knows no deferral wait; the
-    engine and ResumeArm import ``order_panels`` and the progress route
-    does not; `_time_to_floor_s` scans with ``forward_clear_ts`` up to
-    ``SETTING_SCAN_S``; ``_run_steps`` hands a bounded visit to
-    `_run_visit`; and `_visit_panel` requeues a visit the deadline ended
-    with no exposure without handing it to ``visit_outcome``.
+    Until S3's third wave this test also held 1.6's claim that no follower
+    fills the deferral wait (#304), and the engine shape behind it: the wait
+    awaited inside `_close_group_pass` and unknown to `_group_ready_ts`. Its
+    engine mutant "a follower fills the deferral wait" (the await deleted,
+    "the shape the #304 fix will have") went red with "1.6 says no follower
+    fills it yet (#304): say what was built". The third wave built exactly
+    that, and this test went red on the unedited tree with the same words.
+    That half now lives in
+    `test_1_6_and_5_1_say_a_follower_fills_the_deferral_wait_as_s3_built_it`,
+    which holds what was built, and this test keeps S2's half.
 
-    RED under mutant "1.6 back to 'or in a deferral wait'":
-
-        AssertionError: 1.6 must say: 'A deferral wait is not filled yet
-        (S2, #304)'
-        assert False
+    The code: the engine and ResumeArm import ``order_panels`` and the
+    progress route does not; `_time_to_floor_s` scans with
+    ``forward_clear_ts`` up to ``SETTING_SCAN_S``; ``_run_steps`` hands a
+    bounded visit to `_run_visit`; and `_visit_panel` requeues a visit the
+    deadline ended with no exposure without handing it to ``visit_outcome``.
 
     RED under the progress.py mutant "the progress route orders panels" (an
     ``order_panels`` import added):
@@ -5104,27 +5619,26 @@ def test_1_6_5_2_and_5_3_say_the_waits_the_order_and_the_visit_as_built():
           At index 2 diff: True != False
           Use -v to get more diff
 
-    RED under the engine mutant "a follower fills the deferral wait"
-    (`_close_group_pass`'s ``await self._wait_until(time.time() +
-    DEFER_WAIT_S)`` deleted, the shape the #304 fix will have), the case
-    where 1.6 is stale:
-
-        AssertionError: the deferral wait no longer blocks inside
-        _close_group_pass, or group_ready_ts counts it; 1.6 says no follower
-        fills it yet (#304): say what was built
-        assert ([])
-
     RED under the engine mutant "SETTING_SCAN_S = 6 * 3600.0":
 
         AssertionError: 5.2 must say: 'a 60 s forward scan capped at
         `SETTING_SCAN_S` (6 h)'
         assert False
+
+    Since S3's third wave, re-run from a byte backup of the spec:
+
+    RED under mutant "1.6 without its group_ready_ts times" (the clause
+    ", the projected time a blocked panel clears the floor and the mask, or
+    the opening its gating waits for (`_group_ready_ts`)" removed):
+
+        AssertionError: 1.6 must say: 'the opening its gating waits for
+        (`_group_ready_ts`)'
+        assert False
     """
     from astrodeck.flows import progress as progress_mod
     from astrodeck.sequence import group_rules
     s16 = _section("1.6")
-    _says(s16, ("A deferral wait is not filled yet (S2, #304)",
-                "`_close_group_pass`", "the opening its gating waits for "
+    _says(s16, ("`_close_group_pass`", "the opening its gating waits for "
                 "(`_group_ready_ts`)"), "1.6")
     for stale in ("held by the meridian rule, or in a deferral wait)",
                   "the end of a deferral wait (5.1), or the projected time"):
@@ -5140,15 +5654,6 @@ def test_1_6_5_2_and_5_3_say_the_waits_the_order_and_the_visit_as_built():
     _says(s53, ("S2 built it (S2, #189)", "`_run_visit`", "`passes=None`",
                 "is not a visit", "`VisitBound.next_frame_fits`", "#300"),
           "5.3")
-    closing = _tree(SequenceEngine._close_group_pass)
-    blocks = [c for c in _self_calls(closing, "_wait_until")
-              if "DEFER_WAIT_S" in ast.unparse(c)]
-    ready = "DEFER_WAIT_S" in ast.unparse(
-        _tree(SequenceEngine._group_ready_ts))
-    assert blocks and not ready, (
-        "the deferral wait no longer blocks inside _close_group_pass, or "
-        "group_ready_ts counts it; 1.6 says no follower fills it yet (#304): "
-        "say what was built")
     users = (hasattr(engine_mod, "order_panels"),
              hasattr(resume_arm_mod, "order_panels"),
              "order_panels" in inspect.getsource(progress_mod))
@@ -5197,13 +5702,26 @@ def test_the_s1_and_s2_build_items_say_what_s2_built_and_where():
         assert ['test_group_reach.py'] == []
           Left contains one more item: 'test_group_reach.py'
           Use -v to get more diff
+
+    Since S3-SPEC5, S1's test list says S3 built the end-to-end case, in
+    test_flows_continue_skip_param.py, which the file check now covers too.
+
+    RED under mutant "S1's tests back to 'is S3's, with the param'":
+
+        AssertionError: S1's tests must say: 'S3 built the end-to-end case with
+        a real `skip` param'
+        assert False
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
     """
     s2 = _section("S2:")
     _says(s2, ("**As built** (S2, #189)", "`tests/_group_harness.py`",
                "#303", "#304", "#298"), "S2")
     s1 = _line(_section("S1:"), "- Skipping a panel with banked frames")
     _says(s1, ("S2 built the case against a compile patched to skip one",
-               "`test_continue_skipped_panels.py`", "S3's"), "S1's tests")
+               "`test_continue_skipped_panels.py`", "S3 built the end-to-end "
+               "case with a real `skip` param"), "S1's tests")
     named = sorted(set(re.findall(r"`(?:tests/)?(_?test\w*\.py|_group_"
                                   r"harness\.py)`", s2 + "\n" + s1)))
     assert len(named) >= 9, f"premise: S1 and S2 name {named}"
@@ -5214,21 +5732,46 @@ def test_the_s1_and_s2_build_items_say_what_s2_built_and_where():
 
 def _source_names_exist(cell: str, corpus: str) -> list[str]:
     """The backticked names in a revision row's Source cell that name
-    nothing in server/: a path is a file under ``astrodeck/`` or
+    nothing in the tree: a path is a file under ``astrodeck/`` or
     ``tests/`` (or a file of that name anywhere under ``astrodeck/``), and
     a name is a ``def``, a ``class`` or a ``self.<name>`` assignment in
-    ``corpus``, the text of ``astrodeck/`` (its last dotted part)."""
+    ``corpus``, the text of ``astrodeck/`` (its last dotted part).
+
+    Since Revision 7 a name may also be one assigned at the start of a
+    line, indented or not (a module constant, ``TARGET_STOP = ...``, or a
+    dataclass field, ``created_as: dict = ...``), and a ``.ts`` or ``.tsx``
+    file of ``ui/src``, or a function, a constant or a type declared in
+    one: S3's first wave built UI code and module constants too. Only
+    broader: every name Revision 6 gives was found before. The indented
+    form also matches a keyword argument written on a line of its own
+    (``created_as={...}``), so for a name only ever passed that way this
+    half says less than the ``def``/``class`` half does."""
     missing = []
+    ui: str | None = None
     for name in re.findall(r"`([^`]+)`", cell):
         if name.endswith(".py"):
             found = ((_SERVER / "astrodeck" / name).is_file()
                      or (_SERVER / "tests" / name).is_file()
                      or any((_SERVER / "astrodeck").rglob(Path(name).name)))
+        elif name.endswith((".ts", ".tsx")):
+            found = any(UI_SRC.rglob(Path(name).name))
         else:
             last = re.escape(name.split(".")[-1])
             found = bool(re.search(rf"\b(?:def|class) {last}\b", corpus)
                        or re.search(rf"self\.{last}\s*(?::[^=\n]*)?=",
-                                    corpus))
+                                    corpus)
+                       or re.search(
+                           rf"^[ \t]*{last}[ \t]*(?::[^=\n]*)?=(?!=)",
+                           corpus, re.MULTILINE))
+            if not found:
+                if ui is None:
+                    ui = "\n".join(
+                        p.read_text(encoding="utf-8")
+                        for p in UI_SRC.rglob("*.ts*")
+                        if "__tests__" not in p.parts)
+                found = bool(re.search(
+                    rf"\b(?:function|const|let|type|interface|class) "
+                    rf"{last}\b", ui))
         if not found:
             missing.append(name)
     return missing
@@ -5326,3 +5869,5694 @@ def test_revision_6_lists_every_section_s2_edited():
     missing = {k: v for k, v in missing.items() if v}
     assert missing == {}, (f"Revision 6's Source column names code that is "
                            f"not in server/: {missing}")
+
+
+# ================================================ S3's orchestrator rulings
+#
+# Slice S3 was planned under eight rulings the orchestrator made (#189).
+# They are recorded in the slice's first wave, so that every S3 module can
+# cite them by the label the spec keeps, and the #239 check above resolves
+# those citations. Mutants: the spec from a byte backup and code in a
+# private scratch copy of ``server/`` (never the shared tree, #254), each
+# file checked byte-identical (sha256) after its run.
+
+#: Owner list items 22 to 29: the S3 orchestrator ruling each records, and
+#: the issues it decides (ruling 6 decides two).
+_S3_RULINGS = {22: (1, ("#313",)), 23: (2, ("#314",)), 24: (3, ("#311",)),
+               25: (4, ("#312",)), 26: (5, ("#316",)),
+               27: (6, ("#315", "#303")), 28: (7, ("#277",)),
+               29: (8, ("#308",))}
+
+
+def _names(text: str, issue: str) -> bool:
+    """``text`` names ``issue`` itself, not a longer number it begins."""
+    return re.search(rf"{re.escape(issue)}(?!\d)", text) is not None
+
+
+def _joined(nums: list[int]) -> str:
+    """``[1, 2, 8]`` as the spec writes it, "1, 2 and 8"."""
+    return f"{', '.join(map(str, nums[:-1]))} and {nums[-1]}"
+
+
+def test_the_owner_list_records_the_s3_orchestrator_rulings():
+    """The owner list records S3 orchestrator rulings 1 to 8 as items 22 to
+    29, each labelled the orchestrator's, binding until the owner overturns
+    it and naming the issues it decides (#313, #314, #311, #312, #316, #315
+    and #303, #277, #308), in a list numbered from 1 with no gap; with a
+    closing note that they are not the owner's and that their numbers are
+    neither Revision 2's, nor H2's, H3's or S2's. Which numbers collide is
+    computed: all eight with Revision 2's and H3's, 1, 2 and 8 with H2's,
+    and 1, 2 and 3 with S2's, which the note names. Item 19, S2
+    orchestrator ruling 1, says ruling 3 refines it, as item 14 names its
+    own refinement, and item 24 says whom it refines. Item 17, H3
+    orchestrator ruling 8, says ruling 8 refines it: its hourly back-off
+    now holds only for a verdict a dark master stands behind, and without
+    the pointer item 17 and item 29 would read as two binding rules that
+    disagree. Ruling 6 answers the
+    question Revision 2 left open on ruling 5, so item 1 is struck and
+    marked answered by it, as item 3 is marked approved, and Ruling 5's own
+    record says so.
+
+    Each item carries the ruling's text as the orchestrator gave it; one
+    load-bearing phrase of each is held here, so an edit that drops what
+    the ruling decides goes red, and the one number a ruling quotes, ruling
+    8's 10 minute retry, is taken from ``resume_arm.RETRY_INTERVAL_S``. The
+    behaviour each ruling decides is S3's code and its tests; the S3 spec
+    tasks hold the sections that describe it.
+
+    Mutants as in the S2 tests above. Before the spec carried items 22 to
+    29 this test was RED at its first item ("expected exactly one line
+    starting '22. ', found 0").
+
+    RED under mutant "delete item 25" (S3 orchestrator ruling 4's line
+    removed whole):
+
+        AssertionError: expected exactly one line starting '25. ', found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under mutant "label S3 ruling 5 an owner ruling" (item 26's bold
+    head made "**Owner ruling 5:"):
+
+        AssertionError: owner list item 26 must record S3 orchestrator ruling
+        5, labelled as the orchestrator's
+        assert False
+
+    RED under mutant "drop #303 from item 27":
+
+        AssertionError: owner list item 27 must name ['#303'], the issues S3
+        orchestrator ruling 6 decides
+        assert ['#303'] == []
+          Left contains one more item: '#303'
+          Use -v to get more diff
+
+    RED under mutant "an item 31 after item 29" (re-run by S3-SPEC2 once
+    item 30, the open question on 3.1, followed item 29):
+
+        AssertionError: the owner list is numbered [1, 2, 3, 4, 5, 6, 7, 8,
+        9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        26, 27, 28, 29, 31, 30]; it runs from 1 with no gap
+        assert [1, 2, 3, 4, 5, 6, ...] == [1, 2, 3, 4, 5, 6, ...]
+          At index 29 diff: 31 != 30
+          Use -v to get more diff
+
+    RED under mutant "item 22 makes the verdict run-ending" ("It is never
+    a run-ending `SafetyAbort`; the run carries on with the other panels."
+    made "It is a run-ending `SafetyAbort`."):
+
+        AssertionError: owner list item 22 must say: 'It is never a
+        run-ending `SafetyAbort`'
+        assert False
+
+    RED under the resume_arm.py mutant "RETRY_INTERVAL_S = 300.0" (in the
+    scratch copy, which the test imported):
+
+        AssertionError: owner list item 29 must say: 'keeps the 5 minute
+        retry'
+        assert False
+
+    RED under mutant "item 19 without the refinement":
+
+        AssertionError: owner list item 19 must say: 'S3 orchestrator ruling
+        3 (item 24) refines it'
+        assert False
+
+    RED under the S3-SPEC1 verifier's mutant "item 17 without the
+    refinement" (the pointer sentence removed; the control that rewords
+    the rest of that sentence passed, 2 passed):
+
+        AssertionError: owner list item 17 must say: 'S3 orchestrator ruling
+        8 (item 29) refines it'
+        assert False
+
+    RED under mutant "item 1 back to an open question" (the strike
+    removed):
+
+        AssertionError: owner list item 1 must strike Ruling 5's question
+        assert False
+
+    RED under mutant "Ruling 5 without the answer" (its closing paragraph
+    removed):
+
+        AssertionError: Ruling 5 must say: 'S3 orchestrator ruling 6 (#303,
+        #315) answered both points'
+        assert False
+
+    RED under mutant "drop the note on items 22 to 29":
+
+        AssertionError: expected exactly one line starting "Items 22 to 29
+        are not the owner's rulings.", found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under mutant "the note names H2's collisions as 1 and 2":
+
+        AssertionError: the note on items 22 to 29 must say: 'H2 orchestrator
+        rulings 1, 2 and 8'
+        assert False
+
+    In every run above the #239 citation check passed beside it: when they
+    ran, no code in the tree cited an S3 ruling.
+    """
+    owner = _section("Still")
+    numbers = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", owner,
+                                                    re.MULTILINE)]
+    for item, (ruling, issues) in _S3_RULINGS.items():
+        line = _line(owner, f"{item}. ")
+        labelled = line.startswith(f"{item}. **S3 orchestrator ruling "
+                                   f"{ruling}:")
+        assert labelled, (f"owner list item {item} must record S3 "
+                          f"orchestrator ruling {ruling}, labelled as the "
+                          f"orchestrator's")
+        _says(line, ("Binding until the owner overturns it.",),
+              f"owner list item {item}")
+        unnamed = [issue for issue in issues if not _names(line, issue)]
+        assert unnamed == [], (f"owner list item {item} must name {unnamed}, "
+                               f"the issues S3 orchestrator ruling {ruling} "
+                               f"decides")
+    assert numbers == list(range(1, len(numbers) + 1)), (
+        f"the owner list is numbered {numbers}; it runs from 1 with no gap")
+    # What each ruling decides, in the orchestrator's words.
+    retry = f"keeps the {resume_arm_mod.RETRY_INTERVAL_S / 60:g} minute retry"
+    for item, phrases in (
+            (22, ("is a wait for that panel, exactly as selection treats it",
+                  "It is never a run-ending `SafetyAbort`",
+                  "A single target keeps today's behaviour.")),
+            (23, ("bounded by `MOUNT_QUERY_TIMEOUT_S`",
+                  "read once per selection, not once per member",
+                  "dead-link policy (P0-2), never by a hang")),
+            (24, ("waits for the stop bounded by a short named cap",
+                  "retries the park once at once, not 60 s later",
+                  "It refines S2 orchestrator ruling 1 (item 19): the roof "
+                  "close still waits only for the park.")),
+            (25, ("(flipped, side) is persisted in the session under the "
+                  "night key", "keeps one pier change per night")),
+            (26, ("defers the panel with its reason",
+                  "It never drops the panel for the run on one failure.")),
+            (27, ("follows the plain-target rule (`guiding_action`) rather "
+                  "than deferring", "defers the panel as `guide_lost`",
+                  "It answers item 1")),
+            (28, ("never fails a capture", "ASCII transliteration",
+                  "the full UTF-8 name goes in a long-string or `HISTORY` "
+                  "card")),
+            (29, (retry, "Only a verdict backed by a dark master backs off "
+                  "to hourly", "never an hour of sky"))):
+        _says(_line(owner, f"{item}. "), phrases, f"owner list item {item}")
+    _says(_line(owner, "19. "), ("S3 orchestrator ruling 3 (item 24) "
+                                 "refines it",), "owner list item 19")
+    _says(_line(owner, "17. "), ("S3 orchestrator ruling 8 (item 29) "
+                                 "refines it",), "owner list item 17")
+    # Revision 2's open question on ruling 5, answered by ruling 6: struck,
+    # then marked, as item 3 is struck and marked approved.
+    item1 = _line(owner, "1. ")
+    struck = item1.startswith("1. ~~Ruling 5: confirm")
+    assert struck, "owner list item 1 must strike Ruling 5's question"
+    _says(item1, ("~~ Answered by S3 orchestrator ruling 6 (item 27; #303, "
+                  "#315)", "not the owner's",
+                  "binding until the owner overturns it"),
+          "owner list item 1")
+    ruling5 = [text for name, text in _blocks()
+               if name.startswith("Ruling 5:")]
+    assert len(ruling5) == 1, "the spec must have one Revision 2 Ruling 5"
+    _says(ruling5[0], ("S3 orchestrator ruling 6 (#303, #315) answered both "
+                       "points", "Owner list item 27 records it."), "Ruling 5")
+    # The closing note, with the collisions computed.
+    note = _line(owner, "Items 22 to 29 are not the owner's rulings.")
+    s3 = {ruling for ruling, _issues in _S3_RULINGS.values()}
+    revision_2 = {int(m.group(1)) for m in re.finditer(
+        r"^### Ruling (\d+):", _spec(), re.MULTILINE)}
+    h3 = {ruling for ruling, _issue in _H3_RULINGS.values()}
+    h2 = sorted(s3 & set(_H2_RULINGS.values()))
+    s2 = sorted(s3 & {ruling for ruling, _issue in _S2_RULINGS.values()})
+    assert (s3 == set(range(1, 9)) and s3 <= revision_2 and s3 <= h3
+            and h2 == [1, 2, 8] and s2 == [1, 2, 3]), (
+        f"premise: S3's numbers are 1 to 8, every one also Revision 2's and "
+        f"H3's, and S3 shares {h2} with H2 and {s2} with S2")
+    _says(note, ("slice S3 (#189)", "binding until the owner overturns it",
+                 "not Revision 2's numbering, nor H2's, nor H3's, nor S2's",
+                 "All eight of its numbers are also Revision 2's and H3's",
+                 f"H2 orchestrator rulings {_joined(h2)}",
+                 f"S2 orchestrator rulings {_joined(s2)}"),
+          "the note on items 22 to 29")
+
+
+# ======================================== S3's first wave and Revision 7
+#
+# The first wave of slice S3 (#189) built the flows vocabulary (3.1, 3.7),
+# the panel lane (1.5), the re-frame carry (3.3), and a round of engine,
+# ResumeArm and route fixes (5.1, 5.6, 5.9, 6.2, 6.3). Every test below
+# holds one section that wave edited to the code it now describes. Mutants:
+# the spec from a byte backup, and code in a private scratch copy of
+# ``server/`` and ``ui/src`` that the test imported and read (never the
+# shared tree, #254), each file checked byte-identical (sha256) after its
+# run. The scratch copy was taken while the second wave was editing the
+# tree; every mutant's control, the same copy unmutated, passed first.
+
+#: S3's mark on an edit of the body (Revision 7): "(S3, #n)" or an S3
+#: orchestrator ruling. "S3" alone cannot be the mark, as it cannot be S2's:
+#: the body names S3 as a plan throughout ("S3 tests", "in slice S3", "the
+#: doctor docstring ... is corrected in S3"), and those sentences are no
+#: edit.
+_S3 = re.compile(r"\(S3, #\d|\bS3 orchestrator ruling \d")
+
+#: The words the 1.5 worked-case table draws its graphs in, and the node
+#: type each names.
+_CASE_TYPES = {"TARGET": "target", "AF": "autofocus", "GUIDE": "guide",
+               "CYCLE": "cycle", "CAPTURE": "capture", "REPORT": "report",
+               "DOME": "dome"}
+_CASE_WORDS = {v: k for k, v in _CASE_TYPES.items()}
+
+
+def _case_graph(chain: str) -> FlowGraph:
+    """The graph a row of 1.5's worked-case table draws: one flow wire from
+    each node's flow output to the next node's flow input. "TARGET(3x2)" is
+    a block of 3 columns and 2 rows, as the spec writes a grid (A.5),
+    "TARGET(M33)" a single target of that name, and "CAPTURE Ha" a CAPTURE
+    LOOP of that filter. Node ids are ``n0``, ``n1``, ... in chain order."""
+    from astrodeck.flows.nodes import NODE_DEFS
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    for i, token in enumerate(p.strip() for p in chain.split("->")):
+        head, _, inner = token.partition("(")
+        word, _, extra = head.strip().partition(" ")
+        kind = _CASE_TYPES[word]
+        params: dict = {}
+        if kind == "target":
+            grid = re.fullmatch(r"(\d+)x(\d+)", inner.rstrip(")"))
+            params = ({"name": "M31", "cols": int(grid.group(1)),
+                       "rows": int(grid.group(2))} if grid
+                      else {"name": inner.rstrip(")")})
+        elif kind == "capture" and extra:
+            params = {"filter": extra}
+        nodes.append({"id": f"n{i}", "type": kind, "x": 200 * i, "y": 0,
+                      "params": params})
+        if i:
+            src, dst = NODE_DEFS[nodes[i - 1]["type"]], NODE_DEFS[kind]
+            out = next(p.id for p in src.outs if p.kind == "flow")
+            into = next(p.id for p in dst.ins if p.kind == "flow")
+            edges.append({"id": f"e{i}", "from": f"n{i - 1}",
+                          "fromPort": out, "to": f"n{i}", "toPort": into})
+    return FlowGraph.model_validate({"nodes": nodes, "edges": edges})
+
+
+def test_1_5_says_the_panel_lane_as_s3_built_it():
+    """1.5 says the scoping rule is built (S3, #189): `owner_of`,
+    `panel_lane`, `lane_branched`, `lane_tail`, `lane_next`, `loop_wires`
+    and `is_multi_panel` in ``compile.py``, which `compile_plan` scopes by;
+    the choices the code makes where the list is silent; and the compile's
+    note as a ``notes`` entry, ``{node_id, level, text}``, level ``note``
+    for a stage narrowed to its own block and ``warn`` for one that belongs
+    to no block, the key absent when the list is empty.
+
+    The code: EVERY ROW OF THE WORKED-CASE TABLE is drawn as the graph it
+    names (`_case_graph`) and asked of the functions: which stages the
+    block's panels own, its tail, what runs next, and, where the row says
+    so, who owns the CAPTURE; `compile_plan` gives the block exactly the
+    stages it owns and notes each stage the two rules assign differently,
+    at the level the section names; the same graph with a 1x1 block
+    compiles by canvas order with no ``notes`` key; a grid side that is not
+    a whole number of at least 1 reads as 1; a lane that ends on a GUIDE
+    has the GUIDE as its tail; and a stage with two flow parents has no
+    owner.
+
+    RED under mutant "1.5 without its as-built paragraph":
+
+        AssertionError: 1.5 must say: '**As built** (S3, #189)'
+        assert False
+
+    RED under the compile.py mutant "the walk goes through any node"
+    (`_walk_to_owner`'s ``if up.type not in LANE_TYPES or up.id in seen:``
+    made ``if up.id in seen:``):
+
+        AssertionError: 1.5 worked case 'TARGET(3x2) -> CYCLE -> DOME ->
+        CAPTURE' computes ('CYCLE, CAPTURE', 'CAPTURE', []); the table says
+        ('CYCLE', 'CYCLE', ['DOME'])
+        assert ('CYCLE, CAPT...'CAPTURE', []) == ('CYCLE', 'CYCLE',
+        ['DOME'])
+          At index 0 diff: 'CYCLE, CAPTURE' != 'CYCLE'
+          Use -v to get more diff
+
+    RED under the compile.py mutant "notes always present" (``if notes:``
+    before ``out["notes"] = notes`` made ``if True:``):
+
+        AssertionError: a graph with no multi-panel block compiles with a
+        notes key ([]); 1.5 says the key is absent when the list is empty
+        assert 'notes' not in {'automation': {}, 'instructions': [],
+        'name': '', 'notes': [], ...}
+
+    RED under the compile.py mutant "the tail is the nearest stage"
+    (`lane_tail`'s ``return members[-1][1]`` made ``return
+    members[0][1]``):
+
+        AssertionError: 1.5 worked case 'TARGET(3x2) -> AF -> GUIDE ->
+        CYCLE -> REPORT' computes ('CYCLE', 'AF', ['GUIDE']); the table says
+        ('CYCLE', 'CYCLE', ['REPORT'])
+        assert ('CYCLE', 'AF', ['GUIDE']) == ('CYCLE', 'CYCLE', ['REPORT'])
+          At index 1 diff: 'AF' != 'CYCLE'
+          Use -v to get more diff
+    """
+    from astrodeck.flows import compile as compile_mod
+    s15 = _section("1.5")
+    _says(s15, ("**As built** (S3, #189)", "`owner_of`", "`panel_lane`",
+                "`lane_branched`", "`lane_tail`", "`lane_next`",
+                "`loop_wires`", "`is_multi_panel`", "`compile_plan`",
+                "a flow wire only when it is one at both ends",
+                "a stage with two flow parents",
+                "The lane is exactly the lane nodes `owner_of` gives the "
+                "block", "AUTOFOCUS and GUIDE included",
+                "a sibling that is not a lane node (a DOME) branches nothing",
+                "leaving the 1x1 note (M4) to its caller",
+                "`notes` list of the compiled plan, `{node_id, level, text}`",
+                "level `note` for a stage narrowed to its own block",
+                "`warn` for one that belongs to no block",
+                "The key is absent when the list is empty",
+                "`test_flows_panel_lane.py`"), "1.5")
+    assert (_SERVER / "tests" / "test_flows_panel_lane.py").is_file(), (
+        "1.5 names test_flows_panel_lane.py, which is not in server/tests")
+    rows = [[c.strip() for c in line.strip().strip("|").split("|")]
+            for line in s15.splitlines() if line.startswith("| TARGET(")]
+    assert len(rows) == 4, f"premise: 1.5 has four worked cases, {rows}"
+    for chain, owns, tail_cell, next_cell in rows:
+        graph = _case_graph(chain)
+        block = graph.nodes[0]
+        stages = [n for n in graph.nodes if n.type in ("capture", "cycle")]
+        owner = {n.id: compile_mod.owner_of(graph, n.id) for n in stages}
+        mine = [n for n in stages
+                if owner[n.id] is not None and owner[n.id].id == block.id]
+        tail = compile_mod.lane_tail(graph, block)
+        got = (", ".join(_CASE_WORDS[n.type] for n in mine),
+               None if tail is None else _CASE_WORDS[tail.type],
+               [_CASE_WORDS[n.type]
+                for n in compile_mod.lane_next(graph, block)])
+        want = (owns, tail_cell, [next_cell.split()[0].rstrip(";,")])
+        assert got == want, (f"1.5 worked case {chain!r} computes {got}; "
+                             f"the table says {want}")
+        capture = next((n for n in graph.nodes if n.type == "capture"),
+                       None)
+        if "CAPTURE" in next_cell:
+            assert capture is not None, f"premise: {chain!r} has a CAPTURE"
+        if "owns the CAPTURE" in next_cell:
+            later = compile_mod.lane_next(graph, block)[0]
+            assert owner[capture.id] is not None and \
+                owner[capture.id].id == later.id, (
+                    f"1.5 worked case {chain!r}: the CAPTURE is not owned "
+                    f"by the target after the tail")
+        if "CAPTURE is M13" in next_cell:
+            assert owner[capture.id] is None, (
+                f"1.5 worked case {chain!r}: the CAPTURE has an owner; the "
+                f"table says it has none (M13)")
+        compiled = compile_plan(graph)
+        entry = next(t for t in compiled["targets"]
+                     if t.get("node_id") == block.id)
+        shot = [s.get("node_id") for s in entry["steps"]]
+        assert shot == [n.id for n in mine], (
+            f"1.5 worked case {chain!r} compiles the block with stages "
+            f"{shot}; it owns {[n.id for n in mine]}")
+        # The scope notes: a stage the wires give to nobody is a warn, one
+        # they narrow to its own block while an earlier block would have
+        # taken it by canvas order is a note, and every other stage none.
+        earlier = {n.id: {m.id for m in graph.nodes[:int(n.id[1:])]
+                          if m.type == "target"} for n in stages}
+        expect = {}
+        for n in stages:
+            if owner[n.id] is None:
+                expect[n.id] = "warn"
+            elif earlier[n.id] - {owner[n.id].id}:
+                expect[n.id] = "note"
+        scoped = {x["node_id"]: x["level"] for x in compiled.get("notes", [])
+                  if x.get("node_id") in owner}
+        assert scoped == expect, (
+            f"1.5 worked case {chain!r} notes its stages {scoped}; 1.5 says "
+            f"{expect}")
+        for x in compiled.get("notes", []):
+            assert set(x) == {"node_id", "level", "text"}, x
+    # The same third case with a 1x1 block: canvas order, and no key.
+    single = _case_graph("TARGET(1x1) -> CYCLE -> TARGET(M33) -> CAPTURE")
+    plain = compile_plan(single)
+    assert "notes" not in plain, (
+        f"a graph with no multi-panel block compiles with a notes key "
+        f"({plain.get('notes')}); 1.5 says the key is absent when the list "
+        f"is empty")
+    first = next(t for t in plain["targets"] if t.get("node_id") == "n0")
+    assert [s.get("node_id") for s in first["steps"]] == ["n1", "n3"], (
+        "with no multi-panel block the first target no longer gets every "
+        "later stage; 1.5 says canvas order stays byte for byte")
+    # The silent cases the paragraph decides.
+    node = single.nodes[0]
+    for rows_, cols_, multi in ((2, 1, True), ("2", 1, True), (0, 5, True),
+                                (2.5, 1, False), ("x", 1, False),
+                                (float("nan"), 3, True), (1, 1, False)):
+        node.params.update(rows=rows_, cols=cols_)
+        assert compile_mod.is_multi_panel(node) is multi, (
+            f"is_multi_panel reads rows={rows_!r}, cols={cols_!r} as "
+            f"{not multi}; 1.5 says a side that is not a whole number of at "
+            f"least 1 reads as 1")
+    guided = _case_graph("TARGET(3x2) -> CYCLE -> GUIDE")
+    tail = compile_mod.lane_tail(guided, guided.nodes[0])
+    assert tail is not None and tail.type == "guide", (
+        "a lane ending on a GUIDE no longer has it as its tail; 1.5 says "
+        "the tail is its last node of any type")
+    twice = _case_graph("TARGET(3x2) -> CYCLE")
+    twice.nodes.append(FlowNode.model_validate(
+        {"id": "t2", "type": "target", "x": 0, "y": 200,
+         "params": {"name": "M33"}}))
+    twice.edges.append(FlowEdge.model_validate(
+        {"id": "e9", "from": "t2", "fromPort": "target", "to": "n1",
+         "toPort": "run"}))
+    assert compile_mod.owner_of(twice, "n1") is None, (
+        "a stage with two flow parents has an owner; 1.5 says it has none")
+
+
+def _target_row(key: str) -> list[str]:
+    """The cells of 3.1's TARGET param table row whose Key cell names
+    ``key`` (a row may name two, "`ra`, `dec`")."""
+    rows = [[c.strip() for c in line.strip().strip("|").split("|")]
+            for line in _section("3.1").splitlines()
+            if line.startswith("| `")]
+    hits = [r for r in rows if key in re.findall(r"`(\w+)`", r[0])]
+    assert len(hits) == 1, f"3.1's table has {len(hits)} rows for {key!r}"
+    return hits[0]
+
+
+def _cell_value(cell: str):
+    """The value a 3.1 table cell gives, from the backticked token it opens
+    with: ``""`` is the empty string, a number is a number, else the text;
+    None when it opens with words instead (a value derived at compile, or
+    written by the server)."""
+    m = re.match(r"`([^`]*)`", cell)
+    if m is None:
+        return None
+    token = m.group(1)
+    if token == '""':
+        return ""
+    try:
+        return float(token)
+    except ValueError:
+        return token
+
+
+def _same(a, b) -> bool:
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return float(a) == float(b)
+    return a == b
+
+
+def test_3_1_says_the_created_as_column_as_s3_built_it():
+    """3.1 says the Created-as column is built (S3, #189) as
+    ``NodeDef.created_as``, overlaid by `create_params` and mirrored as
+    ``createdAs`` and ``createParams``; that `angle` has no missing-key
+    default and `target_angle` derives it; that the table is that column
+    value for value, except the ``name``, ``ra`` and ``dec`` defaults; and
+    it records the question those three leave as owner list item 30.
+
+    The code: EVERY ROW OF THE TABLE is compared with ``NODE_DEFS``: its
+    Missing-key column with the node's ``params``, its Created-as column
+    with `create_params` ("same" is the missing-key value), a derived or
+    server-written cell standing for a key with no missing-key default or
+    no created value of its own; `target_angle` reads a negative rotation
+    as "Any angle" and anything else, 0 included, as "Rotate to PA", and a
+    stored ``angle`` over either; POOL is created counting accepted subs;
+    ``nodeDefs.ts`` mirrors the column and `createParams`. And the three
+    keys item 30 asks about still default to M31's values in the code while
+    a new block is written blank, so an answer made in code turns this red.
+
+    RED under mutant "3.1 without its as-built paragraph":
+
+        AssertionError: 3.1 must say: '**As built** (S3, #189)'
+        assert False
+
+    RED under mutant "drop item 30":
+
+        AssertionError: expected exactly one line starting "30. **Open
+        question: a TARGET's missing-key name, RA and Dec**", found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under the nodes.py mutant "a new block counts every sub"
+    (``created_as``'s ``"counts": "Accepted subs"`` made ``"counts":
+    "Every sub taken"``):
+
+        AssertionError: 3.1's table creates counts as 'Accepted subs';
+        create_params('target') writes 'Every sub taken'
+        assert False
+
+    RED under the nodes.py mutant "a stored TARGET with no RA has none"
+    (TARGET's missing-key ``"ra": "00h 42m 44s"`` made ``"ra": ""``), the
+    open question answered in code:
+
+        AssertionError: nodes.py's missing-key ra is now '': owner list
+        item 30 is answered in code; record the answer in 3.1 and close the
+        item
+        assert False
+
+    RED under the nodes.py mutant "0 is any angle" (`target_angle`'s ``< 0``
+    made ``<= 0``):
+
+        AssertionError: target_angle reads {'rotation': 0} as 'Any angle';
+        3.1 says 0 is a real PA
+        assert 'Any angle' == 'Rotate to PA'
+          - Rotate to PA
+          + Any angle
+    """
+    from astrodeck.flows import nodes as nodes_mod
+    s31 = _section("3.1")
+    _says(s31, ("**As built** (S3, #189)", "`NodeDef.created_as`",
+                "`create_params`", "`createdAs`", "`createParams`",
+                "`target_angle`", "`targetAngle`",
+                "The table below is that column, value for value, except the "
+                "`name`, `ra` and `dec` defaults", "owner list item 30"),
+          "3.1")
+    target = nodes_mod.NODE_DEFS["target"]
+    created = nodes_mod.create_params("target")
+    keys = []
+    for line in s31.splitlines():
+        if line.startswith("| `"):
+            keys += re.findall(r"`(\w+)`", line.split("|")[1])
+    assert {"rows", "counts", "frameAnchor", "angle", "name"} <= set(keys), (
+        f"premise: 3.1's table was read, {keys}")
+    open_keys = ("name", "ra", "dec")
+    for key in keys:
+        row = _target_row(key)
+        default, made = _cell_value(row[2]), row[3]
+        if key in open_keys:
+            continue
+        if default is None:
+            assert key not in target.params, (
+                f"3.1's table derives or writes {key!r} with no missing-key "
+                f"default; nodes.py gives it {target.params.get(key)!r}")
+        else:
+            ok = key in target.params and _same(target.params[key], default)
+            assert ok, (f"3.1's table defaults {key!r} to {default!r}; "
+                        f"nodes.py to {target.params.get(key)!r}")
+        want = (_cell_value(row[2]) if made.startswith("same")
+                else _cell_value(made))
+        if want is not None:
+            ok = key in created and _same(created[key], want)
+            assert ok, (f"3.1's table creates {key} as {want!r}; "
+                        f"create_params('target') writes "
+                        f"{created.get(key)!r}")
+    for key in open_keys:
+        assert _cell_value(_target_row(key)[2]) == "", (
+            f"premise: 3.1's table still gives {key!r} the missing-key "
+            f"default item 30 asks about")
+        still = bool(target.params.get(key))
+        assert still, (f"nodes.py's missing-key {key} is now "
+                       f"{target.params.get(key)!r}: owner list item 30 is "
+                       f"answered in code; record the answer in 3.1 and "
+                       f"close the item")
+        assert created[key] == "", (
+            f"create_params('target') writes {key} as {created[key]!r}; 3.1 "
+            f"says a new block is written blank")
+    assert nodes_mod.create_params("pool")["counts"] == "Accepted subs"
+    assert nodes_mod.default_params("pool")["counts"] == "Every sub taken"
+    for params, want in (({"rotation": -1}, "Any angle"),
+                         ({"rotation": 23.4}, "Rotate to PA"),
+                         ({"rotation": 0}, "Rotate to PA"),
+                         ({"rotation": ""}, "Any angle"),
+                         ({"rotation": 5, "angle": "Camera fixed at PA"},
+                          "Camera fixed at PA")):
+        got = nodes_mod.target_angle(params)
+        why = ("0 is a real PA" if params.get("rotation") == 0
+               else f"it means {want!r}")
+        assert got == want, (f"target_angle reads {params} as {got!r}; 3.1 "
+                             f"says {why}")
+    ts = (UI_SRC / "components" / "flows" / "nodeDefs.ts").read_text(
+        encoding="utf-8")
+    mirrored = ("export function createParams(" in ts
+                and ts.count("createdAs: {") == 2
+                and "export function targetAngle(" in ts)
+    assert mirrored, ("nodeDefs.ts no longer mirrors createdAs, createParams "
+                      "and targetAngle; 3.1 says it does")
+    item = _line(_section("Still"), "30. **Open question: a TARGET's "
+                                    "missing-key name, RA and Dec**")
+    _says(item, ("(3.1; #189, #190)", "missing-key default of `\"\"`",
+                 "S3 built them as they were before it", "M31's",
+                 "`created_as`", "The owner decides"), "owner list item 30")
+
+
+def test_3_3_says_the_reframe_carry_as_s3_built_it():
+    """3.3 says `reframe_carry` is built (S3, #189), with the signature and
+    answer it has (``at``, and ``reason`` beside the three keys the design
+    named), the reasons in the order they are asked, ``max_move_deg`` None
+    where no move is measured, the ``unchanged`` rule that keeps a block
+    with no camera field, the anchor text `identity.anchor_for` writes,
+    `anchor_geometry`, `anchor_key` and `target_key`'s anchor, and the
+    route's ``anchor``; and its computed thresholds are the ones the
+    function gives.
+
+    The code: `reframe_carry`'s signature; each reason from a case built
+    for it; a block with no field keeps an unchanged anchor and loses a
+    moved one; the four thresholds of the "Computed thresholds" bullet, as
+    `reframe_carry` computes them for those grids and printed to a tenth of
+    an arcminute; `anchor_key` of `anchor_for`'s text is the key
+    `target_key` gives with no anchor (so a first anchor moves no id); and
+    ``_reframe_answer`` answers nothing for no anchor or a blank one, the
+    verdict for a stored one, and a malformed one is refused.
+
+    RED under mutant "3.3 with the design's signature" (``reframe_carry(
+    anchor, new, *, at=None) -> {carry, max_move_deg, threshold_deg,
+    reason}`` put back as the design wrote it):
+
+        AssertionError: 3.3 must say: '`reframe_carry(anchor, new, *,
+        at=None) -> {carry, max_move_deg, threshold_deg, reason}`'
+        assert False
+
+    RED under the framing.py mutant "REFRAME_CARRY_FRACTION = 0.4":
+
+        AssertionError: 3.3 must say: "a 3x2 of 2.0 x 1.33 deg panels
+        allows 8.0'"
+        assert False
+
+    RED under the framing.py mutant "no unchanged rule" (the ``if
+    _same_geometry(old, now):`` return removed):
+
+        AssertionError: reframe_carry answers {'carry': True,
+        'max_move_deg': 8.537736462515939e-07, 'threshold_deg': 0.16625,
+        'reason': 'move'} for the 'unchanged' case; 3.3 says reason
+        'unchanged'
+        assert ({'carry', 'ma...hreshold_deg'} == {'carry',
+        'ma...hreshold_deg'}
+          Use -v to get more diff and 'move' == 'unchanged'
+          - unchanged
+          + move)
+
+    (the shared separation's 8.5e-07 deg for two identical points is the
+    move, so the case the reason names goes red before the one with no
+    camera field).
+
+    RED under the framing.py mutant "the route never answers reframe"
+    (``_reframe_answer`` returning None first):
+
+        AssertionError: the route answers None for a stored anchor; 3.3 says
+        it answers reframe
+        assert None is not None
+    """
+    from pydantic import ValidationError
+
+    from astrodeck.catalog import framing
+    s33 = _section("3.3")
+    _says(s33, ("`reframe_carry(anchor, new, *, at=None) -> {carry, "
+                "max_move_deg, threshold_deg, reason}`",
+                "**As built** (S3, #189)", "`catalog/framing.py`",
+                "`identity` (another object, or a name against typed "
+                "coordinates), `grid`, `angle`, `unchanged` and `move`",
+                "`max_move_deg` is `None` where no move is measured",
+                "`at=(ra_hours, dec_deg)`", "`identity.anchor_for`",
+                "`identity.anchor_geometry`", "`identity.anchor_key`",
+                "`target_key` takes `anchor=` and the grid",
+                "`MosaicAnchorIn`", "refuses malformed text with 422"),
+          "3.3")
+    sig = inspect.signature(framing.reframe_carry)
+    at = sig.parameters.get("at")
+    assert (list(sig.parameters) == ["anchor", "new", "at"] and at is not None
+            and at.kind is inspect.Parameter.KEYWORD_ONLY
+            and at.default is None), (
+        f"reframe_carry{sig} is not the signature 3.3 gives")
+
+    def frame(**over) -> dict:
+        base = {"ra_hours": 5.0, "dec_deg": 20.0, "rows": 2, "cols": 3,
+                "overlap": 0.25, "rotation_deg": 30.0, "fov_x": 2.0,
+                "fov_y": 1.33}
+        return {**base, **over}
+
+    named = {k: v for k, v in frame().items()
+             if k not in ("ra_hours", "dec_deg")}
+    cases = {"identity": (frame(), {**named, "name": "M31"}),
+             "grid": (frame(), frame(rows=3)),
+             "angle": (frame(), frame(rotation_deg=None)),
+             "unchanged": (frame(), frame()),
+             "move": (frame(), frame(dec_deg=20.01))}
+    for reason, (old, new) in cases.items():
+        got = framing.reframe_carry(old, new)
+        assert set(got) == {"carry", "max_move_deg", "threshold_deg",
+                            "reason"} and got["reason"] == reason, (
+            f"reframe_carry answers {got} for the {reason!r} case; 3.3 says "
+            f"reason {reason!r}")
+        unmeasured = reason in ("identity", "grid", "angle")
+        assert (got["max_move_deg"] is None) is unmeasured, (
+            f"the {reason!r} case moves {got['max_move_deg']}; 3.3 says "
+            f"None where no move is measured")
+    blind = frame(fov_x=0.0, fov_y=0.0)
+    kept = framing.reframe_carry(blind, dict(blind))
+    assert kept["carry"] and kept["reason"] == "unchanged", (
+        f"reframe_carry answers {kept} for an unchanged block with no camera "
+        f"field; 3.3 says it keeps its anchor as 'unchanged'")
+    lost = framing.reframe_carry(blind, frame(fov_x=0.0, fov_y=0.0,
+                                              dec_deg=20.001))
+    assert not lost["carry"], "a moved block with no field kept its anchor"
+    thresholds = _line(s33, "- Computed thresholds")
+    for what, cols, rows, overlap, fx, fy in (
+            ("a 3x2 of 2.0 x 1.33 deg panels", 3, 2, 0.25, 2.0, 1.33),
+            ("a single row of three such panels", 3, 1, 0.25, 2.0, 1.33),
+            ("a 3x3 at 15% overlap", 3, 3, 0.15, 2.0, 1.33),
+            ("a 2x2 of 0.9 x 0.6 deg", 2, 2, 0.25, 0.9, 0.6)):
+        g = frame(rows=rows, cols=cols, overlap=overlap, fov_x=fx, fov_y=fy)
+        t = framing.reframe_carry(g, dict(g))["threshold_deg"] * 60
+        _says(thresholds, (f"{what} allows {t:.1f}'",), "3.3")
+    entry = {"name": "field", "ra": "05h 00m 00s", "dec": "+20 00 00"}
+    text = identity.anchor_for(entry, 5.0, 20.0, 30.0, canonical=None)
+    first = identity.anchor_key(text)
+    s1 = identity.target_key(entry, 5.0, 20.0, 30.0, canonical=None)
+    assert first == s1 == identity.target_key(
+        entry, 5.0, 20.0, 30.0, canonical=None, anchor=text), (
+        "a block's first anchor no longer keys as its id did with no anchor; "
+        "3.3 says it needs no migration")
+    assert identity.anchor_geometry("") is None
+    spec = framing.MosaicSpecIn(ra_hours=5.0, dec_deg=20.0, rows=2, cols=3,
+                                overlap=0.25, rotation_deg=30.0,
+                                fov_x_deg=2.0, fov_y_deg=1.33)
+    assert framing._reframe_answer(spec) is None
+    assert framing._reframe_answer(spec.model_copy(
+        update={"anchor": "  "})) is None
+    stored = identity.anchor_for({"name": "x", "ra": "05h", "dec": "+20"},
+                                 5.0, 20.0, 30.0, canonical=None, rows=2,
+                                 cols=3, overlap=0.25, fov_x=2.0, fov_y=1.33)
+    answer = framing._reframe_answer(spec.model_copy(
+        update={"anchor": stored}))
+    assert answer is not None, ("the route answers None for a stored anchor; "
+                                "3.3 says it answers reframe")
+    assert answer["reason"] == "unchanged" and answer["carry"], answer
+    with pytest.raises(ValidationError, match="anchor"):
+        framing.MosaicSpecIn(**{**spec.model_dump(exclude={"anchor"}),
+                                "anchor": "not an anchor"})
+
+
+def test_3_7_says_the_ui_mirror_as_s3_built_it():
+    """3.7 says ``nodeDefs.ts`` is built (S3, #189): ``createdAs``, the
+    ``legacy`` flag and ``LEGACY_TYPES``, and ``FieldDef.derive`` read
+    through ``fieldValue`` for TARGET's derived ``angle``; that both
+    inspectors read it since the integration of S3, so a stored TARGET with
+    a real PA and no ``angle`` key shows "Rotate to PA", held by the two DOM
+    tests it names; and it names the three UI pins the new ports move.
+
+    The code: ``nodeDefs.ts`` holds each name; TARGET's ``angle`` row
+    derives through ``targetAngle``; ``FlowInspector.tsx`` and next's
+    ``FlowNodeEditor.tsx`` each hand a row ``fieldValue(f, node.params)``
+    and neither hands it ``node.params[f.key]``; and the three pinned test
+    files and the two DOM tests are there.
+
+    UNTIL THE INTEGRATION OF S3 this held the other way round: 3.7 said
+    neither inspector read ``fieldValue``, and the guard went red when one
+    did ("say it does"). The integration made both read it (S3-V's
+    verifier, item 4) and turned the guard and the sentence with it.
+
+    RED under mutant "3.7 without its as-built bullet":
+
+        AssertionError: expected exactly one line starting '- **As built**
+        (S3, #189)', found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under the ui mutant "the angle row derives nothing" (``, derive:
+    targetAngle`` removed from TARGET's angle row in ``nodeDefs.ts``):
+
+        AssertionError: nodeDefs.ts no longer has ['derive: targetAngle'];
+        3.7 says it does
+        assert ['derive: targetAngle'] == []
+          Left contains one more item: 'derive: targetAngle'
+          Use -v to get more diff
+
+    RED under the ui mutant "FlowInspector reads fieldValue" (its
+    ``value={node.params[f.key]}`` made ``value={fieldValue(f,
+    node.params)}``), when 3.7 said the fix was not made:
+
+        AssertionError: components/flows/FlowInspector.tsx shows fieldValue
+        now; 3.7 says neither inspector reads it yet: say it does
+        assert not True
+
+    Since the integration, RED under mutant "3.7 says neither inspector reads
+    it" (the bullet's sentence put back as S3-SPEC5 left it):
+
+        AssertionError: 3.7 must say: 'Both inspectors read it since the
+        integration of S3'
+        assert False
+
+    and under the ui mutant "the phone editor passes the raw param" (in the
+    scratch copy of ``ui/src``, FlowNodeEditor.tsx's ``value={fieldValue(f,
+    node.params)}`` put back to ``value={node.params[f.key]}``):
+
+        AssertionError: next/hubs/session/flows/inspector/FlowNodeEditor.tsx
+        hands a row (fieldValue, the raw param) = (False, True); 3.7 says
+        both inspectors read fieldValue
+    """
+    s37 = _section("3.7")
+    bullet = _line(s37, "- **As built** (S3, #189)")
+    _says(bullet, ("`createdAs`", "`legacy`", "`LEGACY_TYPES`",
+                   "`FieldDef.derive`", "`fieldValue`", "`targetAngle`",
+                   "Both inspectors read it since the integration of S3",
+                   "`FlowInspector.tsx`", "`FlowNodeEditor.tsx`",
+                   "`fieldValue(f, node.params)`", "`node.params[f.key]`",
+                   "shows \"Rotate to PA\"",
+                   "(`flowInspectorAngle.test.tsx`, `inspectorDom.test.tsx`)",
+                   "`geometry.test.ts`", "`autoLayout.test.ts`",
+                   "`flowNodeDom.test.tsx`"), "3.7")
+    ts = (UI_SRC / "components" / "flows" / "nodeDefs.ts").read_text(
+        encoding="utf-8")
+    gone = [name for name in ("createdAs?:", "legacy?: true", "legacy: true",
+                              "export const LEGACY_TYPES", "derive?:",
+                              "export function fieldValue(",
+                              "derive: targetAngle")
+            if name not in ts]
+    assert gone == [], f"nodeDefs.ts no longer has {gone}; 3.7 says it does"
+    for rel in ("components/flows/FlowInspector.tsx",
+                "next/hubs/session/flows/inspector/FlowNodeEditor.tsx"):
+        text = (UI_SRC / rel).read_text(encoding="utf-8")
+        hands = ("value={fieldValue(f, node.params)}" in text,
+                 "value={node.params[f.key]}" in text)
+        assert hands == (True, False), (
+            f"{rel} hands a row (fieldValue, the raw param) = {hands}; 3.7 "
+            f"says both inspectors read fieldValue")
+    pins = UI_SRC / "components" / "flows" / "__tests__"
+    dom = UI_SRC / "next" / "hubs" / "session" / "flows" / "inspector" / \
+        "__tests__"
+    missing = [str(p.name) for p in (
+        pins / "geometry.test.ts", pins / "autoLayout.test.ts",
+        pins / "flowNodeDom.test.tsx", pins / "flowInspectorAngle.test.tsx",
+        dom / "inspectorDom.test.tsx") if not p.is_file()]
+    assert missing == [], f"3.7 names UI tests that do not exist: {missing}"
+
+
+def _visit_arms() -> list[tuple[str, ast.ExceptHandler]]:
+    """The except arms of `_visit_panel`'s visit ``try`` (the one that
+    catches ``PanelDeferred``), in order, by the class each catches."""
+    tree = _tree(SequenceEngine._visit_panel)
+    tries = [n for n in ast.walk(tree) if isinstance(n, ast.Try)
+             and _handlers(n, "PanelDeferred")]
+    assert len(tries) == 1, "premise: _visit_panel has one visit try"
+    return [(ast.unparse(h.type), h) for h in tries[0].handlers]
+
+
+def _stop_defers() -> bool:
+    """`_visit_panel` turns a plain ``StopTarget`` into a deferral of kind
+    ``TARGET_STOP`` carrying the stop's words, after the ``WindowClosed``
+    arm that lets the frozen window's stop through."""
+    arms = _visit_arms()
+    names = [n for n, _h in arms]
+    if "StopTarget" not in names or "WindowClosed" not in names:
+        return False
+    stop = dict(arms)["StopTarget"]
+    window = dict(arms)["WindowClosed"]
+    defers = [c for c in ast.walk(stop) if isinstance(c, ast.Call)
+              and ast.unparse(c.func) == "PanelDeferred"
+              and ast.unparse(_keyword_node(c, "kind") or ast.Constant(None))
+              == "TARGET_STOP"
+              and "str(e)" in ast.unparse(_keyword_node(c, "last_error")
+                                          or ast.Constant(None))]
+    return (bool(defers)
+            and names.index("WindowClosed") < names.index("StopTarget")
+            and names.index("FloorStop") < names.index("StopTarget")
+            and [ast.unparse(s) for s in window.body] == ["raise"])
+
+
+def test_5_1_and_6_2_say_how_a_member_visit_ends_as_s3_built_it():
+    """5.1's outcome table says how a group member's visit ends since S3: a
+    plain ``StopTarget`` defers the panel as ``target_stop`` (S3, #316, S3
+    orchestrator ruling 5); the frozen window's stop is ``WindowClosed``
+    and is never deferred; a floor stop's frames are counted
+    (``GroupRun.note_visit``, #288); a floor or keep-out ``SlewRefused`` at
+    the member's own hop is a reach wait (S3, #313, S3 orchestrator ruling
+    1), set aside only once its window has closed; and a member a jump
+    consumes leaves its group (#288), its visit's counts left out (#322).
+    6.2 says the same of the slew-time refusal, which used to end the run
+    "as today".
+
+    The code, from syntax trees: `_visit_panel`'s arms (`_visit_arms`) in
+    the order that makes each true; the reach wait taken only for a
+    refusal of the hop (``hopped``) whose ``REACH_TAGS`` tag is a wait, and
+    handed to `_hop_refused_by_a_limit`, which requeues and sets aside only
+    past the frozen stop, never calling ``visit_outcome``; the mount-floor
+    gate and the Sun check giving their refusal its ``kind``;
+    ``WindowClosed`` a ``StopTarget`` that `_enforce_stop_boundary`
+    raises; `_schedule_loop`'s jump arm calling `_group_member_gone` after
+    `_apply_jump`; and ``GroupRun.note_visit`` counting a visit's
+    exposures toward the pass.
+
+    RED under mutant "5.1 without the reach-wait row":
+
+        AssertionError: 5.1 must say: "a floor or keep-out `SlewRefused` at
+        the member's own hop"
+        assert False
+
+    RED under mutant "6.2 back to 'as today'" (the row's last sentence as
+    S2 left it):
+
+        AssertionError: 6.2 must say: 'is a reach wait (S3, #313, S3
+        orchestrator ruling 1)'
+        assert False
+
+    RED under the engine.py mutant "a plain StopTarget drops the panel"
+    (the ``except StopTarget as e:`` arm and its body removed from
+    `_visit_panel`):
+
+        AssertionError: _visit_panel no longer defers a plain StopTarget as
+        target_stop behind the WindowClosed arm; 5.1 says it does
+        assert False
+         +  where False = _stop_defers()
+
+    RED under the engine.py mutant "a refusal from the frame loop waits
+    too" (``if hopped or REACH_TAGS.get(e.kind) != "wait":`` made ``if
+    REACH_TAGS.get(e.kind) != "wait":``):
+
+        AssertionError: _visit_panel's SlewRefused arm no longer re-raises
+        every refusal but a wait-tagged one at its own hop; 5.1 and 6.2 say
+        so
+        assert []
+
+    RED under the engine.py mutant "a floor stop's frames are not counted"
+    (the ``run.note_visit(...)`` call removed from the FloorStop arm):
+
+        AssertionError: the FloorStop arm no longer counts the visit
+        (note_visit) before it sets the panel aside; 5.1 says it does
+        assert False
+
+    RED under the engine.py mutant "the jump leaves the member live" (the
+    ``self._group_member_gone(...)`` call removed from the jump arm):
+
+        AssertionError: _schedule_loop's jump arm no longer takes the
+        member out of its group; 5.1 says it does
+        assert False
+
+    RED under the engine.py mutant "the mount-floor gate drops the kind"
+    (``, kind=verdict.kind`` removed from `_enforce_mount_floor`'s raise):
+
+        AssertionError: _enforce_mount_floor no longer names the refusal's
+        kind; 5.1 and 6.2 say the kind decides
+        assert []
+    """
+    from astrodeck.sequence import group_rules
+    s51 = _section("5.1")
+    _says(s51, ("a plain `StopTarget` the visit raised",
+                "(S3, #316, S3 orchestrator ruling 5)", "kind `target_stop`",
+                "`WindowClosed`", "`GroupRun.note_visit`, S3, #288",
+                "a floor or keep-out `SlewRefused` at the member's own hop",
+                "(S3, #313, S3 orchestrator ruling 1)",
+                "`_hop_refused_by_a_limit`", "not visited and not a failure",
+                "`_group_member_gone`, S3, #288", "#322"), "5.1")
+    row = _line(_spec(), "| 6.2 |")
+    _says(row, ("is a reach wait (S3, #313, S3 orchestrator ruling 1)",
+                "by its `kind`, never by its text",
+                "`_hop_refused_by_a_limit`",
+                "a refusal from inside the visit's frame loop"), "6.2")
+    stale = "(a race of seconds), `SafetyAbort` ends the run as today" in row
+    assert not stale, "6.2 still says every slew-time refusal ends the run"
+    assert _stop_defers(), ("_visit_panel no longer defers a plain StopTarget "
+                            "as target_stop behind the WindowClosed arm; 5.1 "
+                            "says it does")
+    assert group_rules.TARGET_STOP == "target_stop" and \
+        group_rules.TARGET_STOP in group_rules.DEFERRAL_KINDS
+    arms = dict(_visit_arms())
+    slew = arms.get("SlewRefused")
+    gate = [n for n in ast.walk(slew) if isinstance(n, ast.If)
+            and ast.unparse(n.test) == "hopped or REACH_TAGS.get(e.kind) "
+                                       "!= 'wait'"
+            and [ast.unparse(s) for s in n.body] == ["raise"]] if slew else []
+    assert gate, ("_visit_panel's SlewRefused arm no longer re-raises every "
+                  "refusal but a wait-tagged one at its own hop; 5.1 and 6.2 "
+                  "say so")
+    visit = _tree(SequenceEngine._visit_panel)
+    handed = [n for n in ast.walk(visit) if isinstance(n, ast.If)
+              and ast.unparse(n.test) == "refused is not None"
+              and _self_calls(n, "_hop_refused_by_a_limit")]
+    hopped = _assigns(visit, "hopped", "True")
+    assert handed and hopped, ("_visit_panel no longer hands a refused hop to "
+                               "_hop_refused_by_a_limit; 5.1 says it does")
+    wait = _tree(SequenceEngine._hop_refused_by_a_limit)
+    past = [n for n in ast.walk(wait) if isinstance(n, ast.If)
+            and "stop_ts" in ast.unparse(n.test)
+            and _self_calls(n, "_set_panel_aside")]
+    shape = (bool(past) and bool(_self_calls(wait, "_requeue"))
+             and not _calls(wait, "visit_outcome"))
+    assert shape, ("_hop_refused_by_a_limit no longer requeues the panel "
+                   "uncounted and sets it aside only past its window; 5.1 "
+                   "says it does")
+    floor = arms.get("FloorStop")
+    counted = floor is not None and bool(_calls(floor, "note_visit")) and (
+        _calls(floor, "note_visit")[0].lineno
+        < _calls(floor, "_set_panel_aside")[0].lineno)
+    assert counted, ("the FloorStop arm no longer counts the visit "
+                     "(note_visit) before it sets the panel aside; 5.1 says "
+                     "it does")
+    run = group_rules.GroupRun({"p": "1-1", "q": "1-2"}, max_failed_visits=3)
+    run.note_visit("p", exposures=2, accepted=1)
+    assert run.exposures_this_pass == 2, "note_visit no longer counts"
+    kinded = [n for n in ast.walk(_tree(SequenceEngine._enforce_mount_floor))
+              if isinstance(n, ast.Raise) and isinstance(n.exc, ast.Call)
+              and ast.unparse(n.exc.func) == "SlewRefused"
+              and ast.unparse(_keyword_node(n.exc, "kind")
+                              or ast.Constant(None)) == "verdict.kind"]
+    assert kinded, ("_enforce_mount_floor no longer names the refusal's kind; "
+                    "5.1 and 6.2 say the kind decides")
+    sun = [c for c in ast.walk(ast.parse(inspect.getsource(engine_mod)))
+           if isinstance(c, ast.Call) and ast.unparse(c.func) == "SlewRefused"
+           and _keyword(c, "kind") == "sun"]
+    assert sun and issubclass(engine_mod.WindowClosed, engine_mod.StopTarget)
+    boundary = [n for n in ast.walk(_tree(
+        SequenceEngine._enforce_stop_boundary)) if isinstance(n, ast.Raise)
+        and isinstance(n.exc, ast.Call)
+        and ast.unparse(n.exc.func) == "WindowClosed"]
+    assert boundary, "_enforce_stop_boundary no longer raises WindowClosed"
+    jump = [h for h in ast.walk(_tree(SequenceEngine._schedule_loop))
+            if isinstance(h, ast.ExceptHandler) and h.type is not None
+            and ast.unparse(h.type) == "JumpTarget"]
+    gone = any(_self_calls(h, "_apply_jump") and _self_calls(
+        h, "_group_member_gone") and _self_calls(h, "_apply_jump")[0].lineno
+        < _self_calls(h, "_group_member_gone")[0].lineno for h in jump)
+    assert gone, ("_schedule_loop's jump arm no longer takes the member out "
+                  "of its group; 5.1 says it does")
+
+
+def test_5_6_says_a_lost_guider_defers_the_panel_as_s3_built_it():
+    """5.6 step 7 says the guide-lost deferral is built (S3, #303, S3
+    orchestrator ruling 6): at the #72 bound `_maybe_recover_guiding`
+    raises a ``PanelDeferred`` of kind ``guide_lost`` for a member before
+    the abort, skip and warn escalation and resets ``_guiding_recoveries``;
+    the guide-start pass rule does not count it; a group the pass rule sent
+    on unguided keeps the escalation, whose skip's plain ``StopTarget``
+    defers as ``target_stop`` (S3, #316, S3 orchestrator ruling 5); #134
+    and #329 narrow it. The step's first bullet says the group's last live
+    panel, with guiding optional and no guider connected, is a plain target
+    (S3, #315, S3 orchestrator ruling 6), and its rig-verdict bullet no
+    longer waits on the owner. 5.1's deferral row names ``guide_lost``.
+
+    Until S3's second wave the step said "Not built in S2 (S2, #303):
+    `PanelDeferred` has the kind `guide_lost` and nothing raises it", and
+    ``test_5_6_says_the_hop_checks_as_s2_built_them`` held that half; the
+    engine change turned it red, and this test holds the new claim.
+
+    The code, from syntax trees and the pure rules: the deferral is an
+    ``if`` on ``self._group_unguided`` in `_maybe_recover_guiding` that
+    resets the count and raises before the ``action == 'abort'`` escalation;
+    ``GroupRun.visit_outcome`` counts a ``guide_lost`` deferral at once and
+    holds a ``guide_start`` one for the pass; ``no_guider_defers`` lets only
+    a lone live panel with guiding optional through; `_setup_target` asks
+    it with `_live_panels`; and the #72 bound's skip arm still raises the
+    plain ``StopTarget`` that `_visit_panel` defers (`_stop_defers`).
+
+    RED under mutant "5.6 step 7 back to 'nothing raises it'" (the bullet
+    as S3's first wave left it):
+
+        AssertionError: 5.6 step 7 must say: 'which S3 orchestrator ruling 6
+        confirmed (owner list item 27)'
+        assert False
+
+    RED under the engine.py mutant "no guide-lost deferral" (the
+    ``raise PanelDeferred("guiding was lost and did not recover", ...)``
+    in `_maybe_recover_guiding` made ``pass``):
+
+        AssertionError: _maybe_recover_guiding no longer defers a member as
+        guide_lost; 5.6 step 7 says S3 built it
+        assert []
+
+    RED under the engine.py mutant "the count is not reset" (that branch's
+    ``self._guiding_recoveries = 0`` made ``pass``):
+
+        AssertionError: the guide_lost deferral no longer resets
+        _guiding_recoveries; 5.6 step 7 says the next visit gets its own
+        attempts
+        assert False
+
+    RED under the group_rules.py mutant "a lost guider counts as a failed
+    start" (``deferred.kind == GUIDE_START`` made ``deferred.kind in
+    (GUIDE_START, GUIDE_LOST)``):
+
+        AssertionError: a guide_lost and a guide_start deferral leave failed at
+        (0, 0); 5.6 step 7 says the pass rule holds only the failed start, and
+        a lost guider counts at once
+        assert (0, 0) == (1, 0)
+          At index 0 diff: 0 != 1
+          Use -v to get more diff
+
+    RED under the group_rules.py mutant "the last panel defers too"
+    (`no_guider_defers` returning ``True``):
+
+        AssertionError: no_guider_defers answers {(1, False): True, (1, True):
+        True, (2, False): True, (2, True): True, (3, False): True, (3, True):
+        True}; 5.6 step 7 says only a lone live panel with guiding optional
+        stops deferring
+        assert {(1, False): ...e): True, ...} == {(1, False): ...e): True, ...}
+          Omitting 5 identical items, use -vv to show
+          Differing items:
+          {(1, False): True} != {(1, False): False}
+          Use -v to get more diff
+    """
+    from astrodeck.sequence import group_rules
+    s56 = _section("5.6")
+    lost = _line(s56, "   - A guiding loss mid-visit")
+    _says(lost, ("which S3 orchestrator ruling 6 confirmed (owner list item "
+                 "27)", "Not built in S2 (S2, #303). S3 built it (S3, #303, "
+                 "S3 orchestrator ruling 6)",
+                 "`_maybe_recover_guiding` raises `PanelDeferred` of kind "
+                 "`guide_lost` for a member",
+                 "before the abort, skip and warn escalation, whatever "
+                 "`guiding_action` says", "resets `_guiding_recoveries`",
+                 "The guide-start pass rule does not count it",
+                 "(`_group_unguided`, after a warn) keeps the escalation",
+                 "skip ends the visit with a plain `StopTarget`",
+                 "defers the panel as kind `target_stop`",
+                 "(S3, #316, S3 orchestrator ruling 5)", "(#134)", "(#329)"),
+          "5.6 step 7")
+    for stale in ("nothing raises it", "is marked for the owner to confirm",
+                  "skip drops the panel for this run only"):
+        kept = stale in lost
+        assert not kept, f"5.6 step 7 still says {stale!r}"
+    first = _line(s56, "   - **[group] A failed start defers the panel**")
+    _says(first, ("The group's last live panel is the exception (S3, #315, "
+                  "S3 orchestrator ruling 6)",
+                  "`group_rules.no_guider_defers`", "`_live_panels`",
+                  "A guider that is connected and fails to start "
+                  "still defers it", "a missing guider while "
+                  "guiding is required"), "5.6 step 7")
+    verdict = _line(s56, "   - **A guider that fails on every panel")
+    _says(verdict, ("S3 orchestrator ruling 6 answered in the owner's place "
+                    "(owner list item 1): it stands",), "5.6 step 7")
+    asked = "the owner is asked to confirm it" in verdict
+    assert not asked, "5.6 step 7 still asks the owner about the rig verdict"
+    row = _line(_section("5.1"), "| `PanelDeferred` (section 5.6)")
+    _says(row, ("(kind `guide_lost`, S3, #303, S3 orchestrator ruling 6)",
+                "under skip in a group the pass rule sent on unguided"), "5.1")
+    recover = _tree(SequenceEngine._maybe_recover_guiding)
+    deferral = [n for n in ast.walk(recover) if isinstance(n, ast.If)
+                and "self._group_unguided" in ast.unparse(n.test)
+                and any(isinstance(s, ast.Raise)
+                        and isinstance(s.exc, ast.Call)
+                        and ast.unparse(s.exc.func) == "PanelDeferred"
+                        and _keyword(s.exc, "kind") == "guide_lost"
+                        for s in n.body)]
+    assert deferral, ("_maybe_recover_guiding no longer defers a member as "
+                      "guide_lost; 5.6 step 7 says S3 built it")
+    reset = any(_assigns(s, "self._guiding_recoveries", "0")
+                for s in deferral[0].body)
+    assert reset, ("the guide_lost deferral no longer resets "
+                   "_guiding_recoveries; 5.6 step 7 says the next visit gets "
+                   "its own attempts")
+    escalation = [n.lineno for n in ast.walk(recover) if isinstance(n, ast.If)
+                  and "action == 'abort'" in ast.unparse(n.test)]
+    assert escalation and deferral[0].lineno < min(escalation), (
+        "the guide_lost deferral is no longer asked before the escalation")
+    run = group_rules.GroupRun({"p": "1-1", "q": "1-2"}, max_failed_visits=3)
+    for panel, kind in (("p", group_rules.GUIDE_LOST),
+                        ("q", group_rules.GUIDE_START)):
+        run.visit_outcome(panel, complete=False, exposures=0, accepted=0,
+                          deferred=group_rules.PanelDeferred(
+                              "guiding", kind=kind, last_error="lost"))
+    counted = (run.failed["p"], run.failed["q"])
+    assert counted == (1, 0), (
+        f"a guide_lost and a guide_start deferral leave failed at {counted}; "
+        f"5.6 step 7 says the pass rule holds only the failed start, and a "
+        f"lost guider counts at once")
+    table = {(live, req): group_rules.no_guider_defers(live=live,
+                                                       require_guiding=req)
+             for live in (1, 2, 3) for req in (False, True)}
+    assert table == {(1, False): False, (1, True): True, (2, False): True,
+                     (2, True): True, (3, False): True, (3, True): True}, (
+        f"no_guider_defers answers {table}; 5.6 step 7 says only a lone live "
+        f"panel with guiding optional stops deferring")
+    setup = _tree(SequenceEngine._setup_target)
+    live = [c for c in _calls(setup, "no_guider_defers")
+            if "self._live_panels(" in ast.unparse(
+                _keyword_node(c, "live") or ast.Constant(None))]
+    assert live, ("_setup_target no longer asks no_guider_defers with "
+                  "_live_panels; 5.6 step 7 says the last live panel is "
+                  "counted")
+    source = ast.parse(inspect.getsource(engine_mod))
+    bound = [f for f in ast.walk(source)
+             if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and "_MAX_GUIDING_RECOVERIES" in ast.unparse(f)]
+    skips = [n for f in bound for n in ast.walk(f) if isinstance(n, ast.If)
+             and "action == 'skip'" in ast.unparse(n.test)
+             and any(isinstance(s, ast.Raise) and isinstance(s.exc, ast.Call)
+                     and ast.unparse(s.exc.func) == "StopTarget"
+                     for s in n.body)]
+    assert skips and _stop_defers(), (
+        "the #72 bound's skip arm no longer raises a plain StopTarget that "
+        "_visit_panel defers; 5.6 step 7 says a group sent on unguided "
+        "defers it as target_stop")
+
+
+# ======================================== S3's second wave and Revision 7
+#
+# The second wave of S3 built the compile entry, the expansion and the save,
+# the doctor, FLOW_SCHEMA 4, the editor's move of the loop wire, and the
+# guide-lost deferral, the last live panel and the bounded pier reads (the
+# test above). Every test below holds one section that wave edited to the
+# code it now describes. Mutants as above: the spec from a byte backup, and
+# code in a private scratch copy of ``server/`` and ``ui/src`` (never the
+# shared tree, #254), each file checked byte-identical (sha256) after its
+# run; every mutant's control, the same copy unmutated, passed first.
+
+#: A 3x2 mosaic of M31 as the modal writes one: typed coordinates, a camera
+#: field, a set angle, and accepted subs, as every S3 save writes them.
+_M31 = {"name": "M31", "ra": "00h 42m 44s", "dec": "+41 16 09", "rows": 2,
+        "cols": 3, "overlap": 25, "fovX": 2.0, "fovY": 1.33, "rotation": 30,
+        "angle": "Rotate to PA", "counts": "Accepted subs"}
+_M33 = {"name": "M33", "ra": "01h 33m 51s", "dec": "+30 39 37",
+        "counts": "Accepted subs"}
+_HA = {"filter": "Ha", "exposure": 300, "count": 10}
+_LRGB = {"plan": "L 60, R 60, G 60, B 60"}
+
+
+def _flow(nodes: list[tuple[str, str, dict]], wires: list[str],
+          settings: dict | None = None) -> FlowGraph:
+    """A graph of ``nodes``, each ``(id, type, params)``, laid out left to
+    right in the order given, and ``wires``, each ``"a.port -> b.port"``."""
+    edges = []
+    for i, wire in enumerate(wires):
+        (src, out), (dst, into) = (end.strip().split(".")
+                                   for end in wire.split("->"))
+        edges.append({"id": f"w{i}", "from": src, "fromPort": out,
+                      "to": dst, "toPort": into})
+    data: dict = {"nodes": [{"id": nid, "type": kind, "x": 200 * i, "y": 0,
+                             "params": dict(params)}
+                            for i, (nid, kind, params) in enumerate(nodes)],
+                  "edges": edges}
+    if settings is not None:
+        data["settings"] = settings
+    return FlowGraph.model_validate(data)
+
+
+def test_1_3_says_the_pass_output_as_s3_built_it():
+    """1.3 says the ``pass`` output is built (S3, #189): "pass done" on
+    both stage types beside ``complete``'s "all done", TARGET's optional
+    ``next`` "next panel"; `_trigger_for` answers ``capture.pass`` or
+    ``cycle.pass``, which no engine trigger is, so a pass wire that is no
+    loop wire is reported at warn level, and the loop wire is never
+    emitted; and inside the circle a CAPTURE LOOP's step carries
+    ``per_visit`` 1 and every panel is ``acquisition = "cycle"``, as every
+    panel of a block that owns a FILTER CYCLE is with no loop wire.
+
+    The code: the port table from ``NODE_DEFS``; `_trigger_for` on each
+    type against ``LEGAL_TRIGGERS``; a 3x2 block owning a CAPTURE LOOP
+    compiled and planned with the loop wire and without it (the control:
+    no ``per_visit``, ``blocks``, and no rule either way); a pass wire
+    into a NOTIFY reported as a rule that will not run; and a 3x2 block
+    owning a FILTER CYCLE and no loop wire, planned.
+
+    RED under mutant "1.3 without its as-built paragraph":
+
+        AssertionError: 1.3 must say: '**As built** (S3, #189)'
+        assert False
+
+    RED under mutant "1.3 without 'or any stage it owns cycles'" (added by
+    S3-SPEC3's verifier, with the FILTER CYCLE case below):
+
+        AssertionError: 1.3 must say: '`acquisition = "cycle"` when the block
+        loops or any stage it owns cycles'
+        assert False
+
+    RED under the to_plan.py mutant "a cycling stage alone does not make the
+    panels cycle" (`_expand_mosaic`'s ``cycles = entry.get("loop") is True
+    or any(`` made ``... is True or False and any(``), which every other
+    case here survives:
+
+        AssertionError: a 3x2 block owning a FILTER CYCLE and no loop wire
+        plans ['blocks']; 1.3 says a block cycles when any stage it owns
+        cycles
+        assert ['blocks'] == ['cycle']
+          At index 0 diff: 'blocks' != 'cycle'
+          Use -v to get more diff
+
+    RED under the compile.py mutant "a looped CAPTURE is not a one-slot
+    cycle" (``step["per_visit"] = 1`` made ``pass``):
+
+        AssertionError: a 3x2 block owning a CAPTURE LOOP compiles and plans as
+        {'looped': (None, ['cycle'], 0), 'plain': (None, ['blocks'], 0)}; 1.3
+        says the looped one is per_visit 1 and cycles, and the loop wire is no
+        rule
+        assert {'looped': (N...'blocks'], 0)} == {'looped': (1...'blocks'], 0)}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'looped': (None, ['cycle'], 0)} != {'looped': (1, ['cycle'], 0)}
+          Use -v to get more diff
+
+    RED under the compile.py mutant "no pass branch" (`_trigger_for`'s
+    ``if from_port == PASS_PORT:`` made ``if False:``):
+
+        AssertionError: a capture pass wire compiles to 'on_frame_graded'; 1.3
+        says 'capture.pass', a trigger the engine does not have
+        assert ('on_frame_graded' == 'capture.pass'
+          - capture.pass
+          + on_frame_graded)
+
+    RED under the to_plan.py mutant "the loop wire does not make the panels
+    cycle" (`_expand_mosaic`'s ``cycles = entry.get("loop") is True or
+    any(`` made ``cycles = any(``):
+
+        AssertionError: a 3x2 block owning a CAPTURE LOOP compiles and plans as
+        {'looped': (1, ['blocks'], 0), 'plain': (None, ['blocks'], 0)}; 1.3
+        says the looped one is per_visit 1 and cycles, and the loop wire is no
+        rule
+        assert {'looped': (1...'blocks'], 0)} == {'looped': (1...'blocks'], 0)}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'looped': (1, ['blocks'], 0)} != {'looped': (1, ['cycle'], 0)}
+          Use -v to get more diff
+    """
+    from astrodeck.flows import compile as compile_mod
+    from astrodeck.flows.nodes import NODE_DEFS
+    from astrodeck.flows.to_plan import LEGAL_TRIGGERS
+    s13 = _section("1.3")
+    _says(s13, ("**As built** (S3, #189)", "labelled \"pass done\"",
+                "`complete` output labelled \"all done\"",
+                "labelled \"next panel\"", "`capture.pass` or `cycle.pass`",
+                "a trigger the engine does not have",
+                "reports a pass wire that is not a loop wire, at warn level",
+                "the loop wire itself is never emitted (1.4)",
+                "a CAPTURE LOOP's step carries `per_visit` 1",
+                '`acquisition = "cycle"` when the block loops or any stage '
+                'it owns cycles'), "1.3")
+    for kind in ("capture", "cycle"):
+        d = NODE_DEFS[kind]
+        ports = (d.port("pass", "out").kind, d.port("pass", "out").label,
+                 d.port("complete", "out").label)
+        assert ports == ("event", "pass done", "all done"), (
+            f"{kind}'s pass and complete outputs read {ports}; 1.3 says an "
+            f"event 'pass done' and 'all done'")
+        node = FlowNode.model_validate({"id": "s", "type": kind})
+        trigger = compile_mod._trigger_for(node, "pass")
+        assert trigger == f"{kind}.pass" and trigger not in LEGAL_TRIGGERS, (
+            f"a {kind} pass wire compiles to {trigger!r}; 1.3 says "
+            f"'{kind}.pass', a trigger the engine does not have")
+    target = NODE_DEFS["target"]
+    nxt = target.port("next", "in")
+    assert (nxt.kind, nxt.label, "next" in target.optional_ins) == (
+        "event", "next panel", True), "TARGET's next input is not 1.3's"
+    lane = [("t", "target", _M31), ("c", "capture", _HA)]
+    got = {}
+    for name, wires in (("looped", ["t.target -> c.run", "c.pass -> t.next"]),
+                        ("plain", ["t.target -> c.run"])):
+        graph = _flow(lane, wires)
+        compiled = compile_plan(graph)
+        plan, _unmapped = to_sequence_plan(compiled, graph, flow_id="f-1-3")
+        got[name] = (compiled["targets"][0]["steps"][0].get("per_visit"),
+                     sorted({t.acquisition for t in plan.targets}),
+                     len(compiled["instructions"]))
+    assert got == {"looped": (1, ["cycle"], 0),
+                   "plain": (None, ["blocks"], 0)}, (
+        f"a 3x2 block owning a CAPTURE LOOP compiles and plans as {got}; 1.3 "
+        f"says the looped one is per_visit 1 and cycles, and the loop wire "
+        f"is no rule")
+    stray = _flow(lane + [("n", "notify", {})],
+                  ["t.target -> c.run", "c.pass -> n.do"])
+    _plan, unmapped = to_sequence_plan(compile_plan(stray), stray,
+                                       flow_id="f-1-3")
+    lost = [u["level"] for u in unmapped if "'capture.pass'" in u["detail"]
+            and "this rule will not run" in u["detail"]]
+    assert lost == ["warn"], (
+        f"a pass wire into a NOTIFY is reported at {lost}; 1.3 says one warn")
+    # The other half of the rule: a block that owns a FILTER CYCLE cycles
+    # with no loop wire at all, as it did before S3.
+    cycled = _flow([("t", "target", _M31), ("c", "cycle", _LRGB)],
+                   ["t.target -> c.run"])
+    plan, _unmapped = to_sequence_plan(compile_plan(cycled), cycled,
+                                       flow_id="f-1-3")
+    acquired = sorted({t.acquisition for t in plan.targets})
+    assert acquired == ["cycle"], (
+        f"a 3x2 block owning a FILTER CYCLE and no loop wire plans "
+        f"{acquired}; 1.3 says a block cycles when any stage it owns cycles")
+
+
+def test_1_4_says_the_loop_wire_as_s3_built_it():
+    """1.4 says the grammar is built (S3, #189): the loop wire from the
+    tail is the block's ``loop``, every copy of it too, with the doctor's
+    "one is enough"; the compile emits no rule for it and ``to_plan`` gives
+    the group ``rotate``, or ``sequential`` without it; a pass wire into a
+    1x1 block is no loop wire, noted by M4 and reported by ``to_plan`` as a
+    rule that will not run, a warn and so a loss; and the editor moves the
+    wire and never adds one.
+
+    The code: a 3x2 block's lane compiled with one loop wire, with two and
+    with none (the control), each planned and asked of the doctor; and a
+    1x1 block with a pass wire into its ``next``, compiled, planned and
+    asked.
+
+    RED under mutant "1.4 without its as-built paragraph":
+
+        AssertionError: 1.4 must say: '**As built** (S3, #189)'
+        assert False
+
+    RED under the compile.py mutant "the loop wire is a rule" (the
+    instructions pass's ``if (e.from_, e.fromPort, e.to, e.toPort) in
+    loop_keys: continue`` removed):
+
+        AssertionError: (loop, rules, mode, one is enough) = {'looped': (True,
+        1, 'rotate', False), 'twice': (True, 2, 'rotate', True), 'plain':
+        (False, 0, 'sequential', False)}; 1.4 says the loop wire, every copy of
+        it, is the loop, no rule, and rotate
+        assert {'looped': (T...otate', True)} == {'looped': (T...otate', True)}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'twice': (True, 2, 'rotate', True)} != {'twice': (True, 0, 'rotate',
+          True)}
+          {'looped': (True, 1, 'rotate', False)} != {'looped': (True, 0,
+          'rotate', False)}
+          Use -v to get more diff
+
+    RED under the to_plan.py mutant "every group rotates" (the group's
+    ``"mode": "rotate" if entry.get("loop") is True else "sequential"``
+    made ``"mode": "rotate"``):
+
+        AssertionError: (loop, rules, mode, one is enough) = {'looped': (True,
+        0, 'rotate', False), 'twice': (True, 0, 'rotate', True), 'plain':
+        (False, 0, 'rotate', False)}; 1.4 says the loop wire, every copy of it,
+        is the loop, no rule, and rotate
+        assert {'looped': (T...otate', True)} == {'looped': (T...otate', True)}
+          Omitting 2 identical items, use -vv to show
+          Differing items:
+          {'plain': (False, 0, 'rotate', False)} != {'plain': (False, 0,
+          'sequential', False)}
+          Use -v to get more diff
+    """
+    from astrodeck.flows import doctor
+    from astrodeck.flows.to_plan import losses
+    s14 = _section("1.4")
+    _says(s14, ("**As built** (S3, #189)", "is its loop wire (`loop_wires`)",
+                "so two loop wires are one loop",
+                "notes that one is enough",
+                "emits no rule for it (`_loop_edge_keys`)",
+                "`mode = \"rotate\"`, or `\"sequential\"` without one",
+                "A pass wire into a 1x1 block is no loop wire",
+                "`to_plan` reports it as a rule that will not run, at warn "
+                "level, so `/run` asks for it to be accepted",
+                "The editor never adds the wire when something else is "
+                "connected, and it moves it"), "1.4")
+    lane = [("t", "target", _M31), ("c", "cycle", _LRGB)]
+    run = "t.target -> c.run"
+    loop = "c.pass -> t.next"
+    got = {}
+    for name, wires in (("looped", [run, loop]), ("twice", [run, loop, loop]),
+                        ("plain", [run])):
+        graph = _flow(lane, wires)
+        compiled = compile_plan(graph)
+        plan, _unmapped = to_sequence_plan(compiled, graph, flow_id="f-1-4")
+        enough = any("one is enough" in i.text and i.level == "note"
+                     for i in doctor.check(graph))
+        got[name] = (compiled["targets"][0]["loop"],
+                     len(compiled["instructions"]), plan.groups[0].mode,
+                     enough)
+    assert got == {"looped": (True, 0, "rotate", False),
+                   "twice": (True, 0, "rotate", True),
+                   "plain": (False, 0, "sequential", False)}, (
+        f"(loop, rules, mode, one is enough) = {got}; 1.4 says the loop "
+        f"wire, every copy of it, is the loop, no rule, and rotate")
+    single = _flow([("t", "target", {**_M31, "rows": 1, "cols": 1}),
+                    ("c", "cycle", _LRGB)], [run, loop])
+    compiled = compile_plan(single)
+    _plan, unmapped = to_sequence_plan(compiled, single, flow_id="f-1-4")
+    rules = [r["when"] for r in compiled["instructions"]]
+    lost = [u["level"] for u in losses(unmapped)
+            if "'cycle.pass'" in u["detail"]]
+    noted = [i.level for i in doctor.check(single)
+             if "one panel, nothing to rotate between" in i.text]
+    assert (rules, lost, noted) == (["cycle.pass"], ["warn"], ["note"]), (
+        f"a pass wire into a 1x1 block compiles to {rules}, is a loss at "
+        f"{lost} and a doctor issue at {noted}; 1.4 says one rule, one warn "
+        f"loss and M4's note")
+
+
+def test_1_5_item_6_says_the_editor_moves_the_loop_wire():
+    """1.5 item 6 says the editor's move is built (S3, #189): ``carryLoopWire``
+    in ``flowsSlice.ts``, in the connect's own write, only when the new wire
+    leaves the tail, the block is multi-panel, the lane has a loop wire and
+    the new tail has a ``pass`` output; the moved wire keeps its id; a new
+    tail with a loop wire of its own keeps it and the old one goes; and a
+    stage with no ``pass`` output leaves the wire mid-lane, which the
+    editor does not repair (#331, filed while recording it).
+
+    The code, read from the TypeScript (as 3.7's test reads ``nodeDefs.ts``):
+    each of those guards and both outcomes in ``carryLoopWire``'s body, with
+    whitespace folded, and the connect action calling it on the graph it
+    writes. Whether the slice then behaves is ``flowsSlice.test.ts``'s
+    question.
+
+    RED under mutant "1.5 item 6 back to 'one of the named moments'":
+
+        AssertionError: 1.5 item 6 must say: 'the move 1.4 names (S3, #189)'
+        assert False
+
+    RED under the ui mutant "the carry adds a wire to a lane that had none"
+    (``if (loops.size === 0) return edges;`` removed from ``flowsSlice.ts``):
+
+        AssertionError: carryLoopWire no longer holds ['the lane already has a
+        loop wire']; 1.5 item 6 says it does
+        assert ['the lane al... a loop wire'] == []
+          Left contains one more item: 'the lane already has a loop wire'
+          Use -v to get more diff
+
+    RED under the ui mutant "the carry ignores a tail with no pass output"
+    (``|| !NODE_DEFS[tail.type]?.outs.some((p) => p.id === PASS_PORT)``
+    removed):
+
+        AssertionError: carryLoopWire no longer holds ['the new tail has a pass
+        output']; 1.5 item 6 says it does
+        assert ['the new tai... pass output'] == []
+          Left contains one more item: 'the new tail has a pass output'
+          Use -v to get more diff
+    """
+    item = _line(_section("1.5"), "6. **What runs next**")
+    _says(item, ("the move 1.4 names (S3, #189)",
+                 "`carryLoopWire` in `flowsSlice.ts`",
+                 "in the connect's own graph write",
+                 "only when the new wire leaves the lane's tail, the block is "
+                 "multi-panel, the lane already has a loop wire and the new "
+                 "tail has a `pass` output", "The moved wire keeps its id",
+                 "keeps it while the old one is removed",
+                 "A stage with no `pass` output (AUTOFOCUS, GUIDE)",
+                 "the editor does not repair it (#331)"), "1.5 item 6")
+    stale = "which is one of the named moments in 1.4" in item
+    assert not stale, "1.5 item 6 still calls the move one of 1.4's moments"
+    ts = (UI_SRC / "components" / "flows" / "flowsSlice.ts").read_text(
+        encoding="utf-8")
+    fn = re.search(r"\nfunction carryLoopWire\((.*?)\r?\n}\r?\n", ts,
+                   re.DOTALL)
+    assert fn is not None, "flowsSlice.ts has no carryLoopWire"
+    body = " ".join(fn.group(1).split())
+    shape = {
+        "the block is multi-panel":
+            "if (!owner || !isMultiPanel(owner)) return edges;",
+        "the new wire leaves the tail":
+            "if (laneTail(graph, owner.id)?.id !== from) return edges;",
+        "the lane already has a loop wire":
+            "if (loops.size === 0) return edges;",
+        "the new tail has a pass output":
+            "|| !NODE_DEFS[tail.type]?.outs.some((p) => p.id === PASS_PORT)) "
+            "return edges;",
+        "a looped new tail keeps its own":
+            "edges.filter((e) => !loops.has(e))",
+        "the moved wire keeps its id":
+            "(loops.has(e) ? { ...e, from: tail.id } : e)",
+    }
+    gone = [why for why, code in shape.items() if code not in body]
+    assert gone == [], (f"carryLoopWire no longer holds {gone}; 1.5 item 6 "
+                        f"says it does")
+    called = "carryLoopWire(g, edges, from)" in ts
+    assert called, "the connect action no longer carries the loop wire"
+
+
+def test_1_6_says_the_followers_as_s3_built_them():
+    """1.6 says the followers are built (S3, #189): ``FLOW_SETTINGS`` with
+    the owner's default; ``follows`` on each TARGET or POOL a mosaic's tail
+    feeds, the nearer of two mosaics; and ``after_group`` only under "Wait
+    for the mosaic" and only for a mosaic that made a group.
+
+    The code: ``FLOW_SETTINGS``; a 3x2 mosaic whose tail feeds M33 compiled
+    and planned under the default (the control: no field), under "Wait for
+    the mosaic" (the group's id), and under it with every panel skipped (no
+    group, no field); a chain of two mosaics and a target, whose last
+    follows the second; a block with no stage, which feeds its follower
+    itself; and a branched lane, which has no followers.
+
+    RED under mutant "1.6 without its as-built paragraph":
+
+        AssertionError: 1.6 must say: '**As built** (S3, #189)'
+        assert False
+
+    RED under the to_plan.py mutant "a follower always waits" (``if group
+    is not None and group["when_waiting"] == WAIT_FOR_THE_MOSAIC:`` made
+    ``if group is not None:``):
+
+        AssertionError: (follows, groups, M33 waits for the group) =
+        {'default': ({'t': None, 'f': 't'}, 1, True), 'wait': ({'t': None, 'f':
+        't'}, 1, True), 'wait, every panel skipped': ({'t': None, 'f': 't'}, 0,
+        False)}; 1.6 says M33 follows the mosaic and waits for it only under
+        'Wait for the mosaic', and only when the mosaic made a group
+        assert {'default': (...e}, 0, False)} == {'default': (...e}, 0, False)}
+          Omitting 2 identical items, use -vv to show
+          Differing items:
+          {'default': ({'f': 't', 't': None}, 1, True)} != {'default': ({'f':
+          't', 't': None}, 1, False)}
+          Use -v to get more diff
+
+    RED under the compile.py mutant "the first mosaic wins" (`_followers`'s
+    ``if was is None or (depth, rank) < was[:2]:`` made ``if was is
+    None:``):
+
+        AssertionError: two mosaics in a chain give follows {'a': None, 'b':
+        'a', 'z': 'a'}; 1.6 says a target follows the nearer
+        assert {'a': None, '...'a', 'z': 'a'} == {'a': None, '...'a', 'z': 'b'}
+          Omitting 2 identical items, use -vv to show
+          Differing items:
+          {'z': 'a'} != {'z': 'b'}
+          Use -v to get more diff
+
+    RED under the compile.py mutant "a block with no stage feeds no one"
+    (`_followers`'s ``starts = list(children.get(block.id, []))`` made
+    ``starts = []``):
+
+        AssertionError: follows reads {'no stage': {'t': None, 'f': None},
+        'branched': {'t': None, 'f': None}}; 1.6 says a block with no stage is
+        its own tail and a branched lane has no followers
+        assert {'branched': ...e, 't': None}} == {'branched': ...', 't': None}}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'no stage': {'f': None, 't': None}} != {'no stage': {'f': 't', 't':
+          None}}
+          Use -v to get more diff
+    """
+    from astrodeck.flows.models import FLOW_SETTINGS
+    from astrodeck.flows.to_plan import WAIT_FOR_THE_MOSAIC
+    s16 = _section("1.6")
+    _says(s16, ("**As built** (S3, #189)",
+                "`FlowGraph.settings` and `FLOW_SETTINGS` are built",
+                "carries `follows`, that block's node id (3.2)",
+                "One downstream of two mosaics follows the nearer",
+                "a block that owns no stage is its own tail",
+                "a branched lane has no followers (`_followers`)",
+                "`after_group` only when the flow says \"Wait for the "
+                "mosaic\" (`WAIT_FOR_THE_MOSAIC`) and its mosaic made a group",
+                "after a mosaic whose every panel is skipped, it gets no "
+                "field"), "1.6")
+    waiting = FLOW_SETTINGS["whenWaiting"]
+    assert waiting["default"] == "Shoot later targets, then come back" and \
+        WAIT_FOR_THE_MOSAIC in waiting["options"]
+    wires = ["t.target -> c.run", "c.pass -> t.next", "c.complete -> f.arm",
+             "f.target -> k.run"]
+    every = "1-1, 1-2, 1-3, 2-1, 2-2, 2-3"
+    got = {}
+    for label, settings, skip in (
+            ("default", None, ""),
+            ("wait", {"whenWaiting": WAIT_FOR_THE_MOSAIC}, ""),
+            ("wait, every panel skipped", {"whenWaiting": WAIT_FOR_THE_MOSAIC},
+             every)):
+        graph = _flow([("t", "target", {**_M31, "skip": skip}),
+                       ("c", "cycle", _LRGB), ("f", "target", _M33),
+                       ("k", "capture", _HA)], wires, settings)
+        compiled = compile_plan(graph)
+        follows = {t["node_id"]: t.get("follows")
+                   for t in compiled["targets"]}
+        plan, _unmapped = to_sequence_plan(compiled, graph, flow_id="f-1-6")
+        m33 = next(t for t in plan.targets if t.name == "M33")
+        groups = [g.id for g in plan.groups]
+        waits = m33.after_group is not None and m33.after_group in groups
+        got[label] = (follows, len(groups), waits)
+    assert got == {"default": ({"t": None, "f": "t"}, 1, False),
+                   "wait": ({"t": None, "f": "t"}, 1, True),
+                   "wait, every panel skipped": ({"t": None, "f": "t"}, 0,
+                                                 False)}, (
+        f"(follows, groups, M33 waits for the group) = {got}; 1.6 says M33 "
+        f"follows the mosaic and waits for it only under 'Wait for the "
+        f"mosaic', and only when the mosaic made a group")
+    two = _flow([("a", "target", _M31), ("c1", "cycle", _LRGB),
+                 ("b", "target", {**_M31, "name": "M33", "ra": _M33["ra"],
+                                  "dec": _M33["dec"]}),
+                 ("c2", "cycle", _LRGB), ("z", "target", _M33)],
+                ["a.target -> c1.run", "c1.complete -> b.arm",
+                 "b.target -> c2.run", "c2.complete -> z.arm"])
+    follows = {t["node_id"]: t.get("follows")
+               for t in compile_plan(two)["targets"]}
+    assert follows == {"a": None, "b": "a", "z": "b"}, (
+        f"two mosaics in a chain give follows {follows}; 1.6 says a target "
+        f"follows the nearer")
+    bare = _flow([("t", "target", _M31), ("f", "target", _M33)],
+                 ["t.target -> f.arm"])
+    branched = _flow([("t", "target", _M31), ("c", "cycle", _LRGB),
+                      ("k", "capture", _HA), ("f", "target", _M33)],
+                     ["t.target -> c.run", "t.target -> k.run",
+                      "c.complete -> f.arm"])
+    shapes = {name: {t["node_id"]: t.get("follows")
+                     for t in compile_plan(g)["targets"]}
+              for name, g in (("no stage", bare), ("branched", branched))}
+    assert shapes == {"no stage": {"t": None, "f": "t"},
+                      "branched": {"t": None, "f": None}}, (
+        f"follows reads {shapes}; 1.6 says a block with no stage is its own "
+        f"tail and a branched lane has no followers")
+
+
+def test_1_8_says_the_doctor_as_s3_built_it():
+    """1.8 says the doctor is built (S3, #189) and its docstring corrected
+    (S3, #169): `check` takes ``rig``, a ``RigFacts``, and each rule that
+    needs a fact is silent without it; L1 comes last; M15 replaces M6 once
+    convergence spends the budget; M6 measures typed coordinates only; and
+    the M6, M10 and M14 texts in the table are the doctor's own, the design's
+    M10 example having been under its own threshold.
+
+    The code: `check`'s signature and docstring; each of the three rows
+    against the text `check` gives for the case the row names; the M10 and
+    M8 cases asked with no rig (the control: silent) and with one; the
+    engine's `measured_cost` with no hop measured and with two; a 1x4 at
+    5% at Dec 75, past the budget (``convergence_share`` from framing),
+    drawing M15 and no M6; the M6 case with its coordinates blank drawing
+    no M6; where the silent cases speak: M2 at a negative rotation, M8's
+    fixed-camera note only with the rotator fact, M9 at a "Clock time" stop
+    and not at "Dawn", no M10 once the minimum visit makes the hop small,
+    M11 only beside a multi-panel block, and M14 counting a skipped panel;
+    and a lane with a legacy SLEW whose last issue is L1.
+
+    RED under mutant "1.8 back to the design's M10 example" (the row's text
+    as it stood, "each hop costs 2 m 40 s against a 13 min visit; 2 passes
+    per visit would cut hops by half"):
+
+        AssertionError: 1.8's | M10 | row must quote the doctor's own text:
+        'each hop costs 2 m 40 s (measured over 6 hops) against a 4 min visit;
+        2 passes per visit would cut hops by half.'
+        assert False
+
+    RED under the doctor.py mutant "HOP_NOTE_SHARE = 0.75":
+
+        AssertionError: the doctor draws [] for the case 1.8's | M10 | row
+        names
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under the doctor.py mutant "M6 beside M15" (``if budget - c <= 0 or
+    c <= CONVERGENCE_WARN_SHARE:`` made ``if c <= CONVERGENCE_WARN_SHARE:``):
+
+        AssertionError: past the budget the doctor draws ['warn', 'danger'];
+        1.8 says M15 alone
+        assert ['warn', 'danger'] == ['danger']
+          At index 0 diff: 'warn' != 'danger'
+          Left contains one more item: 'danger'
+          Use -v to get more diff
+
+    RED under the doctor.py mutant "the docstring claims a UI copy again"
+    (``THIS IS THE ONLY COPY OF THE RULES (#169).`` made ``THE UI RUNS ITS
+    OWN COPY OF THE RULES.``):
+
+        AssertionError: doctor.py's docstring no longer says it is the only
+        copy
+        assert False
+
+    RED under the doctor.py mutant "M11 in every graph" (the ``if mosaic:``
+    before M11's count of names made ``if True:``):
+
+        AssertionError: the doctor draws {'M2 at a negative rotation':
+        ['danger'], "M8's fixed-camera note, no rig": [], "M8's fixed-camera
+        note, a rotator": ['note'], 'M9, a clock-time stop': ['warn'], 'M9, a
+        dawn stop': [], 'M10, a 10 min minimum visit': [], 'M11, no multi-panel
+        block': ['danger'], 'M11, a multi-panel block': ['danger'], 'M14 with a
+        panel skipped': ['note']}; 1.8 says where each rule speaks
+        assert {'M10, a 10 m...['note'], ...} == {'M10, a 10 m...['note'], ...}
+          Omitting 8 identical items, use -vv to show
+          Differing items:
+          {'M11, no multi-panel block': ['danger']} != {'M11, no multi-panel
+          block': []}
+          Use -v to get more diff
+
+    RED under the doctor.py mutant "a negative rotation is a PA" (`_pa`'s
+    ``and rot >= 0`` removed):
+
+        AssertionError: the doctor draws {'M2 at a negative rotation': [],
+        "M8's fixed-camera note, no rig": [], "M8's fixed-camera note, a
+        rotator": ['note'], 'M9, a clock-time stop': ['warn'], 'M9, a dawn
+        stop': [], 'M10, a 10 min minimum visit': [], 'M11, no multi-panel
+        block': [], 'M11, a multi-panel block': ['danger'], 'M14 with a panel
+        skipped': ['note']}; 1.8 says where each rule speaks
+        assert {'M10, a 10 m...['note'], ...} == {'M10, a 10 m...['note'], ...}
+          Omitting 8 identical items, use -vv to show
+          Differing items:
+          {'M2 at a negative rotation': []} != {'M2 at a negative rotation':
+          ['danger']}
+          Use -v to get more diff
+
+    RED under the engine.py mutant "an unmeasured hop answers the seed"
+    (`measured_cost`'s ``return None`` for an unmeasured kind made
+    ``return (HOP_COST_S, 0)``):
+
+        AssertionError: measured_cost answers ((150.0, 0), (120.0, 2)) for no
+        hop and for two; 1.8 says None, never the seed, and the mean with its
+        count
+        assert ((150.0, 0), (120.0, 2)) == (None, (120.0, 2))
+          At index 0 diff: (150.0, 0) != None
+          Use -v to get more diff
+    """
+    from astrodeck.catalog import framing
+    from astrodeck.flows import doctor
+    from astrodeck.flows.rig import RigFacts
+    s18 = _section("1.8")
+    _says(s18, ("The docstring at `doctor.py:13-17` said otherwise, and S3 "
+                "corrected it (S3, #169)", "**As built** (S3, #189)",
+                "`check(graph, *, standards=None, mount=None, rig=None)`",
+                "`rig` is a `RigFacts` (`flows/rig.py`)",
+                "the engine answers both through `measured_cost`, `None` for "
+                "a kind it has not measured and never its seed",
+                "a rule that needs a fact (M5, M8, M9, M10) is silent without "
+                "it", "`framing.convergence_share` and `ROTATION_BUDGET`",
+                "M15 replaces M6 once convergence spends the budget",
+                "M11, M13 and M14 speak only in a graph with a multi-panel "
+                "block", "M6, M15 and M8's figure measure only a block with "
+                "typed coordinates", "and L1 last",
+                "M2 also fires for a set angle with a negative rotation",
+                "M8's note for a fixed camera needs the rotator fact too",
+                "so a \"Clock time\" stop counts as none (#191)",
+                "`max(passes, ceil(minVisit / pass))` passes of shutter",
+                "M14 counts the grid, skipped panels included",
+                "is 20.5% of it, under the rule's own 25%"), "1.8")
+    stale = "that says otherwise is stale and is corrected in S3" in s18
+    assert not stale, "1.8 still says the doctor's docstring is stale"
+    sig = inspect.signature(doctor.check)
+    keyword = [p.name for p in sig.parameters.values()
+               if p.kind is inspect.Parameter.KEYWORD_ONLY
+               and p.default is None]
+    assert list(sig.parameters) == ["graph", "standards", "mount", "rig"] \
+        and keyword == ["standards", "mount", "rig"], (
+            f"doctor.check{sig} is not the signature 1.8 gives")
+    doc = " ".join((doctor.__doc__ or "").split())
+    only = ("THIS IS THE ONLY COPY OF THE RULES (#169). No rule text exists "
+            "anywhere in ``ui/src``") in doc
+    assert only, "doctor.py's docstring no longer says it is the only copy"
+    loop = ["t.target -> c.run", "c.pass -> t.next"]
+    m6 = {**_M31, "rows": 1, "cols": 4, "overlap": 10, "dec": "+75 00 00",
+          "rotation": 0}
+    hop = RigFacts(hop_cost_s=160.0, hop_samples=6)
+    cases = {
+        "| M6 |": (_flow([("t", "target", m6), ("c", "cycle", _LRGB)], loop),
+                   None, "meridian convergence turns"),
+        "| M10 |": (_flow([("t", "target", _M31), ("c", "cycle", _LRGB)],
+                          loop), hop, "each hop costs"),
+        "| M14 |": (_flow([("t", "target", _M31), ("c", "cycle", _LRGB),
+                           ("r", "report", {}), ("n", "notify", {})],
+                          loop + ["c.complete -> r.session",
+                                  "r.done -> n.do"]),
+                    None, "fires once per panel"),
+    }
+    for start, (graph, rig, marker) in cases.items():
+        row = _line(s18, start)
+        texts = [i.text for i in doctor.check(graph, rig=rig)
+                 if marker in i.text]
+        assert len(texts) == 1, (f"the doctor draws {texts} for the case "
+                                 f"1.8's {start} row names")
+        words = re.sub("^\N{BLACK RIGHT-POINTING SMALL TRIANGLE} ", "",
+                       texts[0]).split(" - ", 1)[-1]
+        quoted = words.rstrip(".") in row
+        assert quoted, (f"1.8's {start} row must quote the doctor's own "
+                        f"text: {words!r}")
+    measured = (SequenceEngine.measured_cost(
+        SimpleNamespace(_event_costs={}), "hop"),
+        SequenceEngine.measured_cost(
+            SimpleNamespace(_event_costs={"hop": [100.0, 140.0]}), "hop"))
+    assert measured == (None, (120.0, 2)), (
+        f"measured_cost answers {measured} for no hop and for two; 1.8 says "
+        f"None, never the seed, and the mean with its count")
+    silent = [i.text for i in doctor.check(cases["| M10 |"][0])
+              if "each hop costs" in i.text or "turn the camera by hand"
+              in i.text]
+    assert silent == [], f"with no rig the doctor still says {silent}"
+    m8 = [i.level for i in doctor.check(cases["| M10 |"][0],
+                                        rig=RigFacts(has_rotator=False))
+          if "no rotator: turn the camera by hand" in i.text]
+    assert m8 == ["warn"], f"with no rotator M8 says {m8}"
+    budget = {**m6, "overlap": 5}
+    spec = framing.MosaicSpecIn(ra_hours=0.712, dec_deg=75.0, rows=1, cols=4,
+                                overlap=0.05, rotation_deg=0.0, fov_x_deg=2.0,
+                                fov_y_deg=1.33)
+    assert framing.convergence_share(spec) >= framing.ROTATION_BUDGET, (
+        "premise: the 1x4 at 5% at Dec 75 spends the angle budget")
+    both = [i.level for i in doctor.check(_flow(
+        [("t", "target", budget), ("c", "cycle", _LRGB)], loop))
+        if "turns neighbouring panels against each other" in i.text
+        or "leaves no room for camera angle error" in i.text]
+    assert both == ["danger"], (
+        f"past the budget the doctor draws {both}; 1.8 says M15 alone")
+    blank = [i.text for i in doctor.check(_flow(
+        [("t", "target", {**m6, "ra": "", "dec": ""}), ("c", "cycle", _LRGB)],
+        loop)) if "meridian convergence" in i.text]
+    assert blank == [], f"a block with no typed coordinates draws {blank}"
+    def said(graph, marker, rig=None) -> list[str]:
+        return [i.level for i in doctor.check(graph, rig=rig)
+                if marker in i.text]
+
+    cyc = [("c", "cycle", _LRGB)]
+    fixed = _flow([("t", "target", {**_M31, "angle": "Camera fixed at PA"})]
+                  + cyc, loop)
+    ones = _flow([("t", "target", {**_M31, "rows": 1, "cols": 1}),
+                  ("u", "target", {**_M31, "rows": 1, "cols": 1})], [])
+    twos = _flow([("t", "target", _M31),
+                  ("u", "target", {**_M31, "rows": 1, "cols": 1})], [])
+    timed = _flow([("d", "dusk", {"stop": "Clock time"}),
+                   ("t", "target", _M31)] + cyc, ["d.window -> t.arm"] + loop)
+    dawn = _flow([("d", "dusk", {"stop": "Dawn"}), ("t", "target", _M31)]
+                 + cyc, ["d.window -> t.arm"] + loop)
+    guards = RigFacts(reject_guards_off=True)
+    longer = _flow([("t", "target", {**_M31, "minVisit": 10})] + cyc, loop)
+    skipped = _flow([("t", "target", {**_M31, "skip": "1-1"}),
+                     ("c", "cycle", _LRGB), ("r", "report", {}),
+                     ("n", "notify", {})],
+                    loop + ["c.complete -> r.session", "r.done -> n.do"])
+    where = {
+        "M2 at a negative rotation": said(_flow(
+            [("t", "target", {**_M31, "rotation": -1})] + cyc, loop),
+            "a mosaic is laid out at one camera angle"),
+        "M8's fixed-camera note, no rig": said(fixed, "camera fixed: turn"),
+        "M8's fixed-camera note, a rotator": said(
+            fixed, "camera fixed: turn", RigFacts(has_rotator=True)),
+        "M9, a clock-time stop": said(timed, "so Run will refuse it", guards),
+        "M9, a dawn stop": said(dawn, "so Run will refuse it", guards),
+        "M10, a 10 min minimum visit": said(longer, "each hop costs", hop),
+        "M11, no multi-panel block": said(ones, "blocks are both called"),
+        "M11, a multi-panel block": said(twos, "blocks are both called"),
+        "M14 with a panel skipped": said(skipped, "has 6 panels"),
+    }
+    assert where == {
+        "M2 at a negative rotation": ["danger"],
+        "M8's fixed-camera note, no rig": [],
+        "M8's fixed-camera note, a rotator": ["note"],
+        "M9, a clock-time stop": ["warn"], "M9, a dawn stop": [],
+        "M10, a 10 min minimum visit": [],
+        "M11, no multi-panel block": [],
+        "M11, a multi-panel block": ["danger"],
+        "M14 with a panel skipped": ["note"]}, (
+        f"the doctor draws {where}; 1.8 says where each rule speaks")
+    legacy = doctor.check(_flow([("t", "target", _M31), ("s", "slew", {}),
+                                 ("c", "cycle", _LRGB)],
+                                ["t.target -> s.run", "s.centered -> c.run"]))
+    assert "tolerance never reached the run" in legacy[-1].text, (
+        "L1 is not the doctor's last issue")
+
+
+def test_3_2_says_the_compile_entry_as_s3_built_it():
+    """3.2 says `compile_plan` emits the entry (S3, #189), with two keys the
+    design's block leaves out: ``follows`` on an entry a mosaic's tail
+    feeds, absent otherwise, and ``frame_anchor``, the last of ``mosaic``'s
+    thirteen keys, on the entry itself for a block of one panel; and a POOL
+    member carries its pool's ``count_mode``.
+
+    The code: a 3x2 mosaic whose tail feeds M33 and, after it, a POOL,
+    compiled. The mosaic's keys are the thirteen the paragraph names; each
+    entry's keys beyond the block's are exactly the ones the paragraph
+    adds; M33 carries ``follows`` and a ``frame_anchor`` beside a ``mosaic``
+    of None; each pool member follows the mosaic and counts accepted subs;
+    the mosaic itself follows nothing (the control); and a block whose skip
+    names two panels out of order and two that are none, and whose
+    centring tolerance is words, compiles its overlap as a percent, its
+    skip as sorted pairs with one warn note, and its tolerance as None.
+
+    RED under mutant "3.2 without its as-built paragraph":
+
+        AssertionError: 3.2 must say: '**As built** (S3, #189)'
+        assert False
+
+    RED under the compile.py mutant "no frame_anchor in the mosaic" (the
+    ``"frame_anchor": ...`` line removed from ``entry["mosaic"]``):
+
+        AssertionError: the compile's mosaic keys are ['cols', 'fov_from',
+        'fov_x', 'fov_y', 'order', 'overlap', 'passes', 'require_centred',
+        'rows', 'skip', 'visit_min', 'when_waiting']; 3.2 names thirteen:
+        ['rows', 'cols', 'overlap', 'fov_x', 'fov_y', 'fov_from', 'skip',
+        'order', 'passes', 'visit_min', 'require_centred', 'when_waiting',
+        'frame_anchor']
+        assert (('thirteen', 13) == ('thirteen', 13)
+          Use -v to get more diff and {'cols', 'fov...overlap', ...} ==
+          {'cols', 'fov... 'order', ...}
+          Extra items in the right set:
+          'frame_anchor'
+          Use -v to get more diff)
+
+    RED under the compile.py mutant "no follows" (`_target_entry`'s ``if
+    follows is not None:`` made ``if False:``):
+
+        AssertionError: the keys beyond the design's block are {'mosaic':
+        {'frame_anchor'}, 'block': set(), 'follower': {'frame_anchor'}}; 3.2
+        says frame_anchor in the mosaic, and follows and frame_anchor on a
+        single target that follows it
+        assert {'block': set...rame_anchor'}} == {'block': set...rame_anchor'}}
+          Omitting 2 identical items, use -vv to show
+          Differing items:
+          {'follower': {'frame_anchor'}} != {'follower': {'follows',
+          'frame_anchor'}}
+          Use -v to get more diff
+
+    RED under the compile.py mutant "an unread skip is silent" (``if
+    unread:`` made ``if False:``):
+
+        AssertionError: (overlap, skip, tol_arcmin, the skip note) = (25, [[1,
+        1], [2, 3]], None, []); 3.2 says a percent, 1-based pairs in grid
+        order, None, and one warn
+        assert (25, [[1, 1],...3]], None, []) == (25, [[1, 1],...one, ['warn'])
+          At index 3 diff: [] != ['warn']
+          Use -v to get more diff
+    """
+    s32 = _section("3.2")
+    _says(s32, ("**As built** (S3, #189)",
+                "`compile_plan` emits this entry (`_target_entry`), with two "
+                "keys the block above leaves out",
+                "`follows` is on a TARGET or POOL entry that a multi-panel "
+                "block's tail feeds", "it is absent otherwise",
+                "`frame_anchor` is the block's stored `frameAnchor` (3.3)",
+                "it rides on the entry itself when `mosaic` is `null`",
+                "`overlap` stays a percent, `skip` holds 1-based `[row, "
+                "col]` pairs in grid order (`parse_skip`, with a warn note "
+                "for an entry that names no panel)",
+                "a centring or grid value that is not a number is `None`",
+                "A POOL member's entry carries its pool's `count_mode`"),
+          "3.2")
+    drawn = set(re.findall(r'"(\w+)"', s32.split("```")[1]))
+    listed = re.search(r"`mosaic`'s (\w+) keys, (.*?), and it rides", s32)
+    assert listed is not None, "3.2 no longer lists mosaic's keys"
+    named = re.findall(r"`(\w+)`", listed.group(2))
+    graph = _flow([("t", "target", _M31), ("c", "cycle", _LRGB),
+                   ("f", "target", _M33),
+                   ("p", "pool", {"members": "M81, M82",
+                                  "counts": "Accepted subs"})],
+                  ["t.target -> c.run", "c.pass -> t.next",
+                   "c.complete -> f.arm", "f.target -> p.arm"])
+    by: dict[str, list[dict]] = {}
+    for entry in compile_plan(graph)["targets"]:
+        by.setdefault(entry["node_id"], []).append(entry)
+    block, follower = by["t"][0], by["f"][0]
+    assert (listed.group(1), len(named)) == ("thirteen", 13) and \
+        set(block["mosaic"]) == set(named), (
+            f"the compile's mosaic keys are {sorted(block['mosaic'])}; 3.2 "
+            f"names {listed.group(1)}: {named}")
+    extra = {"mosaic": set(block["mosaic"]) - drawn,
+             "block": set(block) - drawn, "follower": set(follower) - drawn}
+    assert extra == {"mosaic": {"frame_anchor"}, "block": set(),
+                     "follower": {"frame_anchor", "follows"}}, (
+        f"the keys beyond the design's block are {extra}; 3.2 says "
+        f"frame_anchor in the mosaic, and follows and frame_anchor on a "
+        f"single target that follows it")
+    assert follower["mosaic"] is None and follower["follows"] == "t"
+    odd = compile_plan(_flow(
+        [("t", "target", {**_M31, "skip": "2-3, 1-1, 9-9, x",
+                          "centerTol": "abc"}), ("c", "cycle", _LRGB)],
+        ["t.target -> c.run"]))
+    read = (odd["targets"][0]["mosaic"]["overlap"],
+            odd["targets"][0]["mosaic"]["skip"],
+            odd["targets"][0]["centre"]["tol_arcmin"],
+            [n["level"] for n in odd.get("notes", [])
+             if "'9-9'" in n["text"] and "'x'" in n["text"]])
+    assert read == (25, [[1, 1], [2, 3]], None, ["warn"]), (
+        f"(overlap, skip, tol_arcmin, the skip note) = {read}; 3.2 says a "
+        f"percent, 1-based pairs in grid order, None, and one warn")
+    members = [(m["name"], m.get("follows"), m.get("count_mode"))
+               for m in by["p"]]
+    assert members == [("M81", "t", "accepted"), ("M82", "t", "accepted")], (
+        f"the pool's members compile as {members}; 3.2 says each follows the "
+        f"mosaic and carries the pool's count mode")
+
+
+def _signature_text(fn) -> str:
+    """``fn``'s signature as 3.3 writes it: strings in double quotes."""
+    parts, star = [], False
+    for p in inspect.signature(fn).parameters.values():
+        if p.kind is inspect.Parameter.KEYWORD_ONLY and not star:
+            parts.append("*")
+            star = True
+        if p.default is inspect.Parameter.empty:
+            parts.append(p.name)
+        else:
+            value = (json.dumps(p.default) if isinstance(p.default, str)
+                     else repr(p.default))
+            parts.append(f"{p.name}={value}")
+    return f"`{fn.__name__}({', '.join(parts)})`"
+
+
+def test_3_3_says_the_expansion_and_the_save_as_s3_built_them():
+    """3.3 says the expansion is built (S3, #189): `_expand_mosaic`'s names,
+    positions, group and ids, ``skip`` in none of them, a block whose every
+    panel is skipped dropped with a warn, the refusals every sentence at
+    once, `to_sequence_plan`'s signature, and a single panel keyed on its
+    anchor; and that the save's anchor rule is built in the store's one
+    writer, a prior node with no stored anchor carrying its implicit one.
+
+    The code: a 3x2 with one panel skipped, planned beside the same block
+    with none (the control: the same group and panel ids); "Camera fixed at
+    PA" and "Shoot anyway"; a block with no field at any angle refused with
+    both sentences; a 3x2 with every panel skipped beside M33; a 1x1 keyed
+    on a stored anchor; M5's loss with a smaller camera and none with no
+    rig (the control); and `prepare_save` over a stored flow with no
+    anchors, nudged 1' (carried, nothing listed), moved 30' (listed), new
+    (the current geometry), stripped of its layout (the prior anchor
+    kept), and over a stored anchor that is not one (treated as absent),
+    with ``FlowStore.save_and_report`` asking it with the store's resolver.
+
+    RED under mutant "3.3 without the expansion's as-built bullet":
+
+        AssertionError: expected exactly one line starting '- **As built** (S3,
+        #189). `_expand_mosaic`', found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under the to_plan.py mutant "a skipped panel is shot" (``if (row,
+    col) in skip:`` made ``if False:``):
+
+        AssertionError: a 3x2 skipping 1-1 plans [(0, 0, 'M31 1-1'), (0, 1,
+        'M31 1-2'), (0, 2, 'M31 1-3'), (1, 0, 'M31 2-1'), (1, 1, 'M31 2-2'),
+        (1, 2, 'M31 2-3')]; 3.3 says five panels named 1-based, placed 0-based
+        assert [(0, 0, 'M31 ...2, 'M31 2-3')] == [(0, 1, 'M31 ...2, 'M31 2-3')]
+          At index 0 diff: (0, 0, 'M31 1-1') != (0, 1, 'M31 1-2')
+          Left contains one more item: (1, 2, 'M31 2-3')
+          Use -v to get more diff
+
+    RED under the to_plan.py mutant "one refusal at a time" (the second
+    ``if _angles(entry)[1] is None:`` in `_mosaic_refusals` made ``elif``):
+
+        AssertionError: a block with no field at any angle is refused with
+        (True, False); 3.3 says every sentence at once
+        assert (True, False) == (True, True)
+          At index 1 diff: False != True
+          Use -v to get more diff
+
+    RED under the to_plan.py mutant "a single target ignores its anchor"
+    (``anchor=entry.get("frame_anchor"))`` made ``anchor=None)``):
+
+        AssertionError: a single target is not keyed on its stored anchor
+        assert 'e5ddcb12a1dd...5fdce30f040ab' == '71c24c958684...2a861c7f1aa45'
+          - 71c24c9586845ccbbfd2a861c7f1aa45
+          + e5ddcb12a1dd5188b715fdce30f040ab
+
+    RED under the save_rules.py mutant "no implicit anchor" (`_base_anchor`'s
+    ``return "" if implicit is None else implicit[0]`` made ``return ""``):
+
+        AssertionError: the save anchors {'nudged': ('the nudged geometry',
+        ['counts'], []), 'moved': ('the moved geometry', ['counts'], []),
+        'new': ('the moved geometry', ['counts'], []), 'no layout now': ('',
+        ['counts'], []), 'a damaged anchor': ('the nudged geometry',
+        ['counts'], [])}; 3.3 says a 1' nudge carries the implicit anchor, a
+        30' move re-anchors and is listed, a new flow takes its current
+        geometry, a block with no layout keeps its anchor, and a damaged anchor
+        is treated as absent
+        assert {'a damaged a...s'], []), ...} == {'a damaged a...s'], []), ...}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'no layout now': ('', ['counts'], [])} != {'no layout now': ('the
+          prior geometry', ['counts'], [])}
+          {'nudged': ('the nudged geometry', ['counts'], [])} != {'nudged':
+          ('the prior geometry', ['counts'], [])}
+          {'a damaged anchor': ('the nudged geometry', ['counts'], [])} != {'a
+          damaged anchor': ('the prior geometry', ['counts'], [])}
+          {'moved': ('the moved geometry', ['counts'], [])} != {'moved': ('the
+          moved geometry', ['counts'], [['max_move_deg', 'node_id',
+          'threshold_deg']])}
+          Use -v to get more diff
+
+    RED under the to_plan.py mutant "no M5 loss" (``if rig is not None and
+    rig.fov_deg is not None:`` made ``if False:``):
+
+        AssertionError: M5's loss reads {'no rig': [], 'a smaller camera': []};
+        3.3 says to_plan reads rig for it
+        assert {'a smaller c... 'no rig': []} == {'a smaller c... 'no rig': []}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'a smaller camera': []} != {'a smaller camera': ['warn']}
+          Use -v to get more diff
+
+    RED under the save_rules.py mutant "no layout drops the anchor"
+    (`_anchor_on_save`'s ``return base, None`` for a block with no layout
+    made to return an empty anchor):
+
+        AssertionError: the save anchors {'nudged': ('the prior geometry',
+        ['counts'], []), 'moved': ('the moved geometry', ['counts'],
+        [['max_move_deg', 'node_id', 'threshold_deg']]), 'new': ('the moved
+        geometry', ['counts'], []), 'no layout now': ('', ['counts'], []), 'a
+        damaged anchor': ('the prior geometry', ['counts'], [])}; 3.3 says a 1'
+        nudge carries the implicit anchor, a 30' move re-anchors and is listed,
+        a new flow takes its current geometry, a block with no layout keeps its
+        anchor, and a damaged anchor is treated as absent
+        assert {'a damaged a...s'], []), ...} == {'a damaged a...s'], []), ...}
+          Omitting 4 identical items, use -vv to show
+          Differing items:
+          {'no layout now': ('', ['counts'], [])} != {'no layout now': ('the
+          prior geometry', ['counts'], [])}
+          Use -v to get more diff
+    """
+    from astrodeck.flows import save_rules
+    from astrodeck.flows.models import FlowRecord
+    from astrodeck.flows.rig import RigFacts
+    from astrodeck.flows.to_plan import GraphNotRunnable
+    s33 = _section("3.3")
+    expansion = _line(s33, "- **As built** (S3, #189). `_expand_mosaic`")
+    _says(expansion, ("each panel named `<name> <row>-<col>`, 1-based, with "
+                      "0-based `panel_row` and `panel_col`",
+                      "`mode` `rotate` with the loop wire",
+                      "`require_centred` (false only for \"Shoot anyway\")",
+                      "the layout angle as `pa_deg`",
+                      "`identity.group_id` over `_block_key`",
+                      "`skip` is in none of them",
+                      "A block whose every panel is skipped is dropped with a "
+                      "warn", "every sentence at once (`_mosaic_refusals`",
+                      _signature_text(to_sequence_plan),
+                      "`rig` is read for M5's loss only",
+                      "commands its PA only for \"Rotate to PA\"",
+                      "is keyed on its anchor with no grid"), "3.3")
+    saving = _line(s33, "  - **As built at the save** (S3, #189)")
+    _says(saving, ("`FlowStore.save_and_report` through "
+                   "`save_rules.prepare_save`",
+                   "`save_and_report` answers `(record, migrated, "
+                   "reanchored)`", "`migrated` is `[\"counts\"]`",
+                   "\"No anchor yet\" is read from the file the save replaces",
+                   "A prior node with no stored anchor had one implicitly",
+                   "measured against it with `reframe_carry`",
+                   "nudged in its first S3 save keeps its ids",
+                   "a block with no layout now keeps the anchor it had",
+                   "a stored anchor that is not one is treated as absent"),
+          "3.3")
+    lane = ["t.target -> c.run", "c.pass -> t.next"]
+
+    def plan_of(params: dict, *extra, wires=lane):
+        graph = _flow([("t", "target", params), ("c", "cycle", _LRGB),
+                       *extra], wires)
+        return to_sequence_plan(compile_plan(graph), graph, flow_id="f-3-3")
+
+    whole, _ = plan_of(_M31)
+    part, _ = plan_of({**_M31, "skip": "1-1"})
+    group = part.groups[0]
+    cells = sorted((t.panel_row, t.panel_col, t.name) for t in part.targets)
+    assert cells == [(0, 1, "M31 1-2"), (0, 2, "M31 1-3"), (1, 0, "M31 2-1"),
+                     (1, 1, "M31 2-2"), (1, 2, "M31 2-3")], (
+        f"a 3x2 skipping 1-1 plans {cells}; 3.3 says five panels named "
+        f"1-based, placed 0-based")
+    kept = {t.id for t in whole.targets} - {t.id for t in part.targets}
+    assert group.id == whole.groups[0].id and group.skipped_ids == list(kept) \
+        and group.skipped_ids == [identity.target_id(group.id, 0, 0)], (
+            "skipping a panel moved an id; 3.3 says skip is in none of them")
+    shape = (group.mode, group.rotate, group.pa_deg, group.require_centred,
+             {t.rotation_deg for t in part.targets})
+    assert shape == ("rotate", True, 30.0, True, {30.0}), shape
+    fixed, _ = plan_of({**_M31, "angle": "Camera fixed at PA",
+                        "ifNotCentred": "Shoot anyway"})
+    g = fixed.groups[0]
+    shape = (g.rotate, g.pa_deg, g.require_centred,
+             {t.rotation_deg for t in fixed.targets})
+    assert shape == (False, 30.0, False, {None}), (
+        f"a fixed camera shooting anyway plans {shape}; 3.3 says no "
+        f"commanded PA, the layout angle, and require_centred off")
+    with pytest.raises(GraphNotRunnable) as refused:
+        plan_of({**_M31, "fovX": 0, "angle": "Any angle"})
+    both = ("frame this block" in str(refused.value),
+            "a mosaic is laid out at one camera angle" in str(refused.value))
+    assert both == (True, True), (
+        f"a block with no field at any angle is refused with {both}; 3.3 "
+        f"says every sentence at once")
+    every = "1-1, 1-2, 1-3, 2-1, 2-2, 2-3"
+    dropped, unmapped = plan_of({**_M31, "skip": every}, ("f", "target", _M33),
+                                wires=lane + ["c.complete -> f.arm"])
+    warned = [u["level"] for u in unmapped
+              if "every panel of TARGET M31 is skipped" in u["detail"]]
+    assert (dropped.groups, [t.name for t in dropped.targets], warned) == (
+        [], ["M33"], ["warn"]), (
+        "a block with every panel skipped is not dropped with a warn")
+    graph = _flow([("t", "target", _M31), ("c", "cycle", _LRGB)], lane)
+    gaps = {}
+    for label, rig in (("no rig", None),
+                       ("a smaller camera", RigFacts(fov_deg=(1.0, 0.6)))):
+        _plan, unmapped = to_sequence_plan(compile_plan(graph), graph,
+                                           flow_id="f-3-3", rig=rig)
+        gaps[label] = [u["level"] for u in unmapped
+                       if "so the panels would leave gaps" in u["detail"]]
+    assert gaps == {"no rig": [], "a smaller camera": ["warn"]}, (
+        f"M5's loss reads {gaps}; 3.3 says to_plan reads rig for it")
+    entry = {"name": "M31", "ra": _M31["ra"], "dec": _M31["dec"]}
+    ra, dec = 0.7122222222222222, 41.26916666666667
+    anchor = identity.anchor_for(entry, ra, dec - 1 / 60, 30.0, canonical=None)
+    single, _ = plan_of({**_M31, "rows": 1, "cols": 1, "frameAnchor": anchor})
+    want = identity.target_id(identity.group_id(
+        "f-3-3", "t", identity.anchor_key(anchor)), 0, 0)
+    assert single.targets[0].id == want, (
+        "a single target is not keyed on its stored anchor")
+
+    def record(params: dict) -> FlowRecord:
+        return FlowRecord(id="f-3-3", name="n", graph=_flow(
+            [("t", "target", params), ("c", "cycle", _LRGB)], lane))
+
+    def current(params: dict) -> str:
+        node = FlowNode.model_validate({"id": "t", "type": "target",
+                                        "params": params})
+        return save_rules.current_anchor(node.with_defaults().params)[0]
+
+    before = {**_M31, "counts": "Every sub taken"}
+    nudged = {**before, "dec": "+41 17 09"}
+    moved = {**before, "dec": "+41 46 09"}
+    placeless = {**before, "name": "", "ra": "", "dec": ""}
+    damaged = {**before, "frameAnchor": "not an anchor"}
+    # Which geometry each save anchored at, by name, so a failure reads as
+    # the rule it broke rather than as two anchor texts.
+    names = {current(before): "the prior geometry",
+             current(nudged): "the nudged geometry",
+             current(moved): "the moved geometry"}
+    got = {}
+    for label, prior, now in (("nudged", before, nudged),
+                              ("moved", before, moved), ("new", None, moved),
+                              ("no layout now", before, placeless),
+                              ("a damaged anchor", damaged, nudged)):
+        rec, migrated, reanchored = save_rules.prepare_save(
+            record(now), None if prior is None else record(prior))
+        anchor = rec.graph.node("t").params["frameAnchor"]
+        got[label] = (names.get(anchor, anchor), migrated,
+                      [sorted(r) for r in reanchored])
+    row = ["max_move_deg", "node_id", "threshold_deg"]
+    assert got == {
+        "nudged": ("the prior geometry", ["counts"], []),
+        "moved": ("the moved geometry", ["counts"], [row]),
+        "new": ("the moved geometry", ["counts"], []),
+        "no layout now": ("the prior geometry", ["counts"], []),
+        "a damaged anchor": ("the prior geometry", ["counts"], [])}, (
+        f"the save anchors {got}; 3.3 says a 1' nudge carries the implicit "
+        f"anchor, a 30' move re-anchors and is listed, a new flow takes its "
+        f"current geometry, a block with no layout keeps its anchor, and a "
+        f"damaged anchor is treated as absent")
+    asks = [c for c in _calls(_tree(FlowStore.save_and_report), "prepare_save")
+            if ast.unparse(_keyword_node(c, "resolve") or ast.Constant(None))
+            == "self.resolve"]
+    assert asks, ("FlowStore.save_and_report no longer applies the save rules "
+                  "with the store's resolver")
+
+
+def test_3_6_says_flow_schema_4_as_s3_built_it():
+    """3.6 says S3 stamps 4 without the ``autoResume`` mapping and #195
+    takes the next number (S3, #189): ``FLOW_SCHEMA`` 4, the v3 to v4 read
+    rewriting nothing, DUSK keeping ``repeat``; `schema_for` over
+    `_v4_meanings`, ``V3_SCHEMA`` when nothing is found, a loop wire read as
+    any wire on the loop's ports; the counts note no version step; and a
+    flow with neither a TARGET nor a POOL stamping 3 only when it holds no
+    other meaning.
+
+    The code: the two constants; DUSK's params; a v3 file with a repeating
+    DUSK read (nothing rewritten, no note) and a v4 file counting every sub
+    read (the counts note); `schema_for` over a 1x1 flow counting every
+    sub (the control: 3) and over it with each v4 meaning in turn, the loop
+    wire being a pass wire into a 1x1 block, which the compile does not
+    call a loop wire; and `schema_for` over each half of that read on its
+    own (a pass wire into a NOTIFY, a REPORT's wire into ``next``) and over
+    a CAPTURE LOOP and a NOTIFY alone (the control: 3), with a pass wire
+    and with "Wait for the mosaic".
+
+    RED under mutant "3.6 back to 'one with neither stamps 3.'" (added by
+    S3-SPEC3's verifier: the sentence as S3-SPEC3 first wrote it, which a
+    flow of a CAPTURE LOOP with a pass wire, or one saying "Wait for the
+    mosaic", contradicts; both stamp 4):
+
+        AssertionError: 3.6 must say: 'one with neither stamps 3 unless it
+        holds a wire on the loop\'s ports or says "Wait for the mosaic"'
+        assert False
+
+    RED under the store.py mutant "the loop-wire read needs both ports"
+    (`_v4_meanings`'s ``e.fromPort == PASS_PORT or e.toPort == NEXT_PORT``
+    made ``... and ...``), which the six v4-meaning cases survive, their
+    pass wire having both ends:
+
+        AssertionError: schema_for stamps {'out of pass only': 3, 'into next
+        only': 3, 'neither': 3, 'neither, a pass wire': 3, 'neither, wait for
+        the mosaic': 4}; 3.6 says a wire out of pass or into next is a loop
+        wire, and a flow with no TARGET or POOL stamps 3 only without another
+        meaning
+        assert {'into next o...saic': 4, ...} == {'into next o...saic': 4, ...}
+          Omitting 2 identical items, use -vv to show
+          Differing items:
+          {'out of pass only': 3} != {'out of pass only': 4}
+          {'into next only': 3} != {'into next only': 4}
+          {'neither, a pass wire': 3} != {'neither, a pass wire': 4}
+          Use -v to get more diff
+
+    RED under mutant "3.6 back to 'If #195 ships before S3'" (the paragraph
+    as it stood):
+
+        AssertionError: 3.6 must say: 'S3 built 4 without that mapping, which
+        #195 brings with the next number (below)'
+        assert False
+
+    RED under the store.py mutant "a loop wire is only a mosaic's"
+    (`_v4_meanings`'s ``e.fromPort == PASS_PORT or e.toPort == NEXT_PORT``
+    made ``e.fromPort == PASS_PORT and is_multi_panel(graph.node(e.to))``):
+
+        AssertionError: schema_for stamps {'nothing': 3, 'a multi-panel block':
+        4, 'a fixed camera': 4, 'a pass wire': 3, 'accepted subs': 4, 'wait for
+        the mosaic': 4}; 3.6 says 4 for each v4 meaning and 3 for none
+        assert {'a fixed cam...subs': 4, ...} == {'a fixed cam...subs': 4, ...}
+          Omitting 5 identical items, use -vv to show
+          Differing items:
+          {'a pass wire': 3} != {'a pass wire': 4}
+          Use -v to get more diff
+
+    RED under the nodes.py mutant "#195 has landed" (DUSK's params gaining
+    ``"autoResume": "On"``):
+
+        AssertionError: DUSK has autoResume now: #195 has landed; record its
+        schema number and its mapping in 3.6
+        assert ('repeat' in {'autoResume': 'On', 'minAlt': 30, 'offset': -30,
+        'repeat': 'Single night', ...} and not True)
+    """
+    import copy
+
+    from astrodeck.flows import store as store_mod
+    from astrodeck.flows.nodes import NODE_DEFS
+    s36 = _section("3.6")
+    _says(s36, ("S3 built 4 without that mapping, which #195 brings with the "
+                "next number (below)",
+                "**As built** (S3, #189). S3 stamps 4 without the "
+                "`autoResume` mapping", "`FLOW_SCHEMA` is 4 in `store.py`",
+                "the v3 to v4 read rewrites nothing", "DUSK keeps its "
+                "`repeat`", f"#195 takes the next schema number, "
+                f"{store_mod.FLOW_SCHEMA + 1}, for that key",
+                "`schema_for`, over `_v4_meanings`",
+                "it stamps `V3_SCHEMA` when no meaning is found",
+                "any wire out of a `pass` output or into a `next` input",
+                "The counts note of ruling 2 is not a version step",
+                "one with neither stamps 3 unless it holds a wire on the "
+                "loop's ports or says " '"Wait for the mosaic"'), "3.6")
+    for stale in ("(If #195 ships before S3", "The v3 to v4 read maps DUSK's",
+                  "one with neither stamps 3."):
+        kept = stale in s36
+        assert not kept, f"3.6 still says {stale!r}"
+    assert (store_mod.FLOW_SCHEMA, store_mod.V3_SCHEMA) == (4, 3)
+    dusk = NODE_DEFS["dusk"].params
+    landed = "autoResume" in dusk
+    assert "repeat" in dusk and not landed, (
+        "DUSK has autoResume now: #195 has landed; record its schema number "
+        "and its mapping in 3.6")
+    single = {**_M31, "rows": 1, "cols": 1, "counts": "Every sub taken"}
+    wait = {"whenWaiting": "Wait for the mosaic"}
+    run = ["t.target -> c.run"]
+    cases = {"nothing": (single, run, None),
+             "a multi-panel block": ({**single, "rows": 2}, run, None),
+             "a fixed camera": ({**single, "angle": "Camera fixed at PA"},
+                                run, None),
+             "a pass wire": (single, run + ["c.pass -> t.next"], None),
+             "accepted subs": ({**single, "counts": "Accepted subs"}, run,
+                               None),
+             "wait for the mosaic": (single, run, wait)}
+    stamps = {name: store_mod.schema_for(_flow(
+        [("t", "target", params), ("c", "cycle", _LRGB)], wires, settings))
+        for name, (params, wires, settings) in cases.items()}
+    assert stamps == {name: (3 if name == "nothing" else 4)
+                      for name in cases}, (
+        f"schema_for stamps {stamps}; 3.6 says 4 for each v4 meaning and 3 "
+        f"for none")
+    # Each half of the wider loop-wire read on its own (the wire above has
+    # both), and a flow with neither a TARGET nor a POOL, which no save
+    # switches to "Accepted subs" and so stamps 3 only without another
+    # meaning.
+    lone = [("k", "capture", _HA), ("n", "notify", {})]
+    halves = {
+        "out of pass only": _flow([("t", "target", single),
+                                   ("c", "cycle", _LRGB),
+                                   ("n", "notify", {})],
+                                  run + ["c.pass -> n.do"]),
+        "into next only": _flow([("t", "target", single),
+                                 ("r", "report", {})], ["r.done -> t.next"]),
+        "neither": _flow(lone, []),
+        "neither, a pass wire": _flow(lone, ["k.pass -> n.do"]),
+        "neither, wait for the mosaic": _flow(lone, [], wait)}
+    stamped = {name: store_mod.schema_for(g) for name, g in halves.items()}
+    assert stamped == {name: (3 if name == "neither" else 4)
+                       for name in halves}, (
+        f"schema_for stamps {stamped}; 3.6 says a wire out of pass or into "
+        f"next is a loop wire, and a flow with no TARGET or POOL stamps 3 "
+        f"only without another meaning")
+    target = {"id": "t", "type": "target", "x": 0, "y": 0,
+              "params": {**single, "counts": "Accepted subs"}}
+    dusky = {"id": "d", "type": "dusk", "x": 0, "y": 0,
+             "params": {"repeat": "Every night"}}
+
+    def read(version: int, counts: str) -> dict:
+        raw = {"schema_version": version, "id": "f", "flow": {
+            "id": "f", "name": "v", "graph": {"nodes": [
+                copy.deepcopy(dusky),
+                {**target, "params": {**target["params"], "counts": counts}}],
+                "edges": []}}}
+        return store_mod._migrate(raw)
+
+    v3 = read(3, "Accepted subs")
+    assert (v3["graph"]["nodes"][0]["params"], v3["migrated"]) == (
+        {"repeat": "Every night"}, []), (
+        f"the v3 to v4 read gave {v3['graph']['nodes'][0]['params']} and "
+        f"{v3['migrated']}; 3.6 says it rewrites nothing")
+    v4 = read(4, "Every sub taken")
+    assert [n["key"] for n in v4["migrated"]] == ["counts"], (
+        "a v4 file counting every sub read with no counts note")
+
+
+def test_5_1_says_the_pier_reads_are_bounded_as_s3_built_them(monkeypatch):
+    """5.1 item 1 says every pier read of the reach verdict is bounded (S3,
+    #314, S3 orchestrator ruling 2) by ``MOUNT_QUERY_TIMEOUT_S`` through
+    `_pier_guard_read`: a failed read or one that answers no side reads
+    UNKNOWN, one past its bound is the dead-link ``SafetyAbort``, never a
+    ``SlewRefused``; and a selection reads the mount's side once for all its
+    members through one shared ``pier_now``. The bound is taken from the
+    engine.
+
+    The code: `_pier_guard_read` asked of a read that raises, one that
+    answers a string, one that answers a side (the control), and one that
+    outlasts a bound shortened for the test; `_mount_floor_verdict` making
+    both reads through it; and `_eligibility_now` handing every verdict it
+    asks one ``pier_now`` made once.
+
+    RED under mutant "5.1 without the bounded-reads bullet":
+
+        AssertionError: expected exactly one line starting '   - Every pier
+        read the verdict makes', found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under the engine.py mutant "a dead link reads unknown" (the
+    ``except SafetyAbort: raise`` arm removed from `_pier_guard_read`):
+
+        AssertionError: _pier_guard_read answers [<PierSide.UNKNOWN:
+        'unknown'>, <PierSide.UNKNOWN: 'unknown'>, <PierSide.EAST: 'east'>, 'no
+        abort']; 5.1 says a failed or wordy read is UNKNOWN and one past its
+        bound the dead-link SafetyAbort
+        assert [<PierSide.UN...>, 'no abort'] == [<PierSide.UN...'SafetyAbort']
+          At index 3 diff: 'no abort' != 'SafetyAbort'
+          Use -v to get more diff
+
+    RED under the engine.py mutant "every member reads the side" (``,
+    pier_now=pier_now`` removed from `_eligibility_now`'s verdict call):
+
+        AssertionError: _eligibility_now no longer shares one pier_now across
+        the verdicts it asks; 5.1 says the side is read once per selection
+        assert (1 == 1 and False)
+         +  where 1 = len([<ast.AnnAssign object at 0x000001D361BF75D0>])
+    """
+    from astrodeck.devices.base import PierSide
+    bullet = _line(_section("5.1"), "   - Every pier read the verdict makes")
+    bound = (f"`MOUNT_QUERY_TIMEOUT_S` "
+             f"({engine_mod.MOUNT_QUERY_TIMEOUT_S:g} s)")
+    _says(bullet, ("is bounded (S3, #314, S3 orchestrator ruling 2)", bound,
+                   "through `_pier_guard_read`", "reads UNKNOWN",
+                   "the engine's dead-link `SafetyAbort` (P0-2), never a "
+                   "`SlewRefused`", "(`_eligibility_now` shares one "
+                   "`pier_now`)"), "5.1 item 1")
+    read = SequenceEngine._pier_guard_read
+
+    async def probe() -> list:
+        async def raises():
+            raise RuntimeError("driver")
+
+        async def words():
+            return "east"
+
+        async def east():
+            return PierSide.EAST
+
+        async def hangs():
+            await asyncio.sleep(5)
+
+        out = [await read(raises, "a"), await read(words, "a"),
+               await read(east, "a")]
+        monkeypatch.setattr(engine_mod, "MOUNT_QUERY_TIMEOUT_S", 0.05)
+        try:
+            await read(hangs, "the mount's pier side")
+        except engine_mod.SafetyAbort as e:
+            out.append(type(e).__name__)
+        else:
+            out.append("no abort")
+        return out
+
+    got = asyncio.run(probe())
+    assert got == [PierSide.UNKNOWN, PierSide.UNKNOWN, PierSide.EAST,
+                   "SafetyAbort"], (
+        f"_pier_guard_read answers {got}; 5.1 says a failed or wordy read is "
+        f"UNKNOWN and one past its bound the dead-link SafetyAbort")
+    verdict = _tree(SequenceEngine._mount_floor_verdict)
+    through = _self_calls(verdict, "_pier_guard_read")
+    bare = [c for c in _calls(verdict, "pier_side")
+            if not any(c is n for t in through for n in ast.walk(t))]
+    assert len(through) == 2 and bare == [], (
+        "_mount_floor_verdict no longer makes both pier reads through "
+        "_pier_guard_read")
+    elig = _tree(SequenceEngine._eligibility_now)
+    made = [n for n in ast.walk(elig) if isinstance(n, ast.AnnAssign)
+            and ast.unparse(n.target) == "pier_now"]
+    asked = _self_calls(elig, "_mount_floor_verdict")
+    shared = asked and all(
+        ast.unparse(_keyword_node(c, "pier_now") or ast.Constant(None))
+        == "pier_now" for c in asked)
+    assert len(made) == 1 and shared, (
+        "_eligibility_now no longer shares one pier_now across the verdicts "
+        "it asks; 5.1 says the side is read once per selection")
+
+
+def test_revision_7_lists_every_section_s3_edited():
+    """Revision 7, "slice S3's first three waves as built", has one row per
+    section that carries an S3 edit, and no other, by the scan Revisions 4
+    to 6 use
+    (`_carried`) with S3's mark (``_S3``). Its rows are numbered from 1;
+    its preamble names the rows of Revision 6 that its own rows supersede,
+    computed from the two tables; and every code name its Source column
+    gives is a ``def``, a ``class``, an attribute, a module constant or a
+    file in server/, or a function, a constant or a file of ``ui/src``.
+
+    Before Revision 7 the scan found S3's mark in the owner list and in
+    Ruling 5 only, where S3-SPEC1 recorded the orchestrator's rulings. S3's
+    second wave added rows for 1.3, 1.4, 1.6, 1.8, 3.2 and 3.6, and with
+    1.6 Revision 6's row 1 became one of those superseded. The failures
+    quoted first were produced after the first wave; those after "Since the
+    second wave" after it.
+
+    RED under mutant "drop the 6.2 row" (Revision 7 without it, the rest
+    renumbered):
+
+        AssertionError: Revision 7 lists ['1.5', '3.1', '3.3', '3.7', '5.1',
+        '5.6', '5.9', '6.3', 'owner list', 'ruling 5']; the sections
+        carrying S3's edits are ['1.5', '3.1', '3.3', '3.7', '5.1', '5.6',
+        '5.9', '6.2', '6.3', 'owner list', 'ruling 5']
+        assert ['1.5', '3.1'...', '5.6', ...] == ['1.5', '3.1'...', '5.6',
+        ...]
+          At index 7 diff: '6.2' != '6.3'
+          Left contains one more item: 'ruling 5'
+          Use -v to get more diff
+
+    RED under mutant "an S3 edit in 2.5 with no Revision 7 row":
+
+        AssertionError: Revision 7 lists ['1.5', '3.1', '3.3', '3.7', '5.1',
+        '5.6', '5.9', '6.2', '6.3', 'owner list', 'ruling 5']; the sections
+        carrying S3's edits are ['1.5', '2.5', '3.1', '3.3', '3.7', '5.1',
+        '5.6', '5.9', '6.2', '6.3', 'owner list', 'ruling 5']
+        assert ['1.5', '2.5'...', '5.1', ...] == ['1.5', '3.1'...', '5.6',
+        ...]
+          At index 1 diff: '2.5' != '3.1'
+          Left contains one more item: 'ruling 5'
+          Use -v to get more diff
+
+    RED under mutant "Revision 7's preamble without the rows it
+    supersedes":
+
+        AssertionError: Revision 7's preamble must say "Revision 6's rows 3,
+        6, 9, 11 and 19" are superseded
+        assert False
+
+    RED under the engine.py mutant "_hop_refused_by_a_limit renamed
+    _hop_refused" (every use renamed, in the scratch copy):
+
+        AssertionError: Revision 7's Source column names code that is not in
+        the tree: {'5.1': ['_hop_refused_by_a_limit'], '6.2':
+        ['_hop_refused_by_a_limit']}
+        assert {'5.1': ['_ho..._by_a_limit']} == {}
+          Left contains 2 more items:
+          {'5.1': ['_hop_refused_by_a_limit'], '6.2':
+          ['_hop_refused_by_a_limit']}
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its
+    Engine heading reworded): every test in this file passed on it (52
+    passed).
+
+    Since the second wave:
+
+    RED under mutant "drop the 1.8 row" (Revision 7 without it, the rest
+    renumbered):
+
+        AssertionError: Revision 7 lists ['1.3', '1.4', '1.5', '1.6', '3.1',
+        '3.2', '3.3', '3.6', '3.7', '5.1', '5.6', '5.9', '6.2', '6.3', 'owner
+        list', 'ruling 5']; the sections carrying S3's edits are ['1.3', '1.4',
+        '1.5', '1.6', '1.8', '3.1', '3.2', '3.3', '3.6', '3.7', '5.1', '5.6',
+        '5.9', '6.2', '6.3', 'owner list', 'ruling 5']
+        assert ['1.3', '1.4'...', '3.1', ...] == ['1.3', '1.4'...', '3.2', ...]
+          At index 4 diff: '1.8' != '3.1'
+          Left contains one more item: 'ruling 5'
+          Use -v to get more diff
+
+    RED under mutant "an S3 edit in 2.5 with no Revision 7 row":
+
+        AssertionError: Revision 7 lists ['1.3', '1.4', '1.5', '1.6', '1.8',
+        '3.1', '3.2', '3.3', '3.6', '3.7', '5.1', '5.6', '5.9', '6.2', '6.3',
+        'owner list', 'ruling 5']; the sections carrying S3's edits are ['1.3',
+        '1.4', '1.5', '1.6', '1.8', '2.5', '3.1', '3.2', '3.3', '3.6', '3.7',
+        '5.1', '5.6', '5.9', '6.2', '6.3', 'owner list', 'ruling 5']
+        assert ['1.3', '1.4'...', '2.5', ...] == ['1.3', '1.4'...', '3.1', ...]
+          At index 5 diff: '2.5' != '3.1'
+          Left contains one more item: 'ruling 5'
+          Use -v to get more diff
+
+    RED under mutant "Revision 7's preamble without the rows it
+    supersedes":
+
+        AssertionError: Revision 7's preamble must say "Revision 6's rows 1, 3,
+        6, 9, 11 and 19" are superseded
+        assert False
+
+    RED under the engine.py mutant "_pier_guard_read renamed _pier_read"
+    (every use renamed, in the scratch copy):
+
+        AssertionError: Revision 7's Source column names code that is not in
+        the tree: {'5.1': ['_pier_guard_read']}
+        assert {'5.1': ['_pier_guard_read']} == {}
+          Left contains 1 more item:
+          {'5.1': ['_pier_guard_read']}
+          Use -v to get more diff
+
+    Unchanged under the same control: every test in this file passed on it
+    (60 passed), with the 1.6 deferral-wait test deselected, which a
+    parallel change of the engine's deferral wait (#304) had turned red on
+    the unedited tree as well.
+
+    Since the third wave, which added rows for 1.2, 1.7, 3.4, 3.5, 5.7 and
+    S3, made the owner list's row name item 28, and with 3.4 and 5.7 made
+    Revision 6's rows 2 and 7 two more of those superseded; the title says
+    three waves:
+
+    RED under mutant "drop the 3.5 row" (Revision 7 without it, the rest
+    renumbered):
+
+        AssertionError: Revision 7 lists ['1.2', '1.3', '1.4', '1.5', '1.6',
+        '1.7', '1.8', '3.1', '3.2', '3.3', '3.4', '3.6', '3.7', '5.1', '5.6',
+        '5.7', '5.9', '6.2', '6.3', 'S3', 'owner list', 'ruling 5']; the
+        sections carrying S3's edits are ['1.2', '1.3', '1.4', '1.5', '1.6',
+        '1.7', '1.8', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '5.1',
+        '5.6', '5.7', '5.9', '6.2', '6.3', 'S3', 'owner list', 'ruling 5']
+        assert ['1.2', '1.3'...', '1.7', ...] == ['1.2', '1.3'...', '1.7', ...]
+          At index 11 diff: '3.5' != '3.6'
+          Left contains one more item: 'ruling 5'
+          Use -v to get more diff
+
+    RED under mutant "an S3 edit in 2.5 with no Revision 7 row":
+
+        AssertionError: Revision 7 lists ['1.2', '1.3', '1.4', '1.5', '1.6',
+        '1.7', '1.8', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '5.1',
+        '5.6', '5.7', '5.9', '6.2', '6.3', 'S3', 'owner list', 'ruling 5']; the
+        sections carrying S3's edits are ['1.2', '1.3', '1.4', '1.5', '1.6',
+        '1.7', '1.8', '2.5', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7',
+        '5.1', '5.6', '5.7', '5.9', '6.2', '6.3', 'S3', 'owner list', 'ruling
+        5']
+        assert ['1.2', '1.3'...', '1.7', ...] == ['1.2', '1.3'...', '1.7', ...]
+          At index 7 diff: '2.5' != '3.1'
+          Left contains one more item: 'ruling 5'
+          Use -v to get more diff
+
+    RED under mutant "Revision 7's preamble without the rows it
+    supersedes" (the list as the second wave left it):
+
+        AssertionError: Revision 7's preamble must say "Revision 6's rows 1, 2,
+        3, 6, 7, 9, 11 and 19" are superseded
+        assert False
+
+    RED under the resume_arm.py mutant "_past_meridian_first renamed
+    _flipped_first" (every use renamed, in the scratch copy):
+
+        AssertionError: Revision 7's Source column names code that is not in
+        the tree: {'5.9': ['_past_meridian_first']}
+        assert {'5.9': ['_pa...idian_first']} == {}
+          Left contains 1 more item:
+          {'5.9': ['_past_meridian_first']}
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its
+    Engine heading reworded): every test in this file passed on it (68 passed).
+
+    Since the fourth wave and the close, which added rows for 6.17, S1, 9 and
+    the #190 row of the issues filed while applying the rulings, made Revision
+    6's rows 14, 15 and 17 three more of those superseded, retitled the
+    revision "slice S3 as built" and made its table final:
+
+    RED under mutant "drop the 6.17 row (the rest renumbered)":
+
+        AssertionError: Revision 7 lists ['1.2', '1.3', '1.4', '1.5', '1.6',
+        '1.7', '1.8', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '5.1',
+        '5.6', '5.7', '5.9', '6.2', '6.3', '9', 'Filed while applying the
+        rulings', 'S1', 'S3', 'owner list', 'ruling 5']; the sections carrying
+        S3's edits are ['1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '3.1',
+        '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '5.1', '5.6', '5.7', '5.9',
+        '6.17', '6.2', '6.3', '9', 'Filed while applying the rulings', 'S1',
+        'S3', 'owner list', 'ruling 5']
+        assert ['1.2', '1.3'...', '1.7', ...] == ['1.2', '1.3'...', '1.7', ...]
+          At index 18 diff: '6.17' != '6.2'
+          Left contains one more item: 'ruling 5'
+          Use -v to get more diff
+
+    RED under mutant "an S3 edit in 2.5 with no Revision 7 row":
+
+        AssertionError: Revision 7 lists ['1.2', '1.3', '1.4', '1.5', '1.6',
+        '1.7', '1.8', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '5.1',
+        '5.6', '5.7', '5.9', '6.17', '6.2', '6.3', '9', 'Filed while applying
+        the rulings', 'S1', 'S3', 'owner list', 'ruling 5']; the sections
+        carrying S3's edits are ['1.2', '1.3', '1.4', '1.5', '1.6', '1.7',
+        '1.8', '2.5', '3.1', '3.2', '3.3', '3.4', '3.5', '3.6', '3.7', '5.1',
+        '5.6', '5.7', '5.9', '6.17', '6.2', '6.3', '9', 'Filed while applying
+        the rulings', 'S1', 'S3', 'owner list', 'ruling 5']
+        assert ['1.2', '1.3'...', '1.7', ...] == ['1.2', '1.3'...', '1.7', ...]
+          At index 7 diff: '2.5' != '3.1'
+          Left contains one more item: 'ruling 5'
+          Use -v to get more diff
+
+    RED under mutant "Revision 7's preamble without the rows it supersedes (the
+    list as the third wave left it)":
+
+        AssertionError: Revision 7's preamble must say "Revision 6's rows 1, 2,
+        3, 6, 7, 9, 11, 14, 15, 17 and 19" are superseded
+        assert False
+
+    RED under mutant "Revision 7 titled for three waves":
+
+        AssertionError: the spec must have one Revision 7, slice S3 as built
+        assert ['Revision 7 ...es as built)'] == ['Revision 7 ...S3 as built)']
+          At index 0 diff: "Revision 7 (slice S3's first three waves as built)"
+          != 'Revision 7 (slice S3 as built)'
+          Use -v to get more diff
+
+    RED under mutant "Revision 7 not called final":
+
+        AssertionError: Revision 7's preamble must say: "This table is final
+        for S3: section 8's S3 says what was built, where its tests are, and
+        what was not."
+        assert False
+
+    RED under the engine.py mutant "_park_and_read_back renamed
+    _park_and_check" (every use renamed, in the scratch copy):
+
+        AssertionError: Revision 7's Source column names code that is not in
+        the tree: {'6.17': ['_park_and_read_back']}
+        assert {'6.17': ['_p...d_read_back']} == {}
+          Left contains 1 more item:
+          {'6.17': ['_park_and_read_back']}
+          Use -v to get more diff
+
+    Since the verifier's pass the 6.17 row also names #345 and
+    `_park_hold_pause`, the pause a refused close falls back to.
+
+    RED under the engine.py mutant "_park_hold_pause renamed
+    _park_hold_wait" (every use renamed, in the scratch copy):
+
+        AssertionError: Revision 7's Source column names code that is not in
+        the tree: {'6.17': ['_park_hold_pause']}
+        assert {'6.17': ['_park_hold_pause']} == {}
+          Left contains 1 more item:
+          {'6.17': ['_park_hold_pause']}
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
+    """
+    blocks = _blocks()
+    rev7 = [(name, text) for name, text in blocks
+            if name.startswith("Revision 7")]
+    assert [name for name, _text in rev7] == [
+        "Revision 7 (slice S3 as built)"], (
+        "the spec must have one Revision 7, slice S3 as built")
+    rows = _rows(rev7[0][1])
+    listed = set().union(*(_where(r[1]) for r in rows))
+    carried = _carried(_S3)
+    # Premise: the sections the three waves are known to have edited are
+    # found, S3-SPEC1's two among them.
+    assert {"1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "3.1", "3.2",
+            "3.3", "3.4", "3.5", "3.6", "3.7", "5.1", "5.6", "5.7", "5.9",
+            "6.2", "6.3", "6.17", "S1", "S3", "9",
+            "Filed while applying the rulings", "owner list",
+            "ruling 5"} <= carried
+    assert sorted(carried) == sorted(listed), (
+        f"Revision 7 lists {sorted(listed)}; the sections carrying S3's "
+        f"edits are {sorted(carried)}")
+    assert [r[0] for r in rows] == [str(i) for i in range(1, len(rows) + 1)]
+    rev6 = [text for name, text in blocks if name.startswith("Revision 6")]
+    superseded = [r[0] for r in _rows(rev6[0]) if _where(r[1]) & listed]
+    assert superseded == ["1", "2", "3", "6", "7", "9", "11", "14", "15",
+                          "17", "19"], superseded
+    preamble = _line(rev7[0][1], "2026-09-26. Slice S3 (#189) is built, in "
+                                 "four waves.")
+    named = (f"Revision 6's rows {', '.join(superseded[:-1])} and "
+             f"{superseded[-1]}")
+    said = named in preamble
+    assert said, f"Revision 7's preamble must say {named!r} are superseded"
+    _says(preamble, ('"(S3, #n)" or an S3 orchestrator ruling',
+                     "items 22 to 29", "item 30", "This table is final for "
+                     "S3: section 8's S3 says what was built, where its "
+                     "tests are, and what was not."), "Revision 7's preamble")
+    corpus = "\n".join(p.read_text(encoding="utf-8")
+                       for p in (_SERVER / "astrodeck").rglob("*.py"))
+    missing = {r[1]: _source_names_exist(r[4], corpus) for r in rows}
+    missing = {k: v for k, v in missing.items() if v}
+    assert missing == {}, (f"Revision 7's Source column names code that is "
+                           f"not in the tree: {missing}")
+
+
+# ========================================= S3's third wave and Revision 7
+#
+# The third wave of S3 built the deferral wait a follower fills (#304), the
+# per-night pier record and the re-centre that reads it (#312), five more
+# identity refusals (#307, #287), the wizard's mosaic kind and the eighth
+# Example, Tonight's mosaic branch and the progress route's mosaic answer,
+# and ruling 7's FITS cards (#277). Every test below holds one section that
+# wave edited to the code it now describes. Mutants as above: the spec from
+# a byte backup, and code in a private scratch copy of ``server/`` and
+# ``ui/src`` (never the shared tree, #254), each file checked byte-identical
+# (sha256) after its run; every mutant's control, the same copy unmutated,
+# passed first.
+
+def test_1_6_and_5_1_say_a_follower_fills_the_deferral_wait_as_s3_built_it():
+    """1.6 says the deferral wait is one of the waits a follower may fill
+    (S3, #304): the pass boundary only sets the wait's end
+    (``GroupRun.defer_next_pass``), `_eligibility_now` holds each member as
+    a waiter until then, and ``group_ready_ts`` is then the later of its
+    earliest time and the wait's end. 5.1's pass boundary item 2 says the
+    same from the boundary's side: S2's ``await _wait_until`` is gone, the
+    next pass starts at once, and the wait is asked after reach and the
+    meridian rule. The wait's length is ``DEFER_WAIT_S``, from
+    ``group_rules``.
+
+    The code: `_close_group_pass` awaits nothing, and on ``defer_wait``
+    calls ``defer_next_pass``, then ``start_pass``; `_eligibility_now` asks
+    ``run.deferring(now)`` after `_meridian_now`, and makes each member it
+    lets through a waiter held "defer" that wakes at ``run.defer_until``;
+    ``GroupRun`` holds its members until exactly ``now + DEFER_WAIT_S``,
+    and no longer at that instant; and `_group_ready_ts`, asked of a
+    stand-in engine holding one ready member, answers the wait's end during
+    the wait and now without one (the control).
+
+    RED under mutant "1.6 back to 'not filled yet'" (the bullet as S2 left
+    it):
+
+        AssertionError: 1.6 must say: "held by the meridian rule, or in the
+        group's deferral wait)"
+        assert False
+
+    RED under mutant "5.1's item 2 back to S2's await":
+
+        AssertionError: 5.1's pass boundary item 2 must say: 'Wait
+        `DEFER_WAIT_S` (300 s, a named constant)'
+        assert False
+
+    RED under the engine.py mutant "the boundary sleeps the wait out again"
+    (``run.defer_next_pass(time.time())`` made ``await
+    self._wait_until(run.defer_next_pass(time.time()))``):
+
+        AssertionError: _close_group_pass awaits ['await
+        self._wait_until(run.defer_next_pass(time.time()))']; 1.6 and 5.1 say
+        the boundary only sets the wait's end (#304)
+        assert ['await self....ime.time()))'] == []
+          Left contains one more item: 'await
+          self._wait_until(run.defer_next_pass(time.time()))'
+          Use -v to get more diff
+
+    RED under the engine.py mutant "the wait holds no member" (``if
+    run.deferring(now):`` in `_eligibility_now` made ``if False:``):
+
+        AssertionError: _eligibility_now no longer holds a group's members as
+        waiters until the deferral wait ends, asked after the meridian rule;
+        1.6 and 5.1 say it does (#304)
+        assert ([])
+
+    RED under the engine.py mutant "group_ready_ts ignores the wait"
+    (``ready_ts = max(ready_ts, run.defer_until)`` made ``pass``):
+
+        AssertionError: group_ready_ts reads {'in the wait': 1000.0, 'control':
+        1000.0}; 1.6 says it is the wait's end during a deferral wait, and the
+        earliest time without one
+        assert {'control': 1...wait': 1000.0} == {'control': 1...wait': 1300.0}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'in the wait': 1000.0} != {'in the wait': 1300.0}
+          Use -v to get more diff
+
+    RED under the group_rules.py mutant "DEFER_WAIT_S = 600.0":
+
+        AssertionError: 5.1's pass boundary item 2 must say: 'Wait
+        `DEFER_WAIT_S` (600 s, a named constant)'
+        assert False
+    """
+    from astrodeck.sequence import group_rules
+    from astrodeck.sequence.models import ExposureStep, Target
+    wait = group_rules.DEFER_WAIT_S
+    s16 = _section("1.6")
+    _says(s16, ("held by the meridian rule, or in the group's deferral "
+                "wait)", "The deferral wait is one of those waits since S3 "
+                "(S3, #304)", "(`GroupRun.defer_next_pass`)",
+                "`_eligibility_now` holds each member as a waiter until then",
+                "`group_ready_ts` is the later of the earliest of those "
+                "times and the wait's end (S3, #304)"), "1.6")
+    for stale in ("A deferral wait is not filled yet",
+                  "joins them when a follower can fill one"):
+        kept = stale in s16
+        assert not kept, f"1.6 still says {stale!r} (#304)"
+    item2 = _line(_section("5.1"), "2. Exposures = 0 and deferrals > 0.")
+    _says(item2, (f"Wait `DEFER_WAIT_S` ({wait:g} s, a named constant)",
+                  "The wait is the group's state since S3 (S3, #304)",
+                  "(`GroupRun.defer_next_pass`, its `defer_until`)",
+                  "starts the next pass at once",
+                  "`_eligibility_now` asks it last, after reach and the "
+                  "meridian rule", "`GroupRun.deferring`",
+                  "a ready follower may fill it (1.6)"),
+          "5.1's pass boundary item 2")
+    s2 = item2.startswith("2. Exposures = 0 and deferrals > 0. `await")
+    assert not s2, "5.1's item 2 still opens with S2's await (#304)"
+    # The boundary waits for nothing: it hands the wait to the group.
+    closing = _tree(SequenceEngine._close_group_pass)
+    awaits = [ast.unparse(n) for n in ast.walk(closing)
+              if isinstance(n, ast.Await)]
+    assert awaits == [], (
+        f"_close_group_pass awaits {awaits}; 1.6 and 5.1 say the boundary "
+        f"only sets the wait's end (#304)")
+    branch = [n for n in ast.walk(closing) if isinstance(n, ast.If)
+              and ast.unparse(n.test) == "end.boundary == 'defer_wait'"]
+    assert len(branch) == 1 and any(
+        _calls(s, "defer_next_pass") for s in branch[0].body) and _calls(
+        closing, "start_pass"), (
+        "_close_group_pass no longer sets the wait's end on a defer_wait "
+        "boundary and starts the next pass; 5.1 says it does (#304)")
+    # Each member the first two steps let through waits for the wait's end,
+    # asked after the meridian rule.
+    elig = _tree(SequenceEngine._eligibility_now)
+    held = [n for n in ast.walk(elig) if isinstance(n, ast.If)
+            and ast.unparse(n.test) == "run.deferring(now)"]
+    waiters = [c for n in held for c in _calls(n, "_Eligibility")
+               if len(c.args) >= 4
+               and ast.unparse(c.args[1]) == "run.defer_until"
+               and ast.unparse(c.args[3]) == "'defer'"]
+    meridian = _self_calls(elig, "_meridian_now")
+    assert held and waiters and meridian and all(
+        n.lineno > meridian[0].lineno for n in held), (
+        "_eligibility_now no longer holds a group's members as waiters "
+        "until the deferral wait ends, asked after the meridian rule; 1.6 "
+        "and 5.1 say it does (#304)")
+    run = group_rules.GroupRun({"p": "1-1"}, max_failed_visits=3)
+    end = run.defer_next_pass(1000.0)
+    spans = (end, run.deferring(1000.0), run.deferring(end - 0.001),
+             run.deferring(end))
+    assert spans == (1000.0 + wait, True, True, False), (
+        f"defer_next_pass(1000) and deferring give {spans}; the wait holds "
+        f"the members for DEFER_WAIT_S ({wait:g} s) and ends at its end")
+    # group_ready_ts, asked of a stand-in engine: one ready member of one
+    # group, in the wait and out of it.
+    group = TargetGroup(id="g", name="M31")
+    member = Target(name="M31 1-1", ra_hours=1.0, dec_deg=10.0,
+                    mosaic_group="g", steps=[ExposureStep(
+                        filter="L", exposure_s=60.0, count=1)])
+    ready = {}
+    for label, waiting in (("in the wait", True), ("control", False)):
+        grun = group_rules.GroupRun({member.id: "1-1"}, max_failed_visits=3)
+        if waiting:
+            grun.defer_next_pass(1000.0)
+        stand_in = SimpleNamespace(
+            _group_runs={"g": grun},
+            _group_of=lambda t: group if t.mosaic_group == "g" else None,
+            _reach_clear_ts=lambda t, now: None)
+        ready[label] = SequenceEngine._group_ready_ts(
+            stand_in, group, [member], {}, {id(member): {"state": "ready"}},
+            1000.0)
+    assert ready == {"in the wait": 1000.0 + wait, "control": 1000.0}, (
+        f"group_ready_ts reads {ready}; 1.6 says it is the wait's end "
+        f"during a deferral wait, and the earliest time without one")
+
+
+def _one_panel_run():
+    """A one-panel ``GroupRun``, fresh: the state `_restore_group_pier`
+    writes into."""
+    from astrodeck.sequence import group_rules
+    return group_rules.GroupRun({"p": "1-1"}, max_failed_visits=3)
+
+
+def test_3_4_5_1_5_7_and_5_9_say_the_pier_record_as_s3_built_it(
+        monkeypatch):
+    """3.4 says ``Session`` gains ``group_pier`` (S3, #312, S3 orchestrator
+    ruling 4), written only through ``note_group_pier``, with
+    ``SESSION_SCHEMA`` still 1 and no ``ui/src/types.ts`` mirror yet. 5.1
+    says the group state is recomputed at a restart but for ``set_aside``
+    and ``flipped``. 5.7 says what the record holds, when
+    `_persist_group_pier` writes it and saves at once, what
+    ``note_group_pier`` refuses, and that `start` and `_start_groups` put
+    tonight's back (`_restore_group_pier`), in one flagged line; another
+    night's record is history. 5.9 says ResumeArm puts a flipped group's
+    panels past the meridian first (`_past_meridian_first`), past by
+    ``MERIDIAN_SIDE_MARGIN_S``, an order and not a filter.
+
+    The code: a ``Session``'s ``group_pier`` replaces a group's record,
+    refuses an empty night and a side that is not east, west or None,
+    never verifies an unread side, and reads one night's record, a record
+    that is not a dict as none; ``SESSION_SCHEMA`` is 1; ``types.ts`` does
+    not name it; `_persist_group_pier` returns early on an unmoved state,
+    writes with ``night_key`` and saves; `start` keeps what
+    ``group_pier_on`` answers and `_start_groups` hands it to
+    `_restore_group_pier`, which, asked of a stand-in engine, starts the
+    group flipped on its side, verified, in one line flagged
+    ``site_derived``, and leaves a group with no record alone (the
+    control); and `recentre_candidates`, with the run's gating and the
+    meridian countdown stood in for (no site is read), puts the panel past
+    the meridian first only for a group flipped that night, with the site
+    set (not with no site, nor at the 0,0 default, whose longitude the
+    helper could read), and leaves a panel inside the band behind.
+
+    RED under mutant "5.7 without the pier-record paragraph":
+
+        AssertionError: 5.7 must say: "**The group's pier change is kept for
+        the night** (S3, #312, S3 orchestrator ruling 4)"
+        assert False
+
+    RED under mutant "3.4 without the group_pier bullet":
+
+        AssertionError: 3.4 must say: "`Session.group_pier` holds each group's
+        pier state for the night (S3, #312, S3 orchestrator ruling 4), written
+        only through `Session.note_group_pier`"
+        assert False
+
+    RED under mutant "5.9 without the flipped group's order":
+
+        AssertionError: 5.9's re-centre bullet must say: '(S3, #312, S3
+        orchestrator ruling 4; `_past_meridian_first`)'
+        assert False
+
+    RED under the session.py mutant "group_pier_on reads any night"
+    (``or rec.get("night") != night`` removed):
+
+        AssertionError: group_pier reads ({'night': '2026-09-25', 'flipped':
+        True, 'side': 'west', 'verified': True}, {'night': '2026-09-25',
+        'flipped': True, 'side': 'west', 'verified': True}, False, None); 5.7
+        says the latest record, for its night only, an unread side never
+        verified, and a non-record as none
+        assert ({'flipped': ..., False, None) == ({'flipped': ..., False, None)
+          At index 1 diff: {'night': '2026-09-25', 'flipped': True, 'side':
+          'west', 'verified': True} != None
+          Use -v to get more diff
+
+    RED under the engine.py mutant "a restart restores nothing"
+    (`_restore_group_pier`'s ``run.flipped = bool(rec.get("flipped"))``
+    made ``run.flipped = False``):
+
+        AssertionError: _restore_group_pier gives {'record': (False, {'g':
+        'west'}, {'g'}, []), 'control': (False, {}, set(), [])}; 5.7 says a
+        group with a record starts flipped on its side, verified, in one
+        flagged line, and one without is left alone
+        assert {'control': (...}, {'g'}, [])} == {'control': (...'g'}, [True])}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'record': (False, {'g': 'west'}, {'g'}, [])} != {'record': (True,
+          {'g': 'west'}, {'g'}, [True])}
+          Use -v to get more diff
+
+    RED under the engine.py mutant "start keeps no record" (`start`'s
+    ``self._group_pier_tonight[gid] = rec`` made ``pass``):
+
+        AssertionError: start no longer keeps tonight's pier records, or
+        _start_groups no longer puts them back; 5.7 says both
+        assert ([])
+
+    RED under the engine.py mutant "the record is never saved"
+    (`_persist_group_pier`'s ``session_store.save_run_state(...)`` made
+    ``pass``):
+
+        AssertionError: _persist_group_pier (returns on an unmoved state, notes
+        it with tonight's night key, saves) = (True, True, False); 5.7 says all
+        three
+        assert (True, True, False) == (True, True, True)
+          At index 2 diff: False != True
+          Use -v to get more diff
+
+    RED under the resume_arm.py mutant "no meridian order" (``if gate and
+    flipped_tonight(group):`` made ``if False:``):
+
+        AssertionError: recentre_candidates orders {'flipped tonight': ['1-1',
+        '1-2', '1-3'], 'another night': ['1-1', '1-2', '1-3'], 'site at the
+        default': ['1-1', '1-2', '1-3'], 'site unset': ['1-1', '1-2', '1-3']};
+        5.9 says a group flipped tonight has its panels past the meridian band
+        first, with the site set, and nothing else moves
+        assert {'another nig...'1-2', '1-3']} == {'another nig...'1-2', '1-3']}
+          Omitting 3 identical items, use -vv to show
+          Differing items:
+          {'flipped tonight': ['1-1', '1-2', '1-3']} != {'flipped tonight':
+          ['1-3', '1-1', '1-2']}
+          Use -v to get more diff
+
+    RED under the resume_arm.py mutant "past at the crossing" (``<=
+    -band_h`` made ``<= 0.0``):
+
+        AssertionError: recentre_candidates orders {'flipped tonight': ['1-2',
+        '1-3', '1-1'], 'another night': ['1-1', '1-2', '1-3'], 'site at the
+        default': ['1-1', '1-2', '1-3'], 'site unset': ['1-1', '1-2', '1-3']};
+        5.9 says a group flipped tonight has its panels past the meridian band
+        first, with the site set, and nothing else moves
+        assert {'another nig...'1-2', '1-3']} == {'another nig...'1-2', '1-3']}
+          Omitting 3 identical items, use -vv to show
+          Differing items:
+          {'flipped tonight': ['1-2', '1-3', '1-1']} != {'flipped tonight':
+          ['1-3', '1-1', '1-2']}
+          Use -v to get more diff
+
+    RED under the resume_arm.py mutant "the order without the site guard"
+    (``if gate and flipped_tonight(group):`` made ``if
+    flipped_tonight(group):``), added by S3-SPEC4's verifier, where the
+    "site unset" case alone stayed green because `_past_meridian_first`
+    finds no longitude on no site:
+
+        AssertionError: recentre_candidates orders {'flipped tonight': ['1-3',
+        '1-1', '1-2'], 'another night': ['1-1', '1-2', '1-3'], 'site at the
+        default': ['1-3', '1-1', '1-2'], 'site unset': ['1-1', '1-2', '1-3']};
+        5.9 says a group flipped tonight has its panels past the meridian band
+        first, with the site set, and nothing else moves
+        assert {'another nig...'1-2', '1-3']} == {'another nig...'1-2', '1-3']}
+          Omitting 3 identical items, use -vv to show
+          Differing items:
+          {'site at the default': ['1-3', '1-1', '1-2']} != {'site at the
+          default': ['1-1', '1-2', '1-3']}
+          Use -v to get more diff
+
+    RED under the types.ts mutant "the UI mirrors group_pier" (a
+    ``group_pier?`` field added to ``Session``, in the scratch copy of
+    ``ui/src``):
+
+        AssertionError: ui/src/types.ts now mirrors group_pier; 3.4 says it
+        does not yet: say it is mirrored
+        assert not True
+    """
+    from astrodeck.sequence import schedule
+    from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
+    from astrodeck.sequence.session import Session
+    s34 = _section("3.4")
+    _says(s34, ("group_pier: dict[str, Any] = {}",
+                "`Session.group_pier` holds each group's pier state for the "
+                "night (S3, #312, S3 orchestrator ruling 4), written only "
+                "through `Session.note_group_pier`",
+                "with `SESSION_SCHEMA` still 1, and `ui/src/types.ts` does "
+                "not mirror it yet"), "3.4")
+    s51 = _section("5.1")
+    _says(s51, ("and `flipped` to `Session.group_pier` with the side the "
+                "group's hops measured (S3, #312",), "5.1")
+    stale = "that is never persisted" in s51
+    assert not stale, "5.1 still says the group state is never persisted"
+    s57 = _section("5.7")
+    _says(s57, ("**The group's pier change is kept for the night** (S3, "
+                "#312, S3 orchestrator ruling 4)",
+                "`{night, flipped, side, verified}`",
+                "`_persist_group_pier` writes it with the "
+                "`events.night_key()` of the moment and saves the session "
+                "at once", "but only when the state has moved",
+                "`Session.note_group_pier` replaces the group's record, "
+                "refuses an empty night key and any side but those three, "
+                "and never marks an unread side verified",
+                "`start` reads tonight's records (`Session.group_pier_on`), "
+                "and `_start_groups` puts each back (`_restore_group_pier`)",
+                "flagged site-derived (6.9)",
+                "Another night's record is history",
+                "a restart still starts that one empty"), "5.7")
+    bullet = _line(_section("5.9"), "- ResumeArm `_recover` re-centres")
+    _says(bullet, ("(S3, #312, S3 orchestrator ruling 4; "
+                   "`_past_meridian_first`)", "`MERIDIAN_SIDE_MARGIN_S`",
+                   "an order and not a filter"), "5.9's re-centre bullet")
+    # The session's half.
+    assert "group_pier" in Session.model_fields and \
+        session_mod.SESSION_SCHEMA == 1
+    s = Session(status="dormant", plan=SequencePlan(name="p", targets=[]))
+    s.note_group_pier("g", night="2026-09-25", flipped=False, side="east",
+                      verified=False)
+    s.note_group_pier("g", night="2026-09-25", flipped=True, side="west",
+                      verified=True)
+    unread = s.note_group_pier("u", night="2026-09-25", flipped=True,
+                               side=None, verified=True)
+    s.group_pier["junk"] = "not a record"
+    reads = (s.group_pier_on("g", "2026-09-25"),
+             s.group_pier_on("g", "2026-09-26"), unread["verified"],
+             s.group_pier_on("junk", "2026-09-25"))
+    assert reads == ({"night": "2026-09-25", "flipped": True, "side": "west",
+                      "verified": True}, None, False, None), (
+        f"group_pier reads {reads}; 5.7 says the latest record, for its "
+        f"night only, an unread side never verified, and a non-record as "
+        f"none")
+    for bad in ({"night": ""}, {"side": "north"}):
+        kw = {"night": "2026-09-25", "flipped": True, "side": "west",
+              "verified": True, **bad}
+        with pytest.raises(ValueError):
+            s.note_group_pier("g", **kw)
+    types = (UI_SRC / "types.ts").read_text(encoding="utf-8")
+    mirrored = "group_pier" in types
+    assert not mirrored, (
+        "ui/src/types.ts now mirrors group_pier; 3.4 says it does not yet: "
+        "say it is mirrored")
+    # The engine's half: written when it moves and saved, read at start,
+    # put back by _start_groups.
+    persist = _tree(SequenceEngine._persist_group_pier)
+    unmoved = [n for n in ast.walk(persist) if isinstance(n, ast.If)
+               and ast.unparse(n.test)
+               == "self._group_pier_saved.get(group.id) == state"
+               and isinstance(n.body[0], ast.Return)]
+    noted = [c for c in _calls(persist, "note_group_pier")
+             if ast.unparse(_keyword_node(c, "night") or ast.Constant(None))
+             == "night_key(time.time())"]
+    saved = _calls(persist, "save_run_state")
+    shape = (bool(unmoved), bool(noted), bool(saved))
+    assert shape == (True, True, True), (
+        f"_persist_group_pier (returns on an unmoved state, notes it with "
+        f"tonight's night key, saves) = {shape}; 5.7 says all three")
+    kept = _assigns(_tree(SequenceEngine.start),
+                    "self._group_pier_tonight[gid]", "rec")
+    restored = _self_calls(_tree(SequenceEngine._start_groups),
+                           "_restore_group_pier")
+    assert kept and restored, (
+        "start no longer keeps tonight's pier records, or _start_groups no "
+        "longer puts them back; 5.7 says both")
+    logged: list = []
+    monkeypatch.setattr(engine_mod, "bus", SimpleNamespace(
+        log=lambda *a, **k: logged.append((a, k))))
+    group = TargetGroup(id="g", name="M31")
+    back = {}
+    for label, records in (("record", {"g": s.group_pier_on(
+            "g", "2026-09-25")}), ("control", {})):
+        grun = _one_panel_run()
+        stand_in = SimpleNamespace(_group_pier_tonight=records,
+                                   _group_side={},
+                                   _group_side_verified=set(),
+                                   _group_pier_saved={})
+        logged.clear()
+        SequenceEngine._restore_group_pier(stand_in, group, grun)
+        back[label] = (grun.flipped, stand_in._group_side,
+                       stand_in._group_side_verified,
+                       [k.get("site_derived") for _a, k in logged])
+    assert back == {"record": (True, {"g": "west"}, {"g"}, [True]),
+                    "control": (False, {}, set(), [])}, (
+        f"_restore_group_pier gives {back}; 5.7 says a group with a record "
+        f"starts flipped on its side, verified, in one flagged line, and "
+        f"one without is left alone")
+    # ResumeArm's half: the meridian countdown and the gating stood in for,
+    # so no site is read. Panel 1-3 is an hour past the meridian, 1-2 is
+    # 3.6 s past it, inside the run's band, and 1-1 is before it.
+    band_h = engine_mod.MERIDIAN_SIDE_MARGIN_S / 3600.0
+    hours = {1.0: 1.0, 2.0: -0.001, 3.0: -1.0}
+    assert 0.001 < band_h, "premise: 3.6 s past the crossing is in the band"
+    monkeypatch.setattr(schedule, "gating_status",
+                        lambda t, site, tw, now: {"state": "ready"})
+    monkeypatch.setattr(schedule, "hours_to_meridian_flip",
+                        lambda ra_hours, lon, now: hours[ra_hours])
+    panels = [Target(name=f"M31 1-{c + 1}", ra_hours=float(c + 1),
+                     dec_deg=10.0, mosaic_group="g", panel_row=0,
+                     panel_col=c, steps=[ExposureStep(
+                         filter="L", exposure_s=60.0, count=1)])
+              for c in range(3)]
+    flipped = Session(status="dormant", plan=SequencePlan(
+        name="p", targets=panels, groups=[TargetGroup(id="g", name="M31")]))
+    flipped.note_group_pier("g", night="2026-09-25", flipped=True,
+                            side="west", verified=True)
+    site = {"is_default": False, "longitude": 0.0}
+    # The 0,0 default carries a longitude `_past_meridian_first` can read, so
+    # only the site-set guard in `recentre_candidates` keeps it in order; with
+    # no site at all the helper itself finds no longitude.
+    default = {"is_default": True, "longitude": 0.0}
+    order = {}
+    for label, night, kw in (
+            ("flipped tonight", "2026-09-25", {"site": site, "now": 1.0}),
+            ("another night", "2026-09-26", {"site": site, "now": 1.0}),
+            ("site at the default", "2026-09-25",
+             {"site": default, "now": 1.0}),
+            ("site unset", "2026-09-25", {})):
+        picked = resume_arm_mod.recentre_candidates(flipped, night, **kw)
+        order[label] = [t.name[-3:] for t in picked]
+    assert order == {"flipped tonight": ["1-3", "1-1", "1-2"],
+                     "another night": ["1-1", "1-2", "1-3"],
+                     "site at the default": ["1-1", "1-2", "1-3"],
+                     "site unset": ["1-1", "1-2", "1-3"]}, (
+        f"recentre_candidates orders {order}; 5.9 says a group flipped "
+        f"tonight has its panels past the meridian band first, with the "
+        f"site set, and nothing else moves")
+
+
+#: 3.5's S3 refusals: the bullet as the spec opens it, and what
+#: ``plan_identity_errors`` says for a plan with that fault alone.
+_S3_REFUSALS = {
+    "- a repeated group id (S3, #307)":
+        "group id 'g1' is used by 2 groups",
+    "- a member listed in its own group's `skipped_ids` (S3, #307)":
+        "target 'A' is in group 'g1' and in its skipped_ids",
+    "- a member whose `after_group` is its own group (S3, #307)":
+        "it waits for itself, so the gate never opens",
+    "- a cycle of `after_group` gates between groups, a mutual pair "
+    "included (S3, #307; `_gate_cycles`)":
+        "wait for each other ('g1' -> 'g2' -> 'g1')",
+    "- a negative `panel_row` or `panel_col` (S3, #287)":
+        "has panel row -1; panel rows and columns are 0-based",
+}
+
+
+def _identity_plan(fault: str = ""):
+    """Two groups and a follower, which ``plan_identity_errors`` passes:
+    M33's member waits for M31, which is no cycle, M31's ``skipped_ids``
+    names M33's member, which is another group's list, and the follower
+    waits for M33. ``fault`` names one of 3.5's S3 refusals to commit."""
+    from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
+
+    def target(name: str, **kw) -> Target:
+        return Target(name=name, ra_hours=1.0, dec_deg=10.0, steps=[
+            ExposureStep(filter="L", exposure_s=60.0, count=1)], **kw)
+
+    a = target("A", mosaic_group="g1", panel_row=0, panel_col=0)
+    b = target("B", mosaic_group="g1", panel_row=0, panel_col=1)
+    c = target("C", mosaic_group="g2", panel_row=0, panel_col=0,
+               after_group="g1")
+    f = target("F", after_group="g2")
+    groups = [TargetGroup(id="g1", name="M31", skipped_ids=[c.id]),
+              TargetGroup(id="g2", name="M33")]
+    if fault == "repeated":
+        groups.append(TargetGroup(id="g1", name="M31 again"))
+    elif fault == "skipped":
+        groups[0].skipped_ids.append(a.id)
+    elif fault == "self":
+        a.after_group = "g1"
+    elif fault == "cycle":
+        a.after_group = "g2"
+    elif fault == "negative":
+        a.panel_row = -1
+    return SequencePlan(name="p", targets=[a, b, c, f], groups=groups)
+
+
+def _reads_after_group(tree: ast.AST) -> set[str]:
+    """The functions under ``tree`` whose code reads a target's
+    ``after_group``, as an attribute or through ``getattr``."""
+    found = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for n in ast.walk(fn):
+            attr = (isinstance(n, ast.Attribute) and n.attr == "after_group"
+                    and isinstance(n.ctx, ast.Load))
+            got = (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                   and n.func.id == "getattr" and len(n.args) >= 2
+                   and isinstance(n.args[1], ast.Constant)
+                   and n.args[1].value == "after_group")
+            if attr or got:
+                found.add(fn.name)
+    return found
+
+
+def test_3_5_says_the_identity_refusals_as_s3_built_them():
+    """3.5 lists the five refusals S3 added to ``plan_identity_errors``
+    (#307, #287): a repeated group id, a member in its own group's
+    ``skipped_ids``, a member that waits for its own group, a cycle of
+    gates between groups, and a negative panel index; and says the two gate
+    refusals grade the plan as written, because the engine reads an
+    ``after_group`` only for a target in no group (`_follower_gate`, #330).
+
+    The code: a plan with two groups, a member gated on the other group,
+    another group's skip naming it and a follower passes (the control);
+    the same plan with each fault alone gives exactly that fault's sentence;
+    a knot of three groups is one sentence that names all three; a negative
+    index on a target in no group is refused too; and in the engine only
+    `_follower_gate` reads an ``after_group``, called only for a target
+    whose group is None.
+
+    RED under mutant "3.5 without the cycle bullet":
+
+        AssertionError: expected exactly one line starting '- a cycle of
+        `after_group` gates between groups, a mutual pair included (S3, #307;
+        `_gate_cycles`)', found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under mutant "3.5 without the #330 note":
+
+        AssertionError: 3.5 must say: 'The two gate refusals grade the plan as
+        written'
+        assert False
+
+    RED under the models.py mutant "a repeated group id passes" (the
+    repeat loop run over ``{}``):
+
+        AssertionError: plan_identity_errors answers {'repeated': []}; 3.5 says
+        each fault alone is refused, in one sentence
+        assert {'repeated': []} == {}
+          Left contains 1 more item:
+          {'repeated': []}
+          Use -v to get more diff
+
+    RED under the models.py mutant "a skipped member passes" (``if t.id in
+    skipped.get(t.mosaic_group, ()):`` made ``if False:``):
+
+        AssertionError: plan_identity_errors answers {'skipped': []}; 3.5 says
+        each fault alone is refused, in one sentence
+        assert {'skipped': []} == {}
+          Left contains 1 more item:
+          {'skipped': []}
+          Use -v to get more diff
+
+    RED under the models.py mutant "a self-gate passes" (``elif
+    t.after_group == t.mosaic_group:`` made ``elif False:``):
+
+        AssertionError: plan_identity_errors answers {'self': []}; 3.5 says
+        each fault alone is refused, in one sentence
+        assert {'self': []} == {}
+          Left contains 1 more item:
+          {'self': []}
+          Use -v to get more diff
+
+    RED under the models.py mutant "no cycle check" (the loop over
+    ``_gate_cycles(plan)`` run over ``[]``):
+
+        AssertionError: plan_identity_errors answers {'cycle': []}; 3.5 says
+        each fault alone is refused, in one sentence
+        assert {'cycle': []} == {}
+          Left contains 1 more item:
+          {'cycle': []}
+          Use -v to get more diff
+
+    RED under the models.py mutant "-1 passes" (``at < 0`` made ``at <
+    -1``):
+
+        AssertionError: plan_identity_errors answers {'negative': []}; 3.5 says
+        each fault alone is refused, in one sentence
+        assert {'negative': []} == {}
+          Left contains 1 more item:
+          {'negative': []}
+          Use -v to get more diff
+
+    RED under the engine.py mutant "a member's gate is read" (``if
+    self._group_runs and self._group_of(target) is None:`` made ``if
+    self._group_runs:``), the case where the #330 note is stale:
+
+        AssertionError: (functions reading after_group, calls of
+        _follower_gate, calls only for a target in no group) =
+        (['_follower_gate'], 1, 0); 3.5 says a member's gate is not read yet
+        (#330): say what was built
+        assert ((['_follower_gate'], 1, 0) == (['_follower_gate'], 1, 1)
+          At index 2 diff: 0 != 1
+          Use -v to get more diff)
+    """
+    from astrodeck.sequence.models import (ExposureStep, SequencePlan,
+                                           Target, plan_identity_errors)
+    s35 = _section("3.5")
+    for bullet in _S3_REFUSALS:
+        _line(s35, bullet)
+    _says(s35, ("The two gate refusals grade the plan as written",
+                "only for a target that is in no group (`_follower_gate`)",
+                "does not wait for it (#330)"), "3.5")
+    assert plan_identity_errors(_identity_plan()) == [], (
+        "the control plan is refused; 3.5 refuses none of it")
+    faults = dict(zip(("repeated", "skipped", "self", "cycle", "negative"),
+                      _S3_REFUSALS.values()))
+    got = {fault: plan_identity_errors(_identity_plan(fault))
+           for fault in faults}
+    wrong = {fault: errors for fault, errors in got.items()
+             if len(errors) != 1 or faults[fault] not in errors[0]}
+    assert wrong == {}, (
+        f"plan_identity_errors answers {wrong}; 3.5 says each fault alone "
+        f"is refused, in one sentence")
+
+    def target(name: str, **kw) -> Target:
+        return Target(name=name, ra_hours=1.0, dec_deg=10.0, steps=[
+            ExposureStep(filter="L", exposure_s=60.0, count=1)], **kw)
+
+    knot = SequencePlan(name="p", targets=[
+        target("A", mosaic_group="g1", after_group="g3"),
+        target("C", mosaic_group="g2", after_group="g1"),
+        target("D", mosaic_group="g3", after_group="g2")], groups=[
+        TargetGroup(id=gid, name=name)
+        for gid, name in (("g1", "M31"), ("g2", "M33"), ("g3", "M81"))])
+    three = plan_identity_errors(knot)
+    assert len(three) == 1 and all(g in three[0] for g in (
+        "'g1' ('M31')", "'g2' ('M33')", "'g3' ('M81')")), (
+        f"a knot of three groups reads {three}; 3.5 says one sentence per "
+        f"knot")
+    alone = _identity_plan()
+    alone.targets[3].panel_col = -2
+    assert [e for e in plan_identity_errors(alone)
+            if "0-based" in e] != [], (
+        "a negative index on a target in no group passes; 3.5 checks every "
+        "target, member or not")
+    # #330: only a target in no group has its gate read.
+    tree = ast.parse(inspect.getsource(engine_mod))
+    readers = _reads_after_group(tree)
+    guarded = [n for n in ast.walk(tree) if isinstance(n, ast.If)
+               and "self._group_of(target) is None" in ast.unparse(n.test)]
+    calls = _self_calls(tree, "_follower_gate")
+    held = [c for c in calls
+            if any(_within(n.body, c) for n in guarded)]
+    gates = (sorted(readers), len(calls), len(held))
+    assert gates == (["_follower_gate"], len(calls), len(calls)) and calls, (
+        f"(functions reading after_group, calls of _follower_gate, calls only "
+        f"for a target in no group) = {gates}; 3.5 says a member's gate is "
+        f"not read yet (#330): say what was built")
+
+
+def test_1_7_says_slew_left_the_palette_the_wizard_the_brief_and_examples():
+    """1.7 says SLEW's retirement is built (S3, #189): ``LEGACY_TYPES`` is
+    ``{"slew"}``, mirrored in ``nodeDefs.ts``; ``NODE_DEFS`` still holds 21
+    types and ``PALETTE_GROUPS`` offers the other 20 once; the palette's
+    type check fails on a legacy type; L1's text, quoted; and the wizard
+    lanes, the brief and the seven Examples draw no SLEW, their plans moved
+    by the count mode alone, pinned in the two test files it names; and both
+    UIs' START BLANK drew one until the integration of S3, and now draws a
+    TARGET and a CAPTURE LOOP from the Created-as column (#340).
+
+    The code: the sets and the palette; the UI's ``LEGACY_TYPES`` and the
+    palette's type check; L1 as the doctor writes it for a SLEW with its
+    missing-key values, less its leading marker; every wizard kind's lane
+    and every Example with no SLEW; the brief of the M31 Example with a
+    legacy SLEW added, which says nothing about plate solving; the two
+    named pins, present in their files; and both UIs' ``BLANK_NODES`` a
+    TARGET and a CAPTURE LOOP, built through ``createParams``.
+
+    UNTIL THE INTEGRATION OF S3 the last guard held the other way round: 1.7
+    said both UIs' START BLANK still drew a SLEW (#340), and the guard went
+    red when either stopped ("say what was built"). The integration fixed
+    #340 in both UIs and turned the guard and the sentence with it.
+
+    RED under mutant "1.7 without its as-built paragraph":
+
+        AssertionError: 1.7 must say: '**As built** (S3, #189)'
+        assert False
+
+    RED under the doctor.py mutant "L1 says 'the mount'" ("never reached
+    the run" made "never reached the mount"):
+
+        AssertionError: 1.7 must say: '"SLEW + CENTER - this stage is part of
+        the TARGET block now. Its 0.5 arcmin tolerance never reached the mount,
+        which centred to 1.2 arcmin. Delete it and set centring on the
+        TARGET."'
+        assert False
+
+    RED under the nodes.py mutant "nothing is legacy" (``LEGACY_TYPES``
+    made ``frozenset()``):
+
+        AssertionError: (legacy, types, offered, offered is every other type) =
+        (set(), 21, 20, False); 1.7 says slew alone is legacy, 21 types, the
+        other 20 offered once
+        assert (set(), 21, 20, False) == ({'slew'}, 21, 20, True)
+          At index 0 diff: set() != {'slew'}
+          Use -v to get more diff
+
+    RED under the examples.py mutant "M31 keeps a SLEW" (a SLEW + CENTER
+    node added to the M31 Example):
+
+        AssertionError: {'example-m31': ['n4']} still draw SLEW + CENTER; 1.7
+        says the wizard lanes and the Examples do not
+        assert {'example-m31': ['n4']} == {}
+          Left contains 1 more item:
+          {'example-m31': ['n4']}
+          Use -v to get more diff
+
+    RED under the tonight.py mutant "the SLEW sentence is back" (``brief``
+    appends "It slews and plate-solves to within 0.5 arcmin." for a SLEW):
+
+        AssertionError: the brief describes a legacy SLEW again; 1.7 says L1
+        names it and the brief does not
+        assert not True
+
+    RED under mutant "1.7 without the START BLANK sentence":
+
+        AssertionError: 1.7 must say: "Both UIs' START BLANK still draws one"
+        assert False
+
+    Since the integration, RED under mutant "1.7's START BLANK sentence as
+    S3-SPEC5 left it":
+
+        AssertionError: 1.7 must say: "Both UIs' START BLANK drew one until
+        the integration of S3"
+        assert False
+
+    and under the wizardModel.ts mutant "START BLANK draws a SLEW again"
+    (``{ type: "capture", x: 320, y: 120 }`` made ``{ type: "slew", x: 320,
+    y: 120 }``, in the scratch copy of ``ui/src``):
+
+        AssertionError: START BLANK draws (a SLEW, a CAPTURE LOOP, through
+        createParams): {'components/flows/FlowWizard.tsx': (False, True,
+        True), 'next/hubs/session/flows/create/wizardModel.ts': (True,
+        False, True)}; 1.7 says both UIs draw a TARGET and a CAPTURE LOOP
+        from the Created-as column (#340)
+
+    Before the integration, RED under the FlowWizard.tsx mutant "START BLANK
+    draws no SLEW" (the ``slew`` entry dropped from ``BLANK_NODES``, in the
+    scratch copy of ``ui/src``), the case where 1.7's #340 sentence was
+    stale:
+
+        AssertionError: START BLANK draws a SLEW:
+        {'components/flows/FlowWizard.tsx': False,
+        'next/hubs/session/flows/create/wizardModel.ts': True}; 1.7 says both
+        UIs still do (#340): say what was built
+        assert {'components/...del.ts': True} == {'components/...del.ts': True}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'components/flows/FlowWizard.tsx': False} !=
+          {'components/flows/FlowWizard.tsx': True}
+          Use -v to get more diff
+
+    RED under the palette.ts mutant "a legacy type may be offered" (the
+    ``[PaletteOffersLegacyType] extends [never] ? true : false`` arm made
+    ``true``, in the scratch copy of ``ui/src``):
+
+        AssertionError: (nodeDefs.ts mirrors LEGACY_TYPES, the palette's type
+        check asks for no legacy type) = (True, False); 1.7 says both
+        assert (True, False) == (True, True)
+          At index 1 diff: False != True
+          Use -v to get more diff
+    """
+    from astrodeck.flows import nodes, tonight, wizard
+    from astrodeck.flows.doctor import check
+    from astrodeck.flows.examples import examples
+    s17 = _section("1.7")
+    l1 = [i.text for i in check(_flow([("s", "slew", {})], []))
+          if "part of the TARGET block" in i.text]
+    marker = chr(0x25B8) + " "
+    assert len(l1) == 1 and l1[0].startswith(marker), l1
+    _says(s17, ("**As built** (S3, #189)", "`LEGACY_TYPES` is `{\"slew\"}`",
+                "`NODE_DEFS` still holds 21 types, `PALETTE_GROUPS` offers "
+                "each of the other 20 once",
+                "`PALETTE_COVERS_EVERY_NODE_TYPE` also fails the type check "
+                "when the palette offers a legacy type",
+                f"\"{l1[0][len(marker):]}\"",
+                "`brief` has no SLEW sentence",
+                "`wizard.py`'s lanes and the seven Examples no longer draw "
+                "SLEW", "Both UIs' START BLANK drew one until the "
+                "integration of S3", "it now draws a TARGET and a CAPTURE "
+                "LOOP, each made from the Created-as column (`BLANK_NODES` "
+                "and `createParams` in `FlowWizard.tsx` and `wizardModel.ts`, "
+                "#340)", "(`blankFlow.test.ts`)",
+                "(`test_flows_wizard.py`, `test_flows_examples_s3.py`)"),
+          "1.7")
+    offered = [t for _group, types in nodes.PALETTE_GROUPS for t in types]
+    shape = (set(nodes.LEGACY_TYPES), len(nodes.NODE_DEFS), len(offered),
+             sorted(offered) == sorted(set(nodes.NODE_DEFS)
+                                       - nodes.LEGACY_TYPES))
+    assert shape == ({"slew"}, 21, 20, True), (
+        f"(legacy, types, offered, offered is every other type) = {shape}; "
+        f"1.7 says slew alone is legacy, 21 types, the other 20 offered once")
+    defs = (UI_SRC / "components" / "flows" / "nodeDefs.ts").read_text(
+        encoding="utf-8")
+    palette = (UI_SRC / "components" / "flows" / "palette.ts").read_text(
+        encoding="utf-8")
+    guard = palette[palette.index(
+        "export const PALETTE_COVERS_EVERY_NODE_TYPE"):]
+    mirrored = ("LEGACY_TYPES: readonly LegacyNodeType[] = [\"slew\"];"
+                in defs, "PaletteOffersLegacyType" in guard.split(";")[0])
+    assert mirrored == (True, True), (
+        f"(nodeDefs.ts mirrors LEGACY_TYPES, the palette's type check asks "
+        f"for no legacy type) = {mirrored}; 1.7 says both")
+    drawn = {kind: [n.id for n in wizard.generate(kind, None, "").nodes
+                    if n.type == "slew"] for kind in wizard.KINDS}
+    drawn.update({e.id: [n.id for n in e.graph.nodes if n.type == "slew"]
+                  for e in examples()})
+    drawn = {k: v for k, v in drawn.items() if v}
+    assert drawn == {}, (f"{drawn} still draw SLEW + CENTER; 1.7 says the "
+                         f"wizard lanes and the Examples do not")
+    m31 = next(e for e in examples() if e.id == "example-m31")
+    legacy = m31.graph.model_copy(deep=True)
+    legacy.nodes.append(FlowNode(id="old", type="slew", x=0.0, y=0.0,
+                                 params={}))
+    said = "plate-solv" in tonight.brief(legacy)
+    assert not said, ("the brief describes a legacy SLEW again; 1.7 says L1 "
+                      "names it and the brief does not")
+    pins = {"test_flows_wizard.py":
+            "def test_dropping_slew_moved_no_wizard_plan_but_its_count(",
+            "test_flows_examples_s3.py":
+            "def test_each_plan_is_the_pre_s3_plan_but_for_the_count("}
+    missing = [f for f, pin in pins.items() if pin not in (
+        _SERVER / "tests" / f).read_text(encoding="utf-8")]
+    assert missing == [], (f"{missing} no longer hold the pin 1.7 names")
+    # #340, fixed in the integration of S3: both UIs' START BLANK draws a
+    # TARGET and a CAPTURE LOOP, each through `createParams`.
+    drawn = {}
+    for rel in ("components/flows/FlowWizard.tsx",
+                "next/hubs/session/flows/create/wizardModel.ts"):
+        src = (UI_SRC / rel).read_text(encoding="utf-8")
+        start = src.index("const BLANK_NODES")
+        table = src[start:src.index("];", start)]
+        drawn[rel] = ('type: "slew"' in table, 'type: "capture"' in table,
+                      "params: createParams(n.type)" in src)
+    assert drawn == {"components/flows/FlowWizard.tsx": (False, True, True),
+                     "next/hubs/session/flows/create/wizardModel.ts":
+                         (False, True, True)}, (
+        f"START BLANK draws (a SLEW, a CAPTURE LOOP, through createParams): "
+        f"{drawn}; 1.7 says both UIs draw a TARGET and a CAPTURE LOOP from "
+        f"the Created-as column (#340)")
+
+
+def test_s3_items_4_and_5_say_the_wizard_mosaic_and_tonight_as_built(
+        monkeypatch):
+    """Section 8's S3 says items 4 and 5 are built (S3, #189). Item 4: the
+    wizard's ``KIND_MOSAIC``, the camera field asked first and
+    ``NO_OPTICS_REASON`` without one, the angle never a default, "Rotate to
+    PA" refused with no rotator, no SLEW and the loop wire from the lane's
+    tail, a grid with another kind refused, and the eighth Example,
+    "M31 3x2, rotating". Item 5: `resolve_tonight`'s mosaic row
+    (`_mosaic_night`) with its panels' peak altitudes and ``band``, the
+    route gated on ``CAP_VIEW_SITE_DERIVED``, `_budget`'s ``panels`` and
+    ``hop_h``, the brief's mosaic sentences and `_campaign`'s panels; and
+    what is not built: the brief's grid rows by columns (#339) and no budget
+    row for a cycle mosaic (#338).
+
+    The code: ``KINDS``; a 2x3 answer with a camera field, its PA folded;
+    the same answer with no field, one target and 1.8's reason; the three
+    refusals and a grid with the Deep-sky kind; the eighth Example's
+    params and its six-panel rotating group; `_budget` over a 2x3 of Ha
+    subs with a goal, looped and not, with no hop cost and a measured one;
+    a two-filter block, whose measured hops its rows share by shutter time;
+    `_mosaic_night` with the altitude stamp stood in for (no site is read),
+    and with no coordinates; the real stamp's parameters, which hold no
+    site (#336); the brief with no hop cost and a measured one;
+    `_campaign` with no progress and with one; the eighth Example's budget,
+    which is empty; the route's decorator; and the two test files the
+    paragraph names, holding the pins it cites.
+
+    RED under mutant "S3 without its as-built paragraph":
+
+        AssertionError: section 8's S3 must say: '**As built** (S3, #189).
+        Items 4 and 5 are built.'
+        assert False
+
+    RED under the wizard.py mutant "the reason is dropped" (`_mosaic_params`'s
+    ``return None, NO_OPTICS_REASON`` made ``return None, None``):
+
+        AssertionError: the wizard answers {'field': (2, 3, 330.0, True, [],
+        False), 'no field': (1, 1, -1, False, [], False)}; S3 says a 2x3 with
+        the loop wire and no SLEW, the PA folded, and one target with the
+        reason when there is no field
+        assert ((2, 3, 330.0...(1, 1), False) == ((2, 3, 330.0... (1, 1), True)
+          At index 2 diff: False != True
+          Use -v to get more diff
+
+    RED under the wizard.py mutant "a rotator is assumed" (``and
+    rig.has_rotator is False`` made ``and False``):
+
+        AssertionError: the wizard answers ['no rotator']; S3 says it refuses
+        assert ['no rotator'] == []
+          Left contains one more item: 'no rotator'
+          Use -v to get more diff
+
+    RED under the examples.py mutant "a 1x3" (``"rows": 1`` added after
+    the eighth Example's overlap, which a dict literal keeps):
+
+        AssertionError: the eighth Example is ('example-m31-mosaic', 'M31 3x2,
+        rotating', {'rows': 1, 'cols': 3, 'overlap': 25, 'fovX': 1.346, 'fovY':
+        0.9, 'angle': 'Rotate to PA', 'rotation': 55.0}, 3, [('rotate',
+        55.0)]); S3 says M31 3x2 at 25%, 1.346 x 0.9 deg, Rotate to PA 55, six
+        panels in one rotating group
+        assert ('example-m31...tate', 55.0)]) == ('example-m31...tate', 55.0)])
+          At index 2 diff: {'rows': 1, 'cols': 3, 'overlap': 25, 'fovX': 1.346,
+          'fovY': 0.9, 'angle': 'Rotate to PA', 'rotation': 55.0} != {'rows':
+          2, 'cols': 3, 'overlap': 25, 'fovX': 1.346, 'fovY': 0.9, 'angle':
+          'Rotate to PA', 'rotation': 55.0}
+          Use -v to get more diff
+
+    RED under the tonight.py mutant "a mosaic goal deduped like a pool"
+    (``round(goal if live is None else goal * live, 2)`` made ``round(goal,
+    2)``):
+
+        AssertionError: _budget gives {('looped', None): [(2.0, 5.0, 6, None)],
+        ('looped', 150.0): [(2.0, 5.0, 6, 2.5)], ('one at a time', None):
+        [(2.0, 5.0, 6, None)], ('one at a time', 150.0): [(2.0, 5.0, 6,
+        0.25)]}; S3 says the live panels times the per-panel goal and tonight,
+        and the hops only once one is measured
+        assert {('looped', N....0, 6, 0.25)]} == {('looped', N....0, 6, 0.25)]}
+          Differing items:
+          {('looped', 150.0): [(2.0, 5.0, 6, 2.5)]} != {('looped', 150.0):
+          [(12.0, 5.0, 6, 2.5)]}
+          {('one at a time', 150.0): [(2.0, 5.0, 6, 0.25)]} != {('one at a
+          time', 150.0): [(12.0, 5.0, 6, 0.25)]}
+          {('looped', None): [(2.0, 5.0, 6, None)]} != {('looped', None):
+          [(12.0, 5.0, 6, None)]}
+          {('one at a time', None): [(2.0, 5.0, 6, None)]} != {('one at a
+          time', None): [(12.0, 5.0, 6, None)]}
+          Use -v to get more diff
+
+    RED under the tonight.py mutant "the seed stands in" (``hop_s =
+    _measured(hop_cost_s)`` made ``hop_s = _measured(hop_cost_s) or
+    150.0``):
+
+        AssertionError: _budget gives {('looped', None): [(12.0, 5.0, 6, 2.5)],
+        ('looped', 150.0): [(12.0, 5.0, 6, 2.5)], ('one at a time', None):
+        [(12.0, 5.0, 6, 0.25)], ('one at a time', 150.0): [(12.0, 5.0, 6,
+        0.25)]}; S3 says the live panels times the per-panel goal and tonight,
+        and the hops only once one is measured
+        assert {('looped', N....0, 6, 0.25)]} == {('looped', N....0, 6, 0.25)]}
+          Omitting 2 identical items, use -vv to show
+          Differing items:
+          {('looped', None): [(12.0, 5.0, 6, 2.5)]} != {('looped', None):
+          [(12.0, 5.0, 6, None)]}
+          {('one at a time', None): [(12.0, 5.0, 6, 0.25)]} != {('one at a
+          time', None): [(12.0, 5.0, 6, None)]}
+          Use -v to get more diff
+
+    RED under the tonight.py mutant "no band" (``out["band"] =
+    _band(out["panels"])`` made ``out["band"] = None``):
+
+        AssertionError: _mosaic_night gives (panels stamped, worst, best, and
+        with no coordinates panels, band, a reason) = (6, None, None, [], None,
+        True); S3 says every shot panel stamped and the band from the worst and
+        the best, and none with a reason when the block cannot be placed
+        assert (6, None, Non...], None, True) == (6, '1-1', '2...], None, True)
+          At index 1 diff: None != '1-1'
+          Use -v to get more diff
+
+    RED under the tonight.py mutant "the brief assumes a hop" (the brief's
+    ``hop = _measured(hop_cost_s)`` made ``hop = _measured(hop_cost_s) or
+    150.0``):
+
+        AssertionError: the brief says (the grid rows by columns, no hop
+        measured, a measured hop) = (True, False, True); S3 says it names the
+        grid rows by columns (#339), and a hop only once measured
+        assert (True, False, True) == (True, True, True)
+          At index 1 diff: False != True
+          Use -v to get more diff
+
+    RED under the tonight.py mutant "a mosaic needs a pool again" (``if
+    pool is None and mosaics:`` made ``if False:``):
+
+        AssertionError: _campaign gives {'none': (False, None, 0), 'progress':
+        (False, None, 0)}; S3 says per-panel rows from the progress answer,
+        with no pool
+        assert {'none': (Fal...lse, None, 0)} == {'none': (Fal...lse, True, 1)}
+          Differing items:
+          {'none': (False, None, 0)} != {'none': (False, False, 0)}
+          {'progress': (False, None, 0)} != {'progress': (False, True, 1)}
+          Use -v to get more diff
+
+    RED under mutant "S3 without the #338 sentence":
+
+        AssertionError: section 8's S3 must say: 'a cycle mosaic, the eighth
+        Example among them, has no budget row, and its hops are priced on no
+        row either (#338)'
+        assert False
+
+    RED under the tonight.py mutant "the grid columns by rows" (the brief's
+    ``{rows}x{cols}`` made ``{cols}x{rows}``), the case where the #339
+    clause is stale:
+
+        AssertionError: the brief says (the grid rows by columns, no hop
+        measured, a measured hop) = (False, True, True); S3 says it names the
+        grid rows by columns (#339), and a hop only once measured
+        assert (False, True, True) == (True, True, True)
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    RED under the tonight.py mutant "every step has a goal" (``goal =
+    _num(step.get("integration_goal_h"))`` made ``... or 1.0``), the case
+    where the #338 sentence is stale:
+
+        AssertionError: the eighth Example's budget rows (goal_h, tonight_h,
+        hop_h) are [(6.0, 0.0, 5.33)]; S3 says a cycle mosaic has no budget row
+        yet (#338): say what was built
+        assert [(6.0, 0.0, 5.33)] == []
+          Left contains one more item: (6.0, 0.0, 5.33)
+          Use -v to get more diff
+
+    RED under the app.py mutant "Tonight open to a viewer" (the route's
+    ``CAP_VIEW_SITE_DERIVED`` dependency made ``CAP_VIEW_STATUS``):
+
+        AssertionError: the Tonight route is no longer CAP_VIEW_SITE_DERIVED
+        assert None
+
+    Added by S3-SPEC4's verifier, whose two mutants below stayed green on
+    the test as first written (one filter, so a row's share was all of it;
+    and #336 not read at all):
+
+    RED under the tonight.py mutant "each row pays every hop" (``hops_h *
+    (_per_panel_s(step) / block_s if block_s > 0 else 1.0)`` made ``hops_h *
+    (1.0 if block_s > 0 else 1.0)``):
+
+        AssertionError: a two-filter block's hop_h rows are [('Ha', 0.25),
+        ('OIII', 0.25)]; S3 says the block's hops are shared among its rows by
+        shutter time
+        assert [('Ha', 0.25), ('OIII', 0.25)] == [('Ha', 0.08), ('OIII', 0.17)]
+          At index 0 diff: ('Ha', 0.25) != ('Ha', 0.08)
+          Use -v to get more diff
+
+    RED under the framing.py mutant "the stamp takes a site" (``site=None``
+    added to `_stamp_transit_alt`'s parameters, the shape a #336 fix has),
+    the case where the #336 sentence is stale:
+
+        AssertionError: framing._stamp_transit_alt takes ['date', 'panels',
+        'site']; S3 says the panel altitudes read the hub's site (#336): say
+        what was built
+        assert ['date', 'panels', 'site'] == ['date', 'panels']
+          Left contains one more item: 'site'
+          Use -v to get more diff
+
+    Since S3-SPEC5 the paragraph opens on all five items, and items 1 to 3, the
+    tests and what was not built are
+    test_s3_says_items_1_to_3_the_tests_and_what_was_not's.
+
+    RED under mutant "S3 back to items 4 and 5":
+
+        AssertionError: section 8's S3 must say: '**As built** (S3, #189).
+        Items 1 to 5 are built.'
+        assert False
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
+    """
+    from astrodeck.catalog import framing
+    from astrodeck.flows import tonight, wizard
+    from astrodeck.flows.compile import loop_wires
+    from astrodeck.flows.examples import examples
+    from astrodeck.flows.rig import RigFacts
+    s3 = _section("S3:")
+    _says(s3, ("**As built** (S3, #189). Items 1 to 5 are built.",
+               "Item 4 is the `KIND_MOSAIC` kind of `flows/wizard.py`, "
+               "\"Mosaic\", in `KINDS`",
+               "The camera field is `rig.fov_deg`, asked first",
+               "`NO_OPTICS_REASON`, 1.8's sentence word for word",
+               "folded into [0, 360)", "\"Rotate to PA\" is refused when the "
+               "rig says it has no rotator",
+               "A grid or an angle given with another kind is refused",
+               "`example-m31-mosaic`, \"M31 3x2, rotating\"",
+               "three columns by two rows at 25% overlap",
+               "a 1.346 x 0.9 deg field", "Rotate to PA 55",
+               "six panels in one rotating group",
+               "(`test_flows_examples_s3.py`)",
+               "(`test_flows_wizard_mosaic.py`)",
+               "gets one `compute_night`, on its centre",
+               "`framing._stamp_transit_alt`", "`band`, the worst and the "
+               "best panel", "The route is `CAP_VIEW_SITE_DERIVED`",
+               "`hop_h`: None until a measured hop cost is passed "
+               "(`hop_cost_s`), never the engine's seed",
+               "shared among the block's rows by shutter time",
+               "says when the hop is not measured yet",
+               "`_campaign` takes per-panel rows from the progress route's "
+               "answer (`progress`), with no pool required", "(#336)",
+               "it writes the grid rows by columns, \"2x3\" for the "
+               "Example's 3x2 (#339)", "a cycle mosaic, the eighth Example "
+               "among them, has no budget row, and its hops are priced on no "
+               "row either (#338)"),
+          "section 8's S3")
+    # Item 4: the wizard.
+    assert wizard.KIND_MOSAIC == "Mosaic" and wizard.KIND_MOSAIC in \
+        wizard.KINDS
+    reason = _line(_section("1.8"), "- **Camera field.**")
+    assert f"(\"{wizard.NO_OPTICS_REASON}\")" in reason, (
+        "NO_OPTICS_REASON is no longer the sentence 1.8 quotes")
+    rig = RigFacts(fov_deg=(2.0, 1.33), has_rotator=True)
+    mosaic = dict(rows=2, cols=3, angle_mode=wizard.ROTATE_TO_PA)
+    answers = {}
+    for label, kw in (("field", {"pa_deg": -30.0, "rig": rig}),
+                      ("no field", {"pa_deg": 30.0, "rig": None})):
+        ans = wizard.generate_answer(wizard.KIND_MOSAIC, target="",
+                                     **mosaic, **kw)
+        graph = ans.record.graph
+        block = next(n for n in graph.nodes if n.type == "target")
+        answers[label] = (block.params.get("rows"), block.params.get("cols"),
+                          block.params.get("rotation"),
+                          bool(loop_wires(graph, block)),
+                          [n.id for n in graph.nodes if n.type == "slew"],
+                          wizard.NO_OPTICS_REASON in ans.notes)
+    shape = (answers["field"], answers["no field"][:2],
+             answers["no field"][5])
+    assert shape == ((2, 3, 330.0, True, [], False), (1, 1), True), (
+        f"the wizard answers {answers}; S3 says a 2x3 with the loop wire and "
+        f"no SLEW, the PA folded, and one target with the reason when there "
+        f"is no field")
+    refusals = {"no angle": dict(rig=rig),
+                "no rotator": dict(rig=RigFacts(fov_deg=(2.0, 1.33),
+                                                has_rotator=False),
+                                   pa_deg=30.0),
+                "nothing measured": dict(rig=rig, use_measured=True)}
+    passed = []
+    for label, kw in refusals.items():
+        try:
+            wizard.generate_answer(wizard.KIND_MOSAIC, target="", **mosaic,
+                                   **kw)
+            passed.append(label)
+        except ValueError:
+            pass
+    try:
+        wizard.generate_answer(wizard.KIND_DEEP_SKY, target="", rows=2,
+                               cols=3)
+        passed.append("a grid with another kind")
+    except ValueError:
+        pass
+    assert passed == [], f"the wizard answers {passed}; S3 says it refuses"
+    # Item 4: the eighth Example.
+    eighth = examples()[-1]
+    block = next(n for n in eighth.graph.nodes if n.type == "target")
+    params = {k: block.params.get(k) for k in (
+        "rows", "cols", "overlap", "fovX", "fovY", "angle", "rotation")}
+    plan, _unmapped = to_sequence_plan(compile_plan(eighth.graph, eighth.name),
+                                       eighth.graph, flow_id=eighth.id)
+    shape = (eighth.id, eighth.name, params, len(plan.targets),
+             [(g.mode, g.pa_deg) for g in plan.groups])
+    assert shape == ("example-m31-mosaic", "M31 3x2, rotating",
+                     {"rows": 2, "cols": 3, "overlap": 25, "fovX": 1.346,
+                      "fovY": 0.9, "angle": "Rotate to PA", "rotation": 55.0},
+                     6, [("rotate", 55.0)]), (
+        f"the eighth Example is {shape}; S3 says M31 3x2 at 25%, 1.346 x 0.9 "
+        f"deg, Rotate to PA 55, six panels in one rotating group")
+    # Item 5: the budget, the night, the brief and the campaign.
+    ha = {"filter": "Ha", "exposure": 300, "count": 10, "goal": 2}
+    looped = _flow([("t", "target", _M31), ("k", "capture", ha)],
+                   ["t.target -> k.run", "k.pass -> t.next"])
+    single = _flow([("t", "target", _M31), ("k", "capture", ha)],
+                   ["t.target -> k.run"])
+    rows = {(label, cost): [(r["goal_h"], r["tonight_h"], r["panels"],
+                             r["hop_h"])
+                            for r in tonight._budget(compile_plan(g), None,
+                                                     cost)]
+            for label, g in (("looped", looped), ("one at a time", single))
+            for cost in (None, 150.0)}
+    # Six panels, each 2 h of goal and 300 s x 10 tonight; looped, a panel
+    # takes 10 visits of one sub, one at a time a single visit.
+    assert rows == {("looped", None): [(12.0, 5.0, 6, None)],
+                    ("looped", 150.0): [(12.0, 5.0, 6, 2.5)],
+                    ("one at a time", None): [(12.0, 5.0, 6, None)],
+                    ("one at a time", 150.0): [(12.0, 5.0, 6, 0.25)]}, (
+        f"_budget gives {rows}; S3 says the live panels times the per-panel "
+        f"goal and tonight, and the hops only once one is measured")
+    # Two filters in one block: its 0.25 h of hops (six panels, one visit
+    # each, at 150 s) split 1:2, as their 3000 s and 6000 s per panel are.
+    oiii = {"filter": "OIII", "exposure": 600, "count": 10, "goal": 2}
+    two = _flow([("t", "target", _M31), ("k", "capture", ha),
+                 ("o", "capture", oiii)],
+                ["t.target -> k.run", "k.complete -> o.run"])
+    shares = [(r["filter"], r["hop_h"])
+              for r in tonight._budget(compile_plan(two), None, 150.0)]
+    assert shares == [("Ha", 0.08), ("OIII", 0.17)], (
+        f"a two-filter block's hop_h rows are {shares}; S3 says the block's "
+        f"hops are shared among its rows by shutter time")
+
+    takes = sorted(inspect.signature(framing._stamp_transit_alt).parameters)
+
+    async def stamp(panels, date):
+        for p in panels:
+            p["transit_alt"] = 40.0 + 10.0 * p["row"] + p["col"]
+
+    monkeypatch.setattr(framing, "_stamp_transit_alt", stamp)
+    entry = compile_plan(looped)["targets"][0]
+    night = tonight._mosaic_night(entry, (0.712, 41.27), "2026-09-26")
+    band = night["band"] or {}
+    nowhere = tonight._mosaic_night(entry, None, "2026-09-26")
+    placed = (len([p for p in night["panels"] if "transit_alt" in p]),
+              (band.get("worst") or {}).get("panel"),
+              (band.get("best") or {}).get("panel"),
+              nowhere["panels"], nowhere["band"], bool(nowhere.get("reason")))
+    assert placed == (6, "1-1", "2-3", [], None, True), (
+        f"_mosaic_night gives (panels stamped, worst, best, and with no "
+        f"coordinates panels, band, a reason) = {placed}; S3 says every shot "
+        f"panel stamped and the band from the worst and the best, and none "
+        f"with a reason when the block cannot be placed")
+    # #336: the stamp is handed no site, so it reads the hub's. Read off the
+    # real function, which the stand-in above has replaced by now.
+    assert takes == ["date", "panels"], (
+        f"framing._stamp_transit_alt takes {takes}; S3 says the panel "
+        f"altitudes read the hub's site (#336): say what was built")
+    briefs = (tonight.brief(looped), tonight.brief(looped, hop_cost_s=160.0))
+    said = ("is a 2x3 mosaic of 6 panels" in briefs[0],
+            "has not been measured on this rig yet" in briefs[0],
+            "as measured on this rig" in briefs[1])
+    assert said == (True, True, True), (
+        f"the brief says (the grid rows by columns, no hop measured, a "
+        f"measured hop) = {said}; S3 says it names the grid rows by columns "
+        f"(#339), and a hop only once measured")
+    cycle = tonight._budget(compile_plan(eighth.graph, eighth.name), None,
+                            160.0)
+    cycle_rows = [(r["goal_h"], r["tonight_h"], r.get("hop_h"))
+                  for r in cycle]
+    assert cycle_rows == [], (
+        f"the eighth Example's budget rows (goal_h, tonight_h, hop_h) are "
+        f"{cycle_rows}; S3 says a cycle mosaic has no budget row yet "
+        f"(#338): say what was built")
+    progress = {"blocks": [{"node_id": "t", "panels": [
+        {"name": "M31", "row": 0, "col": 0, "banked": 5, "owed": 5,
+         "total": 10}], "skipped": []}]}
+    camps = {label: tonight._campaign(looped, None, p)
+             for label, p in (("none", None), ("progress", progress))}
+    got = {k: (c["has_pool"], c.get("has_progress"), len(c.get("panels", [])))
+           for k, c in camps.items()}
+    assert got == {"none": (False, False, 0), "progress": (False, True, 1)}, (
+        f"_campaign gives {got}; S3 says per-panel rows from the progress "
+        f"answer, with no pool")
+    gated = re.search(r'@app\.get\("/api/flows/\{flow_id\}/tonight",'
+                      r'\s*dependencies=\[Depends\(require\('
+                      r'CAP_VIEW_SITE_DERIVED\)\)\]\)',
+                      APP.read_text(encoding="utf-8"))
+    assert gated, "the Tonight route is no longer CAP_VIEW_SITE_DERIVED"
+    pins = {"test_flows_examples_s3.py":
+            "def test_it_runs_on_the_simulator_through_the_group_driver(",
+            "test_flows_wizard_mosaic.py":
+            "def test_every_mosaic_answer_is_one_the_night_can_run("}
+    missing = [f for f, pin in pins.items() if pin not in (
+        _SERVER / "tests" / f).read_text(encoding="utf-8")]
+    assert missing == [], f"{missing} no longer hold the pin S3 cites"
+
+
+def test_1_2_says_the_progress_route_answers_a_mosaic_as_s3_built_it():
+    """1.2 says the progress route answers a mosaic (S3, #189): one entry
+    in ``panels`` per panel its group shoots, each at its own 0-based row
+    and col, found through the group id over `_block_key`, and ``grid`` and
+    ``skipped``, the skipped panels in none of the sums and not orphaned;
+    a block whose every panel is skipped left to #335; and a single target
+    found on its anchor and layout angle, so a fixed-camera block no longer
+    fails the route.
+
+    The code: a 2x3 with panel 1-1 skipped answers ``grid``, five panels
+    at their own places and the skipped one at row 0, col 0, with nothing
+    banked and no session; ``flow_progress`` hands the skipped ids to
+    `_orphaned`; a 1x1 block at "Camera fixed at PA" is found, where a
+    key on the commanded angle finds nothing and the route refuses; and
+    CONTINUE, over a 1x2 with a frame on each panel, reports one panel
+    skipped as skipped (the control) and both skipped as dropped (#335).
+
+    RED under mutant "1.2 without its as-built paragraph":
+
+        AssertionError: 1.2 must say: '**As built** (S3, #189). The route
+        answers a mosaic.'
+        assert False
+
+    RED under the progress.py mutant "no skipped list" (``block["skipped"]
+    = _skipped(...)`` made ``block["skipped"] = [] and _skipped(...)``):
+
+        AssertionError: a 2x3 with 1-1 skipped answers (grid, panels, skipped)
+        = ({'rows': 2, 'cols': 3}, [(0, 1), (0, 2), (1, 0), (1, 1), (1, 2)],
+        []); 1.2 says the grid, the five panels it shoots at their places, and
+        the skipped one
+        assert ({'cols': 3, ..., (1, 2)], []) == ({'cols': 3, ..., [(0, 0, 0)])
+          At index 2 diff: [] != [(0, 0, 0)]
+          Use -v to get more diff
+
+    RED under the progress.py mutant "skipped frames orphaned" (``_orphaned(
+    plan, session, skipped)`` made ``_orphaned(plan, session, set())``):
+
+        AssertionError: flow_progress no longer hands the skipped panels to
+        _orphaned; 1.2 says their frames are not orphaned
+        assert []
+
+    RED under the progress.py mutant "a 1x1 keyed on its commanded angle"
+    (`_single`'s ``layout = _angles(entry)[1]`` made ``[2]``, the angle S1
+    keyed on, None for a fixed camera):
+
+        AssertionError: a 1x1 block at 'Camera fixed at PA' is found refused: 1
+        plan target(s) match no block of this compile (M31): the plan was not
+        compiled from it with flow_id='f-1x1', so every count read against it
+        would be wrong; 1.2 says the route keys it on its layout angle
+        assert "refused: 1 plan target(s) match no block of this compile (M31):
+        the plan was not compiled from it with flow_id='f-1x1', so every count
+        read against it would be wrong" == [True]
+
+    RED under the continuation.py mutant "a grouped panel's lost steps are
+    skipped" (``if t.id in skipped_targets for st in t.steps}`` made ``if
+    t.id in skipped_targets or t.mosaic_group for st in t.steps}``, the
+    outcome a #335 fix has here), added by S3-SPEC4's verifier, the case
+    where the #335 sentence is stale:
+
+        AssertionError: CONTINUE reports (dropped frames, skipped frames) {'one
+        skipped': (0, 1), 'both': (0, 2)}; 1.2 says an all-skipped block's
+        frames still count as dropped (#335): say what was built
+        assert {'both': (0, ...pped': (0, 1)} == {'both': (2, ...pped': (0, 1)}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'both': (0, 2)} != {'both': (2, 0)}
+          Use -v to get more diff
+    """
+    s12 = _section("1.2")
+    _says(s12, ("**As built** (S3, #189). The route answers a mosaic.",
+                "each at its own 0-based `row` and `col`",
+                "(`identity.group_id` over `_block_key`, the block's anchor "
+                "first)", "`grid` (`rows`, `cols`) and `skipped`",
+                "in none of the block's sums and not counted as orphaned",
+                "CONTINUE still counts that block's frames as dropped (#335)",
+                "(`_single`)", "no longer fails the route"), "1.2")
+    graph = _flow([("t", "target", {**_M31, "skip": "1-1"}),
+                   ("c", "cycle", _LRGB)],
+                  ["t.target -> c.run", "c.pass -> t.next"])
+    compiled = compile_plan(graph)
+    plan, _unmapped = to_sequence_plan(compiled, graph, flow_id="f-1-2")
+    block = flow_progress(compiled, plan, None, flow_id="f-1-2")["blocks"][0]
+    places = sorted((p["row"], p["col"]) for p in block["panels"])
+    answer = (block.get("grid"), places,
+              [(s["row"], s["col"], s["banked"])
+               for s in block.get("skipped", [])])
+    assert answer == ({"rows": 2, "cols": 3},
+                      [(0, 1), (0, 2), (1, 0), (1, 1), (1, 2)],
+                      [(0, 0, 0)]), (
+        f"a 2x3 with 1-1 skipped answers (grid, panels, skipped) = "
+        f"{answer}; 1.2 says the grid, the five panels it shoots at their "
+        f"places, and the skipped one")
+    handed = [c for c in _calls(_tree(flow_progress), "_orphaned")
+              if "skipped" in [ast.unparse(a) for a in c.args]]
+    assert handed, ("flow_progress no longer hands the skipped panels to "
+                    "_orphaned; 1.2 says their frames are not orphaned")
+    fixed = _flow([("t", "target", {**_M31, "rows": 1, "cols": 1,
+                                    "angle": "Camera fixed at PA"}),
+                   ("k", "capture", _HA)], ["t.target -> k.run"])
+    compiled = compile_plan(fixed)
+    plan, _unmapped = to_sequence_plan(compiled, fixed, flow_id="f-1x1")
+    try:
+        panels = flow_progress(compiled, plan, None,
+                               flow_id="f-1x1")["blocks"][0]["panels"]
+        found = [p["target_id"] == plan.targets[0].id for p in panels]
+    except ValueError as e:
+        found = f"refused: {e}"
+    assert found == [True], (
+        f"a 1x1 block at 'Camera fixed at PA' is found {found}; 1.2 says "
+        f"the route keys it on its layout angle")
+    # #335: a 1x2 with a frame on each panel, continued with one panel
+    # skipped (the control: skipped, not dropped) and with both, where the
+    # block leaves the plan with no group to name its skips.
+    def pair(skip: str):
+        params = {**_M31, "rows": 1, "cols": 2, **({"skip": skip} if skip
+                                                    else {})}
+        g = _flow([("t", "target", params), ("k", "capture", _HA),
+                   ("f", "target", _M33), ("h", "capture", _HA)],
+                  ["t.target -> k.run", "k.complete -> f.arm",
+                   "f.target -> h.run"])
+        return to_sequence_plan(compile_plan(g), g, flow_id="f-335")[0]
+
+    before = pair("")
+    ledger = session_mod.Session(
+        status="dormant", plan=before, frames=[
+            session_mod.SessionFrame(target_id=t.id, step_id=t.steps[0].id)
+            for t in before.targets if t.mosaic_group])
+    reports = {}
+    for label, skip in (("one skipped", "1-1"), ("both", "1-1, 1-2")):
+        r = continuation.plan_replace_report(ledger, pair(skip))
+        reports[label] = (r.dropped_frames, r.skipped_frames)
+    assert reports == {"one skipped": (0, 1), "both": (2, 0)}, (
+        f"CONTINUE reports (dropped frames, skipped frames) {reports}; 1.2 "
+        f"says an all-skipped block's frames still count as dropped (#335): "
+        f"say what was built")
+
+
+def test_owner_list_item_28_says_how_ruling_7_was_built(tmp_path):
+    """Owner list item 28 records S3 orchestrator ruling 7 (#277) and how
+    it was built: the name as typed percent-encoded in ``OBJUTF8``, only
+    when the fold changed it, since no card may hold raw UTF-8;
+    ``full_object_name`` its one reader; and one fold for ``OBJECT``,
+    ``FILTER``, ``TELESCOP``, ``INSTRUME``, ``MOSAIC`` and ``PANEL``, of
+    which only ``OBJECT`` has a lossless copy (#332).
+
+    The code: ``OBJECT_UTF8``; a frame saved for a name in Cyrillic and one
+    with an accent, each with an ASCII ``OBJECT``, the percent-encoded name
+    in ``OBJUTF8`` and ``full_object_name`` giving the name back; an ASCII
+    name with no ``OBJUTF8`` (the control); and two filter names that fold
+    alike writing one ``FILTER``. The names are built with ``chr`` so this
+    file stays ASCII.
+
+    RED under mutant "item 28 without its as-built sentence":
+
+        AssertionError: owner list item 28 must say: 'Built (S3, #277) with the
+        one departure the format forces'
+        assert False
+
+    RED under the fitsio.py mutant "OBJUTF8 on every name" (``if
+    object_text != str(target):`` made ``if True:``):
+
+        AssertionError: save_fits writes {0: ('M31 ?????????',
+        'M31%20%D0%90%D0%BD%D0%B4%D1%80%D0%BE%D0%BC%D0%B5%D0%B4%D0%B0', True,
+        'H?'), 1: ('Nebuleuse', 'N%C3%A9buleuse', True, 'H?'), 2: ('M31
+        Andromeda', 'M31%20Andromeda', True, 'L')}; item 28 says an ASCII
+        OBJECT, the name as typed percent-encoded beside it only when the fold
+        changed it, and one FILTER for two names that fold alike
+        assert {0: ('M31 ???...', True, 'L')} == {0: ('M31 ???...e, True, 'L')}
+          Omitting 2 identical items, use -vv to show
+          Differing items:
+          {2: ('M31 Andromeda', 'M31%20Andromeda', True, 'L')} != {2: ('M31
+          Andromeda', None, True, 'L')}
+          Use -v to get more diff
+
+    RED under the fitsio.py mutant "OBJECT_UTF8 = 'OBJNAME8'":
+
+        AssertionError: owner list item 28 must say: 'percent-encoded (RFC
+        3986), in a card of its own, `OBJNAME8`, and only when the fold changed
+        the name'
+        assert False
+    """
+    from urllib.parse import quote
+
+    import numpy as np
+    from astropy.io import fits
+
+    from astrodeck.devices.base import CameraFrame
+    from astrodeck.imaging import fitsio
+    item = _line(_section("Still"), "28. ")
+    _says(item, ("Built (S3, #277) with the one departure the format "
+                 "forces", "raw UTF-8 in every card, `HISTORY` included",
+                 f"percent-encoded (RFC 3986), in a card of its own, "
+                 f"`{fitsio.OBJECT_UTF8}`, and only when the fold changed "
+                 f"the name", "`fitsio.full_object_name` is the one reader",
+                 "`OBJECT`, `FILTER`, `TELESCOP`, `INSTRUME`, `MOSAIC` and "
+                 "`PANEL`", "only `OBJECT` has a lossless copy",
+                 "write one `FILTER` (#332)"), "owner list item 28")
+    cyrillic = "M31 " + "".join(map(chr, (0x0410, 0x043D, 0x0434, 0x0440,
+                                          0x043E, 0x043C, 0x0435, 0x0434,
+                                          0x0430)))
+    accented = "N" + chr(0xE9) + "buleuse"
+    got = {}
+    for i, (name, flt) in enumerate(((cyrillic, "H" + chr(0x03B1)),
+                                     (accented, "H" + chr(0x03B2)),
+                                     ("M31 Andromeda", "L"))):
+        frame = CameraFrame(data=np.arange(12, dtype=np.uint16).reshape(3, 4),
+                            exposure_s=1.0, gain=0, offset=0, binning=1,
+                            bayer_pattern=None, temperature_c=None,
+                            timestamp=1.7e9)
+        header = fits.getheader(fitsio.save_fits(
+            frame, tmp_path / f"f{i}.fits", target=name, filter_name=flt))
+        got[i] = (header.get("OBJECT"), header.get(fitsio.OBJECT_UTF8),
+                  fitsio.full_object_name(header) == name,
+                  header.get("FILTER"))
+    assert got == {0: ("M31 " + "?" * 9, quote(cyrillic, safe=""), True,
+                       "H?"),
+                   1: ("Nebuleuse", quote(accented, safe=""), True, "H?"),
+                   2: ("M31 Andromeda", None, True, "L")}, (
+        f"save_fits writes {got}; item 28 says an ASCII OBJECT, the name as "
+        f"typed percent-encoded beside it only when the fold changed it, "
+        f"and one FILTER for two names that fold alike")
+
+
+# ================================ S3's fourth wave and the close (S3-SPEC5)
+#
+# The fourth wave of S3 wired the rig facts into every route that compiles
+# and into the wizard, gave the save's answer what the save did, drew the
+# mosaic chip and the TIMELINE band, and made the wind-down's park wait for
+# the guider and read itself back, which closed the two windows S2 left
+# (#311, #305, #306). The close then made Revision 7 final, wrote section
+# 8's record of S3, paid S1 item 8's last debt in words, and brought section
+# 9's I-05, I-43 and I-47 rows and the #190 row up to date. Every test below
+# holds one of those claims to the code it describes. Mutants as above: the
+# spec from a byte backup, and code in a private scratch copy of
+# ``server/``, ``ui/src`` and the two documents the I-43 row reads (never the
+# shared tree, #254), each file checked byte-identical (sha256) after its
+# run; every mutant's control, the same copy unmutated, passed first.
+
+#: The IA map and the handoff contract the I-43 row reads. Through
+#: ``_ROOT``, so a mutant run from a scratch copy reads the copy.
+IA_MAP = _ROOT / "docs" / "ui-rebuild" / "01-screen-ia-map.md"
+CONTRACT = (_ROOT / "design_handoff_astrodeck_flows"
+            / "MILESTONE2-CONTRACT.md")
+
+
+def _ui(rel: str) -> str:
+    """The text of ``ui/src/<rel>``."""
+    return (UI_SRC / rel).read_text(encoding="utf-8")
+
+
+def _ts_function(text: str, name: str) -> str:
+    """The TypeScript function ``name`` in ``text``, from its ``function``
+    line to the next top-level ``export``, ``function`` or doc comment."""
+    start = re.search(rf"^(?:export )?function {name}\(", text, re.MULTILINE)
+    assert start, f"the file has no function {name}"
+    rest = text[start.end():]
+    end = re.search(r"^(?:export |function |/\*\*)", rest, re.MULTILINE)
+    return text[start.start():start.end() + (end.start() if end else
+                                             len(rest))]
+
+
+def test_1_2_says_the_mosaic_chip_as_s3_built_it():
+    """1.2 says the chip is drawn (S3, #189): `progressChip`, the one
+    formatter both canvases draw, reads a TARGET block whose ``grid`` holds
+    more than one panel as ``N/M panels done`` (`panelsChip`), N the panels
+    whose ``owed`` is 0 and M the panels in ``panels``, so a skipped panel is
+    in neither; no chip when no panel is shot or an ``owed`` is not a finite
+    number; and a single target still reads ``212/315 subs``.
+
+    The code is TypeScript, which this suite does not run, so it is read as
+    text, by the expression that carries each claim: the grid test, the
+    count, the denominator, the two nulls, the dispatch and the single
+    target's string, and each canvas's call. What the chip then shows for a
+    given answer is ``flowProgressChip.test.tsx``'s question.
+
+    RED under mutant "1.2 without the chip" (the sentence from "The chip is
+    drawn" to "`212/315 subs`." deleted):
+
+        AssertionError: 1.2 must say: 'The chip is drawn (S3, #189):
+        `progressChip` (`ui/src/components/flows/flowProgress.ts`), the one
+        formatter both canvases draw'
+        assert False
+
+    RED under the flowProgress.ts mutant "the chip counts a panel owing 1 as
+    done" (``if (owed === 0) done++;`` made ``if (owed <= 1) done++;``):
+
+        AssertionError: flowProgress.ts no longer has ['N counts the panels
+        owing 0']; 1.2 says the chip reads a mosaic in panels as built
+        assert ['N counts th...nels owing 0'] == []
+          Left contains one more item: 'N counts the panels owing 0'
+          Use -v to get more diff
+
+    RED under the FlowNode.tsx mutant "the #/next canvas stops drawing the
+    chip" (every ``progressChip(`` renamed ``progressLabel(``):
+
+        AssertionError: these canvases no longer draw progressChip:
+        ['next/hubs/session/flows/canvas/FlowNode.tsx']; 1.2 says both do
+        assert ['next/hubs/s...FlowNode.tsx'] == []
+          Left contains one more item:
+          'next/hubs/session/flows/canvas/FlowNode.tsx'
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
+    """
+    s12 = _section("1.2")
+    _says(s12, ("The chip is drawn (S3, #189): `progressChip` "
+                "(`ui/src/components/flows/flowProgress.ts`), the one "
+                "formatter both canvases draw",
+                "as `N/M panels done` (`panelsChip`)",
+                "N the panels whose `owed` is 0 and M the panels in "
+                "`panels`, so a skipped panel is in neither",
+                "it draws no chip when no panel is shot or a panel's `owed` "
+                "is not a finite number",
+                "a single target still reads `212/315 subs`"), "1.2")
+    src = _ui("components/flows/flowProgress.ts")
+    grid = _ts_function(src, "isMosaic")
+    chip = _ts_function(src, "panelsChip")
+    entry = _ts_function(src, "progressChip")
+    shape = {
+        "a grid of more than one panel": "rows * cols > 1" in grid,
+        "N counts the panels owing 0":
+            re.search(r"if \(owed === 0\) done\+\+", chip) is not None,
+        "M is the panels listed":
+            "`${done}/${panels.length} panels done`" in chip,
+        "no panel shot, no chip": "panels.length === 0) return null" in chip,
+        "an unreadable owed, no chip":
+            "if (owed === null) return null" in chip,
+        "a mosaic block reads in panels":
+            "if (isMosaic(block)) return panelsChip(block);" in entry,
+        "a single target reads in subs": "`${banked}/${total} subs`" in entry,
+    }
+    wrong = [k for k, v in shape.items() if not v]
+    assert wrong == [], (f"flowProgress.ts no longer has {wrong}; 1.2 says "
+                         f"the chip reads a mosaic in panels as built")
+    canvases = {rel: "progressChip(" in _ui(rel) for rel in (
+        "components/flows/FlowNodeCard.tsx",
+        "next/hubs/session/flows/canvas/FlowNode.tsx")}
+    silent = [rel for rel, drawn in canvases.items() if not drawn]
+    assert silent == [], (
+        f"these canvases no longer draw progressChip: {silent}; 1.2 says "
+        f"both do")
+
+
+def test_3_3_and_1_8_say_the_rig_facts_and_the_save_answer_as_s3_built():
+    """3.3 says the rig facts are read once and handed on (S3, #189):
+    `_rig_facts` builds the ``RigFacts``, `_compile_payload` hands ONE
+    object to `to_sequence_plan` and to the doctor, `run_flow`, the progress
+    route and Tonight pass it too, so every `to_sequence_plan` call in
+    ``api/app.py`` is the run's, and Tonight passes its hop as
+    ``hop_cost_s`` and the progress answer as ``progress``. It says the
+    save routes answer `_save_answer` (``migrated`` as ``{key, note}``,
+    ``reanchored`` on every answer) and that the read adds ruling 2's
+    second sentence, `COUNTS_DORMANT_ADDENDUM`, for a dormant session. 1.8
+    says the routes hand the doctor the rig facts and that the wizard route
+    injects them, with the measured angle for USE MEASURED, answers the
+    ``notes`` and refuses with 422 ``invalid_wizard_answer``.
+
+    The code: from ``api/app.py``'s syntax tree, every `to_sequence_plan`
+    and every `flow_doctor` call passes ``rig``; `_compile_payload` reads
+    `_rig_facts` once and passes that name to both; the wizard route's
+    `generate_answer` call passes ``rig=_rig_facts()`` and the measured
+    angle, reads ``last_sky_angle``, adds ``notes`` and answers the 422;
+    Tonight's `resolve_tonight` call passes ``hop_cost_s`` and ``progress``;
+    `_rig_facts` builds a `RigFacts` of exactly the six facts, from
+    ``effective_optics``, ``measured_cost``, `_profile_has_rotator` and
+    ``resolve_policy``; `_persist_flow` writes through ``save_and_report``
+    and answers `_save_answer`; and `get_flow` asks `current_for_flow` and
+    adds the addendum. `_save_answer` itself is called: a switched save
+    answers ``[{key: counts, note}]`` and its row, a save that did nothing
+    answers two empty lists, and an answer sent back is a record
+    ``FlowRecord`` reads. The addendum is ruling 2's sentence, read from
+    the spec.
+
+    RED under mutant "3.3 without the rig facts' as-built paragraph":
+
+        AssertionError: expected exactly one line starting '**As built** (S3,
+        #189). One reading of the rig', found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under mutant "3.3 without the routes' save answer" (the "As built at
+    the routes" bullet deleted):
+
+        AssertionError: expected exactly one line starting '  - **As built at
+        the routes** (S3, #189)', found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under mutant "1.8 without the routes" (the three sentences from "The
+    routes hand the doctor" deleted):
+
+        AssertionError: 1.8 must say: 'The routes hand the doctor the rig facts
+        (3.3)'
+        assert False
+
+    RED under the app.py mutant "the doctor compiled without the rig facts"
+    (`_compile_payload`'s ``rig=rig`` dropped from the `flow_doctor` call; the
+    line number is the scratch copy's):
+
+        AssertionError: api/app.py calls these without rig: ['5679:
+        flow_doctor']; 3.3 says every to_sequence_plan call is the run's, rig
+        facts included
+        assert ['5679: flow_doctor'] == []
+          Left contains one more item: '5679: flow_doctor'
+          Use -v to get more diff
+
+    RED under the app.py mutant "the run compiles without the rig facts"
+    (`run_flow`'s ``rig=_rig_facts()`` dropped):
+
+        AssertionError: api/app.py calls these without rig: ['6185:
+        to_sequence_plan']; 3.3 says every to_sequence_plan call is the run's,
+        rig facts included
+        assert ['6185: to_sequence_plan'] == []
+          Left contains one more item: '6185: to_sequence_plan'
+          Use -v to get more diff
+
+    RED under the app.py mutant "the wizard route injects no rig"
+    (``rig=_rig_facts()`` made ``rig=None``):
+
+        AssertionError: the wizard route reads (rig, the measured angle,
+        last_sky_angle, the 422, the notes) = (['None'], [True], True, True,
+        True); 1.8 says it injects the rig facts and the measured angle and
+        answers both
+        assert (['None'], [T...e, True, True) == (['_rig_facts...e, True, True)
+          At index 0 diff: ['None'] != ['_rig_facts()']
+          Use -v to get more diff
+
+    RED under the app.py mutant "Tonight passes no hop cost" (its
+    ``hop_cost_s=rig.hop_cost_s`` line deleted):
+
+        AssertionError: Tonight no longer passes hop_cost_s and progress; 3.3
+        says it does
+        assert []
+
+    RED under the app.py mutant "the save answers the bare keys"
+    (`_save_answer`'s ``migrated`` made ``list(migrated)``):
+
+        AssertionError: _save_answer answers (migrated, reanchored, and with
+        nothing done, wire sources) = (['counts'], [{'node_id': 't',
+        'max_move_deg': 0.3, 'threshold_deg': 0.1}], [], [], ['t', 'c']); 3.3
+        says one {key, note} per rule, the rows, two empty lists, and the
+        record by alias
+        assert (['counts'], ...], ['t', 'c']) == ([{'key': 'co...], ['t', 'c'])
+          At index 0 diff: ['counts'] != [{'key': 'counts', 'note': 'now counts
+          accepted subs only: this save switched every TARGET and POOL that
+          counted every sub taken, rejected ones included'}]
+          Use -v to get more diff
+
+    RED under the app.py mutant "the save drops its reanchored rows"
+    (``body["reanchored"] = []``):
+
+        AssertionError: _save_answer answers (migrated, reanchored, and with
+        nothing done, wire sources) = ([{'key': 'counts', 'note': 'now counts
+        accepted subs only: this save switched every TARGET and POOL that
+        counted every sub taken, rejected ones included'}], [], [], [], ['t',
+        'c']); 3.3 says one {key, note} per rule, the rows, two empty lists,
+        and the record by alias
+        assert ([{'key': 'co...], ['t', 'c']) == ([{'key': 'co...], ['t', 'c'])
+          At index 1 diff: [] != [{'node_id': 't', 'max_move_deg': 0.3,
+          'threshold_deg': 0.1}]
+          Use -v to get more diff
+
+    RED under the app.py mutant "the read adds the addendum for an active
+    session" (`get_flow`'s ``latest.status == "dormant"`` made ``==
+    "active"``):
+
+        AssertionError: GET /api/flows/{flow_id} reads (the session Run would
+        continue, the addendum, a dormant status) = (True, True, False); 3.3
+        says it adds the addendum for a dormant session
+        assert (True, True, False) == (True, True, True)
+          At index 2 diff: False != True
+          Use -v to get more diff
+
+    Since the verifier's pass the dormant status is read as an equality
+    with "dormant" and the refusal as its status, 422: the first version
+    looked for the bare word and the bare code, and both mutants below
+    passed it.
+
+    RED under the app.py mutant "the read adds the addendum for every session
+    but a dormant one" (``== "dormant"`` made ``!= "dormant"``):
+
+        AssertionError: GET /api/flows/{flow_id} reads (the session Run would
+        continue, the addendum, a dormant status) = (True, True, False); 3.3
+        says it adds the addendum for a dormant session
+        assert (True, True, False) == (True, True, True)
+          At index 2 diff: False != True
+          Use -v to get more diff
+
+    RED under the app.py mutant "the wizard's refusal is a 500" (its
+    ``HTTPException(422`` made ``HTTPException(500``):
+
+        AssertionError: the wizard route reads (rig, the measured angle,
+        last_sky_angle, the 422, the notes) = (['_rig_facts()'], [True],
+        True, False, True); 1.8 says it injects the rig facts and the measured
+        angle and answers both
+        assert (['_rig_facts..., False, True) == (['_rig_facts...e, True, True)
+          At index 3 diff: False != True
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
+    """
+    import astrodeck.api.app as app_mod
+    from astrodeck.flows.models import FlowRecord
+    s33 = _section("3.3")
+    rig = _line(s33, "**As built** (S3, #189). One reading of the rig")
+    _says(rig, ("`_rig_facts` in `api/app.py`, builds a `RigFacts`",
+                "the camera's field at bin 1 from `hub.effective_optics`",
+                "from `engine.measured_cost(\"hop\")`, None until a hop has "
+                "been timed and never the engine's seed",
+                "(`_profile_has_rotator`: True for a connected rotator or a "
+                "rotator row in the active profile",
+                "whether both reject guards resolve off (`resolve_policy`)",
+                "`_compile_payload` hands one object to `to_sequence_plan` "
+                "and to the doctor",
+                "`run_flow`, the progress route and Tonight pass it too, so "
+                "every `to_sequence_plan` call in the file is the run's",
+                "The wizard route hands it to `generate_answer` (1.8)",
+                "Tonight passes its hop as `hop_cost_s`, with the progress "
+                "answer as `progress`"), "3.3's rig facts")
+    routes = _line(s33, "  - **As built at the routes** (S3, #189)")
+    _says(routes, ("POST, PUT, the wizard and the quick flow all answer "
+                   "`_save_answer`", "`migrated` with one `{key, note}` per "
+                   "rule the save applied", "`reanchored`, on every answer "
+                   "and empty when nothing restarted",
+                   "(`COUNTS_DORMANT_ADDENDUM`)", "is dormant"),
+          "3.3's save routes")
+    s18 = _section("1.8")
+    _says(s18, ("The routes hand the doctor the rig facts (3.3)",
+                "The wizard route (`POST /api/flows/wizard`) injects the "
+                "camera field and the rotator the same way",
+                "(`hub.last_sky_angle`) for USE MEASURED",
+                "it answers the generator's `notes`",
+                "a 422 (`invalid_wizard_answer`)"), "1.8")
+    tree = ast.parse(APP.read_text(encoding="utf-8"))
+    plans = _calls(tree, "to_sequence_plan")
+    doctors = _calls(tree, "flow_doctor")
+    bare = [f"{c.lineno}: {ast.unparse(c.func)}" for c in plans + doctors
+            if _keyword_node(c, "rig") is None]
+    assert (len(plans), len(doctors)) >= (3, 1), (
+        f"premise: api/app.py calls to_sequence_plan {len(plans)} times and "
+        f"flow_doctor {len(doctors)}")
+    assert bare == [], (
+        f"api/app.py calls these without rig: {bare}; 3.3 says every "
+        f"to_sequence_plan call is the run's, rig facts included")
+    payload = _app_def("_compile_payload")
+    read = [a for a in _assigns(payload, "rig")
+            if isinstance(a.value, ast.Call)
+            and ast.unparse(a.value.func) == "_rig_facts"]
+    handed = [ast.unparse(_keyword_node(c, "rig"))
+              for c in _calls(payload, "to_sequence_plan")
+              + _calls(payload, "flow_doctor")]
+    assert len(read) == 1 and handed == ["rig", "rig"], (
+        f"_compile_payload hands the plan and the doctor {handed}; 3.3 "
+        f"says one reading of the rig, handed to both")
+    wizard = _app_def("generate_flow_from_wizard")
+    # Asked on a worker thread: ``to_thread(flow_wizard.generate_answer,
+    # ...)``, so the call to read is the ``to_thread`` that hands it over.
+    asked = [c for c in _calls(wizard, "to_thread") if c.args
+             and ast.unparse(c.args[0]).endswith("generate_answer")]
+    shape = (
+        [ast.unparse(_keyword_node(c, "rig") or ast.Constant(None))
+         for c in asked],
+        [_keyword_node(c, "measured_pa_deg") is not None for c in asked],
+        "last_sky_angle" in ast.unparse(wizard),
+        # The 422 itself, not only its code: the refusal's status is the
+        # HTTPException's first argument.
+        [ast.unparse(c.args[0]) for c in _calls(wizard, "HTTPException")
+         if c.args and "invalid_wizard_answer" in ast.unparse(c)] == ["422"],
+        "'notes'" in ast.unparse(wizard))
+    assert shape == (["_rig_facts()"], [True], True, True, True), (
+        f"the wizard route reads (rig, the measured angle, last_sky_angle, "
+        f"the 422, the notes) = {shape}; 1.8 says it injects the rig facts "
+        f"and the measured angle and answers both")
+    tonight = [c for c in _calls(tree, "to_thread")
+               if c.args and ast.unparse(c.args[0]) == "resolve_tonight"
+               and _keyword_node(c, "hop_cost_s") is not None
+               and _keyword_node(c, "progress") is not None]
+    assert tonight, ("Tonight no longer passes hop_cost_s and progress; 3.3 "
+                     "says it does")
+    facts = _app_def("_rig_facts")
+    built = [c for c in _calls(facts, "RigFacts")]
+    reads = ast.unparse(facts)
+    got = (sorted(k.arg for c in built for k in c.keywords),
+           [w for w in ("effective_optics", "'measured_cost'",
+                        "_profile_has_rotator()", "resolve_policy(")
+            if w not in reads])
+    assert got == (["fov_deg", "fov_from", "has_rotator", "hop_cost_s",
+                    "hop_samples", "reject_guards_off"], []), (
+        f"_rig_facts builds (facts, reads missing) = {got}; 3.3 says the "
+        f"field, the hop and its samples, the rotator and the guards")
+    persist = _app_def("_persist_flow")
+    answered = [ast.unparse(r.value) for r in ast.walk(persist)
+                if isinstance(r, ast.Return) and r.value is not None]
+    writes = [c for c in _calls(persist, "to_thread") if c.args
+              and ast.unparse(c.args[0]) == "flow_store.save_and_report"]
+    assert writes and answered == [
+        "_save_answer(stored, migrated, reanchored)"], (
+        f"_persist_flow answers {answered}; 3.3 says it writes through "
+        f"save_and_report and answers _save_answer")
+    read = ast.unparse(_app_def("get_flow"))
+    # A dormant status, compared equal: a bare "'dormant'" in the source
+    # would also be read by an inverted test (``!= "dormant"``).
+    dormant = any(isinstance(n, ast.Compare) and len(n.ops) == 1
+                  and isinstance(n.ops[0], ast.Eq)
+                  and any(isinstance(c, ast.Constant) and c.value == "dormant"
+                          for c in n.comparators)
+                  for n in ast.walk(_app_def("get_flow")))
+    added = ("current_for_flow" in read, "COUNTS_DORMANT_ADDENDUM" in read,
+             dormant)
+    assert added == (True, True, True), (
+        f"GET /api/flows/{{flow_id}} reads (the session Run would continue, "
+        f"the addendum, a dormant status) = {added}; 3.3 says it adds the "
+        f"addendum for a dormant session")
+    ruling2 = [text for name, text in _blocks()
+               if name.startswith("Ruling 2:")]
+    addendum = _app_constant("COUNTS_DORMANT_ADDENDUM")
+    said = len(ruling2) == 1 and f'"{addendum}"' in ruling2[0]
+    assert said, (f"COUNTS_DORMANT_ADDENDUM is {addendum!r}, which is not "
+                  f"ruling 2's quoted sentence")
+    graph = _flow([("t", "target", _M31), ("c", "cycle", _LRGB)],
+                  ["t.target -> c.run", "c.pass -> t.next"])
+    record = FlowRecord(id="f-3-3-routes", name="n", graph=graph)
+    row = {"node_id": "t", "max_move_deg": 0.3, "threshold_deg": 0.1}
+    switched = app_mod._save_answer(record, ["counts"], [row])
+    quiet = app_mod._save_answer(record, [], [])
+    answer = (switched["migrated"], switched["reanchored"],
+              quiet["migrated"], quiet["reanchored"],
+              [e.get("from") for e in switched["graph"]["edges"]])
+    assert answer == ([{"key": "counts",
+                        "note": app_mod.COUNTS_SWITCHED_NOTE}], [row], [], [],
+                      ["t", "c"]), (
+        f"_save_answer answers (migrated, reanchored, and with nothing "
+        f"done, wire sources) = {answer}; 3.3 says one {{key, note}} per "
+        f"rule, the rows, two empty lists, and the record by alias")
+    back = FlowRecord.model_validate(switched)
+    assert [n.key for n in back.migrated] == ["counts"], (
+        "an answer sent back is no longer a record FlowRecord reads")
+
+
+#: The engine's ceiling on one native guide pulse and the margin after it,
+#: and the AM5 driver's own park poll, the three numbers 6.17 quotes. The
+#: driver is read as text: importing it registers every device backend.
+def _am5_park_wait_s() -> float:
+    path = _SERVER / "astrodeck" / "devices" / "backends" / "zwo_am5.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    hits = [n.value for n in tree.body if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "PARK_WAIT_S"
+                    for t in n.targets)]
+    assert len(hits) == 1, "zwo_am5.py no longer assigns PARK_WAIT_S once"
+    return float(ast.literal_eval(hits[0]))
+
+
+def test_6_17_and_item_24_say_the_wind_down_as_s3_built_it(monkeypatch):
+    """6.17 says the wind-down's park waits for the guider, briefly, and is
+    read back (S3, #311, S3 orchestrator ruling 3): for
+    ``WIND_DOWN_GUIDER_STOP_S``, the native guider's ceiling on one pulse
+    (2.5 s) plus ``WIND_DOWN_PULSE_MARGIN_S`` (2 s), and no longer
+    (`_wait_for_the_guider_before_the_park`); a mount that says it is not
+    parked is parked once more at once, a read-back that cannot answer
+    leaves the park standing, and a park that failed is not asked again
+    (`_park_and_read_back`); the AM5's own ``PARK_WAIT_S`` (60 s) puts it
+    out of that retry's reach (#342). It says S3 closed the two windows S2
+    left (S3, #305, #306): the park on a task of its own that a cancel
+    cannot cut (`_wind_down_park`), and the reopen close ending the idle
+    stop's task before it parks (`_close_for_reopen`,
+    `_cancel_idle_stop_retry`), with the close's own guider wait and unread
+    park left to #343. "Two windows remain" and "parks and closes the roof
+    at once" are gone. Owner list item 24 says how ruling 3 was built, the
+    cap's value computed.
+
+    The code: the cap is the sum 6.17 names, of the guider's own ceiling
+    (imported, not copied); the AM5's poll is read off the driver's source;
+    the guider wait, with the cap made 0.05 s, returns at once for a stop
+    that has finished and inside a second for one that never does; the
+    park and read-back, against a mount scripted to say not parked then
+    parked, parked twice, unreadable, parked, and not parked twice, parks
+    2, 1, 1 and 2 times and answers True, True, True and False, and a park
+    that raises is asked once and answers False; the wind-down parks on a
+    task it waits for across cancels; and the reopen close awaits the idle
+    stop's cancel before its park hold and its park.
+
+    RED under mutant "6.17 as S2 left it" (the row put back as the third wave
+    left it):
+
+        AssertionError: 6.17 must say: '**The park waits for the guider,
+        briefly, and is read back** (S3, #311, S3 orchestrator ruling 3)'
+        assert False
+
+    RED under mutant "6.17 quotes a 3 s pulse":
+
+        AssertionError: 6.17 must say: "`WIND_DOWN_GUIDER_STOP_S`, the native
+        guider's ceiling on one pulse (2.5 s) plus `WIND_DOWN_PULSE_MARGIN_S`
+        (2 s), and no longer"
+        assert False
+
+    RED under mutant "6.17 keeps 'Two windows remain' beside the new text":
+
+        AssertionError: 6.17 still says 'Two windows remain'; S3 built past it
+        assert not True
+
+    RED under mutant "item 24 without how it was built":
+
+        AssertionError: owner list item 24 must say: 'Built (S3, #311, #305):
+        the cap is `WIND_DOWN_GUIDER_STOP_S`, 4.5 s'
+        assert False
+
+    RED under the engine.py mutant "a 3 s pulse margin"
+    (``WIND_DOWN_PULSE_MARGIN_S = 3.0``):
+
+        AssertionError: 6.17 must say: "`WIND_DOWN_GUIDER_STOP_S`, the native
+        guider's ceiling on one pulse (2.5 s) plus `WIND_DOWN_PULSE_MARGIN_S`
+        (3 s), and no longer"
+        assert False
+
+    RED under the engine.py mutant "the guider wait bounded by the guider's own
+    timeout" (``quiet_by = time.time() + GUIDE_OP_TIMEOUT_S``). Before the test
+    patched that timeout to 2 s it ran the full 120 s, a ``wait_for`` of 5 s
+    notwithstanding, because the wait swallows a cancel by design. The last
+    digits of the time vary from run to run (2.017 s on the final one):
+
+        AssertionError: the guider wait took 0.0 s for a stop that had finished
+        and 2.003 s for one that never does, with the cap at 0.05 s; 6.17 says
+        one turn of the loop, and the cap and no longer
+        assert (True, False) == (True, True)
+          At index 1 diff: False != True
+          Use -v to get more diff
+
+    RED under the engine.py mutant "one park, never read back again" (``for
+    attempt in (1, 2):`` made ``(1,)``; pytest orders the differing items by
+    hash seed, so a rerun may list them the other way round):
+
+        AssertionError: _park_and_read_back gives (parks, parked) {'lost, then
+        parked': (1, False), 'parked': (1, True), 'unreadable': (1, True),
+        'never parks': (1, False), 'the park raises': (1, False)}; 6.17 says
+        one park more at once on a definite 'not parked', the driver's park
+        standing when the read-back cannot answer, and no second park after one
+        that failed
+        assert {'lost, then ..., False), ...} == {'lost, then ..., False), ...}
+          Omitting 3 identical items, use -vv to show
+          Differing items:
+          {'never parks': (1, False)} != {'never parks': (2, False)}
+          {'lost, then parked': (1, False)} != {'lost, then parked': (2, True)}
+          Use -v to get more diff
+
+    RED under the engine.py mutant "an unreadable park state parks again" (``if
+    state is not False:`` made ``if state:``):
+
+        AssertionError: _park_and_read_back gives (parks, parked) {'lost, then
+        parked': (2, True), 'parked': (1, True), 'unreadable': (2, False),
+        'never parks': (2, False), 'the park raises': (1, False)}; 6.17 says
+        one park more at once on a definite 'not parked', the driver's park
+        standing when the read-back cannot answer, and no second park after one
+        that failed
+        assert {'lost, then ..., False), ...} == {'lost, then ..., False), ...}
+          Omitting 4 identical items, use -vv to show
+          Differing items:
+          {'unreadable': (2, False)} != {'unreadable': (1, True)}
+          Use -v to get more diff
+
+    RED under the engine.py mutant "the wind-down awaits its park directly"
+    (the task and its cancel-proof wait made ``parked = await
+    self._wind_down_park(tel)``):
+
+        AssertionError: the wind-down no longer parks on a task it waits for
+        across cancels; 6.17 says an Abort landing in the park cannot cut it
+        (#305)
+        assert ([])
+
+    RED under the engine.py mutant "the reopen close leaves the idle stop's
+    task alive" (its ``await self._cancel_idle_stop_retry()`` deleted):
+
+        AssertionError: the reopen close calls ['_park_hold', '_fenced_park']
+        (the cancel awaited: False); 6.17 says it ends the idle stop's task,
+        awaited, before it parks (#306)
+        assert (['_park_hold', '_fenced_park'] ==
+        ['_cancel_idl..._fenced_park']
+          At index 0 diff: '_park_hold' != '_cancel_idle_stop_retry'
+          Right contains one more item: '_fenced_park'
+          Use -v to get more diff)
+
+    Since the verifier's pass 6.17 also says what the #306 fix left behind:
+    a refused close starts none of the idle stop's retries again, and the
+    open-sky pause it falls back to (`_park_hold_pause`) stops tracking and
+    reads nothing back (#345). That is held as not built, from the syntax
+    tree of the unsafe handler and the pause, so it goes red when it lands.
+
+    RED under mutant "6.17 without #345" (the sentence from "A close that is
+    refused" to "(#345)." deleted):
+
+        AssertionError: 6.17 must say: 'A close that is refused starts none of
+        those retries again'
+        assert False
+
+    RED under the engine.py mutant "a refused close reads tracking back"
+    (``await self._tracking_now()`` added after `_park_hold_pause`'s park
+    hold), the case where the #345 sentence is stale:
+
+        AssertionError: a refused reopen close now calls ['_tracking_now'];
+        6.17 says nothing asks an unconfirmed stop again (#345): say what was
+        built
+        assert ['_tracking_now'] == []
+          Left contains one more item: '_tracking_now'
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
+    """
+    from astrodeck.guide import native as native_mod
+    cap = native_mod._ENGINE_MAX_DURATION_MS / 1000.0
+    margin = engine_mod.WIND_DOWN_PULSE_MARGIN_S
+    total = engine_mod.WIND_DOWN_GUIDER_STOP_S
+    poll = _am5_park_wait_s()
+    row = _line(_spec(), "| 6.17 |")
+    _says(row, ("**The park waits for the guider, briefly, and is read "
+                "back** (S3, #311, S3 orchestrator ruling 3)",
+                f"`WIND_DOWN_GUIDER_STOP_S`, the native guider's ceiling on "
+                f"one pulse ({cap:g} s) plus `WIND_DOWN_PULSE_MARGIN_S` "
+                f"({margin:g} s), and no longer",
+                "(`_wait_for_the_guider_before_the_park`)",
+                "the roof close still waits only for the park",
+                "parked once more, at once (`_park_and_read_back`)",
+                "a read-back that cannot answer leaves the driver's park "
+                "standing", "a park that raised or timed out is not asked "
+                "again", f"`PARK_WAIT_S` ({poll:g} s)", "(#342)",
+                "**S3 closed the two windows S2 left** (S3, #305, #306)",
+                "(`_wind_down_park`)", "(`_close_for_reopen`, "
+                "`_cancel_idle_stop_retry`)", "(#343)",
+                "A close that is refused starts none of those retries again",
+                "(`_park_hold_pause`) asks the mount to stop tracking and "
+                "reads nothing back", "(#345)"), "6.17")
+    for stale in ("Two windows remain", "parks and closes the roof at once"):
+        kept = stale in row
+        assert not kept, f"6.17 still says {stale!r}; S3 built past it"
+    item24 = _line(_section("Still"), "24. ")
+    _says(item24, (f"Built (S3, #311, #305): the cap is "
+                   f"`WIND_DOWN_GUIDER_STOP_S`, {total:g} s",
+                   "only a definite \"not parked\" is parked again",
+                   "the park runs on a task an Abort cannot cut (6.17)",
+                   "(#342)"), "owner list item 24")
+    assert engine_mod._NATIVE_PULSE_CAP_MS is \
+        native_mod._ENGINE_MAX_DURATION_MS and total == cap + margin, (
+            f"WIND_DOWN_GUIDER_STOP_S is {total}; 6.17 says the guider's "
+            f"own ceiling {cap} plus the margin {margin}")
+
+    # The cap made 0.05 s, and the guider's own bound 2 s, so a wait bounded
+    # by the wrong one reads as 2 s here, not as the 120 s it would be on a
+    # night. No ``wait_for`` around it: the wait swallows a cancel by design
+    # (#305), so a timeout could not cut a wrong bound short.
+    monkeypatch.setattr(engine_mod, "WIND_DOWN_GUIDER_STOP_S", 0.05)
+    monkeypatch.setattr(engine_mod, "GUIDE_OP_TIMEOUT_S", 2.0)
+
+    async def waits() -> tuple[float, float]:
+        done = asyncio.get_running_loop().create_future()
+        done.set_result(None)
+        hung = asyncio.get_running_loop().create_future()
+        eng = SimpleNamespace()
+        wait = SequenceEngine._wait_for_the_guider_before_the_park
+        t0 = time.perf_counter()
+        await wait(eng, done)
+        t1 = time.perf_counter()
+        await wait(eng, hung)
+        t2 = time.perf_counter()
+        hung.cancel()
+        return round(t1 - t0, 3), round(t2 - t1, 3)
+
+    stopped, bounded = asyncio.run(waits())
+    held = (stopped < 0.05, 0.02 <= bounded < 1.0)
+    assert held == (True, True), (
+        f"the guider wait took {stopped} s for a stop that had finished and "
+        f"{bounded} s for one that never does, with the cap at 0.05 s; 6.17 "
+        f"says one turn of the loop, and the cap and no longer")
+
+    class Mount:
+        def __init__(self, said):
+            self.said, self.parks = list(said), 0
+
+        async def park(self):
+            self.parks += 1
+            if self.said and self.said[0] == "raise":
+                raise RuntimeError("the park failed")
+
+        async def is_parked(self):
+            said = self.said.pop(0)
+            if said is None:
+                raise RuntimeError("cannot read the park state")
+            return said
+
+    async def park(said) -> tuple[int, bool]:
+        tel = Mount(said)
+        eng = SimpleNamespace()
+        eng._parked_state = lambda t: SequenceEngine._parked_state(eng, t)
+        ok = await SequenceEngine._park_and_read_back(eng, tel)
+        return tel.parks, ok
+
+    parked = {label: asyncio.run(park(said)) for label, said in (
+        ("lost, then parked", [False, True]), ("parked", [True]),
+        ("unreadable", [None]), ("never parks", [False, False]),
+        ("the park raises", ["raise"]))}
+    assert parked == {"lost, then parked": (2, True), "parked": (1, True),
+                      "unreadable": (1, True), "never parks": (2, False),
+                      "the park raises": (1, False)}, (
+        f"_park_and_read_back gives (parks, parked) {parked}; 6.17 says "
+        f"one park more at once on a definite 'not parked', the driver's "
+        f"park standing when the read-back cannot answer, and no second "
+        f"park after one that failed")
+    close = _tree(SequenceEngine._wind_down_park_and_close)
+    tasked = [c for c in _calls(close, "ensure_future")
+              if c.args and _is_self_call(c.args[0], "_wind_down_park")]
+    kept = [w for w in ast.walk(close) if isinstance(w, ast.While)
+            and "parking.done()" in ast.unparse(w.test)
+            and any(h.type is not None
+                    and ast.unparse(h.type) == "asyncio.CancelledError"
+                    for t in ast.walk(w) if isinstance(t, ast.Try)
+                    for h in t.handlers)]
+    assert tasked and kept, (
+        "the wind-down no longer parks on a task it waits for across "
+        "cancels; 6.17 says an Abort landing in the park cannot cut it (#305)")
+    reopen = _tree(SequenceEngine._close_for_reopen)
+    order = [c.func.attr for c in _self_calls(reopen)
+             if c.func.attr in ("_cancel_idle_stop_retry", "_park_hold",
+                                "_fenced_park")]
+    awaited = [ast.unparse(a.value) for a in ast.walk(reopen)
+               if isinstance(a, ast.Await)
+               and _is_self_call(a.value, "_cancel_idle_stop_retry")]
+    assert order == ["_cancel_idle_stop_retry", "_park_hold",
+                     "_fenced_park"] and awaited, (
+        f"the reopen close calls {order} (the cancel awaited: "
+        f"{bool(awaited)}); 6.17 says it ends the idle stop's task, awaited, "
+        f"before it parks (#306)")
+    # Not built yet (#345), so this goes red when it lands: say what was
+    # built. The refused close falls back to the open-sky pause, and neither
+    # the unsafe handler nor the pause starts the idle stop's retry again or
+    # reads tracking back.
+    rearmed = [c.func.attr for fn in (SequenceEngine._on_unsafe,
+                                      SequenceEngine._park_hold_pause)
+               for c in _self_calls(_tree(fn))
+               if c.func.attr in ("_idle_stop_retry", "_idle_park_hold",
+                                  "_tracking_now")]
+    assert rearmed == [], (
+        f"a refused reopen close now calls {rearmed}; 6.17 says nothing asks "
+        f"an unconfirmed stop again (#345): say what was built")
+
+
+def test_s1_item_8_and_5_9_say_s3_built_the_skip_param():
+    """S1 item 8, S1's test list and 5.9's dropped-steps row say S3 built
+    the ``skip`` param that fills ``skipped_ids`` (S3, #189): `parse_skip`
+    reads it, `_expand_mosaic` lists each skipped panel's id in its group's
+    ``skipped_ids``, and CONTINUE with a real ``skip`` is held end to end in
+    ``test_flows_continue_skip_param.py``. The "lands in S3", "until then no
+    compile skips a panel" and "is S3's, with the param" clauses are gone.
+
+    The code: `parse_skip` reads "1-2, 9-9" on a 1x2 as panel 1-2 and one
+    entry it cannot read; the 1x2 with "1-2" skipped plans panel 1-1 alone,
+    and its group lists panel 1-2's id, the id the unskipped plan gave it;
+    and the named file holds the end-to-end test it is cited for.
+
+    RED under mutant "S1 item 8 back to 'lands in S3'":
+
+        AssertionError: S1 item 8 must say: "S3 built the `skip` param that
+        fills it (3.1; S3, #189): `parse_skip` reads it, and `_expand_mosaic`
+        lists each skipped panel's id in its group's `skipped_ids`"
+        assert False
+
+    RED under mutant "S1 item 8 keeps the old clause beside the new":
+
+        AssertionError: S1 item 8 still says 'lands in S3'; S3 built it
+        assert not True
+
+    RED under mutant "S1's tests back to 'is S3's, with the param'":
+
+        AssertionError: S1's tests must say: 'S3 built the end-to-end case with
+        a real `skip` param (S3, #189; `test_flows_continue_skip_param.py`)'
+        assert False
+
+    RED under mutant "5.9's row back to 'lands in S3'":
+
+        AssertionError: 5.9's row must say: "S2 built this server half of S1
+        item 8, and S3 the `skip` param that fills `skipped_ids`, so a compile
+        skips each panel a block's `skip` names; S3, #189"
+        assert False
+
+    RED under mutant "5.9's row keeps 'until then no compile skips a panel'":
+
+        AssertionError: 5.9's row still says 'until then no compile skips a
+        panel'; S3 built it
+        assert not True
+
+    RED under the to_plan.py mutant "a skipped panel's id is not listed"
+    (``skipped_ids.append(tid)`` deleted):
+
+        AssertionError: a 1x2 skipping 1-2 plans (panels, its id listed) =
+        ([(0, 0)], False); S1 item 8 says the skip param fills skipped_ids
+        assert ([(0, 0)], False) == ([(0, 0)], True)
+          At index 1 diff: False != True
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
+    """
+    from astrodeck.flows.compile import parse_skip
+    item8 = _line(_section("S1:"), "8. ")
+    _says(item8, ("S3 built the `skip` param that fills it (3.1; S3, #189): "
+                  "`parse_skip` reads it, and `_expand_mosaic` lists each "
+                  "skipped panel's id in its group's `skipped_ids`",),
+          "S1 item 8")
+    tests = _line(_section("S1:"), "- Skipping a panel with banked frames")
+    _says(tests, ("S3 built the end-to-end case with a real `skip` param "
+                  "(S3, #189; `test_flows_continue_skip_param.py`)",
+                  "through `PUT /api/flows/{id}`"), "S1's tests")
+    row = _line(_section("5.9"), "| steps that hold frames would be dropped")
+    _says(row, ("S2 built this server half of S1 item 8, and S3 the `skip` "
+                "param that fills `skipped_ids`, so a compile skips each "
+                "panel a block's `skip` names; S3, #189",), "5.9's row")
+    for where, text, stale in (
+            ("S1 item 8", item8, "lands in S3"),
+            ("5.9's row", row, "lands in S3"),
+            ("5.9's row", row, "until then no compile skips a panel"),
+            ("S1's tests", tests, "is S3's, with the param")):
+        kept = stale in text
+        assert not kept, f"{where} still says {stale!r}; S3 built it"
+    assert parse_skip("1-2, 9-9", 1, 2) == ([[1, 2]], ["9-9"]), (
+        "parse_skip no longer reads a TARGET's skip as S1 item 8 says")
+    params = {**_M31, "rows": 1, "cols": 2}
+
+    def plan(skip: str):
+        graph = _flow([("t", "target", {**params, "skip": skip}),
+                       ("k", "capture", _HA)], ["t.target -> k.run"])
+        return to_sequence_plan(compile_plan(graph), graph,
+                                flow_id="f-s1-8")[0]
+
+    whole, part = plan(""), plan("1-2")
+    second = next(t.id for t in whole.targets
+                  if (t.panel_row, t.panel_col) == (0, 1))
+    got = ([(t.panel_row, t.panel_col) for t in part.targets],
+           part.groups[0].skipped_ids == [second])
+    assert got == ([(0, 0)], True), (
+        f"a 1x2 skipping 1-2 plans (panels, its id listed) = {got}; S1 item "
+        f"8 says the skip param fills skipped_ids")
+    pin = ("async def test_continue_does_not_409_and_re_enabling_restores_"
+           "counts(")
+    held = pin in (_SERVER / "tests" / "test_flows_continue_skip_param.py"
+                   ).read_text(encoding="utf-8")
+    assert held, ("test_flows_continue_skip_param.py no longer holds the "
+                  "end-to-end case S1's test list cites")
+
+
+#: The test files and fixtures section 8's S3 names, found as it writes
+#: them: a Python test or fixture of ``server/tests``, the group harness, or
+#: a TypeScript test of ``ui/src``.
+_NAMED = re.compile(r"`((?:tests/)?_group_harness\.py|test_\w+\.py|"
+                    r"fixtures/\w+\.json|\w+\.test\.tsx?)`")
+
+
+def test_s3_says_items_1_to_3_the_tests_and_what_was_not():
+    """Section 8's S3 says all five items are built (S3, #189): item 1 the
+    vocabulary (`created_as`, `create_params`, the ports, `LEGACY_TYPES`,
+    `_trigger_for`'s ``pass`` branch) with the loop wire consumed, item 2
+    the entry, the lane, the expansion, the anchor, the save, the rig facts
+    and FLOW_SCHEMA 4, item 3 the doctor; that both UIs draw the TIMELINE
+    band from ``band``; where every test is; and what was not built: the
+    deferred list the slice was planned with, the UI surfaces S4 and S6
+    own, and the defects S3 found and filed, each by its issue.
+
+    The code: each name items 1 to 3 give is in the tree; every test file
+    and fixture the paragraph names exists (and there are more than forty),
+    the TypeScript ones under ``ui/src``; both timelines read ``band``
+    through the one reader, ``mosaicBand``, and the classic one draws it as
+    a ``hatch``. Three of the "not built" claims are held here to go red
+    when their work lands: no Campaign reader in ``ui/src`` reads
+    ``panels`` or ``has_progress``; `SequenceEngine.start` empties the
+    measured costs, so no run starts with one; and the session wrapper for
+    ``POST /api/sessions/{id}/resume`` sends no body, so no ``force``. The
+    others are held where their sections are: 3.6 (#195), 3.1 (item 30),
+    3.4 (``group_pier``), 1.2 (#335), 3.5 (#330) and S3 items 4 and 5
+    (#336, #338, #339). Since the integration of S3 the paragraph also says
+    it fixed #340 and made both inspectors read ``fieldValue``, which 1.7's
+    and 3.7's tests hold to the code; until then both were "not built"
+    claims held there.
+
+    RED under mutant "S3 back to items 4 and 5":
+
+        AssertionError: section 8's S3 must say: '**As built** (S3, #189).
+        Items 1 to 5 are built.'
+        assert False
+
+    RED under mutant "S3 without #340 in what it found":
+
+        AssertionError: section 8's S3 must say: '(#340'
+        assert False
+
+    Since the integration of S3, RED under mutant "S3 still lists the
+    inspectors as not built" (the not-built list as S3-SPEC5 left it, the
+    integration's sentence kept):
+
+        AssertionError: section 8's S3 must say: 'the stage-list rail and
+        LOOP PANELS, and #173 and #174'
+        assert False
+
+    RED under mutant "S3 names a test file that is not there"
+    (``test_flows_doctor_s3.py`` written ``test_flows_doctor_s4.py``):
+
+        AssertionError: S3 names 51 test files, and these are not in the tree:
+        ['test_flows_doctor_s4.py']
+        assert (51 > 40 and ['test_flows_doctor_s4.py'] == []
+         +  where 51 = len(['fixtures/panel_lane_cases.json',
+         'flowProgressChip.test.tsx', 'flowsSaveAnswer.test.ts',
+         'flowsSlice.test.ts', 'panelLane.test.ts',
+         'test_capture_root_isolated.py', ...])
+          Left contains one more item: 'test_flows_doctor_s4.py'
+          Use -v to get more diff)
+
+    RED under the TonightTimeline.tsx mutant "the classic band not hatched"
+    (its ``shape: "hatch",`` deleted):
+
+        AssertionError: the timelines read (classic mosaicBand, #/next
+        mosaicBand, a hatch) = (True, True, False); S3 says both draw the band
+        through the one reader
+        assert (True, True, False) == (True, True, True)
+          At index 2 diff: False != True
+          Use -v to get more diff
+
+    RED under the TonightCampaign.tsx mutant "the Campaign tab reads panels"
+    (``panels?: unknown[];`` added to ``CampaignRead``), the case where the
+    not-built sentence is stale:
+
+        AssertionError: the Campaign tab now reads panels (CampaignRead without
+        panels, has_progress readers) = (False, []); S3 says it draws no panel
+        rows yet: say what was built
+        assert (False, []) == (True, [])
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    RED under the engine.py mutant "a run starts with the last run's measured
+    costs" (`start`'s ``self._event_costs = {}`` deleted), the case where the
+    hop-cost sentence is stale:
+
+        AssertionError: SequenceEngine.start no longer empties the measured
+        costs; S3 says a hop cost is not kept across runs: say what was built
+        assert []
+
+    RED under the sessions.ts mutant "Resume sends force" (``, { force: true
+    }`` added to `resumeSession`'s post), the case where the Resume sentence is
+    stale:
+
+        AssertionError: resumeSession now sends a body; S3 says no button sends
+        force to resume yet: say what was built
+        assert None
+
+    Since the verifier's pass the paragraph also names three issues S3 filed
+    that are still open and it had left out, #323, #326 and #345, and it says
+    every GROUP case runs on the group harness, where it said every engine
+    case: the wind-down's run on test_unsafe_ending_parks_at_once's clocked
+    ``_Ending`` and ResumeArm's on ``_simhub``. So each ``test_group_*`` file
+    it names is checked to import ``_group_harness``.
+
+    RED under mutant "S3's list without #345":
+
+        AssertionError: section 8's S3 must say: '(#345'
+        assert False
+
+    RED under mutant "S3's list without #323":
+
+        AssertionError: section 8's S3 must say: '(#323'
+        assert False
+
+    RED under mutant "S3 back to every engine case":
+
+        AssertionError: section 8's S3 must say: 'every group case on the
+        clocked simulator through `tests/_group_harness.py`, as in S2'
+        assert False
+
+    RED under mutant "S3 keeps every engine case beside the new words" (",
+    and every engine case too" added after "as in S2"):
+
+        AssertionError: section 8's S3 says every engine case runs through the
+        group harness; the wind-down's and ResumeArm's do not
+        assert not True
+
+    RED under the test-file mutant "a group test off the harness"
+    (test_group_jump_leaves_group.py's ``from _group_harness import (`` made
+    ``from _other_harness import (``, in the scratch copy):
+
+        AssertionError: of the 9 group test files S3 names, these do not run
+        on the group harness: ['test_group_jump_leaves_group.py']
+        assert (9 >= 8 and ['test_group_...ves_group.py'] == []
+         +  where 9 = len(['test_group_floor_stop_counted.py',
+         'test_group_follower_fills_defer_wait.py',
+         'test_group_guide_lost_defers.py', 'test_group_harness_watchdog.py',
+         'test_group_jump_leaves_group.py',
+         'test_group_last_panel_unguided.py', ...])
+          Left contains one more item: 'test_group_jump_leaves_group.py'
+          Use -v to get more diff)
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
+    """
+    s3 = _section("S3:")
+    _says(s3, ("**As built** (S3, #189). Items 1 to 5 are built.",
+               "Item 1 is the vocabulary of 3.1, 3.7 and 1.3: "
+               "`NodeDef.created_as` and `create_params`",
+               "`LEGACY_TYPES`, and `_trigger_for`'s `pass` branch",
+               "the loop wire is consumed as the entry's `loop` and never "
+               "emitted (1.4)",
+               "Item 2 is the compile entry (3.2, `_target_entry`), the panel "
+               "lane and `owner_of` (1.5)",
+               "(3.3, `_expand_mosaic`, `reframe_carry`, `prepare_save`)",
+               "the rig facts every route that compiles hands the compile, "
+               "the doctor and the wizard (3.3, `_rig_facts`), and "
+               "FLOW_SCHEMA 4 (3.6)",
+               "Item 3 is the doctor of 1.8, in the server only",
+               "Both UIs draw the TIMELINE band from the row's `band` "
+               "(`mosaicBand`, `timelineGeometry`)",
+               "The tests are split by rule",
+               "`test_mosaic_spec_claims.py` holds this spec to the code",
+               "Not built in S3: DUSK's `autoResume` and its tooltip, with "
+               "`FieldDef.help` (#195, which takes FLOW_SCHEMA 5; 3.6)",
+               "(owner list item 30)", "the stage-list rail and LOOP "
+               "PANELS, and #173 and #174",
+               "The integration of S3 fixed one more that S3 had filed, "
+               "START BLANK's SLEW (#340, 1.7), and made both inspectors "
+               "read `fieldValue` (3.7).",
+               "Send to Flow Wizard's stepped sheet and its doors (#196, S4 "
+               "and S6)", "a Resume or Recover button that sends `force` "
+               "(6.3)", "the Campaign tab's panel rows, which `_campaign` "
+               "sends and `TonightCampaign.tsx` does not draw",
+               "`group_pier` in `ui/src/types.ts` (3.4)",
+               "#287's backstop in `_capture`",
+               "#308's no-light band checked against real moonless overcast "
+               "frames (S7)", "#311's driver-side fixes (#342)",
+               "a measured hop cost kept across runs",
+               "the progress route's use of the panel order (5.2)",
+               "S3 also found and filed, all open:",
+               "every group case on the clocked simulator through "
+               "`tests/_group_harness.py`, as in S2") + tuple(
+                   f"(#{n}" for n in (320, 321, 322, 323, 326, 327, 328, 329,
+                                      330, 331, 332, 333, 334, 335, 336, 338,
+                                      339, 340, 343, 345)), "section 8's S3")
+    engine_wide = "every engine case" in s3
+    assert not engine_wide, (
+        "section 8's S3 says every engine case runs through the group "
+        "harness; the wind-down's and ResumeArm's do not")
+    corpus = "\n".join(p.read_text(encoding="utf-8")
+                       for p in (_SERVER / "astrodeck").rglob("*.py"))
+    absent = _source_names_exist(
+        " ".join(f"`{n}`" for n in (
+            "created_as", "create_params", "LEGACY_TYPES", "_trigger_for",
+            "_target_entry", "owner_of", "_expand_mosaic", "reframe_carry",
+            "prepare_save", "_rig_facts", "mosaicBand", "timelineGeometry",
+            "_campaign", "TonightCampaign.tsx")), corpus)
+    assert absent == [], f"S3 names code that is not in the tree: {absent}"
+    named = sorted(set(_NAMED.findall(s3)))
+    missing = []
+    for name in named:
+        if name.endswith((".ts", ".tsx")):
+            found = any(UI_SRC.rglob(name))
+        else:
+            found = (_SERVER / "tests" / name.replace("tests/", "")).is_file()
+        if not found:
+            missing.append(name)
+    assert len(named) > 40 and missing == [], (
+        f"S3 names {len(named)} test files, and these are not in the tree: "
+        f"{missing}")
+    # "Every group case through the group harness": each test_group_* file
+    # the paragraph names imports it.
+    groups = [n for n in named if n.startswith("test_group_")]
+    unharnessed = [n for n in groups if not re.search(
+        r"^from _group_harness import|^import _group_harness",
+        (_SERVER / "tests" / n).read_text(encoding="utf-8"), re.MULTILINE)]
+    assert len(groups) >= 8 and unharnessed == [], (
+        f"of the {len(groups)} group test files S3 names, these do not run "
+        f"on the group harness: {unharnessed}")
+    classic = _ui("components/flows/TonightTimeline.tsx")
+    rebuilt = _ui("next/hubs/session/flows/tonight/tonightModel.ts")
+    drawn = ("mosaicBand(" in classic, "mosaicBand(" in rebuilt,
+             'shape: "hatch"' in classic)
+    assert drawn == (True, True, True), (
+        f"the timelines read (classic mosaicBand, #/next mosaicBand, a "
+        f"hatch) = {drawn}; S3 says both draw the band through the one "
+        f"reader")
+    # Not built yet. Each goes red when its work lands: say what was built.
+    campaign = _ui("components/flows/TonightCampaign.tsx")
+    shape = re.search(r"export interface CampaignRead \{([^}]*)\}", campaign)
+    readers = [p.name for p in UI_SRC.rglob("*.ts*")
+               if "__tests__" not in p.parts
+               and "has_progress" in p.read_text(encoding="utf-8")]
+    unread = (shape is not None and "panels" not in shape.group(1),
+              readers)
+    assert unread == (True, []), (
+        f"the Campaign tab now reads panels (CampaignRead without panels, "
+        f"has_progress readers) = {unread}; S3 says it draws no panel rows "
+        f"yet: say what was built")
+    fresh = [a for a in _assigns(_tree(SequenceEngine.start),
+                                 "self._event_costs")
+             if isinstance(a.value, ast.Dict) and not a.value.keys]
+    assert fresh, ("SequenceEngine.start no longer empties the measured "
+                   "costs; S3 says a hop cost is not kept across runs: say "
+                   "what was built")
+    wrapper = re.search(r"api\.post<[^>]*>\(`/api/sessions/\$\{id\}/resume`"
+                        r"\s*\)", _ui("api/sessions.ts"))
+    assert wrapper, ("resumeSession now sends a body; S3 says no button sends "
+                     "force to resume yet: say what was built")
+
+
+def test_9_and_the_190_row_say_what_s3_did():
+    """Section 9's I-05 row says S3 scopes every stage by its wires in a
+    graph with a multi-panel block (S3, #151) and that a graph with none
+    keeps the canvas-order rule, so the defect and #151 stand there. I-43
+    says all three stale docs are corrected (S3, #169; cbdb59a9). I-47 says
+    every block's centring reaches the run (S3, #170): S1's
+    `_centring_kwargs` and S3's ``centre``, with a legacy SLEW's fields
+    still ignored. The #190 row, among the issues filed while applying the
+    rulings, says the wizard resolves a typed name (S3, #190), and names
+    what still reads M31's (item 30) and what did until the integration of
+    S3 (#340).
+
+    The code: TARGET M31 wired to a CAPTURE, with TARGET M33 beside it and
+    unwired, gives M33 the CAPTURE's step when M31 is one panel (the
+    canvas-order defect, still there) and none when M31 is a 1x2; the
+    doctor's docstring calls itself the only copy, the IA map says both
+    Atlas routes require ``view.site_derived``, the framing route declares
+    it, and the handoff contract's amendment counts the node types
+    ``NODE_DEFS`` holds; a one-panel TARGET centring to 0.6 arcmin in 4
+    tries plans exactly that, and the engine turns it into the
+    ``goto_and_center`` arguments `_setup_target` passes; the wizard puts
+    M16 at M16's coordinates, leaves a name the catalogue does not know
+    without coordinates and with a note, and a created TARGET is blank.
+
+    RED under mutant "I-05 without S3's sentence":
+
+        AssertionError: I-05 must say: 'S3 scopes every stage by its wires in a
+        graph that holds a multi-panel block (1.5; S3, #151)'
+        assert False
+
+    RED under mutant "the #190 row without its fix" (the row put back as
+    S3-SPEC4 left it):
+
+        AssertionError: the #190 row must say: 'Fixed (S3, #190): a TARGET is
+        created blank (`created_as`)'
+        assert False
+
+    RED under the compile.py mutant "wires scope every graph" (the scoping
+    switch's ``if any(is_multi_panel(n) for n in graph.nodes)`` made ``if
+    True``), the case where the I-05 sentence that the defect stands is stale:
+
+        AssertionError: the unwired M33 gets {'one panel': {'a': 1, 'b': 0}, 'a
+        1x2': {'a': 1, 'b': 0}}; I-05 says the canvas-order rule stands in a
+        graph with no mosaic (#151 there), and wires scope one with a mosaic
+        assert {'a 1x2': {'a...': 1, 'b': 0}} == {'a 1x2': {'a...': 1, 'b': 1}}
+          Omitting 1 identical items, use -vv to show
+          Differing items:
+          {'one panel': {'a': 1, 'b': 0}} != {'one panel': {'a': 1, 'b': 1}}
+          Use -v to get more diff
+
+    RED under the doctor.py mutant "the doctor's docstring claims a UI copy
+    again":
+
+        AssertionError: (the doctor's docstring, the IA map, the framing route,
+        the contract's count) read (False, True, True, True); I-43 says all
+        three are corrected
+        assert (False, True, True, True) == (True, True, True, True)
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    RED under the IA map mutant "the IA map calls the Atlas routes un-gated":
+
+        AssertionError: (the doctor's docstring, the IA map, the framing route,
+        the contract's count) read (True, False, True, True); I-43 says all
+        three are corrected
+        assert (True, False, True, True) == (True, True, True, True)
+          At index 1 diff: False != True
+          Use -v to get more diff
+
+    RED under the to_plan.py mutant "a block's tries do not reach the plan"
+    (``out["center_attempts"] = whole`` deleted):
+
+        AssertionError: a TARGET centring to 0.6' in 4 tries reaches the goto
+        as ((0.6, None), {'tolerance_deg': 0.01}); I-47 says it is fixed
+        assert ((0.6, None),...e_deg': 0.01}) == ((0.6, 4), {'...e_deg': 0.01})
+          At index 0 diff: (0.6, None) != (0.6, 4)
+          Use -v to get more diff
+
+    RED under the wizard.py mutant "the wizard creates from the missing-key
+    defaults" (``params=create_params(node_type)`` made
+    ``params=dict(NODE_DEFS[node_type].params)``), #190 back for a name the
+    catalogue does not know:
+
+        AssertionError: the wizard gives (M16 at 18.3 h, an unknown name's RA,
+        its Dec blank, its note, a created TARGET) = (True, '00h 42m 44s',
+        False, True, {'name': '', 'ra': '', 'dec': ''}); the #190 row says M16
+        at M16's coordinates, none and a note for a name the catalogue does not
+        know, and a blank TARGET
+        assert (True, '00h 4...'', 'ra': ''}) == (True, '', Tr...'', 'ra': ''})
+          At index 1 diff: '00h 42m 44s' != ''
+          Use -v to get more diff
+
+    RED under the wizard.py mutant "the wizard resolves no name"
+    (``_resolve_name(tname) if tname`` made ``(None, None) if tname``):
+
+        AssertionError: the wizard gives (M16 at 18.3 h, an unknown name's RA,
+        its Dec blank, its note, a created TARGET) = (False, '', True, False,
+        {'name': '', 'ra': '', 'dec': ''}); the #190 row says M16 at M16's
+        coordinates, none and a note for a name the catalogue does not know,
+        and a blank TARGET
+        assert (False, '', T...'', 'ra': ''}) == (True, '', Tr...'', 'ra': ''})
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its Engine
+    heading reworded): every test in this file passed on it (74 passed).
+    """
+    from astrodeck.catalog import framing
+    from astrodeck.catalog.coords import parse_ra
+    from astrodeck.flows import doctor, wizard
+    from astrodeck.flows.nodes import NODE_DEFS, create_params
+    s9 = [text for name, text in _blocks() if name.startswith("9. ")][0]
+    i05, i43, i47 = (_line(s9, f"| {i} |") for i in ("I-05", "I-43", "I-47"))
+    _says(i05, ("S3 scopes every stage by its wires in a graph that holds a "
+                "multi-panel block (1.5; S3, #151)", "a graph with none keeps "
+                "the canvas-order rule byte for byte, so there the defect "
+                "stands, and #151 with it"), "I-05")
+    _says(i43, ("All three are corrected", "both Atlas routes require "
+                "`view.site_derived` (S3, #169)", "ruling 6's amendment marks "
+                "the contract's counts superseded", "(cbdb59a9)"), "I-43")
+    _says(i47, ("Fixed (S3, #170)", "(`_centring_kwargs`, S1 item 1)",
+                "from TARGET's `centerTol` and `centerTries`, the entry's "
+                "`centre` (3.2)", "a legacy SLEW's fields still never reach "
+                "the run"), "I-47")
+    filed = [text for name, text in _blocks()
+             if name == "Filed while applying the rulings"]
+    row190 = _line(filed[0], "| #190 |")
+    _says(row190, ("Fixed (S3, #190): a TARGET is created blank "
+                   "(`created_as`)", "through `tonight.resolve_target` "
+                   "(`_resolve_name`)", "M16 gets M16's coordinates",
+                   "a name the catalogue does not know is left with no "
+                   "coordinates and a note", "(owner list item 30)", "(#340)"),
+          "the #190 row")
+    # I-05: the two rules, told apart by one unwired TARGET.
+    def steps(rows: int) -> dict:
+        graph = _flow([("a", "target", {**_M31, "rows": rows, "cols": 1}),
+                       ("b", "target", _M33), ("k", "capture", _HA)],
+                      ["a.target -> k.run"])
+        return {t["node_id"]: len(t["steps"])
+                for t in compile_plan(graph)["targets"]}
+
+    scoped = {"one panel": steps(1), "a 1x2": steps(2)}
+    assert scoped == {"one panel": {"a": 1, "b": 1},
+                      "a 1x2": {"a": 1, "b": 0}}, (
+        f"the unwired M33 gets {scoped}; I-05 says the canvas-order rule "
+        f"stands in a graph with no mosaic (#151 there), and wires scope "
+        f"one with a mosaic")
+    # I-43: the three documents.
+    ia = IA_MAP.read_text(encoding="utf-8")
+    contract = CONTRACT.read_text(encoding="utf-8")
+    docs = (
+        "THIS IS THE ONLY COPY OF THE RULES (#169)" in (doctor.__doc__ or ""),
+        "both require **view.site_derived**" in ia,
+        re.search(r'@router\.post\("/api/framing/mosaic",\s*'
+                  r'dependencies=\[Depends\(require\('
+                  r'CAP_VIEW_SITE_DERIVED\)\)\]\)',
+                  inspect.getsource(framing)) is not None,
+        f"The code ships {len(NODE_DEFS)} node types" in contract)
+    assert docs == (True, True, True, True), (
+        f"(the doctor's docstring, the IA map, the framing route, the "
+        f"contract's count) read {docs}; I-43 says all three are corrected")
+    # I-47: a block's centring reaches the goto.
+    graph = _flow([("t", "target", {**_M31, "rows": 1, "cols": 1,
+                                    "centerTol": 0.6, "centerTries": 4}),
+                   ("k", "capture", _HA)], ["t.target -> k.run"])
+    target = to_sequence_plan(compile_plan(graph), graph,
+                              flow_id="f-i-47")[0].targets[0]
+    reached = ((target.center_tolerance_arcmin, target.center_attempts),
+               SequenceEngine._centring_kwargs(target))
+    assert reached == ((0.6, 4), {"tolerance_deg": 0.01,
+                                  "max_attempts": 4}), (
+        f"a TARGET centring to 0.6' in 4 tries reaches the goto as "
+        f"{reached}; I-47 says it is fixed")
+    passed = [c for c in _calls(_tree(SequenceEngine._setup_target),
+                                "goto_and_center")
+              if any(k.arg is None and _is_self_call(k.value,
+                                                     "_centring_kwargs")
+                     for k in c.keywords)]
+    assert passed, ("_setup_target no longer passes a target's centring to "
+                    "goto_and_center; I-47 says it does")
+    # #190: the wizard's name and a created TARGET.
+    def placed(name: str):
+        answer = wizard.generate_answer(wizard.KIND_DEEP_SKY, target=name)
+        node = next(n for n in answer.record.graph.nodes
+                    if n.type == "target")
+        return node.params, answer.notes
+
+    m16, _notes = placed("M16")
+    ra = parse_ra(m16["ra"]) if m16.get("ra") else None
+    unknown, notes = placed("Zork 999")
+    created = {k: create_params("target")[k] for k in ("name", "ra", "dec")}
+    # The unknown name's RA and whether its Dec is blank: a Dec the node
+    # was not meant to keep is M31's, spelled with a prime this file does
+    # not carry.
+    got = (ra is not None and round(ra, 1) == 18.3, unknown["ra"],
+           unknown["dec"] == "", any("Zork 999" in n for n in notes), created)
+    assert got == (True, "", True, True, {"name": "", "ra": "", "dec": ""}), (
+        f"the wizard gives (M16 at 18.3 h, an unknown name's RA, its Dec "
+        f"blank, its note, a created TARGET) = {got}; the #190 row says M16 "
+        f"at M16's coordinates, none and a note for a name the catalogue "
+        f"does not know, and a blank TARGET")

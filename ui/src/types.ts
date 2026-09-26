@@ -835,8 +835,12 @@ export interface SequenceGroupState {
   mode: "rotate" | "sequential";
   /** The pass over the panels, counted from 1. */
   pass?: number;
-  /** The panel label, "<row>-<col>" counted from 1, e.g. "2-3". */
-  panel?: string;
+  /** The panel label, "<row>-<col>" counted from 1, e.g. "2-3". null while
+   *  the group waits before any panel is current (the engine's
+   *  `_group_state` publishes `None` then, e.g. when every panel is behind
+   *  the horizon mask at the start of a night); absent while withheld
+   *  across a meridian wait. */
+  panel?: string | null;
   visit_elapsed_s: number;
   panels_done: number;
   panels_total: number;

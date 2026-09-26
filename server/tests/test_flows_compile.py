@@ -11,12 +11,21 @@ something the engine could actually be handed.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from astrodeck.devices.base import DEFAULT_SHUTTER_TIMEOUT_S
-from astrodeck.flows.compile import compile_plan, flow_order
+from astrodeck.flows.compile import (_trigger_for, compile_plan, flow_order,
+                                     is_multi_panel)
 from astrodeck.flows.examples import examples
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
+
+#: Every Example's compile, captured before the panel lane was written.
+LEGACY_EXAMPLES = json.loads(
+    (Path(__file__).parent / "fixtures" / "panel_lane_cases.json")
+    .read_text(encoding="utf-8"))["legacy_examples"]
 
 
 def _n(nid, ntype, x=0.0, y=0.0, **params):
@@ -25,6 +34,39 @@ def _n(nid, ntype, x=0.0, y=0.0, **params):
 
 def _e(a, ap, b, bp):
     return FlowEdge(**{"from": a, "fromPort": ap, "to": b, "toPort": bp})
+
+
+#: The keys S3's compile adds to an entry, by the node type that emits it.
+_S3_KEYS = {"target": ("angle", "mosaic", "loop", "centre", "count_mode",
+                       "frame_anchor", "follows"),
+            "pool": ("count_mode", "follows")}
+
+
+def _s3_keys(node: FlowNode) -> dict:
+    """What the S3 keys must hold for a node of a graph with NO mosaic: the
+    node's own angle and centring, no grid, no loop, no follower, and what
+    its `counts` asks for: accepted subs, for all seven Examples.
+
+    "attempts" until the integration of S3, which re-pinned it: S3-W made
+    every Example's TARGET and POOL count accepted subs (Revision 2 ruling 2,
+    a created block counts them). Typed here, not read from the node, so the
+    Examples and the compile are checked by a second hand.
+
+    RED under mutant "every block counts attempts" (in a private scratch copy
+    of compile.py, ``count_mode_of`` returning "attempts"), observed for all
+    seven, the first (example-campaign, whose entry n20 is a POOL member):
+
+        E   AssertionError: n20
+        E   assert {'count_mode': 'attempts'} == {'count_mode': 'accepted'}
+    """
+    p = node.params
+    if node.type == "pool":
+        return {"count_mode": "accepted"}
+    return {"angle": "any" if float(p["rotation"]) < 0 else "rotate",
+            "mosaic": None, "loop": False,
+            "centre": {"tol_arcmin": p["centerTol"],
+                       "attempts": p["centerTries"]},
+            "count_mode": "accepted", "frame_anchor": ""}
 
 
 class TestFlowOrder:
@@ -50,8 +92,10 @@ class TestFlowOrder:
         assert [n.id for n in flow_order(g)] == ["a", "b"]
 
     def test_a_cycle_does_not_hang(self):
-        """Not expressible in the editor, so a graph containing one came from
-        somewhere else; dropping the cycle is the fail-closed reading."""
+        """The editor CAN draw one (#149: replace-on-drop turns a back-edge
+        into a loop), and validation now refuses it at save and /run. The
+        compile routes still compile half-built graphs, so dropping the cycle
+        stays the fail-closed reading for whatever reaches here."""
         g = FlowGraph(nodes=[_n("a", "slew"), _n("b", "autofocus")],
                       edges=[_e("a", "centered", "b", "run"),
                              _e("b", "focused", "a", "run")])
@@ -216,6 +260,40 @@ class TestInstructions:
                       edges=[_e("d", "window", "t", "arm")])
         assert compile_plan(g, "n")["instructions"] == []
 
+    @pytest.mark.parametrize("ntype", ["capture", "cycle"])
+    def test_a_pass_wire_names_its_own_trigger(self, ntype):
+        """Spec 1.3 item 1: a stage's ``pass`` output is structural. Before
+        the branch, capture and cycle answered ``on_frame_graded`` for ANY
+        port, so a pass wire would have compiled to a rule that fires on
+        every graded frame. ``<type>.pass`` is no engine trigger, which is the
+        point: ``to_plan`` reports a pass wire that is not the loop as "this
+        rule will not run".
+
+        CHANGED IN S3 (the compile task, spec 1.4 item 3): the LEGAL loop
+        wire (the tail of a multi-panel lane into its own block's ``next``)
+        is now consumed as the block's ``loop`` and never reaches the
+        instructions, so this case grades the trigger on a pass wire that is
+        NOT the loop: the same wire on a block of one panel, which has
+        nothing to rotate between (M4). Its original 3x2 graph now compiles
+        to no rule at all, which ``test_flows_compile_entry_s3.py`` grades.
+        The direct call then pins the branch itself, with the graded frame
+        as its control.
+
+        Mutant "no pass branch" failed (S3-LANE, on the 3x2 graph; the same
+        assertion, re-run on this graph in scratchpad s3-cp-mut):
+            AssertionError: assert ['on_frame_graded'] == ['capture.pass']
+            AssertionError: assert ['on_frame_graded'] == ['cycle.pass']
+        """
+        g = FlowGraph(
+            nodes=[_n("t", "target", rows=1, cols=1), _n("s", ntype, x=200)],
+            edges=[_e("t", "target", "s", "run"), _e("s", "pass", "t", "next")])
+        instructions = compile_plan(g, "n")["instructions"]
+        assert [r["when"] for r in instructions] == [f"{ntype}.pass"]
+        node = _n("s", ntype)
+        assert _trigger_for(node, "pass") == f"{ntype}.pass"
+        # Control: the graded-frame event keeps its engine trigger.
+        assert _trigger_for(node, "frame") == "on_frame_graded"
+
 
 class TestAutomation:
     def test_a_dome_is_always_fail_closed(self):
@@ -297,6 +375,73 @@ class TestTheExamplesCompile:
                 continue
             assert -90.0 <= parse_dec(t["dec"]) <= 90.0, t
             assert 0.0 <= parse_ra(t["ra"]) < 24.0, t
+
+    @pytest.mark.parametrize("ex_id", sorted(LEGACY_EXAMPLES))
+    def test_with_no_mosaic_every_example_compiles_byte_identically(self, ex_id):
+        """Spec 1.5: the canvas-order rule is kept byte for byte for any graph
+        with no multi-panel block, so every Example (and every saved flow)
+        compiles exactly as it did before the panel lane existed. Compared as
+        serialised text, so key order and int-versus-float count too.
+
+        An Example that later gains a mosaic fails the guard below rather than
+        being skipped: taking it out of the corpus has to be a decision.
+
+        All seven compile the same under the wire rule too (checked by forcing
+        it), so this control cannot see "the wire rule in every graph"; the
+        1x1 case in test_flows_panel_lane.py is what catches that one.
+
+        Mutant "an empty notes list on every compile" failed all seven:
+            AssertionError: example-campaign changed its compile
+            assert '{"name": "Ca... "notes": []}' == '{"name": "Ca...": "cursor"}}'
+              -  "cursor"}}
+              +  "cursor"}, "notes": []}
+
+        RE-PINNED ON PURPOSE IN S3 (the compile task; spec 3.2, #189, #170):
+        every TARGET entry gained ``angle``, ``mosaic``, ``loop``, ``centre``,
+        ``count_mode`` and, with no grid, ``frame_anchor``, and every POOL
+        entry ``count_mode``. BOUNDED FROM BOTH SIDES rather than regenerated:
+        the new keys must hold exactly what the Example's node means
+        (``_s3_keys``), and with them taken off the compile is the capture
+        byte for byte. The fixture belongs to S3-LANE and is not edited.
+
+        Mutant "one more key on every entry" (``_target_entry`` also writes
+        ``"panels": 1``), observed for the five Examples with a TARGET:
+            AssertionError: example-cycle changed its compile beyond the S3 keys
+            assert '{"name": "M3...shold": 40}]}' == '{"name": "M3...shold": 40}]}'
+
+        Mutant "a mosaic on every block" (``mosaic`` is ``{}`` for a 1x1),
+        observed for the same five:
+            AssertionError: n2
+            assert {'angle': 'an...hor': '', ...} == {'angle': 'an...hor': '', ...}
+              Omitting 5 identical items, use -vv to show
+              Differing items:
+              {'mosaic': {}} != {'mosaic': None}
+        """
+        ex = next((e for e in examples() if e.id == ex_id), None)
+        assert ex is not None, f"{ex_id} is no longer an Example"
+        assert not any(is_multi_panel(n) for n in ex.graph.nodes), (
+            f"{ex_id} now has a mosaic, so the wire rule compiles it; remove "
+            "it from legacy_examples in panel_lane_cases.json deliberately")
+        compiled = compile_plan(ex.graph, ex.name)
+        nodes = {n.id: n for n in ex.graph.with_defaults().nodes}
+        for entry in compiled["targets"]:
+            node = nodes[entry["node_id"]]
+            taken = {k: entry.pop(k) for k in _S3_KEYS[node.type]
+                     if k in entry}
+            assert taken == _s3_keys(node), entry["node_id"]
+        got = json.dumps(compiled, ensure_ascii=False)
+        want = json.dumps(LEGACY_EXAMPLES[ex_id], ensure_ascii=False)
+        assert got == want, f"{ex_id} changed its compile beyond the S3 keys"
+
+    def test_the_legacy_corpus_is_the_seven_examples(self):
+        """The control above is only as wide as its corpus; a capture that
+        missed an Example would grade six and say seven.
+
+        Mutant of the FIXTURE (a scratch copy) "drop example-eaa" failed:
+            AssertionError: assert 6 == 7
+        """
+        assert len(LEGACY_EXAMPLES) == 7
+        assert set(LEGACY_EXAMPLES) <= {e.id for e in examples()}
 
     def test_the_compile_is_deterministic(self):
         """The timeline is a rendering of THIS; two answers would let the

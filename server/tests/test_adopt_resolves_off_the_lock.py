@@ -125,7 +125,15 @@ def catalogue(monkeypatch):
 def _pre_s1(fid: str, times: tuple[float, ...]) -> tuple[Session, str]:
     """A dormant session saved before S1 (uuid4 ids) on the flow's recipe
     for L, one frame per entry of ``times`` on night n1. Returns it and its
-    L step id."""
+    L step id.
+
+    It counts every sub taken, as a pre-S1 flow session did, and the flow
+    the tests save counts accepted subs (every save writes them since S3,
+    Revision 2 ruling 2). So a request that should START passes
+    ``accept_recount`` (added in the integration of S3): the recount 409
+    (spec 5.9) is test_flows_continue's question, and without the flag it
+    answers after ADOPT and before the start this file grades. A refusal
+    "even with every flag set" sets it too."""
     step = ExposureStep(filter="L", exposure_s=0.05, count=3)
     t = Target(name="Jupiter", ra_hours=RA, dec_deg=DEC, steps=[step])
     s = Session(name="pre-S1", created_ts=1.0, status="dormant",
@@ -188,7 +196,7 @@ async def test_adopt_asks_the_catalogue_off_the_loop_and_outside_the_lock(
     assert rig.starts == []
 
     catalogue.calls.clear()
-    r = await rig.run(fid, adopt=True)
+    r = await rig.run(fid, adopt=True, accept_recount=True)
 
     assert r.status_code == 200, r.text
     assert r.json()["session"]["adopted"] == {"matched": 2, "unmatched": []}
@@ -234,7 +242,8 @@ async def test_a_session_that_became_an_adopt_case_in_the_gap_asks_nothing(
 
     monkeypatch.setattr(SessionStore, "current_for_flow",
                         first_read_then_a_run_banks)
-    r = await rig.run(fid, adopt=True, accept_dropped=True)
+    r = await rig.run(fid, adopt=True, accept_dropped=True,
+                      accept_recount=True)
 
     assert r.status_code == 409, r.text
     body = r.json()["detail"]
@@ -250,7 +259,7 @@ async def test_a_session_that_became_an_adopt_case_in_the_gap_asks_nothing(
         "premise: the run in the gap banked nothing")
     assert rig.starts == [] and not _bak(old.id).exists()
 
-    r = await rig.run(fid, adopt=True)
+    r = await rig.run(fid, adopt=True, accept_recount=True)
 
     assert r.status_code == 200, r.text
     assert r.json()["session"]["adopted"] == {"matched": 2, "unmatched": []}
@@ -290,7 +299,8 @@ async def test_frames_banked_after_the_lookup_are_listed_to_press_adopt_again(
 
     catalogue.hook = a_run_banks_in_the_gap
 
-    r = await rig.run(fid, adopt=True, accept_dropped=True)
+    r = await rig.run(fid, adopt=True, accept_dropped=True,
+                      accept_recount=True)
 
     assert r.status_code == 409, r.text
     body = r.json()["detail"]
@@ -303,7 +313,7 @@ async def test_frames_banked_after_the_lookup_are_listed_to_press_adopt_again(
     assert _bytes(old.id) == banked[0], "the refusal wrote the session"
     assert rig.starts == [] and not _bak(old.id).exists()
 
-    r = await rig.run(fid, adopt=True)
+    r = await rig.run(fid, adopt=True, accept_recount=True)
 
     assert r.status_code == 200, r.text
     assert r.json()["session"]["adopted"] == {"matched": 3, "unmatched": []}
@@ -330,7 +340,8 @@ async def test_control_no_frames_in_the_gap_adopts_on_the_first_press(
     fid = await rig.save_flow(JUPITER)
     old, _l_step = _pre_s1(fid, (T1, T2))
 
-    r = await rig.run(fid, adopt=True, accept_dropped=True)
+    r = await rig.run(fid, adopt=True, accept_dropped=True,
+                      accept_recount=True)
 
     assert r.status_code == 200, r.text
     assert r.json()["session"]["adopted"] == {"matched": 2, "unmatched": []}
