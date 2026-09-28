@@ -23,25 +23,34 @@
 //
 // Every guarded case names the mutant it kills and quotes the failure it
 // produced, each run in a private copy of ui/ (scratchpad/s3-u2-readouts-
-// m5q8/mut/), never in the shared tree.
+// m5q8/mut/; the fixture read by scratchpad s4-tonight-mut), never in the
+// shared tree.
 //
-// RECORDED, NOT HAND-WRITTEN. TONIGHT_2X3 is `flows/tonight.py::
-// resolve_tonight`'s own answer, as S3-T left it, recorded by
-// scratchpad/s3-u2-readouts-m5q8/record.py: the graph DUSK -> TARGET M16 (a
-// 2x3 at 25%, Rotate to PA 30, 2.0 x 1.33 deg panels, loop wire) -> CAPTURE
-// Ha 300 s x 2 -> TARGET M31 (single) -> CAPTURE -> POOL M13, M92 -> CAPTURE,
-// resolved at 2026-06-15 20:00 UTC with twilight -12 for a SYNTHETIC site
-// (40 N 105 W, the place test_flows_tonight_mosaic.py uses, NOT the
-// observatory's), Hub.site patched to the same place because the panel stamp
-// reads the hub's site (#336), hop_cost_s 160 and the recorded 2x3 progress
-// answer. Its M16 row's band: worst 2-1 at 35.0, best 1-3 at 37.4; the first
-// panel in grid order, 1-1, peaks at 35.8, between them, so a band read off
-// one panel cannot pass for the spread. Re-record, never hand-edit.
+// THE ANSWER IS server/tests/fixtures/tonight_mosaic_2x3.json, READ, NOT
+// COPIED (#353 item 7). S3 embedded `flows/tonight.py::resolve_tonight`'s
+// answer here as a literal, "recorded, never hand-edited", and nothing
+// failed when the server's answer drifted from the recording. Now
+// test_flows_tonight_band_fixture.py grades the server against the same
+// file, so a change to the answer turns that test red, and a rewrite of the
+// file is graded here on the next run. Do not replace the read with a
+// literal. The answer is for the graph DUSK -> TARGET M16 (a 3x2, 3 columns
+// by 2 rows, at 25%, Rotate to PA 30, 2.0 x 1.33 deg panels, loop wire) ->
+// CAPTURE Ha 300 s x 2 -> TARGET M31 (single) -> CAPTURE -> POOL M13, M92 ->
+// CAPTURE, resolved at 2026-06-15 20:00 UTC with twilight -12 for a
+// SYNTHETIC site (40 N 105 W, the place test_flows_tonight_mosaic.py uses,
+// NOT the observatory's), hop_cost_s 160 and a 2x3 progress answer with
+// four panels done. Its M16 row's band: worst 2-1 at 35.0, best 1-3 at
+// 37.4; the first panel in grid order, 1-1, peaks at 35.8, between them, so
+// a band read off one panel cannot pass for the spread. The server test
+// holds those premises too.
 //
 // Convention: shell-and-tests.md section 4 - jsdom by hand, createRoot + act,
 // printed tally plus the `{ passed, failed, total }` export.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+// @ts-ignore  node built-ins; tsx supplies them at runtime
+import { readFileSync } from "node:fs";
 
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
@@ -100,324 +109,46 @@ function near(got: number, want: number, eps: number, msg: string): void {
 }
 
 // ------------------------------------------------------------------ fixture
-const TONIGHT_2X3: Record<string, unknown> = {
-  "ok": true,
-  "reason": "",
-  "now_unix": 1781553600.0,
-  "twilight_deg": -12.0,
-  "night": {
-    "dusk_unix": 1781581509.7503662,
-    "dawn_unix": 1781604969.4198608,
-    "window_start_unix": 1781579709.7503662,
-    "window_stop_unix": 1781604969.4198608,
-    "dark_start_unix": 1781584500.0,
-    "dark_end_unix": 1781601900.0,
-    "darkness_kind": "astronomical"
-  },
-  "flats": null,
-  "moon": {
-    "illumination": 0.023,
-    "phase_name": "Waxing Crescent",
-    "alt": -23.8,
-    "az": 352.3,
-    "rise_unix": null,
-    "set_unix": null
-  },
-  "targets": [
-    {
-      "name": "M16",
-      "label": "M16",
-      "coords_from": "node",
-      "ra_hours": 18.313333333333333,
-      "dec_deg": -13.816666666666666,
-      "resolved": true,
-      "min_altitude_deg": 30.0,
-      "pool_rank": null,
-      "window": {"start_unix": 1781589300.0, "end_unix": 1781601900.0, "mean_alt": 34.2},
-      "curve": [
-        [1781582100.0, 14.65], [1781582700.0, 16.25], [1781583300.0, 17.81],
-        [1781583900.0, 19.33], [1781584500.0, 20.81], [1781585100.0, 22.24],
-        [1781585700.0, 23.62], [1781586300.0, 24.96], [1781586900.0, 26.23],
-        [1781587500.0, 27.45], [1781588100.0, 28.6], [1781588700.0, 29.69],
-        [1781589300.0, 30.7], [1781589900.0, 31.64], [1781590500.0, 32.5],
-        [1781591100.0, 33.28], [1781591700.0, 33.98], [1781592300.0, 34.58],
-        [1781592900.0, 35.09], [1781593500.0, 35.51], [1781594100.0, 35.83],
-        [1781594700.0, 36.05], [1781595300.0, 36.17], [1781595900.0, 36.19],
-        [1781596500.0, 36.11], [1781597100.0, 35.93], [1781597700.0, 35.64],
-        [1781598300.0, 35.27], [1781598900.0, 34.79], [1781599500.0, 34.22],
-        [1781600100.0, 33.56], [1781600700.0, 32.82], [1781601300.0, 31.99],
-        [1781601900.0, 31.08], [1781602500.0, 30.09], [1781603100.0, 29.03],
-        [1781603700.0, 27.9], [1781604300.0, 26.71], [1781604900.0, 25.46]
-      ],
-      "transit_unix": 1781595900.0,
-      "transit_alt": 36.2,
-      "transit_in_daylight": false,
-      "meridian_flip_unix": 1781595740.6350548,
-      "moon_sep_deg": 13.7,
-      "never_rises": false,
-      "mosaic": {
-        "rows": 2,
-        "cols": 3,
-        "live": 6,
-        "skipped": [],
-        "panels": [
-          {"panel": "1-1", "row": 0, "col": 0, "transit_alt": 35.8},
-          {"panel": "1-2", "row": 0, "col": 1, "transit_alt": 36.6},
-          {"panel": "1-3", "row": 0, "col": 2, "transit_alt": 37.4},
-          {"panel": "2-1", "row": 1, "col": 0, "transit_alt": 35.0},
-          {"panel": "2-2", "row": 1, "col": 1, "transit_alt": 35.8},
-          {"panel": "2-3", "row": 1, "col": 2, "transit_alt": 36.5}
-        ],
-        "band": {
-          "worst": {"panel": "2-1", "row": 1, "col": 0, "transit_alt": 35.0},
-          "best": {"panel": "1-3", "row": 0, "col": 2, "transit_alt": 37.4}
-        }
-      }
-    },
-    {
-      "name": "M31",
-      "label": "M31",
-      "coords_from": "node",
-      "ra_hours": 0.7122222222222222,
-      "dec_deg": 41.26916666666666,
-      "resolved": true,
-      "min_altitude_deg": 30.0,
-      "pool_rank": null,
-      "window": {"start_unix": 1781599500.0, "end_unix": 1781601900.0, "mean_alt": 34.9},
-      "curve": [
-        [1781582100.0, -4.94], [1781582700.0, -4.25], [1781583300.0, -3.51],
-        [1781583900.0, -2.71], [1781584500.0, -1.87], [1781585100.0, -0.97],
-        [1781585700.0, -0.03], [1781586300.0, 0.96], [1781586900.0, 2.0], [1781587500.0, 3.08],
-        [1781588100.0, 4.2], [1781588700.0, 5.36], [1781589300.0, 6.56], [1781589900.0, 7.79],
-        [1781590500.0, 9.07], [1781591100.0, 10.38], [1781591700.0, 11.72],
-        [1781592300.0, 13.09], [1781592900.0, 14.49], [1781593500.0, 15.92],
-        [1781594100.0, 17.38], [1781594700.0, 18.87], [1781595300.0, 20.38],
-        [1781595900.0, 21.91], [1781596500.0, 23.47], [1781597100.0, 25.05],
-        [1781597700.0, 26.65], [1781598300.0, 28.27], [1781598900.0, 29.9],
-        [1781599500.0, 31.56], [1781600100.0, 33.23], [1781600700.0, 34.92],
-        [1781601300.0, 36.63], [1781601900.0, 38.35], [1781602500.0, 40.08],
-        [1781603100.0, 41.83], [1781603700.0, 43.59], [1781604300.0, 45.36],
-        [1781604900.0, 47.14]
-      ],
-      "transit_unix": 1781601900.0,
-      "transit_alt": 38.4,
-      "transit_in_daylight": true,
-      "meridian_flip_unix": null,
-      "moon_sep_deg": 117.1,
-      "never_rises": false
-    },
-    {
-      "name": "M13",
-      "label": "M13",
-      "coords_from": "catalog",
-      "ra_hours": 16.6949,
-      "dec_deg": 36.4613,
-      "resolved": true,
-      "min_altitude_deg": 30.0,
-      "pool_rank": 1,
-      "window": {"start_unix": 1781584500.0, "end_unix": 1781601900.0, "mean_alt": 72.6},
-      "curve": [
-        [1781582100.0, 64.37], [1781582700.0, 66.29], [1781583300.0, 68.21],
-        [1781583900.0, 70.13], [1781584500.0, 72.05], [1781585100.0, 73.96],
-        [1781585700.0, 75.86], [1781586300.0, 77.75], [1781586900.0, 79.61],
-        [1781587500.0, 81.43], [1781588100.0, 83.16], [1781588700.0, 84.74],
-        [1781589300.0, 85.95], [1781589900.0, 86.41], [1781590500.0, 85.86],
-        [1781591100.0, 84.61], [1781591700.0, 83.01], [1781592300.0, 81.27],
-        [1781592900.0, 79.45], [1781593500.0, 77.58], [1781594100.0, 75.69],
-        [1781594700.0, 73.79], [1781595300.0, 71.88], [1781595900.0, 69.96],
-        [1781596500.0, 68.04], [1781597100.0, 66.12], [1781597700.0, 64.2],
-        [1781598300.0, 62.28], [1781598900.0, 60.37], [1781599500.0, 58.46],
-        [1781600100.0, 56.55], [1781600700.0, 54.65], [1781601300.0, 52.76],
-        [1781601900.0, 50.87], [1781602500.0, 49.0], [1781603100.0, 47.12],
-        [1781603700.0, 45.26], [1781604300.0, 43.41], [1781604900.0, 41.57]
-      ],
-      "transit_unix": 1781589900.0,
-      "transit_alt": 86.4,
-      "transit_in_daylight": false,
-      "meridian_flip_unix": 1781589914.2750547,
-      "moon_sep_deg": 61.2,
-      "never_rises": false
-    },
-    {
-      "name": "M92",
-      "label": "M92",
-      "coords_from": "catalog",
-      "ra_hours": 17.2854,
-      "dec_deg": 43.1359,
-      "resolved": true,
-      "min_altitude_deg": 30.0,
-      "pool_rank": 2,
-      "window": {"start_unix": 1781584500.0, "end_unix": 1781601900.0, "mean_alt": 75.2},
-      "curve": [
-        [1781582100.0, 59.25], [1781582700.0, 61.06], [1781583300.0, 62.88],
-        [1781583900.0, 64.7], [1781584500.0, 66.53], [1781585100.0, 68.36],
-        [1781585700.0, 70.19], [1781586300.0, 72.02], [1781586900.0, 73.84],
-        [1781587500.0, 75.67], [1781588100.0, 77.48], [1781588700.0, 79.28],
-        [1781589300.0, 81.06], [1781589900.0, 82.78], [1781590500.0, 84.41],
-        [1781591100.0, 85.84], [1781591700.0, 86.77], [1781592300.0, 86.74],
-        [1781592900.0, 85.78], [1781593500.0, 84.34], [1781594100.0, 82.7],
-        [1781594700.0, 80.97], [1781595300.0, 79.2], [1781595900.0, 77.4],
-        [1781596500.0, 75.58], [1781597100.0, 73.76], [1781597700.0, 71.93],
-        [1781598300.0, 70.1], [1781598900.0, 68.27], [1781599500.0, 66.44],
-        [1781600100.0, 64.61], [1781600700.0, 62.79], [1781601300.0, 60.97],
-        [1781601900.0, 59.16], [1781602500.0, 57.36], [1781603100.0, 55.56],
-        [1781603700.0, 53.76], [1781604300.0, 51.98], [1781604900.0, 50.2]
-      ],
-      "transit_unix": 1781591700.0,
-      "transit_alt": 86.8,
-      "transit_in_daylight": false,
-      "meridian_flip_unix": 1781592040.0750546,
-      "moon_sep_deg": 66.6,
-      "never_rises": false
-    }
-  ],
-  "budget": [],
-  "campaign": {
-    "is_campaign": false,
-    "has_pool": true,
-    "has_ledger": false,
-    "quota": 45,
-    "members": [
-      {"name": "M13", "banked": null, "quota": 45, "done": false, "pct": null},
-      {"name": "M92", "banked": null, "quota": 45, "done": false, "pct": null}
-    ],
-    "note": "Single-night flow - set DUSK WINDOW \u2192 Repeat to make this a campaign. 4 of 6 " +
-      "mosaic panels done, 9 of 12 subs banked.",
-    "panels": [
-      {
-        "block": "t",
-        "name": "M16 1-1",
-        "row": 0,
-        "col": 0,
-        "banked": 2,
-        "owed": 0,
-        "total": 2,
-        "done": true,
-        "pct": 100,
-        "skipped": false
-      },
-      {
-        "block": "t",
-        "name": "M16 1-2",
-        "row": 0,
-        "col": 1,
-        "banked": 1,
-        "owed": 1,
-        "total": 2,
-        "done": false,
-        "pct": 50,
-        "skipped": false
-      },
-      {
-        "block": "t",
-        "name": "M16 1-3",
-        "row": 0,
-        "col": 2,
-        "banked": 2,
-        "owed": 0,
-        "total": 2,
-        "done": true,
-        "pct": 100,
-        "skipped": false
-      },
-      {
-        "block": "t",
-        "name": "M16 2-3",
-        "row": 1,
-        "col": 2,
-        "banked": 0,
-        "owed": 2,
-        "total": 2,
-        "done": false,
-        "pct": 0,
-        "skipped": false
-      },
-      {
-        "block": "t",
-        "name": "M16 2-2",
-        "row": 1,
-        "col": 1,
-        "banked": 2,
-        "owed": 0,
-        "total": 2,
-        "done": true,
-        "pct": 100,
-        "skipped": false
-      },
-      {
-        "block": "t",
-        "name": "M16 2-1",
-        "row": 1,
-        "col": 0,
-        "banked": 2,
-        "owed": 0,
-        "total": 2,
-        "done": true,
-        "pct": 100,
-        "skipped": false
-      }
-    ],
-    "has_progress": true
-  },
-  "brief": "This flow arms at astronomical dusk (\u221230 min). It then selects the best of M13, " +
-    "M92 - above 30\u00b0, at least 40\u00b0 from the moon (if up), within 4 h of the " +
-    "meridian. M16 is a 2x3 mosaic of 6 panels at 25% overlap, laid out at PA 30\u00b0 with " +
-    "the rotator turned to it at every panel. After 1 pass of its filters on a panel it " +
-    "moves on to the next (least complete first), and comes back until every panel has its " +
-    "subs. A hop between panels takes about 2 m 40 s, as measured on this rig. It captures " +
-    "Ha 300 s \u00d7 2 (gain 100, bin 1). If the active target sinks to the 30\u00b0 floor, " +
-    "it is set aside for tonight - a restart tonight does not retry it, the next night does " +
-    "- and the next best takes over.",
-  "story": [
-    {
-      "t_unix": 1781579709.7503662,
-      "label": "",
-      "msg": "Autorun window opens (sun \u221212\u00b0, \u221230 min offset applied)",
-      "tone": "text"
-    },
-    {"t_unix": 1781584500.0, "label": "", "msg": "Astronomical darkness", "tone": "faint"},
-    {
-      "t_unix": 1781584500.0,
-      "label": "",
-      "msg": "Pool re-scores 4 candidates each cycle (altitude \u00d7 moon separation \u00d7 hour " +
-        "angle) \u2014 best available wins; re-evaluates on completion or an altitude floor",
-      "tone": "text"
-    },
-    {
-      "t_unix": 1781584500.0,
-      "label": "",
-      "msg": "Moon stays down all night (2% illuminated) \u2014 no moonglow in any of it",
-      "tone": "faint"
-    },
-    {
-      "t_unix": 1781589914.2750547,
-      "label": "",
-      "msg": "M13 crosses the meridian \u2014 engine flips, re-centers via plate solve, restarts " +
-        "guiding; worst case one frame lost",
-      "tone": "warn"
-    },
-    {
-      "t_unix": 1781592040.0750546,
-      "label": "",
-      "msg": "M92 crosses the meridian \u2014 engine flips, re-centers via plate solve, restarts " +
-        "guiding; worst case one frame lost",
-      "tone": "warn"
-    },
-    {
-      "t_unix": 1781595740.6350548,
-      "label": "",
-      "msg": "M16 crosses the meridian \u2014 engine flips, re-centers via plate solve, restarts " +
-        "guiding; worst case one frame lost",
-      "tone": "warn"
-    },
-    {
-      "t_unix": 1781604969.4198608,
-      "label": "",
-      "msg": "Dawn: loop ends, mount parks, camera warms",
-      "tone": "text"
-    }
-  ]
-};
+// MUTANT "fixture unreadable" (FIXTURE_REL pointed at a file that is not
+// there), run in scratchpad s4-tonight-mut. Observed: the file stops before
+// its first case with exit code 1, which run-tests.mjs scores as a failure:
+//   Error: cannot read ../../../../../../../../server/tests/fixtures/
+//     tonight_mosaic_2x3.missing.json, the Tonight answer this sheet is
+//     graded against: ENOENT: no such file or directory, open '...'
+// MUTANT "band from the first panel only" (below), re-run against the file
+// in the same copy: 2/7, as recorded at the first case.
+// MUTANT "fixture band edited" (the file's M16 band worst transit_alt 35.0
+// made 35.1, nothing in this file touched), run in scratchpad
+// s4-tonight-resume-mut: this file follows the server's file, where the
+// literal it replaced could not. Observed, 4/7 (test_flows_tonight_band_
+// fixture.py goes red on the same edit, so the file cannot drift unseen):
+//   x the sheet's reader hands the timeline the server's worst and best
+//     panel: ... got "{\"worst\":{...\"transit_alt\":35.1}, ...}"
+//   x the band is the mosaicNightSummary spread of the same panels: the
+//     band's foot is the lowest peak  expected 35  got 35.1
+//   x the card draws the band between the worst and best peak, across the
+//     block's window: its foot is the worst panel's peak, 2-1 at 35.0 (got
+//     78.69999999999999, want ~78.77777777777777)
+const FIXTURE_REL = "../../../../../../../../server/tests/fixtures/tonight_mosaic_2x3.json";
+
+/** The server's answer. A missing or unreadable file must FAIL the whole
+ *  file, never skip it: a skipped fixture reads as a green band. */
+function readAnswer(): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(new URL(FIXTURE_REL, import.meta.url), "utf8") as string;
+  } catch (e) {
+    throw new Error(`cannot read ${FIXTURE_REL}, the Tonight answer this sheet is graded `
+      + `against: ${(e as Error).message}`);
+  }
+  const fx = JSON.parse(text) as { response?: Record<string, unknown> };
+  const targets = fx.response?.targets;
+  if (!Array.isArray(targets) || !(targets[0] as any)?.mosaic) {
+    throw new Error(`${FIXTURE_REL} does not hold a Tonight answer whose first row is a mosaic`);
+  }
+  return fx.response!;
+}
+const TONIGHT_2X3: Record<string, unknown> = readAnswer();
 
 /** The recorded answer with every row's `mosaic` key taken off: a night with
  *  no mosaic in it, otherwise the same bytes. */

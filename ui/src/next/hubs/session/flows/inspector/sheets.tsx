@@ -22,6 +22,13 @@
 // second mount, and it wires it in BOTH places the editor renders: the desktop
 // column (`FlowsCanvasHost`) and this sheet, which is the tablet and phone door
 // to the same stage. One of the two would have been a breakpoint-shaped hole.
+//
+// A TARGET PICKED FROM THE PALETTE OPENS ITS FRAMING (#189 S4 item 3; spec
+// 2.1). The palette's rule is one tap, one stage, back to the graph, and a new
+// TARGET is the one stage that is not done when it lands: it has no object,
+// grid or angle yet. So its tap opens the `flowFrame` sheet on the new node IN
+// PLACE OF this one (`paletteDrop.ts`), and BACK from the modal lands where the
+// palette would have.
 
 import type { JSX } from "react";
 
@@ -34,7 +41,8 @@ import { EmptyCard, Sheet } from "../../../../ui";
 import type { SheetProps } from "../../../sheets";
 import { CalibrationMatrixCard } from "../tonight/CalibrationMatrixCard";
 import { FlowInspectorColumn } from "./FlowInspectorColumn";
-import { ADD_STAGE_TITLE, FlowPaletteRail } from "./FlowPaletteRail";
+import { ADD_STAGE_TITLE, FlowPaletteRail, type FlowPaletteRailProps } from "./FlowPaletteRail";
+import { droppedStageId, frameDroppedStage } from "./paletteDrop";
 import "./inspector.css";
 
 /** What a stage sheet says when the stage is gone.
@@ -94,6 +102,13 @@ export function FlowNodeSheet({ params }: SheetProps): JSX.Element {
 }
 
 export function FlowPaletteSheet(_props: SheetProps): JSX.Element {
+  const openId = useStore((s) => s.flows.record?.id ?? null);
+  // `id` is `flowsAddNode`'s answer, for the day the rail passes it on; until
+  // then `droppedStageId` reads the node the tap just appended.
+  const picked: NonNullable<FlowPaletteRailProps["onPicked"]> = (type, id?: string) => {
+    if (frameDroppedStage(type, droppedStageId(type, id), openId, { inPlaceOfTop: true })) return;
+    nav.back();
+  };
   return (
     <Sheet
       data-testid="session-flow-palette"
@@ -103,8 +118,9 @@ export function FlowPaletteSheet(_props: SheetProps): JSX.Element {
       backLabel="FLOW"
       onBack={() => nav.back()}
     >
-      {/* One tap, one stage, back to the graph - the legacy palette's own rule. */}
-      <FlowPaletteRail variant="sheet" onPicked={() => nav.back()} />
+      {/* One tap, one stage, back to the graph - the legacy palette's own rule,
+          except that a TARGET goes on to its framing (see the file header). */}
+      <FlowPaletteRail variant="sheet" onPicked={picked} />
     </Sheet>
   );
 }

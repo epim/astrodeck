@@ -20,6 +20,11 @@ The fix, pinned here:
   it needs to be. The first test below is the evidence for the encoding:
   astropy refuses raw UTF-8 in EVERY card, HISTORY and COMMENT included, so
   there is no card the name could be carried in as typed.
+* When the fold changed a wheel slot's name or a mosaic group's, the name
+  as typed is kept the same way in ``FILTUTF8`` or ``MOSUTF8`` (#332): the
+  fold is many-to-one, and FILTER or MOSAIC alone files two names that fold
+  alike as one. ``fitsio.full_name`` decodes all three cards;
+  test_fits_filter_names_distinct.py holds the readers that group by them.
 * File names keep ``naming.sanitize_component``, which already writes a
   non-ASCII name into the path safely.
 
@@ -278,6 +283,19 @@ async def test_a_non_ascii_rig_name_saves(sim_hub, monkeypatch, card, setup,
 
         >       assert hdr[card] == expected, repr(hdr[card])
         E       AssertionError: 'H'
+
+    The slot's name as typed rides beside FILTER (#332), and only there:
+    TELESCOP and INSTRUME group nothing and have no such card. Mutation 'no
+    FILTUTF8' went red on FILTER:
+
+        >           assert fitsio.full_name(hdr, "FILTER") == "H\\u03b1"
+        E           AssertionError: assert 'H?' == 'H\\u03b1'
+
+    Mutation 'FILTUTF8 always' went red on TELESCOP and INSTRUME, where
+    the sim wheel's ASCII slot is in the beam:
+
+        >           assert fitsio.FILTER_UTF8 not in hdr
+        E           AssertionError: assert 'FILTUTF8' not in SIMPLE  =                    T / conforms to FITS standard ...
     """
     setup(sim_hub, monkeypatch)
     path, hdr = await _capture(sim_hub, "Veil east")
@@ -287,6 +305,9 @@ async def test_a_non_ascii_rig_name_saves(sim_hub, monkeypatch, card, setup,
     if card == "FILTER":
         # The FILTER token keeps its own sanitizer (strict), untouched.
         assert naming.sanitize_component("H\u03b1", "strict") in path.name
+        assert fitsio.full_name(hdr, "FILTER") == "H\u03b1"
+    else:
+        assert fitsio.FILTER_UTF8 not in hdr
 
 
 async def test_an_ascii_target_writes_exactly_what_was_typed(sim_hub):
@@ -441,6 +462,10 @@ def test_an_ascii_header_is_byte_for_byte_todays(tmp_path, monkeypatch, case):
     where FILTER should ("At index 1440 diff: b'O' != b'F'" on "plain",
     index 1600 on "every").
 
+    Mutation 'FILTUTF8 always' (#332) went red on both, a FILTUTF8 card
+    standing where RA should ("At index 1520 diff: b'F' != b'R'" on
+    "plain", index 1680 on "every").
+
     Run against the unmodified writer itself (``git show e673dff8:`` of
     fitsio.py swapped in), both cases pass: the goldens are today's header.
     """
@@ -560,7 +585,12 @@ def test_the_reader_prefers_the_full_name_and_falls_back_to_object(
         E       AssertionError: assert 'M31 ?????????' == 'M31 \\u0410\\u043d\\u0434\\u0440\\u043e\\u043c\\u0435\\u0434\\u0430'
 
     'drop the UTF-8 card' and 'the card carries the folded name' failed on
-    the same line.
+    the same line. ``full_object_name`` is now ``full_name(header,
+    "OBJECT")`` (#332); mutation 'no fallback' (``full_name`` returning
+    ``""`` when the frame carries no as-typed card) went red here:
+
+        >       assert fitsio.full_object_name(fits.getheader(p2)) == "M31"
+        E       AssertionError: assert '' == 'M31'
     """
     p1 = _write(tmp_path / "a.fits", monkeypatch, target=_ANDROMEDA)
     p2 = _write(tmp_path / "b.fits", monkeypatch, target="M31")
@@ -595,6 +625,190 @@ def test_a_mosaic_name_goes_through_the_same_fold(tmp_path, monkeypatch):
     path = _write(tmp_path / "b.fits", monkeypatch, target="M31",
                   mosaic=_ANDROMEDA, panel="1-2")
     assert fits.getheader(path)["MOSAIC"] == "M31 ?????????"
+
+
+# --- the slot and the group, as typed (#332) ----------------------------------
+
+_SLOT_AND_GROUP = {"FILTER": ("filter_name", fitsio.FILTER_UTF8),
+                   "MOSAIC": ("mosaic", fitsio.MOSAIC_UTF8)}
+
+
+@pytest.mark.parametrize("card", sorted(_SLOT_AND_GROUP))
+@pytest.mark.parametrize("name,folded", [
+    ("H\u03b1", "H?"), (_ANDROMEDA, "M31 ?????????"),
+    (_CRABE, "Nebuleuse du Crabe"), (_VEIL, "Veil - east"),
+], ids=["greek", "cyrillic", "accent", "dash"])
+def test_a_slot_or_group_keeps_its_name_as_typed(tmp_path, monkeypatch,
+                                                 card, name, folded):
+    """FILTER and MOSAIC carry the fold, and FILTUTF8 or MOSUTF8 the name as
+    typed, percent-encoded exactly as OBJUTF8 is (the test above is the
+    evidence for the encoding); ``full_name`` gives it back. The fold is
+    many-to-one (H-alpha and H-beta in Greek are both 'H?'), so without the
+    second card two slots or two groups read as one.
+
+    Mutations 'no FILTUTF8' and 'no MOSUTF8' (each ``if ... !=`` block
+    removed from ``save_fits``) went red on their own card's four cases.
+    The Greek slot, and the same for MOSUTF8:
+
+        >       assert (hdr[card], _utf8(hdr, card), fitsio.full_name(hdr, card)) == (
+        ...
+        E           KeyError: "Keyword 'FILTUTF8' not found."
+
+    Mutation 'one card for all' went red on all eight."""
+    kw, as_typed = _SLOT_AND_GROUP[card]
+    path = _write(tmp_path / "f.fits", monkeypatch, target="M31",
+                  panel="1-1", **{kw: name})
+    hdr = fits.getheader(path)
+    assert (hdr[card], _utf8(hdr, card), fitsio.full_name(hdr, card)) == (
+        folded, name, name)
+    # The target is ASCII: its own card is not written for the slot's name.
+    assert "OBJUTF8" not in hdr
+
+
+def _utf8(hdr, card: str) -> str:
+    """The as-typed card of ``card`` decoded strictly, as ``_utf8_card``
+    decodes OBJUTF8."""
+    return unquote(hdr[_SLOT_AND_GROUP[card][1]], errors="strict")
+
+
+@pytest.mark.parametrize("kw,value,card,written", [
+    ("filter_name", " O-III (3nm) 100%", "FILTER", " O-III (3nm) 100%"),
+    ("filter_name", "Ha", "FILTER", "Ha"),
+    ("mosaic", "  M31 mosaic  ", "MOSAIC", "M31 mosaic"),
+], ids=["filter-punctuated", "filter-plain", "mosaic-padded"])
+def test_an_ascii_slot_or_group_writes_no_as_typed_card(
+        tmp_path, monkeypatch, kw, value, card, written):
+    """CONTROL: an ASCII name is its own card and gets no second one. A
+    group name has always been written stripped, and a blank at either end
+    is not a change the fold made, so it keeps no MOSUTF8 either.
+
+    Mutation 'MOSUTF8 compares the unstripped name' (``if mosaic_text !=
+    str(mosaic):``) went red on "mosaic-padded" alone, and nowhere else in
+    this file or test_panel_provenance:
+
+        >       assert (hdr[card], present) == (written, []), present
+        E       AssertionError: ['MOSUTF8']
+        E       assert ('M31 mosaic', ['MOSUTF8']) == ('M31 mosaic', [])
+
+    Mutation 'FILTUTF8 always' went red on both filter cases, with
+    ``AssertionError: ['FILTUTF8']``."""
+    path = _write(tmp_path / "f.fits", monkeypatch, target="M31",
+                  panel="1-1", **{kw: value})
+    hdr = fits.getheader(path)
+    present = [k for k in (fitsio.FILTER_UTF8, fitsio.MOSAIC_UTF8,
+                           fitsio.OBJECT_UTF8) if k in hdr]
+    assert (hdr[card], present) == (written, []), present
+
+
+@pytest.mark.parametrize("blank", ["\u3000", "\u00a0"],
+                         ids=["ideographic-space", "nbsp"])
+def test_a_slot_or_group_that_folds_to_nothing_keeps_no_name(
+        tmp_path, monkeypatch, blank):
+    """A slot or a group whose name folds to blank writes no card, and so no
+    as-typed card either: a blank has nothing to keep, exactly as OBJECT's.
+
+    Mutation 'FILTUTF8 outside the FILTER guard' (the ``if filter_text !=
+    str(filter_name):`` block dedented out of ``if filter_text:``) went red
+    on both, and nowhere else:
+
+        >       assert present == [], present
+        E       AssertionError: ['FILTUTF8']
+    """
+    path = _write(tmp_path / "f.fits", monkeypatch, target="M31",
+                  filter_name=blank, mosaic=blank, panel="1-1")
+    hdr = fits.getheader(path)
+    present = [k for k in ("FILTER", fitsio.FILTER_UTF8, "MOSAIC",
+                           fitsio.MOSAIC_UTF8) if k in hdr]
+    assert present == [], present
+
+
+@pytest.mark.parametrize("card", sorted(_SLOT_AND_GROUP))
+@pytest.mark.parametrize("name", [
+    "H\u03b1",                        # 8 encoded: the comment fits beside it
+    _ANDROMEDA,                  # 60 encoded: one card, but no comment fits
+    (_ANDROMEDA + " ") * 5,      # 305 encoded: CONTINUE cards
+], ids=["short", "medium", "long"])
+def test_an_as_typed_card_fits_at_any_length_and_warns_nothing(
+        tmp_path, monkeypatch, card, name):
+    """The same arithmetic as OBJUTF8's (``_with_comment``): a name of nine
+    Cyrillic letters is past what fits beside the comment, and astropy
+    would warn on every frame of the night.
+
+    Mutation 'always comment on FILTUTF8' (``hdr[FILTER_UTF8] =
+    (_encoded_name(str(filter_name)), _FILTER_UTF8_COMMENT)`` in place of
+    the ``_with_comment`` call) went red on FILTER's "medium" case alone:
+
+        >           path = _write(tmp_path / "f.fits", monkeypatch, target="M31",
+        ...
+        E               astropy.io.fits.verify.VerifyWarning: Card is too long, comment will be truncated.
+    """
+    kw, as_typed = _SLOT_AND_GROUP[card]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        path = _write(tmp_path / "f.fits", monkeypatch, target="M31",
+                      panel="1-1", **{kw: name})
+    hdr = fits.getheader(path)
+    # FILTER is written as given, a trailing blank and all, and MOSAIC
+    # stripped, as each always was; the as-typed card follows its card.
+    assert fitsio.full_name(hdr, card) == (
+        name.strip() if card == "MOSAIC" else name)
+    if name == "H\u03b1":
+        assert hdr.comments[as_typed] != "", repr(hdr.comments[as_typed])
+
+
+def test_a_lone_surrogate_in_a_slot_or_group_never_fails_the_save(
+        tmp_path, monkeypatch):
+    """The lone surrogate case above, for the two new cards: '?' in the
+    card and in the name as typed, and the save succeeds.
+
+    Mutation 'strict encoding' went red here and on the OBJECT case above:
+
+        >       path = _write(tmp_path / "f.fits", monkeypatch, target="M31",
+        ...
+        E           UnicodeEncodeError: 'utf-8' codec can't encode character '\\ud800' in position 1: surrogates not allowed
+
+    Mutations 'no FILTUTF8' and 'no MOSUTF8' went red here too, each with
+    the KeyError naming its card."""
+    path = _write(tmp_path / "f.fits", monkeypatch, target="M31",
+                  filter_name="H\ud800", mosaic="M31 \ud800", panel="1-1")
+    hdr = fits.getheader(path)
+    assert (hdr["FILTER"], _utf8(hdr, "FILTER")) == ("H?", "H?")
+    assert (hdr["MOSAIC"], _utf8(hdr, "MOSAIC")) == ("M31 ?", "M31 ?")
+
+
+def test_the_one_decoder_reads_each_card_and_refuses_the_rest(
+        tmp_path, monkeypatch):
+    """``fitsio.full_name`` reads each card's own as-typed copy, falls back
+    to the card, gives "" for neither, and refuses a card that has no
+    as-typed copy, whose reader would be reading the wrong card.
+
+    Mutation 'one card for all' (``header.get(OBJECT_UTF8)`` in place of
+    ``header.get(_AS_TYPED[keyword])``) went red here:
+
+        >       assert got == {"OBJECT": _ANDROMEDA, "FILTER": "H\\u03b2", "MOSAIC": _CRABE}, got
+        E       AssertionError: {'FILTER': 'M31 \\u0410\\u043d\\u0434\\u0440\\u043e\\u043c\\u0435\\u0434\\u0430', 'MOSAIC': 'M31 \\u0410\\u043d\\u0434\\u0440\\u043e\\u043c\\u0435\\u0434\\u0430', 'OBJECT': 'M31 \\u0410\\u043d\\u0434\\u0440\\u043e\\u043c\\u0435\\u0434\\u0430'}
+
+    Mutation 'no fallback' went red on the fallback:
+
+        >       assert [fitsio.full_name(plain, k) for k in ("OBJECT", "FILTER", "MOSAIC")
+        E       AssertionError: assert ['', '', ''] == ['M31', 'L', 'M31']
+
+    and 'no FILTUTF8' and 'no MOSUTF8' on the first assertion."""
+    hdr = fits.getheader(_write(tmp_path / "a.fits", monkeypatch,
+                                target=_ANDROMEDA, filter_name="H\u03b2",
+                                mosaic=_CRABE, panel="1-1"))
+    got = {k: fitsio.full_name(hdr, k) for k in ("OBJECT", "FILTER", "MOSAIC")}
+    assert got == {"OBJECT": _ANDROMEDA, "FILTER": "H\u03b2", "MOSAIC": _CRABE}, got
+    plain = fits.getheader(_write(tmp_path / "b.fits", monkeypatch,
+                                  target="M31", filter_name="L",
+                                  mosaic="M31", panel="1-1"))
+    assert [fitsio.full_name(plain, k) for k in ("OBJECT", "FILTER", "MOSAIC")
+            ] == ["M31", "L", "M31"]
+    bare = fits.getheader(_write(tmp_path / "c.fits", monkeypatch))
+    assert [fitsio.full_name(bare, k) for k in ("OBJECT", "FILTER", "MOSAIC")
+            ] == ["", "", ""]
+    with pytest.raises(KeyError):
+        fitsio.full_name(hdr, "TELESCOP")
 
 
 # --- the fold itself ---------------------------------------------------------

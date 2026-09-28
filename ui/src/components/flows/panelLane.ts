@@ -20,6 +20,10 @@
 // TARGET -> CYCLE -> DOME -> CAPTURE it finds the TARGET above the DOME and
 // hands the CAPTURE to every panel. Here the DOME ends the lane and the
 // CAPTURE is nobody's (M13).
+//
+// It also holds the rule for ADDING the loop wire (`loopSource`, `withLoop`),
+// which compile.py does not have: the server only reads the wire. The graphs
+// that rule makes are graded by both languages (the fixture's `loop_cases`).
 
 import { NODE_DEFS } from "./nodeDefs";
 import type { FlowEdgeRec, FlowNodeRec } from "./flowsTypes";
@@ -177,7 +181,8 @@ export function laneBranched(g: LaneGraph, ownerId: string): boolean {
 /** The lane's last stage, the one the loop wire must leave (compile.py
  *  `lane_tail`, spec 1.5 items 4-5). Null for an empty lane, and null for a
  *  branched one, where "the last stage" has two answers. Any lane node can be
- *  the tail; only CAPTURE LOOP and FILTER CYCLE have a `pass` output to give. */
+ *  the tail, and every lane type but legacy SLEW has a `pass` output to give
+ *  (AUTOFOCUS and GUIDE since S4, #331). */
 export function laneTail(g: LaneGraph, ownerId: string): FlowNodeRec | null {
   const members = laneMembers(g, ownerId);
   if (members.length === 0) return null;
@@ -195,4 +200,69 @@ export function loopWires(g: LaneGraph, ownerId: string): FlowEdgeRec[] {
   if (!tail) return [];
   return g.edges.filter((e) => e.from === tail.id && e.fromPort === PASS_PORT
     && e.to === ownerId && e.toPort === NEXT_PORT);
+}
+
+// ------------------------------------------- placing and lifting the loop
+//
+// Spec 1.4 "When the wire is added" and 2.5 DONE. The editor ADDS the loop
+// wire at three named moments only (the modal's DONE, the one-tap LOOP
+// PANELS, the wizard), and at each of them the wire leaves the lane's TAIL:
+// from any earlier stage it is M12, a danger, because every stage after it
+// would be shot once per panel with nothing to say when. These two functions
+// are that rule, in one place, so every moment that adds the wire adds the
+// same one. `test_flows_panel_lane.py` grades the graphs they make against
+// compile.py (`loop_wires` finds the wire, `lane_refusals` finds nothing), and
+// panelLane.test.ts holds this file to those graphs.
+//
+// NOT carryLoopWire (flowsSlice.ts). That one MOVES a wire the lane already
+// has when a stage is appended, and never adds one; this one adds or lifts.
+// The graphs it makes are the fixture's `carry_cases`, graded the same way.
+
+/** The stage a block's loop wire would leave, or null when the block cannot
+ *  loop: it is not a multi-panel TARGET (one panel has nothing to rotate
+ *  between, the doctor's M4 note), it owns no stage or its lane branches (no
+ *  single tail, `laneTail` null), or its tail is a stage with no `pass`
+ *  output to give (legacy SLEW, the one lane type without it since
+ *  AUTOFOCUS and GUIDE gained it, #331: a wire from a port the node lacks is
+ *  refused at save). The block is the first node with the id, as the lane
+ *  index reads a duplicate. */
+export function loopSource(g: LaneGraph, blockId: string): FlowNodeRec | null {
+  const block = g.nodes.find((n) => n.id === blockId);
+  if (!block || !isMultiPanel(block)) return null;
+  const tail = laneTail(g, blockId);
+  if (!tail || !NODE_DEFS[tail.type]?.outs.some((p) => p.id === PASS_PORT)) return null;
+  return tail;
+}
+
+/** `g`'s wires with the block's loop set as `loop` asks (spec 2.5 DONE,
+ *  1.4): the SAME array when that changes nothing, so a caller can tell a
+ *  DONE that moved no wire by identity.
+ *
+ *  - `true` adds `<tail>.pass -> <block>.next` when `loopSource` names a
+ *    tail and the lane has no loop wire yet (a second one is the doctor's
+ *    "one is enough", not a better loop). The new wire goes last and takes
+ *    its id from `mintId`, so this stays pure.
+ *  - `false` lifts EVERY pass wire into the block's `next`, whichever stage
+ *    it leaves: the operator turned the loop off, and a stale wire from a
+ *    mid-lane stage (M12) left behind would still refuse the flow.
+ *  - `undefined` leaves the wires alone: a DONE that did not touch the RUN
+ *    section says nothing about the loop.
+ *
+ *  `true` never lifts a pass wire from a mid-lane stage. Repairing a lane the
+ *  doctor names (M12, #331) is not a side effect of framing a block. */
+export function withLoop<G extends LaneGraph>(
+  g: G, blockId: string, loop: boolean | undefined, mintId: () => string,
+): G["edges"] {
+  if (loop === undefined) return g.edges;
+  if (!loop) {
+    const kept = g.edges.filter((e) =>
+      !(e.fromPort === PASS_PORT && e.to === blockId && e.toPort === NEXT_PORT));
+    return (kept.length === g.edges.length ? g.edges : kept) as G["edges"];
+  }
+  const tail = loopSource(g, blockId);
+  if (!tail || loopWires(g, blockId).length > 0) return g.edges;
+  const wire: FlowEdgeRec = {
+    id: mintId(), from: tail.id, fromPort: PASS_PORT, to: blockId, toPort: NEXT_PORT,
+  };
+  return [...g.edges, wire] as G["edges"];
 }

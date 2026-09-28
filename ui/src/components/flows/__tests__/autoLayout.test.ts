@@ -255,6 +255,31 @@ test("a cycle downstream of a real root keeps the root and drops the loop", () =
 //   ✗ a rule cluster fans out into the opposite column at 22px, not 34:
 //     CLOUD WATCH: expected {"x":14,"y":1149}, got {"x":14,"y":1129}
 //
+// ⚠ AND MOSAIC S4 (#331) MOVED EVERY CARD BELOW THE AUTOFOCUS AGAIN. AUTOFOCUS
+// and GUIDE gained the output `pass` ("pass done"), so each card is 3 rows
+// where it was 2: the GUIDE sits 20px lower (752 -> 772), everything after it
+// 40px lower (capture 871 -> 911, report 1030 -> 1070, every cluster card and
+// the scroll height 1734 -> 1774). Computed by hand from `37 + rows·20 + 8`
+// and FLOW_LANE_GAP before the pins were changed, and the code agrees. The
+// first six rows do not move: the AUTOFOCUS is the sixth card and its own y
+// depends only on the cards above it. RED under mutant "AUTOFOCUS has no
+// pass" (dropped from nodeDefs.ts in a private scratch copy), observed:
+//   ✗ the whole flow lane, card by card: flow lane: expected
+//     [{"x":14,"y":18},{"x":228,"y":137},{"x":14,"y":256},{"x":228,"y":375},
+//     {"x":14,"y":514},{"x":228,"y":633},{"x":14,"y":772},{"x":228,"y":911},
+//     {"x":14,"y":1070}], got [{"x":14,"y":18},{"x":228,"y":137},
+//     {"x":14,"y":256},{"x":228,"y":375},{"x":14,"y":514},{"x":228,"y":633},
+//     {"x":14,"y":752},{"x":228,"y":891},{"x":14,"y":1050}]
+//   ✗ a rule cluster fans out into the opposite column at 22px, not 34:
+//     CLOUD WATCH: expected {"x":14,"y":1189}, got {"x":14,"y":1169}
+//   ✗ a target another cluster already placed gets no second position: FLAT
+//     PANEL opens its own cluster: expected {"x":14,"y":1510}, got
+//     {"x":14,"y":1490}
+//   ✗ every node is placed exactly once, and the height covers the last
+//     card: M16 total scroll height: expected 1774, got 1754
+//   (autoLayout.test: 20/24 passed). The GUIDE's own 20px share holds the
+//   rest of the shift, which is why the mutant moves it by 20, not 40.
+//
 // The width is 392, which is the reference PNG's own pixel width. §C.15 labels
 // the same capture "vw=390" and quotes columns 14 / 228 — and 228 is only
 // reachable at 392 (`392 - 14 - 150`). At a literal 390 the formula gives 226,
@@ -301,10 +326,10 @@ test("the whole flow lane, card by card", () => {
     { x: 14, y: 256 },   // dusk flats  2
     { x: 228, y: 375 },  // target      3 (arm + next + each panel; S3)
     { x: 14, y: 514 },   // slew        2
-    { x: 228, y: 633 },  // autofocus   2
-    { x: 14, y: 752 },   // guide       2
-    { x: 228, y: 871 },  // capture     4 (run + all done + frame + pass; S3)
-    { x: 14, y: 1030 },  // report      1
+    { x: 228, y: 633 },  // autofocus   3 (run + focused + pass; S4)
+    { x: 14, y: 772 },   // guide       3 (run + guiding + pass; S4)
+    { x: 228, y: 911 },  // capture     4 (run + all done + frame + pass; S3)
+    { x: 14, y: 1070 },  // report      1
   ], "flow lane");
 });
 
@@ -327,10 +352,10 @@ test("a rule cluster fans out into the opposite column at 22px, not 34", () => {
   // CLOUD WATCH is the first source (unplaced sources sort by canvas y, and it
   // is the topmost of the three), so it opens the cluster pass at the left
   // column and stacks HOLD / QUEUE / NOTIFY on the right.
-  eq(M16_392.pos.n13, { x: 14, y: 1149 }, "CLOUD WATCH");
-  eq(M16_392.pos.n14, { x: 228, y: 1149 }, "HOLD / RESUME level with its source");
-  eq(M16_392.pos.n15, { x: 228, y: 1256 }, "CALIBRATION QUEUE");
-  eq(M16_392.pos.n10, { x: 228, y: 1383 }, "NOTIFY");
+  eq(M16_392.pos.n13, { x: 14, y: 1189 }, "CLOUD WATCH");
+  eq(M16_392.pos.n14, { x: 228, y: 1189 }, "HOLD / RESUME level with its source");
+  eq(M16_392.pos.n15, { x: 228, y: 1296 }, "CALIBRATION QUEUE");
+  eq(M16_392.pos.n10, { x: 228, y: 1423 }, "NOTIFY");
   eq(CLUSTER_GAP, 22, "the cluster gap — a literal, for the same reason as above");
   eq(M16_392.pos.n15.y - M16_392.pos.n14.y,
      layoutHeight(M16.nodes.find((n) => n.id === "n14")!, NODE_DEFS) + CLUSTER_GAP,
@@ -341,17 +366,17 @@ test("a rule cluster fans out into the opposite column at 22px, not 34", () => {
 test("a target another cluster already placed gets no second position", () => {
   // FLAT PANEL's only edge feeds `calib.panel`, and CLOUD WATCH placed calib
   // first. The panel still gets a slot of its own; the queue does not move.
-  eq(M16_392.pos.n18, { x: 14, y: 1470 }, "FLAT PANEL opens its own cluster");
-  eq(M16_392.pos.n15, { x: 228, y: 1256 }, "CALIBRATION QUEUE stays where it was");
-  eq(M16_392.pos.n3, { x: 14, y: 1557 }, "SAFETY MONITOR");
-  eq(M16_392.pos.n19, { x: 228, y: 1557 }, "ABORT + PARK, level with its source");
+  eq(M16_392.pos.n18, { x: 14, y: 1510 }, "FLAT PANEL opens its own cluster");
+  eq(M16_392.pos.n15, { x: 228, y: 1296 }, "CALIBRATION QUEUE stays where it was");
+  eq(M16_392.pos.n3, { x: 14, y: 1597 }, "SAFETY MONITOR");
+  eq(M16_392.pos.n19, { x: 228, y: 1597 }, "ABORT + PARK, level with its source");
 });
 
 test("every node is placed exactly once, and the height covers the last card", () => {
   eq(Object.keys(M16_392.pos).length, M16.nodes.length, "one position per node");
   const lowest = Math.max(...Object.values(M16_392.pos).map((p) => p.y));
   assert(M16_392.height > lowest, `height ${M16_392.height} must clear the last card ${lowest}`);
-  eq(M16_392.height, 1734, "M16 total scroll height");
+  eq(M16_392.height, 1774, "M16 total scroll height");
 });
 
 test("unwired nodes stack in the left column at the bottom", () => {

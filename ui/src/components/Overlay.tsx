@@ -81,7 +81,8 @@ export type OverlayVariant =
   | "center"   // centred dialog on sm+, bottom sheet on phone (confirm, preflight)
   | "sheet"    // bottom sheet at every width (nav MORE)
   | "dock"     // right column on lg+, bottom sheet below (log / review drawers)
-  | "corner";  // small docked card, bottom sheet on phone (first-run wizard)
+  | "corner"   // small docked card, bottom sheet on phone (first-run wizard)
+  | "full";    // the whole viewport at every width (the Target framing modal)
 
 export interface OverlayProps {
   open: boolean;
@@ -160,6 +161,17 @@ export function overlayGeometry(variant: OverlayVariant, lg: boolean, sm: boolea
         vars: sm
           ? { "--ov-w": "380px", "--ov-max-w": "380px", "--ov-max-h": "80dvh" }
           : { "--ov-max-h": "70dvh" },
+      };
+    case "full":
+      // One geometry at every width: the surface fills the host, which is the
+      // viewport. Its size lives in index.css (`.overlay-surface.overlay-full`)
+      // and NOT in `vars`, because an inline --ov-* here would outrank that
+      // rule; the empty bag is deliberate. No radius utility: rounded corners
+      // on a full-screen surface would show the scrim through them.
+      return {
+        wrap: "absolute inset-0 flex",
+        surface: "overlay-full sheet-enter",
+        vars: {},
       };
     case "center":
     default:

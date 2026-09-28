@@ -411,7 +411,12 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     cat: "RIG",
     colorVar: "--sky",
     ins: [_f("run", "run")],
-    outs: [_f("focused", "focused")],
+    // `pass` since S4 (#331), as on CAPTURE LOOP below and for the same
+    // reason: any lane node can be the last stage of a panel lane, and the
+    // loop wire must leave the last stage. Without it, appending an
+    // AUTOFOCUS after a looped FILTER CYCLE stranded the loop mid-lane (M12)
+    // with no port to carry it to. Appended last, so `focused` keeps its row.
+    outs: [_f("focused", "focused"), _e("pass", "pass done")],
     params: { method: "V-curve sweep", step: 12, samples: 9 },
     fields: [
       { key: "method", label: "Method", control: "select", options: ["V-curve sweep", "Native (delegate)"] },
@@ -427,7 +432,8 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     cat: "RIG",
     colorVar: "--sky",
     ins: [_f("run", "run")],
-    outs: [_f("guiding", "guiding")],
+    // `pass` since S4 (#331): see AUTOFOCUS above.
+    outs: [_f("guiding", "guiding"), _e("pass", "pass done")],
     params: { provider: "PHD2", settle: 1.5, dither: 3 },
     fields: [
       { key: "provider", label: "Provider", control: "select", options: ["PHD2", "NINA (bridge)", "Simulator"] },

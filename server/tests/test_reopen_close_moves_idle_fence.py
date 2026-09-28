@@ -18,6 +18,14 @@ NOW `_close_for_reopen` ends the task first, cancelled and awaited
 (`_cancel_idle_stop_retry`), as every other path that moves the mount does,
 so nothing of the task's is in flight when the close talks to the mount.
 
+RE-PINNED FOR #343 AND #345. The close no longer stops through `_park_hold`:
+it has the wind-down's shape (the guider stop on a task of its own, waited
+for only up to ``WIND_DOWN_GUIDER_STOP_S``, then its own stop of tracking,
+the park read back, the roof close, and the guider stop reaped;
+test_reopen_close_guider_bound.py), and a close that is refused re-arms the
+retries it ended (test_refused_close_keeps_idle_stop.py). Both cases here
+still hold as written; their mutants were re-run against the new shape.
+
 THE HARNESS is the simulator on the real clock, the engine with no run: the
 idle stop is decided (`_idle_park_hold`) on a mount whose
 ``set_tracking(False)`` does not take, so its task is retrying, every
@@ -117,7 +125,9 @@ async def test_a_retry_alive_at_the_reopen_close_sends_nothing_into_its_park(
         AssertionError: the idle-stop retry sent set_tracking(False) into the
         reopen close's park (asked at index 3): at [3, 4, 5]
     (how many land depends on the real clock; the park waits for the first,
-    bounded, so at least one does whenever the task is alive.)
+    bounded, so at least one does whenever the task is alive.) Re-run against
+    #343's shape, the call made ``ended = False`` (S4-ENGA): RED, the same
+    failure, verbatim.
     """
     monkeypatch.setattr(engine_mod, "IDLE_STOP_RETRY_S", 0.01)
     engine = SequenceEngine(sim_hub)
@@ -145,14 +155,17 @@ async def test_a_retry_alive_at_the_reopen_close_sends_nothing_into_its_park(
 async def test_control_with_no_idle_stop_the_reopen_close_is_unchanged(
         sim_hub, monkeypatch, bus_lines):
     """CONTROL. No idle stop was decided, so there is no task to end: the
-    close stops tracking itself (`_park_hold`, the one ``set_tracking(False)``,
+    close stops tracking itself (`_stop_tracking_quietly`, after its brief
+    wait for the guider stop since #343: the one ``set_tracking(False)``,
     sent by the caller), parks, closes the roof over the parked mount and
     says it confirmed the close.
 
-    Mutant "the task's end replaces the close's own stop" (the
-    ``await self._park_hold()`` in `_close_for_reopen` deleted, the new
-    ``_cancel_idle_stop_retry()`` kept, as if ending the idle stop's task
-    were the stop): RED (observed) -
+    Mutant "the task's end replaces the close's own stop" (the close's own
+    stop of tracking deleted, the ``_cancel_idle_stop_retry()`` kept, as if
+    ending the idle stop's task were the stop; until #343 the stop was the
+    ``await self._park_hold()``, and since it the
+    ``await self._stop_tracking_quietly()`` in `_close_for_reopen`): RED
+    (observed, both times) -
         AssertionError: the close's own stop was not the one set_tracking(False)
         before its park: []
     """

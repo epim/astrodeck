@@ -46,6 +46,19 @@
 // forbids from the new UI and which only works today because `legacyBridge.ts`
 // maps it back to a hash. This calls `nav.sheet("planEditor")` directly.
 //
+// THE COUNTS LINE HANGS UNDER THIS ROW (Revision 2 ruling 2, S4 orchestrator
+// ruling 8). A flow saved before new blocks counted accepted subs still counts
+// every sub taken, rejected ones included, until it is next saved, and the
+// canvas says so in one line directly under SAVE - the control that ends it.
+// It is a standing fact about the flow, not an event, so it is not a log line
+// that scrolls out of the strip and not a toast that times out: it stays for
+// as long as the graph on screen counts attempts, and it has no dismiss. It is
+// read from the graph on every store write (`countsNotice`), because the save
+// that switches the counts writes the switch into the graph on screen
+// (`acceptCounts`) without reopening the flow; a line captured when the flow
+// opened would go on promising a switch the save had already made. The phone
+// stage list carries the same line from the same function.
+//
 // WHAT THE ROW IS NOT ALLOWED TO INVENT. Two numbers here have no server behind
 // them: `run.etaS` has no publisher, so a null reads `-` and says why; and the
 // validation pill prints GRAPH VALID only once the checker has actually
@@ -56,11 +69,12 @@ import { useRef, useState, type JSX } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useFlowRunControls } from "../../../../../components/flows/flowRunControls";
+import { countsNotice } from "../../../../../components/flows/countsNotice";
 import type { FlowIssue } from "../../../../../lib/flowsApi";
 import { accessPhrase, useCapability } from "../../../../../lib/caps";
 import { useStore } from "../../../../../store";
 import { nav } from "../../../../router";
-import { ActionButton, Chip, Label, Mono, Pill, Popover, type Tone } from "../../../../ui";
+import { ActionButton, BannerCard, Chip, Label, Mono, Pill, Popover, type Tone } from "../../../../ui";
 import { NxIcon } from "../../../../icons";
 import {
   CHECKS_CLEAN_WHY, CHECKS_DRAFT_WHY, CHECKS_UNKNOWN_WHY, ETA_UNREPORTED,
@@ -110,6 +124,9 @@ export function FlowCanvasToolbar(): JSX.Element {
   const dirty = useStore((s) => s.flows.dirty);
   const readonly = useStore((s) => s.flows.record?.readonly ?? false);
   const save = useStore((s) => s.flowsSave);
+  // A string or null, so exact under Object.is: a pan or a status tick
+  // re-renders nothing here.
+  const countsLine = useStore((s) => countsNotice(s.flows.graph, s.flows.countsNote));
 
   // RUN/STOP is the shared hook, never transcribed: it owns the abort route
   // (`/api/sequence/abort`, not a flows route), the rule that a timed-out abort
@@ -137,7 +154,7 @@ export function FlowCanvasToolbar(): JSX.Element {
   const saveReason = saveLockReason(dirty, readonly);
   const stateWord = saveStateWord(dirty, readonly);
 
-  return (
+  const row = (
     <div className="nx-flow-toolbar" data-testid="flow-toolbar" data-flows-run={phase}>
       <span className="nx-flow-toolbar-name">
         <Label size={10}>FLOW</Label>
@@ -248,6 +265,17 @@ export function FlowCanvasToolbar(): JSX.Element {
         {running ? "STOP" : "RUN"}
       </ActionButton>
     </div>
+  );
+
+  // A sibling of the row, not inside it: the row is 48 px of controls, and the
+  // host's flex column gives this line its own height under them.
+  return (
+    <>
+      {row}
+      {countsLine && (
+        <BannerCard tone="info" text={countsLine} data-testid="flow-canvas-counts" />
+      )}
+    </>
   );
 }
 

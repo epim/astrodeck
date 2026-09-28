@@ -20,9 +20,11 @@ bottom pin that the new arguments never reach them.
 
 The site is pinned twice, to the same synthetic place (40 N 105 W, the one
 ``test_flows_tonight.py`` uses, NOT the observatory's): once as the
-``site`` argument and once as the hub's site, because
-``framing._stamp_transit_alt`` reads the hub's (see ``_mosaic_night``). No
-test here reads the configured site.
+``site`` argument and once as the hub's site. Since #336 the panel stamp is
+handed the resolver's site (``test_flows_panel_altitudes_follow_site``
+holds that, with the hub on a third place); the hub is still pinned here so
+that no path in this file can reach the configured site. No test here reads
+it.
 
 Every test names the mutation of ``flows/tonight.py`` it guards and quotes
 the failure that mutation produced, run in a private copy of ``server/``
@@ -61,11 +63,11 @@ FOV = (2.0, 1.33)
 
 @pytest.fixture(autouse=True)
 def hub_site(monkeypatch):
-    """The hub's site is the synthetic one ``resolve_tonight`` is handed, so
-    the panel altitudes ``_stamp_transit_alt`` computes are for the same
-    place as the curves. Patched on the property, as ``test_framing.py``
-    does, and put back by monkeypatch. Needed because the stamp takes no
-    site of its own (#336)."""
+    """The hub's site is the synthetic one ``resolve_tonight`` is handed.
+    Patched on the property, as ``test_framing.py`` does, and put back by
+    monkeypatch. Since #336 the stamp takes the resolver's site, so this is
+    a guard, not a premise: nothing in this file can reach the configured
+    site even if a path regressed to the hub's."""
     monkeypatch.setattr(Hub, "site", property(lambda self: {
         "name": "synthetic", **SITE, "horizon_min_deg": 0.0}))
 
@@ -128,8 +130,8 @@ def _stub_stamp(alts):
     """A stand-in for ``framing._stamp_transit_alt`` that stamps each panel
     with ``alts[(row, col)]``, or with an error where that is None, and runs
     no ephemeris, so a count of ``compute_night`` calls is the resolver's
-    own."""
-    async def stamp(panels, date):
+    own. It takes the stamp's ``site`` (#336) and ignores it."""
+    async def stamp(panels, date, *, site=None):
         for p in panels:
             alt = alts((p["row"], p["col"])) if callable(alts) \
                 else alts[(p["row"], p["col"])]
@@ -205,9 +207,9 @@ class TestPanelAltitudes:
         seen = []
         real = framing._stamp_transit_alt
 
-        async def spy(panels, date):
-            seen.append((copy.deepcopy(panels), date))
-            await real(panels, date)
+        async def spy(panels, date, *, site=None):
+            seen.append((copy.deepcopy(panels), date, site))
+            await real(panels, date, site=site)
         monkeypatch.setattr(framing, "_stamp_transit_alt", spy)
 
         out = _tonight(_mosaic_flow())
@@ -220,7 +222,8 @@ class TestPanelAltitudes:
         want = sorted((p["row"], p["col"], p["ra_hours"], p["dec_deg"])
                       for p in layout)
         assert len(seen) == 1, "one stamp for the block"
-        panels, date = seen[0]
+        panels, date, site = seen[0]
+        assert site == SITE, "the stamp is handed the resolver's site (#336)"
         got = sorted((p["row"], p["col"], p["ra_hours"], p["dec_deg"])
                      for p in panels)
         assert [g[:2] for g in got] == [w[:2] for w in want]
@@ -252,7 +255,7 @@ class TestPanelAltitudes:
         """
         stamped = []
 
-        async def stamp(panels, date):
+        async def stamp(panels, date, *, site=None):
             stamped.extend((p["row"], p["col"]) for p in panels)
             for p in panels:
                 p["transit_alt"] = 45.0
@@ -483,13 +486,18 @@ class TestTheBudgetCountsEveryPanel:
         and a CAPTURE of OIII x 2 with a goal: a panel owes as many rounds as
         its most-served step, the cycle's 6, so 6 visits a panel and 24 hops
         for the 2x2 (the engine's ``_visits_owed`` with nothing banked, read
-        here off the plan the run would be handed). Only OIII has a goal, so
-        it is the one row, and it carries its shutter share of the hops,
-        600 s of the panel's 2400 s: a quarter of 24 x 160 s.
+        here off the plan the run would be handed). Since S4 orchestrator
+        ruling 5 (#338) the cycle has a row of its own, so the block's 1.07
+        h of hops is shared by the two rows, the cycle's 1800 s and OIII's
+        600 s a panel: 0.80 h and 0.27 h. That no share is lost is
+        ``test_flows_tonight_cycle_budget``'s; this test holds the visits.
 
-        Mutant "cycle visits are one" (a cycle step owes one round) failed:
-            E   assert 0.09 == 0.27
-            E    +  where 0.27 = round(((((4 * 6) * 160) / 3600) * 0.25), 2)
+        Mutant "cycle visits are one" (a cycle step owes one round), re-run
+        on the S4 code (scratchpad ``s4-tonight-mut``), failed:
+            E   assert [0.27, 0.09] == [0.8, 0.27]
+            E     At index 0 diff: 0.27 != 0.8
+        and under S4-TONIGHT's "cycle steps get no row":
+            E   ValueError: not enough values to unpack (expected 2, got 1)
         """
         graph = FlowGraph(
             nodes=[_n("d", "dusk", offset=-30, stop="Dawn", minAlt=30),
@@ -513,10 +521,14 @@ class TestTheBudgetCountsEveryPanel:
                       for s in t.steps) for t in plan.targets}
         assert visits == {6}, "premise: the run owes 6 visits a panel"
 
-        (row,) = _tonight(graph, hop_cost_s=160.0)["budget"]
-        assert (row["filter"], row["goal_h"], row["panels"]) == ("OIII", 4.0,
-                                                                  4)
-        assert row["hop_h"] == round(4 * 6 * 160 / 3600 * 0.25, 2)
+        cyc, oiii = _tonight(graph, hop_cost_s=160.0)["budget"]
+        assert (oiii["filter"], oiii["goal_h"], oiii["panels"]) == ("OIII",
+                                                                    4.0, 4)
+        assert (cyc["filter"], cyc["strategy"], cyc["panels"]) == ("Ha",
+                                                                   "cycle", 4)
+        assert [cyc["hop_h"], oiii["hop_h"]] == [
+            round(4 * 6 * 160 / 3600 * 0.75, 2),
+            round(4 * 6 * 160 / 3600 * 0.25, 2)]
 
     @pytest.mark.parametrize("cost", [0, -5.0, math.nan, math.inf, "160",
                                       True])

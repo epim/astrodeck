@@ -41,6 +41,12 @@
 // `FlowHeader.tsx:167-177`), and every exit goes through it: this button, the
 // sub-nav chip and the browser Back button (caught by `FlowsScreen`'s own
 // effect), and the phone sheet's BACK.
+//
+// A TARGET DROPPED FROM THE DOCKED RAIL OPENS ITS FRAMING (#189 S4 item 3;
+// spec 2.1), as one tapped in the palette sheet does: the rail has no sheet
+// of its own to replace, so the `flowFrame` sheet is pushed over the canvas,
+// with the flow as `?open=`. The decision is `paletteDrop.ts`'s, shared with
+// the sheet, so the two palettes cannot disagree about which stages open it.
 
 import { useEffect, useRef, type JSX } from "react";
 
@@ -51,7 +57,11 @@ import { EmptyCard } from "../../../ui";
 import { FlowCanvasSurface, FlowCanvasToolbar } from "./canvas";
 import {
   FLOW_NODE_SHEET, FlowInspectorColumn, FlowPaletteRail, useOpenFlowPalette,
+  type FlowPaletteRailProps,
 } from "./inspector";
+// Deep, because the area barrel is not this file's to extend. The module holds
+// no component: it reads the store and opens the framing door through the router.
+import { droppedStageId, frameDroppedStage } from "./inspector/paletteDrop";
 import { CalibrationMatrixCard } from "./tonight";
 import { leaveFlowEditor } from "./openFlow";
 import "./canvas/canvas.css";
@@ -96,6 +106,12 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
   const openPalette = useOpenFlowPalette();
 
   const named = open && open !== CANVAS_LIBRARY ? open : null;
+
+  /** The docked rail's drop: a TARGET opens its framing at once. `id` is
+   *  `flowsAddNode`'s answer when the rail passes it on (see `paletteDrop.ts`). */
+  const railPicked: NonNullable<FlowPaletteRailProps["onPicked"]> = (type, id?: string) => {
+    frameDroppedStage(type, droppedStageId(type, id), openId);
+  };
 
   useEffect(() => {
     if (!named) return;
@@ -210,7 +226,7 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
           {/* The rail is docked only where 192 px of it does not eat the graph.
               At tablet the same list is one tap away as the `flowPalette`
               sheet, which is what the surface's + ADD STAGE opens. */}
-          {desktop && <FlowPaletteRail variant="rail" />}
+          {desktop && <FlowPaletteRail variant="rail" onPicked={railPicked} />}
 
           <FlowCanvasSurface
             showAddStage={!desktop}

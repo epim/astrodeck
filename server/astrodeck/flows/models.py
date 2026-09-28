@@ -17,6 +17,7 @@ in the same session.
 """
 from __future__ import annotations
 
+import math
 import re
 import time
 from uuid import uuid4
@@ -55,6 +56,42 @@ MY_FLOWS_FOLDER = "My flows"
 #: one rule, not two paraphrases of it.
 FLOW_LOOP_REFUSAL = ("this flow loops back on itself at {src} -> {dst}; "
                      "a flow lane runs once")
+
+#: The params ``compile_plan`` takes ``int()`` of, by node type (#328): a
+#: FILTER CYCLE's two counts and a POOL's quota. THE ONE EXCEPTION TO
+#: "permissive about params" (the module docstring), and a narrow one: a
+#: value that is a number but not a finite one above 0 is refused at the
+#: door. An infinity or a NaN is a number ``int()`` raises on and JSON cannot
+#: carry, so a flow saved with one could never be compiled, previewed or run
+#: again, and nothing on screen said why; 0 or a negative is no number of
+#: anything. Text that is not a number at all is not judged here: the compile
+#: reads it as the default, as it reads every other param it cannot parse.
+COUNT_PARAMS: dict[str, tuple[str, ...]] = {
+    "cycle": ("cycles", "perCycle"),
+    "pool": ("quota",),
+}
+
+#: The refusal for one of those counts, filled with the card's label, the
+#: node id (two FILTER CYCLEs on one canvas share a label), the param and the
+#: value as stored.
+COUNT_REFUSAL = ("{label} {node!r}: {key!r} is {value!r}, and a count must be "
+                 "a finite number above 0")
+
+
+def _not_a_count(value) -> bool:
+    """True when ``value`` is a number and not a finite one above 0 (#328).
+
+    None, blank text and text that is not a number are False: the compile
+    reads each as its default, and the editor stores a blank field that way.
+    An integer past a float's range is True: ``float()`` of it overflows, so
+    it is no finite count either."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    except OverflowError:
+        return True
+    return not math.isfinite(number) or number <= 0
 
 #: Flow-level settings: one answer per FLOW, not per block (spec 1.6, Revision
 #: 2 ruling 1). ``{key: {"default": missing-key value, "options": [...]}}``.
@@ -249,6 +286,17 @@ class FlowGraph(BaseModel):
         for src, dst in self._flow_back_edges():
             out.append(FLOW_LOOP_REFUSAL.format(
                 src=NODE_DEFS[src.type].label, dst=NODE_DEFS[dst.type].label))
+
+        # A COUNT THAT IS NO COUNT (#328): see COUNT_PARAMS. Refused here, so
+        # save and /run answer 422 with the sentence, and both compile routes
+        # list it under `structural` beside the plan they still compile.
+        for n in self.nodes:
+            for key in COUNT_PARAMS.get(n.type, ()):
+                value = (n.params or {}).get(key)
+                if _not_a_count(value):
+                    out.append(COUNT_REFUSAL.format(
+                        label=NODE_DEFS[n.type].label, node=n.id, key=key,
+                        value=value))
 
         if len(known) != len(self.nodes):
             pass        # already reported as duplicates

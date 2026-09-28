@@ -74,6 +74,9 @@ import math
 from typing import TYPE_CHECKING
 
 from . import identity, tonight
+# ONE READING OF WHICH PANELS A PLAN SKIPS, CONTINUE's own (#335), so the
+# card and the dropped-steps question name one set of frames as lost.
+from .continuation import plan_skipped_ids
 # ONE READING OF A BLOCK'S KEY. `to_plan` mints every id from these: the
 # coordinates (`_coords`), the layout angle (`_angles`), the grid
 # (`_mosaic_numbers`) and the key over the anchor (`_block_key`). Asked the
@@ -129,11 +132,13 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
         skipped: [{target_id, name, row, col, banked}]
 
     ``skipped`` lists, in grid order, the panels the operator skipped
-    (``TargetGroup.skipped_ids``). They owe nothing while skipped and are in
-    none of the block's sums, and ``banked`` is what the ledger holds on the
-    panel, counted by the session's count mode, so a skip never hides what
-    re-enabling the panel brings back (``_skipped``). A block ``to_plan``
-    dropped whole (no coordinates, or every panel skipped) has no panels.
+    (``TargetGroup.skipped_ids``, or the plan's own ``skipped_ids`` for a
+    block with every panel skipped, #335). They owe nothing while skipped
+    and are in none of the block's sums, and ``banked`` is what the ledger
+    holds on the panel, counted by the session's count mode, so a skip
+    never hides what re-enabling the panel brings back (``_skipped``). A
+    block ``to_plan`` dropped whole (no coordinates, or every panel
+    skipped) has no panels.
 
     ``locked_angle`` is present only where there is a lock (``_locked``,
     ``_block_lock``): ``pa_deg`` in the CROTA2 convention the session stored,
@@ -205,11 +210,10 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
             if lock is not None:
                 block["locked_angle"] = lock
     _refuse_a_foreign_plan(compiled, plan, blocks, flow_id)
-    skipped = {s["target_id"] for b in blocks for s in b.get("skipped", ())}
     return {"flow_id": flow_id,
             "session": _summary(session),
             "blocks": blocks,
-            "orphaned": _orphaned(plan, session, skipped)}
+            "orphaned": _orphaned(plan, session)}
 
 
 def _refuse_a_foreign_plan(compiled: dict, plan: "SequencePlan",
@@ -416,22 +420,27 @@ def _mosaic(plan: "SequencePlan", entry: dict, counts: dict[str, int],
         block["panels"].append(panel)
         for field in ("banked", "owed", "total"):
             block[field] += panel[field]
-    block["skipped"] = _skipped(entry, gid, group, name, rows, cols, counts,
+    block["skipped"] = _skipped(plan, gid, group, name, rows, cols, counts,
                                 session)
     return block
 
 
-def _skipped(entry: dict, gid: str | None, group: "TargetGroup | None",
-             name: str, rows: int, cols: int, counts: dict[str, int],
+def _skipped(plan: "SequencePlan", gid: str | None,
+             group: "TargetGroup | None", name: str, rows: int, cols: int,
+             counts: dict[str, int],
              session: "Session | None") -> list[dict]:
     """The panels a mosaic skips, in grid order, each with what the ledger
     holds on it (spec 2.5: "re-enabling a panel restores its progress").
 
-    WHICH PANELS: the group's ``skipped_ids``, the ids ``to_plan`` named for
-    CONTINUE (spec 5.9). A block whose every panel is skipped has no group,
-    so its panels are the compile's ``skip`` list, each id minted the way
-    ``to_plan`` mints a panel's, ``identity.target_id(group, row, col)``.
-    Row and col come from matching the id against every cell of the grid.
+    WHICH PANELS: the ids the PLAN names for CONTINUE (spec 5.9), so the card
+    lists exactly the panels CONTINUE exempts. The group's ``skipped_ids``;
+    or, for a block whose every panel is skipped, which has no group, the
+    ids of this block's cells in the plan's own ``skipped_ids`` (#335).
+    Until #335 that second case read the compile's ``skip`` list, the one
+    thing CONTINUE could not see, so the card showed the frames held while
+    CONTINUE refused them as dropped. A cell's id is minted the way
+    ``to_plan`` mints a panel's, ``identity.target_id(group, row, col)``,
+    and row and col come from matching the id against every cell.
 
     WHAT IS BANKED: the frames whose target id is the panel's, counted by the
     session's count mode (``Session._counts``, one rule with every other
@@ -444,13 +453,12 @@ def _skipped(entry: dict, gid: str | None, group: "TargetGroup | None",
     CONTINUE asks about it then (``plan_replace_report``)."""
     if gid is None:
         return []
+    cell = {identity.target_id(gid, r, c): (r, c)
+            for r in range(rows) for c in range(cols)}
     if group is not None:
         ids = list(group.skipped_ids)
     else:
-        ids = [identity.target_id(gid, int(r) - 1, int(c) - 1)
-               for r, c in (entry["mosaic"].get("skip") or [])]
-    cell = {identity.target_id(gid, r, c): (r, c)
-            for r in range(rows) for c in range(cols)}
+        ids = [tid for tid in plan.skipped_ids if tid in cell]
     on: dict[str, set[str]] = {}
     for f in (session.frames if session is not None else []):
         on.setdefault(f.target_id, set()).add(f.step_id)
@@ -515,24 +523,25 @@ def _panel(target: "Target | None", name: str, counts: dict[str, int], *,
             "steps": steps}
 
 
-def _orphaned(plan: "SequencePlan", session: "Session | None",
-              skipped: set[str]) -> dict:
+def _orphaned(plan: "SequencePlan", session: "Session | None") -> dict:
     """Frames on steps no plan step has, and how many steps they sit on.
 
     A frame on a SKIPPED panel is not one (S3, spec 5.9): the panel's
     ``skipped`` entry shows it, and re-enabling the panel brings it back.
-    ``skipped`` is the target ids the blocks list as skipped, so a frame is
-    shown in one place, never as held and lost at once. It is recognised by
-    its target id, as ``continuation.plan_replace_report`` recognises it
-    through the groups' ``skipped_ids``, so the card and CONTINUE's
-    dropped-steps question agree about which frames are lost, with one
-    exception: a block whose every panel is skipped has no group in the
-    plan, so ``plan_replace_report`` cannot see its skip and counts its
-    frames as dropped, where this, reading the compile's skip list, shows
-    them on the block (#335). A plan that skips nothing reads as it always
-    did."""
+    It is recognised by its target id, in the set of target ids the plan
+    skips, read by ``continuation.plan_skipped_ids``, the function
+    ``plan_replace_report`` reads it by, so the card and CONTINUE's
+    dropped-steps question agree about which frames are lost by
+    construction. That now includes a block whose every panel is skipped,
+    which has no group and whose panels the plan names in its own
+    ``skipped_ids`` (#335); before, CONTINUE counted that block's frames as
+    dropped while this, reading the compile's skip list, showed them held.
+    The blocks' ``skipped`` entries list the same ids, so a frame is shown
+    in one place, never as held and lost at once. A plan that skips nothing
+    reads as it always did."""
     if session is None:
         return {"frames": 0, "steps": 0}
+    skipped = plan_skipped_ids(plan)
     live = {s.id for t in plan.targets for s in t.steps}
     lost: dict[str, int] = {}
     for f in session.frames:

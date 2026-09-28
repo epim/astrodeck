@@ -227,6 +227,41 @@ test("inputs render before outputs, never interleaved", () => {
     "n2|run|in,n2|complete|out,n2|frame|out,n2|pass|out", dirs.join(","));
 });
 
+test("an AUTOFOCUS card renders `focused` and then its `pass` event port (S4, #331)", () => {
+  // DELIBERATE PIN, NEW IN S4: AUTOFOCUS gained the event output `pass`, last,
+  // so the loop wire can leave it when it ends a panel lane. The dot a drop
+  // resolver or a tap lands on is `n3|pass|out`, on the row below `focused`
+  // (geometry.portPos: row ins.length + 1), in the event lane's colour.
+  //
+  // MUTANT "AUTOFOCUS has no pass" (in a private scratch copy, the port
+  // dropped from nodeDefs.ts). Observed:
+  //   x an AUTOFOCUS card renders `focused` and then its `pass` event port
+  //     (S4, #331): n3|run|in,n3|focused|out !==
+  //     n3|run|in,n3|focused|out,n3|pass|out
+  //   and under MUTANT "pass first" (AUTOFOCUS's outs reordered to pass,
+  //   focused):
+  //   x an AUTOFOCUS card renders `focused` and then its `pass` event port
+  //     (S4, #331): n3|run|in,n3|pass|out,n3|focused|out !==
+  //     n3|run|in,n3|focused|out,n3|pass|out
+  //   (flowNodeDom.test: 20/21 passed, each)
+  const n3: FlowNodeRec = {
+    id: "n3", type: "autofocus", x: 600, y: 20, params: { ...NODE_DEFS.autofocus.params },
+  };
+  act(() => root.render(null));
+  act(() => {
+    useStore.setState({
+      flows: { ...FLOWS_INIT, graph: { nodes: [n3], edges: [] } },
+    } as any);
+  });
+  act(() => root.render(React.createElement(FlowNodeCard, { node: n3 })));
+  const ports = [...card("autofocus").querySelectorAll("[data-port]")] as any[];
+  assert.equal(ports.map((p) => p.getAttribute("data-port")).join(","),
+    "n3|run|in,n3|focused|out,n3|pass|out");
+  const dot = (p: any) => p.firstElementChild.getAttribute("style");
+  assert.match(dot(ports[1]), /border:\s*1\.5px solid var\(--accent\)/, "`focused` is a flow port");
+  assert.match(dot(ports[2]), /border:\s*1\.5px solid var\(--warn\)/, "`pass` is an event port");
+});
+
 // ──────────────────────────────────────────────────── the re-render discipline
 
 test("a status tick re-renders ONE card, not the graph", () => {

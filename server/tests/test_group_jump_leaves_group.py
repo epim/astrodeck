@@ -20,10 +20,37 @@ dispatcher, on the clocked simulator (tests/_group_harness.py). The rule
 fires on the first frame of 1-2 (``only_target``), after an HFR above 1 px,
 which every harness frame reports (2.0).
 
+A JUMPED VISIT IS COUNTED (#322). `_visit_panel` hands the visit a jump ends
+to its group before the jump goes on up (`GroupRun.note_visit`): its
+exposures toward the pass boundary, its accepted frames, and a guider start
+that worked toward the guide-start pass rule. Before it, a pass whose only
+frame came from a jumped visit read as a pass of no exposures and waited
+``DEFER_WAIT_S`` for nothing. A NO-OP JUMP (an unknown name, a run to the
+member itself) leaves the member live and UNVISITED, so it is taken up again
+at once, in the same pass: the decision `_visit_panel` documents, and the
+last case here holds.
+
 Each case names the mutant it was shown RED under, with the failure
-observed, verbatim (pytest's own lines, long ones wrapped). Every mutant was
-applied in a private scratch copy of server/ (scratchpad s3ea-mut), never in
-the shared tree (#254).
+observed, verbatim (pytest's own lines, long ones wrapped). The #288 mutants
+were applied in a private scratch copy of server/ (scratchpad s3ea-mut), and
+the #322 ones in scratchpad s4-engb-mut, never in the shared tree (#254).
+Every one of them was run again on the finished S4 code in scratchpad
+s4-engb-resume-mut and failed as recorded:
+
+* "jumped visit not noted": `_visit_panel`'s JumpTarget arm re-raising
+  without its `GroupRun.note_visit` call.
+* "the jumped visit marks the panel visited": that arm counting the visit
+  through `GroupRun.visit_outcome` (``complete=False``), which also marks the
+  panel visited, instead of `note_visit`.
+* "the jumped visit's guide start not counted": that arm's `note_visit`
+  passing ``guide_started=False``. Applied by the S4-ENGB verifier in its
+  own scratch copy (scratchpad s4-engb-verify-mut).
+
+The jumped visit's accepted frames are noted too, and no case here grades
+them: the frame that fires a jump is not banked (#373), a consumed panel is
+not live, and the reject rule reads live panels only, so they can move a
+verdict only when a no-op jump ends a visit after a banked frame and the
+visit that takes the panel up again banks none.
 """
 from __future__ import annotations
 
@@ -57,26 +84,39 @@ async def test_a_member_a_jump_consumes_leaves_its_group(
     boundary that sets 1-1 aside reaches ``none_live``, so passes 1 and 2
     wait ``DEFER_WAIT_S`` and nothing waits after pass 3.
 
-    PASS 1'S WAIT IS ITSELF A DEFECT (#322), pinned here as it stands: the
-    frame 1-2 shot before the jump is not counted for its pass, because a
-    jumped visit never reaches `GroupRun`, so pass 1 reads as a pass of no
-    exposures. The fix for #322 changes the first expected line below.
+    PASS 1 DOES NOT WAIT (#322). The frame 1-2 shot before the jump, and its
+    guider start, count for the pass, so pass 1 took an exposure and goes
+    straight on to pass 2; until #322 it read as a pass of no exposures and
+    waited ``DEFER_WAIT_S`` too. Only pass 2, 1-1's deferral alone, waits.
+
+    MUTANT "jumped visit not noted": RED on both kinds (observed, "skip";
+    "run" word for word the same):
+        AssertionError: ['M31: pass 1 took no exposures and deferred 1
+        visits; waiting 300 s before the next pass', 'M31: pass 2 took no
+        exposures and deferred 1 visits; waiting 300 s before the next pass']
+        assert ['M31: pass 1...he next pass'] == ['M31: pass 2...he next pass']
+          At index 0 diff: 'M31: pass 1 took no exposures and deferred 1
+        visits; waiting 300 s before the next pass' != 'M31: pass 2 took no
+        exposures and deferred 1 visits; waiting 300 s before the next pass'
+          Left contains one more item: 'M31: pass 2 took no exposures and
+        deferred 1 visits; waiting 300 s before the next pass'
 
     MUTANT "no _group_member_gone" (the call in the scheduler's JumpTarget
-    arm deleted): RED on both kinds, the group never hears of it (observed,
-    "skip"; "run" the same with one publish fewer):
+    arm deleted): RED on both kinds, the group never hears of it (observed
+    again with #322 built, scratchpad s4-engb-resume-mut; "skip" and "run"
+    word for word the same):
         AssertionError: no published group named 1-2 set aside after the
         jump: [[], [], [], [], [], [], [], [], [{'panel': '1-1', 'reason':
         'guiding did not start on 1-1 on 3 consecutive visits: no guide star
         found (attempt 3)'}]]
         assert False
     and, run again with that check taken out (a scratch copy of this test),
-    the wait for nothing after 1-1's set-aside (observed, both kinds):
-        AssertionError: ['M31: pass 1 took no exposures and deferred 1
-        visits; waiting 300 s before the next pass', 'M31: pass 2 took no
-        expos...300 s before the next pass', 'M31: pass 3 took no exposures
-        and deferred 1 visits; waiting 300 s before the next pass']
-        assert ['M31: pass 1...he next pass'] == ['M31: pass 1...he next
+    the wait for nothing after 1-1's set-aside (observed, both kinds; pass
+    1 no longer waits, #322):
+        AssertionError: ['M31: pass 2 took no exposures and deferred 1
+        visits; waiting 300 s before the next pass', 'M31: pass 3 took no
+        exposures and deferred 1 visits; waiting 300 s before the next pass']
+        assert ['M31: pass 2...he next pass'] == ['M31: pass 2...he next
         pass']
           Left contains one more item: 'M31: pass 3 took no exposures and
         deferred 1 visits; waiting 300 s before the next pass'
@@ -113,8 +153,8 @@ async def test_a_member_a_jump_consumes_leaves_its_group(
 
     waits = night.said("waiting 300 s before the next pass")
     assert waits == [
-        f"M31: pass {n} took no exposures and deferred 1 visits; waiting "
-        f"300 s before the next pass" for n in (1, 2)], waits
+        "M31: pass 2 took no exposures and deferred 1 visits; waiting "
+        "300 s before the next pass"], waits
     alerts = night.said("set aside for tonight")
     assert alerts == ["M31: guiding did not start on 1-1 on 3 consecutive "
                       "visits: no guide star found (attempt 3); set aside for "
@@ -130,3 +170,90 @@ async def test_a_member_a_jump_consumes_leaves_its_group(
         "an instruction's drop lasts this run and is not recorded for the "
         f"night: {night.stored.set_aside}")
 
+
+async def test_a_no_op_jump_leaves_the_panel_unvisited_for_the_same_pass(
+        group_hub, monkeypatch):
+    """THE NO-OP DECISION (#322). A 1x2, two L frames a panel, one a visit.
+    On 1-2's first frame a rule fires ``run_target`` to a name no target
+    has: `_apply_jump` says so and ignores it, and 1-2 stays in the night.
+    Its jumped visit is counted, and it is NOT marked visited, so the
+    scheduler takes it up again AT ONCE, IN THE SAME PASS: the next hop is to
+    1-2 again, its frame is shot under pass 1, and only then does the pass
+    close. Marked visited, it would sit ahead of the unvisited members
+    without a visit's requeue, so the next selection closed the pass on it.
+
+    The frame that fired the jump is not banked (the jump is raised before
+    the ledger records it, #373), so 1-2 shoots three frames for its two.
+
+    MUTANT "the jumped visit marks the panel visited": RED (observed; the
+    pass closed on 1-2 with no requeue, so the visit that took it up again
+    was pass 2's, and a third pass followed):
+        AssertionError: [('M31 1-1', 1), ('M31 1-2', 1), ('M31 1-2', 2),
+        ('M31 1-1', 2), ('M31 1-2', 3)]
+        assert [1, 2] == [1, 1]
+          At index 1 diff: 2 != 1
+    """
+    rule = Instruction(id="noop", trigger="on_hfr_above", threshold=1.0,
+                       once=True, only_target=_name("1-2"),
+                       action="run_target", target_arg="Nobody")
+    plan = grid_plan(rows=1, cols=2, panel_kw={"filters": ("L",), "count": 2},
+                     instructions=[rule])
+    night = Night(group_hub, monkeypatch)
+    try:
+        night.done = await night.run(plan, wall_s=60.0)
+    finally:
+        await night.close()
+    night.stored = session_store.load(night.session_id)
+    assert night.done, night.lines[-4:]
+    assert night.said("no target named 'Nobody'"), night.lines[-6:]
+    shots = [(c["target"], (c["group"] or {}).get("pass"))
+             for c in night.captures]
+    jumped = next(k for k, (who, _p) in enumerate(shots)
+                  if who == _name("1-2"))
+    # The two 1-2 frames either side of the jump: the one that fired it and
+    # the first of the visit that took the panel up again.
+    pair = shots[jumped:jumped + 2]
+    assert [who for who, _p in pair] == [_name("1-2")] * 2, shots
+    assert [p for _who, p in pair] == [1, 1], shots
+    assert sum(1 for who, _p in shots if who == _name("1-2")) == 3, shots
+    assert night.stored.status == "complete", night.stored.status
+
+
+async def test_a_jumped_visits_guider_start_counts_for_its_pass(
+        group_hub, monkeypatch):
+    """A guided 1x3 whose guider starts on 1-2 alone; a rule consumes 1-2
+    (``skip_target``) at its first frame. Pass 1 then tried the guider on
+    three panels and it worked on one, so the failures on 1-1 and 1-3 are
+    theirs and each is retried. Only pass 2, where it fails on both panels
+    tried, is the guider's fault, and the rig's guiding action (go on
+    unguided) comes after each failing panel's SECOND attempt.
+
+    Without the jumped visit's guider start, pass 1 read as two failures out
+    of two and was blamed on the rig one pass early, after one attempt each.
+
+    MUTANT "the jumped visit's guide start not counted" (the JumpTarget arm's
+    `GroupRun.note_visit` passing ``guide_started=False``): RED (observed):
+        AssertionError: ["M31: guiding did not start on 1-1: no guide star
+        found (attempt 1); retried on the next pass (counted when the pass
+        ends: a guider that fails on every panel is the rig's fault)"]
+        assert 1 == 2
+    """
+    rule = Instruction(id="jump", trigger="on_hfr_above", threshold=1.0,
+                       once=True, only_target=_name("1-2"),
+                       action="skip_target", target_arg=_name("1-2"))
+    plan = grid_plan(rows=1, cols=3, guide=True, instructions=[rule])
+    night = Night(group_hub, monkeypatch,
+                  guide=lambda who, n: who == _name("1-2"))
+    try:
+        night.done = await night.run(plan, wall_s=60.0)
+    finally:
+        await night.close()
+    assert night.done, night.lines[-4:]
+    assert night.shots()[0] == (_name("1-2"), "L"), (
+        f"premise: 1-2 shot one frame and was consumed: {night.shots()[:3]}")
+    rig = [k for k, (_t, _lv, m) in enumerate(night.lines)
+           if "guiding did not start on any of the" in m]
+    assert len(rig) == 1, night.said("guiding did not start on any")
+    tries = [m for _t, _lv, m in night.lines[:rig[0]]
+             if m.startswith("M31: guiding did not start on 1-1")]
+    assert len(tries) == 2, tries

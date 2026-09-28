@@ -230,13 +230,20 @@ async def test_a_pier_change_with_flips_off_sets_that_panel_aside(
     is on, shoots every frame. The night ends; the session stays owed.
 
     MUTANT "every verdict waits" (``REACH_TAGS`` mapping every kind to
-    "wait"): RED (observed):
-        AssertionError: assert ['M31 1-1', '...M31 1-1', ...] == ['M31 1-1',
-        '...1', 'M31 1-1']
-          Left contains 6 more items, first extra item: 'M31 1-2'
-        (1-2 waited, and was shot once the simulator's side, which follows where
-        it points, came round with 1-1 past the meridian: a pier change with
-        flips off, which the refusal exists to prevent)
+    "wait"): RED (observed, RE-PINNED IN S4-SIM):
+        AssertionError: the run was still going at the fake horizon:
+        [[10680.0, 'state', {... 'detail': 'waiting for M31 1-2', ...
+        'schedule': {'state': 'waiting', 'reason': 'a slew to M31 1-2 would
+        need a pier flip, and this plan has meridian flips switched off',
+        'eta_s': 0}, ...}], ...]
+        assert False
+    Before S4-SIM the same mutant failed on the shots instead: 1-2 waited,
+    and was shot once the simulator's side, which then followed where it
+    pointed, came round with 1-1 past the meridian, a pier change with flips
+    off (``Left contains 6 more items, first extra item: 'M31 1-2'``). The
+    simulator mount now keeps the side its goto chose (#298), so the panel
+    waits for a side change that never comes, which is the waiting the
+    refusal exists to cut short.
     """
     group_store.set_safety(SafetyConfig(enabled=False,
                                         enforce_pier_limits=True))

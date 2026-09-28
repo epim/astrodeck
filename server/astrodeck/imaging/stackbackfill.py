@@ -36,7 +36,7 @@ disagree with the live path about that.
 changes, so backfilling two targets would leave the second one's frames and
 throw the first one's away, having spent the disk reads on both.
 
-**Where the metadata comes from.** The FITS header first (``FILTER``,
+**Where the metadata comes from.** The FITS header first (``FILTER`` as typed,
 ``EXPTIME``, ``BAYERPAT``, ``XBINNING``) because it describes the file actually
 being stacked; the frozen plan step second; the filename last. A step edited
 after the frame was shot is not evidence about the frame.
@@ -53,6 +53,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .fitsio import full_name
 from .nightstack import parse_frame_name
 from .sessionstack import BackfillProgress, SessionStacker, effective_bayer, frame_key
 
@@ -164,6 +165,10 @@ def read_backfill_frame(item: BackfillItem
 
     The header wins over the plan for every field, INCLUDING the filter -- a
     plan step edited mid-run says nothing about a frame shot an hour earlier.
+    The filter is the slot's name as typed (``fitsio.full_name``, #332), which
+    is also the name the live frame loop hands the stacker for the same frame:
+    the FILTER card is folded to ASCII, and slots named H-alpha and H-beta in
+    Greek both read 'H?' there, one filter for two.
     Binning is read here and folded into the Bayer answer through
     ``effective_bayer``, because a 2x2-binned OSC frame has no mosaic left in it
     however confidently ``BAYERPAT`` is still written.
@@ -174,7 +179,7 @@ def read_backfill_frame(item: BackfillItem
         hdu = hdul[0]
         raw = np.asarray(hdu.data)
         hdr = hdu.header
-        filt = str(hdr.get("FILTER", "") or "").strip()
+        filt = full_name(hdr, "FILTER").strip()
         exposure = hdr.get("EXPTIME", None)
         bayer = str(hdr.get("BAYERPAT", "") or "").strip()
         binning = hdr.get("XBINNING", 1)

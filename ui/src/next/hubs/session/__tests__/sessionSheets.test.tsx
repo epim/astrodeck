@@ -132,16 +132,27 @@ test("session/sheets.ts does not exist - it would shadow session/sheets/", () =>
     "precondition: the registry this test is about is where it says it is");
 });
 
-// ========================================================= 2. the ten names
+// ====================================================== 2. the eleven names
 
-test("the registry holds exactly the SESSION hub's ten sheets", () => {
+test("the registry holds exactly the SESSION hub's eleven sheets", () => {
   const names = Object.keys(sheets).sort();
-  // Six of the ten arrived with wave R7's Flows cutover (T-R7-20), each from its
-  // own area's `flow*Sheets` export rather than from an edit to the registry
-  // file - which is why a lost half is a compile error here and not a name that
-  // is quietly absent from the map.
+  // Six of the eleven arrived with wave R7's Flows cutover (T-R7-20), and the
+  // seventh flows name, flowFrame (the Target modal), with #189 S4 - each from
+  // its own area's `flow*Sheets` export rather than from an edit to the
+  // registry file - which is why a lost half is a compile error here and not a
+  // name that is quietly absent from the map.
+  //
+  // DELIBERATE PIN CHANGE (#189 S4, spec 2.1; re-pinned by the S4 integration,
+  // #400): `framing/reg.ts` registers flowFrame, the #/next door to the
+  // Target modal, so the pinned list gained it. Mutant "flowFrame dropped from
+  // the registry" (the `...flowFrameSheets` spread removed from
+  // sheets/index.ts), observed in scratchpad/s4-integrate-q7m2 (6/7):
+  //   x the registry holds exactly the SESSION hub's eleven sheets: one name
+  //   missing here is one screen the router cannot reach
+  //   expected archive,files,flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report
+  //   got      archive,files,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report
   eq(names.join(","),
-    "archive,files,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report",
+    "archive,files,flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report",
     "one name missing here is one screen the router cannot reach");
 });
 
@@ -175,7 +186,17 @@ test("the registry imports component-free modules, not the flows area barrels", 
   const specs = Array.from(src.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gm))
     .map((m) => m[1])
     .filter((spec) => spec.includes("/flows/"));
-  eq(specs.length, 4, "the four flows areas each publish one registry export; found");
+  // DELIBERATE PIN CHANGE (#189 S4; re-pinned by the S4 integration, #400):
+  // the framing area is the fifth, and it too is imported through its
+  // component-free `reg` module. Mutant "flowFrame registered through the
+  // area barrel" (sheets/index.ts importing `flowFrameSheets` from
+  // `../flows/framing/reg` made `../flows/framing`, a barrel that exports the
+  // sheet itself), observed in scratchpad/s4-integrate-q7m2 (6/7):
+  //   x the registry imports component-free modules, not the flows area
+  //   barrels: the registry statically imports "../flows/framing", an area
+  //   barrel: that pulls the whole area - components, models and its
+  //   stylesheet - into the entry chunk to register a name. ...
+  eq(specs.length, 5, "the five flows areas each publish one registry export; found");
   for (const spec of specs) {
     assert(/\/(reg|sheets)$/.test(spec),
       `the registry statically imports "${spec}", an area barrel: that pulls the whole `

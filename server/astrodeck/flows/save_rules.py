@@ -25,7 +25,9 @@ TWO RULES, ONE PASS, BECAUSE BOTH ARE THE SERVER'S AND NEVER THE CLIENT'S.
   ``framing.reframe_carry`` says every panel corner moved less than half the
   overlap, and replaced otherwise. The anchor is compared with the new
   geometry and never with the previous save, so nudges under the threshold
-  cannot add up across saves.
+  cannot add up across saves. A single panel anchored with no camera field
+  and saved with one, nothing else changed, is COMPLETED rather than judged
+  (#351, S4 orchestrator ruling 4): it keeps its key and records the field.
 """
 from __future__ import annotations
 
@@ -217,8 +219,29 @@ def _anchor_on_save(node: FlowNode, prior: FlowNode | None,
       measured against where its counts really started.
     * no base anchor: the current geometry. Nothing restarts, since nothing
       was keyed, so nothing is announced.
+    * a single panel anchored with no camera field, saved with one and
+      nothing else changed: the base COMPLETED (``identity.complete_anchor``,
+      #351, S4 orchestrator ruling 4). Its key is kept, so its ids and counts
+      are, and it records the field, against which later moves are judged.
+      Judged as it was, its threshold of 0 would restart every single-target
+      campaign the first time MATCH CAMERA recorded its field, although the
+      pointing had not moved.
     * otherwise ``reframe_carry(base, now)``: kept on a carry; replaced by
-      the current geometry, and listed, when it does not."""
+      the current geometry, and listed, when it does not. The row carries
+      the verdict's ``reason`` (#352, ruling 6), so a grid, angle or object
+      change is said in its own words.
+    * ...except a verdict against an anchor whose KEY the current geometry
+      keeps, which restarts nothing: it is not listed, and the anchor is
+      KEPT, as on a carry. Only a completed anchor can reach it: its keyed
+      field is none, so a save that clears the field again moves every
+      corner back to the centre, past the recorded field's threshold, and
+      keys exactly as before. Listed, it would announce a restart that kept
+      every id. Replaced by the cleared geometry, it would forget the field
+      it records, and the next save could record ANOTHER field as though it
+      were the first and keep every id: a change of field that re-anchors
+      when made in one save would then carry when made in two, the anchor
+      compared with the previous save after all (#390, found by S4-SAVE's
+      verifier)."""
     base = _base_anchor(prior, resolve)
     now = current_anchor(node.with_defaults().params, resolve=resolve)
     if now is None:
@@ -226,12 +249,16 @@ def _anchor_on_save(node: FlowNode, prior: FlowNode | None,
     text, at = now
     if not base:
         return text, None
+    base = identity.complete_anchor(base, text) or base
     verdict = reframe_carry(base, text, at=at)
     if verdict["carry"]:
         return base, None
+    if identity.anchor_key(text) == identity.anchor_key(base):
+        return base, None
     return text, {"node_id": node.id,
                   "max_move_deg": verdict["max_move_deg"],
-                  "threshold_deg": verdict["threshold_deg"]}
+                  "threshold_deg": verdict["threshold_deg"],
+                  "reason": verdict["reason"]}
 
 
 def prepare_save(record: FlowRecord, prior: FlowRecord | None, *,
@@ -249,9 +276,12 @@ def prepare_save(record: FlowRecord, prior: FlowRecord | None, *,
     given, which is what the answer's "now counts accepted subs only" is.
 
     ``reanchored`` lists every TARGET whose counts this save restarts, as
-    ``{node_id, max_move_deg, threshold_deg}`` from ``reframe_carry``
-    (``max_move_deg`` None when no move was measured: the grid, the angle
-    kind or the object changed), so an edit that restarts counts is said.
+    ``{node_id, max_move_deg, threshold_deg, reason}`` from
+    ``reframe_carry`` (``max_move_deg`` None when no move was measured: the
+    grid, the angle kind or the object changed, which ``reason`` names as
+    ``grid``, ``angle`` or ``identity``; ``move`` otherwise), so an edit that
+    restarts counts is said, and said in the words for what it changed
+    (#352, S4 orchestrator ruling 6).
 
     Only ``counts`` and ``frameAnchor`` are written, and only into the nodes
     that carry them. Every other param stays as the client sent it: a

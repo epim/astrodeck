@@ -298,14 +298,36 @@ class TestASkippedPanelKeepsItsCount:
     def test_a_block_whose_every_panel_is_skipped_still_lists_them(self):
         """Skip all four panels and ``to_plan`` leaves the block out: no
         group, no member. Its panels are still the operator's, and 1-2 holds
-        3 subs, so they are listed from the compile's skip list, with ids
-        minted as ``to_plan`` mints a panel's, and none is orphaned. A
-        single target keeps the plan runnable.
+        3 subs, so they are listed, with ids minted as ``to_plan`` mints a
+        panel's, and none is orphaned. A single target keeps the plan
+        runnable.
+
+        CHANGED IN S4 (#335): the panels are the ids the PLAN names in its
+        own ``skipped_ids``, the list CONTINUE now reads too
+        (``continuation.plan_skipped_ids``), where S3 read the compile's
+        skip list, which CONTINUE could not see. The card and CONTINUE then
+        name one set of frames (``test_flows_continue_all_skipped.py``).
 
         Mutant "only the group's skipped ids" (no fallback when the plan
         holds no group) failed:
             E   AssertionError: assert [] == [('M16 1-1', ...'M16 2-2', 0)]
             E     Right contains 4 more items, first extra item: ('M16 1-1', 0)
+
+        RED under mutant "no skip trace for a dropped block" (``to_plan``'s
+        all-skipped branch keeps its ids to itself, as S3 built it),
+        observed on the premise:
+
+            AssertionError: premise: the plan names the four panels
+            assert [] == ['636d9496d83...70e492dc3a05']
+              Right contains 4 more items, first extra item:
+              '636d9496d830549ebddf1fc8be2f7f4f'
+
+        RED under mutant "CONTINUE reads the groups alone"
+        (``continuation.plan_skipped_ids`` without the plan's own list,
+        which ``_orphaned`` asks too), observed:
+
+            AssertionError: assert {'frames': 3, 'steps': 1} == {'frames':
+            0, 'steps': 0}
         """
         def graph(skip):
             return FlowGraph(
@@ -322,6 +344,10 @@ class TestASkippedPanelKeepsItsCount:
         frames = _on(_panel(before, group.id, 0, 1), 3)
         compiled, plan = _compile(graph("1-1, 1-2, 2-1, 2-2"))
         assert plan.groups == [], "premise: to_plan leaves the block out"
+        cell = {r * 2 + c: identity.target_id(group.id, r, c)
+                for r in range(2) for c in range(2)}
+        assert sorted(plan.skipped_ids) == sorted(cell.values()), (
+            "premise: the plan names the four panels")
 
         got = flow_progress(compiled, plan, _session(before, frames),
                             flow_id=FLOW)

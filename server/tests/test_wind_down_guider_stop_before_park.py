@@ -35,9 +35,11 @@ WHAT THE ENGINE CANNOT REACH. On the AM5 itself park() does not return after
 a lost ``:hP#``: the driver polls for ``PARK_WAIT_S`` and retries on its own,
 so a lost park there costs that minute before the engine can read anything
 back. The read-back retry here is at once for a driver whose park() returns
-unparked (this simulator, an asynchronous Alpaca park); the AM5's own minute
-is #342. What closes #311 on the AM5 for the native guider is the wait,
-which keeps the pulse and the park apart.
+with the mount neither parked nor slewing (this simulator's lost park); the
+AM5's own minute is #342. An asynchronous Alpaca park, whose park() returns
+while the mount is still slewing to park, is waited for rather than asked
+again (item 9, test_park_readback_async_park.py). What closes #311 on the AM5
+for the native guider is the wait, which keeps the pulse and the park apart.
 """
 from __future__ import annotations
 
@@ -50,11 +52,11 @@ from astrodeck.devices.base import DeviceError, DomeShutterState
 from astrodeck.sequence.engine import SequenceEngine
 
 from test_idle_park_hold import sim_hub, temp_store  # noqa: F401
+from test_park_readback_async_park import _clock_the_park
 from test_unsafe_ending_parks_at_once import AT_ONCE, GUIDE_S, POLL, _Ending
 
-#: The cap under test, and the tick the ruling measures "at once" against.
+#: The cap under test.
 CAP = engine_mod.WIND_DOWN_GUIDER_STOP_S
-TICK = engine_mod.SCHEDULE_WAIT_STEP_S
 
 
 def _am5_longest_pulse_s() -> float:
@@ -265,18 +267,36 @@ async def test_a_cap_off_the_poll_grid_is_still_kept_exactly(
 
 async def test_a_park_that_reads_back_unparked_is_asked_again_at_once(
         sim_hub, temp_store, monkeypatch, bus_lines):
-    """The first park is lost (park() returns, the mount is not parked). The
-    read-back says so, and the park is asked once more at the same fake
-    instant, well within one scheduler tick, not a minute later: the mount
-    ends parked, "mount parked" is said once, and no fallback stop follows.
+    """The first park is lost (park() returns, the mount is neither parked
+    nor slewing). The read-back says so, and the park is asked once more at
+    the same fake instant, not on the read-back's next poll, a tick or a
+    minute later: the mount ends parked, "mount parked" is said once, and no
+    fallback stop follows.
+
+    RE-PINNED FOR ITEM 9 (the follow-up to S3 orchestrator ruling 3): the
+    read-back now waits for a park that is on its way, polling every
+    ``PARK_READ_BACK_POLL_S`` (test_park_readback_async_park.py), and this is
+    its control: a mount that reads neither parked nor slewing is still
+    parked again at once. The park runs on a task of its own (#305), which
+    this case now hands to the harness's clock (`_clock_the_park`): unclocked,
+    a poll there would sleep in real time with the fake clock standing still,
+    and "the same fake instant" would hold of a read-back that polled first.
+    So "at once" is pinned to the instant, where it was within ``AT_ONCE``
+    (1 s), which a one-second poll would have met.
 
     Mutant "no read-back retry" (the second attempt deleted: one park, taken
     at its word): RED (observed) -
         AssertionError: the park read back unparked and was not asked again:
         parks asked at [0.0] s after the stop was asked; the mount parked:
         False
+    Mutant "a poll before a lost park is judged" (item 9's read-back sleeps
+    one ``PARK_READ_BACK_POLL_S`` before it reads the slewing state): RED
+    (observed) -
+        AssertionError: the park was asked again 1.00 s after the first, not
+        at the same fake instant
     """
     e = _Ending(sim_hub, temp_store, monkeypatch)
+    _clock_the_park(e, monkeypatch)
     rec = _script(e, monkeypatch, lose_first_park=True)
     e.engine.start(e.n.plan)
     try:
@@ -293,9 +313,9 @@ async def test_a_park_that_reads_back_unparked_is_asked_again_at_once(
             f"asked at {[round(t - asked, 2) for t in asks]} s after the stop "
             f"was asked; the mount parked: {rig.parked}")
         gap = asks[1] - asks[0]
-        assert gap <= AT_ONCE < TICK, (
+        assert gap == 0.0, (
             f"the park was asked again {gap:.2f} s after the first, not at "
-            f"once (within one {TICK:g} s tick)")
+            f"the same fake instant")
         assert rig.parked, "the second park did not park the mount"
         again = [m for _l, m, _s in bus_lines if "parking once more" in m]
         parked = [m for _l, m, _s in bus_lines if m.startswith("mount parked")]

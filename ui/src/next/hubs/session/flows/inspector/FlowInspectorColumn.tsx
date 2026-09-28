@@ -12,6 +12,17 @@
 // while a node is selected nothing here is subscribed to the compile's issue
 // list, and while nothing is selected nothing is subscribed to a node record.
 //
+// THE OVERVIEW CARRIES THE FLOW'S ONE SETTING (#189 S4; spec 1.6, Revision 2
+// ruling 1). What the run does while every live panel of a mosaic has to
+// wait - shoot later targets and come back, or wait - is one choice per flow,
+// `FlowGraph.settings.whenWaiting`, and the overview is where a flow-level
+// choice belongs: it is the inspector with no stage selected. It writes
+// through `flowsSetSetting`, which keeps every other key in `settings` (a
+// flow saved by a newer build can carry one this build does not know) and
+// refuses a value `FLOW_SETTINGS` does not offer; a param write on some block
+// would reach neither the setting nor the compile that copies it into each
+// block's `mosaic.when_waiting`.
+//
 // EDITING A GRAPH IS UNGATED CLIENT-SIDE (wave R7 section 3.A row A3: the server
 // gates the save, and RUN is not on this surface). The one lock this column
 // carries is `flows.record.readonly` - an example flow, which `flowsSave`
@@ -23,7 +34,9 @@ import { useShallow } from "zustand/react/shallow";
 
 import { useStore } from "../../../../../store";
 import type { FlowIssue, FlowUnmapped } from "../../../../../lib/flowsApi";
-import { Field, Label, LockNote, Mono, TextInput } from "../../../../ui";
+import { FLOW_SETTINGS, flowSetting } from "../../../../../components/flows/flowsTypes";
+import { isMultiPanel } from "../../../../../components/flows/panelLane";
+import { Field, Label, LockNote, Mono, Segmented, TextInput } from "../../../../ui";
 import { explainLock } from "../../../../shell/explain";
 import { FlowNodeEditor } from "./FlowNodeEditor";
 import {
@@ -53,6 +66,21 @@ export const FLOW_READONLY_REASON =
 export const INSPECTOR_FOOTER =
   "Select a stage to edit its parameters. Drag from a right-side port onto a "
   + "left-side port to wire. Cyan ports carry the run cursor; amber ports carry events.";
+
+/** The flow setting's heading and its accessible name. The name says the
+ *  scope, because the same choice is also offered inside one block's framing
+ *  and it is not per block there either. */
+export const WHEN_WAITING_TITLE = "WHILE A MOSAIC WAITS";
+export const WHEN_WAITING_ARIA = "While a mosaic waits, for every mosaic in this flow";
+
+/** Said under the choice while no TARGET in the flow is a mosaic, because the
+ *  setting changes nothing about a run until one is. */
+export const WHEN_WAITING_NO_MOSAIC =
+  "No TARGET in this flow has more than one panel, so this changes nothing yet.";
+
+/** The two choices, in `FLOW_SETTINGS`' own order and words: the editor and
+ *  the engine read one table. */
+const WHEN_WAITING_OPTIONS = FLOW_SETTINGS.whenWaiting.options.map((o) => ({ value: o, label: o }));
 
 export interface FlowInspectorColumnProps {
   variant?: FlowFieldVariant;
@@ -117,6 +145,12 @@ function InspectorOverview({ lockedReason }: { lockedReason: string | null }): J
   const structural = useStore(useShallow((s) => s.flows.compiled?.structural ?? EMPTY_STRUCTURAL));
   const { losses, advisories, notes } = useMemo(() => splitUnmapped(unmapped), [unmapped]);
   const nameId = useId();
+  // Read through `flowSetting`, the mirror of the engine's `resolve_setting`:
+  // a missing key, null, or a value this build does not know all show as the
+  // default, which is what the run will do with them.
+  const waiting = useStore((s) => flowSetting(s.flows.graph.settings, "whenWaiting"));
+  const hasMosaic = useStore((s) => s.flows.graph.nodes.some(isMultiPanel));
+  const setSetting = useStore((s) => s.flowsSetSetting);
 
   return (
     <>
@@ -147,6 +181,24 @@ function InspectorOverview({ lockedReason }: { lockedReason: string | null }): J
           <Label size={10}>WIRES</Label>
           <Mono size={13} data-testid="flow-wire-count">{wires}</Mono>
         </span>
+      </div>
+
+      <div className="nx-flowins-group" data-testid="flow-when-waiting">
+        <Label size={10}>{WHEN_WAITING_TITLE}</Label>
+        {/* A closed list can be wider than a 284 px column; it scrolls, as a
+            stage's own select does, rather than clipping a choice. */}
+        <div className="nx-flowfield-scroll">
+          <Segmented<string>
+            label={WHEN_WAITING_ARIA}
+            options={WHEN_WAITING_OPTIONS}
+            value={waiting}
+            onChange={(v) => { setSetting("whenWaiting", v); }}
+            lockedReason={lockedReason}
+            onExplain={explainLock}
+            data-testid="flow-when-waiting-choice"
+          />
+        </div>
+        {!hasMosaic && <p className="nx-flowins-lead">{WHEN_WAITING_NO_MOSAIC}</p>}
       </div>
 
       <div className="nx-flowins-group" data-testid="flow-checks">

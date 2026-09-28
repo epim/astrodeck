@@ -46,6 +46,21 @@
 // values honestly and they will read IDLE / - / - / 0 during a real run. A
 // client-side countdown from an assumed total, or a stage name inferred from the
 // graph, would look identical to one the rig computed.
+//
+// THE PANEL LOOP, WHICH THE PHONE CANNOT DRAW AS A WIRE (#189 S4 item 6, spec
+// 1.4 "How it is drawn"). On a tablet a mosaic's loop is the dashed back-arc
+// from its lane's tail to the TARGET's "next panel". Here it is a dashed amber
+// rail from the TARGET's row to the TAIL's row, the lane's rows indented
+// inside it, labelled EVERY PASS: NEXT PANEL; with the wire absent, a LOOP
+// PANELS button takes its place. Both read the graph through panelLane.ts, the
+// mirror of the compile's own lane rules, so the rail is drawn exactly when
+// the run rotates panels and around exactly the stages it shoots per panel.
+//
+// THE COUNTS LINE (Revision 2 ruling 2, S4 orchestrator ruling 8). A flow saved
+// before new blocks counted accepted subs still counts every sub taken until
+// it is next saved, and the phone says so in one persistent line, read from
+// the graph on every render (`countsNotice`), so the save that switches the
+// counts takes it down without a reopen.
 
 import { useCallback, useEffect, useMemo, type JSX } from "react";
 
@@ -53,19 +68,22 @@ import { flowOrder } from "../../../../../components/flows/autoLayout";
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
 import type { FlowEdgeRec, FlowNodeRec } from "../../../../../components/flows/flowsTypes";
 import { useFlowRunControls } from "../../../../../components/flows/flowRunControls";
+import { countsNotice } from "../../../../../components/flows/countsNotice";
+import { laneTail, loopSource, panelLane } from "../../../../../components/flows/panelLane";
+import { LOOP_CHIP_WORDS, targetLoops } from "../../../../../components/flows/targetSummary";
 import { accessPhrase, useCapability } from "../../../../../lib/caps";
 import { useStore } from "../../../../../store";
 import { nav } from "../../../../router";
 import { useBreakpoint } from "../../../../breakpoint";
 import { NxIcon } from "../../../../icons";
 import {
-  ActionButton, Card, EmptyCard, Label, ListRow, LockNote, Mono, Pill,
+  ActionButton, BannerCard, Card, EmptyCard, Label, ListRow, LockNote, Mono, Pill,
   ReadoutGrid, ReadoutTile, Sheet, StatusPill,
 } from "../../../../ui";
 import type { SheetProps } from "../../../sheets";
 import { PLAN_EDITOR_PHONE_REASON } from "../../sheets/planEditor";
 import { leaveFlowEditor } from "../openFlow";
-import { FlowPortRow } from "./FlowNode";
+import { FlowPortRow, LOOP_PANELS_LABEL, offersLoopPanels } from "./FlowNode";
 import { FlowTapWireBar } from "./FlowTapWireBar";
 import {
   ADD_STAGE_LABEL, IDLE_LOG_TEXT, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD,
@@ -100,6 +118,89 @@ export function stageOrder(
   const seen = new Set(ordered.map((n) => n.id));
   return [...ordered, ...nodes.filter((n) => !seen.has(n.id))];
 }
+
+/** The rail's label (spec 1.4): the canvas chip's words, in the list's
+ *  capitals, so the two views of one wire say the same thing. */
+export const LOOP_RAIL_LABEL = LOOP_CHIP_WORDS.toUpperCase();
+
+/** One entry of the drawn list: a plain row; a looped mosaic's TARGET with its
+ *  lane on the rail, ending at `tail`; or the LOOP PANELS button under a
+ *  mosaic's row, with the stage its wire would leave. */
+export type StageBlock =
+  | { kind: "row"; node: FlowNodeRec }
+  | { kind: "rail"; target: FlowNodeRec; lane: FlowNodeRec[]; tail: FlowNodeRec }
+  | { kind: "offer"; target: FlowNodeRec; tail: FlowNodeRec };
+
+/** `stageOrder`, with each looped mosaic's lane gathered onto its rail.
+ *
+ *  A RAIL IS DRAWN for a TARGET whose panels rotate (`targetLoops`: more than
+ *  one panel and a loop wire from its lane's tail), and it holds that block's
+ *  panel lane (`panelLane`) and nothing else, ending at the lane's TAIL
+ *  (`laneTail`), the stage the loop wire leaves. The lane is moved up under
+ *  its TARGET rather than drawn where `stageOrder` put it: that order is
+ *  breadth-first, so a stage fed by the TARGET's own parent (a DOME opened by
+ *  the same DUSK) can sit between the TARGET and its lane, and a rail drawn
+ *  down the list would claim that stage is shot per panel. Every other row
+ *  keeps its place. A block with a loop wire has a single tail, so its lane is
+ *  one chain and `panelLane` lists it nearest first, the tail last.
+ *
+ *  THE BUTTON IS OFFERED where the rail would start, under the TARGET's row,
+ *  exactly when a press would add the wire (`offersLoopPanels`); its `tail` is
+ *  the stage that wire would leave (`loopSource`), which the button names.
+ *
+ *  With no multi-panel TARGET this is `stageOrder`, row for row. */
+export function stageBlocks(
+  nodes: readonly FlowNodeRec[],
+  edges: readonly FlowEdgeRec[],
+): StageBlock[] {
+  const g = { nodes, edges };
+  const order = stageOrder(nodes, edges);
+  const rails = new Map<string, { lane: FlowNodeRec[]; tail: FlowNodeRec }>();
+  const railed = new Set<string>();
+  for (const n of order) {
+    if (!targetLoops(n, g)) continue;
+    const tail = laneTail(g, n.id);
+    if (!tail) continue;
+    const lane = panelLane(g, n.id);
+    rails.set(n.id, { lane, tail });
+    for (const m of lane) railed.add(m.id);
+  }
+  const out: StageBlock[] = [];
+  for (const n of order) {
+    if (railed.has(n.id)) continue;
+    const rail = rails.get(n.id);
+    if (rail) {
+      out.push({ kind: "rail", target: n, ...rail });
+      continue;
+    }
+    out.push({ kind: "row", node: n });
+    const tail = n.type === "target" && offersLoopPanels(g, n.id) ? loopSource(g, n.id) : null;
+    if (tail) out.push({ kind: "offer", target: n, tail });
+  }
+  return out;
+}
+
+/** The rail: a dashed amber line down the left of the lane, from under the
+ *  TARGET's row to the bottom of the TAIL's row, with the lane's rows indented
+ *  inside it. Inline, like every other one-off in this sheet's rows, because
+ *  canvas.css is the canvas's stylesheet; `--warn` is the amber token, and a
+ *  DASH, not the hue, is what the night palette leaves telling it apart. */
+const RAIL_BODY_STYLE = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  marginLeft: 14,
+  paddingLeft: 12,
+  borderLeft: "2px dashed var(--warn)",
+} as const;
+
+/** The TARGET's row and the rail under it, spaced as the list spaces its
+ *  rows (`.nx-flow-stages`, 8 px). */
+const RAIL_STYLE = { display: "flex", flexDirection: "column", gap: 8 } as const;
+
+/** The LOOP PANELS button sits where the rail would start: under the
+ *  TARGET's row, at the rail's inset. */
+const OFFER_STYLE = { marginLeft: 14 } as const;
 
 // -------------------------------------------------------------- a stage row
 
@@ -276,6 +377,13 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   const readonly = useStore((s) => s.flows.record?.readonly ?? false);
   const flowsOpen = useStore((s) => s.flowsOpen);
   const save = useStore((s) => s.flowsSave);
+  const applyFraming = useStore((s) => s.flowsApplyFraming);
+  // THE COUNTS LINE, read from the graph on every store write: a string or
+  // null, so this subscription is exact under Object.is. Not captured when the
+  // sheet opens: the save that switches the counts writes the switch into this
+  // graph (`acceptCounts`) and does not reopen the flow, so a line read once
+  // would go on promising a switch the save already made.
+  const countsLine = useStore((s) => countsNotice(s.flows.graph, s.flows.countsNote));
 
   const canViewSiteDerived = useCapability("view.site_derived");
   const phone = useBreakpoint() === "phone";
@@ -289,7 +397,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
     void flowsOpen(want);
   }, [want, openId, flowsOpen]);
 
-  const rows = useMemo(() => stageOrder(nodes, edges), [nodes, edges]);
+  const blocks = useMemo(() => stageBlocks(nodes, edges), [nodes, edges]);
   const lines = useMemo(() => logTail(logs), [logs]);
 
   const tonightReason = canViewSiteDerived
@@ -392,8 +500,15 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
         <ReadoutTile label="FRAMES" value={framesWord(frames, frameGoal)} />
       </ReadoutGrid>
 
+      {/* Ruling 2's line, for as long as the graph counts every sub taken.
+          No dismiss: it is a standing fact about the flow, and saving is what
+          ends it. */}
+      {countsLine && (
+        <BannerCard tone="info" text={countsLine} data-testid="flow-stages-counts" />
+      )}
+
       <Label size={10}>STAGES</Label>
-      {rows.length === 0 ? (
+      {blocks.length === 0 ? (
         <EmptyCard
           data-testid="flow-stages-empty"
           title="THIS FLOW HAS NO STAGES"
@@ -401,9 +516,55 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
         />
       ) : (
         <div className="nx-flow-stages">
-          {rows.map((n) => (
-            <StageRow key={n.id} node={n} nodes={nodes} edges={edges} openId={want} />
-          ))}
+          {blocks.map((b) => {
+            if (b.kind === "row") {
+              return <StageRow key={b.node.id} node={b.node} nodes={nodes} edges={edges} openId={want} />;
+            }
+            if (b.kind === "rail") {
+              return (
+                <div
+                  key={`rail-${b.target.id}`}
+                  style={RAIL_STYLE}
+                  data-testid="flow-stage-rail"
+                  data-rail-from={b.target.id}
+                  data-rail-to={b.tail.id}
+                >
+                  <StageRow node={b.target} nodes={nodes} edges={edges} openId={want} />
+                  <div
+                    role="group"
+                    aria-label={`${LOOP_RAIL_LABEL}: the stages shot on each panel`}
+                    data-testid="flow-stage-rail-body"
+                    style={RAIL_BODY_STYLE}
+                  >
+                    <span data-testid="flow-stage-rail-label">
+                      <Mono size={10} tone="warn">{LOOP_RAIL_LABEL}</Mono>
+                    </span>
+                    {b.lane.map((n) => (
+                      <StageRow key={n.id} node={n} nodes={nodes} edges={edges} openId={want} />
+                    ))}
+                  </div>
+                </div>
+              );
+            }
+            // THE WIRE IS ABSENT, so the button stands where the rail would.
+            // The press is the modal DONE's own write with an empty patch: one
+            // graph write, one compile, and `withLoop` takes the wire from the
+            // lane's TAIL, never an earlier stage (M12).
+            const from = NODE_DEFS[b.tail.type]?.label ?? b.tail.type;
+            return (
+              <div key={`loop-${b.target.id}`} style={OFFER_STYLE}>
+                <ActionButton
+                  kind="warn"
+                  full
+                  data-testid={`flow-stage-loop-${b.target.id}`}
+                  ariaLabel={`${LOOP_PANELS_LABEL}: wire ${from} 'pass done' to this TARGET's 'next panel', so every pass moves to the next panel`}
+                  onPress={() => { void applyFraming(b.target.id, {}, true); }}
+                >
+                  {LOOP_PANELS_LABEL}
+                </ActionButton>
+              </div>
+            );
+          })}
         </div>
       )}
 

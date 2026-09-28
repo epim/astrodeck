@@ -17,7 +17,8 @@ half, which the pure tests cannot see:
   "Its armed session keeps its count until you CONTINUE.", when the session
   Run would continue (``current_for_flow``) is dormant, and only then. The
   ledger is counted by its frozen plan's ``count_mode``, so a save does not
-  recount it; CONTINUE asks first (spec 5.9, ``accept_recount``).
+  recount it; CONTINUE asks first when the recount changes a total (spec
+  5.9, ``accept_recount``; S4 orchestrator ruling 2, #348).
 
 No site data anywhere: M31's and M16's catalogue positions, never an
 observer's. Every test names the mutant it kills and quotes the failure it

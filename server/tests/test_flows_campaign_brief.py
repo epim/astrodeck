@@ -185,11 +185,40 @@ class TestTheBriefReadsAMosaic:
                 panels (3-1 skipped) at 25% overlap, laid out at PA 30\\xb0
                 with the rotator turned to it at every panel.' missing from:
                 This flow arms at astronomical dusk (\\u221230 min). It then
+
+        DELIBERATE PIN CHANGE (mosaic S4, S4 orchestrator ruling 1, #339;
+        re-pinned by the S4 integration, #398): S3 wrote the grid rows by
+        columns, "3x2" for this block of 3 rows and 2 columns, while the
+        Examples and the framing card write columns by rows. The brief now
+        writes the size columns first, and where a panel label shares the
+        sentence it says the size once in words and says the labels are
+        row-column, so "2x3" and "3-1" cannot be read into each other. The
+        failure quoted above is S3's; the sentences asserted below are S4's.
+
+        Re-observed on the S4 wording in scratchpad/s4-integrate-q7m2.
+        Mutant "no mosaic sentence" (the ``seg.extend(_mosaic_sentences(...))``
+        that adds them made to add nothing), 5 failed, this one first:
+            E           AssertionError: 'M31 is a mosaic of 2 columns by 3
+                rows shooting 5 of its 6 panels (panel 3-1 skipped, written
+                row-column) at 25% overlap, laid out at PA 30\\xb0 with the
+                rotator turned to it at every panel.' missing from: This flow
+                arms at astronomical dusk (\\u221230 min). It then arms M31.
+                Capture interleaves one sub per filter per pass - ...
+
+        Mutant "the size rows by columns, as S3 wrote it" (the no-skip
+        sentence's ``{cols}x{rows}`` made ``{rows}x{cols}``), which the
+        skipped-panel sentence cannot see, since it says the size in words;
+        only this test failed:
+            E       assert 'M31 is a 2x3 mosaic of 6 panels at 25% overlap' in
+                'This flow arms at astronomical dusk (\\u221230 min). It then
+                arms M31. M31 is a 3x2 mosaic of 6 panels at 25% overlap,
+                laid...
         """
         b = brief(_mosaic())
-        for part in ("M31 is a 3x2 mosaic shooting 5 of its 6 panels (3-1 "
-                     "skipped) at 25% overlap, laid out at PA 30° with the "
-                     "rotator turned to it at every panel.",
+        for part in ("M31 is a mosaic of 2 columns by 3 rows shooting 5 of "
+                     "its 6 panels (panel 3-1 skipped, written row-column) at "
+                     "25% overlap, laid out at PA 30° with the rotator turned "
+                     "to it at every panel.",
                      "After 1 pass of its filters on a panel it moves on to "
                      "the next (setting first), and comes back until every "
                      "panel has its subs.",
@@ -197,7 +226,7 @@ class TestTheBriefReadsAMosaic:
                      "rig yet."):
             assert part in b, f"{part!r} missing from: {b}"
         two = brief(_mosaic(passes=2, skip=""))
-        assert "of 6 panels at 25% overlap" in two, two
+        assert "M31 is a 2x3 mosaic of 6 panels at 25% overlap" in two, two
         assert "After 2 passes of its filters" in two, two
 
     def test_the_loop_wire_decides_rotating_or_one_at_a_time(self):
@@ -254,11 +283,27 @@ class TestTheBriefReadsAMosaic:
                 M31. M31 is a 3x2 mosaic shooting 5 of its 6 panels (3-1
                 skipped) at 25% overlap. After 1 pass of its filters on a
                 panel it moves on to the next (setting first), ...
+
+        DELIBERATE PIN CHANGE (S4 orchestrator ruling 1, #339; re-pinned by
+        the S4 integration, #398): the sentence now writes the grid as
+        ``test_the_mosaic_sentence_quotes_the_block`` says. Re-observed on the
+        S4 wording in scratchpad/s4-integrate-q7m2, the same mutant, and
+        only this test failed:
+            E       AssertionError: 'M31 is a mosaic of 2 columns by 3 rows
+                shooting 5 of its 6 panels (panel 3-1 skipped, written
+                row-column) at 25% overlap, at no set angle, so its panels
+                will not tile and it cannot run.' missing from: This flow arms
+                at astronomical dusk (\\u221230 min). It then arms M31. M31 is
+                a mosaic of 2 columns by 3 rows shooting 5 of its 6 panels
+                (panel 3-1 skipped, written row-column) at 25% overlap. After
+                1 pass of its filters on a panel it moves on to the next
+                (setting first), ...
         """
         b = brief(_mosaic(angle="Any angle"))
-        part = ("M31 is a 3x2 mosaic shooting 5 of its 6 panels (3-1 skipped) "
-                "at 25% overlap, at no set angle, so its panels will not tile "
-                "and it cannot run.")
+        part = ("M31 is a mosaic of 2 columns by 3 rows shooting 5 of its 6 "
+                "panels (panel 3-1 skipped, written row-column) at 25% "
+                "overlap, at no set angle, so its panels will not tile and it "
+                "cannot run.")
         assert part in b, f"{part!r} missing from: {b}"
         assert "laid out at PA" not in b, b
 

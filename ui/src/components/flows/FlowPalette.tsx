@@ -49,7 +49,8 @@ export interface FlowPaletteProps {
    * Called instead of the built-in add.
    *
    * The editor should always pass this: it is the only thing that knows the
-   * canvas rect, so it is the only thing that can honour §D.2's drop position.
+   * canvas rect, so it is the only thing that can honour §D.2's drop position,
+   * and it hosts the Target modal a dropped TARGET opens (spec 2.1).
    * Left off, the palette still works (see `PALETTE_FALLBACK_DROP`) rather than
    * rendering nineteen buttons that do nothing.
    */
@@ -143,9 +144,12 @@ export function FlowPalette({ variant = "rail", onPick }: FlowPaletteProps): JSX
     }
     addNode(type, PALETTE_FALLBACK_DROP);
     // The prototype closes the palette on every add (line 1040) — one tap, one
-    // stage, back to the graph. It also SELECTS the new node, which cannot be
-    // done from here: `flowsAddNode` mints the id internally and returns
-    // nothing. Noted rather than faked with a guess at the id.
+    // stage, back to the graph. `flowsAddNode` now returns the new id (spec
+    // 2.1), and the editor's `onPick` uses it to open a dropped TARGET's
+    // modal at once (FlowEditor.tsx). This fallback does neither that nor the
+    // prototype's select-on-add: it runs only where no editor passed
+    // `onPick`, so there is no modal host to open and no canvas showing the
+    // selection.
     setUi({ paletteOpen: false });
   };
 

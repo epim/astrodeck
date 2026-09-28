@@ -22,6 +22,13 @@
 // "a flow wire and an event wire between the same two points get byte-identical
 // paths".
 //
+// THE PANEL LOOP IS THE ONE EXCEPTION (#189 S4 item 6, spec 1.4). An event wire
+// into a TARGET's `next` runs backward from the tail of its lane, and
+// `edgePath` would sweep it across every card between the two ends. It is drawn
+// as `geometry.loopArc` instead (out, down under the cards, left, up), with its
+// own dash and a label chip - see `targetSummary.ts`, which #/next's layer
+// shares, for why the silhouette and the words, not the hue, tell it apart.
+//
 // RE-RENDER SHAPE. The layer subscribes to the node array, the edge array and
 // the run phase; each edge is its own memo'd child taking only PRIMITIVES, and
 // it reads its own source-node status and its own selectedness with narrow
@@ -35,6 +42,9 @@ import { useStore } from "../../store";
 import { NODE_DEFS } from "./nodeDefs";
 import { edgePath, portPos, type EdgeMode, type FlowTier, type Point } from "./geometry";
 import type { FlowEdgeRec, FlowNodeRec, FlowRunPhase, PortKind } from "./flowsTypes";
+import {
+  LOOP_ARC_DASH, LOOP_CHIP_FONT_PX, loopArcOf, loopChip, loopChipBox,
+} from "./targetSummary";
 
 // ------------------------------------------------------------------ constants
 /** Transparent hit band, in WORLD units (§D.4). At zoom 0.35 the canvas band is
@@ -238,6 +248,86 @@ function FlowWire({ edgeId, fromNode, d, kind, running, hitW, select }: FlowWire
 
 const FlowWireMemo = memo(FlowWire);
 
+// ----------------------------------------------------------------- loop arc
+interface FlowLoopArcProps extends FlowWireProps {
+  /** The chip's words, or null for a wire into `next` the run does not loop on
+   *  (targetSummary `loopChip`). A string, so the memo still holds. */
+  chip: string | null;
+  chipX: number;
+  chipY: number;
+}
+
+/** The panel loop's back-arc: the same two paths as any wire, the same hit
+ *  band, stroke and width rules, and a dash and a chip of its own.
+ *
+ *  THE DASH NEVER CHANGES WITH THE RUN. A live wire elsewhere switches to
+ *  `7 6`; this one keeps `LOOP_ARC_DASH`, because the run is when the night
+ *  palette is up and every lane is the same red - the silhouette and the chip
+ *  are what still say "this is the loop". Live still shows, as the 2.5 px
+ *  width, the full-strength colour and the march. */
+function FlowLoopArc({
+  edgeId, fromNode, d, kind, running, hitW, select, chip, chipX, chipY,
+}: FlowLoopArcProps) {
+  const status = useStore((s) => s.flows.statuses[fromNode] ?? "idle");
+  const selected = useStore(
+    (s) => s.flows.sel?.kind === "edge" && s.flows.sel.id === edgeId);
+
+  const active = isWireActive(running, status);
+  const stroke = wireStroke(kind, active, selected);
+  const onSelect = (ev: RMouseEvent) => {
+    // As FlowWire: the canvas background would otherwise clear the selection.
+    ev.stopPropagation();
+    select({ kind: "edge", id: edgeId });
+  };
+  const box = chip ? loopChipBox(chip) : null;
+
+  return (
+    <g data-loop-arc data-edge-id={edgeId}>
+      <path
+        data-wire
+        data-edge-id={edgeId}
+        d={d}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={hitW}
+        style={{ pointerEvents: "stroke", cursor: "pointer" }}
+        onClick={onSelect}
+      />
+      <path
+        data-loop-arc-path
+        d={d}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={wireWidth(active, selected)}
+        strokeLinecap="round"
+        strokeDasharray={LOOP_ARC_DASH}
+        className={active ? "flow-wire-march" : undefined}
+      />
+      {chip && box && (
+        // On the run, centred. A label in the SVG rather than an HTML chip: it
+        // must pan and zoom with the wire it names, and the layer's box is
+        // already the world. Sized from the text (monospace), never measured.
+        <g data-loop-chip transform={`translate(${chipX},${chipY})`}>
+          <rect
+            x={-box.w / 2} y={-box.h / 2} width={box.w} height={box.h} rx={box.h / 2}
+            fill="var(--bg)" stroke={stroke} strokeWidth={1}
+          />
+          <text
+            textAnchor="middle"
+            dominantBaseline="central"
+            fill="var(--warn)"
+            style={{ fontFamily: "var(--font-mono)", fontSize: LOOP_CHIP_FONT_PX }}
+          >
+            {chip}
+          </text>
+        </g>
+      )}
+    </g>
+  );
+}
+
+const FlowLoopArcMemo = memo(FlowLoopArc);
+
 // ----------------------------------------------------------------- pending wire
 /** The wire following the pointer during a drag.
  *
@@ -306,10 +396,17 @@ export default function FlowWireLayer({
   // Read once and handed down: one subscription for the whole layer instead of
   // one per wire, and the action's identity is stable so `memo` still holds.
   const select = useStore((s) => s.flowsSelect);
+  // The loop chip's count comes from the last compile, and is withheld while
+  // the draft has moved on from it (`loopChip`). The plan object changes only
+  // when a compile lands, so this costs one re-render per compile.
+  const plan = useStore((s) => s.flows.compiled?.plan ?? null);
+  const dirty = useStore((s) => s.flows.dirty);
 
   const mode: EdgeMode = auto ? "phone-flow" : "canvas";
   const hitW = auto ? HIT_W_AUTO : HIT_W_CANVAS;
   const running = isRunning(phase);
+  const graph = { nodes, edges };
+  const place = (n: FlowNodeRec) => placed(n, positions);
 
   return (
     <svg
@@ -330,6 +427,30 @@ export default function FlowWireLayer({
         // An edge naming a node or port that no longer exists. Skipped, not
         // drawn at a fallback anchor: see wireAnchors().
         if (!a) return null;
+        // The panel loop: a backward event wire into a TARGET's `next`, routed
+        // under the lane from the card formula. On the phone FLOW tab too, from
+        // the auto-layout's positions - a column layout crosses the lane with
+        // the stock curve just as surely. The classic remove control
+        // (FlowWireDelete.tsx) still sits at the anchors' midpoint, which is
+        // not on the arc (#355); #/next's sits on `loop.handle`.
+        const loop = loopArcOf(e, graph, tier, place);
+        if (loop) {
+          return (
+            <FlowLoopArcMemo
+              key={e.id}
+              edgeId={e.id}
+              fromNode={e.from}
+              d={loop.d}
+              kind={wireLane(e, nodes)}
+              running={running}
+              hitW={hitW}
+              select={select}
+              chip={loopChip(graph, e, plan, dirty)}
+              chipX={loop.label.x}
+              chipY={loop.label.y}
+            />
+          );
+        }
         return (
           <FlowWireMemo
             key={e.id}

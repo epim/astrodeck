@@ -38,9 +38,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
-import astrodeck.config as config_mod
-import astrodeck.hub as hub_mod
-from astrodeck.config import ConfigStore, Optics, StandardsConfig
+from astrodeck.config import Optics, StandardsConfig
 from astrodeck.flows.compile import compile_plan
 from astrodeck.flows.models import FlowGraph
 from astrodeck.flows.rig import RigFacts
@@ -59,21 +57,26 @@ LARGE = Optics(focal_length_mm=500.0, pixel_size_um=3.76,
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    """test_flows_routes' isolation, plus a store handle to set optics and
-    standards on."""
-    store = ConfigStore(path=tmp_path / "astrodeck.json")
-    monkeypatch.setattr(config_mod, "config_store", store)
-    monkeypatch.setattr(hub_mod, "config_store", store)
-    monkeypatch.setattr(app_module, "config_store", store)
-    monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path / "captures")
+def client(isolated_config, tmp_path, monkeypatch):
+    """conftest's ``isolated_config`` (#341: the store swept into every
+    module, the profile library, the capture root, the sky angle, no camera
+    or rotator on the hub), a flow library of the test's own, and a store
+    handle to set optics and standards on. It was test_flows_routes' three-
+    module patch, which left the profile library on the developer's real
+    ``profiles/`` and the hub's device map as the last test left it.
+
+    Checked under two stand-in "real" configs (``ASTRODECK_CONFIG_DIR``),
+    one with optics, an active profile with its own optics and a rotator,
+    and one fresh: every test here answered the same under both
+    (S4-TESTHYG)."""
     monkeypatch.setattr(app_module, "flow_store", FlowStore(tmp_path / "flows"))
     # No hop measured unless a test says so: the module's engine outlives
     # every test in the process.
     monkeypatch.setattr(app_module.engine, "_event_costs", {})
-    with TestClient(app_module.create_app()) as c:
-        c.store = store
+    app = app_module.create_app()
+    isolated_config.sweep()
+    with TestClient(app) as c:
+        c.store = isolated_config.store
         yield c
 
 
@@ -477,17 +480,41 @@ class TestRunRefusesTheLossUntilAccepted:
 class TestAFlowWithNoMosaicIsUntouched:
     def test_its_compile_answer_does_not_move_with_the_facts(self, client,
                                                              monkeypatch):
-        """The whole compile answer of a plain flow, with every fact unknown
-        and then with a field, a measured hop and a connected rotator known,
-        is identical: the field, the hop and the rotator are read by mosaic
-        rules only. (The guards are the one fact a rule reads for any flow:
+        """Every key of a plain flow's compile answer but ``rig``, with every
+        fact unknown and then with a field, a measured hop and a connected
+        rotator known, is identical: the field, the hop and the rotator are
+        read by mosaic rules only. (The guards are the one fact a rule reads for any flow:
         M9 previews the ``quota_unbounded`` refusal the run already makes,
         and it is test_flows_doctor_s3's.)
 
         Not a mutant's test: it is the control for the mutants above, and it
         was green under each of them but "a zero field", under which every
         compile of every flow fails (``RigFacts`` refuses the zero field with
-        the ValueError quoted there), this one included."""
+        the ValueError quoted there), this one included.
+
+        DELIBERATE PIN CHANGE (mosaic S4, #189, re-pinned by the S4
+        integration, #406): since S4 the answer carries ``rig``
+        (``readouts.rig_readout``), which reports these very facts to the
+        Target modal and so moves with them by design. The control now
+        compares every OTHER key, and first requires ``rig`` to have moved,
+        which is the evidence the facts reached the route at all: without
+        it, a harness whose optics or hop never landed would pass the
+        equality below vacuously.
+
+        Mutant "a single block reports the hop" (``readouts._block`` starts
+        a block's ``hop_s``/``hop_measured`` from the rig, not None), which
+        breaks the "a single block reads the same whatever it knows" its
+        comment promises, observed in scratchpad/s4-integrate-q7m2:
+
+            E         Differing items:
+            E         {'readouts': {'t': {'angle_tolerance_deg': None, 'autofocus_every': 0, 'focus': 'once', 'hop_measured': True, ...}}} != {'readouts': {'t': {'angle_tolerance_deg': None, 'autofocus_every': 0, 'focus': 'once', 'hop_measured': False, ...}}}
+
+        Mutant "rig facts never reach the route" (``_compile_payload``'s
+        ``rig = _rig_facts()`` made ``rig = RigFacts()``), under which the
+        equality alone would pass, observed in the same copy:
+
+            E       AssertionError: premise: the rig facts reached the compile route: {'fov_deg': None, 'fov_from': '', 'has_rotator': None, 'hop_s': None, 'hop_samples': 0, 'hop_measured': False}
+        """
         before = _compile(client, PLAIN)
 
         class _Rotator:
@@ -496,7 +523,14 @@ class TestAFlowWithNoMosaicIsUntouched:
         client.store.set_optics(SMALL)
         app_module.engine._event_costs["hop"] = [90.0]
         monkeypatch.setitem(app_module.hub.devices, "rotator", _Rotator())
-        assert _compile(client, PLAIN) == before
+        after = _compile(client, PLAIN)
+        assert after["rig"] != before["rig"], (
+            f"premise: the rig facts reached the compile route: {after['rig']}")
+
+        def _but_rig(answer: dict) -> dict:
+            return {k: v for k, v in answer.items() if k != "rig"}
+
+        assert _but_rig(after) == _but_rig(before)
 
     async def test_it_runs_the_plan_it_ran_before(self, rig, monkeypatch):
         """The plan ``run_flow`` hands the engine for a plain flow, with a

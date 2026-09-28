@@ -283,12 +283,39 @@ class TestInstructions:
         assertion, re-run on this graph in scratchpad s3-cp-mut):
             AssertionError: assert ['on_frame_graded'] == ['capture.pass']
             AssertionError: assert ['on_frame_graded'] == ['cycle.pass']
+
+        DELIBERATE PIN CHANGE (mosaic S4, S4 orchestrator ruling 3, #349;
+        re-pinned by the S4 integration, #389): the one-panel wire above is
+        now structure too. A pass wire into a ONE-PANEL block's ``next`` from
+        a stage of its own lane is consumed and emits no rule
+        (``compile.one_panel_pass_wires``, which
+        ``test_flows_one_panel_pass_wire.py`` grades), so that graph compiles
+        to no instruction and could no longer show which trigger a pass wire
+        names. This case now grades a pass wire that is STILL emitted as a
+        rule: the stage's ``pass`` into a NOTIFY's ``do``, which no rule of
+        the compile consumes and which ``to_plan`` reports as a rule that
+        will not run. The direct calls on ``_trigger_for`` are unchanged.
+
+        Re-observed on this graph in scratchpad/s4-integrate-q7m2. Mutant "no
+        pass branch" (the ``PASS_TYPES`` branch of ``_trigger_for`` made
+        ``if False:``):
+            E       AssertionError: assert ['on_frame_graded'] == ['capture.pass']
+            E       AssertionError: assert ['on_frame_graded'] == ['cycle.pass']
+
+        Mutant "a one-panel lane's pass wire is consumed wherever it goes"
+        (``one_panel_pass_wires`` without its ``NEXT_PORT`` and TARGET
+        checks, taking any pass wire whose source a one-panel block owns),
+        under which the wire into the NOTIFY vanishes with no loss reported:
+            E       AssertionError: assert [] == ['capture.pass']
+            E       AssertionError: assert [] == ['cycle.pass']
         """
         g = FlowGraph(
-            nodes=[_n("t", "target", rows=1, cols=1), _n("s", ntype, x=200)],
-            edges=[_e("t", "target", "s", "run"), _e("s", "pass", "t", "next")])
+            nodes=[_n("t", "target", rows=1, cols=1), _n("s", ntype, x=200),
+                   _n("n", "notify", x=400)],
+            edges=[_e("t", "target", "s", "run"), _e("s", "pass", "n", "do")])
         instructions = compile_plan(g, "n")["instructions"]
         assert [r["when"] for r in instructions] == [f"{ntype}.pass"]
+        assert [r["action"] for r in instructions] == ["notify"]
         node = _n("s", ntype)
         assert _trigger_for(node, "pass") == f"{ntype}.pass"
         # Control: the graded-frame event keeps its engine trigger.

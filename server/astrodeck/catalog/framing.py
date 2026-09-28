@@ -354,7 +354,11 @@ def _frame(value) -> dict:
     Taken from an anchor's stored text, a ``MosaicSpecIn`` or
     ``MosaicAnchorIn``, or a mapping already in that shape. A blank anchor is
     refused: "no anchor yet" is the SAVE's case, where the current geometry
-    becomes the anchor (spec 3.3), and there is nothing here to compare."""
+    becomes the anchor (spec 3.3), and there is nothing here to compare.
+
+    An anchor that RECORDS a field (``identity.RECORDED_FIELDS``, ruling 4)
+    comes back laid out with it (``_laid_out``): as a frame it is the field
+    the camera has, whatever field its key was made with."""
     if isinstance(value, str):
         held = identity.anchor_geometry(value)
         if held is None:
@@ -362,7 +366,7 @@ def _frame(value) -> dict:
                 "a blank anchor is no anchor yet: the save makes the current "
                 "geometry the anchor (spec 3.3), so there is nothing to "
                 "compare")
-        return held
+        return _laid_out(held)
     if isinstance(value, (MosaicSpecIn, MosaicAnchorIn)):
         return _finite({
             "ra_hours": value.ra_hours, "dec_deg": value.dec_deg,
@@ -375,7 +379,30 @@ def _frame(value) -> dict:
         raise ValueError(f"a frame needs {list(identity.SHAPE_FIELDS)} and "
                          f"either ra_hours and dec_deg or a name; it has "
                          f"{sorted(frame)}")
-    return _finite(frame)
+    return _finite(_laid_out(frame))
+
+
+def _laid_out(frame: dict) -> dict:
+    """``frame`` with the field it RECORDS in place of the field it keys
+    (#351, S4 orchestrator ruling 4): a completed anchor keys the field of
+    none it was anchored with and records the camera's field beside it
+    (``identity.complete_anchor``). Laid out, it is the recorded field, so
+    its corners are where the camera's frame corners are, its threshold is
+    half that field's overlap, and against the same field it is one
+    geometry ("unchanged"). A frame that records nothing is returned as it
+    is; half a recorded pair is refused, as the stored text refuses it."""
+    recorded = [k for k in identity.RECORDED_FIELDS if k in frame]
+    if not recorded:
+        return frame
+    if len(recorded) != len(identity.RECORDED_FIELDS):
+        raise ValueError(f"a recorded field is a pair, "
+                         f"{list(identity.RECORDED_FIELDS)}, and this frame "
+                         f"holds only {recorded}")
+    out = {k: v for k, v in frame.items()
+           if k not in identity.RECORDED_FIELDS}
+    out["fov_x"], out["fov_y"] = (frame["recorded_fov_x"],
+                                  frame["recorded_fov_y"])
+    return out
 
 
 def _finite(frame: dict) -> dict:
@@ -526,10 +553,18 @@ def reframe_carry(anchor, new, *,
     the ANCHOR's grid (``_overlap_width_deg``), never the new one's: the
     anchor is what the counts started at, and a threshold read from the new
     grid would let an edit raise its own allowance. It is 0 for a block with
-    no camera field, so only an unchanged geometry keeps its anchor. The
+    no camera field, so only an unchanged geometry keeps its anchor. An
+    anchor that records a field beside a keyed field of none (a COMPLETED
+    anchor, ``identity.complete_anchor``, #351, S4 orchestrator ruling 4) is
+    laid out with the recorded field and takes its threshold from it
+    (``_frame``), so a block whose field was recorded after its counts
+    started is judged, from then on, against the field the camera has. The
     anchor is compared with the new layout, never with the previous save, so
     that moves under the threshold cannot add up across saves; which anchor
     to pass is the caller's, and the save's is always the stored one.
+    Completing an anchor is the caller's too (the save's and the route's),
+    and never this function's: here an anchor with no field is judged as
+    one.
 
     ``max_move_deg`` is None where no move was measured. Every value is plain
     JSON, so the route ships the answer as it is."""
@@ -584,9 +619,10 @@ def _seam_share(lever_deg: float, turn_deg: float, width_deg: float) -> float:
 
 def convergence_share(spec: MosaicSpecIn | dict) -> float:
     """The share of the overlap meridian convergence uses at the worst seam
-    of the grid (A.1): 0.389 for a 1x4 of 2.0 x 1.33 deg at 10% at Dec 75,
-    0.031 for a 3x3 at 25% at Dec 41. Doctor M6 warns on it, and
-    ``angle_tolerance_deg`` spends what it leaves.
+    of the grid (A.1): 0.389 for a 4x1 (4 columns by 1 row, S4 orchestrator
+    ruling 1) of 2.0 x 1.33 deg at 10% at Dec 75, 0.031 for a 3x3 at 25% at
+    Dec 41. Doctor M6 warns on it, and ``angle_tolerance_deg`` spends what
+    it leaves.
 
     Every panel is shot at one angle against LOCAL north, and laid out on
     the grid's tangent plane local north turns from panel to panel
@@ -635,7 +671,7 @@ def angle_tolerance_deg(spec: MosaicSpecIn | dict) -> float:
     """How far a fixed camera may sit off the planned angle before the corner
     overlap runs out, for THIS grid (A.2, combined with convergence by
     Revision 1): 5.97 deg for a 3x3 of 2.0 x 1.33 deg at 25% at Dec 41, 0.47
-    deg for a 1x4 at 10% at Dec 75. What ``to_plan`` puts on a group as
+    deg for a 4x1 at 10% at Dec 75. What ``to_plan`` puts on a group as
     ``angle_tolerance_deg``, and what the modal's tolerance line says.
 
     Convergence and angle error eat the same corners, so they share one
@@ -674,10 +710,22 @@ def _why(e: BaseException) -> str:
     return f"{type(e).__name__}: {detail}" if detail else type(e).__name__
 
 
-async def _stamp_transit_alt(panels: list[dict], date: str | None) -> None:
+async def _stamp_transit_alt(panels: list[dict], date: str | None, *,
+                             site: dict | None = None) -> None:
     """Fill each panel's ``transit_alt`` for ``date`` (``None`` = tonight), and
     where that is impossible put the REASON on the panel as
     ``transit_alt_error``.
+
+    AT ``site``, WHEN GIVEN (#336). The site is handed to
+    ``visibility.transit_alt_for``, so a caller that resolves a night for a
+    site of its own gets its panels' altitudes for that site. Before #336
+    this took no site, and every altitude was the hub's: Tonight drew a
+    block's curve at the site it was handed and its panels at the
+    configured one, and a script resolving a synthetic site printed panel
+    altitudes at the real one, which is a latitude oracle (#140). ``None``
+    reads the hub's site through ``compute_night``, which is what the
+    mosaic route below wants: that route answers for the rig's own site,
+    and it passes nothing.
 
     This was two bare ``except Exception`` swallows that logged nothing and said
     nothing: a panel that failed simply had no ``transit_alt`` key, so the mosaic
@@ -719,7 +767,8 @@ async def _stamp_transit_alt(panels: list[dict], date: str | None) -> None:
         try:
             async with sem:
                 v = await asyncio.to_thread(
-                    transit_alt_for, p["ra_hours"], p["dec_deg"], date=date)
+                    transit_alt_for, p["ra_hours"], p["dec_deg"], date=date,
+                    site=site)
             # A non-finite altitude is not a measurement. It would also take the
             # WHOLE mosaic down: starlette's JSONResponse renders with
             # allow_nan=False, so one NaN panel 500s the response.
@@ -752,7 +801,15 @@ def _reframe_answer(spec: MosaicSpecIn) -> dict | None:
     block where the catalogue puts it now, which is the spec's position, so
     its change of SHAPE is measured there, with the anchor's name carried
     over. Whether the name still resolves to that object is the save's to
-    decide: it is the save that resolves names."""
+    decide: it is the save that resolves names.
+
+    MATCH CAMERA FOLLOWS RULING 4 (#351, spec 2.5). An anchor with no
+    camera field, against a layout that differs from it only by recording
+    one, is COMPLETED first (``identity.completes``), as the save completes
+    it (``save_rules._anchor_on_save``): laid out with the layout's field,
+    it is one geometry with it and carries. Judged as a field of none it
+    would read "restart" for a save that keeps every id, and the modal
+    would ask a question about a restart that never happens."""
     anchor = spec.anchor
     if anchor is None or (isinstance(anchor, str) and not anchor.strip()):
         return None
@@ -760,6 +817,8 @@ def _reframe_answer(spec: MosaicSpecIn) -> dict | None:
     now = _frame(spec)
     if "name" in held:
         now["name"] = held["name"]
+    if identity.completes(held, now):
+        held = {**held, "fov_x": now["fov_x"], "fov_y": now["fov_y"]}
     return reframe_carry(held, now, at=(spec.ra_hours, spec.dec_deg))
 
 

@@ -363,12 +363,17 @@ def no_guider_defers(*, live: int, require_guiding: bool) -> bool:
     at its hop, defer (5.6 step 7), or follow the plain-target rule (#315, S3
     orchestrator ruling 6)?
 
-    ``live`` counts the group's live members, this one included, so it is at
-    least 1. ``require_guiding`` is the rig's escalation setting.
+    ``live`` counts the members THIS PASS CAN VISIT, this one included, so it
+    is at least 1 (:meth:`GroupRun.visitable`, the engine's
+    ``_live_panels``): the live members visited in the pass or let through
+    by one of its selections. A live member held at every selection of the
+    pass, behind a limit, by the meridian rule or by its own gating, makes
+    no attempt in it and is not counted (the #315 follow-up, S3 orchestrator
+    ruling 6). ``require_guiding`` is the rig's escalation setting.
 
-    Two or more live, or guiding required: defer, S2's rule. With one live
-    panel and guiding optional: no, the panel is shot unguided with the
-    plain target's warning, exactly as the same target outside a group is.
+    Two or more, or guiding required: defer, S2's rule. With one and guiding
+    optional: no, the panel is shot unguided with the plain target's
+    warning, exactly as the same target outside a group is.
 
     WHY THE LAST PANEL IS DIFFERENT. A deferral is a bet that the guider is
     the panel's problem, and the guide-start pass rule settles the bet: at
@@ -380,6 +385,12 @@ def no_guider_defers(*, live: int, require_guiding: bool) -> bool:
     nothing, and was set aside after ``max_failed_visits`` passes: about 15
     minutes, then the night, lost to a guider the rig said it could do
     without. A missing guider is a fact about the rig, not about the panel.
+
+    THE SAME HOLDS FOR THE LAST REACHABLE PANEL. A member waiting all pass
+    below the floor, past the meridian or before its own start gate is live,
+    and makes no attempt either, so counted it held the one panel the pass
+    could visit to the same three deferrals and the same lost night (the
+    #315 follow-up, found in S3's safety review).
 
     A guider that is connected and fails to start still defers, whatever
     ``live`` is: that failure can be the panel's guide star. Required
@@ -442,6 +453,8 @@ class GroupRun:
     - ``defer_until``: the end of the deferral wait an all-deferred pass
       began (:meth:`defer_next_pass`, #304), or None. A clock time the engine
       hands in; nothing here reads a clock.
+    - ``let_through``: the members a selection of this pass found it may
+      visit (:meth:`note_let_through`), for :meth:`visitable`.
     """
 
     def __init__(self, members: Mapping[str, str], *, max_failed_visits: int):
@@ -467,6 +480,7 @@ class GroupRun:
         self.acquired = False
         self.angle_verified = False
         self.defer_until: float | None = None
+        self.let_through: set[str] = set()
         # The reject rule's window, "since this panel's previous visit", on a
         # visit counter rather than the clock: two visits can share a clock
         # second on a fake clock, and the order of visits is what the rule
@@ -492,6 +506,29 @@ class GroupRun:
     def live(self) -> list[str]:
         """The live members, in the group's order."""
         return [p for p in self.members if self.is_live(p)]
+
+    def note_let_through(self, panels: Iterable[str]) -> None:
+        """Record the members one selection found it may visit now: ready by
+        their gating, reachable, let by the meridian rule, and outside any
+        deferral wait (the engine's ``_eligibility_now``). Kept for the pass,
+        for :meth:`visitable`; :meth:`start_pass` clears it. A name that is
+        no member is ignored."""
+        self.let_through.update(p for p in panels if p in self.members)
+
+    def visitable(self) -> list[str]:
+        """The live members THIS PASS CAN VISIT, in the group's order: those
+        visited in it, and those one of its selections let through
+        (:meth:`note_let_through`). The count :func:`no_guider_defers` reads
+        (the #315 follow-up, S3 orchestrator ruling 6).
+
+        A live member held at every selection of the pass so far, behind a
+        limit, by the meridian rule or by its own gating, is not one: it
+        makes no guide attempt in this pass, so it cannot be the second
+        attempt the rig verdict needs. One a selection let through and that
+        is held now is: the pass could have visited it, and the order alone
+        put another first."""
+        return [p for p in self.members if self.is_live(p)
+                and (p in self.visited or p in self.let_through)]
 
     def set_aside_panel(self, panel: str, reason: str) -> None:
         """Set one panel aside tonight for a cause the engine decided: its
@@ -552,7 +589,8 @@ class GroupRun:
         :data:`TARGET_STOP`, made by the driver (#316). A floor stop, a
         JumpTarget, a SafetyAbort, a NightQualityStop and cancellation never
         do: they are handled or propagate as they do today, a floor stop's
-        counts handed over by :meth:`note_visit` (#288).
+        counts handed over by :meth:`note_visit` (#288), and a jumped visit's
+        too (#322).
         """
         guide_failed = deferred is not None and deferred.kind == GUIDE_START
         previous = self._record(panel, exposures=exposures, accepted=accepted,
@@ -611,7 +649,12 @@ class GroupRun:
                    guide_started: bool = False) -> None:
         """Count a visit whose outcome the ENGINE decided, before it acts on
         it (#288): a panel that sank below its own floor mid-visit
-        (``FloorStop``), which the engine sets aside tonight at once.
+        (``FloorStop``), which the engine sets aside tonight at once, and a
+        visit a ``JumpTarget`` ended (#322), which the scheduler then either
+        drops from the group (the jump consumed the panel) or takes up again
+        in the same pass (a no-op jump). The panel is NOT marked visited here:
+        a visited panel is one the pass is done with, and only
+        :meth:`visit_outcome` makes one.
 
         The visit's frames were shot this pass all the same, so they are
         counted as any visit's are: its exposures toward the pass boundary,
@@ -744,7 +787,8 @@ class GroupRun:
             f"exposures and {self.deferred_this_pass} deferrals")
 
     def start_pass(self) -> None:
-        """Begin the next pass: clear ``visited`` and the pass's counts.
+        """Begin the next pass: clear ``visited``, ``let_through`` and the
+        pass's counts.
 
         Refuses while guide deferrals are held, because that means the pass
         was never closed and those failures would be dropped uncounted.
@@ -755,6 +799,7 @@ class GroupRun:
                 "deferrals that only the pass boundary can count")
         self.pass_no += 1
         self.visited.clear()
+        self.let_through.clear()
         self.exposures_this_pass = 0
         self.deferred_this_pass = 0
         self.guide_attempts = 0

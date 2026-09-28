@@ -135,15 +135,19 @@ export interface FlowRecordRec {
   last_run: number | null;
   last_result: "" | "ok" | "warn" | "bad";
   readonly: boolean;
-  /** What THIS read rewrote, for `flowsOpen` to put on the flow log. Never
-   *  persisted: the server strips it on every write, so it is on each GET until
-   *  the file is next written (a save, or a run's `touch_run`, which logs it),
-   *  and gone from the written record. Optional because an older server does
+  /** What THIS read rewrote, for `flowsOpen` to put on the flow log, except
+   *  the counts note (key `counts`), which `flowsOpen` keeps as
+   *  `flows.countsNote` for the persistent counts line instead (S4
+   *  orchestrator ruling 8, `countsNotice`). Never persisted: the server
+   *  strips it on every write, so it is on each GET until the file is next
+   *  written (a save, or a run's `touch_run`, which logs it), and gone from
+   *  the written record. Optional because an older server does
    *  not send it. A save's answer uses it for the counts switch only. */
   migrated?: FlowMigrationNote[];
   /** On a SAVE'S answer only: every block that save re-anchored, for
-   *  `flowsSave` to put on the flow log. Absent from a read, and from an older
-   *  server's answer. */
+   *  `flowsSave` to put on the flow log and announce in one toast
+   *  (`reanchorToast`). Absent from a read, and from an older server's
+   *  answer. */
   reanchored?: FlowReanchored[];
 }
 

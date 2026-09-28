@@ -69,6 +69,39 @@ def _finite(x) -> bool:
     return True
 
 
+#: The four things a capture can be (#334), spelled as ``IMAGETYP`` has always
+#: carried them: every frame this rig wrote says one of these, the UI sends
+#: only these, and the calibration library (``calibration.keys``) and every
+#: ``== "Light"`` in the engine and the UI compare against these spellings.
+#: ``IMAGETYP`` is NOT free text, so it is not folded like the names below: a
+#: frame type that is not one of these is refused where it comes in (the
+#: capture body and the plan step, ``sequence.models.FrameType``), and
+#: ``save_fits`` omits the card rather than write one.
+FRAME_TYPES = ("Light", "Dark", "Bias", "Flat")
+_BY_FOLDED = {t.lower(): t for t in FRAME_TYPES}
+
+
+def frame_type_name(value) -> str | None:
+    """``value`` as one of ``FRAME_TYPES``, or None when it is none of them.
+
+    CASE-INSENSITIVE, and surrounding blanks are ignored: 'light', 'LIGHT'
+    and ' Light ' are all Light, because a hand-edited plan or a script
+    posting to the capture route means the frame type whatever its case, and
+    the engine and the UI compare against one spelling. A blank is Light,
+    the default, which is what every reader's ``frame_type or "Light"``
+    already made of one. Only ASCII is looked up: ``str.lower`` maps the
+    Kelvin sign onto 'k', and a value that needs a non-ASCII character to
+    spell a frame type is not one. Anything else is None, never a guess."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return "Light"
+    if not text.isascii():
+        return None
+    return _BY_FOLDED.get(text.lower())
+
+
 #: Typographic dashes and quotes, mapped to the ASCII a keyboard types for
 #: them. A phone's autocorrect turns a typed hyphen into an en dash and a typed
 #: apostrophe into a curly one, so "Veil - east" arrives with an en dash in it
@@ -111,7 +144,8 @@ def _ascii_fold(text: str) -> str:
     '?' in the middle of an evidence sentence reads as corruption. A NAME is
     different: with its Cyrillic dropped, "M31 <name in Cyrillic>" becomes
     plain "M31", which a stacker grouping by OBJECT files with the galaxy's
-    own frames. The name as typed survives beside it in ``OBJUTF8``."""
+    own frames. The name as typed survives beside it in ``OBJUTF8``, and a
+    slot's or a group's in ``FILTUTF8`` or ``MOSUTF8`` (#332)."""
     out: list[str] = []
     for ch in text:
         if " " <= ch <= "~":
@@ -162,6 +196,25 @@ def _header_text(value: str | None) -> str:
 OBJECT_UTF8 = "OBJUTF8"
 _OBJECT_UTF8_COMMENT = "OBJECT as typed: UTF-8, percent-encoded"
 
+#: The wheel slot's name and the mosaic group's name as typed, whenever the
+#: fold changed them (#332), encoded exactly as ``OBJUTF8`` is. The fold is
+#: many-to-one: slots named H-alpha and H-beta in Greek both fold to 'H?', so
+#: FILTER alone put the flats of both into one calibration bucket, the night
+#: stack's flats into one group and the backfill's frames under one filter,
+#: and two mosaics named in Cyrillic with as many letters wrote one MOSAIC.
+#: Every reader that groups by one of these names reads it through
+#: ``full_name``. Never written for an ASCII name, so that header is exactly
+#: what it always was. TELESCOP and INSTRUME have no such card: nothing groups
+#: frames by them.
+FILTER_UTF8 = "FILTUTF8"
+_FILTER_UTF8_COMMENT = "FILTER as typed: UTF-8, percent-encoded"
+MOSAIC_UTF8 = "MOSUTF8"
+_MOSAIC_UTF8_COMMENT = "MOSAIC as typed: UTF-8, percent-encoded"
+
+#: Each folded card that keeps its value as typed, and the card that keeps it.
+_AS_TYPED = {"OBJECT": OBJECT_UTF8, "FILTER": FILTER_UTF8,
+             "MOSAIC": MOSAIC_UTF8}
+
 
 def _encoded_name(name: str) -> str:
     """``name`` as ``OBJUTF8`` carries it. ``errors="replace"`` is for the
@@ -172,14 +225,27 @@ def _encoded_name(name: str) -> str:
     return quote(name, safe="", errors="replace")
 
 
-def full_object_name(header) -> str:
-    """The target's name as the operator typed it, from a header ``save_fits``
-    wrote: ``OBJUTF8`` decoded when the frame carries one, else ``OBJECT``,
-    else ``""``. The one decoder of the card, for readers."""
-    encoded = header.get(OBJECT_UTF8)
+def full_name(header, keyword: str) -> str:
+    """The value of ``keyword`` (``OBJECT``, ``FILTER`` or ``MOSAIC``) as it
+    was typed, from a header ``save_fits`` wrote: its as-typed card
+    (``OBJUTF8``, ``FILTUTF8``, ``MOSUTF8``) decoded when the frame carries
+    one, else the card itself, else ``""``. THE decoder of all three (#277,
+    #332), for every reader that shows or groups by one of these names: a
+    reader of the bare card files two names that fold alike as one.
+
+    Any other keyword is a KeyError: a card with no as-typed copy has nothing
+    to decode, and a reader asking for one is reading the wrong card."""
+    encoded = header.get(_AS_TYPED[keyword])
     if encoded:
         return unquote(str(encoded), errors="replace")
-    return str(header.get("OBJECT", "") or "")
+    return str(header.get(keyword, "") or "")
+
+
+def full_object_name(header) -> str:
+    """The target's name as the operator typed it: ``full_name(header,
+    "OBJECT")``, the spelling every reader of the target has used since
+    #277."""
+    return full_name(header, "OBJECT")
 
 
 def _with_comment(value: str, comment: str):
@@ -212,7 +278,9 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
 
     Every free-text value (``target``, ``filter_name``, ``telescope``,
     ``instrument``, ``mosaic``, ``panel``) goes through ``_ascii_fold``, so no
-    name anybody typed can fail the write (#277); ASCII passes unchanged."""
+    name anybody typed can fail the write (#277); ASCII passes unchanged.
+    ``frame_type`` is not free text: it is written as one of ``FRAME_TYPES``
+    or not at all (#334)."""
     hdu = fits.PrimaryHDU(frame.data)
     hdr = hdu.header
     hdr["EXPTIME"] = (frame.exposure_s, "Exposure time (s)")
@@ -220,7 +288,16 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     hdr["OFFSET"] = frame.offset
     hdr["XBINNING"] = frame.binning
     hdr["YBINNING"] = frame.binning
-    hdr["IMAGETYP"] = frame_type
+    # ONLY A FRAME TYPE (#334). The capture body and the plan step refuse
+    # anything else before a night starts; this is the writer's own check for
+    # a caller that reached it past both. The value it was given went in as
+    # given, so one non-ASCII character failed every save of that step (the
+    # #277 class), and an ASCII value that is no frame type was written where
+    # the calibration library reads what a frame IS. Such a value is omitted,
+    # never a placeholder: a frame with no IMAGETYP is stacked into no master.
+    imagetyp = frame_type_name(frame_type)
+    if imagetyp:
+        hdr["IMAGETYP"] = imagetyp
     # FITS 4.0 sec 4.4.2 requires 'YYYY-MM-DDThh:mm:ss[.s...]' with NO timezone
     # designator (UTC implied); isoformat() on a tz-aware datetime would append
     # '+00:00', which strict FITS parsers reject.
@@ -245,7 +322,8 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     # printable ASCII, so writing one as typed made a single en dash fail every
     # saved frame of the night, and a header write must never fail a capture.
     # ASCII passes unchanged. When the fold changed the target's name, OBJUTF8
-    # keeps the name as typed, right beside OBJECT.
+    # keeps the name as typed, right beside OBJECT; FILTUTF8 and MOSUTF8 do
+    # the same for the slot and the group (#332).
     object_text = _card_text(target)
     if object_text:
         hdr["OBJECT"] = object_text
@@ -255,6 +333,12 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     filter_text = _card_text(filter_name)
     if filter_text:
         hdr["FILTER"] = filter_text
+        # The slot's name as typed, when the fold changed it (#332): H-alpha
+        # and H-beta in Greek both fold to 'H?', and a reader grouping by
+        # FILTER alone calibrates and stacks the two as one filter.
+        if filter_text != str(filter_name):
+            hdr[FILTER_UTF8] = _with_comment(_encoded_name(str(filter_name)),
+                                             _FILTER_UTF8_COMMENT)
     # WHICH MOSAIC AND WHICH PANEL (#189 U-08). A stacker that groups by OBJECT
     # or by folder cannot tell two panels of one mosaic from two targets, or
     # worse from one target, and co-adds two pieces of sky; these two cards let
@@ -266,6 +350,13 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     if mosaic_text:
         hdr["MOSAIC"] = _with_comment(
             mosaic_text, "Mosaic group; stitch panels, never co-add")
+        # The group's name as typed, when the fold changed it (#332): two
+        # groups named in Cyrillic with as many letters fold to one MOSAIC.
+        # Stripped, as MOSAIC always has been: a blank at either end is not
+        # a change the fold made.
+        if mosaic_text != str(mosaic).strip():
+            hdr[MOSAIC_UTF8] = _with_comment(_encoded_name(str(mosaic).strip()),
+                                             _MOSAIC_UTF8_COMMENT)
     panel_text = _header_text(panel)
     if panel_text:
         hdr["PANEL"] = _with_comment(

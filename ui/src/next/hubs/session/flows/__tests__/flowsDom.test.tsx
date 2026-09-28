@@ -31,13 +31,33 @@
 //   7. ONE LIBRARY. The whole point of the cutover (wave R7 section 6.1 defect
 //      7): at tablet the canvas used to stack a second MY FLOWS on top of this
 //      one. Counted, not eyeballed.
-//   8. THE SIX SHEETS ARE REGISTERED. Four areas publish `flow*Sheets`; if one
-//      is not spread into the SESSION hub's registry the route resolves to
+//   8. THE SEVEN SHEETS ARE REGISTERED. Five areas publish `flow*Sheets`; if
+//      one is not spread into the SESSION hub's registry the route resolves to
 //      `MissingSheet` with no compile error anywhere.
 //   9. THE CANVAS SURVIVES ITS OWN SHEET. `nav.sheet` rebuilds the hash from the
 //      params it is handed, so the stage editor clears `?open=`. Without the
 //      store's `ui.screen` fallback the canvas would vanish the moment a stage
 //      was opened for editing.
+//  10. THE TARGET MODAL'S DOORS ON THE CANVAS (#189 S4 items 3 and 5). The
+//      docked column's FRAME ON SKY and a TARGET dropped from the docked rail
+//      both open the `flowFrame` sheet with the stage and the flow in the
+//      route. The phone's doors are graded in
+//      `framing/__tests__/flowFrameSheet.test.tsx`, through the real SheetHost.
+//  11. THE FLOW'S ONE SETTING (spec 1.6). The overview writes `whenWaiting`
+//      through `flowsSetSetting` and keeps every other key in `settings`, and
+//      shows the default, as the run resolves it, for a missing key or a value
+//      this build does not offer.
+//  12. THE COUNTS LINE STAYS (Revision 2 ruling 2, S4 orchestrator ruling 8).
+//      While the graph counts every sub taken the canvas says so in one line
+//      under the toolbar, through edits, log lines and sheets, until the save
+//      that switches the counts.
+//
+// The #189 S4 mutants quoted in 8 and 9b-9d were first run in scratchpad
+// s4-uhostn-mut (2026-09-26), and re-run on 2026-09-27 in s4-uhostn-r2-mut on
+// the tree as S4's second wave left it. Each failed as quoted, word for word,
+// except the minted node ids (`n<seq>_<base36 time>`), which differ per run.
+// Their tallies ("N/50") were counted before S4-UHOSTN's verifier added 9c's
+// default-display case, which makes 51; that case's own quote is 51-based.
 //
 // Convention: shell-and-tests.md section 4.
 
@@ -101,6 +121,10 @@ for (const k of [
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------- the fake rig
+// The counts sentence, from the one pure module both editors print it from
+// (no store, no React, so it is safe to load before the fetch stub exists).
+const { COUNTS_NOTE } = await import("../../../../../components/flows/countsNotice");
+
 const CARDS = [
   {
     id: "quick-m31", name: "Quick · M31 LRGB", folder: "My flows",
@@ -135,6 +159,21 @@ const UNMAPPED_409 = {
       { key: "nodes.safety", detail: "SAFETY: the monitor gate is global, not per flow", level: "warn" },
       { key: "nodes.abort", detail: "ABORT: no per-flow abort rule reaches the engine", level: "danger" },
     ],
+  },
+};
+
+/** Flows whose record carries more than FLOW_RECORD's. `legacy-counts` was
+ *  saved before new blocks counted accepted subs: its TARGET has no `counts`
+ *  key, so it counts every sub taken until it is saved (Revision 2 ruling 2),
+ *  and the server's read says so in `migrated`, as `store._migrate` does. */
+const RECORD_EXTRAS: Record<string, Record<string, unknown>> = {
+  "legacy-counts": {
+    name: "Legacy M31",
+    graph: {
+      nodes: [{ id: "t-old", type: "target", x: 0, y: 0, params: { name: "M31" } }],
+      edges: [],
+    },
+    migrated: [{ key: "counts", note: COUNTS_NOTE }],
   },
 };
 
@@ -208,6 +247,7 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
       ...FLOW_RECORD, id,
       name: card?.name ?? FLOW_RECORD.name,
       readonly: card?.readonly ?? false,
+      ...(RECORD_EXTRAS[id] ?? {}),
     });
   }
   return {
@@ -238,6 +278,10 @@ const { flowCanvasSheets } = await import("../canvas/sheets");
 const { flowInspectorSheets } = await import("../inspector/sheets");
 const { flowTonightSheets } = await import("../tonight");
 const { flowCreateSheets } = await import("../create");
+const { FLOW_FRAME_SHEET } = await import("../framing/FlowFrameSheet");
+const { flowFrameSheets } = await import("../framing/reg");
+const { FLOW_READONLY_REASON, WHEN_WAITING_NO_MOSAIC } = await import("../inspector/FlowInspectorColumn");
+const { FLOW_SETTINGS } = await import("../../../../../components/flows/flowsTypes");
 const { SHEET_ENTRIES } = await import("../../../index");
 const { COUNTS_SWITCHED_LINE } = await import("../../../../../components/flows/flowsSlice");
 
@@ -940,14 +984,22 @@ await testAsync("the docked inspector stands down while its own sheet shows the 
   assert(tid("flow-inspector") != null, "and the column has to come back when the sheet closes");
 });
 
-test("every sheet the four Flows areas register resolves in the composed registry", () => {
+// MUTANT "framing half not spread" (session/sheets/index.ts loses
+// `...flowFrameSheets`). Observed ("flowsDom.test: 48/50 passed"):
+//   x every sheet the five Flows areas register resolves in the composed registry: "flowFrame" is not in SHEET_ENTRIES - the hash would render SheetHost's "not built yet" pane
+//   x the framing registry's literal key and FlowFrameSheet's own constant are the same word: the composed registry does not carry the framing sheet under its own module
+//     expected session/flows/framing/FlowFrameSheet
+//     got      undefined
+test("every sheet the five Flows areas register resolves in the composed registry", () => {
   const mine: Record<string, string> = {};
-  for (const reg of [flowCanvasSheets, flowInspectorSheets, flowTonightSheets, flowCreateSheets]) {
+  for (const reg of [
+    flowCanvasSheets, flowInspectorSheets, flowTonightSheets, flowCreateSheets, flowFrameSheets,
+  ]) {
     for (const [name, entry] of Object.entries(reg)) mine[name] = entry.id;
   }
   eq(Object.keys(mine).sort().join(","),
-    "flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight",
-    "the four areas do not publish the six names the cutover composes");
+    "flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight",
+    "the five areas do not publish the seven names the session hub composes");
 
   for (const [name, id] of Object.entries(mine)) {
     const entry = SHEET_ENTRIES[name];
@@ -961,7 +1013,7 @@ test("every sheet the four Flows areas register resolves in the composed registr
 test("no two registered sheets share a name under two module ids", () => {
   // `hubs/index.ts` throws on this at module load in dev and under the test
   // runner, so reaching this line at all is half the assertion. The other half
-  // is that the six new names did not quietly overwrite six existing screens.
+  // is that the seven flows names did not quietly overwrite seven existing screens.
   const ids = Object.values(SHEET_ENTRIES).map((e) => e.id);
   const names = Object.keys(SHEET_ENTRIES);
   assert(names.length >= 30, `only ${names.length} sheets composed - the registry is not loading`);
@@ -981,6 +1033,346 @@ test("the registry key and the sheet module's own constant are the same word", (
   assert(flowCanvasSheets[FLOW_STAGES_SHEET] != null,
     "canvas/sheets.ts registers a name the sheet module does not answer to");
 });
+
+// The framing sheet is spelled twice for the same reason (#189 S4): its
+// registry is reached from the entry chunk and may not import the modal's
+// adapter, so `reg.ts` writes the literal "flowFrame".
+//
+// MUTANT "the constant renamed" (FlowFrameSheet.tsx
+// `FLOW_FRAME_SHEET = "flowFraming"`, reg.ts untouched). Observed
+// ("flowsDom.test: 49/50 passed"):
+//   x the framing registry's literal key and FlowFrameSheet's own constant are the same word: FlowFrameSheet renamed itself, so every door opens a name the registry does not carry
+//     expected flowFrame
+//     got      flowFraming
+test("the framing registry's literal key and FlowFrameSheet's own constant are the same word", () => {
+  eq(Object.keys(flowFrameSheets).join(","), "flowFrame", "framing/reg.ts registers another name:");
+  eq(FLOW_FRAME_SHEET, "flowFrame",
+    "FlowFrameSheet renamed itself, so every door opens a name the registry does not carry");
+  assert(flowFrameSheets[FLOW_FRAME_SHEET] != null,
+    "framing/reg.ts registers a name the sheet module does not answer to");
+  eq(SHEET_ENTRIES[FLOW_FRAME_SHEET]?.id, flowFrameSheets.flowFrame.id,
+    "the composed registry does not carry the framing sheet under its own module");
+});
+
+// ============ 9b. the Target modal's doors on the canvas (#189 S4 items 3, 5)
+//
+// FlowsScreen renders no SheetHost, so these grade the ROUTE each door writes;
+// the sheet itself, its depth-2 replacement on a phone and the modal it mounts
+// are graded through the real SheetHost in framing/__tests__.
+
+/** One TARGET added and selected on the open flow, as a tap on its card
+ *  leaves it; returns its id. */
+async function selectNewStage(type: string): Promise<string> {
+  let id = "";
+  await act(async () => {
+    id = useStore.getState().flowsAddNode(type as never, { x: 60, y: 60 });
+    useStore.getState().flowsSelect({ kind: "node", id });
+  });
+  await settle();
+  return id;
+}
+
+// Here `?open=` would come back even from a door that dropped it: the canvas
+// host puts it back whenever a sheet takes it away (FlowsCanvasHost's restore
+// effect), so the mutant "open dropped at the door" stays green on this path.
+// The door's own `?open=` is graded on the phone, where nothing restores it
+// (framing/__tests__/flowFrameSheet.test.tsx).
+//
+// MUTANT "params dropped" (FlowFrameSheet.tsx `flowFrameParams` returns `{}`).
+// Observed ("flowsDom.test: 48/50 passed"):
+//   x desktop: the docked column's FRAME ON SKY opens flowFrame on that TARGET with ?open=: the docked column's door did not name the stage and the flow
+//     expected #/session/flows/flowFrame?node=n5_muiq8l8e&open=quick-m31
+//     got      #/session/flows/flowFrame?open=quick-m31
+//   x desktop: a TARGET dropped from the docked rail opens its framing on the new node: the TARGET dropped from the rail did not open its framing on the node it made
+//     expected #/session/flows/flowFrame?node=n6_muiq8lg8&open=quick-m31
+//     got      #/session/flows/flowFrame?open=quick-m31
+//
+// MUTANT "canvas keys act under a sheet" (FlowCanvasSurface.tsx's key handler
+// loses `&& !underSheet`). Observed ("flowsDom.test: 49/50 passed"):
+//   x desktop: the docked column's FRAME ON SKY opens flowFrame on that TARGET with ?open=: Delete or Backspace under the framing sheet deleted the TARGET being framed
+//
+// MUTANT "door on every stage" (FlowNodeEditor.tsx renders the frame slot for
+// every node type). Observed ("flowsDom.test: 49/50 passed"):
+//   x desktop: the docked column's FRAME ON SKY opens flowFrame on that TARGET with ?open=: a CAPTURE offers FRAME ON SKY, which frames a TARGET
+//     expected null
+//     got      [object HTMLButtonElement]
+await testAsync("desktop: the docked column's FRAME ON SKY opens flowFrame on that TARGET with ?open=", async () => {
+  viewportW = 1440;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  assert(tid("flow-inspector") != null, "precondition: the inspector column is not docked at desktop");
+  const id = await selectNewStage("target");
+  const door = tid("flow-node-frame");
+  assert(door != null, "the docked column's TARGET editor offers no FRAME ON SKY");
+  click(door);
+  await settle();
+  eq(win.location.hash, `#/session/flows/${FLOW_FRAME_SHEET}?node=${id}&open=quick-m31`,
+    "the docked column's door did not name the stage and the flow");
+  assert(tid("session-flows-canvas") != null, "the canvas closed under the framing sheet");
+
+  // The canvas stays mounted under the modal, and its Delete / Backspace
+  // handler is on the window (#381 is this class in the classic editor). The
+  // TARGET it would delete is the one being framed: selected, since the
+  // docked column shows the selection. A key pressed on the modal's buttons or
+  // its sky, which are not text fields, reaches that handler; the route's
+  // sheet is what refuses it.
+  for (const key of ["Backspace", "Delete"]) {
+    act(() => {
+      win.document.body.dispatchEvent(new win.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    });
+  }
+  await settle();
+  assert(useStore.getState().flows.graph.nodes.some((n: any) => n.id === id),
+    "Delete or Backspace under the framing sheet deleted the TARGET being framed");
+
+  // CONTROL: a stage that is not a TARGET keeps its editor as it was.
+  await mountAt("#/session/flows?open=quick-m31");
+  await selectNewStage("capture");
+  assert(tid("flow-node-delete") != null, "precondition: the CAPTURE's editor did not render");
+  eq(tid("flow-node-frame"), null, "a CAPTURE offers FRAME ON SKY, which frames a TARGET");
+});
+
+// MUTANT "drop does not open" (paletteDrop.ts `frameDroppedStage` answers
+// false before opening anything). Observed ("flowsDom.test: 49/50 passed"):
+//   x desktop: a TARGET dropped from the docked rail opens its framing on the new node: the TARGET dropped from the rail did not open its framing on the node it made
+//     expected #/session/flows/flowFrame?node=n7_muiq99f7&open=quick-m31
+//     got      #/session/flows?open=quick-m31
+//
+// MUTANT "rail drop not wired" (FlowsCanvasHost.tsx mounts the docked rail
+// without `onPicked`). Observed ("flowsDom.test: 49/50 passed"):
+//   x desktop: a TARGET dropped from the docked rail opens its framing on the new node: the TARGET dropped from the rail did not open its framing on the node it made
+//     expected #/session/flows/flowFrame?node=n7_muiqadfz&open=quick-m31
+//     got      #/session/flows?open=quick-m31
+await testAsync("desktop: a TARGET dropped from the docked rail opens its framing on the new node", async () => {
+  viewportW = 1440;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  const rail = tid("flow-palette");
+  assert(rail != null, "precondition: the palette rail is not docked at desktop");
+  const before = useStore.getState().flows.graph.nodes.length;
+  click(rail.querySelector('[data-testid="palette-type-target"]'));
+  await settle();
+  const nodes = useStore.getState().flows.graph.nodes;
+  eq(nodes.length, before + 1, "precondition: the rail did not add a stage");
+  const added = nodes[nodes.length - 1];
+  eq(added.type, "target", "precondition: the stage the rail added is not a TARGET");
+  eq(win.location.hash, `#/session/flows/${FLOW_FRAME_SHEET}?node=${added.id}&open=quick-m31`,
+    "the TARGET dropped from the rail did not open its framing on the node it made");
+
+  // CONTROL: any other stage lands and opens nothing, as before.
+  await mountAt("#/session/flows?open=quick-m31");
+  click(tid("flow-palette").querySelector('[data-testid="palette-type-capture"]'));
+  await settle();
+  const last = useStore.getState().flows.graph.nodes.slice(-1)[0];
+  eq(last?.type, "capture", "precondition: the rail did not add the CAPTURE");
+  eq(win.location.hash, "#/session/flows?open=quick-m31", "a CAPTURE dropped from the rail opened a sheet");
+});
+
+// ============================ 9c. the flow's one setting, in the overview
+//
+// MUTANT "setting via flowsSetParam" (the overview's choice writes
+// `flowsSetParam(<the first TARGET>, "whenWaiting", v)`, a block param, instead
+// of `flowsSetSetting`). Observed ("flowsDom.test: 49/50 passed"):
+//   x the overview's WHILE A MOSAIC WAITS writes the flow setting and keeps every other key: the overview's choice did not land in the flow's settings with every other key kept
+//     expected {"whenWaiting":"Wait for the mosaic","fromANewerBuild":"kept"}
+//     got      {"whenWaiting":"Shoot later targets, then come back","fromANewerBuild":"kept"}
+//
+// MUTANT "settings replaced whole" (the overview's choice writes
+// `graph.settings = { whenWaiting: v }` straight into the store). Observed
+// ("flowsDom.test: 49/50 passed"):
+//   x the overview's WHILE A MOSAIC WAITS writes the flow setting and keeps every other key: the overview's choice did not land in the flow's settings with every other key kept
+//     expected {"whenWaiting":"Wait for the mosaic","fromANewerBuild":"kept"}
+//     got      {"whenWaiting":"Wait for the mosaic"}
+const WAIT = FLOW_SETTINGS.whenWaiting.options[1];
+const LATER_KEY = "fromANewerBuild";
+
+await testAsync("the overview's WHILE A MOSAIC WAITS writes the flow setting and keeps every other key", async () => {
+  viewportW = 1440;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  // A flow saved by a newer build: a setting this build has never heard of,
+  // and one TARGET for the wrong-path mutant to write on.
+  await act(async () => {
+    const id = useStore.getState().flowsAddNode("target" as never, { x: 0, y: 0 });
+    const f = useStore.getState().flows;
+    useStore.setState({
+      flows: {
+        ...f, sel: null,
+        graph: { ...f.graph, settings: { whenWaiting: FLOW_SETTINGS.whenWaiting.default, [LATER_KEY]: "kept" } },
+      } as never,
+    } as never);
+    void id;
+  });
+  await settle();
+  const choice = tid("flow-when-waiting-choice");
+  assert(choice != null, "the overview with nothing selected offers no WHILE A MOSAIC WAITS");
+  eq(choice.querySelector('[aria-checked="true"]')?.getAttribute("data-value"),
+    FLOW_SETTINGS.whenWaiting.default, "precondition: the overview does not show the stored setting");
+
+  click(choice.querySelector(`[data-value="${WAIT}"]`));
+  await settle();
+  const settings = useStore.getState().flows.graph.settings ?? {};
+  eq(JSON.stringify(settings), JSON.stringify({ whenWaiting: WAIT, [LATER_KEY]: "kept" }),
+    "the overview's choice did not land in the flow's settings with every other key kept");
+  eq(useStore.getState().flows.dirty, true, "the setting changed and the flow is not marked unsaved");
+  eq(tid("flow-when-waiting-choice").querySelector('[aria-checked="true"]')?.getAttribute("data-value"),
+    WAIT, "the overview does not show the choice it just wrote");
+});
+
+// The overview reads the setting through `flowSetting`, the mirror of the
+// engine's `resolve_setting`. A flow saved before the setting existed has no
+// key, and one saved by a newer build can hold a value this build does not
+// offer; the run does the default with both, so the choice shows the default
+// rather than a control with nothing chosen. The case above cannot see this:
+// it stores the default explicitly before it looks.
+//
+// MUTANT "overview reads the raw setting" (the verifier's: the overview's
+// value is `String(graph.settings?.whenWaiting ?? "")` instead of
+// `flowSetting(...)`). Observed ("flowsDom.test: 50/51 passed"; run in
+// scratchpad s4-uhostn-r2-verify2-mut, 2026-09-27):
+//   x the overview shows the default for a flow with no setting and for a value this build does not know: a flow with no setting shows no choice, though the run will do the default
+//     expected Shoot later targets, then come back
+//     got      null
+//
+// MUTANT "unknown value shown raw" (the verifier's: the same, but a missing
+// key falls back to the default, so only an unknown value reaches the control
+// as it is). Observed ("flowsDom.test: 50/51 passed", same run):
+//   x the overview shows the default for a flow with no setting and for a value this build does not know: a value this build does not offer shows no choice, though the run will do the default
+//     expected Shoot later targets, then come back
+//     got      null
+await testAsync("the overview shows the default for a flow with no setting and for a value this build does not know", async () => {
+  viewportW = 1440;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  await act(async () => { useStore.getState().flowsSelect(null); });
+  await settle();
+  eq(useStore.getState().flows.graph.settings?.whenWaiting ?? null, null,
+    "precondition: the flow as opened already carries a whenWaiting, so this case cannot see a missing key");
+  const checked = (): string | null =>
+    tid("flow-when-waiting-choice")?.querySelector('[aria-checked="true"]')?.getAttribute("data-value") ?? null;
+  eq(checked(), FLOW_SETTINGS.whenWaiting.default,
+    "a flow with no setting shows no choice, though the run will do the default");
+
+  await act(async () => {
+    const f = useStore.getState().flows;
+    useStore.setState({
+      flows: { ...f, graph: { ...f.graph, settings: { whenWaiting: "A rule from a newer build" } } } as never,
+    } as never);
+  });
+  await settle();
+  eq(checked(), FLOW_SETTINGS.whenWaiting.default,
+    "a value this build does not offer shows no choice, though the run will do the default");
+});
+
+// MUTANT "no-mosaic line always" (the overview prints WHEN_WAITING_NO_MOSAIC
+// whatever the graph holds). Observed ("flowsDom.test: 49/50 passed"):
+//   x the overview says the setting changes nothing until a TARGET has more than one panel: a flow with a 3x2 mosaic still says the setting changes nothing
+await testAsync("the overview says the setting changes nothing until a TARGET has more than one panel", async () => {
+  viewportW = 1440;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  await act(async () => { useStore.getState().flowsSelect(null); });
+  await settle();
+  assert(String(tid("flow-when-waiting")?.textContent ?? "").includes(WHEN_WAITING_NO_MOSAIC),
+    "a flow with no mosaic does not say the setting changes nothing yet");
+  await act(async () => {
+    const id = useStore.getState().flowsAddNode("target" as never, { x: 0, y: 0 });
+    useStore.getState().flowsSetParam(id, "rows", "2");
+    useStore.getState().flowsSetParam(id, "cols", "3");
+    useStore.getState().flowsSelect(null);
+  });
+  await settle();
+  assert(!String(tid("flow-when-waiting")?.textContent ?? "").includes(WHEN_WAITING_NO_MOSAIC),
+    "a flow with a 3x2 mosaic still says the setting changes nothing");
+});
+
+// CONTROL: an Example is read-only, so the choice explains and writes nothing.
+//
+// MUTANT "setting ignores read-only" (the overview's Segmented loses its
+// `lockedReason`). Observed ("flowsDom.test: 49/50 passed"):
+//   x on a read-only Example the setting explains the lock and writes nothing: a read-only Example's setting was written, and the save would refuse it
+//     expected null
+//     got      {"whenWaiting":"Wait for the mosaic"}
+await testAsync("on a read-only Example the setting explains the lock and writes nothing", async () => {
+  viewportW = 1440;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=example-m16");
+  eq(useStore.getState().flows.record?.readonly, true, "precondition: the Example did not open read-only");
+  const before = JSON.stringify(useStore.getState().flows.graph.settings ?? null);
+  const choice = tid("flow-when-waiting-choice");
+  assert(choice != null, "precondition: the overview offers no setting on the Example");
+  click(choice.querySelector(`[data-value="${WAIT}"]`));
+  await settle();
+  eq(JSON.stringify(useStore.getState().flows.graph.settings ?? null), before,
+    "a read-only Example's setting was written, and the save would refuse it");
+  const toast = useStore.getState().toasts.find((t: any) => String(t.title) === FLOW_READONLY_REASON);
+  assert(toast != null, "the locked press did not say why");
+});
+
+// ======================= 9d. the counts line stays until the switch
+//
+// MUTANT "notice as a log line" (FlowCanvasToolbar.tsx renders no line and
+// instead appends the counts sentence to the flow log once, when it appears).
+// Observed ("flowsDom.test: 49/50 passed"):
+//   x the canvas's counts line stays through edits, log lines and sheets until the save switches the counts: a flow that counts every sub taken shows no counts line on the canvas
+//
+// MUTANT "line from the open's note" (the toolbar shows `flows.countsNote`,
+// the note the server's read carried, instead of asking the graph). Observed
+// ("flowsDom.test: 49/50 passed"):
+//   x the canvas's counts line stays through edits, log lines and sheets until the save switches the counts: the counts line is still up over a flow the save has switched
+//     expected null
+//     got      [object HTMLDivElement]
+await testAsync("the canvas's counts line stays through edits, log lines and sheets until the save switches the counts", async () => {
+  viewportW = 1024;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=legacy-counts");
+  eq(useStore.getState().flows.record?.id, "legacy-counts", "precondition: the legacy flow did not open");
+  const line = () => tid("flow-canvas-counts");
+  assert(line() != null, "a flow that counts every sub taken shows no counts line on the canvas");
+  eq(String(line().textContent).trim(), COUNTS_NOTE, "the line is not ruling 2's sentence");
+
+  // An edit, a log strip's worth of lines, and a sheet opened and closed: a
+  // log line would have scrolled away and a toast timed out by now.
+  await act(async () => { useStore.getState().flowsAddNode("capture" as never, { x: 200, y: 0 }); });
+  await act(async () => {
+    for (let i = 0; i < 40; i++) useStore.getState().flowsAppendLog(`frame ${i} saved`, "info");
+  });
+  await act(async () => { nav.sheet("flowTonight"); });
+  await settle();
+  await act(async () => { nav.closeSheet(); });
+  await settle();
+  assert(line() != null, "the counts line went away before anything switched the counts");
+
+  // The save that switches the counts is what takes it down.
+  putNotes = { migrated: [{ key: "counts", note: "counts switched to Accepted subs" }] };
+  try {
+    click(tid("flow-save"));
+    await settle();
+  } finally {
+    putNotes = {};
+  }
+  eq(useStore.getState().flows.dirty, false, "precondition: the save did not complete");
+  eq(line(), null, "the counts line is still up over a flow the save has switched");
+});
+
+// CONTROL: a flow whose blocks count accepted subs, and a TARGET dropped
+// today, raise no line.
+await testAsync("a flow that counts accepted subs shows no counts line, and a new TARGET raises none", async () => {
+  viewportW = 1024;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  eq(tid("flow-canvas-counts"), null, "an empty flow shows the counts line");
+  await act(async () => { useStore.getState().flowsAddNode("target" as never, { x: 0, y: 0 }); });
+  await settle();
+  eq(tid("flow-canvas-counts"), null, "a TARGET made today (counting accepted subs) raised the counts line");
+});
+
+// Leave the store as the tests below expect it: the edits above stored by the
+// list's own way out, no flow open, and nothing unsaved. The notes test that
+// follows reads the toolbar's verdict pill, which says DRAFT over an edit.
+await mountAt("#/session/flows");
+seed("admin", ADMIN);
+await settle();
 
 // ==================================== 10. the source text, not just the DOM
 

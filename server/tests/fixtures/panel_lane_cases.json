@@ -171,6 +171,361 @@
       "compile": {"steps": {"t": []}, "notes": []}
     }
   ],
+  "_about_loop_cases": [
+    "Placing and lifting the loop wire (#189 S4; spec 1.4 'When the wire is added' and 2.5 DONE): the editor's rule, which compile.py does not have, because the server only reads the wire.",
+    "graph: the flow before. block: the TARGET the modal's DONE (or LOOP PANELS) acts on. loop: true adds the wire, false lifts every pass wire into the block's next.",
+    "result: the flow after, as ui/src/components/flows/panelLane.ts withLoop makes it; a new wire goes last and takes the id the caller mints, 'loop' in these cases.",
+    "loop_wire: the block's loop wire in the result (compile.py loop_wires finds exactly it), or null when it has none.",
+    "Graded by server/tests/test_flows_panel_lane.py (the result is a valid graph, loop_wires finds loop_wire and nothing else, lane_refusals is empty) and by ui/src/components/flows/__tests__/panelLane.test.ts (withLoop makes result from graph)."
+  ],
+  "loop_cases": [
+    {
+      "id": "loop-on",
+      "spec": "1.4 'When the wire is added' / 1.5 item 5: DONE with the loop on, on a 3x2 block whose lane is CYCLE -> CAPTURE Ha. The wire leaves the tail, CAPTURE Ha, never the first stage",
+      "block": "t",
+      "loop": true,
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "ha", "type": "capture", "x": 400, "y": 0, "params": {"filter": "Ha", "exposure": 300, "count": 10}},
+          {"id": "r", "type": "report", "x": 600, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "ha", "toPort": "run"},
+          {"id": "e3", "from": "ha", "fromPort": "complete", "to": "r", "toPort": "session"}
+        ]
+      },
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "ha", "type": "capture", "x": 400, "y": 0, "params": {"filter": "Ha", "exposure": 300, "count": 10}},
+          {"id": "r", "type": "report", "x": 600, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "ha", "toPort": "run"},
+          {"id": "e3", "from": "ha", "fromPort": "complete", "to": "r", "toPort": "session"},
+          {"id": "loop", "from": "ha", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "loop_wire": {"id": "loop", "from": "ha", "fromPort": "pass", "to": "t", "toPort": "next"}
+    },
+    {
+      "id": "loop-off",
+      "spec": "1.4 'When it is deleted' / 2.5 DONE: the loop off lifts every pass wire into M31's next, its loop wire and a stale one from a mid-lane stage (M12) alike, and leaves the loop of the M33 mosaic that follows it",
+      "block": "t",
+      "loop": false,
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "ha", "type": "capture", "x": 400, "y": 0, "params": {"filter": "Ha", "exposure": 300, "count": 10}},
+          {"id": "m33", "type": "target", "x": 600, "y": 0, "params": {"name": "M33", "rows": 2, "cols": 1}},
+          {"id": "c2", "type": "capture", "x": 800, "y": 0, "params": {"filter": "L", "exposure": 120, "count": 20}},
+          {"id": "r", "type": "report", "x": 1000, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "ha", "toPort": "run"},
+          {"id": "e3", "from": "ha", "fromPort": "complete", "to": "m33", "toPort": "arm"},
+          {"id": "e4", "from": "m33", "fromPort": "target", "to": "c2", "toPort": "run"},
+          {"id": "e5", "from": "c2", "fromPort": "complete", "to": "r", "toPort": "session"},
+          {"id": "loop", "from": "ha", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "stale", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "m33-loop", "from": "c2", "fromPort": "pass", "to": "m33", "toPort": "next"}
+        ]
+      },
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "ha", "type": "capture", "x": 400, "y": 0, "params": {"filter": "Ha", "exposure": 300, "count": 10}},
+          {"id": "m33", "type": "target", "x": 600, "y": 0, "params": {"name": "M33", "rows": 2, "cols": 1}},
+          {"id": "c2", "type": "capture", "x": 800, "y": 0, "params": {"filter": "L", "exposure": 120, "count": 20}},
+          {"id": "r", "type": "report", "x": 1000, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "ha", "toPort": "run"},
+          {"id": "e3", "from": "ha", "fromPort": "complete", "to": "m33", "toPort": "arm"},
+          {"id": "e4", "from": "m33", "fromPort": "target", "to": "c2", "toPort": "run"},
+          {"id": "e5", "from": "c2", "fromPort": "complete", "to": "r", "toPort": "session"},
+          {"id": "m33-loop", "from": "c2", "fromPort": "pass", "to": "m33", "toPort": "next"}
+        ]
+      },
+      "loop_wire": null
+    },
+    {
+      "id": "loop-on-single-target",
+      "spec": "1.4 item 4 (control): DONE with the loop on, on a 1x1 block. One panel has nothing to rotate between, so no wire is added",
+      "block": "t",
+      "loop": true,
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "NGC 7331", "rows": 1, "cols": 1}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "r", "type": "report", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "r", "toPort": "session"}
+        ]
+      },
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "NGC 7331", "rows": 1, "cols": 1}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "r", "type": "report", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "r", "toPort": "session"}
+        ]
+      },
+      "loop_wire": null
+    }
+  ],
+  "_about_carry_cases": [
+    "Carrying the loop wire when a stage is appended after the tail (#189 S4, #331; spec 1.5 item 6): the editor's rule, ui/src/components/flows/flowsSlice.ts carryLoopWire, which compile.py does not have, because the server only reads the wire.",
+    "graph: the flow before, the stage about to be appended already on the canvas and unwired. connect: the one wire the operator draws, out of the lane's tail into the new stage, with the id the caller mints ('drawn' in these cases). block: the TARGET whose lane it is.",
+    "result: the flow after the connect, in one write: the drawn wire last, and every pass wire into the block's next that left a stage of its lane re-sourced to the lane's new tail, keeping its id and its place. Nothing else changes.",
+    "lane_tail: the block's tail in the result. loop_wires: the ids compile.py loop_wires finds in the result, in edge order.",
+    "Graded by server/tests/test_flows_panel_lane.py (the result is a valid graph, lane_tail and loop_wires as recorded, lane_refusals is empty, and the result is the graph plus the drawn wire with only pass wires into the block's next re-sourced) and by ui/src/components/flows/__tests__/panelLane.test.ts (carryLoopWire makes result) and flowsSlice.test.ts (flowsConnect makes result, in one graph write)."
+  ],
+  "carry_cases": [
+    {
+      "id": "carry-autofocus-after-looped-cycle",
+      "spec": "1.5 item 6 / #331 case 1: an AUTOFOCUS appended after the looped FILTER CYCLE of a 3x2 becomes the tail, and the loop wire moves to it. Before AUTOFOCUS had a pass output the wire stayed on the cycle, mid-lane (M12)",
+      "block": "t",
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "loop", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "connect": {"id": "drawn", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "loop", "from": "af", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "drawn", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"}
+        ]
+      },
+      "lane_tail": "af",
+      "loop_wires": ["loop"]
+    },
+    {
+      "id": "carry-capture-after-autofocus-stranding-the-loop",
+      "spec": "1.5 item 6 / #331 case 2: the loop wire was stranded on the FILTER CYCLE behind an AUTOFOCUS (M12, a flow saved before AUTOFOCUS had a pass output). A CAPTURE appended after the AUTOFOCUS carries it on, although the tail it was drawn from held no loop wire",
+      "block": "t",
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "ha", "type": "capture", "x": 600, "y": 0, "params": {"filter": "Ha", "exposure": 300, "count": 10}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "loop", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "connect": {"id": "drawn", "from": "af", "fromPort": "focused", "to": "ha", "toPort": "run"},
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "ha", "type": "capture", "x": 600, "y": 0, "params": {"filter": "Ha", "exposure": 300, "count": 10}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "loop", "from": "ha", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "drawn", "from": "af", "fromPort": "focused", "to": "ha", "toPort": "run"}
+        ]
+      },
+      "lane_tail": "ha",
+      "loop_wires": ["loop"]
+    },
+    {
+      "id": "carry-capture-after-autofocus-holding-the-loop",
+      "spec": "1.5 item 6 / #331 case 2: the AUTOFOCUS is the tail and holds the loop wire. A CAPTURE appended after it becomes the tail and takes the wire",
+      "block": "t",
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "ha", "type": "capture", "x": 600, "y": 0, "params": {"filter": "Ha", "exposure": 300, "count": 10}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "loop", "from": "af", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "connect": {"id": "drawn", "from": "af", "fromPort": "focused", "to": "ha", "toPort": "run"},
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "ha", "type": "capture", "x": 600, "y": 0, "params": {"filter": "Ha", "exposure": 300, "count": 10}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "loop", "from": "ha", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "drawn", "from": "af", "fromPort": "focused", "to": "ha", "toPort": "run"}
+        ]
+      },
+      "lane_tail": "ha",
+      "loop_wires": ["loop"]
+    },
+    {
+      "id": "carry-guide-after-looped-capture",
+      "spec": "1.5 item 6 / #331: a GUIDE appended after the looped CAPTURE LOOP of a 2x2 becomes the tail and takes the wire, as an AUTOFOCUS does",
+      "block": "t",
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M33", "rows": 2, "cols": 2}},
+          {"id": "c1", "type": "capture", "x": 200, "y": 0, "params": {"filter": "L", "exposure": 120, "count": 20}},
+          {"id": "g", "type": "guide", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "c1", "toPort": "run"},
+          {"id": "loop", "from": "c1", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "connect": {"id": "drawn", "from": "c1", "fromPort": "complete", "to": "g", "toPort": "run"},
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M33", "rows": 2, "cols": 2}},
+          {"id": "c1", "type": "capture", "x": 200, "y": 0, "params": {"filter": "L", "exposure": 120, "count": 20}},
+          {"id": "g", "type": "guide", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "c1", "toPort": "run"},
+          {"id": "loop", "from": "g", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "drawn", "from": "c1", "fromPort": "complete", "to": "g", "toPort": "run"}
+        ]
+      },
+      "lane_tail": "g",
+      "loop_wires": ["loop"]
+    },
+    {
+      "id": "carry-single-target-control",
+      "spec": "1.4 item 4 (control): the same append on a 1x1 block. One panel has nothing to rotate between, so its pass wire stays where it was and the connect adds only the drawn wire",
+      "block": "t",
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "NGC 7331", "rows": 1, "cols": 1}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "pw", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "connect": {"id": "drawn", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "NGC 7331", "rows": 1, "cols": 1}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "pw", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "drawn", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"}
+        ]
+      },
+      "lane_tail": "af",
+      "loop_wires": []
+    },
+    {
+      "id": "carry-no-loop-wire-control",
+      "spec": "1.4 'When it is deleted' (control): the same append on a 3x2 lane with no loop wire. The operator chose panel-first, and the connect adds no wire of its own",
+      "block": "t",
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"}
+        ]
+      },
+      "connect": {"id": "drawn", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "drawn", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"}
+        ]
+      },
+      "lane_tail": "af",
+      "loop_wires": []
+    },
+    {
+      "id": "carry-foreign-pass-wire-control",
+      "spec": "1.5 item 6 / M4 (control): the same append on a 3x2 lane with no loop wire of its own, while a pass wire from the lane of another TARGET, M33, goes into its next (M4: this wire does nothing). The carry moves only a wire that leaves a stage of THIS block's lane, so the connect adds only the drawn wire. Carried, the stray wire would become M31's loop and M31 would rotate although the operator chose panel-first",
+      "block": "t",
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "t2", "type": "target", "x": 0, "y": 300, "params": {"name": "M33", "rows": 2, "cols": 2}},
+          {"id": "c2", "type": "capture", "x": 200, "y": 300, "params": {"filter": "L", "exposure": 120, "count": 20}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "t2", "fromPort": "target", "to": "c2", "toPort": "run"},
+          {"id": "stray", "from": "c2", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "connect": {"id": "drawn", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 3, "cols": 2}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "t2", "type": "target", "x": 0, "y": 300, "params": {"name": "M33", "rows": 2, "cols": 2}},
+          {"id": "c2", "type": "capture", "x": 200, "y": 300, "params": {"filter": "L", "exposure": 120, "count": 20}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "t2", "fromPort": "target", "to": "c2", "toPort": "run"},
+          {"id": "stray", "from": "c2", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "drawn", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"}
+        ]
+      },
+      "lane_tail": "af",
+      "loop_wires": []
+    }
+  ],
   "_about_legacy_examples": "compile_plan output of every Example, captured from compile.py at sha256 0e5d7efebf18f9e9adb2c6e6c0abbc8caff3758ab7443e1a85d8d5648e82eed4 BEFORE the panel lane was written (S3-LANE, 2026-09-25). None has a multi-panel block, so the canvas-order rule must keep compiling each of them byte for byte (spec 1.5). Python only; test_flows_compile.py grades it.",
   "legacy_examples": {
     "example-campaign": {

@@ -211,6 +211,166 @@ export function edgePath(p1: Point, p2: Point, mode: EdgeMode): string {
   );
 }
 
+// ----------------------------------------------------------------- loop arc
+// The panel loop (#189 S4 item 6; spec 2026-09-23 flows mosaic, 1.4 "How it is
+// drawn"). The dashed "pass done" wire runs from the tail of a TARGET's panel
+// lane back to that TARGET's `next` input, which sits LEFT of every stage the
+// wire leaves. `edgePath` for that right-to-left span is the "long spans" shape
+// its own comment describes - a sweep far right and back - and on a lane it
+// passes straight through the cards between the two ends. So this wire gets its
+// own route: out of the source port, down below the cards, left, and up into
+// `next`.
+//
+// THE CARDS' BOTTOMS COME FROM THE FORMULA. `nodeLayoutHeight` is a budget, not
+// a measurement (its comment says how far it sits from the rendered stack), and
+// the spec says the arc is "computed from the card formula and never measured
+// from the DOM": the path must be knowable in the same tick a flow loads, like
+// every other number in this file.
+
+/** How far below the lowest body card the arc's run lies (spec 1.4: "drops to
+ *  y = max(bottom of the owned body cards) + 28 px"). */
+export const LOOP_ARC_DROP = 28;
+/** The straight stub out of the source port, and into `next`, before the arc
+ *  turns. The drop and the rise stand this far outside the outermost body
+ *  cards, which is also what keeps a 22 px remove control on the drop clear of
+ *  the tail's card. */
+export const LOOP_ARC_STUB = 24;
+/** Corner radius. A square corner reads as a routing glitch; a larger radius
+ *  would eat a short stub. */
+export const LOOP_ARC_RADIUS = 10;
+
+/** A card's box by the formula: its stored position, the tier's width and the
+ *  fit height. What the arc routes around, and what its tests measure against,
+ *  so the two cannot disagree about where a card is. */
+export interface CardBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export function cardBox(node: FlowNodeRec, defs: PortTable, tier: FlowTier): CardBox {
+  return { x: node.x, y: node.y, w: nodeW(tier), h: nodeLayoutHeight(node, defs) };
+}
+
+/** The arc and the two places a layer hangs things on it. */
+export interface LoopArc {
+  /** The SVG path, both ends on their port anchors. */
+  d: string;
+  /** The height of the horizontal run. */
+  runY: number;
+  /** The middle of the run: where the label chip sits. */
+  label: Point;
+  /** The middle of the drop: a point on the wire, outside every body card and
+   *  away from the chip, where a remove control can sit. The straight-line
+   *  midpoint of the two anchors (`wireMidpoint`) is NOT on this path - for a
+   *  lane drawn left to right it lands among the lane's cards, at port height,
+   *  where no wire is drawn. */
+  handle: Point;
+}
+
+/** The route of one loop wire, or null when either port cannot be placed.
+ *
+ *  `from` is the stage the wire leaves (normally the tail of `to`'s panel lane),
+ *  `to` the TARGET whose `next` it enters, and `lane` the stages `to` owns. The
+ *  BODY is all three - the TARGET, its lane and the source - because the run
+ *  passes under every one of them, the TARGET included: `next` is on the
+ *  TARGET's left edge, so the arc reaches it from below-left.
+ *
+ *      run   = max(bottom of every body card, both anchors) + LOOP_ARC_DROP
+ *      drop  = max(right edge of every body card, the source anchor) + STUB
+ *      rise  = min(left edge of every body card, the next anchor) - STUB
+ *
+ *  Taking the extremes of the whole body rather than of the two end cards is
+ *  what keeps the two vertical legs off every card, whatever order the lane is
+ *  drawn in; the run is below all of them by construction. Only the two short
+ *  horizontal stubs at port height could meet a card, and only one drawn right
+ *  of the tail or left of the TARGET at that height, which no generator or
+ *  Example lays out. Ends as it starts, on the anchors `portPos` gives, so the
+ *  wire attaches exactly where every other wire does. */
+export function loopArc(
+  from: FlowNodeRec,
+  fromPort: string,
+  to: FlowNodeRec,
+  toPort: string,
+  lane: readonly FlowNodeRec[],
+  defs: PortTable,
+  tier: FlowTier,
+): LoopArc | null {
+  const p1 = portPos(from, fromPort, "out", defs, tier);
+  const p2 = portPos(to, toPort, "in", defs, tier);
+  if (!p1 || !p2) return null;
+
+  // One box per card: the tail is in the lane AND the source, and a hand-built
+  // graph can name the TARGET twice.
+  const seen = new Set<string>();
+  const body: CardBox[] = [];
+  for (const n of [to, ...lane, from]) {
+    if (seen.has(n.id)) continue;
+    seen.add(n.id);
+    body.push(cardBox(n, defs, tier));
+  }
+
+  const runY = Math.max(p1.y, p2.y, ...body.map((b) => b.y + b.h)) + LOOP_ARC_DROP;
+  const dropX = Math.max(p1.x, ...body.map((b) => b.x + b.w)) + LOOP_ARC_STUB;
+  const riseX = Math.min(p2.x, ...body.map((b) => b.x)) - LOOP_ARC_STUB;
+
+  const corners: Point[] = [
+    p1,
+    { x: dropX, y: p1.y },
+    { x: dropX, y: runY },
+    { x: riseX, y: runY },
+    { x: riseX, y: p2.y },
+    p2,
+  ];
+  return {
+    d: roundedPath(corners, LOOP_ARC_RADIUS),
+    runY,
+    label: { x: (dropX + riseX) / 2, y: runY },
+    handle: { x: dropX, y: (p1.y + runY) / 2 },
+  };
+}
+
+/** Just the path of `loopArc`, for a layer that hangs nothing on it. */
+export function loopArcPath(
+  from: FlowNodeRec,
+  fromPort: string,
+  to: FlowNodeRec,
+  toPort: string,
+  lane: readonly FlowNodeRec[],
+  defs: PortTable,
+  tier: FlowTier,
+): string | null {
+  return loopArc(from, fromPort, to, toPort, lane, defs, tier)?.d ?? null;
+}
+
+/** A polyline with each interior corner rounded by a quadratic of radius `r`,
+ *  shrunk to half the shorter neighbouring segment so a short stub never
+ *  overshoots. The corners are axis-aligned, so every coordinate stays a
+ *  whole number when the anchors are. Same separators as `edgePath`. */
+function roundedPath(pts: readonly Point[], r: number): string {
+  let d = `M${pts[0].x} ${pts[0].y}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const c = pts[i + 1];
+    const lin = Math.hypot(b.x - a.x, b.y - a.y);
+    const lout = Math.hypot(c.x - b.x, c.y - b.y);
+    const k = Math.min(r, lin / 2, lout / 2);
+    if (!(k > 0)) {
+      d += ` L${b.x} ${b.y}`;
+      continue;
+    }
+    const sx = b.x - ((b.x - a.x) / lin) * k;
+    const sy = b.y - ((b.y - a.y) / lin) * k;
+    const ex = b.x + ((c.x - b.x) / lout) * k;
+    const ey = b.y + ((c.y - b.y) / lout) * k;
+    d += ` L${sx} ${sy} Q${b.x} ${b.y}, ${ex} ${ey}`;
+  }
+  const z = pts[pts.length - 1];
+  return `${d} L${z.x} ${z.y}`;
+}
+
 // -------------------------------------------------------------- fit to view
 /** Pan + zoom that frames every node in `rect` (prototype lines 1022-1031).
  *

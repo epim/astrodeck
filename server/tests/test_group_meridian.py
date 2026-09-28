@@ -13,19 +13,22 @@ restart the same night keeps the one change through ``Session.group_pier``
 (#312), and those cases are in test_group_pier_state_persisted.py.
 
 Every case runs the real `_run_scheduled` on the clocked simulator
-(tests/_group_harness.py) with ``coords_clock``: the meridian countdown and
-the sim mount's pier side read the hour angle on the fake clock. The pier
-side after each hop is read from the simulator mount's own oracle, inside
-the harness's goto, the moment the slew lands.
+(tests/_group_harness.py), whose clock ``catalog.coords`` is on for every
+night (#320; the ``coords_clock`` these cases pass is that default): the
+meridian countdown and the sim mount's pier side read the hour angle on the
+fake clock. The pier side after each hop is read from the simulator mount's
+own oracle, inside the harness's goto, the moment the slew lands.
 
 THE PREMISE (I-38). The straddle test proves something only if the
 simulator mount picks its pier side from the hour angle, as the AM5 does
 (`hub.meridian_flip`'s docstring); `test_the_sim_mount_picks_its_pier_side
-_from_the_hour_angle` asserts it first. It held, so devices/sim.py is
-unchanged. The sim reads its side from where it points NOW, so it also
-reports the far side of a target it merely tracks across the meridian,
-which a real GEM does not; every count here reads the side at the moment a
-hop lands, where the two behave alike.
+_from_the_hour_angle` asserts it first. It held. Until S4-SIM the sim also
+read its side from where it pointed NOW, so it reported the far side of a
+target it merely tracked across the meridian, which a real GEM does not
+(#298); it now latches the side at each slew, sync, park and unpark
+(test_sim_pier_side_latched.py). Every count here reads the side at the
+moment a hop lands, where the two behave alike, and every case here passed
+unchanged on the latching mount.
 
 Each case names the mutant it was shown RED under, with the failure
 observed, verbatim. Every mutant was applied in a private scratch copy of

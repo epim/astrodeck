@@ -5,8 +5,17 @@
 // (`server/astrodeck/flows/tonight.py:449`). Each row is
 // `{filter, goal_h, banked_h, tonight_h, has_ledger}`, one row per DISTINCT
 // capture step, and `banked_h` is hours of ACCEPTED integration folded over the
-// whole report archive. That array IS the ledger card's per-filter rows,
+// whole report archive. Its GOAL rows ARE the ledger card's per-filter rows,
 // one-to-one. Nothing here computes a banked figure the server did not send.
+//
+// `goal_h === null` IS NO GOAL, NOT A GOAL OF 0. Since #189 S4 (S4 orchestrator
+// ruling 5, #338) the array also carries one row per FILTER CYCLE, with
+// `goal_h: null` because a cycle sets no integration goal. This card is a goal
+// ledger: its header is "banked of goal", its projection is the goal less the
+// bank. A row with no goal has no place in either, so it is left out (`hasGoal`)
+// and a flow whose only rows are cycles is no campaign, exactly as before S4
+// sent those rows. Reading the null as 0 drew "goal 0 hours" and "0.0 of 0 h"
+// for a flow with no goal at all.
 //
 // `banked_h === null` IS NOT ZERO. "0 of 45 banked" says the rig looked and
 // found nothing; "not counted" says nobody has looked. Only the first should
@@ -152,6 +161,15 @@ function publish(next: typeof raw): void {
 
 function num(v: unknown, fallback = 0): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+/** A budget row the goal ledger can draw: one whose `goal_h` is a number. A
+ *  FILTER CYCLE's row carries `goal_h: null` (no goal, see the header), and a
+ *  row with no goal would otherwise reach `num` and read as a goal of 0. */
+function hasGoal(r: unknown): boolean {
+  const g = r != null && typeof r === "object"
+    ? (r as Record<string, unknown>).goal_h : undefined;
+  return typeof g === "number" && Number.isFinite(g);
 }
 
 function parseNight(v: unknown): NightWindow | null {
@@ -346,7 +364,7 @@ export function useCampaign(): CampaignState {
   const acceptedTonight = acceptedByFilter(session, nightKey);
   const exposures = exposureByFilter(session?.plan);
 
-  const budget: BudgetRow[] = raw.data.budget.map((r) => {
+  const budget: BudgetRow[] = raw.data.budget.filter(hasGoal).map((r) => {
     const o = (r ?? {}) as Record<string, unknown>;
     const filter = String(o.filter ?? "-");
     const liveH = (acceptedTonight.get(filter) ?? 0) * (exposures.get(filter) ?? 0) / 3600;
@@ -361,7 +379,9 @@ export function useCampaign(): CampaignState {
     };
   });
 
-  if (budget.length === 0) return IDLE;   // no per-filter goals: not a campaign
+  // No per-filter goals, which includes a budget of FILTER CYCLE rows alone:
+  // not a campaign.
+  if (budget.length === 0) return IDLE;
 
   const hasLedger = budget.some((b) => b.has_ledger);
   const goalH = budget.reduce((a, b) => a + b.goal_h, 0);

@@ -462,8 +462,14 @@ class TestM5LiveField:
 class TestM6Convergence:
     """Spec 1.8 and Appendix A.1, recomputed through framing."""
 
-    def test_the_1x4_at_10pc_at_dec_75_is_warned(self):
-        """Mutant "threshold 50%" turned this red: ``AssertionError:
+    def test_the_4x1_at_10pc_at_dec_75_is_warned(self):
+        """Spec 1.8's worked case: 4 columns by 1 row, the block this builds
+        (``rows=1, cols=4``). It was named rows by columns until S4
+        orchestrator ruling 1 (#339) wrote a grid's size columns by rows, as
+        the Example and the framing card do, and in words where an operator
+        reads it.
+
+        Mutant "threshold 50%" turned this red: ``AssertionError:
         ('convergence turns neighbouring panels', [])``. So did "drop M6"."""
         share = framing.convergence_share(_spec(1, 4, 0.10, 75.0))
         assert share == pytest.approx(0.389, abs=0.0005)
@@ -488,7 +494,7 @@ class TestM6Convergence:
                                        rotation=0)), M6)
 
     def test_just_over_a_quarter_is_warned(self):
-        """The same 1x4 at 10% at Dec 68 uses 25.8%, just over spec 1.8's
+        """The same 4x1 at 10% at Dec 68 uses 25.8%, just over spec 1.8's
         25%. The two cases above are 38.9% and 3.1%, so on their own they
         hold the line anywhere between. Mutant "threshold 35%" turned this
         red: ``AssertionError: ('convergence turns neighbouring panels',
@@ -511,7 +517,7 @@ class TestM6Convergence:
                                        dec="+66 00 00", rotation=0)), M6)
 
     def test_past_the_budget_m15_speaks_instead(self):
-        """A 1x4 at 10% at Dec 80 uses 58.8%: M15's danger, not M6 beside it.
+        """A 4x1 at 10% at Dec 80 uses 58.8%: M15's danger, not M6 beside it.
         Mutant "M6 beside M15" turned this red: ``AssertionError: assert not
         [Issue(text='▸ TARGET M31 - at Dec 80 meridian convergence turns
         neighbouring panels against each other, which uses 58.8% of their 10%
@@ -971,7 +977,7 @@ class TestM14TargetDone:
 
 class TestM15BudgetSpent:
     def test_convergence_past_half_the_overlap_is_a_danger(self):
-        """A 1x4 at 10% at Dec 80. Mutant "k = 0.5" (the angle budget taken
+        """A 4x1 at 10% at Dec 80. Mutant "k = 0.5" (the angle budget taken
         whole, ignoring convergence) turned this red: ``AssertionError:
         ('leaves no room for camera angle error', [('warn', '▸ TARGET M31 -
         at Dec 80 meridian convergence turns neighbouring panels against each
@@ -989,7 +995,7 @@ class TestM15BudgetSpent:
             f"uses {share * 100:.1f}% of the overlap, which leaves no room for "
             f"camera angle error. Widen the overlap or use fewer columns.")
 
-    def test_the_1x4_at_10pc_at_dec_75_does_not_trip_it(self):
+    def test_the_4x1_at_10pc_at_dec_75_does_not_trip_it(self):
         """Spec 1.8: it uses 38.9% and keeps 0.47 deg of tolerance. Mutant
         "threshold 25%" (M15 at M6's line) turned this red: ``AssertionError:
         assert not [Issue(text='▸ TARGET M31 - at Dec 75 meridian convergence

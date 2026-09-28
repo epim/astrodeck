@@ -1,0 +1,43 @@
+{
+  "_about": [
+    "Worked cases for a TARGET's `skip` text (spec 2026-09-23 flows mosaic, 3.1 and 3.2): what compile.parse_skip reads out of it on a grid of `rows` x `cols`.",
+    "`skip` is the 1-based [row, col] pairs, each panel once, in grid order; `unread` is every entry that names no panel of this grid, in the order typed.",
+    "Graded twice against this one file: server/tests/test_flows_skip_fixture.py against parse_skip itself, and ui/src/components/flows/framing/__tests__/framingModel.test.ts against the modal's mirror (framingModel.ts parseSkip). A case added here is graded on both sides on the next run. Do not copy it into either test.",
+    "The whitespace and digit cases are there because Python's str.strip(), `\\s` and `\\d` are Unicode-wide and JavaScript's trim() and `\\d` are not the same sets: a mirror written with the JS defaults reads a fullwidth '\uff13-1' as nothing (the run would skip a panel the modal draws as live) and strips a BOM the server keeps."
+  ],
+  "cases": [
+    {"id": "two panels, comma", "text": "3-1, 3-2", "rows": 3, "cols": 2, "skip": [[3, 1], [3, 2]], "unread": []},
+    {"id": "empty", "text": "", "rows": 3, "cols": 2, "skip": [], "unread": []},
+    {"id": "blank", "text": "   ", "rows": 3, "cols": 2, "skip": [], "unread": []},
+    {"id": "semicolons, spaces round the dash, empty entries", "text": " 1 - 2 ;2-1,,", "rows": 3, "cols": 3, "skip": [[1, 2], [2, 1]], "unread": []},
+    {"id": "row zero names no panel", "text": "0-1", "rows": 3, "cols": 3, "skip": [], "unread": ["0-1"]},
+    {"id": "col zero names no panel", "text": "1-0", "rows": 3, "cols": 3, "skip": [], "unread": ["1-0"]},
+    {"id": "row past the last", "text": "4-1", "rows": 3, "cols": 3, "skip": [], "unread": ["4-1"]},
+    {"id": "col past the last", "text": "1-4", "rows": 3, "cols": 3, "skip": [], "unread": ["1-4"]},
+    {"id": "the last panel of a 10x10", "text": "10-10", "rows": 10, "cols": 10, "skip": [[10, 10]], "unread": []},
+    {"id": "a 1x1 skipping its one panel", "text": "1-1", "rows": 1, "cols": 1, "skip": [[1, 1]], "unread": []},
+    {"id": "a panel named twice is skipped once", "text": "2-2,2-2", "rows": 3, "cols": 3, "skip": [[2, 2]], "unread": []},
+    {"id": "grid order, not typed order", "text": "3-3, 1-1, 2-1", "rows": 3, "cols": 3, "skip": [[1, 1], [2, 1], [3, 3]], "unread": []},
+    {"id": "good and bad mixed, unread in typed order", "text": "1-1, x, 9-9, 2-2", "rows": 3, "cols": 3, "skip": [[1, 1], [2, 2]], "unread": ["x", "9-9"]},
+    {"id": "leading zeros", "text": "01-002", "rows": 3, "cols": 3, "skip": [[1, 2]], "unread": []},
+    {"id": "letters", "text": "a-b", "rows": 3, "cols": 3, "skip": [], "unread": ["a-b"]},
+    {"id": "three numbers", "text": "1-2-3", "rows": 3, "cols": 3, "skip": [], "unread": ["1-2-3"]},
+    {"id": "two dashes", "text": "1--2", "rows": 3, "cols": 3, "skip": [], "unread": ["1--2"]},
+    {"id": "a plus sign", "text": "+1-2", "rows": 3, "cols": 3, "skip": [], "unread": ["+1-2"]},
+    {"id": "a decimal", "text": "1.0-2", "rows": 3, "cols": 3, "skip": [], "unread": ["1.0-2"]},
+    {"id": "a space for a dash", "text": "1 2", "rows": 3, "cols": 3, "skip": [], "unread": ["1 2"]},
+    {"id": "no dash at all", "text": "12", "rows": 3, "cols": 3, "skip": [], "unread": ["12"]},
+    {"id": "an en dash is not a dash (no typographic fold)", "text": "1\u20132", "rows": 3, "cols": 3, "skip": [], "unread": ["1\u20132"]},
+    {"id": "a trailing newline is stripped", "text": "3-1\n", "rows": 3, "cols": 3, "skip": [[3, 1]], "unread": []},
+    {"id": "no-break and em spaces are stripped", "text": "\u00a01-2\u2003", "rows": 3, "cols": 3, "skip": [[1, 2]], "unread": []},
+    {"id": "no-break spaces round the dash", "text": "1\u00a0-\u00a02", "rows": 3, "cols": 3, "skip": [[1, 2]], "unread": []},
+    {"id": "Python strips the file separator, JS trim does not", "text": "\u001c1-2\u001c", "rows": 3, "cols": 3, "skip": [[1, 2]], "unread": []},
+    {"id": "the file separator round the dash", "text": "1\u001c-2", "rows": 3, "cols": 3, "skip": [[1, 2]], "unread": []},
+    {"id": "Python strips NEL", "text": "\u00851-2", "rows": 3, "cols": 3, "skip": [[1, 2]], "unread": []},
+    {"id": "Python keeps a BOM, JS trim strips it", "text": "\ufeff1-2", "rows": 3, "cols": 3, "skip": [], "unread": ["\ufeff1-2"]},
+    {"id": "a zero-width space is not whitespace", "text": "1\u200b-2", "rows": 3, "cols": 3, "skip": [], "unread": ["1\u200b-2"]},
+    {"id": "fullwidth digit three", "text": "\uff13-1", "rows": 3, "cols": 3, "skip": [[3, 1]], "unread": []},
+    {"id": "Arabic-Indic digits", "text": "\u0663-\u0661", "rows": 3, "cols": 3, "skip": [[3, 1]], "unread": []},
+    {"id": "mathematical bold digit two (outside the BMP)", "text": "\ud835\udfd0-1", "rows": 3, "cols": 3, "skip": [[2, 1]], "unread": []}
+  ]
+}

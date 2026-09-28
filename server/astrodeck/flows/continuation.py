@@ -64,8 +64,9 @@ class ReplaceReport:
 
     ``skipped`` lists, apart from ``dropped``, the old steps that hold frames
     and that the new plan lacks BECAUSE their panel is skipped: the old
-    target that holds the step is in a ``skipped_ids`` of the new plan's
-    groups. ``skipped_frames`` is how many ledger entries sit on them. They
+    target that holds the step is one the new plan skips, in a group's
+    ``skipped_ids`` or in the plan's own (``plan_skipped_ids``).
+    ``skipped_frames`` is how many ledger entries sit on them. They
     stop counting only while the panel is skipped, and re-enabling it brings
     the same step ids back (``kept``), so they are not a loss to refuse.
     """
@@ -82,6 +83,21 @@ class ReplaceReport:
         skips a panel, and a key added here changes the answer of every
         PATCH, skip or none."""
         return {"kept": self.kept, "new": self.new, "dropped": self.dropped}
+
+
+def plan_skipped_ids(plan: SequencePlan) -> set[str]:
+    """Every target id ``plan`` skips: each group's ``skipped_ids``, and the
+    plan's own, which names the panels of a block the compile left out whole
+    because every one of them is skipped (#335).
+
+    THE ONE READING of "which panels does this plan skip", for CONTINUE
+    (``plan_replace_report``, of the new plan and of the session's own) and
+    for the progress card (``progress._orphaned``), so the card and CONTINUE
+    cannot disagree about which frames are lost. Read from the groups alone,
+    as S3 read it, a mosaic with every panel skipped left no trace, so
+    CONTINUE refused its frames as dropped while the card showed them held."""
+    return ({tid for g in plan.groups for tid in g.skipped_ids}
+            | set(plan.skipped_ids))
 
 
 def plan_replace_report(session: Session,
@@ -125,12 +141,18 @@ def plan_replace_report(session: Session,
     ``accept_dropped`` BEFORE it was skipped is named again when the panel
     comes back, since nothing still says it was let go of. Asked twice,
     never silently lost.
+
+    A BLOCK WITH EVERY PANEL SKIPPED IS SKIPPED TOO (#335). The compile
+    leaves such a block out whole, with no group, and names its panels in
+    the plan's own ``skipped_ids`` instead; ``plan_skipped_ids`` reads both,
+    for the new plan and for the session's, so everything above holds for
+    it as for a block that still shoots a panel.
     """
     old_ids = {st.id for t in session.plan.targets for st in t.steps}
     new_ids = {st.id for t in new_plan.targets for st in t.steps}
     with_frames = {f.step_id for f in session.frames}
-    skipped_targets = {tid for g in new_plan.groups for tid in g.skipped_ids}
-    held_back = {tid for g in session.plan.groups for tid in g.skipped_ids}
+    skipped_targets = plan_skipped_ids(new_plan)
+    held_back = plan_skipped_ids(session.plan)
     parked = {f.step_id for f in session.frames if f.target_id in held_back}
     on_skipped = ({st.id for t in session.plan.targets
                    if t.id in skipped_targets for st in t.steps}

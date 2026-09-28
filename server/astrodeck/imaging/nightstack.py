@@ -66,11 +66,13 @@ from typing import NamedTuple
 import numpy as np
 
 from ..calibration.stacker import sigma_clip_mean
+from .fitsio import full_name
 from .stars import detect_stars
 
 __all__ = [
     "FrameRef", "night_of", "parse_frame_name", "scan_frames", "group_by_night",
-    "FitsFrames", "load_frame", "build_master", "load_masters", "calibrate",
+    "FitsFrames", "load_frame", "build_master", "flats_by_filter",
+    "load_masters", "calibrate",
     "Alignment", "register_translation", "compose", "place", "place_crop",
     "bin_mean", "box_blur", "combine", "fill_nan",
     "StretchParams", "stretch_params", "stretch",
@@ -324,6 +326,27 @@ def _fits_in(directory) -> list[Path]:
                   if p.is_file() and p.suffix.lower() in FITS_SUFFIXES)
 
 
+def flats_by_filter(paths: Iterable[Path]) -> dict[str, list[Path]]:
+    """Flat frames grouped by the filter they were shot through, upper-cased,
+    each group in the order given. A header that will not read is left out.
+
+    The filter is the slot's name AS TYPED (``fitsio.full_name``, #332), not
+    the FILTER card: the card is folded to ASCII, and slots named H-alpha and
+    H-beta in Greek both write 'H?', which grouped every flat of both into
+    one master. Upper-cased as this module has always keyed its flats, which
+    keeps the two Greek letters apart (their capitals differ too).
+    """
+    from astropy.io import fits
+    groups: dict[str, list[Path]] = {}
+    for p in paths:
+        try:
+            name = full_name(fits.getheader(p), "FILTER").strip().upper()
+        except Exception:
+            continue
+        groups.setdefault(name, []).append(Path(p))
+    return groups
+
+
 def load_masters(bias_dir=None, flats_dir=None, filters: Sequence[str] = (),
                  *, notes: list[str] | None = None
                  ) -> tuple[np.ndarray | None, dict[str, np.ndarray]]:
@@ -333,8 +356,9 @@ def load_masters(bias_dir=None, flats_dir=None, filters: Sequence[str] = (),
     sensor, and a run that reduces the L channel has no use for the other six.
     Every failure is recorded in ``notes`` and swallowed — a missing or
     unreadable calibration directory must degrade the picture, not stop it.
+    The flats are grouped by :func:`flats_by_filter`, so ``filters`` and the
+    returned keys are slot names as typed, upper-cased.
     """
-    from astropy.io import fits
     log = notes if notes is not None else []
     bias = None
     if bias_dir:
@@ -351,14 +375,7 @@ def load_masters(bias_dir=None, flats_dir=None, filters: Sequence[str] = (),
     flats: dict[str, np.ndarray] = {}
     wanted = {f.upper() for f in filters}
     if flats_dir and wanted:
-        by_filter: dict[str, list[Path]] = {}
-        for p in _fits_in(flats_dir):
-            try:
-                name = str(fits.getheader(p).get("FILTER", "")).strip().upper()
-            except Exception:
-                continue
-            if name in wanted:
-                by_filter.setdefault(name, []).append(p)
+        by_filter = flats_by_filter(_fits_in(flats_dir))
         for name in sorted(wanted):
             paths = by_filter.get(name, [])
             if not paths:

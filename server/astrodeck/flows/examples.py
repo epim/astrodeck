@@ -281,8 +281,17 @@ def _m31_mosaic() -> FlowRecord:
     One TARGET block, three columns by two rows at 25% overlap, and the
     dashed "pass done" wire from the FILTER CYCLE back to TARGET "next panel":
     the circle the owner asked for. It compiles to six panels in ONE ROTATING
-    GROUP, so each pass of the cycle hops to the next panel and a night cut
-    short leaves all six started rather than the last ones empty.
+    GROUP at one pass a visit, least complete first, so each pass of the
+    cycle hops to the next panel: every full rotation deepens every panel,
+    and a night cut short leaves the panels within a pass of each other
+    rather than the last ones empty.
+
+    THE TAGLINE SAYS ONLY THAT (#189 S4, item 14). It promised "a night cut
+    short still covers all of M31", which holds only once the first
+    rotation is done: cut short after three visits, three panels hold
+    nothing. ``test_flows_example_taglines`` pins the words and the three
+    settings they stand on (a rotating group, one pass a visit, no minimum
+    visit), so a change to either turns it red.
 
     THE ANGLE IS SET, NEVER DEFAULTED (spec 1.8, ruling 9): Rotate to PA 55.
     ``framing.compute_mosaic`` steps the columns along ``(cos r, sin r)`` in
@@ -301,7 +310,8 @@ def _m31_mosaic() -> FlowRecord:
         name="M31 3x2, rotating",
         tagline="One TARGET laid out as six panels along the galaxy, 25% "
                 "overlap: every pass of the LRGB cycle hops to the next panel, "
-                "so a night cut short still covers all of M31.",
+                "so each full rotation deepens every panel, and a night cut "
+                "short leaves the panels within a pass of each other.",
         graph=_graph(
             [("n1", "dusk", 30, 60), ("n2", "target", 270, 60),
              ("n5", "autofocus", 510, 60), ("n6", "guide", 750, 60),

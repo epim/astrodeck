@@ -53,6 +53,16 @@ PARK_POLL_S = 1.0
 #: Per-attempt cap on the park poll. Two attempts, so the worst case is twice
 #: this. Was a bare 60.0 inline; named because the retry has to quote it.
 PARK_WAIT_S = 60.0
+#: How long a ``:hP#`` may leave the mount neither moving nor parked before
+#: it is taken as lost and sent once more (S4 orchestrator ruling 9, #342).
+#: A few seconds, far shorter than ``PARK_WAIT_S``: a park the mount took is
+#: visibly slewing within a second or two. It also has a CEILING, and the
+#: ceiling is computed rather than chosen: "not moving" is judged by the
+#: position changing by less than ``SETTLE_DEG``, and a mount standing still
+#: with its drive off sees its RA advance at the sidereal rate, 0.0042 deg/s.
+#: Over this window plus one poll (6 s) that is 0.025 deg; past about 11 s it
+#: would reach ``SETTLE_DEG`` and a lost park would read as a slew.
+PARK_NOOP_DETECT_S = 5.0
 #: How long ``_park_now`` waits for a halt window to close before it starts.
 #: Bounded, and NOT a grace period: the window ends on EVIDENCE (see
 #: ``_note_halt``, which refuses to invent a settling time because nobody has
@@ -105,6 +115,16 @@ def _goto_refusal_words(code: str) -> str:
     return _GOTO_REFUSALS.get(code) or (
         f"the mount refused the goto (code {code}); its altitude, meridian or "
         f"park limits are the usual reasons")
+
+
+def _moved_deg(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """How far apart two (RA hours, Dec degrees) reads are, in the units the
+    ``SETTLE_DEG`` criterion uses: the larger of the RA step times 15 and the
+    Dec step. RA is cyclic, so the step is taken the short way round: a mount
+    standing still at 23:59:58 reads 00:00:03 five seconds later, and that is
+    0.02 degrees of sidereal drift, not 360 degrees of slew."""
+    d_ra = abs(a[0] - b[0]) % 24.0
+    return max(min(d_ra, 24.0 - d_ra) * 15.0, abs(a[1] - b[1]))
 
 #: Pulse-guide emulation (fw 1.8.8, all verified at scope 2026-07-20):
 #: - The LX200 :Mg*# pulse commands PARSE but are INERT over serial.
@@ -776,14 +796,82 @@ class ZwoAm5Telescope(Telescope):
             f"unparked){why}")
 
     async def _send_park_and_wait(self, timeout_s: float) -> bool:
-        """One ``:hP#`` and a bounded poll of the parked flag. True when parked."""
+        """One ``:hP#`` and a bounded poll of the parked flag. True when parked.
+
+        A LOST ``:hP#`` IS SENT AGAIN WITHIN SECONDS (S4 orchestrator ruling
+        9, #342). ``:hP#`` is fire-and-forget, so a park the mount throws away
+        (a guide pulse's move still on the wire when it lands, #311) looks
+        exactly like one it took, and this poll used to find out only at
+        ``timeout_s``: 60 s before the retry in ``_park_now``, with the roof
+        waiting on this park in the rain, and 60 s inside ``park()`` where the
+        engine's "park again at once" (S3 orchestrator ruling 3) can never
+        reach it. So for its first ``PARK_NOOP_DETECT_S`` the poll also
+        watches for motion, and a mount still neither moving nor parked by
+        then gets the command once more. The attempt then runs on to the SAME
+        deadline: the re-send buys time inside the attempt and never lengthens
+        it, so a mount that ignores everything still fails in ``_park_now``'s
+        two ``PARK_WAIT_S`` attempts, as it always did.
+
+        THE RE-SEND IS ONLY THE COMMAND AGAIN, which is all ruling 9 asks. It
+        recovers a park lost to something that has since passed. It does NOT
+        recover one lost because tracking is back on (an east pulse ends with
+        ``:Te#``): the second ``:hP#`` meets the same documented no-op, and
+        the recovery there is still ``_park_now``'s second attempt, which stops
+        tracking first. #311's other two fixes, an unconditional ``:Td#``
+        before the park and a park that takes the pulse lock, are not part of
+        the ruling and are not built here.
+
+        "MOVING" IS THE POSITION CHANGING, from the read taken as the command
+        goes out, by more than ``SETTLE_DEG``: the one observable this driver
+        already trusts to mean motion (``slew()``'s settle, ``_note_halt``).
+        NOT ``is_slewing()``, which is ``slew()``'s own flag around a goto and
+        is never set by ``:hP#`` -- polling it would call every real park a
+        no-op and re-send into a moving mount. NOT ``:GU#`` either: the
+        protocol doc records its slewing and parked bits as unverified against
+        live states.
+
+        A RE-SEND NEEDS EVIDENCE. Only two position reads that both answered
+        and agree can prove the mount still; a read that fails proves nothing,
+        so a mount whose position will not come back is never re-sent, and
+        falls back to the retry ``_park_now`` has always made. A failed read
+        does not fail the park either: the parked flag decides that."""
         await self._request("hP", reply="none")
-        deadline = asyncio.get_running_loop().time() + timeout_s
-        while asyncio.get_running_loop().time() <= deadline:
+        loop = asyncio.get_running_loop()
+        sent_at = loop.time()
+        deadline = sent_at + timeout_s
+        ref = await self._park_probe()      # where the mount stood at :hP#
+        watching = True                     # until it moves or is re-sent
+        while loop.time() <= deadline:
             await asyncio.sleep(PARK_POLL_S)
             if await self.is_parked():
                 return True
+            if not watching:
+                continue
+            now = await self._park_probe()
+            if now is None:
+                continue                    # no evidence either way
+            if ref is None:
+                ref = now                   # the first read that answered
+            elif _moved_deg(ref, now) >= SETTLE_DEG:
+                watching = False            # slewing: the park took
+            elif loop.time() - sent_at >= PARK_NOOP_DETECT_S:
+                watching = False
+                bus.log("warning",
+                        f"{self.name}: the park command has not moved the "
+                        f"mount in {loop.time() - sent_at:.0f}s and it does "
+                        f"not report parked, so the mount looks to have "
+                        f"dropped it; sending it once more", "mount")
+                await self._request("hP", reply="none")
         return False
+
+    async def _park_probe(self) -> tuple[float, float] | None:
+        """The mount's position for the park's motion check, or None when it
+        will not say. Only the driver's own error is absorbed: a mount that
+        will not answer still gets its park, and anything else is a bug."""
+        try:
+            return await self.get_position()
+        except DeviceError:
+            return None
 
     async def _drain_halt(self) -> None:
         """Wait out a halt this driver opened, before commanding anything that

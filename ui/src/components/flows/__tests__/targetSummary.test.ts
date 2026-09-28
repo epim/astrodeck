@@ -1,0 +1,393 @@
+// targetSummary.test.ts - the TARGET card's footer line and the loop wire's
+// words (#189 S4 item 6; spec 2026-09-23 flows mosaic, 1.2 "Card footer" and
+// 1.4 "How it is drawn"; S4 orchestrator ruling 1: a grid is written columns
+// by rows).
+//
+//   Run directly:  node --import tsx src/components/flows/__tests__/targetSummary.test.ts
+//   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
+//
+// WHAT IS PINNED.
+//   * The footer's three designed forms, verbatim:
+//       rotating mosaic   M31 · 3x2 · PA 30.0 · 25% · rotate
+//       mosaic, no loop   M31 · 3x2 · one panel at a time
+//       single target     NGC 7331 · any angle
+//     with 3x2 meaning three columns by two rows, and "rotate" read from the
+//     GRAPH (the block's loop wire), never from a param.
+//   * The loop chip: "every pass: next panel · N panels", N the live panels the
+//     COMPILE's entry for the block holds (rows x cols minus the parsed skip),
+//     no count before a compile or when the compile no longer describes the
+//     block, and no chip at all on a wire into `next` that is not the block's
+//     loop wire.
+//   * The contract two other test files lean on: the footer calls the
+//     vocabulary's own `sum` exactly once (flowNodeDom.test.tsx and
+//     flowProgressChip.test.tsx count card renders through it).
+//
+// Each named mutation was run in a private scratch copy of ui/, and what it
+// turned red is recorded beside the test.
+
+import {
+  LOOP_ARC_DASH, LOOP_CHIP_WORDS, livePanels, loopArcOf, loopArcTarget, loopChip,
+  targetFooter, targetLoops, targetSummary,
+} from "../targetSummary";
+import { loopArc } from "../geometry";
+import { NODE_DEFS } from "../nodeDefs";
+import { panelLane } from "../panelLane";
+import type { FlowEdgeRec, FlowNodeRec, FlowNodeType } from "../flowsTypes";
+
+// ---------------------------------------------------------------- harness
+let passed = 0;
+let failed = 0;
+const failures: string[] = [];
+
+function test(name: string, fn: () => void): void {
+  try { fn(); passed++; }
+  catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
+}
+function eq<T>(a: T, b: T, msg = ""): void {
+  if (a !== b) throw new Error(`${msg}\n    expected ${JSON.stringify(b)}\n    got      ${JSON.stringify(a)}`);
+}
+function assert(cond: unknown, msg: string): void {
+  if (!cond) throw new Error(msg);
+}
+
+// ---------------------------------------------------------------- fixtures
+type Params = Record<string, string | number>;
+
+function node(id: string, type: FlowNodeType, x: number, params: Params = {}): FlowNodeRec {
+  return { id, type, x, y: 60, params: { ...NODE_DEFS[type].params, ...params } };
+}
+let edgeN = 0;
+function wire(from: string, fromPort: string, to: string, toPort: string): FlowEdgeRec {
+  edgeN += 1;
+  return { id: `w${edgeN}`, from, fromPort, to, toPort };
+}
+
+/** M31 at three columns by two rows, Rotate to PA 30, 25% overlap. */
+const M31_PARAMS: Params = {
+  name: "M31", rows: 2, cols: 3, overlap: 25, angle: "Rotate to PA", rotation: 30,
+};
+const T = node("t", "target", 100, M31_PARAMS);
+const AF = node("af", "autofocus", 340);
+const CY = node("cy", "cycle", 580);
+const ARM = wire("t", "target", "af", "run");
+const RUN = wire("af", "focused", "cy", "run");
+const LOOP = wire("cy", "pass", "t", "next");
+
+/** The spec's worked lane: TARGET -> AUTOFOCUS -> FILTER CYCLE, and the
+ *  dashed wire from the cycle's "pass done" back to "next panel". */
+const LOOPED = { nodes: [T, AF, CY], edges: [ARM, RUN, LOOP] };
+const UNLOOPED = { nodes: [T, AF, CY], edges: [ARM, RUN] };
+
+const SINGLE = node("s", "target", 100, { name: "NGC 7331", angle: "Any angle", rotation: -1 });
+const ALONE = { nodes: [SINGLE], edges: [] };
+
+/** A compile answer's plan with one entry for the block, in compile_plan's
+ *  own shape (server flows/compile.py `_target_entry`). */
+function planWith(entry: Record<string, unknown>): Record<string, unknown> {
+  return { targets: [{ name: "other", node_id: "x", mosaic: null }, entry] };
+}
+const M31_ENTRY = { node_id: "t", mosaic: { rows: 2, cols: 3, skip: [[2, 3]] } };
+
+// ============================================================ the footer
+
+// MUTANT "loop read from params" (targetLoops answers isMultiPanel(node): any
+// mosaic reads as rotating, the graph unread). This case stays green; the
+// unlooped one below goes red.
+test("a rotating mosaic: 'M31 · 3x2 · PA 30.0 · 25% · rotate'", () => {
+  eq(targetSummary(T, LOOPED), "M31 · 3x2 · PA 30.0 · 25% · rotate", "the rotating mosaic's footer");
+});
+
+// MUTANT "loop read from params". Observed, targetSummary.test 17/20:
+//   x a mosaic without the loop wire: 'M31 · 3x2 · one panel at a time': the
+//     panel-first mosaic's footer
+//     expected "M31 · 3x2 · one panel at a time"
+//     got      "M31 · 3x2 · PA 30.0 · 25% · rotate"
+test("a mosaic without the loop wire: 'M31 · 3x2 · one panel at a time'", () => {
+  eq(targetSummary(T, UNLOOPED), "M31 · 3x2 · one panel at a time", "the panel-first mosaic's footer");
+});
+
+test("a single target: 'NGC 7331 · any angle'", () => {
+  eq(targetSummary(SINGLE, ALONE), "NGC 7331 · any angle", "the single target's footer");
+});
+
+// MUTANT "rows x cols" (the size written `${rows}x${cols}`). Observed,
+// targetSummary.test 14/20 (every mosaic case; this one):
+//   x the size is COLUMNS x ROWS (S4 orchestrator ruling 1): 2 rows of 3 read
+//     3x2: three columns by two rows
+//     expected "3x2"
+//     got      "2x3"
+//   x a rotating mosaic: 'M31 · 3x2 · PA 30.0 · 25% · rotate': the rotating
+//     mosaic's footer
+//     expected "M31 · 3x2 · PA 30.0 · 25% · rotate"
+//     got      "M31 · 2x3 · PA 30.0 · 25% · rotate"
+test("the size is COLUMNS x ROWS (S4 orchestrator ruling 1): 2 rows of 3 read 3x2", () => {
+  const wide = node("t", "target", 100, { ...M31_PARAMS, rows: 2, cols: 3 });
+  const tall = node("t", "target", 100, { ...M31_PARAMS, rows: 3, cols: 2 });
+  eq(targetSummary(wide, { nodes: [wide, AF, CY], edges: [ARM, RUN] }).split(" · ")[1], "3x2",
+    "three columns by two rows");
+  eq(targetSummary(tall, { nodes: [tall, AF, CY], edges: [ARM, RUN] }).split(" · ")[1], "2x3",
+    "two columns by three rows");
+});
+
+// A pass wire from a stage that is not the lane's tail is M12, and the
+// compile does not loop on it (`loop_wires`, which panelLane.ts mirrors). The
+// footer must say what the run will do. MUTANT "any wire into next loops"
+// (targetLoops asks for any edge into the block's `next`). Observed,
+// targetSummary.test 19/20:
+//   x a pass wire from mid-lane is not the loop: the footer says one panel at
+//     a time: the cycle is not the tail once a CAPTURE follows it
+//     expected false
+//     got      true
+test("a pass wire from mid-lane is not the loop: the footer says one panel at a time", () => {
+  const cap = node("cap", "capture", 820);
+  const g = {
+    nodes: [T, AF, CY, cap],
+    edges: [ARM, RUN, wire("cy", "complete", "cap", "run"), wire("cy", "pass", "t", "next")],
+  };
+  eq(targetLoops(T, g), false, "the cycle is not the tail once a CAPTURE follows it");
+  eq(targetSummary(T, g), "M31 · 3x2 · one panel at a time", "the footer of a mid-lane pass wire");
+});
+
+test("a loop wire into a 1x1 block does not make it a mosaic", () => {
+  const one = node("t", "target", 100, { ...M31_PARAMS, rows: 1, cols: 1 });
+  const g = { nodes: [one, AF, CY], edges: [ARM, RUN, LOOP] };
+  eq(targetLoops(one, g), false, "one panel has nothing to rotate between");
+  eq(targetSummary(one, g), "M31 · PA 30.0", "a single target at Rotate to PA 30");
+});
+
+// THE ANGLE, as the compile reads it (compile.py `angle_code` over
+// `target_angle`): a stored choice this build offers, else derived from the
+// rotation alone. MUTANT "angle defaulted to any" (a missing `angle` read as
+// "Any angle"). Observed, targetSummary.test 19/20:
+//   x the angle: any, a PA to rotate to, or a fixed camera's PA, derived when
+//     unstored: no stored angle: rotation 0 is north up, a real PA
+//     expected "M31 · PA 0.0"
+//     got      "M31 · any angle"
+test("the angle: any, a PA to rotate to, or a fixed camera's PA, derived when unstored", () => {
+  const at = (p: Params) => targetSummary(node("s", "target", 0, { name: "M31", ...p }),
+    { nodes: [], edges: [] });
+  eq(at({ angle: "Any angle", rotation: -1 }), "M31 · any angle", "any angle");
+  eq(at({ angle: "Rotate to PA", rotation: 23.4 }), "M31 · PA 23.4", "rotate to PA");
+  eq(at({ angle: "Camera fixed at PA", rotation: "23.4" }), "M31 · fixed PA 23.4", "a fixed camera");
+  eq(at({ angle: "", rotation: 0 }), "M31 · PA 0.0", "no stored angle: rotation 0 is north up, a real PA");
+  eq(at({ angle: "", rotation: -1 }), "M31 · any angle", "no stored angle: a negative rotation is any angle");
+  eq(at({ angle: "Sideways", rotation: 12 }), "M31 · PA 12.0",
+    "a word this build does not offer is read as the rotation alone says it");
+});
+
+// compile.py `angle_code` looks the stored word up after `.strip()`, so a
+// padded word (a hand edit) is still that choice to the run. Added by the
+// S4-UARC verifier. MUTANT "angle words not trimmed" (angleWords reads
+// `targetAngle(p)` without `.trim()`), run in a private scratch copy of ui/.
+// Observed, targetSummary.test 20/21:
+//   x a padded angle word reads as the compile strips it: a fixed camera,
+//     padded: the run holds the camera, it does not rotate to 23.4
+//     expected "M31 · fixed PA 23.4"
+//     got      "M31 · PA 23.4"
+test("a padded angle word reads as the compile strips it", () => {
+  const at = (p: Params) => targetSummary(node("s", "target", 0, { name: "M31", ...p }),
+    { nodes: [], edges: [] });
+  eq(at({ angle: " Camera fixed at PA ", rotation: 23.4 }), "M31 · fixed PA 23.4",
+    "a fixed camera, padded: the run holds the camera, it does not rotate to 23.4");
+  eq(at({ angle: " Any angle", rotation: 23.4 }), "M31 · any angle",
+    "any angle, padded, over a stale rotation");
+  // CONTROL: whitespace alone is no word, to the compile ("" after strip, so
+  // the rotation decides) as here.
+  eq(at({ angle: "  ", rotation: -1 }), "M31 · any angle", "a blank word and a negative rotation");
+});
+
+// The grid is read as the compile reads it (`_grid_dim`, mirrored by
+// panelLane.ts `isMultiPanel`): "2.0" is not a whole number, so it reads 1.
+// MUTANT "grid read with Number()" (gridDim is `Number(v)`). Observed,
+// targetSummary.test 19/20:
+//   x a grid side is read as the compile reads it: '2.0' rows is one row:
+//     rows '2.0' and cols '3'
+//     expected "M31 · 3x1 · one panel at a time"
+//     got      "M31 · 3x2 · one panel at a time"
+test("a grid side is read as the compile reads it: '2.0' rows is one row", () => {
+  const t = node("t", "target", 100, { ...M31_PARAMS, rows: "2.0", cols: "3" });
+  eq(targetSummary(t, { nodes: [t, AF, CY], edges: [ARM, RUN] }), "M31 · 3x1 · one panel at a time",
+    "rows '2.0' and cols '3'");
+});
+
+test("an empty name leaves no empty segment; an unreadable overlap is left out", () => {
+  const blank = node("s", "target", 0, { name: "", angle: "Any angle", rotation: -1 });
+  eq(targetSummary(blank, { nodes: [blank], edges: [] }), "any angle", "a created, unnamed TARGET");
+  const t = node("t", "target", 100, { ...M31_PARAMS, overlap: "lots" });
+  eq(targetSummary(t, { nodes: [t, AF, CY], edges: [ARM, RUN, LOOP] }), "M31 · 3x2 · PA 30.0 · rotate",
+    "an overlap that is not a number");
+});
+
+// THE CONTRACT THE RENDER COUNTERS LEAN ON. flowNodeDom.test.tsx and
+// flowProgressChip.test.tsx count a card's renders by wrapping
+// `NODE_DEFS.target.sum`, which the footer calls once per render. MUTANT "name
+// read directly" (the name segment built from `params.name`, `sum` never
+// called). Observed, targetSummary.test 19/20:
+//   x the footer takes the name from the vocabulary's own sum, once per call:
+//     calls to NODE_DEFS.target.sum per footer
+//     expected 1
+//     got      0
+// and the two files that lean on the contract go red with it:
+//   flowNodeDom.test 19/20:
+//     x a status tick re-renders ONE card, not the graph: setup: one render each
+//   flowProgressChip.test 31/33:
+//     x [classic] an answer that leaves a card's count alone does not
+//       re-render it: precondition: one render each (expected 1, got 0)
+//     x [next] ... the same
+test("the footer takes the name from the vocabulary's own sum, once per call", () => {
+  const orig = NODE_DEFS.target.sum;
+  let calls = 0;
+  NODE_DEFS.target.sum = (p) => { calls++; return orig(p); };
+  try {
+    targetFooter(T, true);
+    eq(calls, 1, "calls to NODE_DEFS.target.sum per footer");
+    calls = 0;
+    targetLoops(T, LOOPED);
+    eq(calls, 0, "targetLoops runs in a store selector and must not count as a render");
+  } finally {
+    NODE_DEFS.target.sum = orig;
+  }
+});
+
+test("CONTROL: the vocabulary's TARGET sum is unchanged: the name alone", () => {
+  eq(NODE_DEFS.target.sum(M31_PARAMS as Record<string, string | number>), "M31", "TARGET's sum");
+  eq(NODE_DEFS.cycle.sum(NODE_DEFS.cycle.params), "7 filters · 1/pass · ×45", "FILTER CYCLE's sum");
+});
+
+// ========================================================= the loop wire
+
+// MUTANT "arc for every wire into a TARGET" (the `toPort === "next"` test
+// dropped). Observed, targetSummary.test 19/20:
+//   x an event wire into a TARGET's `next` is a loop arc; nothing else is: an
+//     event wire into the TARGET's arm
+//     expected null
+//     got      {"id":"t","type":"target","x":100,"y":60,"params":{"name":"M31",...}}
+test("an event wire into a TARGET's `next` is a loop arc; nothing else is", () => {
+  eq(loopArcTarget(LOOP, LOOPED.nodes)?.id, "t", "the loop wire");
+  eq(loopArcTarget(ARM, LOOPED.nodes), null, "a flow wire out of the TARGET");
+  const armIn = wire("d", "window", "t", "arm");
+  eq(loopArcTarget(armIn, [node("d", "dusk", 0), T]), null, "a flow wire into the TARGET's arm");
+  // Validation refuses an event output into a flow input, but a graph that
+  // arrived some other way is drawn as it arrived, and only `next` loops.
+  eq(loopArcTarget(wire("cy", "frame", "t", "arm"), LOOPED.nodes), null,
+    "an event wire into the TARGET's arm");
+  const pool = node("p", "pool", 0);
+  const advance = wire("r", "done", "p", "advance");
+  eq(loopArcTarget(advance, [node("r", "report", 400), pool]), null,
+    "REPORT 'done' -> POOL 'advance' is a backward event wire, but not into a TARGET");
+  eq(loopArcTarget(wire("cy", "nope", "t", "next"), LOOPED.nodes), null, "an unknown source port");
+});
+
+test("loopArcOf routes the wire under the TARGET, its lane and the source", () => {
+  const arc = loopArcOf(LOOP, LOOPED, "desktop");
+  const want = loopArc(CY, "pass", T, "next", panelLane(LOOPED, "t"), NODE_DEFS, "desktop");
+  assert(arc && want, "precondition: both arcs exist");
+  eq(arc!.d, want!.d, "the arc of the loop wire");
+  eq(loopArcOf(ARM, LOOPED, "desktop"), null, "a flow wire is not an arc");
+  // Placed: the phone FLOW tab substitutes its auto-layout positions.
+  const moved = loopArcOf(LOOP, LOOPED, "desktop",
+    (n) => (n.id === "cy" ? { ...n, y: 300 } : n));
+  eq(moved!.runY, 300 + 143 + 28, "the run follows a placed card");
+});
+
+test("CONTROL: the arc's dash is its own silhouette, never the lane's", () => {
+  // Widened, or the compiler rules the comparison out: the constant is a
+  // literal type, and an edit to it is exactly what this case is for.
+  const dash: string = LOOP_ARC_DASH;
+  assert(dash !== "4 5" && dash !== "7 6" && dash !== "",
+    `the arc's dash ${dash} must differ from an event wire's 4 5 and a live wire's 7 6`);
+});
+
+// --------------------------------------------------------- the chip
+
+test("before any compile the chip reads without the count", () => {
+  eq(loopChip(LOOPED, LOOP, null, false), LOOP_CHIP_WORDS, "no compile answer");
+  eq(loopChip(LOOPED, LOOP, undefined, false), LOOP_CHIP_WORDS, "no compiled plan");
+  eq(LOOP_CHIP_WORDS, "every pass: next panel", "the chip's words");
+});
+
+// MUTANT "count ignores skip" (N = rows x cols). Observed, targetSummary.test
+// 18/20:
+//   x after a compile: 'every pass: next panel · N panels', N = rows x cols -
+//     skip: 3x2 with 2-3 skipped
+//     expected "every pass: next panel · 5 panels"
+//     got      "every pass: next panel · 6 panels"
+// (and the over-skipped answer below counts 6 where it must count nothing)
+test("after a compile: 'every pass: next panel · N panels', N = rows x cols - skip", () => {
+  eq(loopChip(LOOPED, LOOP, planWith(M31_ENTRY), false), "every pass: next panel · 5 panels",
+    "3x2 with 2-3 skipped");
+  eq(livePanels(planWith({ node_id: "t", mosaic: { rows: 2, cols: 3, skip: [] } }), T), 6,
+    "3x2 with nothing skipped");
+  eq(loopChip(LOOPED, LOOP, planWith({ node_id: "t", mosaic: { rows: 2, cols: 3,
+    skip: [[1, 1], [1, 2], [1, 3], [2, 1], [2, 2]] } }), false),
+  "every pass: next panel · 1 panel", "one live panel is one panel");
+});
+
+// The compile runs when a flow opens (flowsSlice `flowsOpen`), not on each
+// edit, so after an edit its entry describes the graph as it was. MUTANT
+// "count while dirty" (loopChip ignores `dirty`). Observed,
+// targetSummary.test 19/20:
+//   x an unsaved edit takes the count away: the compile describes the graph as
+//     opened: the chip while dirty
+//     expected "every pass: next panel"
+//     got      "every pass: next panel · 5 panels"
+test("an unsaved edit takes the count away: the compile describes the graph as opened", () => {
+  eq(loopChip(LOOPED, LOOP, planWith(M31_ENTRY), true), LOOP_CHIP_WORDS, "the chip while dirty");
+});
+
+// MUTANT "count from a stale grid" (the grid check dropped). Observed,
+// targetSummary.test 19/20:
+//   x a compile whose grid is not the block's any more gives no count: a 3x2
+//     entry for a block now 3x3
+//     expected null
+//     got      5
+test("a compile whose grid is not the block's any more gives no count", () => {
+  const bigger = node("t", "target", 100, { ...M31_PARAMS, rows: 3, cols: 3 });
+  const g = { nodes: [bigger, AF, CY], edges: [ARM, RUN, LOOP] };
+  eq(livePanels(planWith(M31_ENTRY), bigger), null, "a 3x2 entry for a block now 3x3");
+  eq(loopChip(g, LOOP, planWith(M31_ENTRY), false), LOOP_CHIP_WORDS, "the chip of a re-gridded block");
+});
+
+test("an answer that cannot be counted gives no count and never throws", () => {
+  const bad: unknown[] = [
+    {}, { targets: "nope" }, { targets: [null, 3] }, planWith({ node_id: "t", mosaic: null }),
+    planWith({ node_id: "t", mosaic: { rows: 2, cols: 3, skip: "2-3" } }),
+    planWith({ node_id: "t", mosaic: { rows: "2", cols: 3, skip: [] } }),
+    planWith({ node_id: "t", mosaic: { rows: 2, cols: 3, skip: [[1, 1], [1, 2], [1, 3], [2, 1], [2, 2], [2, 3], [9, 9]] } }),
+  ];
+  for (const plan of bad) {
+    eq(loopChip(LOOPED, LOOP, plan as Record<string, unknown>, false), LOOP_CHIP_WORDS,
+      `the chip for ${JSON.stringify(plan)}`);
+  }
+});
+
+// A wire into `next` that the compile does not loop on gets the arc (it is
+// still a backward wire, and the stock curve would still cross the cards) but
+// not the words, which would claim a rotation the run will not make. MUTANT
+// "chip on every arc" (loopChip asks only `loopArcTarget`). Observed,
+// targetSummary.test 19/20:
+//   x no chip on a wire into `next` that is not the block's loop wire: a
+//     mid-lane pass wire (M12)
+//     expected null
+//     got      "every pass: next panel · 5 panels"
+test("no chip on a wire into `next` that is not the block's loop wire", () => {
+  const cap = node("cap", "capture", 820);
+  const mid = wire("cy", "pass", "t", "next");
+  const g = { nodes: [T, AF, CY, cap], edges: [ARM, RUN, wire("cy", "complete", "cap", "run"), mid] };
+  eq(loopChip(g, mid, planWith(M31_ENTRY), false), null, "a mid-lane pass wire (M12)");
+  const one = node("t", "target", 100, { ...M31_PARAMS, rows: 1, cols: 1 });
+  eq(loopChip({ nodes: [one, AF, CY], edges: [ARM, RUN, LOOP] }, LOOP, null, false), null,
+    "a pass wire into a 1x1 block");
+  eq(loopChip(LOOPED, ARM, null, false), null, "a flow wire");
+});
+
+// ----------------------------------------------------------------- report
+const total = passed + failed;
+// eslint-disable-next-line no-console
+console.log(`\ntargetSummary.test: ${passed}/${total} passed`);
+if (failures.length) {
+  // eslint-disable-next-line no-console
+  console.error(failures.join("\n"));
+}
+
+export const result = { passed, failed, total };

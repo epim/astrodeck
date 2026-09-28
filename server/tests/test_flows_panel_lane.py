@@ -31,6 +31,7 @@ from astrodeck.flows.compile import (
     is_multi_panel,
     lane_branched,
     lane_next,
+    lane_refusals,
     lane_tail,
     loop_wires,
     owner_of,
@@ -39,7 +40,9 @@ from astrodeck.flows.compile import (
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
 
 FIXTURE = Path(__file__).parent / "fixtures" / "panel_lane_cases.json"
-CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"]
+_FIXTURE_JSON = json.loads(FIXTURE.read_text(encoding="utf-8"))
+CASES = _FIXTURE_JSON["cases"]
+LOOP_CASES = _FIXTURE_JSON["loop_cases"]
 
 
 def _case(case_id: str) -> dict:
@@ -659,3 +662,396 @@ class TestTheCompileSaysWhenTheRulesDiffer:
         """
         plan = compile_plan(_graph(_case("af-guide-cycle")), "n")
         assert "notes" not in plan
+
+
+# ------------------------------------------------ placing the loop wire
+
+def _loop_case(case_id: str) -> dict:
+    found = [c for c in LOOP_CASES if c["id"] == case_id]
+    assert found, f"the fixture no longer carries loop case {case_id}"
+    return found[0]
+
+
+def _wire(e: FlowEdge) -> dict:
+    """A wire in the fixture's own shape, so a mismatch prints both ends."""
+    return {"id": e.id, "from": e.from_, "fromPort": e.fromPort,
+            "to": e.to, "toPort": e.toPort}
+
+
+class TestTheLoopCases:
+    """The graphs the editor makes when it places or lifts a block's loop
+    wire (#189 S4; spec 1.4 "When the wire is added", 2.5 DONE), graded by
+    the rules the server runs them under.
+
+    The editor's rule (ui panelLane.ts ``withLoop``) has no Python twin: the
+    server only READS the wire. So the fixture records what the TypeScript
+    makes, panelLane.test.ts holds the TypeScript to it, and this class holds
+    the fixture to compile.py: the result is a graph validation takes, its
+    loop wire is the one ``loop_wires`` finds and no other, and
+    ``lane_refusals`` (M12, M13) has nothing to say. A result recorded from a
+    wrong rule fails here, and a rule that drifts from the recorded result
+    fails there.
+
+    Mutant of the FIXTURE (a scratch copy) "loop-on recorded from the first
+    owned stage" (the ``loop`` wire's ``from`` in loop-on's result and in its
+    ``loop_wire`` set to ``cy``: the graph the TypeScript mutant "loop from
+    the first owned stage" makes) failed two of these tests on loop-on:
+        FAILED ...::test_loop_wires_finds_exactly_the_recorded_wire[loop-on]
+            AssertionError: loop-on
+            assert [] == [{'from': 'cy...o': 't', ...}]
+              Right contains one more item: {'from': 'cy', 'fromPort':
+              'pass', 'id': 'loop', 'to': 't', ...}
+        FAILED ...::test_the_result_has_no_lane_refusal[loop-on]
+            AssertionError: loop-on
+            assert [{'code': 'M1...of its own.'}] == []
+              Left contains one more item: {'code': 'M12', 'node_id': 'cy',
+              'text': 'the loop wire starts at FILTER CYCLE, but CAPTURE LOOP
+              Ha comes after it in ...rt the loop wire at CAPTURE LOOP Ha to
+              shoot every stage on every panel, or give CAPTURE LOOP Ha a
+              TARGET of its own.'}
+    (2 failed, 73 passed.) The same fixture mutant fails panelLane.test.ts's
+    loop-on case, so neither language accepts a wire from the first stage.
+    """
+
+    @pytest.mark.parametrize("case", LOOP_CASES, ids=lambda c: c["id"])
+    def test_the_result_is_a_graph_the_server_takes(self, case):
+        assert FlowGraph.model_validate(case["result"]).validation_errors() == []
+
+    @pytest.mark.parametrize("case", LOOP_CASES, ids=lambda c: c["id"])
+    def test_loop_wires_finds_exactly_the_recorded_wire(self, case):
+        g = FlowGraph.model_validate(case["result"])
+        want = [] if case["loop_wire"] is None else [case["loop_wire"]]
+        assert [_wire(e) for e in loop_wires(g, case["block"])] == want, case["id"]
+
+    @pytest.mark.parametrize("case", LOOP_CASES, ids=lambda c: c["id"])
+    def test_the_result_has_no_lane_refusal(self, case):
+        assert lane_refusals(FlowGraph.model_validate(case["result"])) == [], case["id"]
+
+    def test_the_fixture_holds_the_named_cases(self):
+        """The TypeScript grades itself against these ids too.
+
+        Mutant of the FIXTURE (a scratch copy) "loop-off renamed" failed:
+            AssertionError: assert {'loop-off-re...ingle-target'} >=
+            {'loop-off', ...ingle-target'}
+              Extra items in the right set:
+              'loop-off'
+        and test_loop_off_lifts_a_wire_the_server_refuses with it:
+            AssertionError: the fixture no longer carries loop case loop-off
+        """
+        assert {c["id"] for c in LOOP_CASES} >= {
+            "loop-on", "loop-off", "loop-on-single-target"}
+
+    def test_loop_on_tells_the_tail_from_the_first_stage(self):
+        """The loop-on case is only a test of "the wire leaves the TAIL" while
+        the lane's first stage is not its tail and would make a wire the
+        server refuses. Premises, so an edit that shrinks the lane to one
+        stage cannot leave the case unable to tell the two rules apart:
+        before DONE the block has no loop wire, and the same wire drawn from
+        the lane's first stage is M12.
+
+        Mutant of the FIXTURE (a scratch copy) "loop-on's lane is one stage"
+        (the CAPTURE and its two wires deleted from graph and result, the
+        CYCLE wired to the REPORT and the loop wire drawn from the CYCLE)
+        failed:
+            AssertionError: loop-on's lane starts at its tail, cy: the wire
+            from the first stage IS the loop wire, so the case cannot tell
+            the rules apart
+        (1 failed, 74 passed), while panelLane.test.ts stayed green on it
+        (22/22): only this premise sees a case that has stopped testing the
+        rule.
+        """
+        case = _loop_case("loop-on")
+        before = FlowGraph.model_validate(case["graph"])
+        assert loop_wires(before, "t") == []
+        first = panel_lane(before, "t")[0]
+        assert first.id != _id(lane_tail(before, "t")), (
+            f"loop-on's lane starts at its tail, {first.id}: the wire from the "
+            f"first stage IS the loop wire, so the case cannot tell the rules apart")
+        wrong = FlowGraph.model_validate({**case["result"], "edges": [
+            {**e, "from": first.id} if e["id"] == case["loop_wire"]["id"] else e
+            for e in case["result"]["edges"]]})
+        assert [(r["code"], r["node_id"]) for r in lane_refusals(wrong)] == \
+            [("M12", first.id)]
+
+    def test_loop_off_lifts_a_wire_the_server_refuses(self):
+        """Premise of loop-off: its stale pass wire from mid-lane is M12
+        before the loop is turned off, so a result that kept it would fail
+        ``test_the_result_has_no_lane_refusal``. The M33 mosaic's own loop is
+        the control: it is M33's loop wire before and after.
+
+        Mutant of the FIXTURE (a scratch copy) "loop-off keeps the stale
+        wire" (``stale`` left in loop-off's result) failed:
+            FAILED ...::test_the_result_has_no_lane_refusal[loop-off]
+            AssertionError: loop-off
+            assert [{'code': 'M1...of its own.'}] == []
+              Left contains one more item: {'code': 'M12', 'node_id': 'cy',
+              'text': 'the loop wire starts at FILTER CYCLE, but CAPTURE LOOP
+              Ha comes after it in ...rt the loop wire at CAPTURE LOOP Ha to
+              shoot every stage on every panel, or give CAPTURE LOOP Ha a
+              TARGET of its own.'}
+        (1 failed, 74 passed), and panelLane.test.ts's loop-off case with it.
+        """
+        case = _loop_case("loop-off")
+        before = FlowGraph.model_validate(case["graph"])
+        assert [(r["code"], r["node_id"]) for r in lane_refusals(before)] == \
+            [("M12", "cy")]
+        after = FlowGraph.model_validate(case["result"])
+        assert [e.id for e in loop_wires(before, "m33")] == ["m33-loop"]
+        assert [e.id for e in loop_wires(after, "m33")] == ["m33-loop"]
+
+
+# ------------------------------------------------ carrying the loop wire
+
+CARRY_CASES = _FIXTURE_JSON["carry_cases"]
+
+#: The carry cases that MOVE a wire (#331), and the controls that must not.
+CARRY_MOVES = ("carry-autofocus-after-looped-cycle",
+               "carry-capture-after-autofocus-stranding-the-loop",
+               "carry-capture-after-autofocus-holding-the-loop",
+               "carry-guide-after-looped-capture")
+CARRY_CONTROLS = ("carry-single-target-control", "carry-no-loop-wire-control",
+                  "carry-foreign-pass-wire-control")
+
+
+def _carry_case(case_id: str) -> dict:
+    found = [c for c in CARRY_CASES if c["id"] == case_id]
+    assert found, f"the fixture no longer carries carry case {case_id}"
+    return found[0]
+
+
+def _uncarried(case: dict) -> FlowGraph:
+    """The case's graph with the drawn wire added and nothing carried: what
+    the connect wrote for these shapes before #331, the loop left behind."""
+    return FlowGraph.model_validate({**case["graph"], "edges": [
+        *case["graph"]["edges"], case["connect"]]})
+
+
+class TestTheCarryCases:
+    """The graphs the editor makes when a stage is appended after the tail of
+    a lane (#189 S4, #331; spec 1.5 item 6), graded by the rules the server
+    runs them under.
+
+    The editor's rule (ui flowsSlice.ts ``carryLoopWire``) has no Python
+    twin, as ``withLoop`` has none: the server only READS the wire. So the
+    fixture records what the TypeScript makes, panelLane.test.ts and
+    flowsSlice.test.ts hold the TypeScript to it, and this class holds the
+    fixture to compile.py: the result is a graph validation takes, its tail
+    and loop wires are the ones recorded, ``lane_refusals`` (M12, M13) has
+    nothing to say, and the result is the connect and a carry, nothing more.
+
+    Case 1 is an AUTOFOCUS appended after a looped FILTER CYCLE, and case 2
+    a CAPTURE appended after an AUTOFOCUS that holds the loop or stranded it
+    (the flow as S3 left it). Both run only because AUTOFOCUS and GUIDE
+    gained a ``pass`` output. Named mutants, each in a private scratch copy
+    (#254):
+
+    Mutant of nodes.py "AUTOFOCUS has no pass" (``_e("pass", "pass done")``
+    dropped from AUTOFOCUS's outs) failed case 1 here, because its result's
+    loop wire leaves a port the vocabulary no longer has:
+        FAILED ...::test_the_result_is_a_graph_the_server_takes[carry-autofocus-after-looped-cycle]
+            AssertionError: carry-autofocus-after-looped-cycle
+            assert ["autofocus h... port 'pass'"] == []
+              Left contains one more item: "autofocus has no output port 'pass'"
+        (7 failed, 219 passed across this file and test_flows_vocabulary_s3.py,
+        whose port, PASS_TYPES and AUTOFOCUS pass-wire cases fail with it;
+        the same 7 failed, 225 passed on the re-run of 2026-09-27)
+    and panelLane.test.ts and flowsSlice.test.ts failed the same case with
+    the same mutant in nodeDefs.ts, where the carry leaves the wire on the
+    cycle (M12). The TypeScript mutant "carry only from the pre-connect
+    tail" fails case 2's stranding shape there (see panelLane.test.ts);
+    this file grades the graph it should have made.
+
+    Mutant of the FIXTURE "case 1 recorded as S3 left it" (a scratch copy:
+    the ``loop`` wire in carry-autofocus-after-looped-cycle's result left on
+    ``cy``) failed:
+        FAILED ...::test_the_tail_and_the_loop_wires_are_the_recorded_ones[carry-autofocus-after-looped-cycle]
+            AssertionError: carry-autofocus-after-looped-cycle
+            assert ('af', []) == ('af', ['loop'])
+        FAILED ...::test_the_result_has_no_lane_refusal[carry-autofocus-after-looped-cycle]
+            assert [{'code': 'M1...of its own.'}] == []
+              Left contains one more item: {'code': 'M12', 'node_id': 'cy',
+              'text': 'the loop wire starts at FILTER CYCLE, but AUTOFOCUS comes
+              after it in the TA...el lane. Start the loop wire at AUTOFOCUS to
+              shoot every stage on every panel, or give AUTOFOCUS a TARGET of its
+              own.'}
+        (2 failed, 30 passed of this class), and panelLane.test.ts and
+        flowsSlice.test.ts failed their case 1 against it, since the carry
+        makes the graph the spec asks for.
+    """
+
+    @pytest.mark.parametrize("case", CARRY_CASES, ids=lambda c: c["id"])
+    def test_the_result_is_a_graph_the_server_takes(self, case):
+        errors = FlowGraph.model_validate(case["result"]).validation_errors()
+        assert errors == [], case["id"]
+
+    @pytest.mark.parametrize("case", CARRY_CASES, ids=lambda c: c["id"])
+    def test_the_tail_and_the_loop_wires_are_the_recorded_ones(self, case):
+        g = FlowGraph.model_validate(case["result"])
+        got = (_id(lane_tail(g, case["block"])),
+               [e.id for e in loop_wires(g, case["block"])])
+        assert got == (case["lane_tail"], case["loop_wires"]), case["id"]
+
+    @pytest.mark.parametrize("case", CARRY_CASES, ids=lambda c: c["id"])
+    def test_the_result_has_no_lane_refusal(self, case):
+        assert lane_refusals(FlowGraph.model_validate(case["result"])) == [], \
+            case["id"]
+
+    @pytest.mark.parametrize("case", CARRY_CASES, ids=lambda c: c["id"])
+    def test_the_result_is_the_connect_and_a_carry_nothing_more(self, case):
+        """What a carry can make, held here as well as in the TypeScript: the
+        graph plus the drawn wire, last, with nothing changed but the source
+        of a pass wire into the block's ``next``, re-sourced to the recorded
+        tail with its id and its place kept. A result recorded with a wire
+        added, dropped or reordered, or a node edited, is no carry's.
+
+        Mutant of the FIXTURE "the carried wire re-minted" (a scratch copy:
+        case 1's carried wire recorded as ``loop2``) failed:
+            FAILED ...::test_the_result_is_the_connect_and_a_carry_nothing_more[carry-autofocus-after-looped-cycle]
+                AssertionError: carry-autofocus-after-looped-cycle: {'id': 'loop',
+                'from': 'cy', 'fromPort': 'pass', 'to': 't', 'toPort': 'next'}
+                became {'id': 'loop2', 'from': 'af', 'fromPort': 'pass', 'to': 't',
+                'toPort': 'next'}, which no carry makes
+            (2 failed, 30 passed: the recorded-columns case with it, assert ('af',
+            ['loop2']) == ('af', ['loop'])).
+        """
+        before, after = case["graph"], case["result"]
+        assert after["nodes"] == before["nodes"], case["id"]
+        drawn = [*before["edges"], case["connect"]]
+        assert len(after["edges"]) == len(drawn), case["id"]
+        for was, now in zip(drawn, after["edges"]):
+            carried = (was["fromPort"] == "pass" and was["to"] == case["block"]
+                       and was["toPort"] == "next"
+                       and now == {**was, "from": case["lane_tail"]})
+            assert now == was or carried, (
+                f"{case['id']}: {was} became {now}, which no carry makes")
+
+    def test_the_fixture_holds_the_named_cases(self):
+        """The TypeScript grades itself against these ids too."""
+        assert {c["id"] for c in CARRY_CASES} >= {*CARRY_MOVES, *CARRY_CONTROLS}
+
+    @pytest.mark.parametrize("case_id", CARRY_MOVES)
+    def test_without_the_carry_the_mosaic_is_refused(self, case_id):
+        """Premise of each moving case: the connect alone, the wire left
+        where it was, leaves a pass wire mid-lane (M12), so a result that
+        kept it fails ``test_the_result_has_no_lane_refusal``. That is #331:
+        a stage appended, and the mosaic no longer runs."""
+        case = _carry_case(case_id)
+        moved = next(e for e in case["graph"]["edges"]
+                     if e["id"] in case["loop_wires"])
+        assert moved["from"] != case["lane_tail"], case_id
+        assert [(r["code"], r["node_id"])
+                for r in lane_refusals(_uncarried(case))] == \
+            [("M12", moved["from"])], case_id
+
+    @pytest.mark.parametrize("case_id", CARRY_CONTROLS)
+    def test_a_control_is_the_connect_alone(self, case_id):
+        """A 1x1 block, a lane with no loop wire and a stray pass wire move
+        nothing (spec 1.4 item 4, "When it is deleted", M4): the connect's
+        wire is added and every other wire is as it was.
+
+        THE ONLY CHECK HERE THAT SEES A CONTROL RECORDED AS CARRIED. Mutant
+        of the FIXTURE "the 1x1 control recorded as carried" (a scratch copy:
+        carry-single-target-control's ``pw`` re-sourced to ``af`` in its
+        result, ``loop_wires`` ["pw"]) failed:
+            FAILED ...::test_a_control_is_the_connect_alone[carry-single-target-control]
+                AssertionError: carry-single-target-control
+                At index 1 diff: {'id': 'pw', 'from': 'af', 'fromPort': 'pass',
+                'to': 't', 'toPort': 'next'} != {'id': 'pw', 'from': 'cy',
+                'fromPort': 'pass', 'to': 't', 'toPort': 'next'}
+            (1 failed, 37 passed of this class): a re-sourced pass wire is
+            exactly what ``..._nothing_more`` lets a carry make, and one panel
+            has no lane refusal to find, so nothing else here goes red.
+        Mutant of the FIXTURE "the no-loop-wire control recorded with a loop
+        added" (a ``pass`` wire from ``af`` into ``t.next`` appended to its
+        result, ``loop_wires`` ["added"]) failed this case and
+        ``..._nothing_more`` (assert 3 == 2), 2 failed, 36 passed. Both
+        mutants also fail the case in panelLane.test.ts and
+        flowsSlice.test.ts, whose carry makes the graph without the change.
+        """
+        case = _carry_case(case_id)
+        assert case["result"]["edges"] == [*case["graph"]["edges"],
+                                           case["connect"]], case_id
+
+    def test_the_stranding_case_is_the_one_a_tail_only_carry_misses(self):
+        """Case 2's stranding shape tells "any pass wire of the lane" from
+        "the pre-connect tail's loop wire" only while the wire it carries
+        leaves a stage that is NOT the tail the operator drew from. So its
+        premises: the connect leaves the tail, the lane has no loop wire by
+        ``loop_wires`` (the tail's), and the graph is already M12 at the
+        cycle. (It is M13 at the CAPTURE too, which is unwired until the
+        connect; only the M12 is this case's.)
+
+        Mutant of the FIXTURE "the stranding case already looped" (a scratch
+        copy: its ``loop`` wire drawn from ``af`` in graph and result alike,
+        the holding case over again) failed:
+            AssertionError: the stranding case's lane already has its loop wire on
+            the tail, so a carry of the tail's loop wire alone passes it
+            assert [FlowEdge(id=...oPort='next')] == []
+              Left contains one more item: FlowEdge(id='loop', from_='af',
+              fromPort='pass', to='t', toPort='next')
+            (1 failed, 31 passed): only this premise sees a case that has stopped
+            telling the two rules apart.
+        """
+        case = _carry_case("carry-capture-after-autofocus-stranding-the-loop")
+        before = FlowGraph.model_validate(case["graph"])
+        assert _id(lane_tail(before, "t")) == case["connect"]["from"]
+        assert loop_wires(before, "t") == [], (
+            "the stranding case's lane already has its loop wire on the tail, "
+            "so a carry of the tail's loop wire alone passes it")
+        assert [(r["code"], r["node_id"]) for r in lane_refusals(before)
+                if r["code"] == "M12"] == [("M12", "cy")]
+
+    def test_the_foreign_wire_control_is_one_a_wider_carry_would_break(self):
+        """The foreign-wire control holds the other edge of "a stage of the
+        lane": the carry widened for #331 to every pass wire into the block's
+        ``next`` that leaves a stage of ITS lane, and no further. A pass wire
+        from another TARGET's lane does nothing (M4), and carried to the new
+        tail it would become this block's loop, a rotation nobody asked for
+        (1.4: the wire "is never added as a side effect of connecting
+        something else"). The control tells the two rules apart only while
+        its stray wire leaves a stage another TARGET owns and carrying it
+        changes what runs. So its premises: the stray wire's source is
+        M33's, outside M31's lane; M31 has no loop wire before or after; and
+        the graph a wider carry makes (the stray wire re-sourced to the new
+        tail) is one compile.py reads as M31's loop.
+
+        Mutant of flowsSlice.ts carryLoopWire "carry from any owned stage"
+        (``lane.has(e.from)`` -> ``ownerOf(graph, e.from) !== null``, in a
+        private scratch copy of ui/) passed all 31 panelLane.test.ts and all
+        47 flowsSlice.test.ts cases before this control. With it, both fail
+        on this case (panelLane.test: 30/32 passed, the identity control
+        with it; flowsSlice.test: 47 passed, 1 failed): carryLoopWire made
+        "stray:af.pass->t.next" where the fixture records
+        "stray:c2.pass->t.next".
+
+        Mutant of the FIXTURE "the stray wire is the block's own" (a scratch
+        copy: the ``stray`` wire drawn from ``cy`` in graph and result, so it
+        leaves this lane's first stage) failed:
+            AssertionError: the stray wire leaves cy, a stage of M31's own
+            lane, so the control no longer tells the lane from any owned
+            stage
+        (2 failed, 111 passed: test_the_result_has_no_lane_refusal for this
+        case with it, since a pass wire from cy is M12 once the AUTOFOCUS
+        follows it; panelLane.test.ts failed the case too, 30/32 passed).
+        """
+        case = _carry_case("carry-foreign-pass-wire-control")
+        before = FlowGraph.model_validate(case["graph"])
+        stray = next(e for e in before.edges
+                     if e.fromPort == "pass" and e.to == case["block"])
+        lane = {n.id for n in panel_lane(before, case["block"])}
+        assert stray.from_ not in lane, (
+            f"the stray wire leaves {stray.from_}, a stage of M31's own lane, "
+            f"so the control no longer tells the lane from any owned stage")
+        owner = owner_of(before, stray.from_)
+        assert owner is not None and owner.id != case["block"], stray.from_
+        assert loop_wires(before, case["block"]) == []
+        wider = FlowGraph.model_validate({**case["result"], "edges": [
+            {**e, "from": case["lane_tail"]} if e["id"] == stray.id else e
+            for e in case["result"]["edges"]]})
+        assert [e.id for e in loop_wires(wider, case["block"])] == [stray.id]
+        loops = {t["node_id"]: t.get("loop") for t in compile_plan(
+            FlowGraph.model_validate(case["result"]), "n")["targets"]}
+        wider_loops = {t["node_id"]: t.get("loop")
+                       for t in compile_plan(wider, "n")["targets"]}
+        assert (loops[case["block"]], wider_loops[case["block"]]) == \
+            (False, True)

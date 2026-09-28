@@ -514,6 +514,17 @@ export default function FlowCanvas({ tier }: FlowCanvasProps) {
       // not the node being edited.
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase() ?? "";
       if (tag === "input" || tag === "select" || tag === "textarea") return;
+      // NOT UNDER A MODAL (#381). This listener is on the WINDOW, so it
+      // stays live under every modal Overlay the editor opens over the canvas:
+      // the Target modal, the edit sheet, the palette sheet. Those cover the
+      // canvas, so a stage deleted from under one is one the operator cannot
+      // see going, and under the Target modal it is the block being framed
+      // (its FRAME ON SKY row opens the selection) or, after a palette drop,
+      // whatever was selected before. The typing guard above does not catch
+      // it: the modal's sky is a focusable role="application" and its CANCEL
+      // is a button. Read at press time, as #/next's canvas reads its open
+      // sheets (FlowCanvasSurface.tsx), so the handler cannot go stale.
+      if (document.querySelector('[aria-modal="true"]')) return;
       if (e.key === "Delete" || e.key === "Backspace") {
         // Marked consumed, following Tooltip's convention (ui.tsx:525-529): an
         // outer dismissable can then tell the key was already used. It also
