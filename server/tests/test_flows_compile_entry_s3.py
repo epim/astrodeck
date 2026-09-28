@@ -297,22 +297,36 @@ class TestTheLoopWire:
 
     def test_a_loop_wire_on_one_panel_rotates_nothing(self):
         """M4's note: "one panel, nothing to rotate between". Not legal (1.4
-        item 1 needs a multi-panel block), so `loop` stays False and the wire
-        is emitted, which `to_plan` reports as a rule that will not run.
+        item 1 needs a multi-panel block), so `loop` stays False.
+
+        CHANGED IN S4 (S4 orchestrator ruling 3, #349): the wire is consumed
+        as structure all the same, so it is emitted as no rule, where S3
+        emitted it and `to_plan` reported it as a rule that will not run, a
+        loss the doctor's note contradicted. The ruling's own cases, and its
+        controls, are `test_flows_one_panel_pass_wire.py`.
 
         Mutant "a loop wire into any block" (`_loop_edge_keys` drops the
-        multi-panel test), observed on the second graph (on the first, with
-        no mosaic, no loop wire is looked for at all):
+        multi-panel test) turned the second graph red while the 1x1's wire
+        was a rule. Consumed either way now, and a 1x1 entry never carries
+        `loop`, so this case cannot see that mutant any more; the one thing
+        it still moves, a CAPTURE inside the 1x1's "circle" made a one-slot
+        cycle, is `test_flows_one_panel_pass_wire.py::TestTheWireIsConsumed::
+        test_it_makes_nothing_a_cycle`'s, where it is observed.
 
-            AssertionError: assert [] == [('cycle.pass', 'next')]
-              Right contains one more item: ('cycle.pass', 'next')
+        Mutant "emit the one-panel pass wire as a rule" (the compile's
+        consumed set is the loop wires alone, as S3 built it), observed on
+        the first graph:
+
+            AssertionError: assert [{'action': '...'cycle.pass'}] == []
+              Left contains one more item: {'action': 'target', 'to_port':
+              'next', 'when': 'cycle.pass'}
         """
         g = _block(rows=1, cols=1)
         assert _entry(g)["loop"] is False
-        assert [r["when"] for r in self._instructions(g)] == ["cycle.pass"]
+        assert self._instructions(g) == []
         # The same block beside a real mosaic, so the graph is scoped by
-        # wires and the loop wires are looked for at all: the mosaic's is
-        # consumed, the 1x1's still is not.
+        # wires and the loop wires are looked for at all: the mosaic's is its
+        # loop, the 1x1's rotates nothing, and neither is a rule.
         other = {**M33, **FIELD, "rotation": 5, "angle": "Rotate to PA",
                  "rows": 2, "cols": 2}
         g = FlowGraph(
@@ -321,9 +335,7 @@ class TestTheLoopWire:
             edges=[*g.edges, _e("m", "target", "mc", "run"),
                    _e("mc", "pass", "m", "next")])
         assert _entry(g)["loop"] is False and _entry(g, "m")["loop"] is True
-        assert [(r["when"], r["to_port"]) for r in self._instructions(g)] == \
-            [("cycle.pass", "next")]
-        assert len(self._instructions(g)) == 1
+        assert self._instructions(g) == []
 
 
 # ---------------------------------------------------------------- centring

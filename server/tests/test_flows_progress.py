@@ -169,8 +169,11 @@ def test_exact_banked_and_owed_for_frames_on_two_steps():
 class TestCountMode:
     """Counts follow the SESSION'S frozen ``count_mode``: the one the ledger
     was counted by. The new compile's mode is a proposal CONTINUE has to
-    announce (spec 5.9, ``accept_recount``); reading it here would recount
-    every banked frame on the card before anyone agreed to it."""
+    announce when it changes a total (spec 5.9, ``accept_recount``; since S4
+    orchestrator ruling 2 it asks only then, #348); reading it here would
+    recount every banked frame on the card before anyone agreed to it.
+    Nothing here leaned on the question being asked with equal totals, so
+    the ruling moved no pin in this file (checked in S4-ROUTES)."""
 
     # 3 accepted, 2 rejected, 1 accepted then overridden to reject, and 1
     # rejected then overridden to accept: 4 effective, 7 taken.

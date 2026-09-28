@@ -1242,3 +1242,130 @@ class TestS1IdsAreUnchanged:
         first = identity.anchor_for(*args, canonical=None)
         assert first == TestGoldenVectors.SINGLE
         assert identity.target_key(*args, canonical=None, anchor=first) == key
+
+
+class TestACompletedAnchor:
+    """A single panel anchored with no camera field and saved with one,
+    nothing else changed, COMPLETES its anchor (#351, S4 orchestrator ruling
+    4): the keyed text is kept as stored, and the field is written beside it
+    as ``RECORDED_FIELDS``. ``anchor_key`` ignores the recorded field, so the
+    ids stay; ``anchor_geometry`` reads it back. The save's side is
+    ``test_flows_anchor_completion.py``; these pin the stored form.
+    """
+
+    #: The SINGLE golden vector with a 1.3 x 0.9 deg field recorded: the
+    #: vector's bytes, and the pair spelt as ``fov_x`` is, in sorted place.
+    COMPLETED = ('{"cols":1,"dec_deg":"41.269167","fov_x":"0.00000",'
+                 '"fov_y":"0.00000","overlap":"0.2500","ra_hours":"0.712222",'
+                 '"recorded_fov_x":"1.30000","recorded_fov_y":"0.90000",'
+                 '"rotation_deg":null,"rows":1}')
+
+    @staticmethod
+    def _drawn(**over) -> str:
+        shape = {"fov_x": 1.3, "fov_y": 0.9, **over}
+        return identity.canonical_geometry(0.7122222222, 41.2691666667, None,
+                                           **shape)
+
+    def test_the_field_goes_beside_the_keyed_text_and_the_key_stays(self):
+        """RED under mutant "a recorded field is keyed" (``_key_of`` reads
+        the recorded pair in place of ``fov_x`` and ``fov_y`` when there is
+        one), observed (and, through the save, every id-keeping case of
+        test_flows_anchor_completion.py red with it):
+
+            E   AssertionError: assert '69eec5c9e53b4505' == '7aa8577027b1741c'
+            E     - 7aa8577027b1741c
+            E     + 69eec5c9e53b4505
+        """
+        single = TestGoldenVectors.SINGLE
+        text = identity.complete_anchor(single, self._drawn())
+        assert text == self.COMPLETED
+        assert identity.anchor_key(text) == "7aa8577027b1741c" == \
+            identity.anchor_key(single)
+        held = identity.anchor_geometry(text)
+        assert (held["fov_x"], held["fov_y"], held["recorded_fov_x"],
+                held["recorded_fov_y"]) == (0.0, 0.0, 1.3, 0.9)
+        # ``target_key`` keys the block on it exactly as on the blank one.
+        args = (TYPED, 0.7122222222, 41.2691666667, None)
+        assert identity.target_key(*args, canonical=None, anchor=text,
+                                   fov_x=1.3, fov_y=0.9) == \
+            "7aa8577027b1741c"
+
+    def test_the_stored_spelling_is_kept(self):
+        """The keyed fields are written back as the stored text holds them,
+        in any order and spelling ``anchor_key`` reads, so completing can
+        never re-key a block whose anchor was written another way."""
+        loose = json.dumps(dict(reversed(json.loads(
+            TestGoldenVectors.SINGLE).items())))
+        loose = loose.replace('"0.2500"', "0.25")
+        text = identity.complete_anchor(loose, self._drawn())
+        stored = json.loads(text)
+        assert stored["overlap"] == 0.25, "the stored number was re-spelt"
+        assert identity.anchor_key(text) == identity.anchor_key(loose)
+
+    @pytest.mark.parametrize("anchor, drawn, why", [
+        pytest.param(TestGoldenVectors.SINGLE, {"fov_y": 0.0}, "one axis",
+                     id="a field on one axis only"),
+        pytest.param(TestGoldenVectors.SINGLE, {"rows": 2}, "grid",
+                     id="another grid"),
+        pytest.param(TestGoldenVectors.SINGLE, {"overlap": 0.4}, "overlap",
+                     id="another overlap"),
+        pytest.param(TestGoldenVectors.GRID, {}, "keys a field",
+                     id="an anchor that keys a field"),
+    ])
+    def test_nothing_else_may_change(self, anchor, drawn, why):
+        """``completes`` holds only when the field is all that changed and
+        the anchor had none. Each row changes one thing more.
+
+        RED under mutant "one axis is a field" (``completes`` asks ``any``
+        axis positive instead of ``all``), observed on its row, a recorded
+        field of 0 that ``anchor_geometry`` itself would then refuse:
+
+            E   AssertionError: completed although one axis
+            E   assert '{"cols":1,"dec_deg":"41.269167","fov_x":"0.00000","fov_y":"0.00000","overlap":"0.2500","ra_hours":"0.712222","recorded_fov_x":"1.30000","recorded_fov_y":"0.00000","rotation_deg":null,"rows":1}' is None
+
+        RED under mutant "complete whatever else changed" on [another grid]
+        and [another overlap], for example:
+
+            E   AssertionError: completed although grid
+        """
+        assert identity.complete_anchor(anchor, self._drawn(**drawn)) is \
+            None, f"completed although {why}"
+
+    @pytest.mark.parametrize("edit, why", [
+        pytest.param(lambda t: t.replace(',"recorded_fov_y":"0.90000"', ""),
+                     "a recorded field is a pair", id="half a pair"),
+        pytest.param(lambda t: t.replace('"fov_x":"0.00000"',
+                                         '"fov_x":"2.00000"'),
+                     "only beside a keyed field of none",
+                     id="beside a keyed field"),
+        pytest.param(lambda t: t.replace('"1.30000"', '"0.00000"'),
+                     "records no field", id="a recorded field of 0"),
+        pytest.param(lambda t: t.replace('"1.30000"', '"-1.30000"'),
+                     "records no field", id="a negative recorded field"),
+        pytest.param(lambda t: t.replace('"1.30000"', '"nan"'),
+                     "not finite", id="a recorded NaN"),
+    ])
+    def test_each_refusal_says_what_is_wrong(self, edit, why):
+        """The server writes the pair only as ``complete_anchor`` spells it,
+        so anything else is a damaged file, refused as a malformed anchor is.
+
+        RED under mutant "half a pair read" (the pair check removed), a
+        KeyError where the refusal should be, on [half a pair]:
+
+            E   KeyError: 'recorded_fov_y'
+
+        RED under mutant "beside any field" (the keyed-field-of-none check
+        removed), on [beside a keyed field]:
+
+            E   Failed: DID NOT RAISE <class 'ValueError'>
+
+        RED under mutant "a recorded field of 0 read" (``<= 0.0`` made
+        ``< 0.0``), on [a recorded field of 0]:
+
+            E   Failed: DID NOT RAISE <class 'ValueError'>
+        """
+        bad = edit(self.COMPLETED)
+        assert bad != self.COMPLETED, "premise: the edit applied"
+        with pytest.raises(ValueError, match=why):
+            identity.anchor_geometry(bad)
+        assert identity.anchor_geometry(self.COMPLETED) is not None

@@ -183,3 +183,36 @@ class TestAMoveThroughTheRoutes:
         restored = _save(client, _graph("+41 00 00"), fid)
         assert restored["reanchored"] == []
         assert _ids(client, fid) == before, "re-enabled, its ids come back"
+
+
+class TestTheAnswerSaysWhy:
+    def test_post_answers_a_grid_change_with_reason_grid(self, client,
+                                                        tmp_path):
+        """POST the 3x2, then POST it again (the route upserts by id) with
+        three rows: the answer's row carries ``reason: "grid"``, so the
+        editor says "its rows or columns changed" and not "its framing
+        changed" (#352, S4 orchestrator ruling 6). ``_save_answer`` passes
+        the row through as the save built it.
+
+        RED under mutant "row drops reason" (``save_rules._anchor_on_save``'s
+        row built without ``reason``), observed:
+
+            E   AssertionError: assert [{'max_move_d...eg': 0.16625}] == [{'max_move_d...25 +- 1.7e-07}]
+            E     At index 0 diff: {'node_id': 't', 'max_move_deg': None, 'threshold_deg': 0.16625, 'reason': None} != {'node_id': 't', 'max_move_deg': None, 'threshold_deg': 0.16625 +- 1.7e-07, 'reason': 'grid'}
+
+        (pytest's plus-minus sign written ``+-``.)
+        """
+        first = client.post("/api/flows", json={"flow": {
+            "name": "reframe", "graph": _graph("+41 00 00")}})
+        assert first.status_code == 200, first.text
+        fid = first.json()["id"]
+        graph = _graph("+41 00 00")
+        graph["nodes"][0]["params"]["rows"] = 3
+        again = client.post("/api/flows", json={"flow": {
+            "id": fid, "name": "reframe", "graph": graph}})
+        assert again.status_code == 200, again.text
+        rows = [{**r, "reason": r.get("reason")}
+                for r in again.json()["reanchored"]]
+        assert rows == [{"node_id": "t", "max_move_deg": None,
+                         "threshold_deg": pytest.approx(THRESHOLD_DEG),
+                         "reason": "grid"}]

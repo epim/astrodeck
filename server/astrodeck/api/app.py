@@ -148,10 +148,15 @@ from ..flows.continuation import (AdoptEvidence, AdoptMatches, adopt_detail,
 # the evidence check below must ask the same ones or it would judge a
 # different set of instants from the set the match reads (#249).
 from ..flows.continuation import _capture_times, _describe
+# And the words for a count mode, for the same reason: the line a quiet
+# recount logs (S4 orchestrator ruling 2) names the two modes in the words the
+# recount question uses, so the operator reads one vocabulary for one change.
+from ..flows.continuation import _MODE_WORDS
 from ..flows.doctor import check as flow_doctor
 from ..flows.models import (MY_FLOWS_FOLDER, FlowGraph, FlowRecord,
                             MigrationNote)
 from ..flows.progress import flow_progress
+from ..flows.readouts import readouts as flow_readouts, rig_readout
 from ..flows.rig import RigFacts
 from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
 from ..flows import wizard as flow_wizard
@@ -163,9 +168,9 @@ from ..flows.tonight import (banked_hours_from_reports,
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
-from ..sequence.models import (TargetGroup, duplicate_name_warning,
-                               plan_identity_errors, quota_unbounded,
-                               replan_cooling)
+from ..sequence.models import (FrameType, TargetGroup,
+                               duplicate_name_warning, plan_identity_errors,
+                               quota_unbounded, replan_cooling)
 from ..sequence.policy import resolve_policy
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
@@ -811,6 +816,37 @@ def _refuse_if_camera_owned() -> None:
                                          "code": "video_owns_camera"})
 
 
+def _refuse_start_while_rig_is_held() -> None:
+    """The guards EVERY start path runs before anything else (#323).
+
+    ONE HELPER FOR THE FOUR HTTP START PATHS: ``/api/sequence/start``,
+    ``/api/flows/{id}/run`` (fresh and CONTINUE), ``/api/sessions/{id}/resume``
+    and ``/api/sequence/recover``. Only the first called
+    ``_refuse_if_camera_owned`` until #323, so a flow run, a resume from the
+    session list or the Recover button pressed during a planetary .ser
+    recording slewed the mount off the planet, and the recording filled with
+    empty sky; the dusk-connecting refusal was skipped by the same three.
+    That is #291's class, in ``run_flow``'s words: "a second start path that
+    quietly omits one is how a guard stops being a guard". A guard added
+    HERE reaches all four, which is the point of it being one function and
+    not four calls.
+
+    FIRST, BEFORE ANY PRE-FLIGHT, because every start is a SLEW: the horizon,
+    Sun, identity and quota checks are about the plan, and this is about
+    whether the rig is someone else's right now. NOT WAIVED BY ``force``,
+    which overrides the horizon pre-flight and nothing that belongs to
+    another lane's hardware, so it takes no arguments.
+
+    What it holds today: the camera-ownership refusals
+    (``_refuse_if_camera_owned``: 409 ``dusk_connecting`` while dusk
+    preparation connects equipment, 409 ``video_owns_camera`` while a
+    recording runs). The resume ladder's refusal is not here, because it
+    must be read with no await before ``engine.start``
+    (``_refuse_while_resume_recovers``); ResumeArm, the fifth start path,
+    starts from its own loop and does not come through these routes."""
+    _refuse_if_camera_owned()
+
+
 def _refuse_plan_identity(plan: SequencePlan, status: int) -> None:
     """Refuse a plan whose ids repeat, or whose rules name a repeated target
     (#156), and log the duplicate-name warning when the plan may start anyway.
@@ -1097,6 +1133,13 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
         to press ADOPT again (``_unasked``).
     (b) ``recount`` - the ledger is counted by the frozen plan's
         ``count_mode``, so a different mode recounts every banked frame.
+        Asked ONLY WHEN THE TWO TOTALS DIFFER (S4 orchestrator ruling 2,
+        #348). With both totals equal - no rejected frame banked, or no
+        frame at all - nothing banked recounts differently, and the question
+        would carry nothing the operator can act on: the save already said
+        "now counts accepted subs only". So the continue goes ahead in
+        tonight's mode, and one info line after the start names both modes
+        and says so.
     (c) ``dropped_steps`` - steps that hold frames are gone from the flow. The
         frames stay in the ledger and on disk; they stop counting.
 
@@ -1154,13 +1197,26 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
             apply_adoption(s, matches)
             adopted = matches
             report = plan_replace_report(s, plan)
-        if s.plan.count_mode != plan.count_mode and not body.accept_recount:
+        # THE RECOUNT QUESTION ASKS ONLY ABOUT A DIFFERENCE (S4 orchestrator
+        # ruling 2, #348). Since S3 every save writes "Accepted subs"
+        # (Revision 2 ruling 2), so the first CONTINUE of every flow whose
+        # dormant session predates S3 meets a mode change; asked whatever the
+        # totals, it read "counted every sub taken (5); counting accepted
+        # subs makes it 5", a warning-shaped dialog about nothing. Equal
+        # totals mean no banked frame counts differently, only future ones
+        # do, so the continue runs in tonight's mode unasked and the log
+        # says why (``quiet_recount``, after the start).
+        quiet_recount: tuple[str, str, int] | None = None
+        if s.plan.count_mode != plan.count_mode:
             before, after = recount(s, plan)
-            raise HTTPException(409, detail={
-                "code": "recount",
-                "detail": recount_detail(s.plan.count_mode, plan.count_mode,
-                                         before, after),
-                "before": before, "after": after, "session_id": s.id})
+            if before != after and not body.accept_recount:
+                raise HTTPException(409, detail={
+                    "code": "recount",
+                    "detail": recount_detail(s.plan.count_mode,
+                                             plan.count_mode, before, after),
+                    "before": before, "after": after, "session_id": s.id})
+            if before == after:
+                quiet_recount = (s.plan.count_mode, plan.count_mode, before)
         if report.dropped and not body.accept_dropped:
             raise HTTPException(409, detail={
                 "code": "dropped_steps",
@@ -1207,6 +1263,17 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
                 f"{moved[1]:g}°C: subs at two sensor temperatures cannot "
                 f"share one dark library. START OVER begins a new session "
                 f"at {moved[1]:g}°C.", "sequence")
+    if quiet_recount is not None:
+        # After the start, like the temperature line: a refused start
+        # continued nothing and changed no mode. Info, not warning: it is
+        # not a problem, it is the reason nothing was asked.
+        was, now, banked = quiet_recount
+        bus.log("info",
+                f"'{s.name}' continues counting "
+                f"{_MODE_WORDS.get(now, now)} where its session counted "
+                f"{_MODE_WORDS.get(was, was)}: nothing banked recounts "
+                f"differently ({banked} sub{'' if banked == 1 else 's'} "
+                f"either way), so nothing was asked.", "sequence")
     out = {"id": s.id, "night": night, "continued": True,
            "kept": len(report.kept), "new": len(report.new),
            "dropped": len(report.dropped)}
@@ -1480,7 +1547,11 @@ class CaptureBody(BaseModel):
     binning: int = 1
     save: bool = False
     target: str = ""
-    frame_type: str = "Light"
+    # One of the four, in any case, blank for Light, and always handed on as
+    # the spelling IMAGETYP carries (``sequence.models.FrameType``, #334). A
+    # plain ``str`` passed 'L' + i-diaeresis + 'ght' through to ``save_fits``,
+    # which failed the save after the exposure had been taken.
+    frame_type: FrameType = "Light"
 
 
 class PromoteBody(BaseModel):
@@ -5611,37 +5682,59 @@ def create_app(*, bind_host: str | None = None,
 
     async def _compile_payload(graph: FlowGraph, name: str, *,
                                flow_id: str = "") -> dict:
-        """``{plan, structural, issues, unmapped}``.
+        """``{plan, structural, issues, unmapped, readouts, rig}``.
 
         ``flow_id`` is the stored flow's id, "" for an unsaved draft. It goes
         to ``to_sequence_plan`` exactly as the run passes it (spec 3.3), so a
         saved flow's preview is compiled with the ids its run will carry.
 
-        FOUR lists, not one, because four different things can be wrong with a
-        graph and collapsing them takes away the operator's ability to act:
+        SIX KEYS. The compile itself, THREE LISTS of what is wrong, not one,
+        because three different things can be wrong with a graph and
+        collapsing them takes away the operator's ability to act, and two
+        objects the Target modal's RUN section prints:
 
+        * ``plan`` — ``compile_plan``'s output, the dict the PLAN tab shows
+          verbatim. Not the SequencePlan: that is what ``to_sequence_plan``
+          makes of it, and ``readouts`` are read off it.
         * ``structural`` — edges to nodes that do not exist, an input wired
           twice, a flow output feeding an event input. NOT run by model
           construction; only ``FlowStore.save`` calls it. ``compile_plan``
           validates NOTHING and will happily emit ``action: "?"`` for an edge
           whose destination is missing, so a compile route that does not call
           this itself compiles nonsense without complaint.
-        * ``issues`` — the doctor's ten advisory rules.
+        * ``issues`` — the doctor's 28 rules (``flows.doctor.check``): 12
+          from the prototype (1 to 10, 13 and 14; 11 and 12 were removed on
+          2026-08-16), the 15 mosaic rules M1 to M15 and L1, each an advisory
+          ``{text, level}``; then the capture-geometry warnings
+          (``capture_geometry.plan_warnings``) and that inventory's note.
         * ``unmapped`` — what the compile emits that ``SequencePlan`` cannot
           carry. This is the list that stops a graph feature being silently
           inert, and it is the reason this endpoint is worth calling before a
           run rather than after one.
+        * ``readouts`` — ``{node_id: block}`` for every TARGET block the plan
+          shoots: subs, hours, the visit bound and the visits, the hop, the
+          pre-flip idle, the angle tolerance and the focus line
+          (``flows.readouts``, spec 2.4 RUN, S4 item 1). "Every number comes
+          from the server compile, never computed in the client", so both
+          UIs print these and neither does the arithmetic. Empty when the
+          compile refused. No site data, so every role that may compile
+          reads them (spec 6.9).
+        * ``rig`` — the rig facts the modal prints (``flows.readouts.
+          rig_readout``): the live camera field, whether there is a rotator,
+          and the MEASURED hop, null until one has been timed.
 
-        ONE READING OF THE RIG (``_rig_facts``, spec 3.3), handed to the plan
-        and to the doctor as the same object: M5's loss in ``unmapped`` and
-        its warning in ``issues`` are then two sentences about one field,
-        never about two reads of it taken a moment apart.
+        ONE READING OF THE RIG (``_rig_facts``, spec 3.3), handed to the plan,
+        to the doctor and to the readouts as the same object: M5's loss in
+        ``unmapped`` and its warning in ``issues`` are then two sentences about
+        one field, and the RUN section's hop the one M10 weighed, never two
+        reads taken a moment apart.
         """
         structural = graph.validation_errors()
         compiled = compile_plan(graph, name)
         rig = _rig_facts()
         unmapped: list[dict] = []
         geometry_issues: list[dict] = []
+        _plan: SequencePlan | None = None
         try:
             # SAME ARGUMENTS AS THE RUN. A preview compiled differently from the
             # run is a preview of a different night — the defect the park/warm
@@ -5666,6 +5759,20 @@ def create_app(*, bind_host: str | None = None,
             # an editor, and the canvas asks for a compile on every edit. The
             # refusal is reported in the same list as every other loss.
             unmapped = [{"key": "plan", "detail": str(e), "level": "danger"}]
+        run_readouts: dict = {}
+        if _plan is not None:
+            # OFF THE LOOP: finding which plan targets are which block asks
+            # ``to_plan``'s own drop test, and for a TARGET known only by its
+            # name that is a catalogue search (10 to 35 ms, #249), made for
+            # every compile the editor asks on every edit. The focus settings
+            # are the run's: ``autofocus_every`` off the plan, and the
+            # temperature delta as ``resolve_policy`` resolves it for this
+            # plan, which is what ``_refocus_due`` reads.
+            run_readouts = await asyncio.to_thread(
+                flow_readouts, compiled, _plan, rig,
+                autofocus_every=_plan.autofocus_every,
+                refocus_on_temp_delta_c=resolve_policy(
+                    _plan, config_store.cfg()).refocus_on_temp_delta_c)
         return {"plan": compiled, "structural": structural,
                 # WITH the rig's standards: rule 14 asks whether frame grading
                 # is armed, which no graph can say. Same store the run reads.
@@ -5680,7 +5787,9 @@ def create_app(*, bind_host: str | None = None,
                                        standards=config_store.cfg().standards,
                                        mount=hub.devices.get("telescope"),
                                        rig=rig)] + geometry_issues,
-                "unmapped": unmapped}
+                "unmapped": unmapped,
+                "readouts": run_readouts,
+                "rig": rig_readout(rig)}
 
     @app.get("/api/flows", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -6159,6 +6268,10 @@ def create_app(*, bind_host: str | None = None,
             rec = await asyncio.to_thread(flow_store.get, flow_id)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
+        # BEFORE ANY PRE-FLIGHT, fresh and CONTINUE alike (#323): a flow run
+        # is a slew, and one started under a .ser recording took the mount
+        # off the planet while the file kept writing. Not waived by force.
+        _refuse_start_while_rig_is_held()
 
         structural = rec.graph.validation_errors()
         if structural:
@@ -6494,6 +6607,9 @@ def create_app(*, bind_host: str | None = None,
             s = await asyncio.to_thread(session_store.load, session_id)
         except KeyError:
             raise HTTPException(404, "session not found")
+        # First, as every start path does it (#323): a resume slews to the
+        # session's next target, whatever the camera is doing.
+        _refuse_start_while_rig_is_held()
         if s.status != "dormant":
             raise HTTPException(409, f"session is {s.status}, not dormant")
         # 409, not 422: the stored session is what conflicts, and it stays
@@ -8605,7 +8721,8 @@ def create_app(*, bind_host: str | None = None,
         # recorder writing empty sky for the rest of the file - with nothing
         # in either UI saying the two had met. ``force`` does not reach this:
         # it overrides the horizon pre-flight, not another lane's hardware.
-        _refuse_if_camera_owned()
+        # The helper every start path calls (#323).
+        _refuse_start_while_rig_is_held()
         # Repeated ids, or a rule naming a repeated target (#156). Not bypassed
         # by `force` either: it is the plan's shape, not tonight's sky.
         _refuse_plan_identity(plan, 422)
@@ -8956,6 +9073,9 @@ def create_app(*, bind_host: str | None = None,
         s = session_store.recoverable()
         if s is None:
             raise HTTPException(404, "no resumable sequence found")
+        # First, as every start path does it (#323): Recover is a resume by
+        # another door, and a slew.
+        _refuse_start_while_rig_is_held()
         _refuse_plan_identity(s.plan, 409)
         # Same unbounded accepted-quota guard as /api/sequence/start (Task 4
         # review, IMPORTANT) — resume starts the engine on this same loop, so a

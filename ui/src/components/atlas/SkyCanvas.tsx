@@ -23,10 +23,17 @@
 //      paints above the label layer (wave-2 G3: it used to live inside layer 3
 //      and could render behind the "Your camera" label at some canvas widths).
 //
+// A mosaic's panels (#189 S4, `panels`) are drawn by PanelLayer.tsx from the
+// SERVER's panel coordinates: its shapes replace FovOverlay in layer 3 and its
+// labels are a sibling of layer 4, never FovOverlay's screen-space grid (a
+// point reflection of the server layout). `frameCenter` moves the planned grid
+// over a still sky (MOVE GRID); absent, the grid is pinned to the view centre
+// exactly as before.
+//
 // J2000 invariant: center is always J2000; never mix live JNow mount RA in.
 
 import {
-  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX,
+  useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type JSX,
   type PointerEvent as RPointerEvent,
   type KeyboardEvent as RKeyboardEvent, type CSSProperties, type ReactNode,
 } from "react";
@@ -34,8 +41,8 @@ import type { CatalogEntry } from "../../types";
 import { fovFromOptics, deproject, plausibilityHint, type OpticsLike } from "../../lib/framing";
 import { surveyTransform, type SurveyGeom } from "../../lib/surveyView";
 import {
-  pointingFov, pointingCaption,
-  type MountSample, type RotatorSample,
+  pointingFov, pointingCaption, skyToView,
+  type AtlasViewGeom, type MountSample, type RotatorSample, type ViewPoint,
 } from "../../lib/atlasFov";
 import { u } from "../../lib/base";
 import type { SkyRow } from "../../lib/skyRegion";
@@ -47,6 +54,10 @@ import { FovOverlay } from "./FovOverlay";
 import { AnnotationMarkers } from "./AnnotationMarkers";
 import { PointingFrame } from "./PointingFrame";
 import { RotateHandle } from "./RotateHandle";
+import {
+  PanelLabels, PanelShapes, panelAt, placePanels,
+  type PanelFov, type SkyPanel,
+} from "./PanelLayer";
 import { initTileGL } from "../../lib/tileGL";
 import { TileEngine } from "./TileEngine";
 
@@ -143,6 +154,33 @@ export interface SkyCanvasProps {
   /** A tap resolved to an object, or to null when it landed on empty sky. */
   onPickObject?: (row: SkyRow | null) => void;
 
+  // ---- mosaic panels (#189 S4, spec 2026-09-23 flows mosaic 2.3) ---------
+  // All additive: with none of these given the canvas draws exactly what it
+  // always drew.
+  /** The server's panels (POST /api/framing/mosaic, or the client mirror while
+   *  a drag is live), each with its state. Non-empty, they are drawn by the
+   *  PanelLayer IN PLACE OF FovOverlay's grid: two drawings of one grid, one
+   *  of them point-reflected, is two claims about which panel is which. */
+  panels?: SkyPanel[];
+  /** The single-frame field the grid was TILED for (the block's fovX/fovY
+   *  snapshot). Panels are outlined at this size, not the live optics, so a
+   *  camera change since shows as the gaps the run would really leave. Absent,
+   *  the live optics are used. */
+  panelFov?: PanelFov | null;
+  /** Where the planned grid is centred (J2000), projected through skyToView.
+   *  Absent, the grid sits at the view centre, as it always has. Given, the
+   *  grid (FovOverlay or the panels' centre mark), the rotate handle and the
+   *  "Your camera" label move to it while the sky stays where `center` puts
+   *  it: MOVE GRID. */
+  frameCenter?: { ra_hours: number; dec_deg: number } | null;
+  /** MOVE GRID's drag: given together with `frameCenter`, a drag carries the
+   *  grid centre with the pointer and does NOT call onCenterChange. */
+  onFrameCenterChange?: (ra_hours: number, dec_deg: number) => void;
+  /** A tap inside a drawn panel, with that panel's 0-based server row and
+   *  col. An object marker under the tap still wins (it is the smaller,
+   *  deliberate target). The modal toggles skip with it. */
+  onPanelTap?: (row: number, col: number) => void;
+
   // callbacks — AtlasView routes these into setFraming.
   onCenterChange: (ra_hours: number, dec_deg: number) => void;
   onRotate: (deg: number) => void;
@@ -189,6 +227,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     surveyDegraded = false, degradedText, onlineFetch = false,
     pointing = null, rotator = null, pointingWhere = null,
     skyRows, selectedObjectId = null, onPickObject,
+    panels, panelFov = null, frameCenter = null, onFrameCenterChange, onPanelTap,
     onCenterChange, onRotate, onZoom, onSurveyError, onSurveyLoad,
   } = props;
 
@@ -252,6 +291,48 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const cssPerDeg = boxPx / fovZoomDeg; // for pointer-delta -> degrees
   const cx = VIEW / 2;
   const cy = VIEW / 2;
+
+  // ---- the planned grid's centre (MOVE GRID, #189 S4) ----
+  // The sky is placed by `center`; the grid by `frameCenter` when one is given,
+  // projected through the same skyToView as every other sky point, so it is
+  // glued to the survey and moves over a still sky. Absent, it is the view
+  // centre, literally (cx, cy), so the old picture is untouched. null = the
+  // frame centre is past the projection horizon: the grid has no place on
+  // this map, and nothing that hangs off it (FovOverlay, the handle, the
+  // camera label) is drawn rather than drawn mirrored.
+  const viewGeom = useMemo<AtlasViewGeom>(
+    () => ({ centerRaHours: center.ra_hours, centerDecDeg: center.dec_deg, pxPerDeg, view: VIEW }),
+    [center.ra_hours, center.dec_deg, pxPerDeg],
+  );
+  const frameView = useMemo<ViewPoint | null>(
+    () => (frameCenter
+      ? skyToView(frameCenter.ra_hours, frameCenter.dec_deg, viewGeom)
+      : { x: cx, y: cy }),
+    [frameCenter, viewGeom, cx, cy],
+  );
+  const moveGrid = !!frameCenter && !!onFrameCenterChange;
+
+  // ---- mosaic panels (#189 S4) ----
+  // Placed in viewBox px from the server's coordinates (PanelLayer.tsx). The
+  // tiled-for field when the caller gives one, else the live optics.
+  const panelsMode = !!panels && panels.length > 0;
+  const hatchId = `panel-hatch-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
+  const placedPanels = useMemo(
+    () => (panelsMode
+      ? placePanels(
+          panels!,
+          panelFov && panelFov.fov_x_deg > 0 && panelFov.fov_y_deg > 0
+            ? panelFov
+            : { fov_x_deg: fov.fov_x_deg, fov_y_deg: fov.fov_y_deg },
+          rotationDeg,
+          viewGeom,
+        )
+      : []),
+    [panelsMode, panels, panelFov, fov.fov_x_deg, fov.fov_y_deg, rotationDeg, viewGeom],
+  );
+  // The rotate handle hangs off the top of the grid that is DRAWN, so with
+  // panels it is sized from the field they were tiled for.
+  const gridFovY = panelsMode && panelFov && panelFov.fov_y_deg > 0 ? panelFov.fov_y_deg : fov.fov_y_deg;
 
   // ---- WebGL tile engine gate (spec §5) ----
   const surveySlug = SURVEY_SLUGS[survey] ?? null;
@@ -424,13 +505,15 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
 
   // ---- pointer drag (translate) + rotation handle ----
   const dragRef = useRef<{
-    mode: "pan" | "rotate" | null;
+    mode: "pan" | "rotate" | "grid" | null;
     startX: number;
     startY: number;
     startCenter: { ra_hours: number; dec_deg: number };
     startAngle: number;
     startRotation: number;
-  }>({ mode: null, startX: 0, startY: 0, startCenter: center, startAngle: 0, startRotation: rotationDeg });
+    /** MOVE GRID: the grid centre in viewBox px when the drag began. */
+    startFrame: ViewPoint | null;
+  }>({ mode: null, startX: 0, startY: 0, startCenter: center, startAngle: 0, startRotation: rotationDeg, startFrame: null });
 
   // The live drag mode ALSO lives in state, not only in the ref. The ref is what
   // the move handler reads (mutating it per move must not re-render the sky),
@@ -440,7 +523,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // up, and never with it down). State is what makes press and release each
   // schedule exactly one render, so the cursor is never a claim about a gesture
   // that ended.
-  const [dragMode, setDragMode] = useState<"pan" | "rotate" | null>(null);
+  const [dragMode, setDragMode] = useState<"pan" | "rotate" | "grid" | null>(null);
 
   // ---- tap-to-identify (#183) ---------------------------------------------
   // A tap is a press and release in the same place, quickly. It has to be told
@@ -465,6 +548,29 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     },
     [cssPerDeg, onCenterChange],
   );
+
+  // MOVE GRID: the grid point under the pointer follows it. The inverse of
+  // skyToView, taken about the view centre the drag began on (which does not
+  // move: the sky is still), so a drag of (dx, dy) lands the grid centre
+  // exactly (dx, dy) CSS px from where it started.
+  const gridTo = useCallback(
+    (dxPx: number, dyPx: number, startFrame: ViewPoint, startCenter: { ra_hours: number; dec_deg: number }) => {
+      const toView = VIEW / boxPx;
+      const x = startFrame.x + dxPx * toView;
+      const y = startFrame.y + dyPx * toView;
+      const sky = deproject((VIEW / 2 - x) / pxPerDeg, (VIEW / 2 - y) / pxPerDeg,
+        startCenter.ra_hours, startCenter.dec_deg);
+      onFrameCenterChange?.(sky.ra_hours, sky.dec_deg);
+    },
+    [boxPx, pxPerDeg, onFrameCenterChange],
+  );
+
+  /** The grid centre in the pointer's CSS px, for rotating about it. With no
+   *  frameCenter this is the box centre read off the same rect as always. */
+  const pivotCss = (rect: DOMRect): { x: number; y: number } =>
+    frameCenter && frameView
+      ? { x: (frameView.x * rect.width) / VIEW, y: (frameView.y * rect.height) / VIEW }
+      : { x: rect.width / 2, y: rect.height / 2 };
 
   // The ONE exit from a held drag. EVERY path that can end one routes through
   // here — pointerup, pointercancel, lost capture, the window going away, the
@@ -533,15 +639,21 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     } catch {
       /* ok */
     }
+    // MOVE GRID drags the grid, but only one that is on this map: a grid past
+    // the projection horizon has no point under the pointer to carry, so the
+    // drag pans the sky toward it instead.
+    const mode = onHandle ? "rotate" : moveGrid && frameView ? "grid" : "pan";
+    const pivot = pivotCss(rect);
     dragRef.current = {
-      mode: onHandle ? "rotate" : "pan",
+      mode,
       startX: px,
       startY: py,
       startCenter: center,
-      startAngle: Math.atan2(py - rect.height / 2, px - rect.width / 2),
+      startAngle: Math.atan2(py - pivot.y, px - pivot.x),
       startRotation: rotationDeg,
+      startFrame: frameView,
     };
-    setDragMode(onHandle ? "rotate" : "pan");
+    setDragMode(mode);
   };
 
   const onPointerMove = (e: RPointerEvent<HTMLDivElement>) => {
@@ -576,8 +688,11 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     const py = e.clientY - rect.top;
     if (d.mode === "pan") {
       panTo(px - d.startX, py - d.startY, d.startCenter);
+    } else if (d.mode === "grid" && d.startFrame) {
+      gridTo(px - d.startX, py - d.startY, d.startFrame, d.startCenter);
     } else {
-      const ang = Math.atan2(py - rect.height / 2, px - rect.width / 2);
+      const pivot = pivotCss(rect);
+      const ang = Math.atan2(py - pivot.y, px - pivot.x);
       const deltaDeg = ((ang - d.startAngle) * 180) / Math.PI;
       let next = (d.startRotation + deltaDeg) % 360;
       if (next < 0) next += 360;
@@ -703,8 +818,16 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // ---- HTML labels (real CSS px; positioned from the projection) ----
   // "Your camera" label sits at the top of the (unrotated) frame footprint.
   const frameHalfHcss = (fov.fov_y_deg * cssPerDeg) / 2;
-  const ccx = boxPx / 2;
-  const ccy = boxPx / 2;
+  // The planned grid's centre in CSS px: the box centre, unless frameCenter
+  // has moved the grid (then everything below that is pinned to the frame
+  // goes with it).
+  const ccx = frameCenter && frameView ? (frameView.x * boxPx) / VIEW : boxPx / 2;
+  const ccy = frameCenter && frameView ? (frameView.y * boxPx) / VIEW : boxPx / 2;
+  // A grid moved off the canvas takes its labels with it. Layer 4 does not
+  // clip, and a label past the right edge widens the page (the "Object size"
+  // legend was measured doing exactly that at 390 px).
+  const gridLabelsOnCanvas = !frameCenter ||
+    (frameView !== null && ccx >= 0 && ccx <= boxPx && ccy >= 0 && ccy <= boxPx);
 
   // "Your camera · WxH" geometry. Two hard constraints, and they used to fight:
   //
@@ -742,7 +865,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     const ro = new ResizeObserver(read);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [haveOptics]);
+  }, [haveOptics, gridLabelsOnCanvas]);
   // Bottom edge parks 3px above the frame's top edge; clamped so a tall frame
   // (zoomed in) can't push the label off the TOP of the canvas either.
   const camTop = Math.max(2, ccy - frameHalfHcss - 3 - camLabelH);
@@ -797,7 +920,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       { x: boxPx - 120, y: boxPx - 22, w: 120, h: 22 },       // scale bar
     ];
     if (hasOverlayControls) boxes.push({ x: boxPx - 64, y: 8, w: 56, h: 198 });
-    if (haveOptics) {
+    if (haveOptics && gridLabelsOnCanvas) {
       boxes.push({
         x: Math.max(0, camGuardRight - camMaxW), y: camTop,
         w: camMaxW, h: camLabelH || 17,
@@ -807,7 +930,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       boxes.push({ x: pointingLabel.left - 45, y: pointingLabel.top, w: 90, h: 18 });
     }
     return boxes;
-  }, [boxPx, haveOptics, camGuardRight, camMaxW, camTop, camLabelH, pointingLabel, hasOverlayControls]);
+  }, [boxPx, haveOptics, gridLabelsOnCanvas, camGuardRight, camMaxW, camTop, camLabelH, pointingLabel, hasOverlayControls]);
 
   // Anchors chosen last frame, so a label does not flip from one side of its
   // marker to the other while the sky moves a pixel underneath it.
@@ -851,14 +974,31 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
    *
    *  The pointer is converted into viewBox units ONCE, here, and everything
    *  downstream stays in them. Two coordinate systems on one canvas is enough;
-   *  three is where an off-by-a-scale-factor hides. */
+   *  three is where an off-by-a-scale-factor hides.
+   *
+   *  With panels and onPanelTap, a tap that finds no object marker is tried
+   *  against the panels next (the marker is the small, deliberate target; the
+   *  panel is most of the canvas), and only a tap on neither is "empty sky".
+   *  Without onPanelTap this is the old two-way answer, unchanged. */
   const pickAt = (px: number, py: number): void => {
-    if (!onPickObject) return;
     const toView = VIEW / boxPx;
-    const hit = hitTest(
-      placement.markers, px * toView, py * toView, TAP_RADIUS_PX * toView,
-    );
-    onPickObject(hit ? hit.row : null);
+    if (onPickObject) {
+      const hit = hitTest(
+        placement.markers, px * toView, py * toView, TAP_RADIUS_PX * toView,
+      );
+      if (hit || !onPanelTap) {
+        onPickObject(hit ? hit.row : null);
+        return;
+      }
+    }
+    if (onPanelTap) {
+      const pp = panelAt(placedPanels, px * toView, py * toView, TAP_RADIUS_PX * toView);
+      if (pp) {
+        onPanelTap(pp.panel.row, pp.panel.col);
+        return;
+      }
+    }
+    onPickObject?.(null);
   };
 
   return (
@@ -996,10 +1136,22 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           className="absolute inset-0 w-full h-full pointer-events-none"
           aria-hidden
         >
-          {props.showFraming !== false && <FovOverlay
+          {/* The planned grid: the server's panels when the caller has them
+              (PanelLayer, drawn from their sky coordinates), else FovOverlay's
+              client-side grid at the frame centre. Never both. */}
+          {panelsMode && (
+            <PanelShapes
+              placed={placedPanels}
+              view={VIEW}
+              hatchId={hatchId}
+              frameCenter={frameView}
+              objectRPx={semiMajorDeg ? semiMajorDeg * pxPerDeg : null}
+            />
+          )}
+          {!panelsMode && props.showFraming !== false && frameView && <FovOverlay
             view={VIEW}
-            cx={cx}
-            cy={cy}
+            cx={frameView.x}
+            cy={frameView.y}
             pxPerDeg={pxPerDeg}
             fovXDeg={fov.fov_x_deg || fovZoomDeg * 0.4}
             fovYDeg={fov.fov_y_deg || fovZoomDeg * 0.28}
@@ -1058,7 +1210,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               is INLINE so its plate hugs each line instead of painting one wide
               slab, and the size half is nowrap so a wrap can only ever fall
               between "Your camera" and the numbers. */}
-          {haveOptics && (
+          {haveOptics && gridLabelsOnCanvas && (
             <span
               ref={camLabelRef}
               className="absolute text-[12px] mono text-right leading-snug"
@@ -1087,7 +1239,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               scrolled sideways into empty space. Off the right edge it is also
               simply invisible. Clamped, it parks on the edge it points past and
               flips its anchor so the text stays inside. */}
-          {semiMajorDeg && (() => {
+          {semiMajorDeg && gridLabelsOnCanvas && (() => {
             const want = ccx + semiMajorDeg * cssPerDeg + 6;
             const clamped = want > boxPx - 6;
             return (
@@ -1139,6 +1291,20 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           <span ref={fontRef} className="absolute text-[12px] mono" aria-hidden />
         </div>
 
+        {/* 4a. panel labels (#189 S4) — a SIBLING of the decorative layer, for
+              the reason 4b gives: they carry a panel's name and state, and with
+              onPanelTap they are the keyboard channel for it. Pointer events
+              off, taps served by pickAt. No z-index, so the rotate handle
+              (mounted later) still paints above them. */}
+        {panelsMode && (
+          <PanelLabels
+            placed={placedPanels}
+            scale={boxPx / VIEW}
+            boxPx={boxPx}
+            onPanelTap={onPanelTap}
+          />
+        )}
+
         {/* 4b. object labels — a SIBLING of the decorative label layer above,
               never a change to it: the compass letters and FOV readouts should
               stay hidden from assistive tech, and these should not.
@@ -1181,13 +1347,13 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
         {/* 5. rotate handle — mounted AFTER the HTML label layer (wave-2 G3
               fix) so it ALWAYS paints on top and stays visible/grabbable at
               every canvas width; see RotateHandle.tsx for the root-cause note. */}
-        {haveOptics && (
+        {haveOptics && frameView && (
           <RotateHandle
             view={VIEW}
-            cx={cx}
-            cy={cy}
+            cx={frameView.x}
+            cy={frameView.y}
             pxPerDeg={pxPerDeg}
-            fovYDeg={fov.fov_y_deg}
+            fovYDeg={gridFovY}
             rotationDeg={rotationDeg}
             rows={mosaic.rows}
             overlap={mosaic.overlap}

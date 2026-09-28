@@ -221,9 +221,34 @@ class TestFolders:
 
 class TestCompile:
     def test_a_stored_flow_compiles_to_four_lists(self, client):
+        """The plan, the three lists of what is wrong, and since S4 the two
+        objects the Target modal's RUN section prints (``_compile_payload``'s
+        docstring, "SIX KEYS").
+
+        DELIBERATE PIN CHANGE (mosaic S4, #189, re-pinned by the S4
+        integration, #406): the answer gained ``readouts`` (spec 2.4 RUN, S4
+        item 1) and ``rig`` (the live field, the rotator and the measured
+        hop). The set is still pinned rather than read as a subset, so a key
+        that arrives or leaves without a decision goes red here.
+
+        Mutant "add an answer key without the docstring" (``"extra": 1``
+        added to the answer), observed in scratchpad/s4-integrate-q7m2:
+
+            E       AssertionError: assert {'extra', 'is...uctural', ...} == {'issues', 'p...', 'unmapped'}
+            E         Extra items in the left set:
+            E         'extra'
+
+        Mutant "the answer drops rig" (the ``"rig"`` key removed), in the
+        same copy:
+
+            E       AssertionError: assert {'issues', 'p...', 'unmapped'} == {'issues', 'p...', 'unmapped'}
+            E         Extra items in the right set:
+            E         'rig'
+        """
         fid = client.post("/api/flows", json={"flow": _flow()}).json()["id"]
         out = client.post(f"/api/flows/{fid}/compile").json()
-        assert set(out) == {"plan", "structural", "issues", "unmapped"}
+        assert set(out) == {"plan", "structural", "issues", "unmapped",
+                            "readouts", "rig"}
         assert out["plan"]["targets"][0]["name"] == "M31"
         assert out["structural"] == []
 

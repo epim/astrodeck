@@ -1333,7 +1333,8 @@ def _mosaic_numbers(entry: dict) -> dict:
 def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                    dec_deg: float, canonical: str | None, base_schedule: dict,
                    flow_id: str, unmapped: list[dict],
-                   rig: RigFacts | None) -> tuple[list[dict], dict | None]:
+                   rig: RigFacts | None,
+                   left_out: list[str]) -> tuple[list[dict], dict | None]:
     """``(panels, group)`` for one multi-panel TARGET entry (spec 3.3).
 
     One Target per panel ``framing.compute_mosaic`` lays out, in its order
@@ -1355,7 +1356,13 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
 
     A block whose every panel is skipped shoots nothing: it is dropped with a
     warn, not emitted as a group of no members, which ``plan_identity_errors``
-    would refuse at every start path."""
+    would refuse at every start path. ITS SKIP IS KEPT all the same (#335):
+    the panels' ids are appended to ``left_out``, which becomes the plan's
+    own ``skipped_ids``, so CONTINUE still tells its panels' frames from a
+    dropped step's (``continuation.plan_skipped_ids``). Dropped with no
+    trace, as S3 built it, those frames were a 409 "subs belong to steps
+    this flow no longer has", about frames that re-enabling a panel brings
+    straight back."""
     # Imported here, not at the top: `catalog.framing` is the Atlas's router,
     # and importing it loads the auth layer, which a plan with no mosaic has
     # no use for (framing imports `sequence` lazily for the same reason).
@@ -1412,6 +1419,7 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
             f"targets[{name or '?'}].mosaic.skip",
             f"every panel of {label} is skipped, so it shoots nothing and "
             f"is left out of the plan"))
+        left_out.extend(skipped_ids)
         return [], None
     fov_x, fov_y = nums["fov_x"], nums["fov_y"]
     if rig is not None and rig.fov_deg is not None:
@@ -1531,7 +1539,9 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
 
     A TARGET ENTRY WITH A GRID becomes one Target per panel and one
     ``TargetGroup`` (``_expand_mosaic``, spec 3.3); one of a single panel
-    stays one plain Target, with its centring. A target a mosaic's tail feeds
+    stays one plain Target, with its centring; one whose every panel is
+    skipped is left out, and its panels' ids become the plan's own
+    ``skipped_ids`` (#335). A target a mosaic's tail feeds
     waits for the mosaic's group (``after_group``) only when the flow says
     "Wait for the mosaic"; otherwise the engine lets it fill the mosaic's
     gaps, from plan order. ``plan.count_mode`` is "accepted" when any block
@@ -1556,6 +1566,9 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     built: list[tuple[dict, list[dict]]] = []
     # A mosaic's node id -> its group, for the targets that follow it.
     group_of: dict[str, dict] = {}
+    # The panels of every block left out whole because each is skipped
+    # (#335): the plan's own `skipped_ids`, absent while empty.
+    left_out: list[str] = []
     pooled = 0
     members_seen: dict[str, set[str]] = {}
     for entry in compiled.get("targets") or []:
@@ -1575,7 +1588,8 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             panels, group = _expand_mosaic(
                 entry, name=name, ra_hours=ra_hours, dec_deg=dec_deg,
                 canonical=canonical, base_schedule=base_schedule,
-                flow_id=flow_id, unmapped=unmapped, rig=rig)
+                flow_id=flow_id, unmapped=unmapped, rig=rig,
+                left_out=left_out)
             if group is not None:
                 groups.append(group)
                 group_of[str(entry.get("node_id") or "")] = {
@@ -1663,6 +1677,8 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         fields["count_mode"] = "accepted"
     if groups:
         fields["groups"] = groups
+    if left_out:
+        fields["skipped_ids"] = left_out
     # THE GUIDE NODE MEANS WHAT IT DRAWS (#239 stage C).
     #
     # `guide` was never set here, so every flow-built night guided - a graph

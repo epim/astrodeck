@@ -215,13 +215,22 @@ NODE_DEFS: dict[str, NodeDef] = {
         type="slew", label="SLEW + CENTER", cat="RIG",
         ins=(_f("run", "run"),), outs=(_f("centered", "centered"),),
         params={"tol": 0.5, "retries": 3, "solver": "ASTAP"}),
+    # AUTOFOCUS AND GUIDE CARRY `pass` TOO (S4, #331). Either can be the last
+    # stage of a panel lane (a lane may end on any lane node, spec 1.5), and
+    # the loop wire must leave the last stage. Without the port, appending
+    # one after a looped FILTER CYCLE left the loop mid-lane (M12) with no
+    # wire the editor could carry it to, and the mosaic stopped running until
+    # the operator rewired it by hand. Structural, exactly as on CAPTURE LOOP
+    # below, and appended last so `focused` and `guiding` keep their rows.
     "autofocus": NodeDef(
         type="autofocus", label="AUTOFOCUS", cat="RIG",
-        ins=(_f("run", "run"),), outs=(_f("focused", "focused"),),
+        ins=(_f("run", "run"),),
+        outs=(_f("focused", "focused"), _e("pass", "pass done")),
         params={"method": "V-curve sweep", "step": 12, "samples": 9}),
     "guide": NodeDef(
         type="guide", label="GUIDE", cat="RIG",
-        ins=(_f("run", "run"),), outs=(_f("guiding", "guiding"),),
+        ins=(_f("run", "run"),),
+        outs=(_f("guiding", "guiding"), _e("pass", "pass done")),
         params={"provider": "PHD2", "settle": 1.5, "dither": 3}),
     "capture": NodeDef(
         type="capture", label="CAPTURE LOOP", cat="RIG",

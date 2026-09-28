@@ -220,6 +220,19 @@ async def test_control_a_2x2_with_no_guider_still_defers_to_the_rig_verdict(
         assert [('M31 1-1', ..., ('L', 'R'))] == [('M31 1-1', ...M31 2-1',
         ())]
           At index 0 diff: ('M31 1-1', ('L', 'R')) != ('M31 1-1', ())
+    Since the #315 follow-up the rule counts the members this pass can
+    visit (`GroupRun.visitable`). MUTANT "nothing let through is kept"
+    (`GroupRun.note_let_through` made a no-op, so a pass counts only the
+    panels it visited and the one asking): the pass's first panel, counting
+    only itself, is shot unguided before the other three defer. RED
+    (observed, S4-ENGC, scratchpad/s4-engc-mut, and again on 2026-09-27 in
+    scratchpad/s4-engc-resume-mut):
+        AssertionError: [('M31 1-1', ('L', 'R')), ('M31 1-2', ()), ('M31
+        2-2', ()), ('M31 2-1', ()), ('M31 1-2', ('L', 'R')), ('M31 2-2',
+        ('L', 'R')), ...]
+        assert [('M31 1-1', ...M31 2-1', ())] == [('M31 1-1', ...M31 2-1',
+        ())]
+          At index 0 diff: ('M31 1-1', ('L', 'R')) != ('M31 1-1', ())
     """
     _optional_guiding(group_store)
     group_hub.guider.connected = False

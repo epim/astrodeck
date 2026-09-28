@@ -109,6 +109,40 @@ const LOGIC_MODULES: Record<string, string> = {
     "S1 #189 - progressChip: the TARGET card's '212/315 subs' chip off the progress route. " +
     "Both canvases draw it from this one pure formatter, so when a count may be shown (a " +
     "session, a saved graph, a TARGET block) cannot drift between them.",
+  // The three below arrived with #189 S4 and were recorded by the S4
+  // integration (#400, #406): the #/next canvas, its phone stage list and its
+  // inspector read the mosaic lane, the loop arc and the counts line from the
+  // same pure modules the classic editor does. Each is a .ts file with no JSX
+  // and imports only nodeDefs, geometry, flowsTypes and each other.
+  // Mutant "drop the panelLane entry", observed in scratchpad/s4-integrate-q7m2:
+  //   x every legacy value or type import comes from an allow-listed module: 6
+  //   legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowNode.tsx imports withLoop from
+  //   components/flows/panelLane; ...
+  "components/flows/panelLane":
+    "S4 #189 - withLoop, loopSource, laneTail, panelLane, isMultiPanel, LaneGraph: the mirror " +
+    "of compile.py's lane rules; the #/next card's LOOP PANELS, the phone rail and the " +
+    "inspector read the lane from it, so none can offer or draw a loop the compile does not make.",
+  // Mutant "drop the targetSummary entry", same copy:
+  //   x every legacy value or type import comes from an allow-listed module: 9
+  //   legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowNode.tsx imports targetFooter from
+  //   components/flows/targetSummary; ...
+  "components/flows/targetSummary":
+    "S4 #189 - targetFooter, targetLoops, loopArcOf, loopChip, loopChipBox, LOOP_ARC_DASH, " +
+    "LOOP_CHIP_FONT_PX, LOOP_CHIP_WORDS: one pure module for the card footer, the loop arc, its " +
+    "chip and the phone rail's label, so the two canvases cannot word or draw a loop apart.",
+  // Mutant "drop the countsNotice entry", same copy:
+  //   x every legacy value or type import comes from an allow-listed module: 2
+  //   legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowCanvasToolbar.tsx imports countsNotice from
+  //   components/flows/countsNotice;
+  //   hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx imports countsNotice
+  //   from components/flows/countsNotice
+  "components/flows/countsNotice":
+    "S4 #189, S4 orchestrator ruling 8 - countsNotice: the counts line the #/next toolbar and " +
+    "phone stage list show, in the server's words; a copy would be a second reading of when " +
+    "saving switches a flow's counts.",
   "components/sequence/sessionDates":
     "2.1 - night-boundary maths, shared by the gallery and the files sheet.",
   "components/sequence/stepDefaults":
@@ -334,6 +368,19 @@ const KEEP_AS_IS: Record<string, { names: string[]; why: string }> = {
     names: ["Login"],
     why: "app-level: there is ONE sign-in form in the product and NextApp mounts it. " +
       "Rebuilding it would mean two login screens that must never disagree.",
+  },
+  // #189 S4, recorded by the S4 integration (#400). Mutant "drop the framing
+  // entry", observed in scratchpad/s4-integrate-q7m2:
+  //   x no legacy presentation component is mounted by the new UI: 1 legacy
+  //   component import(s) with no keep-as-is entry:
+  //   hubs/session/flows/framing/FlowFrameSheet.tsx imports
+  //   TargetFramingSheetLazy from components/flows/framing
+  "components/flows/framing": {
+    names: ["TargetFramingSheetLazy"],
+    why: "S4 #189, spec 2.1 - the Target modal is ONE shared component for both UIs, and " +
+      "the #/next flowFrame sheet mounts it through this lazy door rather than forking its " +
+      "presentation: a second copy would be a second implementation of the DONE lock, the " +
+      "re-frame question and the loop wire. The door keeps the modal out of the sheet's chunk.",
   },
 };
 

@@ -316,6 +316,34 @@ body {
   .overlay-surface { max-height: min(100vh, var(--ov-max-h, 100vh)); }
 }
 
+/* The `full` variant (S4, #189): the Target framing modal on tablet and desktop
+   is the whole screen, the sky on the left beside its control column. Its size
+   is these four values and nothing in Overlay.tsx, so the base surface rule's
+   single declaration still does all the sizing, as explained above.
+   - 100%, not 100vw / 100dvh. The wrapper is `absolute inset-0` inside the
+     fixed host, so 100% IS the viewport the host covers. 100vw also counts a
+     desktop scrollbar. And a dvh value fed through a var defeats the @supports
+     fallback above: `min(100vh, 100dvh)` is invalid at computed-value time in
+     a browser without dvh, which drops max-height to `none` (#354, which the
+     dvh-valued variants still carry).
+   - The top and side safe-area insets are padding here: index.html sets
+     viewport-fit=cover, so a full surface's head row would otherwise sit under
+     the notch. The bottom inset stays with the foot row (or the no-foot body);
+     padding it here as well would count it twice.
+   - No border. A 1px frame at the screen edge is cut off by rounded display
+     corners. The compound selector outranks the base rule's border on
+     specificity, not on where this block happens to sit in the file. */
+.overlay-surface.overlay-full {
+  --ov-w: 100%;
+  --ov-h: 100%;
+  --ov-max-w: 100%;
+  --ov-max-h: 100%;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  border: 0;
+}
+
 .overlay-head { flex: none; border-bottom: 1px solid var(--line); }
 .overlay-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .overlay-foot {

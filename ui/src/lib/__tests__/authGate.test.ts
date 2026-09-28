@@ -409,6 +409,20 @@ const STORE_ACTIONS: string[] = [
   "flowsBeginWire", "flowsMoveWire", "flowsEndWire", "flowsTapPort",
   "flowsCompile", "flowsFetchTonight", "flowsFetchCalHealth", "flowsRun",
   "flowsAppendLog", "flowsSetUi",
+  // Mosaic S4 (#189; recorded by the S4 integration, #406): the Target
+  // modal's DONE writes its framing through one action (one graph write, one
+  // compile), and WHILE A MOSAIC WAITS writes the flow's settings through
+  // another, which keeps the settings keys this build does not know. Both
+  // write `flows`, which ClearedRigState already classifies; neither is state.
+  // Mutant "flowsSetSetting not recorded" (the name left out here), observed
+  // in scratchpad/s4-integrate-q7m2, both walks red:
+  //   x the walk records what it skips instead of inferring it from the
+  //   value: "flowsSetSetting" is a function-valued member of the store that
+  //   nobody has classified. ...
+  //   x no slice can be added to the store without deciding whether the gate
+  //   clears it: flowsSetSetting is a store slice the auth gate has never
+  //   been told what to do with. ...
+  "flowsApplyFraming", "flowsSetSetting",
 ];
 
 /** The store's data slices as they actually are at cold boot: every member that

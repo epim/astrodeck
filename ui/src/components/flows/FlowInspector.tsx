@@ -11,11 +11,24 @@
 // Two blocks, and they are separate components so their subscriptions are too:
 // while a node is selected nothing here is subscribed to the doctor's issue
 // list, and while nothing is selected nothing is subscribed to a node record.
-import { useMemo } from "react";
+//
+// THE TARGET MODAL'S DOOR (#189 S4; spec 2026-09-23 flows mosaic, 2.1). A
+// TARGET's per-type slot, beside calib's, carries a FRAME ON SKY row that
+// opens the Target modal. It is a row of this component and not a FieldDef
+// control: nodeDefs' "every control is one of the three" pin stays true, and
+// the plain field rows below it stay for keyboard editing. THE MODAL IS NOT
+// MOUNTED HERE. The desktop column and the tablet edit sheet both render this
+// component, a palette drop has to open the same modal with no inspector on
+// screen at all, and the sheet is loaded lazily; so the editor hosts it once
+// (FlowEditor) and hands its opener down as `FramingDoorContext`. With no
+// host there is no row, rather than a button that does nothing.
+import { createContext, useContext, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store";
 import { Field, LockedNote } from "../ui";
 import { NODE_DEFS, fieldValue } from "./nodeDefs";
+import { FLOW_SETTINGS, flowSetting } from "./flowsTypes";
+import { isMultiPanel } from "./panelLane";
 import CalibrationMatrix from "./CalibrationMatrix";
 import FlowFieldRow, { type FieldVariant } from "./FlowFieldRow";
 // `FlowIssue` / `FlowUnmapped` live in the api client — flowsTypes re-exports
@@ -58,6 +71,49 @@ const DELETE_BTN =
   "border border-[color-mix(in_srgb,var(--bad)_45%,transparent)] bg-transparent " +
   "text-bad px-3 py-2 hover:border-bad " +
   "hover:shadow-[0_0_12px_color-mix(in_srgb,var(--bad)_28%,transparent)]";
+
+/** Purple border, cyan fill and ink: the treatment RUN, + ADD STAGE and
+ *  GENERATE FLOW share (§C.3), because this row opens a surface rather than
+ *  editing a value in place. */
+const FRAME_BTN =
+  "font-display font-semibold text-[10.5px] tracking-[0.12em] rounded-[10px] " +
+  "border border-accent2 bg-accent-fill text-accent px-3 py-2 cursor-pointer";
+
+// ───────────────────────────────────────────────────── the Target modal's door
+
+/** How the editor that hosts the Target modal lets this component open it.
+ *  `open` is called with the TARGET node the modal is to frame. */
+export interface FramingDoor {
+  open: (nodeId: string) => void;
+}
+
+/** Provided by FlowEditor, which mounts the lazy sheet. Null outside an
+ *  editor, where no FRAME ON SKY row is drawn. */
+export const FramingDoorContext = createContext<FramingDoor | null>(null);
+
+/** The row's label, and its label on a read-only Example. */
+export const FRAME_ON_SKY = "FRAME ON SKY";
+export const VIEW_ON_SKY = "VIEW ON SKY";
+
+/** Why an Example's framing opens to view (spec 2.1, "open it in view mode
+ *  and say why"). The sheet's own `EXAMPLE_VIEW_ONLY`, COPIED: importing it
+ *  would pull the whole sheet (the survey canvas, the catalogue search) into
+ *  the editor's chunk, which is exactly what the lazy door exists to avoid.
+ *  __tests__/flowInspectorFrame.test.tsx holds the two equal. */
+export const EXAMPLE_FRAMING_VIEW_ONLY =
+  "Example flow: its framing opens to view, not to edit. Duplicate the flow to frame your own.";
+
+/** The overview's label for the flow's `whenWaiting` setting: the modal RUN
+ *  section's `WHEN_WAITING_LABEL`, copied for the same reason and held equal
+ *  by the same test. Both editors of one setting say what it applies to in
+ *  the same words (spec 1.6, "labelled for every mosaic in this flow"). */
+export const WHEN_WAITING_OVERVIEW_LABEL =
+  "While a mosaic waits (for every mosaic in this flow)";
+
+/** Said under the setting while the flow has no multi-panel TARGET: the
+ *  setting is stored and kept, but nothing reads it until one exists. */
+export const WHEN_WAITING_NO_MOSAIC =
+  "This flow has no mosaic yet, so this changes nothing until a TARGET has more than one panel.";
 
 export interface FlowInspectorProps {
   variant?: FieldVariant;
@@ -105,6 +161,7 @@ function InspectorNode({ id, variant }: { id: string; variant: FieldVariant }) {
   const node = useStore((s) => s.flows.graph.nodes.find((n) => n.id === id));
   const select = useStore((s) => s.flowsSelect);
   const deleteSel = useStore((s) => s.flowsDeleteSel);
+  const door = useContext(FramingDoorContext);
 
   if (!node) return null;
   const def = NODE_DEFS[node.type];
@@ -144,6 +201,13 @@ function InspectorNode({ id, variant }: { id: string; variant: FieldVariant }) {
       </div>
 
       {node.type === "calib" && <CalibrationMatrix variant={variant} />}
+      {/* THE ID IS THE ONE THIS COLUMN SHOWS, `node.id`: in the edit sheet
+          that is `editNode`, which need not be the selection, and a door
+          opened on anything else would frame a block other than the one
+          named at the top of the column. */}
+      {node.type === "target" && door && (
+        <FrameOnSkyRow id={node.id} variant={variant} door={door} />
+      )}
 
       {def.fields.map((f) => (
         <FlowFieldRow
@@ -176,6 +240,31 @@ function InspectorNode({ id, variant }: { id: string; variant: FieldVariant }) {
   );
 }
 
+/** The TARGET's FRAME ON SKY row (spec 2.1).
+ *
+ *  A read-only Example reads VIEW ON SKY and says why BEFORE it is pressed:
+ *  an Example cannot be saved (`flowsSave` refuses it), so the sheet opens it
+ *  to view only, and a row promising to FRAME would be a promise the sheet
+ *  then withdraws. The sheet repeats the reason once open. */
+function FrameOnSkyRow({ id, variant, door }: {
+  id: string; variant: FieldVariant; door: FramingDoor;
+}) {
+  const example = useStore((s) => s.flows.record?.readonly ?? false);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        data-flows-frame={id}
+        onClick={() => door.open(id)}
+        className={`${FRAME_BTN} ${variant === "sheet" ? "min-h-[44px]" : ""}`}
+      >
+        {example ? VIEW_ON_SKY : FRAME_ON_SKY}
+      </button>
+      {example && <LockedNote reason={EXAMPLE_FRAMING_VIEW_ONLY} />}
+    </div>
+  );
+}
+
 // ────────────────────────────────────────────────── nothing-selected overview
 
 function InspectorOverview() {
@@ -184,6 +273,13 @@ function InspectorOverview() {
   const setName = useStore((s) => s.flowsSetName);
   const stages = useStore((s) => s.flows.graph.nodes.length);
   const wires = useStore((s) => s.flows.graph.edges.length);
+  // The flow's `whenWaiting` as the engine will run it (`flowSetting` reads a
+  // missing or unknown value as the default), and whether anything reads it.
+  // Both primitives, so a param edit re-renders this block only when it
+  // changes one of them.
+  const whenWaiting = useStore((s) => flowSetting(s.flows.graph.settings, "whenWaiting"));
+  const hasMosaic = useStore((s) => s.flows.graph.nodes.some(isMultiPanel));
+  const setSetting = useStore((s) => s.flowsSetSetting);
   // These BUILD a value, so they need useShallow exactly as useCamera does.
   const issues = useStore(useShallow((s) => s.flows.compiled?.issues ?? EMPTY_ISSUES));
   const unmapped = useStore(useShallow((s) => s.flows.compiled?.unmapped ?? EMPTY_UNMAPPED));
@@ -225,6 +321,33 @@ function InspectorOverview() {
           stated, which is the honest-disabled contract's other half. */}
       {readonly && (
         <LockedNote reason="Example flow — edits are not saved. Duplicate it to keep changes." />
+      )}
+
+      {/* THE FLOW'S whenWaiting SETTING (spec 1.6, Revision 2 ruling 1): one
+          answer per flow to "what runs while a mosaic cannot be shot", so it
+          lives here in the flow overview and not on any block. It writes
+          through `flowsSetSetting`, which keeps every other key of
+          `graph.settings` (a newer build's setting survives this build's
+          save) and refuses a value FLOW_SETTINGS does not offer. The modal's
+          RUN section edits the same key in the same words. Like NAME above,
+          it writes and compiles nothing; the compile copies it into each
+          block's `mosaic.when_waiting`. */}
+      <Field label={WHEN_WAITING_OVERVIEW_LABEL}>
+        <select
+          data-flows-setting="whenWaiting"
+          className="field !text-[12px] !py-[7px] !px-[9px] !rounded-none"
+          value={whenWaiting}
+          onChange={(e) => { setSetting("whenWaiting", e.target.value); }}
+        >
+          {FLOW_SETTINGS.whenWaiting.options.map((o) => (
+            <option key={o} value={o}>{o}</option>
+          ))}
+        </select>
+      </Field>
+      {!hasMosaic && (
+        <div className="text-[10.5px] text-faint leading-[1.45] -mt-1.5">
+          {WHEN_WAITING_NO_MOSAIC}
+        </div>
       )}
 
       <div className="grid grid-cols-2 gap-2.5">

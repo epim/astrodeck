@@ -111,19 +111,35 @@ def _never_touch_the_real_config():
     July; a sim pier-side fix on 2026-08-06 made the calibration-reuse gate
     match those stale files at some hours of the day and not others; and three
     convergence tests started failing by wall-clock time of day, in this
-    checkout only, pointing at guiding code that was completely innocent."""
+    checkout only, pointing at guiding code that was completely innocent.
+
+    THE PROFILE LIBRARY is moved too (2026-09-26, #341). ``profiles.profiles``
+    was built at import with ``PROFILES_DIR``, the developer's real
+    ``server/config/profiles/``, and nothing here moved it: a probe of the
+    whole suite found 8 tests in 3 files (test_connect_rig_guard.py,
+    test_hub_solve.py, test_no_route_leaks_the_site_coordinates.py) reading
+    that directory, the last listing the two real profiles into the route
+    bodies it scans. The store's path and the library's directory are
+    recorded first as the developer's real config (``_RealConfig``), which
+    ``_no_test_reads_the_real_config`` then refuses for the whole run."""
     import tempfile
     import astrodeck.config as config_mod
+    import astrodeck.profiles as profiles_mod
     from astrodeck.catalog.ephemeris import elements as elements_mod
     real = config_mod.config_store._path
     real_dir = config_mod.CONFIG_DIR
+    real_profiles = profiles_mod.profiles._dir
     real_elements = (elements_mod.ELEMENTS_DIR, elements_mod.SATELLITE_FILE,
                      elements_mod.COMET_FILE)
     real_start = elements_mod.EphemerisStore.start
+    _RealConfig.record(files=(real, config_mod.CONFIG_FILE),
+                       profile_dirs=(real_profiles, config_mod.PROFILES_DIR))
+    unwatch = _watch_the_real_config()
     with tempfile.TemporaryDirectory(prefix="astrodeck-test-config-") as d:
         config_mod.config_store._path = Path(d) / "astrodeck.json"
         config_mod.config_store._cfg = None      # drop anything already loaded
         config_mod.CONFIG_DIR = Path(d)
+        profiles_mod.profiles._dir = Path(d) / "profiles"
         # THE ORBITAL-ELEMENT CACHE, for the third time in this fixture's life
         # and for the same reason (2026-09-10). ``elements.py`` computes
         # ``ELEMENTS_DIR = CONFIG_DIR / "ephemeris"`` at IMPORT, so repointing
@@ -148,9 +164,199 @@ def _never_touch_the_real_config():
     config_mod.config_store._path = real
     config_mod.config_store._cfg = None
     config_mod.CONFIG_DIR = real_dir
+    profiles_mod.profiles._dir = real_profiles
     (elements_mod.ELEMENTS_DIR, elements_mod.SATELLITE_FILE,
      elements_mod.COMET_FILE) = real_elements
     elements_mod.EphemerisStore.start = real_start
+    unwatch()
+
+
+class _RealConfig:
+    """The developer's real config, as ``astrodeck.config`` resolved it at
+    import, and every time a test reached it (#341).
+
+    Real means the LOCATION: the ``astrodeck.json`` the process store was
+    built on (``server/config/``, or ``ASTRODECK_CONFIG_DIR``) and the
+    ``profiles/`` directory the profile library was built on. The session
+    fixture above moves every shared seam off both, so what reaches them
+    during a run came around it: a ``ConfigStore()`` or ``ProfileLibrary()``
+    built with no path, whose defaults were bound to the real location when
+    the class was defined; a reload of ``astrodeck.config``; a path some
+    fixture put back. Whatever such a test answers is this machine's config,
+    and on another machine it answers something else. The #309 guard's
+    reasoning for ``captures/``, applied to reads.
+
+    Not the process store itself. It stands in for the developer's config
+    in production, but during a run its file is a throwaway: a probe of the
+    whole suite counted 854 tests in 129 files reading optics or a profile
+    through it, every one of them getting the same default answer on every
+    machine, and the #227 guard fails any test that leaves it changed."""
+
+    #: Resolved paths of the real config file (the store's and
+    #: ``CONFIG_FILE``, the same path unless something moved one).
+    files: frozenset[str] = frozenset()
+    #: Resolved paths of the real profiles directory.
+    profile_dirs: frozenset[str] = frozenset()
+    #: One line per reach, ``"<seam> (<what>)"``, appended by the watchers
+    #: and read by the per-test guard. Names only: never a value read.
+    reads: list[str] = []
+    #: Where the current test's window starts in ``reads``, set by the
+    #: guard; a repeat is dropped only within one window.
+    mark: int = 0
+
+    @staticmethod
+    def _key(path) -> str:
+        return os.path.normcase(str(Path(path).resolve()))
+
+    @classmethod
+    def record(cls, *, files, profile_dirs) -> None:
+        cls.files = frozenset(cls._key(p) for p in files)
+        cls.profile_dirs = frozenset(cls._key(p) for p in profile_dirs)
+
+    @classmethod
+    def reached(cls, seam: str, where, kind: str) -> bool:
+        """Note ``seam`` if ``where`` is the real ``kind`` location; say
+        whether it was."""
+        if where is None:
+            return False
+        real = cls.files if kind == "config file" else cls.profile_dirs
+        try:
+            hit = cls._key(where) in real
+        except (OSError, TypeError, ValueError):
+            return False
+        if hit:
+            cls.note(f"{seam} (the real {kind})")
+        return hit
+
+    @classmethod
+    def note(cls, line: str) -> None:
+        # A leaky test may read in a loop: one line per run of reads, but
+        # never across windows, or the next test's first read of the same
+        # seam would be dropped and that test pass unnamed (it was, until
+        # the stand-in run with the session net removed showed 1 test of 5
+        # named where all 5 read the real file).
+        if len(cls.reads) > cls.mark and cls.reads[-1] == line:
+            return
+        cls.reads.append(line)
+
+
+def _watch_the_real_config():
+    """Wrap every method through which a ``ConfigStore`` reads or writes its
+    file and a ``ProfileLibrary`` its directory, so a call on the real
+    location is noted in ``_RealConfig.reads``. Returns the undo.
+
+    At the class, so a store or library built by any test, any fixture or
+    any module is watched without being found first. The methods that
+    touch the disk pay one path comparison per call: a store loads once and
+    saves on a change. ``cfg()``, which every reader calls, pays one
+    identity test (40 ns a call, measured): a config ``_load`` read from
+    the real file is remembered on its store, and a ``cfg()`` served from
+    that cache is a read of the real config too. Without it only the test
+    that first loaded such a store was named; a stand-in run with the
+    session net removed named 1 of 5 tests reading one. ``functools.wraps``
+    keeps ``inspect.getsource`` on a wrapped method reading its own
+    source."""
+    import functools
+
+    from astrodeck.config import ConfigStore
+    from astrodeck.profiles import ProfileLibrary
+    undo = []
+
+    def replace(cls, name: str, watched) -> None:
+        inner = cls.__dict__[name]
+        setattr(cls, name, functools.wraps(inner)(watched(inner)))
+        undo.append(lambda: setattr(cls, name, inner))
+
+    def watch(cls, name: str, attr: str, kind: str) -> None:
+        seam = f"{cls.__name__}.{name}"
+
+        def watched(inner):
+            def call(self, *a, **kw):
+                _RealConfig.reached(seam, getattr(self, attr, None), kind)
+                return inner(self, *a, **kw)
+            return call
+        replace(cls, name, watched)
+
+    held_real = "_astrodeck_test_real_cfg"
+
+    def load(inner):
+        def call(self, *a, **kw):
+            real = _RealConfig.reached("ConfigStore._load",
+                                       getattr(self, "_path", None),
+                                       "config file")
+            loaded = inner(self, *a, **kw)
+            if real:
+                self.__dict__[held_real] = loaded
+            else:
+                self.__dict__.pop(held_real, None)
+            return loaded
+        return call
+
+    def cfg(inner):
+        def call(self):
+            held = self.__dict__.get(held_real)
+            if held is not None and self._cfg is held:
+                _RealConfig.note("ConfigStore.cfg (the real config file)")
+            return inner(self)
+        return call
+
+    replace(ConfigStore, "_load", load)
+    replace(ConfigStore, "cfg", cfg)
+    watch(ConfigStore, "_save", "_path", "config file")
+    for name in ("_all", "get", "save", "delete"):
+        watch(ProfileLibrary, name, "_dir", "profiles directory")
+
+    def unwatch() -> None:
+        for step in reversed(undo):
+            step()
+    return unwatch
+
+
+def _config_reads_stay_off_the_real_one(nodeid: str):
+    """The body of ``_no_test_reads_the_real_config``, as a plain generator
+    so test_real_config_guard.py can drive it."""
+    mark = len(_RealConfig.reads)
+    outer, _RealConfig.mark = _RealConfig.mark, mark
+    try:
+        yield
+    finally:
+        _RealConfig.mark = outer
+    got = list(dict.fromkeys(_RealConfig.reads[mark:]))
+    if got:
+        # Names only, never values: that config holds the site and the
+        # auth secrets, and a teardown error is printed wherever the run's
+        # output goes.
+        raise AssertionError(
+            f"{nodeid} reached the developer's real config: "
+            f"{', '.join(got)}. The session fixture moves the shared seams "
+            f"it knows off it, so this came around them: a ConfigStore() or "
+            f"ProfileLibrary() with no path, a reload of astrodeck.config, "
+            f"a path put back, or a new shared seam that fixture should "
+            f"move (_never_touch_the_real_config). What the "
+            f"test answers is then this machine's config (issue #341). Give "
+            f"it a config of its own: the isolated_config fixture "
+            f"(conftest), or ConfigStore(path=tmp_path / ...).")
+
+
+@pytest.fixture(autouse=True)
+def _no_test_reads_the_real_config(_never_touch_the_real_config, request):
+    """Fail, at its own teardown, any test that read or wrote the
+    developer's real config file or profiles directory (``_RealConfig``;
+    issue #341). Its reads are noted by the watchers the session fixture
+    installs; this fixture only attributes them.
+
+    What it sees: the test body and every function-scoped fixture set up
+    after it, which is every non-autouse one (``client``, ``env``, a
+    lifespan), including a read from the cache of a store that loaded the
+    real file earlier. What it does not see: a read made while a module-
+    or session-scoped fixture sets up, before it; and a read at import,
+    before any fixture, which a probe of the whole suite found none of (the
+    process store had not loaded when the session began, in all 13
+    processes).
+
+    Its cases, a throwaway run of this conftest with a deliberately leaky
+    fixture, are in test_real_config_guard.py."""
+    yield from _config_reads_stay_off_the_real_one(request.node.nodeid)
 
 
 def _config_a_reader_would_see(store) -> object:
@@ -518,6 +724,92 @@ def _captures_are_the_tests_own(_never_touch_the_real_captures, monkeypatch):
     _CaptureRoots.moved = _point_the_capture_root_at(monkeypatch, root)
     yield root
     shutil.rmtree(root, ignore_errors=True)
+
+
+class IsolatedConfig:
+    """A config of the test's own, and every rig fact read off it: what the
+    ``isolated_config`` fixture hands a test (#341).
+
+    * ``store``, a ``ConfigStore`` at ``dir / "astrodeck.json"``, SWEPT into
+      every loaded ``astrodeck`` module that holds a ``config_store``. Swept,
+      never listed: ``from .config import config_store`` binds the singleton
+      into each importing module, and a fixture that patched three of them
+      (config, hub, api.app, as test_flows_wizard_route.py's did) isolated
+      three of them. ``sweep()`` again after ``create_app()``, which may
+      import more.
+    * ``dir``, set as ``CONFIG_DIR``; the profile library reads
+      ``dir / "profiles"``, and the hub's cached active profile is dropped,
+      so a profile a test saves is the one the rig facts read.
+    * ``captures``, the capture root, every seam of it moved as the per-test
+      root is (``_point_the_capture_root_at``).
+    * ``hub.last_sky_angle`` None, and no camera or rotator in the hub's
+      device map: the rig facts read the connected camera's sensor when the
+      optics are not set and a connected rotator as a rotator, and the hub
+      outlives every test on a worker. A test that wants either puts it
+      there after this fixture.
+
+    Everything through ``monkeypatch``, so the #227 guard sees nothing
+    changed at teardown."""
+
+    def __init__(self, mp: pytest.MonkeyPatch, root: Path) -> None:
+        import astrodeck.config as config_mod
+        import astrodeck.hub as hub_mod
+        import astrodeck.profiles as profiles_mod
+        self._mp = mp
+        self.dir = root / "config"
+        self.captures = root / "captures"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.store = config_mod.ConfigStore(path=self.dir / "astrodeck.json")
+        #: ``module`` of every binding a sweep moved.
+        self.swept: list[str] = []
+        self.sweep()
+        mp.setattr(config_mod, "CONFIG_DIR", self.dir)
+        mp.setattr(profiles_mod.profiles, "_dir", self.dir / "profiles")
+        hub = hub_mod.hub
+        mp.setattr(hub, "_profile_cache_id", None)
+        mp.setattr(hub, "_profile_cache", None)
+        mp.setattr(hub, "last_sky_angle", None, raising=False)
+        for role in ("camera", "rotator"):
+            mp.delitem(hub.devices, role, raising=False)
+        _point_the_capture_root_at(mp, self.captures)
+
+    def sweep(self) -> list[str]:
+        """Point every loaded ``astrodeck`` module's ``config_store`` at this
+        store; returns the modules moved, all sweeps so far.
+
+        THE KNOWN POSITIVES, asserted so a sweep that took nowhere fails
+        here rather than passing every test that never reads config: the
+        three modules the rig facts read through, ``astrodeck.config``
+        (``profiles.resolve_optics`` looks it up per call), ``astrodeck.hub``
+        (the active profile) and ``astrodeck.api.app`` when it is loaded
+        (``_rig_facts``' standards)."""
+        for name, mod in list(sys.modules.items()):
+            if mod is None or not (name == "astrodeck"
+                                   or name.startswith("astrodeck.")):
+                continue
+            held = getattr(mod, "config_store", None)
+            if held is None or held is self.store:
+                continue
+            self._mp.setattr(mod, "config_store", self.store)
+            self.swept.append(name)
+        for name in ("astrodeck.config", "astrodeck.hub", "astrodeck.api.app"):
+            mod = sys.modules.get(name)
+            if name == "astrodeck.api.app" and mod is None:
+                continue
+            assert getattr(mod, "config_store", None) is self.store, (
+                f"{name} reads a config store other than this test's: the "
+                f"sweep missed it")
+        return self.swept
+
+
+@pytest.fixture
+def isolated_config(tmp_path, monkeypatch) -> IsolatedConfig:
+    """A config of the test's own (``IsolatedConfig``), under ``tmp_path``:
+    ``tmp_path / "config"`` and ``tmp_path / "captures"``. The one
+    isolation for a test that reads the rig's optics, its profiles or the
+    rig facts built from them (#341); a fresh store has no optics until the
+    test sets them."""
+    return IsolatedConfig(monkeypatch, tmp_path)
 
 
 @pytest.fixture(autouse=True)

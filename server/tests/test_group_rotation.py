@@ -25,8 +25,8 @@ import json
 import pytest
 
 import astrodeck.sequence.engine as engine_mod
-from _group_harness import (GOLDEN_TRACE_PATH, GROUP_NAME, T0, Night,
-                            golden_flow_plan, grid_plan, group_hub,
+from _group_harness import (GOLDEN_T0, GOLDEN_TRACE_PATH, GROUP_NAME, T0,
+                            Night, golden_flow_plan, grid_plan, group_hub,
                             group_store, plain_mosaic_plan, single)
 from astrodeck.config import EscalationConfig
 from astrodeck.events import night_key
@@ -162,10 +162,33 @@ async def test_a_plan_without_groups_runs_byte_for_byte_as_before(
         "plain mosaic","progress":{"current_exposure_s":0.0,"elapsed_s":0,"eta
         _confident":false,"eta_s":552,"events_cost_s":300,"frame_started_at_ms
         ":null,"frames_done":0,"frame
+
+    RE-PINNED IN S4-SIM (#320): the golden night starts at ``GOLDEN_T0``, an
+    hour before ``T0``, and not at ``T0``. Every night now runs its hour
+    angle on the night's clock, and on that clock the golden plan's 195 min
+    from ``T0`` cross NGC 7331's meridian 180 min in: the engine held for the
+    flip point at 9960 s and flipped, and the trace differed from line 341
+    ("holding for the meridian flip point" against "dithering"). The trace
+    was recorded while the countdown read the wall clock, which is why it
+    passed at some hours of the day and held until the fake horizon at
+    others. From ``GOLDEN_T0`` the night ends 34.6 min before the flip point
+    and the recorded trace comes out byte for byte, unchanged, so it is
+    still the one recorded before the group driver; test_group_golden_wall
+    _clock.py runs it across the hours of the wall clock. The plain plan's
+    targets are placed by hour angle at ``T0``, so it keeps ``T0``.
+
+    MUTANT "the golden night from T0" (``t0 = T0`` for both plans): RED on
+    "golden", "plain" green (observed):
+        AssertionError: line 341:
+            got  [9960.0,"state",{"detail":"holding for the meridian flip
+        point","keys":["detail","plan_name","progress","session","sky",...
+            want [9960.0,"state",{"detail":"dithering","keys":["detail",
+        "plan_name","progress","session","sky",...
     """
     plan = (_golden_as_recorded() if name == "golden"
             else plain_mosaic_plan())
-    night = await _night(group_hub, monkeypatch, plan, wall_s=120.0)
+    t0 = GOLDEN_T0 if name == "golden" else T0
+    night = await _night(group_hub, monkeypatch, plan, wall_s=120.0, t0=t0)
     assert night.done, f"premise: the run ended: {night.trace[-3:]}"
     got, want = night.trace_text(), _expected_trace(name)
     assert got == want, _first_difference(got, want)

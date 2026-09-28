@@ -20,7 +20,9 @@ recovery "succeeds" (the guider starts again) and the star is lost again in
 the next exposure, the shape recovery took on 2026-09-20 (#72).
 
 WHY ACCEPTED MODE. The #72 bound counts recovery attempts since the last
-BANKED frame, and `_record_frame` clears it: an accepted frame always, and a
+BANKED frame (and, since #329, since the hop's own working guider start,
+`_hop`; test_guiding_recovery_count_per_visit.py), and `_record_frame`
+clears it: an accepted frame always, and a
 rejected one too in attempts mode, where a reject is recorded unless it is
 retaken. So the bound is reached only when frames are not recorded between
 the attempts, which is accepted mode rejecting trailed frames, as here, or a
@@ -165,12 +167,18 @@ async def test_a_guiding_loss_defers_the_panel_under_every_guiding_action(
         '2026-09-01', 'reason': 'every filter 1-2 still owes is set aside',
         'step_id': None, 'target_id': 'p01'}]
     MUTANT "the budget spans visits" (the reset of ``_guiding_recoveries``
-    at the deferral deleted): 1-2's third visit makes no recovery attempt,
-    and is deferred on its first loss under a sentence claiming two. RED on
-    each (observed):
+    at the deferral deleted, and, since #329, `_hop`'s reset at the next
+    hop's working start deleted too: either alone keeps the budget the
+    visit's own): 1-2's third visit makes no recovery attempt, and is
+    deferred on its first loss under a sentence claiming two. RED on each
+    (observed; first recorded by S3 with the deferral's reset alone, and
+    again by S4-ENGC with both, in scratchpad/s4-engc-mut and on 2026-09-27
+    in scratchpad/s4-engc-resume-mut, word for word):
         AssertionError: 1-2's visits did not each make the hop's start and
         two recovery attempts: SCSCSCSCSCSCSC
         assert 'SCSCSCSCSCSCSC' == 'SCSCSCSCSCSCSCSCSC'
+    With the deferral's reset alone deleted, every case here stays green
+    (S4-ENGC, observed): the next hop's start resets the count (#329).
     """
     group_store.set_escalation(ESCALATION[action])
     night = await _lost_night(group_hub, monkeypatch, _lost_plan(),

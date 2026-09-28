@@ -153,6 +153,10 @@ test("deleting an edge leaves both its nodes alone", () => {
 // put back to `{ nodes:`):
 //   x deleting a node or an edge keeps the flow's settings: deleting a node
 //     dropped the flow's settings: undefined
+// Re-run for #347 (S4 slice, 2026-09-26) in a private scratch copy of ui/,
+// the mutant applied to the node-delete arm of flowsDeleteSel as it is now.
+// Observed (38 passed, 1 failed):
+//   x deleting a node or an edge keeps the flow's settings: deleting a node dropped the flow's settings: undefined
 test("deleting a node or an edge keeps the flow's settings", () => {
   const settings = { whenWaiting: "Wait for the mosaic" };
   const h = harness({ nodes: [], edges: [], settings });
@@ -254,6 +258,101 @@ test("every palette type is created from createParams, the POOL's accepted subs 
   assert(off.length === 0, `${off.join(", ")} are not their createParams`);
   assert(h.flows.graph.nodes.find((n) => n.type === "pool")?.params.counts === "Accepted subs",
     "a new POOL must count accepted subs, or a pool-only flow is the one new flow that counts rejects");
+});
+
+// A palette drop that opens the TARGET modal at once (spec 2.1) has to know
+// which node it made, and a guess from the graph (the last node, a node of
+// that type) is wrong the moment two land in one frame or a hand-built file
+// repeats an id.
+//
+// MUTANT "returns undefined" (flowsSlice.ts flowsAddNode: `return id;`
+// deleted). Observed (38 passed, 1 failed):
+//   x flowsAddNode returns the new node's id, and the node is still created from createParams: flowsAddNode must return a new id per node, got undefined and undefined
+test("flowsAddNode returns the new node's id, and the node is still created from createParams", () => {
+  const h = harness();
+  const a = h.a.flowsAddNode("target", { x: 5, y: 7 });
+  const b = h.a.flowsAddNode("target", { x: 5, y: 7 });
+  const nodes = h.flows.graph.nodes;
+  assert(typeof a === "string" && a !== "" && typeof b === "string" && a !== b,
+    `flowsAddNode must return a new id per node, got ${JSON.stringify(a)} and ${JSON.stringify(b)}`);
+  assert(nodes[0].id === a && nodes[1].id === b,
+    `the returned ids are not the nodes' ids: returned ${a}, ${b}; nodes ${nodes.map((n) => n.id).join(", ")}`);
+  assert(JSON.stringify(nodes[0].params) === JSON.stringify(createParams("target")),
+    "the node the id names was not created from createParams");
+  assert(nodes[0].x === 5 && nodes[0].y === 7, "the node is not where it was dropped");
+});
+
+// ─────────────────────────────────────── the flow's own settings (spec 1.6)
+//
+// `whenWaiting` is edited in three places (the flow overview, the modal's RUN
+// section, the wizard), all through `flowsSetSetting`, which writes one key.
+// A settings object rebuilt from the one key would drop every other: today
+// FLOW_SETTINGS has one, but a flow saved by a newer build carries more
+// (#195's autoResume is next), and a save that dropped one changes what that
+// build runs.
+
+// MUTANT "rebuild settings" (flowsSlice.ts flowsSetSetting: `settings: {
+// ...g.settings, [key]: value }` -> `settings: { [key]: value }`). Observed
+// (38 passed, 1 failed):
+//   x flowsSetSetting writes one key and keeps every other settings key, the nodes and the wires: the other settings keys were not kept: {"whenWaiting":"Wait for the mosaic"}
+test("flowsSetSetting writes one key and keeps every other settings key, the nodes and the wires", () => {
+  const h = harness({
+    nodes: [{ id: "t", type: "target", x: 0, y: 0, params: {} }], edges: [],
+    settings: { whenWaiting: "Shoot later targets, then come back", autoResume: "On" },
+  });
+  const before = h.flows.graph;
+  const ok = h.a.flowsSetSetting("whenWaiting", "Wait for the mosaic");
+  const g = h.flows.graph;
+  assert(ok === true, "an offered value was refused");
+  assert(JSON.stringify(g.settings) === JSON.stringify({ whenWaiting: "Wait for the mosaic", autoResume: "On" }),
+    `the other settings keys were not kept: ${JSON.stringify(g.settings)}`);
+  assert(g.nodes === before.nodes && g.edges === before.edges, "a settings write rewrote the nodes or the wires");
+  assert(h.flows.dirty === true && h.graphWrites === 1, "a settings write is one graph edit");
+});
+
+// MUTANT "no refusal" (flowsSetSetting: the options check deleted, every
+// value written). Observed (38 passed, 1 failed):
+//   x flowsSetSetting refuses a value, or a key, FLOW_SETTINGS does not offer: a value FLOW_SETTINGS does not offer was accepted: [true,true,true]
+test("flowsSetSetting refuses a value, or a key, FLOW_SETTINGS does not offer", () => {
+  const h = harness({ nodes: [], edges: [], settings: { whenWaiting: "Wait for the mosaic" } });
+  const before = h.flows.graph;
+  const results = [
+    h.a.flowsSetSetting("whenWaiting", "Teleport"),
+    h.a.flowsSetSetting("whenWaiting", "wait for the mosaic"),
+    h.a.flowsSetSetting("noSuchSetting" as never, "Wait for the mosaic"),
+  ];
+  assert(results.every((r) => r === false), `a value FLOW_SETTINGS does not offer was accepted: ${JSON.stringify(results)}`);
+  assert(h.flows.graph === before && h.flows.dirty === false,
+    `a refused value was written: ${JSON.stringify(h.flows.graph.settings)}`);
+});
+
+// A key the table only INHERITS (`toString`, `constructor`) is not one it
+// offers: `false`, as for any unknown key, never a throw out of a store action.
+//
+// MUTANT "inherited key" (flowsSetSetting: the `Object.hasOwn` guard dropped,
+// the table indexed plainly as it was first written). Observed (verifier,
+// 2026-09-27; 48 passed, 1 failed):
+//   x flowsSetSetting refuses a key the settings table only inherits, and does not throw: Cannot read properties of undefined (reading 'includes')
+test("flowsSetSetting refuses a key the settings table only inherits, and does not throw", () => {
+  const h = harness({ nodes: [], edges: [], settings: { whenWaiting: "Wait for the mosaic" } });
+  const before = h.flows.graph;
+  const results = ["toString", "constructor", "hasOwnProperty"].map((k) =>
+    h.a.flowsSetSetting(k as never, "Wait for the mosaic"));
+  assert(results.every((r) => r === false), `an inherited key was accepted: ${JSON.stringify(results)}`);
+  assert(h.flows.graph === before && h.flows.dirty === false,
+    `an inherited key was written: ${JSON.stringify(h.flows.graph.settings)}`);
+});
+
+test("control: setting the value already stored writes nothing", () => {
+  const h = harness({ nodes: [], edges: [], settings: { whenWaiting: "Wait for the mosaic" } });
+  const before = h.flows.graph;
+  assert(h.a.flowsSetSetting("whenWaiting", "Wait for the mosaic") === true, "an offered value was refused");
+  assert(h.flows.graph === before && h.flows.dirty === false, "writing the stored value marked the flow edited");
+  // A graph with no settings at all gains the one key it was given.
+  const bare = harness();
+  bare.a.flowsSetSetting("whenWaiting", "Wait for the mosaic");
+  assert(JSON.stringify(bare.flows.graph.settings) === JSON.stringify({ whenWaiting: "Wait for the mosaic" }),
+    `a graph with no settings: ${JSON.stringify(bare.flows.graph.settings)}`);
 });
 
 // ─────────────────────────────────────────────────────────────── tap-to-wire
@@ -868,20 +967,49 @@ test("control: re-drawing the wire into the last stage from its own parent leave
     `a re-drawn wire replaces itself, wires now: ${wires(g)}`);
 });
 
-test("control: appending an AUTOFOCUS after the last stage leaves the loop wire on the cycle", () => {
-  // AUTOFOCUS has no "pass done" output, so there is no wire it could give.
-  // The loop stays where it was (the doctor names that lane: M12), rather
-  // than become a wire from a port AUTOFOCUS lacks, which the server refuses
-  // on save ("autofocus has no output port 'pass'") and so blocks every save.
+test("appending an AUTOFOCUS after the last stage moves the loop wire to it (S4, #331)", () => {
+  // DELIBERATE FLIP. Until S4 this was a control: AUTOFOCUS had no "pass done"
+  // output, so the loop stayed on the cycle, mid-lane (M12), and the mosaic
+  // no longer ran until the operator rewired it (#331). AUTOFOCUS and GUIDE
+  // now have the port, so the AUTOFOCUS is the new tail and takes the wire,
+  // keeping its id, in the connect's one write.
   //
-  // MUTANT "no pass-port check" (carryLoopWire: the check that the new tail
-  // has a `pass` output deleted). Observed (33 passed, 1 failed):
-  //   x control: appending an AUTOFOCUS after the last stage leaves the loop wire on the cycle: a wire leaves a port its node does not have, wires now: d.window->t.arm, t.target->cy.run, af.pass->t.next, cy.complete->af.run
+  // MUTANT "AUTOFOCUS has no pass" (nodeDefs.ts, in a private scratch copy).
+  // Observed:
+  //   x appending an AUTOFOCUS after the last stage moves the loop wire to it (S4, #331): the loop wire must leave the new last stage af, keeping its id, wires now: d.window->t.arm, t.target->cy.run, cy.pass->t.next, cy.complete->af.run
+  //   (47 passed, 2 failed on the re-run of 2026-09-27; the other is the
+  //   fixture's case 1 below)
   const g0 = mosaicLane();
   g0.nodes.push({ id: "af", type: "autofocus", x: 750, y: 200, params: {} });
   const h = harness(g0);
-  const loop = g0.edges[2];
   h.a.flowsConnect("cy", "complete", "af", "run");
+  const g = h.flows.graph;
+  const pass = passWires(g);
+  assert(pass.length === 1 && pass[0].from === "af" && pass[0].id === "loop",
+    `the loop wire must leave the new last stage af, keeping its id, wires now: ${wires(g)}`);
+  const byId = new Map(g.nodes.map((n) => [n.id, n]));
+  const orphan = g.edges.filter((e) =>
+    !NODE_DEFS[byId.get(e.from)!.type].outs.some((p) => p.id === e.fromPort));
+  assert(orphan.length === 0, `a wire leaves a port its node does not have, wires now: ${wires(g)}`);
+  assert(h.graphWrites === 1, `one connect must be one graph write, got ${h.graphWrites}`);
+});
+
+test("control: appending a legacy SLEW after the last stage leaves the loop wire on the cycle", () => {
+  // SLEW is the one lane type with no "pass done" output, so there is no wire
+  // it could give. The loop stays where it was (the doctor names that lane:
+  // M12), rather than become a wire from a port SLEW lacks, which the server
+  // refuses on save ("slew has no output port 'pass'") and so blocks every
+  // save. This control used an AUTOFOCUS until S4 (#331; the case above).
+  //
+  // MUTANT "no pass-port check" (carryLoopWire: the check that the new tail
+  // has a `pass` output deleted). Observed:
+  //   x control: appending a legacy SLEW after the last stage leaves the loop wire on the cycle: a wire leaves a port its node does not have, wires now: d.window->t.arm, t.target->cy.run, sl.pass->t.next, cy.complete->sl.run
+  //   (48 passed, 1 failed on the re-run of 2026-09-27)
+  const g0 = mosaicLane();
+  g0.nodes.push({ id: "sl", type: "slew", x: 750, y: 200, params: {} });
+  const h = harness(g0);
+  const loop = g0.edges[2];
+  h.a.flowsConnect("cy", "complete", "sl", "run");
   const g = h.flows.graph;
   const byId = new Map(g.nodes.map((n) => [n.id, n]));
   const orphan = g.edges.filter((e) =>
@@ -890,6 +1018,71 @@ test("control: appending an AUTOFOCUS after the last stage leaves the loop wire 
     `a wire leaves a port its node does not have, wires now: ${wires(g)}`);
   assert(passWires(g).length === 1 && passWires(g)[0] === loop, `wires now: ${wires(g)}`);
 });
+
+// ───────── the fixture's carry cases, through the connect action (#331)
+//
+// server/tests/fixtures/panel_lane_cases.json `carry_cases`: the graphs the
+// carry must make, which test_flows_panel_lane.py holds to compile.py and
+// panelLane.test.ts to `carryLoopWire`. Here through `flowsConnect`, the one
+// action that calls it, so the write discipline is graded with the graph:
+// one connect, one graph write, the drawn wire last. Its id is minted by the
+// slice, so the comparison reads it as the fixture's `connect.id`.
+//
+// MUTANT "carry only from the pre-connect tail" (carryLoopWire: `loops` back
+// to `new Set(loopWires(graph, owner.id))`, as S3 built it). Observed:
+//   x carry case carry-capture-after-autofocus-stranding-the-loop, through flowsConnect in one write: flowsConnect made ["e1:t.target->cy.run","e2:cy.complete->af.run","loop:cy.pass->t.next","drawn:af.focused->ha.run"], the fixture records ["e1:t.target->cy.run","e2:cy.complete->af.run","loop:ha.pass->t.next","drawn:af.focused->ha.run"]
+//   (48 passed, 1 failed on the re-run of 2026-09-27)
+interface CarryCase {
+  id: string; block: string;
+  graph: FlowGraphRec; result: FlowGraphRec;
+  connect: { id: string; from: string; fromPort: string; to: string; toPort: string };
+}
+const CARRY_CASES: CarryCase[] = (() => {
+  const text = readFileSync(
+    new URL("../../../../../server/tests/fixtures/panel_lane_cases.json", import.meta.url), "utf8") as string;
+  const list = (JSON.parse(text) as { carry_cases?: CarryCase[] }).carry_cases;
+  if (!Array.isArray(list) || list.length === 0) throw new Error("the fixture holds no carry_cases");
+  return list;
+})();
+
+// MUTANT "carry from any owned stage" (carryLoopWire: `lane.has(e.from)` ->
+// `ownerOf(graph, e.from) !== null`). It passed all 47 cases here until the
+// fixture gained carry-foreign-pass-wire-control. Observed since:
+//   x carry case carry-foreign-pass-wire-control, through flowsConnect in one write: flowsConnect made ["e1:t.target->cy.run","e2:t2.target->c2.run","stray:af.pass->t.next","drawn:cy.complete->af.run"], the fixture records ["e1:t.target->cy.run","e2:t2.target->c2.run","stray:c2.pass->t.next","drawn:cy.complete->af.run"]
+//   (47 passed, 1 failed; 48 passed, 1 failed on the re-run of 2026-09-27)
+//
+// The fixture's two controls, a 1x1 block and a lane with no loop wire, fail
+// here too under the mutants the S3 controls above record. "every block is a
+// mosaic" (47 passed, 2 failed, the 1x1 control above with it):
+//   x carry case carry-single-target-control, through flowsConnect in one write: flowsConnect made ["e1:t.target->cy.run","pw:af.pass->t.next","drawn:cy.complete->af.run"], the fixture records ["e1:t.target->cy.run","pw:cy.pass->t.next","drawn:cy.complete->af.run"]
+// "add when missing" (46 passed, 3 failed: the no-loop-wire control above,
+// this case, and the foreign-wire case; the added wire reads as the drawn
+// one because the slice minted its id):
+//   x carry case carry-no-loop-wire-control, through flowsConnect in one write: flowsConnect made ["e1:t.target->cy.run","drawn:cy.complete->af.run","drawn:af.pass->t.next"], the fixture records ["e1:t.target->cy.run","drawn:cy.complete->af.run"]
+test("the fixture's carry cases are all here, controls included", () => {
+  const ids = CARRY_CASES.map((c) => c.id);
+  for (const id of ["carry-autofocus-after-looped-cycle",
+                    "carry-capture-after-autofocus-stranding-the-loop",
+                    "carry-single-target-control", "carry-no-loop-wire-control",
+                    "carry-foreign-pass-wire-control"]) {
+    assert(ids.includes(id), `the fixture no longer carries carry case ${id}`);
+  }
+});
+
+for (const c of CARRY_CASES) {
+  test(`carry case ${c.id}, through flowsConnect in one write`, () => {
+    const h = harness(JSON.parse(JSON.stringify({ ...c.graph, settings: {} })));
+    const before = new Set(h.flows.graph.edges.map((e) => e.id));
+    const { from, fromPort, to, toPort } = c.connect;
+    h.a.flowsConnect(from, fromPort, to, toPort);
+    const got = h.flows.graph.edges.map((e) =>
+      `${before.has(e.id) ? e.id : c.connect.id}:${e.from}.${e.fromPort}->${e.to}.${e.toPort}`);
+    const want = c.result.edges.map((e) => `${e.id}:${e.from}.${e.fromPort}->${e.to}.${e.toPort}`);
+    assert(JSON.stringify(got) === JSON.stringify(want),
+      `flowsConnect made ${JSON.stringify(got)}, the fixture records ${JSON.stringify(want)}`);
+    assert(h.graphWrites === 1, `one connect must be one graph write, got ${h.graphWrites}`);
+  });
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failures.length) { failures.forEach((f) => console.log(f)); process.exit(1); }

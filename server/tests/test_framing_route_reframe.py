@@ -140,24 +140,87 @@ def test_the_anchor_as_a_spec_answers_as_its_text(client):
 
 def test_an_anchor_with_no_camera_field_is_accepted(client):
     """A block framed before MATCH CAMERA holds no field, which the spec
-    form must accept (``fov`` 0, where the layout itself needs a field): its
-    threshold is 0, so framing it with a camera field re-anchors.
+    form must accept (``fov`` 0, where the layout itself needs a field).
+
+    MATCH CAMERA FOLLOWS RULING 4 (#351, spec 2.5). Framed with the camera's
+    field at the same centre and angle, the anchor is COMPLETED, as the save
+    completes it: one geometry with the layout, it carries, with the
+    threshold of the field it now records (0.5 x 0.25 x 1.33 deg). Framed
+    with a field AND moved 1', it does not complete (the edit may not set
+    its own allowance), so the move is judged against no field, threshold
+    0, and re-anchors. Both forms of the anchor answer alike.
 
     Mutant "the anchor needs a field" (``MosaicAnchorIn``'s fields ``gt=0``)
     failed:
         {"type":"greater_than","loc":["body","anchor","MosaicAnchorIn",
         "fov_x_deg"],"msg":"Input should be greater than 0",...}
         assert 422 == 200
+
+    Mutant "the route does not complete" (``_reframe_answer``'s
+    ``identity.completes`` branch removed), the modal would promise a
+    restart the save never makes:
+        AssertionError: assert (False, 0.0, 'move') == (True, 0.16625, 'unchanged')
+          At index 0 diff: False != True
+
+    Mutant "complete whatever else changed" (``identity.completes`` without
+    its key comparison) failed the 1' case, which then completed and
+    carried on the allowance the same edit records:
+        AssertionError: assert (True, 0.16625, 'move') == (False, 0.0, 'move')
+          At index 0 diff: True != False
     """
     old = {"ra_hours": 0.7122, "dec_deg": 41.0, "rows": 1, "cols": 1,
            "overlap": 0.25, "rotation_deg": 30.0, "fov_x_deg": 0.0,
            "fov_y_deg": 0.0}
-    r = client.post("/api/framing/mosaic",
-                    json={**SPEC, "rows": 1, "cols": 1, "anchor": old})
-    assert r.status_code == 200, r.text
-    got = r.json()["reframe"]
-    assert (got["carry"], got["threshold_deg"], got["reason"]) == \
-        (False, 0.0, "move")
+    text = identity.canonical_geometry(0.7122, 41.0, 30.0)
+    single = {**SPEC, "rows": 1, "cols": 1}
+    for anchor in (old, text):
+        r = client.post("/api/framing/mosaic",
+                        json={**single, "anchor": anchor})
+        assert r.status_code == 200, r.text
+        got = r.json()["reframe"]
+        assert (got["carry"], got["threshold_deg"], got["reason"]) == \
+            (True, 0.5 * 0.25 * 1.33, "unchanged")
+        r = client.post("/api/framing/mosaic",
+                        json={**single, "dec_deg": 41.0 + ARCMIN,
+                              "anchor": anchor})
+        got = r.json()["reframe"]
+        assert (got["carry"], got["threshold_deg"], got["reason"]) == \
+            (False, 0.0, "move")
+
+
+def test_a_completed_anchor_is_laid_out_with_the_field_it_records(client):
+    """The stored text of a completed anchor (#351, ruling 4) keys no field
+    and records the camera's. The route lays it out with the recorded field
+    and takes the threshold from it, as the save does: a 3' nudge of a
+    1.3 x 0.9 deg panel carries under 0.1125 deg, and a 10' one does not.
+
+    Mutant "a recorded field is not laid out" (``framing._laid_out``
+    returns every frame as it is) failed:
+        assert (False, 0.0) == (True, 0.1125)
+          At index 0 diff: False != True
+    The route hands ``reframe_carry`` the anchor already laid out, as a
+    mapping, so the save-side mutant "threshold from the anchor's zero field
+    after completion", which reads the keyed field from the stored TEXT,
+    cannot reach it here: this case stays green under it, and the save's
+    cases (test_flows_anchor_completion.py) and reframe_carry's own
+    (test_framing_reframe_carry.py) are the ones that go red.
+    """
+    blank = identity.canonical_geometry(0.7122, 41.0, 30.0)
+    completed = identity.complete_anchor(blank, identity.canonical_geometry(
+        0.7122, 41.0, 30.0, fov_x=1.3, fov_y=0.9))
+    assert completed is not None, "premise: the field completes the anchor"
+    single = {**SPEC, "rows": 1, "cols": 1, "fov_x_deg": 1.3,
+              "fov_y_deg": 0.9}
+    got = []
+    for arcmin in (3.0, 10.0):
+        r = client.post("/api/framing/mosaic",
+                        json={**single, "dec_deg": 41.0 + arcmin * ARCMIN,
+                              "anchor": completed})
+        assert r.status_code == 200, r.text
+        got.append((r.json()["reframe"]["carry"],
+                    r.json()["reframe"]["threshold_deg"]))
+    assert got[0] == (True, 0.5 * 0.25 * 0.9)
+    assert got[1] == (False, 0.5 * 0.25 * 0.9)
 
 
 def test_a_named_anchor_is_measured_at_the_specs_position(client):
@@ -295,6 +358,20 @@ def test_a_non_finite_layout_with_an_anchor_is_a_422_not_a_carry(
     ``_a_reframe_needs_a_finite_layout`` returns at once) failed both spec
     rows the same way, for example:
         [spec fov inf] ValueError: frame field 'fov_y' is not finite: inf
+
+    CONFIRMED BY S4-SAVE (#324), in a private copy of server/. Mutant
+    "MosaicAnchorIn allows inf/nan" failed both anchor rows again, the
+    refusal escaping the route from ``_frame``:
+        [anchor rotation NaN] E   ValueError: frame field 'rotation_deg' is not finite: nan
+        [anchor fov inf]      E   ValueError: frame field 'fov_x' is not finite: inf
+    Mutant "the frame skips _finite" left all four rows GREEN, by design:
+    through this route a non-finite number is refused before ``_frame`` is
+    reached, by ``MosaicAnchorIn``'s config for the anchor and by
+    ``_a_reframe_needs_a_finite_layout`` for the spec, so ``_finite`` is the
+    guard of a direct caller, and the frame cases in
+    test_framing_reframe_carry.py are what grade it. No route input reaches
+    ``_finite`` alone, so no route case can go red under that mutant; the
+    two mutants together would give back #324's 200 carry.
     """
     r = real_client.post("/api/framing/mosaic",
                          content=_raw(AS_SPEC, spec_field=spec_field,

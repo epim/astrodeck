@@ -451,7 +451,9 @@ def recentre_candidates(session: Session, night: str,
     * A target that waits for a group (``after_group``) is left out while the
       group owes frames: the group is live (the target waits) or set aside
       tonight (the target is skipped with it), and either way the run does
-      not shoot it tonight until the group is complete (spec 1.6).
+      not shoot it tonight until the group is complete (spec 1.6). A GROUP
+      whose member waits for another group is left out whole under the same
+      rule (#330): a member's gate holds its whole group, in the run as here.
 
     * THE RUN'S GATING (#283), when ``site`` is set (``site_is_set``) and
       ``now`` is given: each live candidate is asked
@@ -534,6 +536,18 @@ def recentre_candidates(session: Session, night: str,
                 placed.add(group.id)
                 members = [m for m in plan.targets
                            if m.mosaic_group == group.id]
+                # A MEMBER'S GATE HOLDS ITS WHOLE GROUP (#330), as the run
+                # reads it (`SequenceEngine._group_gate`): while a group any
+                # of its members waits for owes frames, the run holds this
+                # group or skips it for the night, and shoots none of its
+                # panels, so none is re-centred. A gate on the group itself
+                # is no gate (the start paths refuse it). Asked before the
+                # panels are placed, as a follower's gate is asked below.
+                waits_for = {m.after_group for m in members
+                             if m.after_group is not None
+                             and m.after_group != group.id}
+                if waits_for & owing_groups:
+                    continue
                 ordered = _group_order(group, members,
                                        [m for m in members if live(m)],
                                        done, last_ts)
@@ -1877,7 +1891,27 @@ class ResumeArm:
                 self._ladder_step = "limits"
                 await self.engine.check_slew_limits(candidate, cfg=cfg,
                                                     plan=session.plan)
-            except Exception as e:  # noqa: BLE001 — SafetyAbort or a bad target
+            except Exception as e:  # noqa: BLE001 — a refusal, a dead link or a bad target
+                from .engine import SafetyAbort, SlewRefused
+                if isinstance(e, SafetyAbort) and not isinstance(e, SlewRefused):
+                    # THE MOUNT DID NOT ANSWER (#327). The gate raises a
+                    # plain SafetyAbort for one thing only: a pier-guard read
+                    # past its bound (`_pier_guard_read`, #314), the engine's
+                    # dead-link abort. Told apart by TYPE, never by text, as
+                    # a cloud hold's re-point tells them apart (#240). Read
+                    # as a limit, it told the operator the target was
+                    # outside the slew limits and sent them to the limits
+                    # configuration while the link was what had failed.
+                    # Refused at once, with no other candidate tried: a link
+                    # that did not answer for one target will not for the
+                    # next, and each try would stall the ladder a whole
+                    # bound. The caller's ten-minute retry follows, as it
+                    # does for a failed solve or goto. The timed-out read's
+                    # own sentence goes to ``site_detail``, the operator's.
+                    self._refusal_site_detail = str(e)
+                    return ("re-centering after restart refused: the mount "
+                            "did not answer the slew-limit check, so the "
+                            "link to it may be down; not slewing")
                 # The gate's numbers (the altitude, the limit and the
                 # azimuth it judged: "... altitude 12 deg below safety floor
                 # 20 deg (az 238 deg)") and which of its limits refused
@@ -1885,7 +1919,7 @@ class ResumeArm:
                 # are each a fact about where the rig stands. So the reason
                 # names none of them, and the numbers go to ``site_detail``
                 # (#233, as the floor refusal above). Any exception, not only
-                # SafetyAbort: the gate's text is not read here, so none of
+                # SlewRefused: the gate's text is not read here, so none of
                 # it is trusted to be site-free.
                 #
                 # THE NUMBERS ARE ON THE REFUSAL, NOT IN ITS TEXT. Since
@@ -1895,14 +1929,13 @@ class ResumeArm:
                 # ``str(e)`` stays the fallback for a refusal without one (a
                 # pier-side refusal, a bad target), which is what an operator
                 # was shown before.
-                from .engine import SafetyAbort
                 if first_refusal is None:
                     words = (
                         "re-centering after restart refused: the target "
                         "is outside this rig's configured slew limits "
                         "(altitude floor, horizon, no-go wedges, pier "
                         "side or zenith keep-out); not slewing yet"
-                        if isinstance(e, SafetyAbort) else
+                        if isinstance(e, SlewRefused) else
                         "re-centering after restart refused: the slew-limit "
                         "check failed; not slewing")
                     first_refusal = (words, getattr(e, "site_detail", None)

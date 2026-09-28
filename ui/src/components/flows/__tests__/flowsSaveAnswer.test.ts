@@ -12,10 +12,13 @@
 //   - `migrated: [{key: "counts", ...}]`: the save switched every TARGET and
 //     POOL to counting accepted subs only (ruling 2). Both editors said
 //     beforehand that saving would; the log says that it did.
-//   - `reanchored: [{node_id, max_move_deg, threshold_deg}]`: a block's
-//     framing moved too far for its counts to carry, so they start from zero
-//     (ruling 3). A raw RA nudge in the inspector does this, and unsaid the
-//     operator meets it nights later as CONTINUE's dropped-steps question.
+//   - `reanchored: [{node_id, max_move_deg, threshold_deg, reason}]`: a
+//     block's framing moved too far for its counts to carry, so they start
+//     from zero (ruling 3), and `reason` says which rule decided (S4
+//     orchestrator ruling 6, #352). A raw RA nudge in the inspector does
+//     this, and unsaid the operator meets it nights later as CONTINUE's
+//     dropped-steps question. The server's own rows are read from its
+//     fixture below, never only written here.
 //
 // One line for the switch, one per re-anchored block, on the log both editors
 // draw (`components/flows/FlowLogStrip`, the #/next `canvas/FlowLogStrip`).
@@ -25,6 +28,9 @@
 // produced when it was run in a private scratch copy of ui/ (#254).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+// @ts-ignore  node built-ins; tsx supplies them at runtime
+import { readFileSync } from "node:fs";
 
 // The slice imports lib/flowsApi -> lib/api -> lib/base, and base.ts reads
 // `window.location.pathname` AT MODULE SCOPE. No request is made: the flowsApi
@@ -206,6 +212,76 @@ await test("a re-anchor with no move measured says why in words", async () => {
     "its rows or columns changed | its angle changed between any angle and a set one"
     + " | it now names a different object | its framing changed",
     "the grid and angle reasons lost their words");
+});
+
+// ================================================ the server's own rows
+//
+// THE ROWS BELOW ARE THE SERVER'S, READ, NOT COPIED (#352, S4 orchestrator
+// ruling 6). The case above writes its own rows, and until ruling 6 the
+// server sent no `reason` at all, so its grid, angle and identity words could
+// not happen in production: every such restart read "its framing changed".
+// server/tests/fixtures/save_answer_rows.json holds `prepare_save`'s rows for
+// one save of each reason, and test_flows_save_answer_fixture.py grades the
+// file against `prepare_save` exactly; this reads the same file, as
+// panelLane.test.ts reads its fixture, so a row shape that drifts goes red on
+// one side or the other. Do not replace the read with a literal.
+//
+// MUTANT "row drops reason" (server/astrodeck/flows/save_rules.py
+// `_anchor_on_save`: the row built without `reason`, and the fixture recorded
+// again from the mutated server, as a hand "fixing" the red grader would;
+// scratch copies of server/ and ui/ side by side). The server grader was red
+// first (test_flows_save_answer_fixture.py, and still red after the re-record,
+// on `KeyError: 'reason'`); with the fixture re-recorded, this case read the
+// generic words for all three. Observed (9/10 passed):
+//   x the server's recorded rows say why in words: the recorded grid, angle and identity rows lost their words
+//   expected "grid: its rows or columns changed | angle: its angle changed between any angle and a set one | identity: it now names a different object | move: its framing moved 5400.0', and with no camera field recorded no move carries counts over"
+//   got      "grid: its framing changed | angle: its framing changed | identity: its framing changed | move: its framing moved 5400.0', and with no camera field recorded no move carries counts over"
+//
+// MUTANT "fixture hand-edited" (the recorded grid row's reason made "angle"
+// in the scratch copy) is the server grader's to catch, and it did; this case
+// read the edit as the truth (9/10 passed), which is why the grader exists:
+//   got      "grid: its angle changed between any angle and a set one | angle: ..."
+
+const FIXTURE_REL = "../../../../../server/tests/fixtures/save_answer_rows.json";
+
+/** The server's recorded rows by reason. A missing or unreadable file must
+ *  FAIL the case, never skip it: a skipped fixture reads as a green mirror. */
+function serverRows(): Record<string, unknown[]> {
+  let text: string;
+  try {
+    text = readFileSync(new URL(FIXTURE_REL, import.meta.url), "utf8") as string;
+  } catch (e) {
+    throw new Error(`cannot read ${FIXTURE_REL}, the rows this case is graded against: ${(e as Error).message}`);
+  }
+  const cases = (JSON.parse(text) as { cases?: Record<string, unknown[]> }).cases;
+  if (!cases || typeof cases !== "object" || Object.keys(cases).length === 0) {
+    throw new Error(`${FIXTURE_REL} holds no cases`);
+  }
+  return cases;
+}
+
+await test("the server's recorded rows say why in words", async () => {
+  const rows = serverRows();
+  const got: string[] = [];
+  for (const reason of ["grid", "angle", "identity", "move"]) {
+    const recorded = rows[reason];
+    eq(Array.isArray(recorded) && recorded.length, 1, `the fixture records one ${reason} row`);
+    // The server's node id is "t": name it in the graph the save answers for.
+    answer = { reanchored: recorded };
+    const h = harness();
+    h.flows.graph!.nodes.push({ id: "t", type: "target", x: 0, y: 400, params: { name: "M31 3x2" } });
+    await h.a.flowsSave();
+    eq(h.flows.logs.length, 1, `the recorded ${reason} row did not reach the log`);
+    const why = /from zero: (.*)\. The subs/.exec(h.flows.logs[0].msg)?.[1] ?? h.flows.logs[0].msg;
+    got.push(`${reason}: ${why}`);
+  }
+  eq(got.join(" | "),
+    "grid: its rows or columns changed"
+    + " | angle: its angle changed between any angle and a set one"
+    + " | identity: it now names a different object"
+    // Control: a measured move is worded from its numbers, not its reason.
+    + " | move: its framing moved 5400.0', and with no camera field recorded no move carries counts over",
+    "the recorded grid, angle and identity rows lost their words");
 });
 
 await test("the switch and the re-anchors together: the switch first, then each block", async () => {

@@ -12,14 +12,32 @@
 // the slot is a prop: the cutover passes the rebuilt matrix in and the control
 // arrives with it. Named in this task's report as the one row it cannot close
 // alone.
+//
+// THE FRAME SLOT SITS BESIDE IT, FOR A TARGET (#189 S4 item 5; spec 2.1). A
+// TARGET's framing - where on the sky, how many panels, at what angle - is
+// edited in the Target modal, and this is its door: FRAME ON SKY opens the
+// `flowFrame` sheet on this stage, with the flow as `?open=`. Unlike
+// `calibSlot` it is not a prop: the door names nothing heavier than the
+// router (the modal itself arrives lazily, `framing/FlowFrameSheet.tsx`), and
+// a prop both callers had to remember - the docked column and the `flowNode`
+// sheet - is how one breakpoint loses the door. The plain field rows stay
+// below it for keyboard editing, as the classic inspector keeps them.
 
 import type { CSSProperties, JSX, ReactNode } from "react";
 
 import { useStore } from "../../../../../store";
 import { NODE_DEFS, fieldValue } from "../../../../../components/flows/nodeDefs";
-import { ActionButton, Label, LockNote, Mono } from "../../../../ui";
+import { NxIcon } from "../../../../icons";
+import { ActionButton, Label, ListRow, LockNote, Mono } from "../../../../ui";
+import { openFlowFrame } from "../framing/FlowFrameSheet";
 import { FlowFieldRow, type FlowFieldVariant } from "./FlowFieldRow";
 import { RIG_VALUE_PREFIX, rigValueFor } from "./issues";
+
+/** The TARGET's door to the Target modal, and what it opens onto. The modal
+ *  is where the grid, the angle and the panels are laid out against the sky;
+ *  the field rows below the door edit the same params one at a time. */
+export const FRAME_ON_SKY = "FRAME ON SKY";
+export const FRAME_ON_SKY_SUB = "grid, angle and panels against the sky";
 
 export interface FlowNodeEditorProps {
   id: string;
@@ -82,6 +100,8 @@ export function FlowNodeEditor({
 
       {node.type === "calib" && calibSlot}
 
+      {node.type === "target" && <FrameSlot id={node.id} />}
+
       {def.fields.map((f) => (
         <FlowFieldRow
           // KEYED BY NODE, not just by field. Two nodes of the same type have
@@ -139,6 +159,30 @@ export function FlowNodeEditor({
         </p>
       )}
     </>
+  );
+}
+
+/** FRAME ON SKY: the `flowFrame` sheet on this stage.
+ *
+ *  `?open=` is the flow the store holds, which is the flow this stage belongs
+ *  to, rather than whatever the route happens to carry: the pencil on a canvas
+ *  card opens `flowNode` with `{ node }` alone, so on that path the route has
+ *  already lost it. On a phone this door is inside `flowNode` at depth 2, and
+ *  the router puts `flowFrame` in its place (`openFlowFrame`).
+ *
+ *  Never locked: a read-only Example opens the modal in view mode and the
+ *  modal says why (spec 2.1), which is more than a locked row could say. */
+function FrameSlot({ id }: { id: string }): JSX.Element {
+  const open = useStore((s) => s.flows.record?.id ?? null);
+  return (
+    <ListRow
+      icon={<NxIcon name="sky" size={16} />}
+      title={FRAME_ON_SKY}
+      sub={FRAME_ON_SKY_SUB}
+      chevron
+      onPress={() => openFlowFrame(id, open)}
+      data-testid="flow-node-frame"
+    />
   );
 }
 

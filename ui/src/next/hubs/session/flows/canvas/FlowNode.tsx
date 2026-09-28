@@ -34,6 +34,8 @@ import { NODE_DEFS, type PortDef } from "../../../../../components/flows/nodeDef
 import { PORT_ROW_H, nodeW, type PortDir } from "../../../../../components/flows/geometry";
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
 import { progressChip } from "../../../../../components/flows/flowProgress";
+import { withLoop, type LaneGraph } from "../../../../../components/flows/panelLane";
+import { targetFooter, targetLoops } from "../../../../../components/flows/targetSummary";
 import { useStore } from "../../../../../store";
 import { nav } from "../../../../router";
 import { ActionButton, Mono, Pill, StatusPill } from "../../../../ui";
@@ -41,6 +43,42 @@ import {
   NODE_STATUS_TONE, NODE_STATUS_WORD, RIG_VALUE_PREFIX, asNodeStatus, isLoss,
   markTone, markWord, nodeMarkDetail, nodeMarkLevel, portAttr, rigValueFor,
 } from "./canvasModel";
+
+// ------------------------------------------------------------ LOOP PANELS
+
+/** The one-tap button that adds a mosaic's loop wire (spec 1.4 "When the wire
+ *  is added": "the one-tap LOOP PANELS button on the card, in the stage list").
+ *  The phone stage list shows the same words. */
+export const LOOP_PANELS_LABEL = "LOOP PANELS";
+
+/** What the button says it does, for its tooltip and accessible name. The
+ *  doctor's M3 names the same wire in the same words. */
+export const LOOP_PANELS_WHY =
+  "Wire the panel lane's last stage 'pass done' to this TARGET's 'next panel', "
+  + "so every pass moves to the next panel";
+
+/** `withLoop` needs an id for a wire it would add; the offer only asks
+ *  WHETHER it would add one, so the wire is never kept. */
+const NO_ID = (): string => "";
+
+/** True when LOOP PANELS would add the block's loop wire: exactly when the
+ *  press, `flowsApplyFraming(id, {}, true)`, would write anything.
+ *
+ *  ONE RULE FOR THE OFFER AND THE PRESS. `withLoop(true)` hands back the SAME
+ *  wires when it adds nothing, and it adds nothing unless the block is a
+ *  multi-panel TARGET, owns a lane with a single tail, that tail has a "pass
+ *  done" to give, and no loop wire leaves it yet. Asked here with the same
+ *  call, the button is shown on exactly the blocks a press changes: never on a
+ *  mosaic that already loops (a second wire is doctor M4's "one is enough"),
+ *  never on a single target, a block that owns no stage, or a lane that
+ *  branches or ends on a stage with no "pass done", where a button that did
+ *  nothing would be a dead control with a promise on it. The phone stage list
+ *  asks the same function.
+ *
+ *  A boolean, so a card's selector stays exact under Object.is. */
+export function offersLoopPanels(graph: LaneGraph, blockId: string): boolean {
+  return withLoop(graph, blockId, true, NO_ID) !== graph.edges;
+}
 
 // ------------------------------------------------------------------- a port
 
@@ -161,7 +199,7 @@ export interface FlowNodeCardProps {
 }
 
 function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTapPort }: FlowNodeCardProps): JSX.Element {
-  // Six subscriptions, all returning a primitive, so all six are exact under
+  // Every subscription here returns a primitive, so each is exact under
   // Object.is. `nodeMarkLevel` returns a string or null and never a fresh
   // object, so a compile that changes nothing for this type does not wake this
   // card - and `rigValueFor` reaches into `status.providers` for ONE label
@@ -179,6 +217,14 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
   // session to count from, a saved graph - so the two canvases cannot disagree
   // about when a count is true.
   const chip = useStore((s) => progressChip(s.flows.progress, node.id, s.flows.dirty));
+  // A TARGET's footer names whether its panels rotate (#189 S4 item 6, spec
+  // 1.2), which is the loop wire in the GRAPH, not a param. A boolean, so a
+  // graph write that leaves this block's loop alone - a drag, another stage's
+  // param - does not wake this card, and `targetLoops` never calls `sum`.
+  const loops = useStore((s) => node.type === "target" && targetLoops(node, s.flows.graph));
+  // LOOP PANELS (#189 S4 item 6, spec 1.4): offered only while a press would
+  // add the loop wire. A boolean, for the same reason as `loops`.
+  const offersLoop = useStore((s) => node.type === "target" && offersLoopPanels(s.flows.graph, node.id));
   // A LOSS earns the `!` and the card outline; a note does not. The note says
   // the run uses the rig's own value for these settings, which is not a defect
   // in the graph and must not be painted as one.
@@ -187,6 +233,7 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
   // Actions are stable references on the store, so selecting them costs nothing.
   const select = useStore((s) => s.flowsSelect);
   const setEditNode = useStore((s) => s.flowsSetEditNode);
+  const applyFraming = useStore((s) => s.flowsApplyFraming);
 
   const def = NODE_DEFS[node.type];
   const w = nodeW(phone ? "phone" : "desktop");
@@ -337,8 +384,12 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
 
       <div className="nx-flow-node-foot">
         {/* Computed from the CURRENT params, so an edit shows on the card
-            without opening anything. */}
-        <Mono size={10} tone="dim">{def.sum(node.params)}</Mono>
+            without opening anything. A TARGET's line is `targetFooter`, the
+            classic card's too - "M31 · 3x2 · PA 30.0 · 25% · rotate" - and it
+            takes the name from the same `def.sum`, once. */}
+        <Mono size={10} tone="dim" data-testid="flow-node-summary">
+          {node.type === "target" ? targetFooter(node, loops) : def.sum(node.params)}
+        </Mono>
         {/* And what the rig will really use, for the stages whose stored params
             name a provider it overrides: GUIDE ships "PHD2" and SLEW ships
             "ASTAP" in the vocabulary's own defaults, so a rig that guides
@@ -370,6 +421,24 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
             </Pill>
           )}
         </div>
+        {offersLoop && (
+          // THE ONE-TAP LOOP (spec 1.4). Amber because the block it sits on is
+          // doctor M3's warning, panels shot one after another, and this is
+          // the action that answers it. The press is the modal DONE's own
+          // write with an empty patch, so it is one graph write and one
+          // compile, and the wire leaves the lane's TAIL by `withLoop`, never
+          // an earlier stage (M12). In the footer, under the ports, so no wire
+          // anchor moves.
+          <ActionButton
+            kind="warn"
+            data-testid="flow-node-loop"
+            ariaLabel={`${LOOP_PANELS_LABEL}: ${LOOP_PANELS_WHY}`}
+            onPress={() => { void applyFraming(node.id, {}, true); }}
+            full
+          >
+            {LOOP_PANELS_LABEL}
+          </ActionButton>
+        )}
         {selected && (
           // The 44 px door to the same sheet the 28 px pencil opens. Revealed on
           // selection so every stage does not carry a button, and selection is a

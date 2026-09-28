@@ -529,6 +529,28 @@ class TestANonFiniteFrameIsNotAMove:
     failed every row here, for example:
         [rotation_deg-nan] Failed: DID NOT RAISE <class 'ValueError'>
         [fov_x-inf] Failed: DID NOT RAISE <class 'ValueError'>
+
+    CONFIRMED BY S4-SAVE (#324), in a private copy of server/:
+
+    * Mutant "the frame skips _finite" (``_frame`` returns its model and
+      its mapping frames without ``_finite``) turned all nine of this
+      class's frame cases red, S4-SAVE's model case included; eight read
+
+          E   Failed: DID NOT RAISE <class 'ValueError'>
+
+      and [rotation_deg-inf] was refused by the arithmetic instead, which
+      is not the refusal the route answers as a 422:
+
+          E   ValueError: math domain error
+          E   AssertionError: Regex pattern did not match.
+          E     Expected regex: 'not finite'
+          E     Actual message: 'math domain error'
+
+    * Mutant "MosaicAnchorIn allows inf/nan" (its ``model_config``
+      removed) left the frame cases green, as it must: ``_frame`` still
+      refuses. It is graded by S4-SAVE's model case below, red on every
+      row, and by the route's two anchor rows
+      (test_framing_route_reframe.py).
     """
 
     @pytest.mark.parametrize("field, value", [
@@ -556,3 +578,138 @@ class TestANonFiniteFrameIsNotAMove:
         got = framing.reframe_carry(single(rotation_deg=None),
                                     single(rotation_deg=None))
         assert (got["carry"], got["reason"]) == (True, "unchanged")
+
+    def test_an_anchor_model_is_checked_too(self):
+        """The ``MosaicAnchorIn`` branch of ``_frame`` refuses a NaN as the
+        spec branch does. The model's own ``allow_inf_nan=False`` stops one
+        at the request, so this reaches the branch around it, as a caller
+        that builds the model without validating it would (#324, added by
+        S4-SAVE: nothing graded this branch's ``_finite`` on its own).
+
+        RED under mutant "the frame skips _finite" (``_frame`` returns both
+        its model and its mapping frames unchecked), observed:
+
+            E       Failed: DID NOT RAISE <class 'ValueError'>
+        """
+        anchor = framing.MosaicAnchorIn.model_construct(
+            ra_hours=0.7122, dec_deg=41.0, rows=2, cols=3, overlap=0.25,
+            rotation_deg=math.nan, fov_x_deg=2.0, fov_y_deg=1.33)
+        with pytest.raises(ValueError, match="not finite"):
+            framing.reframe_carry(anchor, frame())
+
+    @pytest.mark.parametrize("field, value", [
+        ("rotation_deg", math.nan), ("rotation_deg", math.inf),
+        ("rotation_deg", -math.inf), ("fov_x_deg", math.inf),
+        ("fov_y_deg", math.inf)])
+    def test_the_anchor_model_refuses_nan_and_infinity(self, field, value):
+        """``MosaicAnchorIn`` refuses a non-finite number itself, so the
+        route answers 422 before ``_frame`` is reached (#324, added by
+        S4-SAVE: only the route graded this, through the request).
+
+        THE ROWS ARE THE FIELDS ONLY ``allow_inf_nan`` GUARDS. A bounded
+        field refuses a NaN or an infinity by its bound whatever the config
+        (NaN fails ``ge``; ``ra_hours``, ``dec_deg``, ``overlap`` and a
+        negative field are all bounded), and a first draft with an
+        ``ra_hours`` NaN and a ``fov_y_deg`` of minus infinity stayed green
+        under the mutant below for exactly that reason.
+
+        RED under mutant "MosaicAnchorIn allows inf/nan" (its
+        ``model_config`` removed), observed on every row, for example
+        [rotation_deg-nan]:
+
+            E   Failed: DID NOT RAISE <class 'pydantic_core._pydantic_core.ValidationError'>
+        """
+        from pydantic import ValidationError
+        good = dict(ra_hours=0.7122, dec_deg=41.0, rows=2, cols=3,
+                    overlap=0.25, rotation_deg=30.0, fov_x_deg=2.0,
+                    fov_y_deg=1.33)
+        framing.MosaicAnchorIn(**good)      # control: the finite one is taken
+        with pytest.raises(ValidationError):
+            framing.MosaicAnchorIn(**{**good, field: value})
+
+
+class TestAnAnchorThatRecordsAField:
+    """A COMPLETED anchor (#351, S4 orchestrator ruling 4) keys the field of
+    none it was anchored with and records the camera's field beside it
+    (``identity.complete_anchor``). ``reframe_carry`` lays it out with the
+    recorded field and takes its threshold from it, so from then on a move
+    is judged against the field the camera has. Completing is the caller's
+    (the save's and the route's), never this function's.
+
+    The panel is the module's 1x1 recorded at 1.3 x 0.9 deg: threshold
+    0.5 x 0.25 x 0.9 = 0.1125 deg; 3' north moves every corner 0.0500 deg.
+    """
+
+    BLANK = identity.canonical_geometry(0.7122, 41.0, 30.0)
+    FIELD = dict(fov_x=1.3, fov_y=0.9)
+
+    def completed(self) -> str:
+        text = identity.complete_anchor(self.BLANK, identity.canonical_geometry(
+            0.7122, 41.0, 30.0, fov_x=1.3, fov_y=0.9))
+        assert text is not None, "premise: the field completes the anchor"
+        return text
+
+    def test_against_the_field_it_records_it_is_unchanged(self):
+        got = framing.reframe_carry(self.completed(), single(**self.FIELD))
+        assert got == {"carry": True, "max_move_deg": 0.0,
+                       "threshold_deg": 0.5 * 0.25 * 0.9,
+                       "reason": "unchanged"}
+
+    def test_a_nudge_is_measured_against_the_recorded_field(self):
+        """RED under mutant "threshold from the anchor's zero field after
+        completion" (the threshold read from the keyed field, the corners
+        still laid out with the recorded one), observed:
+
+            E   assert (False, 0.0) == (True, 0.1125)
+            E     At index 0 diff: False != True
+        """
+        got = framing.reframe_carry(self.completed(),
+                                    north(single(**self.FIELD), 3.0))
+        assert got["max_move_deg"] == pytest.approx(0.05, abs=1e-5)
+        assert (got["carry"], got["threshold_deg"]) == (True, 0.1125)
+
+    def test_the_corners_are_laid_out_with_the_recorded_field(self):
+        """Against a frame with no field, every corner of the recorded
+        1.3 x 0.9 deg panel comes back to the centre: the half-diagonal,
+        0.79 deg, is the move. Laid out with the keyed field of none, it
+        would be 0.
+
+        RED under mutant "a recorded field is not laid out" (``_laid_out``
+        returns every frame as it is), observed (pytest's plus-minus sign
+        written ``+-``):
+
+            E   assert 0.0 == 0.7905 +- 1.0e-04
+        """
+        got = framing.reframe_carry(self.completed(), single(
+            fov_x=0.0, fov_y=0.0))
+        assert got["max_move_deg"] == pytest.approx(0.7905, abs=1e-4)
+        assert got["carry"] is False
+
+    def test_the_mapping_form_answers_as_the_text(self):
+        """``anchor_geometry``'s answer handed back as a mapping, recorded
+        pair and all, is the same frame as the text."""
+        held = identity.anchor_geometry(self.completed())
+        assert "recorded_fov_x" in held, "premise: the pair is read back"
+        now = north(single(**self.FIELD), 3.0)
+        assert framing.reframe_carry(held, now) == framing.reframe_carry(
+            self.completed(), now)
+
+    def test_half_a_recorded_pair_is_refused(self):
+        """RED under mutant "half a pair laid out" (``_laid_out`` without its
+        pair check), a KeyError escaping instead of the refusal:
+
+            E   KeyError: 'recorded_fov_y'
+        """
+        held = identity.anchor_geometry(self.completed())
+        held.pop("recorded_fov_y")
+        with pytest.raises(ValueError, match="a recorded field is a pair"):
+            framing.reframe_carry(held, single(**self.FIELD))
+
+    def test_control_this_function_never_completes(self):
+        """An anchor with no field against the same geometry with a field is
+        judged as no field, threshold 0: the completion is the save's and the
+        route's (``identity.completes``), so 3.3's "only an unchanged
+        geometry keeps its anchor" still holds here."""
+        got = framing.reframe_carry(self.BLANK, single(**self.FIELD))
+        assert (got["carry"], got["threshold_deg"], got["reason"]) == \
+            (False, 0.0, "move")

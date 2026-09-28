@@ -318,12 +318,19 @@ async def test_m31_frames_filed_as_m16_are_never_adopted_onto_m16(rig):
         assert "arcmin" in u["reason"], u
     assert _bytes(old.id) == original, "a refusal wrote the session"
 
-    # ``accept_recount`` since the integration of S3: the flow was saved, so
-    # it counts accepted subs (Revision 2 ruling 2), and this pre-S1 session
-    # counted every sub taken. Without it the recount 409 (spec 5.9, the
-    # question test_flows_continue asks) answers before the start.
-    r = await rig.run(fid, adopt=True, accept_dropped=True,
-                      accept_recount=True)
+    # No ``accept_recount`` (RE-PINNED IN S4-ROUTES, S4 orchestrator ruling
+    # 2, #348). The flow was saved, so it counts accepted subs (Revision 2
+    # ruling 2), and this pre-S1 session counted every sub taken; the
+    # integration of S3 passed the flag because the recount 409 then asked
+    # whenever the modes differed. All three frames were accepted, so both
+    # totals are 3, nothing banked recounts differently, and since ruling 2
+    # the question is not asked: the flag would be answering nothing. Under
+    # mutation "ask whenever the modes differ" this request is the recount
+    # 409 again (test_flows_recount_equal_totals.py holds the rule),
+    # observed: AssertionError: {"detail":{"code":"recount","detail":"this
+    # session counted every sub taken (3); counting accepted subs makes it
+    # 3","before":3,"after":3,"session_id":"..."}} / assert 409 == 200.
+    r = await rig.run(fid, adopt=True, accept_dropped=True)
 
     assert r.status_code == 200, r.text
     start = rig.starts[-1]

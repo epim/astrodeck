@@ -1,0 +1,37 @@
+{
+  "about": "save_rules.prepare_save's reanchored rows, one save per reason. Recorded by running server/tests/test_flows_save_answer_fixture.py as a script, graded against prepare_save exactly by that file, and read by ui/src/components/flows/__tests__/flowsSaveAnswer.test.ts. Never edit it by hand.",
+  "cases": {
+    "grid": [
+      {
+        "node_id": "t",
+        "max_move_deg": null,
+        "threshold_deg": 0.16625,
+        "reason": "grid"
+      }
+    ],
+    "angle": [
+      {
+        "node_id": "t",
+        "max_move_deg": null,
+        "threshold_deg": 0.16625,
+        "reason": "angle"
+      }
+    ],
+    "identity": [
+      {
+        "node_id": "t",
+        "max_move_deg": null,
+        "threshold_deg": 0.16625,
+        "reason": "identity"
+      }
+    ],
+    "move": [
+      {
+        "node_id": "t",
+        "max_move_deg": 90.0,
+        "threshold_deg": 0.0,
+        "reason": "move"
+      }
+    ]
+  }
+}

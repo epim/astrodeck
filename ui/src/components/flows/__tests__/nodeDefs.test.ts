@@ -299,6 +299,18 @@ test("label and cat match nodes.py for all 21", () => {
 //   directions: cycle.outs port count — an extra port here is a socket the
 //   compiler cannot resolve; a missing one is a wire the operator cannot draw
 //   expected 3, got 2
+// AUTOFOCUS's and GUIDE's `pass` "pass done" (S4, #331), listed after
+// `focused` and `guiding`, are held the same way, from either side. Mutant
+// 'AUTOFOCUS has no pass' in nodeDefs.ts alone, observed:
+//   x every port id, label, kind and ORDER matches nodes.py, in both
+//   directions: autofocus.outs port count — an extra port here is a socket
+//   the compiler cannot resolve; a missing one is a wire the operator cannot
+//   draw expected 2, got 1
+// and in nodes.py alone the same line ending "expected 1, got 2". Mutant
+// 'pass first' (nodeDefs.ts: AUTOFOCUS's outs as `pass`, `focused`, which
+// would move every saved `focused` wire's socket), observed:
+//   x every port id, label, kind and ORDER matches nodes.py, in both
+//   directions: autofocus.outs[0].id expected "focused", got "pass"
 test("every port id, label, kind and ORDER matches nodes.py, in both directions", () => {
   for (const t of TYPES) {
     for (const dir of ["ins", "outs"] as const) {

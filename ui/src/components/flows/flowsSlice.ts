@@ -20,18 +20,20 @@ import type {
   FlowCard, FlowFolder, FlowProgress, FlowRunFlags, FlowRunSession, FlowUnmapped,
 } from "../../lib/flowsApi";
 import { runIsLive } from "../../lib/lastSessionFrame";
-import type { SequenceState } from "../../types";
+import type { SequenceState, ToastLevel } from "../../types";
 import { NODE_DEFS, createParams } from "./nodeDefs";
 import { fitView, type Rect } from "./geometry";
 import { flowLoopRefusal, portKindOf } from "./flowLoop";
 import {
-  NEXT_PORT, PASS_PORT, isMultiPanel, laneTail, loopWires, ownerOf,
+  NEXT_PORT, PASS_PORT, isMultiPanel, laneTail, ownerOf, panelLane, withLoop,
 } from "./panelLane";
-import { COUNTS_MIGRATION_KEY } from "./flowsTypes";
+import { acceptCounts } from "./countsNotice";
+import { COUNTS_MIGRATION_KEY, FLOW_SETTINGS } from "./flowsTypes";
 import type {
   FlowCalHealth, FlowCompileResult, FlowEdgeRec, FlowGraphRec, FlowLogLine,
-  FlowNodeType, FlowPhoneTab, FlowReanchored, FlowRecordRec, FlowRunState,
-  FlowScreen, FlowSelection, PendingWire, TonightTab,
+  FlowNodeRec, FlowNodeType, FlowPhoneTab, FlowReanchored, FlowRecordRec,
+  FlowRunState, FlowScreen, FlowSelection, FlowSettingKey, PendingWire,
+  TonightTab,
 } from "./flowsTypes";
 
 /** Ring size for the run log. README §"State management" says ~120. */
@@ -115,6 +117,18 @@ export interface FlowsState {
    *  until its answer lands.
    *  Cards read it only through `progressChip` (flowProgress.ts). */
   progress: FlowProgress | null;
+  /** The counts note the server's read carried when the OPEN flow was opened
+   *  (`migrated` entry `counts`, spec Revision 2 ruling 2), with the dormant
+   *  addendum when the route added it; null when the read carried none.
+   *
+   *  KEPT, NOT LOGGED (S4 orchestrator ruling 8). It is a standing fact about
+   *  the flow, which both editors show as one persistent line
+   *  (`countsNotice`), and a log line scrolls away. Read only through
+   *  `countsNotice(graph, countsNote)`: the GRAPH decides whether the line
+   *  shows, so a save that switches the counts takes it down without a
+   *  reopen, and this note adds only the addendum. Replaced on every open,
+   *  cleared on close, left alone by a save. */
+  countsNote: string | null;
 
   ui: FlowsUiState;
 }
@@ -135,6 +149,7 @@ export const FLOWS_INIT: FlowsState = {
   tonight: null, tonightLoading: false, tonightError: null,
   calHealth: null,
   progress: null,
+  countsNote: null,
   ui: { screen: "library", phoneTab: "flow", query: "", folderChip: "all",
         tonightOpen: false, tonightTab: "timeline", wizardOpen: false,
         quickOpen: false, highlightId: null,
@@ -147,9 +162,26 @@ export interface FlowsActions {
   flowsCloseEditor: () => Promise<void>;
   flowsSave: () => Promise<void>;
 
-  flowsAddNode: (type: FlowNodeType, at: { x: number; y: number }) => void;
+  /** Adds a node of `type` at `at`, created with `createParams`, and returns
+   *  its new id, so a palette drop can select the node it made or open the
+   *  TARGET modal on it (spec 2.1). */
+  flowsAddNode: (type: FlowNodeType, at: { x: number; y: number }) => string;
   flowsMoveNode: (id: string, x: number, y: number) => void;
   flowsSetParam: (id: string, key: string, raw: string) => void;
+  /** The TARGET modal's DONE (spec 2.5): every param in `patch`, coerced as
+   *  `flowsSetParam` coerces, and the block's loop wire placed (`true`),
+   *  lifted (`false`) or left (`undefined`) by `withLoop`, in ONE graph
+   *  write with one dirty flip, then ONE compile. Resolves when that compile
+   *  has answered, which is when the block's card may say it is valid; at
+   *  once, with nothing written or compiled, when the node is gone or DONE
+   *  changed nothing. */
+  flowsApplyFraming: (
+    id: string, patch: Readonly<Record<string, string | number>>, loop?: boolean,
+  ) => Promise<void>;
+  /** Writes one flow-level setting (spec 1.6, `FlowGraph.settings`), keeping
+   *  every other key. False, and nothing written, for a key or a value
+   *  `FLOW_SETTINGS` does not offer. */
+  flowsSetSetting: (key: FlowSettingKey, value: string) => boolean;
   flowsDeleteSel: () => void;
   flowsConnect: (from: string, fromPort: string, to: string, toPort: string) => void;
   flowsSetName: (name: string) => void;
@@ -314,6 +346,19 @@ export function sessionLogLine(raw: unknown): string | null {
  *  AppState. */
 export interface FlowsHost extends FlowsActions {
   flows: FlowsState;
+  /** The store's ONE toast model (store.ts `enqueueToast`), which the slice
+   *  reaches through `get()` like its own actions. OPTIONAL so a miniature
+   *  store built without one still runs every action: it gets the flow-log
+   *  line alone. The real store always has it. */
+  enqueueToast?: (input: FlowToast) => void;
+}
+
+/** The part of store.ts's `EnqueueInput` the slice sends. */
+export interface FlowToast {
+  level: ToastLevel;
+  title: string;
+  detail?: string;
+  source?: string;
 }
 
 type SetFn = (fn: (s: FlowsHost) => Partial<FlowsHost>) => void;
@@ -369,16 +414,67 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** The sentences in a record's `migrated`, in order. An older server sends no
- *  such key, and an entry with no sentence in it is skipped: printed, it would
- *  be a warn line reading "undefined", which looks like the rig saying
- *  something it did not. */
-function migrationNotes(rec: FlowRecordRec): string[] {
+/** The entries of a record's `migrated` that carry a sentence, as `{key,
+ *  note}`, in order. An older server sends no such key, and an entry with no
+ *  sentence in it is skipped: printed, it would be a warn line reading
+ *  "undefined", which looks like the rig saying something it did not. */
+function migrationEntries(rec: FlowRecordRec): { key: unknown; note: string }[] {
   const list = rec.migrated as unknown;
   if (!Array.isArray(list)) return [];
   return list
-    .map((m) => (m && typeof m === "object" ? (m as { note?: unknown }).note : undefined))
-    .filter((n): n is string => typeof n === "string" && n !== "");
+    .map((m) => (m && typeof m === "object"
+      ? { key: (m as { key?: unknown }).key, note: (m as { note?: unknown }).note } : null))
+    .filter((m): m is { key: unknown; note: string } =>
+      m !== null && typeof m.note === "string" && m.note !== "");
+}
+
+/** The sentences a read's `migrated` puts on the flow log, in order: every
+ *  one but the counts note, which `countsNoteOf` keeps instead (S4
+ *  orchestrator ruling 8). A standing fact logged on every open is noise
+ *  beside the persistent line both editors draw for it. */
+function migrationNotes(rec: FlowRecordRec): string[] {
+  return migrationEntries(rec)
+    .filter((m) => m.key !== COUNTS_MIGRATION_KEY)
+    .map((m) => m.note);
+}
+
+/** The read's counts note (the first, if a server ever sent two), or null. */
+function countsNoteOf(rec: FlowRecordRec): string | null {
+  return migrationEntries(rec).find((m) => m.key === COUNTS_MIGRATION_KEY)?.note ?? null;
+}
+
+/** A param value coerced by the TYPE OF ITS DEFAULT, the rule `flowsSetParam`
+ *  and `flowsApplyFraming` share (see flowsSetParam for why). A numeric
+ *  default takes a number, read with `parseFloat` from text, and falls back
+ *  to the default on anything that is not one (NaN included); a text default
+ *  takes text, so a select's value keeps matching its string options; a key
+ *  with no default (`angle`, derived, or one this build does not know) is
+ *  kept as given. */
+export function coerceParam(
+  base: string | number | undefined, raw: string | number,
+): string | number {
+  if (typeof base === "number") {
+    const v = typeof raw === "number" ? raw : parseFloat(raw);
+    return Number.isNaN(v) ? base : v;
+  }
+  if (typeof base === "string") return String(raw);
+  return raw;
+}
+
+/** `node`'s params with `patch` coerced into them, or `node.params` itself,
+ *  the same object, when no value changes. */
+function patchedParams(
+  node: FlowNodeRec, patch: Readonly<Record<string, string | number>>,
+): FlowNodeRec["params"] {
+  const defaults = NODE_DEFS[node.type]?.params ?? {};
+  let params = node.params;
+  for (const [key, raw] of Object.entries(patch)) {
+    const v = coerceParam(defaults[key], raw);
+    if (params[key] === v) continue;
+    if (params === node.params) params = { ...node.params };
+    params[key] = v;
+  }
+  return params;
 }
 
 // ───────────────────────────────────────────────── what a save's answer says
@@ -398,7 +494,10 @@ function migrationNotes(rec: FlowRecordRec): string[] {
 //     dropped-steps question (5.9), nights later.
 //
 // One line each, on the flow log both editors draw. Nothing for an answer
-// without them: an older server's, and every save that changed neither.
+// without them: an older server's, and every save that changed neither. A
+// re-anchor is also a toast (`reanchorToast`), and the counts switch is also
+// written into the graph the editor holds (`acceptCounts`), so the canvas and
+// the counts line (`countsNotice`) show what the server now stores.
 
 /** The line for the counts switch. The ruling fixes the UI's words ("now
  *  counts accepted subs only"); the rest says what that changes. */
@@ -432,6 +531,15 @@ function reanchorWhy(r: FlowReanchored): string {
   }
 }
 
+/** True when a save's answer says it switched the counts: a `migrated` entry
+ *  keyed `counts`, in either spelling (the spec's bare "counts", or the
+ *  record model's MigrationNote object). */
+function answerSwitchedCounts(saved: FlowRecordRec): boolean {
+  const migrated = saved.migrated as unknown;
+  return Array.isArray(migrated) && migrated.some((m) => m === COUNTS_MIGRATION_KEY
+    || (m && typeof m === "object" && (m as { key?: unknown }).key === COUNTS_MIGRATION_KEY));
+}
+
 /** The flow-log lines a save's answer asks for, in order: the counts switch
  *  (once, however many entries say it), then one line per re-anchored block.
  *  `graph` names the blocks: the saved graph, whose node ids the answer
@@ -440,9 +548,7 @@ export function saveAnswerLines(
   saved: FlowRecordRec, graph: FlowGraphRec,
 ): { msg: string; tone: FlowLogLine["tone"] }[] {
   const lines: { msg: string; tone: FlowLogLine["tone"] }[] = [];
-  const migrated = saved.migrated as unknown;
-  if (Array.isArray(migrated) && migrated.some((m) => m === COUNTS_MIGRATION_KEY
-      || (m && typeof m === "object" && (m as { key?: unknown }).key === COUNTS_MIGRATION_KEY))) {
+  if (answerSwitchedCounts(saved)) {
     lines.push({ msg: COUNTS_SWITCHED_LINE, tone: "info" });
   }
   const reanchored = saved.reanchored as unknown;
@@ -450,17 +556,57 @@ export function saveAnswerLines(
     const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
     for (const r of reanchored as FlowReanchored[]) {
       if (!r || typeof r !== "object") continue;
-      const node = nodes.find((n) => n.id === r.node_id);
-      const name = String(node?.params?.name ?? "").trim();
-      const who = name ? `TARGET "${name}"` : "a TARGET with no name";
       // WARN: the operator's banked subs stop counting toward this block.
       lines.push({
-        msg: `${who} starts counting from zero: ${reanchorWhy(r)}. The subs it banked stay on disk.`,
+        msg: `${blockName(nodes, r.node_id)} starts counting from zero: ${reanchorWhy(r)}. The subs it banked stay on disk.`,
         tone: "warn",
       });
     }
   }
   return lines;
+}
+
+/** How the save's announcements name a block: by its TARGET name, or as one
+ *  with no name. */
+function blockName(nodes: readonly FlowNodeRec[], id: unknown): string {
+  const node = nodes.find((n) => n.id === id);
+  const name = String(node?.params?.name ?? "").trim();
+  return name ? `TARGET "${name}"` : "a TARGET with no name";
+}
+
+/** The ONE warn toast a save's answer asks for when it re-anchored any block
+ *  (S4 orchestrator ruling 8; spec 3.3: "a raw field edit in the inspector
+ *  that restarts counts is announced by a toast"), or null when it
+ *  re-anchored none: an older server's answer, and every save that moved no
+ *  block too far.
+ *
+ *  A TOAST AS WELL AS THE LOG LINE, because the log is a strip the operator
+ *  opens and the restart is the one thing a save does that costs nights: the
+ *  RA they nudged in the inspector is why a campaign's counts start again,
+ *  and unsaid they meet it as CONTINUE's dropped-steps question. The log line
+ *  (`saveAnswerLines`) keeps each block's reason; the toast names the blocks
+ *  once each, however many rows name them. */
+export function reanchorToast(saved: FlowRecordRec, graph: FlowGraphRec): FlowToast | null {
+  const rows = saved.reanchored as unknown;
+  if (!Array.isArray(rows)) return null;
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const ids: unknown[] = [];
+  for (const r of rows as FlowReanchored[]) {
+    if (r && typeof r === "object" && !ids.includes(r.node_id)) ids.push(r.node_id);
+  }
+  if (ids.length === 0) return null;
+  const names = ids.map((id) => blockName(nodes, id));
+  const one = names.length === 1;
+  const who = one ? names[0]
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return {
+    level: "warning",
+    title: `${who} ${one ? "starts" : "start"} counting from zero`,
+    // Not "moved too far": a changed grid, angle or object restarts counts
+    // too, and the log line has each block's own reason.
+    detail: `The subs ${one ? "it" : "they"} banked stay on disk. The flow log says what changed.`,
+    source: "flows",
+  };
 }
 
 // ───────────────────────────────────────── the panel loop follows the tail
@@ -477,28 +623,40 @@ export function saveAnswerLines(
 // never added as a side effect of connecting something else"). No move for a
 // 1x1 block (nothing to rotate between), for a lane with no loop wire (the
 // operator chose panel-first), for a wire from anything but the tail, or when
-// the new tail is a stage with no `pass` output to give (AUTOFOCUS, GUIDE:
-// the doctor names that lane instead).
+// the new tail is a stage with no `pass` output to give (legacy SLEW, the one
+// lane type left without it: the doctor names that lane instead).
+//
+// THE WIRE IT MOVES IS ANY PASS WIRE INTO THE BLOCK'S `next` FROM A STAGE OF
+// ITS LANE, not only the pre-connect tail's (#331). Until AUTOFOCUS and GUIDE
+// had a `pass` output, appending one after a looped FILTER CYCLE left the
+// loop behind on the cycle, mid-lane (M12), and the next stage appended after
+// the AUTOFOCUS did not carry it either, because the tail it was drawn from
+// held no loop wire: the mosaic stayed unrunnable until the operator rewired
+// it by hand. Flows saved in that state still open with the wire stranded, so
+// the next append carries it home. A pass wire from mid-lane has no meaning
+// the operator could have wanted: the compile refuses it (M12).
 
-/** `edges` (the graph after the connect) with the loop wire carried to the
- *  lane's new tail when the wire just drawn out of `from` appended a stage to
- *  a multi-panel block's lane; otherwise `edges` itself, the same array.
- *  `graph` is the graph BEFORE the connect: the tail is the one the operator
- *  drew from. */
+/** `edges` (the graph after the connect) with the lane's pass wires into the
+ *  block's `next` carried to the lane's new tail when the wire just drawn out
+ *  of `from` appended a stage to a multi-panel block's lane; otherwise `edges`
+ *  itself, the same array. `graph` is the graph BEFORE the connect: the tail
+ *  is the one the operator drew from, and the lane is the lane it ended. */
 function carryLoopWire(
   graph: FlowGraphRec, edges: FlowEdgeRec[], from: string,
 ): FlowEdgeRec[] {
   const owner = ownerOf(graph, from);
   if (!owner || !isMultiPanel(owner)) return edges;
   if (laneTail(graph, owner.id)?.id !== from) return edges;
-  const loops = new Set(loopWires(graph, owner.id));
+  const lane = new Set(panelLane(graph, owner.id).map((n) => n.id));
+  const loops = new Set(graph.edges.filter((e) => e.fromPort === PASS_PORT
+    && lane.has(e.from) && e.to === owner.id && e.toPort === NEXT_PORT));
   if (loops.size === 0) return edges;
   const tail = laneTail({ nodes: graph.nodes, edges }, owner.id);
   if (!tail || tail.id === from
       || !NODE_DEFS[tail.type]?.outs.some((p) => p.id === PASS_PORT)) return edges;
   // A new tail the operator already looped (its pass wire drawn before it was
-  // wired in) keeps its own wire, and the old tail's goes: two loop wires into
-  // one `next` is the doctor's "one is enough", not a better loop.
+  // wired in) keeps its own wire, and the lane's go: two loop wires into one
+  // `next` is the doctor's "one is enough", not a better loop.
   const looped = edges.some((e) => e.from === tail.id && e.fromPort === PASS_PORT
     && e.to === owner.id && e.toPort === NEXT_PORT);
   return looped
@@ -507,6 +665,11 @@ function carryLoopWire(
     // stays selected, and every other edge keeps its identity.
     : edges.map((e) => (loops.has(e) ? { ...e, from: tail.id } : e));
 }
+// Exported for panelLane.test.ts, which grades it against the fixture's
+// `carry_cases`, the graphs test_flows_panel_lane.py holds to compile.py. A
+// separate statement, so the declaration above stays the plain `function`
+// test_mosaic_spec_claims.py reads.
+export { carryLoopWire };
 
 export function createFlowsActions(
   set: SetFn, get: GetFn, api?: FlowsStoreApi,
@@ -673,6 +836,9 @@ export function createFlowsActions(
           // answer sat beside this record its counts would land on this
           // flow's cards.
           progress: null,
+          // Kept for the counts line both editors draw, in the same write as
+          // the record it is about (see FlowsState.countsNote).
+          countsNote: countsNoteOf(rec),
           // The highlight has done its job the moment a flow is opened, and it
           // would otherwise still be ringing a card on the next visit.
           ui: { ...s.flows.ui, screen: "editor", highlightId: null },
@@ -687,6 +853,10 @@ export function createFlowsActions(
         // RUN does not write it away - `touch_run` edits last_run in the raw
         // file and leaves the version alone - which is why `run_flow` puts the
         // same sentence on the server log on every run until a save.
+        //
+        // Every note but the counts note, which is kept above instead (S4
+        // orchestrator ruling 8): that one is a standing fact, shown as a
+        // persistent line for as long as it is true, not once per open.
         for (const note of migrationNotes(rec)) get().flowsAppendLog(note, "warn");
         // The TARGET cards' chips (#189 S1 item 9). Not awaited here, nor after
         // a save or a RUN: the read compiles the flow and scans the session
@@ -740,9 +910,18 @@ export function createFlowsActions(
         const kept: FlowRecordRec = { ...saved };
         delete kept.migrated;
         delete kept.reanchored;
+        const switched = answerSwitchedCounts(saved);
         set((s) => patch(s, {
           record: renamed ? { ...kept, name: cur.name } : kept,
           dirty: edited || renamed,
+          // THE SWITCH REACHES THE CANVAS (ruling 2). The server stored every
+          // TARGET and POOL counting accepted subs; the graph here still says
+          // what was sent. Written in, as the server wrote it, into whatever
+          // graph is on screen now: the counts line (`countsNotice`) reads
+          // this graph and so comes down, the draft compile counts what the
+          // stored flow counts, and the next save does not switch it again.
+          // Not an edit: `dirty` was decided above, from what was sent.
+          ...(switched ? { graph: acceptCounts(s.flows.graph) } : {}),
         }));
         // What the save did to the counts, said once (`saveAnswerLines`).
         // AFTER the stale check above: an answer for a flow no longer open
@@ -751,6 +930,11 @@ export function createFlowsActions(
         for (const line of saveAnswerLines(saved, saved.graph ?? graph)) {
           get().flowsAppendLog(line.msg, line.tone);
         }
+        // A restart is also said where the operator is looking (S4
+        // orchestrator ruling 8): one toast through the store's one toast
+        // model, naming every block the save re-anchored.
+        const toast = reanchorToast(saved, saved.graph ?? graph);
+        if (toast) get().enqueueToast?.(toast);
         // What the server counts is the STORED graph, and the save just
         // changed it: a new exposure is a new step id with nothing banked.
         void fetchProgress();
@@ -764,29 +948,41 @@ export function createFlowsActions(
       set((s) => patch(s, {
         record: null, graph: { nodes: [], edges: [] }, dirty: false,
         sel: null, editNode: null, wire: null, tapWire: null,
-        // An answer belongs to the open record and goes with it.
+        // An answer belongs to the open record and goes with it, and so does
+        // the note its read carried.
         progress: null,
+        countsNote: null,
         ui: { ...s.flows.ui, screen: "library", paletteOpen: false },
       }));
       await get().flowsLoadLibrary();
     },
 
     // ─────────────────────────────────────────────────────────── graph edits
-    flowsAddNode: (type, at) => set((s) => {
-      // A DROP IS A CREATION, so the node is written with `createParams`: the
-      // missing-key defaults overlaid with the type's "Created as" column
-      // (spec 3.1). The defaults alone are what a SAVED node lacking a key is
-      // read as, and they keep each key's old meaning: a TARGET built from
-      // them counted rejected subs and carried M31's name and coordinates, so
-      // one renamed M16 and run slewed to Andromeda, #190's defect through the
-      // palette's door. Both editors' palettes drop through here.
-      const node = {
-        id: nextNodeId(), type, x: at.x, y: at.y,
-        params: createParams(type),
-      };
-      return touch(s, { ...s.flows.graph,
-                        nodes: [...s.flows.graph.nodes, node] });
-    }),
+    flowsAddNode: (type, at) => {
+      // THE ID IS MINTED HERE, OUTSIDE THE WRITE, so it can be returned (spec
+      // 2.1): a TARGET dropped from the palette opens its modal at once, and
+      // a caller that had to guess the id of the node it just made would
+      // guess from the graph, where a second drop in the same frame, or a
+      // duplicated id in a hand-built file, hands it the wrong node.
+      const id = nextNodeId();
+      set((s) => {
+        // A DROP IS A CREATION, so the node is written with `createParams`:
+        // the missing-key defaults overlaid with the type's "Created as"
+        // column (spec 3.1). The defaults alone are what a SAVED node lacking
+        // a key is read as, and they keep each key's old meaning: a TARGET
+        // built from them counted rejected subs and carried M31's name and
+        // coordinates, so one renamed M16 and run slewed to Andromeda, #190's
+        // defect through the palette's door. Both editors' palettes drop
+        // through here.
+        const node = {
+          id, type, x: at.x, y: at.y,
+          params: createParams(type),
+        };
+        return touch(s, { ...s.flows.graph,
+                          nodes: [...s.flows.graph.nodes, node] });
+      });
+      return id;
+    },
 
     flowsMoveNode: (id, x, y) => set((s) => touch(s, {
       ...s.flows.graph,
@@ -800,15 +996,76 @@ export function createFlowsActions(
       // does. That is why capture's `bin` stays the string "1" - it is a select
       // whose options are strings - while every numeric field reverts to its
       // default on unparseable input rather than becoming NaN. A NaN here
-      // reaches the compiler as a step with no exposure.
-      const base = NODE_DEFS[node.type].params[key];
-      const v = typeof base === "number"
-        ? (Number.isNaN(parseFloat(raw)) ? base : parseFloat(raw))
-        : raw;
+      // reaches the compiler as a step with no exposure. One rule for this
+      // action and the modal's DONE (`coerceParam`), so the two cannot drift.
+      const v = coerceParam(NODE_DEFS[node.type].params[key], raw);
       return touch(s, { ...s.flows.graph,
         nodes: s.flows.graph.nodes.map((n) =>
           n.id === id ? { ...n, params: { ...n.params, [key]: v } } : n) });
     }),
+
+    flowsApplyFraming: (id, framing, loop) => {
+      // ONE WRITE, ONE COMPILE (spec 2.5). The modal changes a handful of
+      // params at once (name, coordinates, grid, overlap, angle, field) and
+      // perhaps the loop wire. Through `flowsSetParam` that is one graph
+      // write per key, and every write between the first and the last is a
+      // block nobody framed: a 3x2 grid on the old coordinates, a new field
+      // of view on the old grid. The compile, the doctor chip and the draft
+      // progress read whichever of those they catch, and a compile started
+      // per key has N answers racing to be the chip. So every param and the
+      // wire land in one write, and one compile follows it.
+      let wrote = false;
+      set((s) => {
+        const g = s.flows.graph;
+        const node = g.nodes.find((n) => n.id === id);
+        if (!node) return {};
+        const params = patchedParams(node, framing);
+        const nodes = params === node.params
+          ? g.nodes : g.nodes.map((n) => (n === node ? { ...n, params } : n));
+        // THE LOOP IS JUDGED ON THE FRAMED BLOCK, not the one the modal
+        // opened on: DONE that turns a 1x1 into a 3x2 and asks for the loop
+        // gets it, and one that turns a 3x2 into a 1x1 gets no NEW wire
+        // (spec 1.4: "when the block becomes multi-panel and owns a stage").
+        // A loop wire the block already has is lifted only by `false`
+        // (`withLoop`'s `true` never lifts), so a DONE that makes a looped
+        // mosaic a single target must send `false`: left in place, the wire
+        // is a pass wire into a 1x1 block, the doctor's M4 note and a rule
+        // Run asks to accept (spec 1.4 "As built", #349).
+        const edges = withLoop({ ...g, nodes }, id, loop, nextEdgeId);
+        if (nodes === g.nodes && edges === g.edges) return {};
+        wrote = true;
+        return touch(s, { ...g, nodes, edges });
+      });
+      // Nothing written, nothing to check: the compile in hand is still the
+      // answer for this graph. Otherwise the promise is the compile's, so the
+      // modal marks the card valid only once the compiler has answered.
+      return wrote ? get().flowsCompile() : Promise.resolve();
+    },
+
+    flowsSetSetting: (key, value) => {
+      // REFUSED, NOT COERCED, when FLOW_SETTINGS does not offer it. The
+      // engine reads a value it does not know as the default
+      // (`resolve_setting`), so a stored typo would show one behaviour in the
+      // editor and run another. The editors draw their choices from the same
+      // table, so only a caller's mistake reaches this, and it says so with
+      // `false` rather than on the flow log, which is the rig's voice.
+      //
+      // OWN KEYS ONLY. A plain index would find `toString` or `constructor`
+      // on the table's prototype, and the `options` read on it threw where
+      // the contract says `false`.
+      const spec = Object.hasOwn(FLOW_SETTINGS, key)
+        ? (FLOW_SETTINGS as Record<string, { options: readonly string[] }>)[key] : undefined;
+      if (!spec || !spec.options.includes(value)) return false;
+      set((s) => {
+        const g = s.flows.graph;
+        if (g.settings?.[key] === value) return {};
+        // EVERY OTHER KEY IS KEPT: a flow saved by a newer build can carry a
+        // setting this one does not know, and a save that dropped it would
+        // change what that build runs.
+        return touch(s, { ...g, settings: { ...g.settings, [key]: value } });
+      });
+      return true;
+    },
 
     flowsDeleteSel: () => set((s) => {
       const sel = s.flows.sel;

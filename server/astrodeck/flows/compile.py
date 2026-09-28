@@ -26,6 +26,7 @@ unrunnable night look runnable.
 """
 from __future__ import annotations
 
+import math
 import re
 
 from ..devices.base import DomePolicy
@@ -83,9 +84,21 @@ def flow_order(graph: FlowGraph) -> list[FlowNode]:
     half-built by nature), as would any caller that skips validation, and for
     whatever reaches here with a loop, dropping it stays the fail-closed
     reading.
+
+    A WIRE IS A STEP OF THE CURSOR ONLY WHEN IT ENTERS A FLOW INPUT (#328),
+    as the lane functions read it (``_flow_wire``). Read by its source alone,
+    a flow wire into a node with no flow port at all (a FLAT PANEL, an event
+    sink) was counted into no in-degree and then decremented out of one, a
+    ``KeyError`` and a 500 from the editor's compile; and one into an event
+    input of a node that does have a flow input (FILTER CYCLE 'all done'
+    onto TARGET 'next panel') made the TARGET wait on its own stage, so the
+    draft compiled to no target at all. Validation refuses both shapes by
+    name, and a graph it accepts has no other kind of flow wire, so every
+    saved flow walks as it did.
     """
     flow_edges = [e for e in graph.edges
-                  if port_kind(_type_of(graph, e.from_), e.fromPort, "out") == "flow"]
+                  if port_kind(_type_of(graph, e.from_), e.fromPort, "out") == "flow"
+                  and port_kind(_type_of(graph, e.to), e.toPort, "in") == "flow"]
     nodes = [n for n in graph.nodes if _has_flow_port(n)]
     indeg = {n.id: 0 for n in nodes}
     for e in flow_edges:
@@ -125,10 +138,31 @@ def _has_flow_port(node: FlowNode) -> bool:
 
 
 def _num(v, default=0):
+    # OverflowError too: a JSON integer past a float's range (a raw POST can
+    # hold a 400-digit one) is no number this compile can read, and
+    # ``float()`` of it raises that, not ValueError.
     try:
         return int(v) if float(v).is_integer() else float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _finite(v, default=0):
+    """``_num``, with anything that is not a FINITE number read as
+    ``default``: the one reading of every count ``compile_plan`` emits
+    (#328).
+
+    ``_num`` hands back an infinity or a NaN for "inf" and "nan", and those
+    are numbers ``int()`` raises on (``OverflowError``, ``ValueError``) and
+    JSON cannot carry at all, so a count typed as one turned the editor's
+    compile into a 500, and a saved flow holding one could no longer be
+    compiled, previewed or run. Validation now refuses such a count at the
+    save (``FlowGraph.validation_errors``); this is for the drafts the
+    compile routes see before any save, and for a file written by hand. A
+    finite value is ``_num``'s exactly, so every flow that compiled before
+    compiles to the same plan."""
+    value = _num(v, default)
+    return value if math.isfinite(value) else default
 
 
 # ------------------------------------------------------------ the panel lane
@@ -159,6 +193,17 @@ OWNER_TYPES: frozenset[str] = frozenset({"target", "pool"})
 #: operator drew is never ignored because of which build is reading it.
 PASS_PORT = "pass"
 NEXT_PORT = "next"
+
+#: The node types that DECLARE a ``pass`` output, read off the vocabulary so
+#: a type that gains the port is one here at once, as AUTOFOCUS and GUIDE did
+#: (S4, #331): CAPTURE LOOP, FILTER CYCLE, AUTOFOCUS and GUIDE, every lane
+#: type but legacy SLEW. The lane functions below match the port as a string
+#: and never read this. It is for the two answers about what a pass wire
+#: means once the vocabulary gives it a meaning: ``_trigger_for``'s name for
+#: one that is not the loop, and the one-panel consumption
+#: (``one_panel_pass_wires``).
+PASS_TYPES: frozenset[str] = frozenset(
+    t for t, d in NODE_DEFS.items() if d.port(PASS_PORT, "out") is not None)
 
 
 def _grid_dim(value) -> int:
@@ -319,9 +364,10 @@ def lane_tail(graph: FlowGraph, owner: FlowNode | str | None
     and None for a branched one, where "the last stage" has two answers and
     choosing one would put the loop on a stage the operator did not mean.
 
-    Any lane node can be the tail, AUTOFOCUS and GUIDE included; only CAPTURE
-    LOOP and FILTER CYCLE have a ``pass`` output, so a lane ending on one of
-    the others has no loop wire to give, which the doctor names."""
+    Any lane node can be the tail, AUTOFOCUS and GUIDE included. Every lane
+    type but legacy SLEW has a ``pass`` output (``PASS_TYPES``; AUTOFOCUS and
+    GUIDE since S4, #331), so only a lane ending on a SLEW has no loop wire
+    to give."""
     members = _lane_members(graph, owner)
     if not members:
         return None
@@ -491,6 +537,21 @@ def parse_skip(text, rows: int, cols: int) -> tuple[list[list[int]], list[str]]:
     return [[r, c] for r, c in sorted(skip)], unread
 
 
+def grid_size(rows: int, cols: int) -> str:
+    """A grid's size as text an operator reads (S4 orchestrator ruling 1,
+    #339): "3 columns by 2 rows" for 2 rows of 3.
+
+    IN WORDS, COLUMNS FIRST. The code wrote the size both ways: the Example
+    named "M31 3x2" and the framing card write columns by rows, width by
+    height as a camera field is written, while this note wrote rows by
+    columns, pulled by the panel labels, which are row-column ("2-1" is row
+    2, column 1). So one block read "3x2" in the library and "2x3" here. In
+    words it cannot be misread whichever convention the reader brings; the
+    labels stay row-column, and the sentence that quotes them says so."""
+    return (f"{cols} column{'' if cols == 1 else 's'} by "
+            f"{rows} row{'' if rows == 1 else 's'}")
+
+
 def _grid_of(node: FlowNode) -> tuple[int, int]:
     params = node.params or {}
     return _grid_dim(params.get("rows")), _grid_dim(params.get("cols"))
@@ -511,16 +572,57 @@ def _loop_edge_keys(graph: FlowGraph) -> set[tuple[str, str, str, str]]:
     their four ends, so two copies of one wire (the doctor's "one is enough")
     are both the loop.
 
-    A loop wire into a 1x1 block is not one: there is nothing to rotate
-    between (M4's note), so it is left to the instructions pass, where
-    ``to_plan`` reports it as a rule that will not run, like any other pass
-    wire that means nothing."""
+    A pass wire into a 1x1 block is not one: there is nothing to rotate
+    between, so it rotates nothing and sets no block's ``loop``. It is
+    consumed all the same (``one_panel_pass_wires``, S4 orchestrator ruling
+    3), but by the instructions pass alone."""
     keys: set[tuple[str, str, str, str]] = set()
     for n in graph.nodes:
         if is_multi_panel(n):
             for e in loop_wires(graph, n):
                 keys.add((e.from_, e.fromPort, e.to, e.toPort))
     return keys
+
+
+def one_panel_pass_wires(graph: FlowGraph) -> list[FlowEdge]:
+    """The pass wires into a ONE-PANEL TARGET's ``next`` from a stage of that
+    TARGET's own lane (S4 orchestrator ruling 3, #349; spec 1.4 item 4).
+
+    CONSUMED AS STRUCTURE, like the loop wire: the compile emits no rule for
+    one, so ``to_plan`` reports no loss and ``/run`` asks nothing about it.
+    The doctor's M4 notes it, "one panel, nothing to rotate between", and
+    reads THIS list to decide which wires get the note, so the note and the
+    consumption are one set by construction. Before the ruling the compile
+    emitted the wire as a ``<type>.pass`` rule, ``to_plan`` reported that as
+    a rule that will not run, at warn level, and ``/run`` refused until the
+    operator accepted a loss the doctor had called harmless. The likely way
+    in is a 3x2 turned back into a single target, which keeps its loop wire.
+
+    From ANY stage of the lane, the tail or not: with one panel there is no
+    later panel for the stages after the wire's source to be skipped on, so
+    M12's reason does not arise. NOT consumed, and still a rule that will
+    not run: a pass wire from a stage of another block's lane (M4's
+    warning, "this wire does nothing", a stage past a DOME included, since
+    ``owner_of`` gives it to nobody), and a pass wire into any port but a
+    TARGET's ``next``. Matched on the port names as the loop wire is
+    (``PASS_PORT``, ``NEXT_PORT``), from a type that has the port
+    (``PASS_TYPES``). That took in AUTOFOCUS and GUIDE when they gained it
+    (S4, #331), so a 3x2 whose loop left an AUTOFOCUS and was turned back
+    into a single target is treated as one whose loop left a FILTER CYCLE."""
+    by_id, parents = _lane_index(graph)
+    out: list[FlowEdge] = []
+    for e in graph.edges:
+        if e.fromPort != PASS_PORT or e.toPort != NEXT_PORT:
+            continue
+        src, dst = by_id.get(e.from_), by_id.get(e.to)
+        if (src is None or dst is None or dst.type != "target"
+                or src.type not in PASS_TYPES
+                or is_multi_panel(dst)):
+            continue
+        owner = _walk_to_owner(src.id, by_id, parents)[0]
+        if owner is not None and owner.id == dst.id:
+            out.append(e)
+    return out
 
 
 def _followers(graph: FlowGraph) -> dict[str, str]:
@@ -715,9 +817,9 @@ def _target_entry(n: FlowNode, graph: FlowGraph, loop_keys: set,
         if unread:
             notes.append({"node_id": n.id, "level": "warn", "text": (
                 f"{_block_name(n)}: skip {', '.join(repr(u) for u in unread)} "
-                f"names no panel of this {rows}x{cols} grid, so nothing is "
-                f"skipped for it. A panel is written row-column, from 1-1 to "
-                f"{rows}-{cols}.")})
+                f"names no panel of this grid of {grid_size(rows, cols)}, so "
+                f"nothing is skipped for it. A panel is written row-column, "
+                f"from 1-1 to {rows}-{cols}.")})
         entry["mosaic"] = {
             "rows": rows, "cols": cols,
             # A percent, as the block holds it; `to_plan` divides by 100.
@@ -763,6 +865,22 @@ def _trigger_for(node: FlowNode, from_port: str) -> str:
     An unmapped source falls back to ``type.port`` — visible and obviously
     wrong, which beats silently compiling to a trigger that already means
     something else."""
+    if from_port == PASS_PORT and node.type in PASS_TYPES:
+        # THE LOOP WIRE'S TRIGGER (spec 1.3 item 1), FIRST, so no type branch
+        # below can claim a pass wire. "Pass done" is structure, never a
+        # situation: the compile consumes the wire from a lane's tail into its
+        # TARGET's `next` as the group's rotate mode, and one into a one-panel
+        # TARGET's `next` from its own lane as nothing (S4 orchestrator ruling
+        # 3), and a pass wire anywhere else is emitted with this trigger and
+        # reported as a rule that will not run. Before this branch a capture
+        # stage's pass wire compiled to `on_frame_graded`, a rule that would
+        # fire on every graded frame.
+        #
+        # AUTOFOCUS AND GUIDE are named here since they gained the port (S4,
+        # #331), not left to the fallback at the bottom, which happens to
+        # spell the same string today: an edit to the fallback must not turn
+        # their pass wire into a rule the engine runs.
+        return f"{node.type}.pass"
     if node.type == "cloudwatch":
         # 'in' -> on_clouds_in, 'clear' -> on_clouds_clear. The two additive
         # kinds, and the only place they are minted.
@@ -781,14 +899,6 @@ def _trigger_for(node: FlowNode, from_port: str) -> str:
     if node.type == "safety":
         return "on_unsafe"
     if node.type in ("capture", "cycle"):
-        if from_port == PASS_PORT:
-            # THE LOOP WIRE'S TRIGGER (spec 1.3 item 1). "Pass done" is
-            # structure, never a situation: `to_plan` consumes the wire from a
-            # lane's tail into its TARGET's `next` as the group's rotate mode,
-            # and a pass wire anywhere else is reported as a rule that will
-            # not run. Before this branch it compiled to `on_frame_graded`, a
-            # rule that would fire on every graded frame.
-            return f"{node.type}.pass"
         return "on_frame_graded"
     if node.type == "flatpanel":
         return "on_panel_ready"
@@ -831,7 +941,10 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     ``centre`` and its ``count_mode``; a POOL member carries its pool's
     ``count_mode``. A TARGET or POOL a mosaic's tail feeds carries
     ``follows``, the mosaic's node id. The legal loop wire is consumed as
-    ``loop`` and never emitted as a rule. In a graph with no mosaic the
+    ``loop`` and never emitted as a rule, and so is a pass wire into a
+    one-panel block from its own lane, as nothing at all
+    (``one_panel_pass_wires``, S4 orchestrator ruling 3). In a graph with
+    no mosaic the
     entries gain those keys and nothing else moves, and ``to_plan`` turns
     them into the same plan plus the centring (the controls in
     ``test_flows_compile.py`` and ``test_flows_to_plan.py``)."""
@@ -851,6 +964,14 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     loop_keys = _loop_edge_keys(graph) if scoping is not None else set()
     looped = {k[2] for k in loop_keys}
     followers = _followers(graph) if scoping is not None else {}
+    # The wires the instructions pass consumes: the loop wires, and every
+    # pass wire into a one-panel block from its own lane (S4 orchestrator
+    # ruling 3). Looked for in EVERY graph, with a mosaic or without: a
+    # single target has no mosaic to switch the scoping on. Only the loop
+    # wires make a block rotate (``looped``); a one-panel wire makes nothing
+    # a one-slot cycle, because with one panel there is no pass to rotate.
+    consumed = loop_keys | {(e.from_, e.fromPort, e.to, e.toPort)
+                            for e in one_panel_pass_wires(graph)}
 
     def receivers(stage: FlowNode) -> tuple[list[dict], FlowNode | None]:
         """The target entries ``stage``'s step is appended to, and the block
@@ -888,7 +1009,8 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                     # HOW MUCH EACH MEMBER OWES BEFORE IT COUNTS AS DONE. Without
                     # it "advance" has nothing to compare against and a campaign
                     # can never finish a target, only stop working on one.
-                    "quota_cycles": _num(n.params.get("quota")),
+                    # A count, so read finite-only (#328, ``_finite``).
+                    "quota_cycles": _finite(n.params.get("quota")),
                     "min_altitude_deg": _num(n.params.get("minAlt")),
                     # WHAT THE FLOOR MEANS ONCE THE TARGET IS RUNNING, and it
                     # only reached a sentence in the Tonight story before this.
@@ -926,7 +1048,9 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 "exposure_s": _num(n.params.get("exposure")),
                 "gain": _num(n.params.get("gain")),
                 "binning": _num(n.params.get("bin"), 1),
-                "count": _num(n.params.get("count")),
+                # A count, so read finite-only (#328): "inf" is no number of
+                # frames, and `to_plan` refuses the 0 it reads as.
+                "count": _finite(n.params.get("count")),
                 "frame_type": "Light",
                 # The STAGE, not the target: two capture nodes drawing the same
                 # recipe on one target are two quotas, and this is what keeps
@@ -956,8 +1080,13 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             # to avoid.
             slots = [{"filter": f, "exposure_s": exp}
                      for f, exp in parse_cycle_plan(n.params.get("plan"))]
-            cycles = max(1, int(_num(n.params.get("cycles"), 1) or 1))
-            per_cycle = max(1, int(_num(n.params.get("perCycle"), 1) or 1))
+            # FINITE-ONLY (#328). Read through ``_num`` alone, "inf" was an
+            # infinity and "nan" a NaN, and ``int()`` raised on both: the
+            # editor's compile answered 500, and validation let the save
+            # store the flow, so it never compiled again. Anything that is
+            # not a finite number reads as 1, as text always has.
+            cycles = max(1, int(_finite(n.params.get("cycles"), 1) or 1))
+            per_cycle = max(1, int(_finite(n.params.get("perCycle"), 1) or 1))
             step = {
                 "strategy": "cycle",
                 "cycles": cycles,
@@ -1018,13 +1147,15 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             "method": flats.params.get("method"),
             "window": flats.params.get("window"),
             "adu_target": _num(flats.params.get("adu")),
-            "count": _num(flats.params.get("count")),
+            "count": _finite(flats.params.get("count")),
         }
     if calib is not None:
         automation["calibration_queue"] = {
             "order": ["dark", "bias", "flat"],
             "policy": "if_stale",
-            "quota": _num(calib.params.get("quota")),
+            # A count, read finite-only (#328): `plan_extras` takes
+            # ``int()`` of it for the hold's darks.
+            "quota": _finite(calib.params.get("quota")),
             "flats_require_panel": True,
         }
 
@@ -1067,8 +1198,11 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
         # rotate mode; emitted here as well it would become "this rule will
         # not run", a loss the operator would have to accept for the one
         # wire that works. The calib wires `plan_extras` honours are the
-        # precedent. Any other pass wire is still emitted, and reported.
-        if (e.from_, e.fromPort, e.to, e.toPort) in loop_keys:
+        # precedent. A pass wire into a one-panel block from its own lane is
+        # structure too (S4 orchestrator ruling 3, #349): it rotates nothing,
+        # which the doctor's M4 notes, and a loss for it contradicted that
+        # note. Any other pass wire is still emitted, and reported.
+        if (e.from_, e.fromPort, e.to, e.toPort) in consumed:
             continue
         # THE DESTINATION PORT IS PART OF THE RULE, not decoration.
         #

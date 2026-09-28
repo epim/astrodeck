@@ -35,6 +35,12 @@ DELIBERATE PIN CHANGES, recorded here so nobody reads them as drift:
 * TARGET's output `target` is relabelled "each panel"; CAPTURE LOOP's and
   FILTER CYCLE's `complete` are relabelled "all done". Port IDS are unchanged,
   so every saved wire survives; only the words on the card change.
+* S4 (#331): AUTOFOCUS and GUIDE gained the structural event output `pass`
+  ("pass done"), appended last, so `focused` and `guiding` keep their rows.
+  `test_autofocus_and_guide_gain_pass_done` pins it,
+  `TestAutofocusAndGuidePassWires` holds what their pass wires compile to,
+  and `TestTheNewPassOutputsChangeNoShippedPlan` holds that no Example's or
+  wizard graph's plan moved.
 """
 from __future__ import annotations
 
@@ -46,8 +52,10 @@ from pathlib import Path
 
 import pytest
 
-from astrodeck.flows import check
-from astrodeck.flows.compile import compile_plan, is_multi_panel
+from astrodeck.flows import check, wizard
+from astrodeck.flows import compile as flows_compile
+from astrodeck.flows.compile import (
+    compile_plan, is_multi_panel, one_panel_pass_wires)
 from astrodeck.flows.examples import examples
 from astrodeck.flows.models import (
     FLOW_SETTINGS, FlowEdge, FlowGraph, FlowNode, FlowRecord, resolve_setting)
@@ -55,6 +63,9 @@ from astrodeck.flows.nodes import (
     COUNT_MODES, LEGACY_TYPES, NODE_DEFS, PALETTE_GROUPS, TARGET_ANGLES,
     create_params, default_params, target_angle)
 from astrodeck.flows.rig import RigFacts
+from astrodeck.flows.store import (
+    FLOW_SCHEMA, V3_SCHEMA, _v4_meanings, schema_for)
+from astrodeck.flows.to_plan import to_sequence_plan
 
 
 def _n(nid: str, ntype: str, **params) -> FlowNode:
@@ -285,6 +296,23 @@ class TestPorts:
             ("frame", "frame graded", "event"),
             ("pass", "pass done", "event")]
 
+    @pytest.mark.parametrize("ntype,flow_out", [("autofocus", "focused"),
+                                                ("guide", "guiding")])
+    def test_autofocus_and_guide_gain_pass_done(self, ntype, flow_out):
+        """S4, #331: either can be the last stage of a panel lane, and the
+        loop wire must leave the last stage, so each carries the same
+        structural ``pass`` output as CAPTURE LOOP. Appended LAST, so the
+        flow output keeps its row on the card and every saved wire its
+        socket.
+
+        Mutant 'AUTOFOCUS has no pass' (``_e("pass", "pass done")`` dropped
+        from AUTOFOCUS's outs in nodes.py), observed:
+            E       Right contains one more item: ('pass', 'pass done', 'event')
+            FAILED ...test_autofocus_and_guide_gain_pass_done[autofocus-focused]
+        """
+        assert [(p.id, p.label, p.kind) for p in NODE_DEFS[ntype].outs] == [
+            (flow_out, flow_out, "flow"), ("pass", "pass done", "event")]
+
     def test_still_21_types_and_one_flow_input_each(self):
         """Spec 1.1: every node type has at most one flow input, so a lane is a
         chain. `next` is an EVENT input and keeps that true."""
@@ -335,6 +363,189 @@ class TestPorts:
         unarmed = FlowGraph(nodes=lane, edges=wires)
         assert any("TARGET - 'arm' input unwired" in i.text
                    for i in check(unarmed))
+
+
+# ================================== AUTOFOCUS and GUIDE pass wires (S4, #331)
+
+#: A single target with its own coordinates, so ``to_plan`` needs no search.
+M42 = {"name": "M42", "ra": "05h 35m 17s", "dec": "-05 23 28"}
+
+
+def _pass_lane(stage: str, *, rows: int = 1, cols: int = 1, to: str = "t",
+               to_port: str = "next") -> FlowGraph:
+    """TARGET M42 -> FILTER CYCLE -> ``stage`` (an AUTOFOCUS or a GUIDE, so
+    the lane's tail), and the stage's 'pass done' wired into ``to``'s
+    ``to_port``. A NOTIFY stands on the canvas for a wire that goes to no
+    TARGET."""
+    return FlowGraph(
+        nodes=[FlowNode(id="t", type="target",
+                        params={**M42, "rows": rows, "cols": cols}),
+               FlowNode(id="cy", type="cycle", x=200,
+                        params={"plan": "L 60", "cycles": 2}),
+               FlowNode(id="s", type=stage, x=400),
+               FlowNode(id="n", type="notify", x=600)],
+        edges=[_e("t", "target", "cy", "run"), _e("cy", "complete", "s", "run"),
+               _e("s", "pass", to, to_port)])
+
+
+class TestAutofocusAndGuidePassWires:
+    """What a pass wire out of an AUTOFOCUS or a GUIDE compiles to, now that
+    either has the port (S4, #331; spec 1.3 item 1, 1.4): exactly what one
+    out of a CAPTURE LOOP or a FILTER CYCLE compiles to. The loop wire from
+    a multi-panel lane's tail is consumed as the loop; one into a one-panel
+    block from its own lane is consumed as nothing (S4 orchestrator ruling
+    3); any other is emitted as ``<type>.pass``, a trigger the engine does
+    not have, which ``to_plan`` reports as a rule that will not run, at warn
+    level. Mutants in a private scratch copy (#254)."""
+
+    def test_the_types_with_a_pass_output(self):
+        """``compile.PASS_TYPES`` is read off the vocabulary: every lane type
+        but legacy SLEW.
+
+        Mutant 'AUTOFOCUS has no pass' (nodes.py), observed:
+            E       Extra items in the right set:
+            E       'autofocus'
+            FAILED ...test_the_types_with_a_pass_output
+        """
+        assert flows_compile.PASS_TYPES == {"autofocus", "guide", "capture",
+                                            "cycle"}
+
+    @pytest.mark.parametrize("stage", ["autofocus", "guide"])
+    def test_trigger_for_names_the_pass_wire(self, stage):
+        """Mutant 'AUTOFOCUS and GUIDE read as graded frames' (compile.py
+        ``_trigger_for``: ``if node.type in ("autofocus", "guide"): return
+        "on_frame_graded"`` as its first line, the shape a capture stage's
+        pass wire had before S3 gave it its own branch), observed:
+            E       AssertionError: assert 'on_frame_graded' == 'autofocus.pass'
+            FAILED ...test_trigger_for_names_the_pass_wire[autofocus]
+            FAILED ...test_trigger_for_names_the_pass_wire[guide]
+        """
+        assert flows_compile._trigger_for(FlowNode(id="s", type=stage),
+                                          "pass") == f"{stage}.pass"
+
+    @pytest.mark.parametrize("stage", ["autofocus", "guide"])
+    def test_a_pass_wire_that_is_not_the_loop_will_not_run_at_warn(self, stage):
+        """Into a NOTIFY: no TARGET's ``next``, so neither the loop nor the
+        one-panel wire, and emitted; ``to_plan`` reports it at warn level.
+
+        Under the mutant 'AUTOFOCUS and GUIDE read as graded frames' above,
+        observed:
+            E       AssertionError: assert [('on_frame_g...d', 'notify')] ==
+                    [('autofocus.pass', 'notify')]
+            E         At index 0 diff: ('on_frame_graded', 'notify') !=
+                      ('autofocus.pass', 'notify')
+            FAILED ...test_a_pass_wire_that_is_not_the_loop_will_not_run_at_warn[autofocus]
+            FAILED ...test_a_pass_wire_that_is_not_the_loop_will_not_run_at_warn[guide]
+            (4 failed with the trigger cases, 115 deselected)
+        """
+        g = _pass_lane(stage, to="n", to_port="do")
+        assert g.validation_errors() == []
+        compiled = compile_plan(g, "pass wire")
+        assert [(r["when"], r["action"]) for r in compiled["instructions"]] \
+            == [(f"{stage}.pass", "notify")]
+        _plan, unmapped = to_sequence_plan(compiled, g, flow_id="f-331")
+        assert [(u["key"], u["level"]) for u in unmapped
+                if ".pass" in u["key"]] == \
+            [(f"instructions[{stage}.pass -> notify]", "warn")]
+
+    @pytest.mark.parametrize("stage", ["autofocus", "guide"])
+    def test_the_wire_from_a_mosaics_tail_is_its_loop(self, stage):
+        """Mutant 'only a capture stage loops' (compile.py ``loop_wires``:
+        ``and tail.type in ("capture", "cycle")`` added to its filter, the
+        rule as the vocabulary stood before #331), observed:
+            E       AssertionError: assert (False, [{'ac...focus.pass'}]) == (True, [])
+            E         At index 0 diff: False != True
+            FAILED ...test_the_wire_from_a_mosaics_tail_is_its_loop[autofocus]
+            FAILED ...test_the_wire_from_a_mosaics_tail_is_its_loop[guide]
+            and test_flows_panel_lane.py's carry cases whose tail is an AUTOFOCUS or
+            a GUIDE with it: assert ('af', []) == ('af', ['loop']).
+        """
+        g = _pass_lane(stage, rows=3, cols=2)
+        assert g.validation_errors() == []
+        compiled = compile_plan(g, "mosaic")
+        assert (compiled["targets"][0]["loop"], compiled["instructions"]) == \
+            (True, [])
+
+    @pytest.mark.parametrize("stage", ["autofocus", "guide"])
+    def test_a_pass_wire_into_a_one_panel_block_is_consumed(self, stage):
+        """A 3x2 that looped from an AUTOFOCUS, turned back into a single
+        target, keeps its wire: consumed as nothing, as one from a FILTER
+        CYCLE is (S4 orchestrator ruling 3), not a loss ``/run`` asks about.
+
+        Mutant 'one-panel consumption for CAPTURE and CYCLE only'
+        (compile.py ``one_panel_pass_wires``: ``src.type not in PASS_TYPES``
+        back to ``src.type not in ("capture", "cycle")``), observed:
+            E       AssertionError: assert [] == ['s']
+            E         Right contains one more item: 's'
+            FAILED ...test_a_pass_wire_into_a_one_panel_block_is_consumed[autofocus]
+            FAILED ...test_a_pass_wire_into_a_one_panel_block_is_consumed[guide]
+        """
+        g = _pass_lane(stage)
+        assert g.validation_errors() == []
+        assert [e.from_ for e in one_panel_pass_wires(g)] == ["s"]
+        compiled = compile_plan(g, "one panel")
+        assert compiled["instructions"] == []
+        _plan, unmapped = to_sequence_plan(compiled, g, flow_id="f-331")
+        assert [u for u in unmapped if ".pass" in u["key"]] == []
+
+
+class TestALoopFromAnAutofocusStampsSchema4:
+    """Spec 3.6: the writer stamps FLOW_SCHEMA 4 when a file uses a meaning a
+    v3 build would misread, a loop wire among them, read as any wire out of
+    a ``pass`` output or into a ``next`` input whatever stage it leaves
+    (``store._v4_meanings``). A loop wire leaving an AUTOFOCUS is one: no
+    build before S0 has the port, and an S3 build has TARGET's ``next`` but
+    not AUTOFOCUS's ``pass``.
+
+    WHAT AN S3 BUILD DOES WITH SUCH A FILE, run against the committed S3
+    code (git archive of HEAD 812fcf9e into a scratch directory): it is
+    schema 4, which an S3 build does not refuse as a future schema, and its
+    reader does not run ``validation_errors``, so it is NOT listed as
+    unreadable. It opens, and its compile reads the wire as the loop (the
+    lane functions match the port as a string). What refuses it is
+    validation: save and ``/run`` answer 422 with "autofocus has no output
+    port 'pass'". Loud, and nothing runs, which is the row the downgrade
+    matrix gives a loop wire on a build older than S0.
+
+    Observed (scratch script S4-U331-mut/downgrade.py, the file written by
+    this build's FlowStore.save at schema_version 4, then read by the S3
+    build's own store, validation, compile and save):
+
+        S3 listing: records ['af-loop', ...the eight Examples],
+                    unreadable rows []
+        S3 validation_errors: ["autofocus has no output port 'pass'"]
+        S3 compile: loop [True] instructions []
+        S3 save refused: ValueError autofocus has no output port 'pass'
+
+    and S3's run route answers the same structural error with a 422. S3's
+    classic canvas draws no wire from a port its vocabulary lacks
+    (``FlowWireLayer``: ``portPos`` refuses to guess), so the loop is not
+    on screen there; the refusal is what names it.
+    """
+
+    def test_a_mosaic_looping_from_an_autofocus_stamps_4(self):
+        g = _pass_lane("autofocus", rows=3, cols=2)
+        assert schema_for(g) == FLOW_SCHEMA == 4
+
+    def test_the_wire_alone_stamps_4(self):
+        """With a 3x2 the grid alone stamps 4, so the wire's share is held on
+        a graph whose ONLY v4 meaning is the wire: one panel, counting every
+        sub taken, no angle. The control is the same graph without it.
+
+        Mutant 'no loop-wire meaning' (store.py ``_v4_meanings``: the
+        loop-wire test deleted), observed:
+            E       AssertionError: assert [] == ['loop wire']
+            E         Right contains one more item: 'loop wire'
+            FAILED ...test_the_wire_alone_stamps_4
+            (the 3x2 case stays green: its grid stamps 4 by itself, which is why
+            the wire is held on its own)
+        """
+        g = _pass_lane("autofocus")
+        assert _v4_meanings(g) == ["loop wire"]
+        assert schema_for(g) == FLOW_SCHEMA
+        bare = g.model_copy(update={
+            "edges": [e for e in g.edges if e.fromPort != "pass"]})
+        assert (_v4_meanings(bare), schema_for(bare)) == ([], V3_SCHEMA)
 
 
 # ============================================================ legacy SLEW
@@ -741,3 +952,104 @@ class TestASinglePanelReadsNoMosaicKey:
         only_this = {ntype: {key: RETIRED[ntype][key]}}
         assert _compiled(g, "s2") != _compiled(
             _perturb(g, key, table=only_this), "s2")
+
+
+# ============== control: the new pass outputs change no Example's or wizard's plan
+
+def _s3_vocabulary(monkeypatch) -> None:
+    """The vocabulary as S3 left it: AUTOFOCUS and GUIDE without ``pass``,
+    and ``compile.PASS_TYPES`` read off that vocabulary (it is computed once,
+    at import, so it is patched with it)."""
+    for t in ("autofocus", "guide"):
+        d = NODE_DEFS[t]
+        monkeypatch.setitem(NODE_DEFS, t, dataclasses.replace(
+            d, outs=tuple(p for p in d.outs if p.id != "pass")))
+    monkeypatch.setattr(flows_compile, "PASS_TYPES",
+                        frozenset({"capture", "cycle"}))
+
+
+#: Every wizard kind, each with every automation chip and with none, and the
+#: quick flow, all with typed coordinates so no catalogue search runs.
+_NGC7331 = ("22h 37m 04s", "+34 24 56")
+_FIELD = RigFacts(fov_deg=(2.0, 1.33), has_rotator=True)
+
+
+def _wizard_graphs() -> dict[str, FlowGraph]:
+    everything = set(wizard.AUTOMATION_OPTIONS)
+    out: dict[str, FlowGraph] = {}
+    for opts, tag in ((everything, "all"), (set(), "none")):
+        out[f"deep-sky-{tag}"] = wizard.generate(
+            wizard.KIND_DEEP_SKY, opts, "NGC 7331", coords=_NGC7331)
+        out[f"eaa-{tag}"] = wizard.generate(
+            wizard.KIND_EAA, opts, "NGC 7331", coords=_NGC7331)
+        out[f"pool-{tag}"] = wizard.generate(
+            wizard.KIND_POOL, opts, "M16, M17, NGC 6946")
+        out[f"mosaic-{tag}"] = wizard.generate(
+            wizard.KIND_MOSAIC, opts, "NGC 7331", coords=_NGC7331, rows=2,
+            cols=3, angle_mode=wizard.ROTATE_TO_PA, pa_deg=30.0, rig=_FIELD)
+    out["quick"] = wizard.quick(
+        {"name": "NGC 7331", "ra": _NGC7331[0], "dec": _NGC7331[1]},
+        filters=["L", "R", "G", "B"]).graph
+    return out
+
+
+class TestTheNewPassOutputsChangeNoShippedPlan:
+    """CONTROL (S4, #331): giving AUTOFOCUS and GUIDE a ``pass`` output
+    changes no compiled plan of any Example or of any graph the wizard
+    makes. None of them draws a wire from either port, and a port nobody
+    wires must mean nothing. Each is compiled twice, under this build's
+    vocabulary and under S3's (``_s3_vocabulary``), and the two must be
+    byte-identical.
+
+    Checked against the tree before this task as well: a dump of
+    ``compile_plan`` for all eight Examples and these nine wizard graphs,
+    taken with the task's production files at their backups and again with
+    them changed, was byte-identical (sha256 per graph, the scratch script
+    S4-U331-mut/dump_plans.py).
+
+    The known positive is ``test_the_harness_sees_the_vocabulary``: without
+    it a swap that reached nothing would leave every case green.
+    """
+
+    @pytest.mark.parametrize("rec", examples(), ids=lambda r: r.id)
+    def test_each_example_compiles_the_same(self, rec, monkeypatch):
+        """Mutant of examples.py 'an Example wires its AUTOFOCUS pass to a
+        NOTIFY' (a scratch copy: example-m16's AUTOFOCUS given a wire from
+        'pass done' into its NOTIFY's 'do', which this build emits as a rule
+        and S3's vocabulary cannot read at all), observed:
+            E   assert '{"automation...d": "n7"}]}]}' == '{"automation...d": "n7"}]}]}'
+            E     - action": "notify", "to_port": "do", "when": "autofocus.pass"},
+                  {"action": "holdresume", "threshold": 40, "to_port": "pause", ...
+            FAILED ...test_each_example_compiles_the_same[example-m16]
+            (1 failed, 17 passed)
+        """
+        now = _compiled(rec.graph, rec.name)
+        _s3_vocabulary(monkeypatch)
+        assert _compiled(rec.graph, rec.name) == now
+
+    @pytest.mark.parametrize("key", sorted(_wizard_graphs()))
+    def test_each_wizard_graph_compiles_the_same(self, key, monkeypatch):
+        graph = _wizard_graphs()[key]
+        assert graph.validation_errors() == [], key
+        now = _compiled(graph, key)
+        _s3_vocabulary(monkeypatch)
+        assert _compiled(graph, key) == now
+
+    def test_the_harness_sees_the_vocabulary(self, monkeypatch):
+        """An AUTOFOCUS whose 'pass done' feeds a NOTIFY: emitted as a rule
+        on this build, and under S3's vocabulary not an event wire at all
+        (the instructions pass reads a wire's kind off its source port, and
+        S3's AUTOFOCUS has no such port), so it compiles to nothing. The
+        swap reaches the compile.
+
+        Mutant 'the swap reaches nothing' (``_s3_vocabulary``'s body made
+        ``return``), observed:
+            E   assert '{"automation": {}, "instructions": [{"action": "notify",
+                "to_port": "do", "when": "autofocus.pass"}], "name": "af", ...'
+                != '{"automation": {}, "instructions": [{"action": "notify", ...'
+            FAILED ...test_the_harness_sees_the_vocabulary
+        """
+        g = _pass_lane("autofocus", to="n", to_port="do")
+        now = _compiled(g, "af")
+        _s3_vocabulary(monkeypatch)
+        assert _compiled(g, "af") != now

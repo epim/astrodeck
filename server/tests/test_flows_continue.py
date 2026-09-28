@@ -907,11 +907,23 @@ class TestContinue:
             accepted subs makes it 5', ...}
             assert 'recount' == 'adopt'
 
-        The recount step itself is RED under mutants "no recount check" and
-        "recount skipped when adopting" (below), each observed at it:
+        RE-PINNED IN S4-ROUTES (S4 orchestrator ruling 2, #348): the recount
+        step the integration of S3 put between ADOPT and the dropped question
+        is gone again. All five frames were accepted, so both totals are 5,
+        and the recount question is asked only when the totals differ; ADOPT
+        alone goes straight to rule (c), and no request passes
+        ``accept_recount``. The unequal case keeps its question
+        (``test_adopting_does_not_skip_the_recount_question``, 3 against 2).
+        RED under mutation "ask whenever the modes differ" (the ruling's
+        condition reverted to ``s.plan.count_mode != plan.count_mode and not
+        body.accept_recount``), observed at the ADOPT-alone step:
 
-            E   Differing items:
-            E   {'code': 'dropped_steps'} != {'code': 'recount'}
+            AssertionError: {"detail":{"code":"recount","detail":"this
+            session counted every sub taken (5); counting accepted subs
+            makes it 5","before":5,"after":5,"session_id":"..."}}
+            assert (409 == 409 and 'recount' == 'dropped_steps'
+              - dropped_steps
+              + recount)
         """
         fid = await rig.save_flow(LR)
         old_l, old_r1, old_r2, old_ha = (
@@ -946,32 +958,20 @@ class TestContinue:
         assert session_store.load(old.id).auto_resume is True, (
             "the pre-S1 session was disarmed")
 
-        # ADOPT alone: the recount question comes next (rule (b)). The flow
-        # was saved on S3, so it counts accepted subs (ruling 2), and the
-        # pre-S1 session counted every sub taken. RE-PINNED IN THE
-        # INTEGRATION OF S3: before S3 the saved flow counted every sub too,
-        # and ADOPT alone went straight to rule (c). All five frames were
-        # accepted, so both totals are 5.
+        # ADOPT alone: what did not match still holds frames -> rule (c).
+        # The flow was saved on S3, so it counts accepted subs (ruling 2),
+        # and the pre-S1 session counted every sub taken, but all five frames
+        # were accepted: both totals are 5, so rule (b) asks nothing (S4
+        # orchestrator ruling 2). RE-PINNED IN S4-ROUTES: the integration of
+        # S3 pinned the recount 409 here, with both totals 5.
         r = await rig.run(fid, adopt=True)
-        assert r.status_code == 409, r.text
-        assert r.json()["detail"] == {
-            "code": "recount",
-            "detail": recount_detail("attempts", "accepted", 5, 5),
-            "before": 5, "after": 5, "session_id": old.id}
-        assert not _bak(old.id).exists(), "a refused adopt wrote a backup"
-        assert _bytes(old.id) == original
-
-        # ADOPT and the recount accepted: what did not match still holds
-        # frames -> rule (c).
-        r = await rig.run(fid, adopt=True, accept_recount=True)
         assert r.status_code == 409 and \
             r.json()["detail"]["code"] == "dropped_steps", r.text
         assert r.json()["detail"]["dropped_frames"] == 3
         assert not _bak(old.id).exists(), "a refused adopt wrote a backup"
         assert _bytes(old.id) == original
 
-        r = await rig.run(fid, adopt=True, accept_recount=True,
-                          accept_dropped=True)
+        r = await rig.run(fid, adopt=True, accept_dropped=True)
 
         assert r.status_code == 200, r.text
         assert _bak(old.id).read_bytes() == original, (
@@ -1029,12 +1029,16 @@ class TestContinue:
             raise OSError(28, "No space left on device")
 
         monkeypatch.setattr(SessionStore, "backup", no_room)
-        # ``accept_recount`` since the integration of S3: the saved flow
-        # counts accepted subs and this pre-S1 session every sub taken, so
-        # without it the recount 409 answers before the backup is tried.
+        # No ``accept_recount`` (RE-PINNED IN S4-ROUTES). The saved flow
+        # counts accepted subs and this pre-S1 session every sub taken, and
+        # the integration of S3 passed the flag because the recount 409 then
+        # answered before the backup was tried. Its one frame is accepted, so
+        # both totals are 1 and the question is not asked (S4 orchestrator
+        # ruling 2): the flag would answer nothing. Under mutation "ask
+        # whenever the modes differ" the recount 409 answers first again,
+        # observed: ``Failed: DID NOT RAISE <class 'OSError'>``.
         with pytest.raises(OSError):
-            await rig.run(fid, adopt=True, accept_dropped=True,
-                          accept_recount=True)
+            await rig.run(fid, adopt=True, accept_dropped=True)
         assert rig.starts == [], "ADOPT started without its backup"
         assert _bytes(old.id) == original
 
@@ -1132,6 +1136,18 @@ class TestContinue:
             AssertionError: {"started":true,...,"frames":5,"unmapped":[],
             "session":{"id":"fb17825eb97b476a8b9d87a5d1f19c0b","night":2,
             "continued":true,"kept":2,"new":0,"dropped":0}}
+
+        UNCHANGED BY S4 ORCHESTRATOR RULING 2 (#348): one of the three subs
+        was rejected, so the totals differ (3 against 2) and the question is
+        still asked; only equal totals continue unasked
+        (test_flows_recount_equal_totals.py). RED under mutation "never ask
+        when the modes differ" (``if False and before != after and not
+        body.accept_recount:``), observed in S4-ROUTES:
+
+            AssertionError: {"started":true,"flow_id":"...","frames":5,
+            "unmapped":[],"session":{"id":"...","night":2,"continued":true,
+            "kept":2,"new":0,"dropped":0}}
+            assert 200 == 409
         """
         fid = await rig.save_flow(LR)
         one = await rig.night_one(fid, [0, 0, 0], rejected=(1,))
@@ -1188,6 +1204,13 @@ class TestContinue:
 
         Observed again after the integration of S3 reversed the direction,
         the same answer (``"adopted":{"matched":2,...}``, 200 == 409).
+
+        UNCHANGED BY S4 ORCHESTRATOR RULING 2 (#348): the totals differ (3
+        against 2), so the question stands. RED under mutation "never ask
+        when the modes differ", observed in S4-ROUTES, the same answer:
+        ``{"started":true,...,"session":{...,"night":1,"continued":true,
+        "kept":1,"new":1,"dropped":1,"adopted":{"matched":2,...}}}``,
+        ``assert 200 == 409``.
         """
         # RE-PINNED IN THE INTEGRATION OF S3, direction reversed: the saved
         # flow counts accepted subs since S3 (ruling 2), so the pre-S1

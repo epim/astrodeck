@@ -729,8 +729,14 @@ class TestTheLoopWireIsNotARule:
 
     def test_any_other_pass_wire_reads_will_not_run(self):
         """1.3 item 1: a pass wire anywhere else is an illegal trigger, a
-        warn the run holds for. Here, a loop wire on a block of one panel,
-        which has nothing to rotate between.
+        warn the run holds for. Here, a second pass wire from the looped
+        2x2's tail into the 'next panel' of the M33 block the tail feeds:
+        the stage is in the 2x2's lane, not M33's (M4's warning).
+
+        CHANGED IN S4 (S4 orchestrator ruling 3, #349): this case was a loop
+        wire on a block of one panel, which the compile now consumes as
+        structure with no rule and no loss; that case, and the pass wires
+        that are still losses, are `test_flows_one_panel_pass_wire.py`'s.
 
         Mutant "every pass wire consumed silently" (`_instructions` skips
         any ``.pass`` trigger), observed:
@@ -738,7 +744,9 @@ class TestTheLoopWireIsNotARule:
             AssertionError: assert [] == ['instruction...s -> target]']
               Right contains one more item: 'instructions[cycle.pass -> target]'
         """
-        g = _mosaic(rows=1, cols=1)
+        g = _mosaic(after=[_n("t2", "target", x=400, **M33)])
+        g = g.model_copy(update={"edges": [*g.edges,
+                                           _e("s0", "pass", "t2", "next")]})
         plan, un = _plan(g)
         rows = [u for u in un if "will not run" in u["detail"]]
         assert [u["key"] for u in rows] == ["instructions[cycle.pass -> target]"]

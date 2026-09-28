@@ -21,25 +21,22 @@
 // decision is testable on its own (mosaicNightSummary.test.ts).
 
 import { fmtAlt } from "../../lib/visibility";
+import type { MosaicPanel } from "../../types";
 
-/** The parts of a panel this file reads. `transit_alt_error` is on the wire but
- *  NOT yet in `types.ts` MosaicPanel, so this is where it is declared — the same
- *  shape FocusView uses to read `fit` off the raw focus event until the type
- *  catches up.
+/** The parts of a panel this file reads, PICKED from `types.ts` MosaicPanel.
  *
- *  It is a STRUCTURAL SUBSET, not an alias-in-waiting: MosaicPanel additionally
- *  requires ra_hours, dec_deg and rotation_deg, which no fixture or caller here
- *  has any use for. MosaicPanel[] is already assignable to PanelNight[] (row and
- *  col are the only required fields), so `types.ts` needs exactly ONE addition —
- *  `transit_alt_error?: string` on MosaicPanel — and nothing here changes when
- *  it lands. Re-exporting PanelNight AS MosaicPanel would drag three required
- *  fields into every test fixture for no reader. */
-export interface PanelNight {
-  row: number;
-  col: number;
-  transit_alt?: number;
-  transit_alt_error?: string;
-}
+ *  `transit_alt_error` used to be declared here, because it was on the wire and
+ *  not on MosaicPanel. A copy is a second truth: had the wire renamed the
+ *  field, MosaicPanel would have followed (test_types_mirror_status.py holds it
+ *  to a real route answer) and this file would have gone on reading a key
+ *  nobody sends, printing "no reason was given" beside a panel the server had
+ *  given a reason for. Picked, a field MosaicPanel drops or renames is a
+ *  compile error here (#174).
+ *
+ *  A Pick, not MosaicPanel itself: MosaicPanel also requires ra_hours, dec_deg
+ *  and rotation_deg, which no fixture or caller here has any use for, and a
+ *  MosaicPanel[] is assignable to PanelNight[] as it stands. */
+export type PanelNight = Pick<MosaicPanel, "row" | "col" | "transit_alt" | "transit_alt_error">;
 
 /** Which panel, in the 1-based row-col identity the rest of the app already
  *  uses: AtlasView's `panelsToTargets` names every Plan target

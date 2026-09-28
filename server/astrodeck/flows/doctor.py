@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from .compile import (
     LANE_TYPES, NEXT_PORT, OWNER_TYPES, PASS_PORT, _grid_dim, _lane_index,
     _stage_label, compile_plan, is_multi_panel, lane_branched, lane_tail,
-    loop_wires, owner_of, panel_lane)
+    loop_wires, one_panel_pass_wires, owner_of, panel_lane)
 from .identity import typed_coordinates
 from .models import FlowGraph
 from .nodes import NODE_DEFS, parse_cycle_plan, port_kind, target_angle
@@ -84,9 +84,12 @@ def _flow_upstream_types(graph: FlowGraph, node_id: str) -> set[str]:
 
 
 def _num(value, default: float = 0.0) -> float:
+    # OverflowError too: ``float()`` of an integer past a float's range (a
+    # raw POST can hold a 400-digit one) raises that, and the compile route
+    # runs these rules on every draft (#328).
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -147,8 +150,11 @@ def _is_campaign(graph: FlowGraph):
 FIELD_DRIFT_SHARE = 0.02
 #: M6: meridian convergence may use this share of the overlap between
 #: neighbouring panels before the doctor warns (spec 1.8, Appendix A.1). The
-#: 1x4 at 10% at Dec 75 uses 38.9% and warns; the 3x3 at 25% at Dec 41 uses
-#: 3.1% and does not.
+#: 4x1 (4 columns by 1 row) at 10% at Dec 75 uses 38.9% and warns; the 3x3
+#: at 25% at Dec 41 uses 3.1% and does not. A grid's size is written columns
+#: by rows, in words where an operator reads it (S4 orchestrator ruling 1,
+#: #339; ``compile.grid_size``): the sentence's remedy, fewer columns, is
+#: about the four side by side.
 CONVERGENCE_WARN_SHARE = 0.25
 #: M10: a measured hop may cost this share of a visit before the doctor notes
 #: that more passes per visit would buy the night back (spec 1.8).
@@ -434,11 +440,30 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
 
     # M4. A pass wire the compile will not read as a loop. From a stage in
     # another block's lane (by owner_of, so a stage past a DOME is nobody's
-    # and counts as another lane) it does nothing at all: warn. Into a 1x1
-    # block it has nothing to rotate between: a note. And spec 1.4 item 2:
-    # more than one loop wire into one block is harmless, and one is enough.
+    # and counts as another lane) it does nothing at all: warn, and the
+    # compile emits it as a rule that will not run, a loss. Into a 1x1 block
+    # from its own lane it has nothing to rotate between: a note, and the
+    # compile consumes it with no rule and no loss (S4 orchestrator ruling
+    # 3). WHICH wires get the note is the compile's own list
+    # (``one_panel_pass_wires``), so the note and the consumption cannot
+    # name two sets. And spec 1.4 item 2: more than one loop wire into one
+    # block is harmless, and one is enough.
+    #
+    # WALKED OVER BOTH LISTS, in wire order: ``pass_wires`` and every wire
+    # the compile consumes. The compile's list reads the vocabulary
+    # (``PASS_TYPES``), so it took in AUTOFOCUS and GUIDE when they gained
+    # ``pass`` (S4, #331), while ``pass_wires`` still reads the two capture
+    # stages (#375); walked over ``pass_wires`` alone, a one-panel wire from
+    # an AUTOFOCUS was consumed with no rule, no loss and no word from the
+    # doctor either. A consumed wire is from its block's own lane by
+    # construction, so it never reaches the warning.
+    consumed = {(e.from_, e.fromPort, e.to, e.toPort)
+                for e in one_panel_pass_wires(graph)}
+    listed = {id(e) for e in pass_wires}
     one_panel: set[str] = set()
-    for e in pass_wires:
+    for e in [e for e in graph.edges
+              if id(e) in listed
+              or (e.from_, e.fromPort, e.to, e.toPort) in consumed]:
         src, dst = by_id[e.from_], by_id[e.to]
         owner = owner_of(graph, src.id)
         if owner is None or owner.id != dst.id:
@@ -446,7 +471,8 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
                 f"▸ {_block_name(dst)} '{_NEXT}' - this wire does nothing: "
                 f"{_stage_label(src)} is not in this TARGET's panel lane.",
                 "warn"))
-        elif not is_multi_panel(dst) and dst.id not in one_panel:
+        elif ((e.from_, e.fromPort, e.to, e.toPort) in consumed
+              and dst.id not in one_panel):
             one_panel.add(dst.id)
             out.append(Issue(
                 f"▸ {_block_name(dst)} - one panel, nothing to rotate between: "

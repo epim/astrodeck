@@ -289,6 +289,15 @@ _META_CACHE: dict[str, tuple[str, dict]] = {}
 #: cache a cache instead of a second index with its own bugs.
 _META_CACHE_MAX = 100_000
 
+#: The version of what ``_read_header_meta`` reads, appended to every file's
+#: stamp. The disk index keys a row on the stamp, and a stamp describes the
+#: FILE, which does not change when the reader does: after #333 moved the
+#: target and the filter onto the names as typed, a frame the old reader had
+#: indexed would have listed 'M31 ?????????' for as long as the file lived.
+#: Bump it whenever the reader changes what it returns; every row then reads
+#: its header once more, and the index is only a cache.
+_META_READER = "r2"
+
 
 def _parse_date_obs(value: object) -> float | None:
     """``DATE-OBS`` (FITS 4.0: ``YYYY-MM-DDThh:mm:ss[.sss]``, UTC implied, no
@@ -322,13 +331,20 @@ def _read_header_meta(path: Path) -> dict:
             "_header_ok": False}
     try:
         from astropy.io import fits          # lazy: same as hub/calibration
+        from .imaging.fitsio import full_name, full_object_name
         hdr = fits.getheader(path)
         meta["_header_ok"] = True
     except Exception:                        # noqa: BLE001 — see docstring
         return meta
     try:
-        meta["target"] = str(hdr.get("OBJECT", "") or "").strip()
-        meta["filter"] = str(hdr.get("FILTER", "") or "").strip()
+        # The names AS TYPED (#333, #332), not the folded cards: since #277 a
+        # target in a non-Latin script is 'M31 ?????????' in OBJECT and a
+        # Greek slot is 'H?' in FILTER, and the grid listed, grouped and
+        # filtered by the question marks while the capture folder on disk
+        # carried the real name. The one decoder falls back to the card, so a
+        # frame with no as-typed card reads exactly as before.
+        meta["target"] = full_object_name(hdr).strip()
+        meta["filter"] = full_name(hdr, "FILTER").strip()
         meta["frame_type"] = str(hdr.get("IMAGETYP", "") or "").strip()
         meta["exposure_s"] = positive_number(hdr.get("EXPTIME"), allow_zero=True)
         for field, card in (("width", "NAXIS1"), ("height", "NAXIS2"),
@@ -342,7 +358,7 @@ def _read_header_meta(path: Path) -> dict:
 
 def _meta_for(path: Path, st: os.stat_result, index=None, rel="") -> dict:
     key = str(path)
-    stamp = signature(st)
+    stamp = f"{signature(st)}:{_META_READER}"
     if index is not None:
         index.seen.add(rel)
     hit = _META_CACHE.get(key)

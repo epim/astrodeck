@@ -893,6 +893,11 @@ interface AppState extends FlowsActions {
   setWsPhase: (p: WsPhase) => void;
   noteWsEvent: () => void;
   setTelemetryStale: (v: boolean) => void;
+  /** The ONE toast model. The flows slice reaches it BY THIS NAME through
+   *  `get()` (flowsSlice.ts `FlowsHost.enqueueToast`, optional there so a
+   *  miniature store can omit it), so a rename here silences the save's
+   *  re-anchor toast without a type error; flowsReanchorToast.test.ts's
+   *  app-store case is what notices. */
   enqueueToast: (input: EnqueueInput) => void;
   dismissToast: (id: number) => void;
   dismissExpired: () => void;

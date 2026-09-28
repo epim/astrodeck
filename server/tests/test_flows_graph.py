@@ -83,19 +83,50 @@ class TestVocabulary:
 
         The set is pinned rather than counted, because every member is a design
         decision and a new one arriving silently is how a graph starts promising
-        a night it cannot deliver. Four, and each earns it:
+        a night it cannot deliver. Six, and each earns it:
 
-        * ``dusk``     — `window opens` is the lane; `night ends` is the campaign
-                         shutdown, which must fire while there is still time.
-        * ``capture``  — `complete` is the lane; `frame graded` drives watchdogs.
-        * ``cycle``    — same pair, same reason. It is a capture stage.
-        * ``pool``     — `best target` is the lane; `floor hit` says the active
-                         target sank, which the lane itself cannot express.
+        * ``dusk``      — `window opens` is the lane; `night ends` is the
+                          campaign shutdown, which must fire while there is
+                          still time.
+        * ``capture``   — `complete` is the lane; `frame graded` drives
+                          watchdogs.
+        * ``cycle``     — same pair, same reason. It is a capture stage.
+        * ``pool``      — `best target` is the lane; `floor hit` says the active
+                          target sank, which the lane itself cannot express.
+        * ``autofocus`` — `focused` is the lane; `pass done` is the loop wire's
+                          socket, structure the compile consumes as a mosaic's
+                          rotate mode (spec 1.3), never a situation it watches.
+        * ``guide``     — `guiding` is the lane; `pass done` for the same
+                          reason. Either stage can end a panel lane (spec
+                          1.5), and the loop wire must leave the last stage.
+
+        DELIBERATE PIN CHANGE (mosaic S4, #189, #331; re-pinned by the S4
+        integration, #406): AUTOFOCUS and GUIDE gained `pass` so a stage
+        appended after a looped FILTER CYCLE no longer strands the loop
+        mid-lane (M12) with no wire the editor could carry it to. Their only
+        event output is `pass`, which observes nothing, where each of the
+        four above carries one that does; that is why their reason is its own
+        bullet.
+
+        Mutant "GUIDE has no pass" (``nodes.py``: GUIDE's ``outs`` back to
+        ``guiding`` alone), observed in scratchpad/s4-integrate-q7m2:
+
+            E       AssertionError: {'autofocus', 'capture', 'cycle', 'dusk', 'pool'}
+            E         Extra items in the right set:
+            E         'guide'
+
+        Mutant "a SLEW with a pass" (SLEW given ``_e("pass", "pass done")``),
+        the silent arrival this pin exists for, observed in the same copy:
+
+            E       AssertionError: {'autofocus', 'capture', 'cycle', 'dusk', 'guide', 'pool', ...}
+            E         Extra items in the left set:
+            E         'slew'
         """
         both = {t for t, d in NODE_DEFS.items()
                 if any(p.kind == "flow" for p in d.outs)
                 and any(p.kind == "event" for p in d.outs)}
-        assert both == {"dusk", "capture", "cycle", "pool"}, both
+        assert both == {"dusk", "capture", "cycle", "pool", "autofocus",
+                        "guide"}, both
 
     def test_the_optional_inputs_are_exactly_these(self):
         """An input may be optional only when its absence is HARMLESS, or is

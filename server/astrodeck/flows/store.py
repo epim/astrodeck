@@ -21,6 +21,10 @@ A SAVE APPLIES THE SAVE RULES (``save_rules.prepare_save``, #189 Revision 2
 rulings 2 and 3): ``counts`` becomes "Accepted subs" on every TARGET and POOL,
 and each TARGET's ``frameAnchor`` is decided from the file being replaced,
 never from the client. Here, in the one writer, so every door converges.
+A save that CANNOT READ the file it replaces refuses (``_stored``,
+``StoredFlowUnreadable``, #350): read as "no such flow", a transient read
+error moved every anchor to where its block is drawn and restarted counts in
+silence.
 """
 from __future__ import annotations
 
@@ -122,6 +126,27 @@ class NewerSchemaFlow(FlowLibraryFull):
     """
 
     def __init__(self, message: str, code: str = "newer_schema"):
+        super().__init__(message, code)
+
+
+class StoredFlowUnreadable(FlowLibraryFull):
+    """``save()`` refusing to write over a flow it could not read (#350).
+
+    The save measures every TARGET's framing against the file it replaces
+    (``save_rules.prepare_save``): that file's ``frameAnchor`` is where the
+    block's counts started. A read that failed for a reason that says
+    nothing about the file (a sharing violation from antivirus or an
+    indexer, an interrupted read, permissions that could not be secured)
+    is not "no such flow", and anchoring as if it were would move every
+    block's anchor to where it is drawn now and restart counts in silence.
+    So nothing is written, and the operator saves again.
+
+    A SUBCLASS OF FlowLibraryFull FOR THE REASON ``NewerSchemaFlow`` IS ONE:
+    ``_persist_flow`` answers that class with 409 and its ``code``, which is
+    this refusal's answer too, with no route of its own. Its own class, so a
+    caller can still tell them apart."""
+
+    def __init__(self, message: str, code: str = "stored_unreadable"):
         super().__init__(message, code)
 
 
@@ -282,6 +307,13 @@ def _migrate(raw: dict) -> dict:
         notes.append({"key": "counts", "note": COUNTS_NOTE})
     flow["migrated"] = notes
     return flow
+
+
+def _newer_sentence(version: int) -> str:
+    """What a save aimed at a newer build's file is refused with, wherever
+    the save finds the file is one (``NewerSchemaFlow``)."""
+    return (f"a newer AstroDeck saved this flow (schema {version}); update "
+            f"to edit it, or save under a new name")
 
 
 def _record_of(raw, *, pristine: bool = False) -> FlowRecord:
@@ -577,11 +609,16 @@ class FlowStore:
     def _newer_schema_on_disk(self, flow_id: str) -> int | None:
         """The schema of the file at ``flow_id`` when a newer build wrote it,
         else None. A missing or damaged file is None: it holds no meaning a
-        save could downgrade, and saving over it is how it gets repaired."""
+        save could downgrade, and saving over it is how it gets repaired.
+        Damaged includes nested past the parser's depth, which ``json``
+        answers with RecursionError, not a ValueError: uncaught, it escaped
+        every save aimed at that id as a 500 (#363, found by S4-SAVE's test
+        of ``_stored``). A read that fails is None here too, and ``_stored``,
+        which reads the file again, refuses it."""
         try:
             raw = read_json(self._path(flow_id))
             version = _schema_of(raw) if isinstance(raw, dict) else 0
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             return None
         return version if version > FLOW_SCHEMA else None
 
@@ -641,15 +678,59 @@ class FlowStore:
 
     def _stored(self, flow_id: str) -> FlowRecord | None:
         """The flow a save of ``flow_id`` replaces, as this build reads it
-        (migrated, as the compile that keyed its ids read it), or None: no
-        file, a file this build cannot open (it keyed nothing), or a file
-        whose record carries another id, as a copied file can (its nodes
-        are not this flow's, so they lend no anchor)."""
+        (migrated, as the compile that keyed its ids read it), or None.
+
+        NONE ONLY WHEN NOTHING WAS KEYED (#350):
+
+        * no file (``FileNotFoundError``): a new flow;
+        * a file that reads but does not parse or validate: the library
+          lists it as an unreadable row (``_entries`` makes the same
+          judgment with the same ``_record_of``), nothing can open or run
+          it, so it keyed nothing, and saving over it is its repair;
+        * a record that carries another id, as a copied file does: its nodes
+          are another flow's and lend this one no anchor (#353 item 5).
+
+        EVERY OTHER FAILURE REFUSES THE SAVE. An ``OSError`` that is not
+        "no such file", or ``read_json`` failing to secure the file
+        (``PrivatePermissionsError``), says nothing about what the file
+        holds; answered None, as this used to answer every exception, the
+        save anchored every TARGET where it is drawn now and restarted
+        banked counts with nothing listed (#153's family: an error path that
+        returns the "nothing there" answer). ``StoredFlowUnreadable`` names
+        the error's type and never its text, which is the file's full path.
+
+        A FILE A NEWER BUILD WROTE REFUSES HERE TOO (``NewerSchemaFlow``).
+        ``_newer_schema_on_disk`` asks first, but reads an ``OSError`` as
+        "not newer", so when its read fails and this one succeeds the newer
+        file arrives here, and must not be read as a damaged one and
+        overwritten."""
         try:
-            record = _record_of(read_json(self._path(flow_id)))
-        except Exception:           # noqa: BLE001 - missing, a row, a bad id
+            raw = read_json(self._path(flow_id))
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            raise self._unreadable(e) from e
+        except (ValueError, RecursionError):
+            return None             # read, but not JSON or not UTF-8
+        except Exception as e:      # noqa: BLE001 - e.g. PrivatePermissionsError
+            raise self._unreadable(e) from e
+        try:
+            record = _record_of(raw)
+        except FutureFlowSchema as e:
+            raise NewerSchemaFlow(_newer_sentence(e.version)) from None
+        except Exception:           # noqa: BLE001 - a row: _entries' judgment
             return None
         return record if record.id == flow_id else None
+
+    @staticmethod
+    def _unreadable(e: BaseException) -> StoredFlowUnreadable:
+        """The refusal for a read that failed with ``e``: its type, never
+        its text (an OSError's text is the file's full path, and the answer
+        reaches any operator)."""
+        return StoredFlowUnreadable(
+            f"the flow on disk could not be read ({type(e).__name__}), and "
+            f"a save measures each TARGET's framing against it to keep its "
+            f"counts; nothing was written, so save again")
 
     def save(self, record: FlowRecord) -> FlowRecord:
         """Store ``record`` and return it as stored. See ``save_and_report``,
@@ -669,7 +750,9 @@ class FlowStore:
         each block whose counts restart for the second.
 
         After the refusals and the graph's validation, so a refused save
-        costs no catalogue lookup and says nothing it did not do."""
+        costs no catalogue lookup and says nothing it did not do. A file it
+        replaces that cannot be read refuses the save too, from ``_stored``
+        (``StoredFlowUnreadable``, 409 through ``_persist_flow``, #350)."""
         if record.readonly or any(e.id == record.id for e in examples()):
             raise ReadOnlyFlow("the shipped examples are read-only — "
                                "duplicate one into My flows to edit it")
@@ -679,9 +762,7 @@ class FlowStore:
         # would silently downgrade whatever the newer build meant.
         newer = self._newer_schema_on_disk(record.id)
         if newer is not None:
-            raise NewerSchemaFlow(
-                f"a newer AstroDeck saved this flow (schema {newer}); update "
-                f"to edit it, or save under a new name")
+            raise NewerSchemaFlow(_newer_sentence(newer))
         existing = {r.id for r in self._on_disk()}
         if record.id not in existing and len(existing) >= MAX_FLOWS:
             raise FlowLibraryFull(f"the flow library is full ({MAX_FLOWS})")

@@ -2,15 +2,49 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (BaseModel, BeforeValidator, Field,
+                      SerializerFunctionWrapHandler, model_serializer,
+                      model_validator)
 
 from .schedule import MERIDIAN_FLIP_LEAD_MAX_MIN, MERIDIAN_FLIP_LEAD_MIN
 
 if TYPE_CHECKING:                       # pragma: no cover - typing only
     from .policy import RunPolicy
+
+
+def _frame_type(value):
+    """A frame type as one of ``fitsio.FRAME_TYPES``, or a ValueError that
+    names the value and the four (#334). Anything that is not a string is
+    handed on unchanged, so pydantic's own string check words that refusal as
+    it always has."""
+    # Lazy: the four and their reading live with the writer of IMAGETYP, and
+    # this module is imported by the ``sequence`` package before anything
+    # under ``imaging`` needs to be.
+    from ..imaging.fitsio import FRAME_TYPES, frame_type_name
+    if not isinstance(value, str):
+        return value
+    name = frame_type_name(value)
+    if name is None:
+        raise ValueError(f"frame type {value!r} is not one of "
+                         f"{', '.join(FRAME_TYPES)} (in any case)")
+    return name
+
+
+#: A capture's frame type, checked where it comes in (#334): a plan step here,
+#: and ``POST /api/capture``'s body in ``api/app.py``. NORMALISED, not a
+#: ``Literal``: 'light', 'LIGHT' and ' Light ' are all Light, and a blank is
+#: Light (``fitsio.frame_type_name``), because a hand-edited plan or a script
+#: means the frame type whatever its case, and a ``Literal`` would refuse to
+#: load a stored plan over a capital letter. The value that comes OUT is
+#: always one of the four spellings, which is what the engine's ``!= "Light"``
+#: and the UI's ``=== "Light"`` compare against. Anything else refuses: a step
+#: with one non-ASCII character in its frame type failed every save of the
+#: night (the #277 class), and an ASCII value that is no frame type was
+#: written as an IMAGETYP no calibration reader expects.
+FrameType = Annotated[str, BeforeValidator(_frame_type)]
 
 
 class ExposureStep(BaseModel):
@@ -23,7 +57,7 @@ class ExposureStep(BaseModel):
     offset: int = 30
     binning: int = 1
     count: int = Field(gt=0, le=10000)
-    frame_type: str = "Light"          # Light | Dark | Bias | Flat
+    frame_type: FrameType = "Light"    # Light | Dark | Bias | Flat (#334)
     # --- PRO-5 flat auto-exposure (additive; 0/None = off => back-compat) ---
     adu_target: int = Field(0, ge=0, le=65535)     # >0 + Flat ⇒ solve exposure to this ADU
     panel_brightness: int | None = Field(None, ge=0)  # flat-panel level while shooting; None = don't touch
@@ -466,6 +500,28 @@ class SequencePlan(BaseModel):
     # ``after_group`` gates) is ``plan_identity_errors``'s question, asked at
     # the start paths, and never a validator's: see there.
     groups: list[TargetGroup] = []
+    # --- the skip of a block the plan leaves out (#335; ADDITIVE, and ABSENT
+    # from the dump while empty, so every plan without one dumps byte for
+    # byte as before, stored sessions and the plan goldens included). A
+    # TARGET block whose every panel is skipped shoots nothing, and the
+    # compile leaves it out whole rather than emit a group of no members
+    # (which ``plan_identity_errors`` refuses). Its panels' target ids go
+    # here instead of into a ``TargetGroup.skipped_ids``, so CONTINUE can
+    # still tell a skipped panel from a dropped one (spec 5.9): read through
+    # ``flows.continuation.plan_skipped_ids``, never alone. Nothing in the
+    # engine reads it, because nothing in the plan is shot for it; a target
+    # the plan does shoot must not be listed (``plan_identity_errors``).
+    skipped_ids: list[str] = []
+
+    @model_serializer(mode="wrap")
+    def _omit_an_empty_skip(self, handler: SerializerFunctionWrapHandler):
+        """The dump without ``skipped_ids`` when it is empty, whatever the
+        mode, and nested in a ``Session`` too. A wrap serializer, so every
+        other field, and the JSON schema, are pydantic's own."""
+        out = handler(self)
+        if isinstance(out, dict) and not out.get("skipped_ids"):
+            out.pop("skipped_ids", None)
+        return out
 
     def total_frames(self) -> int:
         return sum(s.count for t in self.targets for s in t.steps)
@@ -686,6 +742,8 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
       panel is dropped by the compile and is no member (spec 5.9), so the
       engine and CONTINUE would disagree about whether it is shot. Another
       group's list says nothing about it;
+    * a TARGET LISTED IN THE PLAN'S OWN ``skipped_ids`` (#335), the list of
+      panels of blocks the compile left out whole, for the same reason;
     * a CALIBRATION TARGET IN A GROUP. Darks, bias and flats skip the slew,
       the centring, the focus and the guider, and a member is hopped to,
       centred and angle-checked, so the two cannot both hold. A calibration
@@ -757,6 +815,15 @@ def plan_identity_errors(plan: SequencePlan) -> list[str]:
             errors.append(f"target {t.name!r} is in group {t.mosaic_group!r} "
                           f"and in its skipped_ids; a skipped panel is not "
                           f"shot, and a member is")
+    # The plan's own list (#335) names the panels of blocks the compile left
+    # out whole, which are in no group and shoot nothing. A target the plan
+    # shoots listed there is #307's disagreement one level up: the engine
+    # would shoot it while CONTINUE read its frames as a skipped panel's.
+    left_out = set(plan.skipped_ids)
+    for t in targets:
+        if t.id in left_out:
+            errors.append(f"target {t.name!r} is in the plan's skipped_ids; "
+                          f"a skipped panel is not shot, and a target is")
     for t in targets:
         if t.calibration and t.mosaic_group in group_ids:
             errors.append(f"calibration target {t.name!r} is in group "

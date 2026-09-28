@@ -24,9 +24,18 @@
 // is load-bearing: rotation starts at 0 for every framing session, so treating 0
 // as a commanded angle would bolt a rotate-to-PA loop onto every "just show me
 // this" tap.
+//
+// THE ANGLE IS CONTINUOUS, AND THE DIAL SAYS SO (#173). The finder's rotate drag
+// writes any angle (`SkyCanvas` hands back degrees in [0, 360)), and the dial's
+// stops are multiples of 15. The dial used to be handed `ROTS.includes(v) ? v :
+// 0`, so after a drag to 37 it sat on 0 under a label reading 37, and the first
+// touch moved the frame from 0, not from 37: the angle the user framed was lost
+// to a control that was only showing it. Now an angle that is not a stop gets a
+// stop of its own, and the PA field under the dial takes any angle, with nudges
+// of 1 and 15 that move from where the frame IS (spec 2.4: no 15-degree snap).
 
-import type { JSX } from "react";
-import { Card, Dial } from "../../../ui";
+import { useState, type JSX } from "react";
+import { Card, Dial, NumberField } from "../../../ui";
 import { adjustedPa } from "../../../../lib/rotation";
 import type { RotatorStatus } from "../../../../types";
 import { MOSAIC_CHOICES, ROTS, commandedPa, framingMeta } from "./mosaic";
@@ -54,6 +63,32 @@ export const FRAMING_NOTE =
   "and the engine shoots each panel to completion before it starts the next, so a night " +
   "cut short leaves the last panels short. " +
   "The dashed outline is the object's catalogued extent.";
+
+/** The nudges under the PA field, in degrees. */
+const NUDGES: readonly number[] = [-15, -1, 1, 15];
+
+/** An angle folded into [0, 360), the range the finder's rotate drag writes.
+ *  Rounded to a millionth so a run of nudges from a dragged 37.2398... cannot
+ *  walk into 44.99999999 on float error; and a value that rounds to 360 is 0,
+ *  or the field would print an angle the drag can never produce. */
+export function wrapDeg(v: number): number {
+  const w = Number((((v % 360) + 360) % 360).toFixed(6));
+  return w >= 360 ? 0 : w;
+}
+
+/** One decimal only when there is one: `37°`, `37.2°`. A dragged 30.02 then
+ *  reads "30.0°" beside the "30°" stop rather than as a second "30°". */
+export function degLabel(v: number): string {
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
+/** The dial's stops: the twelve 15-degree framings, plus `held` in its place
+ *  when it is not one of them, so the angle the card is at is always a stop
+ *  the dial can sit on. */
+export function rotationStops(held: number | null): number[] {
+  if (held == null || ROTS.includes(held)) return [...ROTS];
+  return [...ROTS, held].sort((a, b) => a - b);
+}
 
 export interface FramingCardProps {
   targetName: string;
@@ -86,6 +121,22 @@ export function FramingCard({
 }: FramingCardProps): JSX.Element {
   const commandedPaDeg = commandedPa(rotationDeg);
   const hand = commandedPaDeg != null && rotator ? adjustedPa(commandedPaDeg, rotator, rotatorRange) : null;
+
+  // The off-grid stop is HELD, not recomputed from `rotationDeg` on every
+  // render. The Dial scrubs by index from where the drag began, so a stop list
+  // that lost the 37 the moment the drag reached 45 would renumber every stop
+  // under the finger, and the next pointer sample would land one stop further
+  // on (60). Held, the list stays put through the gesture; it moves only when
+  // an angle that is not a stop arrives, which the dial itself never sends.
+  // Synced during render, React's own idiom for state that follows a prop.
+  const [held, setHeld] = useState<number | null>(() => (ROTS.includes(rotationDeg) ? null : rotationDeg));
+  if (!ROTS.includes(rotationDeg) && held !== rotationDeg) setHeld(rotationDeg);
+  const stops = rotationStops(held);
+
+  // A commit that wraps onto the angle already held (360 typed at 0) changes
+  // nothing upstream, so the field would keep showing "360". Bumping this puts
+  // the angle the card is really at back in the box.
+  const [typed, setTyped] = useState(0);
 
   return (
     <Card tone="accent" className="nx-sky-framing" data-testid="sky-framing">
@@ -134,11 +185,38 @@ export function FramingCard({
         <Dial<number>
           label={`CAMERA ROTATION · ${Math.round(rotationDeg)}°`}
           hint="drag or tap"
-          options={ROTS.map((v) => ({ value: v, label: `${v}°` }))}
-          value={ROTS.includes(rotationDeg) ? rotationDeg : 0}
+          options={stops.map((v) => ({ value: v, label: `${degLabel(v)}°` }))}
+          value={rotationDeg}
           onChange={onRotate}
           data-testid="sky-rot-dial"
         />
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <NumberField
+            label="PA"
+            unit="°"
+            ariaLabel="Camera position angle, degrees"
+            value={Math.round(rotationDeg * 10) / 10}
+            resetKey={typed}
+            onCommit={(v) => { setTyped((n) => n + 1); onRotate(wrapDeg(v)); }}
+            data-testid="sky-rot-deg"
+          />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 6 }}>
+            {NUDGES.map((d) => (
+              <button
+                key={d}
+                type="button"
+                className="nx-stepper-btn"
+                data-nudge={d}
+                aria-label={`Camera rotation ${d < 0 ? "minus" : "plus"} ${Math.abs(d)} degrees`}
+                onClick={() => onRotate(wrapDeg(rotationDeg + d))}
+                style={{ width: "100%", fontSize: 12 }}
+              >
+                {d < 0 ? `-${Math.abs(d)}` : `+${d}`}
+              </button>
+            ))}
+          </div>
+        </div>
 
         {commandedPaDeg != null && (
           <p data-testid="sky-rot-note" style={{ fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5, margin: 0 }}>

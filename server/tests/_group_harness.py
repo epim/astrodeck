@@ -43,8 +43,8 @@ WHAT THE HARNESS OWNS, and why each is a script rather than the device:
 WS lanes and the log ring serve, the ``site_derived`` flag included, so a
 test can put a night through `api.redact`'s filters (T18).
 
-THE CLOCK. engine.py's ``time`` and schedule.py's ``time`` are one fake clock
-(``time()`` and ``monotonic()`` both read it), and engine.py's
+THE CLOCK. engine.py's, schedule.py's and catalog.coords' ``time`` are one
+fake clock (``time()`` and ``monotonic()`` both read it), and engine.py's
 ``asyncio.sleep`` parks the engine's run task and its idle-stop task on a
 timer heap. A driver advances the clock to the earliest wake once every live
 engine task is parked, so a night of hours runs in a second or two of wall
@@ -53,6 +53,19 @@ the machinery, is test_idle_park_hold.py's `_Clocked`; this copy adds the
 scripts above and a TRACE: every mount, camera and guider call the engine
 makes, every published ``sequence`` state and every ``sequence`` log line,
 each stamped with its fake time from the night's start.
+
+catalog.coords is on it for every night (#320) because the hour angle is
+read there with no clock of its own, by the engine's meridian countdown and
+by the simulator mount, which latches its pier side from it at each slew
+(#298). The golden trace is then the same at every hour of the day:
+test_group_golden_wall_clock.py shifts every ``time.time`` in the process
+to four of them and compares it byte for byte. One input a night reads is
+on neither clock (#368): the hub's 2 s status poll runs in real time, and its
+meridian cache (``hub.last_meridian``) feeds the engine's ``live`` chip and
+the ETA's flip cost. A night inside either window publishes a trace that
+depends on where in real time the poll lands; the golden night never
+enters one, and that file's ``stop_the_status_poll`` is for a night that
+does.
 
 The trace stops at the first terminal publish. What comes after it is the
 wind-down, which the group driver does not touch, and which reads things
@@ -74,10 +87,20 @@ test_group_harness_watchdog.py.
 
 THE SITE IS A FIXTURE, 40 N 74 W, and not anybody's rig. ``T0`` is a fixed
 instant, 2026-09-02 01:48:09 UTC, at which the fixture site is dark for five
-hours and NGC 7331 stands 3 h east of its meridian at 54 degrees, so the
-golden flow plan (dusk start, 30 degree gate, dawn stop) is shootable at
-once and far from any flip. Found by scanning the calendar with
-schedule.hour_angle_h and schedule.sun_altitude.
+hours and NGC 7331 stands 3 h east of its meridian at 54 degrees. Found by
+scanning the calendar with schedule.hour_angle_h and schedule.sun_altitude.
+
+THE GOLDEN NIGHT STARTS AN HOUR EARLIER, at ``GOLDEN_T0``. It used to start
+at ``T0`` on the premise that the golden flow plan was "far from any flip"
+there, which held only while the countdown read the wall clock: the plan
+runs 11700 s, and on the night's clock NGC 7331 crosses 180 min into a
+195 min night, so the engine holds for the flip point at 9960 s and flips.
+From ``GOLDEN_T0`` it starts at hour angle -4.0 h, 42.8 degrees up with the
+sun at -15.5 (shot at once: a scan found the same trace from 30 to 90 min
+before ``T0``, and a wait at 120, the sun at -4.7), and it ends 34.6 min
+before its flip point, so the premise is true on the clock the night runs
+on, and the trace recorded before the S2 group driver comes out byte for
+byte.
 """
 from __future__ import annotations
 
@@ -114,6 +137,10 @@ from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
 LAT, LON = 40.0, -74.0
 #: 2026-09-02 01:48:09 UTC: dark at the fixture site, NGC 7331 at HA -3 h.
 T0 = 1788313689.0
+#: The golden flow plan's night, an hour before ``T0``: NGC 7331 at HA -4.0 h,
+#: and 34.6 min short of its flip point when the plan's 11700 s are shot (see
+#: the module docstring; #320).
+GOLDEN_T0 = T0 - 3600.0
 TERMINAL = ("complete", "aborted", "error")
 #: A night never runs past this much fake time; reaching it fails the test.
 HORIZON_S = 16 * 3600.0
@@ -290,6 +317,17 @@ def group_store(tmp_path, monkeypatch, request):
 
 @pytest.fixture
 async def group_hub(group_store, monkeypatch):
+    h, popped = await night_hub(monkeypatch)
+    yield h
+    await close_night_hub(h, popped)
+
+
+async def night_hub(monkeypatch) -> tuple[Hub, list]:
+    """A simulator hub as a night uses it, for ``group_hub`` and for a test
+    that needs a second, fresh one: a second night on one hub starts with
+    its mount where the first left it, on the side the first latched
+    (#298). Returns the hub and the devices taken off it, for
+    `close_night_hub`. Needs ``group_store``'s config store in place."""
     monkeypatch.setattr(Hub, "_check_solar",
                         lambda self, ra, dec, *, force=False: None)
     monkeypatch.setattr(SimTelescope, "SLEW_RATE_DEG_S", 1.0e6)
@@ -300,7 +338,10 @@ async def group_hub(group_store, monkeypatch):
     if h.guider is not None:
         await h.guider.disconnect()
     h.guider = ScriptedGuider()
-    yield h
+    return h, popped
+
+
+async def close_night_hub(h: Hub, popped: list) -> None:
     await h.disconnect_all()
     for dev in popped:
         await dev.disconnect()
@@ -681,12 +722,19 @@ class Night:
     exposed when that frame's shutter opened and landing after it, as the
     saved-frame WCS solve does.
 
-    ``coords_clock`` puts ``catalog.coords`` on the fake clock as well. The
-    meridian countdown and the sim mount's pier side read the hour angle
-    there, with no clock of their own, so without it a flip is timed by the
-    wall clock whatever the night's fake time says. Off by default: the
-    golden trace was recorded with it off, and a night far from any meridian
-    reads the same either way.
+    ``catalog.coords`` IS ON THE NIGHT'S CLOCK, for every night (#320). The
+    engine's meridian countdown and the simulator mount's pier side read the
+    hour angle there with no clock of their own. It used to be a choice,
+    ``coords_clock``, off by default, on the premise that "a night far from
+    any meridian reads the same either way"; but that premise is about the
+    night's fake time, and with the choice off both read the WALL clock. So
+    whenever the hour of day put NGC 7331 near the fixture site's meridian,
+    the golden night held for a flip point the frozen countdown never
+    reached, until the fake horizon: the golden trace failed for a stretch
+    of every evening. ``coords_clock`` stays a keyword because eight test
+    files still pass it (the meridian, reach, follower, pier, locked-angle
+    and S3 example cases); anything but True is refused, since a night half
+    on the wall clock is exactly that failure.
 
     ``spin_bound_s`` is the spin watchdog's bound for `run` (#319), in real
     seconds; only the watchdog's own tests shorten it.
@@ -700,8 +748,13 @@ class Night:
                  guide: Callable[[str, int], bool] | None = None,
                  sky: Callable[[str, int], Any] | None = None,
                  frame_sky: Callable[[str, str, int], Any] | None = None,
-                 coords_clock: bool = False,
+                 coords_clock: bool = True,
                  engine: SequenceEngine | None = None):
+        if coords_clock is not True:
+            raise ValueError(
+                "Night: catalog.coords runs on the night's clock (#320); a "
+                "night whose hour angle reads the wall clock times its flip "
+                "by the hour of day the suite runs at")
         self.hub = hub
         self.mp = monkeypatch
         self.t0 = float(t0)
@@ -747,9 +800,8 @@ class Night:
         self._real_sleep = asyncio.sleep
         monkeypatch.setattr(engine_mod, "time", self.clock)
         monkeypatch.setattr(schedule, "time", self.clock)
-        if coords_clock:
-            import astrodeck.catalog.coords as coords_mod
-            monkeypatch.setattr(coords_mod, "time", self.clock)
+        import astrodeck.catalog.coords as coords_mod
+        monkeypatch.setattr(coords_mod, "time", self.clock)
         monkeypatch.setattr(engine_mod, "asyncio", _Asyncio(asyncio, self))
 
         async def inventory(*a, **k):

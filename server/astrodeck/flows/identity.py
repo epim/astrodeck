@@ -23,7 +23,11 @@ WHAT IS IN AN ID, AND WHAT IS LEFT OUT, IS THE DESIGN. Each choice is a rule:
   keeps the counts, and replaces it otherwise. S1 had no anchor, so every
   move re-keyed. The anchor is STORED AS THE TEXT THE KEY HASHES
   (``anchor_for``), so the key of a block's first anchor is S1's key of the
-  same geometry, byte for byte, and no id moves when S3 ships.
+  same geometry, byte for byte, and no id moves when S3 ships. One addition
+  is not keyed: a single panel anchored with no camera field that is saved
+  with one, and nothing else changed, RECORDS the field beside the keyed
+  none (``RECORDED_FIELDS``, ``complete_anchor``; #351, S4 orchestrator
+  ruling 4), so recording the camera's field restarts no campaign.
 * ...unless the TARGET has a NAME and no typed coordinates (``target_key``).
   Its coordinates are then the catalogue's answer at the compile's ``when``,
   and for a planet, the Moon or a comet that answer moves by the hour (a
@@ -110,6 +114,18 @@ NAME_KEY_PREFIX = "name:"
 SHAPE_FIELDS = ("rows", "cols", "overlap", "rotation_deg", "fov_x", "fov_y")
 _GEOMETRY_ANCHOR = frozenset(("ra_hours", "dec_deg", *SHAPE_FIELDS))
 _NAME_ANCHOR = frozenset(("name", *SHAPE_FIELDS))
+
+#: A camera field an anchor RECORDS without keying it (#351, S4 orchestrator
+#: ruling 4). A single panel anchored with no field (S1's shape, and every
+#: block framed before MATCH CAMERA) that is then saved with a field, and
+#: nothing else changed, keeps its key: its ``fov_x`` and ``fov_y`` stay the
+#: none they were keyed with, and the field goes beside them here
+#: (``complete_anchor``). ``anchor_key`` never reads these, so the ids stay;
+#: ``anchor_geometry`` reads them, and ``framing.reframe_carry`` lays the
+#: anchor out with them and takes its threshold from them, so a later move is
+#: judged against the field the camera really has. Written only beside a
+#: keyed field of none: an anchor that keys a field has no other to record.
+RECORDED_FIELDS = ("recorded_fov_x", "recorded_fov_y")
 
 
 def fixed(value: float, places: int) -> str:
@@ -312,6 +328,9 @@ def anchor_geometry(anchor: str | None) -> dict | None:
     overlap, fov_x, fov_y}``, a named one ``{name, rotation_deg, rows, cols,
     overlap, fov_x, fov_y}``: numbers as floats, the grid as integers, and
     "any angle" as None. That is the shape ``framing.reframe_carry`` takes.
+    A COMPLETED anchor (``complete_anchor``, ruling 4) adds
+    ``recorded_fov_x`` and ``recorded_fov_y``, the field it records beside
+    the keyed field of none; ``fov_x`` and ``fov_y`` stay what is keyed.
 
     Blank (or None) is NO ANCHOR YET, answered as None: a block saved before
     S3, or never saved, whose current geometry is its anchor (spec 3.3).
@@ -333,7 +352,11 @@ def anchor_geometry(anchor: str | None) -> dict | None:
                          f"JSON ({e}): {anchor!r}") from None
     if not isinstance(held, dict):
         raise ValueError(f"an anchor is a JSON object, not {anchor!r}")
-    fields = frozenset(held)
+    recorded = [k for k in RECORDED_FIELDS if k in held]
+    if recorded and len(recorded) != len(RECORDED_FIELDS):
+        raise ValueError(f"a recorded field is a pair, {list(RECORDED_FIELDS)}"
+                         f", and this anchor holds only {recorded}")
+    fields = frozenset(held) - frozenset(RECORDED_FIELDS)
     if fields not in (_GEOMETRY_ANCHOR, _NAME_ANCHOR):
         raise ValueError(
             f"not an anchor: it holds {sorted(fields)}, and an anchor holds "
@@ -367,7 +390,32 @@ def anchor_geometry(anchor: str | None) -> dict | None:
         out[key] = _anchor_number(held, key)
         if out[key] < 0.0:
             raise ValueError(f"anchor {key} is negative: {out[key]!r}")
+    if recorded:
+        # Beside a keyed field of none only: the one state ``complete_anchor``
+        # writes. Beside a keyed field it would be a second, contradicting
+        # field for ``reframe_carry`` to lay the anchor out with.
+        if (out["fov_x"], out["fov_y"]) != (0.0, 0.0):
+            raise ValueError(
+                f"an anchor records a field only beside a keyed field of "
+                f"none, and this one keys {out['fov_x']!r} x "
+                f"{out['fov_y']!r}")
+        for key in RECORDED_FIELDS:
+            out[key] = _anchor_number(held, key)
+            if out[key] <= 0.0:
+                raise ValueError(f"anchor {key} records no field: "
+                                 f"{out[key]!r}")
     return out
+
+
+def _key_of(held: dict) -> str:
+    """``anchor_key`` of a geometry in ``anchor_geometry``'s shape: the
+    anchor's own grid, angle and KEYED field, never a recorded one."""
+    shape = {k: held[k] for k in ("rows", "cols", "overlap", "fov_x",
+                                  "fov_y")}
+    if "name" in held:
+        return name_key(held["name"], held["rotation_deg"], **shape)
+    return geometry_key(held["ra_hours"], held["dec_deg"],
+                        held["rotation_deg"], **shape)
 
 
 def anchor_key(anchor: str) -> str:
@@ -377,6 +425,10 @@ def anchor_key(anchor: str) -> str:
     text holds, re-spelt canonically, so it equals the hash of the text
     whenever the text is canonical, which is how the server writes it.
 
+    A RECORDED FIELD IS NOT KEYED (ruling 4): the key of a completed anchor
+    is the key it had before the field was recorded, which is what keeps the
+    ids of a block whose camera field was recorded and nothing else moved.
+
     A blank anchor has no key and raises ``ValueError``, as a malformed one
     does (``anchor_geometry``); ``target_key`` is what falls back to the
     current geometry when there is no anchor."""
@@ -384,12 +436,62 @@ def anchor_key(anchor: str) -> str:
     if held is None:
         raise ValueError("a blank anchor has no key: key the block's current "
                          "geometry (target_key does)")
-    shape = {k: held[k] for k in ("rows", "cols", "overlap", "fov_x",
-                                  "fov_y")}
-    if "name" in held:
-        return name_key(held["name"], held["rotation_deg"], **shape)
-    return geometry_key(held["ra_hours"], held["dec_deg"],
-                        held["rotation_deg"], **shape)
+    return _key_of(held)
+
+
+def completes(held: dict, drawn: dict) -> bool:
+    """Whether ``drawn``, a block's geometry now, COMPLETES the anchor
+    ``held`` (#351, S4 orchestrator ruling 4): both in ``anchor_geometry``'s
+    shape (a frame the caller has placed may carry coordinates beside a
+    name, and they are not read).
+
+    True when ALL that changed is a camera field recorded where the anchor
+    had none: ``held`` is a single panel that keys no field and records
+    none, ``drawn`` has a finite, positive field, and ``drawn`` with that
+    field set aside keys exactly as ``held`` does (the same object or
+    centre, angle, grid and overlap). The caller then keeps the anchor's key
+    and records the field (``complete_anchor``), and later moves are judged
+    against it as usual.
+
+    ANYTHING ELSE CHANGED WITH IT, AND IT DOES NOT COMPLETE. A nudge made in
+    the same save is judged against the anchor as it was, whose threshold
+    is 0: a threshold read from the field the same edit records would let
+    that edit set its own allowance (spec 3.3, "a threshold read from the
+    new grid would let an edit raise its own allowance").
+
+    A SINGLE PANEL ONLY. Its pointing is its centre whatever the field is.
+    A grid's panels are tiled from the field, so recording one moves every
+    panel off the centre it would have been shot at; M1 refuses a grid with
+    no field, so none was, and it re-anchors as before."""
+    if any(k in held or k in drawn for k in RECORDED_FIELDS):
+        return False
+    if (float(held["fov_x"]), float(held["fov_y"])) != (0.0, 0.0):
+        return False
+    field = (float(drawn["fov_x"]), float(drawn["fov_y"]))
+    if not all(math.isfinite(v) and v > 0.0 for v in field):
+        return False
+    if (int(held["rows"]), int(held["cols"])) != (SINGLE_ROWS, SINGLE_COLS):
+        return False
+    return _key_of(held) == _key_of({**drawn, "fov_x": 0.0, "fov_y": 0.0})
+
+
+def complete_anchor(anchor: str, now: str) -> str | None:
+    """``anchor`` completed with the camera field ``now`` records, when
+    ``now`` completes it (``completes``), else None. Both are anchor texts:
+    the stored one and the one ``anchor_for`` gives the block as drawn.
+
+    THE KEYED TEXT IS KEPT AS IT IS STORED, and the field is written beside
+    it as ``RECORDED_FIELDS``, spelt as ``fov_x`` is (``FOV_PLACES``). So
+    ``anchor_key`` of the answer is ``anchor_key(anchor)``: rewriting
+    ``fov_x`` and ``fov_y`` instead would re-key the block, and restart the
+    counts this exists to keep."""
+    held, drawn = anchor_geometry(anchor), anchor_geometry(now)
+    if held is None or drawn is None or not completes(held, drawn):
+        return None
+    stored = json.loads(anchor)
+    stored["recorded_fov_x"] = fixed(drawn["fov_x"], FOV_PLACES)
+    stored["recorded_fov_y"] = fixed(drawn["fov_y"], FOV_PLACES)
+    return json.dumps(stored, sort_keys=True, separators=(",", ":"))
 
 
 def target_key(entry: dict, ra_hours: float, dec_deg: float,

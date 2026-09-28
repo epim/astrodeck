@@ -195,8 +195,9 @@ class TestTheAnchorIsMeasuredFromWhereTheCountsStarted:
         g0, g2 = _geometry("+41 00 00"), _geometry("+41 12 00")
         assert anchors == [g0, g2, g2]
         (row,) = rows[1]
-        assert set(row) == {"node_id", "max_move_deg", "threshold_deg"}
-        assert row["node_id"] == "t"
+        assert set(row) == {"node_id", "max_move_deg", "threshold_deg",
+                            "reason"}
+        assert (row["node_id"], row["reason"]) == ("t", "move")
         assert row["max_move_deg"] * 60 == pytest.approx(12.0, abs=0.01)
         assert row["threshold_deg"] * 60 == pytest.approx(9.975, abs=1e-6)
         keys = [identity.anchor_key(a) for a in anchors]
@@ -215,19 +216,98 @@ class TestTheAnchorIsMeasuredFromWhereTheCountsStarted:
 
     def test_a_grid_change_reanchors_with_no_move_measured(self):
         """Another grid is other panels: re-anchored and listed, with
-        ``max_move_deg`` None because no move was measured."""
+        ``max_move_deg`` None because no move was measured, and ``reason``
+        ``grid`` saying why in its own words (#352, ruling 6; re-pinned from
+        the three-key row S3 answered).
+
+        RED under mutant "row drops reason" (``_anchor_on_save``'s row
+        built without ``reason``), observed (pytest's plus-minus sign
+        written ``+-``):
+
+            E   AssertionError: assert [{'max_move_d...eg': 0.16625}] == [{'max_move_d...98 +- 1.7e-07}]
+            E     At index 0 diff: {'node_id': 't', 'max_move_deg': None, 'threshold_deg': 0.16625} != {'node_id': 't', 'max_move_deg': None, 'threshold_deg': 0.16624999999999998 +- 1.7e-07, 'reason': 'grid'}
+        """
         prior, _, _ = prepare_save(_record(_target()), None)
         saved, _, reanchored = prepare_save(_record(_target(rows=3)), prior)
         assert _anchor(saved) == _geometry("+41 00 00", rows=3)
         assert reanchored == [{"node_id": "t", "max_move_deg": None,
-                               "threshold_deg": pytest.approx(9.975 / 60)}]
+                               "threshold_deg": pytest.approx(9.975 / 60),
+                               "reason": "grid"}]
 
     def test_an_angle_that_becomes_any_reanchors(self):
         prior, _, _ = prepare_save(_record(_target()), None)
         saved, _, reanchored = prepare_save(
             _record(_target(angle="Any angle")), prior)
-        assert [r["max_move_deg"] for r in reanchored] == [None]
+        assert [(r["max_move_deg"], r["reason"]) for r in reanchored] == [
+            (None, "angle")]
         assert _anchor(saved) == _geometry("+41 00 00", angle="Any angle")
+
+
+class TestEveryRowSaysWhy:
+    """Each re-anchored row carries ``reframe_carry``'s ``reason`` (#352, S4
+    orchestrator ruling 6): the editor words a restart from it ("its rows or
+    columns changed", "its angle changed between any angle and a set one",
+    "it now names a different object"), and without it every grid, angle
+    and object change read "its framing changed". The four reasons a
+    restart can have, one case each, through ``prepare_save``.
+
+    RED under mutant "row drops reason" (``_anchor_on_save``'s row built
+    without ``reason``), every case, for example (the address elided):
+
+        E   AssertionError: the move row says None; reframe_carry decided 'move'
+        E   assert None == 'move'
+        E    +  where None = <built-in method get of dict object at 0x...>('reason')
+        E    +    where <built-in method get of dict object at 0x...> = {'max_move_deg': 0.19999570919304457, 'node_id': 't', 'threshold_deg': 0.16625}.get
+    """
+
+    @staticmethod
+    def _rows(reason: str) -> list[dict]:
+        named = TestABlockKnownByItsName._named
+        prior_node, now_node = {
+            "move": (_target(), _target("+41 12 00")),
+            "grid": (_target(), _target(rows=3)),
+            "angle": (_target(), _target(angle="Any angle")),
+            "identity": (named("M 31"), named("M33")),
+        }[reason]
+        prior, _, _ = prepare_save(_record(prior_node), None,
+                                   resolve=CATALOGUE.get)
+        _saved, _, rows = prepare_save(_record(now_node), prior,
+                                       resolve=CATALOGUE.get)
+        return rows
+
+    @pytest.mark.parametrize("reason", ["move", "grid", "angle", "identity"])
+    def test_the_row_carries_the_reason_that_decided(self, reason):
+        (row,) = self._rows(reason)
+        assert row.get("reason") == reason, (
+            f"the {reason} row says {row.get('reason')!r}; reframe_carry "
+            f"decided {reason!r}")
+        assert (row["max_move_deg"] is None) is (reason != "move"), (
+            "a move is measured, and nothing else is")
+
+
+class TestTheOverlapIsClampedBeforeItIsKeyed:
+    def test_an_overlap_of_150_is_written_as_half(self, tmp_path):
+        """A raw ``overlap`` of 150 (a percent typed into the inspector's
+        field, which nothing bounds) is clamped to 50% before it is keyed,
+        as ``compute_mosaic`` clamps it, so the anchor the store writes is
+        one ``anchor_geometry`` reads back, at 0.5 (#353 item 4). Unclamped,
+        the file would hold an anchor the compile refuses, and the block
+        could not run until it was saved again.
+
+        RED under mutant "remove min(0.5, ...)" (``_fraction`` clamps at 0
+        only), observed:
+
+            identity.py:387: in anchor_geometry
+                raise ValueError(f"anchor overlap is a fraction in [0, 1), not "
+            E   ValueError: anchor overlap is a fraction in [0, 1), not 1.5
+        """
+        store = FlowStore(tmp_path / "flows")
+        store.save(_record(_target(overlap=150)))
+        anchor = _anchor(store.get("f1"))
+        assert identity.anchor_geometry(anchor)["overlap"] == 0.5
+        # Control: an overlap inside the range is written as it is.
+        saved, _, _ = prepare_save(_record(_target(overlap=40)), None)
+        assert identity.anchor_geometry(_anchor(saved))["overlap"] == 0.4
 
 
 class TestTheClientNeverSetsTheAnchor:
@@ -355,7 +435,7 @@ class TestAFlowSavedBeforeTheAnchor:
     @pytest.mark.parametrize("over, moves", [
         pytest.param({"rows": 1, "cols": 1, "fovX": None, "fovY": None},
                      False, id="single panel, no field: S1's shape"),
-        pytest.param({"rows": 1, "cols": 1}, True,
+        pytest.param({"rows": 1, "cols": 1}, False,
                      id="single panel with a camera field"),
         pytest.param({"rows": 1, "cols": 1, "fovX": None, "fovY": None,
                       "overlap": 40}, True, id="single panel at 40% overlap"),
@@ -368,13 +448,22 @@ class TestAFlowSavedBeforeTheAnchor:
         S1's shape, 25% overlap and no camera field), so a single panel's
         ``overlap``, ``fovX`` and ``fovY`` were never in its key. A first
         save that moves the ids must list the block; one that lists nothing
-        must keep them. The two single panels with a field or an overlap
-        of their own do move (the anchor now carries them, and a threshold
-        of half the overlap of no field is 0), so they are listed.
+        must keep them.
+
+        The single panel with a camera field of its own (possible before S3
+        only by a hand or API edit) keeps its ids: its implicit anchor, S1's
+        shape, keys no field, and the field is all that differs from it, so
+        the save COMPLETES the anchor and records the field (#351, S4
+        orchestrator ruling 4; ``test_flows_anchor_completion.py``). Before
+        the ruling it moved, and was listed. The single panel at 40% does
+        move (the overlap is keyed, and no field means a threshold of 0), so
+        it is listed.
 
         RED under mutant "a single panel's implicit anchor keeps its field"
         (the implicit anchor read from the node's own params, as first
-        built), observed on the two single-panel cases that move:
+        built), observed on the two single-panel cases with params of their
+        own (re-run by S4-SAVE after ruling 4, and red on both as before;
+        the S1-shape mutant below was re-run too, red as quoted):
 
             E       AssertionError: the ids moved and the save listed nothing
             E       assert [] == ['t']

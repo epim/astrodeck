@@ -18,6 +18,13 @@
 // A key the fixture grows that is in neither list fails the key check below,
 // so a new column cannot pass here by being skipped.
 //
+// ALSO GRADED: the fixture's `loop_cases` (#189 S4), the graphs `withLoop`
+// makes when the modal's DONE places or lifts a block's loop wire, and its
+// `carry_cases` (#331), the graphs flowsSlice.ts `carryLoopWire` makes when
+// a stage is appended after a mosaic's tail. Here the TypeScript must make
+// each recorded result; test_flows_panel_lane.py holds each result to
+// compile.py (`loop_wires`, `lane_refusals`).
+//
 // ONE CASE IS A FLOW CYCLE with no way in, and a walk without its seen-set
 // never returns from it. A synchronous hang cannot be interrupted from its own
 // thread, so that case is graded in a CHILD process with a deadline: under
@@ -37,7 +44,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
-  isMultiPanel, laneBranched, laneTail, loopWires, ownerOf, panelLane,
+  isMultiPanel, laneBranched, laneTail, loopSource, loopWires, ownerOf, panelLane, withLoop,
 } from "../panelLane";
 import type { LaneGraph } from "../panelLane";
 import type { FlowNodeRec, FlowNodeType } from "../flowsTypes";
@@ -371,6 +378,311 @@ if (!CHILD_CASE) {
     ];
     const bad = rows.filter(([, n, want]) => isMultiPanel(n) !== want)
       .map(([what, n, want]) => `${what}: expected ${want}, got ${isMultiPanel(n)}`);
+    assert(bad.length === 0, bad.join("; "));
+  });
+
+  // -------------------------------------- placing and lifting the loop wire
+  //
+  // Spec 1.4 "When the wire is added" and 2.5 DONE (#189 S4). `withLoop` is
+  // the editor's rule for ADDING the loop wire, which compile.py does not
+  // have. The fixture's `loop_cases` record the graphs it makes, and
+  // test_flows_panel_lane.py grades those graphs against compile.py:
+  // `loop_wires` finds exactly the recorded wire and `lane_refusals` (M12,
+  // M13) is empty. So a rule that drifts here from what the server runs goes
+  // red against a graph the server has already accepted.
+  //
+  // MUTANT "loop from the first owned stage" (panelLane.ts loopSource:
+  // `panelLane(g, blockId)[0] ?? null` in place of `laneTail(g, blockId)`).
+  // Observed (4 failed, 18 passed; the other three are the controls below
+  // whose lanes also start at a stage with a pass output, and
+  // flowsApplyFraming.test.ts's DONE cases go red with it):
+  //   x loop case loop-on (1.4 'When the wire is added' / 1.5 item 5: DONE with the loop on, on a 3x2 block whose lane is CYCLE -> CAPTURE Ha. The wire leaves the tail, CAPTURE Ha, never the first stage): withLoop made ["e1:t.target->cy.run","e2:cy.complete->ha.run","e3:ha.complete->r.session","loop:cy.pass->t.next"], the fixture the server grades records ["e1:t.target->cy.run","e2:cy.complete->ha.run","e3:ha.complete->r.session","loop:ha.pass->t.next"]
+  // The graph that mutant makes, handed to compile.py, is one the server
+  // refuses: `loop_wires(g, "t")` is [] and `lane_refusals(g)` answers
+  //   M12 cy | the loop wire starts at FILTER CYCLE, but CAPTURE LOOP Ha comes after it in the TARGET M31 panel lane. Start the loop wire at CAPTURE LOOP Ha to shoot every stage on every panel, or give CAPTURE LOOP Ha a TARGET of its own.
+  //
+  // MUTANT "loop added to a 1x1 block" (loopSource: `|| !isMultiPanel(block)`
+  // deleted). Observed (1 failed, 21 passed):
+  //   x loop case loop-on-single-target (1.4 item 4 (control): DONE with the loop on, on a 1x1 block. One panel has nothing to rotate between, so no wire is added): withLoop made ["e1:t.target->cy.run","e2:cy.complete->r.session","loop:cy.pass->t.next"], the fixture the server grades records ["e1:t.target->cy.run","e2:cy.complete->r.session"]
+  //
+  // MUTANT "lift only the loop wire" (withLoop, loop false: removes only
+  // `loopWires(g, blockId)`, the tail's). Observed (1 failed, 21 passed):
+  //   x loop case loop-off (1.4 'When it is deleted' / 2.5 DONE: the loop off lifts every pass wire into M31's next, its loop wire and a stale one from a mid-lane stage (M12) alike, and leaves the loop of the M33 mosaic that follows it): withLoop made ["e1:t.target->cy.run","e2:cy.complete->ha.run","e3:ha.complete->m33.arm","e4:m33.target->c2.run","e5:c2.complete->r.session","stale:cy.pass->t.next","m33-loop:c2.pass->m33.next"], the fixture the server grades records ["e1:t.target->cy.run","e2:cy.complete->ha.run","e3:ha.complete->m33.arm","e4:m33.target->c2.run","e5:c2.complete->r.session","m33-loop:c2.pass->m33.next"]
+  //
+  // MUTANT "lift every pass wire" (withLoop, loop false: the `e.to ===
+  // blockId` check deleted, so another mosaic's loop goes too). Observed (1
+  // failed, 21 passed):
+  //   x loop case loop-off (1.4 'When it is deleted' / 2.5 DONE: the loop off lifts every pass wire into M31's next, its loop wire and a stale one from a mid-lane stage (M12) alike, and leaves the loop of the M33 mosaic that follows it): withLoop made ["e1:t.target->cy.run","e2:cy.complete->ha.run","e3:ha.complete->m33.arm","e4:m33.target->c2.run","e5:c2.complete->r.session"], the fixture the server grades records ["e1:t.target->cy.run","e2:cy.complete->ha.run","e3:ha.complete->m33.arm","e4:m33.target->c2.run","e5:c2.complete->r.session","m33-loop:c2.pass->m33.next"]
+  //
+  // MUTANT of the FIXTURE "loop-on recorded from the first owned stage" (a
+  // scratch copy: loop-on's `loop` wire and `loop_wire` from `cy`, the graph
+  // the first mutant above makes). This file and test_flows_panel_lane.py
+  // both fail it; here, observed (1 failed, 21 passed):
+  //   x loop case loop-on (1.4 'When the wire is added' / 1.5 item 5: DONE with the loop on, on a 3x2 block whose lane is CYCLE -> CAPTURE Ha. The wire leaves the tail, CAPTURE Ha, never the first stage): withLoop made ["e1:t.target->cy.run","e2:cy.complete->ha.run","e3:ha.complete->r.session","loop:ha.pass->t.next"], the fixture the server grades records ["e1:t.target->cy.run","e2:cy.complete->ha.run","e3:ha.complete->r.session","loop:cy.pass->t.next"]; the result's loop wires are [], loop_wire records ["loop:cy.pass->t.next"]
+
+  interface LoopCase {
+    id: string; spec: string; block: string; loop: boolean;
+    graph: LaneGraph; result: LaneGraph;
+    loop_wire: { id: string; from: string; fromPort: string; to: string; toPort: string } | null;
+  }
+  const LOOP_CASE_KEYS = ["id", "spec", "block", "loop", "graph", "result", "loop_wire"];
+
+  /** The fixture's `loop_cases`, failing (never skipping) when absent. */
+  function readLoopCases(): LoopCase[] {
+    const text = readFileSync(new URL(FIXTURE_REL, import.meta.url), "utf8") as string;
+    const list = (JSON.parse(text) as { loop_cases?: LoopCase[] }).loop_cases;
+    if (!Array.isArray(list) || list.length === 0) {
+      throw new Error(`${FIXTURE_REL} holds no loop_cases`);
+    }
+    return list;
+  }
+  /** Every wire as `id:from.port->to.port`, in order: what the cases compare. */
+  const wireList = (g: { edges: readonly { id: string; from: string; fromPort: string; to: string; toPort: string }[] }) =>
+    g.edges.map((e) => `${e.id}:${e.from}.${e.fromPort}->${e.to}.${e.toPort}`);
+
+  let loopCases: LoopCase[] = [];
+  test("the loop cases are read from panel_lane_cases.json, every column graded", () => {
+    // MUTANT "a loop case renamed away" (a scratch copy of the fixture with
+    // "loop-off" renamed). Observed (1 failed, 21 passed):
+    //   x the loop cases are read from panel_lane_cases.json, every column graded: the fixture no longer carries loop case loop-off
+    loopCases = readLoopCases();
+    for (const id of ["loop-on", "loop-off", "loop-on-single-target"]) {
+      assert(loopCases.some((c) => c.id === id), `the fixture no longer carries loop case ${id}`);
+    }
+    const bad = loopCases.flatMap((c) => Object.keys(c)
+      .filter((k) => !LOOP_CASE_KEYS.includes(k))
+      .map((k) => `${c.id} carries "${k}", which this mirror does not grade`));
+    assert(bad.length === 0, bad.join("; "));
+  });
+
+  for (const c of loopCases) {
+    test(`loop case ${c.id} (${c.spec})`, () => {
+      const edges = withLoop(c.graph, c.block, c.loop, () => "loop");
+      const bad: string[] = [];
+      if (js(wireList({ edges })) !== js(wireList(c.result))) {
+        bad.push(`withLoop made ${js(wireList({ edges }))}, the fixture the server grades records ${js(wireList(c.result))}`);
+      }
+      if (js(c.graph.nodes) !== js(c.result.nodes)) bad.push("the case's result changes a node; the loop is wires only");
+      // The recorded wire is the result's loop wire by this file's walk too,
+      // so the column the server grades cannot drift from the result.
+      const loops = loopWires(c.result, c.block).map((e) => wireList({ edges: [e] })[0]);
+      const want = c.loop_wire ? [wireList({ edges: [c.loop_wire] })[0]] : [];
+      if (js(loops) !== js(want)) bad.push(`the result's loop wires are ${js(loops)}, loop_wire records ${js(want)}`);
+      assert(bad.length === 0, bad.join("; "));
+    });
+  }
+
+  // Shapes the fixture does not carry, each one condition of `loopSource`.
+  const lane = (tailType: FlowNodeType, rows = 3): LaneGraph => ({
+    nodes: [n("t", "target", 0, { rows, cols: 2 }), n("cy", "cycle", 200), n("x", tailType, 400)],
+    edges: [w("t", "target", "cy", "run"), w("cy", "complete", "x", "run")],
+  });
+
+  test("control: loop on leaves a lane that already has its loop wire as it was, the same array", () => {
+    // A second loop wire into one `next` is the doctor's "one is enough".
+    //
+    // MUTANT "a loop wire every time" (withLoop: the `loopWires(g,
+    // blockId).length > 0` check deleted). Observed (1 failed, 21 passed):
+    //   x control: loop on leaves a lane that already has its loop wire as it was, the same array: a lane with its loop wire was rewritten: ["t.target-cy.run:t.target->cy.run","cy.complete-x.run:cy.complete->x.run","own:x.pass->t.next","loop:x.pass->t.next"]
+    const g = lane("capture");
+    const looped: LaneGraph = { ...g, edges: [...g.edges, w("x", "pass", "t", "next", "own")] };
+    const out = withLoop(looped, "t", true, () => "loop");
+    assert(out === looped.edges, `a lane with its loop wire was rewritten: ${js(wireList({ edges: out }))}`);
+  });
+
+  test("control: loop on after a tail with no pass output adds nothing", () => {
+    // Legacy SLEW is the one lane type with no "pass done" port; a wire from
+    // it is refused at save ("slew has no output port 'pass'"), which would
+    // block every save. This control used an AUTOFOCUS until S4 gave AUTOFOCUS
+    // and GUIDE the port (#331); the AUTOFOCUS case now loops, below.
+    //
+    // MUTANT "no pass-port check" (loopSource: the `outs.some(PASS_PORT)`
+    // test deleted). Observed:
+    //   x control: loop on after a tail with no pass output adds nothing: a wire was drawn from a port SLEW lacks: ["t.target-cy.run:t.target->cy.run","cy.complete-x.run:cy.complete->x.run","loop:x.pass->t.next"]
+    //   (panelLane.test: 30/31 passed)
+    const g = lane("slew");
+    const out = withLoop(g, "t", true, () => "loop");
+    assert(out === g.edges, `a wire was drawn from a port SLEW lacks: ${js(wireList({ edges: out }))}`);
+    assert(loopSource(g, "t") === null, "SLEW was named as the stage the loop leaves");
+  });
+
+  test("loop on after an AUTOFOCUS or GUIDE tail adds the wire from it (S4, #331)", () => {
+    // DELIBERATE FLIP of the control above as it stood: either can end a
+    // panel lane, and since S4 either has a `pass` output to give.
+    //
+    // MUTANT "AUTOFOCUS has no pass" (nodeDefs.ts, in a private scratch
+    // copy). Observed:
+    //   x loop on after an AUTOFOCUS or GUIDE tail adds the wire from it (S4, #331): autofocus: ["t.target-cy.run:t.target->cy.run","cy.complete-x.run:cy.complete->x.run"]
+    //   (panelLane.test: 29/31 passed, with carry case 1 below)
+    const bad: string[] = [];
+    for (const t of ["autofocus", "guide"] as const) {
+      const g = lane(t);
+      const out = withLoop(g, "t", true, () => "loop");
+      const want = [...wireList(g), "loop:x.pass->t.next"];
+      if (js(wireList({ edges: out })) !== js(want)) bad.push(`${t}: ${js(wireList({ edges: out }))}`);
+    }
+    assert(bad.length === 0, bad.join("; "));
+  });
+
+  test("control: a branched lane, an empty lane and an unknown block gain no wire", () => {
+    const branched: LaneGraph = { ...lane("capture"),
+      edges: [...lane("capture").edges.slice(0, 1), w("t", "target", "x", "run")] };
+    const empty: LaneGraph = { nodes: [n("t", "target", 0, { rows: 3, cols: 2 }), n("r", "report", 200)],
+      edges: [w("t", "target", "r", "session")] };
+    const bad = ([["branched", branched, "t"], ["empty", empty, "t"], ["unknown block", lane("capture"), "nope"]] as const)
+      .filter(([, g, id]) => withLoop(g, id, true, () => "loop") !== g.edges)
+      .map(([what]) => `${what}: a wire was added`);
+    assert(bad.length === 0, bad.join("; "));
+  });
+
+  test("control: loop undefined leaves every wire, and loop off with nothing to lift is the same array", () => {
+    const g = lane("capture");
+    const looped: LaneGraph = { ...g, edges: [...g.edges, w("x", "pass", "t", "next", "own")] };
+    assert(withLoop(looped, "t", undefined, () => "loop") === looped.edges,
+      "a DONE that said nothing about the loop touched the wires");
+    assert(withLoop(g, "t", false, () => "loop") === g.edges,
+      "turning off a loop that is not there rewrote the wires");
+    assert(loopSource(g, "t")?.id === "x", "premise: the capture is the stage the loop would leave");
+  });
+
+  // ---------------------------------------- carrying the loop wire (#331)
+  //
+  // Spec 1.5 item 6. The connect that appends a stage after a mosaic's tail
+  // carries the lane's loop wire to the new tail in the same write
+  // (flowsSlice.ts `carryLoopWire`). The fixture's `carry_cases` record the
+  // graphs it makes, and test_flows_panel_lane.py grades each against
+  // compile.py (a valid graph, the recorded tail and loop wires, no lane
+  // refusal). Here the TypeScript must make each one. flowsSlice.test.ts
+  // drives the same cases through `flowsConnect`, where "the same write" is
+  // countable.
+  //
+  // MUTANT "carry only from the pre-connect tail" (carryLoopWire: `loops`
+  // back to `new Set(loopWires(graph, owner.id))`, the tail's loop wire only,
+  // as S3 built it). Observed:
+  //   x carry case carry-capture-after-autofocus-stranding-the-loop (1.5 item 6 / #331 case 2: ...): carryLoopWire made ["e1:t.target->cy.run","e2:cy.complete->af.run","loop:cy.pass->t.next","drawn:af.focused->ha.run"], the fixture the server grades records ["e1:t.target->cy.run","e2:cy.complete->af.run","loop:ha.pass->t.next","drawn:af.focused->ha.run"]
+  //   (panelLane.test: 31/32 passed on the re-run of 2026-09-27; 30/31 when
+  //   first recorded, before the foreign-wire control). Case 2 stays M12: the graph that
+  //   mutant makes, handed to compile.py, answers `lane_refusals`
+  //     M12 cy | the loop wire starts at FILTER CYCLE, but AUTOFOCUS and CAPTURE LOOP Ha come after it in the TARGET M31 panel lane. Start the loop wire at CAPTURE LOOP Ha to shoot every stage on every panel, or give AUTOFOCUS and CAPTURE LOOP Ha a TARGET of their own.
+  //
+  // MUTANT "AUTOFOCUS has no pass" (nodeDefs.ts). Observed:
+  //   x carry case carry-autofocus-after-looped-cycle (1.5 item 6 / #331 case 1: ...): carryLoopWire made ["e1:t.target->cy.run","loop:cy.pass->t.next","drawn:cy.complete->af.run"], the fixture the server grades records ["e1:t.target->cy.run","loop:af.pass->t.next","drawn:cy.complete->af.run"]
+  //   (panelLane.test: 30/32 passed on the re-run of 2026-09-27, with the
+  //   AUTOFOCUS loop-on case above).
+  //   Case 1 stays M12: the graph that mutant makes answers `lane_refusals`
+  //     M12 cy | the loop wire starts at FILTER CYCLE, but AUTOFOCUS comes after it in the TARGET M31 panel lane. Start the loop wire at AUTOFOCUS to shoot every stage on every panel, or give AUTOFOCUS a TARGET of its own.
+  //
+  // MUTANT "carry from any owned stage" (carryLoopWire: `lane.has(e.from)`
+  // -> `ownerOf(graph, e.from) !== null`, so a pass wire from ANOTHER
+  // block's lane into this block's `next` is carried too). It passed all 31
+  // cases here and all 47 in flowsSlice.test.ts until the fixture gained
+  // carry-foreign-pass-wire-control, the lane's other edge. Observed since:
+  //   x carry case carry-foreign-pass-wire-control (1.5 item 6 / M4 (control): ...): carryLoopWire made ["e1:t.target->cy.run","e2:t2.target->c2.run","stray:af.pass->t.next","drawn:cy.complete->af.run"], the fixture the server grades records ["e1:t.target->cy.run","e2:t2.target->c2.run","stray:c2.pass->t.next","drawn:cy.complete->af.run"]
+  //   x control: a carry that moves nothing hands back the very array it was given: carry-foreign-pass-wire-control: the edges were copied
+  //   (panelLane.test: 30/32 passed). That graph, handed to compile.py, makes
+  //   the stray wire M31's loop: M31 would rotate although the operator left
+  //   it panel-first (test_flows_panel_lane.py holds that premise).
+  //
+  // THE TWO CONTROLS THE CARRY MUST LEAVE ALONE, each shown red here.
+  // MUTANT "every block is a mosaic" (carryLoopWire: the isMultiPanel check
+  // deleted). Observed:
+  //   x carry case carry-single-target-control (1.4 item 4 (control): ...): carryLoopWire made ["e1:t.target->cy.run","pw:af.pass->t.next","drawn:cy.complete->af.run"], the fixture the server grades records ["e1:t.target->cy.run","pw:cy.pass->t.next","drawn:cy.complete->af.run"]
+  //   x control: a carry that moves nothing hands back the very array it was given: carry-single-target-control: the edges were copied
+  //   (panelLane.test: 30/32 passed).
+  // MUTANT "add when missing" (carryLoopWire: a lane with no loop wire is
+  // given one from the new tail). Observed:
+  //   x carry case carry-no-loop-wire-control (1.4 'When it is deleted' (control): ...): carryLoopWire made ["e1:t.target->cy.run","drawn:cy.complete->af.run","added:af.pass->t.next"], the fixture the server grades records ["e1:t.target->cy.run","drawn:cy.complete->af.run"]
+  //   with the foreign-wire case and the identity control below
+  //   (panelLane.test: 29/32 passed).
+  //
+  // flowsSlice.ts imports lib/flowsApi -> lib/api -> lib/base, which reads
+  // `window.location` at module scope, so it is imported after a window
+  // exists, as flowsSlice.test.ts does. Nothing it offers a request is used.
+  const g0 = globalThis as any;
+  g0.window ??= { location: { pathname: "/", origin: "http://local" } };
+  g0.localStorage ??= { getItem: () => null, setItem() {}, removeItem() {} };
+  const { carryLoopWire } = await import("../flowsSlice");
+
+  interface CarryCase {
+    id: string; spec: string; block: string;
+    graph: LaneGraph; result: LaneGraph;
+    connect: { id: string; from: string; fromPort: string; to: string; toPort: string };
+    lane_tail: string | null; loop_wires: string[];
+  }
+  const CARRY_CASE_KEYS = ["id", "spec", "block", "graph", "connect", "result", "lane_tail", "loop_wires"];
+
+  /** The fixture's `carry_cases`, failing (never skipping) when absent. */
+  function readCarryCases(): CarryCase[] {
+    const text = readFileSync(new URL(FIXTURE_REL, import.meta.url), "utf8") as string;
+    const list = (JSON.parse(text) as { carry_cases?: CarryCase[] }).carry_cases;
+    if (!Array.isArray(list) || list.length === 0) {
+      throw new Error(`${FIXTURE_REL} holds no carry_cases`);
+    }
+    return list;
+  }
+
+  let carryCases: CarryCase[] = [];
+  test("the carry cases are read from panel_lane_cases.json, every column graded", () => {
+    // MUTANT "a carry case renamed away" (a scratch copy of the fixture with
+    // "carry-autofocus-after-looped-cycle" renamed). Observed:
+    //   x the carry cases are read from panel_lane_cases.json, every column graded: the fixture no longer carries carry case carry-autofocus-after-looped-cycle
+    //   (panelLane.test: 30/31 passed)
+    carryCases = readCarryCases();
+    for (const id of ["carry-autofocus-after-looped-cycle",
+                      "carry-capture-after-autofocus-stranding-the-loop",
+                      "carry-capture-after-autofocus-holding-the-loop",
+                      "carry-guide-after-looped-capture",
+                      "carry-single-target-control", "carry-no-loop-wire-control",
+                      "carry-foreign-pass-wire-control"]) {
+      assert(carryCases.some((c) => c.id === id), `the fixture no longer carries carry case ${id}`);
+    }
+    const bad = carryCases.flatMap((c) => Object.keys(c)
+      .filter((k) => !CARRY_CASE_KEYS.includes(k))
+      .map((k) => `${c.id} carries "${k}", which this mirror does not grade`));
+    assert(bad.length === 0, bad.join("; "));
+  });
+
+  for (const c of carryCases) {
+    test(`carry case ${c.id} (${c.spec})`, () => {
+      // The connect as flowsConnect writes it here: into a free flow input,
+      // so no wire is replaced, and the drawn wire goes last.
+      const taken = c.graph.edges.some((e) => e.to === c.connect.to && e.toPort === c.connect.toPort);
+      assert(!taken, `${c.id}'s connect lands on an input that already has a wire`);
+      const drawn = [...c.graph.edges, c.connect];
+      const out = carryLoopWire(c.graph as any, drawn as any, c.connect.from);
+      const bad: string[] = [];
+      if (js(wireList({ edges: out })) !== js(wireList(c.result))) {
+        bad.push(`carryLoopWire made ${js(wireList({ edges: out }))}, the fixture the server grades records ${js(wireList(c.result))}`);
+      }
+      if (js(c.graph.nodes) !== js(c.result.nodes)) bad.push("the case's result changes a node; a connect is wires only");
+      // The recorded columns by this file's walk too, so they cannot drift
+      // from the result the server grades.
+      const tail = laneTail(c.result, c.block)?.id ?? null;
+      if (tail !== c.lane_tail) bad.push(`the result's tail is ${js(tail)}, lane_tail records ${js(c.lane_tail)}`);
+      const loops = loopWires(c.result, c.block).map((e) => e.id);
+      if (js(loops) !== js(c.loop_wires)) bad.push(`the result's loop wires are ${js(loops)}, loop_wires records ${js(c.loop_wires)}`);
+      assert(bad.length === 0, bad.join("; "));
+    });
+  }
+
+  test("control: a carry that moves nothing hands back the very array it was given", () => {
+    // flowsConnect writes what carryLoopWire returns, so an identity answer
+    // is what tells "nothing to carry" apart from "a copy that looks alike".
+    //
+    // MUTANT "a copy for nothing" (carryLoopWire: `return [...edges]` for a
+    // lane with no loop wire). Observed on the re-run of 2026-09-27 (31/32
+    // passed; the foreign-wire control, added since it was first recorded,
+    // has no loop wire of its lane either, so it is copied too):
+    //   x control: a carry that moves nothing hands back the very array it was given: carry-no-loop-wire-control: the edges were copied; carry-foreign-pass-wire-control: the edges were copied
+    // flowsSlice.test.ts stays green under this mutant (49 passed): only an
+    // identity check tells a copy from the same wires.
+    const bad = carryCases
+      .filter((c) => c.id.endsWith("-control"))
+      .filter((c) => {
+        const drawn = [...c.graph.edges, c.connect];
+        return carryLoopWire(c.graph as any, drawn as any, c.connect.from) !== drawn;
+      })
+      .map((c) => `${c.id}: the edges were copied`);
     assert(bad.length === 0, bad.join("; "));
   });
 }

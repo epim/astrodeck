@@ -945,6 +945,9 @@ class SimTelescope(Telescope):
         self._move_rates = {"ra": 0.0, "dec": 0.0}
         self._move_task: asyncio.Task | None = None
         self._tracking_rate = "sidereal"
+        #: The pier side the last slew, sync, park or unpark left the mount
+        #: on (#298), or None before the first of them. See `pier_side`.
+        self._latched_side: PierSide | None = None
 
     async def connect(self) -> None:
         await asyncio.sleep(_sim_delay(0.1))
@@ -1021,10 +1024,12 @@ class SimTelescope(Telescope):
                 self.rig._polar_phase_deg += ph_err
                 self.rig._polar_dec_axis_deg = dec_err
                 self.rig._apply_polar_pointing()
+                self._latch_pier_side()
             finally:
                 self._slewing = False
             return
         self._slewing = True
+        moved = False
         try:
             # Land near the target with a small pointing error (until synced).
             err = self.rig.pointing_error_deg
@@ -1051,13 +1056,24 @@ class SimTelescope(Telescope):
                 # sane). The Target model also requires 0 <= ra_hours < 24.
                 self.rig.ra_hours = (ra0 + (tgt_ra - ra0) * f) % 24.0
                 self.rig.dec_deg = dec0 + (tgt_dec - dec0) * f
+                moved = True
         finally:
             self._slewing = False
+            # THE SIDE IS THE GOTO'S (#298): latched where the slew stopped,
+            # from the hour angle of the landed RA at that moment, pointing
+            # error included, so a goto at the crossing lands 7 s of RA east
+            # and keeps the pre-flip side (what the engine's
+            # MERIDIAN_SIDE_MARGIN_S allows for). A slew cancelled part way
+            # latches where it stopped; one cancelled before it moved leaves
+            # the side as it was, since the tube went nowhere.
+            if moved:
+                self._latch_pier_side()
 
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
         self.rig.ra_hours = ra_hours
         self.rig.dec_deg = dec_deg
         self.rig.pointing_error_deg = 0.003  # synced: pointing is now tight
+        self._latch_pier_side()
 
     async def set_tracking(self, on: bool) -> None:
         self.rig.tracking = on
@@ -1084,18 +1100,21 @@ class SimTelescope(Telescope):
         self.rig.parked = False
 
     async def park(self) -> None:
+        # The slew latches the side of the park position (#298), and nothing
+        # moves the mount after it, so the park keeps that side.
         await self.slew(0.0, 89.5)
         self.rig.parked = True
         self.rig.tracking = False
 
     async def unpark(self) -> None:
         self.rig.parked = False
+        self._latch_pier_side()
 
     async def is_parked(self) -> bool:
         return self.rig.parked
 
     async def pier_side(self) -> PierSide:
-        """The side implied by where this mount is actually pointing.
+        """The side the last slew, sync, park or unpark left this mount on.
 
         Returned a constant ``WEST`` until 2026-08-06, which is the
         ``SimSolver``-doesn't-solve shape: a device answering a question about
@@ -1107,13 +1126,47 @@ class SimTelescope(Telescope):
 
         Standard ASCOM convention, matching what the AM5N was measured to report
         (2026-08-06, both sides): a target EAST of the meridian is observed with
-        the tube on the WEST side, and vice versa."""
-        return self._side_for_ra(self.rig.ra_hours)
+        the tube on the WEST side, and vice versa.
+
+        LATCHED, NOT RECOMPUTED (#298). From 2026-08-06 until the latch this
+        answered from the hour angle of wherever the mount pointed NOW, so a
+        target it was merely tracking crossed the meridian and the mount
+        reported the far side with no slew. A German mount keeps the side its
+        goto chose while it tracks (the counterweight rises past the meridian)
+        and changes it only through a slew, which is the whole point of a
+        meridian flip. A mount that flipped itself made every meridian test in
+        the simulator grade the wrong machine: the flip-owed invariant, a
+        missed flip and a mount tracking past the meridian on the pre-flip side
+        could not be staged at all, and a test that needed a mount keeping its
+        side had to script one. So each slew, sync, park and unpark latches the
+        side from the hour angle at that moment (`_latch_pier_side`), and
+        guiding, a jog and a single-axis turn keep it, as they keep a real
+        mount's.
+
+        Before the first of those there is no goto whose side to keep, and the
+        side a goto to where the mount points would pick is the only answer
+        the simulator has; a mount nothing has moved still answers that way."""
+        if self._latched_side is None:
+            return self._side_for_ra(self.rig.ra_hours)
+        return self._latched_side
+
+    def _latch_pier_side(self) -> None:
+        """Keep the side for where the mount points, at this moment's hour
+        angle, until the next slew, sync, park or unpark (#298)."""
+        self._latched_side = self._side_for_ra(self.rig.ra_hours)
 
     def _side_for_ra(self, ra_hours: float) -> PierSide:
         """ASCOM convention: a target EAST of the meridian is observed with the
         tube on the WEST side. Shared by both pier-side oracles so they cannot
-        drift apart.
+        drift apart: the destination oracle asks it of the destination, and
+        the latch asks it of where a move left the mount.
+
+        THE CLOCK IS ``catalog.coords``' OWN (#320). The hour angle is read
+        with no time of its own: the wall clock in a running server, and
+        whatever clock a test puts ``catalog.coords`` on, which the clocked
+        group harness does for every night it runs. A mount that read the wall
+        clock under a fake night took its side from the hour of day the suite
+        happened to run at.
 
         The RULE ITSELF now lives in `coords.pier_side_for_hour_angle`, read by
         the engine's flip-owed invariant and the AM5's destination prediction
@@ -1132,7 +1185,11 @@ class SimTelescope(Telescope):
         return PierSide(pier_side_for_hour_angle(ha))
 
     async def destination_pier_side(self, ra_hours: float, dec_deg: float) -> PierSide:
-        """What ``pier_side`` will report once we are pointing there.
+        """What ``pier_side`` will report once a goto there lands: the
+        hour-angle rule for the destination, NOT the latch (#298). While the
+        mount tracks a target past the meridian the two differ, the mount
+        still on the side its goto chose and this the side the next goto would
+        take, and that difference is the flip the pre-slew guard asks about.
 
         SAME GEOMETRY AS ``pier_side``, applied to the destination RA. It used
         to be ``(ra_hours % 24) < 12 -> EAST``, a rule on RA alone that ignores

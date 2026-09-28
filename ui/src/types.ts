@@ -361,6 +361,48 @@ export interface RigStatus {
    *  run". `null` is typed alongside for a server that publishes the key with
    *  no snapshot behind it. */
   dew?: DewStatus | null;
+  /** The newest sky angle an imaging-camera plate solve measured (#174).
+   *  Server: `hub.poll_status` publishes `hub.last_sky_angle`, the record
+   *  `sky_angle.note_solved_rotation` writes on every such solve. `null` until
+   *  the first solve since the engine started; ABSENT on an engine older than
+   *  the recorder. It is what the mosaic modal's USE MEASURED chip (spec 2.4)
+   *  reads. */
+  sky_angle?: SkyAngleRecord | null;
+}
+
+/** `status.sky_angle` - one plate solve's measurement of the camera's sky
+ *  position angle, and whether it calibrated the rotator. Server:
+ *  `sky_angle.py` `note_solved_rotation`, which writes every key every time,
+ *  null where it has no value; `test_types_mirror_status.py` holds this type
+ *  to the record a real solve puts on the status frame. */
+export interface SkyAngleRecord {
+  /** Degrees [0, 360), the solver's CROTA2 as `mod360` folds it. Never folded
+   *  by pier side: after a flip the camera really is at the old angle + 180. */
+  pa_deg: number;
+  /** Unix seconds the solved frame was exposed (read before the exposure, or
+   *  as the shutter closed for the saved-frame WCS). Freshness is judged on
+   *  this, not on `solved_at`: a stale frame can finish solving late. */
+  exposed_at: number;
+  solved_at: number;
+  /** Which solve measured it: "plate solve + sync" (the goto centring and
+   *  the resume re-centre), "rotate to PA", "rotator sync", "polar
+   *  alignment", "guide-scope offset" or "saved-frame WCS". A plain string:
+   *  the server has no closed list of them. */
+  source: string;
+  pier_side: "east" | "west" | null;
+  /** The imaging camera's device name ("" when it has none). */
+  camera: string;
+  /** Did this solve re-sync the rotator's sky offset? */
+  calibrated: boolean;
+  /** Why it did not, in words; `null` when it did. */
+  reason: string | null;
+  /** The rotator's mechanical angle at exposure; `null` with no rotator
+   *  connected, or when it could not be read. */
+  mechanical_deg: number | null;
+  /** The rotator's sky angle just before the calibration, and the offset it
+   *  wrote: both `null` unless `calibrated`. */
+  rotator_before_deg: number | null;
+  offset_deg: number | null;
 }
 
 /** `status.dew` - what the heaters are doing about the dew point (D-RIG-3).
@@ -2063,6 +2105,12 @@ export interface MosaicPanel {
   dec_deg: number;
   rotation_deg: number;
   transit_alt?: number;                    // peak alt tonight (NOT instantaneous "now" alt)
+  /** Why this panel has no `transit_alt`, in the server's words
+   *  (`framing._stamp_transit_alt`). Present exactly when a night was asked
+   *  for and this panel could not be answered; a mosaic nobody asked a night
+   *  about carries neither key, which is how "not asked" differs from "could
+   *  not". `mosaicNightSummary.ts` reads it from here (#174). */
+  transit_alt_error?: string;
 }
 
 export interface MosaicResult {

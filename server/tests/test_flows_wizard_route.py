@@ -33,9 +33,38 @@ solve measured (``hub.last_sky_angle``, for USE MEASURED). With no optics the
 wizard answers one target, and the answer's ``notes`` say why.
 
 THE FIXTURE ISOLATES THE CONFIG (S3, #341). It used to patch only the flow
-library, so the wizard read this machine's real config; since the route
-injects the optics, a mosaic's answer would have depended on the developer's
-rig. A throwaway config has no optics until a test sets them.
+library, so the wizard read the process-wide config store; since the route
+injects the optics, a mosaic's answer turned on whatever that store held.
+S3 gave it a throwaway store patched into three modules; S4 moved it onto
+conftest's ``isolated_config``, which sweeps the store into every module
+that holds one and moves the profile library, the capture root, the sky
+angle and the hub's camera and rotator with it. A throwaway config has no
+optics until a test sets them. Checked under two stand-in "real" configs
+(``ASTRODECK_CONFIG_DIR``), one with optics, an active profile with its own
+optics and a rotator (A), and one fresh (B): every test here answered the
+same under both (S4-TESTHYG).
+
+What #341 feared, measured on the Mosaic and the three other kinds of
+``test_every_kind_passes_the_doctor_through_the_route`` and on
+``test_a_mosaic_with_no_optics_answers_one_target_and_the_reason``, in a
+private copy of ``server/`` (scratchpad s4-testhyg-mut2):
+
+    fixture          session net   under A                  under B
+    #341's own       on            5 passed                 5 passed
+    #341's own       off           2 failed, 5 errors       5 passed, 5 errors
+    isolated_config  off           5 passed                 5 passed
+    isolated_config  on            5 passed                 5 passed
+
+So the machine never reached #341's fixture while conftest's session
+fixture had the process store on a throwaway file (since 2026-07-29): the
+answer turned on a shared store, not on the developer's rig. With that net
+removed it does ("2 failed" under A: the Mosaic with no grid was refused,
+``assert 422 == 200``, "a mosaic's rows is a whole number from 1 to 10,
+not None"; and the no-optics case came back tiled, "no optics: one target,
+not a grid"), and conftest's ``_no_test_reads_the_real_config`` errors
+every test that read the stand-in (the "errors", through
+``ConfigStore._load``, ``ConfigStore.cfg`` and ``ProfileLibrary.get``).
+``isolated_config`` answers the same with or without the net.
 
 Each S3 test names its mutant and quotes the failure it produced; mutants
 were written over a byte copy of ``api/app.py`` in a private copy of
@@ -45,9 +74,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
-import astrodeck.config as config_mod
-import astrodeck.hub as hub_mod
-from astrodeck.config import ConfigStore, Optics
+from astrodeck.config import Optics
 from astrodeck.flows import wizard
 from astrodeck.flows.compile import PASS_PORT, is_multi_panel
 from astrodeck.flows.doctor import check as flow_doctor
@@ -58,17 +85,12 @@ from astrodeck.profiles import Profile, ProfileDevice
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    store = ConfigStore(path=tmp_path / "astrodeck.json")
-    monkeypatch.setattr(config_mod, "config_store", store)
-    monkeypatch.setattr(hub_mod, "config_store", store)
-    monkeypatch.setattr(app_module, "config_store", store)
-    monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path / "captures")
-    monkeypatch.setattr(flow_store, "_dir", tmp_path, raising=False)
-    monkeypatch.setattr(app_module.hub, "last_sky_angle", None, raising=False)
-    with TestClient(app_module.create_app()) as c:
-        c.store = store
+def client(isolated_config, tmp_path, monkeypatch):
+    monkeypatch.setattr(flow_store, "_dir", tmp_path / "flows", raising=False)
+    app = app_module.create_app()
+    isolated_config.sweep()
+    with TestClient(app) as c:
+        c.store = isolated_config.store
         yield c
 
 
@@ -263,10 +285,11 @@ def test_use_measured_takes_the_angle_the_last_solve_measured(client,
     {"angle_mode": "Any angle"}, {"rows": GRID_MAX + 1}, {"cols": 0},
     {"rows": 2.5}, {"overlap_pct": OVERLAP_MAX_PCT + 1},
     {"overlap_pct": -1}, {"pa_deg": float("nan")}, {"rows": True},
-    {"pa_deg": True}, {"overlap_pct": True}, {"pa_deg": "30"}],
+    {"pa_deg": True}, {"overlap_pct": True}, {"pa_deg": "30"},
+    {"overlap_pct": "30"}],
     ids=["any-angle", "rows-over", "cols-zero", "rows-half",
          "overlap-over", "overlap-negative", "pa-nan", "rows-bool",
-         "pa-bool", "overlap-bool", "pa-text"])
+         "pa-bool", "overlap-bool", "pa-text", "overlap-text"])
 def test_the_answers_are_checked_at_the_door(client, bad):
     """Checked against the wizard's constants (``MOSAIC_ANGLES``,
     ``GRID_MIN``, ``to_plan.GRID_MAX``, ``OVERLAP_MIN_PCT``,
@@ -295,10 +318,42 @@ def test_the_answers_are_checked_at_the_door(client, bad):
 
     ``pa-bool``, ``overlap-bool`` and ``pa-text`` were added by the S3-A
     verifier: pydantic's float coercion took ``true`` as 1.0 and "30" as
-    30.0 before the door looked. Red, with the same lines, on the code
-    as it was left and under mutants "the PA door coerces" (``pa-bool``,
-    ``pa-text``) and "the overlap door coerces" (``overlap-bool``); see
-    test_a_bool_is_not_an_angle.
+    30.0 before the door looked. Red on the code as it was left. S4
+    (#344, item 20) confirmed them under the two door mutants, each
+    ``mode="before"`` switched to after (the validator's body untouched),
+    in a private copy of ``server/`` (scratchpad s4-testhyg-mut2), and
+    added ``overlap-text``, the overlap's spelling of ``pa-text``, which
+    no case held. Observed verbatim (ids elided, the em dash written as a
+    hyphen, as above):
+
+    mutant "the PA door coerces" (``@field_validator("pa_deg")``):
+
+        E       AssertionError: {"id":"...","name":"M31","folder":"My
+        flows","tagline":"Generated by the wizard - mosaic, planned as one
+        target: set the camera and focal length in Settings > Optics to
+        plan a mosaic","graph":{"nodes":[{"id":"n1","type":"dusk", ...
+        E       assert 200 == 422
+        E        +  where 200 = <Response [200 OK]>.status_code
+        FAILED tests/test_flows_wizard_route.py::
+        test_the_answers_are_checked_at_the_door[pa-bool]
+        FAILED tests/test_flows_wizard_route.py::
+        test_the_answers_are_checked_at_the_door[pa-text]
+        FAILED tests/test_flows_wizard_route.py::test_a_bool_is_not_an_angle
+        3 failed, 28 passed, 1 warning in 24.57s
+
+    mutant "the overlap door coerces" (``@field_validator("overlap_pct")``),
+    the same lines at:
+
+        FAILED tests/test_flows_wizard_route.py::
+        test_the_answers_are_checked_at_the_door[overlap-bool]
+        FAILED tests/test_flows_wizard_route.py::
+        test_the_answers_are_checked_at_the_door[overlap-text]
+        FAILED tests/test_flows_wizard_route.py::test_a_bool_is_not_an_angle
+        3 failed, 28 passed, 1 warning in 19.17s
+
+    Each mutant turns only its own two cases red, so the other eight
+    (``any-angle`` to ``rows-bool``) stay green under both: each is
+    refused by a bound or a type the switch does not move.
     """
     body = {**MOSAIC, **bad}
     if body.get("pa_deg") != body.get("pa_deg"):
@@ -320,21 +375,24 @@ def test_a_bool_is_not_an_angle(client):
     same for ``overlap_pct: true``, which became a 1% overlap.
 
     Found by the S3-A verifier (#344). RED on the code as the
-    implementer left it, and again under mutant "the PA door coerces" (``_finite_pa``
-    back to an after-validator that checks only finiteness), observed
-    (the id elided):
+    implementer left it. Confirmed in S4 (item 20) under both door
+    mutants, ``mode="before"`` switched to after with the validator's
+    body untouched, in a private copy of ``server/`` (scratchpad
+    s4-testhyg-mut2), observed verbatim (the id elided, the em dash
+    written as a hyphen):
 
-        AssertionError: {"id":"...","name":"M31","folder":"My flows",
-        "tagline":"Generated by the wizard - mosaic", ...
-        assert 200 == 422
-         +  where 200 = <Response [200 OK]>.status_code
+        E           AssertionError: {"id":"...","name":"M31","folder":"My
+        flows","tagline":"Generated by the wizard - mosaic","graph":{
+        "nodes":[{"id":"n1","type":"dusk", ...
+        E           assert 200 == 422
+        E            +  where 200 = <Response [200 OK]>.status_code
 
-    (the tagline's em dash written as a hyphen, as above; on the code as
-    left, the answer was a 3x2 laid out at ``"rotation": 1.0``). Red the
-    same way, at the overlap, under mutant "the overlap door coerces"
-    (``_overlap_pct`` back to an after-validator). A control: the number
-    1 the bool was read as is laid out at PA 1.0, so the refusal is of
-    the spelling, not the angle.
+    Under "the PA door coerces" the 200's TARGET was a 3x2 at
+    ``"rotation":1.0``, a PA nobody typed; under "the overlap door
+    coerces" a 3x2 at PA 30 with ``"overlap":1``, a 1% overlap nobody
+    typed (``"overlap":"0.0100"`` in its frame anchor). A control: the
+    number 1 the bool was read as is laid out at PA 1.0, so the refusal is
+    of the spelling, not the angle.
     """
     client.store.set_optics(OPTICS)
     for bad in ({"pa_deg": True}, {"overlap_pct": True}):
