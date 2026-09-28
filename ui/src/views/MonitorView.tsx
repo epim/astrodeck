@@ -1,7 +1,8 @@
 // ============================================================================
 // MonitorView — the unified glanceable run dashboard (monitor spec §4 / §7).
 // Lane 2E. Reads ONLY store slices via the landed narrow hooks (no polling of
-// its own beyond one cold-load snapshot on mount, §8). Read-only for device
+// its own beyond the snapshot it reads on mount, on every reconnect and on each
+// saved frame, for the last frame's id, #399, §8). Read-only for device
 // controls; the only writes are Pause/Resume (non-destructive) and Abort
 // (hold-to-confirm, works over plain HTTP when the WS is down — A2).
 //
@@ -13,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { u } from "../lib/base";
+import { newestPreviewId, showingLivePreview } from "../lib/lastFrameId";
 import {
   useSeq,
   useGuideRecent,
@@ -250,33 +252,55 @@ export default function MonitorView() {
   // snapshot already carries `preview_id`; hold it here and hand it to the tile
   // (as STALE, which is the truth: it is the last frame, not a live one) until
   // a real preview event lands.
+  //
+  // AND NOT ONLY ON MOUNT (#399). 2026-09-27, NGC 7331 over the relay: the
+  // phone showed NO FRAME YET at 50/105 frames with "last frame 41s ago" on
+  // the same screen. The rig had the frame (snapshot preview_id 535, the JPEG
+  // 200) but this page had neither id: the one mount-time fetch had failed or
+  // raced, and the reconnect snapshot in ws.ts restores status and sequence
+  // but never the preview. So the snapshot is read again on every reconnect
+  // and every time frames_done advances, and the tile shows the NEWER of the
+  // two ids (lib/lastFrameId.ts): a preview event lost in transit can no
+  // longer leave the tile behind the rig. Only the first read seeds status and
+  // sequence; the later ones are for the frame alone.
   const [coldPreviewId, setColdPreviewId] = useState<number | null>(null);
+  const seeded = useRef(false);
+  const framesDone = seq.progress?.frames_done ?? null;
   useEffect(() => {
+    if (!wsConnected && seeded.current) return; // a down socket: the next "up" re-reads
     let cancelled = false;
     (async () => {
       try {
         const signal =
           typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
-            ? (AbortSignal as unknown as { timeout(ms: number): AbortSignal }).timeout(4000)
+            ? (AbortSignal as unknown as { timeout(ms: number): AbortSignal }).timeout(8000)
             : undefined;
         const res = await fetch(u("/api/monitor/snapshot"), signal ? { signal } : undefined);
         if (!res.ok || cancelled) return;
         const snap = (await res.json()) as MonitorSnapshot;
         if (cancelled) return;
-        // Seed the store via handleEvent so the regular WS path stays the SSOT.
-        const h = useStore.getState().handleEvent;
-        const ts = Date.now() / 1000;
-        if (snap.status) h({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
-        if (snap.sequence) h({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
-        if (snap.preview_id != null) setColdPreviewId(snap.preview_id);
+        if (!seeded.current) {
+          seeded.current = true;
+          // Seed the store via handleEvent so the regular WS path stays the SSOT.
+          const h = useStore.getState().handleEvent;
+          const ts = Date.now() / 1000;
+          if (snap.status) h({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
+          if (snap.sequence) h({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+        }
+        if (snap.preview_id != null) {
+          const id = snap.preview_id;
+          setColdPreviewId((prev) => newestPreviewId(prev, id));
+        }
       } catch {
-        /* WS catches up within ~2s — non-fatal */
+        /* non-fatal: the next frame or reconnect reads it again */
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [wsConnected, framesDone]);
+  const shownPreviewId = newestPreviewId(preview?.id, coldPreviewId);
+  const shownIsLive = showingLivePreview(shownPreviewId, preview?.id);
 
   // ----- observatory roof / dome (UX-2026-07-26 #27) -----
   // The roof state existed ONLY as a badge in Settings → Safety, so a run that
@@ -1018,15 +1042,17 @@ export default function MonitorView() {
 
         {/* ================================================== THUMBNAIL */}
         <Panel className="col-span-full sm:col-span-2 lg:col-span-6" title="Last frame">
+          {/* The NEWER of the live event and the snapshot (#399); the live
+              event's badge and numbers only when they describe this frame. */}
           <PreviewTile
-            previewId={preview?.id ?? coldPreviewId}
-            live={live}
-            stale={!live && (preview != null || coldPreviewId != null)}
-            ageMs={frameAgeMs}
-            hfr={preview?.hfr}
-            stars={preview?.stars}
-            meta={previewMeta}
-            clip={previewClip}
+            previewId={shownPreviewId}
+            live={live && shownIsLive}
+            stale={shownPreviewId != null && !(live && shownIsLive)}
+            ageMs={shownIsLive ? frameAgeMs : null}
+            hfr={shownIsLive ? preview?.hfr : undefined}
+            stars={shownIsLive ? preview?.stars : undefined}
+            meta={shownIsLive ? previewMeta : undefined}
+            clip={shownIsLive ? previewClip : false}
             brightness={thumbBrightness}
             onBrightness={setBrightness}
             onOpen={openCapture}
