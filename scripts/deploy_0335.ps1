@@ -116,9 +116,11 @@ foreach ($u in $uiChecks) {
     Write-Output ("   " + $u.Name + " in " + $hit.Name)
 }
 
-Write-Output "== the native wheel stays in the venv (idempotent) =="
-& $Py -m pip install --quiet --force-reinstall --no-deps $Wheel
-if ($LASTEXITCODE -ne 0) { throw "wheel install failed (exit $LASTEXITCODE)" }
+Write-Output "== the native wheel already in the venv is the right one (no reinstall) =="
+# NOT reinstalled. No native code changed since 0.3.34, and the running server
+# has astrodeck_native's .pyd loaded, which Windows locks: the first run of this
+# script stopped here, silently, on a --force-reinstall of the same wheel
+# (2026-09-27 23:48). Nothing had been stopped yet, so the run carried on.
 & $Py (Join-Path $Root "check_wheel.py")
 if ($LASTEXITCODE -ne 0) { throw "the installed astrodeck_native has no peek_next (exit $LASTEXITCODE)" }
 
