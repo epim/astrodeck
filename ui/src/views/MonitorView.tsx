@@ -38,7 +38,10 @@ import {
   useStore,
   useResumeArm,
   usePhotometry,
+  useSnapshotPreviewId,
 } from "../store";
+import { EMPTY_SEQUENCE } from "../lib/authGate";
+import { snapshotStamp } from "../ws";
 import { Led, Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
 import {
@@ -263,7 +266,17 @@ export default function MonitorView() {
   // two ids (lib/lastFrameId.ts): a preview event lost in transit can no
   // longer leave the tile behind the rig. Only the first read seeds status and
   // sequence; the later ones are for the frame alone.
-  const [coldPreviewId, setColdPreviewId] = useState<number | null>(null);
+  //
+  // THE ID IS THE STORE'S, AND EVERY READ REPLACES IT (#437). It used to live
+  // here as a running MAXIMUM over every read, on the rule that preview ids
+  // only increase. They do, within one server process: `hub.preview_seq`
+  // starts at 0 on every start, so after a mid-run deploy the new process's
+  // snapshot said 2, the maximum kept 535, and the tile sat on a frame from
+  // before the restart (a 404 on the new process) for the rest of the night.
+  // A read is the server's answer at that moment, so it replaces, into the
+  // same `snapshotPreviewId` ws.ts writes on every connect, reconnect and relay
+  // gap. A newer live frame still wins through newestPreviewId below.
+  const snapshotPreviewId = useSnapshotPreviewId();
   const seeded = useRef(false);
   const framesDone = seq.progress?.frames_done ?? null;
   useEffect(() => {
@@ -275,6 +288,11 @@ export default function MonitorView() {
           typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
             ? (AbortSignal as unknown as { timeout(ms: number): AbortSignal }).timeout(8000)
             : undefined;
+        // Stamped as the request goes out (#476, S7 orchestrator ruling 3):
+        // a live event handled while this read is in flight is newer than its
+        // answer, and a seed written over a `complete` that overtook it would
+        // never be undone. ws.ts's snapshotStamp says why a count.
+        const stamp = snapshotStamp();
         const res = await fetch(u("/api/monitor/snapshot"), signal ? { signal } : undefined);
         if (!res.ok || cancelled) return;
         const snap = (await res.json()) as MonitorSnapshot;
@@ -284,13 +302,12 @@ export default function MonitorView() {
           // Seed the store via handleEvent so the regular WS path stays the SSOT.
           const h = useStore.getState().handleEvent;
           const ts = Date.now() / 1000;
-          if (snap.status) h({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
-          if (snap.sequence) h({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+          if (snap.status && stamp.fresh("status")) h({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
+          if (snap.sequence && stamp.fresh("sequence")) h({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
         }
-        if (snap.preview_id != null) {
-          const id = snap.preview_id;
-          setColdPreviewId((prev) => newestPreviewId(prev, id));
-        }
+        // As the server said it, null included: a restarted server that has
+        // saved nothing yet names no frame.
+        useStore.getState().setSnapshotPreviewId(snap.preview_id ?? null);
       } catch {
         /* non-fatal: the next frame or reconnect reads it again */
       }
@@ -299,7 +316,7 @@ export default function MonitorView() {
       cancelled = true;
     };
   }, [wsConnected, framesDone]);
-  const shownPreviewId = newestPreviewId(preview?.id, coldPreviewId);
+  const shownPreviewId = newestPreviewId(preview?.id, snapshotPreviewId);
   const shownIsLive = showingLivePreview(shownPreviewId, preview?.id);
 
   // ----- observatory roof / dome (UX-2026-07-26 #27) -----
@@ -382,9 +399,27 @@ export default function MonitorView() {
   const waitStatus = formatScheduleStatus(seq.schedule, seq.live, now / 1000);
 
   // ----- abort/error one-shot vibration (resolves H / §7) -----
-  const vibratedError = useRef(false);
+  // On ENTERING the state while this is mounted, never on mounting in it
+  // (#467, found on RunControls, which copied this). A ref that started false
+  // buzzed every open or reload of the dashboard for a run that ended hours
+  // ago, and a desktop logged a blocked-vibrate console error per page load.
+  // So the ref is seeded from the state at mount. And the store's cold value
+  // (EMPTY_SEQUENCE, before any snapshot or event) is not a state the rig was
+  // in: it reads "idle", so the page load's snapshot looked like idle ->
+  // aborted. `null` means nothing is known yet, and the first known state
+  // seeds the ref without buzzing.
+  const seqCold = seq === EMPTY_SEQUENCE;
+  const vibratedError = useRef<boolean | null>(seqCold ? null : failed);
   useEffect(() => {
-    if ((state === "error" || state === "aborted") && !vibratedError.current) {
+    if (seqCold) {
+      vibratedError.current = null;
+      return;
+    }
+    if (vibratedError.current === null) {
+      vibratedError.current = failed;
+      return;
+    }
+    if (failed && !vibratedError.current) {
       vibratedError.current = true;
       try {
         navigator.vibrate?.([60, 40, 60]);
@@ -393,7 +428,7 @@ export default function MonitorView() {
       }
     }
     if (state === "running" || state === "idle") vibratedError.current = false;
-  }, [state]);
+  }, [state, failed, seqCold]);
 
   // ----- when did THIS run start? (UX-2026-07-26 #23) -----
   // The failure card quotes the tail of the error/warning log, and unfiltered

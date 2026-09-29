@@ -8,7 +8,9 @@
 // server/tests/fixtures/plan_list_unreadable.json is a real `GET /api/plans`
 // for one good plan and one hand-edited so that its first step's frame_type is
 // 'Snapshot' (#334). The unreadable row carries `status: "unreadable"` and the
-// server's reason, and none of a plan's numbers.
+// server's reason, and none of a plan's numbers. Since S7 (#478) the recording
+// also holds a file that is not JSON, listed last; `BAD` is the first
+// unreadable row, the Snapshot plan's, and no pin here moved with it.
 //
 // The list is the phone's only way to start a saved plan (D-FU-3), so a row
 // on it is a promise that RUN starts a night. Read as a plan, the unreadable

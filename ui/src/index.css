@@ -310,7 +310,7 @@ body {
    --ov-max-h is still read first, as an explicit cap that REPLACES the
    fraction rather than meeting it in a min(): `full`'s 100% below, and a
    caller's own `surfaceStyle` cap, which therefore must not be dvh either
-   (six still are, #417). */
+   (six were until S7; none is since #417, and overlay.test.ts scans for one). */
 .overlay-surface {
   position: relative;
   display: flex;

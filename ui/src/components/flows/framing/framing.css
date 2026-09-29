@@ -128,10 +128,41 @@
 }
 /* The largest square the sky area holds. SkyCanvas is a width-driven square,
    so without this a landscape sky would be as tall as it is wide and run off
-   the bottom of a short screen. */
+   the bottom of a short screen. It is that square's height too: SkyCanvas's
+   status lines share it with the canvas (below). */
 .tfs-sky-fit {
   width: 100%;
   width: min(100cqw, 100cqh);
+  height: min(100cqw, 100cqh);
+}
+/* THE CANVAS AND ITS LINES SHARE THE FIT BOX (#440, #465). SkyCanvas draws
+   its status lines UNDER its square, in its own column: the degraded banner,
+   the verdict, the pointing line. The square used to be as wide as the fit
+   box, so it filled the sky's whole height by itself, each line pushed the
+   column past `.tfs-sky`'s clip, and the centring cut the overflow off both
+   ends. The real-page probe measured it on the 390 x 844 phone with no sky
+   source: a 426 px column in a 390 px sky, the banner cut to its
+   descenders, 18 px off the canvas's top and bottom (#465); a hand copy of
+   these rules put the top 10 px of MOVE SKY under the clip with it (#440).
+   So the column fills the fit box, the square's slot (SkyCanvas's
+   `.sky-canvas-square`) takes whatever height the lines leave, and the
+   square is the largest one the slot holds, read off the slot as a size
+   container. With no line the slot is the whole fit box and the square is
+   the size it always was. Under @supports, because a flex basis of 0 in a
+   column of no definite height collapses the slot to nothing: a browser
+   without container queries keeps the old layout, since the fit box's own
+   container units above are just as invalid to it. */
+@supports (container-type: size) {
+  .tfs-sky-fit > .sky-canvas { height: 100%; }
+  .tfs-sky-fit .sky-canvas-square {
+    flex: 1 1 0;
+    min-height: 0;
+    container-type: size;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .tfs-sky-fit .sky-canvas-square > [role="application"] { width: min(100cqw, 100cqh); }
 }
 /* SkyCanvas gives its square a 320 px floor (`min-w-[min(320px,...)]`) so it
    never collapses in a narrow column. Here the fit box above already sizes it

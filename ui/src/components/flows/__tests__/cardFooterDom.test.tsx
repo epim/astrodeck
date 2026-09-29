@@ -6,13 +6,15 @@
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
 //
 // WHAT IS WORTH GUARDING HERE
-//   1. Both cards draw `targetFooter` for a TARGET, so the classic canvas and
-//      #/next read the same line: "M31 · rotate · 3x2 · PA 30.0 · 25%",
-//      "M31 · one panel at a time · 3x2", "NGC 7331 · any angle". The loop
-//      word comes right after the name (#357) because the classic card's
-//      footer is one truncated line; the budget case below computes how many
-//      characters it holds from the card's own classes and holds the eighth
-//      Example's two lines to it.
+//   1. Both cards draw the TARGET line from targetSummary.ts: #/next the whole
+//      `targetFooter`, which wraps - "M31 · rotate · 3x2 · PA 30.0 · 25%",
+//      "M31 · one panel at a time · 3x2", "NGC 7331 · any angle" - and the
+//      classic card, whose footer is ONE line, the same line fitted to it
+//      (`fittedFooter`, S7 orchestrator ruling 9, #357): the overlap goes
+//      first, then the name is shortened with an ellipsis, and the loop word
+//      and the angle words are never cut. The budget cases below compute how
+//      many characters that line holds from the mounted card's own classes,
+//      hold the card's constant to it, and hold the ruling's cases to it.
 //   2. The loop is read from the GRAPH: deleting the loop wire changes the line
 //      on a card whose node object never changed, which only a subscription to
 //      the graph's loop can do.
@@ -86,6 +88,7 @@ const { useStore } = await import("../../../store");
 const { NODE_DEFS } = await import("../nodeDefs");
 const { FLOWS_INIT } = await import("../flowsSlice");
 const ClassicCard = (await import("../FlowNodeCard")).default;
+const { CLASSIC_FOOTER_CHARS } = await import("../FlowNodeCard");
 const { FlowNodeCard: NextCard } = await import("../../../next/hubs/session/flows/canvas/FlowNode");
 type FlowNodeRec = import("../flowsTypes").FlowNodeRec;
 type FlowEdgeRec = import("../flowsTypes").FlowEdgeRec;
@@ -146,6 +149,23 @@ const CHIP: Record<Which, string> = {
   next: "[data-testid='flow-node-progress']",
 };
 
+/** The fixture's M31 (3x2, Rotate to PA 30, 25%) as each card draws it:
+ *  #/next the whole line, which wraps; the classic card the line fitted to
+ *  its 29 characters (ruling 9). Written out, not computed with the code
+ *  under test. The rotating line is 34 characters, so its overlap goes and
+ *  the rest, 28, fits with the name whole. The panel-first one is 31, and
+ *  after the overlap it has none to give: one character of room for the
+ *  name, so the grid goes before the name would be only an ellipsis
+ *  (targetSummary.ts "PAST THE RULING, COMPUTED"). */
+const ROTATING: Record<Which, string> = {
+  classic: "M31 · rotate · 3x2 · PA 30.0",
+  next: "M31 · rotate · 3x2 · PA 30.0 · 25%",
+};
+const PANEL_FIRST: Record<Which, string> = {
+  classic: "M31 · one panel at a time",
+  next: "M31 · one panel at a time · 3x2",
+};
+
 const container = win.document.getElementById("root");
 const root = createRoot(container);
 
@@ -174,25 +194,31 @@ const footerOf = (which: Which, id: string): string | null =>
 for (const which of ["classic", "next"] as const) {
   // The records below were re-run in the private scratch copy
   // scratchpad/S5-LOOP-mut once the footer's loop word moved to second place
-  // (#357), so each quotes the strings the file now holds.
+  // (#357), and again in S7-UCANVAS-mut once the classic card fitted its line
+  // (S7 orchestrator ruling 9), so each quotes the strings the file now holds.
   //
   // MUTANT "rows x cols" (targetFooter writes `${rows}x${cols}`). Observed,
-  // cardFooterDom.test 8/16 (every mosaic footer case, on both cards):
-  //   x [classic] a rotating mosaic reads 'M31 · rotate · 3x2 · PA 30.0 ·
-  //     25%': the classic TARGET card's footer
+  // cardFooterDom.test 13/26 (every mosaic line that still shows its grid, on
+  // both cards; the classic panel-first line has dropped it):
+  //   x [classic] a rotating mosaic reads 'M31 · rotate · 3x2 · PA 30.0': the classic TARGET card's footer
+  //     expected "M31 · rotate · 3x2 · PA 30.0"
+  //     got      "M31 · rotate · 2x3 · PA 30.0"
+  //   x [next] a rotating mosaic reads 'M31 · rotate · 3x2 · PA 30.0 · 25%': the next TARGET card's footer
   //     expected "M31 · rotate · 3x2 · PA 30.0 · 25%"
   //     got      "M31 · rotate · 2x3 · PA 30.0 · 25%"
-  //   (and the same line for [next])
   // MUTANTS "classic TARGET footer keeps sum" / "next TARGET footer keeps
-  // sum" (the card draws `def.sum(node.params)` for every type). Observed,
-  // 10/16 and 11/16, every TARGET case of that card (and, for the classic
-  // one, the budget case):
-  //   x [classic] a rotating mosaic reads ...: the classic TARGET card's footer
+  // sum" (the card draws `def.sum(node.params)` for every type; the classic
+  // card fits nothing). Observed, 13/26 and 20/26, every TARGET case of that
+  // card:
+  //   x [classic] a rotating mosaic reads 'M31 · rotate · 3x2 · PA 30.0': the classic TARGET card's footer
+  //     expected "M31 · rotate · 3x2 · PA 30.0"
+  //     got      "M31"
+  //   x [next] a rotating mosaic reads 'M31 · rotate · 3x2 · PA 30.0 · 25%': the next TARGET card's footer
   //     expected "M31 · rotate · 3x2 · PA 30.0 · 25%"
   //     got      "M31"
-  test(`[${which}] a rotating mosaic reads 'M31 · rotate · 3x2 · PA 30.0 · 25%'`, () => {
+  test(`[${which}] a rotating mosaic reads '${ROTATING[which]}'`, () => {
     mount(which, [...LANE, LOOP]);
-    eq(footerOf(which, "t"), "M31 · rotate · 3x2 · PA 30.0 · 25%", `the ${which} TARGET card's footer`);
+    eq(footerOf(which, "t"), ROTATING[which], `the ${which} TARGET card's footer`);
   });
 
   // MUTANT "loop read from params" (targetLoops answers isMultiPanel(node)).
@@ -209,11 +235,18 @@ for (const which of ["classic", "next"] as const) {
   // The re-render case stays green now, because the card's LOOP PANELS
   // selector flips when the loop goes and re-renders it anyway. The two
   // footer lines above still go red, and the branch case below holds the
-  // footer's own subscription where LOOP PANELS cannot mask it.
-  test(`[${which}] deleting the loop wire reads 'M31 · one panel at a time · 3x2'`, () => {
+  // footer's own subscription where LOOP PANELS cannot mask it. Re-run in
+  // S7-UCANVAS-mut (17/26):
+  //   x [classic] deleting the loop wire reads 'M31 · one panel at a time': the classic TARGET card's footer once its loop wire is gone
+  //     expected "M31 · one panel at a time"
+  //     got      "M31 · rotate · 3x2 · PA 30.0"
+  //   x [next] deleting the loop wire reads 'M31 · one panel at a time · 3x2': the next TARGET card's footer once its loop wire is gone
+  //     expected "M31 · one panel at a time · 3x2"
+  //     got      "M31 · rotate · 3x2 · PA 30.0 · 25%"
+  test(`[${which}] deleting the loop wire reads '${PANEL_FIRST[which]}'`, () => {
     mount(which, [...LANE, LOOP]);
     setFlows({ graph: { nodes: NODES, edges: LANE } });
-    eq(footerOf(which, "t"), "M31 · one panel at a time · 3x2",
+    eq(footerOf(which, "t"), PANEL_FIRST[which],
       `the ${which} TARGET card's footer once its loop wire is gone`);
   });
 
@@ -224,7 +257,8 @@ for (const which of ["classic", "next"] as const) {
 
   // MUTANTS "classic footer subscribes to the graph" / "next footer
   // subscribes to the graph" (the card selects `s.flows.graph` and passes it
-  // to targetLoops in render). Observed, cardFooterDom.test 9/10 each:
+  // to targetLoops in render). Observed, cardFooterDom.test 9/10 each, and
+  // 25/26 each on the re-run in S7-UCANVAS-mut:
   //   x [classic] a graph write that leaves the loop alone does not re-render
   //     the TARGET card: the classic TARGET cards re-rendered for a drag of
   //     another card
@@ -252,23 +286,25 @@ for (const which of ["classic", "next"] as const) {
   // unsubscribed" / "next footer reads the loop unsubscribed" (the card's
   // `loops` is `targetLoops(node, useStore.getState().flows.graph)`, read in
   // render), each run in a private scratch copy of ui/. First observed,
-  // cardFooterDom.test 11/12 each; on the re-run in S5-LOOP-mut, 15/16 each:
-  //   x [classic] a branch at the tail ends the rotation, and the card says
-  //     so: the classic TARGET card's footer once its lane branches
+  // cardFooterDom.test 11/12 each; on the re-run in S5-LOOP-mut, 15/16 each;
+  // on the re-run in S7-UCANVAS-mut, 25/26 each:
+  //   x [classic] a branch at the tail ends the rotation, and the card says so: the classic TARGET card's footer once its lane branches
+  //     expected "M31 · one panel at a time"
+  //     got      "M31 · rotate · 3x2 · PA 30.0"
+  //   x [next] a branch at the tail ends the rotation, and the card says so: the next TARGET card's footer once its lane branches
   //     expected "M31 · one panel at a time · 3x2"
   //     got      "M31 · rotate · 3x2 · PA 30.0 · 25%"
-  //   (and the same line for [next] under its own mutant)
   test(`[${which}] a branch at the tail ends the rotation, and the card says so`, () => {
     const loopBtn = which === "classic" ? "[data-flows-loop]" : "[data-testid='flow-node-loop']";
     mount(which, [...LANE, LOOP]);
-    eq(footerOf(which, "t"), "M31 · rotate · 3x2 · PA 30.0 · 25%", "precondition: the mosaic rotates");
+    eq(footerOf(which, "t"), ROTATING[which], "precondition: the mosaic rotates");
     eq(cardOf("t")?.querySelector(loopBtn) ?? null, null, "precondition: no LOOP PANELS on a looped mosaic");
     const cap: FlowNodeRec = { id: "cap", type: "capture", x: 480, y: 200, params: { ...NODE_DEFS.capture.params } };
     // AUTOFOCUS now feeds the cycle AND a CAPTURE: two stages at one depth.
     setFlows({ graph: { nodes: [...NODES, cap], edges: [...LANE, E("c", "af", "focused", "cap", "run"), LOOP] } });
     eq(cardOf("t")?.querySelector(loopBtn) ?? null, null,
       "precondition: a branched lane offers no LOOP PANELS, so that selector did not move");
-    eq(footerOf(which, "t"), "M31 · one panel at a time · 3x2",
+    eq(footerOf(which, "t"), PANEL_FIRST[which],
       `the ${which} TARGET card's footer once its lane branches`);
   });
 
@@ -302,32 +338,23 @@ for (const which of ["classic", "next"] as const) {
 
 // ================================================ the classic card's budget
 //
-// #357. The classic footer is one `truncate` line, and the design's order put
-// the loop word last: "M31 · 3x2 · PA 30.0 · 25% · rotate" is 34 characters,
-// and the ellipsis fell inside "rotate". The budget is computed here from the
-// card as it renders - its width, its border, the footer's padding and type
-// size, read off the mounted element - so a card that grows its padding or
-// its type fails this case rather than leaving it grading a card nobody
-// draws. IBM Plex Mono (Tailwind's `font-mono`, index.css `--font-mono`)
-// advances 0.6 em per character, and Tailwind's spacing unit is 4 px.
+// #357. The classic footer is ONE line, and the design's order put the loop
+// word last: "M31 · 3x2 · PA 30.0 · 25% · rotate" is 34 characters, and the
+// ellipsis fell inside "rotate". S5 moved the word second, and `truncate`
+// still cut the overlap and the end of the PA on the S5/S6 probe's rotating
+// 2x2 ("M31 · rotate · 2x2 · PA 55.0..."). S7 orchestrator ruling 9: the
+// line is FITTED instead - the overlap goes first, then the name is
+// shortened with an ellipsis, and the angle words (the mode and the PA) and
+// the loop word are never cut; #/next keeps the whole line and wraps.
 //
-// A line longer than the budget shows one character fewer than the budget,
-// because the ellipsis takes the last advance; the word must end inside what
-// is shown. The eighth Example (examples.py `_m31_mosaic`): M31, three
-// columns by two rows, 25% overlap, Rotate to PA 55.
-//
-// MUTANT "spec order restored" (targetSummary.ts targetFooter: the loop word
-// pushed last again, "M31 · 3x2 · PA 55.0 · 25% · rotate" and "M31 · 3x2 ·
-// one panel at a time"), run in the private scratch copy
-// scratchpad/S5-LOOP-mut. Observed, cardFooterDom.test 7/16 (every footer
-// string case on both cards, and this one):
-//   x [classic] the eighth Example's loop word is inside the budget, rotating
-//     and panel-first: "M31 · 3x2 · PA 55.0 · 25% · rotate" shows "M31 · 3x2 ·
-//     PA 55.0 · 25% · " in 29 characters: "rotate" is cut; "M31 · 3x2 · one
-//     panel at a time" shows "M31 · 3x2 · one panel at a t" in 29 characters:
-//     "one panel at a time" is cut
-// The budget case above it stays green under that mutant: it measures the
-// card, not the line.
+// The budget is computed here from the card as it renders - its width, its
+// border, the footer's padding and type size, read off the mounted element -
+// so a card that grows its padding or its type fails this case rather than
+// leaving it grading a card nobody draws. IBM Plex Mono (Tailwind's
+// `font-mono`, index.css `--font-mono`) advances 0.6 em per character, and
+// Tailwind's spacing unit is 4 px. A line of 29 fits; a longer one would
+// show 28 characters and the ellipsis, which is what a fitted line with a
+// shortened name shows too.
 const EIGHTH: FlowNodeRec = {
   id: "t", type: "target", x: 0, y: 0,
   params: { ...NODE_DEFS.target.params, name: "M31", rows: 2, cols: 3, overlap: 25,
@@ -350,41 +377,196 @@ function classicBudget(): { chars: number; why: string } {
   const chars = Math.floor(room / (font * 0.6));
   return { chars, why: `${width} - 2 x ${border} - 2 x ${pad} = ${room} px of ${font} px mono` };
 }
-const shown = (line: string, budget: number): string =>
-  line.length <= budget ? line : line.slice(0, budget - 1);
 
-// The premise the issue computed (#357): 188 - 2 - 20 = 166 px, 29
-// characters of 9.5 px mono. MUTANT "classic footer padding grown"
-// (FlowNodeCard.tsx footer `px-2.5` -> `px-3`), run in S5-LOOP-mut. Observed,
-// cardFooterDom.test 15/16:
-//   x [classic] the budget is 29 characters, computed from the card's width,
-//     border, padding and type: the classic footer's budget (188 - 2 x 1 - 2 x
-//     12 = 162 px of 9.5 px mono)
-//     expected 29
-//     got      28
-// (The word case below reads the same budget and still passes at 28: the
-// eighth Example's words end at characters 12 and 25.)
-test("[classic] the budget is 29 characters, computed from the card's width, border, padding and type", () => {
+function mountEighth(): void {
   act(() => root.render(null));
   act(() => { useStore.setState({ flows: { ...FLOWS_INIT, graph: { nodes: [EIGHTH], edges: [] } } } as any); });
   act(() => root.render(createElement(ClassicCard as any, { node: EIGHTH })));
+}
+
+// The premise the issue computed (#357): 188 - 2 - 20 = 166 px, 29
+// characters of 9.5 px mono. MUTANT "classic footer padding grown"
+// (FlowNodeCard.tsx footer `px-2.5` -> `px-3`), first run in S5-LOOP-mut and
+// re-run in S7-UCANVAS-mut once the card fitted its line. Observed,
+// cardFooterDom.test 20/26 (this case, the next, and the four ruling-9 cases
+// whose fitted line is 29 characters, one over the grown card's 28):
+//   x [classic] the budget is 29 characters, computed from the card's width, border, padding and type: the classic footer's budget (188 - 2 x 1 - 2 x 12 = 162 px of 9.5 px mono)
+//     expected 29
+//     got      28
+//   x [classic] ruling 9: NGC 7331 rotating, 3x2 at Rotate to PA 30, 25%: the classic footer: 29 characters, over the card's 28
+test("[classic] the budget is 29 characters, computed from the card's width, border, padding and type", () => {
+  mountEighth();
   const b = classicBudget();
   eq(b.chars, 29, `the classic footer's budget (${b.why})`);
 });
 
-test("[classic] the eighth Example's loop word is inside the budget, rotating and panel-first", () => {
-  const nodes = [EIGHTH, AF, CY];
-  const bad: string[] = [];
-  for (const [edges, word] of [[[...LANE, LOOP], "rotate"], [LANE, "one panel at a time"]] as const) {
-    act(() => root.render(null));
-    act(() => { useStore.setState({ flows: { ...FLOWS_INIT, graph: { nodes, edges } } } as any); });
-    act(() => root.render(createElement(Fragment, null,
-      nodes.map((n) => createElement(ClassicCard as any, { key: n.id, node: n })))));
-    const { chars } = classicBudget();
-    const line = footerOf("classic", "t") ?? "";
-    const seen = shown(line, chars);
-    if (!seen.includes(word)) bad.push(`"${line}" shows "${seen}" in ${chars} characters: "${word}" is cut`);
-  }
+// THE CARD FITS TO THE BUDGET IT HAS. `CLASSIC_FOOTER_CHARS` is spelled from
+// numbers beside the classes (Tailwind builds only a class written out), so
+// a class changed alone would leave the card fitting lines to a room it no
+// longer has. Under the same mutant (S7-UCANVAS-mut, 20/26):
+//   x [classic] the card fits its footer to the budget the mounted card has: CLASSIC_FOOTER_CHARS against the mounted card (188 - 2 x 1 - 2 x 12 = 162 px of 9.5 px mono)
+//     expected 28
+//     got      29
+test("[classic] the card fits its footer to the budget the mounted card has", () => {
+  mountEighth();
+  const b = classicBudget();
+  eq(CLASSIC_FOOTER_CHARS, b.chars, `CLASSIC_FOOTER_CHARS against the mounted card (${b.why})`);
+});
+
+// ================================================ ruling 9's cases
+//
+// Each TARGET mounted on both cards over the fixture's lane, looped or not.
+// The expected lines are written out by hand. For the classic card each is
+// also held to the rule: no longer than the budget read off the mounted card,
+// the loop word and the angle words whole, and the whole line as the tooltip
+// exactly when something was left out.
+
+/** A name of exactly 30 characters. */
+const NAME30 = "M31 Andromeda Galaxy North Arm";
+
+interface FitCase {
+  what: string;
+  params: Record<string, string | number>;
+  /** The lane's loop wire is drawn. */
+  looped: boolean;
+  classic: string;
+  next: string;
+  /** Words the classic line must hold whole. */
+  whole: string[];
+}
+const FIT_CASES: FitCase[] = [
+  // #357's evidence, 34 characters: the overlap goes and the rest fits.
+  { what: "#357's probe, M31 2x2 at Rotate to PA 55, 25%",
+    params: { name: "M31", rows: 2, cols: 2, overlap: 25, angle: "Rotate to PA", rotation: 55 },
+    looped: true,
+    classic: "M31 · rotate · 2x2 · PA 55.0",
+    next: "M31 · rotate · 2x2 · PA 55.0 · 25%",
+    whole: ["M31", "rotate", "PA 55.0"] },
+  { what: "the eighth Example, M31 3x2 at Rotate to PA 55, 25%",
+    params: { ...EIGHTH.params }, looped: true,
+    classic: "M31 · rotate · 3x2 · PA 55.0",
+    next: "M31 · rotate · 3x2 · PA 55.0 · 25%",
+    whole: ["M31", "rotate", "PA 55.0"] },
+  // 39 characters; 33 without the overlap, so the name gives four: room
+  // 29 - 22 - 3 = 4, three of its characters and the ellipsis.
+  { what: "NGC 7331 rotating, 3x2 at Rotate to PA 30, 25%",
+    params: { name: "NGC 7331", rows: 2, cols: 3, overlap: 25, angle: "Rotate to PA", rotation: 30 },
+    looped: true,
+    classic: "NGC… · rotate · 3x2 · PA 30.0",
+    next: "NGC 7331 · rotate · 3x2 · PA 30.0 · 25%",
+    whole: ["rotate", "PA 30.0"] },
+  // 36 characters and no overlap; one character of room beside the grid, so
+  // the grid goes and the name gets seven: 29 - 19 - 3.
+  { what: "NGC 7331 panel-first, 3x2",
+    params: { name: "NGC 7331", rows: 2, cols: 3, overlap: 25, angle: "Rotate to PA", rotation: 30 },
+    looped: false,
+    classic: "NGC 73… · one panel at a time",
+    next: "NGC 7331 · one panel at a time · 3x2",
+    whole: ["one panel at a time"] },
+  // The panel-first line, 31 characters: the grid goes, the name stays whole.
+  { what: "the panel-first line, the eighth Example without its loop",
+    params: { ...EIGHTH.params }, looped: false,
+    classic: "M31 · one panel at a time",
+    next: "M31 · one panel at a time · 3x2",
+    whole: ["M31", "one panel at a time"] },
+  // 42 characters: the name gives 17, sixteen and the ellipsis.
+  { what: "a 30-character name, a single target at any angle",
+    params: { name: NAME30, rows: 1, cols: 1, angle: "Any angle", rotation: -1 },
+    looped: false,
+    classic: "M31 Andromeda Ga… · any angle",
+    next: `${NAME30} · any angle`,
+    whole: ["any angle"] },
+  // The mode is a word of the angle: "fixed PA 30.0" is never cut. Past the
+  // overlap there is no room for a character of the name beside the grid
+  // (29 - 28 - 3 < 2), so the grid goes and the name gets four.
+  { what: "a 30-character name, a rotating mosaic with the camera fixed at PA 30",
+    params: { name: NAME30, rows: 2, cols: 3, overlap: 25, angle: "Camera fixed at PA", rotation: 30 },
+    looped: true,
+    classic: "M31… · rotate · fixed PA 30.0",
+    next: `${NAME30} · rotate · 3x2 · fixed PA 30.0 · 25%`,
+    whole: ["rotate", "fixed PA 30.0"] },
+  // CONTROL: the single-target line fits, and is drawn whole with no tooltip.
+  { what: "the single-target line, NGC 7331 at any angle",
+    params: { name: "NGC 7331", rows: 1, cols: 1, angle: "Any angle", rotation: -1 },
+    looped: false,
+    classic: "NGC 7331 · any angle",
+    next: "NGC 7331 · any angle",
+    whole: ["NGC 7331", "any angle"] },
+];
+
+test("precondition: the 30-character name is 30 characters", () => {
+  eq(NAME30.length, 30, "NAME30's length");
+});
+
+/** The fitted case's TARGET on `which` card, over the fixture's lane. */
+function drawn(which: Which, c: FitCase): { line: string; title: string | null; chars: number | null } {
+  const t: FlowNodeRec = { ...T, params: { ...NODE_DEFS.target.params, ...c.params } };
+  const nodes = [t, AF, CY];
+  act(() => root.render(null));
+  act(() => {
+    useStore.setState({ flows: { ...FLOWS_INIT, graph: { nodes, edges: c.looped ? [...LANE, LOOP] : LANE } } } as any);
+  });
+  act(() => root.render(createElement(Fragment, null,
+    nodes.map((n) => createElement(CARD[which] as any, { key: n.id, node: n })))));
+  const el = cardOf("t")?.querySelector(SUMMARY[which]);
+  return {
+    line: el?.textContent ?? "",
+    title: el?.getAttribute("title") ?? null,
+    chars: which === "classic" ? classicBudget().chars : null,
+  };
+}
+
+// MUTANT "name cut before the overlap" (targetSummary.ts fittedFooter: the
+// name shortened first, against the line with its overlap, to one character
+// and the ellipsis at least, and the overlap dropped only if the line is
+// still over). Observed, cardFooterDom.test 16/26 (every classic line that is
+// over the budget, and the classic per-card cases above):
+//   x [classic] ruling 9: #357's probe, M31 2x2 at Rotate to PA 55, 25%: the classic footer: drew "M… · rotate · 2x2 · PA 55.0", not "M31 · rotate · 2x2 · PA 55.0"; "M31" is cut
+//   x [classic] ruling 9: NGC 7331 rotating, 3x2 at Rotate to PA 30, 25%: the classic footer: drew "N… · rotate · 3x2 · PA 30.0", not "NGC… · rotate · 3x2 · PA 30.0"
+//   x [classic] ruling 9: the panel-first line, the eighth Example without its loop: the classic footer: drew "M… · one panel at a time", not "M31 · one panel at a time"; "M31" is cut
+// (Swapping the two rungs alone is not a mutant: with its overlap kept, the
+// rest of a rotating line is 26 characters at least, "rotate · 2x2 · PA 0.0
+// · 0%", which leaves 29 - 26 - 3 = 0 for the name, so the swapped order
+// draws every line the same. Run as "rungs swapped" in S7-UCANVAS-mut:
+// cardFooterDom.test 26/26.)
+//
+// MUTANT "angle cut" (fittedFooter: past the overlap, the line cut at its
+// end with the ellipsis, as `truncate` cut it, instead of the name
+// shortened). Observed, cardFooterDom.test 18/26:
+//   x [classic] ruling 9: NGC 7331 rotating, 3x2 at Rotate to PA 30, 25%: the classic footer: drew "NGC 7331 · rotate · 3x2 · PA…", not "NGC… · rotate · 3x2 · PA 30.0"; "PA 30.0" is cut
+//   x [classic] ruling 9: NGC 7331 panel-first, 3x2: the classic footer: drew "NGC 7331 · one panel at a ti…", not "NGC 73… · one panel at a time"; "one panel at a time" is cut
+//   x [classic] ruling 9: a 30-character name, a single target at any angle: the classic footer: drew "M31 Andromeda Galaxy North A…", not "M31 Andromeda Ga… · any angle"; "any angle" is cut
+//   x [classic] ruling 9: a 30-character name, a rotating mosaic with the camera fixed at PA 30: the classic footer: drew "M31 Andromeda Galaxy North A…", not "M31… · rotate · fixed PA 30.0"; "rotate" is cut; "fixed PA 30.0" is cut
+//
+// MUTANT "the name goes to the ellipsis before the grid" (targetSummary.ts
+// nameFitted: `room >= 1` and an empty `kept` allowed, so a name with one
+// character of room is the ellipsis alone, as the ruling read literally
+// gives). Observed, cardFooterDom.test 21/26:
+//   x [classic] ruling 9: NGC 7331 panel-first, 3x2: the classic footer: drew "… · one panel at a time · 3x2", not "NGC 73… · one panel at a time"
+//   x [classic] ruling 9: the panel-first line, the eighth Example without its loop: the classic footer: drew "… · one panel at a time · 3x2", not "M31 · one panel at a time"; "M31" is cut
+for (const c of FIT_CASES) {
+  test(`[classic] ruling 9: ${c.what}`, () => {
+    const { line, title, chars } = drawn("classic", c);
+    const bad: string[] = [];
+    if (line !== c.classic) bad.push(`drew "${line}", not "${c.classic}"`);
+    if (chars !== null && line.length > chars) bad.push(`${line.length} characters, over the card's ${chars}`);
+    for (const w of c.whole) if (!line.includes(w)) bad.push(`"${w}" is cut`);
+    const wantTitle = line === c.next ? null : c.next;
+    if (title !== wantTitle) bad.push(`its tooltip is ${JSON.stringify(title)}, not ${JSON.stringify(wantTitle)}`);
+    ok(bad.length === 0, `the classic footer: ${bad.join("; ")}`);
+  });
+}
+
+// #/next keeps wrapping: its footer is the whole line for every case. MUTANT
+// "next card fits too" (FlowNode.tsx draws `fittedFooter(node, loops,
+// 29).line`). Observed, cardFooterDom.test 21/26 (this case and the [next]
+// per-card cases above):
+//   x [next] ruling 9: the #/next card keeps the whole line and wraps: #357's probe, M31 2x2 at Rotate to PA 55, 25%: drew "M31 · rotate · 2x2 · PA 55.0", not "M31 · rotate · 2x2 · PA 55.0 · 25%"; the eighth Example, M31 3x2 at Rotate to PA 55, 25%: drew "M31 · rotate · 3x2 · PA 55.0", not "M31 · rotate · 3x2 · PA 55.0 · 25%"; NGC 7331 rotating, 3x2 at Rotate to PA 30, 25%: drew "NGC… · rotate · 3x2 · PA 30.0", not "NGC 7331 · rotate · 3x2 · PA 30.0 · 25%"; ...
+test("[next] ruling 9: the #/next card keeps the whole line and wraps", () => {
+  const bad = FIT_CASES.flatMap((c) => {
+    const { line } = drawn("next", c);
+    return line === c.next ? [] : [`${c.what}: drew "${line}", not "${c.next}"`];
+  });
   ok(bad.length === 0, bad.join("; "));
 });
 
@@ -425,7 +607,7 @@ for (const which of ["classic", "next"] as const) {
     });
     act(() => root.render(createElement(Fragment, null,
       [...NODES, CAP].map((n) => createElement(CARD[which] as any, { key: n.id, node: n })))));
-    eq(footerOf(which, "t"), "M31 · one panel at a time · 3x2", `the ${which} card over a stranded loop (M12)`);
+    eq(footerOf(which, "t"), PANEL_FIRST[which], `the ${which} card over a stranded loop (M12)`);
     const btn = cardOf("t")?.querySelector(loopBtn);
     ok(btn, `the ${which} card offers no LOOP PANELS on a stranded loop`);
     await act(async () => { btn.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
@@ -433,7 +615,7 @@ for (const which of ["classic", "next"] as const) {
       .filter((e: FlowEdgeRec) => e.fromPort === "pass" && e.to === "t" && e.toPort === "next")
       .map((e: FlowEdgeRec) => `${e.id}:${e.from}`);
     eq(pass.join(","), "loop:cap", `the ${which} press: the pass wires into next`);
-    eq(footerOf(which, "t"), "M31 · rotate · 3x2 · PA 30.0 · 25%", `the ${which} card once the loop is moved`);
+    eq(footerOf(which, "t"), ROTATING[which], `the ${which} card once the loop is moved`);
     eq(cardOf("t")?.querySelector(loopBtn) ?? null, null, `the ${which} card still offers LOOP PANELS`);
   });
 }

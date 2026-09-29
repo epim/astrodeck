@@ -13,7 +13,9 @@
 // integration, no targets. Before #378 the server skipped the file, so the
 // panel had never seen such a row, and read as a plan it printed
 // "undefinedt · undefinedf · NaNm" beside a LOAD that answers 422 and an
-// EXPORT that answers 422.
+// EXPORT that answers 422. Since S7 (#478) the recording also holds a file
+// that is not JSON, listed last and naming nothing; `BAD` is the first
+// unreadable row, the Snapshot plan's.
 //
 // What is held here, on the three things this change owns:
 //   * `types.ts` `PlanRow` declares every key the recorded rows carry, the
@@ -42,9 +44,11 @@
 //   M10 "reason dropped" (panel)        the row says unreadable and not why
 //   V3  "cancel still deletes"          del ignores the confirm's answer
 //   V9  "badge kept"                    the row wears LOADED for the editor's plan
+//   F1  "unreadable rows filtered out"  the panel keeps only rows the reader passes
 // (V3 and V9 were added by the task's verifier, run in its own private copy,
 // scratchpad S5-PLANS-UI-verify-mut, which re-measured every tally below
-// against these 14 cases.)
+// against these 14 cases. F1 and M3's second quote were run for S7's two
+// deliberate pin changes, in scratchpad S7-STORE-mut.)
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -251,10 +255,30 @@ await testAsync("listPlans: a row whose file gives no name is named by its id; e
   //     got      undefined
   // The shared list is put back in a `finally`: a failure here must not hand
   // the nameless list to every panel case below (it did, under M3, before).
+  // DELIBERATE PIN CHANGE (S7, #478): the recording gained a file that is not
+  // JSON, which gives no name, so the recorded list read back is no longer
+  // the list as sent. Its named rows still are; the nameless one is named by
+  // its id, graded here on the server's own row rather than one made by
+  // dropping BAD's name. M3 "name left as sent", observed on the re-pin
+  // (S7-STORE-mut; 12/14 passed, the panel's nameless case red with it):
+  //   x listPlans: a row whose file gives no name is named by its id; every
+  //   other row as sent: the recorded row 3a9d7e5c1b0f4e2d8c6b4a2f0e8d6c4b,
+  //   read back:
+  //     expected {"id":"3a9d7e5c1b0f4e2d8c6b4a2f0e8d6c4b","status":"unreadable",
+  //     "unreadable":"not valid JSON","mtime":1790400000,
+  //     "name":"3a9d7e5c1b0f4e2d8c6b4a2f0e8d6c4b"}
+  //     got      {"id":"3a9d7e5c1b0f4e2d8c6b4a2f0e8d6c4b","status":"unreadable",
+  //     "unreadable":"not valid JSON","mtime":1790400000}
   try {
     listNow = LIST.map((r) => ({ ...r }));
     const asSent = await listPlans();
-    eq(JSON.stringify(asSent), JSON.stringify(LIST), "control: the recorded list, read back:");
+    eq(asSent.length, LIST.length, "the recorded list, read back, has:");
+    for (const [i, row] of LIST.entries()) {
+      const want = typeof row.name === "string" ? row : { ...row, name: row.id };
+      eq(JSON.stringify(asSent[i]), JSON.stringify(want), `the recorded row ${row.id}, read back:`);
+    }
+    assert(LIST.some((r) => r.name === undefined),
+      "precondition: the recording holds no nameless row, so nothing above named one");
     const { name: _dropped, ...nameless } = BAD;
     listNow = [{ ...GOOD }, nameless];
     const read = await listPlans();
@@ -289,7 +313,15 @@ await testAsync("the unreadable file is listed and counted, never hidden", () =>
   const header = [...container.querySelectorAll("button")].find((b: any) =>
     /Saved plans/.test(b.textContent)) as any;
   assert(header != null, "precondition: the saved-plans header is gone");
-  assert(/Saved plans \(2\)/.test(header.textContent), `the file is not counted: ${header.textContent}`);
+  // DELIBERATE PIN CHANGE (S7, #478): the recording's three rows, where it
+  // held two, pinned to the recording's length rather than a number. F1
+  // "unreadable rows filtered out" (the panel keeping only the rows
+  // `planUnreadableReason` passes), observed on the re-pin (S7-STORE-mut;
+  // 6/14 passed, every case about an unreadable row red with it):
+  //   x the unreadable file is listed and counted, never hidden: the files
+  //   are not all counted: Saved plans (1)▾
+  assert(header.textContent.includes(`Saved plans (${LIST.length})`),
+    `the files are not all counted: ${header.textContent}`);
   assert(unreadableRow() != null, "no row for the unreadable file");
 });
 

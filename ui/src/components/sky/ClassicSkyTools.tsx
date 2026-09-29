@@ -70,7 +70,8 @@ export function ClassicSkyTools({ initialTool, onClose, embedded = false, active
   if (embedded) return <section className="panel classic-sky-tools cst-embedded" aria-label={tool === 'finder' ? 'Atlas AR camera and sky map' : 'Atlas horizon editor'}>{content}</section>;
   return <Overlay open label="Sky tools" onClose={onClose} surfaceClassName="classic-sky-tools"
     bodyClassName="p-4"
-    surfaceStyle={{"--ov-w":"940px","--ov-max-w":"96vw","--ov-max-h":"92dvh"} as CSSProperties}
+    // 92dvh as a fraction, gap zeroed: the no-dvh fallback clamps it too (#417).
+    surfaceStyle={{"--ov-w":"940px","--ov-max-w":"96vw","--ov-max-h-frac":"0.92","--ov-max-h-gap":"0px"} as CSSProperties}
     head={<div className="cst-head"><h2>Sky tools</h2><button className="btn" onClick={onClose}>Done</button></div>}>
     {content}
   </Overlay>;

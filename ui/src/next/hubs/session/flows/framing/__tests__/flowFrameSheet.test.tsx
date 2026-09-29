@@ -43,9 +43,11 @@
 //      compile held open, which neither the modal's own test (no SheetHost)
 //      nor the probe (no held compile) can do.
 //   8. RUN MODE IS THE DOOR'S (#189 S5; spec 2.6). While the open flow's
-//      session runs (flowRunState `flowRunLive`), the sheet mounts the modal
-//      with `viewOnly`: read-only, with RUNNING_VIEW_ONLY; a dormant session,
-//      or the rig running another flow's session, opens it editable.
+//      session runs (flowRunState `flowRunLive`, over the sessions the slice
+//      knows as the flow's since #449), the sheet mounts the modal with
+//      `viewOnly`: read-only, with RUNNING_VIEW_ONLY; a dormant session, or
+//      the rig running another flow's session, opens it editable. That it
+//      holds through a save's re-read is runModeAcrossSave.test.tsx's.
 //
 // Every mutant below was run in a private scratch copy of ui/, never in the
 // shared tree (#254), and the failure it produced is quoted verbatim. All of
@@ -313,6 +315,10 @@ function seed(o: {
           created_ts: 0, updated_ts: 0, last_run: null, last_result: "", readonly: o.readonly ?? false },
         graph: gr,
         progress: o.progress ?? null,
+        // As the slice holds it once an answer has landed: the answer's
+        // session noted in the same write (flowsSlice `fetchProgress`), which
+        // is what the door reads since #449.
+        sessionIds: o.progress?.session?.id ? [o.progress.session.id] : [],
         ui: { ...FLOWS_INIT.ui, screen: "editor" },
       } as never,
     } as never);

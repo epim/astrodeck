@@ -29,7 +29,7 @@
 // is not a camera.
 import { NODE_DEFS, TARGET_ANGLES, targetAngle } from "../nodeDefs";
 import { DEFAULT_OVERLAP, mosaicTotalFov, wrapRaHours } from "../../../lib/framing";
-import { panelStateOf, type PanelRunState } from "../flowRunState";
+import { panelStateOf, type PanelRunSource, type PanelRunState } from "../flowRunState";
 import type { PanelState } from "../../atlas/PanelLayer";
 import type { SequenceGroupState, SkyAngleRecord } from "../../../types";
 
@@ -70,8 +70,9 @@ export interface RigBlock {
  *  declared its own record, looser than the server's and held to nothing, and
  *  the sheet's full record compiled against it only because it was looser.
  *  The keys are exactly the ones read below (`rec.x`), which
- *  framingModel.test.ts checks, so a test can build the four it needs. */
-export type MeasuredAngle = Pick<SkyAngleRecord, "pa_deg" | "pier_side" | "solved_at" | "source">;
+ *  framingModel.test.ts checks, so a test can build the five it needs.
+ *  `exposed_at` joined in S7 (#439): the USE MEASURED line ages the frame. */
+export type MeasuredAngle = Pick<SkyAngleRecord, "exposed_at" | "pa_deg" | "pier_side" | "solved_at" | "source">;
 
 /** The compile's numbers for one block's RUN section (spec 2.4): one entry
  *  of the route's `readouts` key, server `flows/readouts.py` `_block`, field
@@ -190,21 +191,27 @@ const TARGET_DEFAULTS: Params = NODE_DEFS.target.params;
 
 /** One param as `flowsSetParam` would store it (flowsSlice.ts): COERCION
  *  KEYS OFF THE TYPE OF THE MISSING-KEY DEFAULT. A numeric default makes the
- *  value `parseFloat(raw)`, or the default itself when that is NaN; any other
- *  key (a string default, or `angle`, which has none) stores the text as
- *  typed. Copied rule for rule, including `parseFloat`'s leniency ("12abc" is
- *  12), because the modal and the inspector write one node: if they coerced
- *  differently, the same keystrokes would save two graphs.
- *  framingModel.test.ts holds this against the real slice action. That
- *  includes the slice's one flaw: "Infinity" and "1e999" parse to Infinity,
- *  which is not NaN, so both store it and it saves as null (#358); fix the
- *  two together. */
+ *  value `parseFloat(raw)` when that is a FINITE number, and the default
+ *  itself otherwise; any other key (a string default, or `angle`, which has
+ *  none) stores the text as typed. Copied rule for rule, including
+ *  `parseFloat`'s leniency ("12abc" is 12), because the modal and the
+ *  inspector write one node: if they coerced differently, the same keystrokes
+ *  would save two graphs. framingModel.test.ts holds this against the real
+ *  slice action, and coerceParamFinite.test.ts against the slice's rule.
+ *
+ *  FINITE, NOT MERELY "NOT NaN" (#358). `parseFloat` reads "Infinity",
+ *  "-Infinity" and "1e999" as an infinity, which is not NaN, and JSON writes
+ *  an infinity as null. S5 fixed the store and left this copy on NaN, so the
+ *  patch held an infinity the store then wrote as the default, the draft
+ *  compile `framedGraph` builds from the patch sent null for it, and a node
+ *  already at the default counted as framed for a change the store declined
+ *  to write. S7 made the two agree. */
 export function coerceParam(key: string, raw: string | number): string | number {
   const text = typeof raw === "number" ? String(raw) : raw;
   const base = TARGET_DEFAULTS[key];
   if (typeof base === "number") {
     const n = parseFloat(text);
-    return Number.isNaN(n) ? base : n;
+    return Number.isFinite(n) ? n : base;
   }
   return text;
 }
@@ -249,8 +256,20 @@ function numOf(draft: FramingDraft, key: DraftKey): number {
   return typeof v === "number" ? v : NaN;
 }
 
+/** A field of the draft as text, read as the server reads a TARGET's text
+ *  (S7 orchestrator ruling 6, server `identity._typed` and `compile._text`):
+ *  text trimmed of Python's whitespace (`pyStrip`), a finite number as its
+ *  text, 0 included, and anything else (null, a bool, NaN, an infinity, a
+ *  list) blank. Until S7 this was `String(v).trim()`, so the number 0 was
+ *  typed here and blank on the server, and trim() kept a lone NEL or U+001C
+ *  the server strips and stripped a BOM the server keeps: one block, placed
+ *  two ways (#387's residual). `true` and NaN were typed text on both sides
+ *  then; ruling 6 makes them blank on both. */
 function textOf(draft: FramingDraft, key: DraftKey): string {
-  return String(draft[key] ?? "").trim();
+  const v: unknown = draft[key];
+  if (typeof v === "string") return pyStrip(v);
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return "";
 }
 
 /** One side of the grid, as compile.py `_grid_dim` reads the stored number:
@@ -391,10 +410,13 @@ export function parseDecDeg(text: string | number): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
-/** Whether the operator typed coordinates: both RA and Dec non-blank, the
- *  server's `identity.typed_coordinates`. Without them the server places the
- *  block by its NAME, through the catalogue, and the modal has nothing to lay
- *  out until it is searched. */
+/** Whether the operator typed coordinates: both RA and Dec non-blank as
+ *  `textOf` reads them, the server's `identity.typed_coordinates` (ruling 6:
+ *  text with something besides Python's whitespace, or a finite number, 0
+ *  included). Without them the server places the block by its NAME, through
+ *  the catalogue, and the modal has nothing to lay out until it is searched.
+ *  Graded with the server on server/tests/fixtures/typed_coordinates_cases.json
+ *  (`typedCoordinatesFixture.test.ts`). */
 export function typedCoordinates(draft: FramingDraft): boolean {
   return textOf(draft, "ra") !== "" && textOf(draft, "dec") !== "";
 }
@@ -903,14 +925,30 @@ function measuredPa(rec: MeasuredAngle | null | undefined): number | null {
   return typeof pa === "number" && Number.isFinite(pa) ? Math.round(pa * 10) / 10 : null;
 }
 
+/** When the frame the angle was measured on was taken, unix seconds:
+ *  `exposed_at` when it is finite, else `solved_at`, else null (#439).
+ *  Freshness is judged on the exposure (types.ts `SkyAngleRecord`: "a stale
+ *  frame can finish solving late"), as the engine's angle check and the
+ *  ruling 9 angle lock judge it (#292). The saved-frame WCS stamp solves a
+ *  frame after it has been saved, so its `solved_at` trails the exposure; an
+ *  age from `solved_at` called a five-minute-old angle "under a minute ago".
+ *  `solved_at` stays as the fallback for a record whose exposure time is
+ *  null or absent, since the solve's time is then the best there is. */
+function measuredAt(rec: MeasuredAngle): number | null {
+  if (Number.isFinite(rec.exposed_at)) return rec.exposed_at;
+  return Number.isFinite(rec.solved_at) ? rec.solved_at : null;
+}
+
 /** The USE MEASURED chip (spec 2.4), from `status.sky_angle`: "camera
- *  measured 37.2 deg, 14 min ago, by the centring solve, pier west". Null
- *  with no record. `nowS` is the caller's clock, in unix seconds. */
+ *  measured 37.2 deg, 14 min ago, by the centring solve, pier west". The age
+ *  is the measured frame's (`measuredAt`), not the solve's. Null with no
+ *  record. `nowS` is the caller's clock, in unix seconds. */
 export function useMeasuredLine(rec: MeasuredAngle | null | undefined, nowS: number): string | null {
   const pa = measuredPa(rec);
   if (rec == null || pa === null) return null;
   const parts = [`camera measured ${pa.toFixed(1)} deg`];
-  if (Number.isFinite(rec.solved_at) && Number.isFinite(nowS)) parts.push(ago(Math.max(0, nowS - rec.solved_at)));
+  const at = measuredAt(rec);
+  if (at !== null && Number.isFinite(nowS)) parts.push(ago(Math.max(0, nowS - at)));
   const src = String(rec.source ?? "").trim();
   parts.push(`by ${SOLVE_PHRASE[src] ?? (src ? `the ${src} solve` : "a solve")}`);
   if (rec.pier_side === "east" || rec.pier_side === "west") parts.push(`pier ${rec.pier_side}`);
@@ -1057,19 +1095,26 @@ export function runLines(r: RunReadouts, rig: RigBlock | null | undefined): stri
  *  grid than the draft's (`grid` is the progress block's): the group's labels
  *  name the panels of the plan that is running, and on another grid "2-2" is
  *  another piece of sky. PanelsSection's `progressByCell` refuses the counts
- *  for the same reason. */
+ *  for the same reason.
+ *
+ *  `run` is the sequence state the group came from, so the panel the run
+ *  is on reads as shot only while the run is running, and as the current
+ *  panel while it is paused, holding or stopping (#451, `panelStateOf`).
+ *  Required, as `panelStateOf`'s is: a caller that left it out used to get
+ *  "shooting now" for a held run's panel. */
 export function runPanelsOf(
   group: SequenceGroupState | null | undefined,
   rows: number,
   cols: number,
   grid: { rows: number; cols: number } | null | undefined,
+  run: PanelRunSource | null,
 ): Record<string, PanelRunState> {
   const out: Record<string, PanelRunState> = {};
   if (!group || !grid || grid.rows !== rows || grid.cols !== cols) return out;
   for (let r = 1; r <= rows; r++) {
     for (let c = 1; c <= cols; c++) {
       const label = `${r}-${c}`;
-      const state = panelStateOf(label, group);
+      const state = panelStateOf(label, group, run);
       if (state) out[label] = state;
     }
   }
@@ -1083,15 +1128,18 @@ export function runPanelsOf(
  *  of it. Then the live states: SET ASIDE, which holds for the night whatever
  *  else the group does, and SHOOTING, ahead of DONE, because the progress
  *  count lags the run by up to a re-read and is never ahead of it, so a panel
- *  that is both is still the panel the visit is on. Then DONE, every owed sub
- *  banked, and PENDING. */
+ *  that is both is still the panel the visit is on. The CURRENT panel of a
+ *  run that is paused, holding or stopping (#451) is drawn as SHOOTING is,
+ *  with the corner ticks: it is still the panel the visit is on, and only
+ *  the words say no exposure of it is being made. Then DONE, every owed
+ *  sub banked, and PENDING. */
 export function panelDrawState(
   panel: { skipped: boolean; banked: number; total: number },
   run: PanelRunState | null | undefined,
 ): PanelState {
   if (panel.skipped) return "skipped";
   if (run?.kind === "set_aside") return "set_aside";
-  if (run?.kind === "shooting") return "shooting";
+  if (run?.kind === "shooting" || run?.kind === "current") return "shooting";
   return panel.total > 0 && panel.banked >= panel.total ? "done" : "pending";
 }
 

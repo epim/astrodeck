@@ -75,21 +75,23 @@ interface TonightRead {
  *  `banked`/`pct` come back null unless the server sent a FINITE NUMBER, which
  *  is the whole point: a missing figure and a zero are different answers, and
  *  `num()` already refuses to invent one. A payload with no `campaign` key at
- *  all returns null and the tab says so rather than drawing an empty pool. */
+ *  all returns null and the tab says so rather than drawing an empty pool.
+ *  `quota` is read the same way and for the same reason (#424): a refused
+ *  quota is no count, and read as `?? 0` it gave every bar a maximum of 0. */
 function readCampaign(raw: Record<string, unknown> | null): CampaignRead | null {
   if (!raw) return null;
   return {
     is_campaign: raw.is_campaign === true,
     has_pool: raw.has_pool === true,
     has_ledger: raw.has_ledger === true,
-    quota: num(raw.quota) ?? 0,
+    quota: num(raw.quota),
     note: str(raw.note),
     members: arr(raw.members).map((m): CampaignMember => {
       const r = rec(m);
       return {
         name: r ? str(r.name) : "",
         banked: r ? num(r.banked) : null,
-        quota: (r ? num(r.quota) : null) ?? 0,
+        quota: r ? num(r.quota) : null,
         done: r ? r.done === true : false,
         pct: r ? num(r.pct) : null,
       };
@@ -316,7 +318,10 @@ export function TonightPanel(): JSX.Element {
       // hands the surface a `rounded-2xl` utility. Overridden here rather than
       // in index.css, which is shared by every overlay in the app.
       surfaceClassName="!rounded-none"
-      surfaceStyle={{ "--ov-max-w": "880px", "--ov-max-h": "90dvh" } as CSSProperties}
+      // The height as a FRACTION of the viewport with center's sm gap zeroed,
+      // which computes the 90dvh it used to pass wherever dvh exists and still
+      // clamps where it does not (#417).
+      surfaceStyle={{ "--ov-max-w": "880px", "--ov-max-h-frac": "0.9", "--ov-max-h-gap": "0px" } as CSSProperties}
       head={
         <TonightHead
           tab={tab}

@@ -18,9 +18,16 @@ Owns `tools/ui_probe/**` only. Never commits anything itself.
 
 ## The probe's own tests
 
-The probe has regression tests of its own - no server, no UI, about seven
-seconds. `run.ps1` runs them before it builds anything, and they need the same
-system python everything else here does:
+The probe has regression tests of its own, which drive a real browser against
+loopback fixtures: no AstroDeck server, no UI build, no rig.
+`test_probe_isolation.py` holds #31, `test_probe_s4.py` the S4 frame probe and
+`routes_s4_frame.json`, `test_probe_s5_s6.py` the S5 and S6 probe and
+`routes_s5_s6.json`, and `test_probe_s7.py` the S7 probe, `routes_s7.json`,
+`seed_session.py` and `server_ctl.py`'s two S7 flags. They are run by hand, and
+by `run.ps1` before it builds anything, with the same system python everything
+else here needs (152 tests, 333 s on the dev box on 2026-09-29, 57 of them
+test_probe_s7.py's; two of those also run `seed_session.py` under the server
+venv, and skip, saying so, without it):
 
 ```powershell
 cd tools\ui_probe
@@ -28,9 +35,97 @@ python -m unittest discover -p "test_*.py"
 ```
 
 `python -m pytest` does NOT work: the interpreter that has Playwright has no
-pytest, and the one the server suite uses has no Playwright. A `pytest` run
-from the repository root skips these with that reason rather than failing to
-collect them.
+pytest, and the one the server suite uses has no Playwright. Where Playwright
+is not importable each file skips, saying so, rather than failing to collect:
+a `pytest` run from the repository root, or this discover run under the server
+venv, reports three skips.
+
+### The route-file guard is in the server suite
+
+Every route file a tracked test names must be tracked too (#415): a commit
+that carries a test and leaves its route file behind grades nothing on any
+other checkout. That guard needs git and nothing else, so it lives in the
+server suite, `server/tests/test_probe_route_files_tracked.py`, and every
+server suite run grades it, CI's included (S7 orchestrator ruling 8, #479).
+It asks about the tracked `test_*.py` files here and in `server/tests`, since
+`test_mosaic_spec_claims.py` reads `routes_s4_frame.json` too. When you add a
+route file, commit it with the test that reads it, by explicit pathspec. To
+run the guard alone:
+
+```powershell
+cd server
+.venv\Scripts\python.exe -m pytest -q -n0 tests\test_probe_route_files_tracked.py
+```
+
+## `routes_s7.json` -- the four S7 scenarios (#189 S7 item 1b)
+
+Four simulator scenarios on the real page, each at 390 x 844 with touch and at
+1440 x 900: a rotating 2x2 RUN and followed; a forced solve failure on one
+panel; CONTINUE on a second observing night; a meridian straddle. The route
+file's `_run`, `_flows`, `_fault`, `_continue` and `_wall_time` say how each is
+staged and why. Each scenario runs against its OWN private server, because
+each leaves the engine and the site in a state the next must not inherit (an
+armed session, a saved site, a run left going):
+
+```powershell
+# a private UI build, outside ui/dist, which other agents may be using
+cd ui; node_modules\.bin\vite build --outDir <scratch>\dist --emptyOutDir; cd ..
+# scenario N, on any port but 8800
+python tools\ui_probe\server_ctl.py start --fresh --port 8871 `
+    --config-dir <scratch>\cfg-1 --capture-dir <scratch>\cap-1 --ui-dir <scratch>\dist
+python tools\ui_probe\probe.py --routes tools\ui_probe\routes_s7.json `
+    --widths 390,1440 --port 8871 --out <scratch>\out-1 `
+    --only s7-rot-run-phone,s7-rot-frame-phone,s7-rot-classic-phone,s7-rot-classic-desktop
+python tools\ui_probe\server_ctl.py stop --config-dir <scratch>\cfg-1
+```
+
+Scenario 2's server adds `--sim-solve-fault 0.731777,41.34074,0.12`, and
+scenario 3's probe adds `--config-dir` and `--capture-dir` (its seed writes that
+server's session store). Scenario 4 needs the fixture site's night (40 N 74 W,
+about 00:30 to 10:00 UTC in late September) and takes about 16 minutes.
+
+What S7 added, each described where it is implemented (probe.py's module
+docstring, point 7):
+
+- **`readouts`**, the check the acceptance asks for: the DOM readouts,
+  `GET /api/sequence/state` and `GET /api/flows/{id}/progress`, read in ONE
+  page evaluation, the two route reads bracketing the DOM read. The two reads
+  must agree (a run that moved between them is read again) and the DOM must
+  EQUAL them. `same_session` ties the rig's session to the flow's, `require`
+  holds a value in both reads (the straddle's `meridian_wait`), `containing`
+  picks a row by its words, and a template hole may pass through `localdate`.
+- **`touch`**: a phone walk asserts that the page reports a touch screen, and
+  every click step on it is a `tap()`. The 390 profile has touch
+  (`WIDTH_PROFILES`, built by `_new_context` for main and the tests alike).
+- **Steps**: `wait_change` (follow a readout until it moves), `remember_api`
+  and `wait_api` `differs_from` (the pier side before the meridian, and after),
+  and `run_copy` and `readouts` as mid-walk checks.
+- **Seeds**: `set_site` (a fixture site through `PUT /api/site`, `night`
+  refusing daylight), `daylight_site` (one where the Sun is up now, so
+  auto-resume opens no window under an armed session), `save_flow`'s
+  `meridian` (a TARGET's RA from the probe's clock at the server's saved site),
+  `run_flow` (run a flow for real until it banks, then abort it) and
+  `seed_session` (move that session onto an earlier observing night and arm it,
+  through `seed_session.py` under the server's venv). A seed op's `routes`
+  limits it to the scenario whose routes are walked (`--only`).
+- **Never the rig's port**: `probe.py` refuses a base on port 8800 and
+  `server_ctl.py start` refuses `--port 8800`, before anything is launched,
+  wiped or seeded.
+- **`server_ctl.py start --sim-solve-fault RA_H,DEC,RADIUS`** sets
+  `ASTRODECK_SIM_SOLVE_FAULT` for the server: every simulator solve within
+  RADIUS deg of that sky position fails (`server/astrodeck/solve/simsolver.py`,
+  sim-only because the SimSolver refuses a real rig first;
+  `server/tests/test_s7_simsolver_fault.py`). Without the flag the variable is
+  removed from the server's environment.
+- **`seed_session.py`**: run by the server's venv, never the system python;
+  refuses a directory under the repository's `server/` or `captures/` (where a
+  checkout's server keeps the developer's own config and captures when no
+  directory is set), a session a run owns, and a move that leaves a run on
+  tonight's night.
+
+Commit `routes_s7.json` with `test_probe_s7.py`, by explicit pathspec: the
+route-file guard in the server suite fails a tracked test whose route file is
+not tracked.
 
 ## One command
 

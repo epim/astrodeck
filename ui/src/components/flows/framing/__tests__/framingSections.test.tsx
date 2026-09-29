@@ -22,6 +22,12 @@
 // single target does (#413, on the route's recorded single-target answer),
 // and that Grid order says where the run starts (#412 item 4).
 //
+// Since S7 it also holds PANELS' run lines in the run's words on the recorded
+// sequence states: the panel the run is on while it is paused, holding for
+// cloud or stopping is never said to be shot (#451), and a set-aside reason
+// that already names its panel is not prefixed with the label again (#509).
+// Those mutants were run in scratchpad S7-URUNHOLD-mut (2026-09-28).
+//
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // s4-umodal-mut), never in the shared tree (#254), and the failure it
 // produced is quoted verbatim. After the limit reset every one was run
@@ -75,9 +81,13 @@ const { flowsApi } = await import("../../../../lib/flowsApi");
 const { NODE_DEFS } = await import("../../nodeDefs");
 const { COUNTS_NOTE, COUNTS_DORMANT_ADDENDUM } = await import("../../countsNotice");
 const { framingApi, framingTiming, campaignLine } = await import("../framingApi");
-const { ANY_ANGLE_ON_A_GRID, NO_ANGLE_ON_A_GRID, NO_OPTICS, NO_ROTATOR } = await import("../framingModel");
+const { ANY_ANGLE_ON_A_GRID, NO_ANGLE_ON_A_GRID, NO_OPTICS, NO_ROTATOR, runPanelsOf } = await import("../framingModel");
 const { ROTATE_LABEL, WHEN_WAITING_NO_MOSAIC } = await import("../sections/RunSection");
-const { GRID_ORDER_NOTE, SETTING_FIRST_NOTE } = await import("../sections/PanelsSection");
+const {
+  GRID_ORDER_NOTE, SETTING_FIRST_NOTE, PanelsSection, panelRows, runLine, runRowText, namesPanel,
+  SHOOTING_NOW, SET_ASIDE_TONIGHT, CURRENT_PAUSED, CURRENT_HOLDING_FOR_CLOUD, CURRENT_HOLDING,
+  CURRENT_STOPPING,
+} = await import("../sections/PanelsSection");
 // The classic overview's copy of the no-mosaic line, which RUN's is held
 // equal to (the overview cannot import the sheet's: the classic flows chunk
 // may not reach a framing module, classicFrameHost.test.tsx).
@@ -124,6 +134,12 @@ const READOUTS_FX = readJson("../../../../../../server/tests/fixtures/flow_reado
  *  route by test_flows_readouts.py `TestASingleTargetExamplesFixture`. Its
  *  block is n2, `mode` "single", every group number null, focus "once". */
 const SINGLE_FX = readJson("../../../../../../server/tests/fixtures/flow_readouts_single.json");
+/** The sequence states the engine published on the clocked simulator for a
+ *  rotating 2x2 whose 2-2 is set aside, rebuilt byte for byte by
+ *  test_s5_recorded_state.py: 1-1 being shot, and (#451) the run paused,
+ *  holding for cloud and stopping from an Abort pressed in that hold, each
+ *  with its group on 1-1. */
+const RUN_FX = readJson("../../../../../../server/tests/fixtures/sequence_state_mosaic.json").states;
 
 const OPERATOR = ["view.status", "view.preview", "view.site_derived", "control.capture", "control.mount"];
 const VIEWER = ["view.status", "view.preview"];
@@ -943,6 +959,133 @@ await test("Grid order carries a note that the run starts after the last-visited
   assert(/starts after the last-visited panel/.test(GRID_ORDER_NOTE), `the note does not say where the run starts: ${GRID_ORDER_NOTE}`);
   choose(doc.querySelector("#tfs-order"), "Setting first");
   eq(note(), SETTING_FIRST_NOTE, "the note under Setting first");
+});
+
+// ======================================================================
+// PANELS in run mode: the run's line under a panel, in the run's words
+// (S7: #451, #509; spec 2.6, 5.8).
+//
+// PANELS mounted on its own, for the recorded night's 2x2, each panel's run
+// state asked of a recorded sequence state through the reader the sheet
+// uses, framingModel `runPanelsOf`, with the sequence state passed as the
+// sheet passes it since the S7 integration (it calls flowRunState
+// `panelStateOf` for each panel): so the words are graded on what the engine
+// published, and runMode.test.tsx grades the sheet's wiring. Asked through
+// `runPanelsOf`, this case is red under framingModel.ts's mutant "state not
+// passed" (`panelStateOf(label, group, run)` made `panelStateOf(label, group,
+// { state: "running" })`), 22/23 in the integration's private copy
+// (scratchpad S7-INTEG-r2-mut). It used to ask `panelStateOf` directly, so no
+// mutant of the sheet's own reader could reach it:
+//   x PANELS says what the run is doing to its panel, on the recorded states: shot, paused, holding
+//     for cloud, stopping: PANELS under the recorded paused state: expected {"1-1":"1-1: current
+//     panel, run paused",...}, got {"1-1":"1-1: shooting now",...} The engine's
+// set-aside reason carries an em dash, which the console printed as a
+// replacement character; it is elided below as "...".
+
+/** PANELS for the recorded 2x2 in run mode, under the recorded `state`. */
+function mountRunPanels(state: any): void {
+  const run = runPanelsOf(state.group, 2, 2, { rows: 2, cols: 2 }, state);
+  const rows = panelRows({
+    rows: 2, cols: 2, skip: [], progress: null, answerPanels: null, order: "Least complete first", run,
+  });
+  act(() => { root.render(null); });
+  act(() => {
+    root.render(createElement(PanelsSection, {
+      rows, order: "Least complete first", showAltitude: false, nightCard: null,
+      onOrder: () => {}, onToggle: () => {},
+    }));
+  });
+}
+/** PANELS' run lines, by label. */
+function panelRunLines(): Record<string, string> {
+  const pairs: [string, string][] = [];
+  for (const el of Array.from(doc.querySelectorAll('[data-testid="framing-panel-run"]')) as any[]) {
+    pairs.push([el.getAttribute("data-panel-run"), el.textContent]);
+  }
+  return Object.fromEntries(pairs.sort(([a], [b]) => a.localeCompare(b)));
+}
+const RUN_REASON: string = RUN_FX.shooting.group.set_aside[0].reason;
+
+// MUTANT "state check dropped" (flowRunState.ts `panelStateOf` answering
+// `shooting` for the group's panel whatever the run's state). Observed, 22/23
+// (flowRunState.test.ts is red on the recorded hold too):
+//   x PANELS says what the run is doing to its panel, on the recorded states: shot, paused, holding
+//     for cloud, stopping: PANELS under the recorded paused state: expected {"1-1":"1-1: current
+//     panel, run paused","2-2":"set aside tonight: centring failed on 2-2 on 3 consecutive visits:
+//     plate solve failed ... used raw GoTo"}, got {"1-1":"1-1: shooting now","2-2":"set aside
+//     tonight: centring failed on 2-2 on 3 consecutive visits: plate solve failed ... used raw GoTo"}
+// MUTANT "held words read as shooting" (PanelsSection.tsx `runLine` answering
+// SHOOTING_NOW for the current kind). Observed, 22/23, the same line.
+// MUTANT "hold worded as cloud whatever it is" (`runLine` answering
+// CURRENT_HOLDING_FOR_CLOUD for every hold). Observed, 22/23:
+//   x PANELS says what the run is doing to its panel, on the recorded states: shot, paused, holding
+//     for cloud, stopping: a hold that names no reason: expected "current panel, run holding", got
+//     "current panel, holding for cloud"
+await test("PANELS says what the run is doing to its panel, on the recorded states: shot, paused, holding for cloud, stopping", async () => {
+  const aside = `${SET_ASIDE_TONIGHT}: ${RUN_REASON}`;
+  const cases: [string, string][] = [
+    ["shooting", SHOOTING_NOW], ["paused", CURRENT_PAUSED],
+    ["holding", CURRENT_HOLDING_FOR_CLOUD], ["aborting", CURRENT_STOPPING],
+  ];
+  for (const [kind, words] of cases) {
+    mountRunPanels(RUN_FX[kind]);
+    eq(panelRunLines(), { "1-1": `1-1: ${words}`, "2-2": aside }, `PANELS under the recorded ${kind} state`);
+    if (kind !== "shooting") {
+      const text = String(q("framing-panels")?.textContent ?? "");
+      assert(!text.includes(SHOOTING_NOW), `PANELS says "${SHOOTING_NOW}" while the run is ${kind}: ${text}`);
+    }
+  }
+  // The recorded abort still carries the hold's key (#513): the words are
+  // the state's, so it reads as stopping, never as holding.
+  eq(RUN_FX.aborting.hold, "clouds", "premise: the recorded abort carries the hold's key");
+  // A hold whose reason the engine does not name is a hold, not cloud.
+  eq(runLine({ kind: "current", run: "holding", hold: null }), CURRENT_HOLDING, "a hold that names no reason");
+  eq(runLine({ kind: "current", run: "holding", hold: "clouds" }), CURRENT_HOLDING_FOR_CLOUD, "a hold for cloud");
+});
+
+// MUTANT "label prefixed again" (PanelsSection.tsx `runRowText` prefixing the
+// label whatever the reason says, as S5 printed every line). Observed, 21/23
+// (the case above is red on the recorded shooting state's 2-2 line too, and
+// runMode.test.tsx's three cases that pin it):
+//   x the set-aside line names its panel once: a reason that names it stands alone, and one that
+//     does not keeps the label: 2-2's line on the recorded state: expected "set aside tonight:
+//     centring failed on 2-2 on 3 consecutive visits: plate solve failed ... used raw GoTo", got
+//     "2-2: set aside tonight: centring failed on 2-2 on 3 consecutive visits: plate solve failed
+//     ... used raw GoTo"
+// MUTANT "label dropped always" (`runRowText` answering `runLine` alone, for
+// every panel). Observed, 21/23 (the case above is red at 1-1's line, "1-1":
+// "shooting now"):
+//   x the set-aside line names its panel once: a reason that names it stands alone, and one that
+//     does not keeps the label: a reason that does not name the panel: expected "2-2: set aside
+//     tonight: guiding did not start on any panel of M31", got "set aside tonight: guiding did not
+//     start on any panel of M31"
+// MUTANT "names a longer label" (`namesPanel` answering `text.includes(label)`).
+// Observed, 22/23:
+//   x the set-aside line names its panel once: a reason that names it stands alone, and one that
+//     does not keeps the label: 12-2 is not 2-2: expected false, got true
+await test("the set-aside line names its panel once: a reason that names it stands alone, and one that does not keeps the label", async () => {
+  assert(RUN_REASON.startsWith("centring failed on 2-2"), `premise: the engine's reason names its panel: ${RUN_REASON}`);
+  mountRunPanels(RUN_FX.shooting);
+  const line = panelRunLines()["2-2"];
+  eq(line, `${SET_ASIDE_TONIGHT}: ${RUN_REASON}`, "2-2's line on the recorded state");
+  eq(line.split("2-2").length - 1, 1, "times 2-2's line says 2-2");
+  // CONTROL: the engine's words for a mosaic set aside when guiding never
+  // started name no panel, so the line must.
+  const guiding = "guiding did not start on any panel of M31";
+  const other = {
+    ...RUN_FX.shooting,
+    group: { ...RUN_FX.shooting.group, set_aside: [{ panel: "2-2", reason: guiding }] },
+  };
+  mountRunPanels(other);
+  eq(panelRunLines()["2-2"], `2-2: ${SET_ASIDE_TONIGHT}: ${guiding}`, "a reason that does not name the panel");
+  // A whole label only: another panel's longer label is not this one.
+  eq(namesPanel("centring failed on 12-2 on 3 consecutive visits", "2-2"), false, "12-2 is not 2-2");
+  eq(namesPanel("centring failed on 2-21 on 3 consecutive visits", "2-2"), false, "2-21 is not 2-2");
+  eq(namesPanel("M31 2-2: below the floor", "2-2"), true, "a reason that ends the name with 2-2");
+  eq(namesPanel("2-2", "2-2"), true, "the label alone");
+  eq(runRowText("2-2", { kind: "set_aside", reason: "centring failed on 12-2" }),
+    `2-2: ${SET_ASIDE_TONIGHT}: centring failed on 12-2`, "a reason naming 12-2, on 2-2's line");
+  eq(runRowText("1-1", null), null, "a panel the run is doing nothing to");
 });
 
 // ------------------------------------------------------------------ report

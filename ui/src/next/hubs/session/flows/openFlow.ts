@@ -14,18 +14,29 @@
 //   Back), and a save that lives on only three of them is the same defect with a
 //   smaller blast radius.
 //
-//   THE WAY IN (P0). `flowsOpen(id)` swallows its own failure
-//   (`flowsSlice.ts:221-223` sets `libraryError` and returns), and it leaves the
-//   PREVIOUSLY loaded record in place when it does. So `await flowsOpen(B)`
-//   followed by `flowsRun()` posts `/api/flows/A/run` - a press on one row
-//   starting a different flow, invisible until the wrong mount moves. Every
-//   caller that acts on the record it just asked for has to check that it got
-//   it, and this is that check.
+//   THE WAY IN (P0). `flowsOpen(id)` swallows its own failure (its catch sets
+//   `libraryError` and returns), and it leaves the PREVIOUSLY loaded record in
+//   place when it does. So `await flowsOpen(B)` followed by `flowsRun()` posts
+//   `/api/flows/A/run` - a press on one row starting a different flow,
+//   invisible until the wrong mount moves. Every caller that acts on the
+//   record it just asked for has to check that it got it, and this is that
+//   check.
 //
-// No store change was needed for either. `flowsOpen` still returns `void` and
-// still swallows; the identity of what landed is readable from
-// `useStore.getState().flows.record`, and the failure text from
-// `flows.libraryError`, which `flowsOpen`'s own catch writes.
+// `flowsOpen` still returns `void` and still swallows; the identity of what
+// landed is readable from `useStore.getState().flows.record`, and the failure
+// text from `flows.libraryError`.
+//
+// AND AN OPEN IS A WAY OUT (#450). The save-first rule above was kept only by
+// the exits that are components, and this root renders only the active hub:
+// a hub switch unmounts every one of them at once, so an edited graph stayed
+// in the store and the next `flowsOpen` from another hub replaced it without
+// a word. The store keeps the rule now: `flowsOpen` saves a dirty open record
+// of another id first, and REFUSES when that save does not keep its edits,
+// leaving that record in place, as a failed read does. That makes a refusal
+// one more way for the record to stay what it was, which the check here
+// already catches (a caller that skips it acts on the other flow, #499), and
+// `libraryError` then carries the refusal's sentence (flowsSlice
+// `FLOW_OPEN_OVER_UNSAVED`) for `flowOpenFailure` to say.
 
 import { useStore } from "../../../../store";
 
@@ -52,12 +63,14 @@ export async function openFlowById(id: string): Promise<boolean> {
 }
 
 /** The sentence to put under {@link FLOW_OPEN_FAILED}: the server's own words
- *  when `flowsOpen` wrote any, and the mismatch sentence when it did not.
+ *  when `flowsOpen` wrote any, its refusal when it would not open over unsaved
+ *  edits (#450), and the mismatch sentence when it wrote neither.
  *
  *  Read AFTER {@link openFlowById} resolves false. `libraryError` is the field
- *  `flowsOpen`'s catch writes, and it is also written by a failed library load,
- *  so a stale one is possible - hence the comparison against what was there
- *  before the call rather than a bare read. */
+ *  `flowsOpen` writes on a failed read and on that refusal, and it is also
+ *  written by a failed library load and a failed save, so a stale one is
+ *  possible - hence the comparison against what was there before the call
+ *  rather than a bare read. */
 export function flowOpenFailure(previousError: string | null): string {
   const now = useStore.getState().flows.libraryError;
   return now && now !== previousError ? now : FLOW_OPEN_MISMATCH;

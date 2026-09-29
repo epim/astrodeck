@@ -16,13 +16,23 @@
 // found nothing; "no ledger" says nobody looked. Only the first should make an
 // operator re-plan a month, so a null renders as "not counted", never as an
 // empty bar at 0%.
+//
+// A NULL QUOTA IS NOT ZERO EITHER (#424, finished for this panel by the S7
+// integration). A POOL quota the server cannot count against ("inf", 0, a
+// negative) comes back null, the campaign's and every member's, with the
+// reason in `note` (#362 item 4). Read as 0 it gave every bar a maximum of 0
+// and would have printed "7/0 cycles"; the #/next card read it the same way
+// until S7. Both surfaces now take the null through this file's types and
+// `memberStatus`, so the rule is written once.
 import type { JSX } from "react";
 
 export interface CampaignMember {
   name: string;
   /** Complete cycles in the bank, or null when there is no ledger to ask. */
   banked: number | null;
-  quota: number;
+  /** Cycles each member owes, or null when the pool's stored quota is no
+   *  finite count above 0 (#424): no quota, never a quota of 0. */
+  quota: number | null;
   done: boolean;
   /** 0-100, or null alongside a null `banked`. */
   pct: number | null;
@@ -32,7 +42,8 @@ export interface CampaignRead {
   is_campaign: boolean;
   has_pool: boolean;
   has_ledger: boolean;
-  quota: number;
+  /** As each member's: null when the server could count against no quota. */
+  quota: number | null;
   members: CampaignMember[];
   note: string;
 }
@@ -45,6 +56,10 @@ export interface CampaignRead {
  *  different nights. */
 export function memberStatus(m: CampaignMember): string {
   if (m.banked === null) return "not counted";
+  // No quota, no "of N" to print (#424). The server pairs a null quota with a
+  // null banked, which reads "not counted" above; a count with no quota,
+  // which it never sends, says the count alone rather than "7/0".
+  if (m.quota === null) return `${m.banked} cycles${m.done ? " · DONE" : ""}`;
   return `${m.banked}/${m.quota} cycles${m.done ? " · DONE" : ""}`;
 }
 
@@ -72,7 +87,8 @@ function MemberRow({ m }: { m: CampaignMember }): JSX.Element {
         role="progressbar"
         aria-label={`${m.name} campaign progress`}
         aria-valuemin={0}
-        aria-valuemax={m.quota}
+        // No quota, no maximum (#424): React writes no attribute for undefined.
+        aria-valuemax={m.quota ?? undefined}
         aria-valuenow={m.banked ?? undefined}
         aria-valuetext={memberStatus(m)}
       >

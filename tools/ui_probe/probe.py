@@ -56,6 +56,22 @@ and the vacuity lesson in verify-on-the-real-thing.md:
      flow drawn in the route file (`save_flow`) and refuse to walk on a
      server that already holds a session for it (`fresh`), and a seed op may
      be limited to some widths.
+  7. Readouts equal to the routes, read at one moment (#189 S7 item 1,
+     routes_s7.json). `readouts` reads the page's readouts and the two routes
+     they are drawn from, GET /api/sequence/state and GET /api/flows/{id}/
+     progress, inside ONE page evaluation: the routes before the DOM and
+     again after it, so the two reads bracket what the page showed. They must
+     agree with each other (a run that moved between them is read again) and
+     the DOM must EQUAL them. A phone walk is a touch walk: `touch` holds that
+     the page reports a touch screen, and on such a route every click step is
+     a tap. A walk can follow the page (`wait_change`), remember a value the
+     rig reported and later wait for it to change (`remember_api`, `wait_api`
+     `differs_from`). Seeds can save a site through the API (`set_site`, and
+     `daylight_site` for one where the sun is up now), draw a TARGET where the
+     meridian will be (`save_flow` `meridian`), run a flow and abort it
+     (`run_flow`) and move its session onto an earlier night (`seed_session`,
+     through the server's own venv). A seed op may be limited to some routes.
+     Nothing here ever runs against the rig's port (RIG_PORT).
 
 Usage:
     python tools/ui_probe/probe.py --routes tools/ui_probe/routes_classic.json \\
@@ -72,7 +88,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -89,6 +107,39 @@ WIDTH_PROFILES: dict[int, dict[str, Any]] = {
     820: {"height": 1180, "is_mobile": False, "has_touch": False},
     1440: {"height": 900, "is_mobile": False, "has_touch": False},
 }
+
+#: The port the rig's own AstroDeck server listens on (CLAUDE.md, "The rig").
+#: The probe never walks a server there (#189 S7): the walks press RUN, seed
+#: flows and sessions, and save sites, and the rig's server is not a probe
+#: server however it is reached. server_ctl.py refuses to start one there too.
+RIG_PORT = 8800
+
+
+def _refuse_rig_port(base: str) -> str | None:
+    """Why the probe may not walk `base`, or None. A base with no port is
+    port 80 or 443, never the rig's."""
+    try:
+        port = urlsplit(base).port
+    except ValueError as exc:
+        return f"--base {base!r} is not a URL the probe can walk ({exc})"
+    if port == RIG_PORT:
+        return (f"{base} is on port {RIG_PORT}, the rig's server port: the probe "
+                f"walks a private server only (server_ctl.py start --port <any "
+                f"other>)")
+    return None
+
+
+def _new_context(browser, width: int):
+    """A browser context for `width`, from WIDTH_PROFILES: a phone width is
+    a touch screen (has_touch, is_mobile), because a phone walk is taps
+    (#189 S7: "390 x 844 with touch"). One constructor for main and for the
+    probe's own tests, so a profile that lost its touch is a profile the
+    tests see."""
+    profile = _viewport_for(width)
+    return browser.new_context(
+        viewport={"width": width, "height": profile["height"]},
+        is_mobile=profile["is_mobile"], has_touch=profile["has_touch"])
+
 
 FORBIDDEN_SUBSTRINGS = ["sign in to control", "display disconnected"]
 MIN_BODY_CHARS = 200
@@ -879,20 +930,44 @@ def _field(obj: Any, dotted: str) -> Any:
     return cur
 
 
-_HOLE = re.compile(r"\{([A-Za-z0-9_.]+)\}")
+_HOLE = re.compile(r"\{([A-Za-z0-9_.]+)(?:\|([a-z]+))?\}")
+
+
+def _localdate(value: Any) -> str | None:
+    """A unix time as the local YYYY-MM-DD, or None for anything that is not a
+    finite number. The browser the probe drives runs in this machine's zone,
+    so the page's "local date" and this one are the same day (#189 S7: the
+    replay notice names the frozen version's date in the viewer's zone)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return time.strftime("%Y-%m-%d", time.localtime(float(value)))
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+#: Filters a hole may name after a bar, `{session.plan_saved_ts|localdate}`.
+#: One, and only what a template needs: a second language in the route file
+#: is a second place for a claim to be wrong.
+_FILTERS = {"localdate": _localdate}
 
 
 def _render(template: str, obj: Any) -> tuple[str | None, list[str]]:
     """`template` with each `{dotted.field}` filled from `obj`. (None, holes)
     when any hole is absent, null or empty: `"{group.panel}: shooting now"`
     must not become "None: shooting now" and then match nothing, or worse,
-    match a page that prints None."""
+    match a page that prints None. A hole may pass its value through a filter
+    (`_FILTERS`); an unknown filter, or a value the filter cannot read, is a
+    hole too."""
     missing: list[str] = []
 
     def fill(m: re.Match) -> str:
         value = _field(obj, m.group(1))
+        if m.group(2) is not None:
+            fn = _FILTERS.get(m.group(2))
+            value = fn(value) if fn is not None and value is not None else None
         if value is None or value == "":
-            missing.append(m.group(1))
+            missing.append(m.group(1) + (f"|{m.group(2)}" if m.group(2) else ""))
             return ""
         return str(value)
 
@@ -1084,6 +1159,186 @@ def _check_run_copy(page, spec: dict) -> tuple[dict, list[str]]:
             reasons.append(f"run_copy: the session banked {want['banked']} subs, and the "
                            f"walk needs >= {spec['min_banked']} to show counts carry")
     return {"selector": sel, "ok": not reasons, **info}, reasons
+
+
+# ------------------------------------------------- readouts, at one moment
+#
+# Module docstring point 7. `api_text` reads the page and the route one after
+# the other, in two round trips, so on a live run "the page said 1-2 and the
+# route said 1-2" can be two different moments that happened to agree, and a
+# readout one publish behind can pass on the poll that lands between two
+# publishes. This reads all of it in ONE page evaluation: the routes (the
+# sequence state and the flow's progress, fetched together, by the page's own
+# origin and cookies), then the DOM, then the routes again. The two route
+# reads bracket the DOM read, and only a pair that AGREES, on every value a
+# field renders and every value `require` names, says what the rig was at the
+# moment the page was read; a pair that disagrees is the run moving, and is
+# read again. The page must then EQUAL them: its text, whitespace collapsed,
+# is the rendered template, whole (`"match": "holds"` asks only that it hold
+# the template, `_holds_text`, for an element that carries a label too).
+#
+# Selectors here are CSS, because the DOM is read by the browser itself, not
+# by Playwright's selector engine; `containing` picks the first visible match
+# whose text contains a word (the PANELS row that says "shooting now", among
+# rows that may say "set aside"), which is what `:has-text` did for a locator.
+
+READOUTS_JS = """async ({flow, fields}) => {
+  const get = async (path) => {
+    try {
+      const r = await fetch(path, {credentials: 'same-origin', cache: 'no-store'});
+      let body = null;
+      try { body = await r.json(); } catch (e) { body = null; }
+      return {status: r.status, body};
+    } catch (e) {
+      return {status: 0, body: {error: String(e)}};
+    }
+  };
+  const routes = async () => {
+    const [state, progress] = await Promise.all([
+      get('/api/sequence/state'),
+      flow ? get('/api/flows/' + encodeURIComponent(flow) + '/progress')
+           : Promise.resolve({status: 0, body: null})]);
+    return {state, progress};
+  };
+  const shown = (el) => {
+    const r = el.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0)) return false;
+    return el.checkVisibility ? el.checkVisibility({checkOpacity: true, checkVisibilityCSS: true}) : true;
+  };
+  const text = (el) => (el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const before = await routes();
+  const dom = fields.map((f) => {
+    const all = Array.from(document.querySelectorAll(f.selector)).filter(shown);
+    const el = f.containing ? all.find((e) => text(e).includes(f.containing)) : all[0];
+    return el ? text(el) : null;
+  });
+  const after = await routes();
+  return {before, dom, after};
+}"""
+
+
+def _read_side(read: dict | None, src: str) -> tuple[int, Any]:
+    side = (read or {}).get(src) or {}
+    return side.get("status", 0), side.get("body")
+
+
+def _readouts_attempt(page, spec: dict) -> tuple[bool, dict]:
+    """One reading (READOUTS_JS) and its verdict: (ok, info), where info holds
+    the rendered values of both route reads and the DOM's text for every
+    field, and `why` names the first problem. Never the routes' bodies: the
+    sequence state carries site-derived fields (a meridian countdown), and a
+    report is read by people who may not see them."""
+    fields = spec.get("fields") or []
+    flow = spec.get("flow")
+    info: dict[str, Any] = {"rows": [], "why": None}
+    if not fields:
+        info["why"] = "readouts: no fields, so nothing on the page is held to the routes"
+        return False, info
+    args = {"flow": flow, "fields": [{"selector": f["selector"],
+                                      "containing": f.get("containing")} for f in fields]}
+    try:
+        got = page.evaluate(READOUTS_JS, args)
+    except Exception as exc:
+        info["why"] = f"readouts: the page could not be read ({exc})"
+        return False, info
+    before, after = got.get("before"), got.get("after")
+    srcs = {f.get("from", "state") for f in fields} | {"state"}
+    srcs |= {k.partition(".")[0] for k in (spec.get("require") or {})}
+    if flow or spec.get("same_session"):
+        srcs.add("progress")
+    for src in sorted(srcs):
+        if src not in ("state", "progress"):
+            info["why"] = f"readouts: {src!r} is neither route (state, progress)"
+            return False, info
+        if src == "progress" and not flow:
+            info["why"] = "readouts: the progress route is read and no flow is named"
+            return False, info
+        for label, read in (("first", before), ("second", after)):
+            status, _ = _read_side(read, src)
+            if status != 200:
+                path = "/api/sequence/state" if src == "state" else f"/api/flows/{flow}/progress"
+                info["why"] = f"readouts: the {label} GET {path} -> {status}"
+                return False, info
+    problems: list[str] = []
+    if spec.get("same_session"):
+        # The readouts are this flow's run only while the session the rig is
+        # writing is the one the flow's progress route counts (flowRunLive).
+        ids = [(_field(_read_side(read, "state")[1], "session.id"),
+                _field(_read_side(read, "progress")[1], "session.id"))
+               for read in (before, after)]
+        info["sessions"] = ids
+        if any(not sid or sid != pid for sid, pid in ids):
+            problems.append(f"readouts: the rig's session and the flow's are not one "
+                            f"session in both reads ({ids})")
+    for dotted, want in (spec.get("require") or {}).items():
+        src, _, path = dotted.partition(".")
+        vals = [_field(_read_side(read, src)[1], path) for read in (before, after)]
+        info.setdefault("require", {})[dotted] = vals
+        if any(v != want for v in vals):
+            problems.append(f"readouts: the routes say {dotted} = {vals[0]!r} then "
+                            f"{vals[1]!r}, and the walk needs {want!r}")
+    dom = got.get("dom") or []
+    for i, f in enumerate(fields):
+        src = f.get("from", "state")
+        want_1, holes_1 = _render(f["template"], _read_side(before, src)[1])
+        want_2, holes_2 = _render(f["template"], _read_side(after, src)[1])
+        text = dom[i] if i < len(dom) else None
+        info["rows"].append({"selector": f["selector"], "from": src, "first": want_1,
+                             "second": want_2, "dom": text})
+        if holes_1 or holes_2:
+            problems.append(f"readouts: {src} answered no {', '.join(holes_1 or holes_2)}, "
+                            f"so {f['template']!r} has nothing to say")
+        elif want_1 != want_2:
+            problems.append(f"readouts: the two {src} reads disagree across the DOM read "
+                            f"({want_1!r} then {want_2!r}): the run moved")
+        elif text is None:
+            problems.append(f"readouts: {f['selector']!r}"
+                            + (f" containing {f['containing']!r}" if f.get("containing") else "")
+                            + " is not visible")
+        elif not (_holds_text(text, want_1) if f.get("match") == "holds" else text == want_1):
+            problems.append(f"readouts: {f['selector']!r} reads {text!r}, and {src} says "
+                            f"{want_1!r} in both reads")
+    info["why"] = problems[0] if problems else None
+    return not problems, info
+
+
+def _check_readouts(page, spec: dict) -> tuple[dict, list[str]]:
+    """`readouts: {"flow", "fields": [{"selector", "containing", "from":
+    "state" | "progress", "template", "match"}], "same_session", "require":
+    {"state.group.meridian_wait": true}, "timeout_ms"}`: see the section
+    header. Polled until a reading passes or the time is up (the page and the
+    rig move on their own clocks), and the last reading is reported whole:
+    each field's value in the first and the second route read and on the
+    page."""
+    ok, info = _poll(page, spec.get("timeout_ms", 8000), lambda: _readouts_attempt(page, spec))
+    return {"ok": ok, **info}, ([] if ok else [info["why"]])
+
+
+# The page's own word for whether it is on a touch screen: a touch point to
+# report and the touch event API to deliver it. A phone walk that ran in a
+# desktop-shaped context would click where a person taps, and every layout
+# decided by `(pointer: coarse)` or by touch would be the desktop's.
+TOUCH_JS = """() => ({max_touch_points: navigator.maxTouchPoints || 0,
+                     touch_events: 'ontouchstart' in window,
+                     coarse: matchMedia('(pointer: coarse)').matches})"""
+
+
+def _check_touch(page, want: bool) -> tuple[dict, list[str]]:
+    """`touch: true | false`: the page reports a touch screen exactly when the
+    route says it is on one (a touch point and the touch event API both)."""
+    try:
+        got = page.evaluate(TOUCH_JS)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, [f"touch: the page could not be asked ({exc})"]
+    touch = bool(got.get("max_touch_points", 0) > 0 and got.get("touch_events"))
+    ok = touch == bool(want)
+    info = {"ok": ok, "want": bool(want), **got}
+    if ok:
+        return info, []
+    if want:
+        return info, [f"touch: this is a phone walk and the page reports no touch screen "
+                      f"({got}): its taps would be a desktop's clicks"]
+    return info, [f"touch: this is a desktop walk and the page reports a touch screen ({got})"]
 
 
 def _check_count(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
@@ -1365,6 +1620,8 @@ MID_WALK_CHECKS = {
     "reachable": lambda page, spec: _check_reachable(page, spec),
     "reachable_all": lambda page, spec: _check_reachable_all(page, spec),
     "api_text": lambda page, spec: _check_api_text(page, spec),
+    "readouts": lambda page, spec: _check_readouts(page, spec),
+    "run_copy": lambda page, spec: _check_run_copy(page, spec),
 }
 
 
@@ -1386,12 +1643,28 @@ def _mid_walk_checks(page, checks: dict) -> list[str]:
     return reasons
 
 
+#: Values a walk remembered (`remember_api`), by name, for a later step to
+#: compare against (`wait_api` `differs_from`), in this walk or a later route
+#: of the same probe run: the S7 straddle remembers the pier side on the
+#: phone, before the meridian, and the desktop walk waits for the flip to
+#: change it. Emptied when a probe run starts (`main`).
+_MEMO: dict[str, Any] = {}
+
+
 def _wait_api(page, spec: dict, wait_ms: int) -> dict:
-    """Poll GET `spec["get"]` until `spec["field"]` is >= `min` or == `equals`
-    (a number the server did not send never satisfies `min`)."""
+    """Poll GET `spec["get"]` until `spec["field"]` is >= `min`, == `equals`,
+    or (`differs_from`, #189 S7) a value that is set, not one of `not_in` and
+    not the one remembered under that name (a number the server did not send
+    never satisfies `min`, and nothing remembered satisfies nothing)."""
     def attempt():
         status, body = _api_json(page, spec["get"])
         value = _field(body, spec["field"]) if status == 200 else None
+        if "differs_from" in spec:
+            name = spec["differs_from"]
+            if name not in _MEMO:
+                return False, value
+            return (value is not None and value not in spec.get("not_in", [])
+                    and value != _MEMO[name]), value
         if "equals" in spec:
             return value == spec["equals"], value
         ok = isinstance(value, (int, float)) and not isinstance(value, bool) \
@@ -1402,8 +1675,49 @@ def _wait_api(page, spec: dict, wait_ms: int) -> dict:
     return {"ok": ok, "value": value}
 
 
+def _remember_api(page, spec: dict, wait_ms: int) -> dict:
+    """`remember_api: {"get", "field", "as", "not_in"}`: poll GET `get` until
+    `field` holds a value that is set and not one of `not_in`, and remember
+    it in `_MEMO` under `as`. A value the server never gave is remembered as
+    nothing and fails the step: "it changed" is no claim about an unread
+    side."""
+    def attempt():
+        status, body = _api_json(page, spec["get"])
+        value = _field(body, spec["field"]) if status == 200 else None
+        return value is not None and value not in spec.get("not_in", []), value
+
+    ok, value = _poll(page, wait_ms, attempt)
+    if ok:
+        _MEMO[spec["as"]] = value
+    return {"ok": ok, "value": value}
+
+
+def _visible_text(page, selector: str) -> str | None:
+    """The first visible match's text (`_text_of`), or None."""
+    found = _visible_css_matches(page, selector)
+    return _text_of(found[0]) if found else None
+
+
+def _wait_change(page, selector: str, wait_ms: int) -> dict:
+    """`{"wait_change": <selector>}`: read the first visible match's text now
+    (it must be there and say something), then wait for it to say something
+    else. A person following a run watches a readout move; a walk that
+    graded the readouts once would pass a page that froze on its first
+    publish."""
+    first = _visible_text(page, selector)
+    if not first:
+        return {"ok": False, "from": first, "to": None}
+
+    def attempt():
+        now = _visible_text(page, selector)
+        return bool(now) and now != first, now
+
+    ok, now = _poll(page, wait_ms, attempt)
+    return {"ok": ok, "from": first, "to": now}
+
+
 def _run_clicks(page, clicks: list[dict], shot_dir: Path | None = None,
-                shot_stem: str = "") -> list[dict]:
+                shot_stem: str = "", tap: bool = False) -> list[dict]:
     """Best-effort click sequence. A step whose text has NO visible match is
     logged as skipped rather than failing the route outright -- at some
     widths a step is legitimately not applicable (e.g. 'More' only exists on
@@ -1441,7 +1755,16 @@ def _run_clicks(page, clicks: list[dict], shot_dir: Path | None = None,
     on a desktop with no FRAMES readout); it is required too. `{"shot":
     <name>}` saves `<shot>-<name>.png` into `shot_dir` without clicking: the
     evidence of a state the walk passes through and leaves, such as START
-    OVER's confirm before its CANCEL."""
+    OVER's confirm before its CANCEL.
+
+    Two more, and taps (#189 S7). `{"wait_change": <selector>}` waits, up to
+    `wait_ms`, for a readout to say something other than it said when the
+    step began (`_wait_change`). `{"remember_api": {"get", "field", "as",
+    "not_in"}}` remembers what the rig says (`_remember_api`), for a later
+    `wait_api` with `differs_from`. Both are required. With `tap` (a route
+    with `"touch": true`, a phone walk) every click is a tap, as a finger
+    makes it: a phone walk that clicked would pass a control that answers a
+    mouse and not a finger."""
     log: list[dict] = []
     for i, step in enumerate(clicks):
         if "goto" in step:
@@ -1472,6 +1795,31 @@ def _run_clicks(page, clicks: list[dict], shot_dir: Path | None = None,
                 continue
             log.append({"text": desc, "action": "missing", "required": True,
                         "reason": f"the server still says {got['value']!r} after "
+                                  f"{step.get('wait_ms', 8000)} ms"})
+            log.extend({"text": _step_desc(s), "action": "not-run"} for s in clicks[i + 1:])
+            break
+        if "wait_change" in step:
+            desc = f"wait_change {step['wait_change']}"
+            got = _wait_change(page, step["wait_change"], step.get("wait_ms", 8000))
+            if got["ok"]:
+                log.append({"text": desc, "action": "changed", "from": got["from"],
+                            "to": got["to"]})
+                continue
+            why = ("it was not visible, or said nothing, when the step began"
+                   if not got["from"] else
+                   f"it still read {got['to']!r} after {step.get('wait_ms', 8000)} ms")
+            log.append({"text": desc, "action": "missing", "required": True, "reason": why})
+            log.extend({"text": _step_desc(s), "action": "not-run"} for s in clicks[i + 1:])
+            break
+        if "remember_api" in step:
+            spec = step["remember_api"]
+            desc = f"remember_api {spec.get('get')} {spec.get('field')} as {spec.get('as')}"
+            got = _remember_api(page, spec, step.get("wait_ms", 8000))
+            if got["ok"]:
+                log.append({"text": desc, "action": "remembered", "value": got["value"]})
+                continue
+            log.append({"text": desc, "action": "missing", "required": True,
+                        "reason": f"the server said {got['value']!r} throughout "
                                   f"{step.get('wait_ms', 8000)} ms"})
             log.extend({"text": _step_desc(s), "action": "not-run"} for s in clicks[i + 1:])
             break
@@ -1510,9 +1858,13 @@ def _run_clicks(page, clicks: list[dict], shot_dir: Path | None = None,
             kwargs: dict[str, Any] = {"timeout": 5000}
             if step.get("position"):
                 kwargs["position"] = step["position"]
-            matches[0].click(**kwargs)
+            if tap:
+                matches[0].tap(**kwargs)
+            else:
+                matches[0].click(**kwargs)
             page.wait_for_timeout(300)
-            log.append({"text": desc, "action": "click", "matched": len(matches)})
+            log.append({"text": desc, "action": "tap" if tap else "click",
+                        "matched": len(matches)})
         except Exception as exc:
             log.append({"text": desc, "action": "click-failed", "error": str(exc),
                         "required": required})
@@ -1528,6 +1880,11 @@ def _step_desc(step: dict) -> str:
         return "check " + ",".join(sorted(step["check"]))
     if "wait_api" in step:
         return f"wait_api {step['wait_api'].get('get')} {step['wait_api'].get('field')}"
+    if "remember_api" in step:
+        return (f"remember_api {step['remember_api'].get('get')} "
+                f"{step['remember_api'].get('field')}")
+    if "wait_change" in step:
+        return f"wait_change {step['wait_change']}"
     return (step.get("goto") or step.get("wait_for") or step.get("fill")
             or step.get("shot") or step.get("selector") or step.get("text", ""))
 
@@ -1691,7 +2048,15 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
     testid_ok = None
 
     if not vacuity_reasons:
-        click_log = _run_clicks(page, route.get("click", []), width_dir, shot_name)
+        # A route on a touch screen is walked by taps (module docstring 7),
+        # and says so first: `touch` is graded before the first step, so a
+        # phone walk in a context with no touch fails on that, by name,
+        # rather than only on the tap it cannot make.
+        if "touch" in route:
+            usable["touch"], why = _check_touch(page, route["touch"])
+            reasons.extend(why)
+        click_log = _run_clicks(page, route.get("click", []), width_dir, shot_name,
+                                tap=route.get("touch") is True)
         for i, step in enumerate(click_log):
             if step.get("required") and step["action"] in ("missing", "click-failed"):
                 reasons.append(f"required step {step['text']!r} failed: "
@@ -1763,8 +2128,8 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
         # right one: measured on the wrong screen, every check below would add
         # a failure that is only the missing marker again, and bury it.
         if testid_ok is not False and marker_ok:
-            usable = _run_usable_checks(page, route, gate, width_dir, shot_name, reasons,
-                                        flows_before)
+            usable.update(_run_usable_checks(page, route, gate, width_dir, shot_name,
+                                             reasons, flows_before))
         elif gate is not None:
             gate.release()
 
@@ -1831,6 +2196,9 @@ def _run_usable_checks(page, route: dict, gate: "_Gate | None", width_dir: Path,
     out: dict[str, Any] = {}
     if gate is not None:
         out["gate"], why = _check_gate(page, gate, width_dir, shot_name)
+        reasons.extend(why)
+    if route.get("readouts"):
+        out["readouts"], why = _check_readouts(page, route["readouts"])
         reasons.extend(why)
     if route.get("api_text"):
         out["api_text"], why = _check_api_text(page, route["api_text"])
@@ -1902,7 +2270,7 @@ class SeedError(RuntimeError):
     pass
 
 
-def _seed(request, base: str, ops: list[dict]) -> list[dict]:
+def _seed(request, base: str, ops: list[dict], ctx: dict | None = None) -> list[dict]:
     """Seed the server before a walk, through the browser context's own
     request client, so an `--auth` run seeds as the signed-in role and a
     refused seed says which role was refused.
@@ -1922,16 +2290,33 @@ def _seed(request, base: str, ops: list[dict]) -> list[dict]:
     the copy AS STORED: were the Example ever to stop being a mosaic, the walk
     would grade a one-panel sheet and still pass, with nothing saying the
     fixture had changed under it; and a walk that tells two flows apart by
-    their TARGET's name passes vacuously if the names never differed."""
+    their TARGET's name passes vacuously if the names never differed.
+
+    Four more (#189 S7): `set_site`, `daylight_site`, `run_flow` and
+    `seed_session`, each described where it is implemented; `ctx` carries
+    what `seed_session` needs of the private server (its directories and its
+    venv), from probe.py's own arguments."""
     base = base.rstrip("/")
     log: list[dict] = []
     for op in ops:
-        kinds = sorted(k for k in op if k != "widths")
+        kinds = sorted(k for k in op if k not in ("widths", "routes"))
         if kinds == ["require_sim"]:
             log.append(_seed_require_sim(request, base))
             continue
         if kinds == ["save_flow"]:
             log.append(_seed_save_flow(request, base, op["save_flow"]))
+            continue
+        if kinds == ["set_site"]:
+            log.append(_seed_set_site(request, base, op["set_site"]))
+            continue
+        if kinds == ["daylight_site"]:
+            log.append(_seed_daylight_site(request, base, op["daylight_site"]))
+            continue
+        if kinds == ["run_flow"]:
+            log.append(_seed_run_flow(request, base, op["run_flow"]))
+            continue
+        if kinds == ["seed_session"]:
+            log.append(_seed_session(request, base, op["seed_session"], ctx or {}))
             continue
         spec = op.get("copy_flow")
         if spec is None or kinds != ["copy_flow"]:
@@ -2045,9 +2430,21 @@ def _seed_save_flow(request, base: str, spec: dict) -> dict:
     route's `losses` reads it): RUN would then stop on a question the walk
     does not answer, and the walk would fail three doors later on a readout
     that never came. The route's TARGET is framed for the simulator's field,
-    and a changed simulator is exactly this case."""
+    and a changed simulator is exactly this case.
+
+    `meridian: {"node", "minutes_east"}` (#189 S7, the straddle) writes that
+    TARGET's RA before the save: the local sidereal time NOW at the site the
+    server holds (GET /api/site, which `set_site` saved), plus `minutes_east`
+    of sidereal time, so the block's centre crosses the meridian that many
+    minutes after the seed, by the probe's clock. It is computed here and
+    not written into the route file, because an RA fixed in the file
+    straddles the meridian at one hour of one day; and from the server's
+    site, never a second copy, so the walk's meridian is the engine's."""
+    graph = spec["graph"]
+    if spec.get("meridian"):
+        graph = _graph_with_meridian_ra(request, base, graph, spec["meridian"])
     record = {"id": spec["id"], "name": spec["name"],
-              "folder": spec.get("folder", "My flows"), "graph": spec["graph"]}
+              "folder": spec.get("folder", "My flows"), "graph": graph}
     saved = request.post(f"{base}/api/flows", data={"flow": record})
     if not saved.ok:
         raise SeedError(f"POST /api/flows ({spec['id']!r}) -> {saved.status}: "
@@ -2081,12 +2478,287 @@ def _seed_save_flow(request, base: str, spec: dict) -> dict:
     return {"save_flow": spec["id"], "readonly": stored.get("readonly")}
 
 
-def _seed_for_width(ops: list[dict], width: int) -> list[dict]:
+# --------------------------------------------------- S7 seeds: sky and sessions
+#
+# Module docstring point 7. The four S7 scenarios need the server in states a
+# drawn flow alone cannot put it in: a site (the straddle's meridian is a
+# site's), a site where the sun is up (the CONTINUE walk's armed session must
+# not be resumed under it), a flow that has run and banked frames, and that
+# run moved onto an earlier observing night. Each is made through the
+# server's own API, except the last, which only the server's own store code
+# can write (seed_session.py, run by the server's venv).
+
+def _lst_hours(lon_deg: float, t: float) -> float:
+    """Local sidereal time in hours at `t`: the server's own formula
+    (server/astrodeck/catalog/coords.py `lst_hours`), so a TARGET this seeds
+    straddles the meridian the engine computes, to the second."""
+    d = t / 86400.0 + 2440587.5 - 2451545.0
+    return ((18.697374558 + 24.06570982441908 * d) % 24.0 + lon_deg / 15.0) % 24.0
+
+
+def _sun_radec(t: float) -> tuple[float, float]:
+    """The Sun's (RA hours, Dec deg) at `t`, to about 0.01 deg (the Astronomical
+    Almanac's low-precision formula): enough to put a site under a noon sun,
+    or to say that one is in the dark."""
+    n = t / 86400.0 + 2440587.5 - 2451545.0
+    L = (280.460 + 0.9856474 * n) % 360.0
+    g = math.radians((357.528 + 0.9856003 * n) % 360.0)
+    lam = math.radians(L + 1.915 * math.sin(g) + 0.020 * math.sin(2 * g))
+    eps = math.radians(23.439 - 0.0000004 * n)
+    ra = math.degrees(math.atan2(math.cos(eps) * math.sin(lam), math.cos(lam))) % 360.0
+    dec = math.degrees(math.asin(math.sin(eps) * math.sin(lam)))
+    return ra / 15.0, dec
+
+
+def _sun_altitude(lat: float, lon: float, t: float) -> float:
+    """The Sun's altitude in degrees at (`lat`, `lon`) and `t`."""
+    ra, dec = _sun_radec(t)
+    ha = math.radians((_lst_hours(lon, t) - ra) * 15.0)
+    la, de = math.radians(lat), math.radians(dec)
+    return math.degrees(math.asin(math.sin(la) * math.sin(de)
+                                  + math.cos(la) * math.cos(de) * math.cos(ha)))
+
+
+def _subsolar_lon(t: float) -> float:
+    """The longitude where the Sun is on the meridian at `t`, east positive,
+    in (-180, 180]."""
+    ra, _ = _sun_radec(t)
+    gmst = _lst_hours(0.0, t)
+    lon = ((ra - gmst) * 15.0) % 360.0
+    return lon - 360.0 if lon > 180.0 else lon
+
+
+def _ra_text(hours: float) -> str:
+    """`HHh MMm SSs`, the way a TARGET's RA param is typed (M31's is
+    "00h 42m 44s"), rounded to the second."""
+    total = int(round((hours % 24.0) * 3600.0)) % 86400
+    return f"{total // 3600:02d}h {total % 3600 // 60:02d}m {total % 60:02d}s"
+
+
+def _site_on_server(request, base: str) -> dict:
+    """The site the server holds (GET /api/site), or SeedError."""
+    got = request.get(f"{base}/api/site")
+    body = got.json() if got.ok else None
+    site = (body or {}).get("site") if isinstance(body, dict) else None
+    if not isinstance(site, dict):
+        raise SeedError(f"GET /api/site -> {got.status}, so the server holds no site "
+                        f"to read")
+    return site
+
+
+def _save_site(request, base: str, lat: float, lon: float, name: str) -> dict:
+    """PUT /api/site with a fixture site and read it back: the server must
+    hold exactly these coordinates, as a saved (not default) site."""
+    body = {"site": {"name": name, "latitude": lat, "longitude": lon,
+                     "elevation_m": 0.0}}
+    put = request.put(f"{base}/api/site", data=body)
+    if not put.ok:
+        raise SeedError(f"PUT /api/site ({name!r}) -> {put.status}: {put.text()[:200]}")
+    site = _site_on_server(request, base)
+    same = (abs(float(site.get("latitude", 999)) - lat) < 1e-6
+            and abs(float(site.get("longitude", 999)) - lon) < 1e-6)
+    if not same or site.get("is_default") is not False:
+        raise SeedError(f"the server did not keep the fixture site {name!r} as a saved "
+                        f"site (is_default={site.get('is_default')!r}, same={same})")
+    return site
+
+
+def _seed_set_site(request, base: str, spec: dict) -> dict:
+    """`set_site: {"latitude", "longitude", "name", "night"}`: save a FIXTURE
+    site through the API (#189 S7, the straddle: the harness's 40 N 74 W,
+    never the observing site) and read it back. With `night`, refuse unless
+    the Sun is more than 12 deg below that site's horizon now: the straddle
+    walks a live run past the meridian, and in daylight the start's own Sun
+    gate would refuse it three doors later, for a reason the walk does not
+    name. The log names the fixture and never prints a coordinate: every
+    site value that reaches a report is scanned against the observing
+    site's, and none needs to be there."""
+    lat, lon = float(spec["latitude"]), float(spec["longitude"])
+    name = spec.get("name", "probe fixture")
+    _save_site(request, base, lat, lon, name)
+    out = {"set_site": name}
+    if spec.get("night"):
+        alt = _sun_altitude(lat, lon, time.time())
+        if alt > -12.0:
+            raise SeedError(f"the Sun is up at the fixture site {name!r}, or in its "
+                            f"twilight: this walk runs past the meridian there, and needs "
+                            f"its night (see the route file's `_wall_time`)")
+        out["night"] = True
+    return out
+
+
+def _seed_daylight_site(request, base: str, spec: dict) -> dict:
+    """`daylight_site: {"latitude", "name"}`: save a FIXTURE site where the Sun
+    is on the meridian now, at `latitude`, its longitude the subsolar one
+    rounded to a whole degree, and read it back (#189 S7, the CONTINUE walk).
+
+    WHY DAYLIGHT. That walk grades CONTINUE and the replay notice over an
+    ARMED dormant session, and auto-resume starts an armed session at its
+    next tick whenever its window is open: on a server with no site it is
+    open at any hour (schedule.dark_enough fails open), and it started the
+    walk's session 34 s after it was armed (measured on a private server,
+    2026-09-28). In daylight the window is shut for hours, which is also the
+    case the notice exists for: the operator opening a flow in the afternoon
+    before its second night. The Sun's altitude there is 90 - |latitude -
+    its declination|, never below 26 deg at 40 N. Refuses if it is not well
+    up, which would mean this arithmetic is wrong."""
+    lat = float(spec.get("latitude", 40.0))
+    now = time.time()
+    lon = float(round(_subsolar_lon(now)))
+    if lon <= -180.0:
+        lon += 360.0
+    name = spec.get("name", "probe fixture (daylight)")
+    _save_site(request, base, lat, lon, name)
+    if _sun_altitude(lat, lon, now) < 20.0:
+        raise SeedError(f"the Sun is not well up at the daylight fixture {name!r}, so "
+                        f"auto-resume could open a window under the walk")
+    return {"daylight_site": name, "sun_up": True}
+
+
+def _graph_with_meridian_ra(request, base: str, graph: dict, spec: dict) -> dict:
+    """`graph` with the TARGET `spec["node"]`'s RA put `spec["minutes_east"]`
+    minutes of sidereal time east of the meridian now, at the server's saved
+    site (see `_seed_save_flow`)."""
+    site = _site_on_server(request, base)
+    if site.get("is_default") is not False:
+        raise SeedError("the straddle's RA is computed at the server's saved site, and "
+                        "it holds none: put a set_site op first")
+    lon = float(site["longitude"])
+    ra = (_lst_hours(lon, time.time()) + float(spec["minutes_east"]) / 60.0) % 24.0
+    out = json.loads(json.dumps(graph))
+    node = next((n for n in out.get("nodes", []) if n.get("id") == spec["node"]), None)
+    if node is None or node.get("type") != "target":
+        raise SeedError(f"the flow has no TARGET {spec['node']!r} to put on the meridian")
+    node.setdefault("params", {})["ra"] = _ra_text(ra)
+    return out
+
+
+def _progress_of(request, base: str, flow: str) -> dict:
+    got = request.get(f"{base}/api/flows/{quote(flow)}/progress")
+    body = got.json() if got.ok else None
+    if not isinstance(body, dict):
+        raise SeedError(f"GET /api/flows/{flow}/progress -> {got.status}")
+    return body
+
+
+def _engine_state(request, base: str) -> str | None:
+    got = request.get(f"{base}/api/sequence/state")
+    return (got.json() or {}).get("state") if got.ok else None
+
+
+def _seed_run_flow(request, base: str, spec: dict) -> dict:
+    """`run_flow: {"flow", "min_banked", "timeout_ms"}`: run a saved flow on
+    this server for real (POST /api/flows/{id}/run), wait for the progress
+    route to count `min_banked` subs, abort it (POST /api/sequence/abort),
+    and wait for the session to be dormant and the engine done (#189 S7, the
+    CONTINUE walk's first night). The frames are the simulator's, banked by
+    the engine, so the counts CONTINUE carries are a ledger's and not a
+    number this wrote. Refuses a busy engine before it presses anything."""
+    flow = spec["flow"]
+    if _engine_state(request, base) in LIVE_STATES:
+        raise SeedError(f"the engine is busy, so {flow!r} cannot be run for its first night")
+    run = request.post(f"{base}/api/flows/{quote(flow)}/run", data={})
+    if not run.ok:
+        raise SeedError(f"POST /api/flows/{flow}/run -> {run.status}: {run.text()[:240]}")
+    need = int(spec.get("min_banked", 1))
+    deadline = time.monotonic() + spec.get("timeout_ms", 240000) / 1000.0
+    banked = 0
+    while time.monotonic() < deadline:
+        blocks = _progress_of(request, base, flow).get("blocks") or []
+        banked = sum(int(b.get("banked") or 0) for b in blocks)
+        if banked >= need:
+            break
+        time.sleep(1.0)
+    stop = request.post(f"{base}/api/sequence/abort", data={})
+    if banked < need:
+        raise SeedError(f"{flow!r} banked {banked} subs in {spec.get('timeout_ms', 240000)} "
+                        f"ms, and its first night needs {need}")
+    if not stop.ok:
+        raise SeedError(f"POST /api/sequence/abort -> {stop.status}")
+    deadline = time.monotonic() + 60.0
+    session: dict = {}
+    while time.monotonic() < deadline:
+        session = _progress_of(request, base, flow).get("session") or {}
+        if session.get("status") == "dormant" and _engine_state(request, base) not in LIVE_STATES:
+            break
+        time.sleep(0.5)
+    else:
+        raise SeedError(f"{flow!r}'s session is {session.get('status')!r} a minute after "
+                        f"the abort, not dormant")
+    return {"run_flow": flow, "banked": banked, "session": session.get("id")}
+
+
+#: The server's own python, which seed_session.py needs (it imports astrodeck).
+DEFAULT_VENV_PYTHON = REPO_ROOT / "server" / ".venv" / "Scripts" / "python.exe"
+
+
+def _seed_session(request, base: str, spec: dict, ctx: dict) -> dict:
+    """`seed_session: {"flow", "nights_ago", "arm"}`: move the flow's dormant
+    session `nights_ago` nights back, and arm it with `arm`, through
+    seed_session.py run by the server's venv against the private server's
+    own directories (probe.py's `--config-dir`, `--capture-dir` and
+    `--venv-python`, which this refuses to guess), then read the result back
+    through the progress route: the same session, dormant, as armed as
+    asked, and every run on a night before tonight (#189 S7: "seed a dormant
+    session whose runs are stamped on an earlier observing night, written in
+    the store's own shape through the server venv")."""
+    missing = [k for k in ("config_dir", "capture_dir") if not ctx.get(k)]
+    if missing:
+        raise SeedError(f"seed_session writes the private server's session store, and "
+                        f"probe.py was not told where it is: pass "
+                        f"{', '.join('--' + k.replace('_', '-') for k in missing)}")
+    venv = Path(ctx.get("venv_python") or DEFAULT_VENV_PYTHON)
+    cmd = [str(venv), str(Path(__file__).resolve().parent / "seed_session.py"),
+           "--config-dir", str(ctx["config_dir"]), "--capture-dir", str(ctx["capture_dir"]),
+           "--flow", spec["flow"], "--nights-ago", str(int(spec.get("nights_ago", 1)))]
+    if spec.get("arm"):
+        cmd.append("--arm")
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
+                              cwd=str(REPO_ROOT))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SeedError(f"seed_session.py did not run ({exc.__class__.__name__}: {exc})")
+    if done.returncode != 0:
+        raise SeedError(f"seed_session.py exited {done.returncode}: "
+                        f"{(done.stderr or done.stdout).strip()[-400:]}")
+    try:
+        out = json.loads(done.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise SeedError(f"seed_session.py printed no JSON: {done.stdout[-200:]!r}")
+    session = _progress_of(request, base, spec["flow"]).get("session") or {}
+    problems = []
+    if session.get("id") != out.get("session"):
+        problems.append(f"the progress route names session {session.get('id')!r}, not "
+                        f"the one moved ({out.get('session')!r})")
+    if session.get("status") != "dormant":
+        problems.append(f"the session is {session.get('status')!r}, not dormant")
+    if bool(session.get("armed")) != bool(spec.get("arm")):
+        problems.append(f"the progress route says armed={session.get('armed')!r}")
+    if out.get("tonight") in (out.get("observing_nights") or []):
+        problems.append("a run is still on tonight's observing night")
+    if problems:
+        raise SeedError("seed_session: " + "; ".join(problems))
+    return {"seed_session": spec["flow"], "session": out.get("session"),
+            "runs": out.get("runs_after"), "nights": out.get("observing_nights"),
+            "frames": out.get("frames"), "armed": out.get("armed")}
+
+
+def _seed_for_width(ops: list[dict], width: int,
+                    names: set[str] | None = None) -> list[dict]:
     """The seed ops that run at `width`: an op with `widths` runs only at
     those, as a route does (`_routes_for_width`). A flow a phone walk starts
     must be seeded once, before the phone walks: seeded again before the
-    desktop walks, `fresh` would find the phone's own session and refuse."""
-    return [op for op in ops if not op.get("widths") or width in op["widths"]]
+    desktop walks, `fresh` would find the phone's own session and refuse.
+
+    An op with `routes` runs only when one of those routes is walked at this
+    width (`names`, the width's routes after `--only`), so one route file can
+    hold four scenarios, each walked against its own private server with
+    `--only`, and seed only its own (#189 S7). With `names` None every op
+    runs, as before."""
+    out = [op for op in ops if not op.get("widths") or width in op["widths"]]
+    if names is not None:
+        out = [op for op in out if not op.get("routes") or set(op["routes"]) & names]
+    return out
 
 
 def _resolve_routes_path(raw: str) -> Path:
@@ -2147,9 +2819,26 @@ def main(argv: list[str] | None = None) -> int:
                         "than erroring, since the caller may pass names that "
                         "only exist in some route files.")
     ap.add_argument("--headed", action="store_true")
+    ap.add_argument("--config-dir", default=None,
+                    help="the private server's config dir (server_ctl.py start "
+                        "--config-dir): read only by the seed_session seed op")
+    ap.add_argument("--capture-dir", default=None,
+                    help="the private server's capture dir (server_ctl.py start "
+                        "--capture-dir): read only by the seed_session seed op")
+    ap.add_argument("--venv-python", default=str(DEFAULT_VENV_PYTHON),
+                    help="the server's venv python, which seed_session.py runs under")
     args = ap.parse_args(argv)
 
     base = args.base or f"http://127.0.0.1:{args.port}"
+    # Before anything is read, launched or seeded: the rig's port is never a
+    # probe server's (RIG_PORT).
+    refused = _refuse_rig_port(base)
+    if refused:
+        print(f"ERROR: {refused}", file=sys.stderr)
+        return 2
+    _MEMO.clear()
+    seed_ctx = {"config_dir": args.config_dir, "capture_dir": args.capture_dir,
+                "venv_python": args.venv_python}
     routes_path = _resolve_routes_path(args.routes)
     routes = _load_routes(routes_path, args.include_pending)
     seed_ops = _load_seed(routes_path)
@@ -2179,11 +2868,7 @@ def main(argv: list[str] | None = None) -> int:
         browser = p.chromium.launch(headless=not args.headed)
         try:
             for width in widths:
-                profile = _viewport_for(width)
-                context = browser.new_context(
-                    viewport={"width": width, "height": profile["height"]},
-                    is_mobile=profile["is_mobile"], has_touch=profile["has_touch"],
-                )
+                context = _new_context(browser, width)
                 page = context.new_page()
                 if args.auth:
                     try:
@@ -2203,13 +2888,14 @@ def main(argv: list[str] | None = None) -> int:
 
                 page.close()
                 width_routes = _routes_for_width(routes, width)
-                width_seed = _seed_for_width(seed_ops, width)
+                width_seed = _seed_for_width(seed_ops, width,
+                                             {r.get("name") for r in width_routes})
                 if width_seed and width_routes:
                     # Every width seeds afresh: the copy is an upsert, so a
                     # walk at 1440 grades the flow as seeded, never as the
                     # walk at 390 left it.
                     try:
-                        seeded = _seed(context.request, base, width_seed)
+                        seeded = _seed(context.request, base, width_seed, seed_ctx)
                         print(f"[{width}px] seeded: {seeded}")
                     except SeedError as exc:
                         msg = f"width={width}: SEED FAILED: {exc}"

@@ -108,51 +108,140 @@ export function targetLoops(node: FlowNodeRec, graph: LaneGraph): boolean {
     && midLanePassWires(graph, node.id).length === 0;
 }
 
-/** The footer for a TARGET whose loopedness the caller already knows.
+/** The footer's facts, each a whole segment, in the order the line says them.
+ *  Null where the block has no such fact: a single target has no loop word,
+ *  no grid and no overlap, and a panel-first mosaic no angle or overlap. */
+interface FooterParts {
+  /** The TARGET's own `sum`; "" before the block is named. */
+  name: string;
+  /** "rotate" or "one panel at a time": what tells the two mosaic lines apart. */
+  loop: string | null;
+  size: string | null;
+  /** "any angle", "PA 30.0" or "fixed PA 30.0": the mode and the PA, one segment. */
+  angle: string | null;
+  overlap: string | null;
+}
+
+/** THE NAME IS THE VOCABULARY'S OWN SUM, called exactly once, so the TARGET's
+ *  `sum` stays what nodeDefs.ts says it is and the render counters in
+ *  flowNodeDom.test.tsx and flowProgressChip.test.tsx still see one call per
+ *  card render. */
+function footerParts(node: FlowNodeRec, loops: boolean): FooterParts {
+  const p = node.params ?? {};
+  const name = NODE_DEFS.target.sum(p);
+  if (!isMultiPanel(node)) {
+    return { name, loop: null, size: null, angle: angleWords(p), overlap: null };
+  }
+  const { rows, cols } = targetGrid(node);
+  // COLUMNS BY ROWS (S4 orchestrator ruling 1): a grid is written the way it
+  // is seen, width first, so three columns of two rows is "3x2".
+  const size = `${cols}x${rows}`;
+  if (!loops) return { name, loop: "one panel at a time", size, angle: null, overlap: null };
+  const overlap = decimal(p.overlap);
+  return {
+    name, loop: "rotate", size, angle: angleWords(p),
+    overlap: Number.isFinite(overlap) ? `${overlap}%` : null,
+  };
+}
+
+/** Segments joined with the separator. Empty ones are left out: a created
+ *  TARGET has no name yet, and " · any angle" would read as a glitch. */
+function joined(...segments: (string | null)[]): string {
+  return segments.filter((s): s is string => s != null && s !== "").join(SUMMARY_SEP);
+}
+
+/** The footer for a TARGET whose loopedness the caller already knows: the
+ *  whole line, as the #/next card draws it (it wraps, so nothing is cut).
  *
  *  The cards call this rather than `targetSummary`: a card's selectors must
  *  return primitives (FlowNodeCard.tsx's header says why), and the graph is not
  *  a prop, so a card subscribes to `targetLoops`'s boolean and hands it here.
  *
- *  THE NAME IS THE VOCABULARY'S OWN SUM, called exactly once, so the TARGET's
- *  `sum` stays what nodeDefs.ts says it is and the render counters in
- *  flowNodeDom.test.tsx and flowProgressChip.test.tsx still see one call per
- *  card render. Empty segments are left out: a created TARGET has no name yet,
- *  and " · any angle" would read as a glitch.
- *
  *  THE WORD THAT TELLS THE TWO MOSAIC LINES APART COMES SECOND (#357), right
- *  after the name. The classic card's footer is one `truncate` line of 9.5 px
- *  mono inside `px-2.5` on a 188 px card: 166 px, 29 characters at the font's
- *  0.6 em advance. The design's order, "M31 · 3x2 · PA 30.0 · 25% · rotate",
- *  is 34, so the ellipsis fell inside "rotate" and a rotating mosaic read
- *  like a panel-first one, the one thing this line was added to say. Now
- *  what the truncation cuts first is the grid and the angle, which the modal
- *  and the inspector both show; cardFooterDom.test.tsx holds the eighth
- *  Example's lines to the budget computed from the card's own classes. The
- *  28 characters an overflowing line shows keep "rotate" for a name of up to
- *  19 characters, but "one panel at a time" only up to 6 ("NGC 7331 · one
- *  panel at a ti"), which still reads apart from "rotate"; a shorter word
- *  there is the spec's to rule on (#357). */
+ *  after the name. The design's order, "M31 · 3x2 · PA 30.0 · 25% · rotate",
+ *  put it where the classic card's one line was cut, so a rotating mosaic
+ *  read like a panel-first one, the one thing this line was added to say.
+ *  The classic card now draws `fittedFooter` instead, which never cuts it. */
 export function targetFooter(node: FlowNodeRec, loops: boolean): string {
-  const p = node.params ?? {};
-  const name = NODE_DEFS.target.sum(p);
-  const parts: string[] = [name];
-  if (isMultiPanel(node)) {
-    const { rows, cols } = targetGrid(node);
-    // COLUMNS BY ROWS (S4 orchestrator ruling 1): a grid is written the way it
-    // is seen, width first, so three columns of two rows is "3x2".
-    const size = `${cols}x${rows}`;
-    if (loops) {
-      parts.push("rotate", size, angleWords(p));
-      const overlap = decimal(p.overlap);
-      if (Number.isFinite(overlap)) parts.push(`${overlap}%`);
-    } else {
-      parts.push("one panel at a time", size);
-    }
-  } else {
-    parts.push(angleWords(p));
-  }
-  return parts.filter((s) => s !== "").join(SUMMARY_SEP);
+  const f = footerParts(node, loops);
+  return joined(f.name, f.loop, f.size, f.angle, f.overlap);
+}
+
+// ---------------------------------------------- the footer on one short line
+//
+// S7 orchestrator ruling 9 (#357). The classic card's footer is ONE line of
+// 9.5 px mono inside `px-2.5` on a 188 px card: 166 px, 29 characters at the
+// font's 0.6 em advance (`CLASSIC_FOOTER_CHARS`, FlowNodeCard.tsx, which
+// cardFooterDom.test.tsx holds to the mounted card's classes). CSS `truncate`
+// cut whatever reached the end, so reordering alone (S5) still lost the
+// overlap and the end of the PA on the #357 probe's rotating 2x2
+// ("M31 · rotate · 2x2 · PA 55.0...") and "one panel at a time" behind any
+// name longer than 6. The ruling: when the line does not fit, the overlap
+// goes first, then the name is shortened with an ellipsis, and the angle
+// words (the mode and the PA) and the loop word are never cut. #/next keeps
+// the whole line and wraps.
+//
+// PAST THE RULING, COMPUTED. After the overlap, the panel-first line is
+// "name · one panel at a time · 3x2", which leaves ONE character of room for
+// the name (29 - 28): read literally, every panel-first mosaic's name would
+// be the ellipsis alone, and two blocks on one canvas would read the same.
+// So the name keeps at least one of its characters, and when it cannot, the
+// grid - the one segment the ruling neither drops nor protects, and one the
+// modal and the inspector both show - gives way before it, and the name is
+// fitted again: "M31 · one panel at a time", "NGC 73… · one panel at a time".
+// The name is left out only when not one of its characters fits even then,
+// which takes angle words no rotator's PA reaches: "rotate · fixed PA
+// 359.9" is 23 and leaves the name two characters and the ellipsis, while
+// "fixed PA 12345.6" leaves one character of room, too little for a
+// character and the ellipsis. Past that, a line is over the budget only
+// when "rotate" and the angle alone are, a rotation typed with a dozen
+// digits, and `truncate` still stands behind it.
+
+/** What a shortened name ends with, one advance of the mono font like any
+ *  other character. */
+export const FOOTER_ELLIPSIS = "…";
+
+/** The line `name` leads, shortened with the ellipsis to fit `chars`, or
+ *  null when not one character of it fits beside `rest`. */
+function nameFitted(name: string, rest: (string | null)[], chars: number): string | null {
+  const tail = joined(...rest);
+  const whole = joined(name, tail);
+  if (whole.length <= chars) return whole;
+  if (name === "") return null;
+  const room = chars - tail.length - (tail === "" ? 0 : SUMMARY_SEP.length);
+  // At least one character of the name, then the ellipsis. Trimmed, so a
+  // name cut at a space reads "NGC…", not "NGC …".
+  const kept = name.slice(0, room - 1).trimEnd();
+  return room >= 2 && kept !== "" ? joined(kept + FOOTER_ELLIPSIS, tail) : null;
+}
+
+/** The TARGET footer fitted to `chars` characters, for the classic card
+ *  (ruling 9, above): `line` is what it draws and `full` the whole line, for
+ *  its tooltip. The name is still the one `sum` call. */
+export function fittedFooter(
+  node: FlowNodeRec, loops: boolean, chars: number,
+): { line: string; full: string } {
+  const f = footerParts(node, loops);
+  const full = joined(f.name, f.loop, f.size, f.angle, f.overlap);
+  if (full.length <= chars) return { line: full, full };
+  const line =
+    // 1. The overlap goes, and then, if that is not enough, the name is
+    //    shortened.
+    nameFitted(f.name, [f.loop, f.size, f.angle], chars)
+    // 2. The grid, when not one character of the name fits beside it.
+    ?? nameFitted(f.name, [f.loop, f.angle], chars)
+    // 3. The name, when none fits even then.
+    ?? joined(f.loop, f.angle);
+  return { line, full };
+}
+
+/** One character's advance in IBM Plex Mono (Tailwind's `font-mono`,
+ *  index.css `--font-mono`), in em. */
+export const MONO_ADVANCE_EM = 0.6;
+
+/** How many characters of `fontPx` mono fit in `px`. */
+export function monoChars(px: number, fontPx: number): number {
+  return Math.floor(px / (fontPx * MONO_ADVANCE_EM));
 }
 
 /** The TARGET card's footer line (spec 1.2):
@@ -164,7 +253,8 @@ export function targetFooter(node: FlowNodeRec, loops: boolean): string {
  *  For a TARGET only; every other card keeps its vocabulary `sum`. The
  *  design wrote the mosaic lines with the loop word last and said they were
  *  "sized to the 188 px card"; computed, they are not (#357), which is why
- *  `targetFooter` puts that word second. */
+ *  `targetFooter` puts that word second and the classic card fits the line
+ *  with `fittedFooter`. */
 export function targetSummary(node: FlowNodeRec, graph: LaneGraph): string {
   return targetFooter(node, targetLoops(node, graph));
 }
@@ -185,8 +275,8 @@ export const LOOP_CHIP_WORDS = "every pass: next panel";
 /** The chip's type size: the card footer's 9.5 px mono, so the wire's label
  *  reads at the same size as the cards around it. */
 export const LOOP_CHIP_FONT_PX = 9.5;
-/** One character's advance in that font. IBM Plex Mono advances 0.6 em. */
-const LOOP_CHIP_CHAR_W = LOOP_CHIP_FONT_PX * 0.6;
+/** One character's advance in that font. */
+const LOOP_CHIP_CHAR_W = LOOP_CHIP_FONT_PX * MONO_ADVANCE_EM;
 
 /** The chip's box around its text: computed, not measured, like every other
  *  box on the canvas - the text is monospace, so its width is its length. */
@@ -297,12 +387,13 @@ const side = (v: unknown): number | null =>
  *  or a grid that is no longer the block's.
  *
  *  THE GRID CHECK. The compile runs when a flow is opened (flowsSlice
- *  `flowsOpen`) and after the modal's DONE or LOOP PANELS
- *  (`flowsApplyFraming`), and not after any other edit or a save, so a 3x2
- *  entry can outlive a block re-gridded to 3x3 in the inspector and saved.
- *  The chip would then count panels the card's own footer contradicts. A
- *  skip edited the same way and saved still gets through until the flow is
- *  reopened (#356). */
+ *  `flowsOpen`), after the modal's DONE or LOOP PANELS (`flowsApplyFraming`)
+ *  and after a save (#356), never on an inspector edit, so a 3x2 entry
+ *  outlives a block re-gridded to 3x3 until the next of those lands. The chip
+ *  asks whether the answer is the graph's own first (`loopChip`'s `stale`,
+ *  from `compiledIsCurrent`), which already withholds such an entry; this
+ *  check is kept beside it so that no caller that hands in an answer without
+ *  asking can count panels the card's own footer contradicts. */
 export function livePanels(
   plan: Record<string, unknown> | null | undefined, target: FlowNodeRec,
 ): number | null {
@@ -332,20 +423,25 @@ export function livePanels(
  *  the arc, but "every pass: next panel" over it would promise a rotation the
  *  run will not make; the doctor names what is wrong with it.
  *
- *  NO COUNT WHILE `dirty`, for the same reason the progress chip hides then
- *  (flowProgress.ts): the compile describes the graph as it last compiled,
- *  and an unsaved edit in the inspector - a skip typed, a grid changed - is
- *  not in it. Conservative after the modal's DONE, whose own compile does
- *  describe the draft: the count comes back at the save. */
+ *  NO COUNT WHILE `stale`: the answer in hand does not describe the graph on
+ *  screen, because an edit - a skip typed, a grid changed - landed after the
+ *  compile it came from was sent. Both canvases pass `!compiledIsCurrent`
+ *  (flowsSlice.ts), which compares the graph the compile SENT with the graph
+ *  on screen (#356, S7). They passed `dirty` until S7, which says whether the
+ *  graph is SAVED, not whether it was COMPILED, and is wrong both ways: a
+ *  skip edit then SAVE clears it a round trip before the save's own compile
+ *  lands, so the chip drew the old count over the new skip, and the modal's
+ *  DONE compiles the unsaved draft, so its count was withheld although it
+ *  described exactly what was on screen. */
 export function loopChip(
   graph: LaneGraph,
   edge: FlowEdgeRec,
   plan: Record<string, unknown> | null | undefined,
-  dirty: boolean,
+  stale: boolean,
 ): string | null {
   if (!isLoopWire(graph, edge)) return null;
   const to = loopArcTarget(edge, graph.nodes);
-  const n = dirty || !to ? null : livePanels(plan, to);
+  const n = stale || !to ? null : livePanels(plan, to);
   if (n === null) return LOOP_CHIP_WORDS;
   return `${LOOP_CHIP_WORDS}${SUMMARY_SEP}${n} panel${n === 1 ? "" : "s"}`;
 }

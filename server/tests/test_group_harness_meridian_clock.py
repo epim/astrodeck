@@ -248,16 +248,13 @@ async def test_the_crossing_night_reads_the_meridian_on_its_own_clock(
     assert (night.rel(inside[-1]["t"]), inside[-1]["chip"]) == (10772.28, 5)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "#422: the engine merges ``live`` into its state and never clears it, "
-    "so the last chip before the crossing rides every later publish"))
 async def test_past_the_crossing_no_chip_is_published(group_store,
                                                       monkeypatch):
     """Past the crossing the flip is behind the mount, and `_live_block`
     builds no chip; the UI's heads-up (``scheduleStatus.ts``) trusts the
-    engine to attach one only within the warn lead. But `_set_state` adds
-    ``live`` to the state only when `_live_block` returns one, and merges,
-    so the last chip, 5 s at 10772.28 s, rides every state published after
+    engine to attach one only within the warn lead. `_set_state` used to add
+    ``live`` to the state only when `_live_block` returned one, and merged,
+    so the last chip, 5 s at 10772.28 s, rode every state published after
     it: "Meridian flip in" a few seconds, for the rest of the run. (A
     publish whose ``live`` carries a sensor temperature replaces the whole
     object; the harness's scripted capture leaves ``hub.last_frame`` unset,
@@ -265,27 +262,37 @@ async def test_past_the_crossing_no_chip_is_published(group_store,
 
     With the harness holding the meridian on the night's clock, this is the
     half of "every published chip is the night's clock's" that the harness
-    cannot reach: an engine defect, filed as #422. STRICT: when the engine
-    stops carrying the chip this case passes, and the marker must go.
-    Observed (the xfail's own failure, under --runxfail), since #366 moved
-    the retry and the flip (re-recorded by the S5/S6 integration,
-    S56-INTEG; before #366 it was "25 states ... [(10800.644, 7),
-    (10800.644, 7), (10980.644, 7)]"):
+    cannot reach: an engine defect, filed as #422, and fixed by S7-ENG-FLIP
+    (`_set_state` pops ``live`` when `_live_block` returns None and the
+    caller passed none). The strict xfail that pinned it went in the same
+    change, which it said it must: with the fix this case XPASSed, and the
+    strict marker failed the suite (observed, S7-ENG-FLIP):
+        [XPASS(strict)] #422: the engine merges ``live`` into its state and
+        never clears it, so the last chip before the crossing rides every
+        later publish
+    test_s7_meridian_chip_cleared.py holds the whole block, not only the
+    chip, and its control.
+
+    MUTANT "live merged, never popped" (`_set_state`'s ``if live:
+    kw.setdefault("live", live)`` restored alone, the code before #422),
+    run in the private copy scratchpad S7-ENG-FLIP-mut: RED (observed).
+    Since #366 moved the retry and the flip it is 27 states carrying 5 s,
+    where before #366 it was "25 states ... [(10800.644, 7), (10800.644,
+    7), (10980.644, 7)]":
         AssertionError: 27 states published past the crossing carried a
         chip, the first (t, published): [(10777.28, 5), (10782.28, 5),
         (10785.603, 5)]
-    With the harness as it was, this case passed: no chip was published at
-    all, so none past the crossing either (observed, XPASS(strict)). The
-    premise that a chip was published now fails that version through
-    ``pytest.fail``, outside the marker's ``raises``, so it is reported
-    FAILED and not XFAIL (observed):
+    With the harness as it was before #368, this case passed: no chip was
+    published at all, so none past the crossing either (observed,
+    XPASS(strict)). The premise that a chip was published fails that
+    version through ``pytest.fail`` (observed):
         Failed: premise: the night published a chip before the crossing
     """
     night, done, rows, _left = await _crossing_night(monkeypatch)
-    # The premises fail through pytest.fail, not assert, so the marker's
-    # ``raises=AssertionError`` does not take a failed premise for the
-    # expected failure: with the harness as it was, no chip was published
-    # at all, and this case passed for that reason alone.
+    # The premises fail through pytest.fail, as they did under the strict
+    # xfail this case carried until #422 was fixed, so a failed premise
+    # reads as one: with the harness as it was, no chip was published at
+    # all, and this case passed for that reason alone.
     if not done:
         pytest.fail(f"premise: the run ended: {night.trace[-3:]}")
     if not any(r["chip"] for r in rows):

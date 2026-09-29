@@ -73,7 +73,17 @@
 // RUN SAYS WHAT IT WILL DO (#189 S5, spec 5.9). With a dormant session the
 // button reads `CONTINUE M31 MOSAIC (night 3, 412/1890 subs)`, the one copy
 // every RUN surface prints (`useFlowRunControls().copy`, from the progress
-// route alone), and START OVER sits beside it behind a confirm.
+// route alone), and START OVER sits beside it behind a confirm. Its first tap
+// arms it with the same verb and numbers, `CONFIRM CONTINUE (night 3,
+// 412/1890 subs)` (`runArm`, #474), so the label at the moment of commitment
+// still says what the second tap does.
+//
+// AND WHAT AN ARMED AUTO-RESUME WILL DO (#473, S7 orchestrator ruling 1).
+// While the session CONTINUE would carry on is armed and the flow was saved
+// after the version it froze, a line under the row says that dusk will
+// replay that version (`replayNotice`), since only CONTINUE applies the
+// saved edits. The phone stage list and the classic editor carry the same
+// line from the same function.
 
 import { useRef, useState, type JSX } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -82,6 +92,7 @@ import {
   START_OVER_LABEL, useFlowRunControls, useFlowRunReadouts, type RunCopy,
 } from "../../../../../components/flows/flowRunControls";
 import { countsNotice } from "../../../../../components/flows/countsNotice";
+import { replayNotice } from "../../../../../components/flows/replayNotice";
 import type { FlowIssue } from "../../../../../lib/flowsApi";
 import { accessPhrase, useCapability } from "../../../../../lib/caps";
 import { useStore } from "../../../../../store";
@@ -99,10 +110,36 @@ import {
  *  empty case is one frozen module-level value. */
 const EMPTY_ISSUES: readonly FlowIssue[] = Object.freeze([]);
 
-/** RUN is the one control on this row that starts the rig moving, so it is a
- *  two-tap arm. STOP is NOT: emergency motion stops stay single-tap, which is
- *  the house rule for STOP / HALT / polar-STOP alike. */
-export const RUN_ARM_LABEL = "CONFIRM RUN";
+/** The word an armed RUN leads with, before the verb it confirms. */
+export const RUN_ARM_WORD = "CONFIRM";
+
+/** The two-tap arm of both #/next RUN buttons, this row's and the phone stage
+ *  sheet's footer (#474): the one helper, so the two cannot confirm a press
+ *  in different words.
+ *
+ *  RUN is the one control that starts the rig moving, so it is a two-tap arm.
+ *  STOP is NOT, and gets no arm: emergency motion stops stay single-tap, the
+ *  house rule for STOP / HALT / polar-STOP alike. `copy.verb` is STOP exactly
+ *  while the run is live (`runCopy`), so the copy alone decides.
+ *
+ *  THE ARMED LABEL SAYS WHAT THE SECOND TAP DOES. `ActionButton` swaps the
+ *  whole label for `arm.label` on the first tap, and this used to be a fixed
+ *  "CONFIRM RUN": over a dormant session the night and the counts being
+ *  continued vanished at the moment of commitment, and "RUN" sat beside
+ *  START OVER, the press that really starts afresh. So the label is
+ *  `CONFIRM <verb>` with the copy's parenthetical kept: "CONFIRM CONTINUE
+ *  (night 3, 194/480 subs)", and "CONFIRM RUN" when there is nothing to
+ *  continue.
+ *
+ *  THE NAME IS LEFT OUT. The label is one string in `.nx-btn-label`, which
+ *  ellipsises from the RIGHT, so every character in front of the
+ *  parenthetical is one more that pushes the night and the counts off a
+ *  narrow button first. The flow's name is already on both surfaces, in the
+ *  row's FLOW title and the sheet's title. */
+export function runArm(copy: RunCopy): { label: string } | undefined {
+  if (copy.verb === "STOP") return undefined;
+  return { label: [`${RUN_ARM_WORD} ${copy.verb}`, copy.detail].filter((p) => p !== "").join(" ") };
+}
 
 /** SAVE's own label and its accessible name. A plain word: the pill beside it
  *  carries the state, so the button does not have to change its own text. */
@@ -182,6 +219,12 @@ export function FlowCanvasToolbar(): JSX.Element {
   // A string or null, so exact under Object.is: a pan or a status tick
   // re-renders nothing here.
   const countsLine = useStore((s) => countsNotice(s.flows.graph, s.flows.countsNote));
+  // The replay line (#473, S7 orchestrator ruling 1), also a string or null:
+  // the progress answer's armed session against the record's saved time, so
+  // a save that moves `updated_ts` raises it and the re-read after CONTINUE
+  // (a live session, so not armed, frozen at the saved version) takes it
+  // down, each without a reopen.
+  const replayLine = useStore((s) => replayNotice(s.flows.progress, s.flows.record));
 
   // RUN/STOP is the shared hook, never transcribed: it owns the abort route
   // (`/api/sequence/abort`, not a flows route), the rule that a timed-out abort
@@ -319,7 +362,7 @@ export function FlowCanvasToolbar(): JSX.Element {
         glyph={<NxIcon name={running ? "stop" : "play"} size={15} />}
         lockedReason={runReason}
         onExplain={explain}
-        arm={running ? undefined : { label: RUN_ARM_LABEL }}
+        arm={runArm(copy)}
         onPress={act}
       >
         <RunCopyWords copy={copy} />
@@ -344,13 +387,18 @@ export function FlowCanvasToolbar(): JSX.Element {
     </div>
   );
 
-  // A sibling of the row, not inside it: the row is 48 px of controls, and the
-  // host's flex column gives this line its own height under them.
+  // Siblings of the row, not inside it: the row is 48 px of controls, and the
+  // host's flex column gives each line its own height under them. The replay
+  // line is a warning, not a fact about counting: the night will shoot
+  // something other than the graph on screen unless CONTINUE is pressed.
   return (
     <>
       {row}
       {countsLine && (
         <BannerCard tone="info" text={countsLine} data-testid="flow-canvas-counts" />
+      )}
+      {replayLine && (
+        <BannerCard tone="warn" text={replayLine} data-testid="flow-canvas-replay" />
       )}
     </>
   );

@@ -6,7 +6,8 @@ This is the ONLY module that touches real sockets; everything it depends on
 WSS integration test exercises this shell end to end.
 
 Endpoints:
-  * ``GET  /healthz``                  liveness (no auth).
+  * ``GET  /healthz``                  liveness (no auth), with the build
+                                       identity baked into the image.
   * ``WS   /scope``                    the HOME dials here (device-token auth via
                                        the HELLO frame). One per home; generation
                                        fencing evicts a stale socket.
@@ -30,6 +31,7 @@ import asyncio
 import contextlib
 import hmac
 import logging
+import os
 import signal
 import time
 from typing import Optional
@@ -697,10 +699,40 @@ async def _browser_ws(state: RelayState, ws: "WebSocket") -> None:
         state.release_ws(home_id)
 
 
-async def _healthz(request) -> "JSONResponse":
+# What /healthz says when the image carries no build identity. An explicit
+# word, because the alternative is a guess: the package's own __version__ has
+# read 0.1.0 since the relay was written, so it cannot tell one build from
+# another.
+BUILD_UNKNOWN = "unknown"
+
+
+def build_identity(environ=None) -> dict:
+    """The version and git commit baked into the image at build time (#462).
+
+    The Dockerfile declares both as build args and passes them to env, and
+    ``scripts/deploy_relay.ps1`` sets them and then waits for /healthz to
+    report its commit. That is how a deploy is verified, and drift noticed,
+    from outside with no Fly credential: the relay once ran July code for two
+    months and nothing said so. An image built without the args has each
+    variable set to "" (an ARG with no value expands to that), so empty and
+    blank read as unset."""
+    env = os.environ if environ is None else environ
+
+    def _read(name: str) -> str:
+        return (env.get(name) or "").strip() or BUILD_UNKNOWN
+
+    return {
+        "version": _read("RELAY_BUILD_VERSION"),
+        "commit": _read("RELAY_BUILD_COMMIT"),
+    }
+
+
+async def _healthz(request, build: dict) -> "JSONResponse":
     return JSONResponse({
         "ok": True,
         "ts": time.time(),
+        "version": build["version"],
+        "commit": build["commit"],
     })
 
 
@@ -725,8 +757,15 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
     async def browser_http_ep(request):  # noqa: ANN001
         return await _browser_http(state, request)
 
+    # Read once: the environment is fixed when the image is built, so the
+    # identity cannot change for the life of the process.
+    build = build_identity()
+
+    async def healthz_ep(request):  # noqa: ANN001
+        return await _healthz(request, build)
+
     routes = [
-        Route("/healthz", _healthz, methods=["GET"]),
+        Route("/healthz", healthz_ep, methods=["GET"]),
         WebSocketRoute("/scope", scope_ep),
         WebSocketRoute("/h/{home_id}/ws", browser_ws_ep),
         Route("/h/{home_id}/{path:path}", browser_http_ep,

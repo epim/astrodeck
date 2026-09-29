@@ -14,7 +14,9 @@ Persistence model (resolves the "second blocking full-file rewrite" critique):
   :func:`asyncio.to_thread` (never a synchronous in-loop blocking write). The
   snapshot is the whole report — small (frames are downsampled when huge) and
   written atomically via :func:`persist.write_json_atomic`.
-* :meth:`finalize` stamps ``ended_at`` + ``end_reason`` and writes one last time.
+* :meth:`finalize` stamps ``ended_at`` + ``end_reason`` and writes one last time,
+  on the caller's thread; a retry of that write runs on a thread of its own
+  (#477).
 * :meth:`attach_existing` re-hydrates a reporter from disk so a crash-resume keeps
   appending to the same report (C2-5).
 
@@ -28,6 +30,11 @@ the reason kept: ``missing`` is the only answer that means the file is not
 there. A ``PermissionError`` is retried briefly first, because on Windows that
 is what a read gets while another handle holds the file, and an unreadable
 file is logged rather than skipped in silence.
+
+Every read blocks, its retry included (``time.sleep``), so a coroutine calls
+the readers through :func:`asyncio.to_thread`, never on the loop (#477);
+tests/test_s7_report_final_retry_off_loop.py drives every route that reads a
+report with the read refusing a thread whose loop is running.
 """
 from __future__ import annotations
 
@@ -73,7 +80,8 @@ _READ_BACKOFF_S = 0.05
 #: there loses the report's ending for good; a snapshot that fails is replaced
 #: by the next one. ``write_json_atomic`` already retries its ``os.replace``;
 #: this covers what it does not, such as the staging file or the directory ACL
-#: failing on a transient sharing violation.
+#: failing on a transient sharing violation. The wait is made on the retry's
+#: own thread whenever ``finalize()`` is called on a running loop (#477).
 _FINAL_RETRY_S = 0.25
 
 #: Report paths already warned about as unreadable, with the reason that was
@@ -174,7 +182,15 @@ def _read_report_file(path: Path) -> tuple[Any, str | None, str, int]:
 
     ``raw`` is the parsed JSON when ``reason`` is ``None``. The retry is here,
     shared by :meth:`SessionReporter.read` and :meth:`SessionReporter.list_reports`,
-    so the list cannot drop a file the single read would have waited for."""
+    so the list cannot drop a file the single read would have waited for.
+
+    THREAD-ONLY. The backoff is ``time.sleep``, up to half a second over
+    ``_READ_RETRIES``, and it stays synchronous: made on the loop thread it
+    would stop every coroutine for that long. Every production caller reaches
+    it through ``asyncio.to_thread`` (the report routes, and the Tonight
+    route's ledgers inside ``resolve_tonight``'s thread), and
+    tests/test_s7_report_final_retry_off_loop.py proves it by patching this
+    function to raise on a thread whose loop is running (#477)."""
     attempts = 0
     while True:
         attempts += 1
@@ -387,8 +403,10 @@ class SessionReporter:
 
     Construct with a plan (the engine does this at run start), then call
     :meth:`record_frame` / :meth:`record_safety` per frame/event and
-    :meth:`finalize` on any terminal path. All disk writes go through
-    :func:`asyncio.to_thread` so the event loop never blocks on I/O."""
+    :meth:`finalize` on any terminal path. Snapshot writes go through
+    :func:`asyncio.to_thread` so the event loop never blocks on I/O; the final
+    write's first attempt is made on the caller's thread, and its retry on a
+    thread of its own (see :meth:`finalize`)."""
 
     def __init__(self, plan: Any, *, report_id: str | None = None,
                  started_at: float | None = None):
@@ -424,6 +442,9 @@ class SessionReporter:
         #: None again (#420, found while fixing #370; see _persist).
         self._built = 0
         self._written = 0
+        #: The thread retrying a failed final write off the loop (#477), or
+        #: None when no retry was handed off.
+        self._final_retry: threading.Thread | None = None
 
     # -- ids / paths -----------------------------------------------------------
 
@@ -498,39 +519,103 @@ class SessionReporter:
         ``_FINAL_RETRY_S`` (#370): nothing writes after it, so its failure is
         the report's ending lost, while a snapshot's is repaired by the next.
 
+        The retry never sleeps on the event loop (#477, S7 orchestrator ruling
+        5). ``finalize()`` is called on the loop thread, and until #477 the
+        sleep and the retry's own write, ``write_json_atomic``'s replace
+        backoff inside it, held every coroutine of the wind-down for up to a
+        second. Called on a running loop, the retry is handed to a thread of
+        its own (:meth:`_retry_final`); with no loop on this thread there is
+        nothing to hold, and it is made here.
+
         The ACL errors are caught with ``OSError`` because they come from the
         same write: ``ensure_private_dir`` and ``harden_private_file`` report a
         transient sharing violation as ``PrivateAclError``. Uncaught, one of
         those escaped a snapshot's worker thread into a task nobody awaits,
         which is a failure nobody hears of."""
         path = self._path()
-        attempts = 2 if final else 1
-        for attempt in range(1, attempts + 1):
+        failed = self._write(path, report, number)
+        if failed is None:
+            return
+        what = "final report, retrying once" if final else "snapshot"
+        bus.log("warning", f"session report write failed ({what}) at "
+                           f"{_shown(path)}: {_described(failed)}", "report")
+        if not final:
+            return
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            self._retry_final(path, report, number, None)
+            return
+        retry = threading.Thread(
+            target=self._retry_final, args=(path, report, number, loop),
+            name=f"report-final-retry-{self.id}",
+            # Not a daemon: an interpreter exiting right after the wind-down
+            # waits the quarter second for the ending rather than dropping it,
+            # which is the loss this retry exists to prevent.
+            daemon=False)
+        self._final_retry = retry
+        try:
+            retry.start()
+        except RuntimeError:
+            # No thread to be had (the interpreter is shutting down): the
+            # ending is worth the wait on a loop that is going away anyway.
+            self._final_retry = None
+            self._retry_final(path, report, number, None)
+
+    def _write(self, path: Path, report: SessionReport,
+               number: int) -> BaseException | None:
+        """One attempt at writing snapshot ``number``: the error it failed
+        with, or None when it was written or was already out of date.
+
+        The one rule every write follows, a final retry on its own thread
+        included (#420): under ``_persist_lock``, and only when nothing newer
+        is on disk."""
+        try:
+            ensure_dir(_reports_dir())
+            # hold the cross-thread lock across the whole atomic write so a
+            # concurrent finalize() (loop thread), snapshot (worker thread)
+            # and final retry (its own thread) can never both be writing the
+            # shared staging file.
+            with self._persist_lock:
+                if number < self._written:
+                    # Built before the snapshot now on disk, and late to the
+                    # lock: writing it would put the older report back over
+                    # the newer, finalize()'s included.
+                    return None
+                write_json_atomic(path, report.model_dump())
+                self._written = number
+            return None
+        except (OSError, PrivatePermissionsError, PrivateAclError) as e:
+            return e
+
+    def _retry_final(self, path: Path, report: SessionReport, number: int,
+                     loop: asyncio.AbstractEventLoop | None) -> None:
+        """The failed final write's one retry, after ``_FINAL_RETRY_S``.
+
+        Runs on its own thread when ``finalize()`` was called on ``loop``,
+        and inline when there is none. A second failure is said on the loop
+        when it is still running: ``bus.log`` fans out to ``asyncio.Queue``
+        subscribers that belong to it, and a line put in from another thread
+        waits for the loop's next wake-up, or raises under asyncio's debug
+        mode ("Non-thread-safe operation invoked on an event loop other than
+        the current one"). #480 is that class across the codebase; a failed
+        snapshot's warning, logged from its worker thread, is still one."""
+        time.sleep(_FINAL_RETRY_S)
+        failed = self._write(path, report, number)
+        if failed is None:
+            return
+        message = (f"session report write failed (final report, after one "
+                   f"retry) at {_shown(path)}: {_described(failed)}")
+        if loop is not None and loop.is_running():
             try:
-                ensure_dir(_reports_dir())
-                # hold the cross-thread lock across the whole atomic write so a
-                # concurrent finalize() (loop thread) and snapshot (worker
-                # thread) can never both be writing the shared staging file.
-                with self._persist_lock:
-                    if number < self._written:
-                        # Built before the snapshot now on disk, and late to
-                        # the lock: writing it would put the older report back
-                        # over the newer, finalize()'s included.
-                        return
-                    write_json_atomic(path, report.model_dump())
-                    self._written = number
+                loop.call_soon_threadsafe(bus.log, "warning", message,
+                                          "report")
                 return
-            except (OSError, PrivatePermissionsError, PrivateAclError) as e:
-                if attempt < attempts:
-                    what = "final report, retrying once"
-                elif final:
-                    what = "final report, after one retry"
-                else:
-                    what = "snapshot"
-                bus.log("warning", f"session report write failed ({what}) at "
-                                   f"{_shown(path)}: {_described(e)}", "report")
-                if attempt < attempts:
-                    time.sleep(_FINAL_RETRY_S)
+            except RuntimeError:
+                pass                   # closed since: nothing left to race
+        bus.log("warning", message, "report")
 
     # -- snapshot --------------------------------------------------------------
 
@@ -555,14 +640,32 @@ class SessionReporter:
 
         Called once at start rather than at finalize: a run that dies before
         finalizing is exactly the one whose settings someone will want to read.
+
+        AND WRITTEN NOW, the report's first file (#517). ``engine.start``
+        names this report's id in the session, and so in the sequence state
+        and the flow's progress, the moment it has stamped this; with no
+        write here the file appeared only at the first frame or the finalize,
+        so for the slew, the centring, a cooling or altitude wait before the
+        first exposure, ``GET /api/reports/{id}`` answered "report not found"
+        for an id every other surface named, and the stamp above reached no
+        disk for a run that died in that stretch, the one this docstring is
+        about. The write is the ordinary numbered snapshot (#420), so a
+        later snapshot or the final write is never replaced by it.
         """
         self._policy = dict(record)
+        self._schedule_write()
 
     def finalize(self, end_reason: str) -> SessionReport:
         """Stamp the terminal reason + end time and write the final snapshot.
 
         Synchronous so every engine terminal path (including a shielded wind-down)
-        produces a persisted report even if the loop is tearing down."""
+        produces a persisted report even if the loop is tearing down. The first
+        attempt is made here, so a write that succeeds is on disk when this
+        returns. A write that fails is retried once, on a thread of its own
+        when this is called on a running loop (#477), so the report may land
+        a moment after the return: the retry is under the same snapshot
+        numbers and lock (#420), and a snapshot built before this call still
+        cannot replace it."""
         self._ended_at = time.time()
         self._end_reason = end_reason
         number, report = self._snapshot()
@@ -588,7 +691,10 @@ class SessionReporter:
         so a report skipped in silence was a night that vanished from it with
         nothing said, for as long as another handle held its file. A file
         that went missing between the directory listing and the read is not
-        "unreadable": it is not there, and it is left out without a word."""
+        "unreadable": it is not there, and it is left out without a word.
+
+        Blocking, one read per file with its retry: a coroutine calls this,
+        or :meth:`list_reports`, through ``asyncio.to_thread`` (#477)."""
         out: list[dict] = []
         unreadable: list[ReportRead] = []
         for path in list_json(_reports_dir()):
@@ -642,7 +748,10 @@ class SessionReporter:
         (``PrivateAclError``) still raises, as it did before: that is a
         security answer about the file, not a reason it is absent. In #370's
         reproduction that step never refused; the reads that failed were
-        refused at the open that follows it."""
+        refused at the open that follows it.
+
+        Blocking, the retry's sleeps included: a coroutine calls this, or
+        :meth:`load`, through ``asyncio.to_thread`` (#477)."""
         path = _reports_dir() / f"{_slug(report_id)}.json"
         raw, reason, detail, attempts = _read_report_file(path)
         if reason is None:
@@ -686,6 +795,7 @@ class SessionReporter:
         r._persist_lock = threading.Lock()
         r._built = 0
         r._written = 0
+        r._final_retry = None
         return r
 
     @staticmethod

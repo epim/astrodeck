@@ -24,7 +24,11 @@
 //      one target, and then sends no grid).
 //   4. THE REVIEW IS THE SERVER'S, and RUN IS LOCKED ON A LOSS with its
 //      reason on screen, graded on requests: a locked RUN posts no `/run`.
-//   5. A FLOW OPEN WITH EDITS is saved before the wizard's flow replaces it.
+//   5. A FLOW OPEN WITH EDITS is saved before the wizard's flow replaces it,
+//      and one whose save fails is not replaced: since #450 that rule is
+//      flowsSlice `flowsOpen`'s, for every caller, and this sheet's
+//      `openSaved` is only the check that the flow asked for landed. The
+//      refusal is said once, by the store.
 //
 // Every mutant below was run in a private scratch copy of ui/
 // (scratchpad/S6-WIZ-UI-mut), never in the shared tree (#254), and the
@@ -190,6 +194,7 @@ const { FLOWS_INIT } = await import("../../flowsSlice");
 const sheetModule = await import("../SendToWizardSheet");
 const Sheet = sheetModule.default;
 const { DOCTOR_CLEAR, OPEN_FAILED, RUN_DID_NOT_START } = sheetModule;
+const { FLOW_OPEN_OVER_UNSAVED } = await import("../../flowsSlice");
 const M = await import("../wizardModel");
 type WizardPrefill = import("../wizardModel").WizardPrefill;
 
@@ -648,6 +653,22 @@ await test("a RUN the server refuses is said, and never read as started off a le
 //   x a flow whose edits will not save is not replaced, and nothing opens: the wizard's flow replaced a flow whose edits did not save
 //     expected 0
 //     got      1
+// That branch is gone since #450: the save and the refusal moved into
+// flowsSlice `flowsOpen`, and the same mutant is now "replace without
+// saving" there (the save-first block deleted), run in scratchpad
+// S7-USLICE-mut. Observed, the same two cases red with the same lines
+// ("sendToWizardSheet.test: 23/25 passed"):
+//   x a flow open with edits is saved before the wizard's flow replaces it: the open flow's edits were not saved first: GET /api/flows/minted-by-the-save, GET /api/flows/minted-by-the-save/progress, POST /api/flows/compile
+//   x a flow whose edits will not save is not replaced, and nothing opens: the wizard's flow replaced a flow whose edits did not save
+//     expected 0
+//     got      1
+//
+// MUTANT "the wizard repeats the store's refusal" (SendToWizardSheet.tsx
+// openSaved: `if (refused) return false;` deleted, so the sheet toasts too).
+// Observed ("sendToWizardSheet.test: 24/25 passed"):
+//   x a flow whose edits will not save is not replaced, and nothing opens: the toasts saying the flow did not open, with their counts and reasons
+//     expected [[1,"The flow open in the editor has edits that did not save, and opening this one would drop them. Save or close that flow first."]]
+//     got      [[2,"The flow open in the editor has edits that did not save, and opening this one would drop them. Save or close that flow first."]]
 
 await test("a flow open with edits is saved before the wizard's flow replaces it", async () => {
   setup();
@@ -668,6 +689,7 @@ await test("a flow open with edits is saved before the wizard's flow replaces it
 
 await test("a flow whose edits will not save is not replaced, and nothing opens", async () => {
   setup();
+  useStore.setState({ toasts: [] } as any);
   useStore.setState({ flows: { ...FLOWS_INIT, record: OTHER as any, graph: OTHER.graph as any, dirty: true } } as any);
   const base = routes();
   answer = (c) => (c.method === "PUT" ? { status: 500, body: { detail: "disk full" } } : base(c));
@@ -685,6 +707,40 @@ await test("a flow whose edits will not save is not replaced, and nothing opens"
   eq(opened, [], "the host was told to open a flow that did not open");
   const toasts = (useStore.getState() as any).toasts ?? [];
   assert(JSON.stringify(toasts).includes(OPEN_FAILED), `no toast said the flow did not open: ${JSON.stringify(toasts)}`);
+  // Said ONCE, by the store, with its reason: the sheet's own report of the
+  // same press would coalesce onto it as a second count.
+  eq(toasts.filter((t: any) => t.title === OPEN_FAILED).map((t: any) => [t.count, t.detail]),
+    [[1, FLOW_OPEN_OVER_UNSAVED]], "the toasts saying the flow did not open, with their counts and reasons");
+});
+
+// The other half of the reduced `openSaved`: a read that FAILS is not the
+// store's refusal, and nobody but this sheet says it.
+//
+// MUTANT "the wizard never says a failed open" (SendToWizardSheet.tsx
+// openSaved: `refused` answered true whatever happened, so a failed read is
+// taken for the store's refusal). Run in scratchpad S7-USLICE-mut. Observed
+// ("sendToWizardSheet.test: 24/25 passed"):
+//   x a saved flow that cannot be read is said by the sheet, and nothing opens: toasts saying the flow did not open
+//     expected 1
+//     got      0
+await test("a saved flow that cannot be read is said by the sheet, and nothing opens", async () => {
+  setup();
+  useStore.setState({ toasts: [] } as any);
+  const base = routes();
+  answer = (c) => (c.method === "GET" && c.url.endsWith(`/api/flows/${ID}`)
+    ? { status: 404, body: { detail: "no flow with that id" } } : base(c));
+  mount(fxPrefill());
+  walkToReview();
+  click(btn("wizard-generate"));
+  await flush();
+  click(btn("wizard-open-editor"));
+  await flush();
+  eq(useStore.getState().flows.record, null, "precondition: a flow opened although its read failed");
+  eq(opened, [], "the host was told to open a flow that did not open");
+  const said = ((useStore.getState() as any).toasts ?? []).filter((t: any) => t.title === OPEN_FAILED);
+  eq(said.length, 1, "toasts saying the flow did not open");
+  assert(said[0].detail && said[0].detail !== FLOW_OPEN_OVER_UNSAVED,
+    `the failed read was reported as the store's refusal, or with no reason: ${JSON.stringify(said[0].detail)}`);
 });
 
 // ============================================================ 5. what is missing

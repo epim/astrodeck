@@ -41,6 +41,7 @@ import asyncio
 import math
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -253,15 +254,63 @@ def _isolate(tmp_path, monkeypatch) -> ConfigStore:
     return store
 
 
+def _local_evening(night: int) -> float:
+    """21:00 LOCAL wall-clock time on the evening of observing night
+    ``night``, counted from the evening of 2026-09-20 as night 1. Local, so
+    the instant differs between the dev box and CI while the wall-clock
+    time, which ``events.night_key`` reads, does not; ``mktime`` normalises a
+    day of the month past its end."""
+    return time.mktime((2026, 9, 19 + night, 21, 0, 0, 0, 0, -1))
+
+
+class _NightClock:
+    """``time`` as the engine and the app read it, with ``time()`` pinned to
+    ``t`` and every other name the real module's. The engine mints a run's
+    report id, the stamp its observing night is read from, off it, and
+    CONTINUE asks it for tonight (``Session.night_at``). The same shape as
+    test_s7_session_nights.py's ``_Clock``."""
+
+    def __init__(self, t: float) -> None:
+        self.t = t
+
+    def time(self) -> float:
+        return self.t
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
 class Rig:
     def __init__(self, client: httpx.AsyncClient, engine: SequenceEngine,
                  night: _Night | None, starts: list[Start],
-                 store: ConfigStore | None = None) -> None:
+                 store: ConfigStore | None = None,
+                 monkeypatch: pytest.MonkeyPatch | None = None) -> None:
         self.client = client
         self.engine = engine
         self.night = night
         self.starts = starts
         self.store = store
+        self._monkeypatch = monkeypatch
+        self._clock: _NightClock | None = None
+
+    def on_night(self, night: int) -> None:
+        """Pin the engine's and the app's clock to the evening of observing
+        night ``night`` (``_local_evening``) until the next call.
+
+        WHY A TEST THAT COUNTS NIGHTS PINS THEM (#430, S7 orchestrator ruling
+        7). CONTINUE's ``night`` and the card's ``nights`` count OBSERVING
+        nights, keyed by ``events.night_key`` of each run's start, not runs.
+        On the real clock every run a test makes falls on one night, so a
+        CONTINUE the test calls night two is night 1, and a test straddling
+        local noon would flip it. Pinned, "night two" is the next evening
+        whatever the machine's clock and zone say."""
+        assert self._monkeypatch is not None, "the rig was built without one"
+        t = _local_evening(night)
+        if self._clock is None:
+            self._clock = _NightClock(t)
+            self._monkeypatch.setattr(engine_module, "time", self._clock)
+            self._monkeypatch.setattr(app_module, "time", self._clock)
+        self._clock.t = t
 
     async def save_flow(self, graph: dict, name: str = "continue me") -> str:
         r = await self.client.post("/api/flows", json={
@@ -326,7 +375,7 @@ async def rig(tmp_path, monkeypatch):
     starts = _record_starts(engine, monkeypatch)
     monkeypatch.setattr(app_module, "engine", engine)
     async with _app_client(monkeypatch, store) as client:
-        yield Rig(client, engine, night, starts, store)
+        yield Rig(client, engine, night, starts, store, monkeypatch)
     if engine.running:
         night.end("aborted")
         await engine._task
@@ -779,8 +828,31 @@ class TestContinue:
             Start(won=True, session_id=None, frames=[], frame_ids=[],
             step_ids=['7bdd8ab4034550a086bb293aa6253eb6', '496e80226e8c572ea2b929b193f95fa6'],
             count_mode='attempts', error='')
+
+        DELIBERATE PIN CHANGE (S7 integration, #430, S7 orchestrator ruling
+        7): both runs used to start on the real clock, seconds apart, and
+        the answer pinned ``"night": 2`` as the run count. CONTINUE's
+        ``night`` is the observing night since S7, so that same-evening
+        second run is night 1, and the unpinned case went red with
+        ``{'night': 1} != {'night': 2}``. Night one now starts on the evening
+        of night 1 and CONTINUE the next evening (``Rig.on_night``), which is
+        the night two this test is named for.
+
+        RED under mutant "tonight never adds a night" (``Session.night_at``
+        answering ``len(nights)``, so the evening CONTINUE is pressed on is
+        always one already run), observed in the integration's private
+        copy:
+
+            AssertionError: assert {'continued':...kept': 2, ...} ==
+            {'continued':...kept': 2, ...}
+              Differing items:
+              {'night': 1} != {'night': 2}
+
+        (The other arm, "tonight always adds one", is
+        test_flows_continue_race.py's and test_s7_session_nights.py's.)
         """
         fid = await rig.save_flow(LR)
+        rig.on_night(1)
         one = await rig.night_one(fid, [0, 0, 1])
         assert one.status == "dormant" and len(one.frames) == 3
         expected = _compiled(LR, fid)
@@ -788,6 +860,7 @@ class TestContinue:
             st.id for t in expected.targets for st in t.steps], (
             "night one did not compile with the flow's id")
 
+        rig.on_night(2)
         r = await rig.run(fid)
 
         assert r.status_code == 200, r.text

@@ -380,6 +380,11 @@ async def test_a_triggered_refocus_leaves_the_baseline_to_the_frame_after_it(
         AssertionError: the baseline after a triggered refocus is 2.8, the
         frame that fired it, not 2.1, the first after it
         assert 2.8 == 2.1
+    Re-run for #435's verification by S7-ENG-FLIP on the S7 tree, in the
+    private copy scratchpad S7-ENG-FLIP-mut: RED, the same failure word for
+    word (observed), beside every other case in this file but three (the
+    rule that never fires, and the two completion-rule cases): 9 failed, 3
+    passed.
     """
     eng = SequenceEngine(sim_hub)
     sweeps: list[str] = []

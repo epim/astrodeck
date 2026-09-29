@@ -90,10 +90,6 @@ _HEALTHY_SESSION_S = 120.0
 # overflow guard, not a behavior change below the cap.
 _BACKOFF_MAX_EXP = 40
 
-# Per-viewer /ws fanout buffer (drop-oldest). A slow remote viewer must never
-# stall the single shared bus subscription that feeds every viewer.
-_WS_BUFFER_MAX = 200
-
 # Hard per-tunnel state bounds. The public relay is an authenticated peer, not a
 # memory-allocation authority: a stolen device token or compromised relay must
 # not create unbounded ASGI tasks/queues on the home controller.
@@ -916,9 +912,19 @@ class RelayClient:
                       ws: Any = None) -> None:
         """Mirror the on-LAN /ws: AUTHORIZE the viewer, then subscribe to the bus
         and stream each REDACTED event down as WS_DATA (server->client ONLY -- there
-        is NO upstream control channel, exactly like the send-only /ws). Per-ws
-        monotonic ``seq`` lets the relay / browser detect a drop; the local buffer
-        drops oldest under backpressure.
+        is NO upstream control channel, exactly like the send-only /ws).
+
+        Each viewer has its own bus subscription, and that is the only buffer on
+        this side of the tunnel. A viewer whose sends back up (a slow uplink to
+        the relay) falls behind in it; past ``events.SUBSCRIBER_MAX`` the bus
+        drops the oldest and the subscription serves a ``{"type": "relay_gap"}``
+        marker ahead of the next event (#444). This loop forwards the marker like
+        any event (``_redact_ws_event`` returns it unchanged), the relay passes it
+        on, and the browser re-reads the monitor snapshot. ``seq`` in the WS_DATA
+        header numbers what this loop tries to send, after the queue and after
+        redaction, so a drop at the bus leaves no hole in it (an event too large
+        to encode does, its number spent before the encode fails). Nothing reads
+        it to find a drop either way: the relay records it and moves on.
 
         Unlike a LAN client, a remote viewer is authorized PER SOCKET here (the LAN
         handler's accept-gate is not reached over the tunnel): we resolve the

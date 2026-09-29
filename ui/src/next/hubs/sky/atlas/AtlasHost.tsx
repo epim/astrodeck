@@ -177,13 +177,18 @@ export interface AtlasHostProps {
   onSurveyLoad: () => void;
   /** Open Settings > SKY PACK, where both fixes for a dark sky live. */
   onSurveySource: () => void;
-  /** Hand the framed object to the finder's reticle and go back to the map. */
+  /** Hand the framed object to the finder's reticle and go back to the map.
+   *  With no tonight's list (no site saved: the ranking is a 409) the hub
+   *  holds the framed object as the lock rather than refusing it for being
+   *  absent from a list that does not exist (#466); `rankingNotes` below
+   *  already says why the list is empty. */
   onLockInFinder: () => void;
   /** Hand the current centre to FRAME mode (mosaic, rotation, panels). */
   onFrame: () => void;
   /** Null while the centre is above the horizon; the hub's FRAME_NEEDS_AIM
    *  sentence when it is not - the survey is drawable anywhere, but a patch of
-   *  ground has no target to frame. */
+   *  ground has no target to frame. Always null with no site saved, a default
+   *  site included (#466): there is no horizon of the operator's to judge. */
   frameReason: string | null;
   onExplain: (reason: string) => void;
 }

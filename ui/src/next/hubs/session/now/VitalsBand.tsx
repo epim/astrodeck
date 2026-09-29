@@ -7,6 +7,14 @@
 // SCROLL TO SEVEN: the README's four are first and always visible, and the rest
 // are one thumb-drag away instead of deleted.
 //
+// "ALWAYS VISIBLE" IS A LAYOUT, NOT A SLICE (#468). The four used to share the
+// seven's sideways scroller at an 86 px floor each, which is 362 px with its
+// gaps: in the desktop column's 336 px content box the FLIP tile ran past the
+// column's edge, and on a phone it lost its last pixels the same way. So the
+// four sit in the panel variant's wrap grid (`ReadoutGrid`, next.css): two
+// across in the column and on a phone, four in a wider container, and a sub
+// that is longer than its tile wraps inside it rather than being cut.
+//
 // EVERY CELL IS ALLOWED TO SAY IT DOES NOT KNOW, and none of them guesses:
 //
 //   * TO DAWN is absent entirely without a tonight payload. A dawn time made up
@@ -31,7 +39,7 @@ import {
 } from "../../../../store";
 import { useCan } from "../../../../lib/caps";
 import { FLIP_SITE_REASON } from "../../monitor/live/FlipTile";
-import { Mono, ReadoutTile } from "../../../ui";
+import { Mono, ReadoutGrid, ReadoutTile } from "../../../ui";
 import { useActiveSession } from "./sessionData";
 import { useCampaign } from "./useCampaign";
 import { useEta } from "./useEta";
@@ -205,21 +213,36 @@ export function VitalsBand({ cells = 4 }: { cells?: 4 | 7 }): JSX.Element {
 
   return (
     <div data-testid="now-vitals" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <div style={{
-        display: "flex", gap: 6, overflowX: "auto", minWidth: 0, paddingBottom: 2,
-      }}>
-        {shown.map((c) => (
-          <div key={c.id} style={{ flex: "1 0 auto", minWidth: 86 }}>
+      {cells === 4 ? (
+        <ReadoutGrid cols={4}>
+          {shown.map((c) => (
             <ReadoutTile
+              key={c.id}
               label={c.label}
               value={c.value}
               sub={c.sub}
               tone={c.tone}
               data-testid={`vital-${c.id}`}
             />
-          </div>
-        ))}
-      </div>
+          ))}
+        </ReadoutGrid>
+      ) : (
+        <div style={{
+          display: "flex", gap: 6, overflowX: "auto", minWidth: 0, paddingBottom: 2,
+        }}>
+          {shown.map((c) => (
+            <div key={c.id} style={{ flex: "1 0 auto", minWidth: 86 }}>
+              <ReadoutTile
+                label={c.label}
+                value={c.value}
+                sub={c.sub}
+                tone={c.tone}
+                data-testid={`vital-${c.id}`}
+              />
+            </div>
+          ))}
+        </div>
+      )}
       {level === "amber" && sinceCaptureS != null && (
         <div data-testid="now-stall-line">
           <Mono size={10} tone="warn">

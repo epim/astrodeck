@@ -57,6 +57,10 @@ class LibraryFull(ValueError):
 #: Why a plan file that does not parse, or is not UTF-8 text, is unreadable:
 #: a write cut short, or a file copied in by hand. Writes are atomic
 #: (``write_json_atomic``), so the library itself should never leave one.
+#: The one spelling of the sentence: ``_read_plan`` raises with it and the
+#: tests import it, and the recorded list the UI tests read holds its words
+#: (``tests/fixtures/plan_list_unreadable.json``, #478), so rewording it
+#: means re-recording that file on purpose.
 NOT_JSON = "not valid JSON"
 
 #: Why JSON that is not an object is: there is no envelope to hold a plan.

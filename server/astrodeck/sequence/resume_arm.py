@@ -1780,10 +1780,24 @@ class ResumeArm:
                 # next step's refusal (cloud, no solve) sends the whole ladder
                 # back through autofocus on every ten-minute retry, because
                 # nothing else can re-establish trust once a gap has opened.
-                try:
-                    _fp.vouch(focuser_position=await foc.get_position())
-                except Exception:  # noqa: BLE001 — bookkeeping, never a refusal
-                    pass
+                #
+                # ONLY A SWEEP THAT FOUND FOCUS IS A MEASUREMENT (#457). A
+                # failed native sweep returns ``success`` False after putting
+                # the drawtube back where it started, which after a restart is
+                # the position the focuser forgot, and vouching for it
+                # recorded that position as measured: a refusal after it (a
+                # failed solve) then left the next tick trusting the focuser
+                # and not sweeping again, and a plan with no initial
+                # autofocus imaged the night on it. The same test
+                # `_note_recovery_sweep` applies, so a result that is not a
+                # result (a test's stub, which returns None) vouches for
+                # nothing either. The ladder still goes on after a failed
+                # sweep, with that function's warning, as it did.
+                if getattr(result, "success", None) is True:
+                    try:
+                        _fp.vouch(focuser_position=await foc.get_position())
+                    except Exception:  # noqa: BLE001 — bookkeeping, never a refusal
+                        pass
 
         # 2. POINTING — ALWAYS re-measure. Never gated on the fingerprint.
         #

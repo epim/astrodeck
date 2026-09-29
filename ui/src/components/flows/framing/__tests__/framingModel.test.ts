@@ -54,6 +54,9 @@ function test(name: string, fn: () => void): void {
 }
 function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
 const js = (v: unknown) => JSON.stringify(v);
+/** A value as a failure should print it: JSON writes an infinity or NaN as
+ *  null, which would hide the very value #358 is about. */
+const shown = (v: unknown) => (typeof v === "number" && !Number.isFinite(v) ? String(v) : js(v));
 function eq(got: unknown, want: unknown, what: string): void {
   assert(js(got) === js(want), `${what}: expected ${js(want)}, got ${js(got)}`);
 }
@@ -156,17 +159,48 @@ test("the patch coerces by the default's type, as flowsSetParam does", () => {
 (globalThis as any).window = { location: { pathname: "/", origin: "http://local" } };
 const { createFlowsActions, FLOWS_INIT } = await import("../../flowsSlice");
 
-// MUTANT "coercion to string" (the same mutant, graded against the real slice action). Observed:
+// MUTANT "coercion to string" (the same mutant, graded against the real slice action). Observed
+// (re-run in scratch copy S7-MODAL-mut when the infinities joined the table):
 //   x coerceParam stores exactly what flowsSetParam stores: overlap "25": slice 25, model "25";
 //     overlap "abc": slice 25, model "abc"; overlap " 7 ": slice 7, model " 7 "; overlap "": slice
-//     25, model ""; overlap "12abc": slice 12, model "12abc"; overlap "1e1": slice 10, model
-//     "1e1"; rows "3": slice 3, model "3"; rows "2.5": slice 2.5, model "2.5"; fovX "2.0": slice
-//     2, model "2.0"; rotation "-1": slice -1, model "-1"
+//     25, model ""; overlap "12abc": slice 12, model "12abc"; overlap "1e1": slice 10, model "1e1";
+//     rows "3": slice 3, model "3"; rows "2.5": slice 2.5, model "2.5"; fovX "2.0": slice 2, model
+//     "2.0"; rotation "-1": slice -1, model "-1"; overlap "Infinity": slice 25, model "Infinity";
+//     overlap "-Infinity": slice 25, model "-Infinity"; overlap "1e999": slice 25, model "1e999";
+//     rows "1e999": slice 1, model "1e999"; rotation "-Infinity": slice -1, model "-Infinity"
+//
+// The infinities are #358's rows. `parseFloat` reads "Infinity", "-Infinity"
+// and "1e999" as an infinity, which is not NaN; the store keeps only a FINITE
+// number since S5, and the modal's copy kept anything but NaN until S7, so
+// the modal's patch held an infinity the store then wrote as the default
+// (and `framedGraph` sent the draft compile null for it). A text default
+// takes "Infinity" as the text it is: a TARGET may be named that.
+//
+// MUTANT "Number.isNaN" (framingModel.ts coerceParam: `return
+// Number.isFinite(n) ? n : base` put back to `return Number.isNaN(n) ? base :
+// n`). Observed (scratch copy S7-MODAL-mut; framingModel.test 49/50, and
+// coerceParamFinite.test goes red with it too, 7/9; flowsSlice.test,
+// flowsApplyFraming.test and typedCoordinatesFixture.test stay green):
+//   x coerceParam stores exactly what flowsSetParam stores: overlap "Infinity": slice 25, model
+//     Infinity; overlap "-Infinity": slice 25, model -Infinity; overlap "1e999": slice 25, model
+//     Infinity; rows "1e999": slice 1, model Infinity; rotation "-Infinity": slice -1, model
+//     -Infinity
+// The table grades the store too, now that it holds the infinities.
+// MUTANT "Number.isNaN restored" (flowsSlice.ts coerceParam: `return
+// Number.isFinite(v) ? v : base` put back to `return Number.isNaN(v) ? base :
+// v`, coerceParamFinite.test.ts's mutant). Observed (scratch copy
+// S7-MODAL-mut; framingModel.test 49/50):
+//   x coerceParam stores exactly what flowsSetParam stores: overlap "Infinity": slice Infinity,
+//     model 25; overlap "-Infinity": slice -Infinity, model 25; overlap "1e999": slice Infinity,
+//     model 25; rows "1e999": slice Infinity, model 1; rotation "-Infinity": slice -Infinity, model
+//     -1
 test("coerceParam stores exactly what flowsSetParam stores", () => {
   const cases: [string, string][] = [
     ["overlap", "25"], ["overlap", "abc"], ["overlap", " 7 "], ["overlap", ""], ["overlap", "12abc"],
     ["overlap", "1e1"], ["rows", "3"], ["rows", "2.5"], ["fovX", "2.0"], ["rotation", "-1"],
     ["name", "M 33"], ["skip", "3-1, 3-2"], ["angle", "Camera fixed at PA"], ["order", "Grid order"],
+    ["overlap", "Infinity"], ["overlap", "-Infinity"], ["overlap", "1e999"], ["rows", "1e999"],
+    ["rotation", "-Infinity"], ["name", "Infinity"],
   ];
   const bad: string[] = [];
   for (const [key, raw] of cases) {
@@ -177,7 +211,7 @@ test("coerceParam stores exactly what flowsSetParam stores", () => {
     state.flowsSetParam("t", key, raw);
     const slice = state.flows.graph.nodes[0].params[key];
     const model = coerceParam(key, raw);
-    if (slice !== model) bad.push(`${key} ${js(raw)}: slice ${js(slice)}, model ${js(model)}`);
+    if (slice !== model) bad.push(`${key} ${js(raw)}: slice ${shown(slice)}, model ${shown(model)}`);
   }
   assert(bad.length === 0, bad.join("; "));
 });
@@ -770,20 +804,99 @@ test("the drift banner: over 2% on either axis, M5's gap sentence when the live 
 //     measured 37.2 deg, 14 min ago, by the centring solve"
 test("USE MEASURED: the angle, how long ago, which solve, which pier", () => {
   const now = 1_790_000_000;
-  const rec: MeasuredAngle = { pa_deg: 37.2449, solved_at: now - 840, source: "plate solve + sync", pier_side: "west" };
+  // Exposed 14 min ago and solved 15 s later, as a centring solve is: the
+  // age is the frame's (#439, below).
+  const rec: MeasuredAngle = {
+    pa_deg: 37.2449, exposed_at: now - 840, solved_at: now - 825, source: "plate solve + sync", pier_side: "west",
+  };
   eq(useMeasuredLine(rec, now), "camera measured 37.2 deg, 14 min ago, by the centring solve, pier west", "spec's example");
-  eq(useMeasuredLine({ ...rec, solved_at: now - 20, pier_side: null, source: "rotator sync" }, now),
+  eq(useMeasuredLine({ ...rec, exposed_at: now - 20, solved_at: now - 5, pier_side: null, source: "rotator sync" }, now),
     "camera measured 37.2 deg, under a minute ago, by the rotator sync solve", "fresh, no pier");
-  eq(useMeasuredLine({ ...rec, solved_at: now - 3 * 3600 }, now)?.split(", ")[1], "3 h ago", "hours");
+  eq(useMeasuredLine({ ...rec, exposed_at: now - 3 * 3600 }, now)?.split(", ")[1], "3 h ago", "hours");
   eq(useMeasuredLine(null, now), null, "no record");
   eq(useMeasuredLine({ ...rec, pa_deg: NaN }, now), null, "no finite angle");
+});
+
+// #439: USE MEASURED's age is the age of the FRAME the angle was measured on,
+// from `exposed_at`, as types.ts `SkyAngleRecord.exposed_at` says freshness
+// is judged ("a stale frame can finish solving late") and as the engine's
+// angle check and the ruling 9 angle lock judge it (#292). Until S7 the modal
+// aged the SOLVE, from `solved_at`, the one reader that did. The saved-frame
+// WCS stamp solves a light frame after it has been saved, so its `solved_at`
+// trails `exposed_at`; with 300 s subs the line could say "under a minute
+// ago" for an angle five minutes old (found by reading the code, not on the
+// rig), and the line is the only place the operator sees
+// how old the offered angle is (the strip offer's tooltip, S5 ruling 1). A
+// record with no finite `exposed_at` (null from a server, or absent from a
+// hand-built record) falls back to `solved_at`; with neither, no age is said.
+//
+// MUTANT "age from solved_at" (useMeasuredLine's `measuredAt`: the
+// `exposed_at` line deleted, so the age is always `solved_at`'s). Observed
+// (scratch copy S7-MODAL-mut; framingModel.test 47/50: the spec's example
+// above, exposed 15 s before it solved, reads "13 min ago" with it, and the
+// Pick check below goes red; framingSections.test, runMode.test and
+// targetFramingSheet.test stay green, since each of their records reads the
+// same age from either time, or carries no `exposed_at` at all):
+//   x USE MEASURED ages the frame: a saved frame's WCS exposed 300 s before it solved reads 5 min,
+//     not under a minute: the saved-frame WCS record: expected "camera measured 212.0 deg, 5 min
+//     ago, by a saved frame's WCS, pier east", got "camera measured 212.0 deg, under a minute ago,
+//     by a saved frame's WCS, pier east"
+// MUTANT "no fallback" (`measuredAt`: `return Number.isFinite(rec.exposed_at)
+// ? rec.exposed_at : null`, the solved_at fallback deleted). Observed (scratch
+// copy S7-MODAL-mut; framingModel.test 48/50, the Pick check red too, since
+// `solved_at` is then read nowhere):
+//   x USE MEASURED ages the frame: a saved frame's WCS exposed 300 s before it solved reads 5 min,
+//     not under a minute: exposed_at NaN: from solved_at: expected "camera measured 212.0 deg, 14
+//     min ago, by a saved frame's WCS, pier east", got "camera measured 212.0 deg, by a saved
+//     frame's WCS, pier east"
+// MUTANT "absent key reads no age" (`measuredAt`: `if (!("exposed_at" in
+// rec)) return null;` put first, so a record without the key says no age).
+// Found by the S7-MODAL verifier: the "absent" row then spread `exposed_at:
+// undefined` into its record, so the key was present, and the file passed
+// under this mutant, 50/50. With the key really absent, observed (scratch copy
+// S7-MODAL-verify-mut; framingModel.test 49/50):
+//   x USE MEASURED ages the frame: a saved frame's WCS exposed 300 s before it solved reads 5 min,
+//     not under a minute: exposed_at absent: from solved_at: expected "camera measured 212.0 deg,
+//     14 min ago, by a saved frame's WCS, pier east", got "camera measured 212.0 deg, by a saved
+//     frame's WCS, pier east"
+test("USE MEASURED ages the frame: a saved frame's WCS exposed 300 s before it solved reads 5 min, not under a minute", () => {
+  const now = 1_790_000_000;
+  const wcs: MeasuredAngle = {
+    pa_deg: 212.04, exposed_at: now - 330, solved_at: now - 30, source: "saved-frame WCS", pier_side: "east",
+  };
+  eq(wcs.solved_at - wcs.exposed_at, 300, "precondition: exposed 300 s before it solved");
+  eq(useMeasuredLine(wcs, now), "camera measured 212.0 deg, 5 min ago, by a saved frame's WCS, pier east",
+    "the saved-frame WCS record");
+  // No finite exposure time: the solve's is the best there is. "absent" has
+  // no `exposed_at` key at all (a key present and undefined would not grade
+  // that: see "absent key reads no age" above).
+  const noExposure: Partial<MeasuredAngle> = { ...wcs };
+  delete noExposure.exposed_at;
+  const unexposed: [string, MeasuredAngle][] = [
+    ["NaN", { ...wcs, exposed_at: NaN }],
+    ["null", { ...wcs, exposed_at: null as unknown as number }],
+    ["absent", noExposure as MeasuredAngle],
+  ];
+  for (const [label, rec] of unexposed) {
+    const passed = { ...rec, solved_at: now - 840 };
+    if (label === "absent") eq("exposed_at" in passed, false, "precondition: the absent record has no exposed_at key");
+    eq(useMeasuredLine(passed, now), "camera measured 212.0 deg, 14 min ago, by a saved frame's WCS, pier east",
+      `exposed_at ${label}: from solved_at`);
+  }
+  eq(useMeasuredLine({ ...wcs, exposed_at: NaN, solved_at: NaN }, now),
+    "camera measured 212.0 deg, by a saved frame's WCS, pier east", "neither time: no age");
+  // CONTROL: exposed and solved in the same second read as they always did.
+  eq(useMeasuredLine({ ...wcs, exposed_at: now - 840, solved_at: now - 840 }, now)?.split(", ")[1], "14 min ago",
+    "exposed_at equal to solved_at (control)");
 });
 
 // MUTANT "use measured keeps any angle" (useMeasured: the mode left as it was). Observed:
 //   x one tap on USE MEASURED lays the grid out at the camera's angle: from any angle: expected
 //     ["Camera fixed at PA",37.2], got ["Any angle",37.2]
 test("one tap on USE MEASURED lays the grid out at the camera's angle", () => {
-  const rec: MeasuredAngle = { pa_deg: 37.2449, solved_at: 0, source: "plate solve + sync", pier_side: "west" };
+  const rec: MeasuredAngle = {
+    pa_deg: 37.2449, exposed_at: 0, solved_at: 0, source: "plate solve + sync", pier_side: "west",
+  };
   const u = useMeasured(draftFromParams({ rotation: -1 }), rec);
   eq([u.angle, u.rotation], ["Camera fixed at PA", 37.2], "from any angle");
   const r = useMeasured(draftOf(M31), rec);
@@ -812,6 +925,15 @@ test("one tap on USE MEASURED lays the grid out at the camera's angle", () => {
 //   `exposed_at` made optional, tsc exited 0 and this test was red with the
 //   same line: a looser copy is what tsc cannot see, which is why this test
 //   reads the source.)
+//
+// Since S7 the Pick holds `exposed_at` too (#439), because the USE MEASURED
+// line ages the frame. MUTANT "age from solved_at" (the #439 case above:
+// `measuredAt`'s `exposed_at` line deleted, the Pick left as it is).
+// Observed (scratch copy S7-MODAL-mut):
+//   x the model reads status.sky_angle through types.ts's SkyAngleRecord and declares no record of
+//     its own: the Pick's keys against the keys the model reads (`rec.x`): expected
+//     ["pa_deg","pier_side","solved_at","source"], got
+//     ["exposed_at","pa_deg","pier_side","solved_at","source"]
 test("the model reads status.sky_angle through types.ts's SkyAngleRecord and declares no record of its own", () => {
   const src = readFileSync(new URL("../framingModel.ts", import.meta.url), "utf8") as string;
   assert(/^import type \{[^}]*\bSkyAngleRecord\b[^}]*\} from "\.\.\/\.\.\/\.\.\/types";$/m.test(src),
@@ -851,7 +973,9 @@ test("the model reads status.sky_angle through types.ts's SkyAngleRecord and dec
 // measured angle, ROTATE TO, or CAMERA FIXED AT on a rig with no rotator, and
 // it applies only when pressed. The sheet's half is framingSections.test.tsx.
 
-const MEASURED: MeasuredAngle = { pa_deg: 37.2449, solved_at: 0, source: "plate solve + sync", pier_side: "west" };
+const MEASURED: MeasuredAngle = {
+  pa_deg: 37.2449, exposed_at: 0, solved_at: 0, source: "plate solve + sync", pier_side: "west",
+};
 const ANY_3x2 = (over: Partial<FramingDraft> = {}) => draftOf(M31, { angle: "Any angle", rotation: -1, ...over });
 const ANY_1x1 = () => ANY_3x2({ rows: 1, cols: 1 });
 
@@ -1432,7 +1556,10 @@ test("runPanelsOf reads the live group's panels on the grid it runs, and nothing
   const shooting = st.shooting.group!;
   const reason = shooting.set_aside[0].reason;
   const g2 = { rows: 2, cols: 2 };
-  eq(runPanelsOf(shooting, 2, 2, g2),
+  // Each call passes the sequence state the group came from, as the sheet
+  // does (#451): the recorded shooting state is "running".
+  const run = st.shooting;
+  eq(runPanelsOf(shooting, 2, 2, g2, run),
     { "1-1": { kind: "shooting" }, "2-2": { kind: "set_aside", reason } }, "the recorded run");
   // The recorded panels, 1-1 and 2-2, sit on the diagonal, where a label read
   // column first names the same panel. The same group moved on to 1-3 of a
@@ -1445,19 +1572,56 @@ test("runPanelsOf reads the live group's panels on the grid it runs, and nothing
   //     "reason":"centring failed on 2-2 on 3 consecutive visits: plate solve failed <U+2014> used raw
   //     GoTo"}}, got {"2-2":{"kind":"set_aside","reason":"centring failed on 2-2 on 3 consecutive
   //     visits: plate solve failed <U+2014> used raw GoTo"}}
-  eq(runPanelsOf({ ...shooting, panel: "1-3" }, 2, 3, { rows: 2, cols: 3 }),
+  eq(runPanelsOf({ ...shooting, panel: "1-3" }, 2, 3, { rows: 2, cols: 3 }, run),
     { "1-3": { kind: "shooting" }, "2-2": { kind: "set_aside", reason } }, "a 2x3 run on 1-3, off the diagonal");
   // A meridian wait shoots nothing, for the operator (served the panel) and
   // the viewer (not served it); the set-aside panel stays for both.
   for (const who of ["meridian_wait_operator", "meridian_wait_viewer"]) {
-    eq(runPanelsOf(st[who].group, 2, 2, g2), { "2-2": { kind: "set_aside", reason } }, who);
+    eq(runPanelsOf(st[who].group, 2, 2, g2, st[who]), { "2-2": { kind: "set_aside", reason } }, who);
   }
   // No group, or a progress block for another grid than the draft's: the
   // labels name another piece of sky, and nothing is drawn.
-  eq(runPanelsOf(null, 2, 2, g2), {}, "no group");
-  eq(runPanelsOf(shooting, 3, 3, g2), {}, "a 3x3 draft over a 2x2 run");
-  eq(runPanelsOf(shooting, 2, 2, { rows: 2, cols: 3 }), {}, "a progress block for a 2x3");
-  eq(runPanelsOf(shooting, 2, 2, null), {}, "a progress block with no grid (a single target's)");
+  eq(runPanelsOf(null, 2, 2, g2, run), {}, "no group");
+  eq(runPanelsOf(shooting, 3, 3, g2, run), {}, "a 3x3 draft over a 2x2 run");
+  eq(runPanelsOf(shooting, 2, 2, { rows: 2, cols: 3 }, run), {}, "a progress block for a 2x3");
+  eq(runPanelsOf(shooting, 2, 2, null, run), {}, "a progress block with no grid (a single target's)");
+});
+
+// THE RUN'S STATE REACHES THE PANELS (#451, the S7 integration). The recorded
+// held night (test_s5_recorded_state.py): the group on 1-1 with 2-2 set aside,
+// the run paused, holding for cloud, and stopping from an Abort pressed in that
+// hold (which still carries `hold: "clouds"`, #513). `runPanelsOf` asked with
+// two arguments until S7, and `panelStateOf` answered `shooting` for any
+// caller that did, so the Target modal said "1-1: shooting now" all through.
+//
+// MUTANT "state not passed" (runPanelsOf calling `panelStateOf(label, group,
+// { state: "running" })`, the old two-argument answer, whatever `run` says).
+// Observed (the integration's private copy, scratchpad S7-INTEG-r2-mut, 50/51;
+// the reason's em dash is <U+2014>):
+//   x runPanelsOf: the panel a paused, held or stopping run is on is current, never shot: the
+//     recorded paused state: expected {"1-1":{"kind":"current","run":"paused","hold":null},"2-2":
+//     {"kind":"set_aside","reason":"centring failed on 2-2 on 3 consecutive visits: plate solve
+//     failed <U+2014> used raw GoTo"}}, got {"1-1":{"kind":"shooting"},"2-2":{"kind":"set_aside",
+//     "reason":"centring failed on 2-2 on 3 consecutive visits: plate solve failed <U+2014> used
+//     raw GoTo"}}
+// framingSections.test.tsx (22/23) and runMode.test.tsx (8/9) go red under it
+// too, on PANELS' "1-1: shooting now" while the run is paused.
+test("runPanelsOf: the panel a paused, held or stopping run is on is current, never shot", () => {
+  const st = recordedStates();
+  const g2 = { rows: 2, cols: 2 };
+  const reason = st.holding.group!.set_aside[0].reason;
+  const want: [string, unknown][] = [
+    ["paused", { kind: "current", run: "paused", hold: null }],
+    ["holding", { kind: "current", run: "holding", hold: "clouds" }],
+    ["aborting", { kind: "current", run: "aborting", hold: null }],
+  ];
+  for (const [who, current] of want) {
+    eq(runPanelsOf(st[who].group, 2, 2, g2, st[who]),
+      { "1-1": current, "2-2": { kind: "set_aside", reason } }, `the recorded ${who} state`);
+  }
+  // A run nobody knows shoots nothing; the set-aside panel still holds.
+  eq(runPanelsOf(st.holding.group, 2, 2, g2, null), { "2-2": { kind: "set_aside", reason } },
+    "the held group with no run state");
 });
 
 // MUTANT "done ahead of shooting" (panelDrawState answers DONE before it
@@ -1481,6 +1645,15 @@ test("panelDrawState: skipped, then set aside, then shooting, then done, then pe
   // a panel both complete and current is still the one the visit is on.
   eq(panelDrawState(full, shot), "shooting", "the panel being shot whose count says complete");
   eq(panelDrawState(open, shot), "shooting", "the panel being shot");
+  // The current panel of a held run is drawn as the one the visit is on, with
+  // the corner ticks (#451); only the words say nothing is exposing it.
+  // MUTANT "ticks lost" (panelDrawState drawing only `shooting` as shooting).
+  // Observed (scratchpad S7-INTEG-r2-mut, 50/51; runMode.test.tsx 8/9 too):
+  //   x panelDrawState: skipped, then set aside, then shooting, then done, then pending: the held
+  //     run's panel whose count says complete: expected "shooting", got "done"
+  const held = { kind: "current" as const, run: "holding" as const, hold: "clouds" };
+  eq(panelDrawState(full, held), "shooting", "the held run's panel whose count says complete");
+  eq(panelDrawState(open, held), "shooting", "the held run's panel");
   eq(panelDrawState(full, null), "done", "a complete panel");
   eq(panelDrawState(open, null), "pending", "a panel still owed subs");
   eq(panelDrawState({ skipped: false, banked: 0, total: 0 }, undefined), "pending",

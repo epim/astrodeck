@@ -15,3 +15,16 @@
 # way. The integrity claim would simply become false, which is worse.
 # `-text` rather than `binary` so the README and the JSON still diff.
 tools/photosphere_sim/fixtures/** -text
+
+# The server's recorded JSON fixtures are graded as bytes (#445): a test
+# records a route's answer, the engine's state or a case table, and compares
+# the file with what the code serves now. Under `core.autocrlf=true` a fresh
+# Windows clone checks them out with CRLF, and such a grade goes red on a
+# correct server at its first byte (`b'\r' != b'\n'`); two tests had to learn
+# to normalise before this line existed (`test_flows_wizard_door_answers.py`,
+# `test_s5_recorded_state.py::_on_disk`), and each new recorder would have had
+# to remember. `eol=lf` rather than `-text`: it also normalises a fixture an
+# editor saved with CRLF back to LF on commit, and it cannot change what a
+# JSON file means, because JSON keeps no raw CR inside a string (it is
+# escaped as `\r`), so only the whitespace between tokens is touched.
+server/tests/fixtures/**/*.json eol=lf

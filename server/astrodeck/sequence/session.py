@@ -12,8 +12,10 @@ pruned). ``migrate_legacy_resume`` folds the retired single-slot
 """
 from __future__ import annotations
 
+import copy
 import json
 import math
+import re
 import shutil
 import threading
 import time
@@ -23,15 +25,55 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pydantic_core
 from pydantic import BaseModel, Field, ValidationError
 
 from .. import hub as _hubmod
+from ..events import night_key
 from ..persist import (harden_private_file, list_json, read_json,
-                       read_json_or, safe_id_path, write_json_atomic)
+                       read_json_or, safe_id_path, write_private_text_atomic)
 from .models import SequencePlan
 
 SESSION_SCHEMA = 1
 MAX_SESSIONS = 200
+
+#: The local start stamp at the end of a report id, as
+#: ``SessionReporter._make_id`` writes it (``<slug>-YYYYMMDD-HHMMSS``), with
+#: the ``-2``, ``-3`` ``_mint_report_id`` adds for a second start in the same
+#: second. Anchored at the end, so a plan name that itself ends in digits
+#: shaped like a stamp is never read for the run's.
+_REPORT_STAMP = re.compile(r"(\d{8}-\d{6})(?:-\d+)?$")
+
+
+def report_night(report_id: str) -> str | None:
+    """The observing night a run belongs to, from its report id: the
+    ``events.night_key`` of the local instant the id's stamp names, which is
+    the key ``captures/logs/<night>.jsonl`` is named by, or None for an id
+    that carries no stamp (#430, S7 orchestrator ruling 7).
+
+    FROM THE ID, SO EVERY SESSION ON DISK ANSWERS. ``engine.start`` mints the
+    id from the run's start (``_mint_report_id``) and appends it to
+    ``Session.nights``, and has done since sessions existed, so no session
+    needs a new field or a migration for its nights to be counted.
+
+    THROUGH ``night_key`` ITSELF, never the stamp's calendar date with noon
+    subtracted by hand. The stamp is local wall-clock time; ``mktime`` turns
+    it back into the instant in the same zone ``_make_id`` read it in, and
+    ``night_key`` then applies its own rollover to that instant. A second
+    copy of the rule would part from the night log's on the day the clocks
+    change, when wall-clock noon and twelve hours after local midnight are an
+    hour apart.
+
+    None for an id with no stamp, or a stamp that is not a date: a hand-made
+    test session, a legacy id. Never a guessed night."""
+    m = _REPORT_STAMP.search(report_id or "")
+    if m is None:
+        return None
+    try:
+        parsed = time.strptime(m.group(1), "%Y%m%d-%H%M%S")
+        return night_key(time.mktime(parsed))
+    except (ValueError, OverflowError):
+        return None
 
 #: Every value ``Session.status`` takes. Named so a caller asking "the newest
 #: session of this flow, whatever became of it" can say so in one word.
@@ -168,10 +210,64 @@ class Session(BaseModel):
     # ledger and all, would vanish from every scan over one pier record.
     # Written only through ``note_group_pier``.
     group_pier: dict[str, Any] = Field(default_factory=dict)
-    # All three are additive with SESSION_SCHEMA still 1. There is no
+    # WHEN THE FLOW'S FROZEN VERSION WAS SAVED (#473, S7 orchestrator ruling
+    # 1; spec 5.9): the flow record's ``updated_ts`` for the version this
+    # session's plan was compiled from. An armed auto-resume replays the
+    # frozen plan, not the flow as the editor shows it now, and the editor
+    # says so with this date ("the armed session will replay the version
+    # from 2026-09-22; press CONTINUE to apply your edits"). Written by
+    # ``run_flow`` when it makes a session and when CONTINUE replaces the
+    # plan, and cleared by a PATCH that replaces the plan with one that is
+    # not the flow's. None for a session made before it existed, for a
+    # shipped Example (never saved: its ``updated_ts`` is the moment it was
+    # read) and for a session no flow made: never a guessed time.
+    plan_saved_ts: float | None = None
+    # All four are additive with SESSION_SCHEMA still 1. There is no
     # ``extra="forbid"`` here, so a build that predates them loads this file
     # and ignores them (it then retries set-aside panels, today's behaviour),
     # and this build reads a file without them as empty.
+
+    # ---- nights and arming (derived; nothing here is written) --------------
+    def observing_nights(self) -> list[str]:
+        """The observing nights this session has run, in the order it first
+        ran on each: one entry per distinct ``report_night`` of its runs'
+        report ids (#430, S7 orchestrator ruling 7).
+
+        ``nights`` holds one report id per ``engine.start``, and every
+        restart appends one: a crash-resume at 01:40, a /recover, a CONTINUE
+        pressed twice in an evening. Its length is the RUN count, and read as
+        a night count it called a restart the next night, on the progress
+        card and in CONTINUE's answer alike. Keyed by night, a restart in the
+        same night continues that night's entry.
+
+        A run whose id carries no stamp (``report_night`` None) is keyed by
+        its id, so it counts once and is never merged into another night:
+        what it counted before #430, since nothing says which night it was."""
+        out: list[str] = []
+        for rid in self.nights:
+            key = report_night(rid) or rid
+            if key not in out:
+                out.append(key)
+        return out
+
+    def night_at(self, now: float) -> int:
+        """The night a run of this session started at ``now`` would be: the
+        observing nights so far, plus one only when ``now``'s night is not
+        already among them. CONTINUE's ``night``: a second press in the same
+        evening is the night the log is already writing, not the next one."""
+        nights = self.observing_nights()
+        return len(nights) + (0 if night_key(now) in nights else 1)
+
+    def is_armed(self) -> bool:
+        """Whether ResumeArm would start this session: dormant, with
+        ``auto_resume`` on. THE ONE RULE, which ``SessionStore.armed`` picks
+        by and the progress route's ``armed`` answers with (#473), so the
+        card can never call armed a session the tick would pass over.
+
+        Dormant and not merely armed: ``engine.start`` arms every run it
+        starts, so a live session is always ``auto_resume`` true, and a
+        complete one may be; neither is a session auto-resume will start."""
+        return self.status == "dormant" and self.auto_resume
 
     # ---- set aside and locks (run-owned; the engine writes, a resume reads) --
     def note_set_aside(self, target_id: str, reason: str, *, night: str,
@@ -334,7 +430,8 @@ NO_STATUS = "it has no status"
 
 #: Why it refuses a file that does not parse, or is not UTF-8 text (#242): a
 #: write cut short by a power cut, or a file copied in by hand. Writes are
-#: atomic (``write_json_atomic``), so the store itself should never leave one.
+#: atomic (``write_private_text_atomic``, the staging file and replace of
+#: ``write_json_atomic``), so the store itself should never leave one.
 NOT_JSON = "not valid JSON"
 
 #: Why it refuses JSON that ``Session`` does not validate (#242).
@@ -565,6 +662,46 @@ def _unreadable_row(path: Path, raw, reason: str | None) -> dict | None:
     return row
 
 
+def session_text(session: Session) -> str:
+    """The text ``SessionStore.save`` writes for ``session``: its
+    ``model_dump()`` as JSON, indented two spaces, non-ASCII unescaped, and
+    NaN and the infinities as the ``NaN`` / ``Infinity`` constants Python's
+    ``json`` reads back (#514, spec risk 8).
+
+    WHY NOT ``json.dumps``. The file is rewritten after every banked frame and
+    holds every frame the project has banked, and the write runs on the event
+    loop. At 10 000 frames ``json.dumps(indent=2)`` took 84.5 ms of the
+    107.7 ms a save cost (medians on the development box, loaded).
+    ``pydantic_core.to_json`` writes the same dump in 13.1 ms, and on a
+    realistic 10 000-frame dump the text is the same byte for byte. The one
+    spelling that differs is a float Python writes in exponent form below
+    1e-4: ``5e-05`` comes out ``0.00005``, ``1e-07`` comes out ``1e-7``. Both
+    parse to the same float, so no reader can tell.
+
+    ``model_dump`` FIRST, NEVER ``model_dump_json``. The model's own JSON
+    serialiser writes NaN as ``null``, and a metric read back as ``null``
+    fails ``dict[str, float]``: one NaN HFR would make the whole ledger
+    unreadable (``SessionUnreadable``), gone from every scan.
+    ``inf_nan_mode="constants"`` keeps what ``json.dumps`` wrote.
+
+    Public so the budget test (``test_s7_ledger_cost.py``) times the
+    serialiser ``save`` actually uses."""
+    return pydantic_core.to_json(session.model_dump(), indent=2,
+                                 inf_nan_mode="constants").decode("utf-8")
+
+
+def _file_stamp(path: Path) -> tuple[int, int, int] | None:
+    """``(inode, mtime_ns, size)`` for the file at ``path``, or None when the
+    OS will not say (it is gone, or the stat was refused). What
+    ``SessionStore.save_run_state`` compares to tell the file this process
+    last wrote from one somebody else has written since (#514)."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
 class SessionStore:
     """uuid-keyed session store; one ``sessions/<id>.json`` per session
     (mirrors plans.PlanLibrary)."""
@@ -767,14 +904,39 @@ class SessionStore:
         with self._write_lock:
             yield self
 
+    #: What this process last wrote to each session file, keyed by the file's
+    #: path: ``(stamp, operator_owned)``, where ``stamp`` is ``_file_stamp``
+    #: read straight after the write and ``operator_owned`` the values of
+    #: ``_OPERATOR_OWNED`` the write carried (#514). On the class, like
+    #: ``_write_lock``, so every store in the process shares it, and read and
+    #: written only under that lock.
+    _written: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+
     def save(self, session: Session) -> None:
         """Atomic write, no .bak (churns every frame). A NEW id triggers the
-        prune sweep; upserting an existing id never prunes."""
+        prune sweep; upserting an existing id never prunes.
+
+        The text is ``session_text``'s, written through
+        ``write_private_text_atomic``: the same private staging file, fsync,
+        replace and hardening ``write_json_atomic(backup=False)`` gave it, with
+        the serialiser that costs a sixth as much (#514). The file's stamp and
+        the operator-owned values are then recorded in ``_written`` for
+        ``save_run_state``. The record is made only after a write that
+        returned: a write that failed before its replace left the file the
+        previous record describes, and one that failed after it left a file
+        whose stamp matches no record, which is read."""
         with self._write_lock:
             session.updated_ts = time.time()
             path = self._path(session.id)
             is_new = not path.exists()
-            write_json_atomic(path, session.model_dump(), backup=False)
+            write_private_text_atomic(path, session_text(session))
+            stamp = _file_stamp(path)
+            if stamp is None:
+                self._written.pop(str(path), None)
+            else:
+                self._written[str(path)] = (stamp, {
+                    field: copy.deepcopy(getattr(session, field))
+                    for field in self._OPERATOR_OWNED})
             if is_new:
                 self._prune()
 
@@ -804,15 +966,37 @@ class SessionStore:
 
         Mutates ``session`` as well as the file, so the caller's long-lived
         copy stops being stale rather than silently diverging again.
+
+        THE RE-READ IS SKIPPED WHEN THE FILE IS THE ONE THIS PROCESS LAST
+        WROTE (#514, spec risk 8). The re-read parsed and validated every frame
+        the project holds to recover one bool: 41.7 ms of the 158.6 ms this
+        call cost at 10 000 frames, after every banked frame, on the event
+        loop. Every write this process makes goes through ``save``, which
+        records the file's stamp and the operator-owned values it wrote
+        (``_written``), the PATCH that disarms included. So when the file's
+        stamp is still the recorded one, the values on disk are the recorded
+        values, and they are taken from the record. A writer from outside
+        (a hand edit, another process, a restore) changes the stamp: a
+        replace gives the file a new inode, and an edit in place a new size or
+        mtime. Then the file is read as before. The one write this cannot see
+        is an in-place rewrite of the same size inside one tick of the
+        filesystem's clock after this process's own write, which is no editor
+        and no writer of this store.
         """
         with self._write_lock:
-            try:
-                stored = self.load(session.id)
-            except (KeyError, Exception):
-                stored = None
-            if stored is not None:
-                for field in self._OPERATOR_OWNED:
-                    setattr(session, field, getattr(stored, field))
+            path = self._path(session.id)
+            written = self._written.get(str(path))
+            if written is not None and written[0] == _file_stamp(path):
+                for field, value in written[1].items():
+                    setattr(session, field, copy.deepcopy(value))
+            else:
+                try:
+                    stored = self.load(session.id)
+                except (KeyError, Exception):
+                    stored = None
+                if stored is not None:
+                    for field in self._OPERATOR_OWNED:
+                        setattr(session, field, getattr(stored, field))
             self.save(session)
 
     def _prune(self) -> None:
@@ -975,7 +1159,7 @@ class SessionStore:
         for path, raw, s, why in self._entries():
             if s is None:
                 self._say_armed_unreadable(path, raw, why)
-            elif s.status == "dormant" and s.auto_resume:
+            elif s.is_armed():
                 armed.append(s)
         armed.sort(key=lambda s: s.updated_ts, reverse=True)
         return armed[0] if armed else None

@@ -9,8 +9,9 @@
     ``WS_DATA`` frames out to EXACTLY that browser (fan-out isolation, §T7(4)),
     through a per-browser bounded EGRESS buffer.
 
-The per-browser egress buffer is the RELAY-side buffer (distinct from the
-home-side per-``ws_id`` buffer, W3.3.3): if it had none, ONE slow browser would
+The per-browser egress buffer is the RELAY-side buffer. The home side keeps
+none of its own per ``ws_id``: each viewer's bus subscription is the only
+buffer there (``relay_client._run_ws``). If the relay had none, ONE slow browser would
 back-pressure the relay's READ of the scope WSS and stall every sibling viewer of
 that home (a multi-tenant DoS). So a slow browser's buffer fills, applies the
 drop/coalesce policy (keep-latest preview/sequence, drop-oldest STATUS), and the
@@ -22,8 +23,10 @@ A drop is announced, not silent: after the relay drops an event it sends ONE
 browser re-reads ``/api/monitor/snapshot`` on it (ui/src/ws.ts). This used to
 say the per-viewer ``seq`` let the browser see the gap, which nothing kept: the
 ``seq`` rides the tunnel frame header and never reaches the browser, and the
-client never looked for one. The server's LAN ``/ws`` has no relay buffer and
-never sends ``relay_gap``.
+client never looked for one. Since #444 the home side sends the same frame
+after its own drops: a bus subscription that falls behind serves one
+``relay_gap`` marker (``events.Subscription``), which reaches the browser
+through the tunnel and through the server's LAN ``/ws`` alike.
 
 This layer is transport-free: a "browser response" is delivered to a callback,
 and a "browser WS" is an object with ``async send(text)`` + ``async close()``.

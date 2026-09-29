@@ -7,6 +7,7 @@ WebSocket — the UI is event-driven.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hmac
 import ipaddress
 import io
@@ -152,10 +153,10 @@ from ..flows.continuation import _capture_times, _describe
 # recount logs (S4 orchestrator ruling 2) names the two modes in the words the
 # recount question uses, so the operator reads one vocabulary for one change.
 from ..flows.continuation import _MODE_WORDS
-from ..flows.doctor import check as flow_doctor
+from ..flows.doctor import UNGUIDED_SUB_LINE_S, check as flow_doctor
 from ..flows.models import (MY_FLOWS_FOLDER, FlowGraph, FlowRecord,
                             MigrationNote)
-from ..flows.progress import flow_progress
+from ..flows.progress import flow_progress, replay_facts
 from ..flows.readouts import readouts as flow_readouts, rig_readout
 from ..flows.rig import RigFacts
 from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
@@ -1088,7 +1089,8 @@ def _adopt_again_detail(steps: int) -> str:
 
 def _continue_flow_session(first_read: Session, plan: SequencePlan,
                            body: FlowRunBody,
-                           evidence: AdoptEvidence | None = None) -> dict:
+                           evidence: AdoptEvidence | None = None, *,
+                           plan_saved_ts: float | None = None) -> dict:
     """CONTINUE a flow's dormant session on tonight's compile, or refuse with
     a 409 that says what continuing would do (#189 S1, spec 5.9, D6).
 
@@ -1149,6 +1151,16 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
     What carries over is tonight's compile, with one exception: a session
     that has a sensor temperature keeps it, and a different setpoint tonight
     is said in the log, not obeyed (the comment at the replace says why).
+
+    ``plan_saved_ts`` is the saved time of the flow version ``plan`` was
+    compiled from (``run_flow`` reads it off the record it compiled), and it
+    becomes the session's with the plan: the version an armed auto-resume
+    replays from here on (#473). It is set on the copy ``engine.start``
+    writes, so it is written by that start or not at all.
+
+    The answer's ``night`` is the observing night this run falls on
+    (``Session.night_at``, #430): the nights the session has run, plus one
+    only when tonight is not already one of them.
     """
     with session_store.write_locked():
         try:
@@ -1226,7 +1238,13 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
             # Before the first write of the re-keyed ledger, which is
             # engine.start's. Raises rather than rewrite without a copy.
             session_store.backup(s.id)
-        night = len(s.nights) + 1          # engine.start appends tonight's
+        # THE OBSERVING NIGHT, NOT THE RUN COUNT (#430, S7 orchestrator
+        # ruling 7). ``nights`` holds a report id per start, so a second
+        # CONTINUE in one evening, or one after a crash-resume at 01:40, was
+        # called the next night. Tonight is counted once, as the night log's
+        # file is, by ``events.night_key``. Read before ``engine.start``
+        # appends tonight's id, so it is the night this run starts.
+        night = s.night_at(time.time())
         # THE SESSION KEEPS ITS SENSOR TEMPERATURE (#189 hardening A1). A
         # flow has no cooling node, so tonight's compile carries TONIGHT'S
         # standing setpoint, and replacing the plan with it would move a
@@ -1249,6 +1267,10 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
             plan = plan.model_copy(update={"cool_to": kept_c})
         s.plan = plan
         s.name = plan.name or s.name
+        # THE FROZEN VERSION MOVES WITH THE PLAN (#473): the plan the session
+        # now holds, and an armed auto-resume will replay, is this version's.
+        # On the copy engine.start saves, never saved here.
+        s.plan_saved_ts = plan_saved_ts
         # The call /api/sessions/{id}/resume makes: a continue is a NEW run
         # and re-reads the standing setpoint, which a plan with a temperature
         # ignores (replan_cooling).
@@ -1281,6 +1303,35 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
         out["adopted"] = {"matched": adopted.frames_matched,
                           "unmatched": adopted.rest()}
     return out
+
+
+def _freeze_saved_version(plan_saved_ts: float | None) -> None:
+    """Record, on the session a FRESH flow run just made, the saved time of
+    the flow version its plan was compiled from (#473, S7 orchestrator ruling
+    1). Called by ``run_flow`` straight after ``engine.start``, with no await
+    between, so the engine's run task has not yet taken a turn.
+
+    ON THE ENGINE'S OWN SESSION OBJECT, NOT ON A COPY LOADED FROM DISK.
+    ``engine.start`` makes the session (it owns the fresh branch: the
+    origin, the arming, the singleton disarm) and keeps it as ``_session``,
+    writing that whole object back at every ledger write and at finalize. A
+    field written to the file alone would be put back to None by the run's
+    first frame. Set on the object, every later write of the run carries it,
+    and ``save_run_state`` writes it now, so a run that dies before its
+    first frame keeps it too.
+
+    Bookkeeping after a start that has succeeded: a write that fails is said
+    and never turns the started run into a failed request. The value stays
+    on the object, so the run's next ledger write persists it anyway."""
+    ours = getattr(engine, "_session", None)
+    if ours is None:
+        return
+    ours.plan_saved_ts = plan_saved_ts
+    try:
+        session_store.save_run_state(ours)
+    except Exception as e:      # noqa: BLE001 - never fail a live run
+        bus.log("warning", f"could not record which version of the flow "
+                           f"'{ours.name}' froze: {e}", "flow")
 
 
 def _spawn(name: str, coro, *, replace: bool = False) -> dict:
@@ -2043,7 +2094,18 @@ class FlowWizardBody(BaseModel):
     options: list[str] = Field(default_factory=list)
     target: str = ""
     #: Only consulted for an unguided lane; the generator picks a safe default.
-    unguided_exposure_s: float | None = Field(None, gt=0, le=3600)
+    #: BOUNDED STRICTLY BELOW THE DOCTOR'S RULE 2 LINE (#432), read from the
+    #: doctor's one constant: the generator writes this answer onto an
+    #: unguided lane's CAPTURE LOOP and holds the door's filter rows to it,
+    #: and from the line up the doctor warns "stars will trail" on the
+    #: wizard's own output, which every generated graph must never do (spec
+    #: 1.8, and Revision 2, ruling 4). It was ``le=3600`` until S7, so an
+    #: answer of 150 came back 200 already warning. Refused whatever the
+    #: lane, since a field bound cannot see the chips; the generator refuses
+    #: the same answer in its own words (``wizard._unguided_seconds``) for a
+    #: caller that does not come through this door.
+    unguided_exposure_s: float | None = Field(
+        None, gt=0, lt=UNGUIDED_SUB_LINE_S)
     #: THE MOSAIC KIND'S ANSWERS (#189 spec 1.8, #196). The generator refuses
     #: them with any other kind, and refuses a grid of one panel, a missing
     #: angle, and "Rotate to PA" on a rig with no rotator; the route answers
@@ -6157,6 +6219,16 @@ def create_app(*, bind_host: str | None = None,
         makes, so the chip can never name a session Run would not continue,
         nor count toward one it would leave: the two used to differ once a
         START OVER left an old dormant session behind (#189 hardening A2).
+
+        THE SESSION ALSO SAYS WHAT AN AUTO-RESUME WOULD REPLAY (#473, S7
+        orchestrator ruling 1): ``armed`` and ``plan_saved_ts``
+        (``progress.replay_facts``), added here, beside the four keys
+        ``flow_progress`` answers, so the editor can say "the armed session
+        will replay the version from ...; press CONTINUE to apply your
+        edits" (spec 5.9). ``plan_saved_ts`` is the SESSION'S, written when
+        its plan was frozen, never this record's ``updated_ts``: that one
+        moves with every save, and read here it would say the session holds
+        the version on screen, which is the opposite of the notice's point.
         """
         compiled = compile_plan(rec.graph, rec.name)
         plan, _unmapped = to_sequence_plan(
@@ -6167,7 +6239,10 @@ def create_app(*, bind_host: str | None = None,
                 config_store.cfg().safety.close_dome_on_unsafe),
             rig=rig)
         session = session_store.current_for_flow(flow_id)
-        return flow_progress(compiled, plan, session, flow_id=flow_id)
+        out = flow_progress(compiled, plan, session, flow_id=flow_id)
+        if session is not None:
+            out["session"].update(replay_facts(session))
+        return out
 
     # ORDERING: declared with the static /api/flows/<segment> routes, before
     # GET /api/flows/{flow_id}. Starlette tries routes in declaration order,
@@ -6193,7 +6268,11 @@ def create_app(*, bind_host: str | None = None,
         itself (#19), so the only safe answer is never to compute one.
         ``flow_progress`` takes no site, clock or config, and the keys it
         emits are held to an allow-list at the wire by
-        tests/test_flows_progress_route.py. Anything site-derived belongs on
+        tests/test_flows_progress_route.py, with the session's ``armed`` and
+        ``plan_saved_ts`` (S7, #473): a status and a flag, and the moment an
+        operator pressed Save, none of them from the site. Its ``nights``
+        counts observing nights since S7 (#430), from the runs' own start
+        stamps, never from the site. Anything site-derived belongs on
         GET /api/flows/{flow_id}/tonight, which is CAP_VIEW_SITE_DERIVED.
 
         OFF THE EVENT LOOP: a compile, a scan of every session file on disk
@@ -6324,16 +6403,32 @@ def create_app(*, bind_host: str | None = None,
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
         can_cool, rig = _camera_can_cool(), _rig_facts()
+
+        # THE REPORTS THEMSELVES, NOT THEIR SUMMARIES (#419). Both folds read
+        # each report's ``by_filter`` and ``targets``, and ``list_reports``
+        # builds a summary of eight scalars that carries neither, so both
+        # folds answered {} on every flow: BUDGET's "0 h banked" and every
+        # CAMPAIGN member at 0, whatever was on disk. So each listed report
+        # is loaded (``SessionReporter.load``), which is what the folds'
+        # docstrings always said the route supplies. A report that cannot be
+        # read is left out, as the list leaves it out, and ``read`` says so
+        # in the log. Loaded ONCE for both folds, and only when
+        # ``resolve_tonight`` asks, on ITS worker thread: this runs inside
+        # the to_thread below and never on the loop.
+        @functools.cache
+        def reports() -> tuple:
+            return tuple(r for r in (SessionReporter.load(s["id"])
+                                     for s in SessionReporter.list_reports())
+                         if r is not None)
+
         return await asyncio.to_thread(
             resolve_tonight, rec.graph, hub.site, name=rec.name,
-            banked=lambda: banked_hours_from_reports(
-                SessionReporter.list_reports()),
+            banked=lambda: banked_hours_from_reports(reports()),
             # The CAMPAIGN tab's per-member progress. Same ledger, different
             # fold: BUDGET wants hours per filter across everything, a campaign
             # wants accepted frames per filter PER TARGET, because a pool member
             # is retired by its own quota and nobody else's.
-            frames_by_target=lambda: frames_by_target_from_reports(
-                SessionReporter.list_reports()),
+            frames_by_target=lambda: frames_by_target_from_reports(reports()),
             hop_cost_s=rig.hop_cost_s,
             progress=lambda: _flow_progress_payload(rec, flow_id, can_cool,
                                                     rig))
@@ -6487,6 +6582,16 @@ def create_app(*, bind_host: str | None = None,
         if (latest is not None and latest.status == "dormant"
                 and _asks_adopt(latest, plan_replace_report(latest, plan))):
             evidence = await asyncio.to_thread(adopt_evidence, latest, plan)
+        # THE VERSION THIS RUN FREEZES (#473, S7 orchestrator ruling 1): the
+        # saved time of the record compiled above, read off that record and
+        # never re-read: ``flow_store.get`` parsed it from disk for this
+        # request alone, so a save that lands during the awaits above leaves
+        # it the version the plan came from. None for a shipped Example: it
+        # is never saved, and its ``updated_ts`` is only the moment it was
+        # built for this read (FlowRecord's default), a time no one pressed
+        # Save at, which the editor would then report as edits the session
+        # lacks.
+        plan_saved_ts = None if rec.readonly else rec.updated_ts
         continued: dict | None = None
         try:
             hub.require("camera")
@@ -6494,13 +6599,15 @@ def create_app(*, bind_host: str | None = None,
             # start: CONTINUE's locked section is synchronous too (#189 A7).
             _refuse_while_resume_recovers()
             if latest is not None and latest.status == "dormant":
-                continued = _continue_flow_session(latest, plan, body,
-                                                   evidence)
+                continued = _continue_flow_session(
+                    latest, plan, body, evidence,
+                    plan_saved_ts=plan_saved_ts)
             else:
                 # Synchronous, and it owns its own task — do not await it, and
                 # do not wrap it in a busy lane. "Already running" is raised in
                 # here.
                 engine.start(plan, origin="flow", origin_id=flow_id)
+                _freeze_saved_version(plan_saved_ts)
         except DeviceError as e:
             raise _err(e)
         if continued is None:
@@ -6768,6 +6875,11 @@ def create_app(*, bind_host: str | None = None,
             merge = plan_replace_report(s, body.plan).merge()
             s.plan = body.plan
             s.name = body.plan.name or s.name
+            # A PLAN NO FLOW SAVE PRODUCED (#473): the session no longer
+            # holds the version ``plan_saved_ts`` names, and nothing here
+            # knows when this one was saved, so it says none rather than
+            # let the editor date a replay by the version it replaced.
+            s.plan_saved_ts = None
         if body.status is not None:
             if body.status != "abandoned":
                 raise HTTPException(422, "status can only be set to 'abandoned'")

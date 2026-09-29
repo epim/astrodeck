@@ -56,7 +56,7 @@ import type { FlowGraphRec, FlowRecordRec } from "../../../../components/flows/f
 import type { QuickPrefs } from "../finder";
 import {
   ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON, SEND_TO_WIZARD,
-  floorLegend, mosaicPlanNote, oscFooter,
+  floorLegend, framingCentreNote, mosaicPlanNote, oscFooter,
 } from "./quickCopy";
 import {
   NO_DARK_SPAN_H, OSC_LABEL, channelLabel, filterColor, finishLabel, hourStops, hoursLabel,
@@ -71,6 +71,7 @@ import { commandedPa, framingMatches, framingPrefill } from "../frame/mosaic";
 import { openFlowWizard } from "../../session/flows/wizard";
 import { effectiveOptics } from "../../../../lib/effective";
 import { fovFromOptics } from "../../../../lib/framing";
+import { angularSepDeg } from "../../../../lib/atlasFov";
 import { useCatalogTarget, useCatalogTargets, type SearchRow } from "./targetsCatalog";
 import { useVisibilityNight } from "./quickVisibility";
 
@@ -382,6 +383,36 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
   const isMosaic = keptPanels > 1;
 
   /**
+   * IS THE KEPT FRAMING CENTRED WHERE GENERATE FLOW IMAGES? (#459)
+   *
+   * GENERATE FLOW posts `target` - the catalogue row's position, or the one
+   * the sheet was opened with - and takes only the framing's angle. A framing
+   * dragged off that position is therefore not what the button images, and
+   * the sheet says so (`framingCentreNote`) with SEND TO FLOW WIZARD beside
+   * it, which is the door that carries the framing's centre.
+   *
+   * KEPT means FRAME's DONE kept it (`panels` holds the engine's centres, one
+   * for a single frame): that is the framing the old copy made its promise
+   * about. A session merely open on this target - the atlas panned around M31
+   * - has kept nothing, and a line about it would be noise on every visit.
+   *
+   * "Differs" is judged in the payload's own spelling: the line shows exactly
+   * when the framing's centre would post different coordinates from the ones
+   * GENERATE FLOW posts, so a centre that rounds to the same second is the
+   * same target and says nothing.
+   */
+  const offCentreDeg = ((): number | null => {
+    if (!mine || keptPanels < 1 || framing == null || target == null) return null;
+    const c = framing.center;
+    if (raHms(c.ra_hours) === target.ra && decDms(c.dec_deg) === target.dec) return null;
+    if (raForVis == null || decForVis == null) return null;
+    return angularSepDeg(c, { ra_hours: raForVis, dec_deg: decForVis });
+  })();
+  // The catalogue's position, or the one this sheet was opened with - the
+  // same branch `targetFromParams` takes.
+  const openedWithCoords = Number.isFinite(Number(params.ra)) && Number.isFinite(Number(params.dec));
+
+  /**
    * A KEPT MOSAIC GOES FORWARD THROUGH THE WIZARD (#196, spec section 8 S6).
    *
    * GENERATE FLOW here builds ONE target: `FlowQuickBody.target` is a single
@@ -389,7 +420,10 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
    * classic Plan targets sharing a `mosaic_group` (the side channel), shot
    * panel-first; that channel is gone. Send to Flow Wizard is the door that
    * plans the whole grid, as one TARGET block, so a kept mosaic is offered it
-   * here, pre-filled from the same framing the FRAME card would send.
+   * here, pre-filled from the same framing the FRAME card would send. So is a
+   * single framing dragged off the target (#459): the line above the button
+   * says GENERATE FLOW images the target's own position, and this is the door
+   * that carries the framing's centre instead.
    *
    * The field is read when the button is pressed, through the resolver the
    * Sky hub draws the reticle with, so this sheet does not re-render on every
@@ -756,15 +790,25 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
           </div>
         </section>
 
-        {/* ------------------------------------------------------ the mosaic */}
-        {isMosaic && (
+        {/* ----------------------------- the mosaic, and where the flow images */}
+        {(isMosaic || offCentreDeg != null) && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <p
-              data-testid="quick-mosaic-note"
-              style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)", margin: 0 }}
-            >
-              {mosaicPlanNote(keptPanels, mosaicCols, mosaicRows)}
-            </p>
+            {isMosaic && (
+              <p
+                data-testid="quick-mosaic-note"
+                style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)", margin: 0 }}
+              >
+                {mosaicPlanNote(keptPanels, mosaicCols, mosaicRows)}
+              </p>
+            )}
+            {offCentreDeg != null && (
+              <p
+                data-testid="quick-framing-centre"
+                style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)", margin: 0 }}
+              >
+                {framingCentreNote(offCentreDeg, target?.name ?? "the target", !openedWithCoords)}
+              </p>
+            )}
             <ActionButton
               kind="secondary"
               full

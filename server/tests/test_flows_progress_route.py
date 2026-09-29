@@ -42,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 
 import httpx
 import pytest
@@ -51,6 +52,7 @@ import astrodeck.auth.users as users_mod
 import astrodeck.config as config_mod
 import astrodeck.flows.store as flow_store_module
 import astrodeck.hub as hub_module
+import astrodeck.sequence.engine as engine_module
 from astrodeck.auth import (UserStore, configure_provider_from_auth,
                             principal_for_role, reset_active_provider,
                             set_active_provider, sign_session)
@@ -165,7 +167,9 @@ def _frames(target_id: str, step_id: str, n: int, *,
 def _seed(flow_id: str, plan: SequencePlan, frames: list[SessionFrame], *,
           created: float, updated: float | None = None,
           status: str = "dormant", count_mode: str | None = None,
-          nights: tuple[str, ...] = ("night-1",)) -> Session:
+          nights: tuple[str, ...] = ("night-1",),
+          auto_resume: bool = False,
+          plan_saved_ts: float | None = None) -> Session:
     """A session this flow started, written as the file ``SessionStore.save``
     writes but with the timestamps the test names: ``save`` stamps
     ``updated_ts`` from the clock, and a test about which timestamp decides
@@ -175,7 +179,8 @@ def _seed(flow_id: str, plan: SequencePlan, frames: list[SessionFrame], *,
     s = Session(name=f"{flow_id}@{created}", created_ts=created,
                 updated_ts=created if updated is None else updated,
                 status=status, plan=plan, nights=list(nights),
-                frames=frames, origin="flow", origin_id=flow_id)
+                frames=frames, origin="flow", origin_id=flow_id,
+                auto_resume=auto_resume, plan_saved_ts=plan_saved_ts)
     path = session_store._path(s.id)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(path, s.model_dump(), backup=False)
@@ -384,9 +389,24 @@ class TestWhoMayReadIt:
 #: The payload's keys, level by level: the same list the pure half is held to
 #: in test_flows_progress.py, held again at the wire. A key added later has to
 #: be added here, in a diff somebody reads (spec 6.9, #19).
+#:
+#: DELIBERATE PIN CHANGE (S7, #473, S7 orchestrator ruling 1): the session
+#: gains ``armed`` and ``plan_saved_ts``, which the ROUTE adds
+#: (``progress.replay_facts``), so the pure half's list keeps four keys and
+#: this one has six. Neither is derived from the site: a status and a flag,
+#: and the moment an operator pressed Save. The old list against the new
+#: route, observed:
+#:
+#:     AssertionError: session carries keys outside the allow-list
+#:     assert {'armed', 'co...ts', 'status'} <= {'count_mode'...ts',
+#:     'status'}
+#:       Extra items in the left set:
+#:       'plan_saved_ts'
+#:       'armed'
 ALLOWED = {
     "top": {"flow_id", "session", "blocks", "orphaned"},
-    "session": {"id", "status", "nights", "count_mode"},
+    "session": {"id", "status", "nights", "count_mode", "armed",
+                "plan_saved_ts"},
     "block": {"node_id", "name", "kind", "banked", "owed", "total", "panels",
               "grid", "skipped", "group_id"},
     "grid": {"rows", "cols"},
@@ -399,17 +419,23 @@ ALLOWED = {
 }
 
 
+#: The seeded session's frozen version's saved time: not round, so the byte
+#: test below reads a real number in the key and not a null (S7, #473).
+SAVED_TS = 1790012345.678
+
+
 async def _seeded_target_and_pool(api) -> str:
     """The TARGET + POOL + mosaic flow with a session that holds a frame on
     the first step of every target that has one (five: the two pool members
     and the mosaic's three live panels) and two frames on a step the flow no
-    longer has."""
+    longer has. Since S7 it is armed and carries ``plan_saved_ts`` (#473), so
+    the site and allow-list tests walk both keys with values, not nulls."""
     fid = await api.save_flow(TARGET_POOL_AND_MOSAIC)
     _c, plan = _compiled(TARGET_POOL_AND_MOSAIC, fid)
     frames = [f for t in plan.targets if t.steps
               for f in _frames(t.id, t.steps[0].id, 1)]
     _seed(fid, plan, frames + _frames(plan.targets[0].id, "gone", 2),
-          created=100.0)
+          created=100.0, auto_resume=True, plan_saved_ts=SAVED_TS)
     return fid
 
 
@@ -452,6 +478,20 @@ class TestItCarriesNoSiteData:
             assert b'{"flow_id":...2,"steps":1}}' ==
             b'{"flow_id":...2,"steps":1}}'
               At index 1898 diff: b'3' != b'6'
+
+        SINCE S7 the session carries ``armed`` and ``plan_saved_ts``
+        (#473), seeded valued here so the equality is over real values of
+        both. The premise that says so is what S7's mutants reach, run in
+        scratchpad ``s7-session-mut``: mutant "plan_saved_ts rewritten on
+        every save" (the route answering the flow record's ``updated_ts``),
+        for both roles, observed:
+
+            AssertionError: premise: S7's two keys are in the body, valued
+            assert (True, 1790646706.1331909) == (True, 1790012345.678)
+
+        and mutant "no replay facts on the route", for both roles, observed:
+
+            KeyError: 'armed'
         """
         fid = await _seeded_target_and_pool(api)
         set_active_provider(_Fixed(principal_for_role(role)))
@@ -470,6 +510,8 @@ class TestItCarriesNoSiteData:
             "premise: the ledger is read, so there is something to leak into")
         assert got["blocks"][2].get("group_id"), (
             "premise: the mosaic's group id is in the body")
+        assert (got["session"]["armed"], got["session"]["plan_saved_ts"]) == (
+            True, SAVED_TS), "premise: S7's two keys are in the body, valued"
         assert bodies[0] == bodies[1], "the body moved with the site"
 
     async def test_every_key_is_on_the_allow_list(self, api):
@@ -635,6 +677,21 @@ class TestTheCounts:
         expected = json.loads(json.dumps(flow_progress(
             compiled, plan, session_store.load(s.id), flow_id=fid)))
         assert expected["session"]["id"] == s.id
+        # DELIBERATE PIN CHANGE (S7, #473): the route's session carries
+        # ``armed`` and ``plan_saved_ts`` beside the module's four keys, as
+        # literals here (a dormant, unarmed session that never froze a
+        # version), not re-derived by the code under test. The module's
+        # answer alone against the new route, observed:
+        #
+        #     AssertionError: assert {'blocks': [{...hts': 1, ...}} ==
+        #     {'blocks': [{...': 'dormant'}}
+        #       Differing items:
+        #       {'session': {'armed': False, 'count_mode': 'accepted', 'id':
+        #       '50136158bc2648b2911dc35f94ee7c77', 'nights': 1, ...}} !=
+        #       {'session': {'count_mode': 'accepted', 'id':
+        #       '50136158bc2648b2911dc35f94ee7c77', 'nights': 1, 'status':
+        #       'dormant'}}
+        expected["session"].update({"armed": False, "plan_saved_ts": None})
         assert _steps(expected) == [(lum.id, 3, 0), (red.id, 1, 1)], (
             "premise: L is capped at its count and the rejected R is not "
             "banked")
@@ -690,8 +747,16 @@ class TestTheCounts:
         done = _seed(fid, plan, _frames(t.id, t.steps[0].id, 2),
                      created=150.0, status="complete")
         got = await api.ok(fid)
+        # DELIBERATE PIN CHANGE (S7, #473): the session's two new keys. The
+        # four-key dict against the new route, observed:
+        #
+        #     AssertionError: assert {'armed': Fal...ghts': 1, ...} ==
+        #     {'count_mode'...': 'complete'}
+        #       Left contains 2 more items:
+        #       {'armed': False, 'plan_saved_ts': None}
         assert got["session"] == {"id": done.id, "status": "complete",
-                                  "nights": 1, "count_mode": "attempts"}
+                                  "nights": 1, "count_mode": "attempts",
+                                  "armed": False, "plan_saved_ts": None}
         assert _steps(got)[0][1] == 2
 
         _seed(fid, plan, _frames(t.id, t.steps[0].id, 3), created=200.0,
@@ -953,8 +1018,31 @@ def _bank(engine: SequenceEngine, steps) -> None:
                                             auto_accepted=True) is not None
 
 
+def _local(y: int, mo: int, d: int, h: int, mi: int = 0) -> float:
+    """The epoch second at that LOCAL wall-clock time on this machine: the
+    zone is the machine's (Pacific on the dev box, UTC in CI), and the
+    wall-clock time, which is what the night key reads, is the same in
+    both."""
+    return time.mktime((y, mo, d, h, mi, 0, 0, 0, -1))
+
+
+class _Clock:
+    """``time`` as the engine and the app read it, with ``time()`` pinned to
+    ``t`` and every other name the real module's."""
+
+    def __init__(self, t: float) -> None:
+        self.t = t
+
+    def time(self) -> float:
+        return self.t
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
 class TestContinue:
-    async def test_after_a_continue_the_same_step_ids_are_reported(self, rig):
+    async def test_after_a_continue_the_same_step_ids_are_reported(
+            self, rig, monkeypatch):
         """Night one through ``/run``, read live and then dormant; night two
         through ``/run`` again, which CONTINUES the same session (S1-13). At
         every read the step ids are the ones the ENGINE is counting by, the
@@ -985,9 +1073,61 @@ class TestContinue:
         subs" into its TARGETs and POOLs (Revision 2 ruling 2), so the run it
         starts counts accepted subs. Every frame here is accepted, so the
         counts themselves do not move.
+
+        DELIBERATE PIN CHANGES IN S7 (#430, #473; S7 orchestrator rulings 7
+        and 1). The CONTINUE here is a second run on the SAME night, and it
+        always was: the two runs are seconds apart. This test pinned
+        ``nights: 2`` after it, which was #430's defect written down (the
+        card counted runs). ``nights`` now counts observing nights, so the
+        read after the CONTINUE says 1 while the session holds two report
+        ids. The old pin against the new code, observed:
+
+            AssertionError: assert {'armed': Fal...ghts': 1, ...} ==
+            {'armed': Fal...ghts': 2, ...}
+              Differing items:
+              {'nights': 1} != {'nights': 2}
+
+        The pin holds only inside one night, so the engine's and the app's
+        clock are pinned to 21:00 and 21:30 local on one date (the machine's
+        zone, whichever it is): at real time a run straddling local noon
+        would read two nights. Both dormant and live reads also carry the
+        session's ``armed`` (true once dormant, false while live) and
+        ``plan_saved_ts`` (the flow's saved time, which the CONTINUE keeps
+        because the flow was not saved again). The four-key dict against
+        the new route, observed at the dormant read:
+
+            AssertionError: assert {'armed': Tru...ghts': 1, ...} ==
+            {'count_mode'...s': 'dormant'}
+              Left contains 2 more items:
+              {'armed': True, 'plan_saved_ts': 1790645522.92159}
+
+        Run in scratchpad ``s7-session-mut`` (see
+        test_s7_session_nights.py), mutants "night is the run count"
+        (``session.py``) and "the card counts runs" (``progress.py``) each
+        turn the read after the CONTINUE red, observed:
+
+            AssertionError: assert {'armed': Fal...ghts': 2, ...} ==
+            {'armed': Fal...ghts': 1, ...}
+              Differing items:
+              {'nights': 2} != {'nights': 1}
+
+        mutant "armed ignores status" the same read, observed:
+
+              Differing items:
+              {'armed': True} != {'armed': False}
+
+        and mutant "never frozen on a fresh run" the dormant read, observed:
+
+              Differing items:
+              {'plan_saved_ts': None} != {'plan_saved_ts': 1790646749.0710003}
         """
         api, engine, night = rig
         fid = await api.save_flow(LR)
+        saved = (await api.client.get(f"/api/flows/{fid}")).json()[
+            "updated_ts"]
+        clock = _Clock(_local(2026, 9, 20, 21, 0))
+        monkeypatch.setattr(engine_module, "time", clock)
+        monkeypatch.setattr(app_module, "time", clock)
         r = await api.client.post(f"/api/flows/{fid}/run", json={})
         assert r.status_code == 200, r.text
         assert r.json()["session"]["continued"] is False
@@ -1007,9 +1147,11 @@ class TestContinue:
         await engine._task
         one = await api.ok(fid)
         assert one["session"] == {"id": sid, "status": "dormant",
-                                  "nights": 1, "count_mode": "accepted"}
+                                  "nights": 1, "count_mode": "accepted",
+                                  "armed": True, "plan_saved_ts": saved}
         assert _steps(one) == _steps(live)
 
+        clock.t = _local(2026, 9, 20, 21, 30)
         r = await api.client.post(f"/api/flows/{fid}/run", json={})
         assert r.status_code == 200, r.text
         assert r.json()["session"]["continued"] is True
@@ -1018,8 +1160,10 @@ class TestContinue:
             counted, "premise: night two compiled the same ids"
 
         two = await api.ok(fid)
+        assert len(engine._session.nights) == 2, "premise: two runs"
         assert two["session"] == {"id": sid, "status": "active",
-                                  "nights": 2, "count_mode": "accepted"}
+                                  "nights": 1, "count_mode": "accepted",
+                                  "armed": False, "plan_saved_ts": saved}
         assert _steps(two) == _steps(one)
 
         _bank(engine, [0])

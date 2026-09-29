@@ -342,6 +342,72 @@ test("a null banked figure is NOT drawn as zero", () => {
   assert.equal(bar.childElementCount, 0, "and no fill");
 });
 
+// A REFUSED QUOTA IS NO COUNT, NOT 0 (#424, the classic half, finished by the
+// S7 integration). `tonight._campaign` answers `quota: null`, the campaign's
+// and every member's, when the stored POOL quota is no finite count above 0
+// ("inf", 0, a negative), as server/tests/test_flows_tonight_counts_finite.py
+// pins it. This panel's reader read that null as `?? 0`, so every bar
+// announced a maximum of 0 for a count nobody could make.
+//
+// Each mutant below was run in the integration's private copy of ui/ (the
+// session scratchpad's S7-INTEG-r2-mut, from a byte backup, sha256 checked
+// after), and each failure is quoted as the run printed it, wrapped.
+// MUTANT "quota read as 0" (TonightPanel.tsx readCampaign: both quota reads
+// back to `num(...) ?? 0`, the code before #424). Observed, 17/18:
+//   x a refused quota gives no bar a maximum, and a count with no quota says
+//   the count alone: NGC 7331 campaign progress announces aria-valuemax="0"
+// MUTANT "a count with no quota reads of 0" (TonightCampaign.tsx
+// memberStatus: its null-quota line removed and the count printed against
+// `m.quota ?? 0`). Observed, 17/18 (and campaignNullQuota.test.tsx 4/5):
+//   x a refused quota gives no bar a maximum, and a count with no quota says
+//   the count alone: M45's aria-valuetext: expected "7 cycles", got
+//   "7/0 cycles"
+// MUTANT "the bar keeps m.quota" (TonightCampaign.tsx: aria-valuemax back to
+// {m.quota}) never reaches a case: tsc refuses it. Observed (`tsc -p
+// tsconfig.json --noEmit`):
+//   src/components/flows/TonightCampaign.tsx(82,8): error TS2322: ...
+//   "aria-valuemax": number | null; ... is not assignable to type
+//   'DetailedHTMLProps<HTMLAttributes<HTMLDivElement>, HTMLDivElement>'.
+// The control below stayed green under all three.
+const REFUSED_CAMPAIGN = {
+  is_campaign: true, has_pool: true, has_ledger: true, quota: null,
+  members: [
+    { name: "NGC 7331", banked: null, quota: null, done: false, pct: null },
+    { name: "M45", banked: 7, quota: null, done: false, pct: null },
+  ],
+  note: "TARGET POOL 'n20' holds 'inf' as its quota, and a count must be a finite number above 0, "
+    + "so no member's cycles are counted against it.",
+};
+
+test("a refused quota gives no bar a maximum, and a count with no quota says the count alone", () => {
+  render({
+    tonight: { ...OK_PAYLOAD, campaign: REFUSED_CAMPAIGN },
+    ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "campaign" },
+  });
+  const body = q("[data-flows-tonight='campaign']");
+  assert.ok(body, "the campaign tab did not render");
+  const bars = [...body.querySelectorAll("[role=progressbar]")] as any[];
+  assert.equal(bars.length, 2, "one bar per member");
+  for (const b of bars) {
+    assert.equal(b.getAttribute("aria-valuemax"), null,
+      `${b.getAttribute("aria-label")} announces aria-valuemax="${b.getAttribute("aria-valuemax")}"`);
+  }
+  // Each message carries what was read: this harness prints the message alone.
+  const said = bars.map((b) => b.getAttribute("aria-valuetext"));
+  assert.equal(said[0], "not counted", `NGC 7331's aria-valuetext: expected "not counted", got "${said[0]}"`);
+  assert.equal(said[1], "7 cycles", `M45's aria-valuetext: expected "7 cycles", got "${said[1]}"`);
+  assert.ok(!/\/0|\/null/.test(body.textContent),
+    `a count against no quota printed an "of N": ${body.textContent}`);
+  assert.ok(body.textContent.includes(REFUSED_CAMPAIGN.note), "the note's refusal sentence is not on the tab");
+});
+
+test("control: a quota of 45 still gives every bar a maximum of 45", () => {
+  render({ tonight: OK_PAYLOAD, ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "campaign" } });
+  const bars = qa("[data-flows-tonight='campaign'] [role=progressbar]") as any[];
+  assert.equal(bars.map((b) => b.getAttribute("aria-valuemax")).join(","), "45,45,45",
+    "each bar's aria-valuemax");
+});
+
 test("CAMPAIGN survives a refusal, because it does not depend on the ephemeris", () => {
   // `_campaign` reads the GRAPH. A tab that blanked when the SITE is unset
   // would look like a broken campaign rather than a missing site.

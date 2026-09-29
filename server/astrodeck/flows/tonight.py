@@ -101,10 +101,31 @@ def _short(name: Any) -> str:
 
 
 def _num(value: Any, default: float = 0.0) -> float:
+    # OverflowError too (#423), as ``compile._num`` and ``doctor._num`` have
+    # caught it since S4: ``float()`` of an integer past a float's range (a
+    # raw POST or a hand-edited file can hold a 400-digit one) raises that,
+    # not ValueError, and it took the whole Tonight answer down with it.
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _not_finite(value: Any) -> bool:
+    """True when ``value`` is a number and not a finite one: an infinity, a
+    NaN, or an integer past a float's range (#423).
+
+    ``models._not_a_count`` without its "above 0": a DUSK offset may be
+    negative, so only the numbers that are no number of minutes at all are
+    judged. None, blank text and text that is not a number are False, as
+    they are there: the compile reads each as its default, and the editor
+    stores a blank field that way."""
+    try:
+        return not math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+    except OverflowError:
+        return True
 
 
 def _signed(value: float, fmt: str = "g") -> str:
@@ -1353,23 +1374,35 @@ def _mosaic_entries(graph: FlowGraph, plan: dict | None) -> dict[str, dict]:
 #: The node types that shoot lights, a sentence each in the brief.
 _CAPTURE_TYPES = frozenset({"cycle", "capture"})
 
+#: The node types that head a lane, an arm or a select sentence each in the
+#: brief (#470).
+_BLOCK_TYPES = frozenset({"target", "pool"})
 
-def _capture_stages(g: FlowGraph) -> list:
-    """Every capture stage of the graph, in lane order: the order the run
+
+def _brief_walk(g: FlowGraph) -> list:
+    """Every block and capture stage of the graph, in the order the run
     cursor reaches them along the flow wires (``compile.flow_order``, with
-    canvas order only between stages no wire orders), so a lane drawn right
-    to left still reads first stage first.
+    canvas order only between nodes no wire orders), so a lane drawn right
+    to left still reads first stage first, and a block reads where its lane
+    runs (#470).
 
-    A stage the walk never reaches (one inside a flow loop, which validation
+    A node the walk never reaches (one inside a flow loop, which validation
     refuses but the editor can draw) follows in canvas order: the brief
-    describes the graph the operator drew, and a stage on the canvas is not
+    describes the graph the operator drew, and a node on the canvas is not
     left out of it because the compile drops it (see ``brief``)."""
-    walked = [n for n in flow_order(g) if n.type in _CAPTURE_TYPES]
+    kinds = _BLOCK_TYPES | _CAPTURE_TYPES
+    walked = [n for n in flow_order(g) if n.type in kinds]
     seen = {n.id for n in walked}
-    rest = sorted((n for n in g.nodes
-                   if n.type in _CAPTURE_TYPES and n.id not in seen),
+    rest = sorted((n for n in g.nodes if n.type in kinds and n.id not in seen),
                   key=lambda n: (n.x, n.y, n.id))
     return walked + rest
+
+
+def _capture_stages(g: FlowGraph) -> list:
+    """Every capture stage of the graph, in lane order: the stages of
+    ``_brief_walk``, so a stage the walk never reaches follows in canvas
+    order, as it always did."""
+    return [n for n in _brief_walk(g) if n.type in _CAPTURE_TYPES]
 
 
 def _receives(block) -> bool:
@@ -1430,9 +1463,12 @@ def _block_label(block) -> str:
 _NO_BLOCK = "Belonging to no TARGET, and so shooting nothing,"
 
 
-def _stage_sentences(g: FlowGraph) -> list[str]:
+def _stage_sentences(g: FlowGraph) -> dict[str, list[str]]:
     """Every capture stage's sentence (``_stage_sentence``), in lane order,
-    each lane's stages together under the block they are shot for.
+    each lane's stages together under the block they are shot for, keyed by
+    the id of the lane's first stage, which is where ``brief`` says the lane
+    (#470: a block's sentence reads where its lane runs, and so does the
+    lane).
 
     ONE LANE READS AS IT ALWAYS DID: "It captures", then "It then
     captures". The stages of a flow whose stages all go to one block (every
@@ -1458,14 +1494,17 @@ def _stage_sentences(g: FlowGraph) -> list[str]:
         key = tuple(b.id for b in receivers.get(s.id, ()))
         lanes.setdefault(key, []).append(s)
     if len(lanes) <= 1:
-        return [_stage_sentence(s, i == 0) for i, s in enumerate(stages)]
-    out: list[str] = []
+        return ({stages[0].id: [_stage_sentence(s, i == 0)
+                                for i, s in enumerate(stages)]}
+                if stages else {})
+    out: dict[str, list[str]] = {}
     for lane in lanes.values():
         blocks = receivers.get(lane[0].id, ())
         who = (f"For {_join_and([_block_label(b) for b in blocks])}"
                if blocks else _NO_BLOCK)
-        out.extend(_stage_sentence(s, i == 0, who=who if i == 0 else None)
-                   for i, s in enumerate(lane))
+        out[lane[0].id] = [_stage_sentence(s, i == 0,
+                                           who=who if i == 0 else None)
+                           for i, s in enumerate(lane)]
     return out
 
 
@@ -1512,6 +1551,26 @@ def _stage_sentence(node, first: bool, who: str | None = None) -> str:
             f"{p.get('count')} (gain {p.get('gain')}, bin {p.get('bin')}).")
 
 
+def _block_sentence(block, lead: str) -> str:
+    """A block's own sentence in the brief: a POOL selects the best of its
+    members by its gates, and a TARGET is armed, each worded as the brief
+    always worded the one block it named (#470 gave every block one).
+
+    "IT THEN" NEEDS SOMETHING TO FOLLOW, so ``lead`` is the caller's. The
+    prototype opened this sentence with a fixed "It then", which reads
+    correctly after the arming sentence and is broken English without one -
+    the EAA example has no DUSK WINDOW, so its brief began "It then arms M27 -
+    Dumbbell." with no antecedent. Same sentence, same content, correct
+    connective; noted in the milestone summary as a prototype defect rather
+    than a design change."""
+    p = block.params
+    if block.type == "pool":
+        return (f"{lead}selects the best of {p.get('members')} - above "
+                f"{p.get('minAlt')}°, at least {p.get('moonSep')}° from the "
+                f"moon (if up), within {p.get('maxHA')} h of the meridian.")
+    return f"{lead}arms {p.get('name')}."
+
+
 def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
           plan: dict | None = None) -> str:
     """The STORY tab's mechanical brief: the graph, read back as prose.
@@ -1545,6 +1604,15 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
     more than one block, each lane's first stage names its block by the
     compile's own scoping rule (``_stage_sentences``, #470).
 
+    EVERY BLOCK GETS A SENTENCE, WHERE ITS LANE RUNS (#470). Each TARGET is
+    armed and each POOL selects (``_block_sentence``), in the order the run
+    cursor reaches them (``_brief_walk``, ``compile.flow_order``), and each
+    lane of stages follows where its first stage runs. It wrote one, the
+    first POOL's or else the first TARGET's, ahead of every lane.
+
+    A DUSK OFFSET THAT IS NO FINITE NUMBER IS SAID TO BE UNREADABLE (#423),
+    where ``int()`` of it raised and took the whole Tonight answer down.
+
     A MOSAIC GETS ITS OWN SENTENCES (``_mosaic_sentences``), one set per
     multi-panel TARGET, after the target sentence. ``hop_cost_s`` is the
     measured hop cost the route injects; with none, they say it is not
@@ -1558,7 +1626,7 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         return ""
     g = graph.with_defaults()
     n = lambda t: _first(g, t)                                   # noqa: E731
-    dusk, pool, tgt, rep = n("dusk"), n("pool"), n("target"), n("report")
+    dusk, pool, rep = n("dusk"), n("pool"), n("report")
     cw, hold, cq, pc = n("cloudwatch"), n("holdresume"), n("calib"), n("parkclose")
     saf, dome, df = n("safety"), n("dome"), n("duskflats")
     guide, af = n("guide"), n("autofocus")
@@ -1566,36 +1634,32 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
 
     if dusk is not None:
         p = dusk.params
-        off = int(_num(p.get("offset")))
         start = _START_PROSE.get(str(p.get("start")), str(p.get("start")))
         t = f"This flow arms at {start}"
-        if off:
-            t += f" ({_signed(off, '+.0f')} min)"
+        # THE OFFSET IS READ FINITE-ONLY (#423), as the compile reads it into
+        # ``start_offset_min`` (``_finite``). ``int()`` of it as ``_num``
+        # read it raised on a stored "inf" or JSON ``1e999`` ("OverflowError:
+        # cannot convert float infinity to integer") and on "nan"
+        # (ValueError), and ``_num`` itself raised on a 400-digit integer; a
+        # DUSK offset is no count, so validation lets a save store any of
+        # them, and ``resolve_tonight`` calls this unconditionally, so the
+        # whole Tonight answer raised for such a flow. The compile reads each
+        # as 0, so the run applies no offset, and the brief says so rather
+        # than print no offset without a word for one the node plainly holds.
+        raw = p.get("offset")
+        if _not_finite(raw):
+            t += (f" (its offset, {_shown(raw)}, cannot be read as a number "
+                  f"of minutes, so none is applied)")
+        else:
+            off = int(_finite(raw))
+            if off:
+                t += f" ({_signed(off, '+.0f')} min)"
         if dome is not None:
             t += ", opens the dome and binds it to the mount"
         if df is not None:
             t += (f", and shoots {df.params.get('count')} flats per filter "
                   f"({str(df.params.get('method')).lower()}) in the twilight window")
         seg.append(t + ".")
-
-    # "IT THEN" NEEDS SOMETHING TO FOLLOW. The prototype opens this sentence
-    # with a fixed "It then", which reads correctly after the arming sentence
-    # and is broken English without one - the EAA example has no DUSK WINDOW, so
-    # its brief began "It then arms M27 - Dumbbell." with no antecedent. Same
-    # sentence, same content, correct connective; noted in the milestone summary
-    # as a prototype defect rather than a design change.
-    lead = "It then " if seg else "This flow "
-    if pool is not None:
-        p = pool.params
-        seg.append(f"{lead}selects the best of {p.get('members')} - above "
-                   f"{p.get('minAlt')}°, at least {p.get('moonSep')}° from the "
-                   f"moon (if up), within {p.get('maxHA')} h of the meridian.")
-    elif tgt is not None:
-        seg.append(f"{lead}arms {tgt.params.get('name')}.")
-    blocks = [b for b in g.nodes if is_multi_panel(b)]
-    entries = _mosaic_entries(graph, plan) if blocks else {}
-    seg.extend(_mosaic_sentences(g, b, hop_cost_s, entries.get(b.id))
-               for b in blocks)
 
     rig: list[str] = []
     if af is not None:
@@ -1604,9 +1668,22 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         rig.append(f"guides with {guide.params.get('provider')} (settle below "
                    f"{guide.params.get('settle')}″, dither every "
                    f"{guide.params.get('dither')} frames)")
-    if rig:
-        seg.append("For each target it " + ", ".join(rig) + ".")
+    rig_owed = [] if not rig else [
+        "For each target it " + ", ".join(rig) + "."]
 
+    # EVERY BLOCK, WHERE ITS LANE RUNS (#470). This wrote one arm sentence,
+    # the first POOL's or, with none, the first TARGET's, ahead of every
+    # lane, so a TARGET after the first was never named and a POOL's sentence
+    # came first wherever its lane ran: the S4 band fixture's graph, M16's
+    # mosaic, then M31, then a POOL, read "It then selects the best of M13,
+    # M92 ..." straight after the arming sentence and never said M31. Now the
+    # walk (``_brief_walk``, the run cursor's order) gives each block its
+    # sentence, and a multi-panel TARGET its mosaic sentences, where the
+    # cursor reaches it, and each lane of stages (``_stage_sentences``)
+    # where its first stage runs, so the blocks and their lanes read in the
+    # order the night runs them. A flow of one block reads as it always did:
+    # its sentence, its mosaic's, the rig sentence, then its stages.
+    #
     # EVERY CAPTURE STAGE, IN LANE ORDER (#395). This picked one stage, the
     # first FILTER CYCLE or, with none, the first CAPTURE LOOP, so a lane of a
     # cycle then a capture never named the capture, and a lane of two
@@ -1615,7 +1692,25 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
     # the brief did not name ("a pass takes 10 min" of a lane whose one named
     # stage takes 5). A flow of several lanes names each lane's block, so no
     # lane's stages read as the first block's (#470, ``_stage_sentences``).
-    seg.extend(_stage_sentences(g))
+    #
+    # The rig sentence is flow-wide ("For each target"), and is said once,
+    # before the first lane's stages, where a flow of one block always said
+    # it; with no stage at all, after the last block.
+    lanes = _stage_sentences(g)
+    multi = any(is_multi_panel(b) for b in g.nodes)
+    entries = _mosaic_entries(graph, plan) if multi else {}
+    for node in _brief_walk(g):
+        if node.type in _BLOCK_TYPES:
+            lead = "It then " if seg else "This flow "
+            seg.append(_block_sentence(node, lead))
+            if is_multi_panel(node):
+                seg.append(_mosaic_sentences(g, node, hop_cost_s,
+                                             entries.get(node.id)))
+        elif node.id in lanes:
+            seg.extend(rig_owed)
+            rig_owed = []
+            seg.extend(lanes[node.id])
+    seg.extend(rig_owed)
 
     advances = pool is not None and _wired(g, to=pool, to_port="advance")
     if rep is not None and advances:

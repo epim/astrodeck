@@ -6,7 +6,8 @@
 // run phase (which is a marker value), the phone tab (which is a layout
 // branch) and the open record's id (which the modal is pinned to). A node
 // status tick, a pan, a param edit and a log line all re-render nothing here;
-// the counts line is its own component with its own string selector.
+// the counts line and the replay line are each their own component with its
+// own string selector.
 //
 // WHY THE OVERLAYS ARE MOUNTED HERE. `FlowEditSheet`, `FlowPaletteSheet` and
 // `TonightPanel` each read their own open-flag and render null when closed, so
@@ -37,18 +38,33 @@
 //
 // RUN MODE IS DECIDED HERE, AT THE DOOR (#189 S5; spec 2.6). While the open
 // flow's session is running (flowRunState `flowRunLive`: the session the rig
-// writes is the one the progress route counts for this flow, and the run is
-// live), the modal opens with `viewOnly`, read-only and drawing the run's
+// writes is one the slice knows as this flow's, `knownSessions`, and the run
+// is live), the modal opens with `viewOnly`, read-only and drawing the run's
 // panels. The #/next door (FlowFrameSheet.tsx) asks the same reader, so the
 // two UIs cannot disagree on when a flow is running. The question is asked in
 // `FramingHostSheet`, not in the editor, so a run starting or ending
 // re-renders the modal's door and never the canvas.
+//
+// NOT FROM THE PROGRESS ANSWER (#449). The door asked `flowRunLive` of
+// `flows.progress`, which every save blanks until its re-read answers: a save
+// made during the run turned the open modal editable for that round trip,
+// DONE and all, and a re-read that failed left it editable for the rest of
+// the night. The known sessions outlive both.
 //
 // THE COUNTS LINE IS ALSO HERE (spec Revision 2 ruling 2; S4 orchestrator
 // ruling 8). While any TARGET or POOL still counts every sub taken, the editor
 // carries `countsNotice`'s line above every tier's body, for as long as it is
 // true. It is not a log line: the flow log is a ring that scrolls, and the
 // ruling's line is a standing fact about the flow that only a save changes.
+//
+// AND SO IS THE REPLAY LINE, BESIDE IT (#473, S7 orchestrator ruling 1). While
+// the session CONTINUE would carry on is armed and the flow was saved after
+// the version it froze, `replayNotice`'s line says dusk will replay that
+// version ("the armed session will replay the version from 2026-09-22; press
+// CONTINUE to apply your edits"), since auto-resume starts the session on its
+// frozen plan and only CONTINUE applies the saved edits. The same standing
+// kind of fact, drawn the same way, above every tier's body; the #/next
+// canvas and phone stage list read the same function.
 import {
   Component, Suspense, useCallback, useMemo, useState,
   type ComponentType, type JSX, type ReactNode,
@@ -69,7 +85,8 @@ import FlowPhoneGraph from "./FlowPhoneGraph";
 import FlowPhoneMonitor from "./FlowPhoneMonitor";
 import FlowTapWireBar from "./FlowTapWireBar";
 import { countsNotice } from "./countsNotice";
-import { flowRunLive } from "./flowRunState";
+import { replayNotice } from "./replayNotice";
+import { flowRunLive, knownSessions } from "./flowRunState";
 import { TargetFramingSheetLazy, type TargetFramingSheetProps } from "./framing";
 
 // ------------------------------------------------------------ the framing host
@@ -120,9 +137,9 @@ class FramingBoundary extends Component<
 
 /** The one open modal, in run mode while the open flow's session runs (see
  *  the header). A boolean selector, so it re-renders when a run of this flow
- *  starts or ends, and at no frame, log line or status tick. */
+ *  starts or ends, and at no frame, log line, status tick or progress re-read. */
 function FramingHostSheet({ nodeId, onClose }: { nodeId: string; onClose: () => void }): JSX.Element {
-  const running = useStore((s) => flowRunLive(s.flows.progress, s.sequence));
+  const running = useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
   return <FramingSheet nodeId={nodeId} onClose={onClose} viewOnly={running} />;
 }
 
@@ -135,6 +152,25 @@ function FlowCountsLine(): JSX.Element | null {
     <div
       role="status"
       data-flows-counts
+      className="flex-none px-3 py-2 border-b border-line text-[11px] leading-[1.45]
+                 text-warn bg-[color-mix(in_srgb,var(--warn)_8%,transparent)] [text-wrap:pretty]"
+    >
+      {line}
+    </div>
+  );
+}
+
+/** The replay line (see the header), beside the counts line and drawn like
+ *  it. A string-or-null selector over the progress answer and the record, so
+ *  a save that moves the record's saved time raises it without a reopen, and
+ *  a pan, a frame or a log line re-renders nothing. */
+function FlowReplayLine(): JSX.Element | null {
+  const line = useStore((s) => replayNotice(s.flows.progress, s.flows.record));
+  if (line === null) return null;
+  return (
+    <div
+      role="status"
+      data-flows-replay
       className="flex-none px-3 py-2 border-b border-line text-[11px] leading-[1.45]
                  text-warn bg-[color-mix(in_srgb,var(--warn)_8%,transparent)] [text-wrap:pretty]"
     >
@@ -213,6 +249,7 @@ export default function FlowEditor({ tier }: FlowEditorProps): JSX.Element {
         className="fill-grow flex flex-col min-h-0 min-w-0"
       >
         <FlowCountsLine />
+        <FlowReplayLine />
         {phone ? (
           // PHONE — three tabs, one of which IS the tablet/desktop canvas
           // (README §5: "identical to tablet/desktop canvas"). The tab bar is

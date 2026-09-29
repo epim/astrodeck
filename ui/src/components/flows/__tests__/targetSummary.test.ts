@@ -14,9 +14,13 @@
 //     with 3x2 meaning three columns by two rows, and "rotate" read from the
 //     GRAPH (the block's loop wire, and no M12 beside it, #410), never from a
 //     param. The word that tells the two mosaic lines apart comes right after
-//     the name (#357), so the classic card's `truncate` cannot cut it:
-//     cardFooterDom.test.tsx computes that card's budget from its font and
-//     padding and holds the eighth Example's two lines to it.
+//     the name (#357).
+//   * The classic card's line fitted to its budget (`fittedFooter`, S7
+//     orchestrator ruling 9): the overlap first, then the name shortened with
+//     an ellipsis, never the loop word or the angle, and the rungs past the
+//     ruling (the grid, then the name) where the name would keep nothing.
+//     cardFooterDom.test.tsx computes that budget from the mounted card and
+//     holds the ruling's cases to it; this file holds the edges.
 //   * The loop chip: "every pass: next panel · N panels", N the live panels the
 //     COMPILE's entry for the block holds (rows x cols minus the parsed skip),
 //     no count before a compile or when the compile no longer describes the
@@ -30,8 +34,8 @@
 // turned red is recorded beside the test.
 
 import {
-  LOOP_ARC_DASH, LOOP_CHIP_WORDS, livePanels, loopArcOf, loopArcTarget, loopChip,
-  targetFooter, targetLoops, targetSummary,
+  FOOTER_ELLIPSIS, LOOP_ARC_DASH, LOOP_CHIP_WORDS, fittedFooter, livePanels, loopArcOf,
+  loopArcTarget, loopChip, monoChars, targetFooter, targetLoops, targetSummary,
 } from "../targetSummary";
 import { loopArc } from "../geometry";
 import { NODE_DEFS } from "../nodeDefs";
@@ -309,6 +313,93 @@ test("CONTROL: the vocabulary's TARGET sum is unchanged: the name alone", () => 
   eq(NODE_DEFS.cycle.sum(NODE_DEFS.cycle.params), "7 filters · 1/pass · ×45", "FILTER CYCLE's sum");
 });
 
+// ================================================ the footer on one line
+//
+// S7 orchestrator ruling 9 (#357), at the classic card's 29 characters. The
+// ruling's own cases are mounted in cardFooterDom.test.tsx; these are the
+// edges of the fitting itself.
+
+const FIT = 29;
+const single = (name: string, extra: Params = {}) =>
+  node("s", "target", 100, { name, rows: 1, cols: 1, angle: "Any angle", rotation: -1, ...extra });
+
+// A line of exactly the budget is drawn whole; one character more and the
+// name keeps sixteen of its eighteen characters and the ellipsis. MUTANT
+// "fits below the budget" (fittedFooter: `full.length < chars` for
+// `<= chars`, and nameFitted's `whole.length < chars` likewise). Observed,
+// targetSummary.test 27/28 (cardFooterDom.test.tsx stays 26/26: none of the
+// ruling's cases is exactly 29 before it is fitted):
+//   x fitted: a line of exactly 29 characters is whole; 30 shortens the name: 29 characters
+//     expected "NGC 7331 Pegasus. · any angle"
+//     got      "NGC 7331 Pegasus… · any angle"
+test("fitted: a line of exactly 29 characters is whole; 30 shortens the name", () => {
+  const at = single("NGC 7331 Pegasus.");
+  eq(targetFooter(at, false).length, 29, "precondition: a 17-character name at any angle is 29");
+  eq(fittedFooter(at, false, FIT).line, "NGC 7331 Pegasus. · any angle", "29 characters");
+  const over = single("NGC 7331 Pegasus..");
+  eq(fittedFooter(over, false, FIT).line, `NGC 7331 Pegasus${FOOTER_ELLIPSIS} · any angle`, "30 characters");
+});
+
+test("fitted: the whole line comes back beside the fitted one", () => {
+  const t = node("t", "target", 100, { ...M31_PARAMS, name: "NGC 7331" });
+  eq(JSON.stringify(fittedFooter(t, true, FIT)), JSON.stringify({
+    line: `NGC${FOOTER_ELLIPSIS} · rotate · 3x2 · PA 30.0`,
+    full: "NGC 7331 · rotate · 3x2 · PA 30.0 · 25%",
+  }), "the NGC 7331 rotating mosaic");
+  const fits = single("NGC 7331");
+  eq(JSON.stringify(fittedFooter(fits, false, FIT)),
+    JSON.stringify({ line: "NGC 7331 · any angle", full: "NGC 7331 · any angle" }), "a line that fits");
+});
+
+// A name cut at a space reads "NG…", not "NG …": the room is four, three
+// characters and the ellipsis, and the third is the space in "NG 7331".
+test("fitted: a name cut at a space drops the space before the ellipsis", () => {
+  const t = node("t", "target", 100, { ...M31_PARAMS, name: "NG 7331" });
+  eq(fittedFooter(t, true, FIT).line, `NG${FOOTER_ELLIPSIS} · rotate · 3x2 · PA 30.0`, "a cut at the space");
+});
+
+// The last rung, past the ruling: the name is left out only when not one of
+// its characters fits beside the loop word and the angle even with the grid
+// gone. A rotation typed as 12345.6 is the doctor's to refuse; the card still
+// keeps "rotate" and the angle whole. MUTANT "the grid kept at any cost"
+// (fittedFooter's last rung returns `joined(f.loop, f.size, f.angle)`, the
+// line with the grid, instead of without it), which leaves the angle to
+// `truncate`. Observed, targetSummary.test 27/28:
+//   x fitted: past the grid, the name goes before the loop word or the angle is cut: a rotation too long for any name beside it
+//     expected "rotate · fixed PA 12345.6"
+//     got      "rotate · 12x10 · fixed PA 12345.6"
+// "the name goes to the ellipsis before the grid" (cardFooterDom.test.tsx)
+// fails this case too (27/28): got "… · rotate · fixed PA 12345.6".
+test("fitted: past the grid, the name goes before the loop word or the angle is cut", () => {
+  const t = node("t", "target", 100, { ...M31_PARAMS, rows: 10, cols: 12,
+    angle: "Camera fixed at PA", rotation: 12345.6 });
+  const { line } = fittedFooter(t, true, FIT);
+  eq(line, "rotate · fixed PA 12345.6", "a rotation too long for any name beside it");
+  assert(line.length <= FIT, `"${line}" is over the budget`);
+  // And an unnamed block over the budget loses its grid, never a separator
+  // at the front.
+  const unnamed = node("t", "target", 100, { ...M31_PARAMS, name: "", rows: 10, cols: 12,
+    angle: "Camera fixed at PA", rotation: 1234.5 });
+  eq(fittedFooter(unnamed, true, FIT).line, "rotate · fixed PA 1234.5", "an unnamed block");
+});
+
+test("fitted: the name is still the one sum call", () => {
+  const orig = NODE_DEFS.target.sum;
+  let calls = 0;
+  NODE_DEFS.target.sum = (p) => { calls++; return orig(p); };
+  try {
+    fittedFooter(node("t", "target", 100, { ...M31_PARAMS, name: "NGC 7331" }), true, FIT);
+    eq(calls, 1, "calls to NODE_DEFS.target.sum per fitted footer");
+  } finally {
+    NODE_DEFS.target.sum = orig;
+  }
+});
+
+test("monoChars: 166 px of 9.5 px mono is 29 characters", () => {
+  eq(monoChars(166, 9.5), 29, "the classic footer's room");
+  eq(monoChars(162, 9.5), 28, "four pixels less");
+});
+
 // ========================================================= the loop wire
 
 // MUTANT "arc for every wire into a TARGET" (the `toPort === "next"` test
@@ -378,16 +469,18 @@ test("after a compile: 'every pass: next panel · N panels', N = rows x cols - s
   "every pass: next panel · 1 panel", "one live panel is one panel");
 });
 
-// The compile runs when a flow opens (flowsSlice `flowsOpen`), not on each
-// edit, so after an edit its entry describes the graph as it was. MUTANT
-// "count while dirty" (loopChip ignores `dirty`). Observed,
-// targetSummary.test 19/20:
-//   x an unsaved edit takes the count away: the compile describes the graph as
-//     opened: the chip while dirty
+// The compile runs on an open, DONE, LOOP PANELS and a save, never on an
+// inspector edit, so after an edit its entry describes the graph as it was.
+// The canvases say so with `stale` (`!compiledIsCurrent`, #356, S7; it was
+// `dirty` until S7, and loopChipCurrent.test.ts drives both canvases through
+// the real slice). MUTANT "count while dirty" (loopChip ignores its flag),
+// first observed 19/20; re-run as "count while stale" in S7-UCANVAS-mut,
+// targetSummary.test 27/28:
+//   x a stale answer takes the count away: it describes the graph before the edit: the chip over a stale answer
 //     expected "every pass: next panel"
 //     got      "every pass: next panel · 5 panels"
-test("an unsaved edit takes the count away: the compile describes the graph as opened", () => {
-  eq(loopChip(LOOPED, LOOP, planWith(M31_ENTRY), true), LOOP_CHIP_WORDS, "the chip while dirty");
+test("a stale answer takes the count away: it describes the graph before the edit", () => {
+  eq(loopChip(LOOPED, LOOP, planWith(M31_ENTRY), true), LOOP_CHIP_WORDS, "the chip over a stale answer");
 });
 
 // MUTANT "count from a stale grid" (the grid check dropped). Observed,

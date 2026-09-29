@@ -110,12 +110,16 @@ export function connectWs(): void {
       // The relay dropped something on its way to this browser (#399). Not a
       // rig event, so it never reaches handleEvent (nor types.ts's event
       // union): it is a transport notice that the events after it are not the
-      // whole story, answered by reading the server's own answer again. The
-      // server's LAN /ws has no relay buffer and never sends one.
+      // whole story, answered by reading the server's own answer again. Since
+      // #444 the server's LAN /ws sends it too, when its bus subscription
+      // drops events for this browser (events.py `Subscription`).
       if (ev && typeof ev === "object" && ev.type === RELAY_GAP) {
         resnapshotAfterGap();
         return;
       }
+      // Counted before it is handled, so a snapshot read in flight knows a
+      // newer event of this type reached the store (#476; snapshotStamp).
+      noteHandled(ev?.type);
       st.handleEvent(ev);
     } catch {
       /* malformed frame — ignore */
@@ -166,14 +170,27 @@ function settleBackoff(): void {
  *  history — if the socket was down when one fired, the store's `sequence`
  *  slice is stuck on the last state it saw (e.g. RUNNING) forever. Reuse the
  *  same cold-load path MonitorView uses, routed through handleEvent so the WS
- *  path stays the single source of truth for how state gets applied. */
+ *  path stays the single source of truth for how state gets applied.
+ *
+ *  AN ANSWER IS OLDER THAN THE EVENTS THAT OVERTAKE IT (#476, S7 orchestrator
+ *  ruling 3). The socket keeps delivering while this read is in flight, and
+ *  the server builds its answer when the request reaches it, so an event
+ *  handled after the request went out can be newer than the answer. Applied on
+ *  arrival, the answer wrote the older state over it, and for `sequence` that
+ *  is the very hole this function exists to fill: a `complete` that landed
+ *  during the read was replaced by the answer's `running`, and nothing
+ *  republishes a terminal state. Since #399 this read also runs after every
+ *  relay gap, mid-stream, on the links where the round trip is longest. So the
+ *  stamp is taken as the request goes out, and each type the answer carries is
+ *  applied only if no live event of that type was handled since. */
 async function rehydrateFromSnapshot(): Promise<void> {
   try {
+    const stamp = snapshotStamp();
     const snap = await api.get<MonitorSnapshot>("/api/monitor/snapshot");
     const st = useStore.getState();
     const ts = Date.now() / 1000;
-    if (snap.status) st.handleEvent({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
-    if (snap.sequence) st.handleEvent({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+    if (snap.status && stamp.fresh("status")) st.handleEvent({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
+    if (snap.sequence && stamp.fresh("sequence")) st.handleEvent({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
     // Polar, for the same reason as sequence above. The aligner's terminal
     // states are its most important ones — "too close to the pole to measure",
     // an error, a finished measurement — and each publishes exactly once with
@@ -181,14 +198,18 @@ async function rehydrateFromSnapshot(): Promise<void> {
     // aligner, no numbers, no reason, and a user who re-runs the run that had
     // just refused. Routed through handleEvent so the WS path stays the single
     // place that decides how this state is applied.
-    if (snap.polar) st.handleEvent({ type: "polar", data: snap.polar as unknown as Record<string, unknown>, ts });
+    // Stamped like sequence: a newer aligner event beats the answer.
+    if (snap.polar && stamp.fresh("polar")) st.handleEvent({ type: "polar", data: snap.polar as unknown as Record<string, unknown>, ts });
     // The newest frame, for the same reason again (#399). A `preview` event is
     // published once per frame and nothing republishes it, so a page whose
     // socket was down, or whose relay dropped the event, sat on NO FRAME YET
     // (or an older frame) until the NEXT exposure: 2026-09-27, NGC 7331, the
     // phone read NO FRAME YET at 50/105 frames while the rig served frame 535.
     // Recorded as the server said it, null included; the LAST FRAME tile shows
-    // the newer of this and the live preview (lib/lastFrameId.ts).
+    // the newer of this and the live preview (lib/lastFrameId.ts). NOT
+    // stamped, and replaced rather than merged: the tile's newer-of-two
+    // already lets a newer live frame win, and a restarted server counts from
+    // 1 again, so the field must be the answer as it came (#437).
     st.setSnapshotPreviewId(snap.preview_id ?? null);
     // Focus has the SAME failure mode the sequence rehydration above exists
     // for, and it bit a real session on 2026-07-30: the sweep failed, the
@@ -198,8 +219,10 @@ async function rehydrateFromSnapshot(): Promise<void> {
     // "running" that the server does not corroborate is stale. Cleared to
     // null rather than marked failed: the sweep may well have SUCCEEDED while
     // we were disconnected, and inventing an outcome is worse than showing
-    // none. `lastAutofocusResult` still holds the last real result.
-    if (Array.isArray(snap.busy) && !snap.busy.includes("autofocus")) {
+    // none. `lastAutofocusResult` still holds the last real result. Stamped
+    // too: a `focus` event handled since the send is a sweep the answer's
+    // `busy` predates, and clearing it would hide a sweep that is running.
+    if (Array.isArray(snap.busy) && !snap.busy.includes("autofocus") && stamp.fresh("focus")) {
       if (useStore.getState().focus?.state === "running") {
         useStore.setState({ focus: null });
       }
@@ -207,6 +230,34 @@ async function rehydrateFromSnapshot(): Promise<void> {
   } catch {
     /* ignore — WS status polling will catch up within ~2s */
   }
+}
+
+// -------------------------------------------------------- snapshot stamps
+// How many live events of each type onmessage has handed to the store (#476).
+// A count, not a clock: two events inside one millisecond, or a frozen clock,
+// would read as "nothing since" against a time stamp, and a count cannot tie.
+// Only the socket's events are counted. A snapshot read is not an event, so
+// two reads never stamp each other out.
+const handledCount = new Map<string, number>();
+
+function noteHandled(type: unknown): void {
+  if (typeof type !== "string") return;
+  handledCount.set(type, (handledCount.get(type) ?? 0) + 1);
+}
+
+/** A snapshot read's per-type stamp, taken when its request is sent. */
+export interface SnapshotStamp {
+  /** True when no live event of `type` has been handled since the stamp, so
+   *  the answer's value for that type is still the newest this client has. */
+  fresh(type: string): boolean;
+}
+
+/** Take the stamp. Call it BEFORE the request goes out: an event handled
+ *  between the call and the answer is one the answer may predate. Exported so
+ *  every snapshot reader (the Monitors' own reads too) can obey one rule. */
+export function snapshotStamp(): SnapshotStamp {
+  const at = new Map(handledCount);
+  return { fresh: (type) => (handledCount.get(type) ?? 0) === (at.get(type) ?? 0) };
 }
 
 // ------------------------------------------------------------- relay gaps

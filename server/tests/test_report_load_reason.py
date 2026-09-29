@@ -23,6 +23,14 @@ The class is #364's: a transient I/O error read as "absent".
 Every mutant below was run in a private copy of ``server/`` under
 scratchpad/S5-REPORT-mut, never in the shared tree, from a byte backup of the
 pristine ``report.py``, restored and compared by SHA-256 after each run.
+
+The write tests here call ``finalize()`` with no running loop, so a failed
+final write is retried inline, which blocks nothing. Called on a running
+loop the retry runs on a thread of its own (#477, S7 orchestrator ruling 5),
+and tests/test_s7_report_final_retry_off_loop.py grades that path. S7
+re-ran #420's and #421's mutants against the new code, under
+scratchpad/S7-REPORT-mut; each test below that they turn red says what S7
+observed.
 """
 from __future__ import annotations
 
@@ -303,6 +311,11 @@ def test_a_final_write_that_fails_once_is_retried(monkeypatch, warnings,
             reports/final-once.json: PermissionError: [WinError 32] The
             process cannot access the file because it is being used by
             another process: '<tmp>\\\\captures\\\\reports\\\\final-once.json'"]
+
+    Re-run by S7 (#477), where two warnings now say a write failed, the
+    first in ``_persist`` and the retry's in ``_retry_final``, with the
+    mutant applied to both ("str(e) in the warning"): the same line,
+    observed with only the elided directory differing.
     """
     calls = _write_failing(monkeypatch, _denied, times=1)
     r = SessionReporter(SequencePlan(name="t"), report_id="final-once",
@@ -322,7 +335,7 @@ def test_a_final_write_that_fails_once_is_retried(monkeypatch, warnings,
 
 def test_a_final_write_that_keeps_failing_says_so_twice_and_never_raises(
         monkeypatch, warnings, captures):
-    """Refused on both tries: finalize() still returns the report (a disk
+    r"""Refused on both tries: finalize() still returns the report (a disk
     hiccup must not kill a wind-down), and the bus has both failures, the
     second saying it came after the retry. Nothing is on disk, and ``read``
     says "missing", which is now the truth and not a guess.
@@ -332,7 +345,15 @@ def test_a_final_write_that_keeps_failing_says_so_twice_and_never_raises(
         E   assert 1 == 2
 
     RED under the mutant "the write warning carries str(e)" as well, both
-    lines named in the assertion.
+    lines named in the assertion. Re-run by S7 (#477) at the retry's
+    warning alone ("str(e) in the retry's warning only"), observed, the
+    temporary directory elided as <tmp>:
+        E   AssertionError: an absolute path left the process: ["session
+            report write failed (final report, after one retry) at
+            reports/final-never.json: PermissionError: [WinError 32] The
+            process cannot access the file because it is being used by
+            another process: '<tmp>\\\\test_a_final_write_that_keeps_0\\\\
+            captures\\\\reports\\\\final-never.json'"]
     """
     calls = _write_failing(monkeypatch, _denied, times=None)
     r = SessionReporter(SequencePlan(name="t"), report_id="final-never",
@@ -409,6 +430,11 @@ async def test_a_late_snapshot_does_not_replace_the_final_report(
         E   AssertionError: the snapshot built before finalize() was written
             after it
         E   assert None == 'complete'
+
+    Re-run by S7 (#477) against the rule's new home, ``_write``, which the
+    snapshot, the final write and its retry all go through: the same two
+    lines, observed. test_s7_report_final_retry_off_loop.py holds the same
+    rule for a retry made on its own thread.
     """
     gate = threading.Event()
     real_ensure = report_mod.ensure_dir

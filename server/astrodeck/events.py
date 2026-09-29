@@ -30,6 +30,14 @@ because the transit of a known RA at a known instant is the longitude. The
 flag rides ``data.site_derived``; the serving seams (``api.redact``) drop the
 line for a principal without ``view.site_derived``, and the night file keeps
 it. An unflagged line has no such key, byte for byte as before the flag.
+
+A subscriber that falls :data:`SUBSCRIBER_MAX` events behind loses the oldest,
+and is told so (#444): its :class:`Subscription` serves one
+``{"type": "relay_gap"}`` marker ahead of the next event it reads. That is
+the frame the relay sends after its own drops, and the browser answers it by
+re-reading the monitor snapshot. The drop used to be silent, so a phone that
+lost a ``preview`` sat on an older frame until the next exposure, the failure
+#399 fixed at the relay hop.
 """
 from __future__ import annotations
 
@@ -53,6 +61,15 @@ NIGHTLOG_RETRY_S = 60.0
 STORM_PASS = 3
 #: the window a storm is measured over; a repeat this far apart is new news.
 STORM_WINDOW_S = 1.0
+#: events one subscriber may have queued before the bus drops its oldest. A
+#: consumer this far behind is minutes behind (status alone is every 2 s), so
+#: it is a socket whose sends are stuck, not a slow one.
+SUBSCRIBER_MAX = 500
+#: the ``type`` of the marker a subscription serves after a drop (#444). The
+#: relay sends the same frame after its own drops (relay/relay/proxy.py
+#: ``RELAY_GAP_FRAME``), so ui/src/ws.ts answers one notice whichever hop
+#: lost the event.
+RELAY_GAP = "relay_gap"
 
 
 def _now() -> float:
@@ -337,6 +354,79 @@ class Event:
         return {"type": self.type, "data": self.data, "ts": self.ts}
 
 
+class GapMarker(Event):
+    """What a :class:`Subscription` serves in place of the events the bus
+    dropped from it: one marker ahead of the first event after the hole.
+
+    It serializes as ``{"type": "relay_gap"}`` and nothing more, the relay's
+    own frame byte for byte. So both consumers forward it untouched (it has
+    no ``data`` for ``_redact_ws_event`` to look into, and no ``ts``: a
+    transport notice has no moment of its own to report), and the browser
+    sees one shape from either hop. ``data`` is still an empty dict, for an
+    in-process subscriber that reads ``ev.data`` without checking ``type``."""
+
+    def __init__(self) -> None:
+        super().__init__(type=RELAY_GAP, data={})
+
+    def to_json(self) -> dict[str, Any]:
+        return {"type": self.type}
+
+
+class Subscription(asyncio.Queue):
+    """One subscriber's queue: bounded, drop-oldest, and it says when it
+    dropped (#444).
+
+    Each event is numbered as it ENTERS the queue (``_put``), and the reading
+    side keeps the number it expects next (``_get``). When the queue is full,
+    ``EventBus._deliver`` discards the oldest entry (:meth:`drop_oldest`),
+    which leaves a hole in the numbers at the head, since the oldest is what
+    goes. The next ``get()`` finds the hole and returns one
+    :class:`GapMarker`, and the event behind the hole on the read after. One
+    marker however many were dropped since the consumer last read; a later
+    fall behind makes a new hole and earns another.
+
+    Numbered on the way in because a number handed out on the way OUT goes
+    only to what survived the queue, so it cannot show what did not. That is
+    what the relay lane's ``seq`` is (``_run_ws``), and its docstring used to
+    say it showed a drop.
+
+    Built on the stdlib's extension points (``_put``/``_get``, as
+    ``LifoQueue`` and ``PriorityQueue`` are), so ``get()``,
+    ``wait_for(q.get(), ...)`` and every consumer's loop work as before, the
+    LAN ``/ws`` and ``_run_ws`` among them, and each forwards the marker like
+    any event. ``qsize()`` counts events; a marker owed takes no slot."""
+
+    def __init__(self, maxsize: int = SUBSCRIBER_MAX) -> None:
+        super().__init__(maxsize)
+        #: events ``EventBus._deliver`` has dropped from this queue, ever.
+        self.dropped = 0
+        self._seq = 0               # the number given to the last event queued
+        self._next_seq = 1          # the number the reader expects next
+
+    def _put(self, ev: Event) -> None:
+        self._seq += 1
+        self._queue.append((self._seq, ev))
+
+    def _get(self) -> Event:
+        seq, ev = self._queue[0]
+        if seq != self._next_seq:
+            # Everything numbered in between was dropped. The marker goes
+            # first; the entry stays at the head for the next read, which now
+            # expects it.
+            self._next_seq = seq
+            return GapMarker()
+        self._queue.popleft()
+        self._next_seq = seq + 1
+        return ev
+
+    def drop_oldest(self) -> None:
+        """Discard the head entry without serving it. Not ``get_nowait()``:
+        that is a read, so it would move the expected number past the entry
+        and leave no hole to announce (and, with a hole already at the head,
+        return the marker instead of dropping anything)."""
+        self._queue.popleft()
+
+
 def _persist_default() -> bool:
     """``ASTRODECK_LOG_PERSIST=0`` turns the disk log off (read-only appliances,
     a RAM-disk capture root, or a CI run that doesn't want the file)."""
@@ -349,7 +439,7 @@ class EventBus:
         # Bounded operation snapshots for reconnecting controllers. Unlike log
         # history these retain terminal results even when no browser was open.
         self.operation_snapshots: dict[str, dict] = {}
-        self._subscribers: set[asyncio.Queue[Event]] = set()
+        self._subscribers: set[Subscription] = set()
         self._history: deque[Event] = deque(maxlen=history)
         #: The same ring with no ``site_derived`` line in it, for a reader
         #: without ``view.site_derived`` (spec 6.9, #166). Filtering the ring
@@ -369,12 +459,12 @@ class EventBus:
         #: guards the night-log notice against re-entering its own publish.
         self._in_notice = False
 
-    def subscribe(self) -> asyncio.Queue[Event]:
-        q: asyncio.Queue[Event] = asyncio.Queue(maxsize=500)
+    def subscribe(self) -> Subscription:
+        q = Subscription(SUBSCRIBER_MAX)
         self._subscribers.add(q)
         return q
 
-    def unsubscribe(self, q: asyncio.Queue[Event]) -> None:
+    def unsubscribe(self, q: asyncio.Queue) -> None:
         self._subscribers.discard(q)
 
     def publish(self, type: str, **data: Any) -> None:
@@ -407,12 +497,14 @@ class EventBus:
             try:
                 q.put_nowait(ev)
             except asyncio.QueueFull:
-                # Slow consumer: drop oldest to keep the stream live.
-                try:
-                    q.get_nowait()
-                    q.put_nowait(ev)
-                except (asyncio.QueueEmpty, asyncio.QueueFull):
-                    pass
+                # Slow consumer: drop the oldest to keep the stream live, and
+                # count it on this subscriber (#444). The hole the drop leaves
+                # in the subscription's numbers is what makes its next read a
+                # GapMarker; the count is the running total, for anyone asking
+                # how far behind this consumer has fallen.
+                q.drop_oldest()
+                q.dropped += 1
+                q.put_nowait(ev)
 
     # -- storm limiter ---------------------------------------------------------
 

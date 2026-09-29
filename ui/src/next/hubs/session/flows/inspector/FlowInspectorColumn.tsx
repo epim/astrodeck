@@ -185,19 +185,22 @@ function InspectorOverview({ lockedReason }: { lockedReason: string | null }): J
 
       <div className="nx-flowins-group" data-testid="flow-when-waiting">
         <Label size={10}>{WHEN_WAITING_TITLE}</Label>
-        {/* A closed list can be wider than a 284 px column; it scrolls, as a
-            stage's own select does, rather than clipping a choice. */}
-        <div className="nx-flowfield-scroll">
-          <Segmented<string>
-            label={WHEN_WAITING_ARIA}
-            options={WHEN_WAITING_OPTIONS}
-            value={waiting}
-            onChange={(v) => { setSetting("whenWaiting", v); }}
-            lockedReason={lockedReason}
-            onExplain={explainLock}
-            data-testid="flow-when-waiting-choice"
-          />
-        </div>
+        {/* NOT in a horizontal scroller, as a stage's own closed list is
+            (#469). The two options side by side are some 400 px of text in a
+            255 px column, so there "Wait for the mosaic" sat wholly out of
+            view: chosen, it showed only the option not chosen. Here the
+            group is a child of this flex column, which stretches it to the
+            column's width, and each option's words wrap inside its half, so
+            both choices and which one is on are always in sight. */}
+        <Segmented<string>
+          label={WHEN_WAITING_ARIA}
+          options={WHEN_WAITING_OPTIONS}
+          value={waiting}
+          onChange={(v) => { setSetting("whenWaiting", v); }}
+          lockedReason={lockedReason}
+          onExplain={explainLock}
+          data-testid="flow-when-waiting-choice"
+        />
         {!hasMosaic && <p className="nx-flowins-lead">{WHEN_WAITING_NO_MOSAIC}</p>}
       </div>
 

@@ -23,9 +23,11 @@ nothing is written. A file a newer build wrote refuses as ``NewerSchemaFlow``
 here too: ``_newer_schema_on_disk`` checks first but reads OSError as "not
 newer", so a check whose read failed must not be the only guard.
 
-THE INJECTION aims at ``_stored``'s own read. The save's quota scan reads
-the same file first and makes a failure a library row, so failing the first
-read of the file would test it, not this. (``_persist_flow`` read it first
+THE INJECTION aims at ``_stored``'s own read, by its caller's name. Until
+#433 (S7) the save's quota scan read the same file first and made a failure
+a library row, so failing the first read of the file would have tested it,
+not this; since #433 the quota counts file names and reads no record, and
+the injection still names the read it means. (``_persist_flow`` read it first
 too, through ``flow_store.get``, until #364 took the save's bookkeeping from
 ``_stored``'s record: ``test_persist_flow_bookkeeping.py``.)
 

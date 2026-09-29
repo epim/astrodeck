@@ -379,6 +379,87 @@ def test_control_a_remembered_answer_is_the_resolvers(remembered_names):
     assert "Jupiter" not in remembered_names
 
 
+# ================================================ #441 at the route (S7)
+
+async def test_the_441_digit_runs_answer_at_the_route(rig, remembered_names):
+    """#441's graphs where the operator meets them: a FILTER CYCLE whose
+    only slot, or whose second, has an exposure of 5000 digits, and a 3x2
+    of M31 skipping an entry of 5000 digits. Validation takes each as
+    drawn, so each is saved; before S7 the editor's draft compile, the saved
+    flow's compile and ``/run`` of it all raised ``ValueError`` (CPython's
+    integer string limit) out of ``compile_plan``, a 500 on every one. Now
+    the draft and the saved compile answer 200 with the answer's six keys,
+    and ``/run`` answers what the plan says: the cycle with no readable slot
+    is refused in words (422, "no filters selected"), and the other two
+    start (each run is ended at once) with the frames the readable part
+    owes: 45 of L alone, the unreadable R shooting nothing, and 540 on the
+    mosaic's six panels, the unreadable skip entry skipping nothing.
+
+    RED under the nodes.py mutant "guard removed" (``parse_cycle_plan``'s
+    ``int()`` unguarded), observed:
+
+        E       AssertionError: 6 failures: {'draft compile': 2, 'stored compile': 2, 'run raised': 2}; first of each: {'draft compile': 'graph 0: ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 5000 digits; use sys.set_int_max_str_digits() to increase the limit', ...}
+
+    RED under the compile.py mutant "guard removed" (``parse_skip``'s
+    ``int()`` pair unguarded), observed:
+
+        E       AssertionError: 3 failures: {'draft compile': 1, 'stored compile': 1, 'run raised': 1}; first of each: {'draft compile': 'graph 2: ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 5000 digits; use sys.set_int_max_str_digits() to increase the limit', ...}
+    """
+    from test_flows_compile_never_raises import (RUN_PAST_THE_LIMIT,
+                                                 SKIP_PAST_THE_LIMIT,
+                                                 _cycle_of, _m31_3x2)
+    # Each graph, and what ``/run`` answers for it: a refusal's sentence,
+    # or the frames of the run it starts.
+    cases = [(_cycle_of("L " + RUN_PAST_THE_LIMIT),
+              (422, "the FILTER CYCLE has no filters selected")),
+             (_cycle_of(f"L 60, R {RUN_PAST_THE_LIMIT}"), (200, 45)),
+             (_m31_3x2(skip=SKIP_PAST_THE_LIMIT), (200, 540))]
+    graphs = [FlowGraph.model_validate(raw) for raw, _ in cases]
+    assert all(not g.validation_errors() for g in graphs), (
+        "premise: a save stores each")
+    app = app_module.create_app()
+    failures = _Failures()
+    async with _client(app) as c:
+        for i, g in enumerate(graphs):
+            r, err = await _call(c, "POST", "/api/flows/compile",
+                                 {"graph": _raw(g), "name": "441"})
+            if err is not None or r.status_code != 200 or set(r.json()) != KEYS:
+                failures.add("draft compile", i,
+                             err or f"{r.status_code} {r.text[:120]}")
+            r, err = await _call(c, "POST", "/api/flows", {
+                "flow": {"name": f"441 {i}", "graph": _raw(g)}})
+            if err is not None or r.status_code != 200:
+                failures.add("save", i, err or f"{r.status_code}")
+                continue
+            fid = r.json()["id"]
+            try:
+                r, err = await _call(c, "POST", f"/api/flows/{fid}/compile")
+                if err is not None or r.status_code != 200:
+                    failures.add("stored compile", i,
+                                 err or f"{r.status_code} {r.text[:120]}")
+                run, err = await _call(c, "POST", f"/api/flows/{fid}/run", {})
+                if err is not None:
+                    failures.add("run raised", i, err)
+                    continue
+                if run.status_code == 200:
+                    rig.night.end("aborted")
+                    await rig.engine._task
+                    got = (200, run.json().get("frames"))
+                else:
+                    detail = run.json().get("detail")
+                    words = (detail.get("detail", "")
+                             if isinstance(detail, dict) else str(detail))
+                    want = cases[i][1][1]
+                    got = (run.status_code,
+                           want if isinstance(want, str) and want in words
+                           else words[:120])
+                if got != cases[i][1]:
+                    failures.add("run", i, f"{got} != {cases[i][1]}")
+            finally:
+                await _call(c, "DELETE", f"/api/flows/{fid}")
+    assert not failures, str(failures)
+
+
 # ========================================= #356: what the comment claims
 
 APP = Path(app_module.__file__)

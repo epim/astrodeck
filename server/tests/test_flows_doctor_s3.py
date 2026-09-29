@@ -1194,14 +1194,49 @@ class TestTheWordsAtTheEdges:
 
     def test_only_typed_coordinates_are_measured(self):
         """``to_plan`` lays a block out at its typed coordinates only when
-        both are typed (``identity.typed_coordinates``, truthiness): an RA
-        of 0 as a number is not, and the block is resolved by its name. The
-        doctor measures what the run would lay out, so it does not measure
-        that one. The control beside it types the same RA as text."""
+        both are typed (``identity.typed_coordinates``), and the doctor
+        measures what the run would lay out. An RA of the number 0 is typed:
+        it is 0h, laid out and measured exactly as the same RA typed as text.
+
+        DELIBERATE PIN CHANGE (S7 orchestrator ruling 6, #387's residual).
+        This case used to pin the opposite: "an RA of 0 as a number is not
+        [typed], and the block is resolved by its name", so the doctor did
+        not measure it, while the Target modal read the same 0 as 0h and
+        previewed a layout the run would never make. Ruling 6 makes a finite
+        number typed, 0 included, on both sides. The old pin, run against
+        the ruling-6 code, observed:
+
+            E       AssertionError: assert (not [Issue(text='\\u25b8 TARGET M31 - at Dec 80 meridian convergence alone uses 58.8% of the overlap, which leaves no room for camera angle error. Widen the overlap or use fewer columns.', level='danger')])
+
+        RED under the identity.py mutant "falsy non-text blank"
+        (``_typed`` back to ``bool(str(value).strip()) if value else
+        False``, the reading the old pin held), observed:
+
+            E       AssertionError: ('leaves no room for camera angle error', [])
+            E       assert 0 == 1
+            FAILED tests/test_flows_doctor_s3.py::TestTheWordsAtTheEdges::test_only_typed_coordinates_are_measured
+
+        The control below stays green under it, as it says.
+        """
         typed = check(_mosaic(rows=1, cols=4, overlap=10, ra="00h 00m 00s",
                               dec="+80 00 00", rotation=0))
-        assert _one(typed, M15).level == "danger"
-        untyped = check(_mosaic(rows=1, cols=4, overlap=10, ra=0,
+        as_text = _one(typed, M15)
+        assert as_text.level == "danger"
+        zero = check(_mosaic(rows=1, cols=4, overlap=10, ra=0,
+                             dec="+80 00 00", rotation=0))
+        assert _one(zero, M15) == as_text, (
+            "an RA of the number 0 is 0h, measured as the text '00h 00m 00s' is")
+
+    @pytest.mark.parametrize("ra", [None, False, float("nan"), float("inf")],
+                             ids=["null", "false", "nan", "inf"])
+    def test_control_a_blank_that_is_not_text_is_not_measured(self, ra):
+        """CONTROL for the pin change above: what ruling 6 reads as blank
+        (null, a bool, NaN, an infinity) places the block by its name, so
+        the doctor measures nothing, as it measured nothing before. Green on
+        the old reading and the new alike: the fixture tests
+        (``test_flows_typed_coordinates.py``) are where these values are
+        graded one by one."""
+        untyped = check(_mosaic(rows=1, cols=4, overlap=10, ra=ra,
                                 dec="+80 00 00", rotation=0))
         assert not _hits(untyped, M15) and not _hits(untyped, M6)
 

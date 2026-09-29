@@ -12,7 +12,9 @@
 //      apart by its dash and its chip: the same stroke as a resting event wire,
 //      a dash no other wire has, and the dash kept while the run is live.
 //   3. The chip reads "every pass: next panel", then " · N panels" once a
-//      compile has counted the block, and loses the count over an unsaved edit.
+//      compile has counted the block, and loses the count once an edit makes
+//      the graph on screen one that compile was not asked about
+//      (`compiledIsCurrent`, #356, S7).
 //   4. The classic phone FLOW tab draws the arc from its own column layout,
 //      inside its container and clear of every card it lays out (#360),
 //      on the real `computeAutoLayout` at 360, 375 and 414 px.
@@ -102,9 +104,15 @@ const EDGES: FlowEdgeRec[] = [
   E("e9", "n3", "unsafe", "n11", "do"),
 ];
 const nodeOf = (id: string) => NODES.find((n) => n.id === id)!;
+/** The graph every canvas case mounts, ONE object, so a compile answer can
+ *  say it was compiled from it (`FlowCompiled.from`), as the slice stamps
+ *  every answer with the graph its request sent. */
+const GRAPH = { nodes: NODES, edges: EDGES };
 
 /** compile_plan's entry for the block: three columns by two rows, 2-3 skipped. */
 const PLAN = { targets: [{ node_id: "n2", mosaic: { rows: 2, cols: 3, skip: [[2, 3]] } }] };
+/** That answer as the slice keeps it, compiled from the graph on screen. */
+const COMPILED = { plan: PLAN, structural: [], issues: [], unmapped: [], from: GRAPH };
 
 const container = win.document.getElementById("root");
 const root = createRoot(container);
@@ -113,7 +121,7 @@ function mount(flows: Record<string, unknown> = {}, props: Record<string, unknow
   act(() => root.render(null));
   act(() => {
     useStore.setState({
-      flows: { ...FLOWS_INIT, graph: { nodes: NODES, edges: EDGES }, ...flows },
+      flows: { ...FLOWS_INIT, graph: GRAPH, ...flows },
     } as any);
   });
   act(() => root.render(React.createElement(FlowWireLayer, props)));
@@ -186,11 +194,17 @@ test("CONTROL: every other wire is still the stock bezier", () => {
 // The chip's count, under "count ignores skip" (7/9: "expected every pass:
 // next panel · 5 panels, got ... · 6 panels" here and in the chip case) and
 // "count while dirty" (8/9: "an unsaved edit: expected every pass: next panel,
-// got every pass: next panel · 5 panels"), goes red in this file too.
+// got every pass: next panel · 5 panels"), goes red in this file too. Since
+// S7 the chip withholds its count by the answer's graph, not by `dirty`
+// (#356); the same mutant on the new flag, "count while stale" (loopChip
+// ignores `stale`), re-run in S7-UCANVAS-mut, 18/19:
+//   x the chip: no count before a compile, the compile's count after, none over an edit: an edit the compile was not asked about
+//     expected every pass: next panel
+//     got      every pass: next panel · 5 panels
 test("night mode: the arc differs from an event wire by its dash and its chip, not its stroke", () => {
   win.document.documentElement.classList.add("night");
   try {
-    mount({ compiled: { plan: PLAN, structural: [], issues: [], unmapped: [] }, dirty: false });
+    mount({ compiled: COMPILED, dirty: false });
     const arc = visible("loop");
     const event = visible("frame");
     eq(arc.getAttribute("stroke"), event.getAttribute("stroke"),
@@ -215,13 +229,17 @@ test("while the run is live the arc keeps its dash; a plain wire goes to 7 6", (
 
 // ================================================================= the chip
 
+// AN EDIT IS A NEW GRAPH OBJECT, as the slice's `touch` writes it, and the
+// answer then describes the graph before it. Whether it is saved is not the
+// question (#356, S7; loopChipCurrent.test.ts drives the real slice through
+// a save and the modal's DONE).
 test("the chip: no count before a compile, the compile's count after, none over an edit", () => {
   mount();
   eq(chipText(), "every pass: next panel", "before any compile");
-  setFlows({ compiled: { plan: PLAN, structural: [], issues: [], unmapped: [] } });
+  setFlows({ compiled: COMPILED });
   eq(chipText(), "every pass: next panel · 5 panels", "after the compile: 3x2 less 2-3");
-  setFlows({ dirty: true });
-  eq(chipText(), "every pass: next panel", "an unsaved edit");
+  setFlows({ graph: { nodes: NODES, edges: EDGES }, dirty: true });
+  eq(chipText(), "every pass: next panel", "an edit the compile was not asked about");
 });
 
 test("the chip sits on the run, centred", () => {

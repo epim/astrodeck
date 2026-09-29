@@ -36,6 +36,16 @@
 //      surfaces, an unsaved edit on the two #/next ones), and a locked press
 //      asks nothing and posts nothing. The phone sheet's live line under its
 //      title reads the same STATE and ETA as its tiles.
+//   6. THE ARMED LABEL (#474): the first tap on either #/next RUN reads
+//      "CONFIRM CONTINUE (night 3, 194/480 subs)", the copy's verb, night and
+//      counts, and "CONFIRM RUN" with nothing to continue.
+//   7. STOP IS ONE TAP on both #/next buttons: over a live run of this flow
+//      neither carries an arm, and one tap posts exactly one abort.
+//
+// SINCE #449 the seed also holds the slice's `sessionIds`, and the fake rig
+// answers the progress route with the recorded answer: the readouts ask the
+// known sessions whose run it is, and the live refresh re-reads progress
+// when a known run ends (S7, the fix S7-USLICE left for this file).
 //
 // Every mutant below was run in a private scratch copy of ui/
 // (scratchpad/S5-RUNUI-mut, #254), from a byte backup of the mutated file
@@ -43,7 +53,11 @@
 // quoted. The counts quoted as N/10 were observed before case 5 was added;
 // re-run against eleven cases (scratchpad/S5-RUNUI-verify-mut), every one of
 // those mutants fails the same cases with the same lines, (N+1)/11, and
-// case 5's own mutants are quoted above it.
+// case 5's own mutants are quoted above it. Case 6 and its mutants arrived in
+// S7 (scratchpad S7-URUN-mut), so every S5 count here is of eleven cases, not
+// twelve. Case 7 arrived with the S7 verification (scratchpad
+// S7-URUN-verify-mut), so case 6's counts, quoted as N/12, are of twelve
+// cases, not thirteen.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -102,6 +116,11 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   let data: any = { ok: true };
   if (/\/run$/.test(url) && method === "POST") {
     data = { started: true, flow_id: RECORD.id, frames: 120, unmapped: [] };
+  } else if (url === `/api/flows/${RECORD.id}/progress`) {
+    // The route's recorded answer, as the slice's live refresh re-reads it
+    // when a run of a known session ends (#449): an `{ok:true}` here would be
+    // a progress answer with no session, and RUN would drop to RUN mid-case.
+    data = JSON.parse(JSON.stringify(PROGRESS));
   } else if (url === "/api/flows/compile") {
     data = { plan: {}, structural: [], issues: [], unmapped: [] };
   }
@@ -230,6 +249,10 @@ function seed(sequence: any, flows: Record<string, unknown> = {}): void {
         sel: null, editNode: null, wire: null, tapWire: null,
         statuses: {}, logs: [], compiled: null, countsNote: null,
         progress: JSON.parse(JSON.stringify(PROGRESS)),
+        // As the slice holds it once that answer has landed: the answer's
+        // session noted in the same write (flowsSlice `fetchProgress`), which
+        // is whose run the readouts ask about since #449.
+        sessionIds: [PROGRESS.session.id],
         run: { ...s.flows.run, phase: "idle", etaS: null, curStage: "—", frames: 0, frameGoal: null },
         ui: { ...s.flows.ui, screen: "editor" },
         ...flows,
@@ -657,6 +680,108 @@ await test("START OVER is locked wherever RUN is, and a locked press asks nothin
   await mount("tablet");
   for (const s of Object.keys(START_OVER)) {
     assert(!locked(within(s, START_OVER[s])?.closest("button")), `${s}: START OVER locked with nothing to refuse`);
+  }
+});
+
+// ======================================================= 6. the armed label
+
+// THE ARMED LABEL KEEPS THE COPY (#474). Both #/next RUN buttons are two-tap
+// arms, and the first tap swaps the whole label for the arm's. It was a fixed
+// "CONFIRM RUN", so over a dormant session the night and the counts vanished
+// at the moment of commitment and RUN sat beside START OVER. Now one helper
+// (`runArm`) arms both with the copy's verb and parenthetical. The literal is
+// the recorded answer's line; the first tap posts nothing.
+//
+// MUTANT "fixed CONFIRM RUN" (S7, scratchpad S7-URUN-mut; FlowCanvasToolbar
+// .tsx `runArm` answering `{ label: "CONFIRM RUN" }` for every verb but STOP).
+// Observed, phoneReadouts.test 11/12:
+//   x the first tap on either #/next RUN arms it with CONTINUE's verb, night and counts: next-phone: the armed label
+//   expected "CONFIRM CONTINUE (night 3, 194/480 subs)"
+//   got      "CONFIRM RUN"
+// (canvasDom.test.tsx goes red under the same mutant, on the toolbar.)
+// MUTANT "the phone sheet keeps its own arm" (S7; FlowStagesPhoneSheet.tsx's
+// RUN back to `arm={running ? undefined : { label: "CONFIRM RUN" }}`, the
+// toolbar still on `runArm`). Observed, phoneReadouts.test 11/12:
+//   x the first tap on either #/next RUN arms it with CONTINUE's verb, night and counts: next-phone: the armed label
+//   expected "CONFIRM CONTINUE (night 3, 194/480 subs)"
+//   got      "CONFIRM RUN"
+await test("the first tap on either #/next RUN arms it with CONTINUE's verb, night and counts", async () => {
+  const ARMED = `CONFIRM CONTINUE (night ${NIGHT}, ${BANKED}/${TOTAL} subs)`;
+  eq(ARMED, "CONFIRM CONTINUE (night 3, 194/480 subs)", "premise: the recorded answer's armed line");
+  for (const [s, id] of [["next-phone", "flow-stages-run"], ["next-toolbar", "flow-run"]] as const) {
+    seed({ state: "idle" });
+    await mount("tablet");
+    const before = runPosts().length;
+    const button = within(s, id);
+    assert(button != null, `${s}: no RUN button`);
+    eq(button.getAttribute("data-armed"), "false", `${s}: RUN is a two-tap arm`);
+    click(button);
+    await settle();
+    const armed = within(s, id);
+    eq(armed.getAttribute("data-armed"), "true", `${s}: the first tap armed it`);
+    eq(text(armed.querySelector(".nx-btn-label")), ARMED, `${s}: the armed label`);
+    eq(runPosts().length, before, `${s}: the first tap posted a run`);
+  }
+  // CONTROL: with nothing to continue the arm still reads CONFIRM RUN.
+  for (const [s, id] of [["next-phone", "flow-stages-run"], ["next-toolbar", "flow-run"]] as const) {
+    seed({ state: "idle" }, { progress: { ...PROGRESS, session: null } });
+    await mount("tablet");
+    click(within(s, id));
+    await settle();
+    eq(text(within(s, id).querySelector(".nx-btn-label")), "CONFIRM RUN", `${s}: no session, CONFIRM RUN`);
+  }
+});
+
+// ============================================== 7. STOP is one tap, on both
+
+// STOP NEVER ARMS, ON EITHER #/next BUTTON. Both RUN buttons take their arm
+// from `runArm` since #474, and `runArm` gives STOP none: emergency motion
+// stops stay single-tap, the house rule for STOP / HALT / polar-STOP alike.
+// canvasDom.test.tsx holds that on the toolbar alone, and nothing held it on
+// the phone stage sheet, whose RUN S7 moved onto the helper. Over a live run
+// of this flow (the recorded `shooting` state, under the recorded session's
+// id) each button reads STOP, carries no arm, and one tap posts exactly one
+// abort. Added by the S7 verification of S7-URUN.
+//
+// Each mutant below was run in the private copy scratchpad
+// S7-URUN-verify-mut, from a byte backup restored and SHA-256 compared.
+// MUTANT "the phone sheet arms STOP" (FlowStagesPhoneSheet.tsx
+// `arm={runArm(copy)}` made `arm={runArm(copy) ?? { label: "CONFIRM STOP"
+// }}`). Observed, phoneReadouts.test 12/13:
+//   x STOP on either #/next button is one tap: no arm, one abort: next-phone: STOP is armed - an emergency motion stop must never need a second tap
+//   expected null
+//   got      "false"
+// MUTANT "STOP armed" (FlowCanvasToolbar.tsx `runArm`'s `if (copy.verb ===
+// "STOP") return undefined;` removed, so both buttons arm STOP). Observed,
+// phoneReadouts.test 12/13, the same failure on next-phone.
+// MUTANT "the toolbar arms STOP" (FlowCanvasToolbar.tsx's own
+// `arm={runArm(copy)}` made `arm={runArm(copy) ?? { label: "CONFIRM STOP"
+// }}`, the phone sheet untouched, so the loop's second leg is reached).
+// Observed, phoneReadouts.test 12/13:
+//   x STOP on either #/next button is one tap: no arm, one abort: next-toolbar: STOP is armed - an emergency motion stop must never need a second tap
+//   expected null
+//   got      "false"
+// MUTANT "the phone STOP posts nothing" (FlowStagesPhoneSheet.tsx RUN's
+// `onPress={act}` made `onPress={running ? () => {} : act}`). Observed,
+// phoneReadouts.test 12/13:
+//   x STOP on either #/next button is one tap: no arm, one abort: next-phone: one tap on STOP must post exactly one abort
+//   expected 1
+//   got      0
+await test("STOP on either #/next button is one tap: no arm, one abort", async () => {
+  const aborts = (): number =>
+    asked.filter((a) => a.method === "POST" && a.url === "/api/sequence/abort").length;
+  for (const [s, id] of [["next-phone", "flow-stages-run"], ["next-toolbar", "flow-run"]] as const) {
+    seed(SHOOTING);
+    await mount("tablet");
+    const stop = within(s, id);
+    assert(stop != null, `${s}: no RUN button`);
+    eq(text(stop), "STOP", `${s}: premise: a live run of this flow offers STOP`);
+    eq(stop.getAttribute("data-armed"), null,
+      `${s}: STOP is armed - an emergency motion stop must never need a second tap`);
+    const before = aborts();
+    click(stop);
+    await settle();
+    eq(aborts(), before + 1, `${s}: one tap on STOP must post exactly one abort`);
   }
 });
 

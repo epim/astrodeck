@@ -30,6 +30,7 @@ import math
 import re
 
 from ..devices.base import DomePolicy
+from .identity import finite_number
 from .models import FlowEdge, FlowGraph, FlowNode
 from .nodes import NODE_DEFS, parse_cycle_plan, port_kind, target_angle
 
@@ -184,13 +185,22 @@ def _text(v) -> str:
     cannot render, or a number, which the plan's ``filter: str`` refuses.
     Text is kept exactly as typed, untrimmed, because the PLAN tab shows
     the compile verbatim and the readers do their own trimming
-    (``identity.typed_coordinates``, ``to_plan``'s name). Anything else is
-    its ``str`` when it is truthy and blank when it is not (None, 0, an
-    empty list), which is how every reader of the entry already took a
-    falsy value: an RA of the number 0 was never typed, and still is not."""
+    (``identity.typed_coordinates``, ``to_plan``'s name).
+
+    A FINITE NUMBER IS ITS TEXT, 0 INCLUDED; ANYTHING ELSE IS BLANK (S7
+    orchestrator ruling 6, #387's residual). This is ``identity._typed``'s
+    reading, so the compiled entry is typed exactly when the node it came
+    from is: the doctor and the save's anchor read the node, the run reads
+    the entry. Until S7 a falsy value was blank and any other its ``str``,
+    so an RA of the number 0 compiled to "" and was placed by its name
+    although RA 0h is a real coordinate, and ``True``, a NaN or a list
+    compiled to typed text ("True", "nan", "[1, 2]") that did not parse,
+    which dropped a block the node's own reading placed by its name. A
+    filter, a method or a window of such a value is blank too, as one the
+    operator left empty is."""
     if isinstance(v, str):
         return v
-    return str(v) if v else ""
+    return str(v) if finite_number(v) else ""
 
 
 # ------------------------------------------------------------ the panel lane
@@ -546,7 +556,15 @@ def parse_skip(text, rows: int, cols: int) -> tuple[list[list[int]], list[str]]:
     no panel of this grid (not "r-c", a zero, a row past the last), so the
     compile can say so: a skip that silently skipped nothing would shoot a
     panel the operator took out, and one that guessed would take out a panel
-    they meant to keep. Commas and semicolons both separate entries."""
+    they meant to keep. Commas and semicolons both separate entries.
+
+    AN ENTRY ``int()`` REFUSES IS UNREAD (#441). Past CPython's integer
+    string limit (4300 digits, leading zeros counted) ``int()`` raises
+    ``ValueError``; unguarded, that reached ``compile_plan`` and Tonight from
+    a flow validation lets a save store. Such an entry names no panel, as a
+    row past the last names none. The pattern stays as wide as it is, since
+    "01-002" is panel 1-2 (``skip_cases.json``), and the modal's mirror
+    counts the digits the way ``int()`` does."""
     skip: set[tuple[int, int]] = set()
     unread: list[str] = []
     for chunk in re.split(r"[,;]", str(text or "")):
@@ -557,7 +575,11 @@ def parse_skip(text, rows: int, cols: int) -> tuple[list[list[int]], list[str]]:
         if m is None:
             unread.append(token)
             continue
-        r, c = int(m.group(1)), int(m.group(2))
+        try:
+            r, c = int(m.group(1)), int(m.group(2))
+        except ValueError:
+            unread.append(token)
+            continue
         if not (1 <= r <= rows and 1 <= c <= cols):
             unread.append(token)
             continue

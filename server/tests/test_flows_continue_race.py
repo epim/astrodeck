@@ -252,9 +252,29 @@ async def test_a_resume_arm_run_that_ends_in_the_gap_is_continued_whole(
         AssertionError: the session file lost 2 frame(s) the ResumeArm run banked
         assert ['87b0c98f489...f10fbf1d4efc'] == []
           Left contains 2 more items, first extra item: '87b0c98f489041bab81876b7b918cd2f'
+
+    DELIBERATE PIN CHANGE (S7 integration, #430, S7 orchestrator ruling 7):
+    the last line used to pin ``night == 3``, the run count after night one,
+    the ResumeArm run and CONTINUE, all on the real clock seconds apart.
+    CONTINUE's ``night`` is the observing night since S7, and unpinned the
+    case went red with ``assert 1 == 3``. Night one now starts on the evening
+    of night 1 and the race on the evening of night 2 (``Rig.on_night``):
+    the ResumeArm run and the CONTINUE that races it fall in one gap of one
+    evening, so CONTINUE is the night that run already opened, night 2, and
+    never a third night after two.
+
+    RED under mutant "tonight always adds one" (``Session.night_at``
+    answering ``len(nights) + 1``, a run count by another name), observed in
+    the integration's private copy:
+
+        AssertionError: CONTINUE on the evening a ResumeArm run already
+        started is not another night
+        assert 3 == 2
     """
     fid = await rig.save_flow(LR)
+    rig.on_night(1)
     one = await rig.night_one(fid, [0])
+    rig.on_night(2)
     barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT_S)
     read = asyncio.Event()
     _gate_the_first_read(monkeypatch, barrier, read)
@@ -284,7 +304,10 @@ async def test_a_resume_arm_run_that_ends_in_the_gap_is_continued_whole(
                                                      (True, one.id)], race
     assert race[1].frame_ids == everything, (
         "CONTINUE started from a ledger without the ResumeArm run's frames")
-    assert r.json()["session"]["night"] == 3
+    assert len(session_store.load(one.id).nights) == 3, "premise: three runs"
+    assert r.json()["session"]["night"] == 2, (
+        "CONTINUE on the evening a ResumeArm run already started is not "
+        "another night")
 
 
 async def test_control_continue_starts_first_and_resume_arm_is_refused(

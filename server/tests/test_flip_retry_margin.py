@@ -297,7 +297,11 @@ async def test_a_retry_due_inside_the_band_holds_before_its_goto(
     `MERIDIAN_SIDE_MARGIN_S` past the crossing and not the crossing. The
     wait itself is `_wait_for_flip_point`'s, which reads the same margin
     (the night above holds it for real). Control: an attempt that is not a
-    retry, the same 5 s past, is taken at once with no hold, as before.
+    retry, the same 5 s past, is taken at once with no hold, as before. It
+    carries the plan's 10 min lead, the mount having taught nothing, which
+    is why: since #455 (S7-ENG-FLIP) a first attempt at ZERO lead holds for
+    the band as the retry does (test_s7_flip_zero_lead_band.py), and #455
+    cited this control as the evidence it did not.
 
     MUTANT "the gate reads the crossing" (the window in
     `_maybe_meridian_flip` computed without the margin, `_wait_for_flip_point`

@@ -14,12 +14,14 @@ The cases were chosen by hand to pin each rule (range, dedup, grid order,
 separators, the Python-wide whitespace and digit sets); the expected values
 are what the rules say, and this file is what proves the server says it.
 
-ONE THING THE FIXTURE CANNOT HOLD: an entry of more than 4300 digits makes
-``int()`` raise (CPython's integer string limit), so ``parse_skip`` raises
-instead of answering, and there is no answer to write down. Recorded on #328
-as a third instance of "compile_plan raises on a graph the routes accept";
-the mirror reads such an entry as unread, and the case belongs in the table
-once the server answers it.
+THE DIGIT RUNS (#441). An entry of more than 4300 digits makes ``int()``
+raise (CPython's integer string limit, leading zeros counted), and until S7
+``parse_skip`` raised with it instead of answering, so the table could not
+hold the case. It answers now: such an entry is unread, as the mirror
+already read it, so the table holds #441's 5000-digit entry, 5000 zeros and
+a 1 (row 1 to arithmetic, a refusal to ``int()``), and a run of exactly 4300
+digits as the control that is read. ``test_s7_compile_digit_runs.py`` holds
+the guard itself.
 
 Each mutant below was run in a private scratch copy of ``server/``, never in
 the shared tree (#254), and the failure it produced is quoted verbatim.
@@ -27,6 +29,7 @@ the shared tree (#254), and the failure it produced is quoted verbatim.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,6 +38,12 @@ from astrodeck.flows.compile import parse_skip
 
 FIXTURE = Path(__file__).parent / "fixtures" / "skip_cases.json"
 CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"]
+
+#: The #441 cases by id: two runs ``int()`` refuses, and the control at the
+#: limit that it reads.
+DIGITS_PAST = "a 5000-digit column int() refuses names no panel (#441)"
+ZEROS_PAST = "5000 zeros and a 1: int() counts the zeros"
+DIGITS_AT = "exactly 4300 digits is read (the limit, a control)"
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
@@ -70,11 +79,29 @@ def test_parse_skip_reads_every_worked_case(case):
         E       AssertionError: fullwidth digit three: '\\uff13-1' on 3x3
         E       assert ([], ['\\uff13-1']) == ([[3, 1]], [])
         5 failed, 30 passed
+
+    MUTANT "guard removed" (compile.py: ``parse_skip``'s ``int()`` pair
+    unguarded again, as #441 found it; S7-COMPILE). Observed on the two
+    digit-run cases past the limit, and on nothing else:
+
+        E           ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 5000 digits; use sys.set_int_max_str_digits() to increase the limit
+        E           ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 5001 digits; use sys.set_int_max_str_digits() to increase the limit
+        FAILED tests/test_flows_skip_fixture.py::test_parse_skip_reads_every_worked_case[a 5000-digit column int() refuses names no panel (#441)]
+        FAILED tests/test_flows_skip_fixture.py::test_parse_skip_reads_every_worked_case[5000 zeros and a 1: int() counts the zeros]
+        2 failed, 36 passed
     """
     got = parse_skip(case["text"], case["rows"], case["cols"])
     want = (case["skip"], case["unread"])
-    assert got == want, (f"{case['id']}: {case['text']!r} on "
+    assert got == want, (f"{case['id']}: {_shown(case['text'])} on "
                          f"{case['rows']}x{case['cols']}")
+
+
+def _shown(text: str) -> str:
+    """A case's text for a failure message: whole, unless it is one of the
+    digit runs, which would bury the message under 5000 digits."""
+    if len(text) <= 80:
+        return repr(text)
+    return f"{text[:24]!r}... ({len(text)} characters)"
 
 
 def test_the_fixture_holds_the_cases_the_mirror_is_most_likely_to_get_wrong():
@@ -92,7 +119,8 @@ def test_the_fixture_holds_the_cases_the_mirror_is_most_likely_to_get_wrong():
     must = ["row zero names no panel", "fullwidth digit three",
             "Python keeps a BOM, JS trim strips it",
             "Python strips the file separator, JS trim does not",
-            "grid order, not typed order", "a panel named twice is skipped once"]
+            "grid order, not typed order", "a panel named twice is skipped once",
+            DIGITS_PAST, ZEROS_PAST, DIGITS_AT]
     missing = [m for m in must if m not in ids]
     assert not missing, f"skip_cases.json no longer asks: {missing}"
     # The characters those cases are about, built from code points so this
@@ -101,6 +129,14 @@ def test_the_fixture_holds_the_cases_the_mirror_is_most_likely_to_get_wrong():
     assert chr(0xFF13) in texts["fullwidth digit three"]
     assert texts["Python keeps a BOM, JS trim strips it"].startswith(chr(0xFEFF))
     assert chr(0x1C) in texts["Python strips the file separator, JS trim does not"]
+    # And the runs #441 is about straddle CPython's limit, leading zeros
+    # counted, so a fixture whose runs were shortened asks nothing.
+    runs = {cid: [len(side) for side in texts[cid].split("-")]
+            for cid in (DIGITS_PAST, ZEROS_PAST, DIGITS_AT)}
+    limit = sys.get_int_max_str_digits()
+    assert max(runs[DIGITS_PAST]) > limit and max(runs[ZEROS_PAST]) > limit, (
+        f"the #441 runs no longer pass the {limit}-digit limit: {runs}")
+    assert max(runs[DIGITS_AT]) == limit, runs
 
 
 def test_every_expected_skip_is_a_panel_of_its_grid_in_grid_order():

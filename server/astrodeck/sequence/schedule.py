@@ -48,6 +48,17 @@ _REFINE_PASSES = 16
 
 # Coarse step for the target peak-altitude scan across a window.
 _PEAK_STEP_S = 600.0
+# How close the altitude gate's rise estimate comes to the rise (#434).
+# `_time_to_gate` bisects the ``_PEAK_STEP_S`` step the crossing falls in until
+# its bracket is this narrow, and answers the bracket's upper end: at most this
+# long after the rise, and never before it. 5 s is the scheduler's own tick
+# (``engine.SCHEDULE_WAIT_STEP_S``, the cadence a wait re-reads the gating at
+# when it knows nothing better), so a wake at the estimate is no later than
+# asking again every tick would have found the gate open. Seven halvings of
+# 600 s reach it (4.7 s). The issue floated 10 s: six halvings, 9.4 s, and on
+# its own night the panel was then first visited 1805.6 s in, more than one
+# tick past the 1800 s it rose at (tests/test_s7_time_to_gate_refined.py).
+_GATE_RISE_TOL_S = 5.0
 
 
 def _lat_lon(site: dict[str, Any]) -> tuple[float, float]:
@@ -780,14 +791,51 @@ def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
 
 def _time_to_gate(target: "Target", lat: float, lon: float, gate: float,
                   now: float, stop_ts: float | None) -> float | None:
-    """Best-effort seconds until the target first reaches ``gate`` after ``now``
-    (within the window / one sidereal day). ``None`` if it never does."""
+    """Seconds until the target first reaches ``gate`` after ``now`` (within
+    the window / one sidereal day): 0 when it is there already, ``None`` if
+    it never does.
+
+    THE RISE, NOT THE NEXT STEP (#434). The scan steps in ``_PEAK_STEP_S``
+    (600 s) and used to answer the first step at or above the gate: the rise
+    rounded up to the next 600 s from the moment of asking. The scheduler
+    sleeps on this answer in one wait that does not ask the gating again
+    before its deadline, so the overshoot was slept in full: a mosaic panel
+    that cleared its gate 1800 s into the night, asked at 390 s, was waited
+    for until 2190 s, and the published ``eta_s`` read 390 s long. The step
+    the crossing falls in is now bisected to ``_GATE_RISE_TOL_S``; the
+    altitude is smooth across one step, so seven more evaluations buy it.
+    The answer is the bracket's upper end, the first instant seen at or above
+    the gate, so a wake there finds the gate open, never a few seconds short
+    of it with a second wait to make.
+
+    ``now`` IS ASKED FIRST. The bisection needs its low end below the gate,
+    and the first step's low end is ``now``; a target already at its gate
+    has no wait. `gating_status` asks only for a target below its gate, and
+    `ResumeArm._floor_eta_note` only after reading one below its floor.
+
+    The span scanned is as it was, whole steps from ``now``, so a crossing
+    no step reaches still answers ``None``."""
+    def alt(t: float) -> float:
+        return target_altitude(target.ra_hours, target.dec_deg, lat, lon, t)
+
+    if alt(now) >= gate:
+        return 0.0
     horizon = stop_ts if stop_ts is not None else now + _SIDEREAL_DAY_S
     steps = max(1, int((horizon - now) / _PEAK_STEP_S))
+    below = now
     for i in range(1, steps + 1):
         t = now + i * _PEAK_STEP_S
-        if target_altitude(target.ra_hours, target.dec_deg, lat, lon, t) >= gate:
+        if alt(t) >= gate:
+            # [below, t] brackets the crossing: below the gate at its low
+            # end, at or above it at its high end. Halve it, keeping both.
+            while t - below > _GATE_RISE_TOL_S:
+                mid = (below + t) / 2.0
+                if alt(mid) >= gate:
+                    t = mid
+                else:
+                    below = mid
             return t - now
+        below = t
     return None
 
 

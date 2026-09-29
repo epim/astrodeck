@@ -92,7 +92,7 @@
       "name": "s5-frame-running-phone",
       "shot": "s5-frame-running-phone",
       "_known": [
-        "Red until #465 is fixed, outside S56-PROBE's files (FramingSky.tsx, framing.css, SkyCanvas.tsx): text 'U+26A0 Survey unreachable - schematic framing; retrying automatic' ([data-testid=\"framing-sky\"] div.text-warn) is clipped 11px by 'tfs-sky' (1 of 1 with text). Every other check on this walk passes: the view-only line, no DONE, the disabled fieldset, '1-1: shooting now' equal to the engine's panel, the sky's size, 34 buttons reachable."
+        "Fixed in S7 (#465, S7-USKY: the degraded line sits under the sky's square, which is sized from its container), and this walk passed in S7-USKY's and S7-PROBE's runs. Until then it was red, outside S56-PROBE's files (FramingSky.tsx, framing.css, SkyCanvas.tsx): text 'U+26A0 Survey unreachable - schematic framing; retrying automatic' ([data-testid=\"framing-sky\"] div.text-warn) was clipped 11px by 'tfs-sky' (1 of 1 with text), while every other check on this walk passed: the view-only line, no DONE, the disabled fieldset, '1-1: shooting now' equal to the engine's panel, the sky's size, 34 buttons reachable."
       ],
       "widths": [390],
       "url": "#/session/flows",
@@ -409,7 +409,7 @@
       "name": "s6-sky-wizard-desktop",
       "shot": "s6-sky-wizard-desktop",
       "_known": [
-        "Red until #467 is fixed, outside S56-PROBE's files (next/hubs/session/now/RunControls.tsx): 1 console error(s): Blocked call to navigator.vibrate because user hasn't tapped on the frame or any embedded frame yet. It is logged at page load, before any click, once the desktop walk has aborted its run; the walk's own checks all pass."
+        "Fixed in S7 (#467, S7-ULIVE: the run controls buzz on entering an aborted or failed run, not on every mount), and this walk passed in S7-PROBE's run. Until then it was red, outside S56-PROBE's files (next/hubs/session/now/RunControls.tsx): 1 console error(s): Blocked call to navigator.vibrate because user hasn't tapped on the frame or any embedded frame yet. It was logged at page load, before any click, once the desktop walk had aborted its run, while the walk's own checks all passed."
       ],
       "widths": [1440],
       "url": "#/sky",

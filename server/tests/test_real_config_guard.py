@@ -290,6 +290,20 @@ def test_nothing_loaded_is_left_on_the_real_config_directory(monkeypatch):
         E         Left contains 15 more items, first extra item:
         'astrodeck.auth.users.user_store._path -> users.json'
 
+    Since #436 (S7) ``user_store`` holds no ``_path`` of its own: it reads
+    ``config.CONFIG_DIR`` at each call, so the scan cannot list it. The same
+    mutant in the S7 integration's private copy (the session scratchpad's
+    ``S7-INTEG-r2-mut``, from a byte backup, sha256 checked after), run
+    alone, observed:
+
+        E       AssertionError: ['astrodeck.catalog.ephemeris.COMET_FILE ->
+        ephemeris\\\\comets.json', 'astrodeck.catalog.ephemeris.ELEMENTS_DIR ->
+        ephe...', 'astrodeck.config.EGAIN_CONFIG_FILE -> egain.json',
+        'astrodeck.config.FILTER_CONFIG_FILE -> filter_names.json', ...]
+        E       assert ['astrodeck.c...es.json', ...] == []
+        E         Left contains 14 more items, first extra item:
+        'astrodeck.catalog.ephemeris.COMET_FILE -> ephemeris\\\\comets.json'
+
     RED under mutant "the scan looks at globals only" (the object loop in
     ``_built_on_the_real_config`` given nothing to walk), not here but at
     the session fixture, whose known positives errored all six cases of

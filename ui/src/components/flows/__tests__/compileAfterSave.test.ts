@@ -32,7 +32,10 @@
 //     login screen; the newest compile still brings the checking flag down
 //     when its answer is dropped;
 //   - the controls: a failed save, a save with nothing to send, and a save
-//     answered after another flow opened each compile nothing.
+//     answered after another flow opened each compile nothing;
+//   - and, since an open saves a dirty flow first (#450), that it does not
+//     send again a SAVE already carrying the graph on screen, and does save
+//     an edit made after that SAVE went out before it reads the other flow.
 //
 // The fake server compile below answers FOR THE GRAPH IT WAS SENT (each
 // TARGET's grid and skip), so a stale answer and a fresh one differ in the
@@ -187,10 +190,12 @@ function slice() {
 }
 
 /** The loop wire's chip as both canvases draw it: the real `loopChip`, fed
- *  what FlowWireLayer.tsx and FlowWires.tsx feed it. */
+ *  what FlowWireLayer.tsx and FlowWires.tsx feed it, which since S7 (#356) is
+ *  `!compiledIsCurrent(f)` for its withheld count. The S7 integration moved
+ *  this helper off `f.dirty`, which the layers no longer read. */
 function chip(f: FlowsState): string | null {
   const edge = f.graph.edges.find((e) => e.id === "loop")!;
-  return loopChip(f.graph, edge, f.compiled?.plan ?? null, f.dirty);
+  return loopChip(f.graph, edge, f.compiled?.plan ?? null, !compiledIsCurrent(f));
 }
 const panels = (n: number) => `${LOOP_CHIP_WORDS} · ${n} panels`;
 
@@ -204,6 +209,14 @@ async function savedWithoutItsCompile(s: ReturnType<typeof slice>): Promise<void
     flush().then(flush).then(() => false),
   ]);
   if (!saved) throw new Error("the save is still waiting for its compile, which is held open");
+}
+
+/** `p`, or a failure saying what was left waiting: an open that waited on a
+ *  PUT these cases hold would otherwise end the file on node's "unsettled
+ *  top-level await", with no tally and no sentence saying why. */
+async function settledOrHeld(p: Promise<unknown>, what: string): Promise<void> {
+  const done = await Promise.race([p.then(() => true), flush().then(flush).then(flush).then(() => false)]);
+  if (!done) throw new Error(`${what} is still waiting (on a PUT this case holds)`);
 }
 
 /** A flow opened (its compile answered), then its skip list edited. */
@@ -251,6 +264,15 @@ await test("a successful save starts one compile, of the graph it saved, and kee
 //   x the loop chip's skip-list-then-save case shows the fresh live-panel count: the chip still counts the panels of the graph as it was opened
 //   expected "every pass: next panel · 5 panels"
 //   got      "every pass: next panel · 6 panels"
+// That was with `chip()` fed `f.dirty`, as the layers were before S7. Fed
+// `!compiledIsCurrent(f)`, as they are now, the old answer describes a graph
+// no longer on screen and the chip withholds its count rather than showing a
+// wrong one. The same mutant in the S7 integration's private copy (the
+// session scratchpad's S7-INTEG-r2-mut, from a byte backup, sha256 checked
+// after), 5/16:
+//   x the loop chip's skip-list-then-save case shows the fresh live-panel count: the chip does not count the live panels of the graph SAVE stored
+//   expected "every pass: next panel · 5 panels"
+//   got      "every pass: next panel"
 await test("the loop chip's skip-list-then-save case shows the fresh live-panel count", async () => {
   const s = slice();
   await s.a.flowsOpen("f1");
@@ -259,7 +281,7 @@ await test("the loop chip's skip-list-then-save case shows the fresh live-panel 
   eq(chip(s.flows), LOOP_CHIP_WORDS, "precondition: no count while the skip edit is unsaved");
   await s.a.flowsSave();
   await flush();
-  eq(chip(s.flows), panels(5), "the chip still counts the panels of the graph as it was opened");
+  eq(chip(s.flows), panels(5), "the chip does not count the live panels of the graph SAVE stored");
 });
 
 // A save that switched the counts writes the server's switch into the graph
@@ -368,6 +390,12 @@ await test("control: a save with nothing to send, or of a read-only flow, compil
 // own graph; a compile here would be a second, of the same graph, for
 // nothing.
 //
+// SINCE #450 AN OPEN SAVES A DIRTY OPEN RECORD FIRST, but not one whose SAVE
+// is already out carrying exactly the graph on screen: that PUT is neither
+// sent twice nor waited on, so f2 opens while f1's PUT is in flight and that
+// PUT is the stale completion, as before #450. The case after this one is
+// the other half: an edit made after the PUT went out is saved again.
+//
 // MUTANT "compile before the stale check" (flowsSave: the compile started
 // right after the PUT answers, above the `cur.id !== record.id` return).
 // Observed (compileAfterSave.test: 12/14 passed; the counts-switch case
@@ -375,19 +403,85 @@ await test("control: a save with nothing to send, or of a read-only flow, compil
 //   x control: a save answered after another flow opened compiles nothing for it: the stale save compiled the other flow's graph a second time
 //   expected 1
 //   got      2
+// Re-run on the #450 tree in scratchpad S7-USLICE-mut, the same two cases
+// red with the same lines (compileAfterSave.test: 14/16 passed).
+//
+// MUTANT "an in-flight save is never trusted" (flowsSlice.ts flowsOpen:
+// `carried` answered false, so the open sends f1's graph a second time and
+// waits for a PUT this case holds). Observed (compileAfterSave.test: 15/16
+// passed):
+//   x control: a save answered after another flow opened compiles nothing for it: opening f2 while f1's SAVE carries its graph is still waiting (on a PUT this case holds)
+// Four files this change did not own hold the same race and hung under this
+// mutant with no tally at all: countsNotice.test.ts, flowsSaveAnswer.test.ts,
+// flowsSaveRace.test.ts and flowsReanchorToast.test.ts, each at its "... after
+// another flow opened" control, which is how the rule was found.
 await test("control: a save answered after another flow opened compiles nothing for it", async () => {
   const s = await openedAndSkipped();
   holdPuts = true;
   const saving = s.a.flowsSave();
   eq(puts.length, 1, "precondition: the PUT is in flight");
   compiles = [];
-  await s.a.flowsOpen("f2");
+  await settledOrHeld(s.a.flowsOpen("f2"), "opening f2 while f1's SAVE carries its graph");
+  eq(puts.length, 1, "the open sent f1's graph again although its SAVE was carrying it");
   eq(compiles.length, 1, "precondition: opening f2 compiled f2");
   puts[0].answer();
   await saving;
   await flush();
   eq(s.flows.record?.id, "f2", "precondition: f2 is the flow open");
   eq(compiles.length, 1, "the stale save compiled the other flow's graph a second time");
+});
+
+// THE OTHER HALF (#450): an edit made after the SAVE went out is on no PUT.
+// The open saves it, waits for that PUT, and only then reads the other flow.
+//
+// MUTANT "an in-flight save covers any graph" (flowsSlice.ts flowsOpen:
+// `carried` stops comparing the graph, `saving.graph === get().flows.graph`
+// dropped). Observed (compileAfterSave.test: 15/16 passed):
+//   x an edit made after the SAVE went out is saved again before another flow opens: the open did not save the edit made after the SAVE went out
+//   expected 2
+//   got      1
+// MUTANT "replace without saving" (flowsSlice.ts flowsOpen: the save-first
+// block deleted, #450's own mutant) is red here with the same line and the
+// next case's (compileAfterSave.test: 14/16 passed), and in
+// hubSwitchSavesFlow.test.tsx and sendToWizardSheet.test.tsx.
+await test("an edit made after the SAVE went out is saved again before another flow opens", async () => {
+  const s = await openedAndSkipped();
+  holdPuts = true;
+  const saving = s.a.flowsSave();
+  eq(puts.length, 1, "precondition: the PUT is in flight");
+  s.a.flowsSetParam("t", "skip", "2-3, 1-1");        // on no PUT yet
+  const opening = s.a.flowsOpen("f2");
+  eq(puts.length, 2, "the open did not save the edit made after the SAVE went out");
+  eq(puts[1].flow.graph.nodes.find((n: any) => n.id === "t")?.params.skip, "2-3, 1-1",
+    "the open's PUT does not carry the later edit");
+  eq(s.flows.record?.id, "f1", "f2 was read before the later edit's PUT answered");
+  puts[1].answer();
+  await settledOrHeld(opening, "the open, once the later edit's PUT answered");
+  eq(s.flows.record?.id, "f2", "f2 did not open once the later edit was saved");
+  puts[0].answer();
+  await saving;
+});
+
+// A SAVE THAT FAILED CARRIES NOTHING (#450). Its PUT settled, so no open may
+// take it for one still carrying the edit: the open saves again, and when
+// that fails too it refuses, f1 still open with its edit.
+//
+// MUTANT "a settled save still counts as carrying" (flowsSlice.ts flowsSave:
+// the `finally` that clears `saving` deleted). Observed (compileAfterSave
+// .test: 15/16 passed):
+//   x a SAVE that failed carries nothing: the next open saves again and refuses: the open did not save the edit a refused SAVE had carried
+//   expected 2
+//   got      1
+await test("a SAVE that failed carries nothing: the next open saves again and refuses", async () => {
+  const s = await openedAndSkipped();
+  failPuts = true;
+  await s.a.flowsSave();
+  eq(s.flows.dirty, true, "precondition: the refused save left the edit unsaved");
+  eq(puts.length, 1, "precondition: the save sent its PUT");
+  await settledOrHeld(s.a.flowsOpen("f2"), "opening f2 over the refused save");
+  eq(puts.length, 2, "the open did not save the edit a refused SAVE had carried");
+  eq(s.flows.record?.id, "f1", "the open replaced f1 over an edit no save kept");
+  eq(s.flows.graph.nodes.find((n) => n.id === "t")?.params.skip, "2-3", "f1's edit after the refused open");
 });
 
 // ================================= 3. THE ANSWER SAYS WHICH GRAPH IT IS FOR

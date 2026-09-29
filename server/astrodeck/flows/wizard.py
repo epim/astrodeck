@@ -73,6 +73,10 @@ from dataclasses import dataclass
 
 from ..catalog.coords import (format_dec_fits, format_ra_fits, parse_dec,
                               parse_ra)
+# The MODULE, not the name: the unguided cap reads the doctor's rule 2 line
+# as ``doctor.UNGUIDED_SUB_LINE_S`` at call time, the one copy of the number
+# (#432). flows/__init__ imports the doctor first, so this costs nothing.
+from . import doctor
 from .compile import NEXT_PORT, PASS_PORT, grid_size, lane_tail, parse_skip
 from .models import MY_FLOWS_FOLDER, FlowEdge, FlowGraph, FlowNode, FlowRecord
 from .nodes import NODE_DEFS, TARGET_ANGLES, create_params, parse_cycle_plan
@@ -133,8 +137,9 @@ _EAA_CAPTURE = {"exposure": 4, "gain": 300, "bin": "2", "count": 60, "goal": 0}
 #: why ``generate()`` takes it as an argument and the wizard sheet offers it as a
 #: field. 30 s is chosen to be short enough to be defensible at most focal
 #: lengths rather than to be right at any particular one; the doctor's 120 s line
-#: ("stars will trail at any real focal length") is the ceiling it stays well
-#: under.
+#: ("stars will trail at any real focal length", ``doctor.UNGUIDED_SUB_LINE_S``)
+#: is the ceiling it stays well under, and the ceiling an answer is refused at
+#: (``_unguided_seconds``, #432).
 #:
 #: Deliberately NOT presented to the operator as a recommendation. Sub length is
 #: a question with more confident answers in circulation than good ones, and a
@@ -607,13 +612,31 @@ def _unguided_seconds(unguided_exposure_s) -> int | float:
 
     A garbled or non-positive override falls back to the default rather than
     being honoured: an exposure of 0 compiles to a step that captures
-    nothing, and the wizard's whole promise is that its output runs."""
+    nothing, and the wizard's whole promise is that its output runs. NaN is
+    garbled too: the check asks "above 0" rather than "0 or less", which a
+    NaN fails, so it takes the default here instead of reaching the node or
+    the line's comparison below.
+
+    AN ANSWER AT OR PAST THE DOCTOR'S LINE IS REFUSED (#432), naming it, for
+    every lane: ``doctor.UNGUIDED_SUB_LINE_S`` is where rule 2 warns that
+    stars will trail, so a sub written there is the warning on the
+    operator's first flow, and one quietly shortened would be a night they
+    did not ask for. Every lane, because the route's door refuses the same
+    answer before it knows the lane (``FlowWizardBody``), and a generator
+    that took what its door refuses would be a second rule. The comparison
+    is strictly below: the line is where the warning begins."""
     try:
         secs = float(unguided_exposure_s)
     except (TypeError, ValueError):
         secs = float(UNGUIDED_EXPOSURE_DEFAULT)
-    if secs <= 0:
+    if not secs > 0:
         secs = float(UNGUIDED_EXPOSURE_DEFAULT)
+    line = doctor.UNGUIDED_SUB_LINE_S
+    if not secs < line:
+        raise ValueError(f"unguided_exposure_s is the longest sub a lane with "
+                         f"no guider is held to, and {secs:g} s is at or past "
+                         f"the {line:g} s the doctor warns from (rule 2: "
+                         f"stars trail): answer less than {line:g} s")
     if secs.is_integer():
         secs = int(secs)
     return secs
@@ -761,9 +784,12 @@ def _within_the_unguided_cap(rows: list[tuple[str, int]],
     it is shortened; a filter row's length is the operator's answer, so a
     row past the cap is refused, naming the two ways out, rather than
     silently shortened or left to trail: a row of 180 s with no GUIDE is
-    the doctor's rule 2 on the operator's first flow. The cap itself may be
-    answered up to 3600 s, past that rule's 120 s line, for the CAPTURE LOOP
-    and these rows alike (#432)."""
+    the doctor's rule 2 on the operator's first flow. The cap is read
+    through ``_unguided_seconds``, which refuses one at or past that rule's
+    line (``doctor.UNGUIDED_SUB_LINE_S``, #432), so the longest row taken
+    here is under the line and a row the cap holds is one the doctor is
+    silent on. Until S7 the cap could be answered up to 3600 s, and a cap of
+    150 let a 150 s row through to the warning."""
     cap = _unguided_seconds(unguided_exposure_s)
     over = [f"{f} {s}" for f, s in rows if s > cap]
     if over:
@@ -798,7 +824,9 @@ def generate(kind: str = KIND_DEEP_SKY,
     guiding was NOT asked for; ``None`` takes
     :data:`UNGUIDED_EXPOSURE_DEFAULT`. It is an argument rather than a constant
     because the right value is a property of the rig and the operator's
-    tolerance, neither of which this function can see.
+    tolerance, neither of which this function can see. One at or past the
+    doctor's rule 2 line (``doctor.UNGUIDED_SUB_LINE_S``, 120 s) is refused
+    with a ValueError naming it, whatever the lane (#432).
 
     Shape (§9): the flow lane is dusk → [dome] → [dusk flats] → target|pool →
     autofocus → [guide] → capture → report, laid out left to right in the
@@ -1083,7 +1111,8 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
     the call a route makes when it will show the notes. Raises ValueError for
     an answer it cannot honour (an unknown kind or chip, a grid or angle with
     another kind, a mosaic grid out of bounds, a mosaic with no angle, "Rotate
-    to PA" on a rig with no rotator), which a route answers 422.
+    to PA" on a rig with no rotator, an unguided sub length at or past the
+    doctor's rule 2 line, #432), which a route answers 422.
 
     THE DOOR'S ANSWERS (S6, #196), each None when not given, and inert then:
 

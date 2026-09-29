@@ -26,8 +26,9 @@ a flow that RAN (``touch_run``: ``last_run`` 1234.0, ``last_result`` "ok"),
 because a flow that never ran looks the same reset or not.
 
 Every named mutation was run in a private copy of ``server/`` under the
-session scratchpad (``S5-ROUTES-mut``), from byte copies, never in the
-shared tree (#254); the failure each produced is quoted where it went red.
+session scratchpad (``S5-ROUTES-mut``; the cases S7 changed for #433 in
+``S7-STORE-mut``), from byte copies, never in the shared tree (#254); the
+failure each produced is quoted where it went red.
 """
 from __future__ import annotations
 
@@ -123,51 +124,65 @@ class TestTheListingReadDecidesNothing:
         works: the save succeeds, and the answer and the file keep the
         flow's ``created_ts``, ``last_run`` and ``last_result``.
 
+        THE PREMISE IS SHOWN ON A LIST (S7, #433). A save walked the
+        library for its quota until #433, so the PUT itself proved the
+        injection reached the listing's read. Since #433 a save lists file
+        names and reads no other flow, so the injection would never fire
+        in the PUT and the case could pass whatever the save did with a
+        listing; a ``GET /api/flows`` under it shows it firing first.
+
         RED under mutant "the prior is read through the listing"
-        (``save_and_report`` taking the three from ``_on_disk()``, a walk of
-        the library, rather than from ``_stored``'s record), the flow that
-        ran answered and stored as created at the save and never run,
-        observed:
+        (``save_and_report`` taking the three from a walk of the library,
+        ``self._scan()[0]`` since #433 removed ``_on_disk``, rather than
+        from ``_stored``'s record), the flow that ran answered and stored
+        as created at the save and never run, observed (S7, on the premise
+        shown by the GET):
 
             E   AssertionError: the answer reset the history
             E   assert {'created_ts'...st_run': None} == {'created_ts'..._run': 1234.0}
             E     Differing items:
             E     {'last_run': None} != {'last_run': 1234.0}
             E     {'last_result': ''} != {'last_result': 'ok'}
-            E     {'created_ts': 1790608523.8208125} != {'created_ts': 1790608523.7968028}
+            E     {'created_ts': 1790645805.932444} != {'created_ts': 1790645805.8879788}
 
         RED the same way under mutant "the route reads the prior itself"
         (HEAD's ``_persist_flow``: its ``flow_store.get`` put back, and the
         store's ``_bookkeeping`` taken out), which is the code #364 was
-        filed against (``{'created_ts': 1790608532.698133} !=
-        {'created_ts': 1790608532.6729133}`` and the two above), and under
+        filed against (``{'created_ts': 1790646667.3327284} !=
+        {'created_ts': 1790646667.2853444}`` and the two above), and under
         "the store keeps the record's bookkeeping" (the ``**_bookkeeping``
         taken out and no ``get`` put back), where the PUT's own record, built
-        fresh, is what the file got.
+        fresh, is what the file got; both run again in S7.
         """
         fid, path, history = _ran_flow(client)
         fired = _fail_reads(monkeypatch, "_entries", path.name)
+        assert client.get("/api/flows").status_code == 200
+        assert fired, "premise: the listing's read of the file failed"
         r = client.put(f"/api/flows/{fid}", json={"flow": {
             "name": "ran once", "graph": GRAPH}})
-        assert fired, "premise: the listing's read of the file failed"
         assert r.status_code == 200, r.text
         assert {k: r.json()[k] for k in BOOKKEEPING} == history, \
             "the answer reset the history"
         assert _on_disk(path) == history, "the file reset the history"
 
-    def test_one_walk_of_the_library_per_save(self, client, monkeypatch):
-        """No read of its own: a save walks the library once, for the
-        store's quota check, and ``_persist_flow`` adds no walk to find the
-        prior. (#433 measured every save reading every stored flow; the
-        route's ``get`` was a second such walk.)
+    def test_no_walk_of_the_library_per_save(self, client, monkeypatch):
+        """No read of its own, and none for the quota: ``_persist_flow``
+        adds no walk to find the prior (#364), and since S7 the store's
+        quota check lists file names instead of walking the library
+        (#433), so a save walks it no times. (S5 left the quota walk and
+        asserted at most one; ``test_s7_store_save_cost.py`` holds that no
+        other flow is read at all.)
 
-        RED under mutant "the route reads the prior itself", observed:
+        RED under mutant "the route reads the prior itself" (HEAD before
+        #364: ``_persist_flow``'s ``flow_store.get`` put back), observed:
 
-            E   AssertionError: a save walked the library 2 times
-            E   assert 2 <= 1
-            E    +  where 2 = len([1, 1])
+            E   AssertionError: a save walked the library 1 times
+            E   assert [1] == []
+            E     Left contains one more item: 1
 
-        and under "the prior is read through the listing" the same way.
+        and under "existing built from _on_disk()" (#433's quota walk put
+        back) and "the prior is read through the listing", the same three
+        lines.
         """
         fid, _path, _history = _ran_flow(client)
         walks: list = []
@@ -181,7 +196,7 @@ class TestTheListingReadDecidesNothing:
         r = client.put(f"/api/flows/{fid}", json={"flow": {
             "name": "ran once", "graph": GRAPH}})
         assert r.status_code == 200, r.text
-        assert len(walks) <= 1, f"a save walked the library {len(walks)} times"
+        assert walks == [], f"a save walked the library {len(walks)} times"
 
 
 class TestAReadErrorRefusesAndNeverResets:
@@ -251,27 +266,33 @@ class TestTheStoreOwnsTheBookkeeping:
     def test_a_listing_read_error_leaves_the_history_in_the_store(
             self, store, monkeypatch):
         """The store half of the first case, with no route: every door
-        that saves through ``save_and_report`` keeps the history.
+        that saves through ``save_and_report`` keeps the history. The
+        injection is shown reaching the listing's read on ``listing()``
+        first, as the route case shows it on a GET (S7, #433: a save no
+        longer lists anything that could fire it).
 
-        RED under mutant "the prior is read through the listing", observed:
+        RED under mutant "the prior is read through the listing", observed
+        (S7, on the premise shown by ``listing()``):
 
             E   AssertionError: assert {'created_ts'...st_run': None} == {'created_ts'..._run': 1234.0}
             E     Differing items:
             E     {'last_run': None} != {'last_run': 1234.0}
             E     {'last_result': ''} != {'last_result': 'ok'}
-            E     {'created_ts': 1790608524.9113002} != {'created_ts': 1790608524.8912714}
+            E     {'created_ts': 1790645809.8161893} != {'created_ts': 1790645809.7782638}
 
         and under "the route reads the prior itself" and "the store keeps
         the record's bookkeeping", where the store wrote what the record
-        carried (a record built fresh never ran), with the same three items.
+        carried (a record built fresh never ran), with the same three items;
+        all three run again in S7.
         """
         store.save(_record())
         store.touch_run("f1", ts=RAN["last_run"], result=RAN["last_result"])
         path = store.dir / "f1.json"
         history = _on_disk(path)
         fired = _fail_reads(monkeypatch, "_entries", path.name)
-        saved, _migrated, _rows = store.save_and_report(_record())
+        store.listing()
         assert fired, "premise: the listing's read of the file failed"
+        saved, _migrated, _rows = store.save_and_report(_record())
         assert {k: getattr(saved, k) for k in BOOKKEEPING} == history
         assert _on_disk(path) == history
 

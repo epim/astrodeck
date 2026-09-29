@@ -26,6 +26,9 @@
 //   L2 "older live numbers"            LiveScreen: hfr={preview?.hfr} unconditionally
 //   L3 "mount read lowers the field"   LiveScreen: the mount read writes
 //                                      snap.preview_id as it came, not the newer.
+//   W7 "ws.ts max-merges"              ws.ts: rehydrateFromSnapshot writes
+//                                      newestPreviewId(store's id, snapshot's id),
+//                                      so a restarted server's lower id is lost (#437).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -235,6 +238,53 @@ await test("a page opened later cannot pull the tile back with an older mount re
   eq(useStore.getState().snapshotPreviewId, 550, "an older mount read lowered the store's frame id");
   assert(tileImgIds().includes(550), `the tile went back to an older frame: ${tileImgIds()}`);
   act(() => { again.unmount(); });
+});
+
+await test("a server restart: the tile follows the new process's frames through ws.ts's replace (#437)", async () => {
+  // `hub.preview_seq` starts at 0 on every server start, and a restart always
+  // drops the socket, so the reconnect read is the first to hear the new
+  // count. It must replace: a maximum would keep 535 until the new process
+  // had saved 535 frames, which on the classic Monitor was the rest of the
+  // night. The live frame arrives as a real socket event.
+  // W7 "ws.ts max-merges" (rehydrateFromSnapshot writes
+  // newestPreviewId(store, snapshot)), observed (6 passed, 1 failed; it also
+  // turns wsReconnectPreview.test.ts's restart control and wsSnapshotStamp's
+  // preview case red):
+  //   x a server restart: the tile follows the new process's frames through
+  //   ws.ts's replace (#437): the new process's live frame 3 is not shown: 535
+  // A fresh page: nothing held from the cases above, so the seed below is 535
+  // under any merge rule and only the restart can tell them apart.
+  await set({ preview: null, snapshotPreviewId: null });
+  rigNewest = 535;
+  let n = FakeWebSocket.all.length;
+  act(() => { sock().onclose?.(); });
+  await awaitRetry(n);
+  await open();
+  eq(useStore.getState().snapshotPreviewId, 535, "precondition: the reconnect seeded 535");
+  const page = createRoot(container);
+  act(() => { page.render(createElement(LiveScreen)); });
+  await settle();
+  try {
+    assert(tile() != null, "precondition: the tile is on the page");
+    assert(tileImgIds().includes(535), `precondition: the tile shows frame 535: ${tileImgIds()}`);
+    // The restart: the socket drops, and the new process has saved frame 2.
+    rigNewest = 2;
+    n = FakeWebSocket.all.length;
+    act(() => { sock().onclose?.(); });
+    await awaitRetry(n);
+    await open();
+    act(() => {
+      sock().onmessage?.({ data: JSON.stringify({ type: "preview", ts: 1, data: {
+        id: 3, hfr: 2.44, stars: 160, exposure_s: 60, gain: 100, binning: 1,
+        data_is_linear: false, stats: { median: 0, max: 0 } } }) });
+    });
+    await settle();
+    assert(tileImgIds().includes(3), `the new process's live frame 3 is not shown: ${tileImgIds()}`);
+    assert(!tileImgIds().includes(535), `the pre-restart frame 535 is still on the tile: ${tileImgIds()}`);
+    eq(useStore.getState().snapshotPreviewId, 2, "the reconnect's snapshot did not replace the frame id");
+  } finally {
+    act(() => { page.unmount(); });
+  }
 });
 
 // ------------------------------------------------------------------ report

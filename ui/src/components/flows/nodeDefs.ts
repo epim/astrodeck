@@ -30,6 +30,7 @@
 // not the number 1 — binning is a select over "1"/"2"/"4" and a numeric default
 // would silently rewrite the operator's choice. Changing a default's type here
 // changes the behaviour of an input control three files away.
+import { DEFAULT_OVERLAP } from "../../lib/framing";
 import type { FlowNodeType, PortKind } from "./flowsTypes";
 
 /** One port on a node.
@@ -268,9 +269,14 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // sub — because these are the MISSING-KEY defaults. `angle` has none: it is
     // derived from `rotation` (see `targetAngle`). A new block is written with
     // `createdAs` instead: blank coordinates (#190), any angle, accepted subs.
+    // `overlap` is the one overlap every framing starts from, lib/framing's
+    // DEFAULT_OVERLAP in percent (#461): it was a fourth number, 25, that did
+    // not read the constant. nodes.py derives the same product from the
+    // server's constant (`target_overlap_pct`), so the parity test compares
+    // one number with one number.
     params: {
       name: "M31 - Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: -1,
-      rows: 1, cols: 1, overlap: 25, fovX: 0, fovY: 0, fovFrom: "", skip: "",
+      rows: 1, cols: 1, overlap: DEFAULT_OVERLAP * 100, fovX: 0, fovY: 0, fovFrom: "", skip: "",
       passes: 1, minVisit: 0, order: "Least complete first", centerTol: 1.2,
       centerTries: 3, ifNotCentred: "Auto", counts: "Every sub taken", frameAnchor: "",
     },

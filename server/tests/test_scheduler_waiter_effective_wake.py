@@ -34,6 +34,15 @@ never in the shared tree (#254):
 * "a gating waiter joins earliest with start_ts": the waiting branch of the
   selection putting ``gs["start_ts"]`` into ``earliest`` again, in place of
   the effective wake. It is the code before the fix.
+
+S7 (#434) refined the altitude gate's rise estimate inside its 600 s step
+and re-pinned one line here, "1-2 was shot once it rose", which had read
+the old estimate's rounding (the case's own comment has its old failure).
+Its mutants were run in a private copy of server/ (scratchpad/S7-SCHED-mut):
+
+* "the gate read 2 deg low": `schedule.gating_status` taking 2 deg off
+  ``min_altitude_deg`` before it gates, so 1-2 counts as risen, and is
+  visited, about ten minutes before it clears its real gate.
 """
 from __future__ import annotations
 
@@ -46,9 +55,11 @@ from astrodeck.sequence.group_rules import DEFER_WAIT_S
 from astrodeck.sequence.models import Schedule, SequencePlan
 from astrodeck.sequence.session import session_store
 
-#: Seconds into the night at which panel 1-2 reaches its own altitude gate.
-#: The gating's rise estimate steps in 600 s (`schedule._time_to_gate`), so a
-#: multiple of it is what the estimate at the start reads exactly.
+#: Seconds into the night at whose altitude panel 1-2's gate is set, less the
+#: 0.01 deg `_plan` takes off it, so 1-2 truly clears the gate 3.1 s sooner,
+#: 1796.9 s in. Since #434 the gating's rise estimate is that rise, to
+#: ``schedule._GATE_RISE_TOL_S`` (test_s7_time_to_gate_refined.py), where it
+#: was the next 600 s step after it.
 RISES = 1800.0
 #: A whole local minute 171 s into the night (``T0`` is 51 s short of one),
 #: before the deferral wait's end: the opening the control's 1-2 waits for.
@@ -112,8 +123,17 @@ async def test_a_deferral_wait_is_not_slept_through_to_another_panels_rise(
         AssertionError: 1-1's visits at [0.0, 1830.0, 1890.0, 1950.0]: its
         second must start at the end of the 300 s deferral wait
         assert 1830.0 == 300.0
+
+    (Observed again after S7's refinement (#434), in S7's copy: the same
+    lines. Asked at 0 s the refined estimate's last probe is 1800.0 s.)
+
+    MUTANT "the gate read 2 deg low": RED (observed; S7):
+        AssertionError: 1-2 first visited at 1168.125 s, 2.0 deg under its
+        73.158 deg gate: it was shot before it rose
+        assert 71.16299245057304 >= 73.158
     """
-    night = await _night(group_hub, monkeypatch, _plan("altitude"))
+    plan = _plan("altitude")
+    night = await _night(group_hub, monkeypatch, plan)
     assert night.done, night.lines[-4:]
     assert night.said("centring failed on 1-1"), (
         f"premise: 1-1's first centring missed: {night.lines[:6]}")
@@ -133,8 +153,28 @@ async def test_a_deferral_wait_is_not_slept_through_to_another_panels_rise(
                             "before the next"), at_start
     # 1-2 was shot all the same, once it rose: the fix changes which wait is
     # slept on, never whether the other panel is waited for.
+    #
+    # DELIBERATE PIN CHANGE (S7, #434). This read ``min(risen) >= RISES``.
+    # 1-2 truly clears its gate at 1796.9 s (``RISES``), so that bound held
+    # only while the rise estimate came late: the 600 s step woke the run at
+    # 2190 s, and the refined one wakes it at 1800.938 s, its last probe at
+    # the 5 s tolerance, by where the probes fall. At a 1 s tolerance the
+    # estimate is 1797.4 s, and right, and the old pin went red (observed,
+    # the variant "tolerance 1 s" in S7's copy):
+    #     AssertionError: [1797.422, 1827.422, 1857.422]
+    #     assert ([1797.422, 1827.422, 1857.422] and 1797.422 >= 1800.0)
+    #      +  where 1797.422 = min([1797.422, 1827.422, 1857.422])
+    # So it is held against the rise itself: 1-2 at or above its own gate at
+    # its first visit.
     risen = [night.rel(t) for t, who in night.gotos if who == _name("1-2")]
-    assert risen and min(risen) >= RISES, risen
+    assert risen, f"premise: 1-2 was visited: {night.gotos}"
+    p12 = next(t for t in plan.targets if t.name == _name("1-2"))
+    gate = float(p12.schedule.min_altitude_deg)
+    first_alt = schedule.target_altitude(p12.ra_hours, p12.dec_deg, LAT, LON,
+                                         T0 + min(risen))
+    assert first_alt >= gate, (
+        f"1-2 first visited at {min(risen)} s, {gate - first_alt:.1f} deg "
+        f"under its {gate} deg gate: it was shot before it rose")
     assert night.stored.status == "complete", night.stored.status
 
 

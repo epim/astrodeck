@@ -388,9 +388,11 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
 
       <div className="nx-flow-node-foot">
         {/* Computed from the CURRENT params, so an edit shows on the card
-            without opening anything. A TARGET's line is `targetFooter`, the
-            classic card's too - "M31 · rotate · 3x2 · PA 30.0 · 25%" - and it
-            takes the name from the same `def.sum`, once. */}
+            without opening anything. A TARGET's line is `targetFooter` -
+            "M31 · rotate · 3x2 · PA 30.0 · 25%" - WHOLE, because this footer
+            wraps; the classic card's one line draws the same line fitted
+            (`fittedFooter`, S7 orchestrator ruling 9). It takes the name from
+            the same `def.sum`, once. */}
         <Mono size={10} tone="dim" data-testid="flow-node-summary">
           {node.type === "target" ? targetFooter(node, loops) : def.sum(node.params)}
         </Mono>

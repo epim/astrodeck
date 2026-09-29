@@ -56,6 +56,16 @@
 // each quoted line recurred verbatim, and "group ignored", "set-aside reason
 // dropped", "viewOnly ignored" and the reader's name match are red at the
 // off-diagonal case too.
+//
+// SINCE S7 (#509) a set-aside line whose engine reason already names its
+// panel is not prefixed with the label: 2-2's line reads "set aside tonight:
+// centring failed on 2-2 ...", where S5 printed "2-2: set aside tonight:
+// centring failed on 2-2 ...". The three cases below that pin 2-2's line were
+// moved for it on purpose (S7-URUNHOLD), and the two mutants that touch the
+// line were run again against the moved pins in scratchpad S7-URUNHOLD-mut
+// (2026-09-28), quoted where they stand. framingSections.test.tsx grades the
+// rule itself, and the words for a run that is paused, holding or stopping
+// (#451) on the recorded states.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -107,7 +117,9 @@ const { framingApi, framingTiming } = await import("../framingApi");
 const sheetModule = await import("../TargetFramingSheet");
 const Sheet = sheetModule.default;
 const { RUNNING_VIEW_ONLY, EXAMPLE_VIEW_ONLY } = sheetModule;
-const { SHOOTING_NOW, SET_ASIDE_TONIGHT } = await import("../sections/PanelsSection");
+const {
+  SHOOTING_NOW, SET_ASIDE_TONIGHT, CURRENT_PAUSED, CURRENT_HOLDING_FOR_CLOUD, CURRENT_STOPPING,
+} = await import("../sections/PanelsSection");
 type FlowNodeRec = import("../../flowsTypes").FlowNodeRec;
 type FlowEdgeRec = import("../../flowsTypes").FlowEdgeRec;
 type SequenceState = import("../../../../types").SequenceState;
@@ -330,12 +342,21 @@ await test("premise: the two files are one session and two blocks of one name, a
 //     "pending","1-3":"pending","2-1":"pending","2-2":"set_aside","2-3":"pending"}, got {"1-1":
 //     "done","1-2":"pending","1-3":"pending","2-1":"pending","2-2":"pending","2-3":"pending"}
 // MUTANT "set-aside reason dropped" (PanelsSection.tsx `runLine` answers
-// SET_ASIDE_TONIGHT alone, the engine's reason left out). Observed, 5/7 (the
-// viewer's case below is red with the same line for 2-2):
+// SET_ASIDE_TONIGHT alone, the engine's reason left out). Observed again
+// against the #509 pins (S7-URUNHOLD-mut), 5/8 (the off-diagonal and the
+// viewer's cases below are red with the same line for 2-2):
 //   x run mode draws the live group: 1-1 shot with thick stroke and corner ticks, 2-2 dotted with
 //     '!' and its reason in PANELS: PANELS' run lines: expected {"1-1":"1-1: shooting now","2-2":
-//     "2-2: set aside tonight: centring failed on 2-2 on 3 consecutive visits: plate solve failed
-//     ... used raw GoTo"}, got {"1-1":"1-1: shooting now","2-2":"2-2: set aside tonight"}
+//     "set aside tonight: centring failed on 2-2 on 3 consecutive visits: plate solve failed ...
+//     used raw GoTo"}, got {"1-1":"1-1: shooting now","2-2":"set aside tonight"}
+// MUTANT "label prefixed again" (PanelsSection.tsx `runRowText` prefixing the
+// label whatever the reason says, as S5 printed every line; #509). Observed,
+// 5/8 (the same two cases red with the same line for 2-2):
+//   x run mode draws the live group: 1-1 shot with thick stroke and corner ticks, 2-2 dotted with
+//     '!' and its reason in PANELS: PANELS' run lines: expected {"1-1":"1-1: shooting now","2-2":
+//     "set aside tonight: centring failed on 2-2 on 3 consecutive visits: plate solve failed ...
+//     used raw GoTo"}, got {"1-1":"1-1: shooting now","2-2":"2-2: set aside tonight: centring failed
+//     on 2-2 on 3 consecutive visits: plate solve failed ... used raw GoTo"}
 await test("run mode draws the live group: 1-1 shot with thick stroke and corner ticks, 2-2 dotted with '!' and its reason in PANELS", async () => {
   setup({ sequence: SHOOTING });
   mount();
@@ -359,7 +380,7 @@ await test("run mode draws the live group: 1-1 shot with thick stroke and corner
   // PANELS: the run's line under the two panels it names, and no other.
   eq(runRows(), {
     "1-1": `1-1: ${SHOOTING_NOW}`,
-    "2-2": `2-2: ${SET_ASIDE_TONIGHT}: ${REASON}`,
+    "2-2": `${SET_ASIDE_TONIGHT}: ${REASON}`,
   }, "PANELS' run lines");
   // A pending panel keeps its progress bar from the route, unchanged.
   eq(doc.querySelector('[data-panel="1-2"] [role="progressbar"]')?.getAttribute("aria-valuenow"),
@@ -397,7 +418,7 @@ await test("the panel being shot is drawn at its own row and column, off the dia
   }, "the sky's panel states with the group on 1-3");
   eq(runRows(), {
     "1-3": `1-3: ${SHOOTING_NOW}`,
-    "2-2": `2-2: ${SET_ASIDE_TONIGHT}: ${REASON}`,
+    "2-2": `${SET_ASIDE_TONIGHT}: ${REASON}`,
   }, "PANELS' run lines with the group on 1-3");
 });
 
@@ -522,7 +543,7 @@ await test("a viewer during a meridian wait sees no panel being shot and no timi
   mount();
   eq(q("framing-view-why")?.textContent, RUNNING_VIEW_ONLY, "the viewer's reason");
   eq(doc.querySelectorAll('[data-state="shooting"]').length, 0, "shapes or labels drawn as shooting for the viewer");
-  eq(runRows(), { "2-2": `2-2: ${SET_ASIDE_TONIGHT}: ${REASON}` }, "the viewer's PANELS run lines");
+  eq(runRows(), { "2-2": `${SET_ASIDE_TONIGHT}: ${REASON}` }, "the viewer's PANELS run lines");
   eq(skyStates()["2-2"], "set_aside", "2-2 for the viewer");
   const text = String(q("target-framing-sheet")?.textContent ?? "");
   const tokens = timingTokens(WAIT_VIEWER);
@@ -658,6 +679,71 @@ await test("an Example that is running says so in run mode's words, and draws th
   eq(q("framing-view-why")?.textContent, EXAMPLE_VIEW_ONLY, "an Example's reason outside run mode");
   eq(runRows(), {}, "an Example's PANELS run lines outside run mode");
   eq(skyStates()["1-1"], "done", "an Example's 1-1 outside run mode");
+});
+
+// ====================================================================
+// 7. a run paused, holding for cloud or stopping (#451)
+
+// The recorded held night's states (test_s5_recorded_state.py, S7): its group
+// on 1-1, 2-2 set aside, and the run paused, holding for cloud, and stopping
+// from an Abort pressed in that hold (which still carries the hold's key,
+// #513). Joined to this block as case 1 joins the shooting state.
+//
+// Each mutant below was run in scratchpad S7-URUNHOLD-mut (2026-09-28) with
+// the integration this case needs applied there (runPanelsOf given the run's
+// state, the current panel drawn with the ticks, PanelLayer told its words).
+// MUTANT "state check dropped" (flowRunState.ts `panelStateOf` answering
+// `shooting` for the group's panel whatever the run's state). Observed, 8/9:
+//   x the panel a paused, held or stopping run is on keeps its corner ticks and is never said to be
+//     shot: PANELS' run lines while paused: expected {"1-1":"1-1: current panel, run paused","2-2":
+//     "set aside tonight: centring failed on 2-2 on 3 consecutive visits: plate solve failed ...
+//     used raw GoTo"}, got {"1-1":"1-1: shooting now","2-2":"set aside tonight: centring failed on
+//     2-2 on 3 consecutive visits: plate solve failed ... used raw GoTo"}
+// MUTANT "state not passed" (TargetFramingSheet.tsx asking `runPanelsOf`
+// without `s.sequence`). Observed, 8/9, the same line. Since the S7
+// integration made `run` required, that mutant is a type error (`tsc -p
+// tsconfig.json --noEmit`: "TargetFramingSheet.tsx(364,20): error TS2554:
+// Expected 5 arguments, but got 4."), and at run time, where tsx checks no
+// type, a missing state is a run nobody knows, which shoots nothing: 2/9 in
+// the integration's private copy (scratchpad S7-INTEG-r2-mut), every panel
+// the run is on drawn done, this case's line being
+//   x the panel a paused, held or stopping run is on keeps its corner ticks and is never said to be
+//     shot: 1-1's shape while paused: expected "shooting", got "done"
+// MUTANT "ticks lost" (framingModel.ts `panelDrawState` drawing only
+// `shooting` as shooting). Observed, 8/9:
+//   x the panel a paused, held or stopping run is on keeps its corner ticks and is never said to be
+//     shot: 1-1's shape while paused: expected "shooting", got "done"
+// MUTANT "sky words ignored" (PanelLayer.tsx's label telling a screen reader
+// the state's own words, never `words`). Observed, 8/9:
+//   x the panel a paused, held or stopping run is on keeps its corner ticks and is never said to be
+//     shot: the sheet says "shooting now" while the run is paused
+await test("the panel a paused, held or stopping run is on keeps its corner ticks and is never said to be shot", async () => {
+  const cases: [string, string][] = [
+    ["paused", CURRENT_PAUSED], ["holding", CURRENT_HOLDING_FOR_CLOUD], ["aborting", CURRENT_STOPPING],
+  ];
+  for (const [kind, words] of cases) {
+    const s = STATES[kind];
+    assert(s?.group?.panel === "1-1" && s.state === kind, `premise: the recorded ${kind} state is on 1-1`);
+    setup({ sequence: s });
+    mount();
+    eq(q("framing-view-why")?.textContent, RUNNING_VIEW_ONLY, `the sheet's reason while ${kind}`);
+    // Drawn as the panel the visit is on: the thick stroke and the ticks.
+    eq(skyStates()["1-1"], "shooting", `1-1's shape while ${kind}`);
+    assert(shape(0, 0)?.querySelector('[data-mark="ticks"]'), `1-1 has no corner ticks while ${kind}`);
+    eq(skyStates()["2-2"], "set_aside", `2-2 while ${kind}`);
+    // Worded as the run is: PANELS and the sky's screen-reader label.
+    eq(runRows(), { "1-1": `1-1: ${words}`, "2-2": `${SET_ASIDE_TONIGHT}: ${REASON}` },
+      `PANELS' run lines while ${kind}`);
+    const said = String(q("target-framing-sheet")?.textContent ?? "");
+    assert(!said.includes(SHOOTING_NOW), `the sheet says "${SHOOTING_NOW}" while the run is ${kind}`);
+    assert(String(skyLabel(0, 0)?.textContent ?? "").includes(words),
+      `1-1's sky label does not say "${words}" while ${kind}: ${skyLabel(0, 0)?.textContent}`);
+  }
+  // CONTROL: the same group, the run shooting, is shot, in words too.
+  setup({ sequence: { ...STATES.holding, state: "running", hold: undefined } as SequenceState });
+  mount();
+  eq(runRows()["1-1"], `1-1: ${SHOOTING_NOW}`, "1-1 once the run is running again");
+  assert(String(skyLabel(0, 0)?.textContent ?? "").includes(SHOOTING_NOW), "1-1's sky label while it is shot");
 });
 
 // ------------------------------------------------------------------ report

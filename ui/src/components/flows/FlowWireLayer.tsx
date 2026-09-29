@@ -45,6 +45,7 @@ import {
   edgePath, portPos, type EdgeMode, type FlowTier, type LoopArc, type Point,
 } from "./geometry";
 import type { FlowEdgeRec, FlowNodeRec, FlowRunPhase, PortKind } from "./flowsTypes";
+import { compiledIsCurrent } from "./flowsSlice";
 import {
   LOOP_ARC_DASH, LOOP_CHIP_FONT_PX, loopArcOf, loopChip, loopChipBox,
 } from "./targetSummary";
@@ -423,10 +424,17 @@ export default function FlowWireLayer({
   // one per wire, and the action's identity is stable so `memo` still holds.
   const select = useStore((s) => s.flowsSelect);
   // The loop chip's count comes from the last compile, and is withheld while
-  // the draft has moved on from it (`loopChip`). The plan object changes only
-  // when a compile lands, so this costs one re-render per compile.
+  // that answer is not the graph on screen's (`loopChip`). The plan object
+  // changes only when a compile lands, so this costs one re-render per
+  // compile.
   const plan = useStore((s) => s.flows.compiled?.plan ?? null);
-  const dirty = useStore((s) => s.flows.dirty);
+  // ASKED OF THE ANSWER, NOT OF THE SAVE (#356, S7): `compiledIsCurrent`
+  // compares the graph the compile sent with the graph on screen. `dirty`
+  // cleared a round trip before a save's compile landed, drawing the old
+  // count over a new skip, and withheld the count DONE's compile of the
+  // unsaved draft had just made. A boolean, so an edit re-renders the layer
+  // once, when the answer stops being current, as `dirty` did.
+  const current = useStore((s) => compiledIsCurrent(s.flows));
 
   const mode: EdgeMode = auto ? "phone-flow" : "canvas";
   const hitW = auto ? HIT_W_AUTO : HIT_W_CANVAS;
@@ -470,7 +478,7 @@ export default function FlowWireLayer({
               running={running}
               hitW={hitW}
               select={select}
-              chip={loopChip(graph, e, plan, dirty)}
+              chip={loopChip(graph, e, plan, !current)}
               chipX={loop.label.x}
               chipY={loop.label.y}
             />

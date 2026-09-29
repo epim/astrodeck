@@ -24,7 +24,11 @@
 //     which drops max-height to `none` (#354). jsdom computes no CSS lengths,
 //     so the tests for that carry a small evaluator of their own.
 
-interface NodeFsLike { readFileSync(path: string, encoding: string): string }
+interface NodeFsLike {
+  readFileSync(path: string, encoding: string): string;
+  readdirSync(path: string): string[];
+  statSync(path: string): { isDirectory(): boolean };
+}
 const nodeImport = (s: string): Promise<unknown> =>
   (Function("m", "return import(m)") as (m: string) => Promise<unknown>)(s);
 const fs = (await nodeImport("node:fs")) as NodeFsLike;
@@ -738,14 +742,35 @@ test("the fallback rule reads the fraction, in vh (#354)", () => {
     `calc(var(--ov-max-h-frac, 1) * 100dvh - var(--ov-max-h-gap, 0px)))); it is ${base}`);
 });
 
+/** The six callers that handed the Overlay a `surfaceStyle` height cap, with
+ *  the caps they handed it as of S5: a dvh value in `--ov-max-h`, which a
+ *  browser without dvh cannot parse (#417). The #354 control below grades the
+ *  variants under these; the #417 tests further down hold what each file
+ *  passes now to what these computed. `file` is relative to ui/src. */
+const CALLERS_PRE_417: { who: string; file: string; variant: "center" | "sheet"; style: Record<string, string> }[] = [
+  { who: "FlowWizard", file: "components/flows/FlowWizard.tsx", variant: "center",
+    style: { "--ov-max-h": "90dvh" } },
+  { who: "ClassicSkyTools", file: "components/sky/ClassicSkyTools.tsx", variant: "center",
+    style: { "--ov-w": "940px", "--ov-max-w": "96vw", "--ov-max-h": "92dvh" } },
+  { who: "TonightPanel", file: "components/flows/TonightPanel.tsx", variant: "center",
+    style: { "--ov-max-w": "880px", "--ov-max-h": "90dvh" } },
+  { who: "QuickFlow", file: "components/flows/QuickFlow.tsx", variant: "center",
+    style: { "--ov-max-h": "90dvh" } },
+  { who: "FlowEditSheet", file: "components/flows/FlowEditSheet.tsx", variant: "sheet",
+    style: { "--ov-max-h": "76dvh" } },
+  { who: "FlowPaletteSheet", file: "components/flows/FlowPaletteSheet.tsx", variant: "sheet",
+    style: { "--ov-max-h": "72dvh" } },
+];
+
 test("control: a dvh browser computes every size it computed before #354", () => {
   // The fix must move nothing where dvh exists: each older variant, alone and
   // under each caller's own `surfaceStyle` cap (their values as of S5), gets
   // the four sizes the rule and vars before #354 gave it. A caller's
   // --ov-max-h still REPLACES the variant's cap rather than meeting it in a
   // min(), so FlowWizard's 90dvh stays 90dvh on a screen 300px tall, where
-  // center's `100dvh - 2rem` would be smaller. Those callers' dvh caps still
-  // leave the fallback invalid without dvh (#417); #354 fixes the variants.
+  // center's `100dvh - 2rem` would be smaller. Those callers' dvh caps left
+  // the fallback invalid without dvh until #417 moved them to fractions as
+  // well; the #417 tests below hold the fractions to these caps.
   // Named mutation 'the fraction in vh in the main rule' (index.css: the
   // main rule's `* 100dvh` made `* 100vh`). Observed:
   //   control: a dvh browser computes every size it computed before #354:
@@ -768,14 +793,7 @@ test("control: a dvh browser computes every size it computed before #354", () =>
     "max-width": "min(100vw, var(--ov-max-w, 100vw))",
     "max-height": "min(100dvh, var(--ov-max-h, 100dvh))",
   };
-  const CALLERS: { who: string; variant: string; style: Record<string, string> }[] = [
-    { who: "FlowWizard", variant: "center", style: { "--ov-max-h": "90dvh" } },
-    { who: "ClassicSkyTools", variant: "center", style: { "--ov-w": "940px", "--ov-max-w": "96vw", "--ov-max-h": "92dvh" } },
-    { who: "TonightPanel", variant: "center", style: { "--ov-max-w": "880px", "--ov-max-h": "90dvh" } },
-    { who: "QuickFlow", variant: "center", style: { "--ov-max-h": "90dvh" } },
-    { who: "FlowEditSheet", variant: "sheet", style: { "--ov-max-h": "76dvh" } },
-    { who: "FlowPaletteSheet", variant: "sheet", style: { "--ov-max-h": "72dvh" } },
-  ];
+  const CALLERS = CALLERS_PRE_417;
   let graded = 0;
   for (const v of ["center", "sheet", "dock", "corner"] as const) {
     for (const lg of [false, true]) {
@@ -834,6 +852,249 @@ test("control: full is unchanged at 100% of the host, with and without dvh (#354
       }
     }
   }
+});
+
+// -------------------------- the callers' caps without dvh (S7, #417)
+// #354 took the dvh values out of overlayGeometry, but six callers still
+// handed the Overlay a dvh cap of their own through `surfaceStyle`, and
+// --ov-max-h REPLACES the fraction in both rules. On those six surfaces the
+// @supports fallback was still `min(100vh, 90dvh)`, invalid without dvh, so
+// max-height fell to `none` there: #354's defect, reached by another path.
+// Each caller now passes a fraction, and a center caller zeroes the 2rem gap
+// center's sm geometry sets, which it did not have before. Two tests hold
+// that: a scan of ui/src that no `--ov-*` value holds a small, large or
+// dynamic viewport unit, whoever sets it, and the six callers' own values,
+// read out of their files, computed against the caps they replaced.
+//
+// Every test here was run RED under a named mutation in a private copy of
+// ui/, and each "Observed" quote is that run's failure line, as above.
+
+/** Every `--ov-*` custom property a source text SETS, with what it sets it
+ *  to: a quoted key in an object (a React style bag, `"--ov-max-h": "90dvh"`),
+ *  a `setProperty("--ov-...", ...)` call, and in a stylesheet a declaration
+ *  (`--ov-max-h: 100%;`, comments stripped first). A read, `var(--ov-max-h,
+ *  ...)`, sets nothing: the dvh in the main rule's fallback is fine, since
+ *  that rule is only used where dvh parses. A value that is not a plain
+ *  string literal (a variable, a template with `${}`) is kept with
+ *  `literal: false`, because nothing here can say what it holds. */
+interface OvSet { key: string; value: string; literal: boolean; line: number }
+function ovSettings(text: string, stylesheet: boolean): OvSet[] {
+  const out: OvSet[] = [];
+  const lineAt = (i: number): number => text.slice(0, i).split("\n").length;
+  if (stylesheet) {
+    // Blank the comments out character for character, so line numbers hold.
+    const bare = text.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
+    for (const m of bare.matchAll(/(?<![\w-])(--ov-[\w-]+)\s*:\s*([^;}]*)/g)) {
+      out.push({ key: m[1], value: m[2].trim(), literal: true, line: lineAt(m.index!) });
+    }
+    return out;
+  }
+  // An object key is quoted with " or ', never a backtick, which is no key
+  // at all in JS; so a comment's markdown (`--ov-max-h`: ...) is not read as
+  // one. setProperty's argument may be any string.
+  const keyed = /(["'])(--ov-[\w-]+)\1\s*:\s*|setProperty\(\s*(["'`])(--ov-[\w-]+)\3\s*,\s*/g;
+  for (const m of text.matchAll(keyed)) {
+    const key = m[2] ?? m[4];
+    const rest = text.slice(m.index! + m[0].length);
+    const lit = /^(["'`])((?:(?!\1)[^\\]|\\.)*)\1/.exec(rest);
+    const literal = !!lit && !(lit[1] === "`" && lit[2].includes("${"));
+    const value = lit ? lit[2] : (/^[^,}\n)]*/.exec(rest)?.[0] ?? "").trim();
+    out.push({ key, value, literal, line: lineAt(m.index!) });
+  }
+  return out;
+}
+/** A small, large or dynamic viewport unit: dvh, svh and lvh, and their
+ *  width, inline, block, min and max forms, which a browser that predates
+ *  them cannot parse either. */
+const NEW_VIEWPORT_UNIT = /(?:^|[^a-z])[dsl]v(?:h|w|i|b|min|max)\b/i;
+
+/** Every .ts, .tsx and .css file under ui/src but the tests, which quote the
+ *  old values on purpose (this file's CALLERS_PRE_417 among them). */
+const SRC_DIR = resolve("../");
+function sourceFiles(dir: string, out: string[] = []): string[] {
+  for (const name of fs.readdirSync(dir)) {
+    const p = `${dir.replace(/[\\/]$/, "")}/${name}`;
+    if (fs.statSync(p).isDirectory()) {
+      if (name !== "node_modules" && name !== "__tests__") sourceFiles(p, out);
+    } else if (/\.(?:tsx?|css)$/.test(name) && !/\.test\.tsx?$/.test(name)) {
+      out.push(p);
+    }
+  }
+  return out;
+}
+const rel = (p: string): string => p.slice(SRC_DIR.replace(/[\\/]$/, "").length + 1);
+
+test("the --ov-* scanner finds what it is for, and only that (#417)", () => {
+  // The scan below grades nothing if this reads nothing, so it is held to
+  // shapes it must flag and shapes it must pass.
+  // Named mutation 'the scanner skips style bags' (this file: the quoted-key
+  // arm of `keyed` removed, leaving the setProperty arm). Observed:
+  //   the --ov-* scanner finds what it is for, and only that (#417): missed
+  //   "--ov-max-h" in surfaceStyle={{ "--ov-max-h": "90dvh" } as
+  //   CSSProperties}
+  const flags = (text: string, stylesheet: boolean): string[] =>
+    ovSettings(text, stylesheet).filter((s) => !s.literal || NEW_VIEWPORT_UNIT.test(s.value)).map((s) => s.key);
+  for (const [text, stylesheet, key] of [
+    [`surfaceStyle={{ "--ov-max-h": "90dvh" } as CSSProperties}`, false, "--ov-max-h"],
+    [`surfaceStyle={{"--ov-w":"940px","--ov-max-h":"92svh"} as CSSProperties}`, false, "--ov-max-h"],
+    [`{ '--ov-h': 'calc(100lvh - 2rem)' }`, false, "--ov-h"],
+    [`el.style.setProperty("--ov-max-h", "90dvh")`, false, "--ov-max-h"],
+    ["{ \"--ov-max-w\": `${cap}` }", false, "--ov-max-w"],
+    [`{ "--ov-max-h": cap }`, false, "--ov-max-h"],
+    [`.x { --ov-max-w: 96dvw; }`, true, "--ov-max-w"],
+    [`.x {\n  --ov-h: 100svh\n}`, true, "--ov-h"],
+  ] as [string, boolean, string][]) {
+    assert(JSON.stringify(flags(text, stylesheet)) === JSON.stringify([key]), `missed "${key}" in ${text}`);
+  }
+  for (const [text, stylesheet] of [
+    [`max-height: min(100dvh, var(--ov-max-h, calc(var(--ov-max-h-frac, 1) * 100dvh)));`, true],
+    [`/* it used to be --ov-max-h: 85dvh */ .x { --ov-max-h: 100%; }`, true],
+    [`{ "--ov-max-h-frac": "0.9", "--ov-max-h-gap": "0px" }`, false],
+    [`{ "--ov-w": "940px", "--ov-max-w": "96vw" }`, false],
+    ["// never `76dvh` in `--ov-max-h`: index.css multiplies the fraction", false],
+  ] as [string, boolean][]) {
+    const got = flags(text, stylesheet);
+    assert(got.length === 0, `flagged ${got.join(", ")} in ${text}, which holds no new viewport unit in an --ov-* value`);
+  }
+  const lines = ovSettings(`a\n.x {\n  /* --ov-h: 1dvh */\n  --ov-h: 100%;\n}`, true);
+  assert(lines.length === 1 && lines[0].line === 4, `the declaration is on line 4, got ${JSON.stringify(lines)}`);
+});
+
+test("no --ov-* value anywhere in ui/src holds dvh, svh or lvh (#417)", () => {
+  // A dvh value in any --ov-* var reaches the @supports fallback, or a rule
+  // with no fallback at all, and leaves it invalid in a browser without dvh.
+  // Named mutation 'one caller keeps 90dvh' (QuickFlow.tsx: surfaceStyle back
+  // to { "--ov-max-h": "90dvh" }). Observed:
+  //   no --ov-* value anywhere in ui/src holds dvh, svh or lvh (#417):
+  //   components/flows/QuickFlow.tsx:275 sets --ov-max-h to "90dvh", a unit
+  //   a browser without dvh cannot parse
+  // Under 'the scanner skips style bags' (above) it goes red on its floor
+  // instead, having read none of the files it must. Observed:
+  //   no --ov-* value anywhere in ui/src holds dvh, svh or lvh (#417): the
+  //   scan found no --ov-* setting in components/Overlay.tsx,
+  //   components/flows/FlowWizard.tsx, components/sky/ClassicSkyTools.tsx,
+  //   components/flows/TonightPanel.tsx, components/flows/QuickFlow.tsx,
+  //   components/flows/FlowEditSheet.tsx, components/flows/FlowPaletteSheet.tsx
+  //   (read 887 files, settings in index.css)
+  const files = sourceFiles(SRC_DIR);
+  const bad: string[] = [];
+  const setters = new Map<string, number>();
+  for (const f of files) {
+    const found = ovSettings(fs.readFileSync(f, "utf8"), f.endsWith(".css"));
+    if (found.length) setters.set(rel(f), found.length);
+    for (const s of found) {
+      if (!s.literal) {
+        bad.push(`${rel(f)}:${s.line} sets ${s.key} to ${s.value || "an expression"}, which is not a string ` +
+          "literal this scan can grade");
+      } else if (NEW_VIEWPORT_UNIT.test(s.value)) {
+        bad.push(`${rel(f)}:${s.line} sets ${s.key} to "${s.value}", a unit a browser without dvh cannot parse`);
+      }
+    }
+  }
+  assert(bad.length === 0, bad.join("; "));
+  // What the scan must have read for its silence to mean anything: the
+  // variants, the stylesheet's `full` rule and every caller.
+  const must = ["components/Overlay.tsx", "index.css", ...CALLERS_PRE_417.map((c) => c.file)];
+  const unread = must.filter((f) => !setters.has(f));
+  assert(unread.length === 0,
+    `the scan found no --ov-* setting in ${unread.join(", ")} (read ${files.length} files, ` +
+    `settings in ${[...setters.keys()].join(", ")})`);
+});
+
+/** The one `surfaceStyle={{ ... }}` bag a caller's file passes, parsed. */
+function callerStyle(file: string): Record<string, string> {
+  const text = fs.readFileSync(`${SRC_DIR.replace(/[\\/]$/, "")}/${file}`, "utf8");
+  const bags = [...text.matchAll(/surfaceStyle=\{\{([^{}]*)\}/g)];
+  assert(bags.length === 1, `${file} has ${bags.length} surfaceStyle bags, expected one`);
+  const out: Record<string, string> = {};
+  for (const s of ovSettings(bags[0][1], false)) out[s.key] = s.value;
+  assert(Object.keys(out).length > 0, `${file}'s surfaceStyle sets no --ov-* var: ${bags[0][1]}`);
+  return out;
+}
+
+test("control: in a dvh browser the six callers compute what their dvh caps did (#417)", () => {
+  // The fractions must move nothing where dvh exists. Each caller's style is
+  // read out of its own file, so this grades what ships, and set against the
+  // cap it replaced (CALLERS_PRE_417), under both the variant's phone and sm
+  // geometry, on a phone with its toolbar showing and on a flat desktop.
+  // Named mutation 'a center caller keeps the gap' (FlowWizard.tsx: the
+  // surfaceStyle without "--ov-max-h-gap": "0px", so center's sm 2rem stays).
+  // Observed:
+  //   control: in a dvh browser the six callers compute what their dvh caps
+  //   did (#417): FlowWizard (center lg=false sm=true, now
+  //   {"--ov-max-h-frac":"0.9"}): a phone browser with dvh at 390x844
+  //   computes max-height 651.64px, with its dvh cap 683.64px
+  // Named mutation 'the sheet's fraction off by one' (FlowEditSheet.tsx:
+  // "0.75" for "0.76"). Observed:
+  //   control: in a dvh browser the six callers compute what their dvh caps
+  //   did (#417): FlowEditSheet (sheet lg=false sm=false, now
+  //   {"--ov-max-h-frac":"0.75"}): a phone browser with dvh at 390x844
+  //   computes max-height 569.7px, with its dvh cap 577.296px
+  // 'one caller keeps 90dvh' leaves this green, as it should: a dvh cap
+  // computes the same where dvh parses.
+  let graded = 0;
+  for (const c of CALLERS_PRE_417) {
+    const now = callerStyle(c.file);
+    for (const lg of [false, true]) {
+      for (const sm of [false, true]) {
+        const g = overlayGeometry(c.variant, lg, sm);
+        const where = `${c.who} (${c.variant} lg=${lg} sm=${sm}, now ${JSON.stringify(now)})`;
+        for (const vp of VIEWPORTS) {
+          for (const b of [phone(vp, true), flat(vp, true)]) {
+            const before = surfaceSizes(b, g.surface, { ...g.vars, ...c.style });
+            const after = surfaceSizes(b, g.surface, { ...g.vars, ...now });
+            for (const prop of SIZE_PROPS) {
+              assert(sameSize(before[prop], after[prop]),
+                `${where}: ${b.name} computes ${prop} ${show(after[prop])}, with its dvh cap ${show(before[prop])}`);
+            }
+            graded++;
+          }
+        }
+      }
+    }
+  }
+  assert(graded === CALLERS_PRE_417.length * 4 * VIEWPORTS.length * 2, `graded ${graded} cases`);
+});
+
+test("the six callers keep their height clamp in a browser without dvh (#417)", () => {
+  // What #417 buys: without dvh each caller's surface still has a clamp
+  // inside the screen, and where vh and dvh measure the same window it is the
+  // clamp a dvh browser computes. Under their dvh caps every one of the six
+  // computed max-height invalid here.
+  // Named mutation 'one caller keeps 90dvh' (QuickFlow.tsx, as above).
+  // Observed:
+  //   the six callers keep their height clamp in a browser without dvh
+  //   (#417): QuickFlow (center lg=false sm=false, now
+  //   {"--ov-max-h":"90dvh"}): a phone browser without dvh at 390x844
+  //   computes max-height invalid at computed-value time (this browser
+  //   cannot parse the unit "dvh")
+  let graded = 0;
+  for (const c of CALLERS_PRE_417) {
+    const now = callerStyle(c.file);
+    for (const lg of [false, true]) {
+      for (const sm of [false, true]) {
+        const g = overlayGeometry(c.variant, lg, sm);
+        const where = `${c.who} (${c.variant} lg=${lg} sm=${sm}, now ${JSON.stringify(now)})`;
+        for (const vp of VIEWPORTS) {
+          const old = phone(vp, false);
+          const got = surfaceSizes(old, g.surface, { ...g.vars, ...now });
+          for (const prop of SIZE_PROPS) {
+            assert(got[prop].ok, `${where}: ${old.name} computes ${prop} ${show(got[prop])}`);
+          }
+          const mh = got["max-height"];
+          assert("px" in mh && mh.px > 0 && mh.px <= vp.h + 1e-6,
+            `${where}: ${old.name} computes max-height ${show(mh)}, which is no clamp inside the screen`);
+          const a = surfaceSizes(flat(vp, true), g.surface, { ...g.vars, ...now })["max-height"];
+          const b = surfaceSizes(flat(vp, false), g.surface, { ...g.vars, ...now })["max-height"];
+          assert(sameSize(a, b),
+            `${where}: at ${vp.w}x${vp.h} with no toolbar, a browser without dvh computes max-height ` +
+            `${show(b)} where one with dvh computes ${show(a)}`);
+          graded++;
+        }
+      }
+    }
+  }
+  assert(graded === CALLERS_PRE_417.length * 4 * VIEWPORTS.length, `graded ${graded} cases`);
 });
 
 // ------------------------------------------- `full`, mounted: the behaviours
