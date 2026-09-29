@@ -10,6 +10,7 @@ cancellation-safe.
 from __future__ import annotations
 
 import enum
+import math
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -927,6 +928,27 @@ DEFAULT_SHUTTER_TIMEOUT_S: float = 120.0
 SHUTTER_POLL_S: float = 0.5
 
 
+def _shutter_timeout(value) -> float:
+    """A shutter timeout as ``DomePolicy`` reads it, from a node or from a
+    compiled plan: a finite number of seconds above 0, else the default.
+
+    ONE READING FOR BOTH, and two ways it failed (#362). A timeout that is
+    not a finite number passed: "inf" is above 0 and a NaN fails every
+    comparison, so both were kept, the compiled plan then held a number the
+    compile route's JSON cannot carry, and ``open_and_confirm`` would wait on
+    a roof for ever. And ``float()`` of an integer past a float's range
+    raises OverflowError, not ValueError, so a 400-digit timeout (a raw POST
+    can hold one) raised out of ``compile_plan`` and ``doctor.check``, which
+    the compile routes run on every draft."""
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_SHUTTER_TIMEOUT_S
+    if not math.isfinite(timeout) or timeout <= 0:
+        return DEFAULT_SHUTTER_TIMEOUT_S
+    return timeout
+
+
 class FlatPanelPlacement(enum.Enum):
     """Where the panel sits relative to the light path — the FLAT PANEL node's
     ``position`` field ("Dust-cover panel" / "Dome-mounted" / "Handheld").
@@ -1107,13 +1129,9 @@ class DomePolicy:
         rather than being honoured. Zero would make ``open_and_confirm`` give up
         before the roof could possibly have moved — turning the one promise this
         stage makes ("the sky is above you") into a coin toss on every run.
+        So does one that is no finite number (``_shutter_timeout``).
         """
-        try:
-            timeout = float(params.get("timeout"))
-        except (TypeError, ValueError):
-            timeout = DEFAULT_SHUTTER_TIMEOUT_S
-        if timeout <= 0:
-            timeout = DEFAULT_SHUTTER_TIMEOUT_S
+        timeout = _shutter_timeout(params.get("timeout"))
         # "Azimuth" has two options, "Bind to mount" and "Manual". Only an
         # explicit Manual gives up binding: an unrecognised value keeps the
         # node's own default, and an unbound dome vignettes the night rather
@@ -1134,12 +1152,7 @@ class DomePolicy:
         Any ``on_unsafe`` the block carries is READ AND DISCARDED — see the class
         docstring. The plan is data that arrives from disk and from clients; it
         does not get a vote on whether the roof shuts in the rain."""
-        try:
-            timeout = float(block.get("shutter_timeout_s"))
-        except (TypeError, ValueError):
-            timeout = DEFAULT_SHUTTER_TIMEOUT_S
-        if timeout <= 0:
-            timeout = DEFAULT_SHUTTER_TIMEOUT_S
+        timeout = _shutter_timeout(block.get("shutter_timeout_s"))
         # Same back-compat as `from_node_params`: a plan compiled before
         # 2026-08-14 spells the key `slave`.
         bind = block.get("bind", block.get("slave", True))

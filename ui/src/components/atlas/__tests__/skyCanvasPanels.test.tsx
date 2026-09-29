@@ -70,6 +70,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { SkyCanvas } = await import("../SkyCanvas");
 const { skyToView, fovCornersSky } = await import("../../../lib/atlasFov");
+const { deproject, fovFromOptics } = await import("../../../lib/framing");
 type SkyPanel = import("../PanelLayer").SkyPanel;
 type SkyRow = import("../../../lib/skyRegion").SkyRow;
 
@@ -646,6 +647,359 @@ test("with panels, the rotate handle stands on the top edge of the grid as tiled
   assert(stalk != null, "no rotate stalk drawn with panels");
   near(-Number(stalk.getAttribute("y1")), (FX.response.total_fov_y_deg * PPD) / 2, 0.5,
     "the stalk's base above the grid centre (viewBox units)");
+});
+
+// ============================ text over the grid (#385, S5-SKY; spec 2.3)
+// The probe saw "Your camera . 29.7'x22.2'" in the middle of the M31 3x2,
+// over panel 2-3's label at 390 px: SkyCanvas pinned it above the camera
+// footprint at the frame centre, and with panels that footprint is not drawn
+// (PanelShapes replaces FovOverlay), so the label named a rectangle nobody
+// could see and sat where the panel labels, the skip toggles, are. Object
+// labels had the same collision in waiting: nothing reserved the panel
+// labels' boxes, so an object's name could be placed on top of one.
+//
+// The cases below give jsdom the two measurements it lacks, as a browser
+// would make them, and grade the boxes, not the markup:
+//   * a glyph of the 12 px mono these labels use is 7.2 px, SkyCanvas's own
+//     fallback advance, and what its label placement measures here;
+//   * the camera label's height, which SkyCanvas measures in a layout effect
+//     to grow it UP off the frame, is 16.5 px a line, and it wraps to two
+//     lines when its natural width is wider than its maxWidth (as it is for a
+//     grid at the centre of this 360 px canvas). Left at jsdom's 0 it would
+//     sit 16.5 px lower than in any browser, and a collision could be passed
+//     or failed on that alone.
+const GLYPH = 7.2;
+const LINE = 16.5;
+interface Box { x: number; y: number; w: number; h: number }
+const meets = (a: Box, b: Box) =>
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+const boxStr = (b: Box) => `(${b.x.toFixed(1)}, ${b.y.toFixed(1)}, ${b.w.toFixed(1)} x ${b.h.toFixed(1)})`;
+
+/** A panel label's box in CSS px, from what PanelLabels draws: centred on its
+ *  panel, an inline-flex plate of px-1 and a 1 px border, its visible parts
+ *  gap-1 apart, the order chip with px-0.5 and a 1 px border of its own, and
+ *  14 px leading plus the border. The classes are read, so a restyle of the
+ *  label fails here by name instead of leaving this model (and SkyCanvas's
+ *  reservation, which is built on the same chrome) quietly wrong. */
+function panelLabelBox(el: any): Box {
+  const cls = String(el.className);
+  for (const c of ["px-1", "gap-1", "border", "leading-[14px]", "inline-flex"]) {
+    assert(cls.split(/\s+/).includes(c),
+      `a panel label's chrome changed (no "${c}" in ${JSON.stringify(cls)}): the box model here and SkyCanvas's reservation both assume it`);
+  }
+  const parts = ["panel-flag", "panel-order", "panel-rc"]
+    .map((r) => el.querySelector(`[data-role="${r}"]`) as any)
+    .filter((p) => p != null);
+  let w = 2 * 4 + 2 * 1;
+  parts.forEach((p, i) => {
+    w += String(p.textContent).length * GLYPH + (i > 0 ? 4 : 0);
+    if (p.getAttribute("data-role") === "panel-order") {
+      const pc = String(p.className).split(/\s+/);
+      assert(pc.includes("px-0.5") && pc.includes("border"),
+        `the order chip's chrome changed (${JSON.stringify(p.className)})`);
+      w += 2 * 2 + 2 * 1;
+    }
+  });
+  const h = 14 + 2;
+  const cx = parseFloat(el.style.left);
+  const cy = parseFloat(el.style.top);
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
+}
+const panelLabelBoxes = (): { name: string; box: Box }[] =>
+  labels().map((el) => ({
+    name: `${Number(el.getAttribute("data-row")) + 1}-${Number(el.getAttribute("data-col")) + 1}`,
+    box: panelLabelBox(el),
+  }));
+
+/** The camera label's box in CSS px: its outer span is right-anchored at
+ *  `left` (translateX(-100%)), `maxWidth` wide at most, at `top`. */
+function camLabelBox(el: any): Box {
+  const natural = String(el.textContent).length * GLYPH + 8;
+  const maxW = parseFloat(el.style.maxWidth);
+  const w = Math.min(natural, maxW);
+  const lines = natural > maxW ? 2 : 1;
+  const right = parseFloat(el.style.left);
+  return { x: right - w, y: parseFloat(el.style.top), w, h: LINE * lines };
+}
+
+/** The grid's top edge in CSS px: the highest corner of any drawn outline. */
+function gridTopCss(): number {
+  const ys = (Array.from(container.querySelectorAll('[data-role="panel"] [data-mark="outline"]')) as any[])
+    .flatMap((el) => (el.getAttribute("d") as string).match(/-?[\d.]+/g)!.map(Number)
+      .filter((_v: number, i: number) => i % 2 === 1));
+  assert(ys.length > 0, "no panel outline is drawn, so the grid has no top edge to measure");
+  return toCss(Math.min(...ys));
+}
+
+/** Give the camera label the height a browser gives it (see above) while
+ *  `fn` runs. The label's height is read in a layout effect keyed on the
+ *  label being shown, so each render inside starts from a canvas without it. */
+function withCamHeights(fn: () => void): void {
+  const proto = win.HTMLElement.prototype;
+  const real = proto.getBoundingClientRect;
+  proto.getBoundingClientRect = function (this: any) {
+    const txt = String(this.textContent ?? "");
+    if (this.style?.maxWidth && /^Your camera/.test(txt)) {
+      const natural = txt.length * GLYPH + 8;
+      const maxW = parseFloat(this.style.maxWidth);
+      const h = LINE * (natural > maxW ? 2 : 1);
+      const w = Math.min(natural, maxW);
+      return { left: 0, top: 0, x: 0, y: 0, width: w, height: h, right: w, bottom: h, toJSON() { return {}; } };
+    }
+    return real.call(this);
+  };
+  try { fn(); } finally { proto.getBoundingClientRect = real; }
+}
+
+/** Render with the camera label freshly measured: first without optics (no
+ *  label, so the layout effect lets go of it), then as asked. */
+function renderMeasured(over: Record<string, unknown>): void {
+  render({ ...over, optics: null });
+  render(over);
+}
+
+// The probe's case: a camera much smaller than the field the grid was tiled
+// for (the sim rig's 29.7' x 22.2' against the block's panels), so the
+// footprint the label was pinned to is small and the label lands inside the
+// grid. 2000 mm, 3.76 um, 4144 x 2822 is 0.45 x 0.30 deg.
+const SMALL_CAMERA = { ...OPTICS, focal_length_mm: 2000 };
+
+// Mutant "label pinned at the frame centre" (SkyCanvas draws the 'Your
+// camera' label in panel mode where it draws it without panels, pinned above
+// the live camera footprint at the frame centre, as before this change):
+//   failed, 20/21 (run in scratchpad S5-SKY-mut):
+//   x with panels the 'Your camera' label is never drawn inside the grid, and
+//     its box meets no panel label: at 5 deg wide with a 0.45 x 0.30 deg
+//     camera: 'Your camera' (0.0, 133.1, 164.0 x 33.0) reaches 71.5 px into the
+//     grid (top edge at 94.5)
+test("with panels the 'Your camera' label is never drawn inside the grid, and its box meets no panel label", () => {
+  withCamHeights(() => {
+    // Control: without panels the label is drawn and measured, so the finder
+    // and the box model below can see one when there is one.
+    renderMeasured({ optics: SMALL_CAMERA, fovZoomDeg: 5 });
+    const plain = camLabel();
+    assert(plain != null, "control: no 'Your camera' label without panels - the finder cannot see one at all");
+    // ...and it is where a browser puts it: its bottom 3 px above the frame's
+    // top edge, grown up by its measured height (two lines here).
+    const small = fovFromOptics(SMALL_CAMERA);
+    near(parseFloat(plain.style.top) + camLabelBox(plain).h,
+      BOX / 2 - (small.fov_y_deg * (BOX / 5)) / 2 - 3, 0.5,
+      "control: the camera label's measured bottom edge (its height did not reach the canvas)");
+    const cases: { zoom: number; optics: typeof OPTICS; frameCenter?: typeof FRAME_AT }[] = [
+      { zoom: 5, optics: SMALL_CAMERA },
+      { zoom: 8, optics: SMALL_CAMERA },
+      { zoom: 5, optics: OPTICS },
+      { zoom: 8, optics: OPTICS },
+      { zoom: 8, optics: SMALL_CAMERA, frameCenter: FRAME_AT },
+    ];
+    for (const c of cases) {
+      const where = `at ${c.zoom} deg wide with a ${c.optics === SMALL_CAMERA ? "0.45 x 0.30" : "1.68 x 1.15"} deg camera` +
+        (c.frameCenter ? ", the grid moved" : "");
+      const geom = { ...GEOM, pxPerDeg: VIEW / c.zoom };
+      renderMeasured({ panels: PANELS, panelFov: PANEL_FOV, optics: c.optics, fovZoomDeg: c.zoom,
+                       frameCenter: c.frameCenter });
+      // The labels this case grades are really on the canvas at this zoom.
+      assert(labels().length === 6, `${where}: ${labels().length} panel labels drawn, expected 6`);
+      near(parseFloat(labelAt(0, 0).style.left),
+        toCss(skyToView(PANELS[0].ra_hours, PANELS[0].dec_deg, geom)!.x), 0.5, `${where}: label 1-1 left`);
+      const cam = camLabel();
+      if (!cam) continue;
+      const cb = camLabelBox(cam);
+      const top = gridTopCss();
+      assert(cb.y + cb.h <= top,
+        `${where}: 'Your camera' ${boxStr(cb)} reaches ${(cb.y + cb.h - top).toFixed(1)} px into the grid (top edge at ${top.toFixed(1)})`);
+      for (const pl of panelLabelBoxes()) {
+        assert(!meets(cb, pl.box),
+          `${where}: 'Your camera' ${boxStr(cb)} is drawn over panel ${pl.name}'s label ${boxStr(pl.box)}`);
+      }
+    }
+  });
+});
+
+// The label comes BACK when the panels go (a grid cut to one frame, or the
+// route's answer not in yet), and it must come back measured. Its height is
+// read in a layout effect keyed on the label being shown. Keyed on the pair it
+// was keyed on before (haveOptics, gridLabelsOnCanvas), neither of which moves
+// when panels come and go, the effect never ran for a label that appeared
+// because the panels went: its height stayed the 0 read while it was hidden,
+// and it sat a whole label lower, over the frame's top edge.
+//
+// Mutant "cam label effect keyed on the old flags" (the layout effect's deps
+// back to [haveOptics, gridLabelsOnCanvas]), run in a private scratch copy
+// (S5-SKY-verify-mut), never in the shared tree (#254); every other case in
+// this file stayed green under it:
+//   failed, 21/22:
+//   x a 'Your camera' label that appears when the panels go is measured, and
+//     parks 3 px above the frame: the label's bottom edge once the panels are
+//     gone (its height was never measured): got 199.056899196, expected
+//     166.056899196 (+-0.5)
+// "label pinned at the frame centre" (above) also turns this case red, on its
+// precondition. This case is the 22nd; the tallies recorded for the mutants
+// above were taken with 21.
+test("a 'Your camera' label that appears when the panels go is measured, and parks 3 px above the frame", () => {
+  withCamHeights(() => {
+    const small = fovFromOptics(SMALL_CAMERA);
+    const want = BOX / 2 - (small.fov_y_deg * (BOX / 5)) / 2 - 3;
+    // From a canvas with no label at all, into panel mode, where the label is
+    // dropped: nothing has been measured, and nothing is drawn to measure.
+    render({ optics: null, fovZoomDeg: 5 });
+    render({ panels: PANELS, panelFov: PANEL_FOV, optics: SMALL_CAMERA, fovZoomDeg: 5 });
+    assert(camLabel() === undefined,
+      "precondition: 'Your camera' is drawn in panel mode, so this case never starts from a hidden label");
+    // The panels go; the optics, the zoom and the grid's place do not.
+    render({ optics: SMALL_CAMERA, fovZoomDeg: 5 });
+    const cam = camLabel();
+    assert(cam != null, "'Your camera' is not drawn once the panels are gone");
+    near(parseFloat(cam.style.top) + camLabelBox(cam).h, want, 0.5,
+      "the label's bottom edge once the panels are gone (its height was never measured)");
+  });
+});
+
+// An object's name must not be placed over a panel's: each panel label's box
+// is reserved before object labels are placed. Stars are put where their
+// names would land on a panel label, and the names are graded where they go.
+/** Where a probing star goes so that its name lands on panel label `b`.
+ *  "first": its first-choice box (east, to the right of the marker: skyMarkers
+ *  ANCHOR_ORDER) starts 2 px inside the label's left edge and runs across it,
+ *  the plain collision. The other four GRAZE one
+ *  edge, reaching 1 px past it: an east name ending inside the left edge, a
+ *  WEST name starting inside the right edge (see the sweep for how it is sent
+ *  west), or an east name with its bottom inside the top edge or its top
+ *  inside the bottom edge. skyMarkers keeps 3 px between two boxes, so a
+ *  graze of 1 px finds a reservation that falls 4 px or more short of that
+ *  edge; one that runs across the label would still hit a reservation
+ *  several px too small. */
+type Probe = "first" | "left" | "right" | "top" | "bottom";
+const starBeside = (b: Box, id: string, probe: Probe = "first", zoom = FOV_ZOOM, name = id): SkyRow => {
+  // Marker radius for a magnitude-3 star is 4 viewBox units; the label sits
+  // 5 px past it (skyMarkers LABEL_GAP), 16 px tall and centred on the star,
+  // as wide as placeSky measures it (7.2 px a glyph plus 8).
+  const ppd = VIEW / zoom;
+  const gap = toCss(4) + 5;
+  const wName = name.length * GLYPH + 8;
+  const graze = 1;
+  const x = probe === "first" ? b.x - gap + 2
+    : probe === "left" ? b.x + graze - gap - wName
+    : probe === "right" ? b.x + b.w - graze + gap + wName
+    : b.x + b.w / 2 - gap;
+  const y = probe === "top" ? b.y + graze - 8
+    : probe === "bottom" ? b.y + b.h - graze + 8
+    : b.y + b.h / 2;
+  const sky = deproject((VIEW / 2 - (x * VIEW) / BOX) / ppd, (VIEW / 2 - (y * VIEW) / BOX) / ppd,
+    CENTER.ra_hours, CENTER.dec_deg);
+  const back = skyToView(sky.ra_hours, sky.dec_deg, { ...GEOM, pxPerDeg: ppd })!;
+  near(toCss(back.x), x, 0.01, `star ${id} lands where it was put (x)`);
+  near(toCss(back.y), y, 0.01, `star ${id} lands where it was put (y)`);
+  return { ...STAR, id, label: name, ra_hours: sky.ra_hours, dec_deg: sky.dec_deg } as SkyRow;
+};
+const objectLabel = (id: string) =>
+  container.querySelector(`[data-role="object-label"][data-object-id="${id}"]`) as any;
+/** An object label's box: top-left at left/top, 16 px tall, as wide as its
+ *  text plus px-1 and a 1 px border. */
+function objectLabelBox(el: any): Box {
+  return {
+    x: parseFloat(el.style.left), y: parseFloat(el.style.top),
+    w: String(el.textContent).length * GLYPH + 2 * 4 + 2 * 1, h: 16,
+  };
+}
+
+// Mutant "panel labels not reserved" (SkyCanvas's reservedBoxes leaves the
+// panel labels out, as before this change):
+//   failed, 20/21 (run in scratchpad S5-SKY-mut):
+//   x an object label avoids the panel labels: the one it would land on
+//     first, and every one of the six: the star's name (90.1, 149.6, 24.4 x
+//     16.0) is placed over panel 1-3's label (88.1, 149.6, 48.8 x 16.0)
+// The reservation's own geometry, mutated in the same scratch copy; each
+// failed 20/21 on this case:
+//   "reserved boxes not centred" (each box starts at the label's centre):
+//     a star at the left of panel 1-1's label has its name (249.4, 136.1,
+//     17.2 x 16.0) placed over panel 1-1's label (263.6, 136.1, 48.8 x 16.0)
+//   "reserved boxes shifted left" (by 12 px): the star lost its name
+//     entirely: there was room for it west of the marker
+//   "reserved boxes too short" (8 px tall, 4 px short at top and bottom): a
+//     star at the bottom of panel 1-1's label has its name (288.0, 151.1,
+//     17.2 x 16.0) placed over panel 1-1's label (263.6, 136.1, 48.8 x 16.0)
+//   "reserved boxes without the order chip": a star at the left of panel
+//     2-2's label has its name (135.8, 207.9, 17.2 x 16.0) placed over panel
+//     2-2's label (150.0, 207.9, 60.0 x 16.0)
+//   "panel label restyled" (PanelLayer.tsx's plate px-1 made px-2): a panel
+//     label's chrome changed (no "px-1" in "absolute inline-flex items-center
+//     gap-1 text-[12px] mono px-2 bg-black/60 whitespace-nowrap
+//     leading-[14px] text-ink border border-transparent
+//     focus-visible:outline-none focus-visible:border-accent"): the box model
+//     here and SkyCanvas's reservation both assume it
+// Until the sweep's probes grazed each edge by 1 px, "too short" and "without
+// the order chip" both passed 21/21: a probe whose name runs across a label
+// still hits a reservation several px too small, and at 8 deg wide most
+// probes lost their names to a neighbouring label and graded nothing.
+test("an object label avoids the panel labels: the one it would land on first, and every one of the six", () => {
+  // No optics: no camera label, so nothing but the panel labels can move the
+  // star's name, and the panels are outlined at the size they were tiled for.
+  render({ panels: PANELS, panelFov: PANEL_FOV, optics: null });
+  const boxes = panelLabelBoxes();
+  assert(boxes.length === 6, `${boxes.length} panel labels to reserve, expected 6`);
+  const b13 = boxes.find((b) => b.name === "1-3")!;
+  const star = starBeside(b13.box, "S3");
+  // Control: with no panels, the star's name takes its first choice, east of
+  // the marker, which is where panel 1-3's label will be.
+  render({ optics: null, skyRows: [star] });
+  const alone = objectLabel("S3");
+  assert(alone != null, "control: the star's name is not drawn with no panels at all");
+  const aloneBox = objectLabelBox(alone);
+  assert(aloneBox.x > toCss(skyToView(star.ra_hours, star.dec_deg, GEOM)!.x),
+    `control: with no panels the star's name is not east of it (${boxStr(aloneBox)})`);
+  assert(meets(aloneBox, b13.box),
+    `control: the star's first-choice box ${boxStr(aloneBox)} does not reach panel 1-3's label ${boxStr(b13.box)}, so the case below proves nothing`);
+  render({ panels: PANELS, panelFov: PANEL_FOV, optics: null, skyRows: [star] });
+  const moved = objectLabel("S3");
+  assert(moved != null, "the star lost its name entirely: there was room for it west of the marker");
+  const mb = objectLabelBox(moved);
+  for (const pl of panelLabelBoxes()) {
+    assert(!meets(mb, pl.box), `the star's name ${boxStr(mb)} is placed over panel ${pl.name}'s label ${boxStr(pl.box)}`);
+  }
+  // Every one: a star grazing each edge of each panel label in turn, so a
+  // reservation that is off to one side, too narrow or too short is caught at
+  // the edge where it falls short. At 8 deg wide the labels sit about 19 px
+  // apart, too close for a name to fit beside one without touching the next,
+  // so this runs at 5 deg wide (about 60 px apart) with one-glyph names: a
+  // name that is dropped proves nothing, and here each one has room to land.
+  const ZOOM_SWEEP = 5;
+  render({ panels: PANELS, panelFov: PANEL_FOV, optics: null, fovZoomDeg: ZOOM_SWEEP });
+  const wide = panelLabelBoxes();
+  assert(wide.length === 6, `${wide.length} panel labels at ${ZOOM_SWEEP} deg wide, expected 6`);
+  let named = 0;
+  for (const pl of wide) {
+    for (const probe of ["left", "right", "top", "bottom"] as Probe[]) {
+      const id = `B${pl.name}${probe[0]}`;
+      const s = starBeside(pl.box, id, probe, ZOOM_SWEEP, "S");
+      if (probe === "right") {
+        // An east name runs away from anything on its right, so only a WEST
+        // name can graze a right edge. placeSky tries last frame's anchor
+        // first (so a name does not flip sides while the sky moves), and that
+        // is the way in: one frame with a blocker named first, on the same
+        // spot, takes the star's east slot and sends its name west; the next
+        // frame, blocker gone and panels drawn, tries west first.
+        const blocker = { ...s, id: `K${id}`, label: "K" } as SkyRow;
+        render({ optics: null, fovZoomDeg: ZOOM_SWEEP, skyRows: [blocker, s] });
+        const west = objectLabel(id);
+        const sx = toCss(skyToView(s.ra_hours, s.dec_deg, { ...GEOM, pxPerDeg: VIEW / ZOOM_SWEEP })!.x);
+        assert(west != null && objectLabelBox(west).x + objectLabelBox(west).w < sx,
+          `precondition: the blocker did not send the star's name west of panel ${pl.name}'s label, so its right edge goes ungraded`);
+      }
+      render({ panels: PANELS, panelFov: PANEL_FOV, optics: null, fovZoomDeg: ZOOM_SWEEP, skyRows: [s] });
+      const el = objectLabel(id);
+      if (!el) continue;
+      named++;
+      const ob = objectLabelBox(el);
+      for (const other of panelLabelBoxes()) {
+        assert(!meets(ob, other.box),
+          `a star at the ${probe} of panel ${pl.name}'s label has its name ${boxStr(ob)} placed over panel ${other.name}'s label ${boxStr(other.box)}`);
+      }
+    }
+  }
+  // Every probe has room for its name somewhere, so all 24 keep one; a probe
+  // that loses its name has graded nothing.
+  assert(named === 24, `only ${named} of the 24 probing stars kept a name, so ${24 - named} edges went ungraded`);
 });
 
 // ------------------------------------------------------------------- report

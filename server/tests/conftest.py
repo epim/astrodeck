@@ -121,7 +121,26 @@ def _never_touch_the_real_config():
     that directory, the last listing the two real profiles into the route
     bodies it scans. The store's path and the library's directory are
     recorded first as the developer's real config (``_RealConfig``), which
-    ``_no_test_reads_the_real_config`` then refuses for the whole run."""
+    ``_no_test_reads_the_real_config`` then refuses for the whole run.
+
+    AND EVERYTHING ELSE BUILT ON ``CONFIG_DIR`` AT IMPORT, swept rather
+    than listed (2026-09-28, S5, verifying #361; filed as #436). #361 said
+    a new singleton left on the real directory would fail loudly; the guard
+    watched two classes, so one of any other class read quietly. A scan of
+    every ``astrodeck`` module found three more singletons
+    (``plans.plan_library``, ``locations.location_store``,
+    ``auth.users.user_store``), five module globals read at call time
+    (``flows.store``'s ``CONFIG_DIR``, whose comment says it is resolved
+    live, ``config``'s egain, filter-name and focuser files, and
+    ``licensing``'s consent file), and eleven more bindings of those paths
+    used only at import, as a default argument or not at all. A probe of
+    the suite against a stand-in
+    real config (scratchpad s5-srvsmall-probe) measured hundreds of tests
+    reading them: the sim rig's connect reads ``egain.json`` and
+    ``filter_names.json``, the app's startup lists ``plans/``, and the site
+    leak scanner read the real ``flows/``, ``plans/``, ``locations.json``
+    and ``users.json``. ``_sweep_off_the_real_config`` moves them all, and
+    the guard now watches the directory as well as the two classes."""
     import tempfile
     import astrodeck.config as config_mod
     import astrodeck.profiles as profiles_mod
@@ -133,7 +152,8 @@ def _never_touch_the_real_config():
                      elements_mod.COMET_FILE)
     real_start = elements_mod.EphemerisStore.start
     _RealConfig.record(files=(real, config_mod.CONFIG_FILE),
-                       profile_dirs=(real_profiles, config_mod.PROFILES_DIR))
+                       profile_dirs=(real_profiles, config_mod.PROFILES_DIR),
+                       dirs=(real_dir, config_mod.CONFIG_FILE.parent))
     unwatch = _watch_the_real_config()
     with tempfile.TemporaryDirectory(prefix="astrodeck-test-config-") as d:
         config_mod.config_store._path = Path(d) / "astrodeck.json"
@@ -159,8 +179,12 @@ def _never_touch_the_real_config():
         # loop calls ``_run``/``refresh`` directly, which is what the ephemeris
         # tests already do.
         elements_mod.EphemerisStore.start = lambda self: None
+        # Last, so the moves above are already off the real directory and
+        # the sweep's known positives are the seams nothing above moves.
+        put_back = _sweep_off_the_real_config(real_dir, Path(d))
         assert config_mod.config_store._path != real
         yield
+    put_back()
     config_mod.config_store._path = real
     config_mod.config_store._cfg = None
     config_mod.CONFIG_DIR = real_dir
@@ -177,7 +201,10 @@ class _RealConfig:
 
     Real means the LOCATION: the ``astrodeck.json`` the process store was
     built on (``server/config/``, or ``ASTRODECK_CONFIG_DIR``) and the
-    ``profiles/`` directory the profile library was built on. The session
+    ``profiles/`` directory the profile library was built on; and, for
+    everything else in it that no class here owns (``plans/``,
+    ``locations.json``, ``users.json``, ``egain.json``), that DIRECTORY
+    (``dirs``, S5). The session
     fixture above moves every shared seam off both, so what reaches them
     during a run came around it: a ``ConfigStore()`` or ``ProfileLibrary()``
     built with no path, whose defaults were bound to the real location when
@@ -197,6 +224,11 @@ class _RealConfig:
     files: frozenset[str] = frozenset()
     #: Resolved paths of the real profiles directory.
     profile_dirs: frozenset[str] = frozenset()
+    #: The real config DIRECTORY, resolved and as given (the audit hook in
+    #: ``_watch_the_real_config`` compares unresolved paths, which is what
+    #: a path built on ``CONFIG_DIR`` is), for everything in it the two
+    #: classes above do not own.
+    dirs: frozenset[str] = frozenset()
     #: One line per reach, ``"<seam> (<what>)"``, appended by the watchers
     #: and read by the per-test guard. Names only: never a value read.
     reads: list[str] = []
@@ -209,9 +241,35 @@ class _RealConfig:
         return os.path.normcase(str(Path(path).resolve()))
 
     @classmethod
-    def record(cls, *, files, profile_dirs) -> None:
+    def record(cls, *, files, profile_dirs, dirs=()) -> None:
         cls.files = frozenset(cls._key(p) for p in files)
         cls.profile_dirs = frozenset(cls._key(p) for p in profile_dirs)
+        cls.dirs = frozenset(
+            k for p in dirs
+            for k in (cls._key(p), os.path.normcase(os.path.abspath(p))))
+
+    @classmethod
+    def entry(cls, path) -> str | None:
+        """The entry of a real config directory that ``path`` is in, as the
+        guard names it (``plans/``, ``locations.json``), or None.
+
+        No ``resolve()``: this runs for every file the process opens, so it
+        is two string operations and a prefix test, against both spellings
+        of each directory ``record`` kept."""
+        if path is None or isinstance(path, int):
+            return None
+        try:
+            text = os.fsdecode(path) if isinstance(path, bytes) else os.fspath(path)
+            key = os.path.normcase(os.path.abspath(text))
+        except (TypeError, ValueError, OSError):
+            return None
+        for real in cls.dirs:
+            if key.startswith(real + os.sep):
+                head, sep, _ = key[len(real) + 1:].partition(os.sep)
+                return head + "/" if sep else head
+            if key == real:
+                return "./"
+        return None
 
     @classmethod
     def reached(cls, seam: str, where, kind: str) -> bool:
@@ -240,9 +298,142 @@ class _RealConfig:
         cls.reads.append(line)
 
 
+#: The audit events through which a file in the real config directory is
+#: read, listed or changed (``os.replace`` raises ``os.rename``).
+_DIRECTORY_EVENTS = frozenset({
+    "open", "os.listdir", "os.scandir", "os.remove", "os.rename", "os.rmdir",
+    "os.mkdir", "os.truncate", "shutil.copyfile", "shutil.rmtree"})
+#: Of those, the ones whose first two arguments are both paths.
+_TWO_PATH_EVENTS = frozenset({"os.rename", "shutil.copyfile"})
+
+#: What the sweep leaves on the real config, by name: the two locations
+#: ``_RealConfig`` records, which are also the defaults a ``ConfigStore()``
+#: or ``ProfileLibrary()`` built with no path falls back to (the guard's
+#: known positive in test_real_config_guard.py builds exactly those).
+_LEFT_ON_THE_REAL_CONFIG = frozenset({
+    "astrodeck.config.CONFIG_FILE", "astrodeck.config.PROFILES_DIR"})
+
+#: The sweep's known positives, ``(module, attribute path)``: seams tests
+#: were measured reaching the real directory through (the s5-srvsmall-probe
+#: run: ``egain.json`` and ``filter_names.json`` by the sim rig's connect,
+#: ``plans/`` by the app's startup, and ``flows/``, ``locations.json`` and
+#: ``users.json`` by the site leak scanner). Each is asserted moved, so a
+#: sweep that took nowhere fails at the first test rather than passing
+#: every test that never reads one.
+_SWEEP_MUST_MOVE = (
+    ("astrodeck.plans", "plan_library._dir"),
+    ("astrodeck.locations", "location_store._path"),
+    ("astrodeck.auth.users", "user_store._path"),
+    ("astrodeck.flows.store", "CONFIG_DIR"),
+    ("astrodeck.config", "EGAIN_CONFIG_FILE"),
+    ("astrodeck.config", "FILTER_CONFIG_FILE"),
+)
+
+
+def _built_on_the_real_config(real_dir) -> list[tuple[object, str, str, str]]:
+    """Every global of a loaded ``astrodeck`` module, and every attribute of
+    an ``astrodeck`` object a module holds, that is a path in ``real_dir``:
+    ``(owner, attribute, dotted name, path relative to real_dir)``, each
+    object once however many modules bind it.
+
+    ``_LEFT_ON_THE_REAL_CONFIG`` is left out, and no function's default
+    arguments are looked at: a ``ConfigStore()`` built with no path is the
+    guard's to name, not the sweep's to hide. Paths only, never strings:
+    ``provenance.LAYER_CONFIG`` is the word "config", which resolves to the
+    real directory from ``server/`` and is not a path."""
+    real = Path(real_dir).resolve()
+    real_key = _RealConfig._key(real)
+    found: list[tuple[object, str, str, str]] = []
+    seen: set[tuple[int, str]] = set()
+
+    def inside(value) -> str | None:
+        if not isinstance(value, PurePath):
+            return None
+        key = _RealConfig._key(value)
+        if key != real_key and not key.startswith(real_key + os.sep):
+            return None
+        return os.path.relpath(Path(value).resolve(), real)
+
+    for name, mod in list(sys.modules.items()):
+        if mod is None or not (name == "astrodeck"
+                               or name.startswith("astrodeck.")):
+            continue
+        for attr, value in list(vars(mod).items()):
+            where = inside(value)
+            if where is not None:
+                dotted = f"{name}.{attr}"
+                if dotted not in _LEFT_ON_THE_REAL_CONFIG:
+                    found.append((mod, attr, dotted, where))
+                continue
+            if isinstance(value, type) or not str(
+                    getattr(type(value), "__module__", "")).startswith(
+                    "astrodeck"):
+                continue
+            try:
+                held = list(vars(value).items())
+            except TypeError:
+                continue
+            for inner, path in held:
+                where = inside(path)
+                if where is not None and (id(value), inner) not in seen:
+                    seen.add((id(value), inner))
+                    found.append((value, inner, f"{name}.{attr}.{inner}",
+                                  where))
+    return found
+
+
+def _sweep_off_the_real_config(real_dir, throwaway: Path):
+    """Move everything ``_built_on_the_real_config`` finds to the same place
+    under ``throwaway``, and return the undo.
+
+    SWEPT, NOT LISTED, for the reason ``IsolatedConfig.sweep`` gives: the
+    session fixture listed the seams it knew, three times over, and each
+    new one read the developer's config until someone found it. Only what
+    is loaded when the fixture runs is swept; a module imported later binds
+    ``config.CONFIG_DIR``, which is already the throwaway, and anything
+    else it builds on the real directory is the guard's to name.
+
+    Its known positives (``_SWEEP_MUST_MOVE``) are imported first and
+    asserted moved, and the two stores among them are asserted to hold
+    nothing loaded: a store that read the real file before the sweep would
+    go on serving it from its cache wherever its path pointed."""
+    import importlib
+    for name, _ in _SWEEP_MUST_MOVE:
+        importlib.import_module(name)
+    moves: list[tuple[object, str, object]] = []
+    for owner, attr, _, where in _built_on_the_real_config(real_dir):
+        moves.append((owner, attr, getattr(owner, attr)))
+        setattr(owner, attr, throwaway / where)
+
+    def undo() -> None:
+        for owner, attr, old in reversed(moves):
+            setattr(owner, attr, old)
+
+    try:
+        home = _RealConfig._key(throwaway)
+        for name, path in _SWEEP_MUST_MOVE:
+            owner = sys.modules[name]
+            *parents, last = path.split(".")
+            for part in parents:
+                owner = getattr(owner, part)
+            assert _RealConfig._key(getattr(owner, last)).startswith(home), (
+                f"{name}.{path} is still on the developer's real config: "
+                f"the sweep missed it")
+        from astrodeck.auth.users import user_store
+        from astrodeck.locations import location_store
+        assert location_store._items is None and user_store._users is None, (
+            "a store read the developer's real config before the sweep "
+            "moved it, and would serve it from its cache")
+    except BaseException:
+        undo()
+        raise
+    return undo
+
+
 def _watch_the_real_config():
     """Wrap every method through which a ``ConfigStore`` reads or writes its
-    file and a ``ProfileLibrary`` its directory, so a call on the real
+    file and a ``ProfileLibrary`` its directory, and hook every file the
+    process touches in the real config directory, so a reach of the real
     location is noted in ``_RealConfig.reads``. Returns the undo.
 
     At the class, so a store or library built by any test, any fixture or
@@ -306,6 +497,33 @@ def _watch_the_real_config():
     for name in ("_all", "get", "save", "delete"):
         watch(ProfileLibrary, name, "_dir", "profiles directory")
 
+    # THE DIRECTORY, for everything in it no class above owns (S5, verifying
+    # #361; #436). A plan library, a location store, a user store and five
+    # module globals read at call time were built on CONFIG_DIR at import
+    # and nobody watched them, so "a new singleton fails loudly" held only
+    # for the two classes. An audit hook sees every open, listing, removal
+    # and rename in the process, so a singleton nobody has found yet is
+    # watched too. Measured: 2 us on a 42 us open-and-read, and 75 ns on
+    # every other audit event. A hook cannot be removed, so the undo
+    # disarms it; and it must never raise, because an audit hook that
+    # raises fails the operation it was watching.
+    armed = [True]
+
+    def audited(event: str, args: tuple) -> None:
+        if event not in _DIRECTORY_EVENTS or not armed[0]:
+            return
+        try:
+            for path in args[:2] if event in _TWO_PATH_EVENTS else args[:1]:
+                entry = _RealConfig.entry(path)
+                if entry is not None:
+                    _RealConfig.note(
+                        f"{event} of {entry} (the real config directory)")
+        except Exception:  # noqa: BLE001 - see above
+            pass
+
+    sys.addaudithook(audited)
+    undo.append(lambda: armed.__setitem__(0, False))
+
     def unwatch() -> None:
         for step in reversed(undo):
             step()
@@ -328,12 +546,14 @@ def _config_reads_stay_off_the_real_one(nodeid: str):
         # output goes.
         raise AssertionError(
             f"{nodeid} reached the developer's real config: "
-            f"{', '.join(got)}. The session fixture moves the shared seams "
-            f"it knows off it, so this came around them: a ConfigStore() or "
-            f"ProfileLibrary() with no path, a reload of astrodeck.config, "
-            f"a path put back, or a new shared seam that fixture should "
-            f"move (_never_touch_the_real_config). What the "
-            f"test answers is then this machine's config (issue #341). Give "
+            f"{', '.join(got)}. The session fixture moves every shared seam "
+            f"built on it that is loaded when it runs, so this came around "
+            f"them: a ConfigStore(), ProfileLibrary() or other store built "
+            f"with no path, a seam built after that fixture ran, a reload "
+            f"of astrodeck.config, or a path put back "
+            f"(_never_touch_the_real_config, _sweep_off_the_real_config). "
+            f"What the test answers is then this machine's config (issues "
+            f"#341, #361, #436). Give "
             f"it a config of its own: the isolated_config fixture "
             f"(conftest), or ConfigStore(path=tmp_path / ...).")
 
@@ -341,8 +561,9 @@ def _config_reads_stay_off_the_real_one(nodeid: str):
 @pytest.fixture(autouse=True)
 def _no_test_reads_the_real_config(_never_touch_the_real_config, request):
     """Fail, at its own teardown, any test that read or wrote the
-    developer's real config file or profiles directory (``_RealConfig``;
-    issue #341). Its reads are noted by the watchers the session fixture
+    developer's real config file, profiles directory or anything else in
+    the real config directory (``_RealConfig``; issues #341, #361, #436). Its
+    reads are noted by the watchers the session fixture
     installs; this fixture only attributes them.
 
     What it sees: the test body and every function-scoped fixture set up

@@ -59,13 +59,22 @@ read there with no clock of its own, by the engine's meridian countdown and
 by the simulator mount, which latches its pier side from it at each slew
 (#298). The golden trace is then the same at every hour of the day:
 test_group_golden_wall_clock.py shifts every ``time.time`` in the process
-to four of them and compares it byte for byte. One input a night reads is
-on neither clock (#368): the hub's 2 s status poll runs in real time, and its
-meridian cache (``hub.last_meridian``) feeds the engine's ``live`` chip and
-the ETA's flip cost. A night inside either window publishes a trace that
-depends on where in real time the poll lands; the golden night never
-enters one, and that file's ``stop_the_status_poll`` is for a night that
-does.
+to four of them and compares it byte for byte.
+
+THE HUB'S MERIDIAN IS THE NIGHT'S TOO (#368). The hub's status poll runs
+every 2 s of REAL time, and its meridian block (``hub.last_meridian``)
+feeds the engine's ``live`` chip, inside ``meridian_flip_warn_min``, and the
+ETA's flip cost, while a flip is due before the run ends. A night of hours
+runs in about a second, so whether a poll landed in it, and at which fake
+instant, was up to the scheduler: a night inside either window published
+a different trace in two tries of three. So `Night` stops the poll for the
+night, drops the block it left (from whenever it last ran, for wherever
+the mount pointed then), and holds the block itself, from the hub's own
+`_compute_meridian`
+on the night's clock, at the night's start, at each wake and after each
+slew (`Night._hold_the_meridian`). Its cases are in
+test_group_harness_meridian_clock.py. test_group_golden_wall_clock.py's
+``stop_the_status_poll`` predates this and is now a no-op beside it.
 
 The trace stops at the first terminal publish. What comes after it is the
 wind-down, which the group driver does not touch, and which reads things
@@ -153,6 +162,12 @@ HORIZON_S = 16 * 3600.0
 #: and short enough that a spin fails in bounded time instead of holding a
 #: core until somebody notices.
 SPIN_BOUND_S = 10.0
+#: How long, in REAL seconds, `Night._hold_the_meridian` waits on the hub's
+#: meridian block before it drops it (#368). The block reads the mount's
+#: side and time to flip, which the simulator answers without waiting; a
+#: test's double that never answers must not stall the night, as in the
+#: poll it would only stall a task of its own.
+MERIDIAN_HOLD_BOUND_S = 0.5
 
 
 def ra_at(ha_h: float, t: float = T0, lon: float = LON) -> float:
@@ -736,6 +751,18 @@ class Night:
     and S3 example cases); anything but True is refused, since a night half
     on the wall clock is exactly that failure.
 
+    ``hub.last_meridian`` IS HELD ON THE NIGHT'S CLOCK (#368). The hub's
+    real-time status poll is stopped for the night, and stopped again if a
+    connect path restarts it (``ensure_status_poller``); it is not started
+    again when the night ends. The block it left is dropped, and the
+    harness writes the block itself at the night's start, at each wake and
+    after each slew, the moments its answer can change for the engine: the
+    clock moves for a running engine only at a wake (a capture a test makes
+    outside the engine moves it while the engine is parked, and the wake
+    that follows holds the block), and the pointing, in a night the harness
+    scripts, only at a slew. A sync or a guide pulse inside one instant is
+    seen at the next wake.
+
     ``spin_bound_s`` is the spin watchdog's bound for `run` (#319), in real
     seconds; only the watchdog's own tests shorten it.
     """
@@ -825,10 +852,33 @@ class Night:
         async def slew(ra_hours, dec_deg):
             self._note("slew", round(float(ra_hours), 6),
                        round(float(dec_deg), 6))
-            await real_slew(ra_hours, dec_deg)
+            try:
+                await real_slew(ra_hours, dec_deg)
+            finally:
+                # The pointing moved inside this instant, and the states
+                # the engine publishes before the next wake read the
+                # meridian for where it points now (#368). In the finally,
+                # since a slew that failed or was cut short may have moved.
+                await self._hold_the_meridian()
 
         monkeypatch.setattr(tel, "set_tracking", set_tracking)
         monkeypatch.setattr(tel, "slew", slew)
+
+        # THE STATUS POLL STOPS FOR THE NIGHT (#368), and so does any poll a
+        # connect path starts while it runs: the real `ensure_status_poller`
+        # still starts what else it starts (the safety poll, NINA's
+        # heartbeat), and the status task it makes is cancelled before it
+        # first runs. The block the poll left is dropped until
+        # `run` holds the night's own.
+        self._stop_the_status_poll()
+        hub.last_meridian = None
+        real_ensure = hub.ensure_status_poller
+
+        def ensure_status_poller():
+            real_ensure()
+            self._stop_the_status_poll()
+
+        monkeypatch.setattr(hub, "ensure_status_poller", ensure_status_poller)
 
         async def goto_and_center(ra_hours, dec_deg, *args, rotation_deg=None,
                                   **kw):
@@ -923,6 +973,33 @@ class Night:
         monkeypatch.setattr(bus, "log", log)
         self._driver = asyncio.get_running_loop().create_task(self._drive())
 
+    def _stop_the_status_poll(self) -> None:
+        """Cancel the hub's status poll task, if one is running (#368)."""
+        task = getattr(self.hub, "_status_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _hold_the_meridian(self) -> None:
+        """Write ``hub.last_meridian`` as the stopped poll would, now: the
+        hub's own `_compute_meridian`, for where the mount points, on the
+        night's clock, which ``catalog.coords`` reads (#368). Bounded by
+        ``MERIDIAN_HOLD_BOUND_S`` real seconds; a block that fails or does
+        not come in time is dropped, so the engine reads no meridian rather
+        than an older one."""
+        hub = self.hub
+        tel = hub.devices.get("telescope")
+        meridian = None
+        if tel is not None and getattr(tel, "connected", False):
+            async def compute():
+                ra, dec = await tel.get_position()
+                return await hub._compute_meridian(tel, ra, dec)
+            try:
+                meridian = await asyncio.wait_for(compute(),
+                                                  MERIDIAN_HOLD_BOUND_S)
+            except Exception:  # noqa: BLE001 - the poll it stands for swallows too
+                meridian = None
+        hub.last_meridian = meridian
+
     def _write_sky(self, what, exposed_at: float) -> None:
         """Put a scripted sky-angle record on the hub, exposed at
         ``exposed_at`` and solved now; ``None`` writes nothing."""
@@ -986,6 +1063,9 @@ class Night:
             if self.clock.t >= self.horizon:
                 self.frozen.set()
                 return
+            # Every engine task is parked, so the hold runs before any of
+            # them sees the new instant (#368).
+            await self._hold_the_meridian()
             fut.set_result(None)
 
     async def sleep(self, delay, result=None):
@@ -1015,6 +1095,10 @@ class Night:
         try:
             self.engine.start(plan, **start_kw)
             self.session_id = self.engine._session.id
+            # After ``start``, which loads the plan the block's
+            # ``flip_enabled`` reads, and before the run's first step, which
+            # the loop runs only at the next await that suspends (#368).
+            await self._hold_the_meridian()
             loop = asyncio.get_running_loop()
             end = loop.time() + wall_s
             while loop.time() < end and not self.frozen.is_set():

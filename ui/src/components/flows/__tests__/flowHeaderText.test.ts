@@ -1,15 +1,23 @@
 // flowHeaderText.test.ts — the four things the Flows toolbar could print untrue.
 //   Run:  npx tsx src/components/flows/__tests__/flowHeaderText.test.ts   (from ui/)
 //
-// FlowHeader is mostly markup and needs no test. These four formatters are not:
+// FlowHeader is mostly markup and needs no test. These formatters are not:
 // each one stands where a header could state something the rig never said.
 //
-//   * formatEta      — `run.etaS` has NO publisher (§G-1). The one behaviour
-//                      worth pinning is that a missing number renders as a
-//                      missing number, because FlowRunState's own comment says
-//                      "an ETA the client invented looks identical to one the
-//                      rig computed, and the operator cannot tell which they
-//                      are being shown."
+//   * formatEta      — the header's ETA is the rig's `progress.eta_s` while the
+//                      run is this flow's (#189 S5, `useFlowRunReadouts`) and
+//                      `run.etaS`, which has NO publisher (§G-1), otherwise, so
+//                      a null is common. The one behaviour worth pinning is
+//                      that a missing number renders as a missing number,
+//                      because FlowRunState's own comment says "an ETA the
+//                      client invented looks identical to one the rig computed,
+//                      and the operator cannot tell which they are being
+//                      shown." Where the ETA comes from is graded mounted, in
+//                      next/hubs/session/flows/canvas/__tests__/
+//                      phoneReadouts.test.tsx.
+//   * RunWords       — the RUN button's words (#189 S5): RUN and STOP exactly
+//                      as they always read, and CONTINUE's line with the
+//                      flow's name as the only part a narrow button may cut.
 //   * checksLabel    — the chip is the only always-visible verdict on a graph.
 //   * runBlockedReason — an honest-disabled control whose reason came back null
 //                      would be a control that silently does nothing.
@@ -45,9 +53,12 @@
 (globalThis as any).matchMedia = (globalThis as any).window.matchMedia;
 
 const {
-  formatEta, checksLabel, runBlockedReason, librarySubline, providerPill,
+  formatEta, checksLabel, runBlockedReason, librarySubline, providerPill, RunWords,
 } = await import("../FlowHeader");
 const { accessPhrase } = await import("../../../lib/caps");
+const { runCopy } = await import("../runCopy");
+const { createElement } = await import("react");
+const { renderToStaticMarkup } = await import("react-dom/server");
 
 let passed = 0;
 let failed = 0;
@@ -161,6 +172,57 @@ test("an unreported backend shows no badge rather than a guess", () => {
   eq(providerPill(undefined), null, "pre-first-poll there is nothing true to say");
   eq(providerPill(""), null, "an empty mode is not a backend");
   eq(providerPill("none"), null, "'none' is the no-backend mode");
+});
+
+// ------------------------------------------------------------- the RUN words
+// The markup `RunWords` draws, rendered to a string: no DOM needed, and the
+// string is the whole claim. A dormant session of two runs, 194 of 480 subs,
+// as the recorded progress answer has it (runCopy.test.ts grades the numbers
+// against the file itself).
+const DORMANT = {
+  flow_id: "example-m31-mosaic",
+  session: { id: "s1", status: "dormant" as const, nights: 2, count_mode: "accepted" as const },
+  blocks: [{ node_id: "n2", name: "M31", kind: "target" as const, banked: 194, owed: 286, total: 480, panels: [] }],
+  orphaned: { frames: 0, steps: 0 },
+};
+const words = (copy: ReturnType<typeof runCopy>, compact = false): string =>
+  renderToStaticMarkup(createElement(RunWords, { copy, compact }));
+
+// Mutants run in scratchpad S5-RUNUI-mut (a private copy of ui/, #254), from
+// a byte backup of FlowHeader.tsx or runCopy.ts, restored and hash-checked.
+//
+// MUTANT "RUN through the CONTINUE row" (RunWords' plain branch taken for
+// STOP alone, so RUN falls through to the CONTINUE markup). Observed,
+// flowHeaderText 14/15:
+//   x RUN and STOP read exactly as they always did: RUN's markup — got "<span class=\"flex items-baseline gap-[0.5em] min-w-0\" data-testid=\"run-copy\"><span aria-hidden=\"true\" class=\"shrink-0\">▶</span> <span class=\"shrink-0 whitespace-nowrap\" data-testid=\"run-copy-verb\">RUN</span></span>", want "<span aria-hidden=\"true\">▶</span> RUN"
+// MUTANT "STOP forgotten" (runCopy.ts `if (live) return plain("STOP")`
+// removed). Observed, flowHeaderText 14/15:
+//   x RUN and STOP read exactly as they always did: STOP's markup — got "<span class=\"flex items-baseline gap-[0.5em] min-w-0\" data-testid=\"run-copy\"><span aria-hidden=\"true\" class=\"shrink-0\">▶</span> <span class=\"shrink-0 whitespace-nowrap\" data-testid=\"run-copy-verb\">CONTINUE</span> <span class=\"min-w-0 truncate\" data-testid=\"run-copy-name\">M31 MOSAIC</span> <span class=\"shrink-0 whitespace-nowrap\" data-testid=\"run-copy-detail\">(night 3, 194/480 subs)</span></span>", want "<span aria-hidden=\"true\">■</span> STOP"
+test("RUN and STOP read exactly as they always did", () => {
+  // The markup the header and the MONITOR tab drew before S5, byte for byte:
+  // other surfaces' tests and the parity captures read these two words.
+  eq(words(runCopy("M31 mosaic", null, false)), '<span aria-hidden="true">▶</span> RUN', "RUN's markup");
+  eq(words(runCopy("M31 mosaic", DORMANT, true)), '<span aria-hidden="true">■</span> STOP', "STOP's markup");
+  eq(words(runCopy("M31 mosaic", null, false), true), '<span aria-hidden="true">▶</span> RUN',
+    "the phone header's RUN is the same");
+});
+
+// MUTANT "the parenthetical truncates" (RunWords' parenthetical given
+// `min-w-0 truncate` in place of `shrink-0 whitespace-nowrap`). Observed,
+// flowHeaderText 14/15:
+//   x CONTINUE's line cuts the name and never the parenthetical: the parenthetical never shrinks or wraps: <span class="flex items-baseline gap-[0.5em] min-w-0" data-testid="run-copy"><span aria-hidden="true" class="shrink-0">▶</span> <span class="shrink-0 whitespace-nowrap" data-testid="run-copy-verb">CONTINUE</span> <span class="min-w-0 truncate" data-testid="run-copy-name">M31 MOSAIC</span> <span class="min-w-0 truncate" data-testid="run-copy-detail">(night 3, 194/480 subs)</span></span>
+test("CONTINUE's line cuts the name and never the parenthetical", () => {
+  const html = words(runCopy("M31 mosaic", DORMANT, false));
+  assert(html.includes('<span class="min-w-0 truncate" data-testid="run-copy-name">M31 MOSAIC</span>'),
+    `the name is the part that truncates: ${html}`);
+  assert(html.includes('<span class="shrink-0 whitespace-nowrap" data-testid="run-copy-detail">'
+    + "(night 3, 194/480 subs)</span>"), `the parenthetical never shrinks or wraps: ${html}`);
+  // The phone header's compact form: the verb on screen, the whole line for
+  // a screen reader.
+  const compact = words(runCopy("M31 mosaic", DORMANT, false), true);
+  eq(compact, '<span aria-hidden="true">▶ CONTINUE</span>'
+    + '<span class="sr-only" data-testid="run-copy-text">CONTINUE M31 MOSAIC (night 3, 194/480 subs)</span>',
+  "the compact CONTINUE");
 });
 
 for (const f of failures) console.log(f);

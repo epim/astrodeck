@@ -756,32 +756,49 @@ class TestThePayloadCarriesNoSiteData:
     and names itself (#19), so the payload is held to an allow-list HERE: any
     key added later has to be added to this list, in a diff someone reads."""
 
+    #: A mosaic block's own keys (``grid``, ``skipped`` and, since S5,
+    #: ``group_id``) are listed here too, and ``_full_payload`` carries a
+    #: mosaic so the walk reaches them: a list that allows a key no payload
+    #: here carries is a list nobody is held to.
     ALLOWED = {
         "top": {"flow_id", "session", "blocks", "orphaned"},
         "session": {"id", "status", "nights", "count_mode"},
         "block": {"node_id", "name", "kind", "banked", "owed", "total",
-                  "panels"},
+                  "panels", "grid", "skipped", "group_id"},
+        "grid": {"rows", "cols"},
         "panel": {"target_id", "name", "row", "col", "banked", "owed",
                   "total", "steps"},
+        "skipped": {"target_id", "name", "row", "col", "banked"},
         "step": {"step_id", "filter", "frame_type", "exposure_s", "count",
                  "banked", "owed"},
         "orphaned": {"frames", "steps"},
     }
 
     def _full_payload(self):
-        """A TARGET and a POOL in one flow with a session, so every level of
-        the payload is populated."""
+        """A TARGET, a POOL and a 2x2 mosaic with a panel skipped in one
+        flow with a session, so every level of the payload is populated."""
         graph = FlowGraph(
             nodes=[_n("t", "target", name="M31", ra="00h 42m 44s",
                       dec="+41 16 09", rotation=-1),
                    _n("p", "pool", x=50, members="M42, M31", minAlt=0,
                       moonSep=0, maxHA=0),
                    _n("c", "capture", x=100, filter="L", exposure=60,
-                      gain=100, bin="1", count=5, goal=0)],
+                      gain=100, bin="1", count=5, goal=0),
+                   _n("m", "target", x=150, name="M16", ra="18h 18m 48s",
+                      dec="-13 49 00", rotation=30, angle="Rotate to PA",
+                      rows=2, cols=2, overlap=25, fovX=2.0, fovY=1.33,
+                      skip="2-2"),
+                   _n("k", "capture", x=200, filter="Ha", exposure=300,
+                      gain=100, bin="1", count=2, goal=0)],
             edges=[_e("t", "target", "p", "arm"),
-                   _e("p", "target", "c", "run")])
+                   _e("p", "target", "c", "run"),
+                   _e("c", "complete", "m", "arm"),
+                   _e("m", "target", "k", "run")])
         compiled, plan = _compile(graph)
-        frames = [f for t in plan.targets
+        # With a stage after the pool's, the first TARGET's lane is the pool
+        # alone and it owns no step (spec 1.5), so only a target with a step
+        # can take a frame.
+        frames = [f for t in plan.targets if t.steps
                   for f in _frames(t.steps[0].id, 1)]
         return flow_progress(compiled, plan,
                              _session(plan, frames + _frames("gone", 2)),
@@ -795,16 +812,31 @@ class TestThePayloadCarriesNoSiteData:
             'steps', ...}
               Extra items in the left set:
               'transit_alt_deg'
+
+        Mutant "a transit altitude on the mosaic block" (S5: the mosaic's
+        block gains ``transit_alt_deg`` beside ``group_id``), run in
+        scratchpad ``s5-feed-mut`` once this payload carried a mosaic,
+        failed here and in the mosaic file's allow-list test:
+            AssertionError: block carries keys outside the allow-list
+            assert {'banked', 'g...node_id', ...} <= {'banked', 'g...node_id',
+            ...}
+              Extra items in the left set:
+              'transit_alt_deg'
         """
         got = self._full_payload()
-        assert [b["kind"] for b in got["blocks"]] == ["target", "pool"], \
+        assert [b["kind"] for b in got["blocks"]] == [
+            "target", "pool", "target"], \
             "premise: both kinds of block are present"
+        assert "grid" in got["blocks"][2], "premise: the third is a mosaic"
         seen = {level: set() for level in self.ALLOWED}
         seen["top"] |= set(got)
         seen["session"] |= set(got["session"])
         seen["orphaned"] |= set(got["orphaned"])
         for block in got["blocks"]:
             seen["block"] |= set(block)
+            seen["grid"] |= set(block.get("grid") or {})
+            for s in block.get("skipped") or []:
+                seen["skipped"] |= set(s)
             for panel in block["panels"]:
                 seen["panel"] |= set(panel)
                 for step in panel["steps"]:

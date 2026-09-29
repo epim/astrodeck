@@ -26,7 +26,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -301,10 +303,57 @@ class TestTheEighthExample:
         t = _example(MOSAIC_ID).graph.node("n2")
         assert (t.params["fovX"], t.params["fovY"]) == M31_MOSAIC_FOV
         assert t.params["fovFrom"] == M31_MOSAIC_FOV_FROM
+        # DELIBERATE PIN CHANGE (#405 item 2, S5-TONIGHT): "bin 1" is no
+        # longer one of the line's facts. The modal's camera line names the
+        # bin itself (the next test), so the line carrying it too made the
+        # screen say "bin 1" twice.
         for fact in (f"{s['width_px']} x {s['height_px']} px",
-                     f"{s['pixel_um']:g} um", f"{s['focal_mm']:g} mm",
-                     "bin 1"):
+                     f"{s['pixel_um']:g} um", f"{s['focal_mm']:g} mm"):
             assert fact in M31_MOSAIC_FOV_FROM, fact
+
+    def test_its_provenance_names_no_bin_since_the_camera_line_does(self):
+        """#405 item 2. GRID's camera-field line is the modal's
+        ``cameraFieldLine`` (``framingModel.ts``), which writes "Tiled for
+        X x Y deg at bin 1 (<fovFrom>)": it names the bin itself, for every
+        block, because ``fovX``/``fovY`` are bin-1 degrees by definition
+        (spec 3.1). The Example's ``fovFrom`` ended "(bin 1)" too, so its
+        line read "... at bin 1 (IMX571 sensor, ... at 1000 mm focal length
+        (bin 1))". The provenance names no bin, and the line, composed as
+        ``cameraFieldLine`` composes it (read from its source, which this
+        suite cannot run), says "bin 1" once.
+
+        RED under mutant "(bin 1) restored" (``M31_MOSAIC_FOV_FROM`` ending
+        "focal length (bin 1)" again), observed; the test above it stays
+        green, since it no longer lists the bin among the line's facts:
+
+            E       AssertionError: the Example's provenance names a bin,
+            which the camera line already names: 'IMX571 sensor, 6248 x
+            4176 px of 3.76 um, at 1000 mm focal length (bin 1)'
+            E       assert 'bin' not in 'IMX571 sens...ngth (bin 1)'
+            E         'bin' is contained here:
+            E           l length (bin 1)
+        """
+        assert "bin" not in M31_MOSAIC_FOV_FROM, (
+            f"the Example's provenance names a bin, which the camera line "
+            f"already names: {M31_MOSAIC_FOV_FROM!r}")
+        model = (Path(__file__).resolve().parents[2] / "ui" / "src" /
+                 "components" / "flows" / "framing" / "framingModel.ts"
+                 ).read_text(encoding="utf-8")
+        found = re.search(r"export function cameraFieldLine\([^)]*\)[^{]*\{"
+                          r"(.*?)\n\}", model, re.S)
+        assert found, "premise: framingModel.ts defines cameraFieldLine"
+        # The template nests a template literal for the provenance, so it
+        # is read to the end of its line, not to the next backtick.
+        (template,) = re.findall(r"return `(Tiled for .*)`;\s*$",
+                                 found.group(1), re.M)
+        assert "at bin 1${from ? ` (${from})` : \"\"}" in template, (
+            f"premise: cameraFieldLine names the bin before the provenance: "
+            f"{template}")
+        t = _example(MOSAIC_ID).graph.node("n2")
+        line = (f"Tiled for {t.params['fovX']:.2f} x "
+                f"{t.params['fovY']:.2f} deg at bin 1 "
+                f"({t.params['fovFrom']})")
+        assert line.count("bin 1") == 1, line
 
     def test_its_angle_is_set_and_lays_the_grid_along_the_galaxy(self):
         """A set angle, Rotate to PA 55 (never a default: spec 1.8). The

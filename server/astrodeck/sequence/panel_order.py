@@ -1,14 +1,27 @@
 """The mosaic panel order: which panel a group visits next (mosaic spec 5.2,
 5.9, 2.3; U-01, #189).
 
-ONE FUNCTION FOR EVERY CALLER. The S2 scheduler re-sorts a group's slice of
-``remaining`` at the run's start and at every pass boundary (5.1), and
-ResumeArm re-centres on the panel it picks (5.9). The progress route does not
-call it yet (spec Revision 6, row 4): numbering the panels in run order (2.3)
-is the modal's, in S4, and it must come here too. Each sorting for itself
-would drift, and the panel the Monitor calls next would not be the one the
-mount goes to. So they share this function, and it decides nothing but the
-order.
+ONE FUNCTION FOR EVERY CALLER ON THE SERVER. The S2 scheduler re-sorts a
+group's slice of ``remaining`` at the run's start and at every pass boundary
+(5.1), and ResumeArm re-centres on the panel it picks (5.9). Each sorting for
+itself would drift, and the panel the Monitor calls next would not be the one
+the mount goes to. So they share this function, and it decides nothing but
+the order. The progress route does not call it yet (spec Revision 6, row 4).
+
+THE TARGET MODAL COPIES THE RULE (#412 item 1). S4 built the modal's run-order
+numbering (2.3, 2.4 PANELS) as a TypeScript sort that never reaches this
+function: ``ui/src/components/flows/framing/sections/PanelsSection.tsx``,
+``snakeIndex`` and ``panelRows``. It copies two of the keys here, the snake
+index and least complete first, and orders "Grid order" by the snake alone,
+because the modal has the progress route's counts and neither visit times nor
+the site, as ResumeArm has no visit times either; "Setting first" it lists in
+grid order and says so. The two copies are held to one table,
+``tests/fixtures/panel_order_cases.json``, which
+``test_panel_order_fixture.py`` grades against this module and
+``ui/src/components/flows/framing/__tests__/panelOrderFixture.test.ts``
+against ``panelRows``: a change to either copy's snake or least-complete
+rule turns its own side red. A change here that the modal should follow
+belongs in the fixture first.
 
 PURE, ON ONE SNAPSHOT PER PASS. The function walks no ledger and reads no
 clock. The caller takes one :class:`OrderSnapshot`: the fraction banked per

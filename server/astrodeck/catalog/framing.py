@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import sys
 
 from fastapi import APIRouter, Depends
 from pydantic import (BaseModel, ConfigDict, Field, field_validator,
@@ -705,9 +706,34 @@ def _why(e: BaseException) -> str:
     ``FileNotFoundError`` the config-store cold-load race raised (fixed
     2026-08-01) stringifies to nothing at all, and an empty reason is exactly
     the silence this field exists to end.
+
+    EXCEPT FOR AN OPERATOR-WORDED ONE WITH A MESSAGE (#405 item 1).
+    ``visibility.NoSite`` carries a sentence written for the operator ("no
+    observing site is saved, ... save the site in Settings"), and the type in
+    front of it put "NoSite:" in the PANELS night card, the Sky hub's framing
+    card and the classic Atlas's mosaic summary on every rig with no site,
+    which is every fresh install. Its message is the whole reason. With an
+    empty message it keeps the type, the one thing left to say.
     """
     detail = str(e).strip()
-    return f"{type(e).__name__}: {detail}" if detail else type(e).__name__
+    if not detail:
+        return type(e).__name__
+    if _operator_worded(e):
+        return detail
+    return f"{type(e).__name__}: {detail}"
+
+
+def _operator_worded(e: BaseException) -> bool:
+    """Whether ``e`` is an exception whose message was written for the
+    operator: ``visibility.NoSite``, the one the transit altitudes raise.
+
+    Looked up in ``sys.modules``, never imported: ``visibility`` pulls astropy
+    and the hub and auth stack, and ``_why`` also explains a failure to
+    import it, when importing it again would fail again. An exception can
+    only be a ``NoSite`` once the module that defines the class has loaded."""
+    visibility = sys.modules.get(f"{__package__}.visibility")
+    no_site = getattr(visibility, "NoSite", None)
+    return no_site is not None and isinstance(e, no_site)
 
 
 async def _stamp_transit_alt(panels: list[dict], date: str | None, *,

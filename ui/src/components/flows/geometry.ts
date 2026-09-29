@@ -253,6 +253,30 @@ export function cardBox(node: FlowNodeRec, defs: PortTable, tier: FlowTier): Car
   return { x: node.x, y: node.y, w: nodeW(tier), h: nodeLayoutHeight(node, defs) };
 }
 
+/** How one surface bends the arc, where the canvas's numbers do not fit it.
+ *  Every field defaults to the canvas's (spec 1.4), so a caller that passes
+ *  nothing draws the arc the spec describes.
+ *
+ *  The phone FLOW tab is the one caller that passes any (#360): its column
+ *  layout leaves a 14 px gutter at each edge of a container that clips what
+ *  crosses it, so a 24 px stub puts both legs outside, and it interleaves
+ *  every card, so the card after the tail in flow order stands 16 px below
+ *  the tail's box, where a run 28 px down lands inside it. */
+export interface LoopArcOpts {
+  /** How far outside the outermost body cards the two legs stand
+   *  (`LOOP_ARC_STUB` when absent). */
+  stub?: number;
+  /** How far below the lowest body card, and at least how far from any card
+   *  in `avoid`, the run lies (`LOOP_ARC_DROP` when absent). */
+  drop?: number;
+  /** Cards outside the body the run must not cross, each by its formula box.
+   *  A card the run's span would meet pushes the run below it, `drop` clear
+   *  of it; one that already lies `drop` clear, or beside the span, does not.
+   *  None when absent: on the canvas the spec promises to clear the body
+   *  only, and the operator arranges the rest. */
+  avoid?: readonly FlowNodeRec[];
+}
+
 /** The arc and the two places a layer hangs things on it. */
 export interface LoopArc {
   /** The SVG path, both ends on their port anchors. */
@@ -287,7 +311,11 @@ export interface LoopArc {
  *  horizontal stubs at port height could meet a card, and only one drawn right
  *  of the tail or left of the TARGET at that height, which no generator or
  *  Example lays out. Ends as it starts, on the anchors `portPos` gives, so the
- *  wire attaches exactly where every other wire does. */
+ *  wire attaches exactly where every other wire does.
+ *
+ *  `opts` bends those three numbers for a surface the canvas's do not fit
+ *  (`LoopArcOpts`): a shorter stub, a shorter drop, and cards outside the
+ *  body the run must pass under rather than through. */
 export function loopArc(
   from: FlowNodeRec,
   fromPort: string,
@@ -296,10 +324,13 @@ export function loopArc(
   lane: readonly FlowNodeRec[],
   defs: PortTable,
   tier: FlowTier,
+  opts: LoopArcOpts = {},
 ): LoopArc | null {
   const p1 = portPos(from, fromPort, "out", defs, tier);
   const p2 = portPos(to, toPort, "in", defs, tier);
   if (!p1 || !p2) return null;
+  const stub = opts.stub ?? LOOP_ARC_STUB;
+  const drop = opts.drop ?? LOOP_ARC_DROP;
 
   // One box per card: the tail is in the lane AND the source, and a hand-built
   // graph can name the TARGET twice.
@@ -311,9 +342,22 @@ export function loopArc(
     body.push(cardBox(n, defs, tier));
   }
 
-  const runY = Math.max(p1.y, p2.y, ...body.map((b) => b.y + b.h)) + LOOP_ARC_DROP;
-  const dropX = Math.max(p1.x, ...body.map((b) => b.x + b.w)) + LOOP_ARC_STUB;
-  const riseX = Math.min(p2.x, ...body.map((b) => b.x)) - LOOP_ARC_STUB;
+  let runY = Math.max(p1.y, p2.y, ...body.map((b) => b.y + b.h)) + drop;
+  const dropX = Math.max(p1.x, ...body.map((b) => b.x + b.w)) + stub;
+  const riseX = Math.min(p2.x, ...body.map((b) => b.x)) - stub;
+
+  // UNDER, NOT THROUGH, every other card the run's span meets. Each pass drops
+  // the run below the cards it would cross, which none of them can then block
+  // again, so the walk ends within one pass per card. A body card never
+  // blocks: the run already lies `drop` below every one of them.
+  const others = (opts.avoid ?? [])
+    .map((n) => cardBox(n, defs, tier))
+    .filter((b) => b.x < dropX && b.x + b.w > riseX);
+  for (;;) {
+    const hit = others.filter((b) => runY - drop < b.y + b.h && runY + drop > b.y);
+    if (hit.length === 0) break;
+    runY = Math.max(...hit.map((b) => b.y + b.h)) + drop;
+  }
 
   const corners: Point[] = [
     p1,
@@ -340,8 +384,9 @@ export function loopArcPath(
   lane: readonly FlowNodeRec[],
   defs: PortTable,
   tier: FlowTier,
+  opts: LoopArcOpts = {},
 ): string | null {
-  return loopArc(from, fromPort, to, toPort, lane, defs, tier)?.d ?? null;
+  return loopArc(from, fromPort, to, toPort, lane, defs, tier, opts)?.d ?? null;
 }
 
 /** A polyline with each interior corner rounded by a quadratic of radius `r`,

@@ -131,6 +131,14 @@ export default function FirstRunWizard(): JSX.Element | null {
   const config = useConfig();
   const equipConnected = useEquipConnected();
   const targetCount = usePlan().targets.length;
+  // SAVED FLOWS TICK "PICK A TARGET" (#458). Since S6 the step says to press
+  // SEND TO FLOW WIZARD, whose GENERATE saves a flow and adds nothing to the
+  // Plan, so a Plan count alone never ticked it for a user who did what it
+  // said. The count is the store's library, which GENERATE refreshes; with the
+  // library not yet read it is 0 (the effect below reads it once the guide is
+  // open), never a guess.
+  const libraryLoaded = useStore((s) => s.flows.libraryLoaded);
+  const flowCount = useStore((s) => (s.flows.libraryLoaded ? s.flows.cards.length : 0));
   const previewCount = usePreviews().length;
   const hasCooler = useStore((s) => !!s.status?.camera?.can_cool);
   const coolerActive = useStore((s) => !!s.status?.camera?.cooler?.on);
@@ -191,8 +199,21 @@ export default function FirstRunWizard(): JSX.Element | null {
   // the site, it has to funnel through loadConfig() too, or this un-ticks again.
   const siteIsDefault = site?.is_default ?? config?.site?.is_default ?? true;
 
+  // The library is read when the Flows screen opens, so a guide opened on
+  // any other screen has no flow count until it asks: once per opening, and
+  // a failed read (a role that cannot list flows, an older server) is not
+  // retried in a loop, since `libraryLoaded` stays false and this does not
+  // re-run until the guide opens again.
+  useEffect(() => {
+    if (open && !libraryLoaded) void useStore.getState().flowsLoadLibrary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   const view = computeWizard(
-    { siteIsDefault, equipConnected, profileCount, targetCount, hasCooler, coolerActive, frameCount: previewCount },
+    {
+      siteIsDefault, equipConnected, profileCount, targetCount, flowCount,
+      hasCooler, coolerActive, frameCount: previewCount,
+    },
     manualId,
   );
 

@@ -1,12 +1,13 @@
-// framingModel.ts - the Target modal's pure model (#189 S4 item 1; spec
-// 2026-09-23 flows mosaic, 2.3-2.5, 2.7, 3.1, 3.2 and A.2).
+// framingModel.ts - the Target modal's pure model (#189 S4 item 1, S5 run
+// mode; spec 2026-09-23 flows mosaic, 2.3-2.7, 3.1, 3.2 and A.2).
 //
 // PURE: no React, no store, no DOM, no fetch, no clock. The sheet
 // (TargetFramingSheet.tsx) owns every one of those and hands this file what
 // they said: the node's params, the rig block and the readouts the compile
 // answered, the route's answer and the key it was asked for, the progress
-// block, whether the page is offline, and the time. Everything a test needs
-// to hold the modal to the spec is therefore reachable without a browser.
+// block, the live run's group, whether the page is offline, and the time.
+// Everything a test needs to hold the modal to the spec is therefore
+// reachable without a browser.
 //
 // WHAT THIS FILE REFUSES TO KNOW. Where the telescope points is the SERVER'S
 // (framing.py is canonical for slew targets, and `to_plan` derives the panels
@@ -17,13 +18,20 @@
 // never computed in the client"); `runLines` only spells them. Whether a
 // re-frame keeps its counts is `reframe_carry`'s, asked through the route.
 //
-// The rig block, the readouts and the sky angle arrive from the server as
-// JSON, so their types are declared HERE, structurally, rather than imported
-// from a module that would pull the store into a pure file. Every reader
-// treats a missing or non-finite number as "unknown", never as zero: a hop of
-// 0 s is not "not measured", and a field of 0 x 0 deg is not a camera.
+// The rig block and the readouts arrive from the server as JSON, so their
+// types are declared HERE, structurally, rather than imported from a module
+// that would pull the store into a pure file. The sky angle is the exception:
+// `status.sky_angle` already has its one type, types.ts `SkyAngleRecord`,
+// which a server test holds to the record the solve writes, and types.ts
+// imports nothing, so the model takes a Pick of it and declares no copy
+// (#408). Every reader treats a missing or non-finite number as "unknown",
+// never as zero: a hop of 0 s is not "not measured", and a field of 0 x 0 deg
+// is not a camera.
 import { NODE_DEFS, TARGET_ANGLES, targetAngle } from "../nodeDefs";
-import { mosaicTotalFov, wrapRaHours } from "../../../lib/framing";
+import { DEFAULT_OVERLAP, mosaicTotalFov, wrapRaHours } from "../../../lib/framing";
+import { panelStateOf, type PanelRunState } from "../flowRunState";
+import type { PanelState } from "../../atlas/PanelLayer";
+import type { SequenceGroupState, SkyAngleRecord } from "../../../types";
 
 // ------------------------------------------------------------------ types
 
@@ -55,22 +63,15 @@ export interface RigBlock {
   hop_measured: boolean;
 }
 
-/** `status.sky_angle`: the angle the last imaging-camera solve measured
- *  (server `sky_angle.note_solved_rotation`, whose record this copies). */
-export interface SkyAngleRecord {
-  /** Degrees in [0, 360), the CROTA2 convention. */
-  pa_deg: number;
-  exposed_at: number | null;
-  /** Unix seconds. */
-  solved_at: number;
-  /** "plate solve + sync", "rotate to PA", "rotator sync", "saved-frame WCS",
-   *  "guide-scope offset" or "polar alignment". */
-  source: string;
-  pier_side: "east" | "west" | null;
-  camera?: string;
-  calibrated?: boolean;
-  reason?: string | null;
-}
+/** What the model reads of `status.sky_angle`, the angle the last
+ *  imaging-camera solve measured: a Pick of types.ts `SkyAngleRecord`, whose
+ *  keys test_types_mirror_status.py holds to server
+ *  `sky_angle.note_solved_rotation`. A Pick and not a copy (#408): S4's model
+ *  declared its own record, looser than the server's and held to nothing, and
+ *  the sheet's full record compiled against it only because it was looser.
+ *  The keys are exactly the ones read below (`rec.x`), which
+ *  framingModel.test.ts checks, so a test can build the four it needs. */
+export type MeasuredAngle = Pick<SkyAngleRecord, "pa_deg" | "pier_side" | "solved_at" | "source">;
 
 /** The compile's numbers for one block's RUN section (spec 2.4): one entry
  *  of the route's `readouts` key, server `flows/readouts.py` `_block`, field
@@ -274,8 +275,10 @@ export function angleOf(draft: FramingDraft): string {
 
 /** What the field LOOKS like, as server `save_rules.block_shape` reads it:
  *  the overlap as a fraction clamped to [0, 0.5] (a non-finite one is the
- *  missing-key 25%), the angle the grid is laid out at (null for any angle,
- *  or a negative rotation), and the field (0 unless finite and positive). */
+ *  missing-key overlap, `lib/framing.ts`'s `DEFAULT_OVERLAP`, the one overlap
+ *  every framing starts from, spec 2.4), the angle the grid is laid out at
+ *  (null for any angle, or a negative rotation), and the field (0 unless
+ *  finite and positive). */
 export interface Layout {
   rows: number;
   cols: number;
@@ -288,7 +291,7 @@ export interface Layout {
 export function layoutOf(draft: FramingDraft): Layout {
   const { rows, cols } = gridOf(draft);
   const pct = numOf(draft, "overlap");
-  const overlap = Math.min(0.5, Math.max(0, (Number.isFinite(pct) ? pct : 25) / 100));
+  const overlap = Math.min(0.5, Math.max(0, Number.isFinite(pct) ? pct / 100 : DEFAULT_OVERLAP));
   const rot = numOf(draft, "rotation");
   const rotation = Number.isFinite(rot) ? rot : -1;
   const field = (k: DraftKey) => {
@@ -453,6 +456,9 @@ export function suggestGrid(sizeArcmin: number, draft: FramingDraft): { cols: nu
 // ------------------------------------------------------------------ locks
 
 export const ANY_ANGLE_ON_A_GRID = "a grid is laid out at one camera angle";
+/** DONE's lock on a grid with no angle (S5 orchestrator ruling 1, #411). */
+export const NO_ANGLE_ON_A_GRID =
+  "a grid is laid out at one camera angle: choose one, or USE MEASURED after a plate solve";
 export const NO_ROTATOR =
   "the active profile has no rotator: set the camera's angle by hand and choose CAMERA FIXED AT";
 export const NO_OPTICS = "set the camera and focal length in Settings > Optics";
@@ -509,11 +515,85 @@ export function matchCamera(draft: FramingDraft, rig: RigBlock | null | undefine
 /** Choosing an ANGLE segment. ANY ANGLE writes rotation -1 (spec 2.4), the
  *  one value that means "none" (#150). A set mode keeps a set angle and turns
  *  "none" into 0, north up: a set mode with a negative rotation is doctor M2
- *  and refused at the run. */
+ *  and refused at the run. Only a press on a segment comes here, never a grid
+ *  change (S5 orchestrator ruling 1, #411): the 0 is then on screen, in the
+ *  degree field beside the segment just pressed, for the operator to change. */
 export function setAngleMode(draft: FramingDraft, mode: TargetAngle): FramingDraft {
   if (mode === "Any angle") return { ...draft, angle: mode, rotation: -1 };
   const rot = numOf(draft, "rotation");
   return { ...draft, angle: mode, rotation: Number.isFinite(rot) && rot >= 0 ? draft.rotation : 0 };
+}
+
+// ------------------------------------------- an angle for a grid (#411)
+//
+// S5 ORCHESTRATOR RULING 1 (#411; spec 1.8: "a default angle nobody chose is
+// exactly the I-04 defect"). A grid is laid out at one camera angle, so a
+// draft at ANY ANGLE that becomes one (a stepper, SUGGEST GRID) owes an angle.
+// S4 paid it with ROTATE TO, whose "none" is 0, so a DONE after a column
+// change commanded the rotator to PA 0: an angle nobody chose, set in the
+// ANGLE section below GRID, off screen on a phone. Now nothing pays it but
+// the operator. The draft stays at ANY ANGLE and DONE is locked until an angle
+// is chosen (`gridAngleLock`); with a measurement in `status.sky_angle` the
+// sheet OFFERS the measured angle (`angleOffer`), which applies only when
+// pressed (`takeOffer`); and the readout strip says the angle the grid is laid
+// out at (`stripAngle`), so the state is on screen wherever the operator is.
+// The rotate handle sets the angle it is turned to, as before: that is an
+// angle the operator chose.
+
+/** Whether the draft is a grid with no angle to lay it out at: ANY ANGLE, or
+ *  a set mode whose rotation reads as none (3.1). Doctor M2 refuses both. */
+function angleOwed(draft: FramingDraft): boolean {
+  const l = layoutOf(draft);
+  return l.rows * l.cols > 1 && l.rotation_deg === null;
+}
+
+/** DONE's lock for a grid with no angle, or null. A single panel at ANY
+ *  ANGLE owes none: it is a whole block, whose first solve's angle the run
+ *  locks (Revision 2 ruling 9). */
+export function gridAngleLock(draft: FramingDraft): string | null {
+  return angleOwed(draft) ? NO_ANGLE_ON_A_GRID : null;
+}
+
+/** The measured angle, offered to a grid that owes one. */
+export interface AngleOffer {
+  mode: TargetAngle;
+  /** Degrees, the measurement to a tenth, as USE MEASURED takes it. */
+  rotation: number;
+  /** The offer's button: "ROTATE TO 37.2 deg", in the segments' words. */
+  label: string;
+}
+
+/** The offer, or null when the draft owes no angle or nothing was measured.
+ *  ROTATE TO the measured angle, the one the camera was solved at; CAMERA
+ *  FIXED AT it where the rig says there is no rotator (unknown is not no, as
+ *  ROTATE TO's own lock reads it), or where the operator already chose CAMERA
+ *  FIXED AT and it lacks only the angle. */
+export function angleOffer(
+  draft: FramingDraft, rec: MeasuredAngle | null | undefined, rig: RigBlock | null | undefined,
+): AngleOffer | null {
+  const pa = measuredPa(rec);
+  if (pa === null || !angleOwed(draft)) return null;
+  const fixed = angleOf(draft) === "Camera fixed at PA" || rig?.has_rotator === false;
+  const mode: TargetAngle = fixed ? "Camera fixed at PA" : "Rotate to PA";
+  return { mode, rotation: pa, label: `${fixed ? "CAMERA FIXED AT" : "ROTATE TO"} ${pa.toFixed(1)} deg` };
+}
+
+/** The draft once the operator presses the offer: its mode and angle, and
+ *  nothing else. */
+export function takeOffer(draft: FramingDraft, offer: AngleOffer): FramingDraft {
+  return { ...draft, angle: offer.mode, rotation: offer.rotation };
+}
+
+/** The readout strip's angle line: the angle the grid is laid out at, "rotate
+ *  to 30.0 deg" or "camera fixed at 30.0 deg"; "any angle" for a single panel
+ *  that holds none, and "no angle" for a grid that owes one. */
+export function stripAngle(draft: FramingDraft): string {
+  const l = layoutOf(draft);
+  if (l.rotation_deg === null) return l.rows * l.cols > 1 ? "no angle" : "any angle";
+  const deg = `${l.rotation_deg.toFixed(1)} deg`;
+  const mode = angleOf(draft);
+  return mode === "Rotate to PA" ? `rotate to ${deg}`
+    : mode === "Camera fixed at PA" ? `camera fixed at ${deg}` : deg;
 }
 
 // ------------------------------------------------ the route and DONE
@@ -818,7 +898,7 @@ function ago(seconds: number): string {
   return min < 120 ? `${min} min ago` : `${Math.floor(min / 60)} h ago`;
 }
 
-function measuredPa(rec: SkyAngleRecord | null | undefined): number | null {
+function measuredPa(rec: MeasuredAngle | null | undefined): number | null {
   const pa = rec?.pa_deg;
   return typeof pa === "number" && Number.isFinite(pa) ? Math.round(pa * 10) / 10 : null;
 }
@@ -826,7 +906,7 @@ function measuredPa(rec: SkyAngleRecord | null | undefined): number | null {
 /** The USE MEASURED chip (spec 2.4), from `status.sky_angle`: "camera
  *  measured 37.2 deg, 14 min ago, by the centring solve, pier west". Null
  *  with no record. `nowS` is the caller's clock, in unix seconds. */
-export function useMeasuredLine(rec: SkyAngleRecord | null | undefined, nowS: number): string | null {
+export function useMeasuredLine(rec: MeasuredAngle | null | undefined, nowS: number): string | null {
   const pa = measuredPa(rec);
   if (rec == null || pa === null) return null;
   const parts = [`camera measured ${pa.toFixed(1)} deg`];
@@ -840,7 +920,7 @@ export function useMeasuredLine(rec: SkyAngleRecord | null | undefined, nowS: nu
 /** One tap on USE MEASURED: the grid laid out at the angle the camera sits
  *  at. That is the no-rotator workflow, so a draft at ANY ANGLE becomes
  *  CAMERA FIXED AT; a set mode keeps its mode and takes the angle. */
-export function useMeasured(draft: FramingDraft, rec: SkyAngleRecord | null | undefined): FramingDraft {
+export function useMeasured(draft: FramingDraft, rec: MeasuredAngle | null | undefined): FramingDraft {
   const pa = measuredPa(rec);
   if (pa === null) return draft;
   const mode = angleOf(draft) === "Any angle" ? "Camera fixed at PA" : draft.angle;
@@ -937,10 +1017,82 @@ export function runLines(r: RunReadouts, rig: RigBlock | null | undefined): stri
   else if (r.focus === "frames" && typeof r.autofocus_every === "number" && r.autofocus_every > 0) {
     lines.push(`focus: a sweep every ${plural(r.autofocus_every, "frame", "frames")}`);
   } else {
-    // "once": neither is armed, and a hop owes no sweep (5.6 step 6).
-    lines.push("focus: a sweep only at the first panel; set a temperature delta to refocus as the night cools");
+    // "once": neither is armed, and a hop owes no sweep (5.6 step 6). A
+    // single target has no first panel, so its one sweep is at the start
+    // (#413).
+    const when = r.mode === "single" ? "at the start" : "at the first panel";
+    lines.push(`focus: a sweep only ${when}; set a temperature delta to refocus as the night cools`);
   }
   return lines;
+}
+
+// ------------------------------------------------------------ run mode (2.6)
+//
+// While the flow's session runs, the sheet opens read-only and draws what the
+// run is doing to each panel it framed: the one being shot, the ones set
+// aside tonight with the engine's reason, and the ones done. Three facts, from
+// two answers the sheet already holds and never from a count of its own:
+//
+//   - WHICH PANEL AND WHAT IS SET ASIDE come from the live `state.group`,
+//     read through flowRunState: `groupForBlock` finds the group by the
+//     progress block's `group_id` (the id the plan minted and the engine
+//     publishes, never the name, which two blocks can share), and
+//     `panelStateOf` says what one panel is doing, with the meridian rule
+//     already applied (no panel is "being shot" across a meridian wait, for
+//     an operator or for a viewer, who is not even told which panel is held).
+//   - DONE comes from the progress route, which the slice re-reads while the
+//     run's frames land (#214), so a panel turns hatched as its last sub is
+//     banked, a re-read at most behind.
+//
+// NO TIME. Nothing here reads the group's `visit_elapsed_s`, the state's
+// `live.meridian_eta_s` or any ETA: a meridian wait's end is timed by the
+// crossing, which is the site's longitude (spec 5.10, 6.9), and a panel's
+// state is all this sheet shows of the run.
+
+/** What the live group says of each panel of the draft's grid, by label
+ *  ("<row>-<col>", counted from 1, the engine's label and PanelLayer's): only
+ *  the panels with something to draw are present.
+ *
+ *  Empty with no group, and empty when the progress block describes another
+ *  grid than the draft's (`grid` is the progress block's): the group's labels
+ *  name the panels of the plan that is running, and on another grid "2-2" is
+ *  another piece of sky. PanelsSection's `progressByCell` refuses the counts
+ *  for the same reason. */
+export function runPanelsOf(
+  group: SequenceGroupState | null | undefined,
+  rows: number,
+  cols: number,
+  grid: { rows: number; cols: number } | null | undefined,
+): Record<string, PanelRunState> {
+  const out: Record<string, PanelRunState> = {};
+  if (!group || !grid || grid.rows !== rows || grid.cols !== cols) return out;
+  for (let r = 1; r <= rows; r++) {
+    for (let c = 1; c <= cols; c++) {
+      const label = `${r}-${c}`;
+      const state = panelStateOf(label, group);
+      if (state) out[label] = state;
+    }
+  }
+  return out;
+}
+
+/** How the sky draws one panel (spec 2.3's five states), from the draft's
+ *  skip, the progress route's counts and the live run's state for it.
+ *
+ *  SKIPPED first: a skipped panel is in no plan, so no run can say anything
+ *  of it. Then the live states: SET ASIDE, which holds for the night whatever
+ *  else the group does, and SHOOTING, ahead of DONE, because the progress
+ *  count lags the run by up to a re-read and is never ahead of it, so a panel
+ *  that is both is still the panel the visit is on. Then DONE, every owed sub
+ *  banked, and PENDING. */
+export function panelDrawState(
+  panel: { skipped: boolean; banked: number; total: number },
+  run: PanelRunState | null | undefined,
+): PanelState {
+  if (panel.skipped) return "skipped";
+  if (run?.kind === "set_aside") return "set_aside";
+  if (run?.kind === "shooting") return "shooting";
+  return panel.total > 0 && panel.banked >= panel.total ? "done" : "pending";
 }
 
 // ------------------------------------------------------------ skip mirror

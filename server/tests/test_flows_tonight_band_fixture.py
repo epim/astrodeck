@@ -33,6 +33,50 @@ renders it. To rewrite it after a deliberate change to the answer:
 (through pytest, so the suite's config isolation holds while it runs), then
 look at the diff, and re-run the UI test. Never hand-edit it.
 
+DELIBERATE PIN CHANGE (#395, S5-TONIGHT; rewritten by the S5/S6
+integration, S56-INTEG, with the command above). The brief used to name the
+first capture stage only, so ``response.brief`` ended its stages at "It
+captures Ha 300 s \xd7 2 (gain 100, bin 1)." Since #395 it names every capture
+stage in the compile's flow order, and this graph has three (one per lane),
+so the rewrite added "It then captures L 60 s \xd7 5 (gain 100, bin 1)." twice.
+That one field is the whole diff; tonightMosaicBand.test.ts stays green on
+it. The old fixture, run against this tree, observed:
+``response.brief: '... It captures Ha 300 s \\xd7 2 (gain 100, bin 1). It then
+captures L 60 s \\xd7 5 (gain 100, bin 1). It then captures L 60 s \\xd7 5
+(gain 100, bin 1). If the active target ...' != '... It captures Ha 300 s
+\\xd7 2 (gain 100, bin 1). If the active target ...'``. MUTANT "if cyc / elif
+cap restored" (S5-TONIGHT's name: tonight.py's brief back to naming one
+CYCLE or the first CAPTURE), run in the private copy scratchpad
+S56-INTEG-mut: ``test_the_fixture_is_resolve_tonights_answer`` RED
+(observed), the same field the other way round:
+``response.brief: '... It captures Ha 300 s \\xd7 2 (gain 100, bin 1). If the
+active target ...' != '... It captures Ha 300 s \\xd7 2 (gain 100, bin 1). It
+then captures L 60 s \\xd7 5 (gain 100, bin 1). It then captures L 60 s \\xd7 5
+(gain 100, bin 1). If the active target ...'``.
+
+SECOND DELIBERATE PIN CHANGE (#470, the S5 integration's close of #395;
+rewritten with the command above). The pin above was known wrong: read as
+one chain, the three stages all followed M16's mosaic sentences, although
+M16's lane is the Ha stage alone and the two L stages are M31's and the
+pool's. ``tonight._stage_sentences`` now names each lane's block by the
+compile's own scoping rule, so the stages read "For M16 it captures Ha 300 s
+\xd7 2 (gain 100, bin 1). For M31 it captures L 60 s \xd7 5 (gain 100, bin 1).
+For every member of the pool it captures L 60 s \xd7 5 (gain 100, bin 1)."
+Again ``response.brief`` is the whole diff. The fixture before the rewrite,
+run against the fix, observed (the field cut to its stages):
+``response.brief: '... measured on this rig. For M16 it captures Ha 300 s
+\\xd7 2 (gain 100, bin 1). For M31 it captures L 60 s \\xd7 5 (gain 100, bin 1).
+For every member of the pool it captures L 60 s \\xd7 5 (gain 100, bin 1). If
+the acti...'``. MUTANT "every stage read as one chain" (``_stage_sentences``'
+``if len(lanes) <= 1:`` made ``if True:``), run in the private copy
+scratchpad S5-FINAL-INTEG-mut: ``test_the_fixture_is_resolve_tonights_answer``
+RED (observed), the stages back as one chain: ``'... measured on this rig.
+It captures Ha 300 s \\xd7 2 (gain 100, bin 1). It then captures L 60 s \\xd7 5
+(gain 100, bin 1). It then captures L 60 s \\xd7 5 (gain 100, bin 1). If the
+acti...'``. The other two halves of #470 (M31's TARGET earns no arm
+sentence, and the pool's select sentence comes first) are older than S5 and
+still open; this pin holds them as they are.
+
 Every test names the mutation it guards and quotes the failure it produced,
 each run in a private copy of ``server/`` (scratchpad ``s4-tonight-mut``,
 from byte backups), never in the shared tree.

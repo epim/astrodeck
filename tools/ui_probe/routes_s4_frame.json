@@ -1,0 +1,127 @@
+{
+  "_comment": "The Target modal (TargetFramingSheet, #189 S4) on the real page: spec 2026-09-23 flows mosaic, section 8 S4's last test ('a probe on the real page with a phone profile, tools/ui_probe, visible=true, asserting a view marker'). Two walks to ONE view marker, target-framing-sheet: the phone's (390 x 844, touch) through the #/next flow list, the stage list, the TARGET's flowNode sheet and its FRAME ON SKY row into the flowFrame sheet; and the desktop's (1440 x 900) through the classic editor's library card, the TARGET card and the inspector's FRAME ON SKY. Both walk by CLICKS through the doors a person uses, never by a deep link to the sheet, because a deep link proves the sheet renders and not that anything opens it. Every step is `required`, so a missing door is named rather than reported as a missing marker. Run against a LOCAL simulator server only, never the rig: `python tools/ui_probe/server_ctl.py start --fresh` (it connects the simulator), then `python tools/ui_probe/probe.py --routes tools/ui_probe/routes_s4_frame.json --widths 390,1440 --out .probe/out/s4-frame`, then `server_ctl.py stop`. The probe's own cases for this file are test_probe_s4.py.",
+  "_seed": "The walk grades DONE, which a read-only Example does not have (the sheet opens an Example in view mode), so it seeds an editable copy of the eighth Example, example-m31-mosaic (M31 3x2, rotating), through POST /api/flows. expect_node holds the copy to what the walk assumes: node n2 is a TARGET of at least two panels. Every width seeds afresh, so the desktop walk grades the flow as seeded. The second copy, probe-s4-m33-namesake, frames M33 in the same node n2: two flows that share a node id and differ in what it frames, for the other-flow walk. Each copy's expect_node checks the TARGET's name as stored, so that walk cannot pass on two flows that never differed.",
+  "_floors": "Box floors are 90% of the size the layout computes, rounded down to 10 px, so a collapse fails and a change of a few pixels does not (framingLayout.test.tsx pins the exact numbers). Phone portrait, spec 2.2: the sky is min(100vw, 52svh) = min(390, 0.52 x 844 = 438.9) = 390 tall and 390 wide, and the canvas is the largest square it holds, 390 x 390 (measured 390 x 390 both); floor 350. Desktop: the sky flexes beside the 360 px control column under the 48 px header, 1440 - 360 = 1080 by 900 - 48 = 852 (measured 1080 x 852); floor 970 x 760. Its canvas is min(1080, 852) capped by SkyCanvas's min(720px, 85svh = 765) = 720 (measured 720 x 720); floor 640. The #/next waiting card (the two missing-flow walks) sits in the sheet body's frame, 16 px each side and 10 px on top (next.css .nx-sheet-body), so it is 390 - 2 x 16 = 358 wide (measured 358) and 128.5 tall on one line of text, 146.5 on two; floor 320 x 110. Its min_inset is 8, half the side gutter, so the frame going is red and a change of a few pixels in it is not.",
+  "_gate": "DONE is locked until POST /api/framing/mosaic answers for the current layout (spec 2.5). The sheet's request is the one carrying the block's stored anchor (`\"anchor\"`); the night card asks the same route with no anchor, and DONE does not wait on it, so only the anchored request is held.",
+  "_text_intact": "Two cells the probe found broken on 2026-09-26 (framing.css, fixed the same day): the PANELS bar's 'n/total' text was cut 4 px at the bottom by its 16 px overflow-hidden bar, and the PEAK cell's 'no peak' (what a rig with no saved site shows, as the probe's fresh config is) wrapped onto two lines in its 44 px column.",
+  "_expected_errors_why": "MEASURED on the sim rig, as routes_next.json records: it has no offline sky pack and config.survey.online_fetch is off by default, so every HiPS tile the modal's sky asks for 404s. The URL entry is precise; the console entry has to be the 404 TEXT because a console message carries no URL, and a 404 on any other endpoint still fails the route through the failed-request check.",
+  "seed": [
+    { "copy_flow": { "from": "example-m31-mosaic", "id": "probe-s4-m31-mosaic", "name": "M31 mosaic (probe copy)", "folder": "My flows", "expect_node": { "id": "n2", "type": "target", "min_panels": 2, "params": { "name": "M31" } } } },
+    { "copy_flow": { "from": "example-m31-mosaic", "id": "probe-s4-m33-namesake", "name": "M33 mosaic (probe namesake)", "folder": "My flows", "set_params": { "n2": { "name": "M33", "ra": "01h 33m 51s", "dec": "+30\u00b0 39' 37\"" } }, "expect_node": { "id": "n2", "type": "target", "min_panels": 2, "params": { "name": "M33" } } } }
+  ],
+  "routes": [
+    {
+      "name": "s4-frame-phone",
+      "_mutations": ["C1 'move pair back in the top-left' (framing.css .tfs-move right: 8px -> left: 8px), observed red: control '[data-testid=\"framing-sky\"] button:text-is(\"MOVE SKY\")' is covered: the point at its centre is not the control ({'x': 52, 'y': 78, 'in_view': True, 'inside': False, 'hit': '<span>Swipe scrolls page</span>'})", "C2 'bar text inline again' (framing.css .tfs-bar-text without display: block), observed red: text '0/80' ([data-testid=\"framing-panels\"] .tfs-bar-text) is clipped 4px by 'tfs-bar' (6 of 6 with text)", "C3 'PEAK column back to 44 px' (framing.css .tfs-c-alt flex: 0 0 44px, no nowrap), observed red: text 'no peak' ([data-testid=\"framing-alt-cell\"]) wraps onto 2 lines, and must sit on one (6 of 6 with text)", "The walk before any fix (2026-09-26) failed on all three at once, and on nothing else."],
+      "shot": "s4-frame-phone",
+      "widths": [390],
+      "url": "#/session/flows?open=probe-s4-m31-mosaic",
+      "_note": "On a phone this hash is the flow LIST (FlowsScreen renders the canvas off-phone only); a row press opens the flowStages sheet, the TARGET row opens flowNode, and FRAME ON SKY puts flowFrame in flowNode's place (router MAX_SHEETS). The TARGET row is picked by its title, exactly, because the DUSK row's wire line also says TARGET.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s4-m31-mosaic\"]", "required": true },
+        { "selector": "[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"] button.nx-row:has(.nx-row-title:text-is(\"TARGET\"))", "required": true },
+        { "selector": "[data-testid=\"flow-node-frame\"]", "required": true }
+      ],
+      "testid": "target-framing-sheet",
+      "gate": { "url": "**/api/framing/mosaic", "body_contains": "\"anchor\"", "control": "button:has([data-testid=\"framing-done\"])", "request_timeout_ms": 5000, "unlock_timeout_ms": 8000, "shot_locked": true },
+      "boxes": [
+        { "selector": "[data-testid=\"framing-sky\"]", "min_width": 350, "min_height": 350 },
+        { "selector": "[data-testid=\"framing-sky\"] [role=\"application\"]", "min_width": 350, "min_height": 350 }
+      ],
+      "reachable": [
+        "[data-testid=\"framing-header\"] button:text-is(\"CANCEL\")",
+        "button:has([data-testid=\"framing-done\"])",
+        "[data-testid=\"framing-sky\"] button:text-is(\"MOVE SKY\")",
+        "[data-testid=\"framing-sky\"] button:text-is(\"MOVE GRID\")"
+      ],
+      "text_intact": [
+        { "selector": "[data-testid=\"framing-panels\"] .tfs-bar-text" },
+        { "selector": "[data-testid=\"framing-alt-cell\"]", "one_line": true }
+      ],
+      "labels": { "within": "[data-testid=\"target-framing-sheet\"]", "texts": ["WHERE", "GRID", "ANGLE", "PANELS", "RUN", "CENTRING"], "shot_each": true },
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
+    {
+      "name": "s4-frame-classic-desktop",
+      "_mutations": ["C2 'bar text inline again' (framing.css .tfs-bar-text without display: block), observed red: text '0/80' ([data-testid=\"framing-panels\"] .tfs-bar-text) is clipped 4px by 'tfs-bar' (6 of 6 with text)", "C3 'PEAK column back to 44 px' (framing.css .tfs-c-alt flex: 0 0 44px, no nowrap), observed red: text 'no peak' ([data-testid=\"framing-alt-cell\"]) wraps onto 2 lines, and must sit on one (6 of 6 with text)", "C1 stays green here, correctly: the touch chip is drawn only on a device with a touch point."],
+      "shot": "s4-frame-classic-desktop",
+      "widths": [1440],
+      "url": "#/classic/flows",
+      "_note": "The classic editor: the library card opens the flow, a press on the TARGET card's title strip selects it (its centre is a port label, so the press is at an offset inside the card), and the inspector's FRAME ON SKY opens the same shared sheet the phone reached.",
+      "click": [
+        { "selector": "[data-flow-id=\"probe-s4-m31-mosaic\"]", "required": true },
+        { "selector": "[data-node-id=\"n2\"]", "position": { "x": 40, "y": 14 }, "required": true },
+        { "selector": "[data-flows-frame=\"n2\"]", "required": true }
+      ],
+      "testid": "target-framing-sheet",
+      "gate": { "url": "**/api/framing/mosaic", "body_contains": "\"anchor\"", "control": "button:has([data-testid=\"framing-done\"])", "request_timeout_ms": 5000, "unlock_timeout_ms": 8000, "shot_locked": true },
+      "boxes": [
+        { "selector": "[data-testid=\"framing-sky\"]", "min_width": 970, "min_height": 760 },
+        { "selector": "[data-testid=\"framing-sky\"] [role=\"application\"]", "min_width": 640, "min_height": 640 }
+      ],
+      "reachable": [
+        "[data-testid=\"framing-header\"] button:text-is(\"CANCEL\")",
+        "button:has([data-testid=\"framing-done\"])",
+        "[data-testid=\"framing-sky\"] button:text-is(\"MOVE SKY\")",
+        "[data-testid=\"framing-sky\"] button:text-is(\"MOVE GRID\")"
+      ],
+      "text_intact": [
+        { "selector": "[data-testid=\"framing-panels\"] .tfs-bar-text" },
+        { "selector": "[data-testid=\"framing-alt-cell\"]", "one_line": true }
+      ],
+      "labels": { "within": "[data-testid=\"target-framing-sheet\"]", "texts": ["WHERE", "GRID", "ANGLE", "PANELS", "RUN", "CENTRING"], "shot_each": true },
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
+    {
+      "name": "s4-frame-phone-other-flow",
+      "_mutations": ["F1 'the sheet frames whatever flow is open' (FlowFrameSheet.tsx: the ?open= test -> false), observed red: marker 'FRAME M31' not visible after clicks (click log: [... {'text': '#/session/flows/flowStages/flowFrame?open=probe-s4-m31-mosaic&node=n2', 'action': 'goto'}]); the shot shows FRAME M33 and 'moved 901.0', more than the 6.8' this grid allows'"],
+      "shot": "s4-frame-phone-other-flow",
+      "widths": [390],
+      "url": "#/session/flows?open=probe-s4-m33-namesake",
+      "_note": "The #/next sheet frames the flow ?open= names, never whichever flow the store holds. Found by this probe on 2026-09-26 and fixed in FlowFrameSheet.tsx: with the namesake flow (M33) open and its framing once on screen, so the modal's chunk is loaded, a link to the M31 copy's flowFrame mounted the modal on the M33 flow's n2 at once; the stage list under it then opened the M31 flow, the node became M31's n2 under the same key, and the draft stayed M33's - title FRAME M33, the strip reading 'moved 901.0'' against M31's anchor, and DONE writing M33's coordinates onto M31's TARGET. The walk ends on the link (a goto, as a link or Back inside the app navigates, with the store and chunks kept) and asserts the M31 flow's framing: FRAME M31.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s4-m33-namesake\"]", "required": true },
+        { "selector": "[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"] button.nx-row:has(.nx-row-title:text-is(\"TARGET\"))", "required": true },
+        { "selector": "[data-testid=\"flow-node-frame\"]", "required": true },
+        { "wait_for": "[data-testid=\"target-framing-sheet\"] .tfs-title:text-is(\"FRAME M33\")" },
+        { "selector": "[data-testid=\"framing-header\"] button:text-is(\"CANCEL\")", "required": true },
+        { "goto": "#/session/flows/flowStages/flowFrame?open=probe-s4-m31-mosaic&node=n2" }
+      ],
+      "testid": "target-framing-sheet",
+      "marker": "FRAME M31",
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
+    {
+      "name": "s4-frame-phone-missing-flow",
+      "_mutations": ["F1 (as above), observed red: testid 'flow-frame-other-flow' ([data-testid='flow-frame-other-flow']) not visible after clicks (click log: [...]); the namesake's modal was up instead", "F2 'waiting card without BACK' (FlowFrameSheet.tsx: the EmptyCard's action removed), observed red: control '[data-testid=\"flow-frame-other-flow-back\"]' is not visible", "G2 'the other-flow copy never chosen' (see s4-frame-phone-fresh-missing-flow), observed red: marker 'another flow is open' not visible after clicks", "H1 'the waiting card without the sheet frame' (FlowFrameSheet.tsx as it stood before 2026-09-28: the wrapper a bare div, no .nx-sheet, .nx-sheet-body or flex: 1), observed red on the real page (the unfixed build, 2026-09-28): box '[data-testid=\"flow-frame-other-flow\"]' sits {'left': 0, 'top': 0, 'right': 0} px from the viewport's left, top and right edges, need >= 8px on each. The card was 390 x 146.5, visible, its BACK reachable, and every other check passed."],
+      "shot": "s4-frame-phone-missing-flow",
+      "widths": [390],
+      "url": "#/session/flows?open=probe-s4-m33-namesake",
+      "_note": "The other-flow walk's harder case: a link to the framing of a flow that does not exist (one since deleted), with another flow open. The flow never loads, so a sheet that framed whichever flow the store holds would frame the open one under a link naming another, for as long as the operator stayed; before the fix it mounted the namesake's modal. The sheet must say it is waiting for the flow the link names, and offer BACK, since the phone's sheet slot has no chrome of its own. The 404 for the missing flow is the stage list asking for it, and is the point of the walk.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s4-m33-namesake\"]", "required": true },
+        { "wait_for": "[data-testid=\"session-flow-stages\"]" },
+        { "goto": "#/session/flows/flowStages/flowFrame?open=probe-s4-no-such-flow&node=n2" }
+      ],
+      "testid": "flow-frame-other-flow",
+      "marker": "another flow is open",
+      "boxes": [{ "selector": "[data-testid=\"flow-frame-other-flow\"]", "min_width": 320, "min_height": 110, "min_inset": 8 }],
+      "reachable": ["[data-testid=\"flow-frame-other-flow-back\"]"],
+      "expected_errors": ["/api/survey/tile/", "/api/flows/probe-s4-no-such-flow", "status of 404"]
+    },
+    {
+      "name": "s4-frame-phone-fresh-missing-flow",
+      "_mutations": ["G1 'the loading copy never chosen' (FlowFrameSheet.tsx: the card's hint always FRAME_OTHER_FLOW, which is the code before this route), observed red on the real page (the built chunk mutated in a private dist, 2026-09-26): marker 'opens once the flow the link names has loaded' not visible after clicks (click log: []); the missing-flow walk stayed green, correctly", "G2 'the other-flow copy never chosen' (FlowFrameSheet.tsx: the card's hint always FRAME_FLOW_LOADING), observed red on the missing-flow walk above: marker 'another flow is open' not visible after clicks (click log: [... {'text': '#/session/flows/flowStages/flowFrame?open=probe-s4-no-such-flow&node=n2', 'action': 'goto'}]); this walk stayed green, correctly", "H1 (as above), observed red on the real page: box '[data-testid=\"flow-frame-other-flow\"]' sits {'left': 0, 'top': 0, 'right': 35.8} px from the viewport's left, top and right edges, need >= 8px on each. The card shrank to its one line of text, 354.2 px wide, on the screen's top-left corner."],
+      "shot": "s4-frame-phone-fresh-missing-flow",
+      "widths": [390],
+      "url": "#/session/flows/flowStages/flowFrame?open=probe-s4-no-such-flow&node=n2",
+      "_note": "The missing-flow walk with NO flow open: the same link loaded fresh (reloaded, shared, bookmarked), so no click precedes it. The sheet waits for the flow the link names as it does with another flow open, but must not say another flow is open when none is. Before this route the card said exactly that, for good on this link and for a moment on every fresh link to a flow that does exist (found by the S4-UPROBE verifier, 2026-09-26). The marker is FRAME_FLOW_LOADING's wording, which FRAME_OTHER_FLOW does not contain, and the missing-flow walk above pins FRAME_OTHER_FLOW's, so the two branches are each held.",
+      "click": [],
+      "testid": "flow-frame-other-flow",
+      "marker": "opens once the flow the link names has loaded",
+      "boxes": [{ "selector": "[data-testid=\"flow-frame-other-flow\"]", "min_width": 320, "min_height": 110, "min_inset": 8 }],
+      "reachable": ["[data-testid=\"flow-frame-other-flow-back\"]"],
+      "expected_errors": ["/api/survey/tile/", "/api/flows/probe-s4-no-such-flow", "status of 404"]
+    }
+  ]
+}

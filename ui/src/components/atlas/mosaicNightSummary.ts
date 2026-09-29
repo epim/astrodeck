@@ -39,9 +39,10 @@ import type { MosaicPanel } from "../../types";
 export type PanelNight = Pick<MosaicPanel, "row" | "col" | "transit_alt" | "transit_alt_error">;
 
 /** Which panel, in the 1-based row-col identity the rest of the app already
- *  uses: AtlasView's `panelsToTargets` names every Plan target
- *  `"<target> ${row+1}-${col+1}"`, so "2-1" printed here is literally the row
- *  the user will find in the Plan. */
+ *  uses for a mosaic's panels (the Target modal's PANELS rows, the brief's
+ *  skipped panels, the run's panel names), so "2-1" printed here is the
+ *  panel the flow shoots as 2-1. (It used to point at the retired Plan
+ *  door's panel names, gone since S6, #196.) */
 export interface PanelRef {
   row: number;
   col: number;

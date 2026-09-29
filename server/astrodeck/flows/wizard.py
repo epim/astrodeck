@@ -43,16 +43,37 @@ WHAT SLICE S3 CHANGED (#189 U-09, #190, #196; spec 1.4, 1.7, 1.8):
   * a fourth kind, Mosaic, lays a TARGET out as a grid from the rig's own
     camera field, at an angle the operator gave or the camera measured, and
     wires the panel loop from the tail of its lane (spec 1.4, 1.8).
+
+WHAT SLICE S6 ADDED, the server half of "Send to Flow Wizard" (#196; spec
+Revision 2 ruling 4, S6): the answers a door pre-fills, which
+``generate_answer`` takes beside the three the sheet has always sent:
+
+  * ``ra`` and ``dec``, the coordinates as typed, written onto the TARGET as
+    given, and the name is then not looked up: a framing's centre is not the
+    catalogue's row for the name;
+  * ``skip``, the panels a framing took out, read as the TARGET's own `skip`
+    is read (``compile.parse_skip``) and written as given;
+  * ``cycle_plan`` and ``cycles``, the filter rows, a FILTER CYCLE's slot
+    table, checked against the connected wheel as ``quick`` checks its
+    filters, and held to the unguided sub cap on a lane that does not guide;
+  * ``guiding``, which lights the Guiding chip, or confirms it is dark.
+
+Each is inert when it is not given, so a body with only the three original
+answers generates exactly what it did (``test_flows_wizard_door_answers``
+pins that byte for byte), and each one the generator cannot honour is a
+refusal that names it. The camera field, the measured angle and the wheel
+stay rig facts the route injects; a client sends none of them.
 """
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ..catalog.coords import (format_dec_fits, format_ra_fits, parse_dec,
                               parse_ra)
-from .compile import NEXT_PORT, PASS_PORT, lane_tail
+from .compile import NEXT_PORT, PASS_PORT, grid_size, lane_tail, parse_skip
 from .models import MY_FLOWS_FOLDER, FlowEdge, FlowGraph, FlowNode, FlowRecord
 from .nodes import NODE_DEFS, TARGET_ANGLES, create_params, parse_cycle_plan
 from .rig import RigFacts
@@ -67,9 +88,11 @@ KIND_POOL = "Best of several"
 KIND_EAA = "EAA quick look"
 #: The generator behind "Send to Flow Wizard" (#196, spec S3 item 4): one
 #: TARGET block laid out as a grid, with the panel loop wired. Its stepped
-#: sheet lands with the framing modal (S4) and its doors move in S6; until
-#: then it is reached through the same route and the same answers plus the
-#: grid, and the three original kinds generate exactly what they did.
+#: sheet and its doors are S6's (#196): S4 built the framing modal and not
+#: the sheet (spec section 8, S4's "Not built"). S6's server half gave the
+#: route the answers a door pre-fills (the coordinates, the skipped panels,
+#: the filter rows and guiding), and the three original kinds generate
+#: exactly what they did.
 KIND_MOSAIC = "Mosaic"
 KINDS: tuple[str, ...] = (KIND_DEEP_SKY, KIND_POOL, KIND_EAA, KIND_MOSAIC)
 
@@ -314,7 +337,8 @@ def _resolve_name(name: str) -> tuple[tuple[str, str] | None, str | None]:
 
 
 def _mosaic_answers_belong(kind: str, **answers) -> None:
-    """Refuse a grid or an angle given with a kind that is not Mosaic.
+    """Refuse a grid, an angle or a skip given with a kind that is not
+    Mosaic.
 
     Refused rather than dropped, for ``_checked``'s reason: a client that sent
     a 3x2 with "Deep-sky target" would otherwise get one panel back looking
@@ -423,8 +447,46 @@ def _mosaic_angle(angle_mode, pa_deg, use_measured, measured_pa_deg,
 _FOV_FROM_LIVE = "the rig's live optics when the wizard planned it"
 
 
+def checked_skip(skip, rows: int, cols: int) -> str | None:
+    """The skipped panels as given, or None for none; a refusal naming what
+    cannot be read (#196, spec S6).
+
+    READ AS THE TARGET'S OWN `skip` IS READ, by ``compile.parse_skip`` ("r-c"
+    entries, 1-based, commas or semicolons), so the panels the door says are
+    left out are the ones the compile leaves out. The compile answers an
+    entry it cannot place with a warning and skips nothing for it; the door
+    refuses it instead, because a skip that skipped nothing would shoot a
+    panel the operator took out, and the door is the one place that can
+    still ask. A skip of every panel is refused too: ``to_plan`` drops such
+    a block whole, and the answer would be a mosaic that shoots nothing.
+
+    Handed back AS GIVEN, not rewritten into the compile's order: it is the
+    operator's text, and both readers read it the same. Blank is no skip.
+    PUBLIC because the route's door asks it too: with no camera field the
+    generator never reads the grid, and a skip of it would otherwise come
+    back as a flow unread."""
+    if skip is None:
+        return None
+    if not isinstance(skip, str):
+        raise ValueError(f"skip is the panels to leave out, written "
+                         f"row-column like '2-3, 1-1', not {skip!r}")
+    if not skip.strip():
+        return None
+    cells, unread = parse_skip(skip, rows, cols)
+    if unread:
+        raise ValueError(
+            f"skip {', '.join(repr(u) for u in unread)} names no panel of "
+            f"this grid of {grid_size(rows, cols)}: a panel is written "
+            f"row-column, from 1-1 to {rows}-{cols}")
+    if len(cells) >= rows * cols:
+        raise ValueError(f"skip names every panel of this grid of "
+                         f"{grid_size(rows, cols)}, so the mosaic would "
+                         f"shoot nothing: leave a panel in")
+    return skip
+
+
 def _mosaic_params(rows, cols, overlap_pct, angle_mode, pa_deg, use_measured,
-                   measured_pa_deg, rig: RigFacts | None
+                   measured_pa_deg, rig: RigFacts | None, skip=None
                    ) -> tuple[dict | None, str | None]:
     """``(params, reason)``: the TARGET params that make it a grid, or None
     and the reason it stays one target.
@@ -435,18 +497,25 @@ def _mosaic_params(rows, cols, overlap_pct, angle_mode, pa_deg, use_measured,
     single target and ``NO_OPTICS_REASON``, never a grid of 0 x 0 degree
     panels (doctor M1). Checked FIRST: without a field the grid and the angle
     cannot be used at all, and a refusal about an angle that would be thrown
-    away would hide the one thing the operator has to fix."""
+    away would hide the one thing the operator has to fix.
+
+    THE SKIP (S6) is read against the grid it names, so after the grid and
+    only with one, as the grid is: with no field neither is read."""
     field = None if rig is None else rig.fov_deg
     if field is None:
         return None, NO_OPTICS_REASON
     n_rows, n_cols, overlap = _mosaic_grid(rows, cols, overlap_pct)
+    skipped = checked_skip(skip, n_rows, n_cols)
     angle, pa = _mosaic_angle(angle_mode, pa_deg, use_measured,
                               measured_pa_deg, rig)
     fov_x, fov_y = field
-    return {"rows": n_rows, "cols": n_cols, "overlap": overlap,
-            "fovX": fov_x, "fovY": fov_y,
-            "fovFrom": rig.fov_from or _FOV_FROM_LIVE,
-            "angle": angle, "rotation": pa}, None
+    params = {"rows": n_rows, "cols": n_cols, "overlap": overlap,
+              "fovX": fov_x, "fovY": fov_y,
+              "fovFrom": rig.fov_from or _FOV_FROM_LIVE,
+              "angle": angle, "rotation": pa}
+    if skipped is not None:
+        params["skip"] = skipped
+    return params, None
 
 
 def _wire_the_loop(canvas: "_Canvas", target: FlowNode) -> None:
@@ -465,6 +534,244 @@ def _wire_the_loop(canvas: "_Canvas", target: FlowNode) -> None:
     canvas.wire(tail, PASS_PORT, target, NEXT_PORT)
 
 
+# -------------------------------------------------------- the door's answers
+# What Send to Flow Wizard pre-fills (#196, spec Revision 2 ruling 4, S6),
+# checked here, where the generator is, so the route and any other caller
+# refuse one set of things. Every one is optional and INERT WHEN NOT GIVEN:
+# none of these helpers answers a missing answer with a value, because a
+# body carrying only the three original answers must generate exactly what
+# it did (ruling 4), and a default here would be a change to every flow the
+# sheet has ever made.
+
+#: The most passes a door's filter rows may ask for. The quick sheet's own
+#: ceiling on subs per filter (``FlowQuickBody.subs``), since ``cycles`` is
+#: that same number: how many subs of each filter, one per pass.
+CYCLES_MAX = 10_000
+
+#: One filter row, read WHOLE: ``"<filter> <seconds>"``. The FILTER CYCLE's
+#: own reader (``nodes.parse_cycle_plan``) matches a row's start and drops a
+#: row it cannot read, so "L 0.5" would be read as "L 0" and "L sixty" not
+#: at all; the door reads each row to its end and refuses one it cannot, so
+#: the table the cycle carries is exactly the one the operator was shown.
+_ROW_RE = re.compile(r"(\S+)\s+(\d+)")
+
+
+def _text_answer(what: str, value) -> str | None:
+    """A text answer stripped, or None when it is not given or blank: a
+    door that always sends its fields sends empty ones for what it does not
+    know, and an empty answer is not an answer. Anything but text is a
+    refusal naming it."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{what} is text, not {value!r}")
+    return value.strip() or None
+
+
+def checked_cycles(cycles) -> int:
+    """``cycles`` as a whole number from 1 to ``CYCLES_MAX``, or a refusal.
+
+    Refused as the grid's sides are (``_mosaic_grid``): a bool or a string is
+    not a count even where Python would read one as a number, and a whole
+    float (3.0) is taken as 3. PUBLIC because the route's door asks it before
+    pydantic's int coercion, which would read ``true`` as 1 and "3" as 3."""
+    if (isinstance(cycles, bool) or not isinstance(cycles, (int, float))
+            or not math.isfinite(cycles) or not float(cycles).is_integer()
+            or not 1 <= cycles <= CYCLES_MAX):
+        raise ValueError(f"cycles is a whole number of passes from 1 to "
+                         f"{CYCLES_MAX}, not {cycles!r}")
+    return int(cycles)
+
+
+def checked_guiding(guiding) -> bool | None:
+    """``guiding`` as given (True, False or None), or a refusal: a 1 or a
+    "true" is a client that means something the answer does not say. PUBLIC
+    for the route's door, which asks before pydantic's bool coercion."""
+    if guiding is None or isinstance(guiding, bool):
+        return guiding
+    raise ValueError(f"guiding is true or false, not {guiding!r}")
+
+
+def _guided(kind: str, opts: frozenset[str]) -> bool:
+    """Whether the lane guides: the Guiding chip, never for EAA (a 4-second
+    sub does not need a guider). ONE READING for the lane and for the
+    unguided cap on the door's rows, so the cap is asked of exactly the
+    lanes that draw no GUIDE."""
+    return kind != KIND_EAA and OPT_GUIDING in opts
+
+
+def _unguided_seconds(unguided_exposure_s) -> int | float:
+    """The sub length an unguided lane is held to: the answer's, or
+    ``UNGUIDED_EXPOSURE_DEFAULT`` for one that is missing, garbled or not
+    positive. An int when it is whole (30, not 30.0, in the node's params).
+
+    A garbled or non-positive override falls back to the default rather than
+    being honoured: an exposure of 0 compiles to a step that captures
+    nothing, and the wizard's whole promise is that its output runs."""
+    try:
+        secs = float(unguided_exposure_s)
+    except (TypeError, ValueError):
+        secs = float(UNGUIDED_EXPOSURE_DEFAULT)
+    if secs <= 0:
+        secs = float(UNGUIDED_EXPOSURE_DEFAULT)
+    if secs.is_integer():
+        secs = int(secs)
+    return secs
+
+
+def _door_guiding(kind: str, opts: frozenset[str], guiding) -> frozenset[str]:
+    """The chips with the ``guiding`` answer applied.
+
+    ``True`` lights the Guiding chip, so the lane is exactly the one the chip
+    draws. ``False`` beside a lit chip is two answers that disagree, and is
+    refused rather than settled either way: turning the chip off would drop
+    an answer, and keeping it would ignore one. ``True`` for EAA is refused
+    for the reason the lane never guides EAA; today's sheet may light the
+    chip under EAA and the lane ignores it, but an answer that says "guide"
+    in so many words is not one to ignore. ``None`` leaves the chips as
+    they are, which is what a body with no ``guiding`` has always meant."""
+    guiding = checked_guiding(guiding)
+    if guiding is None:
+        return opts
+    if guiding is False:
+        if OPT_GUIDING in opts:
+            raise ValueError(f"guiding is false, but the options light the "
+                             f"{OPT_GUIDING!r} chip: send one answer")
+        return opts
+    if kind == KIND_EAA:
+        raise ValueError(f"guiding is true, but an {KIND_EAA!r} never "
+                         f"guides: its short subs need no guider, and the "
+                         f"settle time would make the live view stutter")
+    return opts | {OPT_GUIDING}
+
+
+#: What each typed coordinate is read with and the range it must fall in:
+#: ``(parse, lowest, highest, highest included, unit, the range in words)``.
+_COORDS = {"ra": (parse_ra, 0.0, 24.0, False, "hours",
+                  "an RA runs from 0 up to 24 hours"),
+           "dec": (parse_dec, -90.0, 90.0, True, "degrees",
+                   "a Dec runs from -90 to +90 degrees")}
+
+
+def _door_coords(kind: str, target: str, ra, dec) -> tuple[str, str] | None:
+    """``(ra, dec)`` as typed (stripped), or None when neither is given.
+
+    PARSED HERE, as ``_quick_coords`` parses the quick flow's, by the readers
+    the run reads the node with, so a coordinate the night would refuse at
+    RUN is refused while the sheet that can fix it is open; and held to its
+    range, since ``parse_ra`` reads "nan" as a number and nothing downstream
+    asks whether an RA of 25 hours is one. Refused as well: one of the two
+    without the other (half a position is no position), coordinates for a
+    POOL (it has no TARGET to carry them; its candidates are placed by
+    name), and coordinates with no name, since the frames are filed under
+    the name and a nameless TARGET files them under nothing."""
+    ra, dec = _text_answer("ra", ra), _text_answer("dec", dec)
+    if ra is None and dec is None:
+        return None
+    if ra is None or dec is None:
+        has = "an ra and no dec" if dec is None else "a dec and no ra"
+        raise ValueError(f"typed coordinates are an ra and a dec together; "
+                         f"this answer has {has}")
+    if kind == KIND_POOL:
+        raise ValueError(f"ra and dec place a TARGET, and {KIND_POOL!r} has "
+                         f"none: its candidates are placed by name")
+    if not (target or "").strip():
+        raise ValueError("ra and dec need the target's name as well: the "
+                         "frames are filed under it")
+    for what, text in (("ra", ra), ("dec", dec)):
+        parse, low, high, closed, unit, words = _COORDS[what]
+        try:
+            value = parse(text)
+        except Exception as e:
+            raise ValueError(f"cannot read the {what} {text!r}: {e}") from e
+        if not (math.isfinite(value) and low <= value
+                and (value <= high if closed else value < high)):
+            raise ValueError(f"the {what} {text!r} is {value:g} {unit}; "
+                             f"{words}")
+    return ra, dec
+
+
+def _door_rows(kind: str, cycle_plan, cycles, wheel
+               ) -> tuple[str, int, list[tuple[str, int]]] | None:
+    """``(cycle_plan, cycles, rows)`` for the door's filter rows, or None
+    when there are none; a refusal naming what is off.
+
+    CHECKED AGAINST THE WHEEL AS ``quick`` CHECKS ITS FILTERS
+    (``_unknown_filters``, the one rule and the one sentence for both):
+    ``wheel`` is the connected wheel's usable slot names, a rig fact the
+    route injects, and None means no wheel is connected, so the assumed seven
+    apply. A filter name lands in the FITS header, the filename and the
+    calibration key, so a name the wheel does not have is a refusal, never a
+    row the run discovers at 21:00.
+
+    Each row is read whole (``_ROW_RE``) and must be at least a second: a
+    zero-second row compiles to a step that captures nothing. The rows keep
+    the order they were given in, which is the order the sheet listed them
+    in (the wheel's, from the rows ``cyclePlanRows.ts`` draws).
+
+    ``cycles`` goes with the rows and only with them: rows with no count, or
+    a count with no rows, is refused rather than filled in, since either
+    default (1 pass, or the FILTER CYCLE's shipped 45) would be a number
+    nobody gave. EAA refuses rows: its answer is a CAPTURE LOOP of 4-second
+    subs, and a FILTER CYCLE in its place would be a different night."""
+    plan = _text_answer("cycle_plan", cycle_plan)
+    if plan is None:
+        if cycles is not None:
+            raise ValueError("cycles is how many subs of each filter row, "
+                             "and this answer has no cycle_plan")
+        return None
+    if kind == KIND_EAA:
+        raise ValueError(f"cycle_plan belongs to a night of filter rows; an "
+                         f"{KIND_EAA!r} shoots its short subs through one "
+                         f"CAPTURE LOOP")
+    if cycles is None:
+        raise ValueError("cycle_plan needs cycles: how many subs of each "
+                         "filter row")
+    passes = checked_cycles(cycles)
+    rows: list[tuple[str, int]] = []
+    for chunk in plan.split(","):
+        token = chunk.strip()
+        if not token:
+            continue            # "L 60, R 60," is two rows to the cycle too
+        m = _ROW_RE.fullmatch(token)
+        if m is None:
+            raise ValueError(f"cycle_plan row {token!r} is not '<filter> "
+                             f"<seconds>': a filter the wheel names and a "
+                             f"whole number of seconds")
+        secs = int(m.group(2))
+        if secs <= 0:
+            raise ValueError(f"cycle_plan row {token!r} is {secs} seconds, "
+                             f"which shoots nothing")
+        rows.append((m.group(1), secs))
+    if not rows:
+        raise ValueError(f"cycle_plan {plan!r} names no filter row")
+    refusal = _unknown_filters([f for f, _ in rows], wheel)
+    if refusal is not None:
+        raise ValueError(f"cycle_plan: {refusal}")
+    return plan, passes, rows
+
+
+def _within_the_unguided_cap(rows: list[tuple[str, int]],
+                             unguided_exposure_s) -> None:
+    """Refuse a filter row an unguided lane could not hold.
+
+    The same cap the lane's CAPTURE LOOP is written to (DEVIATION 1, and
+    ``UNGUIDED_EXPOSURE_DEFAULT``'s reasons), and the one the sheet shows
+    beside the guiding step. A CAPTURE LOOP's sub is the wizard's to set, so
+    it is shortened; a filter row's length is the operator's answer, so a
+    row past the cap is refused, naming the two ways out, rather than
+    silently shortened or left to trail: a row of 180 s with no GUIDE is
+    the doctor's rule 2 on the operator's first flow. The cap itself may be
+    answered up to 3600 s, past that rule's 120 s line, for the CAPTURE LOOP
+    and these rows alike (#432)."""
+    cap = _unguided_seconds(unguided_exposure_s)
+    over = [f"{f} {s}" for f, s in rows if s > cap]
+    if over:
+        raise ValueError(f"cycle_plan row(s) {over} run longer than the "
+                         f"{cap:g} s an unguided lane is held to: turn "
+                         f"guiding on, or shorten them")
+
+
 def generate(kind: str = KIND_DEEP_SKY,
              options: Iterable[str] | None = None,
              target: str = "",
@@ -480,6 +787,7 @@ def generate(kind: str = KIND_DEEP_SKY,
              angle_mode: str | None = None,
              pa_deg: float | None = None,
              use_measured: bool = False,
+             skip: str | None = None,
              rig: RigFacts | None = None,
              measured_pa_deg: float | None = None) -> FlowGraph:
     """The graph for one set of wizard answers.
@@ -520,8 +828,10 @@ def generate(kind: str = KIND_DEEP_SKY,
     THE MOSAIC KIND'S ANSWERS (spec 1.8, S3 item 4), refused with any other
     kind: ``rows`` and ``cols`` (1 to ``to_plan.GRID_MAX``, more than one
     panel), ``overlap_pct`` (percent; None takes ``framing.DEFAULT_OVERLAP``),
-    ``angle_mode`` (:data:`MOSAIC_ANGLES`), and either ``pa_deg`` or
-    ``use_measured``. And two rig facts the route injects, never answers:
+    ``angle_mode`` (:data:`MOSAIC_ANGLES`), either ``pa_deg`` or
+    ``use_measured``, and ``skip`` (S6: the panels to leave out, read and
+    refused by ``checked_skip``, written onto the block as given; None or
+    blank is none). And two rig facts the route injects, never answers:
     ``rig`` (``RigFacts``; its ``fov_deg`` is the camera field the grid is
     tiled from, its ``has_rotator`` gates "Rotate to PA") and
     ``measured_pa_deg`` (the sky angle the last centring solve recorded, for
@@ -538,41 +848,34 @@ def generate(kind: str = KIND_DEEP_SKY,
         kind, options, target, unguided_exposure_s, cycle_plan=cycle_plan,
         cycles=cycles, coords=coords, safety_abort=safety_abort, rows=rows,
         cols=cols, overlap_pct=overlap_pct, angle_mode=angle_mode,
-        pa_deg=pa_deg, use_measured=use_measured, rig=rig,
+        pa_deg=pa_deg, use_measured=use_measured, skip=skip, rig=rig,
         measured_pa_deg=measured_pa_deg)[0]
 
 
 def _generate(kind, options, target, unguided_exposure_s, *, cycle_plan,
               cycles, coords, safety_abort, rows, cols, overlap_pct,
-              angle_mode, pa_deg, use_measured, rig, measured_pa_deg
+              angle_mode, pa_deg, use_measured, skip, rig, measured_pa_deg
               ) -> tuple[FlowGraph, list[str]]:
     """``generate``'s graph and the notes that go with it: why a mosaic was
     answered as one target, why a TARGET has no coordinates. ``generate``
     documents every argument."""
     kind, opts = _checked(kind, options)
+    if isinstance(skip, str) and not skip.strip():
+        skip = None             # a blank skip is no skip, with any kind
     _mosaic_answers_belong(kind, rows=rows, cols=cols,
                            overlap_pct=overlap_pct, angle_mode=angle_mode,
-                           pa_deg=pa_deg, use_measured=use_measured)
+                           pa_deg=pa_deg, use_measured=use_measured,
+                           skip=skip)
     notes: list[str] = []
     layout: dict | None = None
     if kind == KIND_MOSAIC:
         layout, why = _mosaic_params(rows, cols, overlap_pct, angle_mode,
                                      pa_deg, use_measured, measured_pa_deg,
-                                     rig)
+                                     rig, skip)
         if why is not None:
             notes.append(why)
     tname = (target or "").strip()
-    # A garbled or non-positive override falls back to the default rather than
-    # being honoured: an exposure of 0 compiles to a step that captures nothing,
-    # and the wizard's whole promise is that its output runs.
-    try:
-        unguided_s = float(unguided_exposure_s)
-    except (TypeError, ValueError):
-        unguided_s = float(UNGUIDED_EXPOSURE_DEFAULT)
-    if unguided_s <= 0:
-        unguided_s = float(UNGUIDED_EXPOSURE_DEFAULT)
-    if unguided_s.is_integer():
-        unguided_s = int(unguided_s)      # 30, not 30.0, in the node's params
+    unguided_s = _unguided_seconds(unguided_exposure_s)
     canvas = _Canvas()
 
     # ------------------------------------------------------------- flow lane
@@ -589,7 +892,7 @@ def _generate(kind, options, target, unguided_exposure_s, *, cycle_plan,
     # No "slew" (spec 1.7): the TARGET block centres. Every stage after it is
     # in its panel lane, which is what a mosaic's loop needs.
     lane_types.append("autofocus")
-    guided = kind != KIND_EAA and OPT_GUIDING in opts
+    guided = _guided(kind, opts)
     if guided:
         lane_types.append("guide")
     lane_types += ["cycle" if cycle_plan else "capture", "report"]
@@ -764,8 +1067,15 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
                     angle_mode: str | None = None,
                     pa_deg: float | None = None,
                     use_measured: bool = False,
+                    skip: str | None = None,
+                    ra: str | None = None,
+                    dec: str | None = None,
+                    cycle_plan: str | None = None,
+                    cycles: int | None = None,
+                    guiding: bool | None = None,
                     rig: RigFacts | None = None,
-                    measured_pa_deg: float | None = None) -> WizardAnswer:
+                    measured_pa_deg: float | None = None,
+                    wheel: Iterable[str] | None = None) -> WizardAnswer:
     """The generated flow as the library stores it, with the wizard's notes.
 
     The arguments are ``generate``'s (the three answers, the unguided sub
@@ -775,14 +1085,40 @@ def generate_answer(kind: str = KIND_DEEP_SKY,
     another kind, a mosaic grid out of bounds, a mosaic with no angle, "Rotate
     to PA" on a rig with no rotator), which a route answers 422.
 
+    THE DOOR'S ANSWERS (S6, #196), each None when not given, and inert then:
+
+    * ``ra`` and ``dec``: the TARGET's coordinates as typed
+      (``_door_coords``). The name is not looked up behind them.
+    * ``skip``: the Mosaic kind's skipped panels (``checked_skip``).
+    * ``cycle_plan`` and ``cycles``: the filter rows, a FILTER CYCLE where
+      the CAPTURE LOOP would be (``_door_rows``), checked against ``wheel``,
+      a rig fact the route injects (the connected wheel's usable slots, None
+      for no wheel, which is the assumed seven, as for ``quick``); on a lane
+      that does not guide, held to the unguided sub cap
+      (``_within_the_unguided_cap``).
+    * ``guiding``: lights the Guiding chip, or confirms it is dark
+      (``_door_guiding``).
+
+    Each refusal names the answer it refuses.
+
     A mosaic answered as one target says so on its card too: the tagline is
     the library card's only line of prose, and a card reading "mosaic" over a
     single target would be the claim nothing keeps."""
+    kind, opts = _checked(kind, options)
+    opts = _door_guiding(kind, opts, guiding)
+    coords = _door_coords(kind, target, ra, dec)
+    table = _door_rows(kind, cycle_plan, cycles, wheel)
+    if table is not None and not _guided(kind, opts):
+        _within_the_unguided_cap(table[2], unguided_exposure_s)
+    # No door answer, no change: "" and 1 are what ``generate`` defaults
+    # the rows to, the inert values the three original answers always met.
+    plan, passes = (table[0], table[1]) if table is not None else ("", 1)
     graph, notes = _generate(
-        kind, options, target, unguided_exposure_s, cycle_plan="", cycles=1,
-        coords=None, safety_abort=False, rows=rows, cols=cols,
-        overlap_pct=overlap_pct, angle_mode=angle_mode, pa_deg=pa_deg,
-        use_measured=use_measured, rig=rig, measured_pa_deg=measured_pa_deg)
+        kind, opts, target, unguided_exposure_s, cycle_plan=plan,
+        cycles=passes, coords=coords, safety_abort=False, rows=rows,
+        cols=cols, overlap_pct=overlap_pct, angle_mode=angle_mode,
+        pa_deg=pa_deg, use_measured=use_measured, skip=skip, rig=rig,
+        measured_pa_deg=measured_pa_deg)
     tagline = f"Generated by the wizard — {kind.lower()}"
     if NO_OPTICS_REASON in notes:
         tagline += f", planned as one target: {NO_OPTICS_REASON}"
@@ -796,7 +1132,7 @@ def generate_record(kind: str = KIND_DEEP_SKY,
                     options: Iterable[str] | None = None,
                     target: str = "",
                     unguided_exposure_s: float | None = None,
-                    **mosaic_and_rig) -> FlowRecord:
+                    **answers_and_rig) -> FlowRecord:
     """The generated flow as the library stores it — graph, name and tagline.
 
     Lands in My flows, never in Examples: the Examples are read-only fixtures
@@ -805,14 +1141,16 @@ def generate_record(kind: str = KIND_DEEP_SKY,
     ``generate_answer``'s record, with the same arguments: the four positional
     answers the route has always passed, and, keyword-only, ``rows``,
     ``cols``, ``overlap_pct``, ``angle_mode``, ``pa_deg``, ``use_measured``,
-    ``rig`` and ``measured_pa_deg``. A caller with only the three original
-    answers gets exactly the graph those answers have always made, less SLEW +
-    CENTER (spec 1.7) and with created params. A route that must say why a
-    mosaic came back as one target calls ``generate_answer`` instead, for the
-    notes; the record's tagline says it either way.
+    the door's answers (``skip``, ``ra``, ``dec``, ``cycle_plan``,
+    ``cycles``, ``guiding``) and the rig facts (``rig``, ``measured_pa_deg``,
+    ``wheel``). A caller with only the three original answers gets exactly
+    the graph those answers have always made, less SLEW + CENTER (spec 1.7)
+    and with created params. A route that must say why a mosaic came back as
+    one target calls ``generate_answer`` instead, for the notes; the record's
+    tagline says it either way.
     """
     return generate_answer(kind, options, target, unguided_exposure_s,
-                           **mosaic_and_rig).record
+                           **answers_and_rig).record
 
 
 # ============================================================== the quick flow
@@ -878,6 +1216,23 @@ def fallback_wheel() -> list[str]:
     return [f for f, _ in parse_cycle_plan(NODE_DEFS["cycle"].params["plan"])]
 
 
+def _unknown_filters(names: Iterable[str],
+                     wheel: Iterable[str] | None) -> str | None:
+    """The refusal for filter names this wheel does not have, or None.
+
+    ONE RULE AND ONE SENTENCE for the quick flow's ticked filters
+    (``cycle_plan_for``) and the wizard door's rows (``_door_rows``): ``wheel``
+    is the connected wheel's usable slot names, and None means no wheel is
+    connected, so the assumed list (``fallback_wheel``) applies. Matched
+    exactly, case and all, for the reason ``cycle_plan_for`` gives."""
+    order = list(wheel) if wheel is not None else fallback_wheel()
+    unknown = sorted({f for f in names if f not in order})
+    if not unknown:
+        return None
+    have = ", ".join(order) if order else "no filters"
+    return f"unknown filter(s) {unknown}; this wheel has {have}"
+
+
 def cycle_plan_for(filters: Iterable[str],
                    wheel: Iterable[str] | None = None,
                    exposures_s: dict[str, float] | None = None) -> str:
@@ -900,10 +1255,9 @@ def cycle_plan_for(filters: Iterable[str],
     picked = [f for f in picked if f]
     if not picked:
         raise ValueError("no filters selected; tick at least one")
-    unknown = sorted({f for f in picked if f not in order})
-    if unknown:
-        have = ", ".join(order) if order else "no filters"
-        raise ValueError(f"unknown filter(s) {unknown}; this wheel has {have}")
+    refusal = _unknown_filters(picked, order)
+    if refusal is not None:
+        raise ValueError(refusal)
     exp = {str(k): v for k, v in (exposures_s or {}).items()}
     wanted = set(picked)
     slots: list[str] = []

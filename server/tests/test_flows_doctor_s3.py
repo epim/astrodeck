@@ -1059,7 +1059,10 @@ class TestTheWordsAtTheEdges:
     string comparison with "..."):
 
     * "M3 always names a wire": ``AssertionError: assert '\u25b8 TARGET
-      M31...s every pass.' == '\u25b8 TARGET M31...s every pass.'``
+      M31...s every pass.' == '\u25b8 TARGET M31...s every pass.'`` (on the
+      GUIDE case as it was pinned; since #375 the no-port sentence is legacy
+      SLEW's alone, and this mutant is shown red on SLEW in
+      ``test_flows_doctor_pass_types.py``)
     * "no name is blank": ``assert False`` (the startswith)
     * "a pool's lane is a target's": ``AssertionError: assert '\u25b8
       CAPTURE LO... it a TARGET.' == '\u25b8 CAPTURE LO... it a TARGET.'``
@@ -1080,17 +1083,36 @@ class TestTheWordsAtTheEdges:
       overlap or use fewer columns.', level='danger')])``"""
 
     def test_m3_on_a_lane_that_ends_on_guide(self):
-        """GUIDE has no 'pass done', so there is no wire to name."""
+        """GUIDE has 'pass done' since S4 (#331), so M3 names the wire to
+        draw from it, as it does for a capture stage.
+
+        A DELIBERATE PIN CHANGE (#375, slice S5). This case pinned "The
+        panel lane ends at GUIDE, which has no 'pass done'; end it on a
+        FILTER CYCLE or CAPTURE LOOP and wire that to TARGET 'next panel'
+        ...", a sentence that was false from the day GUIDE gained the port,
+        and it stayed green on it because the doctor read its own list of
+        pass-bearing types. The no-port sentence is now legacy SLEW's alone,
+        and ``test_flows_doctor_pass_types.py`` pins it there, where the
+        mutant "M3 always names a wire" turns it red (this case is the
+        mutant's reading now, so the list above no longer holds it).
+
+        RED under mutant "_CAPTURE_TYPES restored" (the doctor's pass wires
+        and M3's tail test back on ``_CAPTURE_TYPES``), run in a private
+        copy of server/ (scratchpad s5-compile-mut), observed:
+
+            E       AssertionError: assert '\\u25b8 TARGET M31...s every pass.' == '\\u25b8 TARGET M31...s every pass.'
+            E         Skipping 88 identical leading characters in diff, use -v to show
+            E         - ls empty. Wire GUIDE 'pass done' to TARGET 'next panel' to rotate panels every pass.
+            E         + ls empty. The panel lane ends at GUIDE, which has no 'pass done'; end it on a FILTER CYCLE or CAPTURE LOOP and wire that to TARGET 'next panel' to rotate panels every pass.
+        """
         g = FlowGraph(
             nodes=[_block(), _n("cy", "cycle", 400), _n("g", "guide", 600)],
             edges=[_e("t", "target", "cy", "run"),
                    _e("cy", "complete", "g", "run")])
         assert _one(check(g), M3).text == (
             "▸ TARGET M31 - panels are shot one after another: a night cut "
-            "short leaves the last panels empty. The panel lane ends at GUIDE, "
-            "which has no 'pass done'; end it on a FILTER CYCLE or CAPTURE "
-            "LOOP and wire that to TARGET 'next panel' to rotate panels every "
-            "pass.")
+            "short leaves the last panels empty. Wire GUIDE 'pass done' to "
+            "TARGET 'next panel' to rotate panels every pass.")
 
     def test_a_block_with_no_name_is_still_named(self):
         assert _one(check(_mosaic(name="", fovX=0)), M1).text.startswith(

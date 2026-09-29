@@ -925,3 +925,129 @@ async def test_a_mount_goto_refusal_reaches_the_hold_in_words(
     assert any("refused by the mount" in m for _lv, m, _s in bus_lines), \
         f"the hold must be logged in words: {bus_lines}"
     assert not engine.running
+
+
+async def test_the_ladder_says_when_each_recovery_solve_exposed(
+        sim_hub, monkeypatch, bus_lines):
+    """#402: on 2026-09-27 the ladder's centring solve, seconds after a good
+    blind solve of the same sky, failed with no solution, once, and nothing
+    could say whether the shutter had opened while the mount was still
+    settling from its GoTo. Each recovery solve now logs when its exposure
+    started against the GoTo it followed: the blind solve, made before any
+    GoTo, says there was none; the re-centre's solve says how long after
+    its GoTo came to rest. The hub's own record agrees, and puts that
+    exposure at or after the settle.
+
+    The simulator solves (``find_astap`` forced absent, so the resolver
+    takes the SimSolver whatever this box has installed), and the focus
+    step is trusted, so the ladder is its solve and its re-centre.
+
+    MUTANT "the ladder says nothing of its solves" (both
+    ``_say_solve_timing`` calls in `_recover` removed): RED (observed):
+        AssertionError: the ladder did not say when its solves exposed: []
+    MUTANT "the settle is never stamped" (`Hub.goto_and_center` no longer
+    setting ``goto_settled_at`` after its centring slew): RED (observed):
+        AssertionError: the ladder did not say when its solves exposed: [
+        'auto-resume: the blind solve: the exposure started with no GoTo
+        made since the server started, so none was settling', 'auto-resume:
+        the re-centre: the exposure started with no GoTo made since the
+        server started, so none was settling']
+    """
+    import re
+
+    import astrodeck.providers as providers_module
+    monkeypatch.setattr(providers_module, "find_astap", lambda: None)
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    arm = ResumeArm(engine, sim_hub, clock=lambda: 1_700_000_000.0)
+    assert arm._can_solve(), "premise: the simulator's solver is resolved"
+    refusal = await arm._recover(Session(name="solves", plan=_plan()))
+    assert refusal is None, refusal
+
+    said = [m for _lv, m, _s in bus_lines if m.startswith("auto-resume: the ")]
+    ok = (len(said) == 2
+          and said[0] == ("auto-resume: the blind solve: the exposure started "
+                          "with no GoTo made since the server started, so "
+                          "none was settling")
+          and re.fullmatch(r"auto-resume: the re-centre: the exposure started "
+                           r"\d+\.\d s after the last GoTo came to rest",
+                           said[1]) is not None)
+    assert ok, f"the ladder did not say when its solves exposed: {said}"
+    recs = list(sim_hub.solve_exposures)
+    assert [r["settled_at"] is None for r in recs] == [True, False], recs
+    assert recs[1]["exposed_at"] >= recs[1]["settled_at"], recs
+
+
+async def test_only_tonights_recovery_sweep_is_handed_to_the_start(
+        sim_hub, monkeypatch):
+    """#402: the ladder keeps its good sweep in memory across its retries,
+    and hands it to a start as an AGE, measured on its own clock: 90 s after
+    the sweep, the start is told 90 s. A sweep made on another night is
+    not the focus of this one: it is dropped, not handed over.
+
+    MUTANT "a sweep from another night is handed over" (the night check in
+    ``_sweep_for_start`` removed): RED (observed):
+        AssertionError: last night's sweep was handed to tonight's start:
+        RecoverySweep(position=11022, temp_c=7.5, binning=2, age_s=86400.0)
+    """
+    from astrodeck.events import night_key
+    from astrodeck.sequence.engine import RecoverySweep
+    from astrodeck.sequence.resume_arm import _LadderSweep
+
+    t0 = 1_700_000_000.0
+    now = {"t": t0 + 90.0}
+    arm = ResumeArm(SequenceEngine(sim_hub), sim_hub, clock=lambda: now["t"])
+    arm._recovery_sweep = _LadderSweep(night=night_key(t0), at=t0,
+                                       position=11022, temp_c=7.5, binning=2)
+    assert night_key(now["t"]) == night_key(t0), "premise: the same night"
+    assert arm._sweep_for_start() == RecoverySweep(
+        position=11022, temp_c=7.5, binning=2, age_s=90.0)
+
+    now["t"] = t0 + 86400.0
+    assert night_key(now["t"]) != night_key(t0), "premise: the next night"
+    handed = arm._sweep_for_start()
+    assert handed is None, (
+        f"last night's sweep was handed to tonight's start: {handed}")
+    assert arm._recovery_sweep is None, "last night's sweep was kept"
+
+
+@pytest.mark.parametrize("case", ["kept", "moved"])
+async def test_a_kept_sweep_the_focuser_has_left_is_dropped(
+        sim_hub, monkeypatch, case):
+    """#402: the ladder keeps its good sweep across its retries, and the
+    focus it stands for is where the sweep left the drawtube. A run can
+    come and go between two ladders, its own sweeps moving the focuser, so
+    a later ladder that finds the focuser somewhere else drops the sweep
+    rather than hand it to the start. Control: a focuser still reading the
+    sweep's position keeps it.
+
+    MUTANT "a sweep the focuser has left is handed over" (the position
+    check at the ladder's focus step removed): RED on moved, kept green
+    (observed):
+        AssertionError: moved: the ladder kept a sweep the focuser has left:
+        _LadderSweep(night='2023-11-14', at=1700000000.0, position=19450,
+        temp_c=7.5, binning=2)
+    """
+    from astrodeck.events import night_key
+    from astrodeck.sequence.resume_arm import _LadderSweep
+
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    _record_motion(sim_hub, monkeypatch)
+    _spy_slew_limits(engine, monkeypatch)
+    t0 = 1_700_000_000.0
+    arm = ResumeArm(engine, sim_hub, clock=lambda: t0)
+    here = int(await sim_hub.devices["focuser"].get_position())
+    left_at = here if case == "kept" else here + 250
+    arm._recovery_sweep = _LadderSweep(night=night_key(t0), at=t0,
+                                       position=left_at, temp_c=7.5,
+                                       binning=2)
+    refusal = await arm._recover(Session(name="kept", plan=_plan()))
+    assert refusal is None, refusal
+    if case == "kept":
+        assert arm._recovery_sweep is not None, (
+            "the ladder dropped a sweep the focuser still stands on")
+    else:
+        assert arm._recovery_sweep is None, (
+            f"{case}: the ladder kept a sweep the focuser has left: "
+            f"{arm._recovery_sweep}")

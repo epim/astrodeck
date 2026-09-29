@@ -20,17 +20,14 @@ import { NODE_DEFS } from "../../../../components/flows/nodeDefs";
 import { flowOrder } from "../../../../components/flows/autoLayout";
 import type { FlowGraphRec, FlowNodeType } from "../../../../components/flows/flowsTypes";
 import type { FlowCompileResult } from "../../../../lib/flowsApi";
-import { MOSAIC_FOOTNOTE } from "./quickCopy";
 
 export interface LaneCard {
-  /** Node id, or `mosaic` for the one synthetic card (H.6). */
+  /** The node id: every card is a node of the saved graph. */
   id: string;
   label: string;
   sum: string;
   /** A CSS custom-property NAME with its leading `--`, used as `var(...)`. */
   colorVar: string;
-  /** Present only on the synthetic card: it is drawn, not compiled. */
-  footnote?: string;
 }
 
 export interface RuleRow {
@@ -75,58 +72,11 @@ export function laneCards(graph: FlowGraphRec): LaneCard[] {
     });
 }
 
-/**
- * `"2x1"` -> `{cols: 2, rows: 1}`, or null.
- *
- * The grid travels in the sheet's own params rather than being read back off
- * `store.framing`, because the card has to describe the night that was QUEUED:
- * the framing slice is global and mutable, so reading it puts one target's
- * mosaic on another target's flow and rewrites a saved night's card when the
- * dial moves (review #3). Anything that is not two positive integers is not a
- * grid and gets no card - a malformed hash must not invent panels.
- */
-export function parseMosaicParam(raw: string): { cols: number; rows: number } | null {
-  const m = /^(\d+)x(\d+)$/.exec(raw.trim());
-  if (!m) return null;
-  const cols = Number(m[1]);
-  const rows = Number(m[2]);
-  if (!(cols > 0) || !(rows > 0) || cols * rows <= 1) return null;
-  return { cols, rows };
-}
-
-/**
- * The synthetic MOSAIC card, inserted after TARGET.
- *
- * H.6: `nodeDefs` has 21 node types and none of them is `mosaic`. The engine's
- * mosaic mechanism is N plan targets sharing a `mosaic_group`, so the panels are
- * real and the STAGE is not - which is what the footnote says, on the card,
- * rather than in a release note nobody reads.
- *
- * The summary names the ORDER, because that is the claim an operator plans a
- * night around. It used to end "cycle panels each pass" (#154), and nothing
- * cycles: the engine shoots each plan target to completion before the next, so
- * the panels go one at a time. It is the first thing after the count and the
- * overlap so the ellipsis on a phone cuts the tail, not the order; what a short
- * night costs rides in the footnote, which wraps.
- */
-export function withMosaicCard(
-  cards: LaneCard[],
-  cols: number,
-  rows: number,
-): LaneCard[] {
-  const panels = cols * rows;
-  if (!(panels > 1)) return cards;
-  const card: LaneCard = {
-    id: "mosaic",
-    label: `MOSAIC ${cols}×${rows}`,
-    sum: `${panels} panels · 15% overlap · one panel at a time, each to completion`,
-    colorVar: "--accent-dim",
-    footnote: MOSAIC_FOOTNOTE,
-  };
-  const at = cards.findIndex((c) => c.label === "TARGET" || c.label === "TARGET POOL");
-  if (at < 0) return [card, ...cards];
-  return [...cards.slice(0, at + 1), card, ...cards.slice(at + 1)];
-}
+// THE SYNTHETIC MOSAIC CARD IS DELETED (#196, spec section 8 S6), and so are
+// its hash parser and the footnote it carried (the S5/S6 integration, #461).
+// It stood for panels the quick sheet queued as Plan targets beside the flow,
+// "drawn, not compiled"; that side channel is gone, so the flow card draws the
+// saved graph and nothing else, a mosaic being the graph's own TARGET block.
 
 /** One row per EVENT edge - the "whenever" half of the graph. */
 export function ruleRows(graph: FlowGraphRec): RuleRow[] {

@@ -324,6 +324,107 @@ class TestTheBriefReadsAMosaic:
         assert "—" not in b and "–" not in b, b
 
 
+class TestTheBriefJoinsAListAsEnglish:
+    """#407: a list of two takes no comma, a list of three or more keeps the
+    Oxford comma. ``_join_and`` wrote ", and" before the last item whatever
+    the length, so a mosaic with exactly two skipped panels briefed as
+    "(panels 1-1, and 3-2 skipped, ...)". Its other caller, the cloud hold's
+    checklist, has the same shape: a hold whose cooler, re-centre and
+    refocus steps are all off has two steps.
+
+    Every length is pinned, through ``_join_and`` itself and through the two
+    sentences that call it, so a fix for two that broke three (or the
+    reverse) cannot pass.
+
+    Every mutant below was run in a private copy of ``server/`` (scratchpad
+    ``S5-TONIGHT-mut``, from byte backups), never in the shared tree.
+
+    RED under mutant "the old _join_and" (its two-item branch removed, so
+    every list of two or more ends ", and" as before #407), observed: the
+    two-panel test, the checklist test and the lengths test failed (3
+    failed, 55 passed), and the three-panel test stayed green:
+
+        E       AssertionError: This flow arms at astronomical dusk (−30
+            min). It then arms M31. M31 is a mosaic of 2 columns by 3 rows
+            shooting 4 of its 6 panels (panels 1-1, and 3-2 skipped, written
+            row-column) at 25% overlap, laid out at PA 30° with the rotator
+            turned to it at every panel. After 3 passes of its filters on a
+            panel it moves on to the next (setting first), and comes back
+            until every panel has its subs. The hop between panels has not
+            been measured on this rig yet. Capture interleaves one sub per
+            filter per pass - L 60 s × 45, R 60 s × 45, G 60 s × 45, B 60 s
+            × 45, Ha 180 s × 45, OIII 180 s × 45, SII 180 s × 45 - so every
+            channel grows evenly.
+        E       assert '(panels 1-1 and 3-2 skipped, written row-column)' in
+            'This flow arms at astronomical dusk (−30 min). It then arms
+            M31. M31 is a mosaic of 2 columns by 3 rows shooting 4 of...'
+
+        E       AssertionError: If cloud cover above 40% is detected,
+            imaging pauses at the frame boundary and the calibration queue
+            banks whatever the library lacks (darks → bias →
+            flats-if-panel); once the sky holds clear for 4 min it restores
+            the filter, and resumes at the same slot
+
+        E         Differing items:
+        E         {2: 'a, and b'} != {2: 'a and b'}
+
+    (and ``test_flows_brief_grid_and_visit``'s re-pinned two-panel line).
+
+    RED under mutant "no Oxford comma" (the list of three or more joined
+    ``", ".join(parts[:-1]) + " and " + parts[-1]``), observed: the
+    three-panel test, the checklist test (on its five-step control) and the
+    lengths test failed (3 failed, 55 passed), and the two-panel test stayed
+    green:
+
+        E       AssertionError: This flow arms at astronomical dusk (−30
+            min). It then arms M31. M31 is a mosaic of 2 columns by 3 rows
+            shooting 3 of its 6 panels (panels 1-1, 2-2 and 3-2 skipped,
+            written row-column) at 25% overlap, ...
+        E       assert ', and resumes at the same slot.' in 'This flow arms
+            at astronomical dusk (−30 min), opens the dome and binds it to
+            the mount. ...'
+        E         Differing items:
+        E         {3: 'a, b and c'} != {3: 'a, b, and c'}
+        E         {4: 'a, b, c and d'} != {4: 'a, b, c, and d'}
+    """
+
+    def test_two_skipped_panels_take_no_comma(self):
+        """The #407 graph: 3 rows of 2 with 1-1 and 3-2 skipped."""
+        b = brief(_mosaic(skip="1-1, 3-2", passes=3))
+        assert "(panels 1-1 and 3-2 skipped, written row-column)" in b, b
+        assert "1-1, and" not in b, b
+
+    def test_three_skipped_panels_keep_the_oxford_comma(self):
+        b = brief(_mosaic(skip="1-1, 2-2, 3-2"))
+        assert "(panels 1-1, 2-2, and 3-2 skipped, written row-column)" \
+            in b, b
+
+    def test_a_two_step_resume_checklist_takes_no_comma(self):
+        """The Campaign Example's hold with its cooler gate, re-centre and
+        refocus all off leaves two steps; with them on, five (control: the
+        Oxford comma stays)."""
+        g = _ex("example-campaign")
+        hold = next(n for n in g.nodes if n.type == "holdresume")
+        full = brief(g)
+        assert ("re-cools the sensor to setpoint and waits for it to "
+                "stabilize, restores the filter, re-centers, ") in full, full
+        assert ", and resumes at the same slot." in full, full
+        hold.params.update(cooler="Skip check", recenter="Stay put",
+                           refocus="Never")
+        two = brief(g)
+        sentence = next(s for s in two.split(". ")
+                        if s.startswith("If cloud cover"))
+        assert sentence.endswith(
+            "it restores the filter and resumes at the same slot"), sentence
+
+    def test_every_length_of_list(self):
+        from astrodeck.flows.tonight import _join_and
+        items = ["a", "b", "c", "d"]
+        got = {n: _join_and(items[:n]) for n in range(5)}
+        assert got == {0: "", 1: "a", 2: "a and b", 3: "a, b, and c",
+                       4: "a, b, c, and d"}
+
+
 # =========================================================== the campaign tab
 
 class TestWhatTheCampaignTabWillSay:

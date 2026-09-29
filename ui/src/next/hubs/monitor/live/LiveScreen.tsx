@@ -38,8 +38,9 @@ import { u } from "../../../../lib/base";
 import {
   useStore, useSeq, useStatus, useCamera, useMount, useGuideRecent, useGuideRms, useLiveness,
   usePreview, useLogs, useSafety, useNight, useWsConnected, useTelemetryStale, useWeather,
-  useBackendLinks, useBootConnectFailed, useProviders, usePhotometry,
+  useBackendLinks, useBootConnectFailed, useProviders, usePhotometry, useSnapshotPreviewId,
 } from "../../../../store";
+import { newestPreviewId, showingLivePreview } from "../../../../lib/lastFrameId";
 import { accessPhrase, useCan, useCanViewWeather } from "../../../../lib/caps";
 import { useLock } from "../../../lib/gateHook";
 import { explainLock } from "../../../shell/explain";
@@ -222,9 +223,16 @@ export function LiveScreen(): JSX.Element {
   // Reopening the dashboard mid-run showed LAST FRAME as an empty black box
   // captioned NO FRAME YET with dozens of frames already on disk, because
   // `preview` only ever arrives over the WS on the NEXT frame. The snapshot
-  // carries `preview_id`; hold it here and hand it to the tile as STALE - which
-  // is the truth: it is the last frame, not a live one.
-  const [coldPreviewId, setColdPreviewId] = useState<number | null>(null);
+  // carries `preview_id`; the tile shows it as STALE - which is the truth: it
+  // is the last frame, not a live one.
+  //
+  // THE ID LIVES IN THE STORE, NOT HERE (#399). This screen used to keep it in
+  // local state, read once on mount, and a reconnect never read it again: the
+  // phone sat on NO FRAME YET at 50/105 frames while the rig served frame 535.
+  // ws.ts now reads the snapshot on every connect, reconnect and relay gap and
+  // records the id in `snapshotPreviewId`; this mount read writes to the same
+  // field, so a page opened long after the socket came up still asks the rig.
+  const snapshotPreviewId = useSnapshotPreviewId();
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -234,10 +242,16 @@ export function LiveScreen(): JSX.Element {
         const snap = (await res.json()) as Partial<MonitorSnapshot>;
         if (cancelled) return;
         const ts = Date.now() / 1000;
-        const h = useStore.getState().handleEvent;
-        if (snap.status) h({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
-        if (snap.sequence) h({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
-        if (snap.preview_id != null) setColdPreviewId(snap.preview_id);
+        const st = useStore.getState();
+        if (snap.status) st.handleEvent({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
+        if (snap.sequence) st.handleEvent({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+        // Only ever RAISES the field. This read can resolve after a newer one
+        // ws.ts made at connect, and an older answer must not pull the tile
+        // back. (ws.ts itself replaces: a restarted server counts from 1, and
+        // a restart always drops the socket, so a connect read sees it first.)
+        if (snap.preview_id != null) {
+          st.setSnapshotPreviewId(newestPreviewId(useStore.getState().snapshotPreviewId, snap.preview_id));
+        }
       } catch { /* offline - the WS fills this in on the next frame */ }
     })();
     return () => { cancelled = true; };
@@ -295,6 +309,12 @@ export function LiveScreen(): JSX.Element {
   const guideAgeMs = liveness.guide != null ? nowMs - liveness.guide : null;
   const guideStale = guideAgeMs != null && guideAgeMs > GUIDE_STALE_S * 1000;
   const live = frameIsLive(frameAgeMs, progress?.current_exposure_s);
+  // The NEWER of the live event and the snapshot, the classic Monitor's rule
+  // (lib/lastFrameId.ts). Taking the live event first left the tile on the
+  // frame before a drop until the next exposure. The live event's LIVE badge,
+  // HFR, stars and age are shown only when they describe the frame on screen.
+  const shownPreviewId = newestPreviewId(preview?.id, snapshotPreviewId);
+  const shownIsLive = showingLivePreview(shownPreviewId, preview?.id);
   const previewMeta = useMemo(
     () => (preview ? `${preview.exposure_s}s · g${preview.gain} · ${preview.binning}x` : undefined),
     [preview],
@@ -488,14 +508,14 @@ export function LiveScreen(): JSX.Element {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <Label>LAST FRAME</Label>
           <PreviewTile
-            previewId={preview?.id ?? coldPreviewId}
-            live={live}
-            stale={!live && (preview != null || coldPreviewId != null)}
-            ageMs={frameAgeMs}
-            hfr={preview?.hfr}
-            stars={preview?.stars}
-            meta={previewMeta}
-            clip={isClipping(preview)}
+            previewId={shownPreviewId}
+            live={live && shownIsLive}
+            stale={shownPreviewId != null && !(live && shownIsLive)}
+            ageMs={shownIsLive ? frameAgeMs : null}
+            hfr={shownIsLive ? preview?.hfr : undefined}
+            stars={shownIsLive ? preview?.stars : undefined}
+            meta={shownIsLive ? previewMeta : undefined}
+            clip={shownIsLive && isClipping(preview)}
             brightness={thumbBrightness}
             onBrightness={setBrightness}
             onOpen={() => nav.go("/rig/capture")}

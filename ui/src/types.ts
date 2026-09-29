@@ -770,9 +770,19 @@ export interface SequenceProgress {
 
   eta_s?: number; // total predicted seconds to finish (authoritative magnitude)
   eta_confident?: boolean; // false until >= ETA_MIN_FRAMES real frames measured
+  /** False while the finish clock still owes hops between targets and none
+   *  has been measured, so `eta_s` prices them at the 150 s seed (engine
+   *  `compute_eta`, #189 U-07); true once a hop has been measured, and when
+   *  no hop is left to make. `eta_confident` is false whenever this is. A
+   *  readout says "hops not yet costed" exactly when it is false (S5). */
+  hops_costed?: boolean;
   server_now_ms?: number; // server epoch at emit; client uses to offset-correct
   current_exposure_s?: number; // exposure of the step in flight (for sub-frame bar)
-  frame_started_at_ms?: number; // server epoch when the in-flight exposure began
+  /** Server epoch when the in-flight exposure began. NULL between frames
+   *  (the engine sends `None` while no shutter is open), which every reader
+   *  already treats as "no frame in flight" (`!= null`, `?? null`); typed
+   *  `number` alone until S5 (#431). */
+  frame_started_at_ms?: number | null;
   // event-cost breakdown (transparency/debugging; not required by the UI):
   remaining_capture_s?: number;
   events_cost_s?: number; // sum of remaining dither/AF/flip costs
@@ -2605,13 +2615,46 @@ export interface UnreadableSessionRow {
  *  `listSessions`, which never returns an unreadable row. */
 export type SessionListRow = SessionRow | UnreadableSessionRow;
 
+/** One entry of `GET /api/plans`: a saved plan's headline numbers or, since
+ *  #378, a plan FILE this build cannot read as a plan.
+ *
+ *  AN UNREADABLE ROW IS `{id, name?, status: "unreadable", unreadable, mtime}`
+ *  (server `plans.py` `PlanLibrary.list`). The server used to skip such a file,
+ *  so a damaged plan looked deleted; it is listed now so it can be seen and
+ *  deleted, and `GET /api/plans/{id}` and its export answer it 422. It carries
+ *  no `frames`, `integration_min`, `shutter_min` or `targets`, because nothing
+ *  was read to count. Those numbers stay typed as present because a plan row
+ *  always has them, and the readers written before #378 do arithmetic on
+ *  them: EVERY READER MUST ASK `planUnreadableReason` (`lib/planLibrary.ts`)
+ *  BEFORE IT READS ONE, and a row it answers for offers DELETE and nothing
+ *  else. That is also why this is one type with optional keys rather than a
+ *  union like `SessionListRow`. Not yet kept everywhere: the #/next Plan
+ *  hub's library (`next/hubs/session/plan/PlanLibrary.tsx`) shows the reason
+ *  through `planRowSummary` but still offers LOAD and EXPORT on the row, and
+ *  reads the list without `listPlans` (recorded on #378). */
 export interface PlanRow {
+  /** The file's stem: what GET, export and DELETE address. */
   id: string;
+  /** Always a string once `listPlans` has read the row: the server leaves it
+   *  out of an unreadable row whose file gives no name a person could read,
+   *  and `listPlans` names that row by its id. */
   name: string;
   frames: number;
+  /** Light frames only (plans.py `_summarize`, UX #39). */
   integration_min: number;
+  /** Every exposure, calibration included. The server has always sent it on a
+   *  plan row; nothing on screen reads it yet. */
+  shutter_min?: number;
   targets: number;
+  /** The FILE's mtime, which the server sorts the list by. */
   mtime: number;
+  /** Present only on an unreadable row, and always "unreadable" there: a key
+   *  no plan row has. */
+  status?: "unreadable";
+  /** The server's reason, the same words its 422 carries ("fails validation:
+   *  targets.0.steps.0.frame_type: ...", "not valid JSON", "it holds no
+   *  plan"). Shown as sent. Read it through `planUnreadableReason`. */
+  unreadable?: string;
 }
 
 // ------------------------------------------------------------- touch ergonomics

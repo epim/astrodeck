@@ -264,7 +264,9 @@ body {
       so its own filter's containing block is exactly the viewport, and a
       `fixed`/`absolute inset-0` child clamps to the screen by construction.
    3. CLAMPED. `max-height: 100dvh` (dvh, not vh — mobile browser chrome) and
-      `max-width: 100vw` on the surface, so nothing can exceed the screen.
+      `max-width: 100vw` on the surface, so nothing can exceed the screen. A
+      browser without dvh gets the same clamp in vh from the @supports rule
+      below, which only works because no var it reads holds a dvh value (#354).
    4. OPAQUE. `--bg-raise`, not the translucent `--bg-panel`: reviewers could
       read event-log lines straight through MORE-sheet rows and AUTOMATION
       toggles through frame metadata.
@@ -296,7 +298,19 @@ body {
    authored `max-width: 100vw` here silently ate the variant's
    `sm:max-w-[560px]`, and the preflight rendered 788px wide on an 820px tablet.
    The clamp and the per-variant size therefore have to live in the SAME
-   declaration, which means the variant feeds it through a var. */
+   declaration, which means the variant feeds it through a var.
+
+   The height cap is a bare FRACTION of the viewport (`--ov-max-h-frac`, less
+   `--ov-max-h-gap`), which each rule multiplies by its own unit: 100dvh here,
+   100vh in the @supports fallback. It used to be a dvh value in --ov-max-h,
+   which the fallback read too. A declaration holding var() is only checked
+   once the var is substituted, so without dvh the fallback came out as
+   `min(100vh, 85dvh)`, invalid at computed-value time, and max-height fell to
+   its initial `none`: the fallback removed the clamp it exists to give (#354).
+   --ov-max-h is still read first, as an explicit cap that REPLACES the
+   fraction rather than meeting it in a min(): `full`'s 100% below, and a
+   caller's own `surfaceStyle` cap, which therefore must not be dvh either
+   (six still are, #417). */
 .overlay-surface {
   position: relative;
   display: flex;
@@ -305,7 +319,7 @@ body {
   width: var(--ov-w, 100%);
   height: var(--ov-h, auto);
   max-width: min(100vw, var(--ov-max-w, 100vw));
-  max-height: min(100dvh, var(--ov-max-h, 100dvh));
+  max-height: min(100dvh, var(--ov-max-h, calc(var(--ov-max-h-frac, 1) * 100dvh - var(--ov-max-h-gap, 0px))));
   background: var(--bg-raise);                    /* OPAQUE — never --bg-panel */
   color: var(--text);
   border: 1px solid var(--line-bright);
@@ -313,7 +327,7 @@ body {
   overscroll-behavior: contain;
 }
 @supports not (height: 100dvh) {
-  .overlay-surface { max-height: min(100vh, var(--ov-max-h, 100vh)); }
+  .overlay-surface { max-height: min(100vh, var(--ov-max-h, calc(var(--ov-max-h-frac, 1) * 100vh - var(--ov-max-h-gap, 0px)))); }
 }
 
 /* The `full` variant (S4, #189): the Target framing modal on tablet and desktop
@@ -324,8 +338,8 @@ body {
      fixed host, so 100% IS the viewport the host covers. 100vw also counts a
      desktop scrollbar. And a dvh value fed through a var defeats the @supports
      fallback above: `min(100vh, 100dvh)` is invalid at computed-value time in
-     a browser without dvh, which drops max-height to `none` (#354, which the
-     dvh-valued variants still carry).
+     a browser without dvh, which drops max-height to `none` (#354). A
+     percentage parses in both rules, so --ov-max-h carries it.
    - The top and side safe-area insets are padding here: index.html sets
      viewport-fit=cover, so a full surface's head row would otherwise sit under
      the notch. The bottom inset stays with the foot row (or the no-foot body);

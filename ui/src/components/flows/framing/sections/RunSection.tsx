@@ -5,6 +5,14 @@
 // Shown only when the block owns a stage (the sheet decides): a block with no
 // stages has nothing to rotate, stay on or count.
 //
+// A ONE-PANEL BLOCK GETS NO VISIT ROWS (#413). It compiles to no group
+// (`compile_plan` emits `mosaic: null`), so nothing reads `passes` or
+// `minVisit` and there is no other panel to rotate to: the loop, PASSES PER
+// VISIT and AT LEAST rows are left out rather than offered as controls that
+// change nothing. They come back as soon as the draft is a grid. The flow's
+// whenWaiting row stays, since it is the flow's, with a line saying it reads
+// nothing while the flow has no mosaic, as the flow overview says.
+//
 //   - "Rotate panels every pass" is the loop wire, one source of truth
 //     (spec 1.4): the toggle is held by the sheet and DONE hands it to
 //     `flowsApplyFraming`, which places or lifts the wire from the lane's
@@ -29,8 +37,19 @@ import { Stepper } from "./GridSection";
 
 export const ROTATE_LABEL = "Rotate panels every pass";
 export const WHEN_WAITING_LABEL = "While a mosaic waits (for every mosaic in this flow)";
+/** Under the whenWaiting row while no TARGET in the flow, this block's draft
+ *  included, has more than one panel. The classic overview's
+ *  `WHEN_WAITING_NO_MOSAIC`, copied rather than imported (the overview's
+ *  chunk may not reach a framing module, nor this one the inspector's) and
+ *  held equal by framingSections.test.tsx. */
+export const WHEN_WAITING_NO_MOSAIC =
+  "This flow has no mosaic yet, so this changes nothing until a TARGET has more than one panel.";
 
 export interface RunSectionProps {
+  /** The draft is one panel: no loop, passes or minimum-visit row. */
+  onePanel: boolean;
+  /** No TARGET in the flow is a mosaic, this block's draft included. */
+  noMosaic: boolean;
   loop: boolean;
   /** Why the loop toggle cannot act, or null. */
   loopLock: string | null;
@@ -55,17 +74,21 @@ export function RunSection(p: RunSectionProps): JSX.Element {
   return (
     <section className="tfs-section" aria-labelledby="tfs-run-h" data-testid="framing-run">
       <h3 id="tfs-run-h" className="tfs-section-h">RUN</h3>
-      <div className="tfs-row">
-        <span className="tfs-label">{ROTATE_LABEL}</span>
-        <HonestButton className={`tfs-btn ${p.loop ? "tfs-on" : ""}`} reason={p.loopLock}
-          onClick={() => p.onLoop(!p.loop)} onExplain={p.explain}>
-          <span data-testid="framing-loop" data-on={p.loop ? "true" : "false"}>{p.loop ? "ON" : "OFF"}</span>
-        </HonestButton>
-      </div>
-      <Stepper label="PASSES PER VISIT" value={p.passes} min={1} max={20} lock={null}
-        onChange={p.onPasses} explain={p.explain} />
-      <Stepper label="AT LEAST" value={p.minVisit} min={0} max={180} step={5} unit=" min" lock={null}
-        onChange={p.onMinVisit} explain={p.explain} />
+      {!p.onePanel && (
+        <>
+          <div className="tfs-row">
+            <span className="tfs-label">{ROTATE_LABEL}</span>
+            <HonestButton className={`tfs-btn ${p.loop ? "tfs-on" : ""}`} reason={p.loopLock}
+              onClick={() => p.onLoop(!p.loop)} onExplain={p.explain}>
+              <span data-testid="framing-loop" data-on={p.loop ? "true" : "false"}>{p.loop ? "ON" : "OFF"}</span>
+            </HonestButton>
+          </div>
+          <Stepper label="PASSES PER VISIT" value={p.passes} min={1} max={20} lock={null}
+            onChange={p.onPasses} explain={p.explain} testId="framing-passes" />
+          <Stepper label="AT LEAST" value={p.minVisit} min={0} max={180} step={5} unit=" min" lock={null}
+            onChange={p.onMinVisit} explain={p.explain} testId="framing-min-visit" />
+        </>
+      )}
       <div className="tfs-row">
         <label className="tfs-label" htmlFor="tfs-when-waiting">{WHEN_WAITING_LABEL}</label>
         <select id="tfs-when-waiting" className="field tfs-input" value={p.whenWaiting}
@@ -73,6 +96,7 @@ export function RunSection(p: RunSectionProps): JSX.Element {
           {FLOW_SETTINGS.whenWaiting.options.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       </div>
+      {p.noMosaic && <div className="tfs-row tfs-note" data-testid="framing-no-mosaic">{WHEN_WAITING_NO_MOSAIC}</div>}
       {p.countsNotice && (
         <div className="tfs-row tfs-banner tfs-warn" role="status" data-testid="framing-counts">{p.countsNotice}</div>
       )}

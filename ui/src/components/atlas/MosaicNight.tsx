@@ -168,8 +168,13 @@ export const MosaicNight = memo(function MosaicNight({
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-line pt-3">
+      {/* Columns x rows, like the camera field (width x height): the Example
+          "M31 3x2" is 3 columns by 2 rows, and so is every other place its
+          size is written (S4 orchestrator ruling 1, #339). Panel LABELS stay
+          row-column; that pull is what once put this heading rows first,
+          reading "2x3" for the 3x2. */}
       <span className="label">
-        Across the {rows}×{cols} mosaic
+        Across the {cols}×{rows} mosaic
       </span>
 
       {state.kind === "loading" && (

@@ -12,6 +12,14 @@
 // the old dial's snap is issue I-24), USE MEASURED from `status.sky_angle`,
 // the convention line and the tolerance line. The sky's rotate handle and
 // its `[` `]` keys turn the same angle; they live on the canvas.
+//
+// A GRID WITH NO ANGLE IS OFFERED THE MEASURED ONE, NEVER GIVEN IT (S5
+// orchestrator ruling 1, #411). While the draft is a grid at ANY ANGLE, the
+// USE MEASURED row becomes the offer, its button naming exactly what a press
+// writes, "ROTATE TO 37.2 deg" or "CAMERA FIXED AT 37.2 deg" (framingModel
+// `angleOffer`), with the measurement's line under it saying where the number
+// came from. Nothing is written until it is pressed. The readout strip carries
+// the same offer, since on a phone this section is below GRID, off screen.
 
 import type { JSX } from "react";
 import { HonestButton } from "../../../ui";
@@ -41,6 +49,9 @@ export interface AngleSectionProps {
   locks: Record<TargetAngle, string | null>;
   /** The USE MEASURED chip's text, or null with no measurement. */
   measured: string | null;
+  /** The measured angle offered to a grid that owes one (framingModel
+   *  `angleOffer`'s label), or null. In place of the plain chip. */
+  offer: string | null;
   tolerance: string | null;
   /** Why the degree field and the nudges cannot act (ANY ANGLE holds no
    *  angle), or null. */
@@ -49,6 +60,7 @@ export interface AngleSectionProps {
   onRotation: (text: string) => void;
   onNudge: (delta: number) => void;
   onUseMeasured: () => void;
+  onOffer: () => void;
   explain: (reason: string) => void;
 }
 
@@ -96,7 +108,17 @@ export function AngleSection(p: AngleSectionProps): JSX.Element {
           </HonestButton>
         ))}
       </div>
-      {p.measured && (
+      {p.offer ? (
+        <>
+          <div className="tfs-row">
+            <span className="tfs-label">USE MEASURED</span>
+            <button type="button" className="tfs-btn tfs-on" data-testid="framing-angle-offer" onClick={p.onOffer}>
+              {p.offer}
+            </button>
+          </div>
+          {p.measured && <div className="tfs-row tfs-note">{p.measured}</div>}
+        </>
+      ) : p.measured && (
         <div className="tfs-row">
           <button type="button" className="tfs-btn tfs-chip" data-testid="framing-use-measured"
             onClick={p.onUseMeasured}>

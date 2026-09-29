@@ -178,7 +178,7 @@ const { resetRouterCacheForTests } = await import("../../../router");
 const { SkyHub } = await import("../SkyHub");
 const { CoordsSheet } = await import("../sheets/coords");
 const { skyPrefs } = await import("../finder");
-const { fovFromOptics } = await import("../../../../lib/framing");
+const { DEFAULT_OVERLAP, fovFromOptics } = await import("../../../../lib/framing");
 const { frameFovDeg, matchCameraZoom } = await import("../frame/zoom");
 const { SKY_PREF_KEYS } = skyPrefs;
 
@@ -292,7 +292,18 @@ await testAsync("FRAME HERE opens a framing session with NO target, centred on t
   eq(f?.target, undefined, "a free-roam session must carry no catalogue target:");
   assert(typeof f?.freeroamId === "string" && (f?.freeroamId?.length ?? 0) > 0,
     "free-roam needs a stable group id or its panels cannot be replaced on a re-frame");
-  eq(f?.mosaic.overlap, 0.15, "the 25% seed must still be corrected to the printed 15%:");
+  // DELIBERATE PIN CHANGE (spec 2.4 "one server constant", S6-DOORS;
+  // re-pinned by the S5/S6 integration, S56-INTEG): a free-roam session
+  // starts from lib/framing.ts's DEFAULT_OVERLAP like every framing, no
+  // longer corrected to a Sky-only 15%. The old pin, run against this tree,
+  // observed "the 25% seed must still be corrected to the printed 15%:
+  // expected 0.15, got 0.25". Mutant "the Sky corrects to 15% again"
+  // (SkyHub.tsx's three FRAME resets writing `overlap: 0.15`), observed in the
+  // private copy scratchpad S56-INTEG-mut (17/18):
+  //   x FRAME HERE opens a framing session with NO target, centred on the
+  //   reticle: a free-roam session is not at the one overlap (spec 2.4):
+  //   expected 0.25, got 0.15
+  eq(f?.mosaic.overlap, DEFAULT_OVERLAP, "a free-roam session is not at the one overlap (spec 2.4):");
   // Centred on the RETICLE, not on the mount: the mount may be parked, and the
   // reticle is what the user was looking at when they pressed the button.
   assert(Math.abs((f?.center.dec_deg ?? 0) - (-5.4)) > 1,

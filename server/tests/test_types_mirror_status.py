@@ -32,6 +32,20 @@ copied here:
   pier side, so every field the record can carry as null is seen null once
   and seen as a value once.
 
+S5 (#189, U-07) added two more, held the same way, and both had drifted
+before it (#431):
+
+* ``SequenceProgress``, the ``progress`` of a published sequence state,
+  against every ``progress`` a clocked-simulator night published
+  (``_group_harness``) and every answer ``compute_eta`` gave on it: the
+  finish clock's keys, ``hops_costed`` among them, are exactly the optional
+  ones, and the null ``frame_started_at_ms`` carries between frames is
+  admitted.
+* flowsApi.ts's ``FlowProgressBlock`` and ``FlowProgressPanel``, against a
+  real ``flow_progress`` answer holding a locked single target, a pool and
+  a mosaic: ``group_id``, ``grid``, ``skipped`` and ``locked_angle`` are
+  exactly the optional ones.
+
 Every test that guards a branch names the mutant it kills and quotes the
 failure that mutant produced, observed in a private copy of the tree (a copy
 of ``server/`` beside a copy of ``ui/src/types.ts``), from a byte-for-byte
@@ -47,6 +61,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from _group_harness import (Night, grid_plan, group_hub,  # noqa: F401
+                            group_store)
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from astrodeck.catalog import framing
 from astrodeck.devices.base import DeviceError
@@ -310,3 +326,249 @@ async def test_the_status_type_carries_the_record_and_its_null(sim_hub):
     assert _ts_admits(before, member), (
         f"the status frame carries sky_angle None before any solve, and "
         f"types.ts says {member!r}")
+
+
+# ------------------------------------------------ SequenceProgress (S5, U-07)
+
+def _eta_night_plan():
+    """The fixture 2x2 of L and R, one frame a filter: short, and it ends,
+    so the finish clock is asked with hops still to make and with none."""
+    return grid_plan(panel_kw={"count": 1})
+
+
+async def _progress_of_a_night(hub, monkeypatch) -> tuple[list[dict],
+                                                          list[dict]]:
+    """``(published, eta)``: every ``progress`` the engine published over one
+    clocked night (``_group_harness``), as JSON carries it, and every answer
+    ``compute_eta`` itself gave, asked of the live engine at each exposure.
+
+    Real answers, never a list copied here: ``progress`` is a dict
+    `_set_state` builds, with `compute_eta`'s answer merged in only while a
+    run is live, so no model says what its keys are."""
+    night = Night(hub, monkeypatch)
+    eta: list[dict] = []
+    night.on_capture = lambda rec: eta.append(
+        json.loads(json.dumps(night.engine.compute_eta())))
+    try:
+        done = await night.run(_eta_night_plan())
+    finally:
+        await night.close()
+    assert done, f"premise: the night ended: {night.trace[-3:]}"
+    published = [json.loads(json.dumps(e["data"]["progress"]))
+                 for e in night.events if e["type"] == "sequence"
+                 and isinstance(e["data"].get("progress"), dict)]
+    return published, eta
+
+
+async def test_the_progress_type_is_what_the_engine_publishes(
+        group_hub, monkeypatch):
+    """Every ``progress`` key the engine publishes is declared on
+    ``SequenceProgress`` and every declared key is published; the keys
+    `compute_eta` answers are exactly the ones types.ts marks optional (the
+    finish clock rides only a live run's publishes, so a terminal one has
+    none of them); and every value is one its TS type admits.
+    ``hops_costed`` is seen both ways (hops still to make and none measured,
+    then no hop left to cost), so a type that admitted only one would fail.
+
+    RED against types.ts as it was before S5, observed:
+
+        E   AssertionError: SequenceProgress drifted: the engine publishes
+            ['hops_costed'], which types.ts does not declare, and types.ts
+            declares [], which the engine never publishes
+
+    Each mutant below was run in scratchpad ``s5-feed-mut`` (a copy of
+    ``server/`` beside a copy of ui/src/types.ts), from a byte backup of the
+    file it changed, restored and hash-compared after.
+
+    RED under "drop hops_costed from types.ts" (its line deleted from
+    ``SequenceProgress``), observed: the message above, verbatim.
+
+    RED under "hops_costed required in types.ts" (``hops_costed:
+    boolean;``), observed:
+
+        E   AssertionError: types.ts must mark optional exactly the keys the
+            finish clock adds
+            Extra items in the right set:
+            'hops_costed'
+
+    RED under "hops_costed typed number in types.ts", observed:
+
+        E   AssertionError: types.ts types these otherwise: {'hops_costed':
+            (False, 'number')}
+
+    RED under "frame_started_at_ms not nullable" (``frame_started_at_ms?:
+    number;``, the type before S5, which the engine's null between frames
+    never matched), observed:
+
+        E   AssertionError: types.ts types these otherwise:
+            {'frame_started_at_ms': (None, 'number')}
+
+    RED under the engine mutant "the finish clock gains a key"
+    (``compute_eta`` answering ``"hops_s"`` as well), observed:
+
+        E   AssertionError: SequenceProgress drifted: the engine publishes
+            ['hops_s'], which types.ts does not declare, and types.ts
+            declares [], which the engine never publishes
+    """
+    from astrodeck.sequence import SequenceEngine
+    assert SequenceEngine(group_hub).compute_eta() == {}, (
+        "premise: with no plan the finish clock answers nothing, so its keys "
+        "can be absent")
+    published, eta = await _progress_of_a_night(group_hub, monkeypatch)
+    live = [p for p in published if "eta_s" in p]
+    assert live, "premise: the night published live progress"
+    costed = {p["hops_costed"] for p in live}
+    assert costed == {True, False}, (
+        f"premise: hops_costed was seen both ways: {costed}")
+    assert any(p.get("frame_started_at_ms") is None for p in live) and any(
+        p.get("frame_started_at_ms") is not None for p in live), (
+        "premise: frame_started_at_ms was seen null and set")
+
+    ts = _interface("SequenceProgress")
+    sent = set().union(*map(set, published))
+    assert sent == set(ts), (
+        f"SequenceProgress drifted: the engine publishes "
+        f"{sorted(sent - set(ts))}, which types.ts does not declare, and "
+        f"types.ts declares {sorted(set(ts) - sent)}, which the engine "
+        f"never publishes")
+    clock = set().union(*map(set, eta))
+    assert clock and clock <= sent, (
+        f"premise: compute_eta's keys are published: {sorted(clock)}")
+    assert _optional("SequenceProgress") == clock, (
+        "types.ts must mark optional exactly the keys the finish clock adds")
+    for p in published:
+        wrong = _wrong(p, ts)
+        assert not wrong, f"types.ts types these otherwise: {wrong}"
+
+
+# ------------------------------------------ FlowProgressBlock (flowsApi.ts)
+
+FLOWS_API_TS = TYPES_TS.parent / "lib" / "flowsApi.ts"
+
+
+def _flows_api(name: str) -> dict[str, str]:
+    return _interface(name, FLOWS_API_TS.read_text(encoding="utf-8"))
+
+
+def _flows_api_optional(name: str) -> set[str]:
+    return _optional(name, FLOWS_API_TS.read_text(encoding="utf-8"))
+
+
+def _progress_blocks() -> list[dict]:
+    """The blocks of one real ``flow_progress`` answer with every shape a
+    block takes: a single TARGET locked to an angle, a POOL, and a 2x2
+    mosaic with a panel skipped. JSON-rendered, as the route serves it."""
+    from astrodeck.flows.compile import compile_plan
+    from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
+    from astrodeck.flows.progress import flow_progress
+    from astrodeck.flows.to_plan import to_sequence_plan
+    from astrodeck.sequence.session import Session
+
+    def n(nid, ntype, x, **params):
+        return FlowNode(id=nid, type=ntype, x=x, y=0.0, params=params)
+
+    def e(a, ap, b, bp):
+        return FlowEdge(**{"from": a, "fromPort": ap, "to": b, "toPort": bp})
+
+    graph = FlowGraph(
+        nodes=[n("t", "target", 0, name="M31", ra="00h 42m 44s",
+                 dec="+41 16 09", rotation=-1),
+               n("c", "capture", 50, filter="L", exposure=60, gain=100,
+                 bin="1", count=5, goal=0),
+               n("p", "pool", 100, members="M42, M13", minAlt=0, moonSep=0,
+                 maxHA=0),
+               n("q", "capture", 150, filter="L", exposure=60, gain=100,
+                 bin="1", count=5, goal=0),
+               n("m", "target", 200, name="M16", ra="18h 18m 48s",
+                 dec="-13 49 00", rotation=30, angle="Rotate to PA", rows=2,
+                 cols=2, overlap=25, fovX=2.0, fovY=1.33, skip="2-2"),
+               n("k", "capture", 250, filter="Ha", exposure=300, gain=100,
+                 bin="1", count=2, goal=0)],
+        edges=[e("t", "target", "c", "run"), e("c", "complete", "p", "arm"),
+               e("p", "target", "q", "run"), e("q", "complete", "m", "arm"),
+               e("m", "target", "k", "run")])
+    flow = "flow-mirror-progress"
+    compiled = compile_plan(graph, "n")
+    plan, _ = to_sequence_plan(compiled, graph, flow_id=flow)
+    single = plan.targets[0]
+    session = Session(id="s", status="dormant", nights=["n1"],
+                      plan=plan, frames=[], origin="flow", origin_id=flow,
+                      locked_angles={single.id: {
+                          "pa_deg": 12.5, "solved_at": 1.0,
+                          "exposed_at": 1.0, "source": "plate solve"}})
+    got = flow_progress(compiled, plan, session, flow_id=flow)
+    return json.loads(json.dumps(got))["blocks"]
+
+
+def test_the_progress_block_type_is_what_the_route_answers():
+    """Every key a real block carries is declared on flowsApi.ts's
+    ``FlowProgressBlock``, and every declared key is carried by some block;
+    the keys only some blocks carry (a mosaic's ``grid``, ``skipped`` and
+    ``group_id``, a lock's ``locked_angle``) are exactly the ones marked
+    optional; and every value is one its TS type admits, ``group_id``'s
+    string included. The same for a block's panels (``FlowProgressPanel``).
+
+    RED against flowsApi.ts as it was before S5 (no ``group_id``, and no
+    ``locked_angle`` on either type, though the route has sent it since the
+    locked-angle work), observed with the shared ``_drift`` wording this
+    test used then:
+
+        E   AssertionError: FlowProgressBlock drifted: the server sends
+            ['group_id', 'locked_angle'], which types.ts does not declare,
+            and types.ts declares [], which the server never sends
+
+    Each mutant below was run in scratchpad ``s5-feed-mut`` on a copy of
+    ui/src/lib/flowsApi.ts, from a byte backup, restored and hash-compared.
+
+    RED under "drop group_id from flowsApi.ts", observed:
+
+        E   AssertionError: FlowProgressBlock drifted: the route sends
+            ['group_id'], which flowsApi.ts does not declare, and
+            flowsApi.ts declares [], which the route never sends
+
+    RED under "group_id required" (``group_id: string | null;``),
+    observed:
+
+        E   AssertionError: flowsApi.ts must mark optional exactly the keys
+            a FlowProgressBlock carries only sometimes
+            Extra items in the right set:
+            'group_id'
+
+    RED under "group_id typed number" (``group_id?: number | null;``),
+    observed:
+
+        E   AssertionError: flowsApi.ts types these otherwise: {'group_id':
+            ('35c3487368d45f18b739bf637d515e93', 'number | null')}
+
+    RED under "drop the panel's locked_angle" (re-run with this test's
+    current wording in scratchpad ``s5-feed-verify-mut``), observed:
+
+        E   AssertionError: FlowProgressPanel drifted: the route sends
+            ['locked_angle'], which flowsApi.ts does not declare, and
+            flowsApi.ts declares [], which the route never sends
+
+    The null ``group_id`` of a block whose every panel is skipped is graded by
+    test_flows_progress_mosaic.py; every block here has a group.
+    """
+    blocks = _progress_blocks()
+    kinds = [(b["kind"], "grid" in b, "locked_angle" in b) for b in blocks]
+    assert kinds == [("target", False, True), ("pool", False, False),
+                     ("target", True, False)], (
+        f"premise: a locked single target, a pool and a mosaic: {kinds}")
+
+    for what, records in (("FlowProgressBlock", blocks),
+                          ("FlowProgressPanel",
+                           [p for b in blocks for p in b["panels"]])):
+        ts = _flows_api(what)
+        sent = set().union(*map(set, records))
+        always = set.intersection(*map(set, records))
+        assert sent == set(ts), (
+            f"{what} drifted: the route sends {sorted(sent - set(ts))}, "
+            f"which flowsApi.ts does not declare, and flowsApi.ts declares "
+            f"{sorted(set(ts) - sent)}, which the route never sends")
+        assert _flows_api_optional(what) == sent - always, (
+            f"flowsApi.ts must mark optional exactly the keys a {what} "
+            f"carries only sometimes")
+        for r in records:
+            wrong = _wrong(r, ts)
+            assert not wrong, f"flowsApi.ts types these otherwise: {wrong}"

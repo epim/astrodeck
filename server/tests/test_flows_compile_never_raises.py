@@ -30,26 +30,37 @@ What this file holds:
   the DUSK FLATS count, the CALIBRATION QUEUE quota), read finite-only too;
 * ``FlowGraph.validation_errors``: a count that is not a finite number above
   0 is refused in a sentence, so a save answers 422 and nothing is stored;
-* the compile route: each #328 graph answers 200 with its problems listed.
+* the compile route: each #328 graph answers 200 with its problems listed;
+* PAST ``compile_plan`` (#362, slice S5): over the same corpus,
+  ``to_sequence_plan`` lets nothing out but ``GraphNotRunnable``, which names
+  the block and the field the plan refused; every number the compile emits
+  is finite or null and every text param a str, so the compile route's JSON
+  (``allow_nan=False``) renders every answer; and an integer past a float's
+  range in a DOME timeout or a TARGET rotation raises nothing from the
+  compile or the doctor.
 
 MUTANTS were run from byte backups in a private copy of ``server/`` under the
 session scratchpad (``s4-compile-mut``, and the verifier's
-``s4-compile-verify-mut`` for the cases it added), never in the shared tree;
-each observed failure is quoted in the test it turned red.
+``s4-compile-verify-mut`` for the cases it added; ``s5-compile-mut`` for the
+#362 cases, and ``S5-COMPILE-verify-mut`` for the two refusal cases its
+verifier added), never in the shared tree; each observed failure is quoted in
+the test it turned red.
 """
 from __future__ import annotations
 
 import json
 import math
 import random
+import re
 from collections import Counter
 
 import pytest
 
+from astrodeck.devices.base import DEFAULT_SHUTTER_TIMEOUT_S
 from astrodeck.flows import doctor
 from astrodeck.flows.compile import compile_plan, flow_order
 from astrodeck.flows.models import FlowGraph
-from astrodeck.flows.nodes import NODE_DEFS, port_kind
+from astrodeck.flows.nodes import NODE_DEFS, port_kind, target_angle
 from astrodeck.flows.rig import RigFacts
 from astrodeck.flows.to_plan import GraphNotRunnable, to_sequence_plan
 from test_flows_continue import rig  # noqa: F401 (fixture)
@@ -334,9 +345,12 @@ class TestThe328Graphs:
         doctor's number readers let it through. It reads as a value that is
         not a number: the counts as their defaults, a grid side as 1.
 
-        Kept out of the corpus: two readers outside this change raise on it
+        Kept out of the corpus: two readers outside this change raised on it
         too (``DomePolicy.from_node_params``'s ``timeout`` and
-        ``nodes._rotation_deg``), so the corpus would grade them.
+        ``nodes._rotation_deg``), so the corpus would have graded them. #362
+        fixed both, and ``TestPastCompilePlan`` grades them by hand; the
+        corpus is left as it was, because a longer ``ODD`` would reshuffle
+        every graph the quoted counts in this file were observed on.
 
         RED under mutant "OverflowError escapes _num" (``compile._num``
         catching ``(TypeError, ValueError)`` only), observed:
@@ -626,3 +640,496 @@ class TestTheRoutes:
                 f"finite number above 0"]
             (entry,) = out["plan"]["targets"]
             assert [s["strategy"] for s in entry["steps"]] == ["cycle"]
+
+
+# ------------------------------------------- past compile_plan (#362, S5)
+
+#: The shape of the refusal ``to_plan`` gives for a value the plan's models
+#: refuse (#362 item 1): the block, the field, the value, and why. Read off
+#: the sentence, so the corpus premise below can count the graphs that reach
+#: that refusal.
+PLAN_REFUSAL = re.compile(r": \S+ of .+ cannot be used - input ")
+
+#: How many corpus graphs must reach that refusal, and how many must carry
+#: each shape item 2 is about. FLOORS, as ``SHAPE_FLOOR`` is: the counts on
+#: the vocabulary of 2026-09-28 are in each test's docstring.
+REFUSAL_FLOOR = 40
+ODD_ROTATION_FLOOR = 20
+ODD_TEXT_FLOOR = 50
+
+#: Every text param the compile emits, by its path in the compiled dict.
+#: Each must be a str (#362 item 2): copied verbatim, a JSON NaN in a
+#: TARGET's name reached the route's answer, which cannot render it.
+TEXT_PATHS = frozenset({
+    ".targets[].name", ".targets[].ra", ".targets[].dec",
+    ".targets[].steps[].filter", ".targets[].steps[].slots[].filter",
+    ".targets[].mosaic.fov_from", ".targets[].mosaic.order",
+    ".targets[].mosaic.frame_anchor", ".targets[].frame_anchor",
+    ".automation.dusk_flats.method", ".automation.dusk_flats.window"})
+
+
+def _leaves(value, path=""):
+    """``(path, leaf)`` for every leaf of a compiled dict, lists written
+    ``[]`` so one path names the key in every entry."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from _leaves(v, f"{path}.{k}")
+    elif isinstance(value, list):
+        for v in value:
+            yield from _leaves(v, f"{path}[]")
+    else:
+        yield path, value
+
+
+def _odd_number(value) -> bool:
+    return isinstance(value, float) and not math.isfinite(value)
+
+
+def _plan_refused(raw: dict) -> str:
+    g = _g(raw)
+    with pytest.raises(GraphNotRunnable) as caught:
+        to_sequence_plan(compile_plan(g, "n"), g, flow_id="f-362")
+    return str(caught.value)
+
+
+def _m42(capture: dict | None = None, **target) -> dict:
+    """TARGET M42 -> CAPTURE LOOP, the capture's params over a sound L 60."""
+    params = {"name": "M42", "ra": "05h 35m 17s", "dec": "-05 23 28"}
+    params.update(target)
+    return {"nodes": [{"id": "t", "type": "target", "params": params},
+                      {"id": "c", "type": "capture", "x": 200,
+                       "params": {"filter": "L", "exposure": 60, "count": 3,
+                                  **(capture or {})}}],
+            "edges": [{"from": "t", "fromPort": "target", "to": "c",
+                       "toPort": "run"}]}
+
+
+def _with_rule(raw: dict) -> dict:
+    """``raw`` with a CONDITION "HFR above" at -1 wired to a REFOCUS: a
+    rule whose threshold the plan's ``Instruction`` refuses (at least 0)."""
+    return {"nodes": raw["nodes"] + [
+                {"id": "k", "type": "condition", "x": 400,
+                 "params": {"when": "HFR above", "threshold": -1}},
+                {"id": "r", "type": "refocus", "x": 600}],
+            "edges": raw["edges"] + [
+                {"from": "k", "fromPort": "fire", "to": "r", "toPort": "do"}]}
+
+
+def _m31_3x2(**over) -> dict:
+    """A framed 3x2 of M31 locked at PA 30, owning a FILTER CYCLE with the
+    loop wire from it: a mosaic ``to_plan`` expands into six panels."""
+    params = {"name": "M31", "ra": "00h 42m 44s", "dec": "+41 16 09",
+              "rows": 2, "cols": 3, "overlap": 25, "fovX": 2.0, "fovY": 1.33,
+              "angle": "Rotate to PA", "rotation": 30}
+    cycle = {"plan": "L 60, R 60"}
+    for k, v in over.items():
+        (cycle if k in ("gain", "bin") else params)[k] = v
+    return {"nodes": [{"id": "t", "type": "target", "params": params},
+                      {"id": "cy", "type": "cycle", "x": 200,
+                       "params": cycle}],
+            "edges": [{"from": "t", "fromPort": "target", "to": "cy",
+                       "toPort": "run"},
+                      {"from": "cy", "fromPort": "pass", "to": "t",
+                       "toPort": "next"}]}
+
+
+#: A POOL of one member whose hour-angle limit the plan's ``Schedule``
+#: refuses (at most 12 h).
+_POOL_HA_20 = {"nodes": [{"id": "p", "type": "pool",
+                          "params": {"members": "M42", "maxHA": 20}},
+                         {"id": "c", "type": "capture", "x": 200,
+                          "params": {"exposure": 60, "count": 3}}],
+               "edges": [{"from": "p", "fromPort": "target", "to": "c",
+                          "toPort": "run"}]}
+
+
+def _m31_then_m78(**m78) -> dict:
+    """The sound 3x2 of M31 above, then TARGET M78 -> CAPTURE LOOP, M78's
+    params over its catalogue position. M31's six panels are the plan's
+    first six targets, so M78 is its seventh: a refusal of M78's value is
+    named by a block that is not the plan's first, which a label read at the
+    wrong index cannot name."""
+    raw = _m31_3x2()
+    params = {"name": "M78", "ra": "05h 46m 46s", "dec": "+00 04 45"}
+    params.update(m78)
+    raw["nodes"] += [{"id": "t2", "type": "target", "y": 300,
+                      "params": params},
+                     {"id": "c2", "type": "capture", "x": 200, "y": 300,
+                      "params": {"filter": "L", "exposure": 60, "count": 3}}]
+    raw["edges"] += [{"from": "t2", "fromPort": "target", "to": "c2",
+                      "toPort": "run"}]
+    return raw
+
+
+class TestPastCompilePlan:
+    def test_only_graph_not_runnable_leaves_to_sequence_plan(self):
+        """#362 item 1: every corpus graph compiled, then made a plan, and
+        nothing leaves ``to_sequence_plan`` but ``GraphNotRunnable``, which
+        the compile route shows as the plan's danger row and ``/run``
+        answers with 422. A value the plan's models refuse (an exposure past
+        3600 s, a fractional gain, a count past a step's bound, an hour
+        angle past 12) was a pydantic ``ValidationError`` and a 500.
+
+        THE PREMISE, counted in the same walk: at least ``REFUSAL_FLOOR``
+        graphs reach the refusal that names the block and the field (50 on
+        the vocabulary of 2026-09-28), so a corpus that stopped reaching
+        ``SequencePlan``'s validation cannot leave this green. Before #362's
+        changes 133 graphs raised here (#362 quotes 131, on the corpus
+        before #331 reshuffled it); the compile's finite-only numbers and
+        str text, and ``_coords`` dropping a position off the sphere, took
+        83 of them away before the plan is validated.
+
+        RED under mutant "to_plan lets ValidationError out" (both of
+        ``to_plan``'s catches removed: the one round
+        ``SequencePlan.model_validate`` and the one round the mosaic's
+        layout), observed:
+
+            AssertionError: 50 of 3000 plans raised: {'ValidationError': 50}; first of each: {'ValidationError': 'graph 20: 4 validation errors for SequencePlan\\ntargets.0.schedule.max_hour_angle_h\\n  Input should be greater than or equal to 0 [type=greater_than_equal, input_'}
+        """
+        raised: Counter[str] = Counter()
+        first: dict[str, str] = {}
+        refused = 0
+        for i, g in enumerate(_corpus()):
+            compiled = compile_plan(g, "fuzz")
+            try:
+                to_sequence_plan(compiled, g, flow_id=f"f-{i}")
+            except GraphNotRunnable as e:
+                refused += bool(PLAN_REFUSAL.search(str(e)))
+            except Exception as e:      # noqa: BLE001 - the verdict itself
+                kind = type(e).__name__
+                raised[kind] += 1
+                first.setdefault(kind, f"graph {i}: {e!r}"[:160])
+        assert not raised, (f"{sum(raised.values())} of {CORPUS_SIZE} plans "
+                            f"raised: {dict(raised)}; first of each: {first}")
+        assert refused >= REFUSAL_FLOOR, (
+            f"premise: only {refused} graphs reached the plan's refusal")
+
+    @pytest.mark.parametrize("raw,block,field,value,bound", [
+        (_m42({"exposure": 5000}), "TARGET M42", "steps[0].exposure_s",
+         "5000", "3600"),
+        (_m42({"gain": 1.5}), "TARGET M42", "steps[0].gain", "1.5",
+         "integer"),
+        (_m42(ra="30h 00m 00s"), "TARGET M42", "ra_hours", "30.0", "24"),
+        (_m31_3x2(ra="30h 00m 00s"), "TARGET M31", "ra_hours", "30.0", "24"),
+        (_POOL_HA_20, "TARGET POOL member M42", "schedule.max_hour_angle_h",
+         "20", "12"),
+        (_with_rule(_m42()), "the rule on_hfr_above -> refocus", "threshold",
+         "-1", "0"),
+        (_m31_then_m78(ra="30h 00m 00s"), "TARGET M78", "ra_hours", "30.0",
+         "24"),
+        (_m42({"exposure": 10 ** 300}), "TARGET M42", "steps[0].exposure_s",
+         "1" + "0" * 36 + "...", "3600")],
+        ids=["exposure-past-3600", "fractional-gain", "ra-past-24h",
+             "mosaic-ra-past-24h", "pool-hour-angle-past-12",
+             "negative-rule-threshold", "a-later-block-ra-past-24h",
+             "a-301-digit-exposure"])
+    def test_a_value_the_plan_refuses_names_the_block_and_the_field(
+            self, raw, block, field, value, bound):
+        """The refusal says which block, which field, what it holds and
+        what the plan allows, so the editor's danger row points at the card
+        to fix. A mosaic's layout refuses its centre before any panel is
+        made (``framing.compute_mosaic``), and names the block the same way.
+        The block is found by the refused target's index, so one case puts
+        the fault on the plan's seventh target (M78, after M31's six
+        panels), and a value whose repr is past 40 characters is cut to its
+        first digits.
+
+        RED under mutant "a label read at the wrong index" (the verifier's,
+        ``where`` answering ``target_blocks[max(index - 1, 0)]``), on
+        a-later-block-ra-past-24h alone, observed:
+
+            E       AssertionError: TARGET M31: ra_hours of 30.0 cannot be used - input should be less than 24.
+
+        RED under mutant "value repr uncut" (the verifier's,
+        ``_refused_values``'s 40-character cut removed), on
+        a-301-digit-exposure alone, observed (the digits cut here):
+
+            E       AssertionError: TARGET M42: steps[0].exposure_s of 10000000000000000000000000000000000000000000000000000000000000000...0000 cannot be used - input should be less than or equal to 3600.
+
+        RED under mutant "to_plan lets ValidationError out", observed on all
+        eight, e.g. a-later-block-ra-past-24h, the plan's seventh target:
+
+            E       pydantic_core._pydantic_core.ValidationError: 1 validation error for SequencePlan
+            E       targets.6.ra_hours
+            E         Input should be less than 24 [type=less_than, input_value=30.0, input_type=float]
+
+        and exposure-past-3600:
+
+            E       pydantic_core._pydantic_core.ValidationError: 1 validation error for SequencePlan
+            E       targets.0.steps.0.exposure_s
+            E         Input should be less than or equal to 3600 [type=less_than_equal, input_value=5000, input_type=int]
+
+        and mosaic-ra-past-24h, out of the layout before any panel is made:
+
+            E           pydantic_core._pydantic_core.ValidationError: 1 validation error for MosaicSpecIn
+            E           ra_hours
+            E             Input should be less than 24 [type=less_than, input_value=30.0, input_type=float]
+        """
+        text = _plan_refused(raw)
+        assert text.startswith(f"{block}: {field} of {value} cannot be used "
+                               f"- input should "), text
+        assert bound in text
+
+    def test_a_mosaic_says_it_once_for_all_its_panels(self):
+        """Six panels share the cycle's steps, and the cycle's two slots
+        are a step each, so a fractional gain on the cycle is twelve errors
+        and one fault in one place: said once, naming the block and the
+        first step, not twelve times.
+
+        RED under mutant "one sentence per error" (the refusal's
+        de-duplication removed), observed (the sentence, twelve clauses
+        long, cut):
+
+            E       AssertionError: TARGET M31: steps[0].gain of 1.5 cannot be used - input should be a valid integer, got a number with a fractional part. TARGET M31: steps[1].gain of 1.5 cannot be used - ...
+            E       assert 12 == 1
+        """
+        text = _plan_refused(_m31_3x2(gain=1.5))
+        assert text.count("gain of 1.5 cannot be used") == 1, text
+        assert text.startswith("TARGET M31: steps[0].gain of 1.5 cannot be "
+                               "used - input should be a valid integer")
+
+    @pytest.mark.parametrize("ra,dec", [
+        ("05h 35m 17s", "+95 00 00"), ("05h 35m 17s", "-90 00 01"),
+        ("inf", "-05 23 28"), ("nan", "-05 23 28"), ("05h 35m 17s", "1e999")],
+        ids=["dec-past-the-north-pole", "dec-past-the-south-pole", "ra-inf",
+             "ra-nan", "dec-1e999"])
+    def test_a_typed_position_off_the_sphere_is_dropped(self, ra, dec):
+        """A typed RA or Dec that parses to no place on the sphere (not a
+        finite number, which "inf" and "nan" parse to through ``float``, or
+        a Dec past a pole) is no usable coordinate, the drop text that does
+        not parse gets: the block is left out with a danger row and the
+        rest of the flow still makes a plan. It is the rule
+        ``save_rules.current_anchor`` keeps for "no layout", whose docstring
+        says ``to_plan`` drops such a block, and it keeps an infinity out of
+        the block's key and its layout.
+
+        RED under mutant "off the sphere kept" (``_coords``'s sphere test
+        removed), observed on all five, e.g. dec-past-the-north-pole (the
+        plan refuses the whole flow where the block alone should drop):
+
+            E           astrodeck.flows.to_plan.GraphNotRunnable: TARGET M42: dec_deg of 95.0 cannot be used - input should be less than or equal to 90.
+
+        and ra-inf:
+
+            E           astrodeck.flows.to_plan.GraphNotRunnable: TARGET M42: ra_hours of inf cannot be used - input should be less than 24.
+        """
+        g = _g({"nodes": [
+            {"id": "t1", "type": "target",
+             "params": {"name": "M42", "ra": ra, "dec": dec}},
+            {"id": "c1", "type": "capture", "x": 200,
+             "params": {"exposure": 60, "count": 3}},
+            {"id": "t2", "type": "target", "y": 300,
+             "params": {"name": "M78", "ra": "05h 46m 46s",
+                        "dec": "+00 04 45"}},
+            {"id": "c2", "type": "capture", "x": 200, "y": 300,
+             "params": {"exposure": 60, "count": 3}}],
+            "edges": [{"from": "t1", "fromPort": "target", "to": "c1",
+                       "toPort": "run"},
+                      {"from": "t2", "fromPort": "target", "to": "c2",
+                       "toPort": "run"}]})
+        plan, unmapped = to_sequence_plan(compile_plan(g, "n"), g,
+                                          flow_id="f-362")
+        assert [t.name for t in plan.targets] == ["M78"]
+        (row,) = [u for u in unmapped if u["key"] == "targets[M42]"]
+        assert row["level"] == "danger"
+        assert row["detail"].startswith("dropped: no usable coordinates")
+
+    @pytest.mark.parametrize("dec", ["+90 00 00", "-90 00 00"],
+                             ids=["north-pole", "south-pole"])
+    def test_control_a_pole_is_on_the_sphere(self, dec):
+        """CONTROL: a Dec of exactly +90 or -90 is a place, and is kept.
+        Green on the code and under "off the sphere kept"."""
+        g = _g(_m42(dec=dec))
+        plan, _ = to_sequence_plan(compile_plan(g, "n"), g, flow_id="f-362")
+        assert [t.dec_deg for t in plan.targets] == [float(dec[:3])]
+
+    def test_control_a_sound_plan_is_not_refused(self):
+        """CONTROL: the M42 target, the 3x2 and the pool above, each with
+        nothing odd (the pool's hour angle at its card's 4), build their
+        plans. Green on the code and under every mutant in this class."""
+        pool = json.loads(json.dumps(_POOL_HA_20))
+        pool["nodes"][0]["params"]["maxHA"] = 4
+        for raw in (_m42(), _m31_3x2(), pool):
+            g = _g(raw)
+            plan, _ = to_sequence_plan(compile_plan(g, "n"), g, flow_id="f")
+            assert plan.targets
+
+    def test_every_number_is_finite_and_every_text_a_str(self):
+        """#362 item 2: the compile route returns ``compile_plan``'s dict
+        as JSON with ``allow_nan=False``, so one infinity or NaN anywhere in
+        it was a 500. Every number the compile emits is read finite-only now
+        (a value that is not a finite number reads as text that is no number
+        always read), and every text param is a str, so every corpus graph's
+        compile renders. The paths are named on failure, with the first
+        graph each was seen on.
+
+        THE PREMISE: at least ``ODD_ROTATION_FLOOR`` graphs carry a TARGET
+        rotation that is a float infinity or NaN (the mutant's shape, which
+        JSON cannot carry: 40 on the vocabulary of 2026-09-28), and
+        ``ODD_TEXT_FLOOR`` a text param of a TARGET or a CAPTURE that is not
+        a str (887). Before #362, 764 of the 3000 compiles could not be JSON,
+        at 27 paths.
+
+        RED under mutant "rotation copied verbatim" (``_target_entry``'s
+        ``rotation_deg`` back to ``params.get("rotation")``), observed:
+
+            E       AssertionError: 40 compiles cannot be JSON: numbers that are not finite at {'.targets[].rotation_deg': 'graph 26 (x40)'}; text that is not a str at {}
+
+        Two more mutants of one reading each, red the same way, naming
+        their paths: "threshold read by _num" (a rule's ``threshold`` back
+        to ``_num``):
+
+            E       AssertionError: 6 compiles cannot be JSON: numbers that are not finite at {'.instructions[].threshold': 'graph 1125 (x6)'}; text that is not a str at {}
+
+        and "filter copied verbatim" (a CAPTURE's ``filter`` back to
+        ``n.params.get("filter")``):
+
+            E       AssertionError: 6 compiles cannot be JSON: numbers that are not finite at {'.targets[].steps[].filter': 'graph 103 (x6)'}; text that is not a str at {'.targets[].steps[].filter': 'graph 43 (x59)'}
+        """
+        rotation, text_param, not_json = 0, 0, 0
+        numbers: dict[str, list] = {}
+        texts: dict[str, list] = {}
+        for i, g in enumerate(_corpus()):
+            rotation += any(n.type == "target"
+                            and _odd_number(n.params.get("rotation"))
+                            for n in g.nodes)
+            text_param += any(
+                not isinstance(n.params.get(k, ""), str)
+                for n in g.nodes for k in ("name", "ra", "dec", "filter")
+                if n.type in ("target", "capture"))
+            compiled = compile_plan(g, "fuzz")
+            for path, leaf in _leaves(compiled):
+                if _odd_number(leaf):
+                    numbers.setdefault(path, []).append(i)
+                if path in TEXT_PATHS and not isinstance(leaf, str):
+                    texts.setdefault(path, []).append(i)
+            try:
+                json.dumps(compiled, allow_nan=False)
+            except ValueError:
+                not_json += 1
+        assert (rotation >= ODD_ROTATION_FLOOR
+                and text_param >= ODD_TEXT_FLOOR), \
+            f"premise: {rotation} odd rotations, {text_param} odd texts"
+
+        def say(found: dict[str, list]) -> dict[str, str]:
+            return {p: f"graph {g[0]} (x{len(g)})"
+                    for p, g in sorted(found.items())}
+        assert not (numbers or texts or not_json), (
+            f"{not_json} compiles cannot be JSON: numbers that are not finite "
+            f"at {say(numbers)}; text that is not a str at {say(texts)}")
+
+    @pytest.mark.parametrize("value,reads", [
+        (float("nan"), "nan"), (float("inf"), "inf"), (12.5, "12.5"),
+        (None, ""), (0, ""), ([], ""), ("  M 31 ", "  M 31 ")],
+        ids=["nan", "inf", "a-number", "null", "zero", "empty-list",
+             "text-as-typed"])
+    def test_a_text_param_is_its_text(self, value, reads):
+        """How a text param that is not text reads: a value is its ``str``,
+        a falsy one (null, 0, an empty list) is blank, as every reader of the
+        entry already took it, and text is copied as typed, untrimmed, so the
+        PLAN tab shows what the card holds.
+
+        RED under mutant "name copied verbatim" (``_target_entry``'s
+        ``name`` back to ``params.get("name")``), observed on six of the
+        seven (text-as-typed stays green, as a control), e.g.:
+
+            E       AssertionError: assert nan == 'nan'
+            E       AssertionError: assert 12.5 == '12.5'
+            E       AssertionError: assert None == ''
+        """
+        g = _g({"nodes": [{"id": "t", "type": "target",
+                           "params": {"name": value}}]})
+        (entry,) = compile_plan(g, "n")["targets"]
+        assert entry["name"] == reads
+
+    @pytest.mark.parametrize("where", ["dome-timeout", "target-rotation"])
+    def test_a_400_digit_integer_raises_nothing(self, where):
+        """#362 item 3: ``float()`` of an integer past a float's range
+        raises ``OverflowError``, not ``ValueError``, and two readers on the
+        compile and doctor path caught ``ValueError`` only. A DOME's timeout
+        that is no number reads as the 120 s default, and a TARGET's
+        rotation that is no number as -1, any angle, as text always has.
+        Only a raw POST or a hand-edited file carries one.
+
+        RED under mutant "DomePolicy catches ValueError only"
+        (``devices.base._shutter_timeout``, the one reader behind
+        ``from_node_params`` and ``from_plan``, catching ``(TypeError,
+        ValueError)``) on dome-timeout, observed, raised out of
+        ``compile_plan`` through ``DomePolicy.from_node_params``:
+
+            E           OverflowError: int too large to convert to float
+
+        RED under mutant "_rotation_deg catches ValueError only" on
+        target-rotation, observed, raised out of ``compile_plan`` through
+        ``_target_entry``, ``angle_code`` and ``nodes.target_angle``:
+
+            E           OverflowError: int too large to convert to float
+        """
+        huge = 10 ** 400
+        raw = _m42()
+        if where == "dome-timeout":
+            raw["nodes"] += [{"id": "dm", "type": "dome", "x": 400,
+                              "params": {"timeout": huge}},
+                             {"id": "sf", "type": "safety", "x": 600}]
+        else:
+            raw["nodes"][0]["params"].update(rotation=huge, rows=2, cols=3,
+                                             fovX=2.0, fovY=1.33)
+        g = _g(raw)
+        compiled = compile_plan(g, "n")
+        issues = doctor.check(g, rig=GUARDS_OFF)
+        if where == "dome-timeout":
+            assert compiled["automation"]["dome"]["shutter_timeout_s"] == \
+                DEFAULT_SHUTTER_TIMEOUT_S
+        else:
+            (entry,) = compiled["targets"]
+            assert (entry["rotation_deg"], entry["angle"]) == (-1, "any")
+            assert target_angle(g.nodes[0].params) == "Any angle"
+            # A mosaic with no angle is M2, a danger, where it raised.
+            assert any("laid out at one camera angle" in i.text
+                       for i in issues)
+
+    @pytest.mark.parametrize("value", ["inf", "-inf", "nan", float("inf"),
+                                       float("nan"), 0, -5, "abc", 10 ** 400],
+                             ids=["inf", "-inf", "nan", "float-inf",
+                                  "float-nan", "0", "-5", "text", "huge"])
+    @pytest.mark.parametrize("reader", ["node", "plan"])
+    def test_a_timeout_that_is_no_finite_number_is_the_default(self, reader,
+                                                               value):
+        """The DOME timeout is one of the numbers item 2 found non-finite in
+        the compiled dict (``automation.dome.shutter_timeout_s``): "inf"
+        passed the ``<= 0`` test and a NaN fails every comparison, so both
+        were kept. Read by ``DomePolicy`` from the node and from a compiled
+        plan alike, anything that is not a finite number above 0 is the 120 s
+        default, which ``open_and_confirm`` can wait out.
+
+        RED under mutant "a non-finite timeout kept" (``_shutter_timeout``'s
+        ``not math.isfinite(timeout) or`` removed), observed on the eight
+        infinity and NaN cases, node and plan alike, e.g. node-inf and
+        node-nan:
+
+            E       assert inf == 120.0
+            E        +  where inf = DomePolicy(bind_to_mount=True, shutter_timeout_s=inf).shutter_timeout_s
+            E       assert nan == 120.0
+            E        +  where nan = DomePolicy(bind_to_mount=True, shutter_timeout_s=nan).shutter_timeout_s
+
+        RED under mutant "DomePolicy catches ValueError only", observed on
+        node-huge and plan-huge (and on nothing else here):
+
+            E           OverflowError: int too large to convert to float
+        """
+        from astrodeck.devices.base import DomePolicy
+        policy = (DomePolicy.from_node_params({"timeout": value})
+                  if reader == "node"
+                  else DomePolicy.from_plan({"shutter_timeout_s": value}))
+        assert policy.shutter_timeout_s == DEFAULT_SHUTTER_TIMEOUT_S
+
+    @pytest.mark.parametrize("value,seconds", [(90, 90.0), ("45", 45.0),
+                                               (1e308, 1e308)])
+    def test_control_a_finite_timeout_is_kept(self, value, seconds):
+        """CONTROL: a finite timeout above 0 is the operator's, from the node
+        and from a plan. Green on the code and under every timeout mutant."""
+        from astrodeck.devices.base import DomePolicy
+        assert DomePolicy.from_node_params(
+            {"timeout": value}).shutter_timeout_s == seconds
+        assert DomePolicy.from_plan(
+            {"shutter_timeout_s": value}).shutter_timeout_s == seconds

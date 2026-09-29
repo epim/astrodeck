@@ -17,7 +17,10 @@ it, every ``PARK_READ_BACK_POLL_S``, bounded by what is left of the park's
 own ``PARK_TIMEOUT_S``, before it calls the park lost. A mount that reads
 neither parked nor slewing is parked again at once, as ruling 3 requires
 (the control, test_wind_down_guider_stop_before_park.py's silent no-op
-double); a driver with no slewing state is polled on ``AtPark`` alone.
+double); a driver with no slewing state is polled on ``AtPark`` alone. A
+park seen slewing whose park state then cannot be read is not parked
+(#447): test_park_readback_unreadable_after_slewing.py, which uses this
+file's `_clock_the_park`.
 
 THE HARNESS is test_unsafe_ending_parks_at_once's `_Ending`: a clocked
 simulator night that scripted rain ends on a SafetyAbort, its wind-down on a

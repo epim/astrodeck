@@ -33,6 +33,8 @@
 //   "drop and rise at the end cards only" - the legs placed outside the source
 //                                and the TARGET alone, the rest of the lane
 //                                ignored (added by the S4-UARC verifier)
+//   "avoid ignored"            - a surface's `avoid` cards never push the run
+//                                (#360, S5-LOOP)
 
 import { readFileSync } from "node:fs";
 
@@ -43,6 +45,8 @@ import {
 } from "../geometry";
 import { NODE_DEFS } from "../nodeDefs";
 import { panelLane } from "../panelLane";
+import { AUTO_PAD, computeAutoLayout } from "../autoLayout";
+import { COLUMN_LOOP_DROP, COLUMN_LOOP_STUB } from "../targetSummary";
 import type { FlowEdgeRec, FlowNodeRec, FlowNodeType } from "../flowsTypes";
 
 // ---------------------------------------------------------------- harness
@@ -414,6 +418,77 @@ test("a port the vocabulary does not have draws no arc", () => {
     "an unknown source port");
   eq(loopArcPath(byId(M31, "n7"), "pass", byId(M31, "n2"), "nope", lane, NODE_DEFS, "desktop"), null,
     "an unknown destination port");
+});
+
+// ============================================== a surface's own numbers (#360)
+//
+// `loopArc`'s `opts` bend the stub, the drop and what the run must pass under
+// for a surface the canvas's numbers do not fit: the classic phone FLOW tab's
+// column layout (targetSummary `loopArcOf` in "phone-flow" mode, graded on the
+// mounted tab by loopArcDom.test.tsx). Here, the formula.
+//
+// MUTANT "avoid ignored" (geometry.ts loopArc: every `avoid` card filtered
+// out, so the run is the body's bottom + drop whatever lies there), run in the
+// private scratch copy scratchpad/S5-LOOP-mut. Observed, loopArc.test 16/17
+// (and loopArcDom.test.tsx's stacked-card case with it):
+//   x opts: a card the run would cross pushes it below that card, drop clear,
+//     and no further: a run that would cross the card goes under it
+//     expected 350
+//     got      231
+
+test("opts: the stub and the drop move the legs and the run by exactly what they say", () => {
+  const lane = panelLane(M31, "n2");
+  const arc = loopArc(byId(M31, "n7"), "pass", byId(M31, "n2"), "next", lane, NODE_DEFS, "desktop",
+    { stub: 7, drop: 8 })!;
+  eq(arc.handle.x, 990 + NODE_W_WIDE + 7, "the drop 7 px right of the cycle");
+  eq(arc.runY, 203 + 8, "the run 8 px under the cycle");
+  const xs = samplePath(arc.d).map((p) => p.x);
+  eq(Math.min(...xs), 270 - 7, "the rise 7 px left of the TARGET");
+});
+
+test("opts: a card the run would cross pushes it below that card, drop clear, and no further", () => {
+  // The eighth Example's lane with a REPORT placed 16 px under the cycle, as
+  // the column layout places the card after the tail: a run 8 px under the
+  // cycle clears it (8 px above it); one 28 px under would be inside it.
+  const lane = panelLane(M31, "n2");
+  const under: FlowNodeRec = { ...byId(M31, "n12"), x: 800, y: 203 + 16 };
+  const fits = loopArc(byId(M31, "n7"), "pass", byId(M31, "n2"), "next", lane, NODE_DEFS, "desktop",
+    { drop: 8, avoid: [under] })!;
+  eq(fits.runY, 203 + 8, "a run that fits in the gap stays there");
+  const deep = loopArc(byId(M31, "n7"), "pass", byId(M31, "n2"), "next", lane, NODE_DEFS, "desktop",
+    { avoid: [under] })!;
+  const bottom = under.y + cardBox(under, NODE_DEFS, "desktop").h;
+  eq(deep.runY, bottom + LOOP_ARC_DROP, "a run that would cross the card goes under it");
+  eq(firstIntrusion(deep.d, [byId(M31, "n2"), ...lane, under]), null, "a point of the pushed arc");
+  // A second card under the first, 4 px apart: the run goes under both.
+  const below: FlowNodeRec = { ...under, id: "x2", y: bottom + 4 };
+  const both = loopArc(byId(M31, "n7"), "pass", byId(M31, "n2"), "next", lane, NODE_DEFS, "desktop",
+    { avoid: [under, below] })!;
+  eq(both.runY, below.y + cardBox(below, NODE_DEFS, "desktop").h + LOOP_ARC_DROP, "under a stack of two");
+});
+
+test("CONTROL: a card beside the run's span, or already clear below it, does not move the run", () => {
+  const lane = panelLane(M31, "n2");
+  // Right of the drop leg (x 1202): the run never reaches it.
+  const beside: FlowNodeRec = { ...byId(M31, "n12"), x: 1210, y: 210 };
+  // Under the run by more than the drop.
+  const clear: FlowNodeRec = { ...byId(M31, "n12"), x: 600, y: 231 + LOOP_ARC_DROP };
+  const arc = loopArc(byId(M31, "n7"), "pass", byId(M31, "n2"), "next", lane, NODE_DEFS, "desktop",
+    { avoid: [beside, clear, ...M31.nodes] })!;
+  eq(arc.runY, 231, "the canvas run, whatever else is on the surface");
+});
+
+test("the column layout's numbers: legs half the gutter out, the run in the middle of its gap", () => {
+  // Measured on the real layout of the eighth Example at 375 px, not restated:
+  // the gap between the tail's formula box and the box of the card the layout
+  // puts after it, and the gutter between the columns and the container.
+  const lay = computeAutoLayout(M31, 375, NODE_DEFS);
+  const box = (id: string) => cardBox({ ...byId(M31, id), ...lay.pos[id] }, NODE_DEFS, "phone");
+  const tail = box("n7");
+  const next = box("n12");
+  eq(COLUMN_LOOP_DROP * 2, next.y - (tail.y + tail.h), "twice the drop is the gap under the tail");
+  eq(COLUMN_LOOP_STUB * 2, AUTO_PAD, "twice the stub is the gutter");
+  eq(tail.x, AUTO_PAD, "precondition: the left column stands AUTO_PAD in");
 });
 
 // CONTROL: the stock bezier is untouched. Every other wire still draws with

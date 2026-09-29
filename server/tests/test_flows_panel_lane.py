@@ -800,6 +800,261 @@ class TestTheLoopCases:
         assert [e.id for e in loop_wires(after, "m33")] == ["m33-loop"]
 
 
+# ------------------------------------ a stranded loop, and what rotates (#410)
+
+#: The loop cases whose press MOVES a pass wire the lane already has (#410),
+#: and the control whose stray wire it must leave alone.
+LOOP_STRANDED = ("loop-on-stranded", "loop-on-stranded-twice",
+                 "loop-on-stranded-beside-the-tail-loop")
+LOOP_FOREIGN = "loop-on-foreign-pass-wire-control"
+
+
+def _rotates(g: FlowGraph, block_id: str) -> bool:
+    """Whether the run rotates the block's panels, by compile.py's rules: a
+    multi-panel block, a loop wire (``loop_wires``) and no M12 on its lane
+    (``lane_refusals``, which ``to_plan`` raises on). The compile's own
+    entry reads ``loop`` from ``loop_wires`` alone, so a tail wire beside a
+    stale mid-lane one is ``loop`` True in a graph the run refuses; the card
+    must say what the RUN does, which is this."""
+    g = g.with_defaults()
+    block = next(n for n in g.nodes if n.id == block_id)
+    lane = {n.id for n in panel_lane(g, block_id)}
+    m12 = [r for r in lane_refusals(g) if r["code"] == "M12"
+           and (r["node_id"] == block_id or r["node_id"] in lane)]
+    return is_multi_panel(block) and bool(loop_wires(g, block_id)) and not m12
+
+
+def _into_next(e: dict, block: str) -> bool:
+    return e["fromPort"] == "pass" and e["to"] == block and e["toPort"] == "next"
+
+
+class TestAStrandedLoop:
+    """LOOP PANELS, and the modal's RUN toggle, on a lane whose loop wire is
+    stranded mid-lane (#410; spec 1.5 item 6: a flow saved before S4 opens
+    that way). ``withLoop(..., true)`` used to add a second pass wire from
+    the tail and leave the stranded one, so the flow stayed M12 while the
+    card read "rotate" and the arc carried "every pass: next panel". It now
+    MOVES the stranded wire to the tail, keeping its id and its place, as
+    ``carryLoopWire`` does on an append.
+
+    The fixture's stranded cases are graded by TestTheLoopCases like every
+    loop case (a valid graph, the recorded loop wire, no lane refusal).
+    This class holds their premises, so a case cannot pass by having
+    stopped testing the rule, and the ``rotates`` column every loop case
+    carries, which panelLane.test.ts holds ``targetLoops`` to.
+
+    Named mutants, each run in the private scratch copy
+    scratchpad/S5-LOOP-mut (#254); see the tests below for what each turned
+    red. The TypeScript mutant "withLoop adds a second wire" (panelLane.ts
+    withLoop's `true` branch put back as it was: nothing lifted, a new wire
+    added from the tail whenever the tail has none) failed the three stranded
+    cases in panelLane.test.ts (44/47), loop-on-stranded as
+        withLoop made ["e1:t.target->cy.run","loop:cy.pass->t.next",
+        "e2:cy.complete->af.run","e3:af.focused->r.session",
+        "loop:af.pass->t.next"], the fixture the server grades records
+        ["e1:t.target->cy.run","loop:af.pass->t.next",
+        "e2:cy.complete->af.run","e3:af.focused->r.session"]
+    and the graph it makes is the one
+    ``test_a_second_wire_leaves_the_flow_refused`` hands to compile.py.
+    """
+
+    @pytest.mark.parametrize("case", LOOP_CASES, ids=lambda c: c["id"])
+    def test_rotates_is_what_compile_py_says(self, case):
+        """What the card footer and the loop chip say (``targetLoops``) is
+        recorded per case, before and after, and held here to compile.py.
+
+        Mutant of the FIXTURE (a scratch copy) "the tail-loop case recorded
+        as rotating before the press" (its ``rotates.graph`` true, which is
+        what ``loop_wires`` alone would say) failed:
+            FAILED tests/test_flows_panel_lane.py::TestAStrandedLoop::test_rotates_is_what_compile_py_says[loop-on-stranded-beside-the-tail-loop]
+            AssertionError: loop-on-stranded-beside-the-tail-loop: rotates
+            recorded {'graph': True, 'result': True}, compile.py says
+            {'graph': False, 'result': True}
+        (1 failed, 142 passed), and panelLane.test.ts (46/47) against it:
+            x targetLoops on loop case loop-on-stranded-beside-the-tail-loop,
+            before and after, is what compile.py says: targetLoops answered
+            {"graph":false,"result":true}, the fixture the server grades
+            records {"graph":true,"result":true}
+        """
+        got = {k: _rotates(FlowGraph.model_validate(case[k]), case["block"])
+               for k in ("graph", "result")}
+        assert got == case["rotates"], (
+            f"{case['id']}: rotates recorded {case['rotates']}, compile.py "
+            f"says {got}")
+
+    def test_the_fixture_holds_the_stranded_cases(self):
+        """The TypeScript grades itself against these ids too.
+
+        Mutant of the FIXTURE (a scratch copy) "loop-on-stranded renamed
+        away" failed:
+            AssertionError: assert {'loop-off', ...renamed', ...} >=
+            {'loop-on-for...randed-twice'}
+              Extra items in the right set:
+              'loop-on-stranded'
+        with the three premise tests below on that id ("the fixture no
+        longer carries loop case loop-on-stranded"), 4 failed, 139 passed;
+        panelLane.test.ts (46/47): "x the loop cases are read from
+        panel_lane_cases.json, every column graded: the fixture no longer
+        carries loop case loop-on-stranded".
+        """
+        assert {c["id"] for c in LOOP_CASES} >= {*LOOP_STRANDED, LOOP_FOREIGN}
+
+    @pytest.mark.parametrize("case_id", LOOP_STRANDED)
+    def test_before_the_press_the_lane_is_m12_at_each_stranded_wire(self, case_id):
+        """Premise of each stranded case: before the press every pass wire
+        into the block's ``next`` that leaves a stage of its lane other than
+        the tail is M12, and the block does not rotate. A case whose wire
+        already left the tail would pass whatever ``withLoop`` did.
+
+        Mutant of the FIXTURE (a scratch copy) "loop-on-stranded already on
+        the tail" (its ``loop`` wire drawn from ``af`` in graph and result
+        alike) failed:
+            AssertionError: loop-on-stranded: no stranded wire before the
+            press, so the case cannot tell a move from an add
+            assert [] != []
+        with test_rotates_is_what_compile_py_says and
+        test_a_second_wire_leaves_the_flow_refused on the same case (3
+        failed, 140 passed). panelLane.test.ts's ``withLoop`` grade stays
+        green on it, a graph that already loops being one ``withLoop``
+        rightly leaves alone; only its ``rotates`` grade sees it (46/47):
+            x targetLoops on loop case loop-on-stranded, before and after, is
+            what compile.py says: targetLoops answered
+            {"graph":true,"result":true}, the fixture the server grades
+            records {"graph":false,"result":true}
+        """
+        case = _loop_case(case_id)
+        before = FlowGraph.model_validate(case["graph"])
+        tail = _id(lane_tail(before, case["block"]))
+        lane = {n.id for n in panel_lane(before, case["block"])}
+        stranded = sorted({e["from"] for e in case["graph"]["edges"]
+                           if _into_next(e, case["block"])
+                           and e["from"] in lane and e["from"] != tail})
+        assert stranded != [], (
+            f"{case_id}: no stranded wire before the press, so the case "
+            f"cannot tell a move from an add")
+        m12 = sorted(r["node_id"] for r in lane_refusals(before)
+                     if r["code"] == "M12")
+        assert (m12, _rotates(before, case["block"])) == (stranded, False), case_id
+
+    @pytest.mark.parametrize("case_id", LOOP_STRANDED)
+    def test_a_second_wire_leaves_the_flow_refused(self, case_id):
+        """#410 as filed: the press adds a wire from the tail beside the
+        stranded one(s). compile.py then finds a loop wire (so the card would
+        say "rotate", the doctor's M12 notwithstanding) and still refuses the
+        flow at the stranded source. This is the graph the TypeScript mutant
+        "withLoop adds a second wire" makes (for the tail-loop case, which
+        already has its tail wire, that mutant adds nothing and leaves the
+        graph as it was, which is also M12): held here so the fixture's
+        results cannot be recorded from that rule.
+
+        Red under the FIXTURE mutant "loop-on-stranded already on the tail"
+        (see the test above), where the second wire is no longer beside a
+        stranded one:
+            AssertionError: loop-on-stranded
+            assert 0 >= 1
+        """
+        case = _loop_case(case_id)
+        before = case["graph"]
+        tail = _id(lane_tail(FlowGraph.model_validate(before), case["block"]))
+        has_own = any(_into_next(e, case["block"]) and e["from"] == tail
+                      for e in before["edges"])
+        second = before["edges"] if has_own else [
+            *before["edges"], {"id": "loop", "from": tail, "fromPort": "pass",
+                               "to": case["block"], "toPort": "next"}]
+        g = FlowGraph.model_validate({**before, "edges": second})
+        assert loop_wires(g, case["block"]) != [], case_id
+        assert [r["code"] for r in lane_refusals(g)].count("M12") >= 1, case_id
+        assert not _rotates(g, case["block"]), case_id
+
+    @pytest.mark.parametrize("case_id", LOOP_STRANDED)
+    def test_the_press_moves_or_drops_pass_wires_and_nothing_more(self, case_id):
+        """What a press on a stranded lane can make, held here as well as in
+        the TypeScript: the graph's wires in their order, where a pass wire
+        into the block's ``next`` from a stage of its lane is either kept
+        (the tail's own), re-sourced to the tail with its id and its place,
+        or gone, and nothing else changes and no wire is added. Exactly one
+        pass wire into ``next`` is left.
+
+        Mutant of the FIXTURE (a scratch copy) "loop-on-stranded recorded as
+        #410 filed it" (the stranded ``loop`` wire kept on ``cy`` and a new
+        ``loop2`` from ``af`` appended to its result, ``loop_wire`` loop2)
+        failed this case:
+            AssertionError: loop-on-stranded: the result adds a wire, which
+            no press on a stranded lane makes: loop2
+        with test_the_result_has_no_lane_refusal[loop-on-stranded]
+            Left contains one more item: {'code': 'M12', 'node_id': 'cy',
+            'text': 'the loop wire starts at FILTER CYCLE, but AUTOFOCUS comes
+            after it in the TA...el lane. ...'}
+        and test_rotates_is_what_compile_py_says[loop-on-stranded] (rotates
+        recorded {'graph': False, 'result': True}, compile.py says {'graph':
+        False, 'result': False}): 3 failed, 140 passed. panelLane.test.ts
+        failed the case against it too (45/47): "withLoop made
+        [...,"loop:af.pass->t.next",...], the fixture the server grades
+        records [...,"loop:cy.pass->t.next",...,"loop2:af.pass->t.next"]".
+        """
+        case = _loop_case(case_id)
+        block = case["block"]
+        before, after = case["graph"], case["result"]
+        assert after["nodes"] == before["nodes"], case_id
+        tail = _id(lane_tail(FlowGraph.model_validate(before), block))
+        was = {e["id"]: e for e in before["edges"]}
+        added = [e["id"] for e in after["edges"] if e["id"] not in was]
+        assert added == [], (
+            f"{case_id}: the result adds a wire, which no press on a "
+            f"stranded lane makes: {', '.join(added)}")
+        kept_order = [e["id"] for e in before["edges"]
+                      if e["id"] in {a["id"] for a in after["edges"]}]
+        assert [e["id"] for e in after["edges"]] == kept_order, case_id
+        for now in after["edges"]:
+            old = was[now["id"]]
+            assert now == old or (_into_next(old, block)
+                                  and now == {**old, "from": tail}), (
+                f"{case_id}: {old} became {now}, which no press makes")
+        gone = [e for e in before["edges"]
+                if e["id"] not in {a["id"] for a in after["edges"]}]
+        assert all(_into_next(e, block) for e in gone), case_id
+        assert [e["id"] for e in after["edges"] if _into_next(e, block)] == \
+            [case["loop_wire"]["id"]], case_id
+
+    def test_the_foreign_control_is_one_a_wider_repair_would_break(self):
+        """The control holds the other edge of "a stage of the lane", as
+        carry-foreign-pass-wire-control does for the carry: the stray wire
+        leaves a stage M33 owns, outside M31's lane, so it is M4's warning,
+        not M12, and M31 does not rotate on it. Re-sourced to M31's tail, as
+        a repair that moved every pass wire into ``next`` would, it would
+        become M31's loop, a rotation nobody asked for; left alone, the
+        press adds the loop wire beside it and M31 rotates on that.
+
+        Mutant of the FIXTURE (a scratch copy) "the stray wire is the
+        block's own" (``stray`` drawn from ``cy`` in graph and result, so it
+        leaves M31's tail and is its loop wire already) failed:
+            AssertionError: the stray wire leaves cy, a stage of M31's own
+            lane, so the control no longer tells the lane from any owned stage
+            assert 'cy' not in {'cy'}
+        with test_loop_wires_finds_exactly_the_recorded_wire and
+        test_rotates_is_what_compile_py_says for this case (3 failed, 140
+        passed), and panelLane.test.ts's case and rotates grade (45/47).
+        """
+        case = _loop_case(LOOP_FOREIGN)
+        before = FlowGraph.model_validate(case["graph"])
+        stray = next(e for e in before.edges
+                     if e.fromPort == "pass" and e.to == case["block"])
+        lane = {n.id for n in panel_lane(before, case["block"])}
+        assert stray.from_ not in lane, (
+            f"the stray wire leaves {stray.from_}, a stage of M31's own "
+            f"lane, so the control no longer tells the lane from any owned "
+            f"stage")
+        owner = owner_of(before, stray.from_)
+        assert owner is not None and owner.id != case["block"], stray.from_
+        assert lane_refusals(before) == []
+        assert not _rotates(before, case["block"])
+        tail = _id(lane_tail(before, case["block"]))
+        wider = FlowGraph.model_validate({**case["graph"], "edges": [
+            {**e, "from": tail} if e["id"] == stray.id else e
+            for e in case["graph"]["edges"]]})
+        assert [e.id for e in loop_wires(wider, case["block"])] == [stray.id]
+
+
 # ------------------------------------------------ carrying the loop wire
 
 CARRY_CASES = _FIXTURE_JSON["carry_cases"]

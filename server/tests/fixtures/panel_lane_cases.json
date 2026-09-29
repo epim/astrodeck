@@ -174,9 +174,10 @@
   "_about_loop_cases": [
     "Placing and lifting the loop wire (#189 S4; spec 1.4 'When the wire is added' and 2.5 DONE): the editor's rule, which compile.py does not have, because the server only reads the wire.",
     "graph: the flow before. block: the TARGET the modal's DONE (or LOOP PANELS) acts on. loop: true adds the wire, false lifts every pass wire into the block's next.",
-    "result: the flow after, as ui/src/components/flows/panelLane.ts withLoop makes it; a new wire goes last and takes the id the caller mints, 'loop' in these cases.",
+    "result: the flow after, as ui/src/components/flows/panelLane.ts withLoop makes it; a new wire goes last and takes the id the caller mints, 'loop' in these cases. On a lane whose pass wires into the block's next leave mid-lane stages (M12, #410), true adds nothing: the first such wire is re-sourced to the tail, keeping its id and its place, and the others go; a tail that already has its own loop wire keeps it and every mid-lane one goes.",
     "loop_wire: the block's loop wire in the result (compile.py loop_wires finds exactly it), or null when it has none.",
-    "Graded by server/tests/test_flows_panel_lane.py (the result is a valid graph, loop_wires finds loop_wire and nothing else, lane_refusals is empty) and by ui/src/components/flows/__tests__/panelLane.test.ts (withLoop makes result from graph)."
+    "rotates: whether the block's panels rotate, before (graph) and after (result): a multi-panel block with a loop wire and no M12 on its lane, which is what the card footer and the loop chip say (panelLane.ts targetLoops, #410).",
+    "Graded by server/tests/test_flows_panel_lane.py (the result is a valid graph, loop_wires finds loop_wire and nothing else, lane_refusals is empty, rotates as recorded by compile.py's rules) and by ui/src/components/flows/__tests__/panelLane.test.ts (withLoop makes result from graph, and targetLoops answers rotates on both)."
   ],
   "loop_cases": [
     {
@@ -211,7 +212,8 @@
           {"id": "loop", "from": "ha", "fromPort": "pass", "to": "t", "toPort": "next"}
         ]
       },
-      "loop_wire": {"id": "loop", "from": "ha", "fromPort": "pass", "to": "t", "toPort": "next"}
+      "loop_wire": {"id": "loop", "from": "ha", "fromPort": "pass", "to": "t", "toPort": "next"},
+      "rotates": {"graph": false, "result": true}
     },
     {
       "id": "loop-off",
@@ -256,7 +258,8 @@
           {"id": "m33-loop", "from": "c2", "fromPort": "pass", "to": "m33", "toPort": "next"}
         ]
       },
-      "loop_wire": null
+      "loop_wire": null,
+      "rotates": {"graph": false, "result": false}
     },
     {
       "id": "loop-on-single-target",
@@ -285,7 +288,149 @@
           {"id": "e2", "from": "cy", "fromPort": "complete", "to": "r", "toPort": "session"}
         ]
       },
-      "loop_wire": null
+      "loop_wire": null,
+      "rotates": {"graph": false, "result": false}
+    },
+    {
+      "id": "loop-on-stranded",
+      "spec": "#410 / 1.5 item 6: LOOP PANELS (DONE with the loop on) on a 3x2 lane FILTER CYCLE -> AUTOFOCUS whose one pass wire into next still leaves the cycle, stranded mid-lane when the AUTOFOCUS was appended before S4 (M12). The wire moves to the tail, AUTOFOCUS, keeping its id and its place, and no second wire is added",
+      "block": "t",
+      "loop": true,
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 2, "cols": 3}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "r", "type": "report", "x": 600, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "loop", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "e3", "from": "af", "fromPort": "focused", "to": "r", "toPort": "session"}
+        ]
+      },
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 2, "cols": 3}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "r", "type": "report", "x": 600, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "loop", "from": "af", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "e3", "from": "af", "fromPort": "focused", "to": "r", "toPort": "session"}
+        ]
+      },
+      "loop_wire": {"id": "loop", "from": "af", "fromPort": "pass", "to": "t", "toPort": "next"},
+      "rotates": {"graph": false, "result": true}
+    },
+    {
+      "id": "loop-on-stranded-twice",
+      "spec": "#410: the same press on a lane FILTER CYCLE -> AUTOFOCUS -> GUIDE with two stranded pass wires, from the cycle and from the AUTOFOCUS (M12 at each). The first moves to the tail, GUIDE, keeping its id and its place, and the second goes: one loop wire, not two",
+      "block": "t",
+      "loop": true,
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 2, "cols": 3}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "g", "type": "guide", "x": 600, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "s1", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "e3", "from": "af", "fromPort": "focused", "to": "g", "toPort": "run"},
+          {"id": "s2", "from": "af", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 2, "cols": 3}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}},
+          {"id": "g", "type": "guide", "x": 600, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "s1", "from": "g", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "e3", "from": "af", "fromPort": "focused", "to": "g", "toPort": "run"}
+        ]
+      },
+      "loop_wire": {"id": "s1", "from": "g", "fromPort": "pass", "to": "t", "toPort": "next"},
+      "rotates": {"graph": false, "result": true}
+    },
+    {
+      "id": "loop-on-stranded-beside-the-tail-loop",
+      "spec": "#410: the same press on a lane FILTER CYCLE -> AUTOFOCUS whose tail already has its loop wire while a stale one still leaves the cycle (M12, so the panels do not rotate and the card says so). The tail keeps its own wire and the stale one goes",
+      "block": "t",
+      "loop": true,
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 2, "cols": 3}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "own", "from": "af", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "stale", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 2, "cols": 3}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "af", "type": "autofocus", "x": 400, "y": 0, "params": {}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "cy", "fromPort": "complete", "to": "af", "toPort": "run"},
+          {"id": "own", "from": "af", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "loop_wire": {"id": "own", "from": "af", "fromPort": "pass", "to": "t", "toPort": "next"},
+      "rotates": {"graph": false, "result": true}
+    },
+    {
+      "id": "loop-on-foreign-pass-wire-control",
+      "spec": "#410 / M4 (control): LOOP PANELS on a 3x2 lane with no loop wire of its own, while a pass wire from the lane of another TARGET, M33, goes into its next (M4: this wire does nothing). Only a wire that leaves a stage of THIS block's lane is moved, so the stray wire stays where it is and the loop wire is added from the tail",
+      "block": "t",
+      "loop": true,
+      "graph": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 2, "cols": 3}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "t2", "type": "target", "x": 0, "y": 300, "params": {"name": "M33", "rows": 2, "cols": 2}},
+          {"id": "c2", "type": "capture", "x": 200, "y": 300, "params": {"filter": "L", "exposure": 120, "count": 20}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "t2", "fromPort": "target", "to": "c2", "toPort": "run"},
+          {"id": "stray", "from": "c2", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "result": {
+        "nodes": [
+          {"id": "t", "type": "target", "x": 0, "y": 0, "params": {"name": "M31", "rows": 2, "cols": 3}},
+          {"id": "cy", "type": "cycle", "x": 200, "y": 0, "params": {"plan": "L 60, R 60"}},
+          {"id": "t2", "type": "target", "x": 0, "y": 300, "params": {"name": "M33", "rows": 2, "cols": 2}},
+          {"id": "c2", "type": "capture", "x": 200, "y": 300, "params": {"filter": "L", "exposure": 120, "count": 20}}
+        ],
+        "edges": [
+          {"id": "e1", "from": "t", "fromPort": "target", "to": "cy", "toPort": "run"},
+          {"id": "e2", "from": "t2", "fromPort": "target", "to": "c2", "toPort": "run"},
+          {"id": "stray", "from": "c2", "fromPort": "pass", "to": "t", "toPort": "next"},
+          {"id": "loop", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"}
+        ]
+      },
+      "loop_wire": {"id": "loop", "from": "cy", "fromPort": "pass", "to": "t", "toPort": "next"},
+      "rotates": {"graph": false, "result": true}
     }
   ],
   "_about_carry_cases": [

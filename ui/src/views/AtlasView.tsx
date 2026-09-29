@@ -18,10 +18,19 @@
 //
 // NOTE on the mosaic: the page owns rows/cols/overlap (they drive the live
 // FovOverlay grid via the FramingSession with the byte-identical client mirror
-// `mosaicGrid` from lib/framing.ts). "Send to Plan" now routes through the
-// server `POST /api/framing/mosaic` (Owner C) so the slew targets are identical
-// to the engine; on a network/500 failure it falls back to the client mirror so
-// Send still works offline. The live drag overlay stays on the client mirror.
+// `mosaicGrid` from lib/framing.ts).
+//
+// SEND TO FLOW WIZARD IS THE PAGE'S FORWARD ACTION (#196, spec 2026-09-23 flows
+// mosaic, section 8 S6), for a mosaic and for a single target. It opens the ONE
+// shared wizard (components/flows/wizard, D13) pre-filled from this framing:
+// name, centre, PA, grid, overlap and the camera field. The wizard asks what a
+// framing does not know (filters, counts, guiding, the angle mode), and its
+// GENERATE writes ONE TARGET block into a flow; the server lays that block's
+// panels out with framing.py at every compile, so this page computes none. It
+// replaced the Plan button, which wrote the framing into the classic Plan as
+// targets sharing a `mosaic_group`, shot panel-first (#154); its two labels are
+// on `src/__tests__/deletedDoorStrings.test.ts`'s list of retired strings. The
+// Plan keeps its own target entry for hand-built plans.
 
 import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
 import {
@@ -30,12 +39,11 @@ import {
   useConfig,
   useSite,
   usePreview,
-  useSequence,
   useNight,
 } from "../store";
 import { useShallow } from "zustand/react/shallow";
 import type {
-  CatalogEntry, MosaicPanel, MosaicResult, Optics, PackStatus, PreflightAlt, Target, VisibilityNight,
+  CatalogEntry, Optics, PackStatus, PreflightAlt, VisibilityNight,
 } from "../types";
 import { getPackStatus } from "../api/backends";
 import GotoStrip from "../components/GotoStrip";
@@ -43,7 +51,6 @@ import { ARCSEC_PER_RAD, fmtMicron } from "../lib/optics";
 import {
   fovFromOptics,
   plausibilityHint,
-  mosaicGrid,
   mosaicTotalFov,
   missingOpticsFields,
   deproject,
@@ -58,7 +65,6 @@ import {
   overrideProfileName,
 } from "../lib/effective";
 import { adjustedPa } from "../lib/rotation";
-import { uid } from "../lib/ids";
 import { useSkyRegion, type SkyRow } from "../lib/skyRegion";
 import { ObjectCard } from "../components/atlas/ObjectCard";
 import { SkyCanvas } from "../components/atlas/SkyCanvas";
@@ -66,13 +72,21 @@ import { SurveyControls } from "../components/atlas/SurveyControls";
 import { VisibilityPanel } from "../components/atlas/VisibilityPanel";
 import { CatalogSearch } from "../components/atlas/CatalogSearch";
 import { TonightPicker } from "../components/atlas/TonightPicker";
-import { Panel, Stat, Stepper, EmptyState, HonestButton, LockedChip } from "../components/ui";
+import { Panel, Stat, Stepper, EmptyState, LockedChip } from "../components/ui";
 import { Icon } from "../components/icons";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import { useBusyOrPending } from "../lib/useBusy";
 import { api } from "../api";
 import { ClassicAtlasSky, type AtlasDisplay } from "../components/sky/ClassicAtlasSky";
+// The wizard's classic mount. It imports the lazy door, never the sheet, so
+// the Atlas pays for this host and not for the stepped wizard until SEND TO
+// FLOW WIZARD is pressed (sendToWizardSheet.test.tsx holds that).
+import { SendToWizardHost } from "../components/flows/wizard/SendToWizardHost";
+import type { WizardPrefill } from "../components/flows/wizard";
+// The TARGET node's coordinate format, from the classic copy of the quick
+// flow's formatters (the Target modal reads the same pair).
+import { decDms, raHms } from "../components/flows/QuickFlow";
 
 // Per-image survey brightness (night-adaptation memory, spec §6) persists across
 // sessions. Clamp mirrors store.ts readBright/clampBright (0.08 floor) so a
@@ -88,17 +102,12 @@ function readSurveyBright(): number {
   }
 }
 
-// DEFAULT_STEP shape mirrors SequenceView's (a single light step). Kept local so
-// AtlasView doesn't import from a magnet view; the Plan accepts this as-is.
-const ATLAS_DEFAULT_STEP = {
-  filter: null,
-  exposure_s: 60,
-  gain: 100,
-  offset: 30,
-  binning: 1,
-  count: 20,
-  frame_type: "light",
-};
+/** The page's forward action, in the wizard's own words (its title,
+ *  `SendToWizardSheet.WIZARD_TITLE`; `src/__tests__/doorsConverge.test.tsx`
+ *  finds the button by that title). Written here rather than imported: that
+ *  module is the lazily loaded sheet, and importing it to label a button would
+ *  load it. */
+const SEND_TO_WIZARD = "SEND TO FLOW WIZARD";
 
 function fmtAngle(deg: number): string {
   if (!(deg > 0)) return "—";
@@ -172,7 +181,6 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
   const config = useConfig();
   const site = useSite();
   const preview = usePreview();
-  const sequence = useSequence();
   const night = useNight();
 
   // Camera-merged optics (server effective_optics; same source FocusView uses).
@@ -205,8 +213,6 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
 
   const setFraming = useStore((s) => s.setFraming);
   const openFraming = useStore((s) => s.openFraming);
-  const addTargetsToPlan = useStore((s) => s.addTargetsToPlan);
-  const setView = useStore((s) => s.setView);
   const loadConfig = useStore((s) => s.loadConfig);
   const enqueueToast = useStore((s) => s.enqueueToast);
 
@@ -334,9 +340,11 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
   // A4 (P2-T3 review F2): optional guide-scope focal length. Empty clears it
   // (server stores null); a value commits through the shared optics PUT.
   const [guideFocalDraft, setGuideFocalDraft] = useState<string>("");
-  // In-flight guard for Send-to-Plan — blocks a double-tap from double-adding a
-  // single target (the server round-trip is async).
-  const [sending, setSending] = useState(false);
+  // What SEND TO FLOW WIZARD handed the wizard, or null while it is closed. The
+  // prefill is taken ONCE, at the press, so the wizard's answers stay tied to
+  // the framing they were asked about; a framing changed under an open wizard
+  // reaches it on the next press (EDIT FRAMING closes the wizard onto this page).
+  const [wizardPrefill, setWizardPrefill] = useState<WizardPrefill | null>(null);
 
   // ---- Atlas → mount handoff in-flight state (#18) ----
   //
@@ -699,15 +707,13 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
     }
   };
 
-  // ---- mosaic panels (dual-path: Send POSTs /api/framing/mosaic; the client
-  // mirror `mosaicGrid` is both the live overlay source and the offline fallback) ----
+  // ---- the mosaic grid (the live overlay draws it through the client mirror;
+  // a night gets its panels from the server, see SEND TO FLOW WIZARD below) ----
   const rows = mosaic.rows;
   const cols = mosaic.cols;
   const overlap = mosaic.overlap;
   const panelCount = rows * cols;
   const total = mosaicTotalFov(cols, rows, overlap, fov.fov_x_deg, fov.fov_y_deg);
-
-  const seqRunning = sequence.state === "running" || sequence.state === "paused";
 
   // The rounded fetch key VisibilityPanel computes tonight for — mirrored here
   // (same rounding, wave-1 §2) so the page can tell a night that describes THIS
@@ -721,70 +727,10 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
   // the window in which the old numbers would otherwise still be on screen.
   const visRecomputing = !visFresh && vis.night != null;
 
-  // Below-limit / set-time advisory drives the Send override gate (spec §6).
-  // Null night = no claim: during the recompute the banner says it is checking
-  // rather than repeating the last point's verdict about this one.
+  // Below-limit / set-time advisory drives the SEND TO FLOW WIZARD confirm
+  // (spec §6). Null night = no claim: during the recompute the banner says it
+  // is checking rather than repeating the last point's verdict about this one.
   const belowLimit = visNight?.never_rises_above_limit ?? false;
-  // Group id for mosaic dedupe: a catalog target groups by its id; a free-roam
-  // session groups by the stable per-session freeroamId (seeded in openFraming) so
-  // a multi-panel free-roam mosaic groups in the Plan and re-framing REPLACES its
-  // panels instead of appending duplicates (C1-C2).
-  const groupId = target?.id ?? framing.freeroamId;
-
-  // Map canonical panels (server or client-mirror) → Target[]. Naming/flags are
-  // identical on both paths so a server-vs-fallback Send is indistinguishable in
-  // the Plan (spec §5: the server is canonical; the mirror is the offline twin).
-  const panelsToTargets = (panels: MosaicPanel[]): Target[] => {
-    const baseName = target?.id ?? target?.name ?? "Sky";
-    return panels.map((p) => ({
-      id: uid(),                          // stable identity (sessions spec §1)
-      name: panelCount > 1 ? `${baseName} ${p.row + 1}-${p.col + 1}` : baseName,
-      ra_hours: p.ra_hours, // already %24-wrapped (server emits ra % 24)
-      dec_deg: p.dec_deg,
-      center: true,
-      autofocus_first: p.row === 0 && p.col === 0,
-      calibration: false,
-      rotation_deg,
-      mosaic_group: panelCount > 1 ? groupId : undefined,
-      steps: [{ ...ATLAS_DEFAULT_STEP, id: uid() }],
-    }));
-  };
-
-  // Client-mirror panels — the offline fallback AND the live overlay source. Kept
-  // byte-identical to the server mosaic engine (lib/framing.ts mirrors framing.py).
-  const computePanelsLocal = (): MosaicPanel[] =>
-    mosaicGrid({
-      ra_hours: center.ra_hours,
-      dec_deg: center.dec_deg,
-      rows,
-      cols,
-      overlap,
-      rotation_deg,
-      fov_x_deg: fov.fov_x_deg,
-      fov_y_deg: fov.fov_y_deg,
-    });
-
-  // Send always re-runs the SERVER so the slew targets are byte-identical to the
-  // engine; on a network/500 failure we fall back to the client mirror so Send
-  // still works offline (spec §5). The live drag overlay never depends on this.
-  const computePanels = async (): Promise<Target[]> => {
-    try {
-      const res = await api.post<MosaicResult>("/api/framing/mosaic", {
-        ra_hours: center.ra_hours,
-        dec_deg: center.dec_deg,
-        rows,
-        cols,
-        overlap,
-        rotation_deg,
-        fov_x_deg: fov.fov_x_deg,
-        fov_y_deg: fov.fov_y_deg,
-      });
-      return panelsToTargets(res.panels);
-    } catch {
-      // offline / server error — the client mirror is canonical-equivalent.
-      return panelsToTargets(computePanelsLocal());
-    }
-  };
 
   // ---- the camera angle this page actually COMMANDS ----
   // One expression, read by the Go-to body, the run's toast and the "will
@@ -809,8 +755,40 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
   // instead of the hoped-for one.
   const willRotate = commandedPaDeg != null && statusRotator != null;
 
-  const sendToPlan = async () => {
-    if (!haveOptics || seqRunning || sending) return;
+  // ---- SEND TO FLOW WIZARD (#196, spec section 8 S6) ----
+  //
+  // What this framing hands the wizard, and nothing it does not know:
+  //   - the target's NAME (its catalogue id when it has none), "" in free roam
+  //     (the wizard asks: the frames are filed under it, and the page's "Free
+  //     roam" heading names nothing);
+  //   - the framing's CENTRE, not the catalogue's, in the TARGET node's format;
+  //   - NO ANGLE MODE, since the page holds a rotation and no mode: the wizard
+  //     asks ROTATE TO or CAMERA FIXED AT, with the PA already typed. The PA is
+  //     the COMMANDED one, so a dial never turned off 0 sends none and the
+  //     wizard asks for it rather than laying a grid out at an angle nobody
+  //     chose;
+  //   - the grid and the overlap as the Overlap stepper shows it, in percent;
+  //   - no skipped panels (this page cannot skip one), and the field the frame
+  //     is drawn from, null with no optics (the wizard then offers one target).
+  const wizardPrefillNow = (): WizardPrefill => ({
+    name: (target?.name || target?.id || "").trim(),
+    ra: raHms(center.ra_hours),
+    dec: decDms(center.dec_deg),
+    angleMode: null,
+    paDeg: commandedPaDeg,
+    rows,
+    cols,
+    overlapPct: Math.round(overlap * 100),
+    skip: "",
+    fov: haveOptics ? { xDeg: fov.fov_x_deg, yDeg: fov.fov_y_deg } : null,
+  });
+
+  // It is NEVER LOCKED. Nothing is written by opening it: the wizard saves a
+  // flow only on its GENERATE, which checks the capability itself, asks what
+  // a framing without optics cannot give, and leaves a run in progress alone
+  // (the old "a run is in progress" lock guarded the Plan the engine had
+  // snapshotted, which this door no longer touches).
+  const sendToWizard = async () => {
     if (belowLimit) {
       // App confirm dialog (night-safe, 44px, non-suppressible) — NOT window.confirm
       // (a bright OS dialog destroys dark adaptation). Mirrors MountView.doGoto.
@@ -818,38 +796,15 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
         title: "Below tonight's limit",
         body: `${target?.name ?? "This target"} doesn't rise above ${Math.round(
           visNight?.alt_limit_deg ?? 30,
-        )}° tonight (peaks ${(visNight?.transit_alt ?? 0).toFixed(0)}°). Add anyway?`,
+        )}° tonight (peaks ${(visNight?.transit_alt ?? 0).toFixed(0)}°). Plan it anyway?`,
         tone: "warn",
         mode: "confirm",
-        confirmLabel: "Add anyway",
+        confirmLabel: "Plan anyway",
         confirmPrimary: true, // PLAN-01-gemini: proceeding is the intended action
       });
       if (!ok) return;
     }
-    setSending(true);
-    try {
-      const targets = await computePanels();
-      addTargetsToPlan(targets, panelCount > 1 ? groupId : undefined);
-      enqueueToast({
-        level: "success",
-        title:
-          panelCount > 1
-            ? `${panelCount} panels added to Plan`
-            : "Target added to Plan",
-        // Only send the user to the camera when nothing else will turn it. This
-        // told every rig to hand-set the angle, rotator or not — which now sits
-        // one panel away from a note saying the rotator gets sent that angle.
-        detail:
-          commandedPaDeg == null
-            ? undefined
-            : willRotate
-              ? `Each panel slews, rotates to PA ${Math.round(commandedPaDeg)}° and centres before it exposes.`
-              : `Set your camera to PA ${Math.round(commandedPaDeg)}° before this run — there's no rotator to do it.`,
-      });
-      setView("sequence");
-    } finally {
-      setSending(false);
-    }
+    setWizardPrefill(wizardPrefillNow());
   };
 
   // ---- Atlas → mount handoff (UX-2026-07-26 #18) ----
@@ -955,17 +910,6 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
       enqueueToast({ level: "error", title: "Couldn't slew", detail: (e as Error).message });
     }
   };
-
-  // Why "add to plan" is locked, as a sentence a finger can be told. Ordered by
-  // what the user has to do about it: a run in progress is a wait, missing optics
-  // is a field to fill. Null = the control is live.
-  const sendLock = seqRunning
-    ? "A run is in progress. It fixed its target list when it started, so anything added now would sit in the plan unshot — stop the run, then add this."
-    : !haveOptics
-      ? `No frame size yet, so there is nothing to place on the sky. Still missing: ${missingOpticsFields(
-          mergedOptics,
-        ).join(", ")} — fill those in at the top of this page, or connect the camera and it fills them for you.`
-      : null;
 
   // Honest-disabled reason (§11.8) — dim + aria-disabled + a STATED reason, never
   // the native `disabled` attribute and never `title=` as the only channel.
@@ -1548,33 +1492,19 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
                 </div>
               ) : null}
 
-              {/* House rule §11.8: the one forward control on this panel used the
-                  native `disabled` attribute with its reason only in `title=` —
-                  which never fires on the phone and tablet this page is used
-                  from, so a finger got a dead button and no sentence. It stays
-                  pressable and ANSWERS now; the two static banners on this page
-                  already carry the standing explanation, so pressing it adds the
-                  one thing they don't — that THIS tap did nothing, and why. */}
-              <HonestButton
+              {/* The page's one forward control, for a mosaic and for a single
+                  target alike (#196). Never locked, so a plain button: every
+                  refusal the night could meet (no optics for a grid, no
+                  capture capability, a loss in the compile) is the wizard's to
+                  say, on the step where the operator can answer it. */}
+              <button
+                type="button"
                 className="btn btn-accent btn-touch w-full"
-                reason={sendLock}
-                onExplain={(r) =>
-                  enqueueToast({ level: "warning", title: "Not added to the plan", detail: r })
-                }
-                onClick={() => void sendToPlan()}
+                data-testid="atlas-send-to-wizard"
+                onClick={() => void sendToWizard()}
               >
-                {sending
-                  ? "Adding…"
-                  : panelCount > 1
-                    ? `Send ${panelCount} panels to Plan`
-                    : "Add target to Plan"}
-              </HonestButton>
-              {seqRunning && (
-                <p className="text-[12px] text-warn leading-snug">
-                  A sequence is running — the engine snapshots its plan at start,
-                  so additions won't be picked up mid-run.
-                </p>
-              )}
+                {SEND_TO_WIZARD}
+              </button>
             </div>
           </Panel>
 
@@ -1588,6 +1518,11 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
           />
         </div>
       </div>
+
+      {/* The wizard, over this page (its Overlay portals out). CLOSE and EDIT
+          FRAMING both land back here on the framing as it stands, and OPEN IN
+          EDITOR or a started run go to the Flows view (the host's rule). */}
+      <SendToWizardHost prefill={wizardPrefill} onClose={() => setWizardPrefill(null)} />
     </div>
   );
 }

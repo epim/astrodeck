@@ -19,11 +19,13 @@
 // so a new column cannot pass here by being skipped.
 //
 // ALSO GRADED: the fixture's `loop_cases` (#189 S4), the graphs `withLoop`
-// makes when the modal's DONE places or lifts a block's loop wire, and its
-// `carry_cases` (#331), the graphs flowsSlice.ts `carryLoopWire` makes when
-// a stage is appended after a mosaic's tail. Here the TypeScript must make
-// each recorded result; test_flows_panel_lane.py holds each result to
-// compile.py (`loop_wires`, `lane_refusals`).
+// makes when the modal's DONE or LOOP PANELS places or lifts a block's loop
+// wire (moving a stranded one since #410), with `targetLoops` held to each
+// case's `rotates` column before and after; and its `carry_cases` (#331), the
+// graphs flowsSlice.ts `carryLoopWire` makes when a stage is appended after a
+// mosaic's tail. Here the TypeScript must make each recorded result;
+// test_flows_panel_lane.py holds each result to compile.py (`loop_wires`,
+// `lane_refusals`).
 //
 // ONE CASE IS A FLOW CYCLE with no way in, and a walk without its seen-set
 // never returns from it. A synchronous hang cannot be interrupted from its own
@@ -44,9 +46,11 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
-  isMultiPanel, laneBranched, laneTail, loopSource, loopWires, ownerOf, panelLane, withLoop,
+  isMultiPanel, laneBranched, laneTail, loopSource, loopWires, midLanePassWires, ownerOf,
+  panelLane, withLoop,
 } from "../panelLane";
 import type { LaneGraph } from "../panelLane";
+import { targetLoops } from "../targetSummary";
 import type { FlowNodeRec, FlowNodeType } from "../flowsTypes";
 
 const proc = (globalThis as any).process;
@@ -424,8 +428,9 @@ if (!CHILD_CASE) {
     id: string; spec: string; block: string; loop: boolean;
     graph: LaneGraph; result: LaneGraph;
     loop_wire: { id: string; from: string; fromPort: string; to: string; toPort: string } | null;
+    rotates: { graph: boolean; result: boolean };
   }
-  const LOOP_CASE_KEYS = ["id", "spec", "block", "loop", "graph", "result", "loop_wire"];
+  const LOOP_CASE_KEYS = ["id", "spec", "block", "loop", "graph", "result", "loop_wire", "rotates"];
 
   /** The fixture's `loop_cases`, failing (never skipping) when absent. */
   function readLoopCases(): LoopCase[] {
@@ -446,7 +451,10 @@ if (!CHILD_CASE) {
     // "loop-off" renamed). Observed (1 failed, 21 passed):
     //   x the loop cases are read from panel_lane_cases.json, every column graded: the fixture no longer carries loop case loop-off
     loopCases = readLoopCases();
-    for (const id of ["loop-on", "loop-off", "loop-on-single-target"]) {
+    for (const id of ["loop-on", "loop-off", "loop-on-single-target",
+                      "loop-on-stranded", "loop-on-stranded-twice",
+                      "loop-on-stranded-beside-the-tail-loop",
+                      "loop-on-foreign-pass-wire-control"]) {
       assert(loopCases.some((c) => c.id === id), `the fixture no longer carries loop case ${id}`);
     }
     const bad = loopCases.flatMap((c) => Object.keys(c)
@@ -469,6 +477,36 @@ if (!CHILD_CASE) {
       const want = c.loop_wire ? [wireList({ edges: [c.loop_wire] })[0]] : [];
       if (js(loops) !== js(want)) bad.push(`the result's loop wires are ${js(loops)}, loop_wire records ${js(want)}`);
       assert(bad.length === 0, bad.join("; "));
+    });
+  }
+
+  // ------------------------------------------ what the card says rotates
+  //
+  // #410. `targetLoops` (targetSummary.ts) drives the card footer's
+  // "rotate", the loop chip and the phone rail, and it must answer what the
+  // RUN does: no rotation while any pass wire into the block's `next` leaves
+  // a mid-lane stage, because compile.py's `lane_refusals` calls that M12 and
+  // `to_plan` refuses the flow. `loop_wires` alone finds a tail wire standing
+  // beside a stale one, so the card read "rotate" over a flow `/run` refuses.
+  // Every loop case records `rotates` for its graph and its result, and
+  // test_flows_panel_lane.py holds that column to compile.py's rules.
+  //
+  // MUTANT "targetLoops ignores M12" (targetSummary.ts targetLoops: the
+  // `midLanePassWires(...).length === 0` term deleted, as S4 built it), run in
+  // the private scratch copy scratchpad/S5-LOOP-mut. Observed (45/47):
+  //   x targetLoops on loop case loop-off, before and after, is what compile.py says: targetLoops answered {"graph":true,"result":false}, the fixture the server grades records {"graph":false,"result":false}
+  //   x targetLoops on loop case loop-on-stranded-beside-the-tail-loop, before and after, is what compile.py says: targetLoops answered {"graph":true,"result":true}, the fixture the server grades records {"graph":false,"result":true}
+  //
+  // MUTANT of the FIXTURE "the tail-loop case recorded as rotating before the
+  // press" (a scratch copy: its `rotates.graph` true, what `loop_wires` alone
+  // says). Observed (46/47), and test_flows_panel_lane.py failed it too:
+  //   x targetLoops on loop case loop-on-stranded-beside-the-tail-loop, before and after, is what compile.py says: targetLoops answered {"graph":false,"result":true}, the fixture the server grades records {"graph":true,"result":true}
+  for (const c of loopCases) {
+    test(`targetLoops on loop case ${c.id}, before and after, is what compile.py says`, () => {
+      const block = (g: LaneGraph) => g.nodes.find((n) => n.id === c.block)!;
+      const got = { graph: targetLoops(block(c.graph), c.graph), result: targetLoops(block(c.result), c.result) };
+      assert(js(got) === js(c.rotates),
+        `targetLoops answered ${js(got)}, the fixture the server grades records ${js(c.rotates)}`);
     });
   }
 
@@ -543,6 +581,89 @@ if (!CHILD_CASE) {
     assert(withLoop(g, "t", false, () => "loop") === g.edges,
       "turning off a loop that is not there rewrote the wires");
     assert(loopSource(g, "t")?.id === "x", "premise: the capture is the stage the loop would leave");
+  });
+
+  // -------------------------------------------- a stranded loop (#410)
+  //
+  // LOOP PANELS and the modal's RUN toggle on a lane whose loop wire was
+  // left mid-lane (a flow saved before S4 opens that way, spec 1.5 item 6).
+  // The fixture's stranded loop cases above are graded case by case; these
+  // are the shapes they do not carry.
+  //
+  // MUTANT "withLoop adds a second wire" (panelLane.ts withLoop's `true`
+  // branch put back as S4 built it: nothing lifted, and a new wire added from
+  // the tail whenever the tail has none), run in the private scratch copy
+  // scratchpad/S5-LOOP-mut. Observed (44/47), the three stranded cases:
+  //   x loop case loop-on-stranded (#410 / 1.5 item 6: ...): withLoop made ["e1:t.target->cy.run","loop:cy.pass->t.next","e2:cy.complete->af.run","e3:af.focused->r.session","loop:af.pass->t.next"], the fixture the server grades records ["e1:t.target->cy.run","loop:af.pass->t.next","e2:cy.complete->af.run","e3:af.focused->r.session"]
+  //   x loop case loop-on-stranded-twice (#410: ...): withLoop made ["e1:t.target->cy.run","e2:cy.complete->af.run","s1:cy.pass->t.next","e3:af.focused->g.run","s2:af.pass->t.next","loop:g.pass->t.next"], the fixture the server grades records ["e1:t.target->cy.run","e2:cy.complete->af.run","s1:g.pass->t.next","e3:af.focused->g.run"]
+  //   x loop case loop-on-stranded-beside-the-tail-loop (#410: ...): withLoop made ["e1:t.target->cy.run","e2:cy.complete->af.run","own:af.pass->t.next","stale:cy.pass->t.next"], the fixture the server grades records ["e1:t.target->cy.run","e2:cy.complete->af.run","own:af.pass->t.next"]
+  // The graph the first makes, handed to compile.py, still answers M12 at
+  // `cy` (test_flows_panel_lane.py `test_a_second_wire_leaves_the_flow_refused`).
+  // The foreign-wire control is the other edge: a repair that moved every
+  // pass wire into `next` would re-source its stray wire and make it M31's
+  // loop (test_flows_panel_lane.py holds that premise). The cases below are
+  // the conditions of the repair the fixture does not carry; each control
+  // was run under the mutant it names in the private copy.
+
+  // MUTANT "the tail counts as mid-lane" (midLanePassWires: the `e.from !==
+  // tail.id` test deleted). Observed (38/47; every looped result's
+  // targetLoops grade with it, and the two controls below):
+  //   x midLanePassWires is compile.py's second M12: pass wires into next from a stage of the lane that is not the tail: the mid-lane wires: ["s1","s2","own"]
+  // MUTANT "any stage's pass wire is mid-lane" (midLanePassWires: the
+  // `lane.has(e.from)` test deleted, so another block's stage counts).
+  // Observed (44/47, with the foreign-wire loop case and its rotates grade):
+  //   x midLanePassWires is compile.py's second M12: pass wires into next from a stage of the lane that is not the tail: the mid-lane wires: ["s1","s2","stray"]
+  test("midLanePassWires is compile.py's second M12: pass wires into next from a stage of the lane that is not the tail", () => {
+    // TARGET -> CYCLE -> AUTOFOCUS -> GUIDE, with pass wires from the cycle,
+    // from the AUTOFOCUS, from the tail and from another block's CAPTURE.
+    const g: LaneGraph = {
+      nodes: [n("t", "target", 0, { rows: 2, cols: 3 }), n("cy", "cycle", 200), n("af", "autofocus", 400),
+        n("g", "guide", 600), n("t2", "target", 0, { rows: 2, cols: 2 }), n("c2", "capture", 200)],
+      edges: [w("t", "target", "cy", "run"), w("cy", "complete", "af", "run"), w("af", "focused", "g", "run"),
+        w("t2", "target", "c2", "run"),
+        w("cy", "pass", "t", "next", "s1"), w("af", "pass", "t", "next", "s2"),
+        w("g", "pass", "t", "next", "own"), w("c2", "pass", "t", "next", "stray")],
+    };
+    assert(js(midLanePassWires(g, "t").map((e) => e.id)) === js(["s1", "s2"]),
+      `the mid-lane wires: ${js(midLanePassWires(g, "t").map((e) => e.id))}`);
+    // A branched lane has no tail: M12 names the branch, not each wire, and
+    // compile.py's mid-lane check does not run for it.
+    const branched: LaneGraph = { ...g, edges: [...g.edges, w("t", "target", "x", "run")],
+      nodes: [...g.nodes, n("x", "capture", 200)] };
+    assert(midLanePassWires(branched, "t").length === 0,
+      `a branched lane: ${js(midLanePassWires(branched, "t").map((e) => e.id))}`);
+  });
+
+  // MUTANT "the tail counts as mid-lane" (above). Observed:
+  //   x control: a lane with only its tail's loop wire has no mid-lane wire, and loop on is the same array: the tail's own wire is not mid-lane
+  test("control: a lane with only its tail's loop wire has no mid-lane wire, and loop on is the same array", () => {
+    const g = lane("capture");
+    const looped: LaneGraph = { ...g, edges: [...g.edges, w("x", "pass", "t", "next", "own")] };
+    assert(midLanePassWires(looped, "t").length === 0, "the tail's own wire is not mid-lane");
+    assert(withLoop(looped, "t", true, () => "loop") === looped.edges, "a looped lane was rewritten");
+  });
+
+  // MUTANT "repair without a pass port" (withLoop: `loopSource(g, blockId) ??
+  // laneTail(g, blockId)`, so a tail with no "pass done" is used). Observed
+  // (44/47, with the 1x1 loop case and the SLEW control above):
+  //   x control: loop on after a stranded wire whose tail has no pass output moves nothing: a wire was moved to a SLEW: ["t.target-cy.run:t.target->cy.run","cy.complete-x.run:cy.complete->x.run","stuck:x.pass->t.next"]
+  test("control: loop on after a stranded wire whose tail has no pass output moves nothing", () => {
+    // Legacy SLEW appended after a looped cycle: the wire has nowhere to go,
+    // so it stays where it is and the doctor's M12 names the lane.
+    const g = lane("slew");
+    const stranded: LaneGraph = { ...g, edges: [...g.edges, w("cy", "pass", "t", "next", "stuck")] };
+    assert(withLoop(stranded, "t", true, () => "loop") === stranded.edges,
+      `a wire was moved to a SLEW: ${js(wireList({ edges: withLoop(stranded, "t", true, () => "loop") }))}`);
+  });
+
+  // MUTANT "lift only the loop wire" (withLoop, loop false: removes only
+  // `loopWires(g, blockId)`, the tail's). Observed (45/47, with loop-off):
+  //   x control: loop off still lifts a stranded wire with every other pass wire into next: loop off on a stranded lane left ["t.target-cy.run:t.target->cy.run","cy.complete-x.run:cy.complete->x.run","stuck:cy.pass->t.next"]
+  test("control: loop off still lifts a stranded wire with every other pass wire into next", () => {
+    const g = lane("capture");
+    const stranded: LaneGraph = { ...g, edges: [...g.edges, w("cy", "pass", "t", "next", "stuck")] };
+    const off = wireList({ edges: withLoop(stranded, "t", false, () => "loop") });
+    assert(js(off) === js(wireList(g)), `loop off on a stranded lane left ${js(off)}`);
   });
 
   // ---------------------------------------- carrying the loop wire (#331)

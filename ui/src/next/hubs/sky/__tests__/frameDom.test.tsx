@@ -163,6 +163,8 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
 const { SkyHub } = await import("../SkyHub");
+const { DEFAULT_OVERLAP } = await import("../../../../lib/framing");
+const { FRAMING_REMOVED } = await import("../sheets/quickCopy");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -263,7 +265,19 @@ await testAsync("precondition: FRAME mode is up and names what it is framing", a
   assert(byId("sky-frame-host") != null, "FRAME mode did not mount the survey canvas");
   const f = useStore.getState().framing;
   assert(f != null, "entering FRAME opened no framing session");
-  eq(f?.mosaic.overlap, 0.15, "openFraming's 25% seed was not corrected to the 15% the card prints:");
+  // DELIBERATE PIN CHANGE (spec 2.4 "one server constant", S6-DOORS;
+  // re-pinned by the S5/S6 integration, S56-INTEG): FRAME no longer corrects
+  // the store's 25% seed to a 15% of its own. Every framing starts from
+  // lib/framing.ts's DEFAULT_OVERLAP, which test_overlap_constant_one.py
+  // holds to the server's, and the card prints the session's overlap
+  // (mosaicCopyPanelFirst.test.ts). The old pin, run against this tree,
+  // observed "openFraming's 25% seed was not corrected to the 15% the card
+  // prints: expected 0.15, got 0.25". Mutant "the Sky corrects to 15% again"
+  // (SkyHub.tsx's three FRAME resets writing `overlap: 0.15`), observed in the
+  // private copy scratchpad S56-INTEG-mut (6/8):
+  //   x precondition: FRAME mode is up and names what it is framing: a fresh
+  //   FRAME session is not at the one overlap (spec 2.4): expected 0.25, got 0.15
+  eq(f?.mosaic.overlap, DEFAULT_OVERLAP, "a fresh FRAME session is not at the one overlap (spec 2.4):");
   eq(byId("sky-frame")?.querySelector(".nx-iconbtn-label")?.textContent, "DONE", "the toolbar button label in FRAME mode:");
 });
 
@@ -323,7 +337,13 @@ await testAsync("DONE asks the ENGINE for the panels, at the overlap the card pr
   eq(posts[0].method, "POST", "the mosaic engine is a POST:");
   eq(posts[0].body.rows, 1, "rows:");
   eq(posts[0].body.cols, 2, "cols:");
-  eq(posts[0].body.overlap, 0.15, "the overlap the card printed and the one it asked for must agree:");
+  // DELIBERATE PIN CHANGE (spec 2.4, S6-DOORS; re-pinned by S56-INTEG): the
+  // request carries the session's overlap, the one constant, not 0.15. The
+  // old pin observed "expected 0.15, got 0.25"; mutant "the Sky corrects to
+  // 15% again" (above), observed:
+  //   x DONE asks the ENGINE for the panels, at the overlap the card promised:
+  //   DONE did not ask for the session's overlap: expected 0.25, got 0.15
+  eq(posts[0].body.overlap, DEFAULT_OVERLAP, "DONE did not ask for the session's overlap:");
   eq(posts[0].body.rotation_deg, 30, "the commanded angle must travel with the panels:");
   assert(posts[0].body.fov_x_deg > 1.6 && posts[0].body.fov_x_deg < 1.8, `the frame size is not the rig's: ${posts[0].body.fov_x_deg}`);
 });
@@ -348,10 +368,24 @@ await testAsync("the x clears the framing, and says what that means for the run"
   const f = useStore.getState().framing;
   eq(f?.mosaic.cols, 1, "clearing must return to a single frame:");
   eq(f?.rotation_deg, 0, "clearing must return to no commanded angle:");
+  // DELIBERATE PIN CHANGE (the S5/S6 integration, beside #459): this read
+  // /catalogue position/, the old toast's claim that clearing sends the flow
+  // back to the catalogue centre, as if a kept framing had moved it. The
+  // quick flow is always at the target's own coordinates and takes only the
+  // framing's angle, so the toast is now `quickCopy.ts`'s FRAMING_REMOVED,
+  // which says the angle goes. The old pin, run against this tree, observed:
+  //   x the x clears the framing, and says what that means for the run:
+  //   clearing the framing said nothing about what the run will do instead
+  // MUTANT "SkyHub keeps a removal sentence of its own" (clearFrame's toast
+  // back on the old literal), run in scratchpad/S5-FINAL-INTEG-ui-mut:
+  //   x the x clears the framing, and says what that means for the run:
+  //   clearing the framing did not say what the run loses: ["Framing kept -
+  //   2×1 mosaic · 2 panels · rot 30°.","Framing removed - the flow centres on the
+  //   catalogue position."] (frameDom.test: 7/8 passed)
   const toasts = useStore.getState().toasts;
   assert(
-    toasts.some((t) => /catalogue position/.test(t.title ?? "")),
-    "clearing the framing said nothing about what the run will do instead",
+    toasts.some((t) => t.title === FRAMING_REMOVED),
+    `clearing the framing did not say what the run loses: ${JSON.stringify(toasts.map((t) => t.title))}`,
   );
 });
 

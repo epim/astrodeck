@@ -21,8 +21,18 @@
 // grid stays pinned where the operator put it. A tap on a panel toggles its
 // skip. Pinch and the +/- keys zoom 0.1 to 10 deg; the rotate handle and the
 // [ ] keys turn the angle.
+//
+// THE DEGRADED SURVEY IS THIS FILE'S TO KEEP (#404, UX-07). SkyCanvas swaps its
+// LOADING skeleton for the honest empty state only when its host says the
+// survey is degraded, and the host learns that from the canvas's own
+// `onSurveyError` / `onSurveyLoad`. Every host has to wire all three, as
+// AtlasView, SkyHub and CompassSurvey do; this one wired none, so on a rig
+// with no sky pack and online fetch off the modal's sky said LOADING, over the
+// panel labels that are the skip toggles, for as long as it was open. No
+// `degradedText` is given: without the pack's status there is nothing to pick
+// a narrower sentence from, so the canvas's own UX-07 sentence is the one.
 
-import type { JSX } from "react";
+import { useCallback, useState, type JSX } from "react";
 import { SkyCanvas } from "../../atlas/SkyCanvas";
 import type { PanelFov, SkyPanel } from "../../atlas/PanelLayer";
 import type { OpticsLike } from "../../../lib/framing";
@@ -65,6 +75,12 @@ export interface FramingSkyProps {
 const noop = () => {};
 
 export function FramingSky(p: FramingSkyProps): JSX.Element {
+  // Above the early return: hooks cannot be conditional. Stable identities,
+  // because SkyCanvas's loaders depend on these callbacks and a new one each
+  // render would restart its fetch on every render.
+  const [degraded, setDegraded] = useState(false);
+  const onSurveyError = useCallback(() => setDegraded(true), []);
+  const onSurveyLoad = useCallback(() => setDegraded(false), []);
   if (p.frameCentre === null) {
     return (
       <div className="tfs-sky-empty" data-testid="framing-sky-empty">
@@ -98,6 +114,9 @@ export function FramingSky(p: FramingSkyProps): JSX.Element {
         night={p.night}
         mode="survey"
         onlineFetch={p.onlineFetch}
+        surveyDegraded={degraded}
+        onSurveyError={onSurveyError}
+        onSurveyLoad={onSurveyLoad}
         panels={p.panels}
         panelFov={p.panelFov}
         frameCenter={p.frameCentre}

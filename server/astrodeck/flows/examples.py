@@ -268,11 +268,18 @@ def _cycle() -> FlowRecord:
 #: (3 places), which is what MATCH CAMERA snapshots: 0.7756"/px x 6248 px is
 #: 1.3460 deg, x 4176 px is 0.8996 deg. `test_flows_examples_s3` recomputes
 #: both from the sensor, so the numbers and the line cannot drift apart.
+#:
+#: NO BIN IN THE LINE (#405 item 2). The fields are bin-1 degrees by
+#: definition (spec 3.1), and the modal's camera line says so for every
+#: block, "Tiled for 1.35 x 0.90 deg at bin 1 (<this line>)"
+#: (`framingModel.ts` `cameraFieldLine`). A "(bin 1)" here made that line
+#: say it twice; the rig's own provenance ("<where>, matched <date>") never
+#: named one.
 M31_MOSAIC_SENSOR = {"width_px": 6248, "height_px": 4176, "pixel_um": 3.76,
                      "focal_mm": 1000.0}
 M31_MOSAIC_FOV = (1.346, 0.9)
 M31_MOSAIC_FOV_FROM = ("IMX571 sensor, 6248 x 4176 px of 3.76 um, at 1000 mm "
-                       "focal length (bin 1)")
+                       "focal length")
 
 
 def _m31_mosaic() -> FlowRecord:
@@ -286,8 +293,8 @@ def _m31_mosaic() -> FlowRecord:
     and a night cut short leaves the panels within a pass of each other
     rather than the last ones empty.
 
-    THE TAGLINE SAYS ONLY THAT (#189 S4, item 14). It promised "a night cut
-    short still covers all of M31", which holds only once the first
+    THE TAGLINE SAYS ONLY THAT (spec S3 item 5, #353). It promised "a night
+    cut short still covers all of M31", which holds only once the first
     rotation is done: cut short after three visits, three panels hold
     nothing. ``test_flows_example_taglines`` pins the words and the three
     settings they stand on (a rotating group, one pass a visit, no minimum

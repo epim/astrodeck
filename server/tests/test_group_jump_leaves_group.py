@@ -47,10 +47,12 @@ s4-engb-resume-mut and failed as recorded:
   own scratch copy (scratchpad s4-engb-verify-mut).
 
 The jumped visit's accepted frames are noted too, and no case here grades
-them: the frame that fires a jump is not banked (#373), a consumed panel is
-not live, and the reject rule reads live panels only, so they can move a
-verdict only when a no-op jump ends a visit after a banked frame and the
-visit that takes the panel up again banks none.
+them (#396): a consumed panel is not live, and the reject rule reads live
+panels only, so they can move a verdict only when a no-op jump ends a visit
+that banked a frame and the visit that takes the panel up again banks none.
+Since S5 the frame that fires a jump is banked before the jump acts (#373,
+S5 orchestrator ruling 3), so a jumped visit's accepted frames include it;
+test_trigger_frame_banked.py holds that.
 """
 from __future__ import annotations
 
@@ -182,8 +184,19 @@ async def test_a_no_op_jump_leaves_the_panel_unvisited_for_the_same_pass(
     close. Marked visited, it would sit ahead of the unvisited members
     without a visit's requeue, so the next selection closed the pass on it.
 
-    The frame that fired the jump is not banked (the jump is raised before
-    the ledger records it, #373), so 1-2 shoots three frames for its two.
+    RE-PINNED IN S5, DELIBERATELY: 1-2 SHOOTS TWO FRAMES FOR ITS TWO. This
+    case pinned THREE ("The frame that fired the jump is not banked (the
+    jump is raised before the ledger records it, #373), so 1-2 shoots three
+    frames for its two"), a count that recorded #373 rather than wanted it.
+    The frame that fires the jump is now banked before the jump acts (#373,
+    S5 orchestrator ruling 3), so the visit that takes 1-2 up again shoots
+    its second frame and completes it. Under the mutant "record after the
+    instructions" (`_run_step` running the instructions above the banking
+    again, applied in scratchpad/S5-ENG-SCHED-mut) this case is RED at the
+    new pin, with the old count (observed):
+        AssertionError: [('M31 1-1', 1), ('M31 1-2', 1), ('M31 1-2', 1),
+        ('M31 1-1', 2), ('M31 1-2', 2)]
+        assert 3 == 2
 
     MUTANT "the jumped visit marks the panel visited": RED (observed; the
     pass closed on 1-2 with no requeue, so the visit that took it up again
@@ -215,7 +228,7 @@ async def test_a_no_op_jump_leaves_the_panel_unvisited_for_the_same_pass(
     pair = shots[jumped:jumped + 2]
     assert [who for who, _p in pair] == [_name("1-2")] * 2, shots
     assert [p for _who, p in pair] == [1, 1], shots
-    assert sum(1 for who, _p in shots if who == _name("1-2")) == 3, shots
+    assert sum(1 for who, _p in shots if who == _name("1-2")) == 2, shots
     assert night.stored.status == "complete", night.stored.status
 
 

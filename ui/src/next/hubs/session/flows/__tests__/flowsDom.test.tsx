@@ -51,6 +51,11 @@
 //      While the graph counts every sub taken the canvas says so in one line
 //      under the toolbar, through edits, log lines and sheets, until the save
 //      that switches the counts.
+//  13. RUN SAYS WHAT IT WILL DO (#189 S5, spec 5.9). Over a dormant session
+//      the canvas toolbar's RUN reads "CONTINUE M31 MOSAIC (night 3, 194/480
+//      subs)" from the progress route's recorded answer, not the graph on
+//      screen, and START OVER beside it asks a confirm: CANCEL posts nothing,
+//      the yes posts `fresh`.
 //
 // The #189 S4 mutants quoted in 8 and 9b-9d were first run in scratchpad
 // s4-uhostn-mut (2026-09-26), and re-run on 2026-09-27 in s4-uhostn-r2-mut on
@@ -175,7 +180,39 @@ const RECORD_EXTRAS: Record<string, Record<string, unknown>> = {
     },
     migrated: [{ key: "counts", note: COUNTS_NOTE }],
   },
+  // The eighth Example, whose progress answer is RECORDED (section 13). Its
+  // graph here asks for 30 subs a panel, 180 in all, where the saved flow the
+  // route counts holds 480: a copy read off the graph cannot pass for one
+  // read off the route.
+  "example-m31-mosaic": {
+    name: "M31 mosaic",
+    folder: "Examples",
+    graph: {
+      nodes: [
+        { id: "n2", type: "target", x: 0, y: 0, params: { name: "M31", rows: 2, cols: 3 } },
+        { id: "n3", type: "capture", x: 200, y: 0, params: { filter: "L", exposure: 120, count: 30 } },
+      ],
+      edges: [{ id: "e1", from: "n2", fromPort: "target", to: "n3", toPort: "run" }],
+    },
+  },
 };
+
+/** `GET /api/flows/{id}/progress` answers, by flow id: the recorded answer for
+ *  the eighth Example with a dormant session of two runs (server/tests/
+ *  fixtures/flow_progress_continue.json, read, never copied; rebuilt and
+ *  graded byte for byte by server/tests/test_s5_recorded_state.py). Every
+ *  other flow's read answers 404, as a flow with no route answer did before. */
+const { readFileSync: readFixtureFile } = await import("node:fs");
+const PROGRESS_CONTINUE = (() => {
+  const rel = "../../../../../../../server/tests/fixtures/flow_progress_continue.json";
+  try {
+    return JSON.parse(readFixtureFile(new URL(rel, import.meta.url), "utf8") as string).response;
+  } catch (e) {
+    throw new Error(`cannot read ${rel}, the recorded answer section 13 is graded against: `
+      + `${(e as Error).message}`);
+  }
+})();
+const PROGRESS_ANSWERS: Record<string, unknown> = { [PROGRESS_CONTINUE.flow_id]: PROGRESS_CONTINUE };
 
 const asked: { url: string; method: string; body: any }[] = [];
 /** Flipped by the test that has already seen the 409, so the retry succeeds. */
@@ -250,6 +287,8 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
       ...(RECORD_EXTRAS[id] ?? {}),
     });
   }
+  const progress = /^\/api\/flows\/([^/]+)\/progress$/.exec(url);
+  if (progress && PROGRESS_ANSWERS[progress[1]]) return ok(PROGRESS_ANSWERS[progress[1]]);
   return {
     ok: false, status: 404, statusText: "Not Found",
     headers: { get: () => "application/json" },
@@ -1598,6 +1637,107 @@ await testAsync("a flow whose only findings are notes reads as clean on every su
   eq(String(pill.textContent), "GRAPH VALID",
     "the pill disagrees with the two panels below it about whether this graph is valid");
   eq(pill.getAttribute("data-tone"), "good", "the verdict went off green over settings the rig owns");
+});
+
+// ============== 13. RUN says what it will do, from the route (#189 S5, spec 5.9)
+// The eighth Example opened on the canvas through the real route: the slice
+// reads its progress through the real fetch (the recorded answer, a dormant
+// session of two runs, 194 of 480 subs), and the toolbar's RUN reads
+// CONTINUE with those numbers, never the graph's 180. START OVER sits beside
+// it, behind a confirm: CANCEL posts nothing, the yes posts `fresh`, and
+// CONTINUE itself posts without it. The phone's two monitors and the classic
+// surfaces are graded in `canvas/__tests__/phoneReadouts.test.tsx`.
+//
+// MUTANT "copy from the graph" (flowRunControls.tsx: the copy's blocks built
+// from the graph on screen, each TARGET's rows x cols x its CAPTUREs' counts,
+// banked 0, in place of the progress route's). Observed, flowsDom.test 52/54,
+// in scratchpad S5-RUNUI-mut:
+//   x the canvas toolbar's RUN reads CONTINUE with the progress route's numbers: the toolbar's line
+//   expected CONTINUE M31 MOSAIC (night 3, 194/480 subs)
+//   got      CONTINUE M31 MOSAIC (night 3, 0/180 subs)
+//   x CONTINUE itself posts no fresh session: precondition: the copy is the route's again after a fresh open
+//   expected CONTINUE M31 MOSAIC (night 3, 194/480 subs)
+//   got      CONTINUE M31 MOSAIC (night 3, 0/180 subs)
+// MUTANT "START OVER without a confirm" (flowRunControls.tsx startOver: the
+// pushConfirm and its early return removed). Observed, flowsDom.test 53/54:
+//   x START OVER beside CONTINUE asks first: CANCEL posts nothing, the yes posts fresh: START OVER must ask before it posts
+//   expected Start this flow over?
+//   got      undefined
+// The copy's own mutants "night = nights" and "banked summed over the panels
+// twice" turn the first and third cases red here too (52/54: "got CONTINUE
+// M31 MOSAIC (night 2, 194/480 subs)" and "(night 3, 388/480 subs)").
+
+const { START_OVER_TITLE } = await import("../../../../../components/flows/runCopy");
+const S5_LINE = (() => {
+  const s = PROGRESS_CONTINUE.session;
+  const banked = PROGRESS_CONTINUE.blocks.reduce((n: number, b: any) => n + b.banked, 0);
+  const total = PROGRESS_CONTINUE.blocks.reduce((n: number, b: any) => n + b.total, 0);
+  return `CONTINUE M31 MOSAIC (night ${s.nights + 1}, ${banked}/${total} subs)`;
+})();
+const toolbarLine = (): string => ["run-copy-verb", "run-copy-name", "run-copy-detail"]
+  .map((t) => container.querySelector(`[data-testid="flow-run"] [data-testid="${t}"]`))
+  .filter(Boolean).map((el: any) => String(el.textContent)).join(" ");
+
+await testAsync("the canvas toolbar's RUN reads CONTINUE with the progress route's numbers", async () => {
+  seed("admin", ADMIN);
+  viewportW = 1024;
+  await mountAt("#/session/flows?open=example-m31-mosaic");
+  assert(tid("flow-toolbar") != null, "precondition: the canvas toolbar is on screen");
+  assert(asked.some((a) => a.url === "/api/flows/example-m31-mosaic/progress"),
+    "opening the flow did not read its progress, so nothing here is the route's");
+  eq(S5_LINE, "CONTINUE M31 MOSAIC (night 3, 194/480 subs)", "premise: the spec's line for the recorded answer");
+  eq(toolbarLine(), S5_LINE, "the toolbar's line");
+  assert(tid("flow-start-over") != null, "no START OVER beside CONTINUE");
+});
+
+await testAsync("START OVER beside CONTINUE asks first: CANCEL posts nothing, the yes posts fresh", async () => {
+  acceptedOnce = true;
+  try {
+    const before = runs().length;
+    click(tid("flow-start-over"));
+    await settle();
+    const req = useStore.getState().confirm;
+    eq(req?.title as string | undefined, START_OVER_TITLE, "START OVER must ask before it posts");
+    eq(runs().length, before, "START OVER posted before the operator answered");
+
+    await act(async () => { useStore.getState().resolveConfirm(false); });
+    await settle();
+    eq(runs().length, before, "CANCEL on START OVER started a run");
+
+    click(tid("flow-start-over"));
+    await settle();
+    await act(async () => { useStore.getState().resolveConfirm(true); });
+    await settle();
+    const sent = runs();
+    eq(sent.length, before + 1, "the yes posts exactly one run");
+    eq(sent[sent.length - 1].url, "/api/flows/example-m31-mosaic/run", "against the open flow");
+    eq(sent[sent.length - 1].body?.fresh, true, "and asks for a fresh session");
+  } finally {
+    acceptedOnce = false;
+  }
+});
+
+await testAsync("CONTINUE itself posts no fresh session", async () => {
+  // CONTROL: the same toolbar, the RUN button. It arms, then posts the
+  // continue, which leaves `fresh` false: the server then continues the
+  // dormant session the copy named.
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=example-m31-mosaic");
+  eq(toolbarLine(), S5_LINE, "precondition: the copy is the route's again after a fresh open");
+  acceptedOnce = true;
+  try {
+    const before = runs().length;
+    click(tid("flow-run"));
+    await settle();
+    eq(runs().length, before, "the first tap only arms");
+    click(tid("flow-run"));
+    await settle();
+    const sent = runs();
+    eq(sent.length, before + 1, "the second tap posts one run");
+    eq(sent[sent.length - 1].body?.fresh, false, "CONTINUE is not a START OVER");
+  } finally {
+    acceptedOnce = false;
+  }
 });
 
 // Unmount before the tally, the way `canvasDom.test.tsx` does. jsdom was built

@@ -23,9 +23,15 @@ nothing is written. A file a newer build wrote refuses as ``NewerSchemaFlow``
 here too: ``_newer_schema_on_disk`` checks first but reads OSError as "not
 newer", so a check whose read failed must not be the only guard.
 
-THE INJECTION aims at ``_stored``'s own read. ``_persist_flow``'s ``get`` and
-the save's quota scan read the same file first and make a failure a library
-row, so failing the first read of the file would test them, not this.
+THE INJECTION aims at ``_stored``'s own read. The save's quota scan reads
+the same file first and makes a failure a library row, so failing the first
+read of the file would test it, not this. (``_persist_flow`` read it first
+too, through ``flow_store.get``, until #364 took the save's bookkeeping from
+``_stored``'s record: ``test_persist_flow_bookkeeping.py``.)
+
+#363, VERIFIED IN S5 (S5-ROUTES). The deep-file case below was run again
+under its two recorded mutants in a private copy (``S5-ROUTES-mut``), and
+each still turns it red with the error its docstring quotes.
 
 THE GEOMETRY is test_flows_save_rules.py's 3x2 (threshold 9.975'), nudged
 6' north, which carries: the anchor stays where the counts started while the

@@ -34,6 +34,15 @@
 //   * THE LIST IS THE WHOLE LIBRARY, capped at twelve with a door to Flows,
 //     rather than a top three that silently hid the rest.
 //
+// A PLAN FILE THAT NO LONGER READS AS A PLAN STAYS ON THE LIST, WITH NO VERB
+// (#378). The server lists it with its reason, because a damaged plan that
+// vanished looked deleted, and answers its GET with 422 - so RUN, whose first
+// step is that GET, would fail on every press. The row keeps its place, drops
+// RUN, and its sub-line is the reason in place of numbers and a tonight line.
+// An unreadable FLOW is left off instead (`runnableList.ts`, #153): the Flows
+// hub one tap away lists it. A plan's library is the plan editor, which is
+// honest-disabled at phone width, so on a phone this row is where it is seen.
+//
 // WHAT THIS FILE DOES NOT DO. It does not re-implement running a flow
 // (`useFlowRunControls` owns the 409-unmapped question, the abort route and the
 // timed-out-abort trap), it does not re-implement the pre-flight
@@ -49,6 +58,7 @@ import { getPlan, listPlans, type PlanRow } from "../../../../api/plans";
 import { listReports } from "../../../../api/reports";
 import { resumeRecoveryLine, resumeSession } from "../../../../api/sessions";
 import { endReasonMeta } from "../../../../lib/reportChart";
+import { planUnreadableReason } from "../../../../lib/planLibrary";
 import { useStopResumeRecovery } from "../../../../lib/stopResumeRecovery";
 import { flowsApi } from "../../../../lib/flowsApi";
 import { buildPreflight } from "../../../../lib/preflight";
@@ -333,6 +343,21 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
   // every other hub and must not spend a request per mount on rows it does not
   // draw.
   const plans = usePlanLibrary(!compact);
+
+  // Why each unreadable plan file cannot run, by id (#378). `buildRunnables`
+  // lists every plan row as RUN, so the row is found again here by its id and
+  // drawn without the verb; the reason is `planUnreadableReason`'s, the one
+  // reading the classic library shares, so the two cannot disagree on which
+  // rows are plans.
+  const unreadablePlans = useMemo(() => {
+    const out = new Map<string, string>();
+    for (const row of plans.rows) {
+      if (!row || typeof row !== "object" || typeof row.id !== "string") continue;
+      const why = planUnreadableReason(row);
+      if (why !== null) out.set(row.id, why);
+    }
+    return out;
+  }, [plans.rows]);
 
   const runnables = useMemo(() => buildRunnables({
     cards: Array.isArray(cards) ? cards : [],
@@ -665,7 +690,11 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
             style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 6 }}
           >
             {shown.map((r) => {
-              const verdict = verdictFor(r);
+              // An unreadable plan file (#378): no verb, and its reason is the
+              // sub-line. No tonight line either - a verdict about a plan
+              // nobody can read would sit above the one sentence that matters.
+              const unreadable = r.kind === "plan" ? unreadablePlans.get(r.id) ?? null : null;
+              const verdict = unreadable === null ? verdictFor(r) : null;
               const live = r.verb === "LIVE";
               return (
                 <div key={`${r.kind}:${r.id}`} data-runnable={r.kind} data-runnable-id={r.id}>
@@ -680,7 +709,16 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
                     // says what to go and fix.
                     sub={
                       <span className="nx-runnable-sub">
-                        <span className="nx-runnable-meta">{r.meta}</span>
+                        {unreadable !== null ? (
+                          // The verdict's class: the reason wraps in full, as
+                          // a refusal does, because it is what to go and fix.
+                          <Mono size={10} tone="bad" className="nx-runnable-verdict"
+                            data-testid={`plan-unreadable-${r.id}`}>
+                            {`unreadable: ${unreadable}`}
+                          </Mono>
+                        ) : (
+                          <span className="nx-runnable-meta">{r.meta}</span>
+                        )}
                         {verdict && (
                           <Mono size={10} tone={verdict.tone} className="nx-runnable-verdict">
                             {verdict.line}
@@ -688,7 +726,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
                         )}
                       </span>
                     }
-                    right={
+                    right={unreadable !== null ? undefined : (
                       <ActionButton
                         kind={live ? "ghost" : "secondary"}
                         onPress={
@@ -704,7 +742,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
                       >
                         {r.verb}
                       </ActionButton>
-                    }
+                    )}
                   />
                 </div>
               );

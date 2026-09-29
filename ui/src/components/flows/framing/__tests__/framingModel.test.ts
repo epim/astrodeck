@@ -19,7 +19,8 @@
 // wrapped at spaces, and with each non-ASCII character written <U+XXXX> so
 // this file stays ASCII (the strip's middle dot is <U+00B7>). Each quote is
 // the failing line of the test it sits on; a mutant that failed other tests
-// too is quoted where it was aimed.
+// too is quoted where it was aimed. S5's mutants (#408, #411, #413) were run
+// in the scratch copy s5-modal-mut (2026-09-28).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -27,19 +28,20 @@
 import { readFileSync } from "node:fs";
 
 import {
-  ANY_ANGLE_ON_A_GRID, NO_OPTICS, NO_ROTATOR, OFFLINE_MIRROR, SERVER_DECIDES,
+  ANY_ANGLE_ON_A_GRID, NO_ANGLE_ON_A_GRID, NO_OPTICS, NO_ROTATOR, OFFLINE_MIRROR, SERVER_DECIDES,
   VIEW_PREFS_DEFAULT, WAITING_FOR_PANELS,
-  angleLocks, bankedSubs, cameraFieldLine, coerceParam, doneState, draftCentre,
-  draftFromParams, driftBanner, formatSkip, framingPatch, gridLock, hopDuration,
+  angleLocks, angleOffer, bankedSubs, cameraFieldLine, coerceParam, doneState, draftCentre,
+  draftFromParams, driftBanner, formatSkip, framingPatch, gridAngleLock, gridLock, hopDuration,
   layoutKey, loadViewPrefs, matchCamera, matchCameraLock, moveLine, mosaicRequest,
-  parseDecDeg, parseRaHours, parseSkip, readoutStrip, reframeDecision, requestKey,
-  runLines, saveViewPrefs, setAngleMode, stripRa, suggestAxis, suggestGrid, toggleSkip,
-  toleranceLine, useMeasured, useMeasuredLine, viewPrefsKey,
+  panelDrawState, parseDecDeg, parseRaHours, parseSkip, readoutStrip, reframeDecision, requestKey,
+  runLines, runPanelsOf, saveViewPrefs, setAngleMode, stripAngle, stripRa, suggestAxis, suggestGrid,
+  takeOffer, toggleSkip, toleranceLine, useMeasured, useMeasuredLine, viewPrefsKey,
 } from "../framingModel";
 import type {
-  FramingDraft, MosaicRequest, PanelAnswer, Params, ReframeAnswer, RigBlock, RunReadouts,
-  ServerView, SkyAngleRecord, StorageLike,
+  FramingDraft, MeasuredAngle, MosaicRequest, PanelAnswer, Params, ReframeAnswer, RigBlock,
+  RunReadouts, ServerView, StorageLike,
 } from "../framingModel";
+import type { SequenceState, SkyAngleRecord } from "../../../../types";
 
 const proc = (globalThis as any).process;
 
@@ -768,7 +770,7 @@ test("the drift banner: over 2% on either axis, M5's gap sentence when the live 
 //     measured 37.2 deg, 14 min ago, by the centring solve"
 test("USE MEASURED: the angle, how long ago, which solve, which pier", () => {
   const now = 1_790_000_000;
-  const rec: SkyAngleRecord = { pa_deg: 37.2449, exposed_at: now - 860, solved_at: now - 840, source: "plate solve + sync", pier_side: "west" };
+  const rec: MeasuredAngle = { pa_deg: 37.2449, solved_at: now - 840, source: "plate solve + sync", pier_side: "west" };
   eq(useMeasuredLine(rec, now), "camera measured 37.2 deg, 14 min ago, by the centring solve, pier west", "spec's example");
   eq(useMeasuredLine({ ...rec, solved_at: now - 20, pier_side: null, source: "rotator sync" }, now),
     "camera measured 37.2 deg, under a minute ago, by the rotator sync solve", "fresh, no pier");
@@ -781,11 +783,140 @@ test("USE MEASURED: the angle, how long ago, which solve, which pier", () => {
 //   x one tap on USE MEASURED lays the grid out at the camera's angle: from any angle: expected
 //     ["Camera fixed at PA",37.2], got ["Any angle",37.2]
 test("one tap on USE MEASURED lays the grid out at the camera's angle", () => {
-  const rec: SkyAngleRecord = { pa_deg: 37.2449, exposed_at: null, solved_at: 0, source: "plate solve + sync", pier_side: "west" };
+  const rec: MeasuredAngle = { pa_deg: 37.2449, solved_at: 0, source: "plate solve + sync", pier_side: "west" };
   const u = useMeasured(draftFromParams({ rotation: -1 }), rec);
   eq([u.angle, u.rotation], ["Camera fixed at PA", 37.2], "from any angle");
   const r = useMeasured(draftOf(M31), rec);
   eq([r.angle, r.rotation], ["Rotate to PA", 37.2], "a set mode keeps its mode");
+});
+
+// ============================================== status.sky_angle, one type
+//
+// `status.sky_angle` is typed ONCE, in types.ts, whose SkyAngleRecord
+// test_types_mirror_status.py holds to the record the server writes. S4's
+// model declared a copy of its own, looser (`exposed_at` nullable, three keys
+// optional, three missing) and held to nothing, which compiled only because it
+// was looser (#408). The model now takes a Pick of the keys it reads, so a
+// renamed server key fails tsc here as it does everywhere else, and a key the
+// model starts reading must be one the server sends.
+//
+// MUTANT "local interface restored" (framingModel.ts: the types.ts import and
+// the Pick replaced by S4's own `export interface SkyAngleRecord {...}`, with
+// `MeasuredAngle` an alias of it). Observed (scratch copy s5-modal-mut):
+//   x the model reads status.sky_angle through types.ts's SkyAngleRecord and declares no record of
+//     its own: framingModel.ts does not import SkyAngleRecord from types.ts
+//   (tsc also failed under it, on this file's records, which S4's copy made
+//   carry `exposed_at`: "error TS2741: Property 'exposed_at' is missing in type
+//   '{ pa_deg: number; solved_at: number; source: string; pier_side: "west";
+//   }' but required in type 'SkyAngleRecord'", three times. With S4's
+//   `exposed_at` made optional, tsc exited 0 and this test was red with the
+//   same line: a looser copy is what tsc cannot see, which is why this test
+//   reads the source.)
+test("the model reads status.sky_angle through types.ts's SkyAngleRecord and declares no record of its own", () => {
+  const src = readFileSync(new URL("../framingModel.ts", import.meta.url), "utf8") as string;
+  assert(/^import type \{[^}]*\bSkyAngleRecord\b[^}]*\} from "\.\.\/\.\.\/\.\.\/types";$/m.test(src),
+    "framingModel.ts does not import SkyAngleRecord from types.ts");
+  assert(!/\binterface\s+SkyAngleRecord\b|\btype\s+SkyAngleRecord\s*=/.test(src),
+    "framingModel.ts declares its own SkyAngleRecord");
+  // A copy under another name is the same second truth: no property of the
+  // record is declared in this file.
+  const declared = src.match(/^\s+(?:pa_deg|solved_at|pier_side|exposed_at)\??:/gm) ?? [];
+  eq(declared, [], "sky_angle keys declared in framingModel.ts");
+  // The Pick names exactly the keys the model reads off a record, no more.
+  const pick = /^export type MeasuredAngle = Pick<SkyAngleRecord, ([^>]*)>;$/m.exec(src);
+  assert(pick !== null, "framingModel.ts has no `MeasuredAngle = Pick<SkyAngleRecord, ...>`");
+  const picked = (pick![1].match(/"(\w+)"/g) ?? []).map((k) => k.slice(1, -1)).sort();
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const read = [...new Set([...code.matchAll(/\brec\??\.(\w+)/g)].map((m) => m[1]))].sort();
+  eq(picked, read, "the Pick's keys against the keys the model reads (`rec.x`)");
+  // And the full record, as the status frame carries it, is one the model
+  // takes: this line is tsc's (a MeasuredAngle parameter given the whole
+  // types.ts record), so it holds the Pick to types.ts at every `tsc -b`.
+  const full: SkyAngleRecord = {
+    pa_deg: 37.2449, exposed_at: 1, solved_at: 2, source: "plate solve + sync", pier_side: "west",
+    camera: "", calibrated: false, reason: "no rotator is connected",
+    mechanical_deg: null, rotator_before_deg: null, offset_deg: null,
+  };
+  eq(useMeasuredLine(full, 2)?.startsWith("camera measured 37.2 deg"), true, "the full record read");
+});
+
+// ================================================ an angle for a grid (#411)
+//
+// S5 orchestrator ruling 1 (#411; spec 1.8, "a default angle nobody chose is
+// exactly the I-04 defect"). S4 gave a draft at ANY ANGLE that became a grid
+// ROTATE TO, whose "none" turns into 0, so a DONE after a column change
+// commanded the rotator to PA 0, an angle nobody chose, off screen on a phone.
+// Now the draft stays at ANY ANGLE and DONE is locked until an angle is
+// chosen; with a measurement in `status.sky_angle` the modal OFFERS the
+// measured angle, ROTATE TO, or CAMERA FIXED AT on a rig with no rotator, and
+// it applies only when pressed. The sheet's half is framingSections.test.tsx.
+
+const MEASURED: MeasuredAngle = { pa_deg: 37.2449, solved_at: 0, source: "plate solve + sync", pier_side: "west" };
+const ANY_3x2 = (over: Partial<FramingDraft> = {}) => draftOf(M31, { angle: "Any angle", rotation: -1, ...over });
+const ANY_1x1 = () => ANY_3x2({ rows: 1, cols: 1 });
+
+// MUTANT "no lock without an angle" (gridAngleLock: always null). Observed
+// (scratch copy s5-modal-mut):
+//   x a grid with no angle locks DONE with the ruling's sentence; one panel, or a chosen angle,
+//     does not: 3x2 at any angle: expected "a grid is laid out at one camera angle: choose one, or
+//     USE MEASURED after a plate solve", got null
+test("a grid with no angle locks DONE with the ruling's sentence; one panel, or a chosen angle, does not", () => {
+  eq(NO_ANGLE_ON_A_GRID, "a grid is laid out at one camera angle: choose one, or USE MEASURED after a plate solve",
+    "the ruling's words");
+  eq(gridAngleLock(ANY_3x2()), NO_ANGLE_ON_A_GRID, "3x2 at any angle");
+  eq(gridAngleLock(ANY_3x2({ rows: 1, cols: 2 })), NO_ANGLE_ON_A_GRID, "1x2 at any angle");
+  // A set mode with a negative rotation holds no angle either (3.1 reads it
+  // as none, and doctor M2 refuses it on a grid).
+  eq(gridAngleLock(draftOf(M31, { rotation: -1 })), NO_ANGLE_ON_A_GRID, "ROTATE TO with rotation -1");
+  eq(gridAngleLock(draftOf(M31)), null, "3x2 at PA 30 (control)");
+  eq(gridAngleLock(ANY_1x1()), null, "1x1 at any angle (control)");
+});
+
+// MUTANT "the offer ignores the rotator" (angleOffer: `|| rig?.has_rotator ===
+// false` deleted, so a rig with no rotator is offered ROTATE TO). Observed
+// (scratch copy s5-modal-mut):
+//   x the measured angle is offered only to a grid that owes one: ROTATE TO, or CAMERA FIXED AT
+//     with no rotator: a rig with no rotator: expected {"mode":"Camera fixed at
+//     PA","rotation":37.2,"label":"CAMERA FIXED AT 37.2 deg"}, got {"mode":"Rotate to
+//     PA","rotation":37.2,"label":"ROTATE TO 37.2 deg"}
+// MUTANT "offer to any draft" (angleOffer: the owed test deleted, so a single
+// panel at any angle, and a grid with its angle, are offered one). Observed
+// (scratch copy s5-modal-mut):
+//   x the measured angle is offered only to a grid that owes one: ROTATE TO, or CAMERA FIXED AT
+//     with no rotator: one panel owes no angle (control): expected null, got {"mode":"Rotate to
+//     PA","rotation":37.2,"label":"ROTATE TO 37.2 deg"}
+test("the measured angle is offered only to a grid that owes one: ROTATE TO, or CAMERA FIXED AT with no rotator", () => {
+  eq(angleOffer(ANY_3x2(), MEASURED, RIG), { mode: "Rotate to PA", rotation: 37.2, label: "ROTATE TO 37.2 deg" },
+    "a rig with a rotator");
+  eq(angleOffer(ANY_3x2(), MEASURED, { ...RIG, has_rotator: false }),
+    { mode: "Camera fixed at PA", rotation: 37.2, label: "CAMERA FIXED AT 37.2 deg" }, "a rig with no rotator");
+  // Unknown is not no (rig.py), as ROTATE TO's own lock reads it.
+  eq(angleOffer(ANY_3x2(), MEASURED, { ...RIG, has_rotator: null })?.mode, "Rotate to PA", "unknown rotator");
+  eq(angleOffer(ANY_3x2(), MEASURED, null)?.mode, "Rotate to PA", "no rig block");
+  // A block already set to CAMERA FIXED AT, with no usable angle, keeps the
+  // mode the operator chose: the offer supplies only the angle.
+  eq(angleOffer(draftOf(M31, { angle: "Camera fixed at PA", rotation: -1 }), MEASURED, RIG)?.mode,
+    "Camera fixed at PA", "a fixed camera keeps its mode");
+  eq(angleOffer(ANY_3x2(), null, RIG), null, "no measurement");
+  eq(angleOffer(ANY_3x2(), { ...MEASURED, pa_deg: NaN }, RIG), null, "no finite angle");
+  eq(angleOffer(ANY_1x1(), MEASURED, RIG), null, "one panel owes no angle (control)");
+  eq(angleOffer(draftOf(M31), MEASURED, RIG), null, "a grid with its angle (control)");
+  // Taking it changes the angle and nothing else, and pays the angle owed.
+  const took = takeOffer(ANY_3x2(), angleOffer(ANY_3x2(), MEASURED, RIG)!);
+  eq(framingPatch(M31, took), { rotation: 37.2 }, "the patch against the stored 3x2 at ROTATE TO 30");
+  eq(gridAngleLock(took), null, "the lock once the offer is taken");
+});
+
+// MUTANT "strip angle without its mode" (stripAngle: the bare `${deg}` for
+// every set mode). Observed (scratch copy s5-modal-mut):
+//   x the readout strip's angle line says the angle the grid is laid out at: ROTATE TO: expected
+//     "rotate to 30.0 deg", got "30.0 deg"
+test("the readout strip's angle line says the angle the grid is laid out at", () => {
+  eq(stripAngle(draftOf(M31)), "rotate to 30.0 deg", "ROTATE TO");
+  eq(stripAngle(draftOf(M31, { angle: "Camera fixed at PA", rotation: 37.2 })), "camera fixed at 37.2 deg", "CAMERA FIXED AT");
+  eq(stripAngle(ANY_1x1()), "any angle", "one panel at any angle");
+  eq(stripAngle(ANY_3x2()), "no angle", "a grid at any angle");
+  eq(stripAngle(draftOf(M31, { rotation: -1 })), "no angle", "ROTATE TO with no usable angle");
 });
 
 // MUTANT "no conservative clause" (toleranceLine: the single row or column branch never taken).
@@ -973,21 +1104,44 @@ test("a hop line needs a measured hop; the efficiency is the server's; the produ
 //   x a panel-first block and a single target read what the server answers for them: panel-first:
 //     expected "6 visits: each panel runs to completion", got "6 visits at null passes per visit"
 // MUTANT "single target hops" (runLines: the visits and hop lines written with no visits).
-// Observed:
+// Observed (re-run in scratch copy s5-modal-mut on the single target's #413 wording):
 //   x a panel-first block and a single target read what the server answers for them: a single
 //     target: no visits, no hops, no flip line: expected ["3 subs over 1 panel and 1 filter","0.05
-//     h per panel, 0.05 h in all","focus: a sweep only at the first panel; set a temperature delta
-//     to refocus as the night cools"], got ["3 subs over 1 panel and 1 filter","0.05 h per panel,
+//     h per panel, 0.05 h in all","focus: a sweep only at the start; set a temperature delta to
+//     refocus as the night cools"], got ["3 subs over 1 panel and 1 filter","0.05 h per panel,
 //     0.05 h in all","null visits: each panel runs to completion","hop 2 m 40 s, measured over 6
-//     hops","focus: a sweep only at the first panel; set a temperature delta to refocus as the
-//     night cools"]
+//     hops","focus: a sweep only at the start; set a temperature delta to refocus as the night
+//     cools"]
 test("a panel-first block and a single target read what the server answers for them", () => {
   eq(runLines(SEQUENTIAL_3x2, RIG)[2], "6 visits: each panel runs to completion", "panel-first");
   eq(runLines(SINGLE, MEASURED_RIG), [
     "3 subs over 1 panel and 1 filter",
     "0.05 h per panel, 0.05 h in all",
-    "focus: a sweep only at the first panel; set a temperature delta to refocus as the night cools",
+    "focus: a sweep only at the start; set a temperature delta to refocus as the night cools",
   ], "a single target: no visits, no hops, no flip line");
+});
+
+// A single target has no first panel (#413): "once" is a sweep at the start
+// of the target, and the mosaic's wording told the operator about panels the
+// block does not have. framingSections.test.tsx grades the same line on the
+// route's recorded single-target answer (flow_readouts_single.json).
+// MUTANT "single focus as a mosaic's" (runLines: the `mode === "single"`
+// wording of the once line deleted). Observed (scratch copy s5-modal-mut):
+//   x a single target's once-only focus is a sweep at the start; a mosaic's is at the first panel:
+//     a single target: expected "focus: a sweep only at the start; set a temperature delta to
+//     refocus as the night cools", got "focus: a sweep only at the first panel; set a temperature
+//     delta to refocus as the night cools"
+//   (The single target's case above went red with it too.)
+test("a single target's once-only focus is a sweep at the start; a mosaic's is at the first panel", () => {
+  const last = (l: string[]) => l[l.length - 1];
+  const START = "focus: a sweep only at the start; set a temperature delta to refocus as the night cools";
+  const FIRST = "focus: a sweep only at the first panel; set a temperature delta to refocus as the night cools";
+  eq(last(runLines(SINGLE, RIG)), START, "a single target");
+  eq(last(runLines({ ...SINGLE, focus: "frames", autofocus_every: 0 }, RIG)), START, "a single target, frames with no count");
+  // Controls: a mosaic keeps its first panel, and a cadence is a cadence.
+  eq(last(runLines(SEQUENTIAL_3x2, RIG)), FIRST, "a panel-first mosaic");
+  eq(last(runLines({ ...MEASURED_3x2 }, MEASURED_RIG)), FIRST, "a rotating mosaic");
+  eq(last(runLines({ ...SINGLE, focus: "temperature" }, RIG)), "focus: refocus on temperature", "a single target on temperature");
 });
 
 const READOUTS_REL = "../../../../../../server/tests/fixtures/flow_readouts_m31.json";
@@ -1244,6 +1398,93 @@ test("reading localStorage itself may throw, and still lands on the defaults", (
   } finally {
     if (had) Object.defineProperty(g, "localStorage", had); else delete g.localStorage;
   }
+});
+
+// ================================================== run mode (2.6, S5)
+//
+// What run mode draws of the live group, read off the rig's recorded state
+// (server/tests/fixtures/sequence_state_mosaic.json, READ, NOT COPIED; built
+// and graded byte for byte by test_s5_recorded_state.py): a rotating 2x2
+// whose 1-1 is being shot while 2-2 is set aside, and a meridian wait as an
+// operator and as a viewer is served it. The sheet's half, mounted on the
+// store with the progress route's recorded answer, is runMode.test.tsx.
+const STATE_REL = "../../../../../../server/tests/fixtures/sequence_state_mosaic.json";
+function recordedStates(): Record<string, SequenceState> {
+  let text: string;
+  try {
+    text = readFileSync(new URL(STATE_REL, import.meta.url), "utf8") as string;
+  } catch (e) {
+    throw new Error(`cannot read ${STATE_REL}, the rig's recorded state run mode reads: ${(e as Error).message}`);
+  }
+  return (JSON.parse(text) as { states: Record<string, SequenceState> }).states;
+}
+
+// MUTANT "grid unchecked" (runPanelsOf loses its `grid.rows !== rows ||
+// grid.cols !== cols` test, so the live group's labels are drawn on any
+// grid). Observed (scratch copy S5-RUNMODE-mut, 2026-09-28; the reason's em
+// dash is <U+2014>):
+//   x runPanelsOf reads the live group's panels on the grid it runs, and nothing on another: a 3x3
+//     draft over a 2x2 run: expected {}, got {"1-1":{"kind":"shooting"},"2-2":{"kind":"set_aside",
+//     "reason":"centring failed on 2-2 on 3 consecutive visits: plate solve failed <U+2014> used
+//     raw GoTo"}}
+test("runPanelsOf reads the live group's panels on the grid it runs, and nothing on another", () => {
+  const st = recordedStates();
+  const shooting = st.shooting.group!;
+  const reason = shooting.set_aside[0].reason;
+  const g2 = { rows: 2, cols: 2 };
+  eq(runPanelsOf(shooting, 2, 2, g2),
+    { "1-1": { kind: "shooting" }, "2-2": { kind: "set_aside", reason } }, "the recorded run");
+  // The recorded panels, 1-1 and 2-2, sit on the diagonal, where a label read
+  // column first names the same panel. The same group moved on to 1-3 of a
+  // 2x3 (two rows, three columns) does not: there is no row 3. MUTANT "row and
+  // column swapped in runPanelsOf" (each label built as `${c}-${r}`), green
+  // here before this line; observed (scratch copy S5-RUNMODE-verify-mut,
+  // 2026-09-28; the reason's em dash is <U+2014>):
+  //   x runPanelsOf reads the live group's panels on the grid it runs, and nothing on another: a 2x3
+  //     run on 1-3, off the diagonal: expected {"1-3":{"kind":"shooting"},"2-2":{"kind":"set_aside",
+  //     "reason":"centring failed on 2-2 on 3 consecutive visits: plate solve failed <U+2014> used raw
+  //     GoTo"}}, got {"2-2":{"kind":"set_aside","reason":"centring failed on 2-2 on 3 consecutive
+  //     visits: plate solve failed <U+2014> used raw GoTo"}}
+  eq(runPanelsOf({ ...shooting, panel: "1-3" }, 2, 3, { rows: 2, cols: 3 }),
+    { "1-3": { kind: "shooting" }, "2-2": { kind: "set_aside", reason } }, "a 2x3 run on 1-3, off the diagonal");
+  // A meridian wait shoots nothing, for the operator (served the panel) and
+  // the viewer (not served it); the set-aside panel stays for both.
+  for (const who of ["meridian_wait_operator", "meridian_wait_viewer"]) {
+    eq(runPanelsOf(st[who].group, 2, 2, g2), { "2-2": { kind: "set_aside", reason } }, who);
+  }
+  // No group, or a progress block for another grid than the draft's: the
+  // labels name another piece of sky, and nothing is drawn.
+  eq(runPanelsOf(null, 2, 2, g2), {}, "no group");
+  eq(runPanelsOf(shooting, 3, 3, g2), {}, "a 3x3 draft over a 2x2 run");
+  eq(runPanelsOf(shooting, 2, 2, { rows: 2, cols: 3 }), {}, "a progress block for a 2x3");
+  eq(runPanelsOf(shooting, 2, 2, null), {}, "a progress block with no grid (a single target's)");
+});
+
+// MUTANT "done ahead of shooting" (panelDrawState answers DONE before it
+// asks the run, so a panel whose count says complete is never drawn as the
+// panel being shot). Observed (S5-RUNMODE-mut; runMode.test.tsx is red under
+// it too, 2/7, on the recorded 1-1, complete on the progress answer and the
+// panel the group is on):
+//   x panelDrawState: skipped, then set aside, then shooting, then done, then pending: the panel
+//     being shot whose count says complete: expected "shooting", got "done"
+test("panelDrawState: skipped, then set aside, then shooting, then done, then pending", () => {
+  const aside = { kind: "set_aside" as const, reason: "centring failed" };
+  const shot = { kind: "shooting" as const };
+  const open = { skipped: false, banked: 10, total: 80 };
+  const full = { skipped: false, banked: 80, total: 80 };
+  const off = { skipped: true, banked: 80, total: 0 };
+  eq(panelDrawState(off, shot), "skipped", "a skipped panel, whatever the run says");
+  eq(panelDrawState(off, aside), "skipped", "a skipped panel set aside");
+  eq(panelDrawState(full, aside), "set_aside", "a set-aside panel whose count says complete");
+  eq(panelDrawState(open, aside), "set_aside", "a set-aside panel");
+  // The count lags the run by up to a re-read and is never ahead of it, so
+  // a panel both complete and current is still the one the visit is on.
+  eq(panelDrawState(full, shot), "shooting", "the panel being shot whose count says complete");
+  eq(panelDrawState(open, shot), "shooting", "the panel being shot");
+  eq(panelDrawState(full, null), "done", "a complete panel");
+  eq(panelDrawState(open, null), "pending", "a panel still owed subs");
+  eq(panelDrawState({ skipped: false, banked: 0, total: 0 }, undefined), "pending",
+    "a panel the route has no count for");
 });
 
 // ------------------------------------------------------------------- tally

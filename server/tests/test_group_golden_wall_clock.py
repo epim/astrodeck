@@ -79,25 +79,6 @@ def _where(ra: float) -> float:
     return schedule.hours_to_meridian_flip(ra, LON, time.time())
 
 
-def stop_the_status_poll(hub) -> None:
-    """Stop the hub's 2 s status poll and drop its meridian cache (#368).
-
-    The poll runs on REAL time, and its cache, ``hub.last_meridian``, feeds
-    the engine's ``live`` chip (inside ``meridian_flip_warn_min``, 15 min)
-    and the ETA's flip cost (a flip due before the run ends). A night
-    inside either window then publishes a trace that depends on where, in
-    real time, the poll happened to land: the night crossing the meridian
-    below, run twice on fresh hubs at one hour of the wall clock, differed
-    in two tries of three, by a ``live`` key one run published at 10602 s
-    and the other did not. The golden night never enters either window (it
-    ends 34.6 min before its flip point), so its trace does not depend on
-    the poll."""
-    task = hub._status_task
-    if task is not None and not task.done():
-        task.cancel()
-    hub.last_meridian = None
-
-
 async def _run(hub, monkeypatch, plan, t0: float) -> Night:
     night = Night(hub, monkeypatch, t0=t0)
     try:
@@ -142,6 +123,16 @@ async def test_the_golden_night_is_the_same_at_every_hour_of_the_wall_clock(
     stays green on all four. The golden night never nears its flip point,
     so nothing in it acts on the mount's side; the two cases below are the
     ones that see it.
+
+    S5-ENG-SCHED LEFT THE TRACE BYTE FOR BYTE, NOT RE-PINNED (#380, #374,
+    #373). The golden night is one target shot at once, so it never waits
+    and the waiter the scheduler sleeps on (#380) and the skip asked of a
+    waiter (#374) never come into it. Its plan carries two instructions (a
+    relative refocus and an abort on unsafe) that never fire, so every one
+    of its 105 frames goes through `_run_step`'s banking ahead of the
+    instructions (#373, S5 orchestrator ruling 3), and each frame's publish
+    lands where it did: this case and test_group_rotation.py's golden case
+    passed unchanged on all four hours, with the fixture's sha256 as before.
     """
     assert abs(group_hub.sim_rig._guide_epoch_s - time.time()) < 60.0, (
         "premise: the hub was connected under the shifted wall clock")
@@ -161,14 +152,33 @@ async def test_a_night_across_the_meridian_is_the_same_at_every_hour(
     into its 195. The engine holds for the flip point and makes the
     lead-time attempt, which the simulator answers on the same side (it
     takes its side from the hour angle at the goto, as the AM5 does); the
-    retry at the crossing lands inside the 7 s of RA an unsynced goto falls
-    east, and stays west too (#366); the flip-owed hold's re-slew 30 s later
-    takes the east side. The mount's side is read at every step of that, so this
+    one retry waits until `MERIDIAN_SIDE_MARGIN_S` past the crossing and
+    takes the east side, with no flip-owed hold (#366, S5 orchestrator
+    ruling 2; test_flip_retry_margin.py times it). Before #366 the retry
+    fired at the crossing, landed inside the 7 s of RA an unsynced goto
+    falls east, stayed west, and the flip-owed hold's re-slew 30 s later
+    made the flip. The mount's side is read at every step of that, so this
     night shows whether the side follows the night's clock or the wall's.
     Run on a fresh hub at six hours east by the wall clock, and again on
-    another at ``where``, the two traces are the same, flip and all. The
-    hub's real-time status poll is stopped for both (`stop_the_status_poll`).
+    another at ``where``, the two traces are the same, flip and all.
 
+    THE STATUS POLL IS THE HARNESS'S NOW (#368). This case used to stop the
+    hub's real-time status poll and drop its meridian block itself
+    (``stop_the_status_poll``): the poll's ``hub.last_meridian`` feeds the
+    ``live`` chip and the ETA's flip cost, and a poll landing at a real
+    instant made two runs of this night differ in two tries of three. Since
+    S5-SIM `_group_harness.Night` stops the poll for every night, cancels
+    one a connect path restarts, and holds the block itself on the night's
+    clock, so the helper did nothing beside it and is gone. The two traces
+    compared here now carry the harness's held block, the same in both.
+
+    MUTANT "retry at the crossing" (`_flip_retry_past_s` answering 0.0):
+    RED on both, at the new premise (observed), the retry's no-op now a
+    warning and the one completed flip the hold's:
+        AssertionError: premise: the night flips at its first retry, with
+        no flip-owed hold
+        assert (1 == 1 and 'a meridian flip is owed' not in '[0.0,"state
+        ...index":0}]\n'
     MUTANT "sim reads the wall clock, at the device"
     (`SimTelescope._side_for_ra` reading ``hour_angle_h(ra_hours, lon,
     time.time())``, the process's own clock, which the harness does not
@@ -185,7 +195,6 @@ async def test_a_night_across_the_meridian_is_the_same_at_every_hour(
         assert abs(_where(_golden_ra()) - WALL[name]) < 1.0 / 60.0, (
             f"premise: the wall clock puts NGC 7331 at {name}")
         hub, popped = await night_hub(monkeypatch)
-        stop_the_status_poll(hub)
         try:
             night = await _run(hub, monkeypatch, _golden_as_recorded(), T0)
         finally:
@@ -194,6 +203,9 @@ async def test_a_night_across_the_meridian_is_the_same_at_every_hour(
         traces.append(night.trace_text())
     assert "meridian flip complete (pier side west -> east)" in traces[0], (
         "premise: the night flips")
+    assert (traces[0].count("meridian flip complete (pier side") == 1
+            and "a meridian flip is owed" not in traces[0]), (
+        "premise: the night flips at its first retry, with no flip-owed hold")
     assert traces[1] == traces[0], _first_difference(traces[1], traces[0])
 
 

@@ -19,7 +19,9 @@ NOW a refused or failed close re-arms the idle stop's retries on a fresh
 epoch before the pause (`_rearm_idle_stop`), and the pause reads its own
 stop back and, while the mount has not confirmed it, asks again at most once
 per ``IDLE_STOP_RETRY_S``, leaving the asking to an idle stop's task while
-one is alive.
+one is alive. Since #393 a close that an Abort cuts short re-arms them as
+well, for the Abort to complete (test_abort_in_reopen_close_completes_stop.py,
+which drives this file's `_Pause`).
 
 THE HARNESS is test_idle_park_hold's clocked simulator with no run. The
 idle stop is decided on the engine (`_idle_park_hold`); the unsafe verdict

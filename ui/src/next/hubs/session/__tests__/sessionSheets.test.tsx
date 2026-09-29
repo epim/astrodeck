@@ -132,15 +132,31 @@ test("session/sheets.ts does not exist - it would shadow session/sheets/", () =>
     "precondition: the registry this test is about is where it says it is");
 });
 
-// ====================================================== 2. the eleven names
+// ====================================================== 2. the twelve names
 
-test("the registry holds exactly the SESSION hub's eleven sheets", () => {
+test("the registry holds exactly the SESSION hub's twelve sheets", () => {
   const names = Object.keys(sheets).sort();
-  // Six of the eleven arrived with wave R7's Flows cutover (T-R7-20), and the
-  // seventh flows name, flowFrame (the Target modal), with #189 S4 - each from
-  // its own area's `flow*Sheets` export rather than from an edit to the
-  // registry file - which is why a lost half is a compile error here and not a
-  // name that is quietly absent from the map.
+  // Six of the twelve arrived with wave R7's Flows cutover (T-R7-20), the
+  // seventh flows name, flowFrame (the Target modal), with #189 S4, and the
+  // eighth, flowWizard (Send to Flow Wizard), with #196 S6 - each from its own
+  // area's `flow*Sheets` export rather than from an edit to the registry file
+  // - which is why a lost half is a compile error here and not a name that is
+  // quietly absent from the map.
+  //
+  // DELIBERATE PIN CHANGE (#196 S6, spec D13; re-pinned by the S5/S6
+  // integration, S56-INTEG): `wizard/reg.ts` registers flowWizard, the #/next
+  // door to the shared Send to Flow Wizard sheet, so the pinned list gained
+  // it and the title says twelve. The old pin, run against this tree,
+  // observed:
+  //   expected archive,files,flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report
+  //   got      archive,files,flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,flowWizard,planEditor,report
+  // Mutant "flowWizard not registered" (sheets/index.ts's `flowWizardSheets`
+  // import and its spread both removed, so the file still compiles), observed
+  // in the private copy scratchpad S56-INTEG-mut (5/7, the count below too):
+  //   x the registry holds exactly the SESSION hub's twelve sheets: one name
+  //   missing here is one screen the router cannot reach
+  //   expected archive,files,flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,flowWizard,planEditor,report
+  //   got      archive,files,flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report
   //
   // DELIBERATE PIN CHANGE (#189 S4, spec 2.1; re-pinned by the S4 integration,
   // #400): `framing/reg.ts` registers flowFrame, the #/next door to the
@@ -152,7 +168,7 @@ test("the registry holds exactly the SESSION hub's eleven sheets", () => {
   //   expected archive,files,flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report
   //   got      archive,files,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report
   eq(names.join(","),
-    "archive,files,flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report",
+    "archive,files,flowFrame,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,flowWizard,planEditor,report",
     "one name missing here is one screen the router cannot reach");
 });
 
@@ -196,7 +212,26 @@ test("the registry imports component-free modules, not the flows area barrels", 
   //   barrels: the registry statically imports "../flows/framing", an area
   //   barrel: that pulls the whole area - components, models and its
   //   stylesheet - into the entry chunk to register a name. ...
-  eq(specs.length, 5, "the five flows areas each publish one registry export; found");
+  //
+  // DELIBERATE PIN CHANGE (#196 S6; re-pinned by the S5/S6 integration,
+  // S56-INTEG): the wizard area is the sixth, imported through its
+  // component-free `wizard/reg` module, so the count is 6. The old pin, run
+  // against this tree, observed "expected 5 / got 6". Mutant "flowWizard not
+  // registered" (above) turns the count red too, observed (5/7):
+  //   x the registry imports component-free modules, not the flows area
+  //   barrels: the six flows areas each publish one registry export; found
+  //   expected 6
+  //   got      5
+  // and mutant "flowWizard registered through the area barrel" (sheets/
+  // index.ts importing `flowWizardSheets` from "../flows/wizard", the barrel
+  // that also exports the sheet component, instead of "../flows/wizard/reg"),
+  // observed (6/7):
+  //   x the registry imports component-free modules, not the flows area
+  //   barrels: the registry statically imports "../flows/wizard", an area
+  //   barrel: that pulls the whole area - components, models and its
+  //   stylesheet - into the entry chunk to register a name. Import the area's
+  //   component-free reg module instead.
+  eq(specs.length, 6, "the six flows areas each publish one registry export; found");
   for (const spec of specs) {
     assert(/\/(reg|sheets)$/.test(spec),
       `the registry statically imports "${spec}", an area barrel: that pulls the whole `

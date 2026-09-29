@@ -47,7 +47,7 @@ import {
   flowFooterLine,
 } from "./quickCopy";
 import {
-  doctorChip, issuesLine, laneCards, parseMosaicParam, ruleRows, withMosaicCard,
+  doctorChip, issuesLine, laneCards, ruleRows,
 } from "./flowLane";
 
 export function FlowCardSheet({ params }: SheetProps): JSX.Element {
@@ -78,23 +78,13 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
     void flowsOpen(id);
   }, [id, record?.id, flowsOpen]);
 
-  /**
-   * The synthetic MOSAIC row describes what THIS generate queued.
-   *
-   * It used to be drawn off the GLOBAL `store.framing` slice, which is one
-   * shared session: a framing kept for M31 put a "MOSAIC 2×2 · 4 panels" card
-   * on a flow generated for M42, and a framing changed after the fact rewrote
-   * the card under a night that had already been saved (review #3). The quick
-   * sheet now names the grid it actually sent in the hash, and a deep link that
-   * carries no `mosaic` gets no card - which is the honest answer, because a
-   * link is not evidence that anything was queued.
-   */
-  const mosaicParam = params.mosaic ?? "";
-  const mosaic = useMemo(() => parseMosaicParam(mosaicParam), [mosaicParam]);
-  const cards = useMemo(() => {
-    const lane = laneCards(graph);
-    return mosaic ? withMosaicCard(lane, mosaic.cols, mosaic.rows) : lane;
-  }, [graph, mosaic]);
+  // The lane is the saved graph's and nothing else. The synthetic MOSAIC row
+  // stood for panels the quick sheet queued as Plan targets beside the flow,
+  // named by a `mosaic` hash param; that side channel went in S6 (#196), and
+  // the S5/S6 integration dropped the row's call and the param (#461). A
+  // mosaic is the flow's own TARGET block, whose card the lane draws. A link
+  // from before S6 may still carry `mosaic`; it is not read.
+  const cards = useMemo(() => laneCards(graph), [graph]);
   const rules = useMemo(() => ruleRows(graph), [graph]);
 
   const chip = doctorChip(compiled, compiling);
@@ -248,9 +238,6 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
                           {c.sum}
                         </span>
                       </Mono>
-                      {c.footnote && (
-                        <Mono size={10} tone="warn">{c.footnote}</Mono>
-                      )}
                     </span>
                     <span aria-hidden="true" style={{ width: 10, height: 2, background: "var(--text-3, #7683a5)", flexShrink: 0 }} />
                   </div>

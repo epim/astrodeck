@@ -42,7 +42,9 @@ here is a number an operator acts on:
   ``to_plan`` minted it with (``identity.group_id`` over ``_block_key``), and
   the panels are the plan targets whose ``mosaic_group`` is that id, never
   the targets whose names look like the block's: two blocks may share a
-  name, and a panel's name is only its label.
+  name, and a panel's name is only its label. The block names that group
+  (``group_id``, S5), which is how the run-mode sheet matches the group a
+  run publishes to the block it draws.
 * A LOCKED ANGLE IS SHOWN WHERE IT CAME FROM (Revision 2, owner ruling 9).
   An unframed TARGET takes the position angle its first plate solve
   measured, and from then on every run commands it, so the flow editor must
@@ -122,14 +124,22 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
     panel per member, in rank order, with row and col null: a pool is a list
     of candidates, not a grid. A panel whose entry ``to_plan`` dropped has
     ``target_id`` null and no steps, so it owes nothing, which is what the plan
-    will shoot for it. ``nights`` is how many nights the session has run.
+    will shoot for it. ``nights`` is how many RUNS the session has had, one
+    report id per engine start, so a restart the same night counts again
+    (#430); it is the nights run only while no night held a restart.
 
     A MOSAIC (a TARGET block with a grid, S3) has one panel per panel the
     plan shoots, in the plan's order, each at its own 0-based ``row`` and
-    ``col``, and the block adds two keys no other block carries::
+    ``col``, and the block adds three keys no other block carries::
 
         grid: {rows, cols},
-        skipped: [{target_id, name, row, col, banked}]
+        skipped: [{target_id, name, row, col, banked}],
+        group_id: str | null
+
+    ``group_id`` (S5) is the id of the plan group that shoots the block's
+    panels, the ``state.group.id`` a run publishes while it shoots them, or
+    null when the plan holds no group for the block (every panel skipped,
+    or no coordinates).
 
     ``skipped`` lists, in grid order, the panels the operator skipped
     (``TargetGroup.skipped_ids``, or the plan's own ``skipped_ids`` for a
@@ -406,9 +416,15 @@ def _mosaic(plan: "SequencePlan", entry: dict, counts: dict[str, int],
     gid, group = _group(plan, entry, flow_id=flow_id, node_id=node_id)
     rows = int(entry["mosaic"].get("rows") or 1)
     cols = int(entry["mosaic"].get("cols") or 1)
+    # THE PLAN GROUP'S OWN ID (S5, spec 2.6, 5.10): what the run publishes as
+    # ``state.group.id`` while it shoots this block, so the run-mode sheet
+    # finds its block by it. The group's, never the recomputed id alone: a
+    # block whose every panel is skipped has no group, no run will ever
+    # publish that id, and null says so.
     block: dict = {"node_id": node_id, "name": name, "kind": "target",
                    "banked": 0, "owed": 0, "total": 0, "panels": [],
-                   "grid": {"rows": rows, "cols": cols}}
+                   "grid": {"rows": rows, "cols": cols},
+                   "group_id": group.id if group is not None else None}
     for target in plan.targets:
         if group is None or target.mosaic_group != group.id:
             continue

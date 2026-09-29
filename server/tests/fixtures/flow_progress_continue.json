@@ -1,0 +1,316 @@
+{
+ "about": "GET /api/flows/example-m31-mosaic/progress: the eighth Example with a dormant session of two runs on two nights, 1-1 finished and the other panels part-way, counted in accepted mode. Built and graded byte for byte by server/tests/test_s5_recorded_state.py, which also presses CONTINUE and checks its night is nights + 1. Read, never copied, by ui/src/components/flows/__tests__/flowRunState.test.ts. Never hand-edit it.",
+ "response": {
+  "flow_id": "example-m31-mosaic",
+  "session": {
+   "id": "319caf668a27569db2239f9e8fa83396",
+   "status": "dormant",
+   "nights": 2,
+   "count_mode": "accepted"
+  },
+  "blocks": [
+   {
+    "node_id": "n2",
+    "name": "M31",
+    "kind": "target",
+    "banked": 194,
+    "owed": 286,
+    "total": 480,
+    "panels": [
+     {
+      "target_id": "36921f30fdb75e8c990d5e1597973c3c",
+      "name": "M31 1-1",
+      "row": 0,
+      "col": 0,
+      "banked": 80,
+      "owed": 0,
+      "total": 80,
+      "steps": [
+       {
+        "step_id": "52a36b650c3d5c37aff1658abf62bdb1",
+        "filter": "L",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 20,
+        "owed": 0
+       },
+       {
+        "step_id": "2538e658f286599fa8e30b32ad5df190",
+        "filter": "R",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 20,
+        "owed": 0
+       },
+       {
+        "step_id": "820400c14a1b514397b46c14c72c3b5d",
+        "filter": "G",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 20,
+        "owed": 0
+       },
+       {
+        "step_id": "068af310d0fa5e20902b7b04ac5abdea",
+        "filter": "B",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 20,
+        "owed": 0
+       }
+      ]
+     },
+     {
+      "target_id": "e3450110158d5bed8a042afd6fea667f",
+      "name": "M31 1-2",
+      "row": 0,
+      "col": 1,
+      "banked": 25,
+      "owed": 55,
+      "total": 80,
+      "steps": [
+       {
+        "step_id": "0b4304046ce55450a6757bda91c24513",
+        "filter": "L",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 7,
+        "owed": 13
+       },
+       {
+        "step_id": "398dd4c51c515e24aceb1b2aba33acdc",
+        "filter": "R",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "287fbb4c517955209e8e2df15547626f",
+        "filter": "G",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "e5a5a5810efe5b6bb21364c1066beb0e",
+        "filter": "B",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       }
+      ]
+     },
+     {
+      "target_id": "2120cdfb26685677b09c2e4dcabbe849",
+      "name": "M31 1-3",
+      "row": 0,
+      "col": 2,
+      "banked": 24,
+      "owed": 56,
+      "total": 80,
+      "steps": [
+       {
+        "step_id": "2f14e001beec56ac84b37d0696fbe0a5",
+        "filter": "L",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "43e6e606fd485885a58104cc0f58b252",
+        "filter": "R",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "7c029ed6137350e7a986e08eaeabb292",
+        "filter": "G",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "a58a752ffda15b28a64643e4e6220778",
+        "filter": "B",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       }
+      ]
+     },
+     {
+      "target_id": "fbad61f195425cbba4baa64e789df90f",
+      "name": "M31 2-3",
+      "row": 1,
+      "col": 2,
+      "banked": 23,
+      "owed": 57,
+      "total": 80,
+      "steps": [
+       {
+        "step_id": "cdb8c1a250475fbd96254dbcbe8c840d",
+        "filter": "L",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "1da8ea6a799d518198bc955140e97a29",
+        "filter": "R",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "61fc749f81ca5a66a376e514caf8795b",
+        "filter": "G",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "235bbc84d1405f8a9b67f2c79fb35e92",
+        "filter": "B",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 5,
+        "owed": 15
+       }
+      ]
+     },
+     {
+      "target_id": "a13f560ad11c59298e0d6d1ed96930db",
+      "name": "M31 2-2",
+      "row": 1,
+      "col": 1,
+      "banked": 22,
+      "owed": 58,
+      "total": 80,
+      "steps": [
+       {
+        "step_id": "77171a7f100b5bc4adcdba896c20f654",
+        "filter": "L",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "11554995a5d55290a6e765d6975d0db4",
+        "filter": "R",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 6,
+        "owed": 14
+       },
+       {
+        "step_id": "be68a9c3f5b859a28ac692abb208a1a4",
+        "filter": "G",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 5,
+        "owed": 15
+       },
+       {
+        "step_id": "1a44dd2940a152c5b81d1ddb28090a37",
+        "filter": "B",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 5,
+        "owed": 15
+       }
+      ]
+     },
+     {
+      "target_id": "6075e94cf95e5b4eb640e9b13dfd59df",
+      "name": "M31 2-1",
+      "row": 1,
+      "col": 0,
+      "banked": 20,
+      "owed": 60,
+      "total": 80,
+      "steps": [
+       {
+        "step_id": "522dec83c4e15406beed607dcb5daadc",
+        "filter": "L",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 5,
+        "owed": 15
+       },
+       {
+        "step_id": "a0c7e5bc5bd355a6a1cb61ff07d85d7a",
+        "filter": "R",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 5,
+        "owed": 15
+       },
+       {
+        "step_id": "8019f68f0e5d5a868ed071698b431e5d",
+        "filter": "G",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 5,
+        "owed": 15
+       },
+       {
+        "step_id": "5b4e4c884da858e99822deec1cafa4c5",
+        "filter": "B",
+        "frame_type": "Light",
+        "exposure_s": 120.0,
+        "count": 20,
+        "banked": 5,
+        "owed": 15
+       }
+      ]
+     }
+    ],
+    "grid": {
+     "rows": 2,
+     "cols": 3
+    },
+    "group_id": "f3d3a03608665b10a7c7bfd51ea164c3",
+    "skipped": []
+   }
+  ],
+  "orphaned": {
+   "frames": 0,
+   "steps": 0
+  }
+ }
+}

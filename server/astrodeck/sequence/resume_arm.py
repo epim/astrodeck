@@ -108,6 +108,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from typing import NamedTuple
 
 from ..config import config_store
 from ..devices.base import GotoRefused
@@ -163,6 +164,12 @@ RESUME_GIVE_UP_AFTER = 3
 #: Exposure for the post-restart blind solve. Deliberately longer than
 #: solve_and_sync's 3 s default -- see the call site for the measurement.
 RECOVERY_SOLVE_EXPOSURE_S = 12.0
+
+#: Binning of the recovery ladder's autofocus frames. Passed to the sweep
+#: rather than left to ``run_native_autofocus``'s own default (the same 2), so
+#: the number the sweep ran at and the number its record names cannot differ
+#: (#402): the run that stands on the sweep logs it.
+RECOVERY_AF_BINNING = 2
 
 #: The words ``recovery`` reports for the ladder's current step, in ladder
 #: order (#220). "starting" covers the moment between the tick raising
@@ -630,6 +637,26 @@ def commanded_rotation(session: Session, target: Target) -> float | None:
     return float(pa)
 
 
+class _LadderSweep(NamedTuple):
+    """The recovery ladder's last successful autofocus (#402), as the
+    ladder keeps it: made on the night ``night`` (``events.night_key`` of
+    the ladder's clock) at ``at`` on that clock, leaving the drawtube at
+    ``position`` with the focuser reading ``temp_c``, its frames binned
+    ``binning``. Held on the ResumeArm only, never written (see
+    ``_recovery_sweep``).
+
+    NOT KEYED TO A SESSION. A sweep is a fact about the focuser, and the
+    session the ladder happened to be recovering has no say in where the
+    drawtube is: a record handed to a start of another session is the
+    same focus."""
+
+    night: str
+    at: float
+    position: int | None
+    temp_c: float | None
+    binning: int
+
+
 class ResumeArm:
     def __init__(self, engine, hub, *, clock=None, weather=None):
         self.engine = engine
@@ -738,6 +765,20 @@ class ResumeArm:
         #: always answers for the last refusal, which is what the window's
         #: close reads to choose its line.
         self._held_nothing_tonight: str | None = None
+        #: THE LADDER'S LAST GOOD SWEEP, IN PROCESS MEMORY AND NOWHERE ELSE
+        #: (#402). ``_recover`` sets it when its autofocus succeeds, clears
+        #: it when one fails, and drops it at its focus step once the
+        #: focuser no longer reads the position the sweep left; ``tick``
+        #: hands it to the next start it makes on the night it was made, as
+        #: ``engine.start``'s ``focus_sweep`` (``_sweep_for_start``), and
+        #: clears it once a start has taken it. Kept across ticks on
+        #: purpose: a ladder that sweeps and then refuses at the solve does
+        #: not sweep again ten minutes later (the fingerprint vouches for the
+        #: position), and the run the later ladder starts stands on this
+        #: sweep. Not on disk, because a sweep is tonight's fact about this
+        #: focuser: a later night or another process has no business finding
+        #: it (learned facts belong in process memory).
+        self._recovery_sweep: _LadderSweep | None = None
 
     @property
     def recovering(self) -> bool:
@@ -1427,6 +1468,12 @@ class ResumeArm:
             name_warning = duplicate_name_warning(fresh.plan)
             if name_warning:
                 bus.log("warning", name_warning, "sequence")
+            # THE LADDER'S SWEEP GOES WITH THE START (#402), when it made one
+            # tonight that found focus: the run's first acquisition then
+            # sweeps again only under the hop rule. Passed only when there
+            # is one, so a start with none is today's call exactly.
+            sweep = self._sweep_for_start()
+            handed = {"focus_sweep": sweep} if sweep is not None else {}
             try:
                 self.hub.require("camera")
                 # A resume is a NEW run and re-reads the standing setpoint,
@@ -1442,7 +1489,11 @@ class ResumeArm:
                 # a target up (#202). See ``_tracking_for``.
                 self.engine.start(replan_cooling(
                     fresh.plan, config_store.cfg().cooling.setpoint_c),
-                    session=fresh, tracking=self._tracking_for(fresh))
+                    session=fresh, tracking=self._tracking_for(fresh),
+                    **handed)
+                # Taken: a later start of this process is not stood on it.
+                if handed:
+                    self._recovery_sweep = None
             except Exception as e:          # noqa: BLE001 — refusal, not a crash
                 bus.log("warning", f"auto-resume refused: {e} — retrying in "
                                    f"{int(RETRY_INTERVAL_S / 60)} min",
@@ -1678,6 +1729,15 @@ class ResumeArm:
             pos = await foc.get_position()
         except Exception:  # noqa: BLE001 — no focuser is not a refusal
             pos = None
+        # A KEPT SWEEP IS THE FOCUS ONLY WHILE THE DRAWTUBE STANDS WHERE IT
+        # LEFT IT (#402). Between two ladders a run may have come and gone,
+        # its own sweeps moving the focuser, and a sweep from before it
+        # handed to the next start would reuse a focus the drawtube has
+        # left. A position nobody can read, then or now, vouches for nothing.
+        kept = self._recovery_sweep
+        if kept is not None and (pos is None or kept.position is None
+                                 or int(pos) != kept.position):
+            self._recovery_sweep = None
         if pos is not None and not _fp.verdict(focuser_position=pos).focus_trusted:
             # SAME CONFIGURATION-VERSUS-CONDITIONS SPLIT AS THE SOLVER BELOW, and
             # it was missing here until CI found it. A rig with no autofocus
@@ -1707,9 +1767,14 @@ class ResumeArm:
                                 "running autofocus before resuming", "sequence")
                 self._ladder_step = "autofocus"
                 try:
-                    await self._autofocus()
+                    result = await self._autofocus()
                 except Exception as e:  # noqa: BLE001
+                    self._recovery_sweep = None
                     return f"autofocus after restart failed: {e}"
+                # THE RUN STANDS ON THIS SWEEP IF IT FOUND FOCUS (#402), so
+                # the run's first acquisition does not sweep the same focuser
+                # again two minutes later. Kept in memory for ``tick``.
+                await self._note_recovery_sweep(foc, result)
                 # An autofocus is the MEASUREMENT the fingerprint could not
                 # make, so record where it left the drawtube. Without this the
                 # next step's refusal (cloud, no solve) sends the whole ladder
@@ -1770,8 +1835,14 @@ class ResumeArm:
                 # dropping it forces a true all-sky search that failed outright
                 # on a sparse field. Bounded-and-generous beats blind.
                 self._ladder_step = "solve"
-                await self.hub.solve_and_sync(
-                    exposure_s=RECOVERY_SOLVE_EXPOSURE_S)
+                mark = self._solve_mark()
+                try:
+                    await self.hub.solve_and_sync(
+                        exposure_s=RECOVERY_SOLVE_EXPOSURE_S)
+                finally:
+                    # Solved or not: a failed solve is the one whose timing
+                    # is wanted (#402).
+                    self._say_solve_timing(mark, "the blind solve")
             except NoLightError as e:
                 # THE CAMERA IS IN THE DARK (#251), which is not the cloud
                 # the words below describe. ``tick`` alerts once and backs
@@ -1960,12 +2031,20 @@ class ResumeArm:
             # is today's, with no keyword at all, so a rig with no rotator
             # and a plan with no angle see nothing new.
             rotation = commanded_rotation(session, tgt)
+            mark = self._solve_mark()
             try:
-                if rotation is None:
-                    await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg)
-                else:
-                    await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg,
-                                                   rotation_deg=rotation)
+                try:
+                    if rotation is None:
+                        await self.hub.goto_and_center(tgt.ra_hours,
+                                                       tgt.dec_deg)
+                    else:
+                        await self.hub.goto_and_center(tgt.ra_hours,
+                                                       tgt.dec_deg,
+                                                       rotation_deg=rotation)
+                finally:
+                    # Each centring solve's exposure against its GoTo's
+                    # settle (#402), however the re-centre ended.
+                    self._say_solve_timing(mark, "the re-centre")
             except GotoRefused as e:
                 # THE MOUNT SAID NO, which is a different thing from the slew
                 # failing, and the operator can act on the difference: a
@@ -2080,8 +2159,109 @@ class ResumeArm:
         except Exception:  # noqa: BLE001
             return False
 
-    async def _autofocus(self) -> None:
-        """The rig's real autofocus path (native), not the legacy numpy one."""
+    async def _autofocus(self):
+        """The rig's real autofocus path (native), not the legacy numpy one.
+
+        Returns the sweep's result: ``run_native_autofocus`` answers a sweep
+        that found no focus with ``success`` False rather than raising, and
+        only a sweep that found focus may stand in for the run's own (#402,
+        ``_note_recovery_sweep``). The binning is passed, not defaulted, so
+        the record names the binning the frames were taken at."""
         from ..focus.native import run_native_autofocus
-        await run_native_autofocus(self.hub.require("camera"),
-                                   self.hub.require("focuser"))
+        return await run_native_autofocus(self.hub.require("camera"),
+                                          self.hub.require("focuser"),
+                                          binning=RECOVERY_AF_BINNING)
+
+    async def _note_recovery_sweep(self, foc, result) -> None:
+        """Keep the sweep ``_autofocus`` just made as ``_recovery_sweep``
+        when it found focus, and drop any earlier one when it did not (#402).
+
+        ONLY A SWEEP THAT FOUND FOCUS COUNTS. A failed native sweep puts the
+        drawtube back where it started, which after a restart is the
+        position the focuser forgot, so standing the run on it would skip
+        the one sweep that could still find focus tonight. So a result that
+        does not say ``success`` True is no record at all, and neither is a
+        result that is not a result (a test's stub, which returns None).
+        The position and temperature are read now, as the sweep ended; a
+        read that fails leaves its field None and keeps the record."""
+        if getattr(result, "success", None) is not True:
+            self._recovery_sweep = None
+            if result is not None:
+                bus.log("warning",
+                        f"the autofocus after the restart did not find focus "
+                        f"({getattr(result, 'message', '') or 'no reason given'})"
+                        f"; the run will not count it as tonight's sweep",
+                        "sequence")
+            return
+        position: int | None = None
+        temp_c: float | None = None
+        try:
+            position = int(await foc.get_position())
+        except Exception:  # noqa: BLE001 — a field the record can do without
+            position = None
+        try:
+            t = await foc.get_temperature()
+            temp_c = float(t) if t is not None else None
+        except Exception:  # noqa: BLE001
+            temp_c = None
+        at = self._clock()
+        self._recovery_sweep = _LadderSweep(
+            night=night_key(at), at=at, position=position, temp_c=temp_c,
+            binning=RECOVERY_AF_BINNING)
+
+    def _sweep_for_start(self):
+        """The ladder's sweep as ``engine.start``'s ``focus_sweep``, or None
+        when there is none for tonight (#402).
+
+        TONIGHT'S ONLY, by the ladder's own clock: a sweep kept across a
+        night of refused retries is not the focus of the next evening, so a
+        record from another night is dropped here rather than handed over.
+        The age goes over, not the time, so the engine never compares this
+        clock with its own."""
+        rec = self._recovery_sweep
+        if rec is None:
+            return None
+        now = self._clock()
+        if rec.night != night_key(now):
+            self._recovery_sweep = None
+            return None
+        from .engine import RecoverySweep
+        return RecoverySweep(position=rec.position, temp_c=rec.temp_c,
+                             binning=rec.binning,
+                             age_s=max(0.0, float(now - rec.at)))
+
+    def _solve_mark(self) -> int:
+        """The hub's plate-solve count now, so ``_say_solve_timing`` can say
+        which solves a ladder step made (#402). 0 for a hub that keeps no
+        count (a test's stub)."""
+        seq = getattr(self.hub, "solve_seq", 0)
+        return seq if isinstance(seq, int) else 0
+
+    def _say_solve_timing(self, mark: int, what: str) -> None:
+        """Log, for every plate solve the hub made since ``mark``, when its
+        exposure started against the GoTo it followed (#402).
+
+        THE LINE THE 2026-09-27 LADDER DID NOT HAVE. Its centring solve,
+        seconds after a blind solve of the same sky had worked, failed with
+        no solution, once, and nothing could say whether the shutter opened
+        while the mount was still settling from the GoTo. Each solve's line
+        now says it, so a recurrence explains itself. ``what`` names the
+        step: the blind solve, or the re-centre, whose attempts are counted.
+        Never raises: it is a log line."""
+        try:
+            recs = [r for r in getattr(self.hub, "solve_exposures", ())
+                    if isinstance(r, dict) and int(r.get("seq", 0)) > mark]
+            for n, rec in enumerate(recs, start=1):
+                which = (what if len(recs) == 1
+                         else f"{what}, solve {n} of {len(recs)}")
+                exposed, settled = rec.get("exposed_at"), rec.get("settled_at")
+                if settled is None:
+                    when = ("with no GoTo made since the server started, so "
+                            "none was settling")
+                else:
+                    when = (f"{float(exposed) - float(settled):.1f} s after "
+                            f"the last GoTo came to rest")
+                bus.log("info", f"auto-resume: {which}: the exposure started "
+                                f"{when}", "sequence")
+        except Exception:  # noqa: BLE001 — a log line, never a refusal
+            return

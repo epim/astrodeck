@@ -1,204 +1,85 @@
-// mosaicCopyPanelFirst.test.ts - every sentence the Sky hub says about the ORDER
-// a mosaic's panels are shot in, pinned to what the engine does today (#154,
-// spec I-08, Revision 2 ruling 4).
+// mosaicCopyPanelFirst.test.ts - every sentence the Sky hub says about where a
+// framed mosaic GOES, after S6 converged the doors on Send to Flow Wizard
+// (#196, #154's door half; spec 2026-09-23 flows mosaic, section 8 S6,
+// Revision 2 ruling 4, 2.4's one overlap).
 //
 //   Run directly:  node --import ./test-css-stub.mjs --import tsx src/next/hubs/sky/__tests__/mosaicCopyPanelFirst.test.ts
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
 //
-// WHAT HAPPENS TODAY. GENERATE FLOW saves a flow for the framing centre and
-// queues the panels as classic Plan targets sharing one `mosaic_group`
-// (`quick.tsx`, `addTargetsToPlan`). A `mosaic_group` with no `groups` entry is
-// scheduled like any other target: `_run_scheduled` runs `_setup_target` and then
-// `_run_steps` to completion, and only then removes it and picks the next. So the
-// panels are shot one at a time, each to completion, and a night cut short
-// leaves the last panels short.
+// THIS FILE REPLACES ITS OWN PREDECESSOR (the acceptance says so), which held
+// the Sky's mosaic strings to "panel-first": until S6 a Sky mosaic reached the
+// night through the quick sheet's Plan side channel, as classic Plan targets
+// sharing one `mosaic_group`, each shot to completion before the next, beside
+// a flow saved for the framing centre alone. S6 deleted that channel, the
+// synthetic MOSAIC lane card, its footnote and the split note. The strings that
+// remain describe the door that exists: SEND TO FLOW WIZARD, which writes one
+// TARGET block into a flow.
 //
-// WHAT THE COPY USED TO SAY. Four places promised the opposite - that the panels
-// "cycle every pass", that the engine "shoots a pass at each panel in turn", so
-// "a clouded-out night still leaves every panel with data". Nothing kept that
-// claim; it is the class "a claim nothing keeps". The rotating order is real in
-// the mosaic build (the TARGET block's loop wire compiles to `mode = "rotate"`),
-// and it reaches the Sky through S6's "Send to Flow Wizard" (#196), which retires
-// the Plan door these strings describe. Until then the strings describe
-// panel-first, and S6 deletes them with the door rather than relaxing this test.
+// WHAT IS PINNED, and why a scanner rather than verbatim strings:
 //
-// THE BEHAVIOUR THIS PINS TO is T10's engine test "a mosaic_group with no group
-// stays panel-first" (S2 in the spec, section 8). While that test holds, a
-// sentence here that promises cycling is a promise the engine breaks; if that
-// test ever changes, so must these strings and this file.
+//   1. NO STRING NAMES THE RETIRED DOOR. The Plan side channel's words ("plan
+//      targets", "to the Plan", "mosaic group", "queues ... panels") are run
+//      over every mosaic string the Sky says, so a new sentence that
+//      re-describes the side channel is caught without being listed here.
+//   2. NO STRING PROMISES AN ORDER. Neither panel-first (the retired door's
+//      order) nor a fixed rotation (#154's original false promise) is what a
+//      wizard's TARGET block does: the engine picks each visit from what the
+//      panels have banked. The acceptance deletes FramingCard's order sentence;
+//      this keeps any from coming back.
+//   3. EACH STRING NAMES THE DOOR, in the wizard's own title (SEND_TO_WIZARD),
+//      and carries its facts (the count, the grid, the overlap).
+//   4. ONE OVERLAP (spec 2.4): the Sky's constant is `DEFAULT_OVERLAP` itself,
+//      and every default this hub computes with reads it. The 0.15 correction
+//      is gone.
 //
-// WHY A SCANNER AND NOT VERBATIM STRINGS. The negative half is a list of the
-// promise's own words, run over every mosaic string the Sky says, so a new
-// sentence that re-promises cycling is caught without anyone having to add it
-// here. The scanner is checked against the pre-#154 strings themselves (the
-// known positives stay positive), so it cannot pass by matching nothing. The
-// positive half pins the four facts each sentence must carry.
+// Both scanners are checked against the pre-S6 strings verbatim (the known
+// positives stay positive), so neither can pass by matching nothing, and
+// against an honest sentence (the control), so neither passes by matching
+// everything.
 //
-// THE TOAST TOO (#275). SkyHub.tsx's "Framing kept" toast used to be written
-// inline in a callback and end "as plan targets, one pass each", which is the
-// same broken promise in other words. It is `quickCopy.framingKeptDetail` now,
-// held to both halves like the others, "one pass each" is one of PROMISES, and
-// SkyHub.tsx is read as source only to check that the toast shows that
-// function's words and says nothing of its own about the panels. The S2 review
-// moved it there (spec S2 item 8: "the Sky copy is corrected to describe
-// panel-first behaviour").
+// MUTATION RECORD, 2026-09-28, each run in a private scratch copy of ui/
+// (scratchpad/S6-DOORS-mut in the session scratchpad, never the shared tree,
+// #254). Output verbatim; a quoted sentence is cut at "[...]" where it runs on.
 //
-// MUTATION RECORD, 2026-09-25, each run in a private scratch copy of ui/ (never
-// the shared tree) and restored byte-for-byte after. Output verbatim; a quoted
-// sentence is cut at "[...]" where it runs on.
+//   MUTANT "mosaic.ts keeps 0.15" (the acceptance's named mutant: mosaic.ts's
+//   `export { DEFAULT_OVERLAP as OVERLAP }` back to `export const OVERLAP =
+//   0.15;`, and framingMeta's and panelRects's defaults back to `OVERLAP`).
+//   Observed ("mosaicCopyPanelFirst.test: 10/12 passed"):
+//     x the Sky's overlap is DEFAULT_OVERLAP itself, and the server's number: mosaic.ts's OVERLAP is not DEFAULT_OVERLAP: expected 0.25, got 0.15
+//     x every overlap default this hub computes with reads DEFAULT_OVERLAP: framingMeta's default overlap: expected 2 panels · 2.9° × 1.1° · rot 30°, got 2 panels · 3.1° × 1.1° · rot 30°
+//   (also red in server/tests/test_overlap_constant_one.py, recorded there).
 //
-//   M1 "restore FRAMING_NOTE's 'cycles panels every pass'" - the pre-#154
-//   constant put back in `FramingCard.tsx`:
-//     mosaicCopyPanelFirst.test: 11/13 passed
-//       x FRAMING_NOTE promises no cycling: FRAMING_NOTE promises cycling the
-//         panels, "every pass", "in turn", every panel left with data, which the
-//         engine does not keep - a Plan mosaic_group is shot panel-first: "Drag
-//         the sky to shift the frame, turn the dial to rotate the camera. DONE
-//         keeps the framing: it stays on the sky and goes into the flow. Panels
-//         overlap 15%; the flow centres on each panel in turn and cycles panels
-//         every pass, so a clouded-out night still leaves every panel with data.
-//         The dashed outline is the object's catalogued extent."
-//       x FRAMING_NOTE says the panels go to the Plan and are shot panel-first:
-//         FRAMING_NOTE does not say the panels go to the Plan: "Drag the sky
-//         [...]"
+//   MUTANT "fov.mosaicPitch keeps the README's 0.15" (fov.ts default). Observed
+//   ("mosaicCopyPanelFirst.test: 11/12 passed"):
+//     x every overlap default this hub computes with reads DEFAULT_OVERLAP: fov.mosaicPitch's default: expected 1.5 +/- 1e-12, got 1.7
 //
-//   M2 "restore mosaicPlanNote's 'a pass at each panel in turn'":
-//     mosaicCopyPanelFirst.test: 11/13 passed
-//       x mosaicPlanNote promises no cycling, at every grid the picker offers:
-//         mosaicPlanNote(2, 2, 1) promises "in turn", a pass at each panel, every
-//         panel left with data, which the engine does not keep [...]
-//       x mosaicPlanNote says the panels go to the Plan and are shot
-//         panel-first: mosaicPlanNote(6, 3, 2) does not say each panel is shot
-//         to completion before the next: "Framed as a 3×2 mosaic. [...]"
+//   MUTANT "the UI constant drifts" (lib/framing.ts: 0.25 -> 0.2). Observed
+//   ("mosaicCopyPanelFirst.test: 11/12 passed"):
+//     x the Sky's overlap is DEFAULT_OVERLAP itself, and the server's number: DEFAULT_OVERLAP: expected 0.25, got 0.2
 //
-//   M3 "restore withMosaicCard's 'cycle panels each pass'":
-//     mosaicCopyPanelFirst.test: 11/13 passed
-//       x the MOSAIC lane card promises no cycling, in its summary or its
-//         footnote: withMosaicCard's sum promises cycling the panels, "each
-//         pass", which the engine does not keep - a Plan mosaic_group is shot
-//         panel-first: "6 panels · 15% overlap · centre per panel · cycle panels
-//         each pass"
-//       x the MOSAIC lane card says the panels are shot panel-first: the summary
-//         does not say the order: "6 panels · 15% overlap · centre per panel ·
-//         cycle panels each pass"
+//   MUTANT "the framing card's note keeps its order sentence" (FramingCard.tsx
+//   framingNote: "and the engine shoots each panel to completion before it
+//   starts the next" put back). Observed ("mosaicCopyPanelFirst.test: 11/12 passed"):
+//     x the framing card's note names the wizard, the overlap, and no retired door or order: framingNote(0.25) promises an order ("to completion"), which the engine decides from what the panels have banked: "Drag the sky to shift the frame, [...] DONE keeps the framing on the sky, and the engine shoots each panel to completion before it starts the next. [...]"
 //
-//   M4 "restore fov.ts header 'panels cycle every pass'":
-//     mosaicCopyPanelFirst.test: 12/13 passed
-//       x fov.ts's comments no longer promise the order panelOrder was written
-//         for: a comment in fov.ts promises cycling the panels, "every pass",
-//         which the engine does not keep - a Plan mosaic_group is shot
-//         panel-first: "fov.ts - field-of-view, sampling and mosaic math [...]"
+//   MUTANT "the 'Framing kept' toast names the Plan again" (quickCopy.ts
+//   framingKeptDetail's mosaic branch back to the retired sentence). Observed
+//   ("mosaicCopyPanelFirst.test: 11/12 passed"):
+//     x the 'Framing kept' toast names the wizard and no retired door or order, at every grid: framingKeptDetail(2) describes the retired Plan door ("plan targets", a mosaic group, queueing the panels), which S6 deleted - a Sky mosaic goes through SEND TO FLOW WIZARD now: "GENERATE FLOW queues all 2 panels as plan targets in one mosaic group, each shot to completion before the next."
 //
-//   M8 "restore panelOrder's README quote" (the doc's "cycles panels every pass
-//   so a shortened night leaves every panel with data"):
-//     mosaicCopyPanelFirst.test: 12/13 passed
-//       x fov.ts's comments no longer promise the order panelOrder was written
-//         for: a comment in fov.ts promises cycling the panels, "every pass",
-//         every panel left with data, which the engine does not keep [...]:
-//         "Row-major panel indices for a `cols` x `rows` mosaic, [...]"
-//
-//   M6 "restore MOSAIC_FOOTNOTE's 'the panels are plan targets, not a flow
-//   stage'" (the card then never says where the panels go or what a short
-//   night costs):
-//     mosaicCopyPanelFirst.test: 12/13 passed
-//       x the MOSAIC lane card says the panels are shot panel-first:
-//         withMosaicCard (summary and footnote) does not say they are one mosaic
-//         group: "6 panels · 15% overlap · one panel at a time, each to
-//         completion the panels are plan targets, not a flow stage"
-//
-//   M5 (control) "drop the overlap from withMosaicCard's sum":
-//     mosaicCopyPanelFirst.test: 12/13 passed
-//       x control: the strings still carry the overlap and the panel count: the
-//         lane summary lost the overlap: "6 panels · one panel at a time, each
-//         to completion"
-//
-//   M7 (control) "drop the panel count from mosaicPlanNote":
-//     mosaicCopyPanelFirst.test: 12/13 passed
-//       x control: the strings still carry the overlap and the panel count:
-//         mosaicPlanNote lost the panel count: "Framed as a 3×2 mosaic. GENERATE
-//         FLOW saves the flow for the framing centre and queues all the panels
-//         as plan targets in one mosaic group, [...]"
-//
-//   M10 and M11 graded the inline-toast case that #275 replaced (a scan of
-//   SkyHub.tsx's literals with "plan targets" as its non-vacuity), and are
-//   superseded by M13 to M18 below.
-//
-//   M12 (non-vacuity) "the picker offers one mosaic grid" (MOSAIC_CHOICES cut
-//   to 1x1 and 2x1):
-//     mosaicCopyPanelFirst.test: 12/13 passed
-//       x mosaicPlanNote promises no cycling, at every grid the picker offers:
-//         the picker offers 1 mosaic grids - the loop would read almost nothing
-//
-// The SkyHub case was added at verification, and every mutant above was re-run
-// against the 13 cases then, so each tally is out of 13.
-//
-// #275, at the S2 review, 2026-09-25: the toast moved into `quickCopy.ts`, the
-// inline case above replaced by three cases and a control, 16 in all, so each
-// tally below is out of 16. Same scratch-copy rule, output verbatim.
-//
-//   M13 "restore the toast's 'one pass each'" (framingKeptDetail's mosaic
-//   branch back to the pre-#275 sentence):
-//     mosaicCopyPanelFirst.test: 14/16 passed
-//       x framingKeptDetail promises no cycling, at every grid the picker offers
-//         (#275): framingKeptDetail(2) promises "one pass each", which the engine
-//         does not keep - a Plan mosaic_group is shot panel-first: "GENERATE FLOW
-//         queues all 2 panels as plan targets, one pass each."
-//       x framingKeptDetail says the panels go to the Plan and are shot
-//         panel-first (#275): framingKeptDetail(6) does not say they are one
-//         mosaic group: "GENERATE FLOW queues all 6 panels as plan targets, one
-//         pass each."
-//
-//   M14 "SkyHub inlines its old toast again" (the pre-#275 ternary back in
-//   place of the call):
-//     mosaicCopyPanelFirst.test: 15/16 passed
-//       x SkyHub.tsx's 'Framing kept' toast shows framingKeptDetail's words and
-//         none of its own (#275): SkyHub.tsx's 'Framing kept' toast does not take
-//         its detail from framingKeptDetail(panels.length)
-//
-//   M14b "another SkyHub literal makes the promise" (the call kept, the title
-//   given ", panels one pass each."):
-//     mosaicCopyPanelFirst.test: 15/16 passed
-//       x SkyHub.tsx's 'Framing kept' toast shows framingKeptDetail's words and
-//         none of its own (#275): a SkyHub.tsx string promises "one pass each",
-//         which the engine does not keep - a Plan mosaic_group is shot
-//         panel-first: "`Framing kept - ${frameText(cols, rows,
-//         f.rotation_deg)}, panels one pass each.`"
-//
-//   M15 "the toast is always the one-panel sentence" (`framingKeptDetail(1)`):
-//     mosaicCopyPanelFirst.test: 15/16 passed
-//       x SkyHub.tsx's 'Framing kept' toast shows framingKeptDetail's words and
-//         none of its own (#275): SkyHub.tsx's 'Framing kept' toast does not take
-//         its detail from framingKeptDetail(panels.length)
-//
-//   M16 (control) "the one-panel sentence reworded":
-//     mosaicCopyPanelFirst.test: 15/16 passed
-//       x control: a single frame's toast still says where the night is
-//         centred: the one-panel toast: expected GENERATE FLOW centres the night
-//         here instead of on the catalogue position., got GENERATE FLOW centres
-//         the night on this framing.
-//
-//   M17 (non-vacuity) "'one pass each' dropped from PROMISES":
-//     mosaicCopyPanelFirst.test: 15/16 passed
-//       x the scanner flags every sentence #154 found, so it cannot pass by
-//         matching nothing: the pre-#275 toast, read alone: expected "one pass
-//         each", got
-//
-//   M18 "the toast loses what a short night costs" ("costs the last panels"):
-//     mosaicCopyPanelFirst.test: 15/16 passed
-//       x framingKeptDetail says the panels go to the Plan and are shot
-//         panel-first (#275): framingKeptDetail(6) does not say a night cut short
-//         leaves the last panels short: "GENERATE FLOW queues all 6 panels as
-//         plan targets in one mosaic group, each shot to completion before the
-//         next, so a night cut short costs the last panels."
+//   MUTANT (control) "the framing note prints a fixed 15%" (framingNote's
+//   `${overlapPercent(overlap)}%` back to a literal "15%"). Observed
+//   ("mosaicCopyPanelFirst.test: 11/12 passed"):
+//     x the framing card's note names the wizard, the overlap, and no retired door or order: framingNote(0.25) does not print the session's 25%: "Drag the sky to shift the frame, turn the dial to rotate the camera. Panels overlap 15%. [...]"
 //
 // Convention: inline test()/eq() helpers, printed tally plus the
 // { passed, failed, total } export (shell-and-tests.md section 4).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-// `FramingCard.tsx` and `flowLane.ts` are reached through modules that pass
-// `api.ts` / `lib/base.ts`, which read `window.location` AT MODULE SCOPE. So the
-// browser globals go in first and the imports are dynamic - the convention
+// `FramingCard.tsx` is reached through modules that pass `api.ts` /
+// `lib/base.ts`, which read `window.location` AT MODULE SCOPE. So the browser
+// globals go in first and the imports are dynamic - the convention
 // `frameModel.test.ts` and `skyCards.test.ts` use, for the same reason.
 {
   const g = globalThis as any;
@@ -237,10 +118,12 @@ const fs = (await nodeImport("node:fs")) as NodeFsLike;
 const pathOf = (rel: string): string =>
   decodeURIComponent(new URL(rel, import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, "$1");
 
-const { FRAMING_NOTE } = await import("../frame/FramingCard");
-const { MOSAIC_CHOICES, OVERLAP } = await import("../frame/mosaic");
-const { MOSAIC_FOOTNOTE, framingKeptDetail, mosaicPlanNote } = await import("../sheets/quickCopy");
-const { withMosaicCard } = await import("../sheets/flowLane");
+const { framingNote } = await import("../frame/FramingCard");
+const mosaic = await import("../frame/mosaic");
+const { MOSAIC_CHOICES, framingMeta, panelRects } = mosaic;
+const { FRAMING_REMOVED, SEND_TO_WIZARD, framingKeptDetail, mosaicPlanNote } = await import("../sheets/quickCopy");
+const { DEFAULT_OVERLAP, mosaicTotalFov } = await import("../../../../lib/framing");
+const { mosaicPitch } = await import("../../../lib/fov");
 
 let passed = 0;
 let failed = 0;
@@ -254,39 +137,53 @@ function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(m
 function eq<T>(got: T, want: T, msg = ""): void {
   if (got !== want) throw new Error(`${msg} expected ${String(want)}, got ${String(got)}`);
 }
+function near(got: number, want: number, tol: number, msg: string): void {
+  if (!(Math.abs(got - want) <= tol)) throw new Error(`${msg} expected ${want} +/- ${tol}, got ${got}`);
+}
 
-// ============================================================ the scanner
+// ============================================================ the scanners
 
-/** The cycling promise, in the words it was made in. `cycl` has no honest use
- *  in a sentence about panel order today, so it is banned outright rather than
- *  only in the phrasings that happened to ship. */
-const PROMISES: readonly { re: RegExp; what: string }[] = [
+/** The retired door, in the words it was described in. */
+const PLAN_DOOR: readonly { re: RegExp; what: string }[] = [
+  { re: /\bplan targets?\b/i, what: "\"plan targets\"" },
+  { re: /\bto the Plan\b/, what: "\"to the Plan\"" },
+  { re: /\bmosaic[ _]group\b/i, what: "a mosaic group" },
+  { re: /\bqueues?\b[^.;]*\bpanels?\b/i, what: "queueing the panels" },
+];
+
+/** An ORDER, in the words either false promise was made in: the rotation #154
+ *  found ("cycles panels every pass", "in turn") and the panel-first order the
+ *  retired door described ("to completion", "one panel at a time", "the last
+ *  panels short"). `cycl` has no honest use in a sentence about panels. */
+const ORDER: readonly { re: RegExp; what: string }[] = [
   { re: /\bcycl/i, what: "cycling the panels" },
   { re: /\bevery pass\b/i, what: "\"every pass\"" },
   { re: /\beach pass\b/i, what: "\"each pass\"" },
   { re: /\bin turn\b/i, what: "\"in turn\"" },
-  { re: /\bpass(es)? (at|on|over|to) (each|every) panel\b/i, what: "a pass at each panel" },
-  { re: /\bevery panel\b[^.;]*\bdata\b/i, what: "every panel left with data" },
-  // #275: a pass is one sub per checked filter, and a Plan mosaic gives each
-  // panel every pass before the next panel starts, never one each.
   { re: /\bone pass each\b/i, what: "\"one pass each\"" },
+  { re: /\bto completion\b/i, what: "\"to completion\"" },
+  { re: /\bone panel at a time\b/i, what: "\"one panel at a time\"" },
+  { re: /\blast panels\b/i, what: "\"the last panels\"" },
 ];
 
-function promisesIn(text: string): string[] {
-  return PROMISES.filter((p) => p.re.test(text)).map((p) => p.what);
+function hits(list: readonly { re: RegExp; what: string }[], text: string): string[] {
+  return list.filter((p) => p.re.test(text)).map((p) => p.what);
 }
 
-function assertNoPromise(label: string, text: string): void {
-  const hits = promisesIn(text);
-  assert(hits.length === 0,
-    `${label} promises ${hits.join(", ")}, which the engine does not keep - a Plan `
-    + `mosaic_group is shot panel-first: "${text}"`);
+function assertClean(label: string, text: string): void {
+  const door = hits(PLAN_DOOR, text);
+  assert(door.length === 0,
+    `${label} describes the retired Plan door (${door.join(", ")}), which S6 deleted - a Sky `
+    + `mosaic goes through ${SEND_TO_WIZARD} now: "${text}"`);
+  const order = hits(ORDER, text);
+  assert(order.length === 0,
+    `${label} promises an order (${order.join(", ")}), which the engine decides from what `
+    + `the panels have banked: "${text}"`);
 }
 
-/** The comments of a source file, which is where `fov.ts` made the claim, one
- *  entry per block. A run of `//` lines is ONE block and the comment markers are
- *  stripped, so a promise wrapped across two lines ("cycles panels" / "every
- *  pass") reads as the sentence it is instead of two halves that match nothing. */
+/** The comments of a source file, one entry per block (a run of `//` lines is
+ *  one block, markers stripped), so a claim wrapped across two lines reads as
+ *  the sentence it is. */
 function commentsOf(src: string): string[] {
   return (src.match(/(?:\/\/[^\n]*\n?[ \t]*)+|\/\*[\s\S]*?\*\//g) ?? []).map((c) => c
     .replace(/\/\*\*?|\*\//g, " ")
@@ -295,190 +192,188 @@ function commentsOf(src: string): string[] {
     .trim());
 }
 
-// The strings as they shipped before #154, verbatim. They are the known
-// positives: a scanner that does not flag every one of them could pass by
-// matching nothing.
-const PRE_154 = {
-  framingNote: "Panels overlap 15%; the flow centres on each panel in turn and cycles panels "
+// The strings as they shipped before S6, verbatim: the known positives.
+const PRE_S6 = {
+  framingNote: "Drag the sky to shift the frame, turn the dial to rotate the camera. "
+    + "DONE keeps the framing: it stays on the sky, and its centre and angle go into the flow. "
+    + "Panels overlap 15%. GENERATE FLOW sends them to the Plan as targets in one mosaic group, "
+    + "and the engine shoots each panel to completion before it starts the next, so a night "
+    + "cut short leaves the last panels short. "
+    + "The dashed outline is the object's catalogued extent.",
+  splitNote: "Framed as a 3×2 mosaic. GENERATE FLOW saves the flow for the framing "
+    + "centre and queues all 6 panels as plan targets in one mosaic group, each "
+    + "carrying the camera angle above. The engine shoots each panel to completion before "
+    + "it starts the next, so a night cut short leaves the last panels short. Re-framing "
+    + "replaces them rather than adding a second set.",
+  keptToast: "GENERATE FLOW queues all 6 panels as plan targets in one mosaic group, "
+    + "each shot to completion before the next, so a night cut short leaves the last "
+    + "panels short.",
+  footnote: "the panels are plan targets in one mosaic group, not a flow stage - "
+    + "a night cut short leaves the last panels short",
+  laneSum: "6 panels · 15% overlap · one panel at a time, each to completion",
+  pre154: "Panels overlap 15%; the flow centres on each panel in turn and cycles panels "
     + "every pass, so a clouded-out night still leaves every panel with data.",
-  planNote: "The engine shoots a pass at each panel in turn, so a clouded-out night still "
-    + "leaves every panel with data.",
-  laneSum: "6 panels · 15% overlap · centre per panel · cycle panels each pass",
-  fovHeader: "//   panel pitch = FoV*(1 - overlap); panels cycle every pass",
-  fovDoc: "(README: \"the flow centres on each panel and cycles panels every pass so a "
-    + "shortened night leaves every panel with data\")",
 };
 
-// The toast as it shipped until #275, verbatim but for the panel count its
-// template interpolated. A known positive for the phrase #154's list lacked.
-const PRE_275 = {
-  toast: "GENERATE FLOW queues all 6 panels as plan targets, one pass each.",
-};
-
-test("the scanner flags every sentence #154 found, so it cannot pass by matching nothing", () => {
-  for (const [k, s] of Object.entries(PRE_154)) {
-    assert(promisesIn(s).length > 0, `the scanner let the pre-#154 ${k} through: "${s}"`);
+test("the scanners flag every pre-S6 string, so they cannot pass by matching nothing", () => {
+  for (const [k, s] of Object.entries(PRE_S6)) {
+    assert(hits(PLAN_DOOR, s).length + hits(ORDER, s).length > 0,
+      `the scanners let the pre-S6 ${k} through: "${s}"`);
   }
-  for (const [k, s] of Object.entries(PRE_275)) {
-    eq(promisesIn(s).join(), "\"one pass each\"", `the pre-#275 ${k}, read alone:`);
-  }
-  // The pre-#154 plan note's promise lives in "a pass at each panel" and "every
-  // panel ... data" as well as "in turn"; each pattern is exercised alone so a
-  // dead one is visible.
-  eq(promisesIn("the engine shoots a pass at each panel").join(), "a pass at each panel",
-    "a pass at each panel, alone:");
-  eq(promisesIn("so a short night leaves every panel with data").join(), "every panel left with data",
-    "every panel with data, alone:");
-  eq(promisesIn("cycle panels each pass").length, 2, "cycle and each pass, together:");
-  // A promise wrapped across two comment lines is still one promise.
+  // Each pattern is exercised alone, so a dead one is visible.
+  eq(hits(PLAN_DOOR, "queued as plan targets").join(), "\"plan targets\"", "plan targets, alone:");
+  eq(hits(PLAN_DOOR, "sends them to the Plan as rows").join(), "\"to the Plan\"", "to the Plan, alone:");
+  eq(hits(PLAN_DOOR, "sharing one mosaic_group").join(), "a mosaic group", "mosaic_group, alone:");
+  eq(hits(PLAN_DOOR, "GENERATE FLOW queues all 4 panels").join(), "queueing the panels", "queues panels, alone:");
+  eq(hits(ORDER, "the engine shoots each panel to completion").join(), "\"to completion\"", "to completion, alone:");
+  eq(hits(ORDER, "one panel at a time").join(), "\"one panel at a time\"", "one panel at a time, alone:");
+  eq(hits(ORDER, "leaves the last panels short").join(), "\"the last panels\"", "last panels, alone:");
+  eq(hits(ORDER, "cycle panels each pass").length, 2, "cycle and each pass, together:");
   const wrapped = commentsOf("const a = 1;\r\n// the flow shoots every\r\n// pass at the panels\r\nconst b = 2;\r\n");
   eq(wrapped.length, 1, "two adjacent // lines are one comment block:");
-  eq(promisesIn(wrapped[0]).join(), "\"every pass\"", `a wrapped promise, read as one block ("${wrapped[0]}"):`);
+  eq(hits(ORDER, wrapped[0]).join(), "\"every pass\"", `a wrapped promise, read as one block ("${wrapped[0]}"):`);
 });
 
-test("the scanner leaves an honest panel-first sentence alone", () => {
-  // The control for the scanner: the words a truthful sentence needs - panel,
-  // completion, the next, rotate the CAMERA - must not trip it.
-  const honest = "Drag the sky, turn the dial to rotate the camera. The engine shoots each "
-    + "panel to completion before it starts the next, so a night cut short leaves the last "
-    + "panels short.";
-  eq(promisesIn(honest).length, 0, `an honest sentence was flagged (${promisesIn(honest).join(", ")}):`);
+test("control: the scanners leave an honest wizard sentence alone", () => {
+  const honest = `Framed as a 3×2 mosaic of 6 panels. ${SEND_TO_WIZARD} plans all 6 panels as one `
+    + "mosaic block in a flow, from this framing's centre, angle, grid and overlap. Turn the dial "
+    + "to rotate the camera.";
+  eq(hits(PLAN_DOOR, honest).length + hits(ORDER, honest).length, 0,
+    `an honest sentence was flagged (${[...hits(PLAN_DOOR, honest), ...hits(ORDER, honest)].join(", ")}):`);
 });
 
-// ====================================================== no string promises it
+// ====================================================== the strings, read
 
-const TARGET_ONLY = [{ id: "t1", label: "TARGET", sum: "M31", colorVar: "--accent" }];
-const card6 = withMosaicCard(TARGET_ONLY, 3, 2).find((c) => c.id === "mosaic");
+const GRIDS = MOSAIC_CHOICES.filter((m) => m.cols * m.rows > 1);
 
-test("precondition: a 3x2 framing produces the MOSAIC lane card", () => {
-  assert(card6 != null, "withMosaicCard(3, 2) produced no card - the fixture is wrong, not the copy");
+test("precondition: the picker offers the mosaic grids the loops below read", () => {
+  // MOSAIC_CHOICES is read off the picker itself, so a grid added there is read
+  // here too; a picker cut to one grid would leave the loops reading almost
+  // nothing.
+  assert(GRIDS.length >= 3, `the picker offers ${GRIDS.length} mosaic grids - the loops would read almost nothing`);
 });
 
-test("FRAMING_NOTE promises no cycling", () => {
-  assertNoPromise("FRAMING_NOTE", FRAMING_NOTE);
-});
-
-test("mosaicPlanNote promises no cycling, at every grid the picker offers", () => {
-  // Every MOSAIC_CHOICES grid above one panel, read off the picker itself so a
-  // grid added there is read here too. The panel count is interpolated, so
-  // every shape is read, not just the one a fixture chose.
-  const grids = MOSAIC_CHOICES.filter((m) => m.cols * m.rows > 1);
-  assert(grids.length >= 3, `the picker offers ${grids.length} mosaic grids - the loop would read almost nothing`);
-  for (const { cols: c, rows: r } of grids) {
-    assertNoPromise(`mosaicPlanNote(${c * r}, ${c}, ${r})`, mosaicPlanNote(c * r, c, r));
+test("the framing card's note names the wizard, the overlap, and no retired door or order", () => {
+  for (const o of [DEFAULT_OVERLAP, 0.1, 0.35]) {
+    const note = framingNote(o);
+    assertClean(`framingNote(${o})`, note);
+    assert(note.includes(SEND_TO_WIZARD), `framingNote(${o}) does not name ${SEND_TO_WIZARD}: "${note}"`);
+    const pct = `${Math.round(o * 100)}%`;
+    assert(note.includes(`overlap ${pct}`), `framingNote(${o}) does not print the session's ${pct}: "${note}"`);
   }
 });
 
-test("framingKeptDetail promises no cycling, at every grid the picker offers (#275)", () => {
-  const grids = MOSAIC_CHOICES.filter((m) => m.cols * m.rows > 1);
-  assert(grids.length >= 3, `the picker offers ${grids.length} mosaic grids - the loop would read almost nothing`);
-  for (const { cols: c, rows: r } of grids) {
-    assertNoPromise(`framingKeptDetail(${c * r})`, framingKeptDetail(c * r));
+test("the quick sheet's kept-mosaic note names the wizard, the count and the grid, at every grid", () => {
+  for (const { cols: c, rows: r } of GRIDS) {
+    const note = mosaicPlanNote(c * r, c, r);
+    assertClean(`mosaicPlanNote(${c * r}, ${c}, ${r})`, note);
+    assert(note.includes(SEND_TO_WIZARD), `mosaicPlanNote(${c * r}, ${c}, ${r}) does not name ${SEND_TO_WIZARD}: "${note}"`);
+    assert(note.includes(`${c}×${r}`), `mosaicPlanNote lost the grid ${c}×${r}: "${note}"`);
+    assert(note.includes(`all ${c * r} panels`), `mosaicPlanNote lost the count ${c * r}: "${note}"`);
+    assert(/GENERATE FLOW plans one target/.test(note),
+      `mosaicPlanNote no longer says what GENERATE FLOW beside it plans: "${note}"`);
   }
 });
 
-test("SkyHub.tsx's 'Framing kept' toast shows framingKeptDetail's words and none of its own (#275)", () => {
-  // Read as source because the toast is built inline in a callback. What it
-  // must show is the function the two cases around this one read; a toast
+test("the 'Framing kept' toast names the wizard and no retired door or order, at every grid", () => {
+  for (const { cols: c, rows: r } of GRIDS) {
+    const detail = framingKeptDetail(c * r);
+    assertClean(`framingKeptDetail(${c * r})`, detail);
+    assert(detail.includes(SEND_TO_WIZARD), `framingKeptDetail(${c * r}) does not name ${SEND_TO_WIZARD}: "${detail}"`);
+    assert(detail.includes(`all ${c * r} panels`), `framingKeptDetail(${c * r}) lost the count: "${detail}"`);
+  }
+});
+
+test("control: a single frame's toast names the wizard and the centre, and claims no GENERATE FLOW centring", () => {
+  // The pre-S6 sentence ("GENERATE FLOW centres the night here instead of on
+  // the catalogue position") was never true: the quick flow is placed at the
+  // target's own coordinates. The wizard carries the framing's centre.
+  const one = framingKeptDetail(1);
+  assertClean("framingKeptDetail(1)", one);
+  assert(one.includes(SEND_TO_WIZARD), `the one-panel toast does not name ${SEND_TO_WIZARD}: "${one}"`);
+  assert(/centre/.test(one), `the one-panel toast lost where the night is centred: "${one}"`);
+  assert(!/GENERATE FLOW centres/.test(one), `the one-panel toast still says GENERATE FLOW centres the night: "${one}"`);
+});
+
+test("SkyHub.tsx's 'Framing kept' toast shows framingKeptDetail's words and none of its own", () => {
+  // Read as source because the toast is built inline in a callback. A toast
   // back on a literal of its own would be words nothing here checks.
   const src = fs.readFileSync(pathOf("../SkyHub.tsx"), "utf8");
   assert(/title: `Framing kept - /.test(src),
     "the 'Framing kept' toast was not found in SkyHub.tsx - the check would pass on nothing");
   assert(/detail: framingKeptDetail\(panels\.length\)/.test(src),
     "SkyHub.tsx's 'Framing kept' toast does not take its detail from framingKeptDetail(panels.length)");
-  // And no other literal on a code line (comment lines dropped) that names the
-  // panels makes the promise, whatever it is for.
   const literals = src.split(/\r?\n/)
     .filter((l) => !/^\s*(\/\/|\*|\/\*|\{\/\*)/.test(l))
     .flatMap((l) => l.match(/`[^`]*`|"[^"]*"/g) ?? [])
-    .filter((s) => /\bpanels\b/i.test(s));
-  for (const s of literals) assertNoPromise("a SkyHub.tsx string", s);
+    .filter((s) => /\bpanels?\b/i.test(s));
+  for (const s of literals) assertClean("a SkyHub.tsx string", s);
 });
 
-test("the MOSAIC lane card promises no cycling, in its summary or its footnote", () => {
-  assertNoPromise("withMosaicCard's sum", card6?.sum ?? "");
-  assertNoPromise("withMosaicCard's footnote", card6?.footnote ?? "");
-  assertNoPromise("MOSAIC_FOOTNOTE", MOSAIC_FOOTNOTE);
+// The S5/S6 integration (the S6-DOORS verifier's copy finding, beside #459).
+// Mutants in scratchpad/S5-FINAL-INTEG-ui-mut, each from a byte backup
+// restored with its sha256 checked:
+//   MUTANT "the removal toast claims a centre again" (quickCopy.ts
+//   FRAMING_REMOVED back to "Framing removed - the flow centres on the
+//   catalogue position."). Observed:
+//     x clearing the framing claims no centre the quick flow never took, and SkyHub says it in FRAMING_REMOVED's words: the removal toast claims a centre the quick flow never took: "Framing removed - the flow centres on the catalogue position." (12/13 passed)
+//   MUTANT "SkyHub keeps a removal sentence of its own" (clearFrame's toast
+//   back on its old literal). Observed:
+//     x clearing the framing claims no centre the quick flow never took, and SkyHub says it in FRAMING_REMOVED's words: clearFrame's toast does not show FRAMING_REMOVED: enqueueToast({ level: "info", title: "Framing removed - the flow centres on the catalogue position." }) (12/13 passed)
+test("clearing the framing claims no centre the quick flow never took, and SkyHub says it in FRAMING_REMOVED's words", () => {
+  // The quick flow is placed at the target's own coordinates and takes only
+  // the framing's angle (#459), so clearing the framing changes the angle.
+  assert(!/centre/i.test(FRAMING_REMOVED), `the removal toast claims a centre the quick flow never took: "${FRAMING_REMOVED}"`);
+  assert(/angle/.test(FRAMING_REMOVED), `the removal toast does not say what clearing changes: "${FRAMING_REMOVED}"`);
+  const src = fs.readFileSync(pathOf("../SkyHub.tsx"), "utf8");
+  assert(/const clearFrame = useCallback/.test(src),
+    "clearFrame was not found in SkyHub.tsx - the check would pass on nothing");
+  const body = src.slice(src.indexOf("const clearFrame = useCallback"));
+  const toast = /enqueueToast\(\{[^}]*\}\)/.exec(body)?.[0] ?? "";
+  assert(/title: FRAMING_REMOVED\b/.test(toast), `clearFrame's toast does not show FRAMING_REMOVED: ${toast}`);
 });
 
-test("fov.ts's comments no longer promise the order panelOrder was written for", () => {
+test("fov.ts's comments promise no order for panelOrder", () => {
   const comments = commentsOf(fs.readFileSync(pathOf("../../../lib/fov.ts"), "utf8"));
-  // Non-vacuity: the extraction must have reached both places #154 named - the
-  // header's formula list and panelOrder's own doc.
   assert(comments.some((c) => /panel pitch/.test(c)), "the fov.ts header was not read - the scan would pass on nothing");
   assert(comments.some((c) => /Row-major panel indices/.test(c)),
     "panelOrder's doc was not read - the scan would pass on nothing");
-  // Only the offending blocks are printed: the file's other comments are noise
-  // in a failure that is about one sentence.
-  for (const c of comments) assertNoPromise("a comment in fov.ts", c);
+  // ORDER only: fov.ts's panelOrder doc NAMES the retired Plan door, as
+  // history, which is not a claim about where a mosaic goes today.
+  for (const c of comments) {
+    const order = hits(ORDER, c).filter((w) => w !== "\"to completion\"" && w !== "\"one panel at a time\"");
+    assert(order.length === 0, `a comment in fov.ts promises ${order.join(", ")}: "${c}"`);
+  }
 });
 
-// ==================================================== each says what happens
+// ============================================================ one overlap
 
-/** The four facts of a Plan mosaic today. Each sentence must carry all four:
- *  where the panels go, that they are one group, the order, and what that order
- *  costs when the night is cut short. */
-function assertPanelFirst(label: string, text: string): void {
-  assert(/\bplan\b/i.test(text), `${label} does not say the panels go to the Plan: "${text}"`);
-  assert(/\bone mosaic group\b/i.test(text), `${label} does not say they are one mosaic group: "${text}"`);
-  assert(/\bto completion before\b|\bone panel at a time\b/i.test(text),
-    `${label} does not say each panel is shot to completion before the next: "${text}"`);
-  assert(/\blast panels short\b/i.test(text),
-    `${label} does not say a night cut short leaves the last panels short: "${text}"`);
-}
-
-test("FRAMING_NOTE says the panels go to the Plan and are shot panel-first", () => {
-  assertPanelFirst("FRAMING_NOTE", FRAMING_NOTE);
+test("the Sky's overlap is DEFAULT_OVERLAP itself, and the server's number", () => {
+  // `OVERLAP` is re-exported from lib/framing.ts, a binding, not a copy.
+  eq(mosaic.OVERLAP, DEFAULT_OVERLAP, "mosaic.ts's OVERLAP is not DEFAULT_OVERLAP:");
+  // The server's `framing.DEFAULT_OVERLAP` is 0.25; the server test
+  // test_overlap_constant_one.py holds the UI line to it. Here it pins that
+  // the Sky did not keep a correction of its own.
+  eq(DEFAULT_OVERLAP, 0.25, "DEFAULT_OVERLAP:");
 });
 
-test("mosaicPlanNote says the panels go to the Plan and are shot panel-first", () => {
-  assertPanelFirst("mosaicPlanNote(6, 3, 2)", mosaicPlanNote(6, 3, 2));
+test("every overlap default this hub computes with reads DEFAULT_OVERLAP", () => {
+  // framingMeta's default: the tangent-plane extent at DEFAULT_OVERLAP.
+  const t = mosaicTotalFov(2, 1, DEFAULT_OVERLAP, 1.68, 1.12);
+  eq(framingMeta(2, 1, 30, 1.68, 1.12),
+    `2 panels · ${t.total_fov_x_deg.toFixed(1)}° × ${t.total_fov_y_deg.toFixed(1)}° · rot 30°`,
+    "framingMeta's default overlap:");
+  // panelRects's default pitch.
+  const rects = panelRects(100, 100, 2, 1, 40, 30);
+  near(rects[1].x - rects[0].x, 40 * (1 - DEFAULT_OVERLAP), 1e-9, "panelRects's default pitch:");
+  // The Settings mosaic pitch.
+  near(mosaicPitch(2), 2 * (1 - DEFAULT_OVERLAP), 1e-12, "fov.mosaicPitch's default:");
 });
 
-test("framingKeptDetail says the panels go to the Plan and are shot panel-first (#275)", () => {
-  const detail = framingKeptDetail(6);
-  assertPanelFirst("framingKeptDetail(6)", detail);
-  assert(detail.includes("all 6 panels"), `framingKeptDetail(6) lost the panel count: "${detail}"`);
-});
-
-test("the MOSAIC lane card says the panels are shot panel-first", () => {
-  // The summary is one ellipsised line on a phone, so the ORDER - the claim #154
-  // is about - has to be in it; where they go and what a short night costs ride
-  // in the footnote, which wraps.
-  assert(/\bto completion\b|\bone panel at a time\b/i.test(card6?.sum ?? ""),
-    `the summary does not say the order: "${card6?.sum}"`);
-  assertPanelFirst("withMosaicCard (summary and footnote)", `${card6?.sum} ${card6?.footnote}`);
-  eq(card6?.footnote, MOSAIC_FOOTNOTE, "the card's footnote is the shared constant:");
-});
-
-// ========================================= controls: what must not have moved
-
-test("control: the strings still carry the overlap and the panel count", () => {
-  const pct = `${Math.round(OVERLAP * 100)}%`;
-  // Against OVERLAP itself, so a copy that drifted from the constant the engine
-  // is asked for fails here rather than printing the right-looking number.
-  assert(FRAMING_NOTE.includes(pct), `FRAMING_NOTE lost the ${pct} overlap: "${FRAMING_NOTE}"`);
-  assert((card6?.sum ?? "").includes(`${pct} overlap`), `the lane summary lost the overlap: "${card6?.sum}"`);
-  assert((card6?.sum ?? "").includes("6 panels"), `the lane summary lost the panel count: "${card6?.sum}"`);
-  eq(card6?.label, "MOSAIC 3×2", "the lane label:");
-  const note = mosaicPlanNote(6, 3, 2);
-  assert(note.includes("6 panels"), `mosaicPlanNote lost the panel count: "${note}"`);
-  assert(note.includes("3×2"), `mosaicPlanNote lost the grid: "${note}"`);
-  assert(/plan targets/.test(note), `mosaicPlanNote lost "plan targets", which quickMosaicDom pins: "${note}"`);
-  assert(/camera angle/.test(note), `mosaicPlanNote lost the camera angle each panel carries: "${note}"`);
-  assert(/Re-framing replaces them/.test(note), `mosaicPlanNote lost the re-frame rule: "${note}"`);
-});
-
-test("control: a single frame's toast still says where the night is centred", () => {
-  eq(framingKeptDetail(1),
-    "GENERATE FLOW centres the night here instead of on the catalogue position.",
-    "the one-panel toast:");
-});
-
-test("control: a single frame still gets no MOSAIC card, and the card still follows TARGET", () => {
-  eq(withMosaicCard(TARGET_ONLY, 1, 1), TARGET_ONLY, "a 1x1 framing must pass the lane through untouched:");
-  const lane = withMosaicCard(TARGET_ONLY, 2, 1);
-  eq(lane.map((c) => c.id).join(" "), "t1 mosaic", "the card sits after TARGET:");
+test("control: an explicit overlap still wins over the default", () => {
+  near(mosaicPitch(2, 0.1), 1.8, 1e-12, "mosaicPitch(2, 0.1):");
+  const rects = panelRects(100, 100, 2, 1, 40, 30, 0.1);
+  near(rects[1].x - rects[0].x, 36, 1e-9, "panelRects at 10%:");
 });
 
 // ------------------------------------------------------------------- tally

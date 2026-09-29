@@ -37,19 +37,21 @@ import FlowPort from "./FlowPort";
  *  WHETHER it would add one, so the wire is never kept. */
 const NO_ID = (): string => "";
 
-/** True when LOOP PANELS would add the block's loop wire: exactly when the
- *  press, `flowsApplyFraming(id, {}, true)`, would write anything (spec 1.4
- *  "When the wire is added").
+/** True when LOOP PANELS would change the block's loop wiring: exactly when
+ *  the press, `flowsApplyFraming(id, {}, true)`, would write anything (spec
+ *  1.4 "When the wire is added").
  *
  *  The #/next card and the phone stage list ask the same `withLoop` call
  *  (canvas/FlowNode.tsx `offersLoopPanels`); #/next may not import this
  *  presentation file, nor this file a #/next one, so the one line is written
  *  twice and the RULE lives once, in panelLane.ts. `withLoop(true)` hands back
- *  the SAME wires when it adds nothing, and it adds nothing unless the block
- *  is a multi-panel TARGET that owns a lane with a single tail, the tail has a
- *  "pass done" to give, and no loop wire leaves it yet. So the button is never
- *  on a mosaic that already loops, and never on a block where a press would
- *  do nothing. */
+ *  the SAME wires when it changes nothing, and it changes nothing unless the
+ *  block is a multi-panel TARGET that owns a lane with a single tail and the
+ *  tail has a "pass done" to give; then it adds the loop wire when none leaves
+ *  the tail yet, and MOVES a pass wire stranded mid-lane (M12) to the tail
+ *  rather than adding a second (#410). So the button is never on a mosaic
+ *  that rotates (`targetLoops`), and it IS on one whose tail wire stands
+ *  beside a stale mid-lane one, which the run refuses. */
 function offersLoopPanels(graph: LaneGraph, blockId: string): boolean {
   return withLoop(graph, blockId, true, NO_ID) !== graph.edges;
 }
@@ -127,7 +129,8 @@ function FlowNodeCard({
   // which the render counters in flowNodeDom.test.tsx count.
   const loops = useStore((s) => node.type === "target" && targetLoops(node, s.flows.graph));
   // THE FIFTH, LOOP PANELS (spec 1.4): offered only while a press would add
-  // the loop wire, and a boolean for the same reason as `loops`. It rides in
+  // the loop wire or move a stranded one to the tail (#410), and a boolean
+  // for the same reason as `loops`. It rides in
   // the footer, so the phone card, which has none, asks nothing.
   const offersLoop = useStore((s) =>
     !phone && node.type === "target" && offersLoopPanels(s.flows.graph, node.id));
@@ -292,9 +295,12 @@ function FlowNodeCard({
           auto-graph's layout (autoLayout.ts, +8) budgets room for none. */}
       {!phone && (
         <div className="px-2.5 pt-[3px] pb-2 font-mono text-[9.5px] text-faint">
-          {/* A TARGET's line is `targetFooter` - "M31 · 3x2 · PA 30.0 · 25% ·
-              rotate" - shared with the #/next card; it takes the name from
-              the same `def.sum`, once. Every other type keeps its `sum`. */}
+          {/* A TARGET's line is `targetFooter` - "M31 · rotate · 3x2 · PA
+              30.0 · 25%" - shared with the #/next card; it takes the name
+              from the same `def.sum`, once. The loop word comes right after
+              the name because this line truncates at 29 characters (#357;
+              cardFooterDom.test.tsx reads that budget off these classes).
+              Every other type keeps its `sum`. */}
           <div data-flow-summary className="truncate">
             {node.type === "target" ? targetFooter(node, loops) : def.sum(node.params)}
           </div>

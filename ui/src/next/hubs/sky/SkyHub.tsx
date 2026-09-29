@@ -85,16 +85,17 @@ import { PACK_POLL_MS, shouldPollPack, surveyDegradedText } from "./frame/degrad
 import {
   ZOOM_MAX, clampZoom, fitObjectZoom, frameFovDeg, matchCameraZoom, pinchZoom, pointerDist,
 } from "./frame/zoom";
-import { OVERLAP, fetchPanels, framedStrip, frameText } from "./frame/mosaic";
+import { fetchPanels, framedStrip, framingPrefill, frameText } from "./frame/mosaic";
+import { openFlowWizard } from "../session/flows/wizard";
 import { effectiveOptics } from "../../../lib/effective";
-import { fovFromOptics, type OpticsLike } from "../../../lib/framing";
+import { DEFAULT_OVERLAP, fovFromOptics, type OpticsLike } from "../../../lib/framing";
 import { useSkyRegion, type SkyRow } from "../../../lib/skyRegion";
 import { resolveRoleConnected, useCapability } from "../../../lib/caps";
 import {
   OSC_LABEL, finishLabel, hoursLabel, oscCount, resolveQuickHours, wheelModel,
 } from "./sheets/quickModel";
 import { hoursToDawn } from "./sheets/quickNightArc";
-import { framingKeptDetail } from "./sheets/quickCopy";
+import { FRAMING_REMOVED, framingKeptDetail } from "./sheets/quickCopy";
 import { getPackStatus } from "../../../api/backends";
 import {
   useConfig,
@@ -195,11 +196,10 @@ export function entryOf(t: SkyTarget): CatalogEntry {
  * A free-roam framing's identity: the patch it was framed at, spelled exactly
  * as the quick sheet is opened with it (`pressPatch`'s `name`).
  *
- * ONE STRING, TWO JOBS, and they have to be the same string. It is the plan's
- * `mosaic_group` (so re-framing the same patch replaces its panels instead of
- * appending a second set) and it is what `framingMatches` compares against on
- * the quick sheet (so a patch's own mosaic is the one that reaches the plan and
- * another patch's is not).
+ * It is what `framingMatches` compares against on the quick sheet, so a
+ * patch's own mosaic is the one that sheet offers to Send to Flow Wizard and
+ * another patch's is not. (It was also the Plan's `mosaic_group` for the
+ * side channel S6 retired, #196.)
  */
 export function patchId(patch: PatchModel): string {
   return `${patch.raStr} ${patch.decStr}`;
@@ -481,11 +481,12 @@ export function SkyHub(): JSX.Element {
     (t: SkyTarget, keep: boolean) => {
       if (!keep) {
         openFraming(entryOf(t));
-        // `openFraming` seeds 25% overlap (the Atlas's default) while the README
-        // formula, the prototype and the sentence this card PRINTS all use 15%.
-        // Correcting it here rather than trusting the seed is the difference
-        // between the copy and the panel pitch agreeing.
-        setFraming({ mosaic: { rows: 1, cols: 1, overlap: OVERLAP }, rotation_deg: 0, panels: [] });
+        // A fresh session: one frame, no angle, no kept panels, at the ONE
+        // overlap every framing starts from (`DEFAULT_OVERLAP`, spec 2.4). This
+        // line used to re-set the store's 25% seed to 15%, the number the card's
+        // copy printed, so a Sky framing reached the wizard at another overlap
+        // than the same object framed in the Atlas.
+        setFraming({ mosaic: { rows: 1, cols: 1, overlap: DEFAULT_OVERLAP }, rotation_deg: 0, panels: [] });
       }
       model.setView({ az: t.azNow, alt: t.altNow, trackId: null });
       setFrame({ on: true, set: keep, id: t.id });
@@ -499,8 +500,8 @@ export function SkyHub(): JSX.Element {
    *
    * `store.openFraming()` with no entry is the Atlas's own free-roam door and
    * has been all along - it seeds a session with no `target` and a stable
-   * `freeroamId` so a multi-panel mosaic still groups in the plan. The new UI
-   * simply never opened it. The centre is then moved to the RETICLE's patch
+   * `freeroamId` for the session to be recognised by. The new UI simply never
+   * opened it. The centre is then moved to the RETICLE's patch
    * rather than left on the mount, because the reticle is what the user is
    * looking at and the mount may be parked.
    */
@@ -509,16 +510,15 @@ export function SkyHub(): JSX.Element {
       openFraming();
       setFraming({
         center: { ra_hours: patch.ra_hours, dec_deg: patch.dec_deg },
-        // THE GROUP ID IS THE PATCH, not the mount. `openFraming` derives its
+        // THE ID IS THE PATCH, not the mount. `openFraming` derives its
         // `freeroamId` from wherever the mount happens to be pointing, which is
         // two things wrong at once: the id names coordinates the session is not
         // at, and two free-roam sessions started from one parked position share
-        // it - so framing a second patch would REPLACE the first one's panels in
-        // the plan. This is also the string the quick sheet is opened with
-        // (`pressPatch`'s `name`), which is what lets `framingMatches` recognise
-        // a patch's own framing there.
+        // it. This is the string the quick sheet is opened with (`pressPatch`'s
+        // `name`), which is what lets `framingMatches` recognise a patch's own
+        // framing there.
         freeroamId: patchId(patch),
-        mosaic: { rows: 1, cols: 1, overlap: OVERLAP },
+        mosaic: { rows: 1, cols: 1, overlap: DEFAULT_OVERLAP },
         rotation_deg: 0,
         panels: [],
       });
@@ -553,18 +553,17 @@ export function SkyHub(): JSX.Element {
       fov_x_deg: fov.fov_x_deg,
       fov_y_deg: fov.fov_y_deg,
     });
-    // The ENGINE's panel centres, kept on the framing session so the quick
-    // sheet queues exactly what was drawn here. Nothing is added to the plan
-    // yet: the user has framed a target, not chosen a night.
+    // The ENGINE's panel centres, kept on the framing session: the finder
+    // draws the kept grid from them (`FramedOverlay`) and the quick sheet
+    // counts them to tell a kept mosaic from a single frame. Nothing reaches a
+    // night from here: the user has framed a target, not chosen one.
     setFraming({ panels });
     setFrame((s) => ({ ...s, on: false, set: true }));
-    // WHAT THE TOAST MAY CLAIM. It used to say the framing "goes into the flow",
-    // and nothing read `framing.panels` at all (review #3). It does now - the
-    // quick sheet turns them into plan targets on GENERATE FLOW (plan H.6: the
-    // engine's mosaic mechanism IS N targets sharing a `mosaic_group`, not a
-    // flow stage) - so the sentence names the button that does it and the shape
-    // it will take, rather than a stage that does not exist. The words, and the
-    // panel-first order they promise (#275), are `framingKeptDetail`'s.
+    // WHAT THE TOAST MAY CLAIM. It used to name the quick sheet's GENERATE FLOW
+    // and the Plan targets that queued (#275), a side channel S6 retired
+    // (#196); it now names the way forward that exists, SEND TO FLOW WIZARD.
+    // The words are `framingKeptDetail`'s, read with the other Sky mosaic
+    // strings by `mosaicCopyPanelFirst.test.ts`.
     enqueueToast({
       level: "success",
       title: `Framing kept - ${frameText(cols, rows, f.rotation_deg)}.`,
@@ -573,9 +572,9 @@ export function SkyHub(): JSX.Element {
   }, [fov.fov_x_deg, fov.fov_y_deg, setFraming, enqueueToast]);
 
   const clearFrame = useCallback(() => {
-    setFraming({ mosaic: { rows: 1, cols: 1, overlap: OVERLAP }, rotation_deg: 0, panels: [] });
+    setFraming({ mosaic: { rows: 1, cols: 1, overlap: DEFAULT_OVERLAP }, rotation_deg: 0, panels: [] });
     setFrame({ on: false, set: false, id: null });
-    enqueueToast({ level: "info", title: "Framing removed - the flow centres on the catalogue position." });
+    enqueueToast({ level: "info", title: FRAMING_REMOVED });
   }, [setFraming, enqueueToast]);
 
   // ---- the framing tools the Atlas had and the phone had lost -------------
@@ -1546,6 +1545,14 @@ export function SkyHub(): JSX.Element {
             }}
             onMosaic={(cols, rows) => setFraming({ mosaic: { rows, cols, overlap: framing.mosaic.overlap } })}
             onRotate={(deg) => setFraming({ rotation_deg: deg })}
+            // THE FRAME'S FORWARD ACTION (#196, spec section 8 S6): the shared
+            // wizard, pushed over the sky with this framing in its route, so
+            // CLOSE and EDIT FRAMING pop back to FRAME exactly as it was. It is
+            // never locked here: whatever the wizard cannot do on this rig (no
+            // optics for a grid, no capture capability to GENERATE) it says on
+            // its own step, where the operator can answer it.
+            onSendToWizard={() => openFlowWizard(framingPrefill(framing, fov))}
+            onExplain={onExplain}
           />
 
           {/* What tonight looks like across the WHOLE mosaic, not just its
