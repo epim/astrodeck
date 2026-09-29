@@ -13,6 +13,9 @@ number has to land on the right panel of the right block:
   banked, owed and total; a SKIPPED panel is listed apart, and what the
   ledger holds on it stays visible (re-enabling it brings those subs back),
   and is not counted as orphaned;
+* the block names its plan group (``group_id``, S5), the id a run publishes
+  as ``state.group.id``, so the run-mode sheet can match a live group to the
+  block it draws; and again not by name;
 * nothing site-derived: the route is ``CAP_VIEW_STATUS``, so the answer is
   scanned the #19 way, under two synthetic sites, for any number that moves
   when only the site does.
@@ -20,7 +23,8 @@ number has to land on the right panel of the right block:
 Every test names the mutation of ``flows/progress.py`` it guards and quotes
 the failure that mutation produced, run in a private copy of ``server/``
 (``scratchpad/s3-t-tonight-q8m4/``; the cases the verifier added in
-``scratchpad/s3-t-verify-x4n7/``), never in the shared tree.
+``scratchpad/s3-t-verify-x4n7/``; S5's in ``scratchpad/s5-feed-mut/``),
+never in the shared tree.
 """
 from __future__ import annotations
 
@@ -207,6 +211,85 @@ class TestPanelsAreFoundThroughTheGroup:
         (block,) = got["blocks"]
         assert [p["banked"] for p in block["panels"]] == [0, 0, 0, 4]
         assert block["panels"][3]["name"] == "M16 2-1"
+        assert block["group_id"] == group
+
+
+# ------------------------------------------------------- the block's group id
+
+class TestTheBlockNamesItsPlanGroup:
+    """A mosaic block carries ``group_id``, the id of the plan group that
+    shoots its panels (S5, spec 2.6 and 5.10). The run publishes
+    ``state.group.id`` and the run-mode sheet finds the block it is drawing
+    by that id (``flowRunState.groupForBlock``), so the id must be the
+    group's own, recomputed from the block's anchor the way ``to_plan``
+    minted it, and never a group found by what it is called."""
+
+    def test_two_blocks_of_one_name_each_name_their_own_group(self):
+        """Two 2x2 blocks both called "Veil": each block's ``group_id`` is
+        its own group, keyed on its own geometry and node id, and each
+        block's panels are exactly that group's members.
+
+        RED under mutant "group_id from the block's name" (``_mosaic``
+        setting ``group_id`` to the first plan group whose ``name`` is the
+        block's), run in scratchpad ``s5-feed-mut`` from a byte backup of
+        ``flows/progress.py``, observed:
+
+            AssertionError: assert ('dd0b4f8a16f...5c56a0c5085b') ==
+            ('dd0b4f8a16f...793de20d506c')
+              At index 1 diff: 'dd0b4f8a16f85d5b944f5c56a0c5085b' !=
+              'ec677012824656218f67793de20d506c'
+        """
+        compiled, plan = _compile(_two_veils())
+        east = _geometry_group("t1", VEIL_EAST)
+        west = _geometry_group("t2", VEIL_WEST)
+        assert [g.name for g in plan.groups] == ["Veil", "Veil"], \
+            "premise: both plan groups carry the one name"
+
+        got = flow_progress(compiled, plan, _session(plan, []), flow_id=FLOW)
+
+        e, w = got["blocks"]
+        assert (e["group_id"], w["group_id"]) == (east, west)
+        for block in (e, w):
+            assert {p["target_id"] for p in block["panels"]} == {
+                t.id for t in plan.targets
+                if t.mosaic_group == block["group_id"]}
+
+    def test_control_no_plan_group_names_none_and_a_single_target_no_key(
+            self):
+        """A block whose every panel is skipped has no plan group
+        (``to_plan`` emits no group of no members), so no published group
+        can be its: ``group_id`` is null, not the id the group would have
+        had. A single target is no group's member and carries no key at
+        all, so its block is the block S1 served.
+
+        RED under mutant "the recomputed id with no group" (``group_id``
+        set from ``_group``'s id whether or not the plan holds that group),
+        observed:
+
+            AssertionError: assert '4592b2246ee459179dca1063cc7a2e4e' is None
+
+        RED under mutant "group_id on every block" (the single target's
+        and the pool's block created with ``"group_id": None``), observed:
+
+            AssertionError: assert 'group_id' not in {'banked': 0,
+            'group_id': None, 'kind': 'target', 'name': 'M31', ...}
+        """
+        graph = FlowGraph(
+            nodes=[_block("t", "M16", M16, skip="1-1, 1-2, 2-1, 2-2"),
+                   _capture("c", 200),
+                   _n("u", "target", x=300, name="M31",
+                      ra="00h 42m 44s", dec="+41 16 09", rotation=-1),
+                   _capture("k", 400, count=5)],
+            edges=[_e("t", "target", "c", "run"),
+                   _e("c", "complete", "u", "arm"),
+                   _e("u", "target", "k", "run")])
+        compiled, plan = _compile(graph)
+        assert plan.groups == [], "premise: to_plan leaves the block out"
+        got = flow_progress(compiled, plan, _session(plan, []), flow_id=FLOW)
+        mosaic, single = got["blocks"]
+        assert mosaic["group_id"] is None
+        assert mosaic["skipped"], "premise: the block is still listed"
+        assert "group_id" not in single
 
 
 # ------------------------------------------------------------ skipped panels
@@ -375,7 +458,7 @@ class TestNothingInItMovesWithTheSite:
         "top": {"flow_id", "session", "blocks", "orphaned"},
         "session": {"id", "status", "nights", "count_mode"},
         "block": {"node_id", "name", "kind", "banked", "owed", "total",
-                  "panels", "grid", "skipped"},
+                  "panels", "grid", "skipped", "group_id"},
         "grid": {"rows", "cols"},
         "panel": {"target_id", "name", "row", "col", "banked", "owed",
                   "total", "steps"},

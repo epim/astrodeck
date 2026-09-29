@@ -24,7 +24,8 @@ never from the client. Here, in the one writer, so every door converges.
 A save that CANNOT READ the file it replaces refuses (``_stored``,
 ``StoredFlowUnreadable``, #350): read as "no such flow", a transient read
 error moved every anchor to where its block is drawn and restarted counts in
-silence.
+silence. The same read gives the save its bookkeeping (``_bookkeeping``,
+#364), so one refusal covers both.
 """
 from __future__ import annotations
 
@@ -100,6 +101,15 @@ _REASON_MAX = 160
 #: fill the disk and make every list linear-slow. Upserting an existing id is
 #: always allowed.
 MAX_FLOWS = 500
+
+#: The fields a save takes from the file it replaces and never from the
+#: record it is given (``_bookkeeping``, #364). The library card draws the
+#: last two, and nothing but ``touch_run`` may write them: a client that sent
+#: ``last_result: "ok"`` for a flow that never ran would get a green card.
+#: ``created_ts`` is written once, by the save that creates the flow.
+#: ``readonly``, the fourth field a client could forge, is refused, not
+#: carried (``save_and_report``), and ``_persist_flow`` clears it first.
+BOOKKEEPING = ("created_ts", "last_run", "last_result")
 
 
 class FlowLibraryFull(ValueError):
@@ -325,6 +335,30 @@ def _record_of(raw, *, pristine: bool = False) -> FlowRecord:
     if not isinstance(raw, dict):
         raise ValueError("it holds no flow record")
     return FlowRecord(**_migrate(copy.deepcopy(raw) if pristine else raw))
+
+
+def _bookkeeping(prior: FlowRecord | None, now: float) -> dict:
+    """``BOOKKEEPING`` for a save whose ``_stored`` read answered ``prior``:
+    the prior's own values, or a new flow's (created ``now``, never run).
+
+    FROM THE ONE READ THAT CAN REFUSE (#364). ``_persist_flow`` used to take
+    these from ``flow_store.get``, a walk of the whole library through
+    ``_entries``, which turns any failure to read a file into an unreadable
+    row. A transient read error there (a sharing violation from antivirus or
+    an indexer) made ``get`` answer "no such flow" while ``_stored``'s read,
+    a moment later, succeeded, so the save went ahead and wrote the flow as
+    created now and never run: the card of a flow that had run lost its last
+    run in silence. Taken from ``_stored``'s record instead, a read that
+    fails refuses the whole save (``StoredFlowUnreadable``) and a read that
+    works carries the history; the listing's read decides nothing here.
+
+    ``prior`` is None for a missing file, a file the library lists as
+    unreadable, and a record that carries another id (``_stored``): none of
+    them is this flow's history, so each is a new flow's, as a repair or a
+    first save should be."""
+    if prior is None:
+        return {"created_ts": now, "last_run": None, "last_result": ""}
+    return {k: getattr(prior, k) for k in BOOKKEEPING}
 
 
 def _short_reason(exc: BaseException) -> str:
@@ -678,7 +712,9 @@ class FlowStore:
 
     def _stored(self, flow_id: str) -> FlowRecord | None:
         """The flow a save of ``flow_id`` replaces, as this build reads it
-        (migrated, as the compile that keyed its ids read it), or None.
+        (migrated, as the compile that keyed its ids read it), or None. The
+        save's anchors come from it, and so does its bookkeeping
+        (``_bookkeeping``, #364): the save reads the file once.
 
         NONE ONLY WHEN NOTHING WAS KEYED (#350):
 
@@ -752,7 +788,13 @@ class FlowStore:
         After the refusals and the graph's validation, so a refused save
         costs no catalogue lookup and says nothing it did not do. A file it
         replaces that cannot be read refuses the save too, from ``_stored``
-        (``StoredFlowUnreadable``, 409 through ``_persist_flow``, #350)."""
+        (``StoredFlowUnreadable``, 409 through ``_persist_flow``, #350).
+
+        THE BOOKKEEPING IS THE FILE'S, NOT ``record``'s (``BOOKKEEPING``,
+        #364): ``created_ts``, ``last_run`` and ``last_result`` come from the
+        record that same ``_stored`` read returns, whatever ``record``
+        carries, so a save cannot forge a run and a read that fails cannot
+        reset one."""
         if record.readonly or any(e.id == record.id for e in examples()):
             raise ReadOnlyFlow("the shipped examples are read-only — "
                                "duplicate one into My flows to edit it")
@@ -769,13 +811,17 @@ class FlowStore:
         errors = record.graph.validation_errors()
         if errors:
             raise ValueError("; ".join(errors))
+        # ONE READ OF THE FILE THIS SAVE REPLACES, for the anchors and the
+        # bookkeeping alike (#350, #364): it refuses, or it answers both.
+        prior = self._stored(record.id)
         record, migrated, reanchored = prepare_save(
-            record, self._stored(record.id), resolve=self.resolve)
+            record, prior, resolve=self.resolve)
         ensure_dir(self.dir)
+        now = time.time()
         # `migrated` is cleared on the RETURNED record too, so the response to a
         # save never echoes a note, the client's or a stale read's.
-        record = record.model_copy(update={"updated_ts": time.time(),
-                                           "migrated": []})
+        record = record.model_copy(update={"updated_ts": now, "migrated": [],
+                                           **_bookkeeping(prior, now)})
         self._write(record)
         return record, migrated, reanchored
 

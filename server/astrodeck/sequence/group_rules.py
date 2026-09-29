@@ -652,7 +652,9 @@ class GroupRun:
         (``FloorStop``), which the engine sets aside tonight at once, and a
         visit a ``JumpTarget`` ended (#322), which the scheduler then either
         drops from the group (the jump consumed the panel) or takes up again
-        in the same pass (a no-op jump). The panel is NOT marked visited here:
+        in the same pass (a no-op jump); one whose banked trigger frame
+        completed the panel is then made complete (:meth:`note_complete`,
+        #373). The panel is NOT marked visited here:
         a visited panel is one the pass is done with, and only
         :meth:`visit_outcome` makes one.
 
@@ -673,6 +675,21 @@ class GroupRun:
         """
         self._record(panel, exposures=exposures, accepted=accepted,
                      guide_failed=False, guide_started=guide_started)
+
+    def note_complete(self, panel: str) -> None:
+        """A panel the engine found complete after a visit whose outcome it
+        did not hand here: the visit a ``JumpTarget`` ended, when the frame
+        that fired the jump was the last the panel owed (#373). That frame
+        is banked before the jump acts, so such a visit can complete its
+        panel; its counts reach :meth:`note_visit` first, and this makes it
+        complete as :meth:`visit_outcome` makes a complete panel, without
+        marking it visited (the scheduler decides by the jump).
+
+        Left live, a complete panel is one the pass rules still count and
+        the group can never finish with: whatever waits for the mosaic
+        reads it as set aside."""
+        self._check_live(panel)
+        self.completed.add(panel)
 
     def _record(self, panel: str, *, exposures: int, accepted: int,
                 guide_failed: bool, guide_started: bool) -> int:

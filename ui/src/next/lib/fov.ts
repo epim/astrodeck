@@ -8,8 +8,15 @@
 //
 // The Sky hub's framing card does not read this module: its panels come from
 // the server (`hubs/sky/frame/mosaic.ts`) with `lib/framing.ts` as the offline
-// mirror. The README's formula list also said the panels rotate from pass to
-// pass, and that is not what a night does today - see `panelOrder` (#154).
+// mirror. The README's formula list also gave the panels a fixed rotation from
+// pass to pass, and no night takes that order - see `panelOrder` (#154).
+//
+// THE OVERLAP DEFAULT IS NOT THIS FILE'S. `mosaicPitch` defaults to
+// `lib/framing.ts`'s `DEFAULT_OVERLAP`, the one overlap every framing starts
+// from (spec 2026-09-23 flows mosaic, 2.4). It said 0.15, the README's number,
+// while the Atlas, the Target modal and the server said 0.25, so the Optics
+// preview priced a mosaic at a pitch no framing of it would be laid out at.
+// That one constant is the only thing imported from there.
 //
 // NOTE on reuse: `ui/src/lib/framing.ts` already has `fovFromOptics` and
 // `mosaicGrid`, but they solve a different problem (the live Atlas overlay: FOV
@@ -20,6 +27,8 @@
 // reducer 1 -> 2.54 deg, matching the README), plus a panel-INDEX order
 // (`panelOrder`), not sky coordinates, that only its test calls. The two
 // modules are deliberately not merged.
+
+import { DEFAULT_OVERLAP } from "../../lib/framing";
 
 const R2D = 180 / Math.PI;
 export const ARCSEC_PER_RAD = 206.265;
@@ -62,8 +71,9 @@ export function samplingVerdict(v: number): SamplingVerdict {
   return "well sampled";
 }
 
-/** Mosaic panel pitch in degrees: `fov * (1 - overlap)`. */
-export function mosaicPitch(fovDegValue: number, overlap = 0.15): number {
+/** Mosaic panel pitch in degrees: `fov * (1 - overlap)`, the overlap a
+ *  fraction, `DEFAULT_OVERLAP` when none is given. */
+export function mosaicPitch(fovDegValue: number, overlap = DEFAULT_OVERLAP): number {
   return fovDegValue * (1 - overlap);
 }
 
@@ -74,10 +84,12 @@ export function mosaicPitch(fovDegValue: number, overlap = 0.15): number {
  *
  * NOTHING SHOOTS IN THIS ORDER, and only its test calls it. It was written for
  * the design README's rotating mosaic, and the Sky copy used to promise that
- * rotation as if the night kept it (#154). It does not: a Sky mosaic reaches
- * the classic Plan as targets sharing one `mosaic_group`, and the engine's
- * `_run_scheduled` runs each target to completion before it picks the next, so
- * the panels are shot panel-first. The order a night takes is the engine's to
+ * rotation as if the night kept it (#154). Until S6 a Sky mosaic reached the
+ * classic Plan as targets sharing one `mosaic_group`, shot panel-first. Since
+ * S6 (#196) it reaches the night through Send to Flow Wizard as one TARGET
+ * block, and the engine picks each visit from what every panel has banked
+ * (the block's `order`, least complete first by default, spec D3), which no
+ * fixed rotation reproduces. The order a night takes is the engine's to
  * decide; anything that wants to show it must read it from the server, never
  * compute it here.
  */

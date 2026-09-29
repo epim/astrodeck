@@ -229,10 +229,13 @@ async def test_an_abort_in_the_reopen_close_s_guider_wait_starts_no_motion(
     starts no motion, and the stop of tracking is still made because the
     close has already ended the idle stop's task, which would have made it.
     The guider stop is cancelled with the close rather than left running,
-    and the close ends cancelled. (Verifier's case: the ``if cancelled:``
-    branch of `_close_for_reopen` had no test, so the first mutant below
-    survived the rest of the suite for #343. Its mutants were run in the
-    private scratch copy s4-enga-verify-mut.)
+    and the close ends cancelled. No idle stop was decided here, so the
+    cancel re-arms nothing; with one still asking when the close began, the
+    cancel re-arms it for the Abort to complete (#393,
+    test_abort_in_reopen_close_completes_stop.py). (Verifier's case: the
+    ``if cancelled:`` branch of `_close_for_reopen` had no test, so the
+    first mutant below survived the rest of the suite for #343. Its mutants
+    were run in the private scratch copy s4-enga-verify-mut.)
 
     Mutant "cancel in the reopen guider wait swallowed" (the ``if cancelled:
     raise asyncio.CancelledError()`` in `_close_for_reopen` deleted): RED

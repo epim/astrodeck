@@ -202,6 +202,32 @@ export function loopWires(g: LaneGraph, ownerId: string): FlowEdgeRec[] {
     && e.to === ownerId && e.toPort === NEXT_PORT);
 }
 
+/** Pass wires into the block's `next` from a stage of its lane that is NOT
+ *  the tail: compile.py `lane_refusals`' second M12, which `to_plan` refuses
+ *  the flow on, because every stage after the wire's source would be shot
+ *  once per panel with nothing to say when (spec 1.4 item 4, 1.5 item 5).
+ *  Structural, like `loopWires`: whether the block is a mosaic is the
+ *  caller's question.
+ *
+ *  Empty for a lane with no tail. A branched lane is M12 already, named at
+ *  the block, and compile.py does not look for mid-lane wires in it; an
+ *  empty lane has no stage to leave. A pass wire from ANOTHER block's lane
+ *  is not one either: that is the doctor's M4 warning ("this wire does
+ *  nothing"), not a refusal.
+ *
+ *  A LOOP CAN STAND HERE SILENTLY. A flow saved before S4 gave AUTOFOCUS and
+ *  GUIDE a `pass` output opens with its loop wire stranded on the cycle an
+ *  AUTOFOCUS was appended after (#331), and a tail wire drawn beside it by
+ *  hand leaves the stale one behind. `loopWires` finds the tail's wire in
+ *  both, so the card needs this to say what the run will do (#410). */
+export function midLanePassWires(g: LaneGraph, ownerId: string): FlowEdgeRec[] {
+  const tail = laneTail(g, ownerId);
+  if (!tail) return [];
+  const lane = new Set(panelLane(g, ownerId).map((n) => n.id));
+  return g.edges.filter((e) => e.fromPort === PASS_PORT && e.to === ownerId
+    && e.toPort === NEXT_PORT && e.from !== tail.id && lane.has(e.from));
+}
+
 // ------------------------------------------- placing and lifting the loop
 //
 // Spec 1.4 "When the wire is added" and 2.5 DONE. The editor ADDS the loop
@@ -215,8 +241,10 @@ export function loopWires(g: LaneGraph, ownerId: string): FlowEdgeRec[] {
 // panelLane.test.ts holds this file to those graphs.
 //
 // NOT carryLoopWire (flowsSlice.ts). That one MOVES a wire the lane already
-// has when a stage is appended, and never adds one; this one adds or lifts.
-// The graphs it makes are the fixture's `carry_cases`, graded the same way.
+// has when a stage is appended, and never adds one; this one adds, lifts, or
+// (since #410) moves a wire stranded mid-lane to the tail, the same move for
+// the same reason. The graphs that one makes are the fixture's
+// `carry_cases`, graded the same way.
 
 /** The stage a block's loop wire would leave, or null when the block cannot
  *  loop: it is not a multi-panel TARGET (one panel has nothing to rotate
@@ -238,18 +266,35 @@ export function loopSource(g: LaneGraph, blockId: string): FlowNodeRec | null {
  *  1.4): the SAME array when that changes nothing, so a caller can tell a
  *  DONE that moved no wire by identity.
  *
- *  - `true` adds `<tail>.pass -> <block>.next` when `loopSource` names a
- *    tail and the lane has no loop wire yet (a second one is the doctor's
- *    "one is enough", not a better loop). The new wire goes last and takes
- *    its id from `mintId`, so this stays pure.
+ *  - `true` makes the lane loop from its tail, when `loopSource` names one:
+ *    - a lane whose tail already has its loop wire keeps it, and nothing is
+ *      added (a second one is the doctor's "one is enough", not a better
+ *      loop);
+ *    - a lane whose pass wires into the block's `next` leave mid-lane stages
+ *      (`midLanePassWires`, M12) has them MOVED, not doubled (#410): the
+ *      first is re-sourced to the tail, keeping its id and its place, and
+ *      the rest go, or all of them go when the tail has its own already;
+ *    - a lane with no pass wire into `next` gains `<tail>.pass ->
+ *      <block>.next`, last, its id from `mintId`, so this stays pure.
  *  - `false` lifts EVERY pass wire into the block's `next`, whichever stage
  *    it leaves: the operator turned the loop off, and a stale wire from a
  *    mid-lane stage (M12) left behind would still refuse the flow.
  *  - `undefined` leaves the wires alone: a DONE that did not touch the RUN
  *    section says nothing about the loop.
  *
- *  `true` never lifts a pass wire from a mid-lane stage. Repairing a lane the
- *  doctor names (M12, #331) is not a side effect of framing a block. */
+ *  WHY `true` MOVES A STRANDED WIRE (#410). A flow saved before S4 opens with
+ *  its loop wire stranded mid-lane (spec 1.5 item 6), and LOOP PANELS is
+ *  offered on it, because a press changes the wires. Adding a second wire
+ *  from the tail left the stranded one standing, so the flow was still M12,
+ *  the doctor still told the operator to start the loop at the tail they had
+ *  just looped, and the card read "rotate" over a flow `/run` refuses. The
+ *  move is the one `carryLoopWire` (flowsSlice.ts) makes on an append, for
+ *  the same reason: a pass wire from mid-lane has no meaning the operator
+ *  could have wanted. It never reaches a pass wire from ANOTHER block's lane
+ *  (M4): moved to this tail it would become this block's loop.
+ *
+ *  A tail with no `pass` output (legacy SLEW) has nowhere to move a wire to,
+ *  so `true` changes nothing there and the doctor names the lane. */
 export function withLoop<G extends LaneGraph>(
   g: G, blockId: string, loop: boolean | undefined, mintId: () => string,
 ): G["edges"] {
@@ -260,9 +305,23 @@ export function withLoop<G extends LaneGraph>(
     return (kept.length === g.edges.length ? g.edges : kept) as G["edges"];
   }
   const tail = loopSource(g, blockId);
-  if (!tail || loopWires(g, blockId).length > 0) return g.edges;
-  const wire: FlowEdgeRec = {
-    id: mintId(), from: tail.id, fromPort: PASS_PORT, to: blockId, toPort: NEXT_PORT,
-  };
-  return [...g.edges, wire] as G["edges"];
+  if (!tail) return g.edges;
+  const stranded = new Set(midLanePassWires(g, blockId));
+  const looped = loopWires(g, blockId).length > 0;
+  if (stranded.size === 0) {
+    if (looped) return g.edges;
+    const wire: FlowEdgeRec = {
+      id: mintId(), from: tail.id, fromPort: PASS_PORT, to: blockId, toPort: NEXT_PORT,
+    };
+    return [...g.edges, wire] as G["edges"];
+  }
+  // The first stranded wire becomes the loop unless the tail has its own;
+  // every other edge keeps its identity, so a selected wire stays selected.
+  let keep = !looped;
+  const out: FlowEdgeRec[] = [];
+  for (const e of g.edges) {
+    if (!stranded.has(e)) out.push(e);
+    else if (keep) { out.push({ ...e, from: tail.id }); keep = false; }
+  }
+  return out as G["edges"];
 }

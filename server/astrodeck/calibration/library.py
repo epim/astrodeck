@@ -20,6 +20,7 @@ import numpy as np
 
 from ..events import bus
 from ..gallery import THUMBS_DIRNAME, TRASH_DIRNAME
+from ..imaging.fitsio import write_name_card
 from ..persist import read_json_or, safe_id_path, write_json_atomic
 from .keys import CAL_FRAME_TYPES, CalKey, key_from_header, key_index_id
 from .matcher import Gap, LightNeed, MasterRecord, MatchTolerance, coverage_for
@@ -103,8 +104,14 @@ def _write_master_fits(data: np.ndarray, out_path: Path, key: CalKey,
         h["CCD-TEMP"] = key.temp_c
     h["XBINNING"] = key.binning
     h["YBINNING"] = key.binning
-    if key.filter:
-        h["FILTER"] = key.filter
+    # THE FRAME WRITER'S OWN CARDS (#371). ``key.filter`` is the slot's name
+    # as typed, which for a Greek slot astropy refuses in any card, so it
+    # goes through the helper ``save_fits`` uses: FILTER is the fold, and
+    # FILTUTF8 beside it keeps the name when the fold changed it. The master
+    # then reads back, through ``fitsio.full_name``, as the slot its flats
+    # were shot through. A dark's or a bias's key has no filter, and the
+    # helper writes no card for an empty one.
+    write_name_card(h, "FILTER", key.filter)
     h["NFRAMES"] = (frame_count, "source frames stacked")
     h["MASTER"] = (True, "AstroDeck master calibration frame")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +152,57 @@ def build_master_streamed(paths: list[Path], out_path: Path, *, method: str,
             hd.close()
     _write_master_fits(out, out_path, key, len(use))
     return len(use)
+
+
+def _distinct_ids(buckets: dict[tuple[str, str], _Bucket],
+                  temp_bin_width: float) -> dict[str, _Bucket]:
+    """``{id: bucket}`` in which no two ids are one file (#372).
+
+    An id is a master's file name, and two ids that differ only in case are
+    ONE file on NTFS: flats through slots named 'Ha' and 'HA' built two
+    masters, the second overwrote the first, and both records pointed at it.
+    A slot named 'none' and a flat with no filter mint the very same id.
+    ``key_index_id`` leaves both ids alone, since each alone must keep the id
+    it always had, so the collision is found here, where the whole build is
+    in view: every id of a set that is equal under casefold is minted again
+    with the digest of its own name, and one log line names the filters.
+
+    casefold is wider than NTFS's own case table ('ss' and the German sharp
+    s fold alike, and NTFS keeps them apart), which only costs a digest that
+    was not needed. Where two ids collide even with their digests (the
+    digest is eight hex digits: an accident of one in four billion, or a
+    header built to cause it), the second bucket is REFUSED, with a warning
+    naming both filters: a master left unbuilt is a gap the health matrix
+    shows, and two records sharing one file is a flat applied to the wrong
+    filter with nothing anywhere to say so."""
+    by_fold: dict[str, list[tuple[str, _Bucket]]] = {}
+    for (kid, _name), bucket in buckets.items():
+        by_fold.setdefault(kid.casefold(), []).append((kid, bucket))
+    minted: list[tuple[str, _Bucket]] = []
+    for group in by_fold.values():
+        if len(group) == 1:
+            minted.append(group[0])
+            continue
+        names = ", ".join(repr(b.key.filter) for _kid, b in group)
+        bus.log("info",
+                f"flats for filters {names} would have shared one master "
+                f"file, so each master's file name carries a digest of its "
+                f"filter's name", "calibration")
+        minted += [(key_index_id(b.key, temp_bin_width, digest=True), b)
+                   for _kid, b in group]
+    out: dict[str, _Bucket] = {}
+    taken: dict[str, _Bucket] = {}
+    for kid, bucket in minted:
+        first = taken.get(kid.casefold())
+        if first is not None:
+            bus.log("warning",
+                    f"flats for filter {bucket.key.filter!r} left out of the "
+                    f"masters: their file would be the one built for "
+                    f"{first.key.filter!r}", "calibration")
+            continue
+        taken[kid.casefold()] = bucket
+        out[kid] = bucket
+    return out
 
 
 def _plan_needs(plan) -> list[LightNeed]:
@@ -229,7 +287,10 @@ class CalibrationLibrary:
         its own header. The rejects are RETURNED rather than dropped so the
         caller can say what it left out; a scanner that silently indexes fewer
         frames than the folder holds is how a bad library looks healthy."""
-        buckets: dict[str, _Bucket] = {}
+        # Keyed by the id AND the slot's name as typed: two names that mint
+        # one id are two sets of flats, and ``_distinct_ids`` parts them
+        # rather than stacking them into one master (#372).
+        buckets: dict[tuple[str, str], _Bucket] = {}
         rejected: list[tuple[Path, str]] = []
         for p, header, _ts in self.iter_cal_headers():
             key = key_from_header(header)
@@ -243,13 +304,13 @@ class CalibrationLibrary:
             if _rejected_by_dark_check(header):
                 rejected.append((p, str(header.get("DARKWHY", "")).strip()))
                 continue
-            kid = key_index_id(key, temp_bin_width)
-            b = buckets.get(kid)
+            ident = (key_index_id(key, temp_bin_width), key.filter)
+            b = buckets.get(ident)
             if b is None:
-                buckets[kid] = _Bucket(key=key, paths=[p])
+                buckets[ident] = _Bucket(key=key, paths=[p])
             else:
                 b.paths.append(p)
-        return buckets, rejected
+        return _distinct_ids(buckets, temp_bin_width), rejected
 
     def scan_raw(self, temp_bin_width: float) -> dict[str, list[Path]]:
         buckets, _rejected = self._bucket_raw(temp_bin_width)

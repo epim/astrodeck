@@ -1,23 +1,37 @@
-// mosaic.ts - FRAME mode's arithmetic and its one server call (hub-sky plan C).
+// mosaic.ts - FRAME mode's arithmetic, its one server call, and what its door
+// hands Send to Flow Wizard (hub-sky plan C; #196, spec 2026-09-23 flows
+// mosaic, section 8 S6).
 //
-// THE SERVER IS CANONICAL. `POST /api/framing/mosaic` is what the sequence
-// engine will slew to, so the panels that reach the plan come from there and the
-// byte-identical client mirror (`lib/framing.ts`'s `mosaicGrid`) is only the
-// offline fallback - exactly the split `AtlasView.computePanels` already makes.
-// A phone that computed its own panel centres and sent them would be a second
-// truth about where the telescope points.
+// THE SERVER IS CANONICAL. `POST /api/framing/mosaic` is the same layout the
+// compile gives a TARGET block, so the panels DONE keeps on the framing come
+// from there and the byte-identical client mirror (`lib/framing.ts`'s
+// `mosaicGrid`) is only the offline fallback. A phone that computed its own
+// panel centres would be a second truth about where the telescope points.
 //
-// THE 0.15 OVERLAP IS NOT A DEFAULT, IT IS A CORRECTION. `store.openFraming`
-// seeds `mosaic.overlap = 0.25` (the Atlas's own default), while the README's
-// mosaic formula, the prototype and the sentence the framing card PRINTS
-// ("Panels overlap 15%") all use 0.15. Entering FRAME mode therefore re-sets it
-// immediately; without that the card's copy and the panel pitch disagree, and
-// the one that reaches the sky is the pitch.
+// THE FRAMING GOES FORWARD THROUGH THE WIZARD (#196). SEND TO FLOW WIZARD, on
+// the framing card and on the quick sheet of a kept mosaic, opens the shared
+// wizard pre-filled from the framing (`framingPrefill`), which writes ONE
+// TARGET block with the loop wire into a flow. The framing used to reach the
+// night as classic Plan targets sharing a `mosaic_group`, shot panel-first,
+// beside a flow saved for the centre alone (#154); nothing writes that side
+// channel now.
+//
+// ONE OVERLAP (spec 2.4). This file used to re-set every FRAME session to 0.15
+// so that the card's sentence ("Panels overlap 15%") and the panel pitch
+// agreed, while the store seeded 0.25 and the server laid a wizard's grid out
+// at 0.25. `lib/framing.ts`'s `DEFAULT_OVERLAP` is the one constant now, and
+// `OVERLAP` below is that same binding under the name this module always
+// exported.
 
 import { api } from "../../../../api";
-import { mosaicGrid, mosaicTotalFov } from "../../../../lib/framing";
-import { uid } from "../../../../lib/ids";
-import type { MosaicPanel, MosaicResult, Target } from "../../../../types";
+import { DEFAULT_OVERLAP, mosaicGrid, mosaicTotalFov } from "../../../../lib/framing";
+import type { MosaicPanel, MosaicResult } from "../../../../types";
+import { decDms, raHms } from "../../session/flows/create/quickPayload";
+// TYPE-ONLY, off the door's own opener: the prefill type lives in the shared
+// wizard's model (`components/flows/wizard/wizardModel`), and naming it
+// through `openFlowWizard` keeps this file from importing the legacy tree
+// (r7Parity) while staying the exact type the opener takes.
+import type { openFlowWizard } from "../../session/flows/wizard";
 
 /** The design's four mosaic tiles, cols x rows (README section 1). */
 export const MOSAIC_CHOICES: readonly { cols: number; rows: number }[] = [
@@ -32,8 +46,10 @@ export const MOSAIC_CHOICES: readonly { cols: number; rows: number }[] = [
  *  framing (plan H.4). */
 export const ROTS: readonly number[] = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165];
 
-/** The overlap the copy promises and the engine is asked for. */
-export const OVERLAP = 0.15;
+/** The overlap a FRAME session starts from: `DEFAULT_OVERLAP` itself,
+ *  re-exported under this module's old name (a binding, not a copy), so
+ *  there is still exactly one number. */
+export { DEFAULT_OVERLAP as OVERLAP };
 
 /** `AtlasView.tsx:794`, verbatim and load-bearing: `rotation_deg` starts at 0
  *  for every framing session, so treating 0 as a commanded angle bolts a
@@ -77,71 +93,59 @@ export async function fetchPanels(spec: MosaicSpec): Promise<MosaicPanel[]> {
   }
 }
 
-const DEFAULT_STEP = {
-  filter: null,
-  exposure_s: 60,
-  gain: 100,
-  offset: 30,
-  binning: 1,
-  count: 20,
-  frame_type: "light",
-};
+// ------------------------------------------------ Send to Flow Wizard (#196)
+// The door's label is `sheets/quickCopy.ts`'s `SEND_TO_WIZARD`, with the Sky's
+// other words (that module imports nothing, so a copy test reads it bare).
 
-/**
- * Panels -> plan targets, named and flagged exactly as `AtlasView.sendToPlan`
- * does, so a mosaic sent from the Sky hub and one sent from the Atlas are
- * indistinguishable in the plan (plan H.6: the engine's mosaic mechanism IS
- * N targets sharing a `mosaic_group`, not a flow stage).
- */
-export function panelsToTargets(
-  panels: MosaicPanel[],
-  baseName: string,
-  groupId: string | undefined,
-  rotationDeg: number,
-): Target[] {
-  // `rotation_deg` on every panel is the whole rotator hand-off: the sequence
-  // engine calls `goto_and_center(..., rotation_deg=target.rotation_deg)` on
-  // each slew (`sequence/engine.py:5185, 5880`), and it is the ONLY trigger for
-  // rotation. A panel list without it is a mosaic that images at whatever angle
-  // the camera happened to be left at, under a card promising an angle.
-  const many = panels.length > 1;
-  return panels.map((p) => ({
-    id: uid(),
-    name: many ? `${baseName} ${p.row + 1}-${p.col + 1}` : baseName,
-    ra_hours: p.ra_hours,
-    dec_deg: p.dec_deg,
-    center: true,
-    autofocus_first: p.row === 0 && p.col === 0,
-    calibration: false,
-    rotation_deg: rotationDeg,
-    mosaic_group: many ? groupId : undefined,
-    steps: [{ ...DEFAULT_STEP, id: uid() }],
-  })) as Target[];
+/** What the wizard is handed: its `WizardPrefill`, named through the opener. */
+export type SkyWizardPrefill = Parameters<typeof openFlowWizard>[0];
+
+/** A framing's overlap (a fraction) as the percent a TARGET holds, with the
+ *  float noise of `0.15 * 100` taken off (15.000000000000002 is not a number
+ *  anybody framed). */
+export function overlapPercent(fraction: number): number {
+  return Math.round(fraction * 100 * 1e6) / 1e6;
 }
 
 /**
- * The plan's dedupe key for this framing session.
+ * The Sky framing as the wizard's prefill: everything the framing decided and
+ * nothing it did not.
  *
- * `store.addTargetsToPlan` REPLACES every existing target carrying the group
- * before appending, so re-framing the same object updates its panels instead of
- * silently doubling them. A catalogued object groups by its id; a free-roam
- * session groups by the stable `freeroamId` the store seeded - which is the
- * whole reason that field exists (`store.ts:1272-1275`).
+ * - The NAME is the object's display name, else its catalogue id, and "" for
+ *   a free-roam patch, which the wizard then asks for (the frames are filed
+ *   under it; a patch's coordinate label is not a name anybody chose).
+ * - The CENTRE is the framing's, not the catalogue's: a framing dragged off
+ *   the object is framed where it was dragged to.
+ * - NO ANGLE MODE. The framing holds a rotation and no mode (the prefill's
+ *   own doc), so the wizard asks ROTATE TO or CAMERA FIXED AT with the PA
+ *   already typed. The PA is the commanded one (`commandedPa`): a dial never
+ *   turned off 0 commands nothing and arrives as no PA, which the wizard asks
+ *   for rather than planning a grid at an angle nobody chose.
+ * - No skipped panels: the Sky has no way to skip one.
+ * - The FIELD is the one the reticle and the pitch were drawn from, null
+ *   while the optics are unknown.
  */
-export function mosaicGroupId(f: {
-  target?: { id: string } | undefined;
-  freeroamId?: string;
-}): string | undefined {
-  return f.target?.id ?? f.freeroamId;
-}
-
-/** What every panel target is named after. `AtlasView.tsx:727` prefers the
- *  catalogue ID over the display name, because "M31 1-2" is what an operator
- *  finds in the plan and in the frame filenames; "Sky" is the free-roam case. */
-export function mosaicBaseName(f: {
-  target?: { id?: string; name?: string } | undefined;
-}): string {
-  return f.target?.id ?? f.target?.name ?? "Sky";
+export function framingPrefill(
+  f: {
+    target?: { id?: string; name?: string } | undefined;
+    center: { ra_hours: number; dec_deg: number };
+    rotation_deg: number;
+    mosaic: { rows: number; cols: number; overlap: number };
+  },
+  fov: { fov_x_deg: number; fov_y_deg: number },
+): SkyWizardPrefill {
+  return {
+    name: (f.target?.name || f.target?.id || "").trim(),
+    ra: raHms(f.center.ra_hours),
+    dec: decDms(f.center.dec_deg),
+    angleMode: null,
+    paDeg: commandedPa(f.rotation_deg),
+    rows: f.mosaic.rows,
+    cols: f.mosaic.cols,
+    overlapPct: overlapPercent(f.mosaic.overlap),
+    skip: "",
+    fov: fov.fov_x_deg > 0 && fov.fov_y_deg > 0 ? { xDeg: fov.fov_x_deg, yDeg: fov.fov_y_deg } : null,
+  };
 }
 
 /**
@@ -190,7 +194,7 @@ export function framingMeta(
   rot: number,
   fovX: number,
   fovY: number,
-  overlap = OVERLAP,
+  overlap = DEFAULT_OVERLAP,
 ): string {
   const n = cols * rows;
   const rotTail = `rot ${Math.round(rot)}°`;
@@ -233,7 +237,7 @@ export function panelRects(
   rows: number,
   frameW: number,
   frameH: number,
-  overlap = OVERLAP,
+  overlap = DEFAULT_OVERLAP,
 ): PanelRect[] {
   const stepX = frameW * (1 - overlap);
   const stepY = frameH * (1 - overlap);

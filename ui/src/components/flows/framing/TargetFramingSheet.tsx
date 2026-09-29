@@ -1,5 +1,5 @@
-// TargetFramingSheet.tsx - the Target modal, "FRAME" (#189 S4 items 1 and 4;
-// spec 2026-09-23 flows mosaic, 2.1-2.7).
+// TargetFramingSheet.tsx - the Target modal, "FRAME" (#189 S4 items 1 and 4,
+// S5 run mode; spec 2026-09-23 flows mosaic, 2.1-2.7).
 //
 // ONE SHARED SHEET for both UIs, loaded lazily (index.ts), opened on one
 // TARGET node. The classic inspector's FRAME ON SKY row and the #/next
@@ -30,6 +30,27 @@
 // Offline, or for a viewer (the route needs `view.site_derived`), no request
 // is made and DONE opens on the mirror with a chip saying so.
 //
+// NO ANGLE NOBODY CHOSE (S5 orchestrator ruling 1, #411; spec 1.8). A draft
+// at ANY ANGLE that becomes a grid, by a stepper or SUGGEST GRID, stays at ANY
+// ANGLE: S4 turned it into ROTATE TO at PA 0, which a DONE would have sent to
+// the rotator. DONE is locked until an angle is chosen (framingModel
+// `gridAngleLock`), the readout strip says the angle the grid is laid out at,
+// and a measured angle in `status.sky_angle` is offered in the strip and in
+// ANGLE (`angleOffer`), written only when pressed.
+//
+// RUN MODE (spec 2.6). While the flow's session runs, both doors open this
+// sheet with `viewOnly` (they decide it with flowRunState `flowRunLive`, from
+// the progress route's session and the rig's), and it opens read-only as an
+// Example does: no DONE, the fieldset disabled, the sky read-only, so it
+// writes nothing. What it adds is the run: each panel of the framed grid is
+// drawn as the live `state.group` and the progress route say it is
+// (framingModel `runPanelsOf`, `panelDrawState`): the panel being shot with
+// corner ticks, a panel set aside tonight dotted with "!" and its reason in
+// PANELS, and a panel done hatched once the slice's live re-read (#214) banks
+// its last sub. The group is this block's only by the progress block's
+// `group_id` (flowRunState `groupForBlock`), never by name, and nothing of
+// the run's timing is shown: no meridian countdown, no visit clock (5.10).
+//
 // THE LAYOUT (spec 2.2) IS framing.css's, chosen by container queries on the
 // sheet itself and never by a width breakpoint class: phone portrait stacks
 // a 48 px header, the sky pinned OUTSIDE the scroller at min(100vw, 52svh)
@@ -49,6 +70,7 @@ import { effectiveOptics, opticsOverrideProfile } from "../../../lib/effective";
 import { fovFromOptics, mosaicGrid, mosaicTotalFov } from "../../../lib/framing";
 import type { FlowCompileResult } from "../../../lib/flowsApi";
 import type { CatalogEntry, FramingSession, MosaicPanel } from "../../../types";
+import { groupForBlock, type PanelRunState } from "../flowRunState";
 import { MosaicNightCard } from "../../../next/hubs/sky/frame/MosaicNightCard";
 import type { SkyPanel } from "../../atlas/PanelLayer";
 import { raHms, decDms } from "../QuickFlow";
@@ -57,10 +79,11 @@ import { flowSetting, type FlowNodeRec } from "../flowsTypes";
 import { isMultiPanel, laneBranched, laneTail, loopSource, loopWires, panelLane } from "../panelLane";
 import { countsAttempts, countsNotice } from "../countsNotice";
 import {
-  angleLocks, angleOf, cameraFieldLine, currentAnswer, doneState, draftCentre, draftFromParams,
-  driftBanner, framingPatch, gridLock, gridOf, layoutOf, loadViewPrefs, matchCamera, matchCameraLock,
-  moveLine, mosaicRequest, parseSkip, readoutStrip, reframeDecision, requestKey, runLines,
-  saveViewPrefs, setAngleMode, suggestGrid, toggleSkip, toleranceLine, useMeasured, useMeasuredLine,
+  angleLocks, angleOf, angleOffer, cameraFieldLine, currentAnswer, doneState, draftCentre,
+  draftFromParams, driftBanner, framingPatch, gridAngleLock, gridLock, gridOf, layoutOf,
+  loadViewPrefs, matchCamera, matchCameraLock, moveLine, mosaicRequest, panelDrawState, parseSkip,
+  readoutStrip, reframeDecision, requestKey, runLines, runPanelsOf, saveViewPrefs, setAngleMode,
+  stripAngle, suggestGrid, takeOffer, toggleSkip, toleranceLine, useMeasured, useMeasuredLine,
   ZOOM_MAX_DEG, ZOOM_MIN_DEG,
   type FramingDraft, type PanelAnswer, type ServerView, type TargetAngle,
 } from "./framingModel";
@@ -82,7 +105,10 @@ import { CentringSection } from "./sections/CentringSection";
  *  could only be thrown away on close. */
 export const EXAMPLE_VIEW_ONLY =
   "Example flow: its framing opens to view, not to edit. Duplicate the flow to frame your own.";
-/** Why run mode opens the sheet read-only (spec 2.6). */
+/** Why run mode opens the sheet read-only (spec 2.6). Said ahead of
+ *  EXAMPLE_VIEW_ONLY when an Example is the flow that runs: the run is the
+ *  reason the sheet is showing live panels, and "duplicate the flow" is still
+ *  true once it ends. */
 export const RUNNING_VIEW_ONLY = "This flow's session is running: its framing opens to view, not to edit.";
 export const CHECKING = "writing the framing and waiting for the compiler";
 export const ONE_PANEL_NO_LOOP = "one panel, nothing to rotate between";
@@ -103,8 +129,10 @@ export interface TargetFramingSheetProps {
   /** The TARGET node to frame. */
   nodeId: string;
   onClose: () => void;
-  /** Run mode (spec 2.6): the same sheet, read-only. A read-only Example
-   *  opens read-only on its own. */
+  /** Run mode (spec 2.6): the same sheet, read-only, drawing the live run's
+   *  panels. Each door passes it while flowRunState `flowRunLive` says the
+   *  open flow's session is running. A read-only Example opens read-only on
+   *  its own, and draws no run unless this is set too. */
   viewOnly?: boolean;
 }
 
@@ -151,15 +179,6 @@ function isTextField(el: EventTarget | null): boolean {
   return typeof HTMLTextAreaElement !== "undefined" && el instanceof HTMLTextAreaElement;
 }
 
-/** A draft that became a grid cannot stay at ANY ANGLE (doctor M2: panels
- *  laid out at no angle do not tile), so it takes a set mode, north up, as
- *  the ANGLE section would: ROTATE TO unless the profile has no rotator. */
-function gridSafe(d: FramingDraft, hasRotator: boolean | null | undefined): FramingDraft {
-  const { rows, cols } = gridOf(d);
-  if (rows * cols <= 1 || angleOf(d) !== "Any angle") return d;
-  return setAngleMode(d, hasRotator === false ? "Camera fixed at PA" : "Rotate to PA");
-}
-
 // ------------------------------------------------------------------ shell
 
 export default function TargetFramingSheet(p: TargetFramingSheetProps): JSX.Element {
@@ -177,16 +196,17 @@ export default function TargetFramingSheet(p: TargetFramingSheetProps): JSX.Elem
       </Overlay>
     );
   }
-  const why = example ? EXAMPLE_VIEW_ONLY : p.viewOnly ? RUNNING_VIEW_ONLY : null;
+  const runMode = p.viewOnly === true;
+  const why = runMode ? RUNNING_VIEW_ONLY : example ? EXAMPLE_VIEW_ONLY : null;
   // Keyed by node: a sheet re-pointed at another block starts from that
   // block's params, never from the last one's draft.
-  return <FramingSheetBody key={node.id} node={node} onClose={p.onClose} viewWhy={why} />;
+  return <FramingSheetBody key={node.id} node={node} onClose={p.onClose} viewWhy={why} runMode={runMode} />;
 }
 
 // ------------------------------------------------------------------- body
 
-function FramingSheetBody({ node, onClose, viewWhy }: {
-  node: FlowNodeRec; onClose: () => void; viewWhy: string | null;
+function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
+  node: FlowNodeRec; onClose: () => void; viewWhy: string | null; runMode: boolean;
 }): JSX.Element {
   const nodeId = node.id;
   const stored = node.params;
@@ -314,11 +334,25 @@ function FramingSheetBody({ node, onClose, viewWhy }: {
   const progressBlock = useMemo(
     () => progress?.blocks.find((b) => b.node_id === nodeId) ?? null, [progress, nodeId]);
 
+  // ---- the live run (run mode, spec 2.6)
+  // The group is this block's by the progress block's `group_id`, the id the
+  // engine publishes, and never by name. The selector answers a STRING,
+  // because the store's `sequence` is a new object on every publish (every
+  // frame, every detail line), and the sheet, with the sky under it, should
+  // redraw when a panel changes state, not when a frame counter ticks. Outside
+  // run mode no group id is asked for, so nothing of a run is ever drawn on a
+  // sheet that can still edit.
+  const runGroupId = runMode ? progressBlock?.group_id ?? null : null;
+  const runGrid = progressBlock?.grid ?? null;
+  const runKey = useStore((s) =>
+    JSON.stringify(runPanelsOf(groupForBlock(s.sequence, runGroupId), rows, cols, runGrid)));
+  const run = useMemo(() => JSON.parse(runKey) as Record<string, PanelRunState>, [runKey]);
+
   // ---- the panels, in run order, and as the sky draws them
   const rowsModel = useMemo(() => panelRows({
     rows, cols, skip: parseSkip(draft.skip, rows, cols).skip, progress: progressBlock,
-    answerPanels: serverPanels, order: String(draft.order),
-  }), [rows, cols, draft.skip, draft.order, progressBlock, serverPanels]);
+    answerPanels: serverPanels, order: String(draft.order), run,
+  }), [rows, cols, draft.skip, draft.order, progressBlock, serverPanels, run]);
   const mirror = useMemo(() => (request ? mosaicGrid({
     ra_hours: request.ra_hours, dec_deg: request.dec_deg, rows: request.rows, cols: request.cols,
     overlap: request.overlap, rotation_deg: request.rotation_deg,
@@ -328,8 +362,7 @@ function FramingSheetBody({ node, onClose, viewWhy }: {
     const byLabel = new Map(rowsModel.map((r) => [`${r.row - 1},${r.col - 1}`, r]));
     return (serverPanels ?? mirror).map((pp) => {
       const r = byLabel.get(`${pp.row},${pp.col}`);
-      const state: SkyPanel["state"] = r?.skipped ? "skipped"
-        : r && r.total > 0 && r.banked >= r.total ? "done" : "pending";
+      const state: SkyPanel["state"] = r ? panelDrawState(r, r.run) : "pending";
       return {
         row: pp.row, col: pp.col, ra_hours: pp.ra_hours, dec_deg: pp.dec_deg,
         rotation_deg: pp.rotation_deg, order: r?.order ?? undefined, state,
@@ -422,6 +455,18 @@ function FramingSheetBody({ node, onClose, viewWhy }: {
   // ---- the re-frame question (spec 2.5, Revision 2 ruling 3)
   const decision = reframeDecision({ stored, draft, progress: progressBlock, view });
 
+  // ---- the angle a grid is laid out at (S5 orchestrator ruling 1, #411)
+  const angleLock = gridAngleLock(draft);
+  const offer = angleOffer(draft, skyAngle, rig);
+  const measuredLine = useMeasuredLine(skyAngle, Date.now() / 1000);
+  // The offer is taken against the draft as it is at the press, never the
+  // one it was drawn for: pressed twice, or after a drag, it writes the
+  // measurement or nothing.
+  const onTakeOffer = () => setDraft((d) => {
+    const o = angleOffer(d, skyAngle, rig);
+    return o ? takeOffer(d, o) : d;
+  });
+
   // ---- DONE
   const commit = async () => {
     setQuestion(null);
@@ -452,7 +497,9 @@ function FramingSheetBody({ node, onClose, viewWhy }: {
     if (decision.ask) { setQuestion(decision.question); return; }
     void commit();
   };
-  const doneReason = done.locked ? done.reason : busy ? CHECKING : null;
+  // A grid with no angle says so first: it is the operator's to fix, and
+  // waiting for the server's answer does not fix it.
+  const doneReason = angleLock ?? (done.locked ? done.reason : busy ? CHECKING : null);
   // CANCEL, Escape and the scrim, while DONE's write waits for its compile.
   // By then the write has happened, so CANCEL can no longer mean "write
   // nothing"; and a close taken now was followed by DONE's own when the
@@ -503,8 +550,11 @@ function FramingSheetBody({ node, onClose, viewWhy }: {
   })), [draft]);
 
   // ---- section handlers
-  const setGrid = (over: Partial<FramingDraft>) =>
-    setDraft((d) => gridSafe({ ...d, ...over }, rig?.has_rotator));
+  // A grid change touches the grid and nothing else. A draft at ANY ANGLE
+  // that becomes a grid stays at ANY ANGLE and owes an angle, which DONE's
+  // lock asks for and the offer can pay; S4 set it to ROTATE TO here, whose
+  // "none" is 0, an angle nobody chose (S5 orchestrator ruling 1, #411).
+  const setGrid = (over: Partial<FramingDraft>) => setDraft((d) => ({ ...d, ...over }));
   const suggestion = sky.target ? suggestGrid(sky.target.size_arcmin ?? 0, draft) : null;
   const suggestLock = !sky.target ? NO_OBJECT
     : !(sky.target.size_arcmin && sky.target.size_arcmin > 0) ? NO_SIZE
@@ -586,6 +636,22 @@ function FramingSheetBody({ node, onClose, viewWhy }: {
           <div className="tfs-controls">
             <div className="tfs-strip tfs-mono" data-testid="framing-strip">
               <div>{stripText}</div>
+              {/* The angle the grid is laid out at, and for a grid that owes
+                  one, the measured angle offered in one press (#411). The
+                  strip is outside the fieldset, so the offer is left out
+                  while the draft is frozen rather than disabled by it. */}
+              <div>
+                <span data-testid="framing-strip-angle">{stripAngle(draft)}</span>
+                {offer && !frozen && (
+                  <>
+                    {" "}
+                    <button type="button" className="tfs-btn tfs-on" data-testid="framing-strip-offer"
+                      title={measuredLine ?? undefined} onClick={onTakeOffer}>
+                      {offer.label}
+                    </button>
+                  </>
+                )}
+              </div>
               {move && <div data-testid="framing-move">{move}</div>}
             </div>
             <div
@@ -626,13 +692,15 @@ function FramingSheetBody({ node, onClose, viewWhy }: {
                   mode={mode}
                   rotation={mode === "Any angle" ? "" : String(draft.rotation)}
                   locks={angleLocks(draft, rig)}
-                  measured={useMeasuredLine(skyAngle, Date.now() / 1000)}
+                  measured={measuredLine}
+                  offer={offer?.label ?? null}
                   tolerance={toleranceLine(readouts?.angle_tolerance_deg ?? null, draft)}
                   degreeLock={mode === "Any angle" ? ANY_ANGLE_HOLDS_NONE : null}
                   onMode={(m: TargetAngle) => setDraft((d) => setAngleMode(d, m))}
                   onRotation={(t) => patchDraft({ rotation: t })}
                   onNudge={(delta) => setDraft((d) => ({ ...d, rotation: wrap360(round1((layoutOf(d).rotation_deg ?? 0) + delta)) }))}
                   onUseMeasured={() => setDraft((d) => useMeasured(d, skyAngle))}
+                  onOffer={onTakeOffer}
                   explain={setExplained}
                 />
                 <PanelsSection
@@ -645,6 +713,8 @@ function FramingSheetBody({ node, onClose, viewWhy }: {
                 />
                 {ownsStage && (
                   <RunSection
+                    onePanel={!draftMulti}
+                    noMosaic={!draftMulti && !graph.nodes.some((n) => n.id !== nodeId && isMultiPanel(n))}
                     loop={loopOn}
                     loopLock={loopLock}
                     passes={layoutNum(draft.passes, 1)}

@@ -42,6 +42,10 @@
 //      it reaches the window. Graded through the real SheetHost with the
 //      compile held open, which neither the modal's own test (no SheetHost)
 //      nor the probe (no held compile) can do.
+//   8. RUN MODE IS THE DOOR'S (#189 S5; spec 2.6). While the open flow's
+//      session runs (flowRunState `flowRunLive`), the sheet mounts the modal
+//      with `viewOnly`: read-only, with RUNNING_VIEW_ONLY; a dormant session,
+//      or the rig running another flow's session, opens it editable.
 //
 // Every mutant below was run in a private scratch copy of ui/, never in the
 // shared tree (#254), and the failure it produced is quoted verbatim. All of
@@ -288,7 +292,9 @@ function graph(target = "M31"): any {
  *  flow `?open=` names in every route here, framing M31. `id: null` is an
  *  unsaved flow, which has no record and so no id to name. `readonly` makes
  *  the flow a read-only Example (section 2's last case). */
-function seed(o: { id?: string | null; target?: string; readonly?: boolean } = {}): void {
+function seed(o: {
+  id?: string | null; target?: string; readonly?: boolean; progress?: any; sequence?: any;
+} = {}): void {
   const id = o.id === undefined ? OPEN : o.id;
   const gr = graph(o.target);
   act(() => {
@@ -298,7 +304,7 @@ function seed(o: { id?: string | null; target?: string; readonly?: boolean } = {
       wsConnected: false,
       wsPhase: "up",
       status: { connected: { camera: { connected: true } } } as never,
-      sequence: { state: "idle" } as never,
+      sequence: (o.sequence ?? { state: "idle" }) as never,
       resumeArm: null as never,
       flows: {
         ...FLOWS_INIT,
@@ -306,6 +312,7 @@ function seed(o: { id?: string | null; target?: string; readonly?: boolean } = {
           id, name: `Quick ${o.target ?? "M31"}`, folder: "My flows", tagline: "", graph: gr,
           created_ts: 0, updated_ts: 0, last_run: null, last_result: "", readonly: o.readonly ?? false },
         graph: gr,
+        progress: o.progress ?? null,
         ui: { ...FLOWS_INIT.ui, screen: "editor" },
       } as never,
     } as never);
@@ -848,6 +855,75 @@ await test("on a phone with nothing in flight, Escape closes the modal back to t
   eq(hash(), PHONE_STAGES_AT, "Escape did not pop exactly flowFrame");
   eq(q("session-flow-stages")?.closest(".nx-sheet-slot")?.getAttribute("data-under"), "false",
     "the stage list is not on top after Escape");
+  await unmountAll();
+});
+
+// ============================================ 8. run mode is the door's
+//
+// The progress route's recorded answer for a flow with a dormant session, and
+// the rig's recorded state of a run writing that very session, READ, NOT
+// COPIED (server/tests/test_s5_recorded_state.py rebuilds both byte for byte).
+// They name the session, not this file's flow, and that is all the door reads.
+async function readFixture(name: string): Promise<any> {
+  const { readFileSync } = await import("node:fs");
+  const rel = `../../../../../../../../server/tests/fixtures/${name}`;
+  try {
+    return JSON.parse(String(readFileSync(new URL(rel, import.meta.url), "utf8")));
+  } catch (e) {
+    throw new Error(`cannot read ${rel}, a recorded answer the run-mode case is graded against: `
+      + `${(e as Error).message}`);
+  }
+}
+
+// MUTANT "the doors never pass viewOnly" (FlowFrameSheet.tsx mounts
+// `<TargetFramingSheetLazy nodeId={params.node ?? ""} onClose={closeFrame} />`,
+// the adapter as S4 left it). Run in scratchpad S5-RUNMODE-mut, 2026-09-28.
+// Observed ("flowFrameSheet.test: 17/18 passed"):
+//   x while the open flow's session runs, the sheet opens the modal read-only in run mode; a dormant session opens it editable: the modal's view mode while the flow runs
+//     expected "true"
+//     got      null
+await test("while the open flow's session runs, the sheet opens the modal read-only in run mode; a dormant session opens it editable", async () => {
+  const progress = (await readFixture("flow_progress_continue.json")).response;
+  const running = (await readFixture("sequence_state_mosaic.json")).states.shooting;
+  eq(running.session.id, progress.session.id, "premise: the run writes the progress answer's session");
+  const { RUNNING_VIEW_ONLY } = await import("../../../../../../components/flows/framing/TargetFramingSheet");
+  const reason = (): string | null => q("framing-view-why")?.textContent ?? null;
+
+  // CONTROL: the session dormant, the rig idle. The modal edits.
+  seed({ progress });
+  await mountAt(FRAME_AT, false);
+  await until("the Target modal", () => modal() != null);
+  eq(modal().getAttribute("data-view"), null, "the modal's view mode over a dormant session");
+  eq(reason(), null, "the modal's reason over a dormant session");
+  assert(doneButton() != null, "the modal over a dormant session offers no DONE");
+  await unmountAll();
+
+  // CONTROL: the rig running ANOTHER flow's session (the recorded run, its
+  // session id changed). The modal edits: a run is this flow's by the session
+  // id the progress route counts, never because the rig is busy. MUTANT "the
+  // door asks whether ANY run is live" (FlowFrameSheet.tsx reads
+  // `s.sequence?.state === "running"` in place of `flowRunLive`), green before
+  // this control existed; observed (verifier's scratch copy
+  // S5-RUNMODE-verify-mut, 2026-09-28, "flowFrameSheet.test: 17/18 passed"):
+  //   x while the open flow's session runs, the sheet opens the modal read-only in run mode; a dormant session opens it editable: the modal's view mode under another flow's run
+  //     expected null
+  //     got      "true"
+  seed({ progress, sequence: { ...running, session: { ...running.session, id: "another-flows-session" } } });
+  await mountAt(FRAME_AT, false);
+  await until("the Target modal", () => modal() != null);
+  eq(modal().getAttribute("data-view"), null, "the modal's view mode under another flow's run");
+  eq(reason(), null, "the modal's reason under another flow's run");
+  assert(doneButton() != null, "the modal under another flow's run offers no DONE");
+  await unmountAll();
+
+  // The flow's session running: the same sheet opens run mode.
+  seed({ progress, sequence: running });
+  await mountAt(FRAME_AT, false);
+  await until("the Target modal", () => modal() != null);
+  eq(modal().getAttribute("data-view"), "true", "the modal's view mode while the flow runs");
+  eq(reason(), RUNNING_VIEW_ONLY, "the modal's reason while the flow runs");
+  eq(doneButton() ?? null, null, "the modal offers DONE while the flow runs");
+  eq(doc.querySelector(".tfs-fieldset")?.disabled, true, "the modal's controls while the flow runs");
   await unmountAll();
 });
 

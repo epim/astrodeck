@@ -68,9 +68,8 @@ const {
   DEGRADED_PACK_PRESENT, DEGRADED_PACK_UNKNOWN, regionNotes, shouldPollPack,
   surveyDegradedText,
 } = await import("../degraded");
-const { commandedPa, framingMatches, mosaicBaseName, mosaicGroupId } = await import("../mosaic");
-const { parseMosaicParam } = await import("../../sheets/flowLane");
-const { floorLegend, mosaicPlanNote } = await import("../../sheets/quickCopy");
+const { commandedPa, framingMatches } = await import("../mosaic");
+const { SEND_TO_WIZARD, floorLegend, mosaicPlanNote } = await import("../../sheets/quickCopy");
 
 let passed = 0;
 let failed = 0;
@@ -206,14 +205,11 @@ test("a framing belongs to the target it was framed for, and to no other", () =>
   eq(framingMatches(ROAM, "m31"), false, "and nothing else:");
 });
 
-test("the plan's group id and panel names follow the Atlas's own rule", () => {
-  eq(mosaicGroupId(M31), "m31", "a catalogued object groups by id:");
-  eq(mosaicGroupId(ROAM), "Sky 20.97h +30.7°", "free-roam groups by the stable session id:");
-  eq(mosaicGroupId({}), undefined, "nothing to group by is undefined, not a made-up key:");
-  eq(mosaicBaseName(M31), "m31", "panel names are built from the id an operator finds in the plan:");
-  eq(mosaicBaseName({ target: { name: "Typed position" } }), "Typed position", "name when there is no id:");
-  eq(mosaicBaseName({}), "Sky", "free-roam:");
-});
+// DELIBERATE REMOVAL (#196 S6; the S5/S6 integration, #461): a case here
+// graded `mosaicGroupId` and `mosaicBaseName`, the retired Plan door's group
+// key and panel names, and section 4 graded `parseMosaicParam`, the flow
+// card's hash parser for its synthetic MOSAIC row. S6 left all three with no
+// production caller, and the integration deleted them with their cases.
 
 test("the 0.5 degree dead-band decides whether an angle is COMMANDED", () => {
   // Load-bearing: `rotation_deg` starts at 0 for every framing session, so
@@ -222,19 +218,6 @@ test("the 0.5 degree dead-band decides whether an angle is COMMANDED", () => {
   eq(commandedPa(0), null, "a fresh session commands nothing:");
   eq(commandedPa(0.4), null, "inside the dead-band:");
   eq(commandedPa(30), 30, "a real angle:");
-});
-
-// ============================================================= 4. the hash
-
-test("the flow card's MOSAIC row comes from the hash, and refuses nonsense", () => {
-  eq(parseMosaicParam("2x1")?.cols, 2, "cols:");
-  eq(parseMosaicParam("2x1")?.rows, 1, "rows:");
-  eq(parseMosaicParam("3x2")?.rows, 2, "a deeper grid:");
-  eq(parseMosaicParam("1x1"), null, "a single frame is not a mosaic and gets no card:");
-  eq(parseMosaicParam(""), null, "a deep link with no mosaic must not invent one:");
-  eq(parseMosaicParam("lots"), null, "a malformed hash:");
-  eq(parseMosaicParam("0x4"), null, "a zero dimension:");
-  eq(parseMosaicParam("-2x3"), null, "a negative dimension:");
 });
 
 // ============================================================== 5. the copy
@@ -250,11 +233,42 @@ test("the mosaic note says where the panels actually go", () => {
   // WHERE they go is pinned here; the ORDER they are shot in (panel-first, #154)
   // is pinned with every other Sky mosaic string in
   // `hubs/sky/__tests__/mosaicCopyPanelFirst.test.ts`.
+  //
+  // DELIBERATE PIN CHANGE (#196 S6, S6-DOORS; re-pinned by the S5/S6
+  // integration, S56-INTEG): the panels no longer go to the PLAN. The Plan
+  // side channel is gone, and a kept mosaic's grid is planned through SEND TO
+  // FLOW WIZARD as one mosaic block in a flow, which is now the surprising
+  // half: GENERATE FLOW beside it plans one target. The old pin, run against
+  // this tree, observed:
+  //   x the mosaic note says where the panels actually go: the note must name
+  //   the PLAN, because that is the surprising half of H.6
+  // Mutant "the note says plan targets again" (quickCopy.ts mosaicPlanNote
+  // returning its pre-S6 text, "... queues all 6 panels as plan targets in one
+  // mosaic group ..."), observed in the private copy scratchpad S56-INTEG-mut
+  // (14/15):
+  //   x the mosaic note says where the panels actually go: the note must name
+  //   SEND TO FLOW WIZARD, the door that plans the grid since S6 (#196):
+  //   "Framed as a 3×2 mosaic. GENERATE FLOW saves the flow for the framing
+  //   centre and queues all 6 panels as plan targets in one mosaic group, each
+  //   carrying the camera angle above. The engine shoots each panel to
+  //   completion before it starts the next, so a night cut short leaves the
+  //   last panels short. Re-framing replaces them rather than adding a second
+  //   set."
+  // Mutant "the note drops GENERATE FLOW's one target" (the clause
+  // "GENERATE FLOW plans one target with the camera angle above; " cut from
+  // the note), observed (14/15):
+  //   x the mosaic note says where the panels actually go: and say the wizard
+  //   plans the grid as one block while GENERATE FLOW plans one target:
+  //   "Framed as a 3×2 mosaic of 6 panels. SEND TO FLOW WIZARD plans all 6
+  //   panels as one mosaic block in a flow, from this framing's centre,
+  //   angle, grid and overlap."
   const n = mosaicPlanNote(6, 3, 2);
   assert(/6 panels/.test(n), `the note must name the count: "${n}"`);
   assert(/3×2/.test(n), "and the grid");
-  assert(/plan targets/.test(n),
-    "the note must name the PLAN, because that is the surprising half of H.6");
+  assert(n.includes(SEND_TO_WIZARD),
+    `the note must name ${SEND_TO_WIZARD}, the door that plans the grid since S6 (#196): "${n}"`);
+  assert(/one mosaic block/.test(n) && /one\s+target/.test(n),
+    `and say the wizard plans the grid as one block while GENERATE FLOW plans one target: "${n}"`);
 });
 
 // ------------------------------------------------------------------- tally

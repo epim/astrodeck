@@ -14,14 +14,20 @@
 // THE LOOP IS READ FROM THE GRAPH. Whether a mosaic rotates is the loop wire,
 // not a param: spec 1.4 makes the wire "the single source of truth for rotate
 // panels every pass", and deleting it is how an operator turns rotation off.
-// So the footer's "rotate" and the chip's words both come from `loopWires`
-// (panelLane.ts, the mirror of compile.py `loop_wires`), which is exactly the
-// wire the compile consumes as the entry's `loop` - the card cannot say
-// "rotate" over a graph the run will shoot panel-first.
+// So the footer's "rotate" and the chip's words both come from `targetLoops`:
+// `loopWires` (panelLane.ts, the mirror of compile.py `loop_wires`), which is
+// exactly the wire the compile consumes as the entry's `loop`, and no M12
+// beside it (`midLanePassWires`, #410) - the card cannot say "rotate" over a
+// graph the run will shoot panel-first, or refuse to shoot at all.
 
-import { loopArc, type FlowTier, type LoopArc } from "./geometry";
+import {
+  loopArc, nodeLayoutHeight, type EdgeMode, type FlowTier, type LoopArc, type LoopArcOpts,
+} from "./geometry";
+import { AUTO_PAD, FLOW_LANE_GAP, layoutHeight } from "./autoLayout";
 import { NODE_DEFS, TARGET_ANGLES, targetAngle } from "./nodeDefs";
-import { isMultiPanel, loopWires, panelLane, NEXT_PORT, type LaneGraph } from "./panelLane";
+import {
+  isMultiPanel, loopWires, midLanePassWires, panelLane, NEXT_PORT, type LaneGraph,
+} from "./panelLane";
 import type { FlowEdgeRec, FlowNodeRec } from "./flowsTypes";
 
 /** The separator every card footer already uses between facts (nodeDefs.ts's
@@ -83,13 +89,23 @@ function angleWords(p: Record<string, string | number>): string {
 
 // --------------------------------------------------------------- the footer
 /** True when the block rotates its panels: a mosaic with a loop wire from the
- *  tail of its own lane into its `next`. The graph, never the params, decides.
+ *  tail of its own lane into its `next`, and no pass wire into that `next`
+ *  from a stage before the tail. The graph, never the params, decides.
+ *
+ *  THE SECOND CONDITION IS M12 (#410). A pass wire from mid-lane is a refusal
+ *  (compile.py `lane_refusals`): the run does not rotate the panels, it does
+ *  not start. `loopWires` alone finds a tail wire standing beside a stale one
+ *  (a flow saved before S4, or LOOP PANELS as S4 built it), and the footer
+ *  read "rotate" and the arc "every pass: next panel" over a flow `/run`
+ *  refuses. So the card says what the RUN does: one panel at a time until the
+ *  lane is one loop, which LOOP PANELS then offers to make.
  *
  *  Cheap and `sum`-free on purpose: the cards call this from a store selector,
  *  which runs on every store write, and two test files count card renders
  *  through `NODE_DEFS.target.sum`. */
 export function targetLoops(node: FlowNodeRec, graph: LaneGraph): boolean {
-  return node.type === "target" && isMultiPanel(node) && loopWires(graph, node.id).length > 0;
+  return node.type === "target" && isMultiPanel(node) && loopWires(graph, node.id).length > 0
+    && midLanePassWires(graph, node.id).length === 0;
 }
 
 /** The footer for a TARGET whose loopedness the caller already knows.
@@ -102,7 +118,21 @@ export function targetLoops(node: FlowNodeRec, graph: LaneGraph): boolean {
  *  `sum` stays what nodeDefs.ts says it is and the render counters in
  *  flowNodeDom.test.tsx and flowProgressChip.test.tsx still see one call per
  *  card render. Empty segments are left out: a created TARGET has no name yet,
- *  and " · any angle" would read as a glitch. */
+ *  and " · any angle" would read as a glitch.
+ *
+ *  THE WORD THAT TELLS THE TWO MOSAIC LINES APART COMES SECOND (#357), right
+ *  after the name. The classic card's footer is one `truncate` line of 9.5 px
+ *  mono inside `px-2.5` on a 188 px card: 166 px, 29 characters at the font's
+ *  0.6 em advance. The design's order, "M31 · 3x2 · PA 30.0 · 25% · rotate",
+ *  is 34, so the ellipsis fell inside "rotate" and a rotating mosaic read
+ *  like a panel-first one, the one thing this line was added to say. Now
+ *  what the truncation cuts first is the grid and the angle, which the modal
+ *  and the inspector both show; cardFooterDom.test.tsx holds the eighth
+ *  Example's lines to the budget computed from the card's own classes. The
+ *  28 characters an overflowing line shows keep "rotate" for a name of up to
+ *  19 characters, but "one panel at a time" only up to 6 ("NGC 7331 · one
+ *  panel at a ti"), which still reads apart from "rotate"; a shorter word
+ *  there is the spec's to rule on (#357). */
 export function targetFooter(node: FlowNodeRec, loops: boolean): string {
   const p = node.params ?? {};
   const name = NODE_DEFS.target.sum(p);
@@ -111,14 +141,13 @@ export function targetFooter(node: FlowNodeRec, loops: boolean): string {
     const { rows, cols } = targetGrid(node);
     // COLUMNS BY ROWS (S4 orchestrator ruling 1): a grid is written the way it
     // is seen, width first, so three columns of two rows is "3x2".
-    parts.push(`${cols}x${rows}`);
+    const size = `${cols}x${rows}`;
     if (loops) {
-      parts.push(angleWords(p));
+      parts.push("rotate", size, angleWords(p));
       const overlap = decimal(p.overlap);
       if (Number.isFinite(overlap)) parts.push(`${overlap}%`);
-      parts.push("rotate");
     } else {
-      parts.push("one panel at a time");
+      parts.push("one panel at a time", size);
     }
   } else {
     parts.push(angleWords(p));
@@ -126,18 +155,16 @@ export function targetFooter(node: FlowNodeRec, loops: boolean): string {
   return parts.filter((s) => s !== "").join(SUMMARY_SEP);
 }
 
-/** The TARGET card's footer line (spec 1.2), sized to the 188 px card:
+/** The TARGET card's footer line (spec 1.2):
  *
- *      rotating mosaic   M31 · 3x2 · PA 30.0 · 25% · rotate
- *      mosaic, no loop   M31 · 3x2 · one panel at a time
+ *      rotating mosaic   M31 · rotate · 3x2 · PA 30.0 · 25%
+ *      mosaic, no loop   M31 · one panel at a time · 3x2
  *      single target     NGC 7331 · any angle
  *
- *  For a TARGET only; every other card keeps its vocabulary `sum`.
- *
- *  "Sized to the 188 px card" is the spec's claim, and computed it does not
- *  hold on the classic card: 29 characters of 9.5 px mono fit, the rotating
- *  line is 34, and `truncate` cuts it inside "rotate" (#357). The strings are
- *  the spec's until that is ruled on. */
+ *  For a TARGET only; every other card keeps its vocabulary `sum`. The
+ *  design wrote the mosaic lines with the loop word last and said they were
+ *  "sized to the 188 px card"; computed, they are not (#357), which is why
+ *  `targetFooter` puts that word second. */
 export function targetSummary(node: FlowNodeRec, graph: LaneGraph): string {
   return targetFooter(node, targetLoops(node, graph));
 }
@@ -182,29 +209,81 @@ export function loopArcTarget(edge: FlowEdgeRec, nodes: readonly FlowNodeRec[]):
   return port?.kind === "event" ? to : null;
 }
 
+// ------------------------------------------------ the arc on the column layout
+//
+// The classic phone FLOW tab (#360) lays the graph out in two columns
+// (autoLayout.ts `computeAutoLayout`) inside a container that clips anything
+// past its edges, and the canvas's arc does not fit it. Its legs stood
+// `LOOP_ARC_STUB` (24 px) outside the outermost body cards, and the columns
+// stand `AUTO_PAD` (14 px) inside the container, so both legs were drawn
+// outside it and cut off: the loop read as two stubs with nothing joining
+// them. And its run lay 28 px under the lowest body card, where the column
+// layout had already put the NEXT card in flow order (the REPORT after the
+// tail, 16 px down in the other column), so the run crossed it.
+//
+// So on this surface the legs stand half the gutter out, inside the
+// container, and the run lies in the middle of the gap the column layout
+// leaves under a flow-lane card, below every card from the TARGET down to
+// the tail and above the one that follows. Any card the run's span would
+// still meet (a stage a flow cycle left out of the flow order is stacked
+// 4 px under the one before it) pushes the run below it (`LoopArcOpts`).
+
+/** How far outside the columns the legs stand on the column layout: half of
+ *  `AUTO_PAD`, so each leg is as far inside the container as it is outside
+ *  the cards. */
+export const COLUMN_LOOP_STUB = AUTO_PAD / 2;
+
+/** How much taller a card's formula box (`nodeLayoutHeight`, the fit's pad)
+ *  is than the height the column layout spaces it by (`layoutHeight`, its
+ *  own pad): the same for every card, since both are the header plus the
+ *  rows plus a pad. Read off a card with no rows rather than restated. */
+const BOX_OVER_SPACING = ((): number => {
+  const bare = { id: "", type: "" as FlowNodeRec["type"], x: 0, y: 0, params: {} };
+  return nodeLayoutHeight(bare, NODE_DEFS) - layoutHeight(bare, NODE_DEFS);
+})();
+
+/** How far below the lowest body card the run lies on the column layout: the
+ *  middle of the gap between two consecutive flow-lane cards' boxes, which is
+ *  `FLOW_LANE_GAP` less what each box stands taller than its spacing (34 - 18
+ *  = 16 px, so 8). A card is `layoutHeight` + `FLOW_LANE_GAP` below the one
+ *  before it in flow order, whichever column, and every card before the
+ *  lowest body card ends above it, so the middle of that gap is clear. */
+export const COLUMN_LOOP_DROP = (FLOW_LANE_GAP - BOX_OVER_SPACING) / 2;
+
 /** The arc for a wire into a TARGET's `next`, or null for any other wire (or
  *  one whose ports cannot be placed). The body it runs under is the TARGET,
  *  the lane it owns and the wire's source. `place` substitutes a layout's
  *  positions (the classic phone FLOW tab lays the graph out itself and never
- *  writes those positions back), applied to every card before any maths. */
+ *  writes those positions back), applied to every card before any maths.
+ *
+ *  `mode` is the surface's (geometry `EdgeMode`): "canvas" draws the arc as
+ *  spec 1.4 has it; "phone-flow", the column layout, draws it inside the
+ *  container and clear of every card it lays out (#360, above). */
 export function loopArcOf(
   edge: FlowEdgeRec,
   graph: LaneGraph,
   tier: FlowTier,
   place: (n: FlowNodeRec) => FlowNodeRec = (n) => n,
+  mode: EdgeMode = "canvas",
 ): LoopArc | null {
   const to = loopArcTarget(edge, graph.nodes);
   const from = graph.nodes.find((n) => n.id === edge.from);
   if (!to || !from) return null;
+  const opts: LoopArcOpts = mode === "phone-flow"
+    ? { stub: COLUMN_LOOP_STUB, drop: COLUMN_LOOP_DROP, avoid: graph.nodes.map(place) }
+    : {};
   return loopArc(place(from), edge.fromPort, place(to), edge.toPort,
-    panelLane(graph, to.id).map(place), NODE_DEFS, tier);
+    panelLane(graph, to.id).map(place), NODE_DEFS, tier, opts);
 }
 
 /** Is this the block's loop wire: a pass wire from the tail of a multi-panel
- *  block's lane into its `next`, the wire the compile consumes as `loop`. */
+ *  block's lane into its `next`, the wire the compile consumes as `loop`,
+ *  on a block that rotates (`targetLoops`). A tail wire beside a stale
+ *  mid-lane one is `loop` to the compile and M12 to `to_plan` (#410), and a
+ *  chip over it would promise the rotation the card's footer denies. */
 function isLoopWire(graph: LaneGraph, edge: FlowEdgeRec): boolean {
   const to = loopArcTarget(edge, graph.nodes);
-  return !!to && isMultiPanel(to) && loopWires(graph, to.id).some((e) => e.id === edge.id);
+  return !!to && targetLoops(to, graph) && loopWires(graph, to.id).some((e) => e.id === edge.id);
 }
 
 /** A grid side the compile wrote: a whole number of at least one. */

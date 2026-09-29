@@ -27,7 +27,9 @@
 // that (T-R7-20 measured +42.94 kB raw / +13.46 kB gzip on this entry chunk for
 // the area CSS alone); `reg.ts` beside each area is the entries and nothing
 // else. The fifth, `framing/reg.ts` (#189 S4), names the sheet that brings the
-// Target modal and its survey canvas with it.
+// Target modal and its survey canvas with it. The sixth, `wizard/reg.ts` (#196,
+// S6), names Send to Flow Wizard, whose stepped sheet the Sky FRAME opens over
+// the sky: a sheet name is global, so registering it here serves every hub.
 //
 // Names are GLOBAL across the app (`hubs/index.ts` throws on a collision), which
 // is why they are plain words here rather than hub-prefixed.
@@ -39,17 +41,20 @@ import { flowInspectorSheets } from "../flows/inspector/reg";
 import { flowTonightSheets } from "../flows/tonight/reg";
 import { flowCreateSheets } from "../flows/create/reg";
 import { flowFrameSheets } from "../flows/framing/reg";
+import { flowWizardSheets } from "../flows/wizard/reg";
 
 export const sheets: SheetRegistry = {
   ...sheets2,
   // flowStages (phone stage list), flowNode + flowPalette (stage editor and the
-  // add-stage list), flowTonight, flowNew + flowQuick, and flowFrame (the
-  // Target modal, #189 S4). Seven names, five owners, zero shared files.
+  // add-stage list), flowTonight, flowNew + flowQuick, flowFrame (the Target
+  // modal, #189 S4) and flowWizard (Send to Flow Wizard, #196). Eight names,
+  // six owners, zero shared files.
   ...flowCanvasSheets,
   ...flowInspectorSheets,
   ...flowTonightSheets,
   ...flowCreateSheets,
   ...flowFrameSheets,
+  ...flowWizardSheets,
   // The plan editor drags `views/SequenceView` in with it - the single largest
   // sheet in the app - which is exactly why it is a dynamic import (D-FU-2)
   // rather than a line in front of first paint.

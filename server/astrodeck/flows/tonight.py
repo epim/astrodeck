@@ -51,10 +51,10 @@ from typing import Any
 
 from ..sequence.schedule import (hours_to_meridian_flip, observing_night,
                                  prev_sun_event)
-from .compile import (_grid_of, compile_plan, grid_size, is_multi_panel,
-                      loop_wires, parse_skip)
-from .models import FlowGraph
-from .nodes import parse_cycle_plan, target_angle
+from .compile import (_finite, _grid_of, compile_plan, flow_order, grid_size,
+                      is_multi_panel, loop_wires, owner_of, parse_skip)
+from .models import FlowGraph, _not_a_count
+from .nodes import NODE_DEFS, parse_cycle_plan, target_angle
 
 #: Fallback imaging twilight when neither the caller nor the config has one.
 #: Same number ``schedule.observing_night`` falls back to; duplicated rather
@@ -886,6 +886,56 @@ def _count(value: Any, default: int = 1) -> int:
     return max(1, int(number) or default)
 
 
+def _shown(value: Any) -> str:
+    """A stored count as a sentence quotes it: text in quotes, a float as
+    Python writes it ("inf", "nan"), and an integer too long to read
+    described rather than printed, since a 400-digit quota printed in full
+    would be most of the note."""
+    if isinstance(value, str):
+        text = repr(value)
+        return text if len(text) <= 24 else text[:20] + "...'"
+    if isinstance(value, float):
+        return format(value, "g")
+    if isinstance(value, int) and not isinstance(value, bool) \
+            and abs(value) >= 10 ** 15:
+        return "a number of more than 15 digits"
+    return str(value)
+
+
+def _stored_count(node, key: str, default: int) -> tuple[int | None,
+                                                          str | None]:
+    """A count as the CAMPAIGN tab reads it off a stored node, a POOL's
+    ``quota`` or a FILTER CYCLE's ``perCycle``: ``(count, None)``, or
+    ``(None, why)`` for a value that is a number but no finite count above 0
+    (#362 item 4, the #328 class).
+
+    ``int()`` of the raw param raised on exactly those: ``"inf"`` and a JSON
+    ``1e999`` read as an infinity, whose ``int()`` is ``OverflowError:
+    cannot convert float infinity to integer``, and a 400-digit JSON integer
+    raised ``OverflowError: int too large to convert to float`` from
+    ``_num``'s ``float()`` before ``int()`` was reached. ``_campaign`` let
+    either out and took the whole Tonight answer down. Validation refuses
+    them at the save (``models.COUNT_PARAMS``), so a new save cannot store
+    one, but a flow saved before #328 or a file edited by hand still can,
+    and Tonight reads stored flows.
+
+    REFUSED IN WORDS, NOT CLAMPED. There is no count to clamp to: an
+    infinite quota is no number of cycles, and the default 45 would draw
+    "12/45 cycles" against a quota nobody set. The value is judged by
+    validation's own predicate (``models._not_a_count``), so this tab
+    refuses exactly the counts a save refuses, 0 and negatives among them,
+    which ``max(1, ...)`` used to read as 1. Text that is no number at all
+    is read as ``default``, as it always was, because validation does not
+    judge it either."""
+    value = (node.params or {}).get(key)
+    if _not_a_count(value):
+        label = NODE_DEFS[node.type].label
+        return None, (f"{label} {node.id!r} holds {_shown(value)} as its "
+                      f"{key}, and a count must be a finite number above 0, "
+                      f"so no member's cycles are counted against it.")
+    return max(1, int(_num(value, default))), None
+
+
 def _per_panel_s(step: dict) -> float:
     """One panel's shutter seconds for a compiled step: a capture's exposure
     times its count, a FILTER CYCLE's slot exposures times its cycles and
@@ -945,7 +995,7 @@ def _visits_per_panel(entry: dict) -> int:
     a capture inside the loop its ``count``), and a visit makes
     ``_visit_passes`` of them.
 
-    THE MINIMUM VISIT IS COUNTED (#189 S4, item 14). The engine's
+    THE MINIMUM VISIT IS COUNTED (spec S3 item 5, #353). The engine's
     ``_visits_owed`` leaves ``visit_min_s`` out and so prices the most hops
     a block can make, which is its concern, not this row's. A visit ends at
     a round boundary once it has made its passes AND lasted its minimum, so
@@ -1164,9 +1214,16 @@ _START_PROSE = {
 
 
 def _join_and(parts: list[str]) -> str:
-    """``a, b and c``. The prototype's regex, spelled out."""
+    """``a and b``, ``a, b, and c``: the prototype's regex, spelled out.
+
+    TWO ITEMS TAKE NO COMMA (#407). The Oxford comma belongs to a list of
+    three or more; written before the last of two it read "panels 1-1, and
+    3-2 skipped" in a mosaic's sentence, and "restores the filter, and
+    resumes" in a hold's checklist of two steps."""
     if len(parts) <= 1:
         return "".join(parts)
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
     return ", ".join(parts[:-1]) + ", and " + parts[-1]
 
 
@@ -1208,7 +1265,7 @@ def _mosaic_sentences(g: FlowGraph, block, hop_cost_s: float | None,
     wording), and the labels are said to be row-column, so the two
     conventions cannot be read into each other.
 
-    THE VISIT IS THE ONE THE RUN MAKES (spec 5.3, #189 S4 item 14). A visit
+    THE VISIT IS THE ONE THE RUN MAKES (spec 5.3, S3 item 5, #353). A visit
     ends at a round boundary once it has made ``passes`` rounds AND lasted
     ``minVisit``, so it makes ``max(passes, ceil(minVisit / pass))`` passes
     (``_visit_passes``, which is ``readouts.visit_passes``, the bound the
@@ -1217,7 +1274,10 @@ def _mosaic_sentences(g: FlowGraph, block, hop_cost_s: float | None,
     pass while the run stayed for three. The pass is the block's own stages,
     which only the compile's scoping rule knows (spec 1.5), so ``entry`` is
     the block's compiled entry; with none (a compile that did not answer)
-    the sentence quotes ``passes`` as typed, as it always did."""
+    the sentence quotes ``passes`` as typed, as it always did. The stages the
+    pass is made of are each named by the brief's capture sentences
+    (``_stage_sentence``, #395), so a reader can add them up to the pass this
+    sentence states."""
     p = block.params
     rows, cols = _grid_of(block)
     skip, _unread = parse_skip(p.get("skip"), rows, cols)
@@ -1290,6 +1350,168 @@ def _mosaic_entries(graph: FlowGraph, plan: dict | None) -> dict[str, dict]:
             if e.get("mosaic") and e.get("pool_rank") is None}
 
 
+#: The node types that shoot lights, a sentence each in the brief.
+_CAPTURE_TYPES = frozenset({"cycle", "capture"})
+
+
+def _capture_stages(g: FlowGraph) -> list:
+    """Every capture stage of the graph, in lane order: the order the run
+    cursor reaches them along the flow wires (``compile.flow_order``, with
+    canvas order only between stages no wire orders), so a lane drawn right
+    to left still reads first stage first.
+
+    A stage the walk never reaches (one inside a flow loop, which validation
+    refuses but the editor can draw) follows in canvas order: the brief
+    describes the graph the operator drew, and a stage on the canvas is not
+    left out of it because the compile drops it (see ``brief``)."""
+    walked = [n for n in flow_order(g) if n.type in _CAPTURE_TYPES]
+    seen = {n.id for n in walked}
+    rest = sorted((n for n in g.nodes
+                   if n.type in _CAPTURE_TYPES and n.id not in seen),
+                  key=lambda n: (n.x, n.y, n.id))
+    return walked + rest
+
+
+def _receives(block) -> bool:
+    """Does the compile give this TARGET or POOL any entry to append a step
+    to? A TARGET always has one; a POOL has one per member, so a POOL whose
+    members box names nobody has none (``compile_plan``'s pool branch), and
+    a stage in its lane is shot for no one."""
+    if block.type != "pool":
+        return True
+    return any(m.strip() for m in str(block.params.get("members") or "")
+               .split(","))
+
+
+def _receivers(g: FlowGraph) -> dict[str, tuple]:
+    """The blocks each capture stage is shot for, by the compile's own
+    scoping rule (``compile_plan``'s ``receivers``, spec 1.5), keyed by the
+    stage's node id.
+
+    With a multi-panel TARGET in the graph, a stage is its ``owner_of``
+    block's alone, and nobody's when the chain reaches none (M13). With
+    none, it is every block the walk passed before it: the canvas-order
+    rule, whose leak (a stage after a second TARGET reaches the first too)
+    is I-05, and which the brief says rather than hides. A stage the walk
+    never reaches is absent, as the compile drops it.
+
+    READ OFF THE GRAPH, not the compile: the brief compiles only a graph
+    with a mosaic (``_mosaic_entries``), and a graph with none must brief
+    without a compile it never needed. ``test_flows_brief_stage_owner.py``
+    holds this to the plan's own steps."""
+    mosaic = any(is_multi_panel(n) for n in g.nodes)
+    out: dict[str, tuple] = {}
+    passed: list = []
+    for n in flow_order(g):
+        if n.type in ("target", "pool"):
+            if _receives(n):
+                passed.append(n)
+        elif n.type in _CAPTURE_TYPES:
+            if not mosaic:
+                out[n.id] = tuple(passed)
+                continue
+            owner = owner_of(g, n.id)
+            out[n.id] = ((owner,) if owner is not None and _receives(owner)
+                         else ())
+    return out
+
+
+def _block_label(block) -> str:
+    """A block as a stage sentence names it: a TARGET by its name, a POOL
+    by what it expands to."""
+    if block.type == "pool":
+        return "every member of the pool"
+    return str(block.params.get("name") or "").strip() or "an unnamed TARGET"
+
+
+#: The lead of a stage that no block's lane holds, when the brief names
+#: lanes: the compile appends its step to no target, so it shoots nothing
+#: (the doctor's M13 says the same, "It would shoot nothing").
+_NO_BLOCK = "Belonging to no TARGET, and so shooting nothing,"
+
+
+def _stage_sentences(g: FlowGraph) -> list[str]:
+    """Every capture stage's sentence (``_stage_sentence``), in lane order,
+    each lane's stages together under the block they are shot for.
+
+    ONE LANE READS AS IT ALWAYS DID: "It captures", then "It then
+    captures". The stages of a flow whose stages all go to one block (every
+    Example, and every single-target or pool-only flow) are said with no
+    block named, byte for byte as before.
+
+    SEVERAL LANES NAME THEIR BLOCK (#470, #395). Read as one chain, the
+    stages of a flow of several blocks all read as the first block's: a
+    rotating 2x2 M31 whose lane was a CAPTURE of Ha, beside a TARGET M33
+    whose lane was a CAPTURE of L, said "It captures Ha 300 s × 4 ... It
+    then captures L 60 s × 5 ...", 360 s of stages under a visit sentence
+    that priced M31's pass at the 300 s the compile gives it, and M33 was
+    never named. Now each lane's first stage says whose it is ("For M33 it
+    captures L 60 s × 5 ..."), by the compile's own rule
+    (``_receivers``), so the stages named after a mosaic's sentences are
+    the stages its pass is made of. A stage the compile gives to nobody
+    says so (``_NO_BLOCK``). The lanes follow in the order their first
+    stage runs, and a lane's stages keep lane order."""
+    stages = _capture_stages(g)
+    receivers = _receivers(g)
+    lanes: dict[tuple, list] = {}
+    for s in stages:
+        key = tuple(b.id for b in receivers.get(s.id, ()))
+        lanes.setdefault(key, []).append(s)
+    if len(lanes) <= 1:
+        return [_stage_sentence(s, i == 0) for i, s in enumerate(stages)]
+    out: list[str] = []
+    for lane in lanes.values():
+        blocks = receivers.get(lane[0].id, ())
+        who = (f"For {_join_and([_block_label(b) for b in blocks])}"
+               if blocks else _NO_BLOCK)
+        out.extend(_stage_sentence(s, i == 0, who=who if i == 0 else None)
+                   for i, s in enumerate(lane))
+    return out
+
+
+def _stage_sentence(node, first: bool, who: str | None = None) -> str:
+    """One capture stage, read back: a FILTER CYCLE's slot table and the
+    subs each filter takes a pass, or a CAPTURE LOOP's filter, exposure,
+    count, gain and bin. The first stage is worded as the brief always
+    worded its one stage; a later one says "It then", so a lane of several
+    reads in the order it runs.
+
+    A CYCLE SAYS HOW MANY SUBS A PASS (#395). The sentence said "one sub per
+    filter per pass" whatever ``perCycle`` held, so a cycle at two a pass was
+    named at half the pass the visit sentence prices. The count is the
+    compile's own reading (``_finite``, a count that is no finite number
+    read as 1), so the sentence and the pass cannot read one value two ways.
+
+    NO GRADING CLAUSE. The cycle's sentence used to end "; a sub is graded
+    and only counts below HFR {reject}″" — a specific threshold, in arcsec,
+    for something nothing does: the node's `reject` is dropped by `to_plan`
+    and the plan's nearest field is a multiple of the running median, not an
+    absolute HFR. An operator reading it would believe soft frames were
+    being discarded and their counts topped up. What DOES grade a frame is
+    the rig's own standards, which are not this flow's to describe; that
+    the setting is dropped is said where dropped settings are said, in
+    `to_plan.INERT_PARAMS`. The capture's sentence lost the same clause for
+    the same reason.
+
+    ``who`` opens a lane's first stage with the block it is shot for ("For
+    M33", or ``_NO_BLOCK``) where the brief names lanes
+    (``_stage_sentences``), and then ``first`` is not read."""
+    p = node.params
+    if node.type == "cycle":
+        table = ", ".join(f"{f} {e} s × {p.get('cycles')}"
+                          for f, e in parse_cycle_plan(p.get("plan")))
+        per = max(1, int(_finite(p.get("perCycle"), 1) or 1))
+        each = "one sub" if per == 1 else f"{per} subs"
+        lead = (f"{who} it interleaves" if who else
+                "Capture interleaves" if first else "It then interleaves")
+        return (f"{lead} {each} per filter per pass - {table} - so every "
+                f"channel grows evenly.")
+    lead = (f"{who} it captures" if who else
+            "It captures" if first else "It then captures")
+    return (f"{lead} {p.get('filter')} {p.get('exposure')} s × "
+            f"{p.get('count')} (gain {p.get('gain')}, bin {p.get('bin')}).")
+
+
 def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
           plan: dict | None = None) -> str:
     """The STORY tab's mechanical brief: the graph, read back as prose.
@@ -1316,6 +1538,13 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
     and since S3 to the TARGET's own centring. A legacy SLEW left on a canvas
     is the doctor's to name (L1), not a promise for the brief to repeat.
 
+    EVERY CAPTURE STAGE GETS A SENTENCE (#395), in lane order
+    (``_capture_stages``, ``_stage_sentence``): a FILTER CYCLE then a CAPTURE
+    LOOP reads as both, and two CAPTURE LOOPs as two. It named only the
+    first cycle or, with none, the first capture. Where the stages go to
+    more than one block, each lane's first stage names its block by the
+    compile's own scoping rule (``_stage_sentences``, #470).
+
     A MOSAIC GETS ITS OWN SENTENCES (``_mosaic_sentences``), one set per
     multi-panel TARGET, after the target sentence. ``hop_cost_s`` is the
     measured hop cost the route injects; with none, they say it is not
@@ -1329,8 +1558,7 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
         return ""
     g = graph.with_defaults()
     n = lambda t: _first(g, t)                                   # noqa: E731
-    dusk, pool, tgt = n("dusk"), n("pool"), n("target")
-    cyc, cap, rep = n("cycle"), n("capture"), n("report")
+    dusk, pool, tgt, rep = n("dusk"), n("pool"), n("target"), n("report")
     cw, hold, cq, pc = n("cloudwatch"), n("holdresume"), n("calib"), n("parkclose")
     saf, dome, df = n("safety"), n("dome"), n("duskflats")
     guide, af = n("guide"), n("autofocus")
@@ -1379,26 +1607,15 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
     if rig:
         seg.append("For each target it " + ", ".join(rig) + ".")
 
-    if cyc is not None:
-        slots = parse_cycle_plan(cyc.params.get("plan"))
-        table = ", ".join(f"{f} {e} s × {cyc.params.get('cycles')}"
-                          for f, e in slots)
-        # NO GRADING CLAUSE. This used to end "; a sub is graded and only counts
-        # below HFR {reject}″" — a specific threshold, in arcsec, for something
-        # nothing does: the node's `reject` is dropped by `to_plan` and the
-        # plan's nearest field is a multiple of the running median, not an
-        # absolute HFR. An operator reading it would believe soft frames were
-        # being discarded and their counts topped up. What DOES grade a frame is
-        # the rig's own standards, which are not this flow's to describe; that
-        # the setting is dropped is now said where dropped settings are said, in
-        # `to_plan.INERT_PARAMS`.
-        seg.append(f"Capture interleaves one sub per filter per pass - {table} - "
-                   f"so every channel grows evenly.")
-    elif cap is not None:
-        p = cap.params
-        # Same removal as the cycle branch above, same reason.
-        seg.append(f"It captures {p.get('filter')} {p.get('exposure')} s × "
-                   f"{p.get('count')} (gain {p.get('gain')}, bin {p.get('bin')}).")
+    # EVERY CAPTURE STAGE, IN LANE ORDER (#395). This picked one stage, the
+    # first FILTER CYCLE or, with none, the first CAPTURE LOOP, so a lane of a
+    # cycle then a capture never named the capture, and a lane of two
+    # captures named the first: a stage the operator drew was dropped without
+    # a word, and since S4 the visit sentence priced its pass out of stages
+    # the brief did not name ("a pass takes 10 min" of a lane whose one named
+    # stage takes 5). A flow of several lanes names each lane's block, so no
+    # lane's stages read as the first block's (#470, ``_stage_sentences``).
+    seg.extend(_stage_sentences(g))
 
     advances = pool is not None and _wired(g, to=pool, to_port="advance")
     if rep is not None and advances:
@@ -1692,12 +1909,16 @@ def _campaign(graph: FlowGraph | None,
                 "quota": 0, "members": [],
                 "note": "No target pool in this flow - campaigns need one."}
 
-    quota = max(1, int(_num(pool.params.get("quota"), 45)))
+    # A COUNT THAT IS NO COUNT IS REFUSED IN WORDS (#362 item 4,
+    # ``_stored_count``): no member is counted, the note says which count
+    # and why, and a refused quota is None, never an invented 45.
+    quota, bad_quota = _stored_count(pool, "quota", 45)
     names = [m.strip() for m in str(pool.params.get("members") or "").split(",")
              if m.strip()]
     slots = parse_cycle_plan(cyc.params.get("plan")) if cyc is not None else []
-    per_pass = (max(1, int(_num(cyc.params.get("perCycle"), 1)))
-                if cyc is not None else 1)
+    per_pass, bad_per = (_stored_count(cyc, "perCycle", 1)
+                         if cyc is not None else (1, None))
+    refusals = [r for r in (bad_quota, bad_per) if r is not None]
 
     bank: Mapping[str, Mapping[str, int]] = {}
     has_ledger = frames_by_target is not None
@@ -1708,7 +1929,7 @@ def _campaign(graph: FlowGraph | None,
             has_ledger = False
 
     def cycles_for(name: str) -> int | None:
-        if not has_ledger:
+        if not has_ledger or refusals:
             return None
         got = bank.get(name) or {}
         if not slots:
@@ -1738,12 +1959,17 @@ def _campaign(graph: FlowGraph | None,
     elif not slots:
         note = ("This campaign's capture stage is not a FILTER CYCLE, so "
                 f"progress is not counted in cycles. {_DAWN}")
+    elif refusals:
+        # Nothing is counted, so no work left can be stated.
+        note = _DAWN
     else:
         left = sum(max(0, quota - (m["banked"] or 0)) for m in members)
         passes = left * per_pass * len(slots)
         note = (f"{left} cycles left across the pool ({passes} subs). Nights to "
                 f"finish are not forecast - clear-sky prediction that far out is "
                 f"not something this rig models. {_DAWN}")
+    if refusals:
+        note = f"{' '.join(refusals)} {note}"
 
     out = {"is_campaign": is_campaign, "has_pool": True,
            "has_ledger": has_ledger, "quota": quota, "members": members,

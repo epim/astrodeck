@@ -1,6 +1,6 @@
 // FlowCanvasToolbar.tsx - the canvas's own 48 px row (wave R7 parity row A1).
 //
-// EIGHT THINGS, LEFT TO RIGHT, AND NOTHING THE SHELL ALREADY RENDERS. The shell
+// NINE THINGS, LEFT TO RIGHT, AND NOTHING THE SHELL ALREADY RENDERS. The shell
 // owns the wordmark, the flows pill with its count, the rig chips, the
 // backend/provider badge (`header-backend`), the role chip and the night toggle
 // at every breakpoint, so this row carries only what is about THIS flow:
@@ -12,7 +12,8 @@
 //   5. the save-state pill - SAVED / UNSAVED EDITS / READ ONLY
 //   6. SAVE
 //   7. TONIGHT
-//   8. RUN / STOP
+//   8. RUN / STOP, which reads CONTINUE over a dormant session
+//   9. START OVER, beside CONTINUE only (#189 S5)
 //
 // SAVE IS HERE BECAUSE THE CANVAS HAD NO SAVE AT ALL (whole-branch review, R5
 // P0). `flowsSave` and `flowsCloseEditor` existed, the store tracked `dirty`,
@@ -59,16 +60,27 @@
 // opened would go on promising a switch the save had already made. The phone
 // stage list carries the same line from the same function.
 //
-// WHAT THE ROW IS NOT ALLOWED TO INVENT. Two numbers here have no server behind
-// them: `run.etaS` has no publisher, so a null reads `-` and says why; and the
-// validation pill prints GRAPH VALID only once the checker has actually
+// WHAT THE ROW IS NOT ALLOWED TO INVENT. Two numbers here could be printed
+// with no server behind them. The ETA is the rig's own `progress.eta_s`, read
+// from the sequence state while the run the rig is on is this flow's
+// (`useFlowRunReadouts`, #189 S5), with "hops not yet costed" under it while
+// that clock prices hops it has not measured; for any other run it is
+// `run.etaS`, which has no publisher, so a null reads `-` and says why. And
+// the validation pill prints GRAPH VALID only once the checker has actually
 // answered, because a pill that went green before the first compile returned
 // would be the exact green-while-wrong defect this project keeps paying for.
+//
+// RUN SAYS WHAT IT WILL DO (#189 S5, spec 5.9). With a dormant session the
+// button reads `CONTINUE M31 MOSAIC (night 3, 412/1890 subs)`, the one copy
+// every RUN surface prints (`useFlowRunControls().copy`, from the progress
+// route alone), and START OVER sits beside it behind a confirm.
 
 import { useRef, useState, type JSX } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { useFlowRunControls } from "../../../../../components/flows/flowRunControls";
+import {
+  START_OVER_LABEL, useFlowRunControls, useFlowRunReadouts, type RunCopy,
+} from "../../../../../components/flows/flowRunControls";
 import { countsNotice } from "../../../../../components/flows/countsNotice";
 import type { FlowIssue } from "../../../../../lib/flowsApi";
 import { accessPhrase, useCapability } from "../../../../../lib/caps";
@@ -96,11 +108,54 @@ export const RUN_ARM_LABEL = "CONFIRM RUN";
  *  carries the state, so the button does not have to change its own text. */
 export const SAVE_LABEL = "SAVE";
 
+/** The run line's box: one row, the parts on a shared baseline. `minWidth: 0`
+ *  lets it narrow inside `.nx-btn-label`, whose `overflow: hidden` already
+ *  lets the label itself give up width. */
+const RUN_WORDS_STYLE = { display: "flex", alignItems: "baseline", gap: "0.5em", minWidth: 0 } as const;
+/** The flow's name: the one part that gives up width, with an ellipsis. */
+const RUN_NAME_STYLE = {
+  minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+} as const;
+/** The verb and the parenthetical: never shrunk, never wrapped. */
+const RUN_FIXED_STYLE = { flex: "none", whiteSpace: "nowrap" } as const;
+
+/** The RUN button's words in the #/next chrome: the one copy (`runCopy`),
+ *  drawn so that a narrow button cuts the flow's NAME with an ellipsis and
+ *  never the parenthetical, which carries the night and the counts being
+ *  continued. `.nx-btn-label` alone would ellipsise the whole line from the
+ *  right, taking the counts first.
+ *
+ *  THE SPACES ARE TEXT. The gap is what the eye sees, but a gap is not a
+ *  character, so without the " " between the parts the button's text, and
+ *  the name a screen reader builds from it, would run "CONTINUEM31 MOSAIC".
+ *  A white-space-only run between flex items is not rendered, so the spaces
+ *  cost the layout nothing.
+ *
+ *  RUN and STOP are the bare word, exactly as before. Inline styles, as
+ *  canvas.css is the canvas surface's stylesheet; shared with the phone stage
+ *  sheet's footer, so the two #/next RUN buttons draw one line one way. */
+export function RunCopyWords({ copy }: { copy: RunCopy }): JSX.Element {
+  if (copy.verb !== "CONTINUE") return <>{copy.verb}</>;
+  return (
+    <span style={RUN_WORDS_STYLE} data-testid="run-copy">
+      <span style={RUN_FIXED_STYLE} data-testid="run-copy-verb">{copy.verb}</span>
+      {copy.name !== "" && (
+        <>{" "}<span style={RUN_NAME_STYLE} data-testid="run-copy-name">{copy.name}</span></>
+      )}
+      {copy.detail !== "" && (
+        <>{" "}<span style={RUN_FIXED_STYLE} data-testid="run-copy-detail">{copy.detail}</span></>
+      )}
+    </span>
+  );
+}
+
 export function FlowCanvasToolbar(): JSX.Element {
   // Primitive selectors, so a pan, a stage-status tick or a log line re-renders
   // none of this row. The one derived list goes through `useShallow`.
   const name = useStore((s) => s.flows.record?.name ?? "");
-  const etaS = useStore((s) => s.flows.run.etaS);
+  // The rig's ETA while its run is this flow's, and `run.etaS` otherwise, as
+  // primitives through `useShallow`.
+  const { etaS, etaNote } = useFlowRunReadouts();
   const checked = useStore((s) => s.flows.compiled !== null);
   // Also the parity harness's state marker: it waits for `data-flows-run` to
   // reach a phase word rather than sleeping. The toolbar already re-renders on
@@ -131,7 +186,7 @@ export function FlowCanvasToolbar(): JSX.Element {
   // RUN/STOP is the shared hook, never transcribed: it owns the abort route
   // (`/api/sequence/abort`, not a flows route), the rule that a timed-out abort
   // is not a failed abort, and the 409 `unmapped` confirm.
-  const { running, reason: hookRunReason, explain, act } = useFlowRunControls();
+  const { running, reason: hookRunReason, explain, act, copy, startOver } = useFlowRunControls();
 
   // Order matters: the rig's own refusals (no capability, no camera, link down)
   // outrank ours, because a viewer who also has an unsaved edit is refused for
@@ -219,6 +274,11 @@ export function FlowCanvasToolbar(): JSX.Element {
         >
           <Label size={10}>ETA</Label>
           <Mono size={12}>{formatEta(etaS)}</Mono>
+          {etaNote && (
+            <span data-testid="flow-eta-note">
+              <Mono size={10} tone="dim">{etaNote}</Mono>
+            </span>
+          )}
         </span>
       )}
 
@@ -262,8 +322,25 @@ export function FlowCanvasToolbar(): JSX.Element {
         arm={running ? undefined : { label: RUN_ARM_LABEL }}
         onPress={act}
       >
-        {running ? "STOP" : "RUN"}
+        <RunCopyWords copy={copy} />
       </ActionButton>
+
+      {/* START OVER, beside CONTINUE and only beside it (spec 5.9). Its guard
+          is the confirm `startOver` asks, not an arm: the confirm says what
+          the press leaves behind, which a second tap cannot. Locked for the
+          same reasons RUN is, unsaved edits included, since it starts the
+          stored flow too. */}
+      {copy.verb === "CONTINUE" && (
+        <ActionButton
+          kind="secondary"
+          data-testid="flow-start-over"
+          lockedReason={runReason}
+          onExplain={explain}
+          onPress={startOver}
+        >
+          {START_OVER_LABEL}
+        </ActionButton>
+      )}
     </div>
   );
 

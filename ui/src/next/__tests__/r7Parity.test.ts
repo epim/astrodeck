@@ -92,9 +92,25 @@ const LOGIC_MODULES: Record<string, string> = {
     "2.1 - resolveWheel and the cycle-plan row maths, shared with the Sky hub's quick session.",
   "components/flows/autoLayout":
     "2.1 - the layout solver (flowOrder), used by the phone stage list and the Sky lane.",
+  // Since #189 S5 this module also hands the #/next toolbar and phone stage
+  // sheet the button's words: useFlowRunControls returns runCopy's RUN /
+  // CONTINUE / STOP copy and START OVER, and useFlowRunReadouts the monitor
+  // tiles. So components/flows/runCopy has NO entry of its own, deliberately
+  // (S5/S6 integration, S56-INTEG): no file under next/ imports it, and
+  // flowsDom.test.tsx's dynamic import of START_OVER_TITLE rides that file's
+  // DRIFT_TESTS entry. An entry nothing needs is one whose removal turns
+  // nothing red. The door stays shut instead, and the rule still polices it:
+  // mutant "the #/next toolbar imports runCopy" (FlowCanvasToolbar.tsx taking
+  // HOPS_NOT_COSTED from components/flows/runCopy), observed in the private
+  // copy scratchpad S56-INTEG-mut (7/8):
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   1 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowCanvasToolbar.tsx imports HOPS_NOT_COSTED
+  //   from components/flows/runCopy
   "components/flows/flowRunControls":
     "2.1 - useFlowRunControls, runBlockedReason, isRunPhaseLive: one place decides " +
-    "whether RUN is allowed and what the refusal says.",
+    "whether RUN is allowed and what the refusal says; since S5 #189 also what the button " +
+    "says (the copy, START OVER) and the monitor's readouts (useFlowRunReadouts).",
   // Mutant "drop the flowLoop entry" went red, verbatim: "2 legacy import(s)
   // outside the allow-lists: hubs/session/flows/canvas/FlowCanvasSurface.tsx
   // imports flowLoopRefusal from components/flows/flowLoop; ... imports type
@@ -143,6 +159,42 @@ const LOGIC_MODULES: Record<string, string> = {
     "S4 #189, S4 orchestrator ruling 8 - countsNotice: the counts line the #/next toolbar and " +
     "phone stage list show, in the server's words; a copy would be a second reading of when " +
     "saving switches a flow's counts.",
+  // The two below arrived with #189 S5 and #196 S6 and were recorded by the
+  // S5/S6 integration (S56-INTEG), each a DELIBERATE PIN CHANGE: both are .ts
+  // files with no JSX. flowRunState imports lib/lastSessionFrame and types
+  // only; wizardModel imports nodeDefs, framing/framingModel, framing/
+  // framingApi and lib/flowsApi's types, all of them pure.
+  // Mutant "drop the flowRunState entry", observed in the private copy
+  // scratchpad S56-INTEG-mut (7/8):
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   1 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/framing/FlowFrameSheet.tsx imports flowRunLive from
+  //   components/flows/flowRunState
+  // and the other half, mutant "FlowFrameSheet stops asking flowRunLive" (its
+  // import removed and its one reader answering false), observed (7/8):
+  //   x every allow-list entry carries a reason and is still used:
+  //   LOGIC_MODULES["components/flows/flowRunState"] is imported by nothing -
+  //   drop it
+  "components/flows/flowRunState":
+    "S5 #189, spec 2.6 - flowRunLive: whether a run is this flow's (by session id). The " +
+    "#/next flowFrame sheet decides run mode (viewOnly) with the reader the classic host asks, " +
+    "so the two doors cannot disagree on when a flow is running and its Target modal is frozen.",
+  // Mutant "drop the wizardModel entry", same copy (7/8):
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   4 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports prefillFromParams
+  //   from components/flows/wizard/wizardModel;
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports wizardParams from
+  //   components/flows/wizard/wizardModel;
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports
+  //   withoutWizardParams from components/flows/wizard/wizardModel;
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports type
+  //   WizardPrefill from components/flows/wizard/wizardModel
+  "components/flows/wizard/wizardModel":
+    "S6 #196, spec D13 - prefillFromParams, wizardParams, withoutWizardParams, WizardPrefill: " +
+    "the wizard prefill and its wz_* route params. The #/next flowWizard sheet carries the " +
+    "prefill in the route with the shared sheet's own reader, so a reload reopens the wizard " +
+    "the door opened and the two UIs cannot read a door's prefill apart.",
   "components/sequence/sessionDates":
     "2.1 - night-boundary maths, shared by the gallery and the files sheet.",
   "components/sequence/stepDefaults":
@@ -382,6 +434,24 @@ const KEEP_AS_IS: Record<string, { names: string[]; why: string }> = {
       "presentation: a second copy would be a second implementation of the DONE lock, the " +
       "re-frame question and the loop wire. The door keeps the modal out of the sheet's chunk.",
   },
+  // #196 S6, recorded by the S5/S6 integration (S56-INTEG) as a DELIBERATE
+  // PIN CHANGE. Mutant "drop the wizard entry", observed in the private copy
+  // scratchpad S56-INTEG-mut, both rules red (6/8):
+  //   x no legacy presentation component is mounted by the new UI: 1 legacy
+  //   component import(s) with no keep-as-is entry:
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports
+  //   SendToWizardSheetLazy from components/flows/wizard
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   1 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports
+  //   SendToWizardSheetLazy from components/flows/wizard
+  "components/flows/wizard": {
+    names: ["SendToWizardSheetLazy"],
+    why: "S6 #196, spec D13 - Send to Flow Wizard is ONE shared sheet for both UIs, and the " +
+      "#/next flowWizard sheet mounts it through this lazy door rather than forking its " +
+      "presentation: a second copy would be a second implementation of the GENERATE request, " +
+      "the RUN lock and the door's prefill. The door keeps the sheet out of the adapter's chunk.",
+  },
 };
 
 /** Tests that import a legacy module on purpose to pin a COPY against it.
@@ -396,10 +466,18 @@ const DRIFT_TESTS: Record<string, string> = {
     "pins the palette's fallback drop point against components/flows/FlowPalette's.",
   "hubs/sky/__tests__/skyDomeCardDom.test.tsx":
     "mounts the kept SkyDomePanel to prove the card's overlay args reach it.",
+  // The two reasons below were widened by the S5/S6 integration (S56-INTEG)
+  // to name what each file reads: both said runBlockedReason only, while
+  // rule 5 lets a drift test import any module dynamically, so the reason is
+  // the only record of what it pins.
   "hubs/session/flows/__tests__/flowsDom.test.tsx":
-    "reads runBlockedReason, a logic module, through a dynamic import.",
+    "reads runBlockedReason, COUNTS_NOTE, FLOW_SETTINGS, COUNTS_SWITCHED_LINE and (S5 #189) " +
+    "runCopy's START_OVER_TITLE through dynamic imports, to grade the #/next screens in the " +
+    "legacy modules' own words.",
   "hubs/session/flows/canvas/__tests__/canvasDom.test.tsx":
-    "reads runBlockedReason, a logic module, through a dynamic import.",
+    "reads runBlockedReason and createParams through dynamic imports, and mounts the classic " +
+    "FlowPalette rail beside the #/next one to pin that a TARGET dropped from either palette " +
+    "is exactly createParams(\"target\").",
   "hubs/sky/sheets/__tests__/horizonDom.test.tsx":
     "mounts ConfirmHost so a confirm can be asserted.",
   "__tests__/shellDom.test.tsx":

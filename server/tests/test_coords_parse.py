@@ -89,10 +89,32 @@ class TestGarbageStillRaises:
         with pytest.raises(ValueError):
             parse_dec(text)
 
-    def test_unicode_decimal_digits_are_accepted_and_that_is_fine(self):
-        """Python's own float() reads fullwidth and Devanagari digits, and this
-        parser inherits that. Documented rather than fought: the digit is
-        unambiguous, so the number produced is the one that was written. No
-        guess is being made, and a guess is the only thing worth refusing
-        over."""
-        assert parse_dec("４１.5") == pytest.approx(41.5)
+    def test_a_digit_that_is_not_0_to_9_is_refused_by_name(self):
+        """A fullwidth or Devanagari digit is refused, naming the character,
+        not read as the digit it looks like (#359).
+
+        DELIBERATE PIN CHANGE (#359, S5-SRVSMALL; re-pinned by the S5/S6
+        integration, S56-INTEG). This case was
+        ``test_unicode_decimal_digits_are_accepted_and_that_is_fine`` and
+        pinned the opposite: Python's float() reads fullwidth and Devanagari
+        digits, and the parser inherited that, "documented rather than
+        fought". But the Target modal's preview mirror (``framingModel.ts``)
+        reads 0-9 only, so the preview dropped a coordinate the run would
+        shoot; the rule is now 0-9 on both sides, and
+        test_coords_ascii_digits.py holds it across scripts and both parsers.
+        The old pin, run against this tree, observed:
+            ValueError: '\\uff14\\uff11.5' has a digit that is not 0-9
+            (U+FF14 FULLWIDTH DIGIT FOUR); retype it with 0-9
+        This case keeps the fold's own promise in this file's terms: a string
+        that is not a coordinate in 0-9 raises rather than quietly becoming a
+        number.
+
+        MUTANT "the fallback checks no digit" (coords.py ``_decimal``'s
+        ``if ch.isdecimal() and not ch.isascii():`` written ``if False:``,
+        so the fallback is Python's Unicode-wide float() again), run in the
+        private copy scratchpad S56-INTEG-mut: RED (observed):
+            Failed: DID NOT RAISE <class 'ValueError'>
+        """
+        with pytest.raises(ValueError) as refused:
+            parse_dec("４１.5")
+        assert "U+FF14 FULLWIDTH DIGIT FOUR" in str(refused.value)

@@ -9,11 +9,20 @@ slew: every meridian test graded a mount that flips itself, and the
 flip-owed invariant (`_enforce_flip_owed`), a missed flip and a mount
 tracking past the meridian on the pre-flip side could not be staged on it.
 
-Now `SimTelescope` latches its side at each slew, sync, park and unpark,
-from the hour angle at that moment (the RULE stays
-`coords.pier_side_for_hour_angle`, the one copy), and `pier_side` reports
-the latched side. `destination_pier_side` keeps the hour-angle rule: it is
-the side a goto there WOULD pick, which is what the pre-slew guard asks.
+Now `SimTelescope` latches its side at each move of an axis, a slew and the
+park and the home that slew, from the hour angle at that moment (the RULE
+stays `coords.pier_side_for_hour_angle`, the one copy), and `pier_side`
+reports the latched side. `destination_pier_side` keeps the hour-angle rule:
+it is the side a goto there WOULD pick, which is what the pre-slew guard
+asks.
+
+A sync and an unpark move no axis, so they keep the side (#392). Until then
+each latched as well, which #298 asked for: a plate-solve sync that landed
+past the meridian, while the mount tracked there on the pre-flip side,
+reported a flip no slew made, #298's defect by the sync's door. The AM5N's
+own answer after a sync and an unpark has not been measured (#392 asks for
+a supervised session); a German mount's side is whether its declination
+axis is past the pole, which neither call touches.
 
 Each case runs the simulator mount on its own, at the harness's fixture
 site (40 N 74 W, not anybody's rig), with ``catalog.coords`` on a clock the
@@ -135,34 +144,86 @@ async def test_guiding_and_turning_the_ra_axis_keep_the_side(mount, clock):
         f"a turn of the RA axis past the meridian changed the side to {side}")
 
 
-async def test_sync_park_and_unpark_each_latch_the_side_at_that_moment(
+async def test_a_sync_past_the_meridian_keeps_the_side_the_goto_chose(
         mount, clock):
-    """The three other moves the issue names (#298) latch the side from the
-    hour angle at that moment, as a slew does. A sync past the meridian,
-    of a mount slewed to the target before it crossed, takes the new side.
-    A park keeps the side of the park position at the moment it parks, and
-    keeps it while the park position's hour angle crosses; the unpark that
-    follows takes the side that hour angle now implies.
+    """A sync moves no axis, so it keeps the side (#392). A goto 15 min
+    before transit lands west of the pier, and the mount then tracks the
+    target across the meridian: 15 min past it, the counterweight rising,
+    the mount is in the flip-owed state #298 was fixed to stage. A
+    plate-solve sync there (`hub.solve_and_sync`, which `goto_and_center`,
+    the resume ladder and the bare solve route all call) tells the mount
+    where it points and nothing else, so it still reports west. The sync's
+    position is taken all the same.
 
-    The park's own side is its slew's: `park` slews to the park position,
-    which latches, and moves nothing after.
+    The second half holds the clock still, as a centring pass does whose
+    sync lands across the crossing: slewed 15 min east of the meridian and
+    synced to a position 15 min past it, the mount keeps west, while the
+    destination oracle calls that position east, the flip the pre-slew
+    guard asks about. The goto that follows takes the east side: the side
+    changes through a slew.
 
-    MUTANT "sync does not latch" (the latch call in `SimTelescope.sync`
-    removed): RED (observed):
-        AssertionError: a sync past the meridian kept the side west
-        assert 'west' == 'east'
-          - east
-          ?  -
-          + west
-          ? +
-    MUTANT "unpark does not latch" (the latch call in `SimTelescope.unpark`
-    removed): RED (observed):
-        AssertionError: the unpark kept the side west of the park
-        assert 'west' == 'east'
-          - east
-          ?  -
-          + west
-          ? +
+    MUTANT "sync latches" (`SimTelescope.sync` calling `_latch_pier_side`
+    after it sets the position, as it did before #392): RED (observed):
+        AssertionError: a sync 15 min past the meridian changed the side to
+        east with no slew
+        assert 'east' == 'west'
+          - west
+          ? -
+          + east
+          ?  +
+    MUTANT "sync latches before it moves" (`SimTelescope.sync` calling
+    `_latch_pier_side` before it sets the position): RED, the same failure,
+    verbatim: the mount already points past the meridian when the sync
+    arrives, having tracked there.
+    MUTANT "pier_side from the hour angle now": RED, the same failure,
+    verbatim.
+    """
+    ra = ra_at(-0.25)
+    await mount.slew(ra, DEC)
+    assert (await mount.pier_side()).value == "west", (
+        "premise: a goto east of the meridian lands west of the pier")
+    clock.t = crossing(ra) + 15 * 60.0
+    await mount.sync(ra, DEC)
+    assert (mount.rig.ra_hours, mount.rig.dec_deg) == (ra, DEC), (
+        "premise: the sync took its position")
+    side = (await mount.pier_side()).value
+    assert side == "west", (
+        f"a sync 15 min past the meridian changed the side to {side} with "
+        f"no slew")
+
+    clock.t = T0
+    await mount.slew(ra_at(-0.25), DEC)
+    assert (await mount.pier_side()).value == "west", "premise"
+    past = ra_at(0.25)
+    await mount.sync(past, DEC)
+    assert (await mount.destination_pier_side(past, DEC)).value == "east", (
+        "premise: the synced position is past the meridian")
+    side = (await mount.pier_side()).value
+    assert side == "west", (
+        f"a sync to a position 15 min past the meridian changed the side to "
+        f"{side} with no slew")
+    await mount.slew(past, DEC)
+    assert (await mount.pier_side()).value == "east", (
+        "the goto after the sync did not take the side of where it landed")
+
+
+async def test_an_unpark_keeps_the_side_the_park_left(mount, clock):
+    """An unpark moves no axis, so it keeps the side the park left (#392).
+    A mount on the east side, slewed past the meridian, parks: the park's
+    slew latches the side of the park position, west, since that position
+    stands east of the meridian now. An hour after the park position's
+    hour angle has crossed, a parked mount that nothing moved is still
+    west, and so is the mount the unpark hands back. The goto that follows
+    takes the side of where it lands.
+
+    MUTANT "unpark latches" (`SimTelescope.unpark` calling
+    `_latch_pier_side`, as it did before #392): RED (observed):
+        AssertionError: the unpark changed the side to east with no slew
+        assert 'east' == 'west'
+          - west
+          ? -
+          + east
+          ?  +
     MUTANT "pier_side from the hour angle now": RED (observed):
         AssertionError: a parked mount changed side with the clock
         assert 'east' == 'west'
@@ -170,26 +231,77 @@ async def test_sync_park_and_unpark_each_latch_the_side_at_that_moment(
           ? -
           + east
           ?  +
+    MUTANT "park keeps the side" (below): RED at the premise (observed):
+        AssertionError: premise: the park latched the side of the park
+        position
+        assert 'east' == 'west'
     """
-    ra = ra_at(-0.25)
-    await mount.slew(ra, DEC)
-    clock.t = crossing(ra) + 15 * 60.0
-    await mount.sync(ra, DEC)
-    side = (await mount.pier_side()).value
-    assert side == "east", f"a sync past the meridian kept the side {side}"
-
+    await mount.slew(ra_at(0.5), DEC)
+    assert (await mount.pier_side()).value == "east", "premise"
     await mount.park()
     park_ra = mount.rig.ra_hours
-    parked = coords_mod.pier_side_for_hour_angle(
-        coords_mod.hour_angle_h(park_ra, LON, clock.t))
-    assert (await mount.pier_side()).value == parked == "west", (
-        "premise: the park position stands east of the meridian now")
+    assert (await mount.pier_side()).value == "west", (
+        "premise: the park latched the side of the park position")
     clock.t = crossing(park_ra) + 60 * 60.0
+    assert coords_mod.pier_side_for_hour_angle(
+        coords_mod.hour_angle_h(park_ra, LON, clock.t)) == "east", (
+        "premise: the park position now stands past the meridian")
     assert (await mount.pier_side()).value == "west", (
         "a parked mount changed side with the clock")
     await mount.unpark()
+    assert not mount.rig.parked, "premise: the mount is unparked"
     side = (await mount.pier_side()).value
-    assert side == "east", f"the unpark kept the side {side} of the park"
+    assert side == "west", f"the unpark changed the side to {side} with no slew"
+    await mount.slew(ra_at(-2.0, clock.t), DEC)
+    assert (await mount.pier_side()).value == "west"
+    await mount.slew(ra_at(0.5, clock.t), DEC)
+    assert (await mount.pier_side()).value == "east"
+
+
+async def test_a_park_and_a_home_latch_the_side_of_where_they_stop(
+        mount, clock):
+    """The park and the home move both axes, to the park position and the
+    pole, so each still latches (#392 keeps them), through the slew each
+    makes. A mount on the east side, past the meridian, parks, and takes
+    west, the side of the park position east of the meridian; unparked and
+    sent past the meridian again, it goes home and takes west again. Both
+    moves were exercised only as premises before #392, never with a side to
+    change.
+
+    MUTANT "park keeps the side" (`SimTelescope.park` saving the latched
+    side before its slew and putting it back after, the shape of #392's fix
+    applied one call too far): RED (observed):
+        AssertionError: the park kept the side east it started on
+        assert 'east' == 'west'
+          - west
+          ? -
+          + east
+          ?  +
+    MUTANT "home keeps the side" (the same in `SimTelescope.find_home`):
+    RED (observed):
+        AssertionError: the home kept the side east it started on
+        assert 'east' == 'west'
+          - west
+          ? -
+          + east
+          ?  +
+    """
+    await mount.slew(ra_at(0.5), DEC)
+    assert (await mount.pier_side()).value == "east", "premise"
+    await mount.park()
+    assert coords_mod.pier_side_for_hour_angle(coords_mod.hour_angle_h(
+        mount.rig.ra_hours, LON, clock.t)) == "west", (
+        "premise: the park position stands east of the meridian")
+    side = (await mount.pier_side()).value
+    assert side == "west", f"the park kept the side {side} it started on"
+
+    await mount.unpark()
+    await mount.slew(ra_at(0.5), DEC)
+    assert (await mount.pier_side()).value == "east", "premise"
+    await mount.find_home()
+    assert not mount.rig.parked, "premise: the home leaves the mount usable"
+    side = (await mount.pier_side()).value
+    assert side == "west", f"the home kept the side {side} it started on"
 
 
 async def test_the_destination_oracle_keeps_the_hour_angle_rule(mount, clock):
@@ -233,11 +345,11 @@ async def test_the_destination_oracle_keeps_the_hour_angle_rule(mount, clock):
 
 async def test_a_mount_nothing_has_moved_answers_with_the_hour_angle_rule(
         mount, clock):
-    """Before the first slew, sync, park or unpark there is no goto whose
-    side to keep, so `pier_side` answers with the hour-angle rule for where
-    the mount points: the side a goto there would pick. A mount nothing has
-    moved therefore still follows the clock, at both of these instants, and
-    the first slew latches.
+    """Before the first slew (a park's or a home's included) there is no
+    goto whose side to keep, so `pier_side` answers with the hour-angle
+    rule for where the mount points: the side a goto there would pick. A
+    mount nothing has moved therefore still follows the clock, at both of
+    these instants, and the first slew latches.
 
     MUTANT "an unlatched mount is always west" (`pier_side` returning WEST
     before the first latch): RED (observed):
@@ -289,13 +401,23 @@ async def test_a_goto_under_an_injected_polar_error_latches_too(
         mount, clock, monkeypatch):
     """The native-TPPA path of `slew` (an injected polar misalignment) lands
     by its own model and returns early; it latches where it lands, like the
-    plain path. Synced west of the pier on a target two hours east of the
-    meridian, a goto four hours of RA west, past the meridian, takes the
-    east side. The misalignment model reads the simulator module's own
-    clock, so it is put on the case's clock too.
+    plain path. Slewed west of the pier on a target two hours east of the
+    meridian, and synced there once the misalignment is injected, a goto
+    four hours of RA west, past the meridian, takes the east side. The
+    misalignment model reads the simulator module's own clock, so it is put
+    on the case's clock too.
+
+    THE WEST SIDE IS A LATCHED ONE, from a plain slew made before the
+    misalignment (a slew there would take the polar path under test). The
+    case used to start from the sync alone, which latched west until #392;
+    once a sync kept the side, that mount was one nothing had moved, which
+    answers with the hour-angle rule for where it points, so a polar goto
+    that latched nothing still answered east past the meridian, and the
+    mutant below left this case green (observed by the S5-SIM verifier,
+    ``13 passed``).
 
     MUTANT "the polar goto does not latch" (the latch call in `slew`'s
-    polar branch removed): RED (observed):
+    polar branch removed): RED (observed, again with the plain slew first):
         AssertionError: the polar goto kept the side west
         assert 'west' == 'east'
           - east
@@ -305,8 +427,9 @@ async def test_a_goto_under_an_injected_polar_error_latches_too(
     """
     import astrodeck.devices.sim as sim_mod
     monkeypatch.setattr(sim_mod, "time", clock)
-    mount.rig.set_polar_misalignment(2.0, 1.0, lat_deg=40.0, lon_deg=LON)
     east = ra_at(-2.0, clock.t)
+    await mount.slew(east, DEC)
+    mount.rig.set_polar_misalignment(2.0, 1.0, lat_deg=40.0, lon_deg=LON)
     await mount.sync(east, DEC)
     assert (await mount.pier_side()).value == "west", "premise"
     await mount.slew(ra_at(2.0, clock.t), DEC)
@@ -418,6 +541,15 @@ async def test_a_slew_cancelled_part_way_latches_where_it_stopped(
           ?  -
           + west
           ? +
+
+    THE SECOND HALF STARTS FROM A FINISHED SLEW, then a sync to make the
+    position exact. It used to start from the sync alone, which latched
+    west until #392. Once a sync kept the side, the mount under this
+    mutant had never latched at all (its one slew was cancelled), so it
+    answered with the hour-angle rule for where it stopped, past the
+    meridian, east, and the mutant left the case green (observed by the
+    S5-SIM verifier, ``13 passed``). With the finished slew first it is RED
+    again, the failure above, verbatim.
     """
     await mount.sync(ra_at(-2.0), DEC)
     assert (await mount.pier_side()).value == "west", "premise"
@@ -432,6 +564,7 @@ async def test_a_slew_cancelled_part_way_latches_where_it_stopped(
         f"a slew stopped at HA {stopped:+.3f} h, short of the meridian, "
         f"latched {side}, the side of the target it never reached")
 
+    await mount.slew(ra_at(-0.03), DEC)
     await mount.sync(ra_at(-0.03), DEC)
     assert (await mount.pier_side()).value == "west", "premise"
     await _cancel_after_one_step(mount, ra_at(2.0))
@@ -445,35 +578,40 @@ async def test_a_slew_cancelled_part_way_latches_where_it_stopped(
         f"the side {side} it started on")
 
 
-async def test_a_sync_latches_the_side_of_where_it_says_the_mount_points(
+async def test_a_mount_nothing_has_moved_keeps_the_rule_through_a_sync_and_an_unpark(
         mount, clock):
-    """A sync latches from the position it was given, not from where the
-    mount pointed before it. With the clock held still, a mount slewed 15
-    min east of the meridian (west of the pier) and synced to a position
-    15 min past it takes the east side. The control: a sync that stays
-    east of the meridian leaves the side as it was.
+    """A sync and an unpark are not moves (#392), so a mount that only a
+    sync and an unpark have touched is still a mount nothing has moved: it
+    answers with the hour-angle rule for where it points, as the case above
+    does with nothing touching it, at two clocks either side of that
+    position's crossing. Synced 10 min east of the meridian it is west;
+    an hour past the crossing, with no slew between, the rule says east and
+    so does the mount. Before #392 the sync latched west here and the mount
+    kept it.
 
-    Added by the S4-SIM verifier: the sync case above syncs to the target
-    the mount was already slewed to, where the side before the sync and
-    after it are one, so the mutant below left it, and every other case in
-    the 93 files, green.
+    The rule is the simulator's only answer before a move, not a side it
+    has chosen, so a mount that has never slewed follows it; the first
+    slew latches (the case above).
 
-    MUTANT "sync latches before it moves" (`SimTelescope.sync` calling
-    `_latch_pier_side` before it sets ``rig.ra_hours``): RED (observed):
-        AssertionError: a sync to a position 15 min past the meridian
-        latched west, the side of where the mount pointed before it
+    MUTANT "sync latches": RED (observed):
+        AssertionError: a mount only synced and unparked answered west, not
+        the hour-angle rule's east
         assert 'west' == 'east'
           - east
           ?  -
           + west
           ? +
+    MUTANT "unpark latches": RED, the same failure, verbatim.
     """
-    await mount.slew(ra_at(-0.25), DEC)
-    assert (await mount.pier_side()).value == "west", "premise"
-    await mount.sync(ra_at(-0.2), DEC)
-    assert (await mount.pier_side()).value == "west"
-    await mount.sync(ra_at(0.25), DEC)
-    side = (await mount.pier_side()).value
-    assert side == "east", (
-        f"a sync to a position 15 min past the meridian latched {side}, the "
-        f"side of where the mount pointed before it")
+    ra = ra_at(-10.0 / 60.0)
+    await mount.sync(ra, DEC)
+    await mount.unpark()
+    for t in (T0, crossing(ra) + 3600.0):
+        clock.t = t
+        rule = coords_mod.pier_side_for_hour_angle(
+            coords_mod.hour_angle_h(ra, LON, t))
+        side = (await mount.pier_side()).value
+        assert side == rule, (
+            f"a mount only synced and unparked answered {side}, not the "
+            f"hour-angle rule's {rule}")
+    assert rule == "east", "premise: the clock carried the position across"

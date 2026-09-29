@@ -333,7 +333,10 @@ export function tapWireHint(
  *  Minutes are unbounded (`73:05`): there is no specified hour form, so the
  *  least-committal rendering is the one that never truncates a real number.
  *  NEVER a client-side countdown from an assumed total - an ETA the client
- *  invented looks identical to one the rig computed. */
+ *  invented looks identical to one the rig computed. What it formats is the
+ *  rig's own `progress.eta_s` while the run is this flow's
+ *  (`useFlowRunReadouts`, #189 S5), and `run.etaS`, which nothing writes,
+ *  otherwise. */
 export function formatEta(secs: number | null | undefined): string {
   if (secs == null || !Number.isFinite(secs) || secs < 0) return "-";
   const s = Math.round(secs);
@@ -516,8 +519,11 @@ export function lossesWhy(losses: number): string {
   return `${n} not reach the run. The FLOW column lists them under NOT HONOURED BY A RUN.`;
 }
 
-/** `run.etaS` has no publisher, so a null is the rig's silence and the tooltip
- *  says so rather than letting a bare `-` read as zero. */
+/** The ETA's tooltip while it reads `-`. The ETA is the sequence state's
+ *  `progress.eta_s` while the rig's run is this flow's (#189 S5), and
+ *  `run.etaS`, which has no publisher, otherwise; either way a null is the
+ *  rig's silence, and the tooltip says so rather than letting a bare `-` read
+ *  as zero. */
 export const ETA_UNREPORTED = "The rig has not reported a time remaining for this run.";
 
 /** PLAN's tooltip: what the plan editor is still FOR, now that Flows expresses
@@ -533,10 +539,12 @@ export function tonightLockReason(phrase: string): string {
   return `Tonight is worked out from the observatory site, so it needs ${phrase}.`;
 }
 
-/** `flows.run.curStage` is initialised to a bare em-dash placeholder by the
- *  slice and written by nothing server-side. Rendered through here so the phone
- *  monitor prints the house dash for "the rig has not said" instead of a
- *  character the copy rules forbid. */
+/** The STAGE readout. While the rig's run is this flow's it is the sequence
+ *  state's (`useFlowRunReadouts`, #189 S5: the target, or `M31 2-3 · pass 2`
+ *  for a mosaic); otherwise it is `flows.run.curStage`, which the slice
+ *  initialises to a bare em-dash placeholder and nothing server-side writes.
+ *  Rendered through here so the phone monitor prints the house dash for "the
+ *  rig has not said" instead of a character the copy rules forbid. */
 export function stageWord(raw: string | null | undefined): string {
   const s = (raw ?? "").trim();
   if (!s || s === "—" || s === "–") return "-";

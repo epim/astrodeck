@@ -262,6 +262,40 @@ def _with_comment(value: str, comment: str):
     return value
 
 
+#: The names ``write_name_card`` writes: each card, the card that keeps its
+#: value as typed, and that card's comment. MOSAIC is not here: it is written
+#: stripped, by ``save_fits``'s own block.
+_NAME_CARDS = {"OBJECT": (OBJECT_UTF8, _OBJECT_UTF8_COMMENT),
+               "FILTER": (FILTER_UTF8, _FILTER_UTF8_COMMENT)}
+
+
+def write_name_card(hdr, keyword: str, value: str | None) -> str:
+    """Write ``value``, a name somebody typed, into ``hdr`` as ``keyword``
+    (``OBJECT`` or ``FILTER``): the card folded by ``_ascii_fold``, and
+    beside it its as-typed card (``OBJUTF8``, ``FILTUTF8``) when the fold
+    changed the name. Returns the card's value, ``""`` when nothing but
+    blanks was left and no card was written. An ASCII name is written byte
+    for byte and gets no as-typed card, so that header is what it always was.
+
+    THE ONE WRITER of these cards (#371). ``save_fits`` writes a frame's
+    target and slot through it, and the calibration library a master's slot.
+    The library used to write its key's filter into the master's FILTER card
+    as it was, which could only ever be the fold: the Greek letter the key
+    now carries would make astropy raise and fail the build (the #277
+    class), and a master with the fold alone is one a reader of FILTUTF8
+    cannot tell from any other slot that folds alike (#332). A second fold,
+    kept in step with this one by hand, is the same bug a release later.
+
+    Any other keyword is a KeyError, as in ``full_name``."""
+    as_typed, comment = _NAME_CARDS[keyword]
+    text = _card_text(value)
+    if text:
+        hdr[keyword] = text
+        if text != str(value):
+            hdr[as_typed] = _with_comment(_encoded_name(str(value)), comment)
+    return text
+
+
 def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
               filter_name: str = "", frame_type: str = "Light",
               ra_hours: float | None = None, dec_deg: float | None = None,
@@ -323,22 +357,13 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     # saved frame of the night, and a header write must never fail a capture.
     # ASCII passes unchanged. When the fold changed the target's name, OBJUTF8
     # keeps the name as typed, right beside OBJECT; FILTUTF8 and MOSUTF8 do
-    # the same for the slot and the group (#332).
-    object_text = _card_text(target)
-    if object_text:
-        hdr["OBJECT"] = object_text
-        if object_text != str(target):
-            hdr[OBJECT_UTF8] = _with_comment(_encoded_name(str(target)),
-                                             _OBJECT_UTF8_COMMENT)
-    filter_text = _card_text(filter_name)
-    if filter_text:
-        hdr["FILTER"] = filter_text
-        # The slot's name as typed, when the fold changed it (#332): H-alpha
-        # and H-beta in Greek both fold to 'H?', and a reader grouping by
-        # FILTER alone calibrates and stacks the two as one filter.
-        if filter_text != str(filter_name):
-            hdr[FILTER_UTF8] = _with_comment(_encoded_name(str(filter_name)),
-                                             _FILTER_UTF8_COMMENT)
+    # the same for the slot and the group (#332). The slot's copy matters
+    # most: H-alpha and H-beta in Greek both fold to 'H?', and a reader
+    # grouping by FILTER alone calibrates and stacks the two as one filter.
+    # Both through ``write_name_card``, which a master flat's FILTER goes
+    # through too (#371).
+    write_name_card(hdr, "OBJECT", target)
+    write_name_card(hdr, "FILTER", filter_name)
     # WHICH MOSAIC AND WHICH PANEL (#189 U-08). A stacker that groups by OBJECT
     # or by folder cannot tell two panels of one mosaic from two targets, or
     # worse from one target, and co-adds two pieces of sky; these two cards let

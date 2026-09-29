@@ -131,7 +131,12 @@ export function MosaicNightCard(p: MosaicNightCardProps): JSX.Element | null {
             fontSize: 10, letterSpacing: ".2em", color: "var(--text-faint)",
           }}
         >
-          {`ACROSS THE ${p.rows}×${p.cols} MOSAIC`}
+          {/* Columns x rows, like the camera field (width x height): the
+              Example "M31 3x2" is 3 columns by 2 rows, and so is every other
+              place its size is written (S4 orchestrator ruling 1, #339).
+              Panel LABELS stay row-column; that pull is what once put this
+              heading rows first, reading "2x3" for the 3x2. */}
+          {`ACROSS THE ${p.cols}×${p.rows} MOSAIC`}
         </div>
 
         {state.kind === "loading" && (

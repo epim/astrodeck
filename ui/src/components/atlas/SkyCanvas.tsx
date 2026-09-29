@@ -55,7 +55,7 @@ import { AnnotationMarkers } from "./AnnotationMarkers";
 import { PointingFrame } from "./PointingFrame";
 import { RotateHandle } from "./RotateHandle";
 import {
-  PanelLabels, PanelShapes, panelAt, placePanels,
+  PanelLabels, PanelShapes, panelAt, panelLabel, placePanels,
   type PanelFov, type SkyPanel,
 } from "./PanelLayer";
 import { initTileGL } from "../../lib/tileGL";
@@ -75,6 +75,18 @@ const TAP_MS = 500;
  *  measureText below — a hardcoded character width must never decide a layout
  *  a user can see, which is the same line the "Your camera" label draws. */
 const MONO_FALLBACK_ADVANCE = 7.2;
+/** PanelLabels' plate (PanelLayer.tsx), CSS px, so the box a panel label
+ *  covers can be reserved before object labels are placed (#385). Each label
+ *  is centred on its panel: an inline-flex plate of px-1 and a 1 px border,
+ *  its visible parts (the "!" flag, the run-order chip, the row-col) gap-1
+ *  apart, the chip with px-0.5 and a 1 px border of its own, 14 px leading
+ *  plus the border for its height. The widths of the TEXT are measured, like
+ *  every other label's; only this chrome is written down, and a restyle of
+ *  the label fails skyCanvasPanels.test by name. */
+const PANEL_PLATE_PX = 2 * 4 + 2 * 1;
+const PANEL_PART_GAP_PX = 4;
+const PANEL_CHIP_PX = 2 * 2 + 2 * 1;
+const PANEL_LABEL_H = 14 + 2;
 
 // One-time WebGL capability probe (spec §5): try initTileGL on a 1x1 canvas.
 // Cached so every SkyCanvas mount shares one probe result.
@@ -160,7 +172,10 @@ export interface SkyCanvasProps {
   /** The server's panels (POST /api/framing/mosaic, or the client mirror while
    *  a drag is live), each with its state. Non-empty, they are drawn by the
    *  PanelLayer IN PLACE OF FovOverlay's grid: two drawings of one grid, one
-   *  of them point-reflected, is two claims about which panel is which. */
+   *  of them point-reflected, is two claims about which panel is which. The
+   *  "Your camera" label goes with FovOverlay, since the footprint it names is
+   *  no longer drawn, and each panel label's box is kept clear of object
+   *  labels (#385). */
   panels?: SkyPanel[];
   /** The single-frame field the grid was TILED for (the block's fovX/fovY
    *  snapshot). Panels are outlined at this size, not the live optics, so a
@@ -828,6 +843,18 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // legend was measured doing exactly that at 390 px).
   const gridLabelsOnCanvas = !frameCenter ||
     (frameView !== null && ccx >= 0 && ccx <= boxPx && ccy >= 0 && ccy <= boxPx);
+  // "Your camera" names the camera footprint FovOverlay draws at the frame
+  // centre. With panels that footprint is not drawn (PanelShapes replaces
+  // FovOverlay), so the label named a rectangle nobody could see, and it sat
+  // where the grid's panels and their labels are: the probe caught it over
+  // panel 2-3's label, a skip toggle, at 390 px (#385). It is dropped in panel
+  // mode rather than pinned somewhere else, because anywhere on this canvas
+  // it would state a size that matches no outline: the panels are drawn at
+  // the field they were TILED for, and the live camera may have changed since
+  // (the sim rig's 29.7' x 22.2' against a block tiled for 1.35 x 0.90 deg).
+  // The Target modal's GRID section states both fields, and its banner says
+  // when they differ.
+  const showCamLabel = haveOptics && gridLabelsOnCanvas && !panelsMode;
 
   // "Your camera · WxH" geometry. Two hard constraints, and they used to fight:
   //
@@ -865,7 +892,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     const ro = new ResizeObserver(read);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [haveOptics, gridLabelsOnCanvas]);
+  }, [showCamLabel]);
   // Bottom edge parks 3px above the frame's top edge; clamped so a tall frame
   // (zoomed in) can't push the label off the TOP of the canvas either.
   const camTop = Math.max(2, ccy - frameHalfHcss - 3 - camLabelH);
@@ -879,7 +906,8 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const fontRef = useRef<HTMLSpanElement | null>(null);
   const measureCtxRef = useRef<CanvasRenderingContext2D | null | undefined>(undefined);
   const measureCacheRef = useRef<Map<string, number>>(new Map());
-  const measure = useCallback((text: string): number => {
+  /** The rendered width of `text` alone, CSS px: no plate, no padding. */
+  const textWidth = useCallback((text: string): number => {
     const cache = measureCacheRef.current;
     const hit = cache.get(text);
     if (hit !== undefined) return hit;
@@ -903,14 +931,38 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     } else {
       w = text.length * MONO_FALLBACK_ADVANCE;
     }
-    w += 8; // the plate's horizontal padding, both sides
     cache.set(text, w);
     return w;
   }, []);
+  // An object label: its text plus the plate's horizontal padding, both sides.
+  const measure = useCallback((text: string): number => textWidth(text) + 8, [textWidth]);
+
+  // Where each panel label is drawn, CSS px (#385). The same cull as
+  // PanelLabels (a label whose panel centre is off the canvas is not drawn),
+  // the same centring, and the chrome above. The "!" is counted on every
+  // label, not only a set-aside one: a panel is set aside mid-run, and the
+  // label must not grow into an object's name when it is.
+  const panelLabelBoxes = useMemo<Rect[]>(() => {
+    if (!panelsMode) return [];
+    const scale = boxPx / VIEW;
+    const flagW = textWidth("!") + PANEL_PART_GAP_PX;
+    const out: Rect[] = [];
+    for (const pp of placedPanels) {
+      const x = pp.center.x * scale;
+      const y = pp.center.y * scale;
+      if (!(x >= 0 && x <= boxPx && y >= 0 && y <= boxPx)) continue;
+      const order = pp.panel.order;
+      const w = PANEL_PLATE_PX + flagW + textWidth(panelLabel(pp.panel)) +
+        (order != null ? textWidth(String(order)) + PANEL_CHIP_PX + PANEL_PART_GAP_PX : 0);
+      out.push({ x: x - w / 2, y: y - PANEL_LABEL_H / 2, w, h: PANEL_LABEL_H });
+    }
+    return out;
+  }, [panelsMode, placedPanels, boxPx, textWidth]);
 
   // Boxes the canvas's own furniture already occupies, so an object label
-  // never lands on top of the compass letters, the readouts, or the two
-  // labels that name the frames. CSS px.
+  // never lands on top of the compass letters, the readouts, the two labels
+  // that name the frames, or a panel's label (#385: an object's name drawn
+  // over a panel label covers the one control that skips that panel). CSS px.
   const hasOverlayControls = !!props.overlayControls;
   const reservedBoxes = useMemo<Rect[]>(() => {
     const boxes: Rect[] = [
@@ -920,7 +972,8 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       { x: boxPx - 120, y: boxPx - 22, w: 120, h: 22 },       // scale bar
     ];
     if (hasOverlayControls) boxes.push({ x: boxPx - 64, y: 8, w: 56, h: 198 });
-    if (haveOptics && gridLabelsOnCanvas) {
+    boxes.push(...panelLabelBoxes);
+    if (showCamLabel) {
       boxes.push({
         x: Math.max(0, camGuardRight - camMaxW), y: camTop,
         w: camMaxW, h: camLabelH || 17,
@@ -930,7 +983,8 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       boxes.push({ x: pointingLabel.left - 45, y: pointingLabel.top, w: 90, h: 18 });
     }
     return boxes;
-  }, [boxPx, haveOptics, gridLabelsOnCanvas, camGuardRight, camMaxW, camTop, camLabelH, pointingLabel, hasOverlayControls]);
+  }, [boxPx, showCamLabel, camGuardRight, camMaxW, camTop, camLabelH, pointingLabel,
+      hasOverlayControls, panelLabelBoxes]);
 
   // Anchors chosen last frame, so a label does not flip from one side of its
   // marker to the other while the sky moves a pixel underneath it.
@@ -1106,8 +1160,11 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
           </div>
         )}
-        {/* UX-07: honest empty-state when the survey has no reachable source. */}
-        {useTileEngine && !tileDrew && surveyDegraded && (
+        {/* UX-07: honest empty-state when the survey has no reachable source.
+            On either path: the tile engine before its first drawn frame, or
+            the <img> pipeline with no good frame to keep (#404: its own
+            skeleton below said LOADING for good in exactly this state). */}
+        {surveyDegraded && (useTileEngine ? !tileDrew : mode === "survey" && !shownUrl) && (
           <div className="absolute inset-0 grid place-items-center px-6 text-center text-dim text-xs">
             <span>
               {degradedText ??
@@ -1116,8 +1173,10 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           </div>
         )}
 
-        {/* first-ever load skeleton (img fallback path only) */}
-        {mode === "survey" && !useTileEngine && !everLoaded && !shownUrl && (
+        {/* first-ever load skeleton (img fallback path only). Gated on
+            !surveyDegraded like the tile engine's (#404): a cutout that has
+            failed is not loading, and the empty state above takes over. */}
+        {mode === "survey" && !useTileEngine && !everLoaded && !shownUrl && !surveyDegraded && (
           <div className="absolute inset-0 grid place-items-center text-dim text-xs" aria-hidden>
             <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
           </div>
@@ -1210,7 +1269,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               is INLINE so its plate hugs each line instead of painting one wide
               slab, and the size half is nowrap so a wrap can only ever fall
               between "Your camera" and the numbers. */}
-          {haveOptics && gridLabelsOnCanvas && (
+          {showCamLabel && (
             <span
               ref={camLabelRef}
               className="absolute text-[12px] mono text-right leading-snug"

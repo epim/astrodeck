@@ -112,6 +112,8 @@ LR_R90 = _graph(_capture("c1", "L"), _capture("c2", "R", exposure=90.0,
                                               count=2))
 #: A TARGET and a POOL in one flow, so every level of the payload is
 #: populated: a block of each kind, grid panels and pool panels.
+#: test_progress_locked_angle.py imports it, and relies on every target
+#: having a step.
 TARGET_AND_POOL = {
     "nodes": [
         {"id": "t", "type": "target", "x": 0, "y": 0,
@@ -123,6 +125,24 @@ TARGET_AND_POOL = {
         _capture("c", "L", count=5)],
     "edges": [{"from": "t", "fromPort": "target", "to": "p", "toPort": "arm"},
               {"from": "p", "fromPort": "target", "to": "c", "toPort": "run"}]}
+#: ``TARGET_AND_POOL`` with a 2x2 mosaic after it, one panel skipped, so the
+#: site and allow-list tests below walk a mosaic's own keys as well
+#: (``grid``, ``skipped`` and, since S5, ``group_id``). With a stage after
+#: the pool's, the first TARGET's lane is the pool alone, so it owns no step
+#: (spec 1.5).
+TARGET_POOL_AND_MOSAIC = {
+    "nodes": [
+        *TARGET_AND_POOL["nodes"],
+        {"id": "m", "type": "target", "x": 150, "y": 0,
+         "params": {"name": "M16", "ra": "18h 18m 48s", "dec": "-13 49 00",
+                    "rotation": 30, "angle": "Rotate to PA", "rows": 2,
+                    "cols": 2, "overlap": 25, "fovX": 2.0, "fovY": 1.33,
+                    "skip": "2-2"}},
+        _capture("k", "Ha", exposure=300.0, count=2)],
+    "edges": [*TARGET_AND_POOL["edges"],
+              {"from": "c", "fromPort": "complete", "to": "m",
+               "toPort": "arm"},
+              {"from": "m", "fromPort": "target", "to": "k", "toPort": "run"}]}
 
 
 def _compiled(graph: dict, flow_id: str) -> tuple[dict, SequencePlan]:
@@ -367,9 +387,12 @@ class TestWhoMayReadIt:
 ALLOWED = {
     "top": {"flow_id", "session", "blocks", "orphaned"},
     "session": {"id", "status", "nights", "count_mode"},
-    "block": {"node_id", "name", "kind", "banked", "owed", "total", "panels"},
+    "block": {"node_id", "name", "kind", "banked", "owed", "total", "panels",
+              "grid", "skipped", "group_id"},
+    "grid": {"rows", "cols"},
     "panel": {"target_id", "name", "row", "col", "banked", "owed", "total",
               "steps"},
+    "skipped": {"target_id", "name", "row", "col", "banked"},
     "step": {"step_id", "filter", "frame_type", "exposure_s", "count",
              "banked", "owed"},
     "orphaned": {"frames", "steps"},
@@ -377,11 +400,13 @@ ALLOWED = {
 
 
 async def _seeded_target_and_pool(api) -> str:
-    """The TARGET + POOL flow with a session that holds a frame on every
-    target's first step and two frames on a step the flow no longer has."""
-    fid = await api.save_flow(TARGET_AND_POOL)
-    _c, plan = _compiled(TARGET_AND_POOL, fid)
-    frames = [f for t in plan.targets
+    """The TARGET + POOL + mosaic flow with a session that holds a frame on
+    the first step of every target that has one (five: the two pool members
+    and the mosaic's three live panels) and two frames on a step the flow no
+    longer has."""
+    fid = await api.save_flow(TARGET_POOL_AND_MOSAIC)
+    _c, plan = _compiled(TARGET_POOL_AND_MOSAIC, fid)
+    frames = [f for t in plan.targets if t.steps
               for f in _frames(t.id, t.steps[0].id, 1)]
     _seed(fid, plan, frames + _frames(plan.targets[0].id, "gone", 2),
           created=100.0)
@@ -415,6 +440,18 @@ class TestItCarriesNoSiteData:
             AssertionError: premise: the ledger is read, so there is
             something to leak into
             assert 0 == 3
+
+        (the count was 3 before S5 put the mosaic in this payload; it is 5
+        now). RED under mutation "a transit altitude on the mosaic block"
+        (S5: ``flows/progress.py``'s mosaic block gains ``transit_alt_deg``,
+        ``90 - |latitude - dec|`` from the configured site, beside
+        ``group_id``), run in scratchpad ``s5-feed-mut``, for both roles, and
+        the allow-list test below on its key:
+
+            AssertionError: the body moved with the site
+            assert b'{"flow_id":...2,"steps":1}}' ==
+            b'{"flow_id":...2,"steps":1}}'
+              At index 1898 diff: b'3' != b'6'
         """
         fid = await _seeded_target_and_pool(api)
         set_active_provider(_Fixed(principal_for_role(role)))
@@ -429,8 +466,10 @@ class TestItCarriesNoSiteData:
             assert r.status_code == 200, r.text
             bodies.append(r.content)
         got = json.loads(bodies[0])
-        assert sum(b["banked"] for b in got["blocks"]) == 3, (
+        assert sum(b["banked"] for b in got["blocks"]) == 5, (
             "premise: the ledger is read, so there is something to leak into")
+        assert got["blocks"][2].get("group_id"), (
+            "premise: the mosaic's group id is in the body")
         assert bodies[0] == bodies[1], "the body moved with the site"
 
     async def test_every_key_is_on_the_allow_list(self, api):
@@ -443,20 +482,34 @@ class TestItCarriesNoSiteData:
             'steps', ...}
               Extra items in the left set:
               'transit_alt_deg'
+
+        RED under mutation "a transit altitude on the mosaic block" (see
+        the site test above), observed:
+
+            AssertionError: block carries keys outside the allow-list
+            assert {'banked', 'g...node_id', ...} <= {'banked',
+            'g...node_id', ...}
+              Extra items in the left set:
+              'transit_alt_deg'
         """
         fid = await _seeded_target_and_pool(api)
         api.store.set_site(Site(name="fixture", latitude=SITE_A[0],
                                 longitude=SITE_A[1], elevation_m=10.0,
                                 is_default=False))
         got = await api.ok(fid)
-        assert [b["kind"] for b in got["blocks"]] == ["target", "pool"], (
+        assert [b["kind"] for b in got["blocks"]] == [
+            "target", "pool", "target"], (
             "premise: both kinds of block are present")
+        assert "grid" in got["blocks"][2], "premise: the third is a mosaic"
         seen: dict[str, set] = {level: set() for level in ALLOWED}
         seen["top"] |= set(got)
         seen["session"] |= set(got["session"])
         seen["orphaned"] |= set(got["orphaned"])
         for block in got["blocks"]:
             seen["block"] |= set(block)
+            seen["grid"] |= set(block.get("grid") or {})
+            for s in block.get("skipped") or []:
+                seen["skipped"] |= set(s)
             for panel in block["panels"]:
                 seen["panel"] |= set(panel)
                 for step in panel["steps"]:

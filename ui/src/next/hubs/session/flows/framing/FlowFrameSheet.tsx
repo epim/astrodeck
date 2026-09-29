@@ -5,10 +5,10 @@
 // `components/flows/framing/TargetFramingSheet.tsx`, which the classic
 // inspector mounts too. This file is the adapter between the router's sheet
 // contract (`{ params, depth }`) and that component's props (`{ nodeId,
-// onClose }`), and nothing else: no layout, no copy, no draft. A #/next copy
-// of the modal would be the second implementation of every rule in it (the
-// DONE lock, the re-frame question, the loop wire), and the day one was fixed
-// the other would still ship the defect.
+// onClose, viewOnly }`), and nothing else: no layout, no copy, no draft. A
+// #/next copy of the modal would be the second implementation of every rule
+// in it (the DONE lock, the re-frame question, the loop wire), and the day
+// one was fixed the other would still ship the defect.
 //
 // THE MODAL STAYS LAZY TWICE OVER (D-FU-2). `reg.ts` fetches this module with a
 // dynamic `import()`, and this module mounts the shared door
@@ -48,10 +48,17 @@
 // same test. With no `?open=` (an unsaved flow, which has no id to name) the
 // sheet frames the open flow, as before. The classic host pins its modal to
 // the record it was opened in (FlowEditor.tsx `frame.recordId`).
+//
+// RUN MODE IS THE DOOR'S TO DECIDE (#189 S5; spec 2.6). While the open flow's
+// session is running, the modal opens with `viewOnly`: read-only, drawing the
+// run's panels. Decided by flowRunState `flowRunLive`, the reader the classic
+// host (FlowEditor.tsx `FramingHostSheet`) asks too, so a flow is running in
+// both UIs or in neither.
 
 import { Suspense, type JSX } from "react";
 
 import { TargetFramingSheetLazy } from "../../../../../components/flows/framing";
+import { flowRunLive } from "../../../../../components/flows/flowRunState";
 import { useStore } from "../../../../../store";
 import { buildHash, currentRoute, nav } from "../../../../router";
 import { ActionButton, EmptyCard } from "../../../../ui";
@@ -139,10 +146,13 @@ function closeFrame(): void {
 
 export function FlowFrameSheet({ params }: SheetProps): JSX.Element {
   const recordId = useStore((s) => s.flows.record?.id ?? null);
+  // A boolean selector: a run of this flow starting or ending re-renders this
+  // sheet, a frame or a status tick does not.
+  const running = useStore((s) => flowRunLive(s.flows.progress, s.sequence));
   const open = params.open ?? "";
   // The shared modal owns every other decision: a node that is gone or is not
-  // a TARGET says so and offers CLOSE, and a read-only Example opens in view
-  // mode with its reason. Run mode (spec 2.6, `viewOnly`) is S5's.
+  // a TARGET says so and offers CLOSE, a read-only Example opens in view mode
+  // with its reason, and in run mode the modal reads the run itself.
   //
   // THE CARDS SIT IN THE SHEET'S OWN FRAME, `.nx-sheet` and `.nx-sheet-body`
   // (next.css): the slot's full height and the 16 px gutter every other sheet
@@ -165,7 +175,7 @@ export function FlowFrameSheet({ params }: SheetProps): JSX.Element {
           />
         ) : (
           <Suspense fallback={<EmptyCard title="FRAME" hint={FRAME_LOADING} />}>
-            <TargetFramingSheetLazy nodeId={params.node ?? ""} onClose={closeFrame} />
+            <TargetFramingSheetLazy nodeId={params.node ?? ""} onClose={closeFrame} viewOnly={running} />
           </Suspense>
         )}
       </div>

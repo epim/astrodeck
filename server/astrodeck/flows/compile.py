@@ -149,8 +149,8 @@ def _num(v, default=0):
 
 def _finite(v, default=0):
     """``_num``, with anything that is not a FINITE number read as
-    ``default``: the one reading of every count ``compile_plan`` emits
-    (#328).
+    ``default``: the one reading of every number ``compile_plan`` emits
+    (#328 for the counts, #362 for the rest).
 
     ``_num`` hands back an infinity or a NaN for "inf" and "nan", and those
     are numbers ``int()`` raises on (``OverflowError``, ``ValueError``) and
@@ -158,11 +158,39 @@ def _finite(v, default=0):
     compile into a 500, and a saved flow holding one could no longer be
     compiled, previewed or run. Validation now refuses such a count at the
     save (``FlowGraph.validation_errors``); this is for the drafts the
-    compile routes see before any save, and for a file written by hand. A
-    finite value is ``_num``'s exactly, so every flow that compiled before
-    compiles to the same plan."""
+    compile routes see before any save, and for a file written by hand.
+
+    NOT ONLY THE COUNTS (#362 item 2). The route renders the compiled dict
+    with ``allow_nan=False``, so an infinite rotation, centring tolerance,
+    camera field or rule threshold was a 500 just as a count was: 764 of
+    the #328 corpus's 3000 compiles held one, at 27 paths. Every number is
+    read here now, each with the default its ``_num`` call always had, so
+    "inf" reads exactly as "abc" does. A finite value is ``_num``'s
+    exactly, so every flow that compiled before compiles to the same plan.
+    ``default`` may be None, the centring's and the grid's "not a number",
+    which ``to_plan`` leaves to the hub or refuses."""
     value = _num(v, default)
-    return value if math.isfinite(value) else default
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return value
+    return default
+
+
+def _text(v) -> str:
+    """A text param as the compile emits it: always a str (#362 item 2).
+
+    COPIED VERBATIM, a TARGET's name, RA or Dec, a CAPTURE's filter and
+    DUSK FLATS' method and window reached the compiled dict as whatever
+    the node held, and a raw POST can hold a JSON NaN, which the route
+    cannot render, or a number, which the plan's ``filter: str`` refuses.
+    Text is kept exactly as typed, untrimmed, because the PLAN tab shows
+    the compile verbatim and the readers do their own trimming
+    (``identity.typed_coordinates``, ``to_plan``'s name). Anything else is
+    its ``str`` when it is truthy and blank when it is not (None, 0, an
+    empty list), which is how every reader of the entry already took a
+    falsy value: an RA of the number 0 was never typed, and still is not."""
+    if isinstance(v, str):
+        return v
+    return str(v) if v else ""
 
 
 # ------------------------------------------------------------ the panel lane
@@ -786,15 +814,19 @@ def _target_entry(n: FlowNode, graph: FlowGraph, loop_keys: set,
     params = n.params or {}
     rows, cols = _grid_of(n)
     entry: dict = {
-        "name": params.get("name"),
-        "ra": params.get("ra"),
-        "dec": params.get("dec"),
+        # Text, as typed (``_text``): the one reading of whether RA and Dec
+        # are typed, trimmed, is ``identity.typed_coordinates`` (#387).
+        "name": _text(params.get("name")),
+        "ra": _text(params.get("ra")),
+        "dec": _text(params.get("dec")),
         # DEFAULT -1, NOT 0. -1 is "no angle constraint" (see to_plan's
         # rotation block); 0 is north-up, a real position angle somebody
         # may well want. An unparseable or empty field must fall to "no
         # constraint" — falling to 0 would silently command the rotator to
         # PA 0 on every target of every flow whose angle box was left blank.
-        "rotation_deg": _num(params.get("rotation"), -1),
+        # Finite-only (#362), so "inf" is no constraint too, as
+        # ``nodes._rotation_deg`` reads it for the block's angle.
+        "rotation_deg": _finite(params.get("rotation"), -1),
         # THE BLOCK THIS CAME FROM (#189 S1, spec 3.2). `to_plan` keys the
         # target's deterministic id on it, so a flow compiled on night two
         # names the targets night one banked frames against. The canvas node
@@ -808,8 +840,8 @@ def _target_entry(n: FlowNode, graph: FlowGraph, loop_keys: set,
         # None, which `to_plan` leaves unset, so the run centres to the
         # hub's own 0.02 deg and 3 attempts: exactly the missing-key values,
         # 1.2 arcmin and 3, and never a number the compile made up.
-        "centre": {"tol_arcmin": _num(params.get("centerTol"), None),
-                   "attempts": _num(params.get("centerTries"), None)},
+        "centre": {"tol_arcmin": _finite(params.get("centerTol"), None),
+                   "attempts": _finite(params.get("centerTries"), None)},
         "count_mode": count_mode_of(params),
     }
     if rows * cols > 1:
@@ -824,16 +856,17 @@ def _target_entry(n: FlowNode, graph: FlowGraph, loop_keys: set,
             "rows": rows, "cols": cols,
             # A percent, as the block holds it; `to_plan` divides by 100.
             # None for a value that is not a number: `to_plan` refuses it,
-            # where a guessed overlap would tile panels nobody framed.
-            "overlap": _num(params.get("overlap"), None),
-            "fov_x": _num(params.get("fovX"), None),
-            "fov_y": _num(params.get("fovY"), None),
+            # where a guessed overlap would tile panels nobody framed. An
+            # infinity or a NaN is not one either (#362).
+            "overlap": _finite(params.get("overlap"), None),
+            "fov_x": _finite(params.get("fovX"), None),
+            "fov_y": _finite(params.get("fovY"), None),
             "fov_from": str(params.get("fovFrom") or ""),
             "skip": skip,
             # The operator's words; `to_plan` maps them onto the engine's.
             "order": str(params.get("order") or ""),
-            "passes": _num(params.get("passes"), None),
-            "visit_min": _num(params.get("minVisit"), None),
+            "passes": _finite(params.get("passes"), None),
+            "visit_min": _finite(params.get("minVisit"), None),
             # "Auto" and "Skip it this pass" both keep a panel on its tile:
             # Auto means skip for a mosaic panel (spec 2.4 CENTRING).
             "require_centred": (str(params.get("ifNotCentred") or "").strip()
@@ -1011,7 +1044,9 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                     # can never finish a target, only stop working on one.
                     # A count, so read finite-only (#328, ``_finite``).
                     "quota_cycles": _finite(n.params.get("quota")),
-                    "min_altitude_deg": _num(n.params.get("minAlt")),
+                    # Every number below finite-only too (#362): the route
+                    # renders this dict as JSON, which has no infinity.
+                    "min_altitude_deg": _finite(n.params.get("minAlt")),
                     # WHAT THE FLOOR MEANS ONCE THE TARGET IS RUNNING, and it
                     # only reached a sentence in the Tonight story before this.
                     # The dial's two options are prose ("Advance now; retry it
@@ -1023,8 +1058,8 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                                  if str(n.params.get("onFloor") or "")
                                  .strip().lower().startswith("advance")
                                  else "keep"),
-                    "min_moon_sep_deg": _num(n.params.get("moonSep")),
-                    "max_hour_angle_h": _num(n.params.get("maxHA")),
+                    "min_moon_sep_deg": _finite(n.params.get("moonSep")),
+                    "max_hour_angle_h": _finite(n.params.get("maxHA")),
                     # The POOL's `counts`, which ruling 2 treats as TARGET's:
                     # one plan-wide count mode, so every block says what it
                     # asks for and `to_plan` settles it (M7).
@@ -1044,10 +1079,14 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             # can substitute one for another mid-night. The wire rule keeps
             # that, since every member of a pool is the pool's.
             step = {
-                "filter": n.params.get("filter"),
-                "exposure_s": _num(n.params.get("exposure")),
-                "gain": _num(n.params.get("gain")),
-                "binning": _num(n.params.get("bin"), 1),
+                # Text (#362): a filter that is a number or a JSON NaN was
+                # copied verbatim, which the plan's `filter: str` refuses.
+                "filter": _text(n.params.get("filter")),
+                # Finite-only, as every number here is (#362): an "inf"
+                # exposure reads as 0, which `to_plan` refuses by name.
+                "exposure_s": _finite(n.params.get("exposure")),
+                "gain": _finite(n.params.get("gain")),
+                "binning": _finite(n.params.get("bin"), 1),
                 # A count, so read finite-only (#328): "inf" is no number of
                 # frames, and `to_plan` refuses the 0 it reads as.
                 "count": _finite(n.params.get("count")),
@@ -1057,7 +1096,7 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 # their step ids apart (spec 3.3).
                 "node_id": n.id,
             }
-            goal = _num(n.params.get("goal"))
+            goal = _finite(n.params.get("goal"))
             if goal:
                 step["integration_goal_h"] = goal
             mine, owner = receivers(n)
@@ -1091,9 +1130,9 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 "strategy": "cycle",
                 "cycles": cycles,
                 "per_cycle": per_cycle,
-                "gain": _num(n.params.get("gain")),
-                "binning": _num(n.params.get("bin"), 1),
-                "reject_hfr": _num(n.params.get("reject")),
+                "gain": _finite(n.params.get("gain")),
+                "binning": _finite(n.params.get("bin"), 1),
+                "reject_hfr": _finite(n.params.get("reject")),
                 "slots": slots,
                 "frame_type": "Light",
                 # Every slot step `to_plan` expands from this stage carries it.
@@ -1109,9 +1148,9 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     if dusk is not None:
         schedule = {
             "start_mode": "dusk",
-            "start_offset_min": _num(dusk.params.get("offset")),
+            "start_offset_min": _finite(dusk.params.get("offset")),
             "stop_mode": "dawn" if dusk.params.get("stop") == "Dawn" else "none",
-            "min_altitude_deg": _num(dusk.params.get("minAlt")),
+            "min_altitude_deg": _finite(dusk.params.get("minAlt")),
         }
     else:
         # No dusk node = run now. NOT "never": a flow with no window is one the
@@ -1144,9 +1183,9 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
         automation["dome"] = DomePolicy.from_node_params(dome.params).to_plan()
     if flats is not None:
         automation["dusk_flats"] = {
-            "method": flats.params.get("method"),
-            "window": flats.params.get("window"),
-            "adu_target": _num(flats.params.get("adu")),
+            "method": _text(flats.params.get("method")),
+            "window": _text(flats.params.get("window")),
+            "adu_target": _finite(flats.params.get("adu")),
             "count": _finite(flats.params.get("count")),
         }
     if calib is not None:
@@ -1221,7 +1260,9 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                       "to_port": e.toPort}
         thr = src.params.get("threshold")
         if thr is not None:
-            rule["threshold"] = _num(thr)
+            # Finite-only (#362): an infinite threshold was one more number
+            # the route's JSON could not carry.
+            rule["threshold"] = _finite(thr)
         if (src.type == "condition"
                 and str(src.params.get("when") or "").strip().lower()
                 == "hfr above (x focus)"):

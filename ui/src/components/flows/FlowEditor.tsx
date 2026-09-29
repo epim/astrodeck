@@ -35,6 +35,15 @@
 // arrive when a block is first framed, never with the editor
 // (__tests__/classicFrameHost.test.tsx walks the static imports to hold it).
 //
+// RUN MODE IS DECIDED HERE, AT THE DOOR (#189 S5; spec 2.6). While the open
+// flow's session is running (flowRunState `flowRunLive`: the session the rig
+// writes is the one the progress route counts for this flow, and the run is
+// live), the modal opens with `viewOnly`, read-only and drawing the run's
+// panels. The #/next door (FlowFrameSheet.tsx) asks the same reader, so the
+// two UIs cannot disagree on when a flow is running. The question is asked in
+// `FramingHostSheet`, not in the editor, so a run starting or ending
+// re-renders the modal's door and never the canvas.
+//
 // THE COUNTS LINE IS ALSO HERE (spec Revision 2 ruling 2; S4 orchestrator
 // ruling 8). While any TARGET or POOL still counts every sub taken, the editor
 // carries `countsNotice`'s line above every tier's body, for as long as it is
@@ -60,6 +69,7 @@ import FlowPhoneGraph from "./FlowPhoneGraph";
 import FlowPhoneMonitor from "./FlowPhoneMonitor";
 import FlowTapWireBar from "./FlowTapWireBar";
 import { countsNotice } from "./countsNotice";
+import { flowRunLive } from "./flowRunState";
 import { TargetFramingSheetLazy, type TargetFramingSheetProps } from "./framing";
 
 // ------------------------------------------------------------ the framing host
@@ -106,6 +116,14 @@ class FramingBoundary extends Component<
       </Overlay>
     );
   }
+}
+
+/** The one open modal, in run mode while the open flow's session runs (see
+ *  the header). A boolean selector, so it re-renders when a run of this flow
+ *  starts or ends, and at no frame, log line or status tick. */
+function FramingHostSheet({ nodeId, onClose }: { nodeId: string; onClose: () => void }): JSX.Element {
+  const running = useStore((s) => flowRunLive(s.flows.progress, s.sequence));
+  return <FramingSheet nodeId={nodeId} onClose={onClose} viewOnly={running} />;
 }
 
 /** The counts line (see the header). A string-or-null selector, so it
@@ -233,7 +251,7 @@ export default function FlowEditor({ tier }: FlowEditorProps): JSX.Element {
         {framing !== null && (
           <FramingBoundary onClose={closeFrame}>
             <Suspense fallback={null}>
-              <FramingSheet nodeId={framing} onClose={closeFrame} />
+              <FramingHostSheet nodeId={framing} onClose={closeFrame} />
             </Suspense>
           </FramingBoundary>
         )}

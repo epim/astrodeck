@@ -499,10 +499,16 @@ def _rotation_deg(value) -> float:
     forms such as "1_0" that ``nodeDefs.ts``'s stricter ``DECIMAL`` refuses,
     so a raw string only a hand-written graph can hold may read "Rotate to
     PA" here and "Any angle" in the inspector; an edit in either editor
-    stores a number.)"""
+    stores a number.)
+
+    OverflowError too (#362 item 3): ``float()`` of an integer past a
+    float's range raises that, not ValueError, and a raw POST can hold a
+    400-digit one. It is no number, so it is no constraint; uncaught, it
+    raised out of ``compile_plan`` (through ``compile.angle_code``) and out
+    of the doctor (``_pa``), which the compile routes run on every draft."""
     try:
         v = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return -1.0
     return v if math.isfinite(v) else -1.0
 

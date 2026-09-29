@@ -19,12 +19,17 @@
 //      moves on (its RE-FRAME commits the draft as it is when pressed).
 //      CANCEL writes nothing at all; while DONE's write waits for its
 //      compile, CANCEL and Escape refuse and say why, the draft takes no edit
-//      it could not keep, and the host's onClose runs once at most (#382).
+//      it could not keep, and the host's onClose runs once at most (#382),
+//      a compile that fails included.
 //   4. Opening block A never changes `store.framing`, the Atlas singleton
 //      whose sharing put one target's mosaic on another target's flow.
 //   5. A viewer never sees the altitude column or the night card: absent, not
 //      empty.
 //   6. A read-only Example opens in view mode and says why.
+//
+// Run mode (spec 2.6: the sheet read-only while the flow's session runs,
+// drawing the live group) is runMode.test.tsx's, graded on the rig's and the
+// progress route's recorded answers.
 //
 // THE PANELS ARE THE SERVER'S ANSWER, READ, NEVER COPIED:
 // server/tests/fixtures/mosaic_panels_3x2.json, kept equal to the route by
@@ -35,7 +40,9 @@
 // s4-umodal-mut), never in the shared tree (#254), and the failure it
 // produced is quoted verbatim. After the limit reset every one was run again
 // against the current tree in s4-umodal-r2-mut (2026-09-27), with the three
-// #382 mutants, and each was red with the failure quoted.
+// #382 mutants, and each was red with the failure quoted. S5 ran the three
+// #382 mutants again on the committed tree (HEAD 029914bb) in s5-modal-mut
+// (2026-09-28), each red with its quoted line, and then on its own tree.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -742,6 +749,62 @@ await test("a DONE whose sheet the host has already taken down closes nothing wh
   // Control: the write DONE made before the host closed it stands.
   eq(useStore.getState().flows.graph.nodes.find((n: any) => n.id === "n2")!.params.name, "M31 wide",
     "the name DONE wrote");
+});
+
+// A compile that FAILS is the other way DONE's wait ends (a relay drop, a
+// 5xx, the api's 15 s timeout). flowsCompile catches it and keeps the last
+// good answer, so the write DONE made stands and the sheet closes, once: the
+// lock traps no one, and nothing about a failure closes twice (#382, checked
+// again by S5 on the committed tree).
+// MUTANT "a failed compile rejects" (flowsSlice's flowsCompile rethrows from
+// its catch, after logging, so flowsApplyFraming rejects and DONE's commit
+// throws before its close). Observed (scratch copy s5-modal-mut):
+//   x a DONE whose compile fails closes the sheet once, and CANCEL and Escape in the wait close
+//     nothing: closes once DONE's compile had failed: expected 1, got 0
+// MUTANT "cancel live while DONE writes" (CANCEL's HonestButton given
+// `reason={null}`), run against this case too. Observed (scratch copy
+// s5-modal-mut):
+//   x a DONE whose compile fails closes the sheet once, and CANCEL and Escape in the wait close
+//     nothing: closes after CANCEL, with DONE's compile still out: expected 0, got 1
+// MUTANT "escape live while DONE writes" (the Overlay handed the host's
+// `onClose`), likewise. Observed (scratch copy s5-modal-mut):
+//   x a DONE whose compile fails closes the sheet once, and CANCEL and Escape in the wait close
+//     nothing: closes after Escape, with DONE's compile still out: expected 0, got 1
+await test("a DONE whose compile fails closes the sheet once, and CANCEL and Escape in the wait close nothing", async () => {
+  // A failed DONE must be seen here, not end the run: under the first mutant
+  // its rejection would otherwise be unhandled and exit the process.
+  const proc = (globalThis as any).process;
+  const rejections: unknown[] = [];
+  const onRejection = (e: unknown) => { rejections.push(e); };
+  proc.on("unhandledRejection", onRejection);
+  setup({ ws: false });
+  mount();
+  typeInto(doc.querySelector("#tfs-name"), "M31 wide");
+  let fail: (e: Error) => void = () => {};
+  compileGate = new Promise<void>((_ok, bad) => { fail = bad; });
+  try {
+    click(doneBtn());
+    await flush();
+    eq(applyCalls.length, 1, "DONE's writes");
+    eq(storeCompiles, 1, "compiles DONE started");
+    click(q("framing-header").querySelector("button"));
+    eq(closes, 0, "closes after CANCEL, with DONE's compile still out");
+    act(() => { doc.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    eq(closes, 0, "closes after Escape, with DONE's compile still out");
+  } finally {
+    fail(new Error("503 from the compile route"));
+    compileGate = null;
+    await flush();
+    await flush(20);
+    proc.off("unhandledRejection", onRejection);
+  }
+  eq(closes, 1, "closes once DONE's compile had failed");
+  eq(rejections.length, 0, "DONE's commit rejected");
+  const log = useStore.getState().flows.logs.map((l: any) => l.msg);
+  assert(log.some((m: string) => m.startsWith("could not check this flow")),
+    `the failed compile was not logged: ${JSON.stringify(log)}`);
+  eq(useStore.getState().flows.graph.nodes.find((n: any) => n.id === "n2")!.params.name, "M31 wide",
+    "the name DONE wrote before its compile failed");
 });
 
 // DONE's write takes the draft as it stands when DONE is pressed, and the

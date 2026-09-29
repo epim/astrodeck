@@ -100,6 +100,44 @@ export interface FlowCompileResult {
   unmapped: FlowUnmapped[];
 }
 
+/** `POST /api/flows/wizard`'s body, server `FlowWizardBody` key for key.
+ *
+ *  The first three are the NEW FLOW sheet's answers, and a body with only
+ *  those generates exactly the graph it always did (Revision 2 ruling 4).
+ *  Every other key is OPTIONAL and is LEFT OUT when there is nothing to say:
+ *  the route reads a missing key as "not given", and each one is inert then.
+ *
+ *  - the Mosaic kind's: `rows`, `cols`, `overlap_pct` (percent), `angle_mode`
+ *    (one of the two mosaic angles), and either `pa_deg` or `use_measured`;
+ *  - the door's (#196, S6): `ra` and `dec` as typed, `skip` in the TARGET's
+ *    own syntax, `cycle_plan` (a FILTER CYCLE slot table, "L 60, R 60") with
+ *    `cycles` (subs of each), and `guiding`.
+ *
+ *  The camera field, the rotator, the measured angle and the wheel are RIG
+ *  FACTS the route injects; there is no key for any of them. The kind and
+ *  the chip labels are wizard.py's constants, sent as they render. Built by
+ *  `components/flows/wizard/wizardModel.ts::wizardBody` for Send to Flow
+ *  Wizard, and graded against the route's recorded answer
+ *  (server/tests/fixtures/wizard_mosaic_answer.json). */
+export interface FlowWizardAnswers {
+  kind: string;
+  options: string[];
+  target: string;
+  unguided_exposure_s?: number;
+  rows?: number;
+  cols?: number;
+  overlap_pct?: number;
+  angle_mode?: string;
+  pa_deg?: number;
+  use_measured?: boolean;
+  ra?: string;
+  dec?: string;
+  skip?: string;
+  cycle_plan?: string;
+  cycles?: number;
+  guiding?: boolean;
+}
+
 /** The quick sheet's payload. `target` carries the three strings the TARGET
  *  node stores -- the name alone is not enough, because `to_plan` reads ra/dec
  *  and never the name, so a flow with a name and no coordinates slews to the
@@ -210,6 +248,11 @@ export interface FlowProgressPanel {
   banked: number;
   owed: number;
   total: number;
+  /** The angle the session has locked this panel's target to (Revision 2,
+   *  owner ruling 9), in the CROTA2 convention, with where it came from in
+   *  words (server `progress.LOCK_SOURCE`). Absent when there is no lock;
+   *  never the lock's times, which a viewer may not read. */
+  locked_angle?: { pa_deg: number; source: string };
   steps: FlowProgressStep[];
 }
 
@@ -245,12 +288,27 @@ export interface FlowProgressBlock {
   grid?: { rows: number; cols: number };
   /** Present only on a mosaic block, in grid order. */
   skipped?: FlowProgressSkipped[];
+  /** Present only on a mosaic block (#189 S5): the id of the plan group that
+   *  shoots its panels, which is the `SequenceGroupState.id` a run publishes
+   *  while it shoots them, so the run-mode sheet finds the live group of the
+   *  block it draws by this id (`flowRunState.groupForBlock`) and never by
+   *  name: two blocks may share one. Null when the plan holds no group for
+   *  the block (every panel skipped, or no coordinates), so no run will ever
+   *  publish its group. */
+  group_id?: string | null;
+  /** A TARGET block's locked angle: the one every panel the plan holds is
+   *  locked to (server `progress._block_lock`). Absent when any panel is
+   *  unlocked or two panels disagree, and on a POOL block. */
+  locked_angle?: { pa_deg: number; source: string };
 }
 
 export interface FlowProgressSession {
   id: string;
   status: "active" | "dormant" | "complete";
-  /** How many nights the session has run. */
+  /** How many RUNS the session has had: one report per engine start, so a
+   *  restart on the same night counts again (#430). Equal to the nights it
+   *  has run only while no night held a restart; CONTINUE's `night` is this
+   *  plus one. */
   nights: number;
   count_mode: "attempts" | "accepted";
 }
@@ -372,13 +430,13 @@ export const flowsApi = {
    *  forging them is not possible. */
   create: (flow: unknown) => api.post<unknown>(FLOWS_BASE, { flow }),
 
-  /** The wizard's three answers -> a generated, SAVED flow. The rules live in
+  /** The wizard's answers -> a generated, SAVED flow, with the generator's
+   *  `notes` beside the record. The rules live in
    *  server/astrodeck/flows/wizard.py and are not duplicated here; `kind` and
    *  the `options` labels are that module's own constants, so the sheet sends
-   *  the strings it renders. */
-  generateFromWizard: (answers: {
-    kind: string; options: string[]; target: string;
-  }) => api.post<unknown>(FLOWS_WIZARD, answers),
+   *  the strings it renders. The NEW FLOW sheet sends the three answers;
+   *  Send to Flow Wizard sends the door's as well (`FlowWizardAnswers`). */
+  generateFromWizard: (answers: FlowWizardAnswers) => api.post<unknown>(FLOWS_WIZARD, answers),
 
   /** The quick sheet's four answers -> a generated, SAVED flow, optionally
    *  already running.

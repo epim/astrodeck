@@ -32,6 +32,13 @@ which also says whether the profile has a rotator) and the angle the last
 solve measured (``hub.last_sky_angle``, for USE MEASURED). With no optics the
 wizard answers one target, and the answer's ``notes`` say why.
 
+SLICE S6 (#196, the server half; task S6-WIZ-SRV) adds the door's answers
+(``ra``, ``dec``, ``skip``, ``cycle_plan``, ``cycles``, ``guiding``) and a
+third injected rig fact, the connected wheel. They are graded in
+``test_flows_wizard_door_answers.py``, which also records
+``fixtures/wizard_mosaic_answer.json``; every case here is unchanged, and
+still holds with them in the body model.
+
 THE FIXTURE ISOLATES THE CONFIG (S3, #341). It used to patch only the flow
 library, so the wizard read the process-wide config store; since the route
 injects the optics, a mosaic's answer turned on whatever that store held.

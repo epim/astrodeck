@@ -129,14 +129,29 @@ export type OverlayGeometry = { wrap: string; surface: string; vars: OverlayVars
  *  utility. The clamp and the variant size must therefore share one
  *  declaration, which is what `--ov-max-w` / `--ov-max-h` / `--ov-w` / `--ov-h`
  *  are for. Border radius and animation stay as utilities: nothing authored
- *  sets those, so there is nothing to lose to. */
+ *  sets those, so there is nothing to lose to.
+ *
+ *  A VARIANT'S HEIGHT CAP IS A FRACTION, NOT A dvh VALUE (#354).
+ *  `--ov-max-h-frac` is a bare number of viewport heights and `--ov-max-h-gap`
+ *  a length taken off it. index.css multiplies the fraction by 100dvh in the
+ *  main rule and by 100vh in its `@supports not (height: 100dvh)` fallback, so
+ *  each rule gets a unit it can parse. A dvh value in the var used to reach
+ *  the fallback as well, and a declaration holding var() is only checked once
+ *  the var is substituted: without dvh the fallback was invalid at
+ *  computed-value time and max-height fell to `none`, the one outcome the
+ *  fallback exists to prevent. `--ov-max-h` stays as an explicit cap that
+ *  REPLACES the fraction: `full`'s 100% comes through it, and so does a
+ *  caller's `surfaceStyle` cap. A caller that puts dvh there still loses the
+ *  clamp without dvh (six do, #417); it should pass `--ov-max-h-frac` instead,
+ *  with `--ov-max-h-gap: 0px` under center, whose 2rem gap would otherwise
+ *  stay. */
 export function overlayGeometry(variant: OverlayVariant, lg: boolean, sm: boolean): OverlayGeometry {
   switch (variant) {
     case "sheet":
       return {
         wrap: "absolute inset-0 flex flex-col justify-end",
         surface: "rounded-t-2xl more-sheet-in",
-        vars: { "--ov-max-h": "85dvh" },
+        vars: { "--ov-max-h-frac": "0.85" },
       };
     case "dock":
       return lg
@@ -148,7 +163,7 @@ export function overlayGeometry(variant: OverlayVariant, lg: boolean, sm: boolea
         : {
             wrap: "absolute inset-0 flex flex-col justify-end",
             surface: "rounded-t-2xl sheet-enter",
-            vars: { "--ov-max-h": "60dvh" },
+            vars: { "--ov-max-h-frac": "0.6" },
           };
     case "corner":
       return {
@@ -159,8 +174,8 @@ export function overlayGeometry(variant: OverlayVariant, lg: boolean, sm: boolea
           : "absolute inset-x-0 bottom-0 overlay-above-nav flex justify-center",
         surface: sm ? "rounded-2xl sheet-enter" : "rounded-t-2xl sheet-enter",
         vars: sm
-          ? { "--ov-w": "380px", "--ov-max-w": "380px", "--ov-max-h": "80dvh" }
-          : { "--ov-max-h": "70dvh" },
+          ? { "--ov-w": "380px", "--ov-max-w": "380px", "--ov-max-h-frac": "0.8" }
+          : { "--ov-max-h-frac": "0.7" },
       };
     case "full":
       // One geometry at every width: the surface fills the host, which is the
@@ -180,9 +195,11 @@ export function overlayGeometry(variant: OverlayVariant, lg: boolean, sm: boolea
           ? "absolute inset-0 flex items-center justify-center p-4"
           : "absolute inset-0 flex items-end justify-center",
         surface: sm ? "rounded-2xl sheet-enter" : "rounded-t-2xl sheet-enter",
+        // sm: the whole viewport less 2rem, which is the wrapper's p-4 above
+        // and below, so the dialog never touches the screen edge.
         vars: sm
-          ? { "--ov-max-w": "560px", "--ov-max-h": "calc(100dvh - 2rem)" }
-          : { "--ov-max-h": "92dvh" },
+          ? { "--ov-max-w": "560px", "--ov-max-h-frac": "1", "--ov-max-h-gap": "2rem" }
+          : { "--ov-max-h-frac": "0.92" },
       };
   }
 }

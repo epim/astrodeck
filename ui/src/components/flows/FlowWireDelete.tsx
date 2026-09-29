@@ -13,12 +13,20 @@
 // the curve passes through the midpoint of its endpoints. No sampling, no second
 // bezier: the button lands on the wire by construction.
 //
+// EXCEPT THE PANEL LOOP (#355), which is not a bezier. Its arc drops below the
+// lane's cards, runs left and rises into the TARGET's `next`, so the midpoint
+// of its anchors is among the lane's cards at port height, with no wire under
+// it: on the eighth Example, the gap between AUTOFOCUS and GUIDE. Its control
+// sits on the arc's `handle`, a point on the drop, from the same `wireLoopArc`
+// the layer draws the arc with, so on the phone FLOW tab it follows the arc
+// that tab draws (#360).
+//
 // This owns `data-flows-wire-selected`, which is the ONLY thing capture 15
 // waits for — "the selected wire's remove control must be visible". A control
 // that rendered with no box, or off behind a card, passes a DOM query and fails
 // the picture.
 import { useStore } from "../../store";
-import { wireAnchors, wireMidpoint } from "./FlowWireLayer";
+import { wireAnchors, wireLoopArc, wireMidpoint } from "./FlowWireLayer";
 import type { FlowTier, Point } from "./geometry";
 import type { FlowEdgeRec } from "./flowsTypes";
 
@@ -61,6 +69,9 @@ export default function FlowWireDelete({
   positions,
 }: FlowWireDeleteProps) {
   const nodes = useStore((s) => s.flows.graph.nodes);
+  // The lane a loop arc runs under is read from the wires, so the control
+  // needs them too; the layer already re-renders on the same array.
+  const edges = useStore((s) => s.flows.graph.edges);
   const deleteSel = useStore((s) => s.flowsDeleteSel);
 
   // Same resolver the wire layer uses, so the button cannot disagree with the
@@ -72,7 +83,8 @@ export default function FlowWireDelete({
   if (!a) return null;
 
   const sz = auto ? SIZE_AUTO : SIZE_CANVAS;
-  const { x: mx, y: my } = wireMidpoint(a.p1, a.p2);
+  const loop = wireLoopArc(edge, { nodes, edges }, tier, auto, positions);
+  const { x: mx, y: my } = loop ? loop.handle : wireMidpoint(a.p1, a.p2);
 
   return (
     <button

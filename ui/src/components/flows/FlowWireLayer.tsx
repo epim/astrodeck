@@ -27,7 +27,8 @@
 // `edgePath` would sweep it across every card between the two ends. It is drawn
 // as `geometry.loopArc` instead (out, down under the cards, left, up), with its
 // own dash and a label chip - see `targetSummary.ts`, which #/next's layer
-// shares, for why the silhouette and the words, not the hue, tell it apart.
+// shares, for why the silhouette and the words, not the hue, tell it apart,
+// and for how the phone FLOW tab's column layout bends it (#360).
 //
 // RE-RENDER SHAPE. The layer subscribes to the node array, the edge array and
 // the run phase; each edge is its own memo'd child taking only PRIMITIVES, and
@@ -40,7 +41,9 @@ import { memo } from "react";
 import type { MouseEvent as RMouseEvent } from "react";
 import { useStore } from "../../store";
 import { NODE_DEFS } from "./nodeDefs";
-import { edgePath, portPos, type EdgeMode, type FlowTier, type Point } from "./geometry";
+import {
+  edgePath, portPos, type EdgeMode, type FlowTier, type LoopArc, type Point,
+} from "./geometry";
 import type { FlowEdgeRec, FlowNodeRec, FlowRunPhase, PortKind } from "./flowsTypes";
 import {
   LOOP_ARC_DASH, LOOP_CHIP_FONT_PX, loopArcOf, loopChip, loopChipBox,
@@ -115,6 +118,25 @@ export function wireAnchors(
   return p1 && p2 ? { p1, p2 } : null;
 }
 
+/** The panel loop's arc for one wire as THIS surface draws it, or null for a
+ *  wire that is not a loop wire (targetSummary `loopArcOf`).
+ *
+ *  ONE RESOLVER FOR THE LAYER AND THE REMOVE CONTROL. The layer draws the arc
+ *  from it and FlowWireDelete puts its control on the same arc's `handle`
+ *  (#355), with the same positions and the same surface: on the phone FLOW
+ *  tab (`auto`) the arc keeps inside the column layout's container and clear
+ *  of every card it lays out (#360), and a control placed from the canvas's
+ *  arc would sit off the wire drawn there. */
+export function wireLoopArc(
+  edge: FlowEdgeRec,
+  graph: { nodes: readonly FlowNodeRec[]; edges: readonly FlowEdgeRec[] },
+  tier: FlowTier,
+  auto: boolean,
+  positions?: Readonly<Record<string, Point>>,
+): LoopArc | null {
+  return loopArcOf(edge, graph, tier, (n) => placed(n, positions), auto ? "phone-flow" : "canvas");
+}
+
 /** Where the wire's remove control goes: the straight-line midpoint of the two
  *  PORT ANCHORS — not of the path's bounding box, and not a sampled point.
  *
@@ -125,7 +147,11 @@ export function wireAnchors(
  *  sits on the curve" is an identity, not an approximation — which is why this
  *  lives beside `wireAnchors` rather than in the control: the two must never
  *  drift apart, and __tests__/flowWire.test.ts re-derives it from the emitted
- *  path string. */
+ *  path string.
+ *
+ *  NOT FOR THE PANEL LOOP. The loop arc is not a bezier (`wireLoopArc`), and
+ *  the midpoint of its anchors lands among the lane's cards at port height,
+ *  where no wire is drawn (#355); its control goes on the arc's `handle`. */
 export function wireMidpoint(p1: Point, p2: Point): Point {
   return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
 }
@@ -406,7 +432,6 @@ export default function FlowWireLayer({
   const hitW = auto ? HIT_W_AUTO : HIT_W_CANVAS;
   const running = isRunning(phase);
   const graph = { nodes, edges };
-  const place = (n: FlowNodeRec) => placed(n, positions);
 
   return (
     <svg
@@ -430,10 +455,10 @@ export default function FlowWireLayer({
         // The panel loop: a backward event wire into a TARGET's `next`, routed
         // under the lane from the card formula. On the phone FLOW tab too, from
         // the auto-layout's positions - a column layout crosses the lane with
-        // the stock curve just as surely. The classic remove control
-        // (FlowWireDelete.tsx) still sits at the anchors' midpoint, which is
-        // not on the arc (#355); #/next's sits on `loop.handle`.
-        const loop = loopArcOf(e, graph, tier, place);
+        // the stock curve just as surely - and inside its container, clear of
+        // every card it lays out (#360). The remove control (FlowWireDelete)
+        // asks the same `wireLoopArc` and sits on its `handle` (#355).
+        const loop = wireLoopArc(e, graph, tier, auto, positions);
         if (loop) {
           return (
             <FlowLoopArcMemo

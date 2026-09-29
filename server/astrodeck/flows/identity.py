@@ -244,8 +244,25 @@ def typed_coordinates(entry: dict) -> bool:
     answer, which is the fault ``target_key`` exists to remove. Truthiness,
     not parseability, is the test on both sides - a typed Dec that does not
     parse drops the entry in ``_coords`` rather than falling back to the
-    name, so it is never keyed at all."""
-    return bool(entry.get("ra") and entry.get("dec"))
+    name, so it is never keyed at all.
+
+    TRIMMED FIRST (#387). A field that holds only whitespace is blank, as an
+    empty one is, so the block is placed by its name. Read raw, an RA of
+    three spaces was typed: ``_coords`` could not parse it and dropped the
+    block, while the Target modal, whose mirror (``framingModel.ts``
+    ``typedCoordinates``) trims, showed it placed by its name and previewed
+    a placement the run would never make. Both readings are graded against
+    ``tests/fixtures/typed_coordinates_cases.json``. A value that is not
+    text is read as it always was: a falsy one (an RA of the number 0) is
+    blank, and any other is its ``str``."""
+    return _typed(entry.get("ra")) and _typed(entry.get("dec"))
+
+
+def _typed(value) -> bool:
+    """One coordinate field holds something typed: text that is not blank
+    once trimmed (``str.strip``, Python's whitespace), or a truthy value
+    that is not text, which reads as its ``str``."""
+    return bool(str(value).strip()) if value else False
 
 
 def _identity_of(entry: dict, canonical: str | None) -> str | None:

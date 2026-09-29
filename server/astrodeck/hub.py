@@ -7,6 +7,7 @@ The hub is the single place that knows which physical device fills each role
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import json
 import math
@@ -277,6 +278,13 @@ ROTATE_MIN_GAIN_DEG = 0.5
 #: (``sequence.engine.MOUNT_QUERY_TIMEOUT_S``); a driver that never answers must
 #: degrade to "nobody can say" and leave the flip conservative, never hang it.
 PIER_SIDE_QUERY_TIMEOUT_S = 30.0
+
+#: How many plate solves' exposure starts `Hub.solve_exposures` keeps (#402).
+#: Its one reader, the recovery ladder, reads the solves of one step at a
+#: time: a blind solve, or a re-centre's attempts (three by default, a few
+#: more with a rotate loop). Sixteen covers that with room, and bounds what a
+#: night of centring leaves behind in memory.
+SOLVE_EXPOSURES_KEPT = 16
 
 #: Bound on each command a rig teardown's cleanup sends (#267): every device's
 #: disconnect, the guider's, the NINA client's and each session's close, and
@@ -750,6 +758,23 @@ class Hub:
         self._pointing_verified: bool = False
         self._pointing_reason: str = "not plate solved since the last move"
         self._pointing_error_arcmin: float | None = None
+        #: ``time.time()`` at which the last GoTo `goto_and_center` commanded
+        #: came to rest, or None before its first: the moment ``tel.slew``
+        #: returned, which on Alpaca is when the mount stopped reporting
+        #: ``Slewing`` (#402). Stamped for `solve_exposures`, below.
+        self.goto_settled_at: float | None = None
+        #: Every plate solve's exposure start beside the GoTo settle it
+        #: followed, newest last, the last ``SOLVE_EXPOSURES_KEPT`` kept:
+        #: ``{"seq", "exposed_at", "settled_at"}``, where ``settled_at`` is
+        #: `goto_settled_at` as the shutter opened and ``seq`` counts from 1
+        #: (`solve_seq` is the last one's). The recovery ladder reads it to say
+        #: when each of its solves exposed (#402): on 2026-09-27 the centring
+        #: solve just after a good blind solve failed with no solution, once,
+        #: and nothing recorded whether the mount was still settling from its
+        #: GoTo when the shutter opened. Memory only, and a bounded one.
+        self.solve_exposures: collections.deque[dict] = collections.deque(
+            maxlen=SOLVE_EXPOSURES_KEPT)
+        self.solve_seq = 0
         # (rounded ra, rounded dec) -> the pointing-derived guess, so a 60-frame
         # loop on one target runs one cone query rather than sixty.
         self._pointing_field_cache: tuple[tuple[float, float], dict | None] | None = None
@@ -6183,6 +6208,10 @@ class Hub:
                 # opened, so the solve below may calibrate the rotator.
                 angle = await _sky_angle.exposure_context(self, cam)
                 async with self.exposure_guard("plate solve"):
+                    # When the shutter opened, against when the last GoTo
+                    # came to rest (#402), inside the guard so a wait for
+                    # the camera is not counted as settling time.
+                    self._note_solve_exposure()
                     frame = await cam.expose(exposure_s, 200, 30, binning=2)
             finally:
                 await self._return_wheel_after_solve(borrowed_slot)
@@ -6746,6 +6775,7 @@ class Hub:
                                 "attempts": 0, "aborted": True, "rotation": None}
                     slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
                     await tel.slew(slew_ra, slew_dec)
+                    self.goto_settled_at = time.time()
                 try:
                     rotation_result = await self.rotate_to_pa(
                         rotation_deg, exposure_s=solve_exposure_s)
@@ -6796,6 +6826,11 @@ class Hub:
                 # no-op for sim/NINA. The centering error below stays in J2000.
                 slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
                 await tel.slew(slew_ra, slew_dec)
+                # THE GOTO CAME TO REST HERE, as far as anything can tell
+                # (#402): ``tel.slew`` returns once the mount stops
+                # reporting that it slews. The solve below stamps its own
+                # exposure start against this.
+                self.goto_settled_at = time.time()
             # A plate-solve failure or timeout must DEGRADE to a raw GoTo, not
             # hang or propagate (live bug): the mount has already slewed, so we
             # return the un-centered result with a warning rather than aborting.
@@ -6848,6 +6883,19 @@ class Hub:
         self.note_pointing_verified(False, reason=str("centering did not converge"))
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
                 "attempts": max_attempts} | _rot_keys
+
+    def _note_solve_exposure(self) -> None:
+        """Record that a plate solve's shutter is opening now, beside the
+        last GoTo's settle (`solve_exposures`, #402). Never raises: it is on
+        the path to every solve's exposure, and a record it cannot keep is
+        not worth a solve."""
+        try:
+            self.solve_seq = int(getattr(self, "solve_seq", 0) or 0) + 1
+            self.solve_exposures.append({
+                "seq": self.solve_seq, "exposed_at": time.time(),
+                "settled_at": getattr(self, "goto_settled_at", None)})
+        except Exception:                # noqa: BLE001 - bookkeeping only
+            pass
 
     async def pier_side_now(self) -> str | None:
         """The mount's pier side as a lower-case string, or ``None``.
@@ -6956,7 +7004,14 @@ class Hub:
                 await self.guider.start_guiding()
             except Exception as e:
                 bus.log("warning", f"meridian flip: guiding restart failed: {e}", "sequence")
-        bus.log("info", "meridian flip complete", "sequence")
+        # "COMPLETE" ONLY FOR A FLIP (#366). This said "meridian flip
+        # complete" after every re-slew, the ones that moved nothing too, two
+        # lines below the one saying nothing flipped: the night log then read
+        # as a flip made at the lead point and another at the crossing. A
+        # side that could not be read keeps the word, as it keeps the
+        # recalibration above: unreadable is not evidence that nothing moved.
+        bus.log("info", "meridian flip complete" if flipped else
+                "meridian flip attempt finished: nothing flipped", "sequence")
         return dict(result or {}, flipped=flipped,
                     pier_side_before=side_before, pier_side_after=side_after)
 

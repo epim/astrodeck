@@ -1,4 +1,5 @@
-"""The M31 mosaic Example's tagline says only what holds (#189 S4, item 14).
+"""The M31 mosaic Example's tagline says only what holds (spec S3 item 5,
+#353).
 
 S3 shipped the eighth Example with the tagline "...every pass of the LRGB
 cycle hops to the next panel, so a night cut short still covers all of

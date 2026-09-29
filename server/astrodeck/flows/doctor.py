@@ -34,9 +34,9 @@ from dataclasses import dataclass
 # way in this package, and a second reading here would let the doctor and the
 # compile's notes disagree about the same wire.
 from .compile import (
-    LANE_TYPES, NEXT_PORT, OWNER_TYPES, PASS_PORT, _grid_dim, _lane_index,
-    _stage_label, compile_plan, is_multi_panel, lane_branched, lane_tail,
-    loop_wires, one_panel_pass_wires, owner_of, panel_lane)
+    LANE_TYPES, NEXT_PORT, OWNER_TYPES, PASS_PORT, PASS_TYPES, _grid_dim,
+    _lane_index, _stage_label, compile_plan, is_multi_panel, lane_branched,
+    lane_tail, loop_wires, one_panel_pass_wires, owner_of, panel_lane)
 from .identity import typed_coordinates
 from .models import FlowGraph
 from .nodes import NODE_DEFS, parse_cycle_plan, port_kind, target_angle
@@ -97,6 +97,12 @@ def _num(value, default: float = 0.0) -> float:
 #: applies to both — a FILTER CYCLE that shoots 180s subs needs a guider for
 #: exactly the reason a CAPTURE LOOP does, and exempting it would make the safer
 #: stage the one the doctor stops checking.
+#:
+#: NOT the stages a pass wire leaves (#375). Which types have 'pass done' is
+#: ``compile.PASS_TYPES``, read off the vocabulary; the mosaic rules read
+#: that, so a type that gains the port is read by the doctor as by the
+#: compile. This list once stood in for both, and when AUTOFOCUS and GUIDE
+#: gained the port (S4, #331) M3, M4 and M12 went on reading only these two.
 _CAPTURE_TYPES = ("capture", "cycle")
 
 #: What satisfies R4 (spec 1.7): the cursor passed something that points the
@@ -373,12 +379,18 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
     mosaic = bool(blocks)
     by_id, parents = _lane_index(graph)
     specs = {b.id: _mosaic_spec(b) for b in blocks}
+    # Every pass wire into a TARGET's 'next panel', from any type the
+    # vocabulary gives the port (``PASS_TYPES``): the wires the compile
+    # reads, so M3, M4 and M12 speak about the graph it compiles (#375).
+    # Read off ``_CAPTURE_TYPES`` instead, a pass wire from an AUTOFOCUS or
+    # GUIDE was invisible here: no M12 for one mid-lane, which the compile
+    # refuses, and no M4 for one from another block's lane.
     pass_wires = [e for e in graph.edges
                   if e.fromPort == PASS_PORT and e.toPort == NEXT_PORT
                   and (dst := by_id.get(e.to)) is not None
                   and dst.type == "target"
                   and (src := by_id.get(e.from_)) is not None
-                  and src.type in _CAPTURE_TYPES]
+                  and src.type in PASS_TYPES]
 
     # M12's mid-lane wires, found once: M3 stays silent for a block that has
     # one, because M12 already says where the loop wire should start, and two
@@ -424,12 +436,17 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
                 or b.id in mid_lane):
             continue
         tail = lane_tail(graph, b)
-        if tail is not None and tail.type in _CAPTURE_TYPES:
+        if tail is not None and tail.type in PASS_TYPES:
+            # Any stage with 'pass done' (``PASS_TYPES``), AUTOFOCUS and
+            # GUIDE included since #331: the wire can be drawn from it, so
+            # M3 names it (#375).
             how = (f"Wire {_stage_label(tail)} '{_PASS}' to TARGET '{_NEXT}' "
                    f"to rotate panels every pass.")
         else:
-            # A lane that ends on AUTOFOCUS or GUIDE: neither has a 'pass
-            # done' output, so there is no wire to draw until a stage ends it.
+            # A lane that ends on a legacy SLEW, the one lane type with no
+            # 'pass done' output (spec 1.5 item 6): there is no wire to draw
+            # until a stage that has one ends the lane. Said of AUTOFOCUS and
+            # GUIDE too until #375, after they had gained the port.
             how = (f"The panel lane ends at {_stage_label(tail)}, which has no "
                    f"'{_PASS}'; end it on a FILTER CYCLE or CAPTURE LOOP and "
                    f"wire that to TARGET '{_NEXT}' to rotate panels every "
@@ -450,12 +467,15 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
     # block is harmless, and one is enough.
     #
     # WALKED OVER BOTH LISTS, in wire order: ``pass_wires`` and every wire
-    # the compile consumes. The compile's list reads the vocabulary
-    # (``PASS_TYPES``), so it took in AUTOFOCUS and GUIDE when they gained
-    # ``pass`` (S4, #331), while ``pass_wires`` still reads the two capture
-    # stages (#375); walked over ``pass_wires`` alone, a one-panel wire from
-    # an AUTOFOCUS was consumed with no rule, no loss and no word from the
-    # doctor either. A consumed wire is from its block's own lane by
+    # the compile consumes. Both read the vocabulary (``PASS_TYPES``) now,
+    # so the compile's list is inside ``pass_wires``; the walk still takes
+    # the union because the note must follow the compile's consumption
+    # whatever ``pass_wires`` reads. It was the other way round until #375:
+    # the compile's list took in AUTOFOCUS and GUIDE when they gained
+    # ``pass`` (S4, #331) while ``pass_wires`` read the two capture stages,
+    # and walked over ``pass_wires`` alone a one-panel wire from an
+    # AUTOFOCUS was consumed with no rule, no loss and no word from the
+    # doctor either (#389). A consumed wire is from its block's own lane by
     # construction, so it never reaches the warning.
     consumed = {(e.from_, e.fromPort, e.to, e.toPort)
                 for e in one_panel_pass_wires(graph)}

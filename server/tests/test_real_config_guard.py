@@ -39,9 +39,43 @@ guard names each. Its control is the same mosaic through
 Every mutant was run in a private copy of ``server/`` under the session
 scratchpad (s4-testhyg-mut2), from a byte backup, restored and compared by
 SHA-256 after each run, never in the shared tree.
+
+VERIFIED, AND WHAT THE VERIFICATION FOUND (2026-09-28, S5, #361; filed
+as #436). The
+mutant "the library left on the real profiles/" was run again in a private
+copy (scratchpad s5-srvsmall-mut) and gave what #361 records, ``1 failed,
+20 passed, 8 errors`` over this file and the three it names. #361 also
+said a new singleton that the session fixture does not move "will fail
+loudly instead of reading quietly". That held only for the two classes
+the guard watched. A scan of every ``astrodeck`` module
+(``conftest._built_on_the_real_config``, all of them imported) found,
+beside the store and the library, three more singletons built on
+``CONFIG_DIR`` at import: ``plans.plan_library`` (``plans/``),
+``locations.location_store`` (``locations.json``, the saved sites) and
+``auth.users.user_store`` (``users.json``). It also found five module
+globals read at call time: ``flows.store.CONFIG_DIR`` (``flow_store.dir``'s
+comment says it is resolved live, but the name was bound at import),
+``config``'s ``FILTER_CONFIG_FILE``, ``EGAIN_CONFIG_FILE`` and
+``FOCUSER_STATE_FILE``, and ``licensing.CONSENT_FILE``; and eleven more
+bindings of those paths used only at import, as a default argument or not
+at all (``config.PLANS_DIR``, ``locations.LOCATIONS_FILE``, the ephemeris
+package's re-exports among them). Nothing moved or watched any of them. A probe of the suite against a
+stand-in real config (scratchpad s5-srvsmall-probe, an audit hook recording
+every file touched in it by test id; two runs that ended at 6,200 and
+7,190 tests when the machine ran out of memory, and one run of the three
+files that read the rarest entries) counted at least: ``egain.json`` 856
+tests in 115 files and ``filter_names.json`` 851 in 113, both through the
+sim rig's connect; ``plans/`` 725 tests in 76 files, through the app's
+startup; ``flows/`` 8 in 3; ``locations.json`` 2 and ``users.json`` 2,
+each once through the site leak scanner's own known positive. None of them
+wrote there. The session fixture now sweeps them all off
+(``_sweep_off_the_real_config``), and the guard watches the directory
+itself, so what #361 promised is now true for anything that touches a file
+in it.
 """
 from __future__ import annotations
 
+import importlib
 import os
 import subprocess
 import sys
@@ -53,10 +87,15 @@ import astrodeck
 import astrodeck.config as config_mod
 import astrodeck.hub as hub_mod
 import astrodeck.profiles as profiles_mod
+from astrodeck.auth.users import UserStore
 from astrodeck.config import ConfigStore, Optics
+from astrodeck.locations import LocationStore
+from astrodeck.persist import read_json_or
+from astrodeck.plans import PlanLibrary
 from astrodeck.profiles import Profile, ProfileDevice, ProfileLibrary
+from astrodeck.sequence.models import SequencePlan
 from conftest import (  # rootdir-relative, as test_capture_root_isolated does
-    IsolatedConfig, _RealConfig)
+    IsolatedConfig, _built_on_the_real_config, _RealConfig)
 
 _CONFTEST = Path(__file__).resolve().parent / "conftest.py"
 
@@ -105,10 +144,21 @@ def test_the_guard_watches_the_real_locations_and_the_net_is_off_them():
 
     (``ProfileLibrary.get`` for test_connect_rig_guard.py's one test,
     ``ProfileLibrary._all`` for test_no_route_leaks_the_site_coordinates'
-    six). With the net in place those three files pass, 17 of 17."""
+    six). With the net in place those three files pass, 17 of 17.
+
+    SINCE S5 the session fixture's sweep moves the library as well (it
+    finds ``profiles.profiles._dir``), so that mutant alone is equivalent:
+    run again in scratchpad s5-srvsmall-mut it left the four files green,
+    ``23 passed``. With the sweep skipped too (mutant "library line and
+    sweep both gone") this case fails as quoted above, and the four files
+    give ``3 failed, 20 passed, 1 warning, 11 errors``: the 8, and three
+    connects that read ``filter_names.json`` and ``egain.json``
+    (test_connect_rig_guard.py's force and idle cases,
+    test_hub_solve.py's vertical hint)."""
     key = _RealConfig._key
     assert key(config_mod.CONFIG_FILE) in _RealConfig.files
     assert key(config_mod.PROFILES_DIR) in _RealConfig.profile_dirs
+    assert key(config_mod.CONFIG_FILE.parent) in _RealConfig.dirs
     for cls, name in ((ConfigStore, "_load"), (ConfigStore, "_save"),
                       (ConfigStore, "cfg"),
                       (ProfileLibrary, "_all"), (ProfileLibrary, "get"),
@@ -207,6 +257,143 @@ def test_the_guard_body_names_a_reach_and_passes_a_clean_test(tmp_path,
     assert str(cached.value).startswith(
         "probe::cached reached the developer's real config: ConfigStore.cfg "
         "(the real config file)."), str(cached.value)
+
+
+#: The modules the S5 scan found singletons in, and the app, which binds
+#: most of them: imported before the scan below, so it cannot pass on a run
+#: that never loaded them.
+_SCANNED = ("astrodeck.plans", "astrodeck.locations", "astrodeck.auth.users",
+            "astrodeck.flows.store", "astrodeck.licensing", "astrodeck.api.app")
+
+
+def test_nothing_loaded_is_left_on_the_real_config_directory(monkeypatch):
+    """#361's scan as a case (S5): no global of a loaded ``astrodeck``
+    module, and no attribute of an ``astrodeck`` object one holds, is a
+    path in the real config directory, except the two ``_RealConfig``
+    records (``CONFIG_FILE``, ``PROFILES_DIR``). A seam built on
+    ``CONFIG_DIR`` at import that the session fixture's sweep did not move
+    is named here, by module and attribute, and never by value.
+
+    Its known positive first: a path planted as a module global, and a
+    ``PlanLibrary`` on the real ``plans/`` planted as one, are both found.
+
+    RED under mutant "the sweep skipped" (the session fixture's
+    ``put_back = _sweep_off_the_real_config(...)`` made ``put_back = lambda:
+    None``), run alone, observed (pytest cut the list; 15 in all):
+
+        E       AssertionError: ['astrodeck.auth.users.user_store._path ->
+        users.json', 'astrodeck.catalog.ephemeris.COMET_FILE ->
+        ephemeris\\\\comets.j...json',
+        'astrodeck.catalog.ephemeris.elements.CONFIG_DIR -> .',
+        'astrodeck.config.EGAIN_CONFIG_FILE -> egain.json', ...]
+        E       assert ['astrodeck.a...in.json', ...] == []
+        E         Left contains 15 more items, first extra item:
+        'astrodeck.auth.users.user_store._path -> users.json'
+
+    RED under mutant "the scan looks at globals only" (the object loop in
+    ``_built_on_the_real_config`` given nothing to walk), not here but at
+    the session fixture, whose known positives errored all six cases of
+    this file at setup, observed:
+
+        E                   AssertionError: astrodeck.plans.plan_library._dir
+        is still on the developer's real config: the sweep missed it
+    """
+    for name in _SCANNED:
+        importlib.import_module(name)
+    real = config_mod.CONFIG_FILE.parent
+    with monkeypatch.context() as m:
+        m.setattr(profiles_mod, "S5_PLANTED_FILE", real / "planted.json",
+                  raising=False)
+        m.setattr(profiles_mod, "S5_PLANTED_LIBRARY",
+                  PlanLibrary(real / "plans"), raising=False)
+        planted = {name for _, _, name, _ in _built_on_the_real_config(real)}
+    assert {"astrodeck.profiles.S5_PLANTED_FILE",
+            "astrodeck.profiles.S5_PLANTED_LIBRARY._dir"} <= planted, planted
+    left = sorted(f"{name} -> {where}"
+                  for _, _, name, where in _built_on_the_real_config(real))
+    assert left == [], left
+
+
+def _stand_in_directory(root: Path) -> Path:
+    """A config directory with the entries the S5 scan found no class
+    watching: an empty ``plans/`` and a location store, a user store and an
+    egain table with nothing in them."""
+    (root / "plans").mkdir(parents=True)
+    (root / "locations.json").write_text('{"locations": []}', encoding="utf-8")
+    (root / "users.json").write_text('{"users": []}', encoding="utf-8")
+    (root / "egain.json").write_text("{}", encoding="utf-8")
+    return root
+
+
+def _read_the_directory(root: Path) -> None:
+    """Read each entry the way the product does: the three singletons'
+    classes, and a module global's file read through no class at all, as
+    ``config.load_egain_config`` reads ``egain.json``."""
+    assert PlanLibrary(root / "plans").list() == []
+    assert LocationStore(root / "locations.json").list() == []
+    assert UserStore(root / "users.json").is_empty()
+    assert read_json_or(root / "egain.json", None) == {}
+
+
+def test_the_guard_names_what_was_touched_in_the_real_directory(
+        tmp_path, monkeypatch):
+    """The directory watcher, the session's own audit hook, driven against
+    a stand-in real directory: each entry read is named as the event and
+    the entry, never the path or what was in it, and the same reads of a
+    directory of the test's own are not named at all.
+
+    ``plans/`` is empty on purpose: a library listing an empty real
+    directory answers "no plans" on this machine and some on the next, and
+    only the listing touches it.
+
+    What it cannot see: a store that asks whether its entry exists and
+    finds nothing opens nothing (``persist.list_json`` checks ``is_dir``
+    first). So a machine with no ``plans/`` runs such a test clean, and a
+    machine with one names it: in the scratch copy, which has no config
+    directory, "the sweep skipped" left the leak scanner's six listings of
+    ``plans/`` and ``flows/`` unnamed, which the probe against a stand-in
+    directory that had both had counted.
+
+    RED under mutant "the directory unwatched" (``sys.addaudithook(audited)``
+    removed from ``_watch_the_real_config``), observed:
+
+        >               next(guard)
+        E               StopIteration
+
+    RED under mutant "listings unseen" (``os.scandir`` and ``os.listdir``
+    taken out of ``_DIRECTORY_EVENTS``), observed:
+
+        E       AssertionError: probe::dir reached the developer's real
+        config: open of locations.json (the real config directory), open of
+        users.json (the real config directory), open of egain.json (the
+        real config directory). The session fixture moves ...
+    """
+    from conftest import _config_reads_stay_off_the_real_one
+    real = _stand_in_directory(tmp_path / "real")
+    own = _stand_in_directory(tmp_path / "own")
+    with monkeypatch.context() as m:
+        m.setattr(_RealConfig, "dirs", frozenset(
+            {_RealConfig._key(real), os.path.normcase(os.path.abspath(real))}))
+        m.setattr(_RealConfig, "reads", [])
+
+        guard = _config_reads_stay_off_the_real_one("probe::own")
+        next(guard)
+        _read_the_directory(own)
+        with pytest.raises(StopIteration):
+            next(guard)
+
+        guard = _config_reads_stay_off_the_real_one("probe::dir")
+        next(guard)
+        _read_the_directory(real)
+        with pytest.raises(AssertionError) as verdict:
+            next(guard)
+    text = str(verdict.value)
+    assert text.startswith(
+        "probe::dir reached the developer's real config: os.scandir of "
+        "plans (the real config directory), open of locations.json (the "
+        "real config directory), open of users.json (the real config "
+        "directory), open of egain.json (the real config directory)."), text
+    assert str(real) not in text, text
 
 
 class _Camera:
@@ -346,6 +533,11 @@ def test_the_profiles_through_a_library_with_no_dir():
     assert len(ProfileLibrary().list()) == 1
 
 
+def test_the_plans_through_a_library_with_no_dir():
+    from astrodeck.plans import PlanLibrary
+    assert len(PlanLibrary().list()) == 1
+
+
 def test_control_the_same_mosaic_through_isolated_config(
         isolated_config, tmp_path, monkeypatch):
     monkeypatch.setattr(flow_store, "_dir", tmp_path / "flows", raising=False)
@@ -361,9 +553,12 @@ def test_control_the_same_mosaic_through_isolated_config(
 
 def _standin_real_config(root: Path) -> Path:
     """A "real" config directory as a developer's machine may have one:
-    optics set, and an active profile with its own optics and a rotator.
-    Built through the product's own writers, from this process, where the
-    directory is not a real location (so the guard stays silent here)."""
+    optics set, an active profile with its own optics and a rotator, and a
+    saved plan (S5: the app's startup lists ``plans/``, so the control
+    below is clean only if the session fixture's sweep moved the plan
+    library). Built through the product's own writers, from this process,
+    where the directory is not a real location (so the guard stays silent
+    here)."""
     store = ConfigStore(path=root / "astrodeck.json")
     store.set_optics(STANDIN_OPTICS)
     store.cfg().active_profile_id = "standin"
@@ -372,6 +567,7 @@ def _standin_real_config(root: Path) -> Path:
         id="standin", name="Stand-in rig", primary_backend="native",
         optics=STANDIN_OPTICS,
         devices=[ProfileDevice(role="rotator", backend="native")]))
+    PlanLibrary(root / "plans").save(SequencePlan(name="STANDIN plan"))
     return root
 
 
@@ -430,6 +626,33 @@ def test_a_leaky_fixture_is_named_and_the_isolated_one_is_not(tmp_path):
 
     Red too under "the check skipped" (the child's ``3 passed, 1 warning
     in 3.63s``).
+
+    THE THIRD LEAKY TEST (S5) is a plan library with no directory, which
+    no class watcher covers: it is named by the directory watcher. And the
+    stand-in now holds a plan, so the control is clean only because the
+    session fixture swept the plan library off the real directory before
+    the app's startup listed it.
+
+    RED under mutant "the directory unwatched", observed: the plan library
+    passes unnamed, the child's progress ``.E.E..``, and
+
+        E       assert 'ERROR at teardown of
+        test_the_plans_through_a_library_with_no_dir' in '.E.E..
+        [100%]\\n...
+
+    RED under mutant "listings unseen": the child's ``4 passed, 1 warning,
+    3 errors``, the library named only by what it opened, observed:
+
+        E       assert "test_probe.py::test_the_plans_through_a_library_with_
+        no_dir reached the developer's real config: os.scandir of plans (t...
+
+    RED under mutant "the sweep skipped": the child's ``4 passed, 1
+    warning, 4 errors``, the fourth the control's, observed in the child's
+    output:
+
+        tests/test_probe.py::test_control_the_same_mosaic_through_isolated_
+        config reached the developer's real config: os.scandir of plans (the
+        real config directory), open of plans/ (the real config directory).
     """
     done = _throwaway_run(tmp_path)
     out = done.stdout + done.stderr
@@ -443,7 +666,12 @@ def test_a_leaky_fixture_is_named_and_the_isolated_one_is_not(tmp_path):
     assert ("test_probe.py::test_the_profiles_through_a_library_with_no_dir "
             "reached the developer's real config: ProfileLibrary._all (the "
             "real profiles directory)" in out), out
+    assert ("ERROR at teardown of test_the_plans_through_a_library_with_"
+            "no_dir" in out), out
+    assert ("test_probe.py::test_the_plans_through_a_library_with_no_dir "
+            "reached the developer's real config: os.scandir of plans (the "
+            "real config directory)" in out), out
     assert "ERROR at teardown of test_control" not in out, out
-    assert "3 passed" in out and "2 errors" in out, out
+    assert "4 passed" in out and "3 errors" in out, out
     assert "STANDIN" not in out, "the guard printed a value it read"
     assert done.returncode == 1, (done.returncode, out)

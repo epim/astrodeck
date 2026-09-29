@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .. import hub as _hubmod
 from ..persist import (harden_private_file, list_json, read_json,
@@ -54,6 +54,8 @@ class SessionUnreadable(Exception):
         # detail of a validation failure is pydantic's, quotes the values it
         # refused (a frame's absolute path, say) and travels as ``__cause__``
         # only, because the reason is shown in a list viewers can read.
+        # ``INVALID`` may go on to name the step that failed, in words the
+        # store builds from the file itself (``_invalid_reason``, #416).
         message = f"session file is unreadable: {session_id}"
         super().__init__(f"{message} ({reason})" if reason else message)
         self.session_id = session_id
@@ -359,6 +361,99 @@ def _stated_status(raw: dict) -> str | None:
     return raw.get("status")
 
 
+#: Longest quoted value a reason carries: a list line, and the value comes
+#: from a file nothing validated.
+_VALUE_MAX = 40
+
+
+def _quoted(value) -> str:
+    """``repr(value)``, cut to ``_VALUE_MAX`` characters."""
+    text = repr(value)
+    return text if len(text) <= _VALUE_MAX else text[:_VALUE_MAX - 3] + "..."
+
+
+def _step_words(raw, error: dict) -> str | None:
+    """What a validation error on one field of a plan step says, in the
+    store's words, or None when the error is anywhere else (#416).
+
+    ``target 'M42', step 2 of 2 (filter 'Ha'): frame_type 'DarkFlat' is not
+    one of Light, Dark, Bias, Flat (in any case)``: the target, the step's
+    place and filter, which is how an operator finds a step, then the field
+    and the value. All of it is read off the raw file at the error's
+    location, so it can quote only a step's own settings (its filter name,
+    exposure, count, gain, offset, binning, frame type and the like), and
+    none of them is a path or a place. An error anywhere else (a frame's
+    metrics, whose input can be an absolute path) is not described at all,
+    which is why pydantic's rendering of the error is never used: it quotes
+    the refused input from wherever it sits.
+
+    The rule broken is pydantic's word for it (``input should be greater
+    than 0``), which describes the constraint and quotes nothing, except for
+    the frame type, whose rule is the store's: the four spellings #334 made
+    the only ones. A missing field is said to be missing rather than quoted
+    as None, a step with no filter says so, and a target with a blank name
+    is named by its place, counted from 1 like the step."""
+    loc = error.get("loc", ())
+    if (len(loc) != 6 or loc[0] != "plan" or loc[1] != "targets"
+            or loc[3] != "steps" or not isinstance(loc[2], int)
+            or not isinstance(loc[4], int) or not isinstance(loc[5], str)):
+        return None
+    try:
+        target = raw["plan"]["targets"][loc[2]]
+        steps = target["steps"]
+        step = steps[loc[4]]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not isinstance(steps, list) or not isinstance(step, dict):
+        return None
+    name = target.get("name")
+    who = (f"target {_quoted(name.strip())}"
+           if isinstance(name, str) and name.strip() else
+           f"target {loc[2] + 1}")
+    filt = step.get("filter")
+    filt = "no filter" if filt is None else f"filter {_quoted(filt)}"
+    field = loc[5]
+    if error.get("type") == "missing":
+        what = f"{field} is missing"
+    elif field == "frame_type":
+        # Lazy, as ``models._frame_type`` imports it: the four live with the
+        # writer of IMAGETYP.
+        from ..imaging.fitsio import FRAME_TYPES
+        what = (f"frame_type {_quoted(step.get(field))} is not one of "
+                f"{', '.join(FRAME_TYPES)} (in any case)")
+    else:
+        rule = str(error.get("msg", ""))
+        what = (f"{field} {_quoted(step.get(field))}: "
+                f"{rule[:1].lower()}{rule[1:]}")
+    return f"{who}, step {loc[4] + 1} of {len(steps)} ({filt}): {what}"
+
+
+def _invalid_reason(raw, exc: Exception) -> str:
+    """``INVALID``, naming the first step field that failed when one did
+    (#416), else ``INVALID`` alone.
+
+    WHY A STEP IS NAMED. #334 made a step's frame type one of four
+    spellings, and before it the field took any string, so a session on disk
+    can hold a step saying ``DarkFlat``. That file became "fails
+    validation" and nothing else: nothing told the operator what to repair,
+    and DELETE was the only thing left to press on a campaign's ledger.
+    Named, it is one field in a file they can edit.
+
+    The first in pydantic's order is named and the rest are counted, since
+    repairing the one named would not make the file load if another field
+    fails too. A failure that is not a ``ValidationError`` names nothing."""
+    errors = exc.errors() if isinstance(exc, ValidationError) else []
+    for error in errors:
+        words = _step_words(raw, error)
+        if words is None:
+            continue
+        more = len(errors) - 1
+        if more:
+            words += f" (and {more} more error{'s' if more != 1 else ''})"
+        return f"{INVALID}: {words}"
+    return INVALID
+
+
 def _session_from_file(raw, session_id: str) -> Session:
     """Validate a parsed session file, or raise :class:`SessionUnreadable`.
 
@@ -371,11 +466,12 @@ def _session_from_file(raw, session_id: str) -> Session:
     (``{"plan": "not a plan"}`` states no status either) reports the damage,
     with pydantic's error as the cause, rather than the missing status alone:
     adding a status to that file would not make it readable. JSON that is
-    not an object at all (``[]``, ``"x"``) fails validation too."""
+    not an object at all (``[]``, ``"x"``) fails validation too. A failure
+    on a step's field is named (``_invalid_reason``, #416)."""
     try:
         session = Session.model_validate(raw)
     except Exception as e:
-        raise SessionUnreadable(session_id, INVALID) from e
+        raise SessionUnreadable(session_id, _invalid_reason(raw, e)) from e
     if _stated_status(raw) is None:
         raise SessionUnreadable(session_id, NO_STATUS)
     return session
@@ -423,6 +519,15 @@ def _has_backup(path: Path) -> bool:
         return False
 
 
+def _raw_name(path: Path, raw) -> str:
+    """The name an unreadable file gives its session, cut to ``_NAME_MAX``,
+    or the file's stem when it gives none: the list row's name and the one
+    ``armed``'s warning says (#416)."""
+    name = raw.get("name") if isinstance(raw, dict) else None
+    return (name.strip()[:_NAME_MAX]
+            if isinstance(name, str) and name.strip() else path.stem)
+
+
 def _unreadable_row(path: Path, raw, reason: str | None) -> dict | None:
     """The ``GET /api/sessions`` row for a file the store cannot read (#242),
     or None when the file has gone since it was read.
@@ -453,11 +558,8 @@ def _unreadable_row(path: Path, raw, reason: str | None) -> dict | None:
         mtime = path.stat().st_mtime
     except OSError:
         return None
-    name = raw.get("name") if isinstance(raw, dict) else None
-    name = (name.strip()[:_NAME_MAX]
-            if isinstance(name, str) and name.strip() else path.stem)
-    row = {"id": path.stem, "name": name, "status": "unreadable",
-           "unreadable": reason, "updated_ts": mtime}
+    row = {"id": path.stem, "name": _raw_name(path, raw),
+           "status": "unreadable", "unreadable": reason, "updated_ts": mtime}
     if _has_backup(path):
         row["backup"] = True
     return row
@@ -550,11 +652,12 @@ class SessionStore:
                 yield path, raw, None, e.reason
 
     def load_all(self) -> list[Session]:
-        """Every readable session. ``boot_sweep``, ``recoverable``,
-        ``armed``, the prune sweep and ``engine.start``'s disarm loop all read
-        through here, so a file this skips is one none of them can sweep,
-        count, start or save over (#218). ``list`` walks the same entries and
-        shows the skipped files as what they are (#242); nothing else does."""
+        """Every readable session. ``boot_sweep``, ``recoverable``, the prune
+        sweep and ``engine.start``'s disarm loop all read through here, so a
+        file this skips is one none of them can sweep, count, start or save
+        over (#218). ``list`` walks the same entries and shows the skipped
+        files as what they are (#242), and ``armed`` walks them too and says
+        an armed one it cannot start (#416); nothing else does."""
         return [s for _path, _raw, s, _why in self._entries()
                 if s is not None]           # unreadable: skip, never raise
 
@@ -851,13 +954,70 @@ class SessionStore:
         dormant.sort(key=lambda s: s.updated_ts, reverse=True)
         return dormant[0] if dormant else None
 
+    #: The unreadable armed files ``armed`` has said so about, by path: once
+    #: per file per process (#416). On the class, like ``_write_lock``, so
+    #: every store in the process shares it.
+    _said_armed_unreadable: set[str] = set()
+
     def armed(self) -> Session | None:
         """The auto_resume-armed dormant session. PATCH enforces the singleton;
-        most-recent wins defensively if files were hand-edited."""
-        armed = [s for s in self.load_all()
-                 if s.status == "dormant" and s.auto_resume]
+        most-recent wins defensively if files were hand-edited.
+
+        AN ARMED FILE IT CANNOT READ IS SAID, ONCE (#416). The same walk as
+        ``load_all`` (``_entries``), which skips such a file: a session
+        whose plan holds a step #334 now refuses (``DarkFlat``) dropped out
+        of auto-resume, and the tick saw exactly what "disarmed from the UI"
+        looks like, so nothing on any screen or in the night log said the
+        campaign would not resume (the 2026-08-11 shape, recorded at
+        ``ResumeArm.tick``). The file is still not a session this can start,
+        and it is never rewritten here: ``_say_armed_unreadable`` logs."""
+        armed: list[Session] = []
+        for path, raw, s, why in self._entries():
+            if s is None:
+                self._say_armed_unreadable(path, raw, why)
+            elif s.status == "dormant" and s.auto_resume:
+                armed.append(s)
         armed.sort(key=lambda s: s.updated_ts, reverse=True)
         return armed[0] if armed else None
+
+    def _say_armed_unreadable(self, path: Path, raw,
+                              reason: str | None) -> None:
+        """One warning for an unreadable file that auto-resume would have
+        started, naming the session and the store's reason, the first time
+        this process meets it; nothing for any other file (#416).
+
+        ARMED IS ``auto_resume`` TRUE WITH A STATUS OF DORMANT OR ACTIVE, as
+        the raw file states them. Dormant is what ``armed`` answers for a
+        readable file. Active is what a deploy over a live run leaves: the
+        engine was writing the file when the process stopped, and
+        ``boot_sweep``, which turns an active session dormant so it can be
+        resumed, reads through ``load_all`` and cannot sweep a file it
+        cannot read, so that file never becomes dormant on disk. A file
+        that is complete, disarmed or states no status (#218) was never going
+        to be resumed, and one that is not JSON states nothing.
+
+        ONCE, because ``armed`` runs on every ResumeArm tick and in the
+        routes that ask about tonight, and the file stays as it is until
+        somebody repairs or deletes it. Keyed by path, never cleared: a file
+        repaired and broken again in the same process is not said twice. A
+        log line that cannot be written never costs the scan its answer."""
+        if (not isinstance(raw, dict) or raw.get("auto_resume") is not True
+                or _stated_status(raw) not in ("dormant", "active")):
+            return
+        key = str(path)
+        if key in self._said_armed_unreadable:
+            return
+        self._said_armed_unreadable.add(key)
+        try:
+            from ..events import bus
+            bus.log("warning",
+                    f"auto-resume: session '{_raw_name(path, raw)}' "
+                    f"({path.stem}) is armed but its file cannot be read, so "
+                    f"auto-resume will not start it ({reason}). Repair the "
+                    f"file, or delete it from the sessions list.",
+                    "sequence")
+        except Exception:      # noqa: BLE001 - a log line never costs the scan
+            pass
 
 
 session_store = SessionStore()

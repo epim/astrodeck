@@ -13,7 +13,10 @@ backfill (one filter). The fix, pinned here:
 * ``fitsio.full_name(header, "FILTER")`` is the one decoder, beside
   ``full_object_name``;
 * ``calibration/keys.py``, ``imaging/nightstack.py`` and
-  ``imaging/stackbackfill.py`` key on the decoded name.
+  ``imaging/stackbackfill.py`` key on the decoded name. Since #371
+  ``CalKey.filter`` IS the decoded name, and a master writes it through the
+  frame writer's own ``fitsio.write_name_card``
+  (``test_master_filter_keys.py``).
 
 The frames are the simulator's own: two slots of the sim wheel renamed, one
 flat and one light shot through each by ``Hub.capture``, so every card is
@@ -86,8 +89,15 @@ def test_both_slots_write_one_filter_and_keep_their_own_name(two_slots):
         >       assert got == {n: ("H?", n) for n in _SLOTS}, got
         E       AssertionError: {'H\\u03b1': ('H?', 'H?'), 'H\\u03b2': ('H?', 'H?')}
 
+    Since #371 that block is ``fitsio.write_name_card``'s, and the mutation
+    re-run there (``and keyword != "FILTER"`` added to ``if text !=
+    str(value):``) went red on the same four cases with the same assertion,
+    and on the eight cases of test_master_filter_keys that shoot or save a
+    non-ASCII slot.
+
     Mutation 'one card for all' (``full_name`` reading ``OBJUTF8`` for
-    every keyword) went red on the same four cases."""
+    every keyword) went red on the same four cases.
+    """
     got = {}
     for name, (flat, _light) in two_slots.items():
         hdr = fits.getheader(flat)
@@ -98,49 +108,43 @@ def test_both_slots_write_one_filter_and_keep_their_own_name(two_slots):
 def test_the_two_slots_give_distinct_calibration_keys(two_slots):
     """The calibration key, its bucket id, and the library's own buckets:
     one flat each, never one bucket of two. And the build that follows
-    makes two masters and does not fail, because the master's own FILTER
-    card is still the fold (a raw Greek letter in any card makes astropy
-    raise, and the library writes ``CalKey.filter`` into the master; #371).
+    makes two masters and does not fail: since #371 ``CalKey.filter`` is
+    the name as typed, and the master writes it through
+    ``fitsio.write_name_card``, so its FILTER card is the fold and no Greek
+    letter reaches astropy.
 
     Mutation 'readers key on FILTER' (all three readers restored to read
-    the FILTER card: ``key_from_header``'s ``typed`` read from FILTER, so
-    it sets no ``filter_utf8``, and ``nightstack.flats_by_filter`` and
-    ``read_backfill_frame`` reading ``header.get("FILTER")``) went red on
-    this case, the night-stack case and the backfill case, and on nothing
-    else: test_calibration_keys, test_calibration_library, test_nightstack,
-    test_session_stack_backfill, test_gallery and
-    test_flows_calibration_health all stayed green under it (297 passed).
-    Here, one bucket for the two slots:
+    the FILTER card: ``key_from_header``'s ``filt``,
+    ``nightstack.flats_by_filter`` and ``read_backfill_frame`` each reading
+    ``header.get("FILTER")``) went red on this case, the night-stack case
+    and the backfill case, and on the eight cases of
+    test_master_filter_keys that shoot or save a non-ASCII slot;
+    test_calibration_keys, test_calibration_library, test_nightstack,
+    test_session_stack_backfill, test_gallery, test_flows_calibration_health,
+    test_file_safety_sweep, test_fits_non_ascii_names and
+    test_panel_provenance all stayed green under it (322 passed). Here, one bucket for the two slots:
 
-        >       assert len(set(keys.values())) == 2, keys
-        E       AssertionError: {'H\\u03b1': CalKey(frame_type='FLAT', exposure_s=0.2, gain=100, offset=30, temp_c=12.3, binning=1, filter='H?', filter_utf8...': CalKey(frame_type='FLAT', exposure_s=0.2, gain=100, offset=30, temp_c=12.3, binning=1, filter='H?', filter_utf8='')}
-        E       assert 1 == 2
+            assert len(set(keys.values())) == 2, keys
+        E   AssertionError: {'H\\u03b1': CalKey(frame_type='FLAT', exposure_s=0.2, gain=100, offset=30, temp_c=12.3, binning=1, filter='H?'), 'H\\u03b2': CalKey(frame_type='FLAT', exposure_s=0.2, gain=100, offset=30, temp_c=12.3, binning=1, filter='H?')}
+        E   assert 1 == 2
 
-    Mutation 'keys reads FILTER' (that reader alone) went red here alone,
-    with the same lines.
+    Mutation 'keys reads FILTER' (that reader alone, which is the key
+    before #371) went red here with the same lines, and on the same eight
+    cases of test_master_filter_keys.
 
-    Mutation 'the bucket id reads FILTER' (``sanitize_component(key.filter,
-    "strict")`` in ``key_index_id`` in place of ``key.filter_name``) went
-    red here alone, test_calibration_keys and test_calibration_library
-    green:
+    Mutation 'raw name in the card' (the master's FILTER written as
+    ``key.filter``, the line before #371) went red here at the build:
 
-        >       assert len(set(ids.values())) == 2, ids
-        E       AssertionError: {'H\\u03b1': 'flat_g100_o30_b1_fH', 'H\\u03b2': 'flat_g100_o30_b1_fH'}
-        E       assert 1 == 2
+            report = library.build()
+        E   ValueError: FITS header values must contain standard printable ASCII characters; 'H\\u03b1' contains characters not representable in ASCII or non-printable characters.
 
-    Mutation 'the key is the decoded name' (``filt = full_name(header,
-    "FILTER")`` in ``key_from_header``, so ``CalKey.filter``, which the
-    library writes into the master's FILTER card, carries the Greek letter)
-    went red here alone, at the build:
-
-        >       report = library.build()
-        ...
-        E                   ValueError: FITS header values must contain standard printable ASCII characters; 'H\\u03b1' contains characters not representable in ASCII or non-printable characters.
+    The earlier mutation 'the bucket id reads FILTER' has no form since
+    #371: the key carries the name and nothing else.
     """
     keys = {name: key_from_header(fits.getheader(flat))
             for name, (flat, _light) in two_slots.items()}
     assert len(set(keys.values())) == 2, keys
-    assert {n: k.filter_name for n, k in keys.items()} == {n: n for n in _SLOTS}
+    assert {n: k.filter for n, k in keys.items()} == {n: n for n in _SLOTS}
     ids = {name: key_index_id(k, 5.0) for name, k in keys.items()}
     assert len(set(ids.values())) == 2, ids
 
@@ -219,13 +223,22 @@ async def test_an_ascii_slot_writes_no_filtutf8_and_keys_as_before(sim_hub):
         >       assert fitsio.FILTER_UTF8 not in hdr
         E       AssertionError: assert 'FILTUTF8' not in SIMPLE  =                    T / conforms to FITS standard ...
 
-    (the header's repr elided). Mutation 'every key carries the name'
-    (the ``if typed == filt: typed = ""`` lines removed, so an ASCII key
-    has ``filter_utf8='Ha'``) went red here alone, test_calibration_keys,
-    test_calibration_library and test_flows_calibration_health green:
+    (the header's repr elided). Since #371 that test is
+    ``fitsio.write_name_card``'s, which writes OBJUTF8 too, and the mutation
+    re-run there (``if True:`` in place of ``if text != str(value):``) went
+    red here with the same assertion, on seventeen cases of
+    test_fits_non_ascii_names (the ASCII target's among them now), on the
+    same five of test_panel_provenance, and on the ASCII case of
+    test_master_filter_keys' frame-writer test.
 
-        >       assert key == CalKey("FLAT", 0.2, 100, 30, temp, 1, "Ha"), key
-        E       AssertionError: CalKey(frame_type='FLAT', exposure_s=0.2, gain=100, offset=30, temp_c=12.3, binning=1, filter='Ha', filter_utf8='Ha')
+    Mutation 'digest always' (every flat's id given a digest in
+    ``key_index_id``, #372) went red here:
+
+            assert key_index_id(key, 5.0) == "flat_g100_o30_b1_fHa"
+        E   AssertionError: assert 'flat_g100_o3..._fHa~72aa80bf' == 'flat_g100_o30_b1_fHa'
+
+    The earlier mutation 'every key carries the name' has no form since
+    #371: ``CalKey`` has no second filter field for an ASCII key to fill.
 
     Mutation 'no fallback' (``full_name`` returning ``""`` when the frame
     carries no as-typed card) went red here too:

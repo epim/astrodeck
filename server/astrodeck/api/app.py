@@ -128,7 +128,7 @@ from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
 from ..mount_offset import nudge as nudge_offset
 from ..mount_offset import parse_nudge
 from ..naming import sanitize_component
-from ..plans import PLAN_SCHEMA, plan_library
+from ..plans import PLAN_SCHEMA, PlanUnreadable, plan_library
 from .. import power_guard
 from ..profiles import Profile, profiles, redact_profile
 from ..provenance import effective_config
@@ -2026,7 +2026,7 @@ class PlanSaveBody(BaseModel):
 
 
 class FlowWizardBody(BaseModel):
-    """The sheet's three answers.
+    """The sheet's three answers, the Mosaic kind's and the door's.
 
     VALIDATED AGAINST THE GENERATOR'S OWN CONSTANTS rather than re-typed here.
     wizard.py opens by explaining why: a caller matching on "EAA quick look" and
@@ -2062,6 +2062,62 @@ class FlowWizardBody(BaseModel):
     pa_deg: float | None = None
     #: USE MEASURED: lay the grid out at the angle the last solve measured.
     use_measured: bool = False
+    #: THE DOOR'S ANSWERS (#196, spec Revision 2 ruling 4, S6): what Send to
+    #: Flow Wizard pre-fills from the Sky FRAME or the Atlas, beside the
+    #: three answers. Every one defaults to None, which the generator reads
+    #: as not given and changes nothing for: a body with only the three
+    #: original answers generates exactly what it did (ruling 4), and a
+    #: default here would change every flow the sheet has ever made. The
+    #: generator checks each (``wizard.generate_answer``); what is checked
+    #: HERE is what pydantic's coercion would hide from it (a ``true``
+    #: counted as 1 pass, a "true" read as guiding) and the skip, which
+    #: with no optics the generator never reads. The wheel the rows are
+    #: checked against is a rig fact the route injects, like the field.
+    #:
+    #: The coordinates as typed: the framing's centre, not the catalogue's.
+    ra: str | None = Field(None, max_length=64)
+    dec: str | None = Field(None, max_length=64)
+    #: The panels to leave out, as a TARGET's `skip` holds them ("2-3, 1-1").
+    #: Declared after ``rows`` and ``cols``, which its validator reads.
+    skip: str | None = Field(None, max_length=1000)
+    #: The filter rows, a FILTER CYCLE's slot table ("L 60, R 60"), and how
+    #: many subs of each (its passes).
+    cycle_plan: str | None = Field(None, max_length=1000)
+    cycles: int | None = None
+    #: On lights the Guiding chip; off says it stays dark.
+    guiding: bool | None = None
+
+    @field_validator("cycles", mode="before")
+    @classmethod
+    def _cycles(cls, v):
+        # Before pydantic's int coercion, which would read True as 1 pass
+        # and "10" as 10, through the wizard's own reading of a count.
+        return None if v is None else flow_wizard.checked_cycles(v)
+
+    @field_validator("guiding", mode="before")
+    @classmethod
+    def _guiding(cls, v):
+        # Before pydantic's bool coercion, which reads 1, "true" and "yes"
+        # as True: a client that sent one of those meant something the
+        # answer does not say.
+        return flow_wizard.checked_guiding(v)
+
+    @field_validator("skip")
+    @classmethod
+    def _skip(cls, v, info):
+        # Read against the grid it names, whether or not the rig has
+        # optics: with none the generator answers one target and never
+        # reads the grid, so a skip naming no panel would come back 200 as
+        # a single target, the gap the grid's own door closes.
+        if v is None or not v.strip():
+            return v
+        if "rows" not in info.data or "cols" not in info.data:
+            return v            # a side was refused; its error says why
+        rows, cols = info.data["rows"], info.data["cols"]
+        if rows is None or cols is None:
+            raise ValueError("skip names panels of a grid, and this answer "
+                             "has no rows and cols")
+        return flow_wizard.checked_skip(v, rows, cols)
 
     @field_validator("rows", "cols", mode="before")
     @classmethod
@@ -2177,9 +2233,11 @@ class FlowSaveBody(BaseModel):
     """The record to persist.
 
     Server-owned fields on it are IGNORED rather than trusted — see
-    ``_persist_flow``. The store refuses ``readonly=True``, but nothing in it
-    stops a client forging ``last_result: "ok"`` onto a flow that has never run,
-    and that field is what the library card draws.
+    ``_persist_flow``. ``readonly`` is cleared by the route, and the store
+    takes ``created_ts``, ``last_run`` and ``last_result`` from the file it
+    replaces (``store.BOOKKEEPING``, #364), so a client cannot forge
+    ``last_result: "ok"`` onto a flow that has never run, the field the
+    library card draws.
     """
     flow: FlowRecord
 
@@ -5463,10 +5521,17 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/plans/{plan_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def get_plan(plan_id: str):
+        """The stored plan; 404 when there is none, and 422 ``unreadable``
+        with the list row's own sentence for a file that is there and is not
+        a plan (``PlanUnreadable``, #378). That was pydantic's
+        ``ValidationError`` escaping as a 500."""
         try:
             return plan_library.get(plan_id)
         except (KeyError, FileNotFoundError):
             raise HTTPException(404, "plan not found")
+        except PlanUnreadable as e:
+            raise HTTPException(422, detail={"detail": e.reason,
+                                             "code": e.code})
 
     @app.post("/api/plans", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
@@ -5495,11 +5560,18 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/plans/{plan_id}/export", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def export_plan(plan_id: str):
+        # THE PLAN FIRST, THEN ITS BYTES (#378): ``get`` is the one judgment
+        # of which files are plans, so a damaged file answers 422 with the
+        # list row's sentence here too, whether it fails validation or does
+        # not parse, instead of a 500 from the name read or a 404.
         try:
-            raw = plan_library.export_bytes(plan_id)
             name = plan_library.get(plan_id).name or plan_id
+            raw = plan_library.export_bytes(plan_id)
         except (KeyError, FileNotFoundError):
             raise HTTPException(404, "plan not found")
+        except PlanUnreadable as e:
+            raise HTTPException(422, detail={"detail": e.reason,
+                                             "code": e.code})
         safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip() or "plan"
         return Response(raw, media_type="application/json", headers={
             "Content-Disposition": f'attachment; filename="{safe}.astroplan.json"'})
@@ -5541,12 +5613,22 @@ def create_app(*, bind_host: str | None = None,
         the field-ownership policy is the thing that must not drift between
         them.
 
-        FlowRecord carries four fields the store does not defend: ``created_ts``
-        (nothing writes it), ``last_run`` and ``last_result`` (nothing on the
-        server writes them either), and ``readonly`` (refused, but only by
-        exception). The library cards RENDER last_run/last_result — so a client
-        that PUTs ``last_result: "ok"`` onto a flow that has never run gets a
-        green card for free. All four are re-derived from the stored record.
+        FlowRecord carries four fields a client must not set: ``created_ts``,
+        ``last_run`` and ``last_result`` (``store.BOOKKEEPING``), and
+        ``readonly``. The library cards RENDER last_run/last_result — so a
+        client that PUTs ``last_result: "ok"`` onto a flow that has never run
+        would get a green card for free. ``readonly`` is cleared here (the
+        store refuses it, but only by exception); the other three are the
+        STORE'S, taken by ``save_and_report`` from the record its own read of
+        the file it replaces returns (``_stored``, ``_bookkeeping``).
+
+        NO READ OF ITS OWN (#364). This used to take the three from
+        ``flow_store.get``, a walk of the library that turns any failure to
+        read a file into an unreadable row, so a transient read error there
+        answered "no such flow" and the save wrote the flow as created now
+        and never run, whenever the store's own read a moment later
+        succeeded. Now the one read decides: it refuses the save (409
+        ``stored_unreadable``, below) or carries the history.
 
         THE SAVE RULES RIDE THE STORE'S ONE WRITER (#189 Revision 2 rulings 2
         and 3, spec 3.3): ``save_and_report`` runs ``save_rules.prepare_save``
@@ -5558,16 +5640,7 @@ def create_app(*, bind_host: str | None = None,
         throw the report away, and the report is the only place a restarted
         campaign is said at the moment it is caused.
         """
-        try:
-            prior = await asyncio.to_thread(flow_store.get, record.id)
-        except KeyError:
-            prior = None
-        record = record.model_copy(update={
-            "readonly": False,
-            "created_ts": prior.created_ts if prior else time.time(),
-            "last_run": prior.last_run if prior else None,
-            "last_result": prior.last_result if prior else "",
-        })
+        record = record.model_copy(update={"readonly": False})
         try:
             stored, migrated, reanchored = await asyncio.to_thread(
                 flow_store.save_and_report, record)
@@ -5756,18 +5829,23 @@ def create_app(*, bind_host: str | None = None,
                 geometry_issues.append({"text": note, "level": "warn"})
         except GraphNotRunnable as e:
             # Not an error response: a half-built graph is the NORMAL state of
-            # an editor, and the canvas asks for a compile on every edit. The
-            # refusal is reported in the same list as every other loss.
+            # an editor. The canvas's compile (``flowsCompile``) runs when a
+            # flow opens, after each save and on the Target modal's DONE or
+            # LOOP PANELS, which write through ``flowsApplyFraming``; an edit
+            # between them compiles nothing (#356). The modal also posts its
+            # own draft here once a framing edit settles, for its RUN numbers.
+            # The refusal is reported in the same list as every other loss.
             unmapped = [{"key": "plan", "detail": str(e), "level": "danger"}]
         run_readouts: dict = {}
         if _plan is not None:
             # OFF THE LOOP: finding which plan targets are which block asks
             # ``to_plan``'s own drop test, and for a TARGET known only by its
             # name that is a catalogue search (10 to 35 ms, #249), made for
-            # every compile the editor asks on every edit. The focus settings
-            # are the run's: ``autofocus_every`` off the plan, and the
-            # temperature delta as ``resolve_policy`` resolves it for this
-            # plan, which is what ``_refocus_due`` reads.
+            # every compile a client asks, the editor's on open, save and
+            # DONE (#356) and the modal's settled draft among them. The focus
+            # settings are the run's: ``autofocus_every`` off the plan, and
+            # the temperature delta as ``resolve_policy`` resolves it for
+            # this plan, which is what ``_refocus_due`` reads.
             run_readouts = await asyncio.to_thread(
                 flow_readouts, compiled, _plan, rig,
                 autofocus_every=_plan.autofocus_every,
@@ -5852,6 +5930,18 @@ def create_app(*, bind_host: str | None = None,
         notes it has (a name the catalogue does not know). A refusal of the
         generator's (a grid with another kind, one panel, no angle, "Rotate
         to PA" with no rotator) is a 422 naming it, not a 500.
+
+        THE DOOR'S ANSWERS (#196, spec Revision 2 ruling 4, S6): the typed
+        coordinates, the skipped panels, the filter rows and guiding, which
+        Send to Flow Wizard pre-fills, are handed to the generator as they
+        came, each None when the body does not carry it. A third rig fact
+        goes with them: the connected wheel's usable slots (``_rig_wheel``,
+        the reading POST /api/flows/quick checks its filters against, None
+        for no wheel), read here on the event loop where the device map is,
+        so a filter row the wheel does not have is refused as the quick
+        flow refuses it. The camera field and the measured angle stay rig
+        facts too; a client sends none of the three. A refusal of a door
+        answer is the same 422, naming the answer.
         """
         sky = getattr(hub, "last_sky_angle", None)
         measured = sky.get("pa_deg") if isinstance(sky, dict) else None
@@ -5866,8 +5956,10 @@ def create_app(*, bind_host: str | None = None,
                 body.unguided_exposure_s,
                 rows=body.rows, cols=body.cols, overlap_pct=body.overlap_pct,
                 angle_mode=body.angle_mode, pa_deg=body.pa_deg,
-                use_measured=body.use_measured, rig=_rig_facts(),
-                measured_pa_deg=measured)
+                use_measured=body.use_measured, skip=body.skip, ra=body.ra,
+                dec=body.dec, cycle_plan=body.cycle_plan, cycles=body.cycles,
+                guiding=body.guiding, rig=_rig_facts(),
+                measured_pa_deg=measured, wheel=_rig_wheel())
         except ValueError as e:
             raise HTTPException(422, detail={"detail": str(e),
                                              "code": "invalid_wizard_answer"})

@@ -16,11 +16,18 @@
 // compile's numbers for the layout as framed, and gives the campaign line to
 // a holder of the site view only.
 //
+// Since S5 it also holds that a grid is never given an angle nobody chose,
+// that the measured angle is offered and applied only when pressed (#411, S5
+// orchestrator ruling 1), that a single target's RUN and CENTRING say what a
+// single target does (#413, on the route's recorded single-target answer),
+// and that Grid order says where the run starts (#412 item 4).
+//
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // s4-umodal-mut), never in the shared tree (#254), and the failure it
 // produced is quoted verbatim. After the limit reset every one was run
 // again against the current tree in s4-umodal-r2-mut (2026-09-27), and
-// each was red with the failure quoted.
+// each was red with the failure quoted. S5's mutants were run the same way
+// in s5-modal-mut (2026-09-28).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -68,7 +75,14 @@ const { flowsApi } = await import("../../../../lib/flowsApi");
 const { NODE_DEFS } = await import("../../nodeDefs");
 const { COUNTS_NOTE, COUNTS_DORMANT_ADDENDUM } = await import("../../countsNotice");
 const { framingApi, framingTiming, campaignLine } = await import("../framingApi");
-const { ANY_ANGLE_ON_A_GRID, NO_OPTICS, NO_ROTATOR } = await import("../framingModel");
+const { ANY_ANGLE_ON_A_GRID, NO_ANGLE_ON_A_GRID, NO_OPTICS, NO_ROTATOR } = await import("../framingModel");
+const { ROTATE_LABEL, WHEN_WAITING_NO_MOSAIC } = await import("../sections/RunSection");
+const { GRID_ORDER_NOTE, SETTING_FIRST_NOTE } = await import("../sections/PanelsSection");
+// The classic overview's copy of the no-mosaic line, which RUN's is held
+// equal to (the overview cannot import the sheet's: the classic flows chunk
+// may not reach a framing module, classicFrameHost.test.tsx).
+const { WHEN_WAITING_NO_MOSAIC: OVERVIEW_NO_MOSAIC } = await import("../../FlowInspector");
+const { api } = await import("../../../../api");
 const sheetModule = await import("../TargetFramingSheet");
 const Sheet = sheetModule.default;
 const { COMPILE_NEEDS_ACCESS } = sheetModule;
@@ -105,6 +119,11 @@ function readJson(rel: string): any {
   }
 }
 const READOUTS_FX = readJson("../../../../../../server/tests/fixtures/flow_readouts_m31.json");
+/** The route's recorded answer for a single target (the `example-cycle`
+ *  Example: one panel owning the default FILTER CYCLE), pinned against the
+ *  route by test_flows_readouts.py `TestASingleTargetExamplesFixture`. Its
+ *  block is n2, `mode` "single", every group number null, focus "once". */
+const SINGLE_FX = readJson("../../../../../../server/tests/fixtures/flow_readouts_single.json");
 
 const OPERATOR = ["view.status", "view.preview", "view.site_derived", "control.capture", "control.mount"];
 const VIEWER = ["view.status", "view.preview"];
@@ -137,6 +156,16 @@ let localAsks = 0;
 let storeCompiles = 0;
 (flowsApi as any).compileDraft = async () => { storeCompiles++; return compiledWith(); };
 framingTiming.settleMs = 0;
+/** The catalogue, for WHERE's search: M31 at its catalogued size, so SUGGEST
+ *  GRID has something to size a grid by. Every other route still fails. */
+const M31_ENTRY = {
+  id: "M31", name: "Andromeda Galaxy", type: "galaxy", ra_hours: 0.7123, dec_deg: 41.269,
+  mag: 3.4, size_arcmin: 178,
+};
+(api as any).get = async (path: string) => {
+  if (path.startsWith("/api/catalog?")) return { results: [M31_ENTRY], notes: [] };
+  throw new Error(`no network in this fixture: ${path}`);
+};
 
 const real = useStore.getState();
 let applyCalls: any[][] = [];
@@ -199,6 +228,11 @@ function click(el: any): void {
 }
 function buttonByText(text: string): any {
   return Array.from(doc.querySelectorAll("button") as any[]).find((b: any) => b.textContent.includes(text));
+}
+function typeInto(el: any, value: string): void {
+  assert(el, "no field to type into");
+  const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+  act(() => { setter.call(el, value); el.dispatchEvent(new win.Event("input", { bubbles: true })); });
 }
 function choose(sel: any, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!;
@@ -585,6 +619,330 @@ await test("the campaign line comes from the Tonight answer, for a holder of the
   await flush();
   eq(tonightFetches, 1, "Tonight fetches for an operator with no answer in hand");
   unmount();
+});
+
+// ======================================================================
+// ANGLE: a grid is laid out at one angle, and nobody's default is it (#411)
+//
+// S5 orchestrator ruling 1 (#411; spec 1.8). S4's `gridSafe` gave a draft at
+// ANY ANGLE that became a grid ROTATE TO, whose "none" turns into 0, so a DONE
+// after a column change commanded the rotator to PA 0: an angle nobody chose,
+// set in the ANGLE section below GRID, off screen on a phone. Now the draft
+// stays at ANY ANGLE, DONE is locked until an angle is chosen, the readout
+// strip says the angle the grid is laid out at, and a measurement in
+// `status.sky_angle` is OFFERED in the strip and in ANGLE, applied only when
+// the operator presses it.
+
+const ANY_1x1 = () => target({ rows: 1, cols: 1, angle: "Any angle", rotation: -1 });
+const stripAngle = () => q("framing-strip-angle")?.textContent ?? null;
+const degrees = () => (doc.querySelector("#tfs-angle-deg") as any)?.value ?? null;
+/** WHERE's catalogue search, picked: M31 at its catalogued 178'. */
+async function pickM31(): Promise<void> {
+  typeInto(doc.querySelector('[aria-label="Search the target catalog"]'), "M31");
+  await flush(300);   // CatalogSearch's 250 ms debounce, then its answer
+  click(buttonByText("Andromeda Galaxy"));
+}
+
+// MUTANT "gridSafe falls back to 0" (the sheet's grid handler given S4's
+// `gridSafe` back: a draft at ANY ANGLE that becomes a grid is set by
+// `setAngleMode` to ROTATE TO, or CAMERA FIXED AT with no rotator, which turns
+// "none" into 0). Observed (scratch copy s5-modal-mut):
+//   x a grid made at ANY ANGLE, by the steppers or SUGGEST GRID, stays there, and DONE asks for an
+//     angle: the angle after more cols made a 2x1: expected "Any angle", got "Rotate to PA"
+//   (The offer's test below went red with it too.) The same fallback on
+//   SUGGEST GRID's path alone, `onSuggest` writing through S4's rule while the
+//   steppers do not. Observed (scratch copy s5-modal-mut):
+//   x a grid made at ANY ANGLE, by the steppers or SUGGEST GRID, stays there, and DONE asks for an
+//     angle: the angle after SUGGEST GRID made a 2x3: expected "Any angle", got "Rotate to PA"
+// MUTANT "DONE open with no angle" (the sheet's DONE reason leaves out
+// `gridAngleLock`). Observed (scratch copy s5-modal-mut):
+//   x a grid made at ANY ANGLE, by the steppers or SUGGEST GRID, stays there, and DONE asks for an
+//     angle: DONE is open on a grid with no angle
+await test("a grid made at ANY ANGLE, by the steppers or SUGGEST GRID, stays there, and DONE asks for an angle", async () => {
+  setup({ nodes: [ANY_1x1(), CYCLE], edges: LANE_ONLY });
+  mount();
+  eq(chosenAngle(), "Any angle", "premise: a 1x1 at any angle");
+  click(buttonByText("more cols"));
+  eq(chosenAngle(), "Any angle", "the angle after more cols made a 2x1");
+  eq(degrees(), "", "the degree field after more cols made a 2x1");
+  eq(stripAngle(), "no angle", "the strip's angle on the 2x1");
+  assert(locked(doneBtn()), "DONE is open on a grid with no angle");
+  eq(doneBtn().getAttribute("title"), NO_ANGLE_ON_A_GRID, "DONE's reason on a grid with no angle");
+  click(doneBtn());
+  eq(applyCalls.length, 0, "a DONE locked for its angle applied the framing");
+  eq(q("framing-explain")?.textContent, NO_ANGLE_ON_A_GRID, "pressing DONE says why");
+  assert(q("framing-strip-offer") === null && q("framing-angle-offer") === null, "an offer with nothing measured");
+  // Control: the operator chooses the angle, and DONE writes what they chose.
+  click(buttonByText("ROTATE TO"));
+  typeInto(doc.querySelector("#tfs-angle-deg"), "12.5");
+  eq(stripAngle(), "rotate to 12.5 deg", "the strip once the operator chose an angle");
+  assert(!locked(doneBtn()), "DONE stays locked with an angle chosen");
+  await done();
+  eq(applyCalls.map((a) => a[1]), [{ cols: 2, angle: "Rotate to PA", rotation: 12.5 }], "what DONE wrote");
+  unmount();
+  // SUGGEST GRID is the other way a draft becomes a grid.
+  setup({ nodes: [ANY_1x1(), CYCLE], edges: LANE_ONLY });
+  mount();
+  await pickM31();
+  click(buttonByText("SUGGEST GRID 2x3"));
+  eq([q("framing-cols")?.querySelector(".tfs-value")?.textContent, q("framing-rows")?.querySelector(".tfs-value")?.textContent],
+    ["2", "3"], "premise: SUGGEST GRID laid out M31's 2x3");
+  eq(chosenAngle(), "Any angle", "the angle after SUGGEST GRID made a 2x3");
+  eq(stripAngle(), "no angle", "the strip's angle on the 2x3");
+  assert(locked(doneBtn()), "DONE is open on the suggested grid with no angle");
+});
+
+const SKY = (() => {
+  const now = Date.now() / 1000;
+  return {
+    pa_deg: 37.24, exposed_at: now - 14 * 60 - 20, solved_at: now - 14 * 60 - 5, source: "plate solve + sync",
+    pier_side: "west", camera: "ZWO ASI2600MM", calibrated: false, reason: "no rotator is connected",
+    mechanical_deg: null, rotator_before_deg: null, offset_deg: null,
+  };
+})();
+
+// MUTANT "the offer applies itself" (the sheet's grid handler takes the
+// measured offer as a draft becomes a grid, `takeOffer` on the new draft
+// whenever `angleOffer` answers one: the prefill #411 suggested, with no
+// press). Observed (scratch copy s5-modal-mut):
+//   x with a measurement, the strip and ANGLE offer the measured angle, and only a press applies
+//     it: a rig with a rotator: the angle once the grid was made, before any press: expected "Any
+//     angle", got "Rotate to PA"
+// Each surface is pressed on each rig. With one surface per rig, ANGLE's
+// button was pressed only where there is no rotator, and there USE MEASURED
+// writes the same CAMERA FIXED AT the offer does, so a button that said
+// ROTATE TO and wrote CAMERA FIXED AT passed.
+// MUTANT "ANGLE's offer runs USE MEASURED" (AngleSection: the offer button's
+// onClick is `p.onUseMeasured`). Observed (scratch copy S5-MODAL-xverify-mut,
+// the S5-MODAL verifier, 2026-09-28; 20/20 before the second surface):
+//   x with a measurement, the strip and ANGLE offer the measured angle, and only a press applies
+//     it: a rig with a rotator: the angle after pressing framing-angle-offer: expected ["Rotate to
+//     PA","37.2"], got ["Camera fixed at PA","37.2"]
+await test("with a measurement, the strip and ANGLE offer the measured angle, and only a press applies it", async () => {
+  for (const [what, hasRotator, mode, label] of [
+    ["a rig with a rotator", true, "Rotate to PA", "ROTATE TO 37.2 deg"],
+    ["a rig with no rotator", false, "Camera fixed at PA", "CAMERA FIXED AT 37.2 deg"],
+  ] as const) for (const press of ["framing-strip-offer", "framing-angle-offer"] as const) {
+    setup({ nodes: [ANY_1x1(), CYCLE], edges: LANE_ONLY, skyAngle: SKY, compiled: compiledWith({ has_rotator: hasRotator }) });
+    mount();
+    click(buttonByText("more cols"));
+    eq(chosenAngle(), "Any angle", `${what}: the angle once the grid was made, before any press`);
+    eq(q("framing-strip-offer")?.textContent, label, `${what}: the strip's offer`);
+    eq(q("framing-angle-offer")?.textContent, label, `${what}: ANGLE's offer`);
+    assert((q("framing-angle")?.textContent ?? "").includes("camera measured 37.2 deg, 14 min ago, by the centring solve, pier west"),
+      `${what}: ANGLE does not say where the offered angle came from`);
+    assert(locked(doneBtn()), `${what}: DONE is open before the offer was taken`);
+    click(q(press));
+    eq([chosenAngle(), degrees()], [mode, "37.2"], `${what}: the angle after pressing ${press}`);
+    eq(stripAngle(), `${mode === "Rotate to PA" ? "rotate to" : "camera fixed at"} 37.2 deg`, `${what}: the strip once taken`);
+    assert(q("framing-strip-offer") === null && q("framing-angle-offer") === null, `${what}: the offer outlived its taking`);
+    assert(!locked(doneBtn()), `${what}: DONE stays locked once the offer was taken`);
+    await done();
+    eq(applyCalls.map((a) => a[1]), [{ cols: 2, angle: mode, rotation: 37.2 }], `${what}: what DONE wrote after ${press}`);
+    unmount();
+  }
+});
+
+// The control the ruling names: a single panel at ANY ANGLE is a whole,
+// runnable block (ruling 9 locks its first solve's angle at the run), so the
+// sheet leaves it be: no offer, no lock, and a DONE that writes nothing.
+// MUTANT "offer to any draft" (framingModel `angleOffer` loses its owed
+// test, so a single panel at any angle is offered the measured angle).
+// Observed (scratch copy s5-modal-mut):
+//   x a single panel at ANY ANGLE is left alone: no offer, DONE open, nothing written: the strip
+//     offers an angle to a single panel
+await test("a single panel at ANY ANGLE is left alone: no offer, DONE open, nothing written", async () => {
+  setup({ nodes: [ANY_1x1(), CYCLE], edges: LANE_ONLY, skyAngle: SKY, compiled: compiledWith({ has_rotator: true }) });
+  mount();
+  eq(chosenAngle(), "Any angle", "the 1x1's angle");
+  eq(stripAngle(), "any angle", "the strip's angle on the 1x1");
+  assert(q("framing-strip-offer") === null, "the strip offers an angle to a single panel");
+  assert(q("framing-angle-offer") === null, "ANGLE offers an angle to a single panel");
+  assert(q("framing-use-measured"), "the single panel lost its USE MEASURED chip");
+  assert(!locked(doneBtn()), "DONE is locked on a single panel at any angle");
+  await done();
+  eq(applyCalls.map((a) => a[1]), [{}], "what DONE wrote for the untouched 1x1");
+});
+
+// The strip sits outside the fieldset that freezes the draft, so its offer is
+// left out while the sheet is frozen rather than disabled by it: in view mode
+// (a running session, an Example) a press there would edit a draft no DONE
+// can write. ANGLE's offer is inside the fieldset and is disabled with it.
+// DONE's wait freezes the sheet too, but a grid that owes an angle has DONE
+// locked, so no offer is on screen while DONE writes; view mode is the case.
+// MUTANT "the strip's offer outlives the freeze" (the sheet's strip draws the
+// offer on `offer && (` with no `!frozen`). Observed (scratch copy
+// S5-MODAL-xverify-mut, the S5-MODAL verifier, 2026-09-28):
+//   x in view mode the strip offers no angle, and ANGLE's offer is frozen with the draft: the
+//     strip offers an angle in view mode
+await test("in view mode the strip offers no angle, and ANGLE's offer is frozen with the draft", async () => {
+  setup({ nodes: [target({ angle: "Any angle", rotation: -1 }), CYCLE], skyAngle: SKY, compiled: compiledWith({ has_rotator: true }) });
+  act(() => { root.render(null); });
+  act(() => { root.render(createElement(Sheet, { nodeId: "n2", onClose: () => {}, viewOnly: true })); });
+  assert(q("framing-view-why"), "premise: the sheet opened in view mode");
+  eq(stripAngle(), "no angle", "the strip's angle on a stored 3x2 at any angle, in view mode");
+  assert(q("framing-strip-offer") === null, "the strip offers an angle in view mode");
+  const inAngle = q("framing-angle-offer");
+  assert(inAngle, "premise: ANGLE draws the offer in view mode");
+  eq(inAngle.closest("fieldset")?.disabled, true, "ANGLE's offer is in a disabled fieldset in view mode");
+  unmount();
+  // Control: the same block, editable, is offered the angle in the strip.
+  mount();
+  assert(q("framing-view-why") === null, "premise: the editable sheet says it is view-only");
+  eq(q("framing-strip-offer")?.textContent, "ROTATE TO 37.2 deg", "the strip's offer on the editable sheet");
+  unmount();
+});
+
+// The rotate handle turns the angle, and the angle it is turned to is the
+// one the grid takes, from ANY ANGLE too: that is an angle the operator chose,
+// so the ruling leaves it (#411). `]` is the handle's key (SkyCanvas), 5 deg
+// from where the canvas draws the frame, north up for no angle.
+// MUTANT "the handle leaves any angle" (onSkyRotate writes the rotation
+// alone, keeping the mode). Observed (scratch copy s5-modal-mut):
+//   x the rotate handle sets the angle it is turned to, from ANY ANGLE too: the angle the handle
+//     turned to (rotator true): expected ["Rotate to PA","5"], got ["Any angle",""]
+await test("the rotate handle sets the angle it is turned to, from ANY ANGLE too", async () => {
+  for (const [hasRotator, mode] of [[true, "Rotate to PA"], [false, "Camera fixed at PA"]] as const) {
+    setup({ nodes: [target({ angle: "Any angle", rotation: -1 }), CYCLE], compiled: compiledWith({ has_rotator: hasRotator }) });
+    mount();
+    eq(chosenAngle(), "Any angle", "premise: a 3x2 stored at any angle");
+    const sky = doc.querySelector('[data-testid="framing-sky"] [role="application"]') as any;
+    act(() => { sky.dispatchEvent(new win.KeyboardEvent("keydown", { key: "]", bubbles: true })); });
+    eq([chosenAngle(), degrees()], [mode, "5"], `the angle the handle turned to (rotator ${hasRotator})`);
+    eq(stripAngle(), `${mode === "Rotate to PA" ? "rotate to" : "camera fixed at"} 5.0 deg`, "the strip after the handle");
+    unmount();
+  }
+});
+
+// ======================================================================
+// RUN and CENTRING on a single target (#413), on the route's recorded answer
+//
+// A one-panel TARGET compiles to no group (`compile_plan` emits `mosaic:
+// null`), so nothing reads `passes` or `minVisit` and there is nothing to
+// rotate between; the flow-level "while a mosaic waits" setting reads nothing
+// in a flow with no mosaic; a single target has no first panel; and the
+// CENTRING choice governs the angle check at every acquisition as well as the
+// centring (5.6). Each is graded on server/tests/fixtures/
+// flow_readouts_single.json, the compile route's own answer for one.
+
+function singleCompiled(): any {
+  return { plan: {}, structural: [], issues: [], unmapped: [], readouts: SINGLE_FX.readouts, rig: SINGLE_FX.rig };
+}
+const setupSingle = () => setup({ nodes: [target({ rows: 1, cols: 1 }), CYCLE], edges: LANE_ONLY, compiled: singleCompiled() });
+
+// MUTANT "one panel offers visits" (RunSection renders the loop, PASSES PER
+// VISIT and AT LEAST rows whatever `onePanel` says). Observed (scratch copy
+// s5-modal-mut):
+//   x on a one-panel block RUN leaves out the loop, passes and minimum visit, which nothing reads:
+//     the loop, passes and minimum-visit rows on a one-panel block: expected [false,false,false],
+//     got [true,true,true]
+await test("on a one-panel block RUN leaves out the loop, passes and minimum visit, which nothing reads", async () => {
+  setupSingle();
+  mount();
+  assert(q("framing-run"), "premise: RUN is shown for a single target that owns a stage");
+  eq(SINGLE_FX.readouts.n2.passes, null, "premise: the route's single target has no visit settings");
+  const run = () => q("framing-run");
+  eq([q("framing-loop") !== null, q("framing-passes") !== null, q("framing-min-visit") !== null],
+    [false, false, false], "the loop, passes and minimum-visit rows on a one-panel block");
+  assert(!run().textContent.includes(ROTATE_LABEL), `RUN still says "${ROTATE_LABEL}" on one panel`);
+  // Control: a column added in the sheet makes the draft a grid, and the rows
+  // it now reads come back.
+  click(buttonByText("more cols"));
+  eq([q("framing-loop") !== null, q("framing-passes") !== null, q("framing-min-visit") !== null],
+    [true, true, true], "the loop, passes and minimum-visit rows once the draft is a 2x1");
+});
+
+// MUTANT "no-mosaic line dropped" (RunSection draws the whenWaiting row with
+// no line under it). Observed (scratch copy s5-modal-mut):
+//   x the whenWaiting row says the flow has no mosaic while it has none, the draft included: the
+//     line under whenWaiting in a flow of one single target: expected "This flow has no mosaic
+//     yet, so this changes nothing until a TARGET has more than one panel.", got undefined
+// MUTANT "no mosaic from the stored graph" (the sheet asks the stored graph,
+// `!graph.nodes.some(isMultiPanel)`, and not the draft). Observed (scratch
+// copy s5-modal-mut):
+//   x the whenWaiting row says the flow has no mosaic while it has none, the draft included: the
+//     no-mosaic line once this block's draft is a 2x1
+await test("the whenWaiting row says the flow has no mosaic while it has none, the draft included", async () => {
+  eq(WHEN_WAITING_NO_MOSAIC, OVERVIEW_NO_MOSAIC, "RUN's no-mosaic line against the classic overview's");
+  setupSingle();
+  mount();
+  eq(q("framing-no-mosaic")?.textContent, WHEN_WAITING_NO_MOSAIC, "the line under whenWaiting in a flow of one single target");
+  // The draft counts: a column added here makes this block the flow's mosaic.
+  click(buttonByText("more cols"));
+  assert(q("framing-no-mosaic") === null, "the no-mosaic line once this block's draft is a 2x1");
+  unmount();
+  // Control: another block in the flow is a mosaic, so the setting is read.
+  setup({ nodes: [target({ rows: 1, cols: 1 }), CYCLE, target({ name: "M33" }, "n9")], edges: LANE_ONLY, compiled: singleCompiled() });
+  mount();
+  assert(q("framing-run"), "premise: RUN shown");
+  assert(q("framing-no-mosaic") === null, "the no-mosaic line in a flow whose other block is a 3x2");
+});
+
+// MUTANT "single focus as a mosaic's" (runLines: the `mode === "single"`
+// wording of the once line deleted). Observed (scratch copy s5-modal-mut):
+//   x a single target's focus line says a sweep only at the start, on the route's recorded answer:
+//     a single target's RUN lines: expected ["1 panel x 7 filters x 45 = 315 subs","9.75 h per
+//     panel, 9.75 h in all","focus: a sweep only at the start; set a temperature delta to refocus
+//     as the night cools"], got ["1 panel x 7 filters x 45 = 315 subs","9.75 h per panel, 9.75 h
+//     in all","focus: a sweep only at the first panel; set a temperature delta to refocus as the
+//     night cools"]
+await test("a single target's focus line says a sweep only at the start, on the route's recorded answer", async () => {
+  const lines = () => Array.from(doc.querySelectorAll('[data-testid="framing-readouts"] .tfs-readout') as any[])
+    .map((l: any) => l.textContent);
+  setupSingle();
+  mount();
+  eq(SINGLE_FX.readouts.n2.mode, "single", "premise: the recorded block is a single target");
+  eq(lines(), [
+    "1 panel x 7 filters x 45 = 315 subs",
+    "9.75 h per panel, 9.75 h in all",
+    "focus: a sweep only at the start; set a temperature delta to refocus as the night cools",
+  ], "a single target's RUN lines");
+  unmount();
+  // Control: the eighth Example's 3x2 keeps its first panel.
+  setup();
+  mount();
+  eq(lines()[lines().length - 1],
+    "focus: a sweep only at the first panel; set a temperature delta to refocus as the night cools",
+    "the 3x2's focus line");
+});
+
+// MUTANT "centring label drops the angle" (CentringSection's label back to S4's
+// "IF A PANEL WILL NOT CENTRE"). Observed (scratch copy s5-modal-mut):
+//   x CENTRING's choice is labelled for the angle as well as the centring, in the inspector's
+//     words: CENTRING's select label: expected "IF A PANEL WILL NOT CENTRE OR REACH ITS ANGLE", got
+//     "IF A PANEL WILL NOT CENTRE"
+await test("CENTRING's choice is labelled for the angle as well as the centring, in the inspector's words", async () => {
+  setupSingle();
+  mount();
+  const label = doc.querySelector('label[for="tfs-if-not"]') as any;
+  eq(label?.textContent, "IF A PANEL WILL NOT CENTRE OR REACH ITS ANGLE", "CENTRING's select label");
+  const field = NODE_DEFS.target.fields.find((f: any) => f.key === "ifNotCentred");
+  eq(label?.textContent, String(field?.label).toUpperCase(), "the label against the inspector's field");
+});
+
+// ======================================================================
+// PANELS: Grid order says where the run starts (#412 item 4)
+//
+// The engine's `grid` policy is the snake ROTATED to start after the
+// last-visited panel (spec 5.2), and the modal numbers it from 1-1, so after
+// the first visit its numbers, in the rows and on the sky, are not the order
+// the run uses. "Setting first" says its order is decided at the run; Grid
+// order now says so too.
+// MUTANT "grid order note removed" (PanelsSection draws no note for Grid
+// order). Observed (scratch copy s5-modal-mut):
+//   x Grid order carries a note that the run starts after the last-visited panel, as Setting first
+//     carries its own: the note under Grid order: expected "grid order is turned at the run so it
+//     starts after the last-visited panel: listed here from 1-1", got null
+await test("Grid order carries a note that the run starts after the last-visited panel, as Setting first carries its own", async () => {
+  setup({ progress: progress() });
+  mount();
+  const note = () => q("framing-order-note")?.textContent ?? null;
+  eq(note(), null, "a note under Least complete first, which the rows do follow");
+  choose(doc.querySelector("#tfs-order"), "Grid order");
+  eq(note(), GRID_ORDER_NOTE, "the note under Grid order");
+  assert(/starts after the last-visited panel/.test(GRID_ORDER_NOTE), `the note does not say where the run starts: ${GRID_ORDER_NOTE}`);
+  choose(doc.querySelector("#tfs-order"), "Setting first");
+  eq(note(), SETTING_FIRST_NOTE, "the note under Setting first");
 });
 
 // ------------------------------------------------------------------ report

@@ -945,8 +945,9 @@ class SimTelescope(Telescope):
         self._move_rates = {"ra": 0.0, "dec": 0.0}
         self._move_task: asyncio.Task | None = None
         self._tracking_rate = "sidereal"
-        #: The pier side the last slew, sync, park or unpark left the mount
-        #: on (#298), or None before the first of them. See `pier_side`.
+        #: The pier side the last slew (the park's and the home's included)
+        #: left the mount on (#298), or None before the first of them. A sync
+        #: and an unpark leave it as it is (#392). See `pier_side`.
         self._latched_side: PierSide | None = None
 
     async def connect(self) -> None:
@@ -1073,7 +1074,13 @@ class SimTelescope(Telescope):
         self.rig.ra_hours = ra_hours
         self.rig.dec_deg = dec_deg
         self.rig.pointing_error_deg = 0.003  # synced: pointing is now tight
-        self._latch_pier_side()
+        # THE SIDE IS KEPT (#392). A sync tells the mount where it points and
+        # moves no axis, so the tube stays on the side its last goto chose.
+        # It used to latch from the synced position's hour angle, so a
+        # plate-solve sync that landed past the meridian, while the mount
+        # tracked there on the pre-flip side, reported a flip no slew made:
+        # #298's defect entered by the sync instead of by tracking, and in
+        # the state the flip-owed invariant exists for.
 
     async def set_tracking(self, on: bool) -> None:
         self.rig.tracking = on
@@ -1101,20 +1108,24 @@ class SimTelescope(Telescope):
 
     async def park(self) -> None:
         # The slew latches the side of the park position (#298), and nothing
-        # moves the mount after it, so the park keeps that side.
+        # moves the mount after it, so the park keeps that side, and the
+        # unpark after it keeps it too (#392). A home latches the same way.
         await self.slew(0.0, 89.5)
         self.rig.parked = True
         self.rig.tracking = False
 
     async def unpark(self) -> None:
+        # The side the park's slew latched is kept (#392): an unpark lets the
+        # mount take commands again and moves nothing. It used to latch from
+        # the park position's hour angle at the moment of the unpark, a side
+        # that changes with the clock while the mount stands still.
         self.rig.parked = False
-        self._latch_pier_side()
 
     async def is_parked(self) -> bool:
         return self.rig.parked
 
     async def pier_side(self) -> PierSide:
-        """The side the last slew, sync, park or unpark left this mount on.
+        """The side the last slew, park or home left this mount on.
 
         Returned a constant ``WEST`` until 2026-08-06, which is the
         ``SimSolver``-doesn't-solve shape: a device answering a question about
@@ -1138,21 +1149,31 @@ class SimTelescope(Telescope):
         the simulator grade the wrong machine: the flip-owed invariant, a
         missed flip and a mount tracking past the meridian on the pre-flip side
         could not be staged at all, and a test that needed a mount keeping its
-        side had to script one. So each slew, sync, park and unpark latches the
-        side from the hour angle at that moment (`_latch_pier_side`), and
-        guiding, a jog and a single-axis turn keep it, as they keep a real
-        mount's.
+        side had to script one. So each slew latches the side from the hour
+        angle at that moment (`_latch_pier_side`), the park's and the home's
+        slews included, and guiding, a jog and a single-axis turn keep it, as
+        they keep a real mount's.
 
-        Before the first of those there is no goto whose side to keep, and the
+        A SYNC AND AN UNPARK KEEP IT TOO (#392): neither moves an axis. #298
+        had them latch as well, so a plate-solve sync past the meridian, of
+        a mount tracking there on the pre-flip side, reported a flip no slew
+        made. What the AM5N itself reports after either is not measured yet
+        (#392); a German mount's side is whether its declination axis is past
+        the pole, which neither touches.
+
+        Before the first slew there is no goto whose side to keep, and the
         side a goto to where the mount points would pick is the only answer
-        the simulator has; a mount nothing has moved still answers that way."""
+        the simulator has; a mount nothing has moved still answers that way,
+        a sync or an unpark included, since neither is a move."""
         if self._latched_side is None:
             return self._side_for_ra(self.rig.ra_hours)
         return self._latched_side
 
     def _latch_pier_side(self) -> None:
         """Keep the side for where the mount points, at this moment's hour
-        angle, until the next slew, sync, park or unpark (#298)."""
+        angle, until the next slew (#298). Called only where an axis moved:
+        a slew's end, and so the park's and the home's; never a sync or an
+        unpark (#392)."""
         self._latched_side = self._side_for_ra(self.rig.ra_hours)
 
     def _side_for_ra(self, ra_hours: float) -> PierSide:

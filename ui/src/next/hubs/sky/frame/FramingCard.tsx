@@ -33,36 +33,41 @@
 // to a control that was only showing it. Now an angle that is not a stop gets a
 // stop of its own, and the PA field under the dial takes any angle, with nudges
 // of 1 and 15 that move from where the frame IS (spec 2.4: no 15-degree snap).
+//
+// SEND TO FLOW WIZARD IS THIS CARD'S FORWARD ACTION (#196, spec section 8 S6).
+// It hands the framing as it stands (centre, PA, grid, overlap, field) to the
+// shared wizard, which writes one TARGET block into a flow. The card used to
+// promise an ORDER instead, because the framing's only way forward was the
+// quick sheet's Plan side channel, shot panel-first (#154); that channel and
+// the sentence describing it are gone, and the order a TARGET block is shot
+// in is the engine's, which this card does not describe.
 
 import { useState, type JSX } from "react";
-import { Card, Dial, NumberField } from "../../../ui";
+import { ActionButton, Card, Dial, NumberField } from "../../../ui";
 import { adjustedPa } from "../../../../lib/rotation";
 import type { RotatorStatus } from "../../../../types";
-import { MOSAIC_CHOICES, ROTS, commandedPa, framingMeta } from "./mosaic";
+import { MOSAIC_CHOICES, ROTS, commandedPa, framingMeta, overlapPercent } from "./mosaic";
+import { SEND_TO_WIZARD } from "../sheets/quickCopy";
 
 const MONO = "'IBM Plex Mono', ui-monospace, monospace";
 const DISPLAY = "'Chakra Petch', system-ui, sans-serif";
 
 /**
- * The sentence under the picker, which is where the panel ORDER is promised.
+ * The sentence under the picker: how to frame, what each way forward keeps,
+ * and the overlap, which nothing else on this card shows.
  *
- * It used to say the flow "centres on each panel in turn and cycles panels
- * every pass, so a clouded-out night still leaves every panel with data"
- * (#154). Nothing kept that. The flow is saved for the framing centre only;
- * GENERATE FLOW queues the panels as classic Plan targets sharing one
- * `mosaic_group`, and the engine runs each target to completion before it picks
- * the next. So the panels are shot panel-first, and a short night costs the
- * LAST panels, not a share of every panel. The sentence now says that, and
- * `mosaicCopyPanelFirst.test.ts` holds it there until S6 retires this door for
- * "Send to Flow Wizard" (#196), whose TARGET block really does rotate.
+ * The overlap is the SESSION's, printed from the prop, never a number typed
+ * into the copy: the copy used to say "Panels overlap 15%" as a literal, and
+ * FRAME mode re-set every session to 0.15 to keep the pitch in line with it
+ * (spec 2.4's one constant ended that).
  */
-export const FRAMING_NOTE =
-  "Drag the sky to shift the frame, turn the dial to rotate the camera. " +
-  "DONE keeps the framing: it stays on the sky, and its centre and angle go into the flow. " +
-  "Panels overlap 15%. GENERATE FLOW sends them to the Plan as targets in one mosaic group, " +
-  "and the engine shoots each panel to completion before it starts the next, so a night " +
-  "cut short leaves the last panels short. " +
-  "The dashed outline is the object's catalogued extent.";
+export function framingNote(overlap: number): string {
+  return "Drag the sky to shift the frame, turn the dial to rotate the camera. "
+    + `Panels overlap ${overlapPercent(overlap)}%. `
+    + `${SEND_TO_WIZARD} plans a flow from this framing: its centre, angle, grid and overlap. `
+    + "DONE keeps the framing on the sky. "
+    + "The dashed outline is the object's catalogued extent.";
+}
 
 /** The nudges under the PA field, in degrees. */
 const NUDGES: readonly number[] = [-15, -1, 1, 15];
@@ -104,6 +109,13 @@ export interface FramingCardProps {
   rotatorRange: { range_type: "full" | "half" | "quarter"; range_start_deg: number };
   onMosaic: (cols: number, rows: number) => void;
   onRotate: (deg: number) => void;
+  /** SEND TO FLOW WIZARD (#196). Optional so a caller that only draws the
+   *  picker (a test of the dial) need not wire a door; the button is left
+   *  out without it, never drawn dead. */
+  onSendToWizard?: () => void;
+  /** Why the wizard cannot be opened, said on a press; null when it can. */
+  sendReason?: string | null;
+  onExplain?: (reason: string) => void;
 }
 
 export function FramingCard({
@@ -118,6 +130,9 @@ export function FramingCard({
   rotatorRange,
   onMosaic,
   onRotate,
+  onSendToWizard,
+  sendReason = null,
+  onExplain,
 }: FramingCardProps): JSX.Element {
   const commandedPaDeg = commandedPa(rotationDeg);
   const hand = commandedPaDeg != null && rotator ? adjustedPa(commandedPaDeg, rotator, rotatorRange) : null;
@@ -240,7 +255,22 @@ export function FramingCard({
           </p>
         )}
 
-        <div style={{ fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5 }}>{FRAMING_NOTE}</div>
+        {onSendToWizard && (
+          <ActionButton
+            kind="primary"
+            full
+            data-testid="sky-send-to-wizard"
+            lockedReason={sendReason}
+            onExplain={onExplain}
+            onPress={onSendToWizard}
+          >
+            {SEND_TO_WIZARD}
+          </ActionButton>
+        )}
+
+        <div data-testid="sky-framing-note" style={{ fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5 }}>
+          {framingNote(overlap)}
+        </div>
       </div>
     </Card>
   );

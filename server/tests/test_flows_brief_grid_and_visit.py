@@ -1,6 +1,6 @@
 """The STORY brief's mosaic sentences: the grid written columns by rows (S4
-orchestrator ruling 1, #339) and the visit the run really makes (spec 5.3,
-#189 S4 item 14).
+orchestrator ruling 1, #339), the visit the run really makes (spec 5.3, S3
+item 5, #353), and every capture stage the pass is made of (#395).
 
 THE GRID. The eighth Example is named "M31 3x2, rotating" (2 rows of 3
 columns), the framing card and the spec's tables write ``cols x rows`` as a
@@ -138,8 +138,17 @@ class TestTheGridIsColumnsByRows:
         assert sentence.count("3 columns by 2 rows") == 1, sentence
         assert "(panel 2-1 skipped, written row-column)" in sentence, sentence
         assert "3x2" not in sentence and "2x3" not in sentence, sentence
+        # DELIBERATE PIN CHANGE (#407, S5-TONIGHT): a list of two takes no
+        # comma, so the two skipped panels read "1-3 and 2-3", where S4 pinned
+        # "1-3, and 2-3". RED under mutant "the old _join_and" (see
+        # test_flows_campaign_brief's TestTheBriefJoinsAListAsEnglish),
+        # observed, this test alone in this file:
+        #   E       AssertionError: M31 is a mosaic of 3 columns by 2 rows
+        #   shooting 4 of its 6 panels (panels 1-3, and 2-3 skipped, written
+        #   row-column) at 25% overlap, laid out at PA 30° with the rotator
+        #   turned to it at every panel.
         two = _sentence(brief(_mosaic(skip="1-3, 2-3")), "M31 is a")
-        assert "shooting 4 of its 6 panels (panels 1-3, and 2-3 skipped, " \
+        assert "shooting 4 of its 6 panels (panels 1-3 and 2-3 skipped, " \
                "written row-column)" in two, two
 
     def test_control_a_square_grid_reads_the_same_either_way(self):
@@ -289,6 +298,290 @@ class TestTheVisitIsTheOneTheRunMakes:
         hops = [b["hop_h"] for b in _budget(compiled, None, 160.0)]
         assert round(sum(hops), 2) == round(
             block["visits_total"] * 160 / 3600, 2) == 0.53, hops
+
+
+def _rotating(stages, *, min_visit=12):
+    """A rotating 2x2 of M31 whose lane is ``stages`` in order, each a
+    ``(id, type, x, params)``, with the loop wire from the last. The x of
+    each stage is given, so a case can draw the lane against canvas order."""
+    nodes = [_n("t", "target", name="M31", ra="00h 42m 44s", dec="+41 16 09",
+                rows=2, cols=2, overlap=25, rotation=30, angle="Rotate to PA",
+                fovX=2.0, fovY=1.33, passes=1, minVisit=min_visit,
+                order="Least complete first")]
+    edges, prev, port = [], "t", "target"
+    for sid, stype, x, params in stages:
+        nodes.append(_n(sid, stype, x=x, **params))
+        edges.append(_e(prev, port, sid, "run"))
+        prev, port = sid, "complete"
+    edges.append(_e(prev, "pass", "t", "next"))
+    return FlowGraph(nodes=nodes, edges=edges)
+
+
+#: A capture stage's sentence as the brief writes it: the first "It
+#: captures", a later one "It then captures", each ``filter exposure s x
+#: count`` and its gain and bin.
+_CAPTURE = re.compile(r"It (?:then )?captures (\S+) (\d+(?:\.\d+)?) s × "
+                      r"(\S+) \(gain [^,]+, bin [^)]+\)\.")
+#: A FILTER CYCLE's sentence: the first "Capture interleaves", a later one
+#: "It then interleaves", the subs each filter takes a pass, and the table.
+_CYCLE = re.compile(r"(?:Capture|It then) interleaves (one sub|(\d+) subs) "
+                    r"per filter per pass - (.+?) - so every channel grows "
+                    r"evenly\.")
+_SLOT = re.compile(r"(\S+) (\d+(?:\.\d+)?) s × \S+")
+
+
+def _named_stages(text: str) -> list[tuple[str, float]]:
+    """Every capture stage the brief names, in the order it names them, as
+    ``(filters, shutter seconds one pass takes of it)``: a cycle's slot
+    exposures times the subs it says each filter takes a pass, and a
+    capture's exposure once, since inside the loop a CAPTURE LOOP is a
+    one-slot cycle that takes one frame a pass (spec 1.3 item 4; the
+    compile's ``per_visit = 1``)."""
+    found: list[tuple[int, str, float]] = []
+    for m in _CYCLE.finditer(text):
+        per = 1 if m.group(1) == "one sub" else int(m.group(2))
+        slots = _SLOT.findall(m.group(3))
+        found.append((m.start(), " ".join(f for f, _ in slots),
+                      sum(float(e) for _, e in slots) * per))
+    for m in _CAPTURE.finditer(text):
+        found.append((m.start(), m.group(1), float(m.group(2))))
+    return [(names, s) for _, names, s in sorted(found)]
+
+
+def _stated_pass_s(text: str) -> float:
+    """The pass the visit sentence states, "a pass takes 10 min.", in s."""
+    (minutes,) = re.findall(r"a pass takes (\d+(?:\.\d+)?) min\.", text)
+    return float(minutes) * 60.0
+
+
+class TestEveryCaptureStageIsNamed:
+    """#395: the brief describes every capture stage in lane order, and the
+    pass its visit sentence states is the sum of the stages it names.
+
+    ``brief`` picked one stage, ``if cyc is not None: ... elif cap is not
+    None: ...``, so a lane of a FILTER CYCLE then a CAPTURE LOOP named the
+    cycle alone, and a lane of two CAPTURE LOOPs named the first. Since S4
+    the visit sentence prices the pass out of every step the block owns
+    (``_pass_s``), so the brief said "a pass takes 10 min" of a lane whose
+    only named stage takes 5. Each stage now has its sentence, in the
+    cursor's order along the wires (``compile.flow_order``), the first worded
+    as before and each later one "It then ...", and a cycle that takes more
+    than one sub of each filter a pass says how many.
+
+    The cases below read the stages back out of the prose (``_named_stages``)
+    and add them up, so the check is the reader's: what the brief says a
+    pass is made of must come to what it says a pass takes.
+
+    Every mutant below was run in a private copy of ``server/`` (scratchpad
+    ``S5-TONIGHT-mut``, from byte backups), never in the shared tree.
+
+    RED under mutant "if cyc / elif cap restored" (the loop over every stage
+    replaced by S4's two branches on ``_first(g, "cycle")`` and
+    ``_first(g, "capture")``), observed: all four lane cases failed (4
+    failed, 10 passed), and the single-stage control and every other test in
+    this file and in ``test_flows_campaign_brief`` stayed green. The first:
+
+        E       AssertionError: named [('Ha', 300.0)] of a pass the brief
+            states as 600 s: This flow arms M31. M31 is a 2x2 mosaic of 4
+            panels at 25% overlap, laid out at PA 30° with the rotator
+            turned to it at every panel. After 2 passes of its filters on a
+            panel it moves on to the next (least complete first), and comes
+            back until every panel has its subs. A visit is 2 passes rather
+            than the 1 asked, since it lasts at least its 12 min minimum and
+            a pass takes 10 min. The hop between panels has not been
+            measured on this rig yet. Capture interleaves one sub per filter
+            per pass - Ha 300 s × 6 - so eve
+        E       assert [('Ha', 300.0)] == [('Ha', 300.0...OIII', 300.0)]
+        E         Right contains one more item: ('OIII', 300.0)
+
+    The two CAPTUREs' brief ended "... It captures Ha 300 s × 4 (gain 100,
+    bin 1)." with no OIII, the lane drawn against canvas order named
+    ``[('Ha', 300.0)]`` alone, and the perCycle case read "one sub per
+    filter per pass", ``[('L R', 600.0)]``.
+
+    RED under mutant "one sub per filter, whatever perCycle" (the cycle
+    sentence's count of subs a pass fixed at "one sub"), observed, in the
+    perCycle case alone (1 failed, 13 passed):
+
+        E       AssertionError: named [('L R', 600.0)] of a pass the brief
+            states as 1200 s: This flow arms M31. M31 is a 3x2 mosaic of 6
+            panels at 25% overlap, ... A visit is 2 passes rather than the 1
+            asked, since it lasts at least its 30 min minimum and a pass
+            takes 20 min. The hop between panels has not been measured on
+            this rig yet. Capture interleaves one sub per filter per pass -
+            L 300 s × 4, R 300 s × 4 - so every channel grows evenly.
+        E       assert [('L R', 600.0)] == [('L R', 1200.0)]
+
+    RED under mutant "canvas order" (the stages taken in canvas x order
+    instead of along the wires), observed, in the lane drawn against canvas
+    order alone (1 failed, 13 passed):
+
+        E       AssertionError: [('OIII', 300.0), ('Ha', 300.0)]
+        E       assert [('OIII', 300...('Ha', 300.0)] == [('Ha', 300.0...OIII',
+            300.0)]
+        E         At index 0 diff: ('OIII', 300.0) != ('Ha', 300.0)
+
+    The counts above were taken before the verifier added the last two lane
+    cases (a cycle after a capture, a stage the walk never reaches). Re-run
+    on the file with them, from byte backups in a private copy: "if cyc /
+    elif cap restored" 5 failed, 11 passed (the cycle after a capture fails
+    too, since S4's branches named the cycle alone, and the unreached-stage
+    case stays green, since ``_first`` found its cycle off the canvas); "one
+    sub per filter, whatever perCycle" and "canvas order" 1 failed, 15
+    passed each, the same single cases as above.
+    """
+
+    def test_a_cycle_then_a_capture(self):
+        """The #395 graph: CYCLE Ha 300 s (one sub a pass, 6 cycles), then
+        CAPTURE OIII 300 s x 2, at a 12 min minimum. The pass is 600 s, the
+        compile's own (``readouts``' ``pass_s``), and the brief names both
+        stages, the cycle first, and says a pass takes 10 min."""
+        graph = _rotating([
+            ("y", "cycle", 200, dict(plan="Ha 300", cycles=6, perCycle=1,
+                                     gain=100, bin="1")),
+            ("o", "capture", 300, dict(filter="OIII", exposure=300,
+                                       gain=100, bin="1", count=2, goal=1))])
+        compiled = compile_plan(graph, "n")
+        plan, _ = to_sequence_plan(compiled, graph, flow_id=FLOW)
+        (block,) = readouts(compiled, plan, None).values()
+        assert block["pass_s"] == 600.0, "premise: the compile's pass"
+        text = brief(graph)
+        named = _named_stages(text)
+        assert named == [("Ha", 300.0), ("OIII", 300.0)], (
+            f"named {named} of a pass the brief states as "
+            f"{_stated_pass_s(text):g} s: {text}")
+        assert sum(s for _, s in named) == _stated_pass_s(text) == 600.0
+        assert "It then captures OIII 300 s × 2 (gain 100, bin 1)." in text
+
+    def test_two_captures(self):
+        """Two CAPTURE LOOPs, Ha then OIII, each one frame a pass in the
+        loop: both are named, the second "It then captures", and the pass
+        is their sum."""
+        graph = _rotating([
+            ("a", "capture", 200, dict(filter="Ha", exposure=300, gain=100,
+                                       bin="1", count=4, goal=1)),
+            ("b", "capture", 300, dict(filter="OIII", exposure=300,
+                                       gain=100, bin="1", count=4, goal=1))])
+        text = brief(graph)
+        named = _named_stages(text)
+        assert named == [("Ha", 300.0), ("OIII", 300.0)], (
+            f"named {named} of a pass the brief states as "
+            f"{_stated_pass_s(text):g} s: {text}")
+        assert sum(s for _, s in named) == _stated_pass_s(text)
+        assert "It captures Ha 300 s × 4 (gain 100, bin 1). It then " \
+               "captures OIII 300 s × 4 (gain 100, bin 1)." in text, text
+
+    def test_lane_order_is_the_wires_not_the_canvas(self):
+        """Ha is wired first and drawn to the right of OIII: the brief names
+        Ha first, the order the run shoots them in."""
+        graph = _rotating([
+            ("a", "capture", 500, dict(filter="Ha", exposure=300, gain=100,
+                                       bin="1", count=4, goal=1)),
+            ("b", "capture", 200, dict(filter="OIII", exposure=300,
+                                       gain=100, bin="1", count=4, goal=1))])
+        named = _named_stages(brief(graph))
+        assert named == [("Ha", 300.0), ("OIII", 300.0)], named
+
+    def test_a_cycle_says_the_subs_each_filter_takes_a_pass(self):
+        """L and R at 300 s, two subs of each a pass: the sentence says "2
+        subs per filter per pass", so the named stage is the 20 min the
+        visit sentence prices, where "one sub" would add up to 10."""
+        text = brief(_mosaic(min_visit=30, cycle=dict(
+            plan="L 300, R 300", cycles=4, perCycle=2)))
+        named = _named_stages(text)
+        assert named == [("L R", 1200.0)], (
+            f"named {named} of a pass the brief states as "
+            f"{_stated_pass_s(text):g} s: {text}")
+        assert sum(s for _, s in named) == _stated_pass_s(text)
+        assert "Capture interleaves 2 subs per filter per pass - L 300 s × " \
+               "4, R 300 s × 4 - so every channel grows evenly." in text
+
+    def test_a_cycle_after_a_capture_says_it_then(self):
+        """A CAPTURE LOOP (Ha 300 s) then a FILTER CYCLE (L and R at 300 s,
+        one sub each a pass), at a 20 min minimum: the cycle is the second
+        stage, so its sentence says "It then interleaves", not the first
+        stage's "Capture interleaves", which would read as the lane's
+        start; and the two add up to the 15 min pass. (``_CYCLE`` accepts
+        either lead, so ``_named_stages`` alone cannot tell them apart.)
+
+        RED under mutant "later cycle worded as first" (``_stage_sentence``'s
+        cycle lead fixed at "Capture interleaves"), observed (1 failed, 15
+        passed; added by the S5-TONIGHT verifier):
+
+            E       AssertionError: This flow arms M31. M31 is a 2x2 mosaic
+                of 4 panels at 25% overlap, ... A visit is 2 passes rather
+                than the 1 asked, since it lasts at least its 20 min minimum
+                and a pass takes 15 min. The hop between panels has not been
+                measured on this rig yet. It captures Ha 300 s × 4 (gain
+                100, bin 1). Capture interleaves one sub per filter per pass
+                - L 300 s × 4, R 300 s × 4 - so every channel grows evenly.
+            E       assert 'It captures Ha 300 s × 4 (gain 100, bin 1). It
+                then interleaves one sub per filter per pass - L 300 s × 4,
+                R 300 s × 4 - so every channel grows evenly.' in 'This flow
+                arms M31. ...'
+        """
+        graph = _rotating([
+            ("a", "capture", 200, dict(filter="Ha", exposure=300, gain=100,
+                                       bin="1", count=4, goal=1)),
+            ("y", "cycle", 300, dict(plan="L 300, R 300", cycles=4,
+                                     perCycle=1, gain=100, bin="1"))],
+            min_visit=20)
+        text = brief(graph)
+        named = _named_stages(text)
+        assert named == [("Ha", 300.0), ("L R", 600.0)], named
+        assert sum(s for _, s in named) == _stated_pass_s(text) == 900.0
+        assert ("It captures Ha 300 s × 4 (gain 100, bin 1). It then "
+                "interleaves one sub per filter per pass - L 300 s × 4, R 300 "
+                "s × 4 - so every channel grows evenly.") in text, text
+        assert "Capture interleaves" not in text, text
+
+    def test_a_stage_the_walk_never_reaches_is_still_named(self):
+        """A FILTER CYCLE wired back into its TARGET's ``arm`` (the flow
+        loop #149 describes, which validation refuses by name but the
+        editor can draw): ``compile.flow_order`` drops both nodes, and the
+        brief still names the cycle, as it did when it read the first cycle
+        off the canvas, because it describes the graph the operator drew
+        (``_capture_stages``' canvas-order tail).
+
+        RED under mutant "unreached stages dropped" (``_capture_stages``
+        returning the walked stages alone), observed (1 failed, 15 passed;
+        added by the S5-TONIGHT verifier):
+
+            E       AssertionError: This flow arms M31.
+            E       assert [] == [('L R', 120.0)]
+            E         Right contains one more item: ('L R', 120.0)
+        """
+        graph = FlowGraph(
+            nodes=[_n("t", "target", name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09"),
+                   _n("y", "cycle", x=200, plan="L 60, R 60", cycles=10,
+                      perCycle=1)],
+            edges=[_e("t", "target", "y", "run"),
+                   _e("y", "complete", "t", "arm")])
+        assert any("loops back on itself" in e
+                   for e in graph.validation_errors()), \
+            "premise: validation refuses this loop"
+        text = brief(graph)
+        assert _named_stages(text) == [("L R", 120.0)], text
+        assert ("Capture interleaves one sub per filter per pass - L 60 s × "
+                "10, R 60 s × 10 - so every channel grows evenly.") in text
+
+    def test_control_one_stage_reads_as_it_did(self):
+        """Controls: a lane of one stage keeps its sentence word for word, a
+        cycle at one sub a pass says "one sub", and every shipped Example
+        names exactly the one capture stage it draws. Green on the code and
+        under every mutant above."""
+        text = brief(_mosaic(min_visit=30))
+        assert ("Capture interleaves one sub per filter per pass - L 60 s × "
+                "45, R 60 s × 45, G 60 s × 45, B 60 s × 45, Ha 180 s × 45, "
+                "OIII 180 s × 45, SII 180 s × 45 - so every channel grows "
+                "evenly.") in text, text
+        assert "It then" not in text, text
+        for ex in examples():
+            stages = [n for n in ex.graph.nodes
+                      if n.type in ("cycle", "capture")]
+            assert len(stages) == 1, f"premise: {ex.id} draws one stage"
+            assert len(_named_stages(brief(ex.graph))) == 1, ex.id
 
 
 class TestFramingSaysTheWorkedCaseColumnsFirst:

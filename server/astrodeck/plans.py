@@ -6,6 +6,12 @@ browser. This module gives plans a real home: one file per plan under
 never silently overwrites a different plan (the API detects a name collision and
 prompts). A stored plan reuses ``SequencePlan`` verbatim plus an ``id`` +
 ``schema_version`` envelope on disk.
+
+A FILE THAT IS NO LONGER A PLAN IS LISTED, NOT SKIPPED (#378): a row with
+``status: "unreadable"`` and the first thing wrong with it, and ``GET`` and
+its export answer 422 with the same sentence. Skipping it made a damaged
+plan look deleted, and asking for it by id was a 500. The flow library
+(#153) and the session store (#242) keep the same rule.
 """
 from __future__ import annotations
 
@@ -13,6 +19,8 @@ import json
 import time
 from pathlib import Path
 from uuid import uuid4
+
+from pydantic import ValidationError
 
 from .config import PLANS_DIR
 from .persist import (ensure_dir, list_json, read_json, read_json_or,
@@ -44,6 +52,158 @@ class LibraryFull(ValueError):
     def __init__(self, message: str, code: str = "library_full"):
         super().__init__(message)
         self.code = code
+
+
+#: Why a plan file that does not parse, or is not UTF-8 text, is unreadable:
+#: a write cut short, or a file copied in by hand. Writes are atomic
+#: (``write_json_atomic``), so the library itself should never leave one.
+NOT_JSON = "not valid JSON"
+
+#: Why JSON that is not an object is: there is no envelope to hold a plan.
+NO_PLAN = "it holds no plan"
+
+#: The start of the reason for an envelope whose plan ``SequencePlan`` does
+#: not validate; ``_invalid_reason`` says where and why after it.
+INVALID = "fails validation"
+
+#: Longest name an unreadable row carries: a list line, read from a file
+#: nothing validated. The session store's bound.
+_NAME_MAX = 120
+
+#: Longest quoted value a reason carries, for the same reason.
+_VALUE_MAX = 40
+
+#: Longest rule a reason carries. Pydantic's own words for a bound are far
+#: shorter; the cut is for a validator's sentence that quotes the value.
+_RULE_MAX = 160
+
+
+class PlanUnreadable(ValueError):
+    """A plan file on disk that this build cannot read as a plan (#378).
+
+    ``reason`` is the sentence the list row and the 422 carry, the same
+    words in both places. ``name`` is the name the file gives, when it
+    gives one a person can read, else None. A ``ValueError`` like the other
+    refusals here, and never a ``KeyError``: the routes answer that 404,
+    and "not found" is false for a plan that is on disk and damaged."""
+
+    def __init__(self, plan_id: str, reason: str, name: str | None = None,
+                 code: str = "unreadable"):
+        super().__init__(reason)
+        self.plan_id = plan_id
+        self.reason = reason
+        self.name = name
+        self.code = code
+
+
+_MISSING = object()
+
+
+def _at(value, loc: tuple):
+    """What the raw plan holds at a validation error's ``loc``, or
+    ``_MISSING`` when the path runs out (a field the file leaves out)."""
+    for key in loc:
+        if isinstance(value, dict) and isinstance(key, str) and key in value:
+            value = value[key]
+        elif (isinstance(value, list) and type(key) is int
+              and 0 <= key < len(value)):
+            value = value[key]
+        else:
+            return _MISSING
+    return value
+
+
+def _quoted(value) -> str:
+    """``repr(value)``, cut to ``_VALUE_MAX`` characters."""
+    text = repr(value)
+    return text if len(text) <= _VALUE_MAX else text[:_VALUE_MAX - 3] + "..."
+
+
+def _invalid_reason(body, exc: ValidationError) -> str:
+    """``INVALID`` and the first error pydantic reports, named by its path
+    in the plan and the value the file holds there, with the rest counted:
+    ``fails validation: targets.0.steps.0.frame_type: frame type 'Snapshot'
+    is not one of Light, Dark, Bias, Flat (in any case)``.
+
+    THE PATH, BECAUSE IT IS WHAT TO REPAIR. #334 made a step's frame type one
+    of four spellings, and a plan saved before it with any other word stopped
+    loading; the operator has a file to edit and needs the field.
+
+    THE VALUE ONLY WHEN IT IS ONE PLAIN VALUE, read off the file at the
+    error's own path, never pydantic's rendering of the error, which quotes
+    its input from wherever it sits. A list or an object is named by its
+    path alone. ``SequencePlan`` ignores keys it does not model, so every
+    path is a field the plan's own editor writes, and a plan that loads
+    hands a viewer every such value anyway (``GET /api/plans/{id}``). A
+    rule whose own words already quote the value (#334's) is not made to
+    say it twice. A missing field is said to be missing."""
+    errors = exc.errors()
+    if not errors:
+        return INVALID
+    first = errors[0]
+    loc = tuple(first.get("loc", ()))
+    # An error on the plan as a whole (an envelope whose plan is a list, say)
+    # has no path of its own.
+    where = ".".join(str(p) for p in loc) or "the plan"
+    rule = str(first.get("msg", "")).removeprefix("Value error, ")
+    rule = rule[:1].lower() + rule[1:]
+    value = _at(body, loc)
+    plain = value is not _MISSING and (value is None or isinstance(
+        value, (str, int, float)))
+    says_it = plain and repr(value) in rule
+    if len(rule) > _RULE_MAX:
+        # #334's rule quotes the value whole, and the value is whatever the
+        # file holds.
+        rule = rule[:_RULE_MAX - 3] + "..."
+    if first.get("type") == "missing":
+        what = f"{where} is missing"
+    elif plain and not says_it:
+        what = f"{where} {_quoted(value)}: {rule}"
+    else:
+        what = f"{where}: {rule}"
+    more = len(errors) - 1
+    if more:
+        what += f" (and {more} more error{'s' if more != 1 else ''})"
+    return f"{INVALID}: {what}"
+
+
+def _raw_name(raw) -> str | None:
+    """The name a damaged file gives its plan, the envelope's first and the
+    plan's own second, cut to ``_NAME_MAX``; None when it gives neither."""
+    if not isinstance(raw, dict):
+        return None
+    plan = raw.get("plan")
+    for name in (raw.get("name"),
+                 plan.get("name") if isinstance(plan, dict) else None):
+        if isinstance(name, str) and name.strip():
+            return name.strip()[:_NAME_MAX]
+    return None
+
+
+def _read_plan(path: Path) -> tuple[dict, SequencePlan]:
+    """The envelope a plan file holds and its plan, or raise:
+    ``PlanUnreadable`` for a file that is there and is not a plan this build
+    reads, and ``OSError`` (``FileNotFoundError`` among them) for one that
+    is gone or that the OS will not open.
+
+    THE ONE JUDGMENT (#378): ``list`` makes a row of the refusal, and
+    ``get`` and the export answer 422 with it, so the three cannot disagree
+    about which files are plans. Nested past the parser's depth, ``json``
+    raises RecursionError, not a ValueError (#363's lesson in the flow
+    store), and it is damage like any other."""
+    try:
+        raw = read_json(path)
+    except (ValueError, RecursionError) as e:  # not JSON, or not UTF-8
+        raise PlanUnreadable(path.stem, NOT_JSON) from e
+    if not isinstance(raw, dict):
+        raise PlanUnreadable(path.stem, NO_PLAN)
+    body = raw.get("plan") or {}
+    try:
+        plan = SequencePlan.model_validate(body)
+    except ValidationError as e:
+        raise PlanUnreadable(path.stem, _invalid_reason(body, e),
+                             _raw_name(raw)) from e
+    return raw, plan
 
 
 def _summarize(plan: SequencePlan) -> dict:
@@ -103,6 +263,13 @@ def migrate_plan_policy_fields(library: "PlanLibrary | None" = None) -> int:
     lib = library if library is not None else plan_library
     changed = 0
     for row in lib.list():
+        if row.get("status") == "unreadable":
+            # A file this build cannot read as a plan is listed (#378) and
+            # left exactly as it is, as it was when the list skipped it: its
+            # meaning is unknown, so nothing in it is "a default nobody
+            # chose", and a rewrite would stamp over the evidence the
+            # operator repairs it from.
+            continue
         pid = row["id"]
         try:
             env = lib._envelope(pid)
@@ -152,30 +319,64 @@ class PlanLibrary:
         return raw if isinstance(raw, dict) else None
 
     def list(self) -> list[dict]:
-        """Lightweight rows: ``{id, name, frames, integration_min, targets, mtime}``."""
+        """Lightweight rows, newest first: ``{id, name, frames,
+        integration_min, shutter_min, targets, mtime}`` for each plan, and
+        ``{id, name, status: "unreadable", unreadable, mtime}`` for each file
+        that is not one (#378).
+
+        AN UNREADABLE ROW IS SEEN, AND NOTHING TO MISTAKE FOR A PLAN. It
+        used to be skipped (``continue``), so a damaged plan looked deleted
+        and the library looked healthy. It carries no ``frames``,
+        ``integration_min``, ``shutter_min`` or ``targets``, because none of
+        them was read from anything and a 0 would be a count of a plan that
+        does not exist, and ``status`` is a key no plan row has. The id is
+        the FILE's stem, which ``GET`` and ``DELETE`` address; ``name`` is left
+        out when the file gives none a person could read (``_raw_name``).
+        ``unreadable`` is ``_read_plan``'s reason, which the 422 of ``GET``
+        repeats word for word.
+
+        A FILE THE OS WILL NOT OPEN RIGHT NOW is left out, as before: a
+        sharing violation from antivirus or an indexer says nothing about
+        what the file holds, and a row calling a good plan unreadable would
+        offer it for deletion. The next list shows it. A file that has gone
+        between the listing and its read is left out too."""
         rows: list[dict] = []
         for path in list_json(self._dir):
-            raw = read_json_or(path)
-            if not isinstance(raw, dict):
-                continue
             try:
-                plan = SequencePlan(**(raw.get("plan") or {}))
-            except Exception:
+                raw, plan = _read_plan(path)
+                mtime = path.stat().st_mtime
+            except PlanUnreadable as e:
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                row = {"id": path.stem}
+                if e.name is not None:
+                    row["name"] = e.name
+                rows.append({**row, "status": "unreadable",
+                             "unreadable": e.reason, "mtime": mtime})
+                continue
+            except OSError:
                 continue
             rows.append({
                 "id": raw.get("id", path.stem),
                 "name": raw.get("name") or plan.name,
                 **_summarize(plan),
-                "mtime": path.stat().st_mtime,
+                "mtime": mtime,
             })
         rows.sort(key=lambda r: r["mtime"], reverse=True)
         return rows
 
     def get(self, plan_id: str) -> SequencePlan:
-        env = self._envelope(plan_id)
-        if env is None:
-            raise KeyError(plan_id)
-        return SequencePlan(**(env.get("plan") or {}))
+        """The stored plan. ``KeyError`` when there is no such file (or the
+        OS will not open it, as ``list`` leaves such a file out), and
+        ``PlanUnreadable`` when the file is there and is not a plan (#378):
+        it used to raise pydantic's ``ValidationError``, which no route
+        caught, so asking for a damaged plan by id was a 500."""
+        try:
+            return _read_plan(self._path(plan_id))[1]
+        except OSError:
+            raise KeyError(plan_id) from None
 
     def save(self, plan: SequencePlan, plan_id: str | None = None) -> dict:
         """Upsert by id; atomic write. Returns the list row.

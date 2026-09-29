@@ -168,6 +168,39 @@ function readSingle(): any {
 //     boolean
 // CONTROL: the mosaic fixture's tests above stay green under it, which is
 // why they could not see it.
+//
+// DELIBERATE PIN CHANGE (#413, S5-MODAL; re-pinned by the S5/S6 integration,
+// S56-INTEG): a single target has no first panel, so `runLines` words its one
+// sweep "at the start" since S5, and the third line changed with it. The
+// eighth Example above is a mosaic and still says "at the first panel". The
+// old pin, run against this tree, observed:
+//   x a single target's recorded readouts read, and render its RUN lines, with no hop line: the
+//     RUN lines of a single target, which makes no hop and has no visit bound: expected ["1 panel
+//     x 7 filters x 45 = 315 subs","9.75 h per panel, 9.75 h in all","focus: a sweep only at the
+//     first panel; set a temperature delta to refocus as the night cools"], got ["1 panel x 7
+//     filters x 45 = 315 subs","9.75 h per panel, 9.75 h in all","focus: a sweep only at the
+//     start; set a temperature delta to refocus as the night cools"]
+// Mutant "every mode says at the first panel" (framingModel `runLines`'s
+// `when` written `"at the first panel"` for every mode), run in the private
+// copy scratchpad S56-INTEG-mut, observed (3/4, this case red, the mosaic's
+// green):
+//   x a single target's recorded readouts read, and render its RUN lines, with no hop line: the
+//     RUN lines of a single target, which makes no hop and has no visit bound: expected ["1 panel
+//     x 7 filters x 45 = 315 subs","9.75 h per panel, 9.75 h in all","focus: a sweep only at the
+//     start; set a temperature delta to refocus as the night cools"], got ["1 panel x 7 filters
+//     x 45 = 315 subs","9.75 h per panel, 9.75 h in all","focus: a sweep only at the first panel;
+//     set a temperature delta to refocus as the night cools"]
+// CONTROL, the other way: mutant "every mode says at the start" (`when`
+// written `"at the start"` for every mode) turns the mosaic case red and
+// leaves this one green, observed (3/4):
+//   x the compile route's recorded readouts render the spec's worked RUN lines through the
+//     sheet's reader: the RUN lines: expected ["6 panels x 4 filters x 20 = 480 subs","2.67 h
+//     per panel, 16 h in all","120 visits at 1 pass per visit","hop: not measured on this rig
+//     yet","meridian: up to 6.1 min idle before the flip","focus: a sweep only at the first
+//     panel; set a temperature delta to refocus as the night cools"], got ["6 panels x 4 filters
+//     x 20 = 480 subs","2.67 h per panel, 16 h in all","120 visits at 1 pass per visit","hop: not
+//     measured on this rig yet","meridian: up to 6.1 min idle before the flip","focus: a sweep
+//     only at the start; set a temperature delta to refocus as the night cools"]
 test("a single target's recorded readouts read, and render its RUN lines, with no hop line", () => {
   const fx = readSingle();
   const compiled = { plan: {}, structural: [], issues: [], unmapped: [], readouts: fx.readouts, rig: fx.rig };
@@ -178,7 +211,7 @@ test("a single target's recorded readouts read, and render its RUN lines, with n
   eq(runLines(read!.value, compiledRig(compiled as any)), [
     "1 panel x 7 filters x 45 = 315 subs",
     "9.75 h per panel, 9.75 h in all",
-    "focus: a sweep only at the first panel; set a temperature delta to refocus as the night cools",
+    "focus: a sweep only at the start; set a temperature delta to refocus as the night cools",
   ], "the RUN lines of a single target, which makes no hop and has no visit bound");
   // The same null is still refused where a boolean is owed: the rig block's
   // flag, which decides the hop line.

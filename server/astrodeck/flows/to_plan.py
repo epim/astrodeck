@@ -33,10 +33,13 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 from uuid import uuid4
+
+from pydantic import ValidationError
 
 from ..catalog.coords import parse_dec, parse_ra
 from ..sequence.models import ActionKind, SequencePlan, TriggerKind
@@ -526,13 +529,27 @@ def _coords(entry: dict, when: float | None
 
     "Typed" is ``identity.typed_coordinates``, the same test ``_identify``
     keys by: an entry resolved by name here is keyed on its name's identity
-    there (#189 A5), and the two must never read one entry differently.
+    there (#189 A5), and the two must never read one entry differently. A
+    field of only whitespace is not typed (#387), so it is placed by name.
+
+    A TYPED POSITION OFF THE SPHERE IS NO POSITION (#362): an RA or Dec that
+    is not a finite number ("inf" and "nan" parse, through ``float``), or a
+    Dec past a pole, drops the entry as text that does not parse does. That
+    is ``save_rules.current_anchor``'s rule for "no layout", whose docstring
+    says this function drops such a block, and it keeps an infinity out of
+    the identity key and the mosaic's layout. A finite RA outside 0 to 24 h
+    is not dropped here: it is refused by name where the plan checks it
+    (``_refused_values``).
     """
     if identity.typed_coordinates(entry):
         try:
-            return parse_ra(str(entry["ra"])), parse_dec(str(entry["dec"])), None
+            ra, dec = parse_ra(str(entry["ra"])), parse_dec(str(entry["dec"]))
         except (TypeError, ValueError):
             return None
+        if not (math.isfinite(ra) and math.isfinite(dec)
+                and -90.0 <= dec <= 90.0):
+            return None
+        return ra, dec, None
     name = str(entry.get("name") or "").strip()
     # Looked up on the module at call time, never bound here by name, so a
     # test that replaces `tonight.resolve_target` replaces it for this and
@@ -1376,7 +1393,16 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
     spec = {"ra_hours": ra_hours, "dec_deg": dec_deg, "rows": nums["rows"],
             "cols": nums["cols"], "overlap": overlap, "rotation_deg": layout,
             "fov_x_deg": nums["fov_x"], "fov_y_deg": nums["fov_y"]}
-    layout_panels = framing.compute_mosaic(spec)["panels"]
+    try:
+        layout_panels = framing.compute_mosaic(spec)["panels"]
+        tolerance = framing.angle_tolerance_deg(spec)
+    except ValidationError as e:
+        # THE LAYOUT REFUSES THE CENTRE BEFORE ANY PANEL IS MADE (#362):
+        # ``MosaicSpecIn`` holds the sphere's bounds, so an RA typed as 30h
+        # was a pydantic error out of the route. Named as the plan's own
+        # refusals are, the block and the field.
+        raise GraphNotRunnable(_refused_values(
+            e, lambda loc: (label, _path(loc)))) from None
     key = _block_key(entry, ra_hours, dec_deg, layout, canonical,
                      anchor=m.get("frame_anchor"),
                      grid=dict(rows=nums["rows"], cols=nums["cols"],
@@ -1447,7 +1473,7 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
         "rotate": angle == "rotate",
         # A.2 with convergence's share taken first (Revision 1): how far the
         # camera may sit off `pa_deg` before the corner overlap runs out.
-        "angle_tolerance_deg": framing.angle_tolerance_deg(spec),
+        "angle_tolerance_deg": tolerance,
         "skipped_ids": skipped_ids,
         # Provenance only; `_group_cols` reads `cols` as a fallback.
         "geometry": {"rows": nums["rows"], "cols": nums["cols"],
@@ -1455,6 +1481,57 @@ def _expand_mosaic(entry: dict, *, name: str, ra_hours: float,
                      "fov_from": str(m.get("fov_from") or ""), "key": key},
     }
     return panels, group
+
+
+def _refused_values(error: ValidationError, where) -> str:
+    """The sentence a ``ValidationError`` from the plan's models becomes
+    (#362 item 1): one clause per value refused, each naming the block, the
+    field, the value and the bound, all of them at once, as
+    ``_mosaic_refusals`` gives every refusal at once.
+
+    ``where(loc)`` answers ``(block, field)`` for one error's location: the
+    block's label, as ``_block_label`` writes it, and the rest of the path
+    inside what it built (``steps[0].exposure_s``, ``ra_hours``).
+
+    SAID ONCE PER BLOCK AND FIELD. A mosaic's six panels carry one copy of
+    the block's steps each, and a FILTER CYCLE's slots are one step each, so
+    one fractional gain on a two-filter cycle over six panels is twelve
+    errors and one fault in one place on the canvas. Clauses that differ
+    only in a list index (``steps[0]``, ``steps[1]``) are that one fault,
+    and the first is said. A value's repr is cut at 40 characters: a
+    309-digit integer names itself by its first digits."""
+    clauses: list[str] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for err in error.errors():
+        block, field = where(tuple(err.get("loc") or ()))
+        msg = str(err.get("msg") or "it is not accepted")
+        why = f"{msg[:1].lower()}{msg[1:]}"
+        value = repr(err.get("input")) if field else ""
+        if len(value) > 40:
+            value = value[:37] + "..."
+        fault = (block, re.sub(r"\[\d+\]", "[]", field), value, why)
+        if fault in seen:
+            continue
+        seen.add(fault)
+        if field:
+            clauses.append(f"{block}: {field} of {value} cannot be used - "
+                           f"{why}.")
+        else:
+            # A model's own check (an Instruction's relative factor): the
+            # whole thing is the value, and its message names the field.
+            clauses.append(f"{block} cannot be used - {why}.")
+    return " ".join(clauses)
+
+
+def _path(loc: tuple) -> str:
+    """A location inside one model as the PLAN tab would name it:
+    ``("steps", 0, "exposure_s")`` is ``steps[0].exposure_s``, and ``()``,
+    the model itself, is blank."""
+    out = ""
+    for part in loc:
+        out += f"[{part}]" if isinstance(part, int) else (
+            f".{part}" if out else str(part))
+    return out
 
 
 def _count_mode(built: list[tuple[dict, list[dict]]], out: list[dict]) -> str:
@@ -1550,7 +1627,10 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     Raises :class:`GraphNotRunnable` when there is nothing runnable here - no
     targets at all, or a capture step with no exposure or no frames - and
     for a mosaic that cannot run (M1, M2, M12, M13; ``_mosaic_refusals``),
-    every such sentence at once.
+    every such sentence at once. And for a value the plan's models refuse,
+    naming the block and the field (``_refused_values``, #362): nothing
+    else leaves this function, so the compile route never answers 500 on a
+    draft and ``/run`` answers 422.
     """
     refusals = _mosaic_refusals(compiled, graph)
     if refusals:
@@ -1561,6 +1641,10 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
 
     targets: list[dict] = []
     groups: list[dict] = []
+    # The block each target and each group came from, index for index, so a
+    # value the plan's models refuse is named by its block (#362 item 1).
+    target_blocks: list[str] = []
+    group_blocks: list[str] = []
     # Each entry with the targets it became, for the count mode and the
     # followers, which are settled once every block is built.
     built: list[tuple[dict, list[dict]]] = []
@@ -1592,10 +1676,12 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                 left_out=left_out)
             if group is not None:
                 groups.append(group)
+                group_blocks.append(_block_label(entry))
                 group_of[str(entry.get("node_id") or "")] = {
                     **group, "when_waiting": entry["mosaic"].get(
                         "when_waiting")}
             targets.extend(panels)
+            target_blocks.extend(_block_label(entry) for _ in panels)
             built.append((entry, panels))
             continue
 
@@ -1634,6 +1720,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         _identify(target, entry, flow_id=flow_id, is_pool=is_pool,
                   members_seen=members_seen, canonical=canonical, key=key)
         targets.append(target)
+        target_blocks.append(_block_label(entry))
         built.append((entry, [target]))
         pooled += 1 if is_pool else 0
 
@@ -1722,7 +1809,39 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             "a dark library. Set Target °C on the Capture tab and press Cool, "
             "or run uncooled on purpose",
             "note"))
-    plan = SequencePlan.model_validate(fields)
+
+    def where(loc: tuple) -> tuple[str, str]:
+        """``(block, field)`` for one refused value's location in ``fields``:
+        a target's or a group's block, a rule by its trigger and action, or
+        the flow for a plan-level field."""
+        head, index = (loc + (None, None))[:2]
+        rules = fields["instructions"]
+        if isinstance(index, int):
+            if head == "targets" and index < len(target_blocks):
+                return target_blocks[index], _path(loc[2:])
+            if head == "groups" and index < len(group_blocks):
+                return group_blocks[index], _path(loc[2:])
+            if head == "instructions" and index < len(rules):
+                rule = rules[index]
+                return (f"the rule {rule.get('trigger')} -> "
+                        f"{rule.get('action')}", _path(loc[2:]))
+        return "this flow", _path(loc)
+
+    try:
+        plan = SequencePlan.model_validate(fields)
+    except ValidationError as e:
+        # A VALUE THE PLAN'S MODELS REFUSE IS THE OPERATOR'S TO FIX (#362
+        # item 1). The compile reads a card's numbers as it finds them, and
+        # `ExposureStep`, `Schedule` and `Target` hold the bounds (an
+        # exposure of at most 3600 s, a whole gain, an hour angle of at most
+        # 12 h, an RA under 24 h). Uncaught, their ValidationError was a 500
+        # from the editor's compile on every edit and from /run, where the
+        # route answers GraphNotRunnable with the block to fix: the plan's
+        # danger row, and a 422. Checking each bound here as well, as
+        # `_centring` and `_mosaic_numbers` do for theirs, would be a second
+        # copy of the models' bounds, free to drift from the ones the run
+        # obeys; the models' own verdict, named by block, cannot.
+        raise GraphNotRunnable(_refused_values(e, where)) from None
     return plan, unmapped
 
 

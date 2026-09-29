@@ -28,6 +28,12 @@
 //      the modal on screen can close itself (#382).
 //   9. The same key guard holds under the tablet's edit sheet and palette
 //      sheet, the other two modal Overlays over the canvas (#381).
+//  10. RUN MODE IS THE DOOR'S (#189 S5; spec 2.6). While the open flow's
+//      session runs (flowRunState `flowRunLive`), FRAME ON SKY opens the
+//      modal with `viewOnly`: read-only, with RUNNING_VIEW_ONLY. A dormant
+//      session, or the rig running another flow's session, opens it
+//      editable, and the run ending under an open modal makes it editable
+//      again.
 //
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // s4-uhostc-mut, and s4-uhostc-verify-mut for case 7), never in the shared
@@ -88,7 +94,7 @@ const { flowsApi } = await import("../../../lib/flowsApi");
 const { createParams } = await import("../nodeDefs");
 const { framingApi, framingTiming } = await import("../framing/framingApi");
 const { loadTargetFramingSheet } = await import("../framing");
-const { EXAMPLE_VIEW_ONLY } = await import("../framing/TargetFramingSheet");
+const { EXAMPLE_VIEW_ONLY, RUNNING_VIEW_ONLY } = await import("../framing/TargetFramingSheet");
 const { COUNTS_NOTE, COUNTS_DORMANT_ADDENDUM, acceptCounts } = await import("../countsNotice");
 const { FRAME_ON_SKY, VIEW_ON_SKY, EXAMPLE_FRAMING_VIEW_ONLY } = await import("../FlowInspector");
 const editorModule = await import("../FlowEditor");
@@ -138,9 +144,30 @@ const ALPHA = target("ta", "Alpha", { ra: "00h 42m 44s", dec: "+41 16 09", rows:
   fovX: 2, fovY: 1.33, angle: "Rotate to PA", rotation: 0 });
 const BETA = target("tb", "Beta", { ra: "05h 35m 17s", dec: "-05 23 28" });
 
+/** The rig's state before any run: what the store starts with. Every seed
+ *  puts it back, so a case that ran a flow cannot leave the next one
+ *  running. */
+const IDLE_SEQUENCE = useStore.getState().sequence;
+
+// The run-mode case's answers (section 10), READ, NOT COPIED: the progress
+// route's recorded answer for a flow with a dormant session, and the rig's
+// recorded state of a run writing that very session
+// (server/tests/test_s5_recorded_state.py rebuilds both byte for byte).
+function readFixture(name: string): any {
+  const rel = `../../../../../server/tests/fixtures/${name}`;
+  try {
+    return JSON.parse(readFileSync(new URL(rel, import.meta.url), "utf8") as string);
+  } catch (e) {
+    throw new Error(`cannot read ${rel}, a recorded answer the run-mode case is graded against: `
+      + `${(e as Error).message}`);
+  }
+}
+const RUN_PROGRESS = readFixture("flow_progress_continue.json").response;
+const RUN_STATE = readFixture("sequence_state_mosaic.json").states.shooting;
+
 function seed(o: {
   nodes?: FlowNodeRec[]; sel?: string | null; editNode?: string | null; readonly?: boolean;
-  countsNote?: string | null; paletteOpen?: boolean;
+  countsNote?: string | null; paletteOpen?: boolean; progress?: any; sequence?: any;
 } = {}): void {
   const graph: FlowGraphRec = { nodes: o.nodes ?? [ALPHA, BETA], edges: [] };
   act(() => {
@@ -148,6 +175,7 @@ function seed(o: {
       principal: { role: "operator", email: null, caps: ["view.status", "control.capture"] },
       wsConnected: false,
       status: { sky_angle: null } as any,
+      sequence: o.sequence ?? IDLE_SEQUENCE,
       config: null,
       site: null,
       flows: {
@@ -158,6 +186,7 @@ function seed(o: {
         sel: o.sel ? { kind: "node", id: o.sel } : null,
         editNode: o.editNode ?? null,
         countsNote: o.countsNote ?? null,
+        progress: o.progress ?? null,
         ui: { ...FLOWS_INIT.ui, screen: "editor", paletteOpen: o.paletteOpen ?? false },
       },
     } as any);
@@ -725,6 +754,79 @@ await test("Delete or Backspace under the tablet's edit sheet or palette sheet l
   assert(doc.querySelector('[aria-modal="true"]') === null, "precondition: a modal is open on the bare tablet");
   press(doc.body, "Delete");
   eq(ids(), ["tb"], "Delete on the tablet with no sheet open");
+});
+
+// ======================================================================
+// 10. run mode is the door's (#189 S5; spec 2.6)
+
+// MUTANT "the doors never pass viewOnly" (FlowEditor.tsx `FramingHostSheet`
+// renders `<FramingSheet nodeId={nodeId} onClose={onClose} />`, the host as
+// S4 left it). Run in scratchpad S5-RUNMODE-mut, 2026-09-28. Observed, 12/13:
+//   x while the open flow's session runs, FRAME ON SKY opens the modal read-only in run mode; a dormant session opens it editable: the sheet's view mode while the flow runs: expected "true", got null
+// MUTANT "run mode decided once at open" (FlowEditor.tsx `FramingHostSheet`
+// reads the answer once, `const [running] = useState(() =>
+// flowRunLive(useStore.getState().flows.progress,
+// useStore.getState().sequence))`). Observed, 12/13:
+//   x while the open flow's session runs, FRAME ON SKY opens the modal read-only in run mode; a dormant session opens it editable: the sheet's reason once the run has ended: expected null, got "This flow's session is running: its framing opens to view, not to edit."
+await test("while the open flow's session runs, FRAME ON SKY opens the modal read-only in run mode; a dormant session opens it editable", async () => {
+  const sheetReason = () => (doc.querySelector('[data-testid="framing-view-why"]') as any)?.textContent ?? null;
+  const done = () => doc.querySelector('[data-testid="framing-done"]');
+  // Premise: the two recorded answers are one session, and the run is live.
+  eq(RUN_STATE.session.id, RUN_PROGRESS.session.id, "premise: the run writes the progress answer's session");
+  eq(RUN_STATE.state, "running", "premise: the recorded run's state");
+
+  // CONTROL: the session dormant, the rig idle. The modal edits.
+  seed({ sel: "ta", progress: RUN_PROGRESS });
+  await mount("desktop");
+  click(frameRow());
+  await flush();
+  assert(sheet(), "FRAME ON SKY mounted no sheet over a dormant session");
+  eq(sheet().getAttribute("data-view"), null, "the sheet's view mode over a dormant session");
+  eq(sheetReason(), null, "the sheet's reason over a dormant session");
+  assert(done(), "the sheet over a dormant session offers no DONE");
+  unmount();
+
+  // CONTROL: the rig running ANOTHER flow's session (the recorded run, its
+  // session id changed). The modal edits: a run is this flow's by the session
+  // id the progress route counts, never because the rig is busy. MUTANT "the
+  // door asks whether ANY run is live" (`FramingHostSheet` reads
+  // `s.sequence?.state === "running"` in place of `flowRunLive`), green before
+  // this control existed; observed (verifier's scratch copy
+  // S5-RUNMODE-verify-mut, 2026-09-28), 12/13:
+  //   x while the open flow's session runs, FRAME ON SKY opens the modal read-only in run mode; a dormant session opens it editable: the sheet's view mode under another flow's run: expected null, got "true"
+  const otherRun = { ...RUN_STATE, session: { ...RUN_STATE.session, id: "another-flows-session" } };
+  seed({ sel: "ta", progress: RUN_PROGRESS, sequence: otherRun });
+  await mount("desktop");
+  click(frameRow());
+  await flush();
+  assert(sheet(), "FRAME ON SKY mounted no sheet under another flow's run");
+  eq(sheet().getAttribute("data-view"), null, "the sheet's view mode under another flow's run");
+  eq(sheetReason(), null, "the sheet's reason under another flow's run");
+  assert(done(), "the sheet under another flow's run offers no DONE");
+  unmount();
+
+  // The flow's session running: the same door opens run mode.
+  seed({ sel: "ta", progress: RUN_PROGRESS, sequence: RUN_STATE });
+  await mount("desktop");
+  eq(frameRow()?.textContent, FRAME_ON_SKY, "the column's row while the flow runs");
+  const before = JSON.stringify(useStore.getState().flows.graph);
+  click(frameRow());
+  await flush();
+  assert(sheet(), "FRAME ON SKY mounted no sheet while the flow runs");
+  eq(sheet().getAttribute("data-view"), "true", "the sheet's view mode while the flow runs");
+  eq(sheetReason(), RUNNING_VIEW_ONLY, "the sheet's reason while the flow runs");
+  assert(done() === null, "the sheet offers DONE while the flow runs");
+  eq((doc.querySelector(".tfs-fieldset") as any)?.disabled, true, "the sheet's controls while the flow runs");
+
+  // The run ends under the open modal: the door's answer follows it, and the
+  // modal edits again without being reopened.
+  act(() => { useStore.setState({ sequence: { ...RUN_STATE, state: "complete" } } as any); });
+  await flush();
+  eq(sheetReason(), null, "the sheet's reason once the run has ended");
+  assert(done(), "the sheet offers no DONE once the run has ended");
+  click(buttonByText("CANCEL"));
+  await flush();
+  eq(JSON.stringify(useStore.getState().flows.graph), before, "the graph after run mode and a CANCEL");
 });
 
 // ------------------------------------------------------------------- report

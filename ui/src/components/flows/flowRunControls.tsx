@@ -23,16 +23,34 @@
 // This module was extracted from FlowHeader.tsx when the phone MONITOR tab
 // needed the same button; FlowHeader re-exports `runBlockedReason` so the
 // existing `flowHeaderText.test.ts` import keeps resolving.
-import { useCallback } from "react";
+//
+// WHAT THE BUTTON SAYS AND WHAT THE READOUTS SHOW live here too (#189 S5):
+// `useFlowRunControls().copy` is the one RUN / CONTINUE / STOP line and
+// `useFlowRunReadouts()` the one set of STATE / ETA / STAGE / FRAMES, both
+// computed by the pure `runCopy.ts`. The #/next surfaces reach them through
+// this module, which the r7Parity allow-list already names as the one place
+// that decides what RUN does and says, so they take on no new legacy import.
+import { useCallback, useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import { api, ApiError } from "../../api";
 import { useStore, type ConfirmRequest } from "../../store";
 import { accessPhrase, useCanControlMount, useRoleConnected } from "../../lib/caps";
-import type { FlowUnmapped } from "../../lib/flowsApi";
+import type { FlowRunFlags, FlowUnmapped } from "../../lib/flowsApi";
 import {
   nextRunFlags, type FlowContinueCode, type FlowContinueQuestion,
   type FlowRunAcceptance, type FlowsActions,
 } from "./flowsSlice";
+import { flowRunLive } from "./flowRunState";
+import {
+  START_OVER_TITLE, runCopy, runReadouts, startOverBody,
+  type RunCopy, type RunReadouts,
+} from "./runCopy";
+
+export {
+  HOPS_NOT_COSTED, MERIDIAN_WAIT_STAGE,
+  type RunCopy, type RunReadouts, type RunVerb,
+} from "./runCopy";
 
 /** Why RUN cannot act, or null when it can.
  *
@@ -97,6 +115,9 @@ export const CONTINUE_VERB: Record<FlowContinueCode, string> = {
   recount: "CONTINUE",
 };
 
+/** START OVER's one spelling: the button in a CONTINUE question's body, the
+ *  button beside CONTINUE on every RUN surface (#189 S5) and the yes of the
+ *  confirm that button asks. */
 export const START_OVER_LABEL = "START OVER";
 
 /** What START OVER does to the session being asked about, in the server's own
@@ -119,8 +140,10 @@ export const START_OVER_NOTE = "START OVER begins a new session and leaves this 
  *
  *  Spans, not paragraphs or a list: the classic host puts the body inside a
  *  `<p>`. `startOverClass` lets each UI dress the button in its own chrome.
- *  Like the graph question, this presentation is UNDESIGNED (§G-2); the
- *  designed CONTINUE button, with the night and counts on it, is slice S5. */
+ *  Like the graph question, this presentation is UNDESIGNED (§G-2). The
+ *  CONTINUE button itself, with the night and counts on it, is S5's
+ *  (`runCopy`), and so is the START OVER beside it (`startOver` below), which
+ *  asks its own confirm before a single request goes out. */
 export async function askContinue(
   q: FlowContinueQuestion,
   pushConfirm: (req: Omit<ConfirmRequest, "resolve">) => Promise<boolean>,
@@ -174,14 +197,21 @@ export interface RunOutcome {
  *  keeps ADOPT on the request that then answers a dropped-steps CONTINUE.
  *  Each caller brings its own way of asking the graph question, because the
  *  two UIs word and dress that list differently; the CONTINUE questions are
- *  `askContinue` in both. */
+ *  `askContinue` in both.
+ *
+ *  `first` is what the FIRST request already carries: `{ fresh: true }` for
+ *  the START OVER beside CONTINUE (#189 S5), which the operator confirmed
+ *  before this loop ran. Every re-post keeps it, because each is built from
+ *  the flags the question came back with. Omitted, the first request is
+ *  `run()` exactly as it always was. */
 export async function runAnsweringQuestions(
   run: FlowsActions["flowsRun"],
   askUnmapped: (list: FlowUnmapped[]) => Promise<boolean>,
   askContinueQuestion: (q: FlowContinueQuestion) => Promise<FlowRunAcceptance | null>,
+  first?: FlowRunFlags,
 ): Promise<RunOutcome> {
   let answered: FlowRunAcceptance | null = null;
-  let answer = await run();
+  let answer = await (first ? run(first) : run());
   while (answer) {
     const yes: FlowRunAcceptance | null = answer.kind === "unmapped"
       ? ((await askUnmapped(answer.unmapped)) ? "unmapped" : null)
@@ -195,7 +225,14 @@ export async function runAnsweringQuestions(
 
 export interface FlowRunControls {
   /** Live-run flag; drives the glyph AND the word, so the state is never
-   *  carried by colour alone. */
+   *  carried by colour alone.
+   *
+   *  TWO SOURCES (#189 S5). `flows.run.phase`, which `flowsRun` writes the
+   *  moment its request returns (before the engine's first publish), and
+   *  `flowRunLive`: the rig's run IS this flow's, the session the sequence
+   *  state writes being the one the progress route counts. The second is
+   *  what makes the button read STOP over a run this flow did not start from
+   *  this page, such as auto-resume on night two or another browser. */
   running: boolean;
   /** Honest-disabled reason, or null. Never becomes a bare `disabled`. */
   reason: string | null;
@@ -203,11 +240,58 @@ export interface FlowRunControls {
   explain: (reason: string) => void;
   /** Start, or stop if a run is live. */
   act: () => void;
+  /** What the button says: RUN, CONTINUE with the flow's name and the
+   *  session's numbers, or STOP (`runCopy`). Every RUN surface prints this. */
+  copy: RunCopy;
+  /** START OVER, offered beside CONTINUE only (`copy.verb === "CONTINUE"`).
+   *  It asks a confirm first and posts `fresh` only on its yes. */
+  startOver: () => void;
+}
+
+/** Ask the graph question: the compile's losses, as the run route's 409
+ *  `unmapped` lists them. True runs anyway. */
+function askUnmappedWith(
+  pushConfirm: (req: Omit<ConfirmRequest, "resolve">) => Promise<boolean>,
+): (unmapped: FlowUnmapped[]) => Promise<boolean> {
+  return async (unmapped) => {
+    // An empty list asks nothing and runs nothing, as it always has.
+    if (unmapped.length === 0) return false;
+    // WARNING: the presentation is UNDESIGNED (§G-2): no screenshot, no
+    // README paragraph. This uses the app's existing confirm primitive
+    // unchanged - the least-committal thing that renders the server's own
+    // list. The title is app.py:3760's own refusal sentence, not new copy.
+    return pushConfirm({
+      title: "Parts of this flow do not survive the compile",
+      // A list, not a joined string: `ConfirmHost` renders `body` as-is,
+      // and a "\n" inside a text node collapses to a space — five
+      // refusals would arrive as one run-on sentence.
+      body: (
+        <ul className="flex flex-col gap-1.5 text-[12px] text-dim">
+          {unmapped.map((u) => <li key={u.key}>{u.detail}</li>)}
+        </ul>
+      ),
+      confirmLabel: "RUN ANYWAY",
+      cancelLabel: "CANCEL",
+      tone: "warn",
+      mode: "confirm",
+      confirmPrimary: true,
+    });
+  };
 }
 
 export function useFlowRunControls(): FlowRunControls {
   const phase = useStore((s) => s.flows.run.phase);
-  const running = isRunPhaseLive(phase);
+  // A boolean, so exact under Object.is: a frame landing on the run wakes
+  // nothing here unless it changes whose run it is.
+  const ours = useStore((s) => flowRunLive(s.flows.progress, s.sequence));
+  const running = isRunPhaseLive(phase) || ours;
+
+  // The copy's two inputs. `progress` changes identity only when a new
+  // answer lands (open, save, a started run, a frame on a live one, at most
+  // every 30 s), so the memo below recomputes that rarely.
+  const name = useStore((s) => s.flows.record?.name ?? "");
+  const progress = useStore((s) => s.flows.progress);
+  const copy = useMemo(() => runCopy(name, progress, running), [name, progress, running]);
 
   const canControlMount = useCanControlMount();
   const camera = useRoleConnected("camera");
@@ -244,42 +328,59 @@ export function useFlowRunControls(): FlowRunControls {
   const start = useCallback(async () => {
     await runAnsweringQuestions(
       run,
-      async (unmapped) => {
-        // An empty list asks nothing and runs nothing, as it always has.
-        if (unmapped.length === 0) return false;
-        // WARNING: the presentation is UNDESIGNED (§G-2): no screenshot, no
-        // README paragraph. This uses the app's existing confirm primitive
-        // unchanged - the least-committal thing that renders the server's own
-        // list. The title is app.py:3760's own refusal sentence, not new copy.
-        return pushConfirm({
-          title: "Parts of this flow do not survive the compile",
-          // A list, not a joined string: `ConfirmHost` renders `body` as-is,
-          // and a "\n" inside a text node collapses to a space — five
-          // refusals would arrive as one run-on sentence.
-          body: (
-            <ul className="flex flex-col gap-1.5 text-[12px] text-dim">
-              {unmapped.map((u) => <li key={u.key}>{u.detail}</li>)}
-            </ul>
-          ),
-          confirmLabel: "RUN ANYWAY",
-          cancelLabel: "CANCEL",
-          tone: "warn",
-          mode: "confirm",
-          confirmPrimary: true,
-        });
-      },
+      askUnmappedWith(pushConfirm),
       (q) => askContinue(q, pushConfirm, resolveConfirm),
     );
   }, [pushConfirm, resolveConfirm, run]);
 
+  // START OVER, BEHIND A CONFIRM (spec 5.9: "START OVER behind a confirm").
+  // The press walks away from a ledger CONTINUE would carry on, for good:
+  // CONTINUE reads only the newest session this flow started, so once the
+  // fresh one exists the old one is never reopened. So nothing is posted
+  // until the operator has read that and said yes, and CANCEL, Escape or a
+  // tap outside post nothing at all. The yes then runs the ordinary loop with
+  // `fresh` on the first request: the server can still ask the graph
+  // question, and every re-post keeps `fresh`.
+  const startOver = useCallback(async () => {
+    const ok = await pushConfirm({
+      title: START_OVER_TITLE,
+      body: startOverBody(copy),
+      confirmLabel: START_OVER_LABEL,
+      cancelLabel: "CANCEL",
+      tone: "warn",
+      mode: "confirm",
+    });
+    if (!ok) return;
+    await runAnsweringQuestions(
+      run,
+      askUnmappedWith(pushConfirm),
+      (q) => askContinue(q, pushConfirm, resolveConfirm),
+      { fresh: true },
+    );
+  }, [copy, pushConfirm, resolveConfirm, run]);
+
   const act = useCallback(() => {
     void (running ? stop() : start());
   }, [running, start, stop]);
+  const pressStartOver = useCallback(() => { void startOver(); }, [startOver]);
 
   return {
     running,
     reason: runBlockedReason(canControlMount, camera.connected, running),
     explain,
     act,
+    copy,
+    startOver: pressStartOver,
   };
+}
+
+/** The run readouts every monitor and the two ETA slots draw (#189 S5).
+ *
+ *  Fed from the sequence state while `flowRunLive` says the rig's run is this
+ *  flow's, and the idle values in `flows.run` otherwise (`runReadouts`).
+ *  Returned through `useShallow`: every member is a primitive, so a publish
+ *  that changes none of them (a sky reading, a guide RMS, a hold's reason)
+ *  re-renders none of the surfaces that read it. */
+export function useFlowRunReadouts(): RunReadouts {
+  return useStore(useShallow((s) => runReadouts(s.flows.progress, s.sequence, s.flows.run)));
 }

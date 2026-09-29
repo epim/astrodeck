@@ -38,6 +38,24 @@ and the vacuity lesson in verify-on-the-real-thing.md:
      click step may be `required` (and a step may be a `goto` or a
      `wait_for`), and a route file may `seed` the server before its walk.
      Each is described where it is implemented.
+  6. What the page says must be what the rig says (#189 S5 and S6,
+     routes_s5_s6.json). A readout, a RUN button's copy or a review that
+     reads plausibly is not evidence it reads TRUE: "M31 2-1, pass 3" is as
+     well formed when the engine is on 1-2. So a route may compare the page
+     against the server's own answer (`api_text`, `run_copy`), say what a
+     control's text must be (`text_expect`) and how many of a thing there are
+     (`count`), forbid a request the walk must not cause (`forbid_requests`),
+     and grade what the walk saved (`new_flow`) and left in the browser
+     (`no_plan_targets`). Every button in a view can be held to the hit test
+     and a height floor at once (`reachable_all`), a box to filling its row
+     (`fills`) and a scroller to showing its content (`unsquashed`), text
+     that shares a line to lining up (`aligned`), and text is also graded
+     against its OWN box (an ellipsis is a cut). A walk may type (`fill`),
+     wait on the rig (`wait_api`), run checks mid-walk (`check`) and take a
+     screenshot mid-walk (`shot`). A seed can save a
+     flow drawn in the route file (`save_flow`) and refuse to walk on a
+     server that already holds a session for it (`fresh`), and a seed op may
+     be limited to some widths.
 
 Usage:
     python tools/ui_probe/probe.py --routes tools/ui_probe/routes_classic.json \\
@@ -54,10 +72,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -349,11 +369,24 @@ HIT_TEST_JS = """(el) => {
 # Where an element's TEXT is drawn, asked of the browser through a Range (the
 # glyph boxes, not the element's box, which for an inline span says nothing
 # about where its glyphs land): `lines` counts the distinct line boxes, and
-# `clipped` names the first ancestor whose overflow cuts a glyph box, by how
-# many px. The clip is the ancestor's PADDING box (client area), which is
+# `clipped` names the first box whose overflow cuts a glyph box, by how
+# many px. The clip is the box's PADDING box (client area), which is
 # where `overflow` clips. Measured case (2026-09-26): the PANELS bar's
 # "0/80" sat in a 16 px `overflow: hidden` bar on the row's 21 px line, and
 # its glyphs ran 4 px past the bar's bottom edge.
+#
+# The walk starts at the element's OWN box, not its parent (#189 S5). An
+# element that clips its own text - `overflow: hidden` with an ellipsis, as a
+# flow's name on the RUN button's CONTINUE copy is drawn - hides the tail of
+# it as surely as an ancestor does, and its glyph boxes still run past its
+# edge (the layout is the whole text; only the paint is cut), so the same
+# test sees it. The first version began at the parent: on the wizard's title,
+# cut by its own ellipsis at 390 px (measured 2026-09-28, the unfixed build),
+# it reported only the 0.7 px of that hidden layout that ran past the body,
+# "clipped 0.7px by 'BODY'", which names neither the cut nor its cause; from
+# the element's own box it reads "clipped 9.5px by 'swz-title'". A fixture
+# of a span whose ellipsis stays inside the page reads whole to the old walk
+# (test_probe_s5_s6.OwnBoxClipTest).
 TEXT_INTACT_JS = """(el) => {
   const range = document.createRange();
   range.selectNodeContents(el);
@@ -366,7 +399,7 @@ TEXT_INTACT_JS = """(el) => {
     if (!tops.some(t => Math.abs(t - r.top) < minH / 2)) tops.push(r.top);
   }
   let clipped = null;
-  for (let a = el.parentElement; a && !clipped; a = a.parentElement) {
+  for (let a = el; a && !clipped; a = a.parentElement) {
     const cs = getComputedStyle(a);
     if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
     const b = a.getBoundingClientRect();
@@ -498,10 +531,40 @@ EDGES_JS = """(el) => {
   return {left: q(r.left), top: q(r.top), right: q(w - r.right)};
 }"""
 
+# Whether a scroller shows all its content, or else stands at its own
+# max-height (the one reason a box may hide content it holds: it was told to
+# scroll past that height). A scroller a flex column has shrunk below both
+# shows neither: measured 2026-09-28, the phone stage sheet's LOG, a 170 px
+# max-height scroller holding 32 px of lines, was 17 px tall, one line cut in
+# half, and each line still measured whole once scrolled to.
+UNSQUASHED_JS = """(el) => {
+  const q = (v) => Math.round(v * 10) / 10;
+  const cs = getComputedStyle(el);
+  const max = parseFloat(cs.maxHeight);
+  const h = el.getBoundingClientRect().height;
+  const ok = el.scrollHeight <= el.clientHeight + 1 || (isFinite(max) && h >= max - 1);
+  return {ok, client: q(el.clientHeight), content: q(el.scrollHeight),
+          max: isFinite(max) ? q(max) : null};
+}"""
+
+# The element's width against the CONTENT width of the ancestor `sel` names
+# (its client width less its horizontal padding), both in CSS px; `content`
+# is null when no such ancestor exists.
+FILLS_JS = """(el, sel) => {
+  const q = (v) => Math.round(v * 10) / 10;
+  const a = el.parentElement ? el.parentElement.closest(sel) : null;
+  const width = q(el.getBoundingClientRect().width);
+  if (!a) return {width, content: null, container: null};
+  const cs = getComputedStyle(a);
+  const content = a.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  return {width, content: q(content), container: (a.getAttribute('class') || a.nodeName).slice(0, 60)};
+}"""
+
 
 def _check_boxes(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
-    """`boxes: [{"selector", "min_width", "min_height", "min_inset"}]`: the
-    first visible match must be at least that big. The floor is the route's,
+    """`boxes: [{"selector", "min_width", "min_height", "min_inset", "fills",
+    "unsquashed"}]`: the first visible match must be at least that big
+    (`unsquashed` is UNSQUASHED_JS, on a scroller). The floor is the route's,
     derived there from the layout it grades (routes_s4_frame.json computes its
     sky floor from spec 2.2), because what is "non-trivial" depends on what
     the box is: MIN_VISIBLE_PX's 16 x 16 is a floor for a control, and a sky
@@ -513,7 +576,15 @@ def _check_boxes(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
     framing sheet's waiting card sat at x = 0, y = 0 in the phone's sheet
     slot, 390 px wide - full width, visible, its BACK reachable - with its
     dashed border on the top and left edges of the screen, because the sheet
-    gave it no frame (FlowFrameSheet.tsx)."""
+    gave it no frame (FlowFrameSheet.tsx).
+
+    `fills` names an ANCESTOR (a selector `closest` finds) whose content box
+    the element must fill across, within a pixel: a `full` button is as wide
+    as its row. A width floor sees only the gross case. Measured 2026-09-28,
+    the phone stage sheet's footer column shrank to its content (a flex item
+    of a flex ROW with no `flex`), so RUN was 92 px wide, and with CONTINUE's
+    longer copy 349 px of the 358 the footer holds: over any floor that leaves
+    room for a few pixels of layout change, and still not full."""
     results: list[dict] = []
     reasons: list[str] = []
     for spec in specs:
@@ -524,6 +595,29 @@ def _check_boxes(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
         ok = box is not None and box["width"] >= need_w and box["height"] >= need_h
         result: dict[str, Any] = {"selector": sel, "ok": ok, "box": box,
                                   "need": {"width": need_w, "height": need_h}}
+        if spec.get("fills") and box is not None:
+            try:
+                room = found[0].evaluate(FILLS_JS, spec["fills"])
+            except Exception as exc:
+                room = {"error": str(exc)}
+            fills_ok = (isinstance(room, dict) and room.get("content") is not None
+                        and room["width"] >= room["content"] - 1)
+            result.update(fills=room, ok=result["ok"] and fills_ok)
+            if not fills_ok:
+                reasons.append(f"box {sel!r} is {room.get('width') if isinstance(room, dict) else '?'}"
+                               f"px wide and does not fill {spec['fills']!r} "
+                               f"({room})")
+        if spec.get("unsquashed") and box is not None:
+            try:
+                depth = found[0].evaluate(UNSQUASHED_JS)
+            except Exception as exc:
+                depth = {"error": str(exc)}
+            deep_ok = isinstance(depth, dict) and bool(depth.get("ok"))
+            result.update(depth=depth, ok=result["ok"] and deep_ok)
+            if not deep_ok:
+                reasons.append(f"box {sel!r} is squashed: it shows {depth.get('client') if isinstance(depth, dict) else '?'}"
+                               f"px of {depth.get('content') if isinstance(depth, dict) else '?'}px of "
+                               f"content and is under its own max-height ({depth})")
         inset = spec.get("min_inset")
         inset_ok = True
         edges = None
@@ -533,7 +627,7 @@ def _check_boxes(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
             except Exception:
                 edges = None
             inset_ok = edges is not None and min(edges.values()) >= inset
-            result.update(edges=edges, ok=ok and inset_ok)
+            result.update(edges=edges, ok=result["ok"] and inset_ok)
             result["need"]["inset"] = inset
         results.append(result)
         if box is None:
@@ -741,6 +835,510 @@ def _check_gate(page, gate: _Gate, out_dir: Path, shot_stem: str) -> tuple[dict,
     return info, reasons
 
 
+# ------------------------------------------------ the page against the rig
+#
+# Module docstring point 6. Each check below exists because a page can read
+# well and read false (#189 S5, S6): a STAGE readout names a panel in the
+# right shape whether or not it is the engine's, a CONTINUE button prints
+# numbers whether or not they are the ledger's, and a wizard review that
+# lists one TARGET says nothing of what the walk saved or what it left in the
+# browser. So they ask the server, through the browser context's own request
+# client (an --auth run reads as the signed-in role, as `_seed` does), and
+# compare. A value the server did not send never passes: a template with a
+# hole the answer leaves null fails, rather than matching the text "None".
+
+def _origin(page) -> str:
+    """scheme://host:port of the page, which is the server the walk is on."""
+    u = urlsplit(page.url)
+    return f"{u.scheme}://{u.netloc}"
+
+
+def _api_json(page, path: str) -> tuple[int, Any]:
+    """GET `path` on the page's own server: (status, parsed JSON or None).
+    Status 0 means the request itself failed (the error is in the body)."""
+    try:
+        resp = page.context.request.get(_origin(page) + path)
+    except Exception as exc:
+        return 0, {"error": str(exc)}
+    try:
+        return resp.status, resp.json()
+    except Exception:
+        return resp.status, None
+
+
+def _field(obj: Any, dotted: str) -> Any:
+    """`obj["a"]["b"]` for "a.b" (a list index is a number), or None."""
+    cur = obj
+    for part in dotted.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+            cur = cur[int(part)]
+        else:
+            return None
+    return cur
+
+
+_HOLE = re.compile(r"\{([A-Za-z0-9_.]+)\}")
+
+
+def _render(template: str, obj: Any) -> tuple[str | None, list[str]]:
+    """`template` with each `{dotted.field}` filled from `obj`. (None, holes)
+    when any hole is absent, null or empty: `"{group.panel}: shooting now"`
+    must not become "None: shooting now" and then match nothing, or worse,
+    match a page that prints None."""
+    missing: list[str] = []
+
+    def fill(m: re.Match) -> str:
+        value = _field(obj, m.group(1))
+        if value is None or value == "":
+            missing.append(m.group(1))
+            return ""
+        return str(value)
+
+    out = _HOLE.sub(fill, template)
+    return (None if missing else out), missing
+
+
+def _text_of(el) -> str:
+    """An element's text as the DOM holds it, whitespace collapsed: the
+    textContent, not innerText, because innerText applies `text-transform`
+    (the classic buttons upper-case "night" on screen, and the copy is the
+    words) and breaks lines between flex items."""
+    try:
+        raw = el.evaluate("(e) => e.textContent || ''")
+    except Exception:
+        return ""
+    return " ".join(raw.split())
+
+
+def _holds_text(got: str, want: str) -> bool:
+    """`want` is in `got`, and a number at either end of it is the whole of a
+    number there. As bare text "0 / 80" is inside "FRAMES10 / 80", and "M31
+    1-1 \u00b7 pass 1" inside "... pass 12": a count or a pass that only ends like
+    the engine's would pass as the engine's. Only digits are fenced, never
+    letters, because the text is textContent and runs words together: a
+    readout's label into its value ("FRAMES0 / 80" on the real page,
+    2026-09-28) and a panel row's words into the next row's number ("1-1:
+    shooting now21-2ON..."). Found by the S56-PROBE verifier."""
+    if not want:
+        return False
+    head = r"(?<!\d)" if want[0].isdigit() else ""
+    tail = r"(?!\d)" if want[-1].isdigit() else ""
+    return re.search(head + re.escape(want) + tail, got) is not None
+
+
+def _poll(page, timeout_ms: int, attempt) -> Any:
+    """Call `attempt()` until it answers (True, info) or the time is up, and
+    return its last info. The page updates on its own clock (a WS publish, a
+    progress refetch), so a check reads more than once before it fails."""
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        ok, info = attempt()
+        if ok or time.monotonic() >= deadline:
+            return ok, info
+        page.wait_for_timeout(200)
+
+
+def _check_text_expect(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
+    """`text_expect: [{"selector", <one test>, "timeout_ms"}]`, the test one of:
+    `equals`, `contains` or `matches` (a regex, searched) on the first visible
+    match's text; or `none_contain` on EVERY visible match, which with
+    `min_count` (default 1) must also find that many, so a check of "no stage
+    reads IDLE" cannot pass on a page with no stages. Text is `_text_of`."""
+    results: list[dict] = []
+    reasons: list[str] = []
+    for spec in specs:
+        sel = spec["selector"]
+
+        def attempt(spec=spec, sel=sel):
+            texts = [_text_of(el) for el in _visible_css_matches(page, sel)]
+            if "none_contain" in spec:
+                bad = [t for t in texts if spec["none_contain"] in t]
+                need = spec.get("min_count", 1)
+                if len(texts) < need:
+                    return False, (texts, f"text {sel!r}: {len(texts)} visible, need >= {need}")
+                if bad:
+                    return False, (texts, f"text {sel!r}: {len(bad)} of {len(texts)} contain "
+                                          f"{spec['none_contain']!r}, e.g. {bad[0]!r}")
+                return True, (texts, None)
+            if not texts:
+                return False, (texts, f"text {sel!r} is not visible")
+            got = texts[0]
+            if "equals" in spec and got != spec["equals"]:
+                return False, (texts, f"text {sel!r} reads {got!r}, not {spec['equals']!r}")
+            if "contains" in spec and spec["contains"] not in got:
+                return False, (texts, f"text {sel!r} reads {got!r}, which does not "
+                                      f"contain {spec['contains']!r}")
+            if "matches" in spec and not re.search(spec["matches"], got):
+                return False, (texts, f"text {sel!r} reads {got!r}, which does not "
+                                      f"match {spec['matches']!r}")
+            return True, (texts, None)
+
+        ok, (texts, why) = _poll(page, spec.get("timeout_ms", 3000), attempt)
+        results.append({"selector": sel, "ok": ok, "texts": texts[:8]})
+        if not ok:
+            reasons.append(why)
+    return results, reasons
+
+
+def _check_api_text(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
+    """`api_text: [{"selector", "get", "template", "timeout_ms"}]`: the first
+    visible match's text contains `template` filled from the server's answer
+    to GET `get` (`_holds_text`: a number at either end is held whole), both
+    read afresh on every poll (the engine moves on between two reads, so they
+    must agree at one moment, not each be right once)."""
+    results: list[dict] = []
+    reasons: list[str] = []
+    for spec in specs:
+        sel = spec["selector"]
+
+        def attempt(spec=spec, sel=sel):
+            status, body = _api_json(page, spec["get"])
+            want, missing = _render(spec["template"], body)
+            found = _visible_css_matches(page, sel)
+            got = _text_of(found[0]) if found else None
+            info = {"status": status, "want": want, "got": got, "missing": missing}
+            return (status == 200 and want is not None and got is not None
+                    and _holds_text(got, want)), info
+
+        ok, info = _poll(page, spec.get("timeout_ms", 6000), attempt)
+        results.append({"selector": sel, "ok": ok, **info})
+        if ok:
+            continue
+        if info["status"] != 200:
+            reasons.append(f"api_text: GET {spec['get']} -> {info['status']}")
+        elif info["missing"]:
+            reasons.append(f"api_text: GET {spec['get']} answered no "
+                           f"{', '.join(info['missing'])}, so {spec['template']!r} "
+                           f"has nothing to say")
+        elif info["got"] is None:
+            reasons.append(f"api_text: text {sel!r} is not visible")
+        else:
+            reasons.append(f"api_text: text {sel!r} reads {info['got']!r}, and the "
+                           f"server says {info['want']!r}")
+    return results, reasons
+
+
+def _run_copy_want(page, flow: str) -> tuple[dict | None, str | None]:
+    """What RUN must say over this flow's session, from the server alone:
+    `CONTINUE <NAME> (night <n>, <banked>/<total> subs)`, where the night is
+    the session's `nights` plus one and the counts are the blocks' `banked`
+    and `total` summed (runCopy.ts `runCopy`, spec 5.9), and the name is the
+    stored flow's in capitals. (None, why) when the route names no dormant
+    session, since CONTINUE is then not what RUN should say at all."""
+    status, prog = _api_json(page, f"/api/flows/{quote(flow)}/progress")
+    if status != 200 or not isinstance(prog, dict):
+        return None, f"GET /api/flows/{flow}/progress -> {status}"
+    session = prog.get("session") or {}
+    if session.get("status") != "dormant":
+        return None, (f"the progress route names no dormant session for {flow!r} "
+                      f"(session: {session or None}), so RUN should not read CONTINUE")
+    try:
+        blocks = prog.get("blocks") or []
+        banked = sum(int(b["banked"]) for b in blocks)
+        total = sum(int(b["total"]) for b in blocks)
+        night = int(session["nights"]) + 1
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, f"the progress route's numbers do not read as numbers ({exc!r})"
+    status, rec = _api_json(page, f"/api/flows/{quote(flow)}")
+    if status != 200 or not isinstance(rec, dict):
+        return None, f"GET /api/flows/{flow} -> {status}"
+    name = str(rec.get("name") or "").strip().upper()
+    text = " ".join(p for p in ("CONTINUE", name, f"(night {night}, {banked}/{total} subs)") if p)
+    return {"text": text, "night": night, "banked": banked, "total": total,
+            "session": session.get("id")}, None
+
+
+def _check_run_copy(page, spec: dict) -> tuple[dict, list[str]]:
+    """`run_copy: {"selector", "flow", "night", "min_banked", "timeout_ms"}`:
+    the RUN button's text holds exactly the CONTINUE line the progress route
+    makes (`_run_copy_want`), read afresh on every poll. `night` pins the
+    night the walk expects (a first run's abort continues night 2), and
+    `min_banked` that some subs were banked, so a button that printed 0 for
+    every count could not pass a walk that shot one."""
+    sel = spec["selector"]
+    reasons: list[str] = []
+
+    def attempt():
+        want, why = _run_copy_want(page, spec["flow"])
+        found = _visible_css_matches(page, sel)
+        got = _text_of(found[0]) if found else None
+        info = {"want": want, "why": why, "got": got}
+        return (want is not None and got is not None and want["text"] in got), info
+
+    ok, info = _poll(page, spec.get("timeout_ms", 6000), attempt)
+    want = info["want"]
+    if want is None:
+        reasons.append(f"run_copy: {info['why']}")
+    elif info["got"] is None:
+        reasons.append(f"run_copy: control {sel!r} is not visible")
+    elif not ok:
+        reasons.append(f"run_copy: control {sel!r} reads {info['got']!r}, and the "
+                       f"progress route says {want['text']!r}")
+    if want is not None:
+        if "night" in spec and want["night"] != spec["night"]:
+            reasons.append(f"run_copy: the session continues night {want['night']}, "
+                           f"and the walk expects night {spec['night']}")
+        if want["banked"] < spec.get("min_banked", 0):
+            reasons.append(f"run_copy: the session banked {want['banked']} subs, and the "
+                           f"walk needs >= {spec['min_banked']} to show counts carry")
+    return {"selector": sel, "ok": not reasons, **info}, reasons
+
+
+def _check_count(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
+    """`count: [{"selector", "equals" | "min"}]`: how many VISIBLE matches. A
+    view-only sheet has no DONE (`equals: 0`), a disabled fieldset
+    (`min: 1`), and a wizard review of one TARGET one block (`equals: 1`)."""
+    results: list[dict] = []
+    reasons: list[str] = []
+    for spec in specs:
+        sel = spec["selector"]
+        n = len(_visible_css_matches(page, sel))
+        ok = (n == spec["equals"]) if "equals" in spec else n >= spec.get("min", 1)
+        results.append({"selector": sel, "ok": ok, "count": n})
+        if not ok:
+            need = f"== {spec['equals']}" if "equals" in spec else f">= {spec.get('min', 1)}"
+            reasons.append(f"count {sel!r} is {n}, need {need}")
+    return results, reasons
+
+
+def _check_reachable_all(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
+    """`reachable_all: [{"within", "selector", "min_height"}]`: EVERY visible
+    `selector` (default "button") inside the first visible `within` answers
+    the hit test once scrolled into view, as `reachable` asks of named
+    controls, and with `min_height` is at least that tall. Named ones cover
+    the controls a walk presses; this covers the ones nobody thought to name,
+    which is where a covered control hides. One reason per spec, naming the
+    first failure and the count, as `text_intact` does.
+
+    The height floor is the probe-visible-is-not-sized class again (#189 S5):
+    on 2026-09-28 the phone stage sheet's + ADD STAGE, a 52 px button, was
+    drawn 20 px tall under a long stage list (a flex item of the sheet body's
+    column shrinks to its content's height), and it answered the hit test at
+    its centre like any other."""
+    results: list[dict] = []
+    reasons: list[str] = []
+    for spec in specs:
+        within = spec["within"]
+        sel = spec.get("selector", "button")
+        scope = _visible_css_matches(page, within)
+        if not scope:
+            results.append({"within": within, "ok": False, "why": "not visible"})
+            reasons.append(f"reachable_all: container {within!r} is not visible")
+            continue
+        loc = scope[0].locator(sel)
+        failed: list[str] = []
+        seen = 0
+        try:
+            n = loc.count()
+        except Exception:
+            n = 0
+        for i in range(n):
+            el = loc.nth(i)
+            try:
+                if not el.is_visible():
+                    continue
+            except Exception:
+                continue
+            seen += 1
+            _bring_into_view(page, el)
+            hit = _hit_test(el)
+            box = _box_for(el)
+            if not (hit and hit.get("inside")):
+                failed.append(f"{_text_of(el)[:40]!r} is covered: the point at its "
+                              f"centre is not the control ({hit})")
+            elif spec.get("min_height") and (box is None or box["height"] < spec["min_height"]):
+                failed.append(f"{_text_of(el)[:40]!r} is {box and box['height']}px tall, "
+                              f"need >= {spec['min_height']}px (box {box})")
+        results.append({"within": within, "selector": sel, "ok": not failed and seen > 0,
+                        "seen": seen, "failed": failed})
+        if seen == 0:
+            reasons.append(f"reachable_all: no visible {sel!r} inside {within!r}")
+        elif failed:
+            reasons.append(f"reachable_all: {failed[0]} ({len(failed)} of {seen} "
+                           f"{sel!r} inside {within!r})")
+    return results, reasons
+
+
+# Where each element's TEXT sits vertically: the centre of its first glyph
+# box (the element's own box says nothing - a flex row stretches every item
+# to the line's height whatever its words do), with the box's top and bottom
+# so the caller can tell which texts share a line.
+TEXT_CENTRE_JS = """(els) => els.map((el) => {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const r = Array.from(range.getClientRects()).find(x => x.width > 0 && x.height > 0);
+  const q = (v) => Math.round(v * 10) / 10;
+  return r ? {text: (el.textContent || '').trim().slice(0, 30), top: q(r.top),
+              bottom: q(r.bottom), centre: q((r.top + r.bottom) / 2)} : null;
+})"""
+
+
+def _check_aligned(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
+    """`aligned: [{"selector", "tolerance"}]`: the visible matches whose text
+    shares a line (their glyph boxes overlap vertically) have their text
+    centred within `tolerance` px (default 2) of each other. Found on the
+    wizard's step rail (#189 S6): a step behind the current one is a 32 px
+    button and the others plain words, and the plain ones sat at the top of a
+    stretched flex line, below-the-line and above-the-line on one row, which
+    every size and clip check reads as fine."""
+    results: list[dict] = []
+    reasons: list[str] = []
+    for spec in specs:
+        sel = spec["selector"]
+        tol = spec.get("tolerance", 2)
+        found = _visible_css_matches(page, sel)
+        try:
+            boxes = [b for b in page.evaluate(TEXT_CENTRE_JS, [el.element_handle() for el in found]) if b]
+        except Exception as exc:
+            results.append({"selector": sel, "ok": False, "error": str(exc)})
+            reasons.append(f"aligned {sel!r} could not be measured: {exc}")
+            continue
+        lines: list[list[dict]] = []
+        for b in sorted(boxes, key=lambda b: b["top"]):
+            line = next((ln for ln in lines if any(b["top"] < o["bottom"] and o["top"] < b["bottom"]
+                                                    for o in ln)), None)
+            if line is None:
+                lines.append([b])
+            else:
+                line.append(b)
+        spreads = [max(b["centre"] for b in ln) - min(b["centre"] for b in ln) for ln in lines]
+        worst = max(spreads, default=0.0)
+        ok = len(boxes) >= spec.get("min_count", 2) and worst <= tol
+        results.append({"selector": sel, "ok": ok, "lines": lines, "spread": round(worst, 1)})
+        if len(boxes) < spec.get("min_count", 2):
+            reasons.append(f"aligned {sel!r}: {len(boxes)} text(s) to line up, need >= "
+                           f"{spec.get('min_count', 2)}")
+        elif worst > tol:
+            line = lines[spreads.index(worst)]
+            reasons.append(f"aligned {sel!r}: text on one line is {round(worst, 1)}px out of "
+                           f"line, need <= {tol}px ({[(b['text'], b['centre']) for b in line]})")
+    return results, reasons
+
+
+def _flow_ids(context, base: str) -> set[str] | None:
+    """The ids the flow library holds (GET /api/flows), or None if unread."""
+    try:
+        resp = context.request.get(base.rstrip("/") + "/api/flows")
+        rows = resp.json() if resp.ok else None
+    except Exception:
+        return None
+    if isinstance(rows, dict):
+        rows = rows.get("flows")
+    if not isinstance(rows, list):
+        return None
+    return {str(r.get("id")) for r in rows if isinstance(r, dict)}
+
+
+def _check_new_flow(page, spec: dict, before: set[str] | None) -> tuple[dict, list[str]]:
+    """`new_flow: {"target_nodes"}`: the walk saved EXACTLY ONE flow (the
+    library's ids after the walk, less those before it), and that flow's
+    graph holds exactly `target_nodes` TARGET nodes. The wizard's GENERATE
+    saves one flow whatever the framing (spec S6, Revision 2 ruling 4), and a
+    mosaic is ONE TARGET with its panels, never one per panel; the review on
+    screen is the server's compile of it, which this reads at the source."""
+    reasons: list[str] = []
+    after = _flow_ids(page.context, _origin(page))
+    info: dict[str, Any] = {"ok": False}
+    if before is None or after is None:
+        reasons.append("new_flow: the flow library could not be read before and "
+                       "after the walk")
+        return info, reasons
+    new = sorted(after - before)
+    info["new"] = new
+    if len(new) != 1:
+        reasons.append(f"new_flow: the walk saved {len(new)} flow(s) ({new}), "
+                       f"need exactly 1")
+        return info, reasons
+    status, rec = _api_json(page, f"/api/flows/{quote(new[0])}")
+    nodes: list = []
+    if status == 200 and isinstance(rec, dict):
+        nodes = (rec.get("graph") or {}).get("nodes") or []
+    targets = [n for n in nodes if isinstance(n, dict) and n.get("type") == "target"]
+    info.update(id=new[0], name=(rec or {}).get("name"),
+                types=[n.get("type") for n in nodes if isinstance(n, dict)],
+                targets=[(n.get("params") or {}).get("name") for n in targets])
+    want = spec.get("target_nodes", 1)
+    if status != 200:
+        reasons.append(f"new_flow: GET /api/flows/{new[0]} -> {status}")
+    elif len(targets) != want:
+        reasons.append(f"new_flow: the saved flow {new[0]!r} has {len(targets)} TARGET "
+                       f"node(s) {info['targets']}, need exactly {want}")
+    info["ok"] = not reasons
+    return info, reasons
+
+
+# The store's own key for the Plan the classic Plan editor shows (store.ts
+# PLAN_KEY, written by `setPlan`). The side channel S6 deleted,
+# `addTargetsToPlan`, wrote a door's panels there as Plan targets.
+PLAN_KEY = "astrodeck-plan"
+
+
+def _check_no_plan_targets(page) -> tuple[dict, list[str]]:
+    """`no_plan_targets: true`: the browser holds no Plan with targets in it
+    (PLAN_KEY absent, or its `targets` empty). A door that still fed the Plan
+    beside the wizard would leave a TARGET there for every panel, and the
+    wizard's review would read exactly the same."""
+    try:
+        raw = page.evaluate("(k) => { try { return localStorage.getItem(k); } catch (e) "
+                            "{ return 'unreadable: ' + e; } }", PLAN_KEY)
+    except Exception as exc:
+        raw = f"unreadable: {exc}"
+    if raw is None:
+        return {"ok": True, "plan": None}, []
+    if isinstance(raw, str) and raw.startswith("unreadable"):
+        return {"ok": False, "plan": raw}, [f"no_plan_targets: localStorage {raw}"]
+    try:
+        targets = (json.loads(raw) or {}).get("targets") or []
+    except (ValueError, AttributeError):
+        return {"ok": False, "plan": raw[:200]}, [
+            f"no_plan_targets: {PLAN_KEY} is not a plan: {raw[:120]!r}"]
+    names = [t.get("name") for t in targets if isinstance(t, dict)]
+    if targets:
+        return {"ok": False, "targets": names}, [
+            f"no_plan_targets: the Plan holds {len(targets)} target(s) {names[:6]}"]
+    return {"ok": True, "targets": []}, []
+
+
+def _glob_re(pattern: str) -> re.Pattern:
+    """A URL glob as Playwright writes one: `**` any run of characters, `*`
+    any run without a '/', everything else literal."""
+    out = ""
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            out += ".*"
+            i += 2
+        elif pattern[i] == "*":
+            out += "[^/]*"
+            i += 1
+        else:
+            out += re.escape(pattern[i])
+            i += 1
+    return re.compile(out + r"(\?.*)?$")
+
+
+class _Forbidden:
+    """`forbid_requests: [{"method", "url"}]`: requests the walk must never
+    cause, recorded from the moment the page opens. START OVER behind a
+    confirm is the case (spec 5.9): a CANCEL that still posted
+    `{fresh: true}` would read the same on screen once the page settled."""
+
+    def __init__(self, page, specs: list[dict]) -> None:
+        self.rules = [(s.get("method", "").upper(), _glob_re(s["url"]), s) for s in specs]
+        self.seen: list[dict] = []
+        page.on("request", self._on_request)
+
+    def _on_request(self, request) -> None:
+        for method, rx, spec in self.rules:
+            if (not method or request.method == method) and rx.match(request.url):
+                self.seen.append({"method": request.method, "url": request.url})
+
+    def reasons(self) -> list[str]:
+        return [f"forbidden request made: {r['method']} {r['url']}" for r in self.seen]
+
+
 # --------------------------------------------------------------- clicking
 
 def _step_matches(page, step: dict) -> list:
@@ -756,7 +1354,56 @@ def _step_matches(page, step: dict) -> list:
     return [page.get_by_text(text, exact=exact).first]
 
 
-def _run_clicks(page, clicks: list[dict]) -> list[dict]:
+# The checks a walk may make in the middle (`{"check": {...}}`), each the
+# route-level check of the same name.
+MID_WALK_CHECKS = {
+    "aligned": lambda page, spec: _check_aligned(page, spec),
+    "text_intact": lambda page, spec: _check_text_intact(page, spec),
+    "text_expect": lambda page, spec: _check_text_expect(page, spec),
+    "count": lambda page, spec: _check_count(page, spec),
+    "boxes": lambda page, spec: _check_boxes(page, spec),
+    "reachable": lambda page, spec: _check_reachable(page, spec),
+    "reachable_all": lambda page, spec: _check_reachable_all(page, spec),
+    "api_text": lambda page, spec: _check_api_text(page, spec),
+}
+
+
+def _mid_walk_checks(page, checks: dict) -> list[str]:
+    """Run the named checks NOW, on the view the walk is passing through, and
+    return their reasons. A route's own checks run at the end of its walk,
+    which is the wrong moment for a state the walk leaves: the wizard's step
+    rail has buttons only for steps behind the current one and before
+    GENERATE, so at the end of its walk there is nothing left to misalign.
+    An unknown name is a reason, never a silent pass."""
+    reasons: list[str] = []
+    for name, spec in checks.items():
+        fn = MID_WALK_CHECKS.get(name)
+        if fn is None:
+            reasons.append(f"unknown mid-walk check {name!r}")
+            continue
+        _, why = fn(page, spec)
+        reasons.extend(why)
+    return reasons
+
+
+def _wait_api(page, spec: dict, wait_ms: int) -> dict:
+    """Poll GET `spec["get"]` until `spec["field"]` is >= `min` or == `equals`
+    (a number the server did not send never satisfies `min`)."""
+    def attempt():
+        status, body = _api_json(page, spec["get"])
+        value = _field(body, spec["field"]) if status == 200 else None
+        if "equals" in spec:
+            return value == spec["equals"], value
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and value >= spec.get("min", 1)
+        return ok, value
+
+    ok, value = _poll(page, wait_ms, attempt)
+    return {"ok": ok, "value": value}
+
+
+def _run_clicks(page, clicks: list[dict], shot_dir: Path | None = None,
+                shot_stem: str = "") -> list[dict]:
     """Best-effort click sequence. A step whose text has NO visible match is
     logged as skipped rather than failing the route outright -- at some
     widths a step is legitimately not applicable (e.g. 'More' only exists on
@@ -782,7 +1429,19 @@ def _run_clicks(page, clicks: list[dict]) -> list[dict]:
     the app in a state a deep link could never give it. `{"wait_for":
     <selector>}` is a required step that only has to become visible: the
     premise of what comes next, stated and checked (e.g. that one flow's
-    framing was on screen before a link to another's)."""
+    framing was on screen before a link to another's).
+
+    Four more (#189 S5, S6). `{"check": {<name>: <spec>}}` runs route checks
+    at that moment (`_mid_walk_checks`), for a state the walk passes through
+    and leaves. `{"fill": <selector>, "value": <text>}` types
+    into a field, as a person does into the catalogue search or a wizard's
+    PA box; it is required, like a door. `{"wait_api": {"get", "field",
+    "min" | "equals"}}` waits, up to `wait_ms`, for the server's answer to
+    say so (a premise the page does not show, such as the first banked sub
+    on a desktop with no FRAMES readout); it is required too. `{"shot":
+    <name>}` saves `<shot>-<name>.png` into `shot_dir` without clicking: the
+    evidence of a state the walk passes through and leaves, such as START
+    OVER's confirm before its CANCEL."""
     log: list[dict] = []
     for i, step in enumerate(clicks):
         if "goto" in step:
@@ -790,8 +1449,36 @@ def _run_clicks(page, clicks: list[dict]) -> list[dict]:
             page.wait_for_timeout(300)
             log.append({"text": step["goto"], "action": "goto"})
             continue
+        if "shot" in step:
+            name = "".join(c if c.isalnum() or c in "-_" else "_" for c in step["shot"])
+            if shot_dir is not None:
+                try:
+                    page.screenshot(path=str(shot_dir / f"{shot_stem}-{name}.png"))
+                    log.append({"text": step["shot"], "action": "shot"})
+                except Exception as exc:
+                    log.append({"text": step["shot"], "action": "shot-failed", "error": str(exc)})
+            continue
+        if "check" in step:
+            why = _mid_walk_checks(page, step["check"])
+            log.append({"text": "check " + ",".join(sorted(step["check"])),
+                        "action": "check", "reasons": why})
+            continue
+        if "wait_api" in step:
+            spec = step["wait_api"]
+            desc = f"wait_api {spec.get('get')} {spec.get('field')}"
+            got = _wait_api(page, spec, step.get("wait_ms", 8000))
+            if got["ok"]:
+                log.append({"text": desc, "action": "seen", "value": got["value"]})
+                continue
+            log.append({"text": desc, "action": "missing", "required": True,
+                        "reason": f"the server still says {got['value']!r} after "
+                                  f"{step.get('wait_ms', 8000)} ms"})
+            log.extend({"text": _step_desc(s), "action": "not-run"} for s in clicks[i + 1:])
+            break
         if "wait_for" in step:
             step = {**step, "selector": step["wait_for"], "required": True}
+        if "fill" in step:
+            step = {**step, "selector": step["fill"], "required": True}
         desc = step.get("selector") or step.get("text", "")
         required = bool(step.get("required"))
         matches = _step_matches(page, step)
@@ -815,6 +1502,11 @@ def _run_clicks(page, clicks: list[dict]) -> list[dict]:
             log.append({"text": desc, "action": "seen", "matched": len(matches)})
             continue
         try:
+            if "fill" in step:
+                matches[0].fill(str(step.get("value", "")), timeout=5000)
+                page.wait_for_timeout(step.get("settle_ms", 800))
+                log.append({"text": desc, "action": "fill", "value": step.get("value")})
+                continue
             kwargs: dict[str, Any] = {"timeout": 5000}
             if step.get("position"):
                 kwargs["position"] = step["position"]
@@ -832,8 +1524,12 @@ def _run_clicks(page, clicks: list[dict]) -> list[dict]:
 
 
 def _step_desc(step: dict) -> str:
-    return (step.get("goto") or step.get("wait_for") or step.get("selector")
-            or step.get("text", ""))
+    if "check" in step:
+        return "check " + ",".join(sorted(step["check"]))
+    if "wait_api" in step:
+        return f"wait_api {step['wait_api'].get('get')} {step['wait_api'].get('field')}"
+    return (step.get("goto") or step.get("wait_for") or step.get("fill")
+            or step.get("shot") or step.get("selector") or step.get("text", ""))
 
 
 # ------------------------------------------------------------------- login
@@ -960,6 +1656,10 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
     # Installed BEFORE the page opens: the request it holds may leave the
     # moment the view mounts, long before the walk is done.
     gate = _Gate(page, route["gate"]) if route.get("gate") else None
+    # Likewise a request the walk must not cause, and the flow library as it
+    # stood before the walk, so `new_flow` counts only what the walk saved.
+    forbidden = _Forbidden(page, route["forbid_requests"]) if route.get("forbid_requests") else None
+    flows_before = _flow_ids(page.context, base) if route.get("new_flow") else None
     width_dir = out_dir / str(width)
     width_dir.mkdir(parents=True, exist_ok=True)
 
@@ -991,11 +1691,13 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
     testid_ok = None
 
     if not vacuity_reasons:
-        click_log = _run_clicks(page, route.get("click", []))
-        for step in click_log:
+        click_log = _run_clicks(page, route.get("click", []), width_dir, shot_name)
+        for i, step in enumerate(click_log):
             if step.get("required") and step["action"] in ("missing", "click-failed"):
                 reasons.append(f"required step {step['text']!r} failed: "
                                f"{step.get('reason') or step.get('error')}")
+            if step["action"] == "check":
+                reasons.extend(f"mid-walk check at step {i + 1}: {r}" for r in step["reasons"])
         page.wait_for_timeout(400)
 
         # A route asserts a data-testid (routes_next.json's primary check, see
@@ -1061,7 +1763,8 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
         # right one: measured on the wrong screen, every check below would add
         # a failure that is only the missing marker again, and bury it.
         if testid_ok is not False and marker_ok:
-            usable = _run_usable_checks(page, route, gate, width_dir, shot_name, reasons)
+            usable = _run_usable_checks(page, route, gate, width_dir, shot_name, reasons,
+                                        flows_before)
         elif gate is not None:
             gate.release()
 
@@ -1085,6 +1788,12 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
         reasons.append(f"{len(unexpected_failed)} failed request(s) (>=400): "
                        + "; ".join(f"{r['status']} {r['url']}"
                                    for r in unexpected_failed[:3]))
+    # Graded whatever the marker said: a forbidden request is something the
+    # walk DID, not a measurement taken on the wrong screen, and START OVER
+    # posting past its confirm matters most exactly when the page went wrong.
+    if forbidden is not None:
+        reasons.extend(forbidden.reasons())
+        usable["forbidden_requests"] = list(forbidden.seen)
 
     if gate is not None:
         gate.release()  # never leave a request hanging behind a failed walk
@@ -1111,20 +1820,47 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
 
 
 def _run_usable_checks(page, route: dict, gate: "_Gate | None", width_dir: Path,
-                       shot_name: str, reasons: list[str]) -> dict[str, Any]:
-    """Module docstring point 5, in the order the Target modal needs: the gate
-    first, because its hold must stay under the UI's own 15 s fetch timeout
-    (see the gate section), then the checks that look at the view as it
-    stands, then the labels, whose scrolling moves it."""
+                       shot_name: str, reasons: list[str],
+                       flows_before: set[str] | None = None) -> dict[str, Any]:
+    """Module docstring points 5 and 6, in the order the Target modal needs:
+    the gate first, because its hold must stay under the UI's own 15 s fetch
+    timeout (see the gate section); then the page against the rig, while the
+    rig is where the walk left it (a live run moves on); then the checks
+    that look at the view as it stands, then the labels, whose scrolling
+    moves it."""
     out: dict[str, Any] = {}
     if gate is not None:
         out["gate"], why = _check_gate(page, gate, width_dir, shot_name)
+        reasons.extend(why)
+    if route.get("api_text"):
+        out["api_text"], why = _check_api_text(page, route["api_text"])
+        reasons.extend(why)
+    if route.get("run_copy"):
+        out["run_copy"], why = _check_run_copy(page, route["run_copy"])
+        reasons.extend(why)
+    if route.get("text_expect"):
+        out["text_expect"], why = _check_text_expect(page, route["text_expect"])
+        reasons.extend(why)
+    if route.get("count"):
+        out["count"], why = _check_count(page, route["count"])
+        reasons.extend(why)
+    if route.get("new_flow"):
+        out["new_flow"], why = _check_new_flow(page, route["new_flow"], flows_before)
+        reasons.extend(why)
+    if route.get("no_plan_targets"):
+        out["no_plan_targets"], why = _check_no_plan_targets(page)
         reasons.extend(why)
     if route.get("boxes"):
         out["boxes"], why = _check_boxes(page, route["boxes"])
         reasons.extend(why)
     if route.get("reachable"):
         out["reachable"], why = _check_reachable(page, route["reachable"])
+        reasons.extend(why)
+    if route.get("reachable_all"):
+        out["reachable_all"], why = _check_reachable_all(page, route["reachable_all"])
+        reasons.extend(why)
+    if route.get("aligned"):
+        out["aligned"], why = _check_aligned(page, route["aligned"])
         reasons.extend(why)
     if route.get("text_intact"):
         out["text_intact"], why = _check_text_intact(page, route["text_intact"])
@@ -1171,9 +1907,11 @@ def _seed(request, base: str, ops: list[dict]) -> list[dict]:
     request client, so an `--auth` run seeds as the signed-in role and a
     refused seed says which role was refused.
 
-    One op so far, `copy_flow: {"from", "id", "name", "folder", "set_params",
-    "expect_node"}`: read a flow (a shipped Example), save a copy under a new
-    id through `POST /api/flows`, and read the copy back. The copy exists
+    Three ops: `require_sim` (see `_seed_require_sim`), `save_flow` (see
+    `_seed_save_flow`) and `copy_flow: {"from",
+    "id", "name", "folder", "set_params", "expect_node"}`, which reads a flow
+    (a shipped Example), saves a copy under a new id through
+    `POST /api/flows` and reads the copy back. The copy exists
     because an Example is read-only (the store refuses an Example's id with
     403, and the Target modal opens an Example in view mode with no DONE),
     and a walk that means to grade DONE needs a flow a person could edit.
@@ -1188,9 +1926,16 @@ def _seed(request, base: str, ops: list[dict]) -> list[dict]:
     base = base.rstrip("/")
     log: list[dict] = []
     for op in ops:
+        kinds = sorted(k for k in op if k != "widths")
+        if kinds == ["require_sim"]:
+            log.append(_seed_require_sim(request, base))
+            continue
+        if kinds == ["save_flow"]:
+            log.append(_seed_save_flow(request, base, op["save_flow"]))
+            continue
         spec = op.get("copy_flow")
-        if spec is None:
-            raise SeedError(f"unknown seed op {sorted(op)!r}")
+        if spec is None or kinds != ["copy_flow"]:
+            raise SeedError(f"unknown seed op {kinds!r}")
         src = request.get(f"{base}/api/flows/{spec['from']}")
         if not src.ok:
             raise SeedError(f"GET /api/flows/{spec['from']} -> {src.status}")
@@ -1212,29 +1957,136 @@ def _seed(request, base: str, ops: list[dict]) -> list[dict]:
             raise SeedError(f"the copy {spec['id']!r} does not read back: "
                             f"GET -> {back.status}")
         stored = back.json()
-        want = spec.get("expect_node")
-        if want:
-            node = next((n for n in stored.get("graph", {}).get("nodes", [])
-                         if n.get("id") == want["id"]), None)
-            if node is None or node.get("type") != want.get("type", node.get("type")):
-                raise SeedError(f"the copy {spec['id']!r} has no {want.get('type')} "
-                                f"node {want['id']!r} (got {node!r:.200})")
-            params = node.get("params") or {}
-            try:
-                panels = int(params.get("rows", 1)) * int(params.get("cols", 1))
-            except (TypeError, ValueError):
-                panels = 0
-            if panels < want.get("min_panels", 1):
-                raise SeedError(f"the copy {spec['id']!r}'s node {want['id']!r} is "
-                                f"{panels} panel(s), and the walk grades a mosaic "
-                                f"(need >= {want['min_panels']})")
-            for key, value in want.get("params", {}).items():
-                if params.get(key) != value:
-                    raise SeedError(f"the copy {spec['id']!r}'s node {want['id']!r} "
-                                    f"stored {key}={params.get(key)!r}, not {value!r}")
+        _expect_node(spec["id"], stored, spec.get("expect_node"))
         log.append({"copy_flow": spec["id"], "from": spec["from"],
                     "readonly": stored.get("readonly")})
     return log
+
+
+def _expect_node(flow_id: str, stored: dict, want: dict | None) -> None:
+    """`expect_node`, read off the flow AS STORED (see `_seed`)."""
+    if not want:
+        return
+    node = next((n for n in stored.get("graph", {}).get("nodes", [])
+                 if n.get("id") == want["id"]), None)
+    if node is None or node.get("type") != want.get("type", node.get("type")):
+        raise SeedError(f"the copy {flow_id!r} has no {want.get('type')} "
+                        f"node {want['id']!r} (got {node!r:.200})")
+    params = node.get("params") or {}
+    try:
+        panels = int(params.get("rows", 1)) * int(params.get("cols", 1))
+    except (TypeError, ValueError):
+        panels = 0
+    if panels < want.get("min_panels", 1):
+        raise SeedError(f"the copy {flow_id!r}'s node {want['id']!r} is "
+                        f"{panels} panel(s), and the walk grades a mosaic "
+                        f"(need >= {want['min_panels']})")
+    for key, value in want.get("params", {}).items():
+        if params.get(key) != value:
+            raise SeedError(f"the copy {flow_id!r}'s node {want['id']!r} "
+                            f"stored {key}={params.get(key)!r}, not {value!r}")
+
+
+# The engine states in which a run still owns the rig (lastSessionFrame.ts
+# `runIsLive`: running, paused, a cloud hold, the wind-down of an abort).
+LIVE_STATES = {"running", "paused", "holding", "aborting"}
+
+
+def _seed_require_sim(request, base: str) -> dict:
+    """`require_sim: true`: refuse to walk unless the server's rig is the
+    simulator (`GET /api/status` says `mode` "sim", as server_ctl.py waits
+    for). A route file whose walks press RUN moves whatever rig the server
+    drives: s5-run-phone slews, rotates and exposes, and pointed by mistake at
+    a real rig's server (a `--base`, or `--port 8800` on the rig's own PC) it
+    would start a run on the telescope. `fresh` and `runnable` often refuse
+    there too, but only by accident (a run already going, a field the TARGET
+    was not framed for), so this says it on purpose, before anything is saved
+    or pressed (found by the S56-PROBE verifier, 2026-09-28: the route file's
+    "never the rig" was a sentence nothing kept). The refusal quotes the mode
+    and nothing else of the status, whose body can carry the site."""
+    try:
+        resp = request.get(f"{base}/api/status")
+        status = resp.status
+        body = resp.json() if resp.ok else None
+    except Exception as exc:
+        raise SeedError(f"GET /api/status could not be read ({exc.__class__.__name__}), "
+                        f"so nothing says this server's rig is the simulator") from None
+    if not isinstance(body, dict):
+        raise SeedError(f"GET /api/status -> {status}, so nothing says this server's "
+                        f"rig is the simulator")
+    mode = body.get("mode")
+    if mode != "sim":
+        raise SeedError(f"these walks press RUN, and this server's rig is mode={mode!r}, "
+                        f"not the simulator: start one with `server_ctl.py start "
+                        f"--fresh --port <any but 8800>`")
+    return {"require_sim": True, "mode": mode}
+
+
+def _seed_save_flow(request, base: str, spec: dict) -> dict:
+    """`save_flow: {"id", "name", "folder", "graph", "expect_node", "runnable",
+    "fresh"}`:
+    save a flow DRAWN in the route file through `POST /api/flows` and read it
+    back (#189 S5). A run-mode walk needs a flow it can start on the
+    simulator and still catch live: the eighth Example waits for dusk (its
+    DUSK node), autofocuses and guides, and its 120 s subs would keep a walk
+    waiting minutes for a first frame; a TARGET, a FILTER CYCLE of short subs
+    and a report start at once and bank a sub a minute in.
+
+    `fresh: true` refuses a server on which the walk would not be the flow's
+    first run: one whose progress route already names a session for this
+    flow (RUN would read CONTINUE before the walk pressed anything, and a
+    walk that asserts RUN, then STOP, then CONTINUE on night 2 would be
+    grading an earlier walk's ledger), or whose engine is running something
+    (RUN would be refused "already running"). Both are said in words, since
+    the fix is to start the server again with `server_ctl.py start --fresh`.
+
+    `runnable: true` compiles the stored flow on this server and refuses a
+    compile that lists a LOSS (any `unmapped` entry but a `note`, as the run
+    route's `losses` reads it): RUN would then stop on a question the walk
+    does not answer, and the walk would fail three doors later on a readout
+    that never came. The route's TARGET is framed for the simulator's field,
+    and a changed simulator is exactly this case."""
+    record = {"id": spec["id"], "name": spec["name"],
+              "folder": spec.get("folder", "My flows"), "graph": spec["graph"]}
+    saved = request.post(f"{base}/api/flows", data={"flow": record})
+    if not saved.ok:
+        raise SeedError(f"POST /api/flows ({spec['id']!r}) -> {saved.status}: "
+                        f"{saved.text()[:300]}")
+    back = request.get(f"{base}/api/flows/{quote(spec['id'])}")
+    if not back.ok:
+        raise SeedError(f"the flow {spec['id']!r} does not read back: GET -> {back.status}")
+    stored = back.json()
+    _expect_node(spec["id"], stored, spec.get("expect_node"))
+    if spec.get("runnable"):
+        comp = request.post(f"{base}/api/flows/{quote(spec['id'])}/compile", data={})
+        if not comp.ok:
+            raise SeedError(f"POST /api/flows/{spec['id']}/compile -> {comp.status}")
+        lost = [u for u in (comp.json() or {}).get("unmapped") or []
+                if isinstance(u, dict) and u.get("level") != "note"]
+        if lost:
+            raise SeedError(f"{spec['id']!r} would not run without a question on this "
+                            f"server: {lost[0].get('detail', lost[0])!r:.240}")
+    if spec.get("fresh"):
+        prog = request.get(f"{base}/api/flows/{quote(spec['id'])}/progress")
+        session = (prog.json() or {}).get("session") if prog.ok else "unread"
+        if session is not None:
+            raise SeedError(f"the server already holds a session for {spec['id']!r} "
+                            f"({session!r:.160}), so this walk would not be its first "
+                            f"run: start the server again with `server_ctl.py start --fresh`")
+        state = request.get(f"{base}/api/sequence/state")
+        engine = (state.json() or {}).get("state") if state.ok else "unread"
+        if engine in LIVE_STATES or engine == "unread":
+            raise SeedError(f"the engine is {engine!r}, so RUN would be refused: stop "
+                            f"the run, or start the server again with --fresh")
+    return {"save_flow": spec["id"], "readonly": stored.get("readonly")}
+
+
+def _seed_for_width(ops: list[dict], width: int) -> list[dict]:
+    """The seed ops that run at `width`: an op with `widths` runs only at
+    those, as a route does (`_routes_for_width`). A flow a phone walk starts
+    must be seeded once, before the phone walks: seeded again before the
+    desktop walks, `fresh` would find the phone's own session and refuse."""
+    return [op for op in ops if not op.get("widths") or width in op["widths"]]
 
 
 def _resolve_routes_path(raw: str) -> Path:
@@ -1248,7 +2100,27 @@ def _resolve_routes_path(raw: str) -> Path:
                             f"(tried {p} and {alt})")
 
 
+def _console_safe(*streams) -> None:
+    """Let the console print any character a page puts in a reason.
+
+    A reason quotes the page's own text, and the page's text is not ASCII
+    (the warning sign, U+26A0, before "Survey unreachable"; the middle dot in
+    a STAGE readout, "M31 1-2 . pass 3"). On a Windows console the
+    streams encode as cp1252 with `errors="strict"`, so the first such reason
+    raised UnicodeEncodeError out of the result loop (measured 2026-09-28, the
+    first walk of routes_s5_s6.json): the probe died after two routes,
+    wrote no report.jsonl, and left the run it had started going on the
+    simulator. A character the console cannot show is now written as its
+    escape; the report file is UTF-8 and keeps it whole."""
+    for stream in streams or (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass  # not a TextIOWrapper (a test's StringIO): it can hold anything
+
+
 def main(argv: list[str] | None = None) -> int:
+    _console_safe()
     ap = argparse.ArgumentParser(prog="probe")
     ap.add_argument("--base", default=None,
                     help="server base URL; default http://127.0.0.1:<port>")
@@ -1331,12 +2203,13 @@ def main(argv: list[str] | None = None) -> int:
 
                 page.close()
                 width_routes = _routes_for_width(routes, width)
-                if seed_ops and width_routes:
+                width_seed = _seed_for_width(seed_ops, width)
+                if width_seed and width_routes:
                     # Every width seeds afresh: the copy is an upsert, so a
                     # walk at 1440 grades the flow as seeded, never as the
                     # walk at 390 left it.
                     try:
-                        seeded = _seed(context.request, base, seed_ops)
+                        seeded = _seed(context.request, base, width_seed)
                         print(f"[{width}px] seeded: {seeded}")
                     except SeedError as exc:
                         msg = f"width={width}: SEED FAILED: {exc}"

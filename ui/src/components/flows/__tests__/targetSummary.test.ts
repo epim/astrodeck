@@ -7,12 +7,16 @@
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
 //
 // WHAT IS PINNED.
-//   * The footer's three designed forms, verbatim:
-//       rotating mosaic   M31 · 3x2 · PA 30.0 · 25% · rotate
-//       mosaic, no loop   M31 · 3x2 · one panel at a time
+//   * The footer's three forms:
+//       rotating mosaic   M31 · rotate · 3x2 · PA 30.0 · 25%
+//       mosaic, no loop   M31 · one panel at a time · 3x2
 //       single target     NGC 7331 · any angle
 //     with 3x2 meaning three columns by two rows, and "rotate" read from the
-//     GRAPH (the block's loop wire), never from a param.
+//     GRAPH (the block's loop wire, and no M12 beside it, #410), never from a
+//     param. The word that tells the two mosaic lines apart comes right after
+//     the name (#357), so the classic card's `truncate` cannot cut it:
+//     cardFooterDom.test.tsx computes that card's budget from its font and
+//     padding and holds the eighth Example's two lines to it.
 //   * The loop chip: "every pass: next panel · N panels", N the live panels the
 //     COMPILE's entry for the block holds (rows x cols minus the parsed skip),
 //     no count before a compile or when the compile no longer describes the
@@ -93,39 +97,53 @@ const M31_ENTRY = { node_id: "t", mosaic: { rows: 2, cols: 3, skip: [[2, 3]] } }
 // MUTANT "loop read from params" (targetLoops answers isMultiPanel(node): any
 // mosaic reads as rotating, the graph unread). This case stays green; the
 // unlooped one below goes red.
-test("a rotating mosaic: 'M31 · 3x2 · PA 30.0 · 25% · rotate'", () => {
-  eq(targetSummary(T, LOOPED), "M31 · 3x2 · PA 30.0 · 25% · rotate", "the rotating mosaic's footer");
+//
+// MUTANT "spec order restored" (targetFooter: the loop word pushed last again,
+// as the design wrote it; #357), re-run in the private scratch copy
+// scratchpad/S5-LOOP-mut. Observed, targetSummary.test 16/22 (every mosaic
+// footer case; this one):
+//   x a rotating mosaic: 'M31 · rotate · 3x2 · PA 30.0 · 25%': the rotating
+//     mosaic's footer
+//     expected "M31 · rotate · 3x2 · PA 30.0 · 25%"
+//     got      "M31 · 3x2 · PA 30.0 · 25% · rotate"
+// The case that says why the order matters is cardFooterDom.test.tsx's
+// budget case, which computes the classic card's 29 characters.
+test("a rotating mosaic: 'M31 · rotate · 3x2 · PA 30.0 · 25%'", () => {
+  eq(targetSummary(T, LOOPED), "M31 · rotate · 3x2 · PA 30.0 · 25%", "the rotating mosaic's footer");
 });
 
-// MUTANT "loop read from params". Observed, targetSummary.test 17/20:
-//   x a mosaic without the loop wire: 'M31 · 3x2 · one panel at a time': the
+// MUTANT "loop read from params". Observed on its re-run in S5-LOOP-mut,
+// once the footer's order changed (#357), targetSummary.test 18/22:
+//   x a mosaic without the loop wire: 'M31 · one panel at a time · 3x2': the
 //     panel-first mosaic's footer
-//     expected "M31 · 3x2 · one panel at a time"
-//     got      "M31 · 3x2 · PA 30.0 · 25% · rotate"
-test("a mosaic without the loop wire: 'M31 · 3x2 · one panel at a time'", () => {
-  eq(targetSummary(T, UNLOOPED), "M31 · 3x2 · one panel at a time", "the panel-first mosaic's footer");
+//     expected "M31 · one panel at a time · 3x2"
+//     got      "M31 · rotate · 3x2 · PA 30.0 · 25%"
+test("a mosaic without the loop wire: 'M31 · one panel at a time · 3x2'", () => {
+  eq(targetSummary(T, UNLOOPED), "M31 · one panel at a time · 3x2", "the panel-first mosaic's footer");
 });
 
 test("a single target: 'NGC 7331 · any angle'", () => {
   eq(targetSummary(SINGLE, ALONE), "NGC 7331 · any angle", "the single target's footer");
 });
 
-// MUTANT "rows x cols" (the size written `${rows}x${cols}`). Observed,
-// targetSummary.test 14/20 (every mosaic case; this one):
+// MUTANT "rows x cols" (the size written `${rows}x${cols}`). Observed on its
+// re-run in S5-LOOP-mut, once the footer's order changed (#357),
+// targetSummary.test 15/22 (every mosaic case; this one):
 //   x the size is COLUMNS x ROWS (S4 orchestrator ruling 1): 2 rows of 3 read
 //     3x2: three columns by two rows
 //     expected "3x2"
 //     got      "2x3"
-//   x a rotating mosaic: 'M31 · 3x2 · PA 30.0 · 25% · rotate': the rotating
+//   x a rotating mosaic: 'M31 · rotate · 3x2 · PA 30.0 · 25%': the rotating
 //     mosaic's footer
-//     expected "M31 · 3x2 · PA 30.0 · 25% · rotate"
-//     got      "M31 · 2x3 · PA 30.0 · 25% · rotate"
+//     expected "M31 · rotate · 3x2 · PA 30.0 · 25%"
+//     got      "M31 · rotate · 2x3 · PA 30.0 · 25%"
 test("the size is COLUMNS x ROWS (S4 orchestrator ruling 1): 2 rows of 3 read 3x2", () => {
   const wide = node("t", "target", 100, { ...M31_PARAMS, rows: 2, cols: 3 });
   const tall = node("t", "target", 100, { ...M31_PARAMS, rows: 3, cols: 2 });
-  eq(targetSummary(wide, { nodes: [wide, AF, CY], edges: [ARM, RUN] }).split(" · ")[1], "3x2",
+  const size = (line: string) => line.split(" · ").find((seg) => /^\d+x\d+$/.test(seg));
+  eq(size(targetSummary(wide, { nodes: [wide, AF, CY], edges: [ARM, RUN] })), "3x2",
     "three columns by two rows");
-  eq(targetSummary(tall, { nodes: [tall, AF, CY], edges: [ARM, RUN] }).split(" · ")[1], "2x3",
+  eq(size(targetSummary(tall, { nodes: [tall, AF, CY], edges: [ARM, RUN] })), "2x3",
     "two columns by three rows");
 });
 
@@ -145,7 +163,43 @@ test("a pass wire from mid-lane is not the loop: the footer says one panel at a 
     edges: [ARM, RUN, wire("cy", "complete", "cap", "run"), wire("cy", "pass", "t", "next")],
   };
   eq(targetLoops(T, g), false, "the cycle is not the tail once a CAPTURE follows it");
-  eq(targetSummary(T, g), "M31 · 3x2 · one panel at a time", "the footer of a mid-lane pass wire");
+  eq(targetSummary(T, g), "M31 · one panel at a time · 3x2", "the footer of a mid-lane pass wire");
+});
+
+// #410. A tail wire standing beside a stale one from mid-lane is the loop to
+// `loop_wires` and M12 to `lane_refusals`, so `/run` refuses the flow: the
+// card must not say "rotate", and the arc must carry no chip that promises
+// "every pass". Before #410 both did, which is what LOOP PANELS as S4 built it
+// left behind (a second wire from the tail) and what a flow saved before S4
+// opens as once its tail is looped by hand.
+//
+// MUTANT "targetLoops ignores M12" (targetLoops: the `midLanePassWires(...)
+// .length === 0` term deleted, as S4 built it), run in the private scratch
+// copy scratchpad/S5-LOOP-mut. Observed, targetSummary.test 21/22:
+//   x a tail loop beside a stale mid-lane pass wire (M12) rotates nothing, and
+//     the card says so: a stale mid-lane wire is M12: the run does not rotate,
+//     it refuses
+//     expected false
+//     got      true
+// MUTANT "chip ignores M12" (loopChip's `isLoopWire` back to `isMultiPanel`
+// in place of `targetLoops`, as S4 built it). Observed, 21/22:
+//   x a tail loop beside a stale mid-lane pass wire (M12) rotates nothing, and
+//     the card says so: the tail wire's chip beside a stale wire
+//     expected null
+//     got      "every pass: next panel · 5 panels"
+test("a tail loop beside a stale mid-lane pass wire (M12) rotates nothing, and the card says so", () => {
+  const cap = node("cap", "capture", 820);
+  const own = wire("cap", "pass", "t", "next");
+  const stale = wire("cy", "pass", "t", "next");
+  const g = { nodes: [T, AF, CY, cap], edges: [ARM, RUN, wire("cy", "complete", "cap", "run"), own, stale] };
+  eq(targetLoops(T, g), false, "a stale mid-lane wire is M12: the run does not rotate, it refuses");
+  eq(targetSummary(T, g), "M31 · one panel at a time · 3x2", "the footer beside a stale wire");
+  eq(loopChip(g, own, planWith(M31_ENTRY), false), null, "the tail wire's chip beside a stale wire");
+  // CONTROL: the stale wire gone, the same tail wire is the loop again.
+  const clean = { ...g, edges: g.edges.filter((e) => e !== stale) };
+  eq(targetLoops(T, clean), true, "the tail wire alone");
+  eq(loopChip(clean, own, planWith(M31_ENTRY), false), "every pass: next panel · 5 panels",
+    "the tail wire's chip once the stale wire is gone");
 });
 
 test("a loop wire into a 1x1 block does not make it a mosaic", () => {
@@ -198,15 +252,16 @@ test("a padded angle word reads as the compile strips it", () => {
 
 // The grid is read as the compile reads it (`_grid_dim`, mirrored by
 // panelLane.ts `isMultiPanel`): "2.0" is not a whole number, so it reads 1.
-// MUTANT "grid read with Number()" (gridDim is `Number(v)`). Observed,
-// targetSummary.test 19/20:
+// MUTANT "grid read with Number()" (gridDim is `Number(v)`). Observed on its
+// re-run in S5-LOOP-mut, once the footer's order changed (#357),
+// targetSummary.test 21/22:
 //   x a grid side is read as the compile reads it: '2.0' rows is one row:
 //     rows '2.0' and cols '3'
-//     expected "M31 · 3x1 · one panel at a time"
-//     got      "M31 · 3x2 · one panel at a time"
+//     expected "M31 · one panel at a time · 3x1"
+//     got      "M31 · one panel at a time · 3x2"
 test("a grid side is read as the compile reads it: '2.0' rows is one row", () => {
   const t = node("t", "target", 100, { ...M31_PARAMS, rows: "2.0", cols: "3" });
-  eq(targetSummary(t, { nodes: [t, AF, CY], edges: [ARM, RUN] }), "M31 · 3x1 · one panel at a time",
+  eq(targetSummary(t, { nodes: [t, AF, CY], edges: [ARM, RUN] }), "M31 · one panel at a time · 3x1",
     "rows '2.0' and cols '3'");
 });
 
@@ -214,7 +269,7 @@ test("an empty name leaves no empty segment; an unreadable overlap is left out",
   const blank = node("s", "target", 0, { name: "", angle: "Any angle", rotation: -1 });
   eq(targetSummary(blank, { nodes: [blank], edges: [] }), "any angle", "a created, unnamed TARGET");
   const t = node("t", "target", 100, { ...M31_PARAMS, overlap: "lots" });
-  eq(targetSummary(t, { nodes: [t, AF, CY], edges: [ARM, RUN, LOOP] }), "M31 · 3x2 · PA 30.0 · rotate",
+  eq(targetSummary(t, { nodes: [t, AF, CY], edges: [ARM, RUN, LOOP] }), "M31 · rotate · 3x2 · PA 30.0",
     "an overlap that is not a number");
 });
 

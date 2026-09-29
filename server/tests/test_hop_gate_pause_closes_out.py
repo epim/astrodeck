@@ -20,6 +20,17 @@ NOW both close out first: the line, the report, the published verdict, the
 streak and the cooler gate, then the floor re-check, whose refusal is the
 reach wait it always was.
 
+SINCE #448 (S4 review item 9) the cooler gate comes FIRST within the pause's
+close-out, reading the monitor through its wait, and the line, the report,
+the verdict and the streak follow it only once it has passed; the reopen's
+gate reads the monitor through its wait too. These cases are unchanged by
+that, deliberately: the fixture plan asks for no temperature, so the gate
+returns at once and the five still land at the one instant these cases pin.
+The order when the gate does wait, and the rain it must see meanwhile, is
+test_safe_again_after_cooler_gate.py's. The two engine mutants below were
+re-run against the #448 shape (S5-ENG-SAFE-mut) and are still RED with the
+failures quoted.
+
 THE HARNESS is tests/_group_harness.py's clocked night, and the refusal is
 test_group_preslew_floor_wait's: panel 2-2 is moved low in the east, under a
 no-go wedge on the azimuths it crosses between ``T_GATE`` and ``T_CLEAR``,

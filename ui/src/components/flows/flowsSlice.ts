@@ -103,7 +103,15 @@ export interface FlowsState {
   logs: FlowLogLine[];
 
   // ── server-derived
-  compiled: FlowCompileResult | null;
+  /** The newest compile answer in hand, with the graph it describes
+   *  (`FlowCompiled.from`), or null before the first; an open clears it, a
+   *  close does not (its graph is then the empty one). It can be
+   *  STALE: an edit made since that compile started is not in it, so a
+   *  reader that must not draw last round's verdict as this one's asks
+   *  `compiledIsCurrent`. Written by `flowsCompile`, which runs when a flow
+   *  opens, after the modal's DONE or LOOP PANELS, and after a successful
+   *  save (#356). */
+  compiled: FlowCompiled | null;
   compiling: boolean;
   tonight: Record<string, unknown> | null;
   tonightLoading: boolean;
@@ -131,6 +139,32 @@ export interface FlowsState {
   countsNote: string | null;
 
   ui: FlowsUiState;
+}
+
+/** A compile answer as the slice keeps it: the server's answer, and `from`,
+ *  the graph object the compile request SENT, which is the graph the answer
+ *  describes (#356).
+ *
+ *  THE SENT OBJECT, NOT THE ONE ON SCREEN WHEN THE ANSWER LANDS. An edit
+ *  made inside the compile's round trip is not in the answer, and stamping
+ *  it with the graph on screen at landing would pass last round's verdict
+ *  off as this one's. Identity is enough, for the reason `flowsSave` gives:
+ *  every edit replaces the graph object (`touch`), and so does a save that
+ *  writes the server's counts switch in.
+ *
+ *  OPTIONAL only so that a caller that seeds `compiled` by hand (a test's
+ *  store, an older fixture) still type-checks; `flowsCompile` always writes
+ *  it, and an answer without it is never current. */
+export type FlowCompiled = FlowCompileResult & { from?: FlowGraphRec };
+
+/** True when `compiled` is the answer for the graph on screen now: it was
+ *  compiled from this very graph object, and no edit has landed since. A
+ *  reader of `flows.compiled` that must not show a stale answer (the loop
+ *  chip's count, #356) asks this rather than `dirty`, which says whether
+ *  the graph is SAVED, not whether it was COMPILED: DONE's compile is of an
+ *  unsaved draft, and an edit then SAVE is saved before its compile lands. */
+export function compiledIsCurrent(f: Pick<FlowsState, "compiled" | "graph">): boolean {
+  return f.compiled != null && f.compiled.from === f.graph;
 }
 
 export const FLOWS_INIT: FlowsState = {
@@ -198,6 +232,9 @@ export interface FlowsActions {
   flowsEndWire: (drop: { nodeId: string; portId: string } | null) => void;
   flowsTapPort: (nodeId: string, portId: string, dir: "in" | "out") => void;
 
+  /** Compiles the graph on screen as a draft into `compiled`, stamped with
+   *  that graph (`FlowCompiled.from`). Kept only while newer than the answer
+   *  in hand and while its flow is still the one open. Never rejects. */
   flowsCompile: () => Promise<void>;
   flowsFetchTonight: () => Promise<void>;
   flowsFetchCalHealth: () => Promise<void>;
@@ -445,17 +482,23 @@ function countsNoteOf(rec: FlowRecordRec): string | null {
 
 /** A param value coerced by the TYPE OF ITS DEFAULT, the rule `flowsSetParam`
  *  and `flowsApplyFraming` share (see flowsSetParam for why). A numeric
- *  default takes a number, read with `parseFloat` from text, and falls back
- *  to the default on anything that is not one (NaN included); a text default
- *  takes text, so a select's value keeps matching its string options; a key
- *  with no default (`angle`, derived, or one this build does not know) is
- *  kept as given. */
+ *  default takes a FINITE number, read with `parseFloat` from text, and falls
+ *  back to the default on anything else: NaN, and plus or minus Infinity too;
+ *  a text default takes text, so a select's value keeps matching its string
+ *  options; a key with no default (`angle`, derived, or one this build does
+ *  not know) is kept as given.
+ *
+ *  FINITE, NOT MERELY "NOT NaN" (#358). `parseFloat` reads "Infinity",
+ *  "-Infinity" and "1e999" as an infinity, which is not NaN, and
+ *  `JSON.stringify` writes an infinity as null: the node showed what was
+ *  typed while the save and every compile sent null, which the server reads
+ *  as its missing-key default or refuses. */
 export function coerceParam(
   base: string | number | undefined, raw: string | number,
 ): string | number {
   if (typeof base === "number") {
     const v = typeof raw === "number" ? raw : parseFloat(raw);
-    return Number.isNaN(v) ? base : v;
+    return Number.isFinite(v) ? v : base;
   }
   if (typeof base === "string") return String(raw);
   return raw;
@@ -684,6 +727,17 @@ export function createFlowsActions(
   // Per store rather than per module, so two stores (the tests' miniature
   // ones) cannot supersede each other's reads.
   let progressTicket = 0;
+
+  // AN OLDER COMPILE ANSWER NEVER REPLACES A NEWER ONE (#356). Open, DONE and
+  // a save each start a compile, and since the save does, DONE followed by
+  // SAVE before DONE's answer lands puts two in flight, of two graphs: DONE's
+  // answer arriving last would undo the refresh the save asked for. So each
+  // compile takes a ticket, and an answer is kept only when it is newer than
+  // the one in hand. An older answer that lands FIRST is kept (it is still
+  // newer than what it replaces), and `from` says which graph it describes.
+  // Per store, like the progress ticket.
+  let compileStarted = 0;
+  let compileKept = 0;
 
   /** The sessions known to be the OPEN flow's: the one each progress answer
    *  counts from, and the one `flowsRun`'s answer named. A live run is this
@@ -938,6 +992,27 @@ export function createFlowsActions(
         // What the server counts is the STORED graph, and the save just
         // changed it: a new exposure is a new step id with nothing banked.
         void fetchProgress();
+        // AND THE COMPILE ANSWER IS REFRESHED (#356). It was asked for only
+        // on open and on DONE, so after any other edit and its save it
+        // described the graph as opened, and every reader of it went stale:
+        // the loss marks, the checks pill, the PLAN tab, and the loop chip,
+        // whose one unguarded case was exactly this one (a skip-list edit,
+        // then SAVE, which clears `dirty` and leaves the grid alone).
+        //
+        // OF THE GRAPH THE STORE HOLDS NOW, after the write above: the graph
+        // this save stored, with the server's counts switch written in as
+        // the server wrote it, so the answer is current the moment it lands.
+        // Were an edit made inside the PUT's round trip, it is on screen and
+        // `dirty` says so, and the answer describes what is on screen, which
+        // is what every reader of `compiled` draws it beside.
+        //
+        // Only here: a refused PUT stored nothing new (the catch below), and
+        // a save with nothing to send, or one answered after another flow
+        // opened, returned above. NOT AWAITED, for the reason the progress
+        // read is not: a close saves first, and a compile must not hold the
+        // editor open for its round trip. `flowsCompile` keeps the answer
+        // only while its flow is still the one open.
+        void get().flowsCompile();
       } catch (e) {
         set((s) => patch(s, { libraryError: errText(e) }));
       }
@@ -994,10 +1069,12 @@ export function createFlowsActions(
       if (!node) return {};
       // COERCION KEYS OFF THE TYPE OF THE DEFAULT, exactly as the prototype
       // does. That is why capture's `bin` stays the string "1" - it is a select
-      // whose options are strings - while every numeric field reverts to its
-      // default on unparseable input rather than becoming NaN. A NaN here
-      // reaches the compiler as a step with no exposure. One rule for this
-      // action and the modal's DONE (`coerceParam`), so the two cannot drift.
+      // whose options are strings - while every numeric field keeps only a
+      // FINITE number and reverts to its default on anything else, rather
+      // than becoming NaN or Infinity. A NaN here reaches the compiler as a
+      // step with no exposure, and an Infinity reaches it as null (#358). One
+      // rule for this action and the modal's DONE (`coerceParam`), so the two
+      // cannot drift.
       const v = coerceParam(NODE_DEFS[node.type].params[key], raw);
       return touch(s, { ...s.flows.graph,
         nodes: s.flows.graph.nodes.map((n) =>
@@ -1173,16 +1250,38 @@ export function createFlowsActions(
     // ────────────────────────────────────────────────────────────── server
     flowsCompile: async () => {
       const { graph, record } = get().flows;
+      const ticket = ++compileStarted;
       set((s) => patch(s, { compiling: true }));
+      // Still the flow this compile was asked for. A close saves first, so a
+      // save's compile can outlive its editor, and the sign-out gate
+      // (lib/authGate.ts) resets `flows` without waiting for anything in
+      // flight: an answer written after it would put the rig's plan, its
+      // targets and filters, behind the login screen.
+      const ours = () => get().flows.record?.id === record?.id;
+      // Only the newest compile STARTED settles the checking flag: while a
+      // newer one is out, the flow is still being checked.
+      const newest = () => ticket === compileStarted;
       try {
-        const compiled = await flowsApi.compileDraft(graph, record?.name ?? "");
-        set((s) => patch(s, { compiled, compiling: false }));
+        const answer = await flowsApi.compileDraft(graph, record?.name ?? "");
+        const keep = ticket > compileKept && ours();
+        if (keep) compileKept = ticket;
+        if (!keep && !newest()) return;
+        set((s) => patch(s, {
+          // `from` is the graph this request SENT, captured before the
+          // await, never the graph on screen now (see FlowCompiled).
+          ...(keep ? { compiled: { ...answer, from: graph } } : {}),
+          ...(newest() ? { compiling: false } : {}),
+        }));
       } catch (e) {
         // The compile is advisory - it drives the doctor chip, not the run - so
         // a failure leaves the LAST GOOD result in place rather than blanking
         // the chip. A chip that vanished on a dropped request would read as
         // "no problems found".
-        set((s) => patch(s, { compiling: false }));
+        if (newest()) set((s) => patch(s, { compiling: false }));
+        // Said only while its flow is open: the log is one strip for
+        // whichever flow is, and "could not check this flow" on it would be
+        // about another one.
+        if (!ours()) return;
         get().flowsAppendLog(`could not check this flow: ${errText(e)}`, "warn");
       }
     },

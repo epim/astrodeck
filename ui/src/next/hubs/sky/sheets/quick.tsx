@@ -55,7 +55,7 @@ import {
 import type { FlowGraphRec, FlowRecordRec } from "../../../../components/flows/flowsTypes";
 import type { QuickPrefs } from "../finder";
 import {
-  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON,
+  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON, SEND_TO_WIZARD,
   floorLegend, mosaicPlanNote, oscFooter,
 } from "./quickCopy";
 import {
@@ -67,9 +67,10 @@ import {
   NightArc, curveFromNight, hoursToDawn, type ArcCurve, type ArcHold,
 } from "./quickNightArc";
 import { withDarksAfter, withDuskFlats, withRotation, withTargetPool } from "./flowGraphExtras";
-import {
-  commandedPa, framingMatches, mosaicBaseName, mosaicGroupId, panelsToTargets,
-} from "../frame/mosaic";
+import { commandedPa, framingMatches, framingPrefill } from "../frame/mosaic";
+import { openFlowWizard } from "../../session/flows/wizard";
+import { effectiveOptics } from "../../../../lib/effective";
+import { fovFromOptics } from "../../../../lib/framing";
 import { useCatalogTarget, useCatalogTargets, type SearchRow } from "./targetsCatalog";
 import { useVisibilityNight } from "./quickVisibility";
 
@@ -375,11 +376,33 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
   const framing = useFraming();
   const framingId = isPool ? null : (params.target ?? params.name ?? null);
   const mine = framingMatches(framing, framingId);
-  const panels = mine ? (framing?.panels ?? []) : [];
+  const keptPanels = mine ? (framing?.panels.length ?? 0) : 0;
   const mosaicCols = mine ? (framing?.mosaic.cols ?? 1) : 1;
   const mosaicRows = mine ? (framing?.mosaic.rows ?? 1) : 1;
-  const isMosaic = panels.length > 1;
-  const addTargetsToPlan = useStore((s) => s.addTargetsToPlan);
+  const isMosaic = keptPanels > 1;
+
+  /**
+   * A KEPT MOSAIC GOES FORWARD THROUGH THE WIZARD (#196, spec section 8 S6).
+   *
+   * GENERATE FLOW here builds ONE target: `FlowQuickBody.target` is a single
+   * `{name, ra, dec}`. The panels of a kept mosaic used to ride beside it as
+   * classic Plan targets sharing a `mosaic_group` (the side channel), shot
+   * panel-first; that channel is gone. Send to Flow Wizard is the door that
+   * plans the whole grid, as one TARGET block, so a kept mosaic is offered it
+   * here, pre-filled from the same framing the FRAME card would send.
+   *
+   * The field is read when the button is pressed, through the resolver the
+   * Sky hub draws the reticle with, so this sheet does not re-render on every
+   * status frame for a number only the press needs.
+   */
+  const sendToWizard = (): void => {
+    if (!framing || !mine) return;
+    const st = useStore.getState();
+    const optics = effectiveOptics(
+      st.config, st.config?.optics ?? null, st.status?.optics ?? st.config?.optics_computed ?? null,
+    );
+    openFlowWizard(framingPrefill(framing, fovFromOptics(optics)));
+  };
 
   const label = planLine({
     oneChannel: wheel.oneChannel,
@@ -388,7 +411,9 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     oscCount: oscSubs,
     hoursLabel: hoursLabel(hours, dawnH),
     poolCount: poolIds.length,
-    panels: panels.length,
+    // One: the flow GENERATE FLOW saves shoots one target, whatever the
+    // framing holds (a kept mosaic goes through SEND TO FLOW WIZARD below).
+    panels: 1,
   });
 
   // ------------------------------------------------------------ generate
@@ -437,36 +462,14 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       }
       if (graph !== before) await flowsApi.save(id, { ...record, graph });
 
-      /**
-       * THE MOSAIC PANELS REACH THE NIGHT (review #3, plan H.6).
-       *
-       * FRAME mode drew them, kept them on `framing.panels` and toasted that
-       * they went into the flow - and nothing read them. `panelsToTargets` was
-       * called by one test and nothing else.
-       *
-       * They cannot ride in the quick PAYLOAD: `FlowQuickBody.target` is ONE
-       * `{name, ra, dec}` and `wizard.quick` builds a one-target night, so
-       * there is no field to put N pointings in. The engine's mosaic mechanism
-       * is not a stage either - `nodeDefs` has 21 node types and none is
-       * `mosaic`. It is N plan targets sharing a `mosaic_group`, which is
-       * exactly what `AtlasView.sendToPlan` produced and what
-       * `store.addTargetsToPlan` replaces-by-group so a re-frame updates its
-       * panels instead of doubling them. So the plan path is the one taken, and
-       * the flow card says so on the synthetic MOSAIC row.
-       */
-      if (isMosaic && framing) {
-        addTargetsToPlan(
-          panelsToTargets(panels, mosaicBaseName(framing), mosaicGroupId(framing), framing.rotation_deg),
-          mosaicGroupId(framing),
-        );
-      }
-
+      // NOTHING ELSE LEAVES THIS SHEET. A kept mosaic's panels used to be
+      // queued here as classic Plan targets beside the flow (the Plan side
+      // channel), and the flow card was told the grid in its hash so it could
+      // draw a synthetic MOSAIC row. Both went with S6 (#196): the flow this
+      // sheet saved is the whole night it asked for, one target, and a mosaic
+      // is planned through SEND TO FLOW WIZARD (`sendToWizard` above).
       await flowsOpen(id);
-      // The mosaic travels in the HASH, not read back off the global framing
-      // slice: the card must describe what this generate actually queued, so a
-      // framing changed afterwards (or one belonging to another target) cannot
-      // put a MOSAIC row on a flow that has none.
-      nav.sheet("flow", isMosaic ? { id, mosaic: `${mosaicCols}x${mosaicRows}` } : { id });
+      nav.sheet("flow", { id });
     } catch (e) {
       // THE SAVE AND THE RUN ARE TWO OUTCOMES OF ONE REQUEST, and the answer is
       // read off the decoded BODY, never off the message string - FastAPI nests
@@ -755,12 +758,22 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
 
         {/* ------------------------------------------------------ the mosaic */}
         {isMosaic && (
-          <p
-            data-testid="quick-mosaic-note"
-            style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)" }}
-          >
-            {mosaicPlanNote(panels.length, mosaicCols, mosaicRows)}
-          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <p
+              data-testid="quick-mosaic-note"
+              style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)", margin: 0 }}
+            >
+              {mosaicPlanNote(keptPanels, mosaicCols, mosaicRows)}
+            </p>
+            <ActionButton
+              kind="secondary"
+              full
+              data-testid="quick-send-to-wizard"
+              onPress={sendToWizard}
+            >
+              {SEND_TO_WIZARD}
+            </ActionButton>
+          </div>
         )}
 
         {/* -------------------------------------------------- what it cannot */}

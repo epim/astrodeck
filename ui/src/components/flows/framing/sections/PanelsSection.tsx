@@ -1,5 +1,5 @@
-// PanelsSection.tsx - the Target modal's PANELS section (#189 S4 item 1; spec
-// 2026-09-23 flows mosaic, 2.4 PANELS, 5.2, 6.9).
+// PanelsSection.tsx - the Target modal's PANELS section (#189 S4 item 1, S5
+// run mode; spec 2026-09-23 flows mosaic, 2.4 PANELS, 2.6, 5.2, 6.9).
 //
 // One row per panel of the draft's grid: its run-order number, its `r-c`
 // label (1-based, row 1 the north edge, col 1 the west edge at angle 0, the
@@ -15,8 +15,12 @@
 // panels and needs the ledger's timestamps, which the progress route does not
 // carry; ResumeArm, which also has no visit times, orders exactly as this
 // does. "Setting first" needs the site, so it is listed in snake order and
-// says so. Skipped panels run in no order and are listed after, in grid
-// order, so a panel toggled back on shows where it came from.
+// says so. "Grid order" is the snake ROTATED at the run to start after the
+// last-visited panel (5.2), which needs the ledger's visit times too, so it
+// is listed from 1-1 and says so as well (#412 item 4): after the first visit
+// its numbers are not the order the run takes. Skipped panels run in no order
+// and are listed after, in grid order, so a panel toggled back on shows where
+// it came from.
 //
 // THE ALTITUDE COLUMN AND THE NIGHT CARD ARE SITE-DERIVED (spec 6.9). A
 // panel's peak altitude tonight is a function of the site's latitude, so the
@@ -24,10 +28,19 @@
 // `view.site_derived`, and for anyone else they are ABSENT: no header, no
 // empty cells, no card. An empty column tells a viewer there is something
 // being withheld, and a "-" in every row reads as "these panels never rise".
+//
+// IN RUN MODE (spec 2.6) a row also says what the live run is doing to its
+// panel, in a line under it: "shooting now", or "set aside tonight:" and the
+// engine's reason in the engine's words. The reason is the one thing the sky
+// cannot draw (its "!" says only THAT a panel is set aside), and without it
+// the operator cannot tell a panel that will not centre from one the horizon
+// took. The state is framingModel `runPanelsOf`'s, handed in; nothing here
+// reads the run, and no time is shown (a meridian wait's end is the site's).
 
 import type { JSX, ReactNode } from "react";
 import type { FlowProgressBlock } from "../../../../lib/flowsApi";
 import type { MosaicPanel } from "../../../../types";
+import type { PanelRunState } from "../../flowRunState";
 import { NODE_DEFS } from "../../nodeDefs";
 
 export const ORDERS: readonly string[] =
@@ -35,6 +48,20 @@ export const ORDERS: readonly string[] =
 
 export const SETTING_FIRST_NOTE =
   "setting first is ordered at the run, from the site: listed here in grid order";
+export const GRID_ORDER_NOTE =
+  "grid order is turned at the run so it starts after the last-visited panel: listed here from 1-1";
+/** A run-mode row's line for the panel the run is shooting: PanelLayer's own
+ *  words for the state, so the list and the sky's screen-reader label agree. */
+export const SHOOTING_NOW = "shooting now";
+/** The line for a panel set aside tonight, before the engine's reason. */
+export const SET_ASIDE_TONIGHT = "set aside tonight";
+
+/** A run-mode row's line, or null for a panel the run is doing nothing to. */
+export function runLine(run: PanelRunState | null | undefined): string | null {
+  if (!run) return null;
+  if (run.kind === "shooting") return SHOOTING_NOW;
+  return run.reason ? `${SET_ASIDE_TONIGHT}: ${run.reason}` : SET_ASIDE_TONIGHT;
+}
 
 export interface PanelRow {
   /** 1-based, in the server's convention. */
@@ -54,6 +81,9 @@ export interface PanelRow {
    *  server did). */
   peakAlt: number | null;
   altError: string | null;
+  /** What the live run is doing to this panel (run mode, spec 2.6), or null:
+   *  not in run mode, or nothing to draw. */
+  run?: PanelRunState | null;
 }
 
 /** Snake order (`compute_mosaic`): even rows west to east, odd rows back. */
@@ -98,6 +128,9 @@ export function panelRows(a: {
   /** The route's panels for the CURRENT spec, or null. */
   answerPanels: readonly MosaicPanel[] | null;
   order: string;
+  /** Run mode: framingModel `runPanelsOf`'s answer, by label. Absent outside
+   *  run mode, which leaves every row's `run` null. */
+  run?: Readonly<Record<string, PanelRunState>>;
 }): PanelRow[] {
   const { rows, cols } = a;
   const counts = progressByCell(a.progress, rows, cols);
@@ -115,6 +148,7 @@ export function panelRows(a: {
         skipped: skipped.has(k), banked: n.banked, total: n.total,
         peakAlt: ap && finite(ap.transit_alt) ? ap.transit_alt : null,
         altError: ap?.transit_alt_error ?? null,
+        run: a.run?.[`${r0 + 1}-${c0 + 1}`] ?? null,
         snake: snakeIndex(r0, c0, cols),
         fraction: n.total > 0 ? n.banked / n.total : 0,
       });
@@ -152,7 +186,8 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
           {ORDERS.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       </div>
-      {p.order === "Setting first" && <div className="tfs-row tfs-note">{SETTING_FIRST_NOTE}</div>}
+      {p.order === "Setting first" && <div className="tfs-row tfs-note" data-testid="framing-order-note">{SETTING_FIRST_NOTE}</div>}
+      {p.order === "Grid order" && <div className="tfs-row tfs-note" data-testid="framing-order-note">{GRID_ORDER_NOTE}</div>}
       <div className="tfs-panel-table" role="table" aria-label="Panels in run order">
         <div className="tfs-row tfs-panel tfs-panel-head" role="row">
           <span role="columnheader" className="tfs-c-order">#</span>
@@ -161,7 +196,7 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
           <span role="columnheader" className="tfs-c-bar">BANKED</span>
           {p.showAltitude && <span role="columnheader" className="tfs-c-alt" data-testid="framing-alt-head">PEAK</span>}
         </div>
-        {p.rows.map((r) => (
+        {p.rows.map((r) => [
           <div key={r.label} className={`tfs-row tfs-panel ${r.skipped ? "tfs-off" : ""}`}
             role="row" data-panel={r.label}>
             <span role="cell" className="tfs-c-order tfs-mono">{r.order ?? ""}</span>
@@ -193,8 +228,16 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
                 {r.peakAlt !== null ? `${Math.round(r.peakAlt)}\u00b0` : r.altError ? "no peak" : ""}
               </span>
             )}
-          </div>
-        ))}
+          </div>,
+          // The run's line for this panel, a row of its own under it so a
+          // long reason wraps rather than squeezing the bar.
+          runLine(r.run) !== null && (
+            <div key={`${r.label}-run`} className="tfs-row tfs-note" role="row"
+              data-testid="framing-panel-run" data-panel-run={r.label}>
+              <span role="cell">{`${r.label}: ${runLine(r.run)}`}</span>
+            </div>
+          ),
+        ])}
       </div>
       {p.showAltitude && p.nightCard}
     </section>

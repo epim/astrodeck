@@ -20,27 +20,68 @@ Persistence model (resolves the "second blocking full-file rewrite" critique):
 
 The header is recomputed from the frame list every snapshot, so a report loaded
 mid-run is always internally consistent.
+
+Reading one back tells "not there" from "could not read it now" (#370).
+:meth:`SessionReporter.load` answers ``None`` for both, which is what its
+callers map to a 404, and :meth:`SessionReporter.read` is the same read with
+the reason kept: ``missing`` is the only answer that means the file is not
+there. A ``PermissionError`` is retried briefly first, because on Windows that
+is what a read gets while another handle holds the file, and an unreadable
+file is logged rather than skipped in silence.
 """
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 from pathlib import Path
 from statistics import median
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, Field
 
 from .. import hub as _hubmod
 from ..events import bus
-from ..persist import ensure_dir, list_json, read_json, write_json_atomic
+from ..persist import (PrivatePermissionsError, ensure_dir, list_json,
+                       read_json, write_json_atomic)
+from ..windows_acl import PrivateAclError
 
 # Append-only frame cap: once the list passes this, every other frame is dropped
 # on the *next* snapshot so the file (and the derived trends) stay bounded on a
 # long all-night run. The accepted-frame *counts* in the breakdown are never
 # downsampled — only the per-frame detail list (C1-19 "downsampled/append-only").
 _MAX_FRAMES = 2000
+
+#: A read that raises ``PermissionError`` is tried this many more times,
+#: ``_READ_BACKOFF_S * attempt`` apart, 0.5 s in all (#370). On Windows that is
+#: the error a read gets while another handle has the file, and the snapshot
+#: writer is one: in #370's reproduction every refused read (20 of 20 traced)
+#: opened the file while a worker thread's ``os.replace`` was putting a
+#: snapshot over it, ``PermissionError: [Errno 13]``, with the report on disk
+#: throughout. An antivirus scan or an indexer can do the same. Before this it
+#: was folded into ``None``, the answer for a report that does not exist, so a
+#: report on disk read as absent. Under a writer replacing the file back to
+#: back, a read needed at most one retry (27 of 17520 reads needed one).
+#: Only ``PermissionError``: a missing file is not going to appear by waiting,
+#: and a file that does not parse will not parse the second time.
+_READ_RETRIES = 4
+_READ_BACKOFF_S = 0.05
+
+#: How long a failed FINAL write waits before its one retry. The final write is
+#: the one that stamps ``end_reason``, and nothing writes after it, so a failure
+#: there loses the report's ending for good; a snapshot that fails is replaced
+#: by the next one. ``write_json_atomic`` already retries its ``os.replace``;
+#: this covers what it does not, such as the staging file or the directory ACL
+#: failing on a transient sharing violation.
+_FINAL_RETRY_S = 0.25
+
+#: Report paths already warned about as unreadable, with the reason that was
+#: logged. ``GET /api/reports`` and the Tonight route list the store often, and
+#: a file that stays unreadable would otherwise put the same warning into the
+#: 200-line log ring on every call and push the night's real lines out of it.
+#: A path is warned again when its reason changes, and forgotten once it reads.
+_REPORTED_UNREADABLE: dict[str, str] = {}
 
 
 def _reports_dir() -> Path:
@@ -53,6 +94,102 @@ def _slug(text: str) -> str:
     """Filesystem-safe slug for the report id / filename."""
     out = "".join(c if c.isalnum() or c in "-_" else "_" for c in (text or "run"))
     return out.strip("_") or "run"
+
+
+def _shown(path: Path) -> str:
+    """``reports/<name>``: the path a log line may carry.
+
+    Never the absolute one. A bus log line reaches the WS stream, ``/api/logs``
+    and the night log, and the owner's ruling is that no absolute path leaves
+    this process for anybody (tests/test_no_absolute_paths_externally.py): the
+    capture root's path names the operator's Windows account. The write
+    warning carried it until #421, inside ``str(OSError)``."""
+    return f"reports/{path.name}"
+
+
+_WIN32_CODE = re.compile(r"\((\d+)\)\s*$")
+
+
+def _described(exc: BaseException) -> str:
+    """The error's type and code, without the path its text usually carries.
+
+    ``str(OSError)`` ends with the file name, absolute, and a ``PrivateAclError``
+    names the path, or an ancestor of it such as the account's home directory,
+    in its message. So an OSError is described by its errno or Windows code
+    and ``strerror``, which carry no path, and anything else by its type and
+    the Win32 code its message ends with, when it ends with one."""
+    name = type(exc).__name__
+    if isinstance(exc, OSError):
+        winerror = getattr(exc, "winerror", None)
+        if winerror:
+            return f"{name}: [WinError {winerror}] {exc.strerror or ''}".rstrip()
+        if exc.errno is not None:
+            return f"{name}: [Errno {exc.errno}] {exc.strerror or ''}".rstrip()
+        return name
+    code = _WIN32_CODE.search(str(exc))
+    return f"{name} (code {code.group(1)})" if code else name
+
+
+def _warn_unreadable(path: Path, reason: str, detail: str) -> None:
+    """Log a report that could not be read, once per path and reason."""
+    key = str(path)
+    said = f"{reason}: {detail}"
+    if _REPORTED_UNREADABLE.get(key) == said:
+        return
+    _REPORTED_UNREADABLE[key] = said
+    bus.log("warning", f"session report {_shown(path)} could not be read "
+                       f"({reason}): {detail}", "report")
+
+
+class ReportRead(NamedTuple):
+    """What reading one report found, and why when it found nothing (#370)."""
+
+    #: The report, or ``None``.
+    report: SessionReport | None
+    #: ``None`` when ``report`` loaded. Otherwise the one word that says why:
+    #: ``missing`` (no such file, the only answer that means "not there"),
+    #: ``unreadable`` (an OS error, a ``PermissionError`` only after
+    #: ``_READ_RETRIES`` more tries), ``corrupt`` (not JSON) or ``invalid``
+    #: (JSON that is not a report).
+    reason: str | None
+    #: The error's type and code, never its text: see :func:`_described`.
+    detail: str
+    #: The file that was read. For the caller's own use, never for a log line
+    #: or a response body (:func:`_shown`).
+    path: Path
+    #: How many times the file was opened.
+    attempts: int
+
+
+class ReportScan(NamedTuple):
+    """:meth:`SessionReporter.scan_reports`: the summaries, and what was not."""
+
+    summaries: list[dict]
+    #: One :class:`ReportRead` per file listed that could not be read.
+    unreadable: list[ReportRead]
+
+
+def _read_report_file(path: Path) -> tuple[Any, str | None, str, int]:
+    """``(raw, reason, detail, attempts)`` for one report file.
+
+    ``raw`` is the parsed JSON when ``reason`` is ``None``. The retry is here,
+    shared by :meth:`SessionReporter.read` and :meth:`SessionReporter.list_reports`,
+    so the list cannot drop a file the single read would have waited for."""
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            return read_json(path), None, "", attempts
+        except FileNotFoundError as e:
+            return None, "missing", _described(e), attempts
+        except PermissionError as e:
+            if attempts > _READ_RETRIES:
+                return None, "unreadable", _described(e), attempts
+            time.sleep(_READ_BACKOFF_S * attempts)
+        except ValueError as e:
+            return None, "corrupt", _described(e), attempts
+        except OSError as e:
+            return None, "unreadable", _described(e), attempts
 
 
 # ------------------------------------------------------------------------ models
@@ -279,6 +416,14 @@ class SessionReporter:
         # (works across both threads) makes the two _persist calls mutually
         # exclusive on the shared temp path.
         self._persist_lock = threading.Lock()
+        #: Snapshots are numbered as they are built, on the loop thread, and
+        #: ``_persist`` writes one only if nothing newer is on disk. The lock
+        #: above orders the WRITES, not the snapshots: a snapshot built before
+        #: finalize() whose worker thread reached the lock after it replaced
+        #: the final report with the one before it, and ``end_reason`` read
+        #: None again (#420, found while fixing #370; see _persist).
+        self._built = 0
+        self._written = 0
 
     # -- ids / paths -----------------------------------------------------------
 
@@ -328,24 +473,64 @@ class SessionReporter:
             return
         loop.create_task(self._write_async())
 
+    def _snapshot(self) -> tuple[int, SessionReport]:
+        """Build the report and number it. Called on the loop thread only, so
+        the numbers follow the order the snapshots were built in."""
+        self._built += 1
+        return self._built, self.build()
+
     async def _write_async(self) -> None:
         async with self._lock:
-            snapshot = self.build()
-            await asyncio.to_thread(self._persist, snapshot)
+            number, snapshot = self._snapshot()
+            await asyncio.to_thread(self._persist, snapshot, number)
 
     def _write_sync(self) -> None:
-        self._persist(self.build())
+        number, snapshot = self._snapshot()
+        self._persist(snapshot, number)
 
-    def _persist(self, report: SessionReport) -> None:
-        try:
-            ensure_dir(_reports_dir())
-            # hold the cross-thread lock across the whole atomic write so a
-            # concurrent finalize() (loop thread) and snapshot (worker thread) can
-            # never both be writing the shared ``<id>.json.tmp`` at the same time.
-            with self._persist_lock:
-                write_json_atomic(self._path(), report.model_dump())
-        except OSError as e:  # never let a disk hiccup kill the run
-            bus.log("warning", f"session report write failed: {e}", "report")
+    def _persist(self, report: SessionReport, number: int, *,
+                 final: bool = False) -> None:
+        """Write one snapshot, unless a newer one is already on disk (#420).
+
+        Never raises: a disk hiccup must not kill the run. A failure is logged
+        at warning with the report's path (capture-root-relative, see
+        :func:`_shown`), and a FINAL write that fails is retried once, after
+        ``_FINAL_RETRY_S`` (#370): nothing writes after it, so its failure is
+        the report's ending lost, while a snapshot's is repaired by the next.
+
+        The ACL errors are caught with ``OSError`` because they come from the
+        same write: ``ensure_private_dir`` and ``harden_private_file`` report a
+        transient sharing violation as ``PrivateAclError``. Uncaught, one of
+        those escaped a snapshot's worker thread into a task nobody awaits,
+        which is a failure nobody hears of."""
+        path = self._path()
+        attempts = 2 if final else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                ensure_dir(_reports_dir())
+                # hold the cross-thread lock across the whole atomic write so a
+                # concurrent finalize() (loop thread) and snapshot (worker
+                # thread) can never both be writing the shared staging file.
+                with self._persist_lock:
+                    if number < self._written:
+                        # Built before the snapshot now on disk, and late to
+                        # the lock: writing it would put the older report back
+                        # over the newer, finalize()'s included.
+                        return
+                    write_json_atomic(path, report.model_dump())
+                    self._written = number
+                return
+            except (OSError, PrivatePermissionsError, PrivateAclError) as e:
+                if attempt < attempts:
+                    what = "final report, retrying once"
+                elif final:
+                    what = "final report, after one retry"
+                else:
+                    what = "snapshot"
+                bus.log("warning", f"session report write failed ({what}) at "
+                                   f"{_shown(path)}: {_described(e)}", "report")
+                if attempt < attempts:
+                    time.sleep(_FINAL_RETRY_S)
 
     # -- snapshot --------------------------------------------------------------
 
@@ -380,21 +565,44 @@ class SessionReporter:
         produces a persisted report even if the loop is tearing down."""
         self._ended_at = time.time()
         self._end_reason = end_reason
-        report = self.build()
-        self._persist(report)
+        number, report = self._snapshot()
+        self._persist(report, number, final=True)
         return report
 
     # -- class-level reads -----------------------------------------------------
 
     @staticmethod
     def list_reports() -> list[dict]:
-        """Summaries (no frame detail) of every persisted report, newest first."""
+        """Summaries (no frame detail) of every persisted report, newest first.
+
+        A file that cannot be read is left out of the list, and logged at
+        warning (once per path and reason) rather than skipped in silence
+        (#370); :meth:`scan_reports` answers which files those were."""
+        return SessionReporter.scan_reports().summaries
+
+    @staticmethod
+    def scan_reports() -> "ReportScan":
+        """:meth:`list_reports`' summaries, and the files it could not read.
+
+        The summaries are the operator's report list (``GET /api/reports``),
+        so a report skipped in silence was a night that vanished from it with
+        nothing said, for as long as another handle held its file. A file
+        that went missing between the directory listing and the read is not
+        "unreadable": it is not there, and it is left out without a word."""
         out: list[dict] = []
+        unreadable: list[ReportRead] = []
         for path in list_json(_reports_dir()):
-            try:
-                raw = read_json(path)
-            except (ValueError, OSError):
+            raw, reason, detail, attempts = _read_report_file(path)
+            if reason is None and not isinstance(raw, dict):
+                reason, detail = "invalid", f"a JSON {type(raw).__name__}"
+            if reason == "missing":
                 continue
+            if reason is not None:
+                _warn_unreadable(path, reason, detail)
+                unreadable.append(ReportRead(None, reason, detail, path,
+                                             attempts))
+                continue
+            _REPORTED_UNREADABLE.pop(str(path), None)
             out.append({
                 "id": raw.get("id", path.stem),
                 "plan_name": raw.get("plan_name", ""),
@@ -406,19 +614,48 @@ class SessionReporter:
                 "integration_s": raw.get("integration_s", 0.0),
             })
         out.sort(key=lambda r: r.get("started_at") or 0.0, reverse=True)
-        return out
+        return ReportScan(out, unreadable)
 
     @staticmethod
     def load(report_id: str) -> SessionReport | None:
+        """The report, or ``None``: :meth:`read`'s ``report``.
+
+        ``None`` for a report that is not there and for one that could not be
+        read, which is what the routes need (both are a 404 to them). A caller
+        that must tell the two apart, a test asserting a report was written
+        among them, calls :meth:`read`, which says which it was."""
+        return SessionReporter.read(report_id).report
+
+    @staticmethod
+    def read(report_id: str) -> ReportRead:
+        """Read one report and say why when there is none (#370).
+
+        Until #370 every failure here was ``None``: a missing file, a file
+        another handle held for a moment, a file that did not parse. A test
+        that found ``None`` right after an unsafe abort had written the report
+        could not say which, and neither could an operator's report link. Now
+        a ``PermissionError`` is retried ``_READ_RETRIES`` times over half a
+        second before it is given up on, and anything but ``missing`` is also
+        logged, once per path and reason.
+
+        A refusal by the ACL layer that ``read_json`` runs first
+        (``PrivateAclError``) still raises, as it did before: that is a
+        security answer about the file, not a reason it is absent. In #370's
+        reproduction that step never refused; the reads that failed were
+        refused at the open that follows it."""
         path = _reports_dir() / f"{_slug(report_id)}.json"
-        try:
-            raw = read_json(path)
-        except (FileNotFoundError, ValueError, OSError):
-            return None
-        try:
-            return SessionReport(**raw)
-        except Exception:
-            return None
+        raw, reason, detail, attempts = _read_report_file(path)
+        if reason is None:
+            try:
+                report = SessionReport(**raw)
+            except Exception as e:         # a TypeError for a non-dict too
+                reason, detail = "invalid", _described(e)
+            else:
+                _REPORTED_UNREADABLE.pop(str(path), None)
+                return ReportRead(report, None, "", path, attempts)
+        if reason != "missing":
+            _warn_unreadable(path, reason, detail)
+        return ReportRead(None, reason, detail, path, attempts)
 
     @staticmethod
     def attach_existing(report_id: str) -> "SessionReporter | None":
@@ -447,6 +684,8 @@ class SessionReporter:
         r._policy = dict(getattr(rep, "policy", {}) or {})
         r._lock = asyncio.Lock()
         r._persist_lock = threading.Lock()
+        r._built = 0
+        r._written = 0
         return r
 
     @staticmethod

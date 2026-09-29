@@ -1,0 +1,455 @@
+{
+  "_comment": "Mosaic slices S5 and S6 on the real page (#189; spec 2026-09-23 flows mosaic, section 8 S5 and S6, and S4's probe as the precedent: visible=true, a view marker on every walk). S5: a rotating 2x2 flow started on the simulator by its RUN button, the phone stage sheet's readouts naming the engine's panel and pass while RUN reads STOP, the Target modal opening view-only with the shooting panel, and after Abort, RUN reading CONTINUE with the progress route's numbers and START OVER behind a confirm. S6: Sky FRAME and the classic Atlas each hand their framing to SEND TO FLOW WIZARD, whose steps end on a review of exactly one TARGET, with no Plan targets left behind. Phone walks at 390 x 844 with touch, desktop walks at 1440 x 900, every one by the clicks a person makes, never a deep link. Run against a LOCAL simulator server only, never the rig: `python tools/ui_probe/server_ctl.py start --fresh --port 8857` (any port but 8800; it connects the simulator), then `python tools/ui_probe/probe.py --routes tools/ui_probe/routes_s5_s6.json --widths 390,1440 --port 8857 --out .probe/out/s5-s6`, then `server_ctl.py stop`. The widths must run 390 first: the desktop's seed refuses an engine the phone left running. The probe's own cases for this file are test_probe_s5_s6.py.",
+  "_order": "The walks are one night in order, because the engine is one engine. At 390: s5-run-phone presses RUN and leaves the run going; s5-frame-running-phone opens the Target modal while it runs; s5-continue-phone waits for the first banked sub, presses STOP, and grades CONTINUE and START OVER's confirm; s6-sky-wizard-phone and s6-atlas-wizard-phone each save a flow through the wizard. At 1440 the same on the classic editor and the classic Atlas, on a second flow, and s6-sky-wizard-desktop. Each route is a fresh page, so each proves its own door; the run is the server's, so it outlives the page that started it.",
+  "_seed": "First `require_sim`: these walks press RUN, so the probe refuses a server whose rig is not the simulator (GET /api/status `mode`), at every width, before anything is saved or pressed. Then two flows DRAWN here, not copied from the eighth Example: that one waits for dusk (its DUSK node), autofocuses and guides, and its 120 s subs would keep a walk minutes from its first frame. Each is ONE TARGET of 2 x 2 panels at PA 55, rotating (the loop wire from the FILTER CYCLE's 'pass done' to the TARGET's 'next panel'), with 20 passes of one 10 s L sub, so 80 subs: on the simulator the first slew and centre take about 28 s, the first autofocus 28 s more, and then a sub lands every 12 s, the panel changing with every pass (measured 2026-09-28). With no DUSK node the run starts now, and with no site set nothing gates it on altitude. The TARGET is framed for the simulator's field, 0.494 x 0.371 deg (the compile's rig facts on a fresh config), and `runnable` refuses a server whose compile would call that a loss, since RUN would then stop on a question the walk does not answer. `fresh` refuses a server that already holds a session for the flow, or whose engine is running: this walk must be the flow's first run. The phone's flow is seeded only at 390 and the desktop's only at 1440 (seed `widths`), because a flow seeded again after its walk would find its own session and refuse.",
+  "_names": "The flow names are short on purpose: the phone footer's RUN button is the screen less its gutters, 358 px, and CONTINUE's line is the verb, the name and the parenthetical, of which only the name may be cut (runCopy.ts). 'M31 2x2' fits beside '(night 2, n/80 subs)' there, so the probe can hold that NO text is cut, the name included, rather than exempting the one part the design lets go.",
+  "_found": "Found by this probe's first walks, 2026-09-28, and each opened and looked at in its screenshots: #463, fixed in the working tree (the phone RUN footer shrunk to its words, stages reading IDLE through the run, ADD STAGE and the LOG squashed, the TONIGHT sub cut, the wizard's title cut and its rail on two baselines, and the probe dying on a reason it could not print); open, in files this task does not own: #464 (flows.statuses never written, both canvases), #465 (the phone modal's sky clips its degraded line; s5-frame-running-phone stays red), #466 (the Sky hub judges FRAME at the placeholder site), #467 (RunControls buzzes on mount; s6-sky-wizard-desktop stays red), #468 (the desktop session column misdescribes a flow's run), #469 (the 'While a mosaic waits' select cut); and more evidence on #357 (the classic TARGET card's footer).",
+  "_expected_errors_why": "Measured on the sim rig, as routes_s4_frame.json records: no offline sky pack and online fetch off by default, so every survey tile 404s (the console carries only the status text). A fresh config has no site, so the Sky hub's tonight list and visibility answer 409 (the Sky walks only); any other 4xx still fails the route.",
+  "seed": [
+    { "require_sim": true },
+    { "widths": [390], "save_flow": {
+      "id": "probe-s5-phone", "name": "M31 2x2", "folder": "My flows",
+      "graph": {
+        "nodes": [
+          { "id": "n2", "type": "target", "x": 30, "y": 60, "params": { "name": "M31", "ra": "00h 42m 44s", "dec": "+41\u00b0 16' 09\"", "rows": 2, "cols": 2, "overlap": 25, "fovX": 0.494, "fovY": 0.371, "angle": "Rotate to PA", "rotation": 55.0 } },
+          { "id": "n7", "type": "cycle", "x": 270, "y": 60, "params": { "plan": "L 10", "cycles": 20, "perCycle": 1 } },
+          { "id": "n12", "type": "report", "x": 510, "y": 60, "params": {} }
+        ],
+        "edges": [
+          { "id": "e1", "from": "n2", "fromPort": "target", "to": "n7", "toPort": "run" },
+          { "id": "e2", "from": "n7", "fromPort": "complete", "to": "n12", "toPort": "session" },
+          { "id": "e3", "from": "n7", "fromPort": "pass", "to": "n2", "toPort": "next" }
+        ],
+        "settings": {}
+      },
+      "expect_node": { "id": "n2", "type": "target", "min_panels": 4, "params": { "name": "M31", "angle": "Rotate to PA" } },
+      "runnable": true, "fresh": true } },
+    { "widths": [1440], "save_flow": {
+      "id": "probe-s5-desk", "name": "M31 2x2 desk", "folder": "My flows",
+      "graph": {
+        "nodes": [
+          { "id": "n2", "type": "target", "x": 30, "y": 60, "params": { "name": "M31", "ra": "00h 42m 44s", "dec": "+41\u00b0 16' 09\"", "rows": 2, "cols": 2, "overlap": 25, "fovX": 0.494, "fovY": 0.371, "angle": "Rotate to PA", "rotation": 55.0 } },
+          { "id": "n7", "type": "cycle", "x": 270, "y": 60, "params": { "plan": "L 10", "cycles": 20, "perCycle": 1 } },
+          { "id": "n12", "type": "report", "x": 510, "y": 60, "params": {} }
+        ],
+        "edges": [
+          { "id": "e1", "from": "n2", "fromPort": "target", "to": "n7", "toPort": "run" },
+          { "id": "e2", "from": "n7", "fromPort": "complete", "to": "n12", "toPort": "session" },
+          { "id": "e3", "from": "n7", "fromPort": "pass", "to": "n2", "toPort": "next" }
+        ],
+        "settings": {}
+      },
+      "expect_node": { "id": "n2", "type": "target", "min_panels": 4, "params": { "name": "M31", "angle": "Rotate to PA" } },
+      "runnable": true, "fresh": true } }
+  ],
+  "routes": [
+    {
+      "name": "s5-run-phone",
+      "shot": "s5-run-phone",
+      "_mutations": [
+        "Before any fix (the build as it stood, 2026-09-28), observed red on the real page: text '[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"]': 3 of 3 contain 'IDLE'; box '[data-testid=\"flow-stages-run\"]' is 92.2 x 56px, need >= 320 x 50px; box '[data-testid=\"flow-stages-save\"]' is 92.2 x 52px, need >= 320 x 40px (#463).",
+        "Each fix undone in a private build (scratchpad S56-PROBE-mut, mutate_ui.py), the route alone on a fresh private simulator server: U1 'footer column back to its content width' (FlowStagesPhoneSheet.tsx: the foot's style={FOOT_STYLE} removed), observed red: box '[data-testid=\"flow-stages-run\"]' is 92.2px wide and does not fill '.nx-sheet-foot' ({'width': 92.2, 'content': 358, 'container': 'nx-sheet-foot'}), and the same for SAVE, and both under their 320 px floors.",
+        "U2 'the stage pill says IDLE through the run' (`const showStatus = true || ...`), observed red: text '[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"]': 3 of 3 contain 'IDLE', e.g. 'TARGETM31IDLE...'.",
+        "U3 'ADD STAGE unwrapped' (the plain block around + ADD STAGE removed, the code before #463), observed red: reachable_all: '+ ADD STAGE' is 20px tall, need >= 44px (box {'width': 358, 'height': 20}) (1 of 21 'button' inside '[data-testid=\"session-flow-stages\"]').",
+        "U4 'the LOG may shrink' (the LOG's style={NO_SHRINK} removed), observed red: box '[data-testid=\"flow-stages-log\"]' is squashed: it shows 16px of 32px of content and is under its own max-height ({'ok': False, 'client': 16, 'content': 32, 'max': 170}).",
+        "U5 'the TONIGHT sub back' (the 50-character sub before #463), observed red: text 'timeline, brief, compiled plan and campaign ledger' ([data-testid=\"session-flow-stages\"] .nx-row-sub) is clipped 32px by 'nx-row-sub' (1 of 4 with text)."
+      ],
+      "widths": [390],
+      "url": "#/session/flows",
+      "_note": "RUN by its own two taps (the #/next arm: RUN, then CONFIRM RUN), on the flow list's row and the stage sheet it opens. The walk first holds that RUN reads RUN, the premise that this is the flow's first run, then waits (up to 30 s) for the STAGE readout to name a pass, which it does from the first slew. The readouts are then held to the engine's own answer at one moment (api_text), and every stage row to saying nothing it does not know (no IDLE while the run is live).",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s5-phone\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] .nx-btn-label:text-is(\"RUN\")" },
+        { "selector": "[data-testid=\"flow-stages-run\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] .nx-btn-label:text-is(\"CONFIRM RUN\")" },
+        { "selector": "[data-testid=\"flow-stages-run\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-stage\"]:has-text(\"pass\")", "wait_ms": 30000 }
+      ],
+      "testid": "session-flow-stages",
+      "api_text": [
+        { "selector": "[data-testid=\"flow-stages-stage\"]", "get": "/api/sequence/state", "template": "{group.name} {group.panel} \u00b7 pass {group.pass}" },
+        { "selector": "[data-testid=\"flow-stages-frames\"]", "get": "/api/sequence/state", "template": "{progress.frames_done} / {progress.frames_total}" }
+      ],
+      "text_expect": [
+        { "selector": "[data-testid=\"flow-stages-run\"]", "equals": "STOP" },
+        { "selector": "[data-testid=\"flow-stages-state\"]", "contains": "RUNNING" },
+        { "selector": "[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"]", "none_contain": "IDLE", "min_count": 3 }
+      ],
+      "boxes": [
+        { "selector": "[data-testid=\"flow-stages-run\"]", "min_width": 320, "min_height": 50, "min_inset": 8, "fills": ".nx-sheet-foot" },
+        { "selector": "[data-testid=\"flow-stages-save\"]", "min_width": 320, "min_height": 40, "min_inset": 8, "fills": ".nx-sheet-foot" },
+        { "selector": "[data-testid=\"flow-stages-log\"]", "min_height": 14, "unsquashed": true }
+      ],
+      "reachable_all": [ { "within": "[data-testid=\"session-flow-stages\"]", "min_height": 44 } ],
+      "text_intact": [
+        { "selector": "[data-testid=\"flow-stages-monitor\"] *" },
+        { "selector": "[data-testid=\"flow-stages-run\"] .nx-btn-label" },
+        { "selector": "[data-testid=\"session-flow-stages\"] .nx-row-title" },
+        { "selector": "[data-testid=\"session-flow-stages\"] .nx-row-sub" }
+      ]
+    },
+    {
+      "name": "s5-frame-running-phone",
+      "shot": "s5-frame-running-phone",
+      "_known": [
+        "Red until #465 is fixed, outside S56-PROBE's files (FramingSky.tsx, framing.css, SkyCanvas.tsx): text 'U+26A0 Survey unreachable - schematic framing; retrying automatic' ([data-testid=\"framing-sky\"] div.text-warn) is clipped 11px by 'tfs-sky' (1 of 1 with text). Every other check on this walk passes: the view-only line, no DONE, the disabled fieldset, '1-1: shooting now' equal to the engine's panel, the sky's size, 34 buttons reachable."
+      ],
+      "widths": [390],
+      "url": "#/session/flows",
+      "_note": "The Target modal while this flow's session runs, reached as S4's phone walk reaches it: the list's row, the TARGET row, FRAME ON SKY. It must open view-only (spec 2.6: RUNNING_VIEW_ONLY's line, no DONE, the controls in a disabled fieldset) and name the panel the engine is on as shooting, the one its sky outlines brighter. The TARGET row is picked by its title, exactly, as in routes_s4_frame.json.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s5-phone\"]", "required": true },
+        { "selector": "[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"] button.nx-row:has(.nx-row-title:text-is(\"TARGET\"))", "required": true },
+        { "selector": "[data-testid=\"flow-node-frame\"]", "required": true }
+      ],
+      "testid": "target-framing-sheet",
+      "marker": "session is running",
+      "api_text": [
+        { "selector": "[data-testid=\"framing-panels\"]", "get": "/api/sequence/state", "template": "{group.panel}: shooting now" }
+      ],
+      "count": [
+        { "selector": "[data-testid=\"framing-done\"]", "equals": 0 },
+        { "selector": "[data-testid=\"target-framing-sheet\"] fieldset:disabled", "min": 1 }
+      ],
+      "boxes": [
+        { "selector": "[data-testid=\"framing-sky\"]", "min_width": 350, "min_height": 350 },
+        { "selector": "[data-testid=\"framing-sky\"] [role=\"application\"]", "min_width": 350, "min_height": 350 }
+      ],
+      "reachable_all": [ { "within": "[data-testid=\"target-framing-sheet\"]", "min_height": 32 } ],
+      "text_intact": [
+        { "selector": "[data-testid=\"framing-view-why\"]" },
+        { "selector": "[data-testid=\"framing-strip\"] > div" },
+        { "selector": "[data-testid=\"framing-sky\"] div.text-warn" },
+        { "selector": "[data-testid=\"framing-panels\"] .tfs-bar-text" },
+        { "selector": "[data-testid=\"framing-alt-cell\"]", "one_line": true }
+      ],
+      "labels": { "within": "[data-testid=\"target-framing-sheet\"]", "texts": ["WHERE", "GRID", "ANGLE", "PANELS", "RUN", "CENTRING"], "shot_each": true },
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
+    {
+      "name": "s5-continue-phone",
+      "shot": "s5-continue-phone",
+      "_mutations": [
+        "On the build before #463 the walk passed its first checks (the fills check did not exist yet) with CONTINUE 349 px of the 358 px footer, right inset 25 (report.jsonl, 2026-09-28): the footer column's defect shows as 'not full' for a name that fits and as the counts off the screen for one that does not. `fills` grades it; U1 on s5-run-phone is its real-page red."
+      ],
+      "widths": [390],
+      "url": "#/session/flows",
+      "_note": "Abort by STOP (one tap: a motion stop is never armed), once the FRAMES readout shows a banked sub, so the counts CONTINUE carries are not all 0. RUN must then read CONTINUE with the progress route's own numbers, night 2 (a first run's abort continues its session), and START OVER must ask before it does anything: the walk opens its confirm, photographs it, and CANCELs, and no run request may leave the page (forbid_requests), so a START OVER that posted past its confirm fails however the page looks after.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s5-phone\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-frames\"] :text-matches(\"^[1-9][0-9]* / [0-9]+$\")", "wait_ms": 120000 },
+        { "selector": "[data-testid=\"flow-stages-run\"]:has(.nx-btn-label:text-is(\"STOP\"))", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] [data-testid=\"run-copy\"]", "wait_ms": 20000 },
+        { "shot": "continue" },
+        { "selector": "[data-testid=\"flow-stages-start-over\"]", "required": true },
+        { "wait_for": "[data-testid=\"confirm-scrim\"]:has-text(\"Start this flow over?\")" },
+        { "shot": "start-over-confirm" },
+        { "selector": "[data-testid=\"confirm-scrim\"] [data-testid=\"confirm-keep\"]", "required": true }
+      ],
+      "testid": "session-flow-stages",
+      "run_copy": { "selector": "[data-testid=\"flow-stages-run\"]", "flow": "probe-s5-phone", "night": 2, "min_banked": 1 },
+      "count": [
+        { "selector": "[data-testid=\"confirm-scrim\"]", "equals": 0 },
+        { "selector": "[data-testid=\"flow-stages-start-over\"]", "equals": 1 }
+      ],
+      "forbid_requests": [ { "method": "POST", "url": "**/api/flows/*/run" } ],
+      "boxes": [
+        { "selector": "[data-testid=\"flow-stages-run\"]", "min_width": 320, "min_height": 50, "min_inset": 8, "fills": ".nx-sheet-foot" },
+        { "selector": "[data-testid=\"flow-stages-start-over\"]", "min_width": 320, "min_height": 40, "min_inset": 8, "fills": ".nx-sheet-foot" },
+        { "selector": "[data-testid=\"flow-stages-save\"]", "min_width": 320, "min_height": 40, "min_inset": 8, "fills": ".nx-sheet-foot" },
+        { "selector": "[data-testid=\"flow-stages-log\"]", "min_height": 14, "unsquashed": true }
+      ],
+      "reachable_all": [ { "within": "[data-testid=\"session-flow-stages\"]", "min_height": 44 } ],
+      "text_intact": [
+        { "selector": "[data-testid=\"flow-stages-run\"] [data-testid=\"run-copy-verb\"]" },
+        { "selector": "[data-testid=\"flow-stages-run\"] [data-testid=\"run-copy-name\"]" },
+        { "selector": "[data-testid=\"flow-stages-run\"] [data-testid=\"run-copy-detail\"]" },
+        { "selector": "[data-testid=\"flow-stages-start-over\"] .nx-btn-label" },
+        { "selector": "[data-testid=\"session-flow-stages\"] .nx-row-title" },
+        { "selector": "[data-testid=\"session-flow-stages\"] .nx-row-sub" }
+      ]
+    },
+    {
+      "name": "s6-sky-wizard-phone",
+      "shot": "s6-sky-wizard-phone",
+      "_mutations": [
+        "Before any fix (2026-09-28), observed red on the real page: text 'SEND TO FLOW WIZARD - Wild Duck Cluster' (.swz-title) is clipped 5.8px by 'swz-title' (1 of 1 with text) (#463). The object framed varies with the hour, so the title's red is held by s6-atlas-wizard-phone, whose name does not."
+      ],
+      "widths": [390],
+      "url": "#/sky",
+      "_note": "Sky FRAME to SEND TO FLOW WIZARD to its review. FRAME is pressed in the finder, not the atlas: the atlas's FRAME is gated on the atlas centre being above the horizon of the configured site, which on a fresh config is a placeholder at 0 N 0 E, so it passes or refuses with the hour (#466); the finder's frames the first object its reach list offers, whatever the hour. The first step leaves the atlas and is skipped when the atlas is already off; the next states that it is. The framing is made a 2 x 2, the wizard asks the angle (no angle mode arrives from the Sky card), a filter and the guiding, and GENERATE saves. The object framed varies with the hour; nothing below depends on which.",
+      "click": [
+        { "selector": "[data-testid=\"sky-atlas-mode\"][aria-pressed=\"true\"]" },
+        { "wait_for": "[data-testid=\"sky-atlas-mode\"][aria-pressed=\"false\"]" },
+        { "selector": "[data-testid=\"sky-frame\"]", "required": true },
+        { "selector": "[data-testid=\"sky-framing\"] [data-mosaic=\"2x2\"]", "required": true },
+        { "wait_for": "[data-testid=\"sky-framing\"] [data-mosaic=\"2x2\"][aria-pressed=\"true\"]" },
+        { "selector": "[data-testid=\"sky-send-to-wizard\"]", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"target\"]" },
+        { "shot": "target" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"framing\"]" },
+        { "selector": "[data-testid=\"wizard-angle-mode-0\"]", "required": true },
+        { "fill": "[data-testid=\"wizard-ask-pa\"]", "value": "30" },
+        { "shot": "framing" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"filters\"]" },
+        { "check": { "aligned": [ { "selector": "[data-testid^=\"wizard-rail-\"] > *", "min_count": 5 } ] } },
+        { "selector": "[data-testid=\"wizard-filter-L\"]", "required": true },
+        { "shot": "filters" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"guiding\"]" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"review\"]" },
+        { "shot": "review-before" },
+        { "selector": "button:has([data-testid=\"wizard-generate\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-review-block\"]", "wait_ms": 15000 }
+      ],
+      "testid": "send-to-wizard-sheet",
+      "marker": "in My flows",
+      "count": [ { "selector": "[data-testid=\"wizard-review-block\"]", "equals": 1 } ],
+      "new_flow": { "target_nodes": 1 },
+      "no_plan_targets": true,
+      "reachable_all": [ { "within": "[role=\"dialog\"]:has([data-testid=\"send-to-wizard-sheet\"])", "min_height": 32 } ],
+      "text_intact": [
+        { "selector": ".swz-title" },
+        { "selector": "[data-testid^=\"wizard-rail-\"]", "one_line": true },
+        { "selector": "[data-testid=\"wizard-saved\"]" },
+        { "selector": "[data-testid=\"wizard-review-line\"]" }
+      ],
+      "expected_errors": ["/api/survey/tile/", "/api/catalog/tonight", "/api/visibility", "status of 404", "status of 409"]
+    },
+    {
+      "name": "s6-atlas-wizard-phone",
+      "shot": "s6-atlas-wizard-phone",
+      "_mutations": [
+        "U6 'the title on one line' (SendToWizardSheet.tsx: style={TITLE_WRAPS} removed), observed red on the real page (a private build): text 'SEND TO FLOW WIZARD - Andromeda Galaxy' (.swz-title) is clipped 9.5px by 'swz-title' (1 of 1 with text).",
+        "U7 'the rail stretched' (SendToWizardSheet.tsx: style={RAIL_ALIGNS} removed), observed red: mid-walk check at step 18: aligned '[data-testid^=\"wizard-rail-\"] > *': text on one line is 8.5px out of line, need <= 2px ([('3 FILTERS', 314.8), ('4 GUIDING', 314.8), ('5 REVIEW', 314.8), ('1 TARGET', 323.3), ('2 FRAMING', 323.3)])."
+      ],
+      "widths": [390],
+      "url": "#/classic",
+      "_note": "The classic Atlas door on a phone, where the classic bottom nav keeps Atlas under More. It is also the walk that holds the wizard's title on a phone with a name that does not fit on one line: the Sky walk frames whatever its reach list offers first, and a short name would pass a title that cuts a long one, where M31's catalogue name, Andromeda Galaxy, does not fit beside SEND TO FLOW WIZARD at 390 px.",
+      "click": [
+        { "selector": "nav button:has-text(\"More\")", "required": true },
+        { "selector": "button:has-text(\"Atlas\")", "required": true },
+        { "fill": "input[aria-label=\"Search the target catalog\"]", "value": "M31" },
+        { "selector": "button:has(.mono:text-is(\"M31\"))", "required": true },
+        { "wait_for": "[data-testid=\"atlas-send-to-wizard\"]" },
+        { "selector": "button[aria-label=\"Increase Rows\"]", "required": true },
+        { "selector": "button[aria-label=\"Increase Cols\"]", "required": true },
+        { "shot": "framed" },
+        { "selector": "[data-testid=\"atlas-send-to-wizard\"]", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"target\"]" },
+        { "shot": "target" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"framing\"]" },
+        { "selector": "[data-testid=\"wizard-angle-mode-0\"]", "required": true },
+        { "fill": "[data-testid=\"wizard-ask-pa\"]", "value": "30" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"filters\"]" },
+        { "check": { "aligned": [ { "selector": "[data-testid^=\"wizard-rail-\"] > *", "min_count": 5 } ] } },
+        { "selector": "[data-testid=\"wizard-filter-L\"]", "required": true },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"guiding\"]" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"review\"]" },
+        { "selector": "button:has([data-testid=\"wizard-generate\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-review-block\"]", "wait_ms": 15000 }
+      ],
+      "testid": "send-to-wizard-sheet",
+      "marker": "in My flows",
+      "count": [ { "selector": "[data-testid=\"wizard-review-block\"]", "equals": 1 } ],
+      "new_flow": { "target_nodes": 1 },
+      "no_plan_targets": true,
+      "reachable_all": [ { "within": "[role=\"dialog\"]:has([data-testid=\"send-to-wizard-sheet\"])", "min_height": 32 } ],
+      "text_intact": [
+        { "selector": ".swz-title" },
+        { "selector": "[data-testid^=\"wizard-rail-\"]", "one_line": true },
+        { "selector": "[data-testid=\"wizard-saved\"]" },
+        { "selector": "[data-testid=\"wizard-review-line\"]" }
+      ],
+      "expected_errors": ["/api/survey/tile/", "/api/catalog/tonight", "/api/visibility", "status of 404", "status of 409"]
+    },
+    {
+      "name": "s5-run-desktop",
+      "shot": "s5-run-desktop",
+      "widths": [1440],
+      "url": "#/classic/flows",
+      "_note": "The classic editor's header RUN (one click: the classic header does not arm), on the desktop's own flow. The header's ETA is drawn only while a run of this flow is live, so it is the view marker; the editor root is the second.",
+      "click": [
+        { "selector": "[data-flow-id=\"probe-s5-desk\"]", "required": true },
+        { "wait_for": "main header button:has-text(\"RUN\")" },
+        { "selector": "main header button:has-text(\"RUN\")", "required": true },
+        { "wait_for": "main header button:has-text(\"STOP\")", "wait_ms": 15000 }
+      ],
+      "testid": "flow-header-eta",
+      "count": [ { "selector": "[data-flows-tab=\"editor\"]", "min": 1 } ],
+      "text_expect": [
+        { "selector": "main header button:has-text(\"STOP\")", "equals": "\u25a0 STOP" }
+      ],
+      "reachable_all": [ { "within": "main header" } ],
+      "text_intact": [ { "selector": "[data-testid=\"flow-header-eta\"]", "one_line": true } ]
+    },
+    {
+      "name": "s5-frame-running-desktop",
+      "shot": "s5-frame-running-desktop",
+      "widths": [1440],
+      "url": "#/classic/flows",
+      "_note": "The same view-only modal through the classic doors S4's desktop walk uses: the library card, a press on the TARGET card's title strip, the inspector's FRAME ON SKY.",
+      "click": [
+        { "selector": "[data-flow-id=\"probe-s5-desk\"]", "required": true },
+        { "selector": "[data-node-id=\"n2\"]", "position": { "x": 40, "y": 14 }, "required": true },
+        { "selector": "[data-flows-frame=\"n2\"]", "required": true }
+      ],
+      "testid": "target-framing-sheet",
+      "marker": "session is running",
+      "api_text": [
+        { "selector": "[data-testid=\"framing-panels\"]", "get": "/api/sequence/state", "template": "{group.panel}: shooting now" }
+      ],
+      "count": [
+        { "selector": "[data-testid=\"framing-done\"]", "equals": 0 },
+        { "selector": "[data-testid=\"target-framing-sheet\"] fieldset:disabled", "min": 1 }
+      ],
+      "boxes": [
+        { "selector": "[data-testid=\"framing-sky\"]", "min_width": 970, "min_height": 760 },
+        { "selector": "[data-testid=\"framing-sky\"] [role=\"application\"]", "min_width": 640, "min_height": 640 }
+      ],
+      "reachable_all": [ { "within": "[data-testid=\"target-framing-sheet\"]", "min_height": 32 } ],
+      "text_intact": [
+        { "selector": "[data-testid=\"framing-view-why\"]" },
+        { "selector": "[data-testid=\"framing-strip\"] > div" },
+        { "selector": "[data-testid=\"framing-sky\"] div.text-warn" },
+        { "selector": "[data-testid=\"framing-panels\"] .tfs-bar-text" },
+        { "selector": "[data-testid=\"framing-alt-cell\"]", "one_line": true }
+      ],
+      "labels": { "within": "[data-testid=\"target-framing-sheet\"]", "texts": ["WHERE", "GRID", "ANGLE", "PANELS", "RUN", "CENTRING"], "shot_each": true },
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
+    {
+      "name": "s5-continue-desktop",
+      "shot": "s5-continue-desktop",
+      "widths": [1440],
+      "url": "#/classic/flows",
+      "_note": "The desktop's abort and CONTINUE. The classic editor has no FRAMES readout, so the walk waits on the progress route itself for the first banked sub (wait_api), which is the number the CONTINUE copy is then held to. START OVER sits beside CONTINUE in the header and opens the classic confirm.",
+      "click": [
+        { "selector": "[data-flow-id=\"probe-s5-desk\"]", "required": true },
+        { "wait_api": { "get": "/api/flows/probe-s5-desk/progress", "field": "blocks.0.banked", "min": 1 }, "wait_ms": 120000 },
+        { "selector": "main header button:has-text(\"STOP\")", "required": true },
+        { "wait_for": "main header button:has([data-testid=\"run-copy\"])", "wait_ms": 20000 },
+        { "shot": "continue" },
+        { "selector": "main header button:has([data-testid=\"flow-start-over\"])", "required": true },
+        { "wait_for": "[role=\"alertdialog\"]:has-text(\"Start this flow over?\")" },
+        { "shot": "start-over-confirm" },
+        { "selector": "[role=\"alertdialog\"] button:has-text(\"CANCEL\")", "required": true }
+      ],
+      "testid": "run-copy",
+      "count": [
+        { "selector": "[data-flows-tab=\"editor\"]", "min": 1 },
+        { "selector": "[role=\"alertdialog\"]", "equals": 0 },
+        { "selector": "main header [data-testid=\"flow-start-over\"]", "equals": 1 }
+      ],
+      "run_copy": { "selector": "main header button:has([data-testid=\"run-copy\"])", "flow": "probe-s5-desk", "night": 2, "min_banked": 1 },
+      "forbid_requests": [ { "method": "POST", "url": "**/api/flows/*/run" } ],
+      "reachable_all": [ { "within": "main header" } ],
+      "text_intact": [
+        { "selector": "main header [data-testid=\"run-copy-verb\"]" },
+        { "selector": "main header [data-testid=\"run-copy-name\"]" },
+        { "selector": "main header [data-testid=\"run-copy-detail\"]" },
+        { "selector": "main header [data-testid=\"flow-start-over\"]" }
+      ]
+    },
+    {
+      "name": "s6-atlas-wizard-desktop",
+      "shot": "s6-atlas-wizard-desktop",
+      "widths": [1440],
+      "url": "#/classic",
+      "_note": "The classic Atlas door: the rail's Atlas, the catalogue search typed as a person types it, the result, Rows and Cols up to a 2 x 2, SEND TO FLOW WIZARD, and the same steps as the Sky walk. With no site the Atlas has no night to check, so its below-the-limit confirm is not asked.",
+      "click": [
+        { "selector": "nav button:has-text(\"Atlas\")", "required": true },
+        { "fill": "input[aria-label=\"Search the target catalog\"]", "value": "M31" },
+        { "selector": "button:has(.mono:text-is(\"M31\"))", "required": true },
+        { "wait_for": "[data-testid=\"atlas-send-to-wizard\"]" },
+        { "selector": "button[aria-label=\"Increase Rows\"]", "required": true },
+        { "selector": "button[aria-label=\"Increase Cols\"]", "required": true },
+        { "shot": "framed" },
+        { "selector": "[data-testid=\"atlas-send-to-wizard\"]", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"target\"]" },
+        { "shot": "target" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"framing\"]" },
+        { "selector": "[data-testid=\"wizard-angle-mode-0\"]", "required": true },
+        { "fill": "[data-testid=\"wizard-ask-pa\"]", "value": "30" },
+        { "shot": "framing" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"filters\"]" },
+        { "check": { "aligned": [ { "selector": "[data-testid^=\"wizard-rail-\"] > *", "min_count": 5 } ] } },
+        { "selector": "[data-testid=\"wizard-filter-L\"]", "required": true },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"guiding\"]" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"review\"]" },
+        { "selector": "button:has([data-testid=\"wizard-generate\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-review-block\"]", "wait_ms": 15000 }
+      ],
+      "testid": "send-to-wizard-sheet",
+      "marker": "in My flows",
+      "count": [ { "selector": "[data-testid=\"wizard-review-block\"]", "equals": 1 } ],
+      "new_flow": { "target_nodes": 1 },
+      "no_plan_targets": true,
+      "reachable_all": [ { "within": "[role=\"dialog\"]:has([data-testid=\"send-to-wizard-sheet\"])", "min_height": 32 } ],
+      "text_intact": [
+        { "selector": ".swz-title" },
+        { "selector": "[data-testid^=\"wizard-rail-\"]", "one_line": true },
+        { "selector": "[data-testid=\"wizard-saved\"]" },
+        { "selector": "[data-testid=\"wizard-review-line\"]" }
+      ],
+      "expected_errors": ["/api/survey/tile/", "/api/catalog/tonight", "/api/visibility", "status of 404", "status of 409"]
+    },
+    {
+      "name": "s6-sky-wizard-desktop",
+      "shot": "s6-sky-wizard-desktop",
+      "_known": [
+        "Red until #467 is fixed, outside S56-PROBE's files (next/hubs/session/now/RunControls.tsx): 1 console error(s): Blocked call to navigator.vibrate because user hasn't tapped on the frame or any embedded frame yet. It is logged at page load, before any click, once the desktop walk has aborted its run; the walk's own checks all pass."
+      ],
+      "widths": [1440],
+      "url": "#/sky",
+      "_note": "The phone's Sky walk at 1440, so the #/next door is graded at both widths.",
+      "click": [
+        { "selector": "[data-testid=\"sky-atlas-mode\"][aria-pressed=\"true\"]" },
+        { "wait_for": "[data-testid=\"sky-atlas-mode\"][aria-pressed=\"false\"]" },
+        { "selector": "[data-testid=\"sky-frame\"]", "required": true },
+        { "selector": "[data-testid=\"sky-framing\"] [data-mosaic=\"2x2\"]", "required": true },
+        { "wait_for": "[data-testid=\"sky-framing\"] [data-mosaic=\"2x2\"][aria-pressed=\"true\"]" },
+        { "selector": "[data-testid=\"sky-send-to-wizard\"]", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"target\"]" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"framing\"]" },
+        { "selector": "[data-testid=\"wizard-angle-mode-0\"]", "required": true },
+        { "fill": "[data-testid=\"wizard-ask-pa\"]", "value": "30" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"filters\"]" },
+        { "check": { "aligned": [ { "selector": "[data-testid^=\"wizard-rail-\"] > *", "min_count": 5 } ] } },
+        { "selector": "[data-testid=\"wizard-filter-L\"]", "required": true },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"guiding\"]" },
+        { "selector": "button:has([data-testid=\"wizard-next\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-step\"][data-step=\"review\"]" },
+        { "selector": "button:has([data-testid=\"wizard-generate\"])", "required": true },
+        { "wait_for": "[data-testid=\"wizard-review-block\"]", "wait_ms": 15000 }
+      ],
+      "testid": "send-to-wizard-sheet",
+      "marker": "in My flows",
+      "count": [ { "selector": "[data-testid=\"wizard-review-block\"]", "equals": 1 } ],
+      "new_flow": { "target_nodes": 1 },
+      "no_plan_targets": true,
+      "reachable_all": [ { "within": "[role=\"dialog\"]:has([data-testid=\"send-to-wizard-sheet\"])", "min_height": 32 } ],
+      "text_intact": [
+        { "selector": ".swz-title" },
+        { "selector": "[data-testid^=\"wizard-rail-\"]", "one_line": true },
+        { "selector": "[data-testid=\"wizard-saved\"]" },
+        { "selector": "[data-testid=\"wizard-review-line\"]" }
+      ],
+      "expected_errors": ["/api/survey/tile/", "/api/catalog/tonight", "/api/visibility", "status of 404", "status of 409"]
+    }
+  ]
+}

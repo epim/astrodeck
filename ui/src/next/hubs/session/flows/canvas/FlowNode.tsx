@@ -61,15 +61,18 @@ export const LOOP_PANELS_WHY =
  *  WHETHER it would add one, so the wire is never kept. */
 const NO_ID = (): string => "";
 
-/** True when LOOP PANELS would add the block's loop wire: exactly when the
- *  press, `flowsApplyFraming(id, {}, true)`, would write anything.
+/** True when LOOP PANELS would change the block's loop wiring: exactly when
+ *  the press, `flowsApplyFraming(id, {}, true)`, would write anything.
  *
  *  ONE RULE FOR THE OFFER AND THE PRESS. `withLoop(true)` hands back the SAME
- *  wires when it adds nothing, and it adds nothing unless the block is a
- *  multi-panel TARGET, owns a lane with a single tail, that tail has a "pass
- *  done" to give, and no loop wire leaves it yet. Asked here with the same
- *  call, the button is shown on exactly the blocks a press changes: never on a
- *  mosaic that already loops (a second wire is doctor M4's "one is enough"),
+ *  wires when it changes nothing, and it changes nothing unless the block is
+ *  a multi-panel TARGET, owns a lane with a single tail, and that tail has a
+ *  "pass done" to give; then it adds the loop wire when none leaves the tail
+ *  yet, and MOVES a pass wire stranded mid-lane (M12) to the tail rather than
+ *  adding a second (#410). Asked here with the same call, the button is shown
+ *  on exactly the blocks a press changes: never on a mosaic that rotates
+ *  (`targetLoops`; a second wire is doctor M4's "one is enough"), but on one
+ *  whose tail wire stands beside a stale mid-lane one, which the run refuses;
  *  never on a single target, a block that owns no stage, or a lane that
  *  branches or ends on a stage with no "pass done", where a button that did
  *  nothing would be a dead control with a promise on it. The phone stage list
@@ -223,7 +226,8 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
   // param - does not wake this card, and `targetLoops` never calls `sum`.
   const loops = useStore((s) => node.type === "target" && targetLoops(node, s.flows.graph));
   // LOOP PANELS (#189 S4 item 6, spec 1.4): offered only while a press would
-  // add the loop wire. A boolean, for the same reason as `loops`.
+  // add the loop wire or move a stranded one to the tail (#410). A boolean,
+  // for the same reason as `loops`.
   const offersLoop = useStore((s) => node.type === "target" && offersLoopPanels(s.flows.graph, node.id));
   // A LOSS earns the `!` and the card outline; a note does not. The note says
   // the run uses the rig's own value for these settings, which is not a defect
@@ -385,7 +389,7 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
       <div className="nx-flow-node-foot">
         {/* Computed from the CURRENT params, so an edit shows on the card
             without opening anything. A TARGET's line is `targetFooter`, the
-            classic card's too - "M31 · 3x2 · PA 30.0 · 25% · rotate" - and it
+            classic card's too - "M31 · rotate · 3x2 · PA 30.0 · 25%" - and it
             takes the name from the same `def.sum`, once. */}
         <Mono size={10} tone="dim" data-testid="flow-node-summary">
           {node.type === "target" ? targetFooter(node, loops) : def.sum(node.params)}
