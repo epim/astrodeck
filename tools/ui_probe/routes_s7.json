@@ -1,0 +1,487 @@
+{
+  "_comment": "Mosaic slice S7 item 1b on the real page (#189; spec 2026-09-23 flows mosaic, section 8 S7 item 1 and Revision 2 ruling 8; 2.6, 5.7, 5.9, 5.10; S4 and S5 probe precedent: visible=true, a view marker on every walk; S7 orchestrator rulings 1 and 7). Four scenarios, each walked at 390 x 844 with touch (every step a tap) and at 1440 x 900, every step a click or tap a person makes, never a deep link, each against its OWN private local simulator server, never the rig: (1) a rotating 2x2 RUN and followed, its panel and pass on the phone stage sheet, in the view-only Target modal and in the classic editor; (2) a forced solve failure on one panel, the panel set aside in run mode's PANELS and on the modal's sky; (3) CONTINUE on a second observing night, START OVER behind its confirm, and the replay notice after an edit and a save; (4) a meridian straddle, the meridian wait shown and the flip passing. The readouts check (probe.py `readouts`) reads the DOM, GET /api/sequence/state and GET /api/flows/{id}/progress in one page evaluation, the two route reads bracketing the DOM read, and holds the page EQUAL to them. The probe's own cases for this file are test_probe_s7.py.",
+  "_run": "One private server per scenario (any port but 8800, which server_ctl.py and probe.py refuse), with its own --config-dir, --capture-dir and probe --out under the session scratch folder, and a private UI build passed with --ui-dir (`cd ui && node_modules/.bin/vite build --outDir <scratch>/dist --emptyOutDir`). For scenario N: `python tools/ui_probe/server_ctl.py start --fresh --port <P> --config-dir <scratch>/cfg-N --capture-dir <scratch>/cap-N --ui-dir <scratch>/dist` (scenario 2 adds `--sim-solve-fault 0.731777,41.34074,0.12`, see `_fault`), then `python tools/ui_probe/probe.py --routes tools/ui_probe/routes_s7.json --widths 390,1440 --port <P> --out <scratch>/out-N --only <that scenario's routes>` (scenario 3 adds `--config-dir <scratch>/cfg-3 --capture-dir <scratch>/cap-3`, which its seed_session op writes through the server venv), then `server_ctl.py stop --config-dir <scratch>/cfg-N`. The widths must run 390 first: each desktop walk follows the run, or uses the seed, its phone walk left.",
+  "_scenarios": {
+    "1": ["s7-rot-run-phone", "s7-rot-frame-phone", "s7-rot-classic-phone", "s7-rot-classic-desktop"],
+    "2": ["s7-fault-phone", "s7-fault-desktop"],
+    "3": ["s7-cont-phone", "s7-cont-desktop"],
+    "4": ["s7-merid-phone", "s7-merid-desktop"]
+  },
+  "_flows": "Each flow is DRAWN here, as routes_s5_s6.json's are, and for the same reasons: ONE TARGET of 2 x 2 panels at PA 55, rotating (the loop wire from the FILTER CYCLE's 'pass done' to the TARGET's 'next panel'), 20 passes of one 10 s L sub, 80 subs, framed for the simulator's field (0.494 x 0.371 deg). With no DUSK node the run starts at once. Measured on a private server, 2026-09-28: the first slew and centre take 28 s, the initial autofocus 28 s more, the first sub is banked at 56 s, and after it the panel changes every 12 s (a hop of 2 s and a 10 s sub), 1-1, 1-2, 2-2, 2-1. The names are short so that CONTINUE's line fits the phone footer whole (routes_s5_s6.json `_names`).",
+  "_fault": "Scenario 2's server is started with `--sim-solve-fault 0.731777,41.34074,0.12`: every simulator solve within 0.12 deg of panel 2-2's centre fails (ASTRODECK_SIM_SOLVE_FAULT, read by the SimSolver alone and only after its real-rig refusal: server/astrodeck/solve/simsolver.py, graded by server/tests/test_s7_simsolver_fault.py). The centre is the compile's own, not a hand calculation: `to_sequence_plan(compile_plan(graph))` for this TARGET places 1-1 at 0.692711 h +41.19685, 1-2 at 0.711536 h +41.50071, 2-2 at 0.731777 h +41.34074 and 2-1 at 0.712904 h +41.03762 (computed 2026-09-28 with the server venv). The nearest other centre is 0.278 deg from 2-2, and an unsynced goto lands 0.035 deg off, so 2-2's every solve fails and no other panel's does. The walk holds that the panel set aside is 2-2, so a centre gone stale fails it by name.",
+  "_continue": "Scenario 3 needs a dormant session whose runs are on an EARLIER observing night, armed, so that RUN reads CONTINUE with night 2 (the run route's night, since tonight is not among the session's nights: #511 is the same-night case) and the replay notice can show (S7 orchestrator ruling 1: armed, and the record saved after the version the session froze). The first night is real: `run_flow` runs each flow on the simulator until the progress route counts a banked sub and aborts it, so the counts are a ledger's. `seed_session` then moves that run one night back and arms the session, through tools/ui_probe/seed_session.py run by the SERVER's venv (the store's own load and save). Both flows' first nights run at the 390 seed, BEFORE `daylight_site`, and each width arms its own flow's session (the singleton disarms the other): an armed session is resumed by auto-resume at its next tick whenever its window is open, which with no site is always (measured: 34 s after arming, on a private server, 2026-09-28), so the site is saved where the Sun is on the meridian now, where no window opens for hours, and where the engine would not start the first nights. That is the case the notice is for: the afternoon before the second night.",
+  "_wall_time": "Scenario 4 is the long one. Its TARGET is drawn `minutes_east` = 16.0 minutes of sidereal time east of the meridian at the fixture site when the phone seed runs, by the probe's clock (probe.py `_graph_with_meridian_ra`, the server's own sidereal formula), and walked while the fixture site is dark (`set_site` `night` refuses otherwise: the harness's 40 N 74 W is dark from about 00:30 to 10:00 UTC in late September). The plan's flip lead is the default 10 min and a hop is priced at 150 s until one is measured, so a panel is eligible before the meridian only while its hour angle leaves the lead plus a hop and a frame (spec 5.7): the group shoots its first panels, then waits for the meridian, the pre-flip idle of spec 5.7 and A.4, about the lead long. 16 minutes leaves a few minutes of visits before the wait; the first draft's 5 minutes left none, and the run waited from its first slew (observed 2026-09-28: `meridian_wait` true during the initial autofocus, frames_done 0). Measured on the first walk that ran through (2026-09-29, 06:41 to 06:57 UTC): the phone walk takes 6 min (its first sub at about 1 min, the wait from about 6 min) and the desktop walk 9 min (the crossing, the flip hop and its first sub), 16 min in all, plus the seed; the phone walk's pier side before the meridian read west and the desktop's after it east. Scenarios 1 to 3 take about 2.5, 2.5 and 3 minutes (measured 2026-09-29; scenario 3's time is nearly all its seed, two first nights run to their second banked sub).",
+  "_found": "Found by these walks, 2026-09-28 and 29, each opened and looked at in its screenshots, and filed with the needles scan done first: #528 (scenario 2: run mode numbered the set-aside 2-2 first, '1 2-2' in PANELS and a '1' badge on the sky; fixed in the working tree, PanelsSection.tsx `panelRows`, and held by the two checks s7-fault-phone and s7-fault-desktop gained, see s7-fault-phone `_mutations`); #529 (scenario 1: the flow LOG reads 'Idle \u2014 no events yet' through the live run, beside STATE RUNNING, on the classic MONITOR tab and on every log strip; open, in four files and two constants); #527 (found while staging scenario 3: with no site saved, a DUSK window is resolved at the 0,0 placeholder, so a DUSK flow waited 12 h and could bank no first night, which is why scenario 3 stages with a daylight site; open, server side). Seen again on every modal, already filed: #491 (the degraded line drawn over the grid). Not a defect: the classic desktop editor draws no STAGE or FRAMES (README section C.3), so a run's pass is followed on the phone surfaces and its panel on the desktop. The whole of routes_s5_s6.json, re-run on the same build against its own private server, passed 10/10, s5-frame-running-phone (#465) and s6-sky-wizard-desktop (#467) included.",
+  "_expected_errors_why": "Measured on the sim rig, as routes_s4_frame.json records: no offline sky pack and online fetch off by default, so every survey tile 404s (the console carries only the status text). Any other 4xx still fails the route.",
+  "seed": [
+    { "require_sim": true },
+    { "widths": [390], "routes": ["s7-rot-run-phone", "s7-rot-frame-phone", "s7-rot-classic-phone"], "save_flow": {
+      "id": "probe-s7-rot", "name": "S7 rot", "folder": "My flows",
+      "graph": {
+        "nodes": [
+          { "id": "n2", "type": "target", "x": 30, "y": 60, "params": { "name": "M31", "ra": "00h 42m 44s", "dec": "+41\u00b0 16' 09\"", "rows": 2, "cols": 2, "overlap": 25, "fovX": 0.494, "fovY": 0.371, "angle": "Rotate to PA", "rotation": 55.0 } },
+          { "id": "n7", "type": "cycle", "x": 270, "y": 60, "params": { "plan": "L 10", "cycles": 20, "perCycle": 1 } },
+          { "id": "n12", "type": "report", "x": 510, "y": 60, "params": {} }
+        ],
+        "edges": [
+          { "id": "e1", "from": "n2", "fromPort": "target", "to": "n7", "toPort": "run" },
+          { "id": "e2", "from": "n7", "fromPort": "complete", "to": "n12", "toPort": "session" },
+          { "id": "e3", "from": "n7", "fromPort": "pass", "to": "n2", "toPort": "next" }
+        ],
+        "settings": {}
+      },
+      "expect_node": { "id": "n2", "type": "target", "min_panels": 4, "params": { "name": "M31", "angle": "Rotate to PA" } },
+      "runnable": true, "fresh": true } },
+    { "widths": [390], "routes": ["s7-fault-phone"], "save_flow": {
+      "id": "probe-s7-fault", "name": "S7 fault", "folder": "My flows",
+      "graph": {
+        "nodes": [
+          { "id": "n2", "type": "target", "x": 30, "y": 60, "params": { "name": "M31", "ra": "00h 42m 44s", "dec": "+41\u00b0 16' 09\"", "rows": 2, "cols": 2, "overlap": 25, "fovX": 0.494, "fovY": 0.371, "angle": "Rotate to PA", "rotation": 55.0 } },
+          { "id": "n7", "type": "cycle", "x": 270, "y": 60, "params": { "plan": "L 10", "cycles": 20, "perCycle": 1 } },
+          { "id": "n12", "type": "report", "x": 510, "y": 60, "params": {} }
+        ],
+        "edges": [
+          { "id": "e1", "from": "n2", "fromPort": "target", "to": "n7", "toPort": "run" },
+          { "id": "e2", "from": "n7", "fromPort": "complete", "to": "n12", "toPort": "session" },
+          { "id": "e3", "from": "n7", "fromPort": "pass", "to": "n2", "toPort": "next" }
+        ],
+        "settings": {}
+      },
+      "expect_node": { "id": "n2", "type": "target", "min_panels": 4, "params": { "name": "M31", "angle": "Rotate to PA", "rotation": 55.0 } },
+      "runnable": true, "fresh": true } },
+    { "widths": [390], "routes": ["s7-cont-phone", "s7-cont-desktop"], "save_flow": {
+      "id": "probe-s7-cont", "name": "S7 cont", "folder": "My flows",
+      "graph": {
+        "nodes": [
+          { "id": "n2", "type": "target", "x": 30, "y": 60, "params": { "name": "M31", "ra": "00h 42m 44s", "dec": "+41\u00b0 16' 09\"", "rows": 2, "cols": 2, "overlap": 25, "fovX": 0.494, "fovY": 0.371, "angle": "Rotate to PA", "rotation": 55.0 } },
+          { "id": "n7", "type": "cycle", "x": 270, "y": 60, "params": { "plan": "L 10", "cycles": 20, "perCycle": 1 } },
+          { "id": "n12", "type": "report", "x": 510, "y": 60, "params": {} }
+        ],
+        "edges": [
+          { "id": "e1", "from": "n2", "fromPort": "target", "to": "n7", "toPort": "run" },
+          { "id": "e2", "from": "n7", "fromPort": "complete", "to": "n12", "toPort": "session" },
+          { "id": "e3", "from": "n7", "fromPort": "pass", "to": "n2", "toPort": "next" }
+        ],
+        "settings": {}
+      },
+      "expect_node": { "id": "n2", "type": "target", "min_panels": 4, "params": { "name": "M31", "angle": "Rotate to PA" } },
+      "runnable": true, "fresh": true } },
+    { "widths": [390], "routes": ["s7-cont-phone", "s7-cont-desktop"], "save_flow": {
+      "id": "probe-s7-cont-d", "name": "S7 cont d", "folder": "My flows",
+      "graph": {
+        "nodes": [
+          { "id": "n2", "type": "target", "x": 30, "y": 60, "params": { "name": "M31", "ra": "00h 42m 44s", "dec": "+41\u00b0 16' 09\"", "rows": 2, "cols": 2, "overlap": 25, "fovX": 0.494, "fovY": 0.371, "angle": "Rotate to PA", "rotation": 55.0 } },
+          { "id": "n7", "type": "cycle", "x": 270, "y": 60, "params": { "plan": "L 10", "cycles": 20, "perCycle": 1 } },
+          { "id": "n12", "type": "report", "x": 510, "y": 60, "params": {} }
+        ],
+        "edges": [
+          { "id": "e1", "from": "n2", "fromPort": "target", "to": "n7", "toPort": "run" },
+          { "id": "e2", "from": "n7", "fromPort": "complete", "to": "n12", "toPort": "session" },
+          { "id": "e3", "from": "n7", "fromPort": "pass", "to": "n2", "toPort": "next" }
+        ],
+        "settings": {}
+      },
+      "expect_node": { "id": "n2", "type": "target", "min_panels": 4, "params": { "name": "M31", "angle": "Rotate to PA" } },
+      "runnable": true, "fresh": true } },
+    { "widths": [390], "routes": ["s7-cont-phone", "s7-cont-desktop"], "run_flow": { "flow": "probe-s7-cont", "min_banked": 2, "timeout_ms": 240000 } },
+    { "widths": [390], "routes": ["s7-cont-phone", "s7-cont-desktop"], "run_flow": { "flow": "probe-s7-cont-d", "min_banked": 2, "timeout_ms": 240000 } },
+    { "widths": [390], "routes": ["s7-cont-phone", "s7-cont-desktop"], "daylight_site": { "latitude": 40.0, "name": "probe fixture, daylight" } },
+    { "widths": [390], "routes": ["s7-cont-phone"], "seed_session": { "flow": "probe-s7-cont", "nights_ago": 1, "arm": true } },
+    { "widths": [1440], "routes": ["s7-cont-desktop"], "seed_session": { "flow": "probe-s7-cont-d", "nights_ago": 1, "arm": true } },
+    { "widths": [390], "routes": ["s7-merid-phone"], "set_site": { "latitude": 40.0, "longitude": -74.0, "name": "probe fixture 40N 74W", "night": true } },
+    { "widths": [390], "routes": ["s7-merid-phone"], "save_flow": {
+      "id": "probe-s7-merid", "name": "S7 merid", "folder": "My flows",
+      "meridian": { "node": "n2", "minutes_east": 16.0 },
+      "graph": {
+        "nodes": [
+          { "id": "n2", "type": "target", "x": 30, "y": 60, "params": { "name": "Straddle", "ra": "00h 00m 00s", "dec": "+30\u00b0 00' 00\"", "rows": 2, "cols": 2, "overlap": 25, "fovX": 0.494, "fovY": 0.371, "angle": "Rotate to PA", "rotation": 55.0 } },
+          { "id": "n7", "type": "cycle", "x": 270, "y": 60, "params": { "plan": "L 10", "cycles": 20, "perCycle": 1 } },
+          { "id": "n12", "type": "report", "x": 510, "y": 60, "params": {} }
+        ],
+        "edges": [
+          { "id": "e1", "from": "n2", "fromPort": "target", "to": "n7", "toPort": "run" },
+          { "id": "e2", "from": "n7", "fromPort": "complete", "to": "n12", "toPort": "session" },
+          { "id": "e3", "from": "n7", "fromPort": "pass", "to": "n2", "toPort": "next" }
+        ],
+        "settings": {}
+      },
+      "expect_node": { "id": "n2", "type": "target", "min_panels": 4, "params": { "name": "Straddle", "angle": "Rotate to PA" } },
+      "runnable": true, "fresh": true } }
+  ],
+  "routes": [
+    {
+      "name": "s7-rot-run-phone",
+      "shot": "s7-rot-run-phone",
+      "widths": [390],
+      "touch": true,
+      "url": "#/session/flows",
+      "_note": "RUN by its two taps (the #/next arm: RUN, then CONFIRM RUN) on the flow list's row and the stage sheet it opens; RUN must read RUN first, the premise that this is the flow's first run. Then the readouts are FOLLOWED: read against the routes as soon as STAGE names a pass, again once STAGE has moved on to another panel on its own (up to 90 s: a panel lasts 12 s once the first sub is in), which a page frozen on its first publish cannot pass, and a third time at the end of the walk, once STAGE has reached pass 2 (four visits later), so the pass is followed as well as the panel.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s7-rot\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] .nx-btn-label:text-is(\"RUN\")" },
+        { "selector": "[data-testid=\"flow-stages-run\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] .nx-btn-label:text-is(\"CONFIRM RUN\")" },
+        { "selector": "[data-testid=\"flow-stages-run\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-stage\"]:has-text(\"pass\")", "wait_ms": 30000 },
+        { "check": { "readouts": { "flow": "probe-s7-rot", "same_session": true, "timeout_ms": 15000, "fields": [
+          { "selector": "[data-testid=\"flow-stages-stage\"] .nx-readout-value", "template": "{group.name} {group.panel} \u00b7 pass {group.pass}" },
+          { "selector": "[data-testid=\"flow-stages-frames\"] .nx-readout-value", "template": "{progress.frames_done} / {progress.frames_total}" }
+        ] } } },
+        { "shot": "first-panel" },
+        { "wait_change": "[data-testid=\"flow-stages-stage\"] .nx-readout-value", "wait_ms": 90000 },
+        { "check": { "readouts": { "flow": "probe-s7-rot", "same_session": true, "timeout_ms": 15000, "fields": [
+          { "selector": "[data-testid=\"flow-stages-stage\"] .nx-readout-value", "template": "{group.name} {group.panel} \u00b7 pass {group.pass}" },
+          { "selector": "[data-testid=\"flow-stages-frames\"] .nx-readout-value", "template": "{progress.frames_done} / {progress.frames_total}" }
+        ] } } },
+        { "shot": "next-panel" },
+        { "wait_for": "[data-testid=\"flow-stages-stage\"] .nx-readout-value:has-text(\"pass 2\")", "wait_ms": 120000 },
+        { "shot": "next-pass" }
+      ],
+      "testid": "session-flow-stages",
+      "readouts": { "flow": "probe-s7-rot", "same_session": true, "require": { "state.state": "running" }, "fields": [
+        { "selector": "[data-testid=\"flow-stages-stage\"] .nx-readout-value", "template": "{group.name} {group.panel} \u00b7 pass {group.pass}" },
+        { "selector": "[data-testid=\"flow-stages-frames\"] .nx-readout-value", "template": "{progress.frames_done} / {progress.frames_total}" }
+      ] },
+      "text_expect": [
+        { "selector": "[data-testid=\"flow-stages-run\"]", "equals": "STOP" },
+        { "selector": "[data-testid=\"flow-stages-state\"] .nx-readout-value", "equals": "RUNNING" },
+        { "selector": "[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"]", "none_contain": "IDLE", "min_count": 3 }
+      ],
+      "reachable_all": [ { "within": "[data-testid=\"session-flow-stages\"]", "min_height": 44 } ],
+      "text_intact": [
+        { "selector": "[data-testid=\"flow-stages-monitor\"] .nx-readout-value" },
+        { "selector": "[data-testid=\"flow-stages-run\"] .nx-btn-label" }
+      ]
+    },
+    {
+      "name": "s7-rot-frame-phone",
+      "shot": "s7-rot-frame-phone",
+      "widths": [390],
+      "touch": true,
+      "url": "#/session/flows",
+      "_note": "The view-only Target modal on the same run, by S5's doors (the list's row, the TARGET row, FRAME ON SKY). Its PANELS row for the panel the engine is on must read '<panel>: shooting now', and the sky's label for the panel drawn shooting must name the same panel, both equal to the sequence state at one moment; then followed, once the row has moved to the next panel.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s7-rot\"]", "required": true },
+        { "selector": "[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"] button.nx-row:has(.nx-row-title:text-is(\"TARGET\"))", "required": true },
+        { "selector": "[data-testid=\"flow-node-frame\"]", "required": true },
+        { "wait_for": "[data-testid=\"framing-panel-run\"]", "wait_ms": 15000 },
+        { "check": { "readouts": { "flow": "probe-s7-rot", "same_session": true, "timeout_ms": 15000, "fields": [
+          { "selector": "[data-testid=\"framing-panel-run\"]", "containing": "shooting now", "template": "{group.panel}: shooting now" },
+          { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"shooting\"] [data-role=\"panel-rc\"]", "template": "{group.panel}" }
+        ] } } },
+        { "shot": "shooting" },
+        { "wait_change": "[data-testid=\"framing-panel-run\"]", "wait_ms": 60000 }
+      ],
+      "testid": "target-framing-sheet",
+      "marker": "session is running",
+      "readouts": { "flow": "probe-s7-rot", "same_session": true, "fields": [
+        { "selector": "[data-testid=\"framing-panel-run\"]", "containing": "shooting now", "template": "{group.panel}: shooting now" },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"shooting\"] [data-role=\"panel-rc\"]", "template": "{group.panel}" }
+      ] },
+      "count": [
+        { "selector": "[data-testid=\"framing-done\"]", "equals": 0 },
+        { "selector": "[data-testid=\"target-framing-sheet\"] fieldset:disabled", "min": 1 },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel\"][data-state=\"shooting\"]", "equals": 1 }
+      ],
+      "text_intact": [
+        { "selector": "[data-testid=\"framing-panel-run\"]" },
+        { "selector": "[data-testid=\"framing-view-why\"]" }
+      ],
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
+    {
+      "name": "s7-rot-classic-phone",
+      "shot": "s7-rot-classic-phone",
+      "widths": [390],
+      "touch": true,
+      "url": "#/classic/flows",
+      "_note": "The classic editor on a phone: the library's card, then the editor's MONITOR tab, whose STAGE and FRAMES readouts are the same `runReadouts` the #/next sheet draws. Read against the routes, followed to the next panel, and read again.",
+      "click": [
+        { "selector": "[data-flow-id=\"probe-s7-rot\"]", "required": true },
+        { "selector": "button:text-is(\"MONITOR\")", "required": true },
+        { "wait_for": "[data-testid=\"flow-monitor-stage\"]" },
+        { "check": { "readouts": { "flow": "probe-s7-rot", "same_session": true, "timeout_ms": 15000, "fields": [
+          { "selector": "[data-testid=\"flow-monitor-stage\"] span:nth-child(2)", "template": "{group.name} {group.panel} \u00b7 pass {group.pass}" },
+          { "selector": "[data-testid=\"flow-monitor-frames\"] span:nth-child(2)", "template": "{progress.frames_done} / {progress.frames_total}" }
+        ] } } },
+        { "shot": "monitor" },
+        { "wait_change": "[data-testid=\"flow-monitor-stage\"] span:nth-child(2)", "wait_ms": 60000 }
+      ],
+      "testid": "flow-monitor-stage",
+      "readouts": { "flow": "probe-s7-rot", "same_session": true, "fields": [
+        { "selector": "[data-testid=\"flow-monitor-stage\"] span:nth-child(2)", "template": "{group.name} {group.panel} \u00b7 pass {group.pass}" },
+        { "selector": "[data-testid=\"flow-monitor-frames\"] span:nth-child(2)", "template": "{progress.frames_done} / {progress.frames_total}" }
+      ] },
+      "text_expect": [
+        { "selector": "[data-testid=\"flow-monitor-state\"] span:nth-child(2)", "equals": "RUNNING" }
+      ],
+      "text_intact": [
+        { "selector": "[data-testid=\"flow-monitor-stage\"] span:nth-child(2)" },
+        { "selector": "[data-testid=\"flow-monitor-frames\"] span:nth-child(2)" }
+      ]
+    },
+    {
+      "name": "s7-rot-classic-desktop",
+      "shot": "s7-rot-classic-desktop",
+      "widths": [1440],
+      "touch": false,
+      "url": "#/classic/flows",
+      "_note": "The classic editor on a desktop follows the same run, which the phone walks left going: the header reads STOP with the run's ETA (the desktop header draws no STAGE or FRAMES, README section C.3: they are the phone MONITOR's, so the pass is followed at 390 and the panel here), then the view-only modal by S4's desktop doors, its shooting row and its sky's shooting label held to the state, followed to the next panel.",
+      "click": [
+        { "selector": "[data-flow-id=\"probe-s7-rot\"]", "required": true },
+        { "wait_for": "main header button:has-text(\"STOP\")", "wait_ms": 15000 },
+        { "check": { "text_expect": [ { "selector": "main header button:has-text(\"STOP\")", "equals": "\u25a0 STOP" } ] } },
+        { "shot": "header" },
+        { "selector": "[data-node-id=\"n2\"]", "position": { "x": 40, "y": 14 }, "required": true },
+        { "selector": "[data-flows-frame=\"n2\"]", "required": true },
+        { "wait_for": "[data-testid=\"framing-panel-run\"]", "wait_ms": 15000 },
+        { "check": { "readouts": { "flow": "probe-s7-rot", "same_session": true, "timeout_ms": 15000, "fields": [
+          { "selector": "[data-testid=\"framing-panel-run\"]", "containing": "shooting now", "template": "{group.panel}: shooting now" },
+          { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"shooting\"] [data-role=\"panel-rc\"]", "template": "{group.panel}" }
+        ] } } },
+        { "shot": "shooting" },
+        { "wait_change": "[data-testid=\"framing-panel-run\"]", "wait_ms": 60000 }
+      ],
+      "testid": "target-framing-sheet",
+      "marker": "session is running",
+      "readouts": { "flow": "probe-s7-rot", "same_session": true, "fields": [
+        { "selector": "[data-testid=\"framing-panel-run\"]", "containing": "shooting now", "template": "{group.panel}: shooting now" },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"shooting\"] [data-role=\"panel-rc\"]", "template": "{group.panel}" }
+      ] },
+      "count": [
+        { "selector": "[data-testid=\"framing-done\"]", "equals": 0 },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel\"][data-state=\"shooting\"]", "equals": 1 }
+      ],
+      "text_intact": [ { "selector": "[data-testid=\"framing-panel-run\"]" } ],
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
+    {
+      "name": "s7-fault-phone",
+      "shot": "s7-fault-phone",
+      "_mutations": [
+        "On the build before the #528 fix (the first walk, 2026-09-28), this walk's checks as they stood passed, and its screenshot showed PANELS reading '1 2-2' over the set-aside line and the sky's dotted 2-2 carrying a '1' badge (#528, filed from it). The two checks added for it, run on that build (the private UI build dist-0, the route alone on a fresh private simulator server, 2026-09-29), observed red at both widths: text '[data-testid=\"framing-panels\"] [role=\"row\"][data-panel] .tfs-c-label' reads '2-2', which does not match '^(1-1|1-2|2-1)$'; count '[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"set_aside\"] [data-role=\"panel-order\"]' is 1, need == 0. On the build with the fix (PanelsSection.tsx `panelRows`), both pass: PANELS reads 1 1-1, 2 1-2, 3 2-1, then 2-2 unnumbered with its reason, and the sky's 2-2 carries the '!' and no badge."
+      ],
+      "widths": [390],
+      "touch": true,
+      "url": "#/session/flows",
+      "_note": "RUN on the server whose simulator cannot solve 2-2 (`_fault`), then wait, up to 10 min, for the engine to set 2-2 aside (its third consecutive failed pass, max_failed_visits 3; measured 2026-09-29: the whole phone walk, RUN to the modal's last check, took 138 s), then the view-only modal: PANELS says 'set aside tonight:' and the engine's reason for 2-2 with no label before it (#509), and the sky draws 2-2 set aside (dotted with '!'), exactly one panel so, both equal to the state at one moment.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s7-fault\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] .nx-btn-label:text-is(\"RUN\")" },
+        { "selector": "[data-testid=\"flow-stages-run\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] .nx-btn-label:text-is(\"CONFIRM RUN\")" },
+        { "selector": "[data-testid=\"flow-stages-run\"]", "required": true },
+        { "wait_api": { "get": "/api/sequence/state", "field": "group.set_aside.0.panel", "equals": "2-2" }, "wait_ms": 600000 },
+        { "shot": "stages-set-aside" },
+        { "selector": "[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"] button.nx-row:has(.nx-row-title:text-is(\"TARGET\"))", "required": true },
+        { "selector": "[data-testid=\"flow-node-frame\"]", "required": true },
+        { "wait_for": "[data-testid=\"framing-panel-run\"]", "wait_ms": 15000 }
+      ],
+      "testid": "target-framing-sheet",
+      "marker": "session is running",
+      "readouts": { "flow": "probe-s7-fault", "same_session": true, "require": { "state.group.set_aside.0.panel": "2-2" }, "fields": [
+        { "selector": "[data-testid=\"framing-panel-run\"]", "containing": "set aside tonight", "template": "set aside tonight: {group.set_aside.0.reason}" },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"set_aside\"] [data-role=\"panel-rc\"]", "template": "{group.set_aside.0.panel}" }
+      ] },
+      "count": [
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel\"][data-state=\"set_aside\"]", "equals": 1 },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel\"][data-row=\"1\"][data-col=\"1\"][data-state=\"set_aside\"]", "equals": 1 },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"set_aside\"] [data-role=\"panel-flag\"]", "equals": 1 },
+        { "selector": "[data-testid=\"framing-panel-run\"][data-panel-run=\"2-2\"]", "equals": 1 },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"set_aside\"] [data-role=\"panel-order\"]", "equals": 0 }
+      ],
+      "text_expect": [
+        { "selector": "[data-testid=\"framing-panels\"] [role=\"row\"][data-panel] .tfs-c-label", "matches": "^(1-1|1-2|2-1)$" }
+      ],
+      "text_intact": [ { "selector": "[data-testid=\"framing-panel-run\"]" } ],
+      "labels": { "within": "[data-testid=\"target-framing-sheet\"]", "texts": ["PANELS"], "shot_each": true },
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
+    {
+      "name": "s7-fault-desktop",
+      "shot": "s7-fault-desktop",
+      "widths": [1440],
+      "touch": false,
+      "url": "#/classic/flows",
+      "_note": "The same run's set-aside panel through the classic desktop doors: the library card, the TARGET card's title strip, the inspector's FRAME ON SKY.",
+      "click": [
+        { "selector": "[data-flow-id=\"probe-s7-fault\"]", "required": true },
+        { "wait_api": { "get": "/api/sequence/state", "field": "group.set_aside.0.panel", "equals": "2-2" }, "wait_ms": 60000 },
+        { "selector": "[data-node-id=\"n2\"]", "position": { "x": 40, "y": 14 }, "required": true },
+        { "selector": "[data-flows-frame=\"n2\"]", "required": true },
+        { "wait_for": "[data-testid=\"framing-panel-run\"]", "wait_ms": 15000 }
+      ],
+      "testid": "target-framing-sheet",
+      "marker": "session is running",
+      "readouts": { "flow": "probe-s7-fault", "same_session": true, "require": { "state.group.set_aside.0.panel": "2-2" }, "fields": [
+        { "selector": "[data-testid=\"framing-panel-run\"]", "containing": "set aside tonight", "template": "set aside tonight: {group.set_aside.0.reason}" },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"set_aside\"] [data-role=\"panel-rc\"]", "template": "{group.set_aside.0.panel}" }
+      ] },
+      "count": [
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel\"][data-state=\"set_aside\"]", "equals": 1 },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel\"][data-row=\"1\"][data-col=\"1\"][data-state=\"set_aside\"]", "equals": 1 },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"set_aside\"] [data-role=\"panel-flag\"]", "equals": 1 },
+        { "selector": "[data-testid=\"framing-panel-run\"][data-panel-run=\"2-2\"]", "equals": 1 },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"set_aside\"] [data-role=\"panel-order\"]", "equals": 0 }
+      ],
+      "text_expect": [
+        { "selector": "[data-testid=\"framing-panels\"] [role=\"row\"][data-panel] .tfs-c-label", "matches": "^(1-1|1-2|2-1)$" }
+      ],
+      "text_intact": [ { "selector": "[data-testid=\"framing-panel-run\"]" } ],
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
+    {
+      "name": "s7-cont-phone",
+      "shot": "s7-cont-phone",
+      "widths": [390],
+      "touch": true,
+      "url": "#/session/flows",
+      "_note": "Night 2 of a session whose first night is on the observing night before tonight (`_continue`). RUN must read CONTINUE with night 2 and the progress route's counts, and no replay line may show yet (the CONTROL: the record is the version the session froze). START OVER opens its confirm and is kept, and no run request leaves the page. Then an edit a person makes, TOTAL CYCLES from 20 to 21 in the FILTER CYCLE's sheet, and SAVE; the replay line must then say the armed session will replay the version it froze, dated in this machine's zone (the browser's), equal to the progress route's plan_saved_ts. CONTINUE is read again after the save, against the counts the saved flow now owes.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s7-cont\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] [data-testid=\"run-copy\"]", "wait_ms": 20000 },
+        { "check": {
+          "run_copy": { "selector": "[data-testid=\"flow-stages-run\"]", "flow": "probe-s7-cont", "night": 2, "min_banked": 2 },
+          "count": [ { "selector": "[data-testid=\"flow-stages-replay\"]", "equals": 0 } ] } },
+        { "shot": "continue" },
+        { "selector": "[data-testid=\"flow-stages-start-over\"]", "required": true },
+        { "wait_for": "[data-testid=\"confirm-scrim\"]:has-text(\"Start this flow over?\")" },
+        { "shot": "start-over-confirm" },
+        { "selector": "[data-testid=\"confirm-scrim\"] [data-testid=\"confirm-keep\"]", "required": true },
+        { "selector": "[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"] button.nx-row:has(.nx-row-title:text-is(\"FILTER CYCLE\"))", "required": true },
+        { "fill": "[data-testid=\"flow-field-cycles\"] input", "value": "21" },
+        { "selector": "button[aria-label=\"Back to flow\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-save\"]:not([aria-disabled=\"true\"])" },
+        { "selector": "[data-testid=\"flow-stages-save\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-replay\"]", "wait_ms": 15000 },
+        { "shot": "replay" }
+      ],
+      "testid": "session-flow-stages",
+      "readouts": { "flow": "probe-s7-cont", "require": { "progress.session.armed": true, "progress.session.status": "dormant" }, "fields": [
+        { "selector": "[data-testid=\"flow-stages-replay\"]", "from": "progress", "template": "the armed session will replay the version from {session.plan_saved_ts|localdate}; press CONTINUE to apply your edits" }
+      ] },
+      "run_copy": { "selector": "[data-testid=\"flow-stages-run\"]", "flow": "probe-s7-cont", "night": 2, "min_banked": 2 },
+      "count": [
+        { "selector": "[data-testid=\"confirm-scrim\"]", "equals": 0 },
+        { "selector": "[data-testid=\"flow-stages-start-over\"]", "equals": 1 }
+      ],
+      "forbid_requests": [ { "method": "POST", "url": "**/api/flows/*/run" } ],
+      "text_intact": [
+        { "selector": "[data-testid=\"flow-stages-run\"] [data-testid=\"run-copy-verb\"]" },
+        { "selector": "[data-testid=\"flow-stages-run\"] [data-testid=\"run-copy-name\"]" },
+        { "selector": "[data-testid=\"flow-stages-run\"] [data-testid=\"run-copy-detail\"]" },
+        { "selector": "[data-testid=\"flow-stages-replay\"]" }
+      ]
+    },
+    {
+      "name": "s7-cont-desktop",
+      "shot": "s7-cont-desktop",
+      "widths": [1440],
+      "touch": false,
+      "url": "#/classic/flows",
+      "_note": "The same on the classic desktop editor, over its own flow's session (armed by the 1440 seed): CONTINUE in the header with night 2 and the route's counts and no replay line yet, START OVER's classic confirm CANCELled, then TOTAL CYCLES changed in the inspector and saved by the one save door the classic editor has, LIBRARY (flowsCloseEditor saves first), and the flow opened again: the replay line must then be there.",
+      "click": [
+        { "selector": "[data-flow-id=\"probe-s7-cont-d\"]", "required": true },
+        { "wait_for": "main header button:has([data-testid=\"run-copy\"])", "wait_ms": 20000 },
+        { "check": {
+          "run_copy": { "selector": "main header button:has([data-testid=\"run-copy\"])", "flow": "probe-s7-cont-d", "night": 2, "min_banked": 2 },
+          "count": [ { "selector": "[data-flows-replay]", "equals": 0 } ] } },
+        { "shot": "continue" },
+        { "selector": "main header button:has([data-testid=\"flow-start-over\"])", "required": true },
+        { "wait_for": "[role=\"alertdialog\"]:has-text(\"Start this flow over?\")" },
+        { "shot": "start-over-confirm" },
+        { "selector": "[role=\"alertdialog\"] button:has-text(\"CANCEL\")", "required": true },
+        { "selector": "[data-node-id=\"n7\"]", "position": { "x": 40, "y": 14 }, "required": true },
+        { "fill": "label:has(> span.label:text-is(\"Total cycles\")) input", "value": "21" },
+        { "selector": "main header button:has-text(\"LIBRARY\")", "required": true },
+        { "selector": "[data-flow-id=\"probe-s7-cont-d\"]", "required": true },
+        { "wait_for": "[data-flows-replay]", "wait_ms": 15000 },
+        { "shot": "replay" }
+      ],
+      "testid": "run-copy",
+      "readouts": { "flow": "probe-s7-cont-d", "require": { "progress.session.armed": true, "progress.session.status": "dormant" }, "fields": [
+        { "selector": "[data-flows-replay]", "from": "progress", "template": "the armed session will replay the version from {session.plan_saved_ts|localdate}; press CONTINUE to apply your edits" }
+      ] },
+      "run_copy": { "selector": "main header button:has([data-testid=\"run-copy\"])", "flow": "probe-s7-cont-d", "night": 2, "min_banked": 2 },
+      "count": [
+        { "selector": "[role=\"alertdialog\"]", "equals": 0 },
+        { "selector": "main header [data-testid=\"flow-start-over\"]", "equals": 1 }
+      ],
+      "forbid_requests": [ { "method": "POST", "url": "**/api/flows/*/run" } ],
+      "text_intact": [
+        { "selector": "main header [data-testid=\"run-copy-verb\"]" },
+        { "selector": "main header [data-testid=\"run-copy-name\"]" },
+        { "selector": "main header [data-testid=\"run-copy-detail\"]" },
+        { "selector": "[data-flows-replay]" }
+      ]
+    },
+    {
+      "name": "s7-merid-phone",
+      "shot": "s7-merid-phone",
+      "widths": [390],
+      "touch": true,
+      "url": "#/session/flows",
+      "_note": "RUN on the flow drawn 16 minutes east of the meridian at the fixture site (`_wall_time`). The readouts are held to the routes on the first panel, the pier side the rig reports then is remembered, and the walk waits (up to 20 min) for STAGE to say the mosaic waits for the meridian; the readouts are then held to the routes again with state.group.meridian_wait true in both reads, and STAGE must name the mosaic and nothing else (no panel, no pass, no countdown: spec 5.10, 6.9). The run is left going for the desktop walk, which sees the flip.",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s7-merid\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] .nx-btn-label:text-is(\"RUN\")" },
+        { "selector": "[data-testid=\"flow-stages-run\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-run\"] .nx-btn-label:text-is(\"CONFIRM RUN\")" },
+        { "selector": "[data-testid=\"flow-stages-run\"]", "required": true },
+        { "wait_for": "[data-testid=\"flow-stages-stage\"]:has-text(\"pass\")", "wait_ms": 120000 },
+        { "check": { "readouts": { "flow": "probe-s7-merid", "same_session": true, "timeout_ms": 15000, "require": { "state.group.meridian_wait": false }, "fields": [
+          { "selector": "[data-testid=\"flow-stages-stage\"] .nx-readout-value", "template": "{group.name} {group.panel} \u00b7 pass {group.pass}" }
+        ] } } },
+        { "remember_api": { "get": "/api/status", "field": "meridian.pier_side", "as": "s7_pier_before", "not_in": ["unknown"] } },
+        { "shot": "before-meridian" },
+        { "wait_for": "[data-testid=\"flow-stages-stage\"]:has-text(\"waiting for the meridian\")", "wait_ms": 1200000 },
+        { "remember_api": { "get": "/api/sequence/state", "field": "progress.frames_done", "as": "s7_frames_at_wait" } },
+        { "shot": "meridian-wait" }
+      ],
+      "testid": "session-flow-stages",
+      "readouts": { "flow": "probe-s7-merid", "same_session": true, "require": { "state.group.meridian_wait": true }, "fields": [
+        { "selector": "[data-testid=\"flow-stages-stage\"] .nx-readout-value", "template": "{group.name} \u00b7 waiting for the meridian" },
+        { "selector": "[data-testid=\"flow-stages-frames\"] .nx-readout-value", "template": "{progress.frames_done} / {progress.frames_total}" }
+      ] },
+      "text_expect": [
+        { "selector": "[data-testid=\"flow-stages-run\"]", "equals": "STOP" }
+      ],
+      "text_intact": [ { "selector": "[data-testid=\"flow-stages-monitor\"] .nx-readout-value" } ]
+    },
+    {
+      "name": "s7-merid-desktop",
+      "shot": "s7-merid-desktop",
+      "widths": [1440],
+      "touch": false,
+      "url": "#/classic/flows",
+      "_note": "The same run on the classic desktop editor, opened while the group waits: STOP in the header, then the view-only modal by S4's desktop doors. During the wait the modal must draw no panel as shot (the panel a waiting group names is the last one or the next one, and neither is being exposed: flowRunState `panelStateOf`), which is graded between two reads of the state that both say the group waits. Then the walk waits (up to 20 min) inside the modal for the flip: the state ends the wait, the pier side the rig reports differs from the one remembered before the meridian (the flip happened and was read, not assumed), and a frame is banked past the count the wait began at. The modal must then name the post-flip panel shooting, equal to the state at one moment.",
+      "click": [
+        { "selector": "[data-flow-id=\"probe-s7-merid\"]", "required": true },
+        { "wait_for": "main header button:has-text(\"STOP\")", "wait_ms": 15000 },
+        { "shot": "header-waiting" },
+        { "selector": "[data-node-id=\"n2\"]", "position": { "x": 40, "y": 14 }, "required": true },
+        { "selector": "[data-flows-frame=\"n2\"]", "required": true },
+        { "wait_for": "[data-testid=\"target-framing-sheet\"]", "wait_ms": 15000 },
+        { "wait_api": { "get": "/api/sequence/state", "field": "group.meridian_wait", "equals": true }, "wait_ms": 5000 },
+        { "check": { "count": [ { "selector": "[data-testid=\"framing-panel-run\"]", "equals": 0 },
+                               { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel\"][data-state=\"shooting\"]", "equals": 0 } ] } },
+        { "wait_api": { "get": "/api/sequence/state", "field": "group.meridian_wait", "equals": true }, "wait_ms": 2000 },
+        { "shot": "modal-waiting" },
+        { "wait_api": { "get": "/api/sequence/state", "field": "group.meridian_wait", "equals": false }, "wait_ms": 1200000 },
+        { "wait_api": { "get": "/api/status", "field": "meridian.pier_side", "differs_from": "s7_pier_before", "not_in": ["unknown"] }, "wait_ms": 300000 },
+        { "wait_api": { "get": "/api/sequence/state", "field": "progress.frames_done", "differs_from": "s7_frames_at_wait" }, "wait_ms": 120000 },
+        { "wait_for": "[data-testid=\"framing-panel-run\"]:has-text(\"shooting now\")", "wait_ms": 60000 },
+        { "shot": "after-flip" }
+      ],
+      "testid": "target-framing-sheet",
+      "marker": "session is running",
+      "readouts": { "flow": "probe-s7-merid", "same_session": true, "require": { "state.group.meridian_wait": false }, "fields": [
+        { "selector": "[data-testid=\"framing-panel-run\"]", "containing": "shooting now", "template": "{group.panel}: shooting now" },
+        { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel-label\"][data-state=\"shooting\"] [data-role=\"panel-rc\"]", "template": "{group.panel}" }
+      ] },
+      "count": [ { "selector": "[data-testid=\"framing-sky\"] [data-role=\"panel\"][data-state=\"shooting\"]", "equals": 1 } ],
+      "text_intact": [ { "selector": "[data-testid=\"framing-panel-run\"]" } ],
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    }
+  ]
+}

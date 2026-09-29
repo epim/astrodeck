@@ -91,6 +91,37 @@ def _valid_row(r: object) -> bool:
     return isinstance(r, dict) and all(k in r for k in _MASTER_FIELDS)
 
 
+def _bucket_named(key: CalKey) -> str:
+    """The frames of one bucket, as a log line names them: a flat's by its
+    filter, as ``_distinct_ids`` does, and a dark's or a bias's by the
+    numbers that tell one of them from another, never by its id, which for
+    a dark is mostly a formatted exposure."""
+    if key.frame_type == "FLAT":
+        return f"flats for filter {key.filter!r}"
+    if key.frame_type == "DARK":
+        return f"darks of {key.exposure_s:g} s at gain {key.gain}"
+    return f"bias frames at gain {key.gain}"
+
+
+def _described(exc: OSError) -> str:
+    """An OSError's type and code, without the path its text carries (#421).
+
+    ``str(OSError)`` ends with the file name, absolute, and a bus log line
+    reaches the WS stream, ``/api/logs`` and the night log: no absolute path
+    leaves this process for anybody (tests/test_no_absolute_paths_externally
+    .py), since the capture root's path names the operator's Windows account.
+    The errno or Windows code and ``strerror`` carry no path. The twin of
+    ``sequence.report._described``, kept here rather than imported because
+    that module imports the hub."""
+    name = type(exc).__name__
+    winerror = getattr(exc, "winerror", None)
+    if winerror:
+        return f"{name}: [WinError {winerror}] {exc.strerror or ''}".rstrip()
+    if exc.errno is not None:
+        return f"{name}: [Errno {exc.errno}] {exc.strerror or ''}".rstrip()
+    return name
+
+
 def _write_master_fits(data: np.ndarray, out_path: Path, key: CalKey,
                        frame_count: int) -> None:
     from astropy.io import fits           # lazy (hub precedent)
@@ -345,9 +376,25 @@ class CalibrationLibrary:
             except KeyError:
                 continue
             method = "median" if key.frame_type == "BIAS" else "sigma_clip"
-            n = build_master_streamed(
-                bucket.paths, out, method=method, sigma=sigma,
-                max_frames=max_frames, strip_rows=strip_rows, key=key)
+            # ONE BUCKET, NOT THE BUILD (#427). A master the disk refuses (a
+            # file name too long for it, a file another program holds open,
+            # a source frame deleted since the walk) raised straight out of
+            # here, past ``_save_manifest``: the masters written earlier in
+            # this build stayed on disk unrecorded, the manifest kept its old
+            # rows, and one bad frame anywhere under the capture root blocked
+            # every build after it until somebody found it and moved it. So
+            # that bucket is left out, named, and the rest are built and
+            # recorded. Its gap is what the health matrix then shows.
+            try:
+                n = build_master_streamed(
+                    bucket.paths, out, method=method, sigma=sigma,
+                    max_frames=max_frames, strip_rows=strip_rows, key=key)
+            except OSError as e:
+                bus.log("warning",
+                        f"{_bucket_named(key)} left out of the masters: "
+                        f"building their master failed with "
+                        f"{_described(e)}", "calibration")
+                continue
             indexed += len(bucket.paths)
             records.append(MasterRecord(
                 id=kid, frame_type=key.frame_type, exposure_s=key.exposure_s,

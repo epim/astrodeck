@@ -30,7 +30,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Callable, Literal
 
 PortKind = Literal["flow", "event"]
 
@@ -56,6 +56,51 @@ class Port:
     id: str
     label: str
     kind: PortKind
+
+
+@dataclass(frozen=True)
+class Derived:
+    """A missing-key default another module owns, read each time the table is
+    read rather than once when it is built (#461).
+
+    One so far: TARGET's ``overlap``, which is ``catalog.framing``'s
+    ``DEFAULT_OVERLAP`` in percent (``target_overlap_pct``), the one overlap
+    every framing starts from (spec 2.4, S6). Until S7 the table wrote 25 of
+    its own, a fourth copy of a number S6 made one constant. It cannot be read
+    when this table is built: ``catalog.framing`` imports ``flows.identity``,
+    and so this whole package, so a process that imports framing first builds
+    this table while framing's constant is not yet bound; and importing
+    framing at the top of this module would load the catalogue and the web
+    stack with every flow, which ``doctor.py`` avoids for the same reason.
+    ``NodeDef.params`` reads each ``Derived`` value as it is asked for, so no
+    reader ever meets one: the table as read holds numbers, in the order it
+    was written.
+
+    NEVER READ WHILE THE PACKAGE LOADS. ``read`` imports framing, so a module
+    that read a TARGET's defaults at import time would meet the half-loaded
+    framing this exists to avoid. Nothing does; ``test_overlap_constant_one``
+    loads both orders in a fresh interpreter."""
+    read: Callable[[], object]
+
+
+def target_overlap_pct() -> int | float:
+    """TARGET's ``overlap`` default: ``catalog.framing.DEFAULT_OVERLAP``, a
+    fraction, as the percent a TARGET holds (#461; spec 2.4, S6's one overlap
+    constant). ``nodeDefs.ts`` writes the same ``DEFAULT_OVERLAP * 100`` from
+    its mirror of the constant, one IEEE product, so the two sides agree to
+    the bit. A whole percent is an int, as the 25 it replaces was: the
+    inspector coerces an edit by the type of the default, and the vocabulary's
+    missing-key column is pinned by type.
+
+    A MISSING-KEY DEFAULT THAT CAN MOVE. A multi-panel TARGET whose stored
+    params hold no ``overlap`` reads as this, so re-deciding DEFAULT_OVERLAP
+    would re-mean such a block, which is the "semantics flip needs a
+    migration" class; a single panel is keyed on ``identity.SINGLE_OVERLAP``,
+    a stored contract, and never reads this."""
+    # Imported here, not at the top: see ``Derived``.
+    from ..catalog import framing
+    pct = framing.DEFAULT_OVERLAP * 100
+    return int(pct) if float(pct).is_integer() else pct
 
 
 @dataclass(frozen=True)
@@ -94,6 +139,18 @@ class NodeDef:
     #: POSTing an old-shaped graph either. A key may name a derived param
     #: that has no missing-key default at all (TARGET's `angle`).
     created_as: dict = field(default_factory=dict)
+
+    def __getattribute__(self, name: str):
+        """``params`` with each ``Derived`` default read now (see
+        ``Derived``), as a fresh dict in the table's order, so no reader of
+        the table, direct or through :func:`default_params`, ever meets one;
+        every other attribute, and a table with nothing derived, as stored."""
+        value = object.__getattribute__(self, name)
+        if name == "params" and any(isinstance(v, Derived)
+                                    for v in value.values()):
+            return {k: v.read() if isinstance(v, Derived) else v
+                    for k, v in value.items()}
+        return value
 
     @property
     def create_params(self) -> dict:
@@ -163,10 +220,13 @@ NODE_DEFS: dict[str, NodeDef] = {
         # PA keeps commanding it. The name, ra and dec keep today's defaults
         # so a stored TARGET with no coordinates still means M31; only a NEW
         # block is written blank (`created_as`), which is what stops a typed
-        # name landing on M31's coordinates (#190).
+        # name landing on M31's coordinates (#190). `overlap` is the one
+        # overlap every framing starts from, `framing.DEFAULT_OVERLAP` in
+        # percent (25), read when the table is read (`Derived`, #461).
         params={"name": "M31 - Andromeda", "ra": "00h 42m 44s",
                 "dec": "+41° 16′ 09″", "rotation": -1,
-                "rows": 1, "cols": 1, "overlap": 25, "fovX": 0, "fovY": 0,
+                "rows": 1, "cols": 1, "overlap": Derived(target_overlap_pct),
+                "fovX": 0, "fovY": 0,
                 "fovFrom": "", "skip": "", "passes": 1, "minVisit": 0,
                 "order": "Least complete first", "centerTol": 1.2,
                 "centerTries": 3, "ifNotCentred": "Auto",
@@ -449,12 +509,23 @@ def parse_cycle_plan(plan) -> list[tuple[str, int]]:
     would put frames on disk under a filter the operator never asked for. An
     empty result makes the stage contribute nothing, which the doctor and the
     compile both notice — silence here would not be noticed by either.
+
+    A DIGIT RUN ``int()`` REFUSES IS UNPARSEABLE TOO (#441). Past CPython's
+    integer string limit (4300 digits, leading zeros counted) ``int()``
+    raises ``ValueError``, and unguarded that reached ``compile_plan`` and
+    ``doctor.check`` from a flow validation lets a save store, so the flow
+    never compiled again. An exposure that long is no exposure, so its slot
+    is dropped like any other slot nobody can read.
     """
     out: list[tuple[str, int]] = []
     for chunk in str(plan or "").split(","):
         m = _CYCLE_SLOT_RE.match(chunk.strip())
         if m:
-            out.append((m.group(1), int(m.group(2))))
+            try:
+                seconds = int(m.group(2))
+            except ValueError:
+                continue
+            out.append((m.group(1), seconds))
     return out
 
 

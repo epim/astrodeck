@@ -26,6 +26,10 @@
 //   5. A viewer never sees the altitude column or the night card: absent, not
 //      empty.
 //   6. A read-only Example opens in view mode and says why.
+//   7. RUN's loop toggle opens on what the run does (#429): `targetLoops`,
+//      the card's reader, so OFF over a tail loop beside a stale pass wire
+//      from mid-lane (M12), graded on the panel-lane fixture's own case, and
+//      switching it on repairs the lane to the graph the fixture records.
 //
 // Run mode (spec 2.6: the sheet read-only while the flow's session runs,
 // drawing the live group) is runMode.test.tsx's, graded on the rig's and the
@@ -127,6 +131,8 @@ function readJson(rel: string): any {
 }
 const PANELS_FX = readJson("../../../../../../server/tests/fixtures/mosaic_panels_3x2.json");
 const READOUTS_FX = readJson("../../../../../../server/tests/fixtures/flow_readouts_m31.json");
+/** The panel-lane cases test_flows_panel_lane.py holds to compile.py. */
+const LANE_FX = readJson("../../../../../../server/tests/fixtures/panel_lane_cases.json");
 
 const OPERATOR = ["view.status", "view.preview", "view.site_derived", "control.capture", "control.mount"];
 const VIEWER = ["view.status", "view.preview"];
@@ -203,8 +209,9 @@ useStore.setState({
 function setup(o: {
   caps?: string[]; ws?: boolean; progress?: any; readonly?: boolean;
   params?: Record<string, string | number>; framing?: any; tonight?: any;
+  graph?: any;
 } = {}): void {
-  const graph = { nodes: [target(o.params), CYCLE], edges: LANE };
+  const graph = o.graph ?? { nodes: [target(o.params), CYCLE], edges: LANE };
   useStore.setState({
     principal: { role: o.caps === VIEWER ? "viewer" : "operator", email: null, caps: o.caps ?? OPERATOR },
     wsConnected: o.ws ?? true,
@@ -230,9 +237,9 @@ const root = createRoot(container);
 let closes = 0;
 /** A fresh sheet: whatever was mounted is unmounted first, so no draft
  *  survives from one mount to the next. */
-function mount(): void {
+function mount(nodeId = "n2"): void {
   act(() => { root.render(null); });
-  act(() => { root.render(createElement(Sheet, { nodeId: "n2", onClose: () => { closes++; } })); });
+  act(() => { root.render(createElement(Sheet, { nodeId, onClose: () => { closes++; } })); });
 }
 function unmount(): void {
   act(() => { root.render(null); });
@@ -989,6 +996,99 @@ await test("a read-only Example opens in view mode and says why", async () => {
   assert(q("framing-view-why") === null, "an editable flow says it is view-only");
   assert(q("framing-done"), "an editable flow has no DONE");
   unmount();
+});
+
+// ======================================================================
+// 7. RUN's loop toggle opens on what the run does (#429)
+
+/** A `loop_cases` entry of the panel-lane fixture, by id, failing (never
+ *  skipping) when it is gone. */
+function loopCase(id: string): any {
+  const c = (LANE_FX.loop_cases ?? []).find((x: any) => x.id === id);
+  if (!c) throw new Error(`panel_lane_cases.json holds no loop case ${id}`);
+  return c;
+}
+/** The case's graph with its TARGET framed (this file's M31: a camera field,
+ *  coordinates, an angle), so the sheet can lay the grid out and DONE is not
+ *  held by a missing field or angle. The rows, the columns and every wire
+ *  stay the fixture's. */
+function framedCase(g: any, block: string): any {
+  return {
+    ...g,
+    nodes: g.nodes.map((n: any) => (n.id === block
+      ? { ...n, params: { ...target().params, ...n.params } } : n)),
+  };
+}
+const loopToggle = () => q("framing-loop") as any;
+const passWiresInto = (block: string) => useStore.getState().flows.graph.edges
+  .filter((e: any) => e.fromPort === "pass" && e.to === block && e.toPort === "next")
+  .map((e: any) => `${e.id}:${e.from}`);
+
+// MUTANT "modal reads loopWires" (TargetFramingSheet.tsx: `opened.loop` back to
+// `loopWires(graph, nodeId).length > 0`, the sheet as S5 left it). Run in
+// scratchpad S7-USLICE-mut. Observed ("targetFramingSheet.test: 20/21
+// passed"):
+//   x RUN's loop opens OFF over a tail loop beside a stale mid-lane wire, and switching it on repairs the lane: RUN's loop over a lane the card says runs one panel at a time: expected "false", got "true"
+await test("RUN's loop opens OFF over a tail loop beside a stale mid-lane wire, and switching it on repairs the lane", async () => {
+  const c = loopCase("loop-on-stranded-beside-the-tail-loop");
+  // Premises, from the fixture: the graph does not rotate (M12) and the
+  // repaired one does; the case is a press of `true`.
+  eq(c.rotates, { graph: false, result: true }, "premise: the fixture's rotation, before and after");
+  eq(c.loop, true, "premise: the case is the loop turned on");
+  setup({ ws: false, graph: framedCase(c.graph, c.block) });
+  mount(c.block);
+  assert(loopToggle(), "precondition: the sheet shows no RUN loop toggle for the fixture's lane");
+  eq(loopToggle().getAttribute("data-on"), "false", "RUN's loop over a lane the card says runs one panel at a time");
+  click(loopToggle().closest("button"));
+  eq(loopToggle().getAttribute("data-on"), "true", "RUN's loop after one press");
+  click(doneBtn());
+  await flush();
+  eq(applyCalls.length, 1, "precondition: DONE did not reach flowsApplyFraming");
+  eq(applyCalls[0][2], true, "the loop DONE sent");
+  const want = c.result.edges.filter((e: any) => e.fromPort === "pass" && e.to === c.block && e.toPort === "next")
+    .map((e: any) => `${e.id}:${e.from}`);
+  eq(passWiresInto(c.block), want, "the pass wires into next after DONE, as the fixture records them");
+  eq(JSON.stringify(useStore.getState().flows.graph.edges), JSON.stringify(c.result.edges),
+    "every wire after DONE, as the fixture records them");
+  unmount();
+  // CONTROL: the repaired lane, which rotates, opens ON, and a DONE that
+  // leaves RUN alone sends no loop and moves no wire.
+  setup({ ws: false, graph: framedCase(c.result, c.block) });
+  mount(c.block);
+  eq(loopToggle()?.getAttribute("data-on"), "true", "RUN's loop over the repaired lane");
+  typeInto(doc.querySelector("#tfs-name"), "M31 wide");
+  click(doneBtn());
+  await flush();
+  eq(applyCalls[0]?.[2], undefined, "the loop DONE sent with RUN untouched on a lane that rotates");
+  eq(JSON.stringify(useStore.getState().flows.graph.edges), JSON.stringify(c.result.edges),
+    "the repaired lane's wires after a DONE that left RUN alone");
+});
+
+// The other fact DONE needs is still the tail's wire, not the rotation: a
+// mosaic made one panel lifts every pass wire into its `next` when its tail
+// carries a loop wire, rotating or not, or the stale ones would stand as pass
+// wires into a 1x1 block.
+//
+// MUTANT "the one-panel lift reads the rotation" (TargetFramingSheet.tsx:
+// `loopArg`'s one-panel arm asks `opened.loop` in place of
+// `opened.tailWire`). Run in scratchpad S7-USLICE-mut. Observed
+// ("targetFramingSheet.test: 20/21 passed"):
+//   x a stranded lane made one panel has its tail loop and the stale wire lifted: the loop DONE sent for a looped mosaic made one panel: expected false, got undefined
+await test("a stranded lane made one panel has its tail loop and the stale wire lifted", async () => {
+  const c = loopCase("loop-on-stranded-beside-the-tail-loop");
+  setup({ ws: false, graph: framedCase(c.graph, c.block) });
+  mount(c.block);
+  eq(passWiresInto(c.block).length, 2, "precondition: the fixture's two pass wires into next");
+  click(buttonByText("fewer rows"));
+  click(buttonByText("fewer cols"));
+  click(buttonByText("fewer cols"));
+  click(doneBtn());
+  await flush();
+  eq(applyCalls.length, 1, "precondition: DONE did not reach flowsApplyFraming");
+  const n = useStore.getState().flows.graph.nodes.find((x: any) => x.id === c.block)!;
+  eq([n.params.rows, n.params.cols], [1, 1], "precondition: DONE made the block one panel");
+  eq(applyCalls[0][2], false, "the loop DONE sent for a looped mosaic made one panel");
+  eq(passWiresInto(c.block), [], "pass wires into a one-panel block after DONE");
 });
 
 // ------------------------------------------------------------------ report

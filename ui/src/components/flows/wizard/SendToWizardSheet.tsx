@@ -33,12 +33,12 @@
 // RUN button shares, `runAnsweringQuestions` on `POST /api/flows/{id}/run`,
 // with every gate that route applies, and is locked with its reason while the
 // compile shows a danger or a loss (wizardModel `runLock`). Both RUN and OPEN
-// IN EDITOR first open the saved flow in the store (`flowsOpen`), saving the
-// flow that was open there if it holds edits, as every way out of the editor
-// does: `flowsOpen` replaces the open record without a word, and `flowsRun`
-// runs whatever record is open. (`openSaved` is a local copy of that rule; a
-// hub switch in #/next leaves edits unsaved for every other `flowsOpen`
-// caller, #450, whose fix would let this copy go.)
+// IN EDITOR first open the saved flow in the store (`flowsOpen`), which saves
+// the flow that was open there if it holds edits and refuses, saying so, when
+// that save does not keep them (#450), and `flowsRun` runs whatever record is
+// open, so neither acts unless the saved flow is the one that landed
+// (`openSaved`). This sheet kept its own copy of the save-first rule until
+// #450 moved it into `flowsOpen` for every caller.
 //
 // CLOSE WAITS FOR ITS ANSWER. While GENERATE, RUN or OPEN IN EDITOR is out,
 // CLOSE, Escape and the scrim refuse and say why (`CLOSE_WHILE_BUSY`): a
@@ -57,6 +57,7 @@ import { fovFromOptics } from "../../../lib/framing";
 import { flowsApi, type FlowCompileResult, type FlowUnmapped } from "../../../lib/flowsApi";
 import { cyclePlanRows, resolveWheel, setSlotExposure, toggleSlot } from "../cyclePlanRows";
 import { askContinue, isRunPhaseLive, runAnsweringQuestions, runBlockedReason } from "../flowRunControls";
+import { FLOW_NOT_OPENED } from "../flowsSlice";
 import {
   ANGLE_WORDS, MOSAIC_ANGLES, STEP_TITLE, STEPS, UNGUIDED_CAP_S,
   angleArrived, angleOf, angleWords, fieldChanged, fieldWords, firstGap, initialAnswers,
@@ -74,11 +75,10 @@ export const FROM_FRAMING = "FROM THE FRAMING";
 export const GENERATE_FAILED = "Could not generate the flow";
 export const BUSY = "Already working on it - one moment.";
 export const RUN_DID_NOT_START = "The flow did not start";
-export const OPEN_FAILED = "That flow did not open";
-/** Why neither RUN nor OPEN IN EDITOR went ahead: the flow open in the editor
- *  holds edits its save did not keep, and opening this one would drop them. */
-export const OPEN_FLOW_UNSAVED =
-  "The flow open in the editor has edits that did not save, and opening this one would drop them. Save or close that flow first.";
+/** The store's own title for an open that did not land (flowsSlice
+ *  `FLOW_NOT_OPENED`), so this sheet's report of a failed open and the
+ *  store's refusal to open over unsaved edits coalesce into one card. */
+export const OPEN_FAILED = FLOW_NOT_OPENED;
 export const NO_WHEEL_NOTE =
   "No filter wheel reports its slots, so these are the seven a FILTER CYCLE assumes.";
 export const ONE_TARGET_ANGLE =
@@ -280,24 +280,28 @@ export default function SendToWizardSheet(p: SendToWizardSheetProps): JSX.Elemen
   };
 
   // ---- the saved flow into the store, for RUN and OPEN IN EDITOR
+  //
+  // REDUCED TO THE CHECK (#450). The save of a dirty open flow, and the
+  // refusal when it does not keep its edits, were this sheet's own; they are
+  // `flowsOpen`'s now, for every caller. What stays is what only the caller
+  // can do: act on NOTHING unless the flow asked for is the one that landed.
   const openSaved = async (id: string): Promise<boolean> => {
-    const st = useStore.getState();
-    if (st.flows.record && st.flows.record.id !== id && st.flows.dirty) {
-      await st.flowsSave();
-      if (useStore.getState().flows.dirty) {
-        enqueueToast({ level: "error", title: OPEN_FAILED, detail: OPEN_FLOW_UNSAVED });
-        return false;
-      }
-    }
-    const before = useStore.getState().flows.libraryError;
+    const before = useStore.getState().flows;
     await useStore.getState().flowsOpen(id);
     const now = useStore.getState().flows;
     if (now.record?.id !== id) {
+      // REFUSED OVER UNSAVED EDITS: the flow that was open, not a read-only
+      // Example (which `flowsOpen` replaces unsaved), is open still and
+      // still dirty, and `flowsOpen` has said so in its own toast, which
+      // this one would only repeat.
+      const refused = before.record !== null && !before.record.readonly && before.dirty
+        && now.record?.id === before.record.id && now.dirty;
+      if (refused) return false;
       // `flowsOpen` swallows its failure and leaves the previous record in
       // place, so RUN from here would start THAT flow: act on nothing.
       enqueueToast({
         level: "error", title: OPEN_FAILED,
-        detail: now.libraryError && now.libraryError !== before
+        detail: now.libraryError && now.libraryError !== before.libraryError
           ? now.libraryError : "The server answered with a different flow, so nothing was done.",
       });
       return false;

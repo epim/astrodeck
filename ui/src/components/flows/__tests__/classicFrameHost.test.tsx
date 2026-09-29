@@ -29,11 +29,12 @@
 //   9. The same key guard holds under the tablet's edit sheet and palette
 //      sheet, the other two modal Overlays over the canvas (#381).
 //  10. RUN MODE IS THE DOOR'S (#189 S5; spec 2.6). While the open flow's
-//      session runs (flowRunState `flowRunLive`), FRAME ON SKY opens the
-//      modal with `viewOnly`: read-only, with RUNNING_VIEW_ONLY. A dormant
-//      session, or the rig running another flow's session, opens it
-//      editable, and the run ending under an open modal makes it editable
-//      again.
+//      session runs (flowRunState `flowRunLive`, over the sessions the slice
+//      knows as the flow's since #449), FRAME ON SKY opens the modal with
+//      `viewOnly`: read-only, with RUNNING_VIEW_ONLY. A dormant session, or
+//      the rig running another flow's session, opens it editable, and the run
+//      ending under an open modal makes it editable again. That it holds
+//      through a save's re-read is runModeAcrossSave.test.tsx's.
 //
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // s4-uhostc-mut, and s4-uhostc-verify-mut for case 7), never in the shared
@@ -187,6 +188,10 @@ function seed(o: {
         editNode: o.editNode ?? null,
         countsNote: o.countsNote ?? null,
         progress: o.progress ?? null,
+        // As the slice holds it once an answer has landed: the answer's
+        // session noted in the same write (flowsSlice `fetchProgress`), which
+        // is what the door reads since #449.
+        sessionIds: o.progress?.session?.id ? [o.progress.session.id] : [],
         ui: { ...FLOWS_INIT.ui, screen: "editor", paletteOpen: o.paletteOpen ?? false },
       },
     } as any);
@@ -766,7 +771,7 @@ await test("Delete or Backspace under the tablet's edit sheet or palette sheet l
 // MUTANT "run mode decided once at open" (FlowEditor.tsx `FramingHostSheet`
 // reads the answer once, `const [running] = useState(() =>
 // flowRunLive(useStore.getState().flows.progress,
-// useStore.getState().sequence))`). Observed, 12/13:
+// useStore.getState().sequence))`, as S5 wrote the reader). Observed, 12/13:
 //   x while the open flow's session runs, FRAME ON SKY opens the modal read-only in run mode; a dormant session opens it editable: the sheet's reason once the run has ended: expected null, got "This flow's session is running: its framing opens to view, not to edit."
 await test("while the open flow's session runs, FRAME ON SKY opens the modal read-only in run mode; a dormant session opens it editable", async () => {
   const sheetReason = () => (doc.querySelector('[data-testid="framing-view-why"]') as any)?.textContent ?? null;

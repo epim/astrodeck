@@ -167,8 +167,11 @@ export default function FlowWizard() {
       label="New flow — guided"
       onClose={close}
       // `center`'s sm geometry already supplies --ov-max-w: 560px; only the
-      // height is the design's own number (§C.14).
-      surfaceStyle={{ "--ov-max-h": "90dvh" } as CSSProperties}
+      // height is the design's own number (§C.14), 90dvh, given as a FRACTION
+      // so the no-dvh fallback can clamp it too (#417). The gap is zeroed
+      // because center's sm geometry takes 2rem off the fraction, and the
+      // design's 90dvh never had it.
+      surfaceStyle={{ "--ov-max-h-frac": "0.9", "--ov-max-h-gap": "0px" } as CSSProperties}
       head={(
         <header
           data-flows-wizard

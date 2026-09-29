@@ -19,10 +19,13 @@
 // WHAT IS GUARDED
 //   1. The selected loop wire's control is at the arc's handle, (1202, 199),
 //      and its 22 px box covers no card.
-//   2. On the phone FLOW tab the control sits on the arc that tab DRAWS, from
+//   2. On the phone FLOW tab the control covers the arc that tab DRAWS, from
 //      the same positions and the same column-layout arc (#360): a control
 //      placed from the canvas's arc would stand off the drawn wire.
-//   3. CONTROL: any other selected wire's control is still at its anchors'
+//   3. And there its 26 px box lies inside the tab's container, which clips,
+//      at 360, 375 and 414 px (#428): centred on the drop, 7 px inside the
+//      edge, it reached 6 px past it and was drawn cut off.
+//   4. CONTROL: any other selected wire's control is still at its anchors'
 //      midpoint.
 //
 // Each named mutation was run in a private scratch copy of ui/ (never the
@@ -222,35 +225,110 @@ test("CONTROL: any other selected wire's remove control is at its anchors' midpo
 // ====================================================== the phone FLOW tab
 
 // The phone FLOW tab hands the control the layout's positions and `auto`, so
-// it must sit on the arc THAT tab draws: inside the container, half the
+// it must cover the arc THAT tab draws: inside the container, half the
 // gutter outside the columns (#360). A control placed from the canvas's arc
 // over the same positions stands 17 px right of the drawn drop, off the wire.
+// Since #428 it stands `LOOP_CONTROL_INSET_AUTO` (6 px) in from the drop,
+// at the handle's height, so its box, not its centre, is what lies on the
+// wire: the drop runs through it 7 px inside its outer side.
 //
 // MUTANT "control from the canvas arc on the phone tab" (FlowWireDelete.tsx:
 // `wireLoopArc(edge, { nodes, edges }, tier, false, positions)`, the column
-// layout not asked). Observed, flowWireDeleteLoop.test 2/3:
-//   x [phone FLOW 375 px] the control sits on the arc the tab draws: the
-//     control at (385, 693) is not on the drawn arc M164 661 L358 661 Q368
-//     661, 368 671 L368 695 Q368 705, 358 705 L17 705 Q7 705, 7 695 L7 214 Q7
-//     204, 17 204 L211 204
+// layout not asked). First observed 2/3 with the control on the drop; re-run
+// in S7-UCANVAS-mut with the #428 inset, flowWireDeleteLoop.test 2/6 (this
+// case and the three below):
+//   x [phone FLOW 375 px] the control covers the arc the tab draws, at its handle: the control's x
+//     expected 362
+//     got      379
+//   x [phone FLOW 375 px] the 26 px remove control lies inside the container and still covers the wire: the control spans x 366..392, outside [0, 375]
 // MUTANT "desktop stub on the phone tab" (targetSummary.ts loopArcOf, see
 // loopArcDom.test.tsx) moves the drawn arc and the control together, so only
-// the pinned x sees it here (2/3):
-//   x [phone FLOW 375 px] the control sits on the arc the tab draws: the
-//     control's x is the drop's
-//     expected 368
-//     got      385
-test("[phone FLOW 375 px] the control sits on the arc the tab draws", () => {
+// the pinned x and the container see it here; re-run in S7-UCANVAS-mut,
+// 2/6:
+//   x [phone FLOW 375 px] the control covers the arc the tab draws, at its handle: the control's x
+//     expected 362
+//     got      379
+//   x [phone FLOW 360 px] the 26 px remove control lies inside the container and still covers the wire: the control spans x 351..377, outside [0, 360]
+test("[phone FLOW 375 px] the control covers the arc the tab draws, at its handle", () => {
   const layout = computeAutoLayout({ nodes: NODES, edges: EDGES }, 375, NODE_DEFS);
   mount("loop", { tier: "phone", auto: true, positions: layout.pos });
   const at = controlAt();
   const d = container.querySelector('[data-loop-arc] [data-loop-arc-path]')?.getAttribute("d") ?? "";
   ok(d, "the tab drew no loop arc");
-  ok(samplePath(d).some((p) => Math.abs(p.x - at.x) < 0.5 && Math.abs(p.y - at.y) < 0.5),
-    `the control at (${at.x}, ${at.y}) is not on the drawn arc ${d}`);
-  // On the drop, the column's right edge (375 - 14) plus half the gutter.
-  eq(at.x, 375 - 14 + 7, "the control's x is the drop's");
+  ok(samplePath(d).some((p) => Math.abs(p.x - at.x) <= 13 && Math.abs(p.y - at.y) <= 13),
+    `the 26 px control at (${at.x}, ${at.y}) covers none of the drawn arc ${d}`);
+  // 6 px in from the drop, which is the column's right edge (375 - 14) plus
+  // half the gutter.
+  eq(at.x, 375 - 14 + 7 - 6, "the control's x");
 });
+
+// ================================ the phone FLOW tab's own container (#428)
+//
+// The tab lays the graph out itself and clips at its container's edges
+// (FlowPhoneGraph.tsx, `overflow-x-hidden`), so these cases mount the REAL
+// tab, with the loop wire selected, at three phone widths, and read the
+// control the tab drew: its box (its own width and height, centred on its
+// place) must lie inside [0, wc], wc the container the layout fills, and a
+// point of the arc the tab drew must lie inside that box, or the operator
+// sees a control beside the wire rather than on it.
+//
+// MUTANT "centred on the leg" (FlowWireDelete.tsx: the loop's control at
+// `loop.handle` on every surface, the #428 inset left out, as S5 left it).
+// Observed, flowWireDeleteLoop.test 2/6 (the three widths, and the 375 px
+// case above on its pinned x, "expected 362, got 368"):
+//   x [phone FLOW 360 px] the 26 px remove control lies inside the container and still covers the wire: the control spans x 340..366, outside [0, 360]
+//     path M164 661 L343 661 Q353 661, 353 671 L353 695 Q353 705, 343 705 L17 705 Q7 705, 7 695 L7 214 Q7 204, 17 204 L196 204
+//   x [phone FLOW 375 px] the 26 px remove control lies inside the container and still covers the wire: the control spans x 355..381, outside [0, 375]
+//     path M164 661 L358 661 Q368 661, 368 671 L368 695 Q368 705, 358 705 L17 705 Q7 705, 7 695 L7 214 Q7 204, 17 204 L211 204
+//   x [phone FLOW 414 px] the 26 px remove control lies inside the container and still covers the wire: the control spans x 394..420, outside [0, 414]
+//     path M164 661 L397 661 Q407 661, 407 671 L407 695 Q407 705, 397 705 L17 705 Q7 705, 7 695 L7 214 Q7 204, 17 204 L250 204
+
+const { layoutColumns, AUTO_PAD } = await import("../autoLayout");
+const FlowPhoneGraph = (await import("../FlowPhoneGraph")).default;
+
+// The tab measures its container (clientWidth, through a ResizeObserver);
+// jsdom lays nothing out, so both are supplied, for that container only.
+let phoneW = 390;
+Object.defineProperty(win.HTMLElement.prototype, "clientWidth", {
+  configurable: true,
+  get(this: any) { return this.getAttribute?.("data-flows-phone-tab") === "flow" ? phoneW : 0; },
+});
+g.ResizeObserver = class { observe() {} disconnect() {} };
+
+for (const w of [360, 375, 414]) {
+  test(`[phone FLOW ${w} px] the 26 px remove control lies inside the container and still covers the wire`, () => {
+    phoneW = w;
+    act(() => root.render(null));
+    act(() => {
+      useStore.setState({
+        flows: { ...FLOWS_INIT, graph: { nodes: NODES, edges: EDGES }, sel: { kind: "edge", id: "loop" } },
+      } as any);
+    });
+    act(() => root.render(React.createElement(FlowPhoneGraph)));
+    const wc = layoutColumns(w).colR + 150 + AUTO_PAD;
+    eq(wc, w, "precondition: the layout fills the container");
+    // The tab laid itself out at `w`: the TARGET stands where the layout at
+    // `w` puts it, so the control below was placed for this width.
+    const layout = computeAutoLayout({ nodes: NODES, edges: EDGES }, w, NODE_DEFS);
+    const tStyle = container.querySelector('[data-node-id="n2"]')?.getAttribute("style") ?? "";
+    ok(tStyle.includes(`translate3d(${layout.pos.n2.x}px,${layout.pos.n2.y}px,0)`),
+      `precondition: the tab did not lay out at ${w} px: ${tStyle}`);
+    const cut = container.querySelector("[data-flows-wire-selected]");
+    ok(cut, "the tab drew no remove control for the selected loop wire");
+    const at = controlAt();
+    const size = parseFloat(cut.style.width);
+    eq(`${size} x ${parseFloat(cut.style.height)}`, "26 x 26", "precondition: the phone FLOW control's size");
+    const box = { x0: at.x - size / 2, x1: at.x + size / 2, y0: at.y - size / 2, y1: at.y + size / 2 };
+    const d = container.querySelector("[data-loop-arc-path]")?.getAttribute("d") ?? "";
+    ok(d, "the tab drew no loop arc");
+    const bad: string[] = [];
+    if (box.x0 < 0 || box.x1 > wc) bad.push(`the control spans x ${box.x0}..${box.x1}, outside [0, ${wc}]`);
+    if (!samplePath(d).some((p) => p.x > box.x0 && p.x < box.x1 && p.y > box.y0 && p.y < box.y1)) {
+      bad.push(`the control [x ${box.x0}..${box.x1}, y ${box.y0}..${box.y1}] covers none of the arc`);
+    }
+    ok(bad.length === 0, `${bad.join("; ")}\n    path ${d}`);
+  });
+}
 
 // ----------------------------------------------------------------- report
 act(() => root.render(null));

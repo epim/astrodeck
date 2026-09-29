@@ -126,8 +126,21 @@ export function ClassicAtlasSky({ children }: { children: (display: AtlasDisplay
   </div>;
 }
 
-/** Sensor browsing never changes the saved frame or exposes equipment commands. */
-function CompassSurvey({center,display}:{center:{ra_hours:number;dec_deg:number};display:AtlasDisplay}) {
+/** The survey CompassSurvey shows when the framing session names none (or
+ *  names "schematic"): the store's own default, written out because the store
+ *  does not export it. It was the bare 'DSS2/color', a HiPS id nothing serves:
+ *  SkyCanvas has no tile slug for it, so it took the <img> path, and the
+ *  cutout route's `survey` accepts only the three CDS ids, so every request
+ *  was refused and the compass sky sat in its degraded state on every rig,
+ *  whatever its pack or network (found doing #426; #494). */
+const COMPASS_SURVEY = 'CDS/P/DSS2/color';
+
+/** Sensor browsing never changes the saved frame or exposes equipment commands.
+ *  Exported for its tests (framingSkyDegraded.test.tsx): what it says when the
+ *  survey is degraded, by `onlineFetch`, is SkyCanvas's default, and this is
+ *  one of the two hosts that show it (#426). No degradedText is passed: this
+ *  host has no pack status to pick a narrower sentence from. */
+export function CompassSurvey({center,display}:{center:{ra_hours:number;dec_deg:number};display:AtlasDisplay}) {
   const [zoom,setZoom]=useState(55);
   const [degraded,setDegraded]=useState(false);
   const surveyError=useCallback(()=>setDegraded(true),[]);
@@ -137,7 +150,7 @@ function CompassSurvey({center,display}:{center:{ra_hours:number;dec_deg:number}
   const framing=useStore(s=>s.framing);
   const region=useSkyRegion(center,zoom,true);
   return <section className="panel cst-atlas-camera" aria-label="Compass survey">
-    <SkyCanvas center={center} rotationDeg={0} survey={framing?.survey === 'schematic' ? 'DSS2/color' : framing?.survey ?? 'DSS2/color'} stretch="linear" fovZoomDeg={zoom}
+    <SkyCanvas center={center} rotationDeg={0} survey={framing?.survey === 'schematic' ? COMPASS_SURVEY : framing?.survey ?? COMPASS_SURVEY} stretch="linear" fovZoomDeg={zoom}
       optics={null} mosaic={{rows:1,cols:1,overlap:0}} night={night} mode={display.imagery?'survey':'schematic'} showFraming={false}
       onlineFetch={config?.survey?.online_fetch ?? false} surveyDegraded={degraded} onSurveyError={surveyError} onSurveyLoad={surveyLoad}
       skyRows={display.objects?region.rows.filter(display.accepts):[]} overlayControls={display.controls}

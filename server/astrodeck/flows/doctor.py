@@ -52,6 +52,22 @@ class Issue:
         return {"text": self.text, "level": self.level}
 
 
+#: Rule 2's line: a capture stage with no GUIDE upstream warns when its
+#: longest sub is this many seconds or more ("stars will trail at any real
+#: focal length"). THE ONE COPY OF THE NUMBER (#432). The wizard's unguided
+#: answer is bounded strictly below it at the route's door
+#: (``FlowWizardBody.unguided_exposure_s``) and in the generator
+#: (``wizard._unguided_seconds``, which the door's filter rows are held to
+#: through ``_within_the_unguided_cap``), because every generated graph must
+#: pass this doctor at note level or better (spec 1.8, and Revision 2, ruling
+#: 4). A second literal in either place is how the door came to accept 3600 s
+#: while this rule warned from 120. The wizard reads it as
+#: ``doctor.UNGUIDED_SUB_LINE_S`` at call time, as this rule does, so moving
+#: the line moves both; the door's field bound is read once, when app.py is
+#: imported, the only moment a pydantic bound can be read.
+UNGUIDED_SUB_LINE_S = 120
+
+
 def _flow_upstream_types(graph: FlowGraph, node_id: str) -> set[str]:
     """Every node type reachable BACKWARDS from ``node_id`` along FLOW edges.
 
@@ -799,12 +815,12 @@ def check(graph: FlowGraph, *, standards=None, mount=None,
     # GN-09: on a mount whose `needs_guiding` flag is set (a harmonic drive
     # whose unguided tracking cannot hold a sub of ordinary length -- the AM5
     # trailed unguided 60 s subs by 15 px on 2026-09-06), the generic "120 s
-    # or more" trailing rule below is the WRONG rule: it read clean on a 60 s
-    # unguided cycle the night this defect was found. When `mount` names such
-    # a mount, every capture stage with no GUIDE upstream gets the
-    # mount-specific line INSTEAD, at any sub length -- not doubled with the
-    # generic line, because a doctor that says two things about one wire
-    # teaches the operator to skim past both.
+    # or more" trailing rule below (``UNGUIDED_SUB_LINE_S``) is the WRONG
+    # rule: it read clean on a 60 s unguided cycle the night this defect was
+    # found. When `mount` names such a mount, every capture stage with no
+    # GUIDE upstream gets the mount-specific line INSTEAD, at any sub length
+    # -- not doubled with the generic line, because a doctor that says two
+    # things about one wire teaches the operator to skim past both.
     needs_guide_mount = mount is not None and getattr(mount, "needs_guiding", False)
     mount_name = getattr(mount, "name", "this mount") if needs_guide_mount else ""
     for n in [x for x in graph.nodes if x.type in _CAPTURE_TYPES]:
@@ -815,7 +831,7 @@ def check(graph: FlowGraph, *, standards=None, mount=None,
                 f"▸ {exp:g}s subs with no GUIDE upstream on a mount that needs "
                 f"guiding ({mount_name}: the harmonic drive trailed unguided "
                 f"60 s subs by 15 px on 2026-09-06). Add Guide.", "warn"))
-        elif exp >= 120 and "guide" not in up:
+        elif exp >= UNGUIDED_SUB_LINE_S and "guide" not in up:
             out.append(Issue(
                 f"▸ {exp:g}s subs with no GUIDE upstream - stars will trail at "
                 f"any real focal length. Add Guide, or shorten the subs.", "warn"))

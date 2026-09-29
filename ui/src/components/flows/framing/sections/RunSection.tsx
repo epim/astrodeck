@@ -21,7 +21,10 @@
 //   - Stay on a panel: `passes` (1 to 20) and "at least N minutes" (0 to 180).
 //   - While a mosaic waits: the FLOW'S `whenWaiting` setting (ruling 1),
 //     labelled "for every mosaic in this flow" because it is not this
-//     block's; DONE writes it through `flowsSetSetting`.
+//     block's; DONE writes it through `flowsSetSetting`. Its select sits on
+//     a row of its own under the label (#469): beside the label, in the
+//     360 px column, it showed "Shoot later targets, then c", and a native
+//     select cannot wrap its value.
 //   - Counts: no control (ruling 2). A block that still counts every sub
 //     shows the persistent counts line instead (S4 orchestrator ruling 8).
 //   - The readouts: every number is the server compile's (`readouts`),
@@ -44,6 +47,20 @@ export const WHEN_WAITING_LABEL = "While a mosaic waits (for every mosaic in thi
  *  held equal by framingSections.test.tsx. */
 export const WHEN_WAITING_NO_MOSAIC =
   "This flow has no mosaic yet, so this changes nothing until a TARGET has more than one panel.";
+
+/** The whenWaiting label's row: the label alone, across the row rather than
+ *  in `.tfs-label`'s 45% (which wrapped it over three lines once nothing sat
+ *  beside it), and no 44 px floor, since the row is not a control; the
+ *  select's row under it is. Inline, because framing.css is the sheet's
+ *  stylesheet and this is one row's arrangement. */
+const WHEN_WAITING_LABEL_ROW = { minHeight: 0, paddingTop: 8 } as const;
+const WHEN_WAITING_LABEL_TEXT = { flex: "1 1 auto" } as const;
+/** 12px, not `.field`'s 13px. "Shoot later targets, then come back" is 35
+ *  characters of IBM Plex Mono at 0.6 em: 273 px at 13px, which the 360 px
+ *  column's 315 px holds, but the narrowest phone in landscape (667 px, the
+ *  controls 45% of it) leaves the select 256 px inside its padding; 252 px at
+ *  12px fits both. */
+const WHEN_WAITING_SELECT = { fontSize: 12 } as const;
 
 export interface RunSectionProps {
   /** The draft is one panel: no loop, passes or minimum-visit row. */
@@ -89,10 +106,17 @@ export function RunSection(p: RunSectionProps): JSX.Element {
             onChange={p.onMinVisit} explain={p.explain} testId="framing-min-visit" />
         </>
       )}
+      {/* Two rows, the label's and the select's: the select gets the row's
+          whole width, which holds "Shoot later targets, then come back"
+          whole in the 360 px column (#469). */}
+      <div className="tfs-row" style={WHEN_WAITING_LABEL_ROW}>
+        <label className="tfs-label" htmlFor="tfs-when-waiting" style={WHEN_WAITING_LABEL_TEXT}>
+          {WHEN_WAITING_LABEL}
+        </label>
+      </div>
       <div className="tfs-row">
-        <label className="tfs-label" htmlFor="tfs-when-waiting">{WHEN_WAITING_LABEL}</label>
-        <select id="tfs-when-waiting" className="field tfs-input" value={p.whenWaiting}
-          onChange={(e) => p.onWhenWaiting(e.target.value)}>
+        <select id="tfs-when-waiting" className="field tfs-input" style={WHEN_WAITING_SELECT}
+          value={p.whenWaiting} onChange={(e) => p.onWhenWaiting(e.target.value)}>
           {FLOW_SETTINGS.whenWaiting.options.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       </div>

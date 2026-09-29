@@ -40,7 +40,8 @@
 //
 // RUN MODE (spec 2.6). While the flow's session runs, both doors open this
 // sheet with `viewOnly` (they decide it with flowRunState `flowRunLive`, from
-// the progress route's session and the rig's), and it opens read-only as an
+// the sessions the slice knows as the flow's and the rig's, and never from
+// the progress answer a save blanks, #449), and it opens read-only as an
 // Example does: no DONE, the fieldset disabled, the sky read-only, so it
 // writes nothing. What it adds is the run: each panel of the framed grid is
 // drawn as the live `state.group` and the progress route say it is
@@ -77,6 +78,7 @@ import { raHms, decDms } from "../QuickFlow";
 import { NODE_DEFS } from "../nodeDefs";
 import { flowSetting, type FlowNodeRec } from "../flowsTypes";
 import { isMultiPanel, laneBranched, laneTail, loopSource, loopWires, panelLane } from "../panelLane";
+import { targetLoops } from "../targetSummary";
 import { countsAttempts, countsNotice } from "../countsNotice";
 import {
   angleLocks, angleOf, angleOffer, cameraFieldLine, currentAnswer, doneState, draftCentre,
@@ -94,7 +96,7 @@ import { FramingSky, type SkyPoint } from "./FramingSky";
 import { WhereSection, NO_OBJECT, NO_SIZE } from "./sections/WhereSection";
 import { GridSection } from "./sections/GridSection";
 import { AngleSection } from "./sections/AngleSection";
-import { PanelsSection, panelRows } from "./sections/PanelsSection";
+import { PanelsSection, panelRows, runLine } from "./sections/PanelsSection";
 import { RunSection } from "./sections/RunSection";
 import { CentringSection } from "./sections/CentringSection";
 
@@ -249,9 +251,23 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
   });
 
   // ---- what the block was when the sheet opened, for the loop rule
+  //
+  // RUN OPENS ON WHAT THE RUN DOES (#429): `targetLoops`, the one reader of
+  // "does this block rotate" the card's footer, the loop chip, the phone
+  // rail and LOOP PANELS all ask. It opened on `loopWires` alone, which
+  // finds the tail's wire standing beside a stale pass wire from mid-lane
+  // (M12): the toggle read ON over a lane the card said runs one panel at a
+  // time and `/run` refuses, and a DONE that left it alone sent no `loop`,
+  // which repairs nothing. Now it opens OFF there, and switching it on sends
+  // `true`, whose `withLoop` moves the lane to one loop from its tail.
+  //
+  // `tailWire` is the other fact DONE needs, and a different one: a wire
+  // leaving the tail, which a DONE that makes the mosaic one panel lifts
+  // (`loopArg` below). A lane that does not rotate can still carry one.
   const [opened] = useState(() => ({
     multi: isMultiPanel(node),
-    loop: loopWires(graph, nodeId).length > 0,
+    loop: targetLoops(node, graph),
+    tailWire: loopWires(graph, nodeId).length > 0,
   }));
   const [loopTouched, setLoopTouched] = useState<boolean | null>(null);
   const storedWaiting = flowSetting(graph.settings, "whenWaiting");
@@ -345,7 +361,7 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
   const runGroupId = runMode ? progressBlock?.group_id ?? null : null;
   const runGrid = progressBlock?.grid ?? null;
   const runKey = useStore((s) =>
-    JSON.stringify(runPanelsOf(groupForBlock(s.sequence, runGroupId), rows, cols, runGrid)));
+    JSON.stringify(runPanelsOf(groupForBlock(s.sequence, runGroupId), rows, cols, runGrid, s.sequence)));
   const run = useMemo(() => JSON.parse(runKey) as Record<string, PanelRunState>, [runKey]);
 
   // ---- the panels, in run order, and as the sky draws them
@@ -366,6 +382,10 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
       return {
         row: pp.row, col: pp.col, ra_hours: pp.ra_hours, dec_deg: pp.dec_deg,
         rotation_deg: pp.rotation_deg, order: r?.order ?? undefined, state,
+        // The current panel of a held run is drawn as shot (panelDrawState)
+        // and told to a screen reader in PANELS' words, never "shooting
+        // now" (#451).
+        words: r?.run?.kind === "current" ? runLine(r.run) ?? undefined : undefined,
       };
     });
   }, [serverPanels, mirror, rowsModel]);
@@ -392,7 +412,7 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
   // wire is added"); a looped mosaic that becomes one panel has its wire
   // lifted, which would otherwise be a pass wire into a 1x1 block.
   const loopArg: boolean | undefined = !draftMulti
-    ? (opened.multi && opened.loop ? false : undefined)
+    ? (opened.multi && opened.tailWire ? false : undefined)
     : loopTouched !== null ? loopTouched
       : !opened.multi ? true : undefined;
 

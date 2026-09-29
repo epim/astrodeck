@@ -20,7 +20,8 @@
 // is listed from 1-1 and says so as well (#412 item 4): after the first visit
 // its numbers are not the order the run takes. Skipped panels run in no order
 // and are listed after, in grid order, so a panel toggled back on shows where
-// it came from.
+// it came from. In run mode a panel set aside tonight runs in no order
+// tonight either, and is listed unnumbered between the two (#528).
 //
 // THE ALTITUDE COLUMN AND THE NIGHT CARD ARE SITE-DERIVED (spec 6.9). A
 // panel's peak altitude tonight is a function of the site's latitude, so the
@@ -30,12 +31,16 @@
 // being withheld, and a "-" in every row reads as "these panels never rise".
 //
 // IN RUN MODE (spec 2.6) a row also says what the live run is doing to its
-// panel, in a line under it: "shooting now", or "set aside tonight:" and the
-// engine's reason in the engine's words. The reason is the one thing the sky
-// cannot draw (its "!" says only THAT a panel is set aside), and without it
-// the operator cannot tell a panel that will not centre from one the horizon
-// took. The state is framingModel `runPanelsOf`'s, handed in; nothing here
-// reads the run, and no time is shown (a meridian wait's end is the site's).
+// panel, in a line under it: "shooting now"; the panel the run is on while
+// it is paused, holding for cloud or stopping, worded by that state and
+// never as shot (#451); or "set aside tonight:" and the engine's reason in
+// the engine's words. The reason is the one thing the sky cannot draw (its
+// "!" says only THAT a panel is set aside), and without it the operator
+// cannot tell a panel that will not centre from one the horizon took. A
+// reason that already names its panel ("centring failed on 2-2 ...") is not
+// prefixed with the label again (#509). The state is framingModel
+// `runPanelsOf`'s, handed in; nothing here reads the run, and no time is
+// shown (a meridian wait's end is the site's).
 
 import type { JSX, ReactNode } from "react";
 import type { FlowProgressBlock } from "../../../../lib/flowsApi";
@@ -55,12 +60,51 @@ export const GRID_ORDER_NOTE =
 export const SHOOTING_NOW = "shooting now";
 /** The line for a panel set aside tonight, before the engine's reason. */
 export const SET_ASIDE_TONIGHT = "set aside tonight";
+/** The lines for the panel the run is on while no exposure of it is being
+ *  made (flowRunState's CURRENT, #451), one per run state. The hold's words
+ *  name cloud only when the engine's `hold` does. */
+export const CURRENT_PAUSED = "current panel, run paused";
+export const CURRENT_HOLDING_FOR_CLOUD = "current panel, holding for cloud";
+export const CURRENT_HOLDING = "current panel, run holding";
+export const CURRENT_STOPPING = "current panel, run stopping";
 
 /** A run-mode row's line, or null for a panel the run is doing nothing to. */
 export function runLine(run: PanelRunState | null | undefined): string | null {
   if (!run) return null;
   if (run.kind === "shooting") return SHOOTING_NOW;
+  if (run.kind === "current") {
+    if (run.run === "paused") return CURRENT_PAUSED;
+    if (run.run === "aborting") return CURRENT_STOPPING;
+    return run.hold === "clouds" ? CURRENT_HOLDING_FOR_CLOUD : CURRENT_HOLDING;
+  }
   return run.reason ? `${SET_ASIDE_TONIGHT}: ${run.reason}` : SET_ASIDE_TONIGHT;
+}
+
+/** Does `text` name the panel `label` ("2-2") as a whole label: not inside
+ *  a longer one, so "12-2" and "2-21" do not name 2-2. */
+export function namesPanel(text: string, label: string): boolean {
+  if (!label) return false;
+  const at = (i: number) => (i >= 0 && i < text.length ? text[i] : "");
+  for (let i = text.indexOf(label); i !== -1; i = text.indexOf(label, i + 1)) {
+    if (!/[0-9]/.test(at(i - 1)) && !/[0-9]/.test(at(i + label.length))) return true;
+  }
+  return false;
+}
+
+/** A run-mode row's whole line, as PANELS prints it under the panel's row,
+ *  or null for a panel the run is doing nothing to: the panel's label, then
+ *  `runLine`. A set-aside reason that already names the panel stands alone
+ *  after "set aside tonight:", with no label before it (#509): the engine's
+ *  centring reason reads "centring failed on 2-2 on 3 consecutive visits
+ *  ...", and "2-2: set aside tonight: centring failed on 2-2 ..." said the
+ *  panel twice in one line, under a row whose PANEL cell already says it. A
+ *  reason that does not name it ("guiding did not start on any panel of
+ *  M31") keeps the label, or the line would not say which panel. */
+export function runRowText(label: string, run: PanelRunState | null | undefined): string | null {
+  const line = runLine(run);
+  if (line === null) return null;
+  if (run?.kind === "set_aside" && namesPanel(run.reason, label)) return line;
+  return `${label}: ${line}`;
 }
 
 export interface PanelRow {
@@ -68,7 +112,8 @@ export interface PanelRow {
   row: number;
   col: number;
   label: string;
-  /** 1-based run order among the panels that run; null for a skipped one. */
+  /** 1-based run order among the panels that run; null for a skipped one,
+   *  and in run mode for one set aside tonight (#528). */
   order: number | null;
   skipped: boolean;
   /** Banked and owed-in-all subs from the progress route; `total` 0 when the
@@ -155,11 +200,23 @@ export function panelRows(a: {
     }
   }
   const leastComplete = a.order === "Least complete first" || !ORDERS.includes(a.order);
-  const live = cells.filter((c) => !c.skipped).sort((x, y) =>
+  // A PANEL SET ASIDE TONIGHT IS NOT IN TONIGHT'S ORDER (#528). The engine
+  // owes it no visit for the rest of the night (spec 5.10, `_visits_owed`)
+  // and the recovery ladder leaves it out, so numbering it would name, as
+  // the run's next panel, the one the run has given up on; and least
+  // complete first always put it at 1, since it banked nothing (observed on
+  // the S7 probe's forced-solve-failure walk: "1 2-2" in PANELS and a "1"
+  // badge on the sky's dotted 2-2). In run mode such a panel is listed after
+  // the panels that run, unnumbered, and before the skipped ones; its row
+  // still says why, and the sky still draws it dotted with "!".
+  const asideTonight = (c: PanelRow) => c.run?.kind === "set_aside";
+  const live = cells.filter((c) => !c.skipped && !asideTonight(c)).sort((x, y) =>
     (leastComplete ? x.fraction - y.fraction : 0) || x.snake - y.snake);
   live.forEach((c, i) => { c.order = i + 1; });
+  const aside = cells.filter((c) => !c.skipped && asideTonight(c))
+    .sort((x, y) => x.row - y.row || x.col - y.col);
   const off = cells.filter((c) => c.skipped).sort((x, y) => x.row - y.row || x.col - y.col);
-  return [...live, ...off].map(({ snake: _s, fraction: _f, ...row }) => row);
+  return [...live, ...aside, ...off].map(({ snake: _s, fraction: _f, ...row }) => row);
 }
 
 export interface PanelsSectionProps {
@@ -231,10 +288,10 @@ export function PanelsSection(p: PanelsSectionProps): JSX.Element {
           </div>,
           // The run's line for this panel, a row of its own under it so a
           // long reason wraps rather than squeezing the bar.
-          runLine(r.run) !== null && (
+          runRowText(r.label, r.run) !== null && (
             <div key={`${r.label}-run`} className="tfs-row tfs-note" role="row"
               data-testid="framing-panel-run" data-panel-run={r.label}>
-              <span role="cell">{`${r.label}: ${runLine(r.run)}`}</span>
+              <span role="cell">{runRowText(r.label, r.run)}</span>
             </div>
           ),
         ])}

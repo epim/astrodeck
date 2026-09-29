@@ -126,12 +126,31 @@ class TestSkippingAPanelThroughItsParam:
         ``_expand_mosaic``: ``skipped_ids.append(tid)`` removed, so a skipped
         panel leaves the plan as a drop), observed the same way at night two
         (``"dropped_frames":4``, ``assert 409 == 200``).
+
+        DELIBERATE PIN CHANGE (S7 integration, #430, S7 orchestrator ruling
+        7): the three runs used to start on the real clock, seconds apart,
+        and the answers pinned ``"night": 2`` and ``3`` as the run count.
+        CONTINUE's ``night`` is the observing night since S7, so the
+        unpinned case went red with ``{'night': 1} != {'night': 2}``. Each
+        night now starts on its own evening (``Rig.on_night``).
+
+        RED under mutant "tonight never adds a night" (``Session.night_at``
+        answering ``len(nights)``, so the evening CONTINUE is pressed on is
+        always one already run), observed in the integration's private
+        copy:
+
+            AssertionError: assert {'continued':...kept': 2, ...} ==
+            {'continued':...kept': 2, ...}
+              Differing items:
+              {'night': 1} != {'night': 2}
         """
+        rig.on_night(1)
         fid, sid, ids = await _night_one(rig)
         t12, (l12, r12) = ids[P12]
 
         saved = await _put(rig, fid, _graph(skip="1-2"))    # night two
         assert saved["reanchored"] == [], "a skip is not a re-frame (2.5)"
+        rig.on_night(2)
         r = await rig.run(fid)
         assert r.status_code == 200, r.text
         assert r.json()["session"] == {
@@ -146,6 +165,7 @@ class TestSkippingAPanelThroughItsParam:
             "the skipped panel's frames stay in the ledger")
 
         await _put(rig, fid, _graph(skip=""))               # night three
+        rig.on_night(3)
         r = await rig.run(fid)
         assert r.status_code == 200, r.text
         assert r.json()["session"] == {

@@ -51,14 +51,16 @@
 //
 // RUN MODE IS THE DOOR'S TO DECIDE (#189 S5; spec 2.6). While the open flow's
 // session is running, the modal opens with `viewOnly`: read-only, drawing the
-// run's panels. Decided by flowRunState `flowRunLive`, the reader the classic
+// run's panels. Decided by flowRunState `flowRunLive` over the sessions the
+// slice knows as the open flow's (`knownSessions`), the reader the classic
 // host (FlowEditor.tsx `FramingHostSheet`) asks too, so a flow is running in
-// both UIs or in neither.
+// both UIs or in neither. Never over `flows.progress`, which each save blanks
+// for a round trip (#449).
 
 import { Suspense, type JSX } from "react";
 
 import { TargetFramingSheetLazy } from "../../../../../components/flows/framing";
-import { flowRunLive } from "../../../../../components/flows/flowRunState";
+import { flowRunLive, knownSessions } from "../../../../../components/flows/flowRunState";
 import { useStore } from "../../../../../store";
 import { buildHash, currentRoute, nav } from "../../../../router";
 import { ActionButton, EmptyCard } from "../../../../ui";
@@ -147,8 +149,8 @@ function closeFrame(): void {
 export function FlowFrameSheet({ params }: SheetProps): JSX.Element {
   const recordId = useStore((s) => s.flows.record?.id ?? null);
   // A boolean selector: a run of this flow starting or ending re-renders this
-  // sheet, a frame or a status tick does not.
-  const running = useStore((s) => flowRunLive(s.flows.progress, s.sequence));
+  // sheet, a frame, a status tick or a progress re-read does not.
+  const running = useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
   const open = params.open ?? "";
   // The shared modal owns every other decision: a node that is gone or is not
   // a TARGET says so and offers CLOSE, a read-only Example opens in view mode

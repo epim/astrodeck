@@ -320,11 +320,21 @@ _LEFT_ON_THE_REAL_CONFIG = frozenset({
 #: ``users.json`` by the site leak scanner). Each is asserted moved, so a
 #: sweep that took nowhere fails at the first test rather than passing
 #: every test that never reads one.
+#:
+#: ``flows/`` and ``users.json`` are no longer here (the S7 integration).
+#: Since #436 the flow store and the user store read ``config.CONFIG_DIR``
+#: at each call, and the session fixture points that at the throwaway
+#: before the sweep runs, so their two entries (``flows.store.CONFIG_DIR``
+#: and ``user_store._path``) passed whether the sweep moved anything or
+#: not: with the sweep's ``setattr`` made a no-op and only those two
+#: entries left, test_s7_store_config_dir_live.py passed 6 of 6, where the
+#: four below error every case at setup ("astrodeck.plans.plan_library._dir
+#: is still on the developer's real config: the sweep missed it"). A known
+#: positive that cannot fail grades nothing; that the two stores follow the
+#: directory is test_s7_store_config_dir_live.py's to hold.
 _SWEEP_MUST_MOVE = (
     ("astrodeck.plans", "plan_library._dir"),
     ("astrodeck.locations", "location_store._path"),
-    ("astrodeck.auth.users", "user_store._path"),
-    ("astrodeck.flows.store", "CONFIG_DIR"),
     ("astrodeck.config", "EGAIN_CONFIG_FILE"),
     ("astrodeck.config", "FILTER_CONFIG_FILE"),
 )

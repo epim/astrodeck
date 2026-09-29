@@ -20,16 +20,25 @@
 // RUN will not start, and it knows nothing of what the session banked.
 //
 // THE READOUTS ARE READ FROM THE SEQUENCE STATE, and only while that run is
-// this flow's (`flowRunLive`: the same session id on both answers). A run of
-// another flow, or of a plan, is not this flow's run, and its target, frames
-// and clock on this flow's monitor would be a claim about the wrong ledger.
+// this flow's (`flowRunLive`: the session the run writes is one the slice
+// knows as the flow's). A run of another flow, or of a plan, is not this
+// flow's run, and its target, frames and clock on this flow's monitor would
+// be a claim about the wrong ledger. Whose run it is was read off the
+// progress answer until #449, and every save blanked that answer for a round
+// trip: the monitor dropped to IDLE in the middle of a run and came back.
 //
-// NOTHING SITE-DERIVED. The published state carries `live.meridian_eta_s` and
-// a meridian wait's `schedule.reason`, and for an operator the panel and pass
-// across that wait: each timestamps a transit, which gives away the site's
-// longitude (spec 6.9). The readouts read none of them. Across a meridian
-// wait the stage names the mosaic and the wait, the same words for an
-// operator and a viewer.
+// NOTHING SITE-DERIVED OF THEIR OWN, AND THE ETA CARRIES #166 ITEM 1. The
+// published state carries `live.meridian_eta_s` and a meridian wait's
+// `schedule.reason`, and for an operator the panel and pass across that wait:
+// each timestamps a transit, which gives away the site's longitude (spec
+// 6.9). The readouts read none of them. Across a meridian wait the stage
+// names the mosaic and the wait, the same words for an operator and a viewer.
+// The ETA they do print is the engine's `progress.eta_s`, and that is not
+// clean: `compute_eta` adds a flip's cost while a flip falls inside the run,
+// so the number steps when the flip is taken, which is #166 item 1, still
+// open. It is the field the Monitor's own ETA already prints, so the four
+// surfaces add places that show it and no new channel, and they inherit
+// whatever #166's fix does to it, with no change here (#510, B16).
 //
 // Pure: no store, no React, no clock. Each answers from its arguments alone.
 import type { FlowProgress } from "../../lib/flowsApi";
@@ -68,11 +77,17 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
  *
  *  CONTINUE when the route names a DORMANT session, the one case in which
  *  `run_flow` continues rather than starts fresh (server `run_flow`: "it is
- *  continued only if it is dormant"). The night is the session's `nights`
- *  plus one, as the run route answers it (`_continue_flow_session`), so the
- *  button and the run's own log line agree; `nights` counts the session's
- *  RUNS, so a night that held a restart counts twice until #430 is settled,
- *  on both of them alike. The
+ *  continued only if it is dormant"). THE NIGHT READS THE OBSERVING-NIGHT
+ *  COUNT (#430, S7 orchestrator ruling 7): the route's `nights` is the
+ *  observing nights the session has run (server `Session.observing_nights`,
+ *  so a restart in the same night is the same night), and the button prints
+ *  it plus one, the night the run route answers for a CONTINUE on an evening
+ *  the session has not run (`Session.night_at`), so there the button and the
+ *  run's own log line agree. Until S7 `nights` counted RUNS, and a night
+ *  that held a restart read as the next night on both. The route sends no
+ *  clock, so the button cannot tell a night the session already ran: a
+ *  second CONTINUE in the same evening reads one more than the route
+ *  answers (#511). The
  *  counts are the blocks' `banked` over their `total`, summed over the blocks
  *  and nothing else. A block's sums already hold its panels, so adding the
  *  panels again would count every sub twice; skipped panels and orphaned
@@ -203,13 +218,25 @@ export function runStage(seq: SequenceState): string | null {
   return target === "" ? null : target;
 }
 
+/** Who `runReadouts` asks about the run: the sessions known to be the open
+ *  flow's (flowRunState `knownSessions`), which is what every store reader
+ *  passes (flowRunControls `useFlowRunReadouts`).
+ *
+ *  A LIST, NEVER A PROGRESS ANSWER. Until S7 a progress answer was accepted
+ *  here too, standing for the one session it names, only so runCopy.test.ts
+ *  compiled across the #449 change; that test now passes the list. No store
+ *  reader may ask `flows.progress` whose run it is: a save blanks it for a
+ *  round trip, which is the defect #449 names. */
+export type RunSessions = readonly string[] | null | undefined;
+
 /** The four readouts (STATE, ETA, STAGE, FRAMES), fed from the sequence state
- *  while `flowRunLive` says the rig's run is this flow's, and the idle values
- *  (`flows.run`) otherwise. */
-export function runReadouts(progress: FlowProgress | null | undefined,
+ *  while `flowRunLive` says the rig's run is this flow's, one of `known`'s
+ *  sessions (see `RunSessions`), and the idle values (`flows.run`)
+ *  otherwise. */
+export function runReadouts(known: RunSessions,
                             sequence: SequenceState | null | undefined,
                             idle: RunIdle): RunReadouts {
-  if (!sequence || !flowRunLive(progress, sequence)) {
+  if (!sequence || !flowRunLive(known, sequence)) {
     return {
       fed: false,
       state: String(idle.phase ?? "idle").toUpperCase(),

@@ -227,10 +227,16 @@ export function portAttr(nodeId: string, portId: string, dir: PortDir): string {
 
 // -------------------------------------------------------------------- status
 
-/** `flows.statuses` is a loose `Record<string, string>` because it is filled
- *  from a WS frame. Anything the vocabulary does not know reads as idle - an
- *  unknown word must not blank the status, which would look like "no stage
- *  here". */
+/** `flows.statuses` is a loose `Record<string, string>`, and NOTHING WRITES IT
+ *  (#464): no server topic carries a stage's status, and the published
+ *  sequence state names the running target, its index, its group and a line
+ *  of detail, never the stage - `to_plan` takes each compiled step's
+ *  `node_id` off before the engine sees the plan. So every stage reads idle,
+ *  a live run included, until the engine publishes the stage; #464 is
+ *  deferred for that field (S7 orchestrator ruling 10), and the phone stage
+ *  list shows no word for an unwritten stage while its flow runs. Anything
+ *  the vocabulary does not know reads as idle - an unknown word must not
+ *  blank the status, which would look like "no stage here". */
 export function asNodeStatus(raw: string | undefined): FlowNodeStatus {
   return raw === "busy" || raw === "ok" || raw === "warn" || raw === "bad" ? raw : "idle";
 }

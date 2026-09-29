@@ -53,6 +53,11 @@ export interface SkyPanel {
   /** 1-based run order, when the caller knows it. */
   order?: number;
   state: PanelState;
+  /** What a screen reader is told of the panel in place of its state's own
+   *  words, when the caller knows more than the shape can say: the Target
+   *  modal's current panel of a paused, held or stopping run is drawn as
+   *  `shooting` and is not being shot (#451). */
+  words?: string;
   /** The angle the server laid this panel out at (its answer carries one per
    *  panel). Absent, the canvas's own `rotationDeg` is used. */
   rotation_deg?: number;
@@ -364,7 +369,7 @@ export function PanelLabels(props: PanelLabelsProps): JSX.Element | null {
               </span>
             )}
             <span data-role="panel-rc">{name}</span>
-            <span className="sr-only">, {STATE_WORDS[panel.state] ?? panel.state}</span>
+            <span className="sr-only">, {panel.words ?? STATE_WORDS[panel.state] ?? panel.state}</span>
           </>
         );
         const common = {

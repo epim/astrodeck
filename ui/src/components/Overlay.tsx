@@ -142,9 +142,9 @@ export type OverlayGeometry = { wrap: string; surface: string; vars: OverlayVars
  *  fallback exists to prevent. `--ov-max-h` stays as an explicit cap that
  *  REPLACES the fraction: `full`'s 100% comes through it, and so does a
  *  caller's `surfaceStyle` cap. A caller that puts dvh there still loses the
- *  clamp without dvh (six do, #417); it should pass `--ov-max-h-frac` instead,
- *  with `--ov-max-h-gap: 0px` under center, whose 2rem gap would otherwise
- *  stay. */
+ *  clamp without dvh (six did until S7, #417, and overlay.test.ts now scans
+ *  for one); it should pass `--ov-max-h-frac` instead, with
+ *  `--ov-max-h-gap: 0px` under center, whose 2rem gap would otherwise stay. */
 export function overlayGeometry(variant: OverlayVariant, lg: boolean, sm: boolean): OverlayGeometry {
   switch (variant) {
     case "sheet":

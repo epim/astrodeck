@@ -30,8 +30,24 @@ import { nodeLossDetail, nodeLossLevel } from "./flowsTypes";
 import type { FlowNodeRec, FlowNodeStatus } from "./flowsTypes";
 import { progressChip } from "./flowProgress";
 import { withLoop, type LaneGraph } from "./panelLane";
-import { targetFooter, targetLoops } from "./targetSummary";
+import { fittedFooter, monoChars, targetLoops } from "./targetSummary";
 import FlowPort from "./FlowPort";
+
+/** The footer line's room, in characters, from the classes that draw it:
+ *  the card's `border` (1 px a side), the footer's `px-2.5` (10 px a side)
+ *  and its `text-[9.5px]` mono. 188 - 2 - 20 = 166 px, 29 characters.
+ *
+ *  Tailwind only builds a class it finds written out, so the classes cannot
+ *  be spelled from these numbers; cardFooterDom.test.tsx computes the budget
+ *  from the MOUNTED card's classes instead and holds this constant to it, so
+ *  a card that grows its padding or its type and not this fails there rather
+ *  than cutting a TARGET line this file thinks fits (S7 orchestrator ruling
+ *  9, #357). */
+const CARD_BORDER_PX = 1;
+const FOOTER_PAD_PX = 10;
+const FOOTER_FONT_PX = 9.5;
+export const CLASSIC_FOOTER_CHARS =
+  monoChars(nodeW("desktop") - 2 * CARD_BORDER_PX - 2 * FOOTER_PAD_PX, FOOTER_FONT_PX);
 
 /** `withLoop` needs an id for a wire it would add; the offer only asks
  *  WHETHER it would add one, so the wire is never kept. */
@@ -73,9 +89,15 @@ const LED_BY_STATUS: Record<FlowNodeStatus, LedState> = {
   idle: "off", busy: "busy", ok: "on", warn: "warn", bad: "bad",
 };
 
-/** `flows.statuses` is a loose `Record<string, string>` because it is filled
- *  from a WS frame. Anything the vocabulary does not know reads as idle — an
- *  unknown word must not blank the LED, which would look like "no node here". */
+/** `flows.statuses` is a loose `Record<string, string>`, and NOTHING WRITES IT
+ *  (#464): no server topic carries a stage's status, and the published
+ *  sequence state names the running target, its index, its group and a line
+ *  of detail, never the stage - `to_plan` takes each compiled step's
+ *  `node_id` off before the engine sees the plan. So every LED here reads
+ *  idle, a live run included, until the engine publishes the stage; #464 is
+ *  deferred for that field (S7 orchestrator ruling 10). Anything the
+ *  vocabulary does not know reads as idle - an unknown word must not blank
+ *  the LED, which would look like "no node here". */
 function asStatus(raw: string | undefined): FlowNodeStatus {
   return raw === "busy" || raw === "ok" || raw === "warn" || raw === "bad"
     ? raw : "idle";
@@ -144,6 +166,10 @@ function FlowNodeCard({
   const w = nodeW(phone ? "phone" : "desktop");
   const px = x ?? node.x;
   const py = y ?? node.y;
+  // A TARGET's footer, fitted to the line (ruling 9). Only where there IS a
+  // footer, so the phone card, which has none, calls no `sum`.
+  const footer = !phone && def && node.type === "target"
+    ? fittedFooter(node, loops, CLASSIC_FOOTER_CHARS) : null;
 
   // SELECTION OUTRANKS STATUS (§C.5) — a selected busy node reads as selected.
   // Both are token-derived: the prototype's literal rgba(0,210,255,·) values are
@@ -295,14 +321,18 @@ function FlowNodeCard({
           auto-graph's layout (autoLayout.ts, +8) budgets room for none. */}
       {!phone && (
         <div className="px-2.5 pt-[3px] pb-2 font-mono text-[9.5px] text-faint">
-          {/* A TARGET's line is `targetFooter` - "M31 · rotate · 3x2 · PA
-              30.0 · 25%" - shared with the #/next card; it takes the name
-              from the same `def.sum`, once. The loop word comes right after
-              the name because this line truncates at 29 characters (#357;
-              cardFooterDom.test.tsx reads that budget off these classes).
-              Every other type keeps its `sum`. */}
-          <div data-flow-summary className="truncate">
-            {node.type === "target" ? targetFooter(node, loops) : def.sum(node.params)}
+          {/* A TARGET's line is the #/next card's `targetFooter` - "M31 ·
+              rotate · 3x2 · PA 30.0 · 25%" - FITTED to this one line's 29
+              characters (`fittedFooter`, S7 orchestrator ruling 9, #357):
+              the overlap goes first, then the name is shortened with an
+              ellipsis, and the loop word and the angle are never cut. The
+              whole line is the tooltip whenever anything was left out. It
+              takes the name from the same `def.sum`, once. `truncate` stays
+              behind it for a line nothing can fit. Every other type keeps
+              its `sum`. */}
+          <div data-flow-summary className="truncate"
+               title={footer && footer.line !== footer.full ? footer.full : undefined}>
+            {footer ? footer.line : def.sum(node.params)}
           </div>
           {chip && (
             <div data-flow-progress className="truncate text-dim">{chip}</div>

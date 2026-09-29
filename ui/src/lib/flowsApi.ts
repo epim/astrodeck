@@ -195,6 +195,11 @@ export interface FlowRunFlags {
  *  persisted. */
 export interface FlowRunSession {
   id: string | null;
+  /** The observing night this run is of its session (server
+   *  `Session.night_at`, #430, S7 orchestrator ruling 7): the nights it has
+   *  run so far, plus one only when tonight is not already among them, so a
+   *  second press in the same evening is the night the log is already
+   *  writing. A fresh session's first run is night 1. */
   night: number;
   continued: boolean;
   kept: number;
@@ -305,12 +310,36 @@ export interface FlowProgressBlock {
 export interface FlowProgressSession {
   id: string;
   status: "active" | "dormant" | "complete";
-  /** How many RUNS the session has had: one report per engine start, so a
-   *  restart on the same night counts again (#430). Equal to the nights it
-   *  has run only while no night held a restart; CONTINUE's `night` is this
-   *  plus one. */
+  /** How many OBSERVING NIGHTS the session has run: one per distinct night
+   *  key (local noon to local noon, the key the night log is named by) of
+   *  its runs' starts, so a restart in the same night is the same night
+   *  (server `Session.observing_nights`; #430, S7 orchestrator ruling 7).
+   *  It counted RUNS until S7, one per engine start, so a night that held a
+   *  restart counted twice; the key kept its name and changed its meaning.
+   *
+   *  CONTINUE's `night` (`FlowRunSession.night`) is this plus one on a night
+   *  the session has not run, and this on a night it has. This answer
+   *  carries no clock, so the button (`runCopy`) prints this plus one, the
+   *  night a CONTINUE starts on an evening the session has not run, and is
+   *  one ahead of the run route on a same-night re-press (#511). */
   nights: number;
   count_mode: "attempts" | "accepted";
+  /** Whether auto-resume would start this session at dusk: dormant, with
+   *  auto-resume on (server `Session.is_armed`, the rule ResumeArm picks
+   *  by). Added by the ROUTE (`progress.replay_facts`; #473, S7 orchestrator
+   *  ruling 1), which since S7 always sends it. OPTIONAL because a server
+   *  older than S7 sends neither this nor `plan_saved_ts`, and every reader
+   *  must survive that answer: `replayNotice` reads a missing value as not
+   *  armed. test_types_mirror_status.py holds these two, and only these, as
+   *  the optional members. */
+  armed?: boolean;
+  /** The flow record's saved time (`updated_ts`, unix seconds) for the
+   *  version this session froze: what an armed auto-resume would replay.
+   *  Null for a session older than S7, a shipped Example's (never saved) and
+   *  one whose plan a PATCH replaced: the route never guesses a time. Absent
+   *  from a server older than S7 (see `armed`). The editor's replay line
+   *  compares it with the open record's `updated_ts` (`replayNotice`). */
+  plan_saved_ts?: number | null;
 }
 
 export interface FlowProgress {

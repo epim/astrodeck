@@ -101,6 +101,50 @@
 //   CONTROL "a comment names the slice" (store.ts given the line comment
 //   `// atlasBannerPending and dismissAtlasBanner were here`): 5/5 passed.
 //
+// THE EXCLUSION CHECK COULD NOT FAIL (#484, S7 finding B14). The walk case
+// asserted `FILES.filter(isTest)` was empty, and FILES is
+// `ALL.filter((r) => !isTest(r))`, so it was empty for every `isTest`. It now
+// grades what the exclusion excluded and kept: this file walked and not
+// scanned, a second test file likewise, and `isTest` on named tests and
+// named sources. MUTATION RECORD, 2026-09-28 (S7-USKYHUB), each mutant in a
+// private scratch copy of ui/ (scratchpad/S7-USKYHUB-mut in the session
+// scratchpad), from a byte backup restored with its sha256 checked. Output
+// verbatim; a list is cut at "[...]" where it runs on.
+//
+//   MUTANT "isTest excludes nothing" (`const isTest = (rel: string): boolean
+//   => false && rel === "";`), against the file BEFORE this change. Observed
+//   ("deletedDoorStrings.test: 3/5 passed"): the walk case PASSED, the
+//   tautology; only the two scans went red, because the files they now read
+//   happen to quote the strings:
+//     x no retired string survives in ui/src: [...] got ["__tests__/deletedDoorStrings.test.ts: \"panels to Plan\"", [...]]
+//     x no retired identifier or banner sentence survives in code: still in code: [...]
+//   The same mutant against this file. Observed ("2/5 passed"), the walk case
+//   red on its own terms, then the same two scans:
+//     x the walk reads ui/src's sources and none of its tests, so it cannot pass by reading nothing: the scan read __tests__/deletedDoorStrings.test.ts, which quotes every retired string: tests are not excluded
+//
+//   MUTANT "isTest misses __fixtures__" (the directory test cut to
+//   `(__tests__)`). Observed ("4/5 passed"):
+//     x the walk reads ui/src's sources and none of its tests, so it cannot pass by reading nothing: isTest let these tests through to the scan:
+//     expected []
+//     got      ["next/hubs/sky/sheets/__fixtures__/z.ts"]
+//
+//   MUTANT "isTest takes any name with test in it" (the name test cut to
+//   `/test/`). Observed ("4/5 passed"):
+//     x the walk reads ui/src's sources and none of its tests, so it cannot pass by reading nothing: isTest took these ordinary sources for tests, so the scan would skip them:
+//     expected []
+//     got      ["lib/testing.ts","lib/contest.ts","views/latest.tsx"]
+//
+//   MUTANT "a retired string injected into a production file" (quickCopy.ts
+//   given `export const INJECTED = "panels to Plan";`: the scanned list holds
+//   that production file, and the scan reads it). Observed ("4/5 passed"):
+//     x no retired string survives in ui/src: the retired Plan door's strings are still in these files (S6 deleted the door; SEND TO FLOW WIZARD replaced it):
+//     expected []
+//     got      ["next/hubs/sky/sheets/quickCopy.ts: \"panels to Plan\""]
+//
+//   CONTROL "the same string injected into a test file"
+//   (next/hubs/sky/__tests__/mosaicCopyPanelFirst.test.ts given the same
+//   constant): 5/5 passed.
+//
 // Convention: inline test()/eq() helpers, printed tally plus the
 // { passed, failed, total } export (shell-and-tests.md section 4).
 
@@ -212,10 +256,27 @@ test("the walk reads ui/src's sources and none of its tests, so it cannot pass b
     "next/hubs/sky/sheets/flow.tsx", "next/hubs/session/plan/PlanEditor.tsx",
     "lib/authGate.ts",
   ]) assert(TEXT.has(f), `the walk did not read ${f}, where a retired string lived`);
-  const tests = FILES.filter(isTest);
-  eq(tests, [], "the walk read test files, which quote the retired strings on purpose:");
-  assert(ALL.some((r) => r === "__tests__/deletedDoorStrings.test.ts"),
-    "the walk never saw this file, so its exclusion of tests is untested");
+  // THE EXCLUSION, GRADED ON WHAT IT EXCLUDED (#484). This used to assert
+  // `FILES.filter(isTest)` was empty, and FILES is `ALL.filter(!isTest)`, so
+  // that was empty for every `isTest` there could be. What can fail: this
+  // file, which quotes every retired string, was walked and was NOT scanned;
+  // so was a second test file; and the predicate answers named paths the way
+  // the walk needs, both ways round.
+  const SELF = "__tests__/deletedDoorStrings.test.ts";
+  assert(ALL.includes(SELF), "the walk never saw this file, so its exclusion of tests is untested");
+  assert(!TEXT.has(SELF), `the scan read ${SELF}, which quotes every retired string: tests are not excluded`);
+  const OTHER = "next/hubs/sky/__tests__/mosaicCopyPanelFirst.test.ts";
+  assert(ALL.includes(OTHER) && !TEXT.has(OTHER), `${OTHER} was not walked, or was scanned`);
+  const tests = [
+    "__tests__/x.test.ts", "lib/__tests__/y.ts", "next/hubs/sky/sheets/__fixtures__/z.ts",
+    "lib/w.test.tsx", "lib/v.test.mjs",
+  ];
+  eq(tests.filter((r) => !isTest(r)), [], "isTest let these tests through to the scan:");
+  const sources = [
+    "next/hubs/sky/SkyHub.tsx", "next/hubs/sky/sheets/quickCopy.ts",
+    "lib/testing.ts", "lib/contest.ts", "views/latest.tsx",
+  ];
+  eq(sources.filter(isTest), [], "isTest took these ordinary sources for tests, so the scan would skip them:");
 });
 
 test("the matchers find each retired string in the line it shipped in (known positives)", () => {

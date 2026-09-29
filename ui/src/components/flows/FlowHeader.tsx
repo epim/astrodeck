@@ -336,8 +336,11 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
           className="font-mono text-[11px] tabular-nums shrink-0"
           data-testid="flow-header-eta"
           // The sequence event's `progress.eta_s`, which a flow run really
-          // does emit because it runs on the same engine (§G-1's settlement
-          // (b), ruled by #189 S5), read only while that run is this flow's.
+          // does emit because it runs on the same engine, read only while
+          // that run is this flow's. The source is the U-07 plan (spec
+          // section 9, row U-07, built in #189 S5): the flow's readouts come
+          // from the sequence state and no flow topic was added. §G-1 was
+          // never ruled; U-07 is what was built (#510, B17).
           // The note rides in the tooltip on a phone: the row there is
           // README §5's `‹ LIBRARY` / title / `◷ RUN i` at 390 px, with no
           // room for four more words, and the MONITOR tab's ETA prints them.

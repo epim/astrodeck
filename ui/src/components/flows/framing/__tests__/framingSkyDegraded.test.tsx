@@ -1,6 +1,9 @@
 // framingSkyDegraded.test.tsx - the Target modal's sky on a rig with no survey
 // source says so, instead of LOADING for good (#404, UX-07; spec 2026-09-23
-// flows mosaic, 2.3).
+// flows mosaic, 2.3); what it says is right for the rig's online fetch and for
+// the render path (#426), on both hosts that show SkyCanvas's own copy; and
+// the modal's sky keeps the lines SkyCanvas draws under its canvas inside its
+// fixed height (#440, #465).
 //
 //   Run:  node --import ./test-css-stub.mjs --import tsx src/components/flows/framing/__tests__/framingSkyDegraded.test.tsx   (from ui/)
 //   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
@@ -29,9 +32,18 @@
 // browser with no WebGL) takes SkyCanvas's <img> cutout pipeline, whose own
 // first-load skeleton said LOADING for good in the same way, degraded or not.
 //
+// THE COPY (#426, S7-USKY). With no `degradedText` from its host, SkyCanvas
+// said UX-07's sentence whatever the rig's online fetch was, so an operator
+// whose fetch was ON, on a rig with no network, was told to turn it on; and
+// the line under the canvas said "schematic framing" over the tile engine,
+// which draws no schematic backdrop, behind a warning glyph and an em dash.
+// FramingSky and CompassSurvey (ClassicAtlasSky.tsx) are the two hosts that
+// show that default, so each is driven here in both states of onlineFetch.
+//
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
-// S5-SKY-mut), never in the shared tree (#254), and the failure it produced is
-// quoted verbatim.
+// S5-SKY-mut for S5's, S7-USKY-mut for S7's), never in the shared tree
+// (#254), and the failure it produced is quoted verbatim. S5's quotes carry
+// the copy as it read then.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -54,6 +66,9 @@ win.Element.prototype.releasePointerCapture = function () { /* jsdom has none */
 win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 win.URL.createObjectURL = () => "blob:stub";
 win.URL.revokeObjectURL = () => {};
+// The store (CompassSurvey reads it) opens nothing at import, but the shell
+// it belongs to expects a socket class to exist.
+win.WebSocket = class { close() {} addEventListener() {} send() {} };
 
 // A WebGL context that accepts every call and answers every query with a
 // truthy object: enough for initTileGL to compile, link and draw (it checks
@@ -67,8 +82,9 @@ win.HTMLCanvasElement.prototype.getContext = function (kind: string) {
 
 // The network. `tiles` decides what /api/survey/tile answers; the cutout
 // route (the <img> path) always fails. Every request is counted, so a case
-// can say how many 404s it took.
-const net = { tiles: "404" as "404" | "ok", tileCalls: 0, cutoutCalls: 0 };
+// can say how many 404s it took, and every survey id a cutout asked for is
+// kept, so a case can say whether the server would have served it at all.
+const net = { tiles: "404" as "404" | "ok", tileCalls: 0, cutoutCalls: 0, cutoutSurveys: [] as string[] };
 win.fetch = async (url: string) => {
   const s = String(url);
   if (s.includes("/api/survey/tile/")) {
@@ -78,7 +94,12 @@ win.fetch = async (url: string) => {
   }
   if (s.includes("/api/survey/cutout")) {
     net.cutoutCalls++;
+    net.cutoutSurveys.push(new URL(s, "http://local").searchParams.get("survey") ?? "");
     return { ok: false, status: 404, headers: { get: () => null }, blob: async () => ({}) };
+  }
+  // CompassSurvey asks what is catalogued in its patch of sky; nothing is.
+  if (s.includes("/api/catalog/region")) {
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ rows: [] }) };
   }
   throw new Error(`no network in this fixture: ${s}`);
 };
@@ -89,7 +110,7 @@ for (const k of [
   "window", "document", "navigator", "HTMLElement", "Element", "Node", "Event",
   "CustomEvent", "MouseEvent", "KeyboardEvent", "localStorage", "getComputedStyle",
   "matchMedia", "ResizeObserver", "requestAnimationFrame", "cancelAnimationFrame",
-  "Image", "URL", "fetch", "Blob",
+  "Image", "URL", "fetch", "Blob", "WebSocket", "location", "history",
 ]) {
   const v = k === "window" ? win : win[k];
   Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
@@ -99,6 +120,8 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { FramingSky } = await import("../FramingSky");
+const { CompassSurvey } = await import("../../../sky/ClassicAtlasSky");
+const { useStore } = await import("../../../../store");
 type SkyPanel = import("../../../atlas/PanelLayer").SkyPanel;
 
 // ------------------------------------------------------------------ harness
@@ -178,11 +201,33 @@ function props(over: Record<string, unknown> = {}): any {
  *  its own (FramingSky has no pack status to choose a better one from). */
 const EMPTY_STATE = /No sky survey available/;
 const LOADING = /LOADING/;
-const UNREACHABLE = /Survey unreachable/;
+/** The tile engine's line under the canvas while the survey is degraded (it
+ *  also reaches the screen reader through the canvas's status line). */
+const TILE_LINE = /Survey tiles not loading/;
+
+/** The copy, graded by what it tells the operator, not by its exact words. */
+const UX07 = /^No sky survey available: download the offline pack or enable online fetch in Settings\.$/;
+const TURN_ON_FETCH = /(enable|turn on) online fetch/i;
+const NOT_ARRIVING = /not arriving/i;
+const CHECK_CONNECTION = /check the (rig's )?connection/i;
+const INSTALL_PACK = /(install|download) the offline sky pack/i;
+const NO_DASH_OR_GLYPH = /[\u2014\u2013\u26A0]/;
 
 const container = win.document.getElementById("root") as any;
 const text = () => String(container.textContent ?? "");
 const skyBox = () => container.querySelector('[role="application"]') as any;
+/** UX-07's empty state inside the canvas (its text, or null when not drawn). */
+const emptyText = (): string | null => {
+  const el = container.querySelector('[data-role="survey-empty"]') as any;
+  return el ? String(el.textContent) : null;
+};
+/** The line under the canvas: the element the real-page probe grades
+ *  (routes_s5_s6.json, s5-frame-running-phone: `[data-testid="framing-sky"]
+ *  div.text-warn`), found the same way. */
+const lineText = (): string | null => {
+  const el = container.querySelector("div.text-warn") as any;
+  return el ? String(el.textContent) : null;
+};
 
 // ============================================ the tile engine (the probe's path)
 const root = createRoot(container);
@@ -222,6 +267,42 @@ await test("a canvas whose tiles all 404 shows UX-07's empty state and no LOADIN
     `LOADING is still drawn beside the empty state after ${net.tileCalls} tile 404s`);
 });
 
+// Online fetch OFF, the tile engine: UX-07's advice is right here, and the
+// line under the canvas names what the tile engine does, not a schematic.
+//
+// Mutant "line not worded by path" (SkyCanvas's default line under the canvas
+// back to the one sentence for both paths, "Survey unreachable, showing a
+// schematic. Retrying." when there is no last image): failed, 7/11:
+//   x online fetch off, tile engine: the canvas says UX-07's sentence and the
+//     line under it names no schematic: the tile engine's line under the
+//     canvas reads "Survey unreachable, showing a schematic. Retrying."
+//   x when the tiles come back, the engine's first drawn frame clears the
+//     degraded state: precondition: the sky is not degraded, so there is
+//     nothing for the tiles to clear: "MOVE SKYMOVE GRIDSurvey unreachable,
+//     showing a schematic. Retrying.No sky survey available: download the
+//     offline pack or enable online fetch in Settings.NW1.46″/px8.00° wide1-1,
+//     pending1-2, pending1-3"
+//   x online fetch on, FramingSky: the canvas says the survey is not arriving,
+//     check the connection or install the pack, and never to turn fetch on:
+//     the tile engine's line under the canvas reads "Survey unreachable,
+//     showing a schematic. Retrying."
+//   x CompassSurvey, online fetch off: it asks for a survey the server serves,
+//     and says UX-07's sentence: the compass sky's line under the canvas reads
+//     "Survey unreachable, showing a schematic. Retrying."
+await test("online fetch off, tile engine: the canvas says UX-07's sentence and the line under it names no schematic", () => {
+  const empty = emptyText();
+  assert(empty !== null, `precondition: the empty state is not drawn: ${JSON.stringify(text().slice(0, 200))}`);
+  assert(UX07.test(empty!), `with online fetch off the canvas says ${JSON.stringify(empty)}, not UX-07's sentence`);
+  const line = lineText();
+  assert(line !== null, `no line under the canvas while the survey is degraded: ${JSON.stringify(text().slice(0, 200))}`);
+  assert(TILE_LINE.test(line!), `the tile engine's line under the canvas reads ${JSON.stringify(line)}`);
+  assert(!/schematic|last image/i.test(line!),
+    `the tile engine's line names ${JSON.stringify(line)} - it draws no schematic backdrop and keeps no last image`);
+  for (const [what, t] of [["the canvas's sentence", empty!], ["the line under it", line!]] as const) {
+    assert(!NO_DASH_OR_GLYPH.test(t), `${what} carries an em or en dash or a warning glyph: ${JSON.stringify(t)}`);
+  }
+});
+
 // Mutant "load never clears" (FramingSky wires onSurveyError but not
 // onSurveyLoad, so nothing ever takes the state down):
 //   failed, 4/5 (the canvas's status line opens with a warning-sign glyph,
@@ -233,7 +314,7 @@ await test("a canvas whose tiles all 404 shows UX-07's empty state and no LOADIN
 //     pending2-1, pending[warning sign] Survey unreachable — schematic framing;
 //     retrying automatically."
 await test("when the tiles come back, the engine's first drawn frame clears the degraded state", async () => {
-  assert(EMPTY_STATE.test(text()) && UNREACHABLE.test(text()),
+  assert(EMPTY_STATE.test(text()) && TILE_LINE.test(text()),
     `precondition: the sky is not degraded, so there is nothing for the tiles to clear: ${JSON.stringify(text().slice(0, 200))}`);
   net.tiles = "ok";
   // The failed tiles sit in the engine's 45 s negative cache, so the sky is
@@ -245,18 +326,20 @@ await test("when the tiles come back, the engine's first drawn frame clears the 
   // frame (its own first-draw flag), whatever the host does, so its going is
   // what says the tiles really arrived. The degraded state itself is the
   // host's, and only onSurveyLoad clears it: the status line under the canvas
-  // and the screen reader's line both say "Survey unreachable" until then.
+  // and the screen reader's line both say the tiles are not loading until
+  // then.
   const drew = await waitFor(() => !EMPTY_STATE.test(text()) && net.tileCalls > calls, 3000);
   assert(drew,
     `the tiles were made to answer and the engine never drew one (${net.tileCalls - calls} requests since): ` +
     JSON.stringify(text().slice(0, 200)));
-  const cleared = await waitFor(() => !UNREACHABLE.test(text()), 1000);
+  const cleared = await waitFor(() => !TILE_LINE.test(text()), 1000);
   assert(cleared,
-    `the engine drew its tiles and the sky still says the survey is unreachable: ${JSON.stringify(text().slice(0, 200))}`);
+    `the engine drew its tiles and the sky still says the survey tiles are not loading: ${JSON.stringify(text().slice(0, 200))}`);
   assert(!LOADING.test(text()), "LOADING came back after the tiles answered");
 });
 
 act(() => { root.unmount(); });
+net.tiles = "404";
 
 // ================================================ the <img> cutout pipeline
 // A survey the tile engine has no slug for takes the <img> path even with
@@ -290,7 +373,259 @@ await test("on the <img> path a failed cutout shows the empty state and no LOADI
   assert(!LOADING.test(text()), "LOADING is still drawn beside the empty state on the <img> path");
 });
 
+// The <img> path with no good frame draws the schematic backdrop, so there the
+// line under the canvas is right to say so.
+await test("on the <img> path with no image yet, the line under the canvas says the sky is schematic", () => {
+  const line = lineText();
+  assert(line !== null, "no line under the canvas on the <img> path while the survey is degraded");
+  assert(/showing a schematic/.test(line!) && !TILE_LINE.test(line!),
+    `the <img> path's line under the canvas reads ${JSON.stringify(line)}`);
+  assert(!NO_DASH_OR_GLYPH.test(line!), `the <img> path's line carries a dash or a warning glyph: ${JSON.stringify(line)}`);
+});
+
 act(() => { root2.unmount(); });
+
+// ============================================ online fetch ON, the modal's sky
+// The probe's path again, on a rig whose online fetch is on and whose tiles
+// still do not arrive (a dark site with no network, and no pack).
+//
+// Mutant "enable online fetch said while on" (SkyCanvas's default in the
+// canvas is UX-07's sentence whatever `onlineFetch` says, as before this
+// change): failed, 9/11:
+//   x online fetch on, FramingSky: the canvas says the survey is not arriving,
+//     check the connection or install the pack, and never to turn fetch on:
+//     with online fetch ON the canvas tells the operator to turn it on: "No
+//     sky survey available: download the offline pack or enable online fetch
+//     in Settings."
+//   x CompassSurvey, online fetch on: it says the survey is not arriving,
+//     check the connection or install the pack, and never to turn fetch on:
+//     with online fetch ON the compass sky tells the operator to turn it on:
+//     "No sky survey available: download the offline pack or enable online
+//     fetch in Settings."
+const root3 = createRoot(container);
+act(() => { root3.render(createElement(FramingSky, props({ onlineFetch: true }))); });
+
+await test("online fetch on, FramingSky: the canvas says the survey is not arriving, check the connection or install the pack, and never to turn fetch on", async () => {
+  const calls = net.tileCalls;
+  const shown = await waitFor(() => emptyText() !== null, 3000);
+  assert(net.tileCalls - calls >= 8,
+    `only ${net.tileCalls - calls} tile requests with online fetch on, under the engine's 8-failure threshold - the fixture never degraded`);
+  assert(shown, `with online fetch on the degraded sky shows no empty state; it reads ${JSON.stringify(text().slice(0, 200))}`);
+  const empty = emptyText()!;
+  assert(!TURN_ON_FETCH.test(empty), `with online fetch ON the canvas tells the operator to turn it on: ${JSON.stringify(empty)}`);
+  assert(NOT_ARRIVING.test(empty) && CHECK_CONNECTION.test(empty) && INSTALL_PACK.test(empty),
+    `with online fetch on the canvas says ${JSON.stringify(empty)}: not that the survey is not arriving, to check the connection, or to install the pack`);
+  assert(!NO_DASH_OR_GLYPH.test(empty), `the canvas's sentence carries a dash or a warning glyph: ${JSON.stringify(empty)}`);
+  const line = lineText();
+  assert(line !== null && TILE_LINE.test(line), `the tile engine's line under the canvas reads ${JSON.stringify(line)}`);
+});
+
+// ================================ the modal's sky keeps its lines (#440, #465)
+// `.tfs-sky` is a fixed height with overflow hidden (framing.css), and
+// SkyCanvas draws its status lines UNDER its square, in its own column. The
+// square used to be as wide as the fit box, so it filled the sky's height by
+// itself and every line went past the clip: the real-page probe saw the
+// degraded line cut to its descenders and 18 px off the canvas's top and
+// bottom on the 390 x 844 phone (#465). jsdom lays nothing out, so this case
+// holds the CONTRACT the layout is built from, on both sides of it: the
+// stylesheet sizes the square from the height the lines leave, and the DOM
+// puts the square alone in the slot that stylesheet reads, with the lines
+// beside the slot, not in it. The layout itself is graded on the real page
+// (routes_s5_s6.json, s5-frame-running-phone, text_intact on the line).
+const CSS_REL = "../framing.css";
+interface Rule { at: string[]; selector: string; decls: [string, string][] }
+/** framing.css's rules, comments stripped, blocks nested to any depth: the
+ *  same small reader framingLayout.test.tsx uses (the file has no strings
+ *  containing braces). */
+function parseCss(src: string): Rule[] {
+  const css = src.replace(/\/\*[\s\S]*?\*\//g, "");
+  const out: Rule[] = [];
+  let i = 0;
+  function block(at: string[]): void {
+    while (i < css.length) {
+      const open = css.indexOf("{", i);
+      const close = css.indexOf("}", i);
+      if (close !== -1 && (open === -1 || close < open)) { i = close + 1; return; }
+      if (open === -1) { i = css.length; return; }
+      const prelude = css.slice(i, open).trim();
+      i = open + 1;
+      if (prelude.startsWith("@")) { block([...at, prelude.replace(/\s+/g, " ")]); continue; }
+      const end = css.indexOf("}", i);
+      const body = css.slice(i, end);
+      i = end + 1;
+      const decls = body.split(";").map((d) => d.trim()).filter(Boolean).map((d) => {
+        const c = d.indexOf(":");
+        return [d.slice(0, c).trim(), d.slice(c + 1).trim()] as [string, string];
+      });
+      out.push({ at, selector: prelude.replace(/\s+/g, " "), decls });
+    }
+  }
+  block([]);
+  return out;
+}
+function readCss(): string {
+  try {
+    return readFileSync(new URL(CSS_REL, import.meta.url), "utf8") as string;
+  } catch (e) {
+    throw new Error(`cannot read ${CSS_REL}: ${(e as Error).message}`);
+  }
+}
+const RULES = parseCss(readCss());
+const rulesFor = (sel: string, at: (a: string[]) => boolean): Rule[] =>
+  RULES.filter((r) => r.selector.split(",").map((s) => s.trim()).includes(sel) && at(r.at));
+const last = (r: Rule | undefined, prop: string): string | null => {
+  const hits = (r?.decls ?? []).filter(([p]) => p === prop);
+  return hits.length ? hits[hits.length - 1][1] : null;
+};
+const top = (a: string[]) => a.length === 0;
+const withCq = (a: string[]) => a.length === 1 && a[0] === "@supports (container-type: size)";
+const hasClass = (el: any, c: string) => el != null && String(el.className).split(/\s+/).includes(c);
+
+// Mutant "square fills the box" (`container-type: size` dropped from the
+// slot, so the square's container units read `.tfs-sky`, the whole box, and
+// the square fills it as it did before this change): failed, 10/11:
+//   x the modal's square is sized from the height SkyCanvas's lines leave, and
+//     the lines sit beside its slot: the square's slot is not a size container
+//     (container-type null), so the square's container units read the whole
+//     sky and it fills the box
+// Built into the app and walked on the real page (390 x 844, no sky source),
+// the same mutant PASSES the probe's s5-frame-running-phone and s4-frame-phone:
+// the line is whole, so text_intact is satisfied, while the 390 px square
+// overhangs its 354 px slot by 18 px each way, its top (the N, and the top
+// 10 px of MOVE SKY) under the sky's clip and its bottom under the line. So
+// this case, not the probe, is what holds the contract (the probe's blind
+// spot is #495); the layout before this change failed the probe on the line
+// (text_intact, clipped 11 px).
+await test("the modal's square is sized from the height SkyCanvas's lines leave, and the lines sit beside its slot", () => {
+  // The stylesheet. The fit box is the largest square the sky holds, in both
+  // axes, and SkyCanvas's column fills it.
+  const fit = rulesFor(".tfs-sky-fit", top)[0];
+  assert(last(fit, "width") === "min(100cqw, 100cqh)" && last(fit, "height") === "min(100cqw, 100cqh)",
+    `the fit box is not the sky's largest square in both axes: width ${last(fit, "width")}, height ${last(fit, "height")}`);
+  const col = rulesFor(".tfs-sky-fit > .sky-canvas", withCq)[0];
+  assert(last(col, "height") === "100%", `SkyCanvas's column does not fill the fit box: height ${last(col, "height")}`);
+  // The slot takes what height the lines leave, and nothing more (a flex
+  // basis of 0, allowed below its content), and is what the square is read
+  // off.
+  const slot = rulesFor(".tfs-sky-fit .sky-canvas-square", withCq)[0];
+  const flex = String(last(slot, "flex")).split(/\s+/);
+  assert(flex[0] === "1" && /^0(px|%)?$/.test(flex[2] ?? ""),
+    `the square's slot does not take the height the lines leave (flex ${JSON.stringify(last(slot, "flex"))}, wanted a grow of 1 on a basis of 0)`);
+  assert(last(slot, "min-height") === "0", `the square's slot keeps a content floor (min-height ${last(slot, "min-height")})`);
+  assert(last(slot, "container-type") === "size",
+    `the square's slot is not a size container (container-type ${last(slot, "container-type")}), so the square's container units read the whole sky and it fills the box`);
+  const square = rulesFor('.tfs-sky-fit .sky-canvas-square > [role="application"]', withCq)[0];
+  assert(last(square, "width") === "min(100cqw, 100cqh)",
+    `the square is not the largest one its slot holds: width ${last(square, "width")}`);
+  // Nothing between the slot and the sky reads the square's container units
+  // instead: SkyCanvas's column is not a container of its own.
+  for (const r of RULES.filter((x) => /\.sky-canvas(?![-\w])/.test(x.selector))) {
+    assert(last(r, "container-type") === null || /sky-canvas-square/.test(r.selector),
+      `${r.selector} is a container too, and the square could read it instead of its slot`);
+  }
+  // The DOM the stylesheet names. The degraded sky is up (root3, above), so
+  // the line under the canvas is drawn.
+  const fitEl = container.querySelector(".tfs-sky-fit") as any;
+  assert(fitEl != null, "no .tfs-sky-fit in the modal's sky");
+  const colEl = fitEl.firstElementChild;
+  assert(hasClass(colEl, "sky-canvas") && hasClass(colEl, "flex") && hasClass(colEl, "flex-col"),
+    `the fit box's child is not SkyCanvas's column (${JSON.stringify(colEl ? String(colEl.className) : null)})`);
+  const sq = skyBox();
+  assert(hasClass(sq?.parentElement, "sky-canvas-square") && sq.parentElement.parentElement === colEl,
+    "the square is not alone in the slot framing.css sizes it from, directly in SkyCanvas's column");
+  assert(sq.parentElement.children.length === 1, "the square's slot holds more than the square");
+  const lineEl = container.querySelector("div.text-warn") as any;
+  assert(lineEl != null, "precondition: no degraded line under the canvas, so where it sits goes ungraded");
+  assert(lineEl.parentElement === colEl,
+    "the degraded line is not beside the square's slot in SkyCanvas's column, so the slot cannot leave it room");
+});
+
+act(() => { root3.unmount(); });
+
+// ========================================================= CompassSurvey
+// The classic Atlas's compass sky (ClassicAtlasSky.tsx) is the other host
+// with no pack status: it passes `config.survey.online_fetch` and no text, so
+// SkyCanvas's default is what it shows. It is driven through the store the
+// way the page drives it.
+const COMPASS_CENTRE = { ra_hours: FX.centre.ra_hours, dec_deg: FX.centre.dec_deg };
+const DISPLAY = { accepts: () => true, imagery: true, objects: false, controls: null };
+/** The HiPS ids GET /api/survey/cutout.jpg accepts (its `survey` Literal in
+ *  server/astrodeck/catalog/survey.py). */
+const SERVED = new Set(["CDS/P/DSS2/color", "CDS/P/DSS2/red", "CDS/P/2MASS/color"]);
+
+/** Mount the compass sky with the store saying `onlineFetch`, zoom it in, and
+ *  let its survey degrade. The root is handed back for the case to unmount;
+ *  if anything here throws, it is unmounted first, so the next case does not
+ *  mount a second root on the same container. */
+async function compass(onlineFetch: boolean): Promise<{ root: any; empty: string | null; line: string | null;
+                                                        tiles: number; unserved: string[] }> {
+  useStore.setState({ config: { survey: { online_fetch: onlineFetch } }, night: false, framing: null } as never);
+  const r = createRoot(container);
+  try {
+    const calls = net.tileCalls;
+    const cutouts = net.cutoutSurveys.length;
+    act(() => { r.render(createElement(CompassSurvey, { center: COMPASS_CENTRE, display: DISPLAY })); });
+    // The compass sky opens 55 deg wide, where the whole view is three tiles:
+    // under the engine's 8-failure threshold, so on a rig with no source it
+    // reports nothing until its 45 s negative cache has let it ask twice more
+    // (#493).
+    // Zoomed in with the + key, as a person would, to about 8 deg (the canvas
+    // clamps to 10, then each press is 1/1.12), where the view has enough
+    // tiles to fail in one pass.
+    for (let i = 0; i < 3; i++) {
+      act(() => { skyBox().dispatchEvent(new win.KeyboardEvent("keydown", { key: "+", bubbles: true })); });
+    }
+    assert(/7\.97° wide/.test(text()), `the + key did not zoom the compass sky to 7.97 deg: ${JSON.stringify(text().slice(0, 200))}`);
+    await waitFor(() => emptyText() !== null, 3000);
+    return {
+      root: r, empty: emptyText(), line: lineText(), tiles: net.tileCalls - calls,
+      unserved: net.cutoutSurveys.slice(cutouts).filter((s) => !SERVED.has(s)),
+    };
+  } catch (e) {
+    act(() => { r.unmount(); });
+    throw e;
+  }
+}
+const UNSERVED = (asked: string[]) =>
+  `the compass sky asked the cutout route for ${JSON.stringify(asked)}, which it does not serve: every request is refused, whatever the rig's pack or network`;
+
+// Mutant "compass survey bare id" (CompassSurvey's fallback survey back to
+// 'DSS2/color', as before this change): failed, 9/11:
+//   x CompassSurvey, online fetch off: it asks for a survey the server serves,
+//     and says UX-07's sentence: the compass sky asked the cutout route for
+//     ["DSS2/color"], which it does not serve: every request is refused,
+//     whatever the rig's pack or network
+//   x CompassSurvey, online fetch on: it says the survey is not arriving,
+//     check the connection or install the pack, and never to turn fetch on:
+//     the compass sky asked the cutout route for ["DSS2/color"], which it does
+//     not serve: every request is refused, whatever the rig's pack or network
+await test("CompassSurvey, online fetch off: it asks for a survey the server serves, and says UX-07's sentence", async () => {
+  const c = await compass(false);
+  try {
+    assert(c.unserved.length === 0, UNSERVED(c.unserved));
+    assert(skyBox()?.querySelector("canvas") != null,
+      "the compass sky's tile engine did not mount: it has no tile slug for the survey it names");
+    assert(c.tiles >= 8, `the compass sky made ${c.tiles} tile requests, under the engine's 8-failure threshold - it never degraded`);
+    assert(c.empty !== null && UX07.test(c.empty), `with online fetch off the compass sky says ${JSON.stringify(c.empty)}, not UX-07's sentence`);
+    assert(c.line !== null && TILE_LINE.test(c.line) && !NO_DASH_OR_GLYPH.test(c.line),
+      `the compass sky's line under the canvas reads ${JSON.stringify(c.line)}`);
+  } finally {
+    act(() => { c.root.unmount(); });
+  }
+});
+
+await test("CompassSurvey, online fetch on: it says the survey is not arriving, check the connection or install the pack, and never to turn fetch on", async () => {
+  const c = await compass(true);
+  try {
+    assert(c.unserved.length === 0, UNSERVED(c.unserved));
+    assert(c.empty !== null, `the compass sky with online fetch on shows no empty state: ${JSON.stringify(text().slice(0, 200))}`);
+    assert(!TURN_ON_FETCH.test(c.empty!), `with online fetch ON the compass sky tells the operator to turn it on: ${JSON.stringify(c.empty)}`);
+    assert(NOT_ARRIVING.test(c.empty!) && CHECK_CONNECTION.test(c.empty!) && INSTALL_PACK.test(c.empty!),
+      `with online fetch on the compass sky says ${JSON.stringify(c.empty)}`);
+  } finally {
+    act(() => { c.root.unmount(); });
+  }
+});
 
 // ------------------------------------------------------------------- report
 dom.window.close();

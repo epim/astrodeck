@@ -30,7 +30,16 @@
 // with no sky pack and online fetch off the modal's sky said LOADING, over the
 // panel labels that are the skip toggles, for as long as it was open. No
 // `degradedText` is given: without the pack's status there is nothing to pick
-// a narrower sentence from, so the canvas's own UX-07 sentence is the one.
+// a narrower sentence from, so the canvas's own default is the one, and the
+// canvas picks it by the `onlineFetch` passed here (#426): UX-07's sentence
+// with online fetch off, "not arriving, check the connection or install the
+// pack" with it on, where UX-07's told the operator to turn on what was on.
+//
+// THE SKY'S HEIGHT IS FIXED AND THE CANVAS'S LINES ARE INSIDE IT. SkyCanvas
+// draws its degraded banner and verdict under its square, and `.tfs-sky` clips
+// whatever does not fit; framing.css sizes the square from the height those
+// lines leave (#440, #465), through the `.tfs-sky-fit` box below and the
+// canvas's own `.sky-canvas-square` slot, so this file passes nothing for it.
 
 import { useCallback, useState, type JSX } from "react";
 import { SkyCanvas } from "../../atlas/SkyCanvas";

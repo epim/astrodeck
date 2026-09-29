@@ -110,6 +110,10 @@ const EDGES: FlowEdgeRec[] = [
 const nodeOf = (id: string) => NODES.find((n) => n.id === id)!;
 const edgeOf = (id: string) => EDGES.find((e) => e.id === id)!;
 const PLAN = { targets: [{ node_id: "n2", mosaic: { rows: 2, cols: 3, skip: [] } }] };
+/** One graph object, so the answer below can say it was compiled from it
+ *  (`FlowCompiled.from`, which `compiledIsCurrent` compares, #356 S7). */
+const GRAPH = { nodes: NODES, edges: EDGES };
+const COMPILED = { plan: PLAN, structural: [], issues: [], unmapped: [], from: GRAPH };
 
 const EXPECTED_ARC = loopArc(nodeOf("n7"), "pass", nodeOf("n2"), "next",
   panelLane({ nodes: NODES, edges: EDGES }, "n2"), NODE_DEFS, "tablet")!;
@@ -121,7 +125,7 @@ function mount(flows: Record<string, unknown> = {}, selectedEdge: string | null 
   act(() => root.render(null));
   act(() => {
     useStore.setState({
-      flows: { ...FLOWS_INIT, graph: { nodes: NODES, edges: EDGES }, ...flows },
+      flows: { ...FLOWS_INIT, graph: GRAPH, ...flows },
     } as any);
   });
   act(() => root.render(createElement(Fragment, null,
@@ -189,7 +193,7 @@ test("CONTROL: every other wire is still the stock bezier, and every wire is sti
 test("night mode: the arc differs from an event wire by its dash and its chip, not its stroke", () => {
   win.document.documentElement.classList.add("night");
   try {
-    mount({ compiled: { plan: PLAN, structural: [], issues: [], unmapped: [] }, dirty: false });
+    mount({ compiled: COMPILED, dirty: false });
     const arc = visible("loop");
     const event = visible("frame");
     eq(arc.getAttribute("stroke"), event.getAttribute("stroke"),
@@ -211,13 +215,19 @@ test("while the run is live the arc keeps its dash; a plain wire goes to 7 6", (
 
 // ================================================================= the chip
 
+// DELIBERATE PIN CHANGE (S7 integration, #356): an edit used to be modelled
+// as `dirty: true` alone, because the chip withheld its count by `dirty`.
+// Since S7 both wire layers withhold it by `compiledIsCurrent`, which asks
+// whether the answer was compiled from the graph on screen, so an edit is a
+// NEW graph object (as every store edit makes one) and the answer carries the
+// graph it came `from`. Unchanged, this file went 8/10 against the S7 layers.
 test("the chip: no count before a compile, the compile's count after, none over an edit", () => {
   mount();
   eq(chipText(), "every pass: next panel", "before any compile");
-  setFlows({ compiled: { plan: PLAN, structural: [], issues: [], unmapped: [] } });
+  setFlows({ compiled: COMPILED });
   eq(chipText(), "every pass: next panel · 6 panels", "after the compile: 3x2, nothing skipped");
-  setFlows({ dirty: true });
-  eq(chipText(), "every pass: next panel", "an unsaved edit");
+  setFlows({ graph: { nodes: NODES, edges: EDGES }, dirty: true });
+  eq(chipText(), "every pass: next panel", "an edit the compile was not asked about");
 });
 
 // The chip names the run, so it sits on the run: in the middle of it, under

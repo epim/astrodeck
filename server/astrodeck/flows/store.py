@@ -37,7 +37,7 @@ from typing import Callable
 
 from pydantic import ValidationError
 
-from ..config import CONFIG_DIR
+from .. import config as _config
 from ..persist import ensure_dir, list_json, read_json, safe_id_path, write_json_atomic
 from .compile import NEXT_PORT, PASS_PORT, is_multi_panel
 from .examples import examples
@@ -56,7 +56,6 @@ from .save_rules import (ACCEPTED_SUBS, COUNTED_TYPES, counts_attempts,
 #: See ``_migrate`` for why the file version is the only thing that can tell
 #: either pair of readings apart.
 FLOW_SCHEMA = 4
-FLOWS_DIR = CONFIG_DIR / "flows"
 
 #: What ``save()`` stamps a file whose graph uses no FLOW_SCHEMA 4 meaning
 #: (``schema_for``). Not 4 regardless: a build from S0 to S2 refuses a v4 file
@@ -99,7 +98,8 @@ _REASON_MAX = 160
 
 #: Soft quota, same reasoning as PlanLibrary's: a client must not be able to
 #: fill the disk and make every list linear-slow. Upserting an existing id is
-#: always allowed.
+#: always allowed. Counted in FILES, readable or not, from a listing of the
+#: directory (``save_and_report``, #433).
 MAX_FLOWS = 500
 
 #: The fields a save takes from the file it replaces and never from the
@@ -424,8 +424,11 @@ class FlowStore:
         # Resolved LIVE, never bound at import: a test monkeypatches CONFIG_DIR
         # and every other store in this codebase honours that (see gallery's
         # capture_root note). Binding it here is how a maintenance path ends up
-        # reading a different directory from the server.
-        return self._dir if self._dir is not None else CONFIG_DIR / "flows"
+        # reading a different directory from the server. THROUGH THE CONFIG
+        # MODULE (#436): this comment was here while the module imported the
+        # name itself, which is binding it at import by another route, so
+        # repointing ``config.CONFIG_DIR`` never moved ``flow_store``.
+        return self._dir if self._dir is not None else _config.CONFIG_DIR / "flows"
 
     def _path(self, flow_id: str) -> Path:
         return safe_id_path(self.dir, flow_id)
@@ -526,9 +529,6 @@ class FlowStore:
             "last_run": None, "last_result": "", "updated_ts": updated,
             "unreadable": reason,
         }
-
-    def _on_disk(self) -> list[FlowRecord]:
-        return self._scan()[0]
 
     @staticmethod
     def _examples_free(taken: set[str]) -> list[FlowRecord]:
@@ -805,8 +805,19 @@ class FlowStore:
         newer = self._newer_schema_on_disk(record.id)
         if newer is not None:
             raise NewerSchemaFlow(_newer_sentence(newer))
-        existing = {r.id for r in self._on_disk()}
-        if record.id not in existing and len(existing) >= MAX_FLOWS:
+        # THE QUOTA FROM THE FILE NAMES (#433), as PlanLibrary answers its
+        # own: is the file at this id there, and how many files does the
+        # directory list. It was ``{r.id for r in self._on_disk()}``, a walk
+        # that parsed, migrated and validated every stored flow on every
+        # save to count them (#433 measured 0.08 s a save over the first 48
+        # into an empty library, 0.75 s a save averaged over 768). The only
+        # file a save reads is now the one it writes, above and in
+        # ``_stored``. Files, not readable records: an unreadable file takes
+        # the disk and the listing's time like any other, and a save over
+        # one at its own id is the upsert it is, so a full library can still
+        # have a damaged flow repaired.
+        if (not self._path(record.id).exists()
+                and len(list_json(self.dir)) >= MAX_FLOWS):
             raise FlowLibraryFull(f"the flow library is full ({MAX_FLOWS})")
         errors = record.graph.validation_errors()
         if errors:

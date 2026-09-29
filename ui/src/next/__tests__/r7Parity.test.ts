@@ -159,6 +159,22 @@ const LOGIC_MODULES: Record<string, string> = {
     "S4 #189, S4 orchestrator ruling 8 - countsNotice: the counts line the #/next toolbar and " +
     "phone stage list show, in the server's words; a copy would be a second reading of when " +
     "saving switches a flow's counts.",
+  // #473, S7 orchestrator ruling 1 (S7-URUN): the replay line stands beside
+  // the counts line on the #/next toolbar and phone stage list, as it does in
+  // the classic editor. A .ts file with no JSX that imports only types
+  // (lib/flowsApi, flowsTypes).
+  // Mutant "drop the replayNotice entry", observed in the private copy
+  // scratchpad S7-URUN-mut (7/8):
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   2 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowCanvasToolbar.tsx imports replayNotice
+  //   from components/flows/replayNotice;
+  //   hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx imports replayNotice
+  //   from components/flows/replayNotice
+  "components/flows/replayNotice":
+    "S7 #473, S7 orchestrator ruling 1 - replayNotice: the line that an armed auto-resume will " +
+    "replay the version its session froze. The #/next toolbar and phone stage list and the classic " +
+    "editor read the one function, so the three cannot disagree on when dusk replays an old version.",
   // The two below arrived with #189 S5 and #196 S6 and were recorded by the
   // S5/S6 integration (S56-INTEG), each a DELIBERATE PIN CHANGE: both are .ts
   // files with no JSX. flowRunState imports lib/lastSessionFrame and types
@@ -195,6 +211,17 @@ const LOGIC_MODULES: Record<string, string> = {
     "the wizard prefill and its wz_* route params. The #/next flowWizard sheet carries the " +
     "prefill in the route with the shared sheet's own reader, so a reload reopens the wizard " +
     "the door opened and the two UIs cannot read a door's prefill apart.",
+  // #356, S7: the loop chip on both canvases withholds its count by the
+  // slice's own reader rather than by `dirty`. Recorded by the S7
+  // integration, a DELIBERATE PIN CHANGE. Without this entry (the tree S7
+  // left) the file is 7/8:
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   hubs/session/flows/canvas/FlowWires.tsx imports compiledIsCurrent
+  //   from components/flows/flowsSlice
+  "components/flows/flowsSlice":
+    "S7 #356 - compiledIsCurrent: whether the compile answer in hand is the graph on screen's. " +
+    "Both wire layers withhold the loop chip's count by it, so the two canvases cannot disagree " +
+    "on when a count is true. A slice is section 2.1's shared logic, and the store is built from it.",
   "components/sequence/sessionDates":
     "2.1 - night-boundary maths, shared by the gallery and the files sheet.",
   "components/sequence/stepDefaults":

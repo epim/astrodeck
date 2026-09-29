@@ -24,6 +24,7 @@ import {
 } from "../nodeDefs";
 import type { FieldDef, NodeDef, PortDef } from "../nodeDefs";
 import type { FlowNodeType } from "../flowsTypes";
+import { DEFAULT_OVERLAP } from "../../../lib/framing";
 // @ts-ignore  no @types/node guaranteed; tsx supplies fs at runtime
 import { readFileSync } from "node:fs";
 
@@ -111,11 +112,44 @@ function matchBracket(src: string, open: number): number {
 }
 
 /** A Python dict literal of double-quoted keys and string/number values IS
- *  JSON, with one exception: Python allows a trailing comma. Removing it is the
- *  whole conversion — deliberately not a general Python-literal evaluator, so
- *  that any dict this file cannot honestly read throws instead of guessing. */
+ *  JSON, with two exceptions. Python allows a trailing comma, which is removed.
+ *  And a value may be `Derived(<function>)` (#461): a missing-key default
+ *  nodes.py reads from another module when its table is read, TARGET's
+ *  `overlap` being framing's DEFAULT_OVERLAP in percent. It reads as the
+ *  marker `{"derived": "<function>"}`, which `resolveDerived` turns into the
+ *  value nodeDefs.ts must hold. That is the whole conversion — deliberately
+ *  not a general Python-literal evaluator, so that any dict this file cannot
+ *  honestly read throws instead of guessing. */
 function pyDictToJson(src: string): unknown {
-  return JSON.parse(src.replace(/,(\s*)}/g, "$1}"));
+  return JSON.parse(src.replace(/,(\s*)}/g, "$1}")
+    .replace(/\bDerived\((\w+)\)/g, '{"derived": "$1"}'));
+}
+
+/** What each `Derived` function of nodes.py is, read on the UI's side: the
+ *  same product from lib/framing's mirror of the server constant, which
+ *  server/tests/test_overlap_constant_one.py holds equal to the server's.
+ *  A function this map does not name throws, so a new derived default cannot
+ *  pass the parity test unread. */
+const DERIVED_AS: Record<string, number> = {
+  // nodes.py `target_overlap_pct`: framing.DEFAULT_OVERLAP x 100.
+  target_overlap_pct: DEFAULT_OVERLAP * 100,
+};
+
+/** A parsed params dict with each `Derived` marker read as `DERIVED_AS`
+ *  says, and the keys that were derived, by the function that derives them. */
+function resolveDerived(
+  type: string, parsed: Record<string, string | number | { derived: string }>,
+): { params: Record<string, string | number>; derived: Record<string, string> } {
+  const params: Record<string, string | number> = {};
+  const derived: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (typeof v !== "object") { params[k] = v; continue; }
+    assert(v.derived in DERIVED_AS,
+      `nodes.py "${type}" derives ${k} with ${v.derived}, which DERIVED_AS does not name`);
+    params[k] = DERIVED_AS[v.derived];
+    derived[k] = v.derived;
+  }
+  return { params, derived };
 }
 
 /** Index just past `name=`, only where `name` is a whole word. */
@@ -130,7 +164,11 @@ const py = stripComments(nodesPySrc);
 interface PyNode {
   type: string; label: string; cat: string;
   ins: PortDef[]; outs: PortDef[];
+  /** `params=`, each `Derived` default read as the UI must hold it. */
   params: Record<string, string | number>;
+  /** The keys of `params` nodes.py derives, by the function that derives
+   *  them (`Derived`, #461), `{}` when it derives none. */
+  derived: Record<string, string>;
   /** `created_as=` — the Created-as column, `{}` when the entry has none. */
   createdAs: Record<string, string | number>;
   optionalIns: string[];
@@ -196,17 +234,21 @@ function parseNodesPy(): Record<string, PyNode> {
       ? Array.from(optRaw[1].matchAll(/"([^"]*)"/g), (q) => q[1])
       : [];
 
+    // Python's dict literal here is byte-for-byte valid JSON — double-quoted
+    // keys, string and numeric values only, bar a `Derived` default. Parsing
+    // it (rather than regex-ing values out) is what preserves the
+    // string/number DISTINCTION, which is the property capture.bin depends on.
+    const { params, derived } = resolveDerived(m[1], pyDictToJson(paramsJson) as
+      Record<string, string | number | { derived: string }>);
+
     out[m[1]] = {
       type: strKw("type"),
       label: strKw("label"),
       cat: strKw("cat"),
       ins: portsKw("ins"),
       outs: portsKw("outs"),
-      // Python's dict literal here is byte-for-byte valid JSON — double-quoted
-      // keys, string and numeric values only. Parsing it (rather than
-      // regex-ing values out) is what preserves the string/number DISTINCTION,
-      // which is the property capture.bin depends on.
-      params: pyDictToJson(paramsJson) as Record<string, string | number>,
+      params,
+      derived,
       createdAs,
       optionalIns,
       kwargs: Array.from(args.matchAll(/(?:^|[^A-Za-z0-9_])([a-z_]+)\s*=/g), (k) => k[1]),
@@ -260,6 +302,21 @@ test("parser sanity: nodes.py yielded 21 entries with ports and params", () => {
   eq(PY.target.createdAs.counts, "Accepted subs", "target created_as parsed");
   eq(PY.target.createdAs.rotation, -1, "a negative number survived the created_as parse");
   eq(Object.keys(PY.dusk.createdAs).length, 0, "an entry with no created_as parses to {}");
+  // DELIBERATE PIN CHANGE (S7, #461): nodes.py's TARGET no longer writes
+  // `"overlap": 25` but `"overlap": Derived(target_overlap_pct)`, framing's
+  // DEFAULT_OVERLAP in percent, read when the table is read. The parser before
+  // this change could not read it, and the whole file died at load, observed:
+  //   SyntaxError: Unexpected token 'D', ..."overlap": Derived(ta"... is not valid JSON
+  // It now reads a `Derived` default as the value the UI must hold, and this
+  // checks one was read, so the parity below is not vacuously about numbers.
+  // Only TARGET's overlap is derived: any other key the server starts
+  // deriving, or stops, changes this line on purpose.
+  // Mutant "literal 25" in nodes.py (the TARGET's overlap written 25 again),
+  // observed:
+  //   x parser sanity: nodes.py yielded 21 entries with ports and params: the
+  //   defaults nodes.py derives expected "target.overlap=target_overlap_pct", got ""
+  const derived = TYPES.flatMap((t) => Object.entries(PY[t].derived).map(([k, f]) => `${t}.${k}=${f}`));
+  eq(derived.join(","), "target.overlap=target_overlap_pct", "the defaults nodes.py derives");
 });
 
 // ------------------------------------------------------- the type set itself

@@ -75,6 +75,12 @@
 // it is next saved, and the phone says so in one persistent line, read from
 // the graph on every render (`countsNotice`), so the save that switches the
 // counts takes it down without a reopen.
+//
+// THE REPLAY LINE (#473, S7 orchestrator ruling 1). While the session
+// CONTINUE would carry on is armed and the flow was saved after the version
+// it froze, a line under the counts line says dusk will replay that version
+// (`replayNotice`), and RUN's first tap arms it as `CONFIRM CONTINUE (night
+// n, banked/total subs)` (`runArm`, #474), the toolbar's own arm.
 
 import { useCallback, useEffect, useMemo, type JSX } from "react";
 
@@ -85,6 +91,7 @@ import {
   START_OVER_LABEL, useFlowRunControls, useFlowRunReadouts,
 } from "../../../../../components/flows/flowRunControls";
 import { countsNotice } from "../../../../../components/flows/countsNotice";
+import { replayNotice } from "../../../../../components/flows/replayNotice";
 import { laneTail, loopSource, panelLane } from "../../../../../components/flows/panelLane";
 import { LOOP_CHIP_WORDS, targetLoops } from "../../../../../components/flows/targetSummary";
 import { accessPhrase, useCapability } from "../../../../../lib/caps";
@@ -100,7 +107,7 @@ import type { SheetProps } from "../../../sheets";
 import { PLAN_EDITOR_PHONE_REASON } from "../../sheets/planEditor";
 import { leaveFlowEditor } from "../openFlow";
 import { FlowPortRow, LOOP_PANELS_LABEL, offersLoopPanels } from "./FlowNode";
-import { RunCopyWords } from "./FlowCanvasToolbar";
+import { RunCopyWords, runArm } from "./FlowCanvasToolbar";
 import { FlowTapWireBar } from "./FlowTapWireBar";
 import {
   ADD_STAGE_LABEL, IDLE_LOG_TEXT, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD,
@@ -438,6 +445,9 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   // graph (`acceptCounts`) and does not reopen the flow, so a line read once
   // would go on promising a switch the save already made.
   const countsLine = useStore((s) => countsNotice(s.flows.graph, s.flows.countsNote));
+  // THE REPLAY LINE (#473, S7 orchestrator ruling 1), from the one function
+  // the toolbar and the classic editor read, as a string or null.
+  const replayLine = useStore((s) => replayNotice(s.flows.progress, s.flows.record));
 
   const canViewSiteDerived = useCapability("view.site_derived");
   const phone = useBreakpoint() === "phone";
@@ -529,9 +539,11 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
             glyph={<NxIcon name={running ? "stop" : "play"} size={16} />}
             lockedReason={runReason}
             onExplain={explain}
-            // STOP is a plain single tap: emergency motion stops are never
-            // armed, held or confirmed.
-            arm={running ? undefined : { label: "CONFIRM RUN" }}
+            // The toolbar's own arm (#474): CONFIRM and the copy's verb with
+            // its night and counts, and none for STOP, a plain single tap,
+            // since emergency motion stops are never armed, held or
+            // confirmed.
+            arm={runArm(copy)}
             onPress={act}
           >
             <RunCopyWords copy={copy} />
@@ -585,6 +597,13 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
           ends it. */}
       {countsLine && (
         <BannerCard tone="info" text={countsLine} data-testid="flow-stages-counts" />
+      )}
+      {/* The replay line: dusk will replay the version the armed session
+          froze unless CONTINUE applies the saved edits. A warning, so it
+          takes the warn tone; no dismiss, since it stays true until
+          CONTINUE applies the edits or the session is disarmed. */}
+      {replayLine && (
+        <BannerCard tone="warn" text={replayLine} data-testid="flow-stages-replay" />
       )}
 
       <Label size={10}>STAGES</Label>

@@ -46,6 +46,16 @@ before it (#431):
   a mosaic: ``group_id``, ``grid``, ``skipped`` and ``locked_angle`` are
   exactly the optional ones.
 
+S7 (#473, #430; S7 orchestrator rulings 1 and 7) added a third, held the same
+way (#431's "worth the same test when next touched"):
+
+* flowsApi.ts's ``FlowProgressSession``, against the progress ROUTE's own
+  answers (the route, not ``flow_progress``, adds ``armed`` and
+  ``plan_saved_ts``): a live session, a dormant armed one frozen at a saved
+  version, and a dormant armed one older than S7 whose ``plan_saved_ts`` is
+  null, so ``armed`` is seen both ways and ``plan_saved_ts`` as a number and
+  as null.
+
 Every test that guards a branch names the mutant it kills and quotes the
 failure that mutant produced, observed in a private copy of the tree (a copy
 of ``server/`` beside a copy of ``ui/src/types.ts``), from a byte-for-byte
@@ -66,6 +76,7 @@ from _group_harness import (Night, grid_plan, group_hub,  # noqa: F401
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 from astrodeck.catalog import framing
 from astrodeck.devices.base import DeviceError
+from test_flows_continue import LR, _compiled, rig  # noqa: F401 (fixture)
 from test_types_mirror_groups import (TYPES_TS, _interface, _mask_strings,
                                       _optional, _ts_admits)
 
@@ -572,3 +583,116 @@ def test_the_progress_block_type_is_what_the_route_answers():
         for r in records:
             wrong = _wrong(r, ts)
             assert not wrong, f"flowsApi.ts types these otherwise: {wrong}"
+
+
+# ---------------------------------------- FlowProgressSession (flowsApi.ts)
+
+async def _route_sessions(rig) -> list[dict]:
+    """Three ``session`` records the progress ROUTE answers, JSON as served:
+    a live run's (``armed`` false: ``engine.start`` arms every run, and a
+    live session is not one auto-resume will start), the same session
+    dormant after an incomplete night (armed, frozen at the flow's saved
+    time), and a dormant armed session written before S7, whose file has no
+    ``plan_saved_ts`` (null: the route never guesses a time). The keys the
+    route adds (``replay_facts``) are exactly what ``flow_progress`` alone
+    does not answer, so only the route can be the other side of this."""
+    from astrodeck.persist import write_json_atomic
+    from astrodeck.sequence.session import Session, session_store
+
+    async def session_of(fid: str) -> dict:
+        r = await rig.client.get(f"/api/flows/{fid}/progress")
+        assert r.status_code == 200, r.text
+        return json.loads(r.content)["session"]
+
+    fid = await rig.save_flow(LR)
+    r = await rig.run(fid)
+    assert r.status_code == 200, r.text
+    live = await session_of(fid)
+    await rig.end_night("incomplete")
+    dormant = await session_of(fid)
+
+    old = await rig.save_flow(LR, name="saved before S7")
+    body = Session(name="saved before S7", created_ts=100.0, updated_ts=100.0,
+                   status="dormant", plan=_compiled(LR, old),
+                   auto_resume=True, origin="flow",
+                   origin_id=old).model_dump()
+    body.pop("plan_saved_ts", None)
+    path = session_store._path(body["id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(path, body, backup=False)
+    before = await session_of(old)
+    return [live, dormant, before]
+
+
+async def test_the_progress_session_type_is_what_the_route_answers(rig):
+    """Every key a real ``session`` of the progress route carries is declared
+    on flowsApi.ts's ``FlowProgressSession``, and every declared key is
+    carried; every value is one its TS type admits: ``armed`` true and
+    false, ``plan_saved_ts`` a number and null, and the status choices
+    (#431, #473).
+
+    OPTIONAL EXACTLY THE REPLAY FACTS. This route sends all six keys on
+    every record, but a server older than S7 sends neither of the two the
+    route adds (``progress.replay_facts``), and the UI must read that answer
+    too, so flowsApi.ts marks those two optional, the way it marks
+    ``FlowRunResult.session`` for a server older than S1. The optional set
+    is held to the keys the carried-sometimes rule gives plus the keys
+    ``replay_facts`` itself answers, read off the server, not copied here.
+
+    Each mutant below was run in the private copy scratchpad
+    ``S7-URUN-mut`` (a copy of ``server/`` beside copies of
+    ``ui/src/types.ts`` and ``ui/src/lib/flowsApi.ts``), from a byte backup of
+    flowsApi.ts, restored and SHA-256 compared after each run.
+
+    RED under "flowsApi drops armed" (the ``armed?: boolean;`` member deleted
+    from ``FlowProgressSession``), observed:
+
+        E   AssertionError: FlowProgressSession drifted: the route sends
+            ['armed'], which flowsApi.ts does not declare, and flowsApi.ts
+            declares [], which the route never sends
+
+    RED under "plan_saved_ts never null" (``plan_saved_ts?: number;``),
+    observed:
+
+        E   AssertionError: flowsApi.ts types these otherwise:
+            {'plan_saved_ts': (None, 'number')}
+
+    RED under "armed required" (``armed: boolean;``, so a reader may trust
+    a key an older server never sends), observed:
+
+        E   AssertionError: flowsApi.ts must mark optional exactly the keys
+            a FlowProgressSession carries only sometimes, and the replay
+            facts a server older than S7 does not send
+        E   assert {'plan_saved_ts'} == {'armed', 'plan_saved_ts'}
+    """
+    from astrodeck.flows.progress import replay_facts
+    from astrodeck.sequence.session import Session
+
+    records = await _route_sessions(rig)
+    shapes = [(s["status"], s["armed"], s["plan_saved_ts"] is None)
+              for s in records]
+    assert shapes == [("active", False, False), ("dormant", True, False),
+                      ("dormant", True, True)], (
+        f"premise: a live session, an armed one frozen at a saved version, "
+        f"and an armed one older than S7: {shapes}")
+
+    ts = _flows_api("FlowProgressSession")
+    sent = set().union(*map(set, records))
+    always = set.intersection(*map(set, records))
+    assert sent == set(ts), (
+        f"FlowProgressSession drifted: the route sends "
+        f"{sorted(sent - set(ts))}, which flowsApi.ts does not declare, and "
+        f"flowsApi.ts declares {sorted(set(ts) - sent)}, which the route "
+        f"never sends")
+    replay = set(replay_facts(Session()))
+    assert replay == {"armed", "plan_saved_ts"} and replay <= always, (
+        f"premise: the route adds the replay facts to every record: "
+        f"{sorted(replay)}")
+    assert _flows_api_optional("FlowProgressSession") == (
+        (sent - always) | replay), (
+        "flowsApi.ts must mark optional exactly the keys a "
+        "FlowProgressSession carries only sometimes, and the replay facts "
+        "a server older than S7 does not send")
+    for r in records:
+        wrong = _wrong(r, ts)
+        assert not wrong, f"flowsApi.ts types these otherwise: {wrong}"

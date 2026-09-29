@@ -21,6 +21,7 @@ import type {
 } from "../../lib/flowsApi";
 import { runIsLive } from "../../lib/lastSessionFrame";
 import type { SequenceState, ToastLevel } from "../../types";
+import { knownSessions } from "./flowRunState";
 import { NODE_DEFS, createParams } from "./nodeDefs";
 import { fitView, type Rect } from "./geometry";
 import { flowLoopRefusal, portKindOf } from "./flowLoop";
@@ -47,6 +48,32 @@ export const LOG_RING = 120;
  *  read when the run ENDS is not held to it: it is the one that makes the
  *  final count right. */
 export const LIVE_PROGRESS_MIN_MS = 30_000;
+
+/** The toast title when `flowsOpen` refuses to replace the open flow (#450).
+ *  The same words the #/next doors (openFlow.ts `FLOW_OPEN_FAILED`) and the
+ *  wizard put on a failed open, so the store's toast model coalesces a
+ *  caller's own report of the same press onto this one instead of stacking
+ *  two cards about one tap. It says what did NOT happen: the dangerous
+ *  reading of a silent refusal is that the other flow opened. */
+export const FLOW_NOT_OPENED = "That flow did not open";
+
+/** Why `flowsOpen` refused (#450): the flow open in the editor holds edits
+ *  that its save, made first, did not keep, and replacing it would drop them.
+ *  The wizard said this first, for its own two doors (`openSaved`); since the
+ *  rule moved into the store, every door says it. */
+export const FLOW_OPEN_OVER_UNSAVED =
+  "The flow open in the editor has edits that did not save, and opening this one would drop them. Save or close that flow first.";
+
+/** No session known: one shared empty list, so writing it twice is no
+ *  change of identity. */
+const NO_SESSIONS: readonly string[] = [];
+
+/** `ids` with `sid` added, or `ids` itself, the same array, when `sid` names
+ *  no session or is already there: `sessionIds` keeps its identity unless it
+ *  learns something, so a selector over it wakes nobody for nothing. */
+function withSession(ids: readonly string[], sid: unknown): readonly string[] {
+  return typeof sid !== "string" || sid === "" || ids.includes(sid) ? ids : [...ids, sid];
+}
 
 export interface FlowsUiState {
   screen: FlowScreen;
@@ -123,8 +150,35 @@ export interface FlowsState {
    *  re-read (`fetchProgress`, private to createFlowsActions). A LIVE re-read,
    *  started by a frame landing on this flow's run (#214), leaves it in place
    *  until its answer lands.
-   *  Cards read it only through `progressChip` (flowProgress.ts). */
+   *  Cards read it only through `progressChip` (flowProgress.ts).
+   *
+   *  NEVER ASKED WHETHER THE FLOW IS RUNNING (#449). It is a cache of a route
+   *  answer that every open, save and RUN blanks for a round trip, and a
+   *  failed read leaves blank; whose run the rig is on is a fact about the rig
+   *  that holds across all of those. That question is `sessionIds`'. */
   progress: FlowProgress | null;
+  /** The session ids known to be the OPEN flow's: the one each progress answer
+   *  counted from, and the one `flowsRun`'s answer named. The rig's live run is
+   *  this flow's when its session is one of these, which is how the live
+   *  refresh (#214), run mode at both Target modal doors, the RUN button and
+   *  the run readouts decide it (flowRunState `flowRunLive`, over
+   *  `knownSessions`).
+   *
+   *  A LIST, NOT THE LATEST ONE, because both sources are needed and neither
+   *  may overwrite the other. RUN names its session before any answer does
+   *  (START OVER, a first night), and a run started elsewhere (ResumeArm on
+   *  night two, another browser) is known only by an answer, which a save
+   *  clears for the length of one read (#449). A session id is minted once per
+   *  session, so every id that was ever this flow's still is.
+   *
+   *  So nothing within one flow drops an id: not a save, not a failed read,
+   *  not a run ending. The list goes when no flow is open (a close, the
+   *  sign-out gate's reset of `flows`: a session id is a fact about the rig,
+   *  and nothing keeps one behind the login screen) and is replaced, in the
+   *  same write as the record, when ANOTHER flow opens: flow A's session
+   *  running while flow B is open is not B's run. Readers go through
+   *  `knownSessions`, which also answers none while no record is open. */
+  sessionIds: readonly string[];
   /** The counts note the server's read carried when the OPEN flow was opened
    *  (`migrated` entry `counts`, spec Revision 2 ruling 2), with the dormant
    *  addendum when the route added it; null when the read carried none.
@@ -183,6 +237,7 @@ export const FLOWS_INIT: FlowsState = {
   tonight: null, tonightLoading: false, tonightError: null,
   calHealth: null,
   progress: null,
+  sessionIds: NO_SESSIONS,
   countsNote: null,
   ui: { screen: "library", phoneTab: "flow", query: "", folderChip: "all",
         tonightOpen: false, tonightTab: "timeline", wizardOpen: false,
@@ -192,6 +247,19 @@ export const FLOWS_INIT: FlowsState = {
 
 export interface FlowsActions {
   flowsLoadLibrary: () => Promise<void>;
+  /** Opens flow `id` into the editor's state, replacing the open record.
+   *
+   *  A DIRTY OPEN RECORD OF ANOTHER ID IS SAVED FIRST (#450), and when that
+   *  save does not keep its edits the open is REFUSED: nothing is read,
+   *  nothing is replaced, and the refusal is said (`FLOW_OPEN_OVER_UNSAVED`,
+   *  in a toast and in `libraryError`, where `openFlowById`'s callers read
+   *  why an open did not land). A read-only Example is not saved first (the
+   *  server refuses it) and is replaced as a close replaces it, and a SAVE
+   *  already out carrying exactly the graph on screen is neither sent again
+   *  nor waited on (#215's stale completion covers its answer).
+   *
+   *  Resolves once the record is in, or once the open failed or was refused,
+   *  having written `libraryError` either way; it never rejects. */
   flowsOpen: (id: string) => Promise<void>;
   flowsCloseEditor: () => Promise<void>;
   flowsSave: () => Promise<void>;
@@ -739,35 +807,26 @@ export function createFlowsActions(
   let compileStarted = 0;
   let compileKept = 0;
 
-  /** The sessions known to be the OPEN flow's: the one each progress answer
-   *  counts from, and the one `flowsRun`'s answer named. A live run is this
-   *  flow's when its session is one of these (#214).
+  /** Is `sid` one of the OPEN flow's sessions (`FlowsState.sessionIds`)? A
+   *  live run is this flow's when it is (#214).
    *
-   *  A SET, not the latest one, because both sources are needed and neither
-   *  may overwrite the other. RUN names its session before any answer does
-   *  (START OVER, a first night), and a run started elsewhere - ResumeArm on
-   *  night two, another browser - is known only by the answer, which a save
-   *  clears for the length of one read. A session id is minted once per
-   *  session, so every id that was ever this flow's still is.
-   *
-   *  Dropped whenever no flow is open (the watcher below), which includes the
-   *  sign-out gate's reset of `flows`: a session id is a fact about the rig,
-   *  and nothing keeps one behind the login screen. */
-  let flowSessions: { flowId: string; ids: Set<string> } | null = null;
-  const noteSession = (flowId: string, sid: unknown): void => {
-    if (typeof sid !== "string" || sid === "") return;
-    if (flowSessions?.flowId !== flowId) flowSessions = { flowId, ids: new Set() };
-    flowSessions.ids.add(sid);
-  };
-  const openFlowOwns = (sid: string | null): boolean => {
-    const id = get().flows.record?.id;
-    return sid !== null && id !== undefined
-      && flowSessions?.flowId === id && flowSessions.ids.has(sid);
-  };
+   *  THE STATE, NOT A PRIVATE COPY (#449). This closure kept the set to
+   *  itself, so the live refresh knew across a save which run was the flow's
+   *  while both Target modal doors, reading the progress answer the save had
+   *  just blanked, did not. One list in the store, and one reader of it
+   *  (`knownSessions`), is what keeps the refresh and the doors agreeing. */
+  const openFlowOwns = (sid: string | null): boolean =>
+    sid !== null && knownSessions(get().flows).includes(sid);
 
   /** When the last live read started, for LIVE_PROGRESS_MIN_MS. Reset when a
    *  flow opens, so one flow's reads never hold back another's. */
   let liveReadAt = -Infinity;
+
+  /** The PUT `flowsSave` has out now: the flow, and the graph object and name
+   *  it sent. `flowsOpen` reads it (#450): a save already carrying exactly
+   *  what is on screen is not sent a second time nor waited on. Cleared when
+   *  that PUT settles, unless a later save has replaced it meanwhile. */
+  let saving: { id: string; graph: FlowGraphRec; name: string } | null = null;
 
   /** Re-read the open flow's progress into `flows.progress` (#189 S1 item 9).
    *  Never rejects, and every caller starts it without awaiting it.
@@ -800,14 +859,20 @@ export function createFlowsActions(
       // one open: the editor can close, or open another flow, while a read is
       // in flight.
       if (ticket !== progressTicket || get().flows.record?.id !== id) return;
-      set((s) => patch(s, { progress }));
-      noteSession(id, progress?.session?.id);
+      // THE ANSWER'S SESSION IS KNOWN FROM THE SAME WRITE (#449): no render
+      // sees an answer naming a session the list lacks. It stays known after
+      // the next clearing read blanks the answer, which is the point.
+      set((s) => patch(s, {
+        progress, sessionIds: withSession(s.flows.sessionIds, progress?.session?.id),
+      }));
     } catch {
       // Left as it was, and SILENT: null after a clearing read, the previous
       // answer after a live one. A server older than S1 answers 404 for every
       // flow, and a saved graph that cannot become a plan answers 422, which
       // the compile's own doctor already reports. A missing chip claims
       // nothing; a log line on every open would be noise about a decoration.
+      // `sessionIds` is left too: a read that failed says nothing about which
+      // sessions were this flow's, so a live run stays this flow's (#449).
     }
   };
 
@@ -852,9 +917,10 @@ export function createFlowsActions(
   };
 
   // Called on EVERY store write in the app (status ticks every 2 s, log
-  // lines, previews), so it does two comparisons before anything else.
+  // lines, previews), so it does one comparison before anything else. It
+  // used to drop the private session set when no flow was open; the list is
+  // state now, dropped by the writes that close the record (#449).
   api?.subscribe((s, prev) => {
-    if (flowSessions && !s.flows.record) flowSessions = null;
     if (s.sequence !== prev.sequence) onSequence(prev.sequence, s.sequence);
   });
 
@@ -877,6 +943,63 @@ export function createFlowsActions(
     },
 
     flowsOpen: async (id) => {
+      // EVERY WAY OUT SAVES FIRST, AND AN OPEN IS A WAY OUT (#450). The rule
+      // lived on the exits that are components (the canvas host's BACK and
+      // its stranded-route effect, the Flows screen's, the stage sheet's,
+      // each through openFlow.ts `leaveFlowEditor`), and #/next renders only
+      // the active hub: a hub switch unmounts all of them at once, leaving
+      // the edited graph in the store with `dirty` set, and the next open
+      // from another hub (the Sky's quick flow, its flow card's deep link,
+      // Tonight, RUN on a Now row) replaced it without a word. So the save
+      // belongs to the store, where every caller, present and future, passes
+      // through it. The wizard's own copy of this rule (`openSaved`) is now
+      // this.
+      //
+      // A read-only Example is left to be replaced, as a close replaces it:
+      // the server refuses its save, and refusing the open over it would
+      // trap the operator in an Example they cannot keep. A clean record is
+      // asked too, and `flowsSave` sends nothing for it; `dirty` after the
+      // save is the one test, so there is no second one before it to drift.
+      //
+      // A SAVE ALREADY CARRYING WHAT IS ON SCREEN is neither sent again nor
+      // waited on: the operator pressed SAVE, its PUT holds this very graph
+      // and name, and `dirty` stays set only until it answers. Sending a
+      // second one and waiting for it would hold the open for a round trip
+      // that stores nothing new, and #215's stale completion (that PUT
+      // answering after this open, writing nothing onto the flow now open)
+      // is a race the slice already handles. What is left is narrow and is
+      // said where it lands: should that PUT then fail, its catch writes
+      // `libraryError`, but the edit is no longer on screen (#500, with the
+      // close that clears whatever its save did). An edit made
+      // AFTER that PUT went out is on no PUT, so it is saved here as any
+      // other, and refused over when that fails.
+      const leaving = get().flows.record;
+      const carried = saving !== null && leaving !== null && saving.id === leaving.id
+        && saving.graph === get().flows.graph && saving.name === leaving.name;
+      if (leaving && leaving.id !== id && !leaving.readonly && !carried) {
+        const was = leaving.id;
+        await get().flowsSave();
+        const now = get().flows;
+        // STILL DIRTY IS REFUSED, WHATEVER THE REASON: the PUT failed (its
+        // catch wrote `libraryError`), or an edit landed inside its round
+        // trip (flowsSave keeps `dirty` for it, #215). Either way the graph
+        // on screen is not the one stored, and replacing it is the loss this
+        // exists to prevent. A record that is no longer `was` means another
+        // open landed meanwhile and made its own save; this one goes on.
+        if (now.record?.id === was && now.dirty) {
+          // In `libraryError` because that is where `openFlowById`'s callers
+          // (openFlow.ts `flowOpenFailure`) and the wizard read why an open
+          // did not land; in a toast because the callers that open from an
+          // effect (the Sky's flow card, Tonight, the canvas host) report
+          // nothing of their own, and a refusal nobody sees reads as a tap
+          // that missed.
+          set((s) => patch(s, { libraryError: FLOW_OPEN_OVER_UNSAVED }));
+          get().enqueueToast?.({
+            level: "error", title: FLOW_NOT_OPENED, detail: FLOW_OPEN_OVER_UNSAVED, source: "flows",
+          });
+          return;
+        }
+      }
       try {
         const rec = (await flowsApi.get(id)) as FlowRecordRec;
         set((s) => patch(s, {
@@ -890,6 +1013,12 @@ export function createFlowsActions(
           // answer sat beside this record its counts would land on this
           // flow's cards.
           progress: null,
+          // So are the sessions known to be the open flow's (#449), for a
+          // stronger reason: another flow's session running while this one is
+          // open would read as THIS flow's run, and freeze its Target modal
+          // and turn its RUN into a STOP over someone else's night. The same
+          // flow opened again keeps its own.
+          sessionIds: s.flows.record?.id === rec.id ? s.flows.sessionIds : NO_SESSIONS,
           // Kept for the counts line both editors draw, in the same write as
           // the record it is about (see FlowsState.countsNote).
           countsNote: countsNoteOf(rec),
@@ -927,6 +1056,8 @@ export function createFlowsActions(
     flowsSave: async () => {
       const { record, graph, dirty } = get().flows;
       if (!record || record.readonly || !dirty) return;
+      const sent = { id: record.id, graph, name: record.name };
+      saving = sent;
       try {
         const saved = (await flowsApi.save(record.id,
           { ...record, graph })) as FlowRecordRec;
@@ -1015,6 +1146,8 @@ export function createFlowsActions(
         void get().flowsCompile();
       } catch (e) {
         set((s) => patch(s, { libraryError: errText(e) }));
+      } finally {
+        if (saving === sent) saving = null;
       }
     },
 
@@ -1023,9 +1156,10 @@ export function createFlowsActions(
       set((s) => patch(s, {
         record: null, graph: { nodes: [], edges: [] }, dirty: false,
         sel: null, editNode: null, wire: null, tapWire: null,
-        // An answer belongs to the open record and goes with it, and so does
-        // the note its read carried.
+        // An answer belongs to the open record and goes with it, and so do
+        // the note its read carried and the sessions known to be its (#449).
         progress: null,
+        sessionIds: NO_SESSIONS,
         countsNote: null,
         ui: { ...s.flows.ui, screen: "library", paletteOpen: false },
       }));
@@ -1103,11 +1237,13 @@ export function createFlowsActions(
         // opened on: DONE that turns a 1x1 into a 3x2 and asks for the loop
         // gets it, and one that turns a 3x2 into a 1x1 gets no NEW wire
         // (spec 1.4: "when the block becomes multi-panel and owns a stage").
-        // A loop wire the block already has is lifted only by `false`
-        // (`withLoop`'s `true` never lifts), so a DONE that makes a looped
-        // mosaic a single target must send `false`: left in place, the wire
-        // is a pass wire into a 1x1 block, the doctor's M4 note and a rule
-        // Run asks to accept (spec 1.4 "As built", #349).
+        // The loop wire leaving the TAIL is lifted only by `false`: `true`
+        // keeps it, and since #410 lifts only a pass wire stranded mid-lane
+        // (M12), moving the first to the tail when the tail has none (#429
+        // corrected this comment, which said `true` never lifts). So a DONE
+        // that makes a looped mosaic a single target must send `false`: left
+        // in place, the wire is a pass wire into a 1x1 block, the doctor's M4
+        // note (spec 1.4 "As built", #349).
         const edges = withLoop({ ...g, nodes }, id, loop, nextEdgeId);
         if (nodes === g.nodes && edges === g.edges) return {};
         wrote = true;
@@ -1320,16 +1456,20 @@ export function createFlowsActions(
           run: { ...s.flows.run, phase: "running",
                  frames: 0, frameGoal: res.frames,
                  acceptedUnmapped: flags.acceptUnmapped ? (res.unmapped ?? []) : [] },
+          // The session this run went into is this flow's, known from this
+          // moment: the live refresh (#214) recognizes the run's frames by
+          // it, and run mode, the RUN button and the readouts the run itself
+          // (#449), before any progress answer has named it, and through the
+          // clearing read started below. Only while the flow that was run is
+          // still the one open: another flow's list is not this one's.
+          ...(s.flows.record?.id === id
+            ? { sessionIds: withSession(s.flows.sessionIds, res.session?.id) } : {}),
         }));
         // Which ledger the night went into, in words - "continued night 3: 7
         // steps kept, 0 new". Without it a CONTINUE is indistinguishable from
         // a fresh start on every surface that shows the log.
         const line = sessionLogLine(res.session);
         if (line) get().flowsAppendLog(line, "info");
-        // The session this run went into is this flow's, known from this
-        // moment: the live refresh (#214) recognizes the run's frames by it
-        // before any progress answer has named it.
-        noteSession(id, res.session?.id);
         // The run may have gone into a NEW session (START OVER, or the first
         // night), whose counts are not the ones the cards are showing.
         void fetchProgress();

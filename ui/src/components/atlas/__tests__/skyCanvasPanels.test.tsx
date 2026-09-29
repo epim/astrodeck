@@ -932,6 +932,13 @@ function objectLabelBox(el: any): Box {
 // the order chip" both passed 21/21: a probe whose name runs across a label
 // still hits a reservation several px too small, and at 8 deg wide most
 // probes lost their names to a neighbouring label and graded nothing.
+// Re-run for #385's residual (S7-USKY, 2026-09-28), which found the
+// reservation in place and this case holding it: mutant "panel label boxes not
+// reserved" (the same removal, `boxes.push(...panelLabelBoxes)` dropped from
+// reservedBoxes), in a private scratch copy (S7-USKY-mut): failed, 21/22:
+//   x an object label avoids the panel labels: the one it would land on
+//     first, and every one of the six: the star's name (90.1, 149.6, 24.4 x
+//     16.0) is placed over panel 1-3's label (88.1, 149.6, 48.8 x 16.0)
 test("an object label avoids the panel labels: the one it would land on first, and every one of the six", () => {
   // No optics: no camera label, so nothing but the panel labels can move the
   // star's name, and the panels are outlined at the size they were tiled for.

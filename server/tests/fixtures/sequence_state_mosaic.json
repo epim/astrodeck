@@ -1,5 +1,5 @@
 {
- "about": "GET /api/sequence/state as the engine served it on the clocked simulator (server/tests/_group_harness.py) for a rotating 2x2 of the fixture mosaic near the meridian, flips on, whose 2-2 never centres and is set aside at its third visit; the night runs under the session id flow_progress_continue.json records. 'shooting' is the first state with a panel set aside and an exposure in flight; the meridian wait is the first state whose group waits on the meridian rule, as an operator is served it and as a viewer is (panel and pass absent). Built and graded byte for byte by server/tests/test_s5_recorded_state.py. Read, never copied, by ui/src/components/flows/__tests__/flowRunState.test.ts. Never hand-edit it.",
+ "about": "GET /api/sequence/state as the engine served it on the clocked simulator (server/tests/_group_harness.py) for a rotating 2x2 of the fixture mosaic near the meridian, flips on, whose 2-2 never centres and is set aside at its third visit; the night runs under the session id flow_progress_continue.json records. 'shooting' is the first state with a panel set aside and an exposure in flight; the meridian wait is the first state whose group waits on the meridian rule, as an operator is served it and as a viewer is (panel and pass absent). 'paused', 'holding' and 'aborting' are the first state of each kind whose group names a panel, as an operator is served it, from a second night of the same plan with safety armed, no monitor assigned and the frames' own cloud verdict standing in for one: paused and resumed as the first frame after 2-2 is set aside opens, the sky shut from the next frame, and an Abort pressed at the cloud hold's first probe. Built and graded byte for byte by server/tests/test_s5_recorded_state.py. Read, never copied, by ui/src/components/flows/__tests__/flowRunState.test.ts. Never hand-edit it.",
  "states": {
   "shooting": {
    "state": "running",
@@ -201,6 +201,187 @@
     "reason": "the mosaic waits for the meridian, so it changes pier side once",
     "eta_s": 0
    },
+   "running": true,
+   "paused": false
+  },
+  "paused": {
+   "state": "paused",
+   "progress": {
+    "frames_done": 6,
+    "frames_total": 120,
+    "percent": 5.0,
+    "elapsed_s": 180,
+    "rejected": 0,
+    "eta_s": 17328,
+    "eta_confident": false,
+    "hops_costed": false,
+    "server_now_ms": 1788313869000,
+    "current_exposure_s": 30.0,
+    "frame_started_at_ms": 1788313869000,
+    "remaining_capture_s": 3390,
+    "events_cost_s": 12540
+   },
+   "detail": "paused by you \u2014 it waits here until you resume it",
+   "sky": {
+    "cloudy": null,
+    "age_s": null,
+    "score": null,
+    "reason": "no cloud reading yet",
+    "latest_frame": {
+     "cloudy": null,
+     "score": null,
+     "reason": ""
+    },
+    "text": "no cloud reading yet",
+    "holding": false,
+    "hold_deferred": null
+   },
+   "plan_name": "M31 mosaic",
+   "session": {
+    "id": "319caf668a27569db2239f9e8fa83396",
+    "name": "M31 mosaic",
+    "count_mode": "attempts",
+    "accepted": 6,
+    "target": "M31 1-1"
+   },
+   "target": "M31 1-1",
+   "target_index": 0,
+   "group": {
+    "id": "m31-mosaic",
+    "name": "M31",
+    "mode": "rotate",
+    "pass": 3,
+    "panel": "1-1",
+    "visit_elapsed_s": 0,
+    "panels_done": 0,
+    "panels_total": 4,
+    "set_aside": [
+     {
+      "panel": "2-2",
+      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo"
+     }
+    ],
+    "meridian_wait": false
+   },
+   "hold": null,
+   "running": true,
+   "paused": true
+  },
+  "holding": {
+   "state": "holding",
+   "progress": {
+    "frames_done": 9,
+    "frames_total": 120,
+    "percent": 7.5,
+    "elapsed_s": 270,
+    "rejected": 0,
+    "eta_s": 16752,
+    "eta_confident": false,
+    "hops_costed": false,
+    "server_now_ms": 1788313959000,
+    "current_exposure_s": 30.0,
+    "frame_started_at_ms": null,
+    "remaining_capture_s": 3330,
+    "events_cost_s": 12090
+   },
+   "detail": "held for cloud - no safety monitor is assigned and the frames say the sky has closed in. The mount is not on M31 1-1 yet: pointing it there before the sky is judged",
+   "sky": {
+    "cloudy": true,
+    "age_s": 0,
+    "score": 0.93,
+    "reason": "cloudy, from a reading 0s old \u2014 cloudy: 1 bright stars, low contrast (3x noise)",
+    "latest_frame": {
+     "cloudy": true,
+     "score": 0.93,
+     "reason": "cloudy: 1 bright stars, low contrast (3x noise)"
+    },
+    "text": "cloudy, from a reading 0s old \u2014 cloudy: 1 bright stars, low contrast (3x noise)",
+    "holding": true,
+    "hold_deferred": null
+   },
+   "plan_name": "M31 mosaic",
+   "session": {
+    "id": "319caf668a27569db2239f9e8fa83396",
+    "name": "M31 mosaic",
+    "count_mode": "attempts",
+    "accepted": 9,
+    "target": "M31 1-1"
+   },
+   "target": "M31 1-1",
+   "target_index": 0,
+   "group": {
+    "id": "m31-mosaic",
+    "name": "M31",
+    "mode": "rotate",
+    "pass": 4,
+    "panel": "1-1",
+    "visit_elapsed_s": 0,
+    "panels_done": 0,
+    "panels_total": 4,
+    "set_aside": [
+     {
+      "panel": "2-2",
+      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo"
+     }
+    ],
+    "meridian_wait": false
+   },
+   "hold": "clouds",
+   "running": true,
+   "paused": false
+  },
+  "aborting": {
+   "state": "aborting",
+   "progress": {
+    "frames_done": 9,
+    "frames_total": 120,
+    "percent": 7.5,
+    "elapsed_s": 390,
+    "rejected": 0
+   },
+   "detail": "stopping the run \u2014 ending the exposure and the guider. A device that has stopped answering can hold this for a few minutes.",
+   "sky": {
+    "cloudy": true,
+    "age_s": 120,
+    "score": 0.93,
+    "reason": "cloudy, from a reading 120s old \u2014 cloudy: 1 bright stars, low contrast (3x noise)",
+    "latest_frame": {
+     "cloudy": true,
+     "score": 0.93,
+     "reason": "cloudy: 1 bright stars, low contrast (3x noise)"
+    },
+    "text": "cloudy, from a reading 120s old \u2014 cloudy: 1 bright stars, low contrast (3x noise)",
+    "holding": true,
+    "hold_deferred": null
+   },
+   "plan_name": "M31 mosaic",
+   "session": {
+    "id": "319caf668a27569db2239f9e8fa83396",
+    "name": "M31 mosaic",
+    "count_mode": "attempts",
+    "accepted": 9,
+    "target": "M31 1-1"
+   },
+   "target": "M31 1-1",
+   "target_index": 0,
+   "group": {
+    "id": "m31-mosaic",
+    "name": "M31",
+    "mode": "rotate",
+    "pass": 4,
+    "panel": "1-1",
+    "visit_elapsed_s": 0,
+    "panels_done": 0,
+    "panels_total": 4,
+    "set_aside": [
+     {
+      "panel": "2-2",
+      "reason": "centring failed on 2-2 on 3 consecutive visits: plate solve failed \u2014 used raw GoTo"
+     }
+    ],
+    "meridian_wait": false
+   },
+   "hold": "clouds",
    "running": true,
    "paused": false
   }

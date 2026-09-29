@@ -78,6 +78,9 @@ import type {
 import { ActionButton, Card, EmptyCard, Label, ListRow, Mono } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { explainLock } from "../../../shell/explain";
+import {
+  FLOW_OPEN_FAILED, flowOpenFailure, libraryErrorNow, openFlowById,
+} from "../flows/openFlow";
 import { nav } from "../../../router";
 import { useCampaignFlowId } from "./useCampaign";
 import { useFlowLibrary } from "./sessionData";
@@ -294,7 +297,6 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
   const { cards } = useFlowLibrary();
   const { id: campaignFlowId } = useCampaignFlowId();
   const flowControls = useFlowRunControls();
-  const flowsOpen = useStore((s) => s.flowsOpen);
   const enqueueToast = useStore((s) => s.enqueueToast);
   const pushConfirm = useStore((s) => s.pushConfirm);
   const setPlan = useStore((s) => s.setPlan);
@@ -445,7 +447,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
     // `flowControls.act` captures `running` at render time, so the object this
     // handler was created with would still toggle to STOP even after the line
     // above corrected the flag. React flushes the state write at the end of this
-    // event handler, long before `flowsOpen`'s request comes back, so by then
+    // event handler, long before the open's request comes back, so by then
     // the ref holds an `act` that starts.
     
     // The SHARED run control, not a second copy of it: `useFlowRunControls`
@@ -456,8 +458,27 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
     // NO ARM TWO-TAP, matching `FlowsScreen`: RUN starts a run, it does not end
     // one, and the two-tap arm in this app guards the controls that STOP an
     // unattended night (`now-stop`). Arming a start would train the arm away.
+    //
+    // AND ONLY WHEN THE FLOW PRESSED IS THE ONE THAT OPENED (#499). `flowsOpen`
+    // swallows its failure and leaves the record that was open before, and
+    // since #450 it also REFUSES over a flow whose unsaved edits its save did
+    // not keep. `act()` posts against whatever record is open, so a press on
+    // row B while flow A held a failed save started flow A: one dropped PUT on
+    // a phone, and the wrong night runs. `openFlowById` says whether `id`
+    // landed, and on false nothing is posted, as FlowsScreen's RUN does.
     startedAt.current = Date.now();
-    void flowsOpen(id).then(() => actRef.current());
+    const before = libraryErrorNow();
+    void openFlowById(id).then((landed) => {
+      if (!landed) {
+        enqueueToast({
+          level: "error",
+          title: FLOW_OPEN_FAILED,
+          detail: `${flowOpenFailure(before)} Nothing was started.`,
+        });
+        return;
+      }
+      actRef.current();
+    });
   };
 
   /** RESUME picks the ARMED session back up; it does not start a fresh run.

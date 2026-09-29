@@ -87,6 +87,44 @@ const PANEL_PLATE_PX = 2 * 4 + 2 * 1;
 const PANEL_PART_GAP_PX = 4;
 const PANEL_CHIP_PX = 2 * 2 + 2 * 1;
 const PANEL_LABEL_H = 14 + 2;
+/** The "Object size" legend (#425): its text, its 18 px leading (written on
+ *  the element, so the height is not whatever it inherits), px-1 each side,
+ *  6 px off the ellipse's rim, and the 3 px it keeps from any other box, as
+ *  skyMarkers keeps between two object labels. skyCanvasLegend.test reads the
+ *  classes, so a restyle of the legend fails there by name. */
+const LEGEND_TEXT = "Object size";
+const LEGEND_H = 18;
+const LEGEND_PLATE_PX = 2 * 4;
+const LEGEND_GAP_PX = 6;
+const LEGEND_PAD_PX = 3;
+
+// ---- what the canvas says when its survey is degraded (#426) -------------
+// A host that knows the offline pack's state passes a narrower sentence as
+// `degradedText` (SkyHub and FrameHost through surveyDegradedText, AtlasView
+// its own). FramingSky and CompassSurvey know only `onlineFetch`, and the
+// default used to ignore that too: it told an operator whose online fetch was
+// ON, on a rig with no network, to turn on what was already on. So the
+// default in the canvas is picked by `onlineFetch`, and the line under it by
+// the render path, because only the <img> path ever has a schematic backdrop
+// or a last image to name. No em dash and no warning glyph: the house rule
+// for UI copy, and a glyph the status line needs no help from.
+/** UX-07's sentence, for a rig with online fetch off. */
+const NO_SURVEY_OFFLINE =
+  "No sky survey available: download the offline pack or enable online fetch in Settings.";
+/** Online fetch is on and still nothing arrives: the network, or no pack. */
+const NO_SURVEY_ONLINE =
+  "The sky survey is not arriving. Check the rig's connection, or install the offline sky pack in Settings.";
+/** The line under the canvas. Short enough to sit on ONE line in the Target
+ *  modal's 390 px phone sky, where every line it wraps onto comes off the
+ *  square (framing.css, #465). The tile engine draws no schematic backdrop
+ *  and keeps no last image, so its line names neither; it re-asks a failed
+ *  tile once its 45 s negative cache lets it, which is the retry. */
+function degradedLine(tileEngine: boolean, lastImage: boolean): string {
+  if (tileEngine) return "Survey tiles not loading. Retrying automatically.";
+  return lastImage
+    ? "Survey unreachable, showing the last image. Retrying."
+    : "Survey unreachable, showing a schematic. Retrying.";
+}
 
 // One-time WebGL capability probe (spec §5): try initTileGL on a 1x1 canvas.
 // Cached so every SkyCanvas mount shares one probe result.
@@ -208,6 +246,12 @@ export interface SkyCanvasProps {
 
 function clampZoom(v: number): number {
   return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v));
+}
+
+/** Two boxes closer than `pad` px on both axes (skyMarkers' own test). */
+function boxesMeet(a: Rect, b: Rect, pad: number): boolean {
+  return a.x < b.x + b.w + pad && b.x < a.x + a.w + pad &&
+    a.y < b.y + b.h + pad && b.y < a.y + a.h + pad;
 }
 
 // Build the survey cutout URL. ra in HOURS — the backend multiplies by 15.
@@ -986,6 +1030,63 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   }, [boxPx, showCamLabel, camGuardRight, camMaxW, camTop, camLabelH, pointingLabel,
       hasOverlayControls, panelLabelBoxes]);
 
+  // ---- the "Object size" legend, CSS px (#425) ----
+  // `left`/`top` are its anchor: the middle of its left edge, or of its right
+  // edge when `anchor` is "right". Without panels it goes where it always
+  // went: 6 px right of the ellipse at the grid centre's height, parked on the
+  // right edge (stepped down past the W) when that is off the canvas.
+  //
+  // With panels that height is where a grid with an odd number of rows puts
+  // its middle row's labels, and for an object about the grid's size the
+  // ellipse's right edge lands on the west-most one: the probe found the
+  // legend over 2-1 on every 3x3 and over 1-1 on every 3x1 it tried, and a
+  // panel label is the control that skips its panel. So in panel mode the
+  // legend looks for a box that is on the canvas and meets none of the
+  // canvas's furniture (`reservedBoxes`: the panel labels, the compass
+  // letters, the readouts, the overlay controls), hugging the ellipse's rim:
+  // first at the grid centre's height, where it always was, then a step
+  // lower, a step higher and so on while the rim is still beside it, right of
+  // the ellipse before left, each slid in off an edge it would cross; then
+  // under the ellipse, then over it. Nowhere clear, it is not drawn, as the
+  // "Your camera" label is not in panel mode: a legend that covers a skip
+  // toggle costs more than the one word it adds, and the GRID section names
+  // the object's size in figures. Object labels do not keep off the legend
+  // yet: it is not among `reservedBoxes` (#491).
+  const legend = useMemo<{ left: number; top: number; anchor: "left" | "right" } | null>(() => {
+    if (!semiMajorDeg || !gridLabelsOnCanvas) return null;
+    const r = semiMajorDeg * cssPerDeg;
+    if (!panelsMode) {
+      const want = ccx + r + LEGEND_GAP_PX;
+      return want > boxPx - 6
+        ? { left: boxPx - 6, top: ccy + 22, anchor: "right" }
+        : { left: want, top: ccy, anchor: "left" };
+    }
+    const w = textWidth(LEGEND_TEXT) + LEGEND_PLATE_PX;
+    const h = LEGEND_H;
+    const clear = (x: number, y: number): boolean => {
+      const b = { x, y, w, h };
+      return x >= 0 && y >= 0 && x + w <= boxPx && y + h <= boxPx &&
+        !reservedBoxes.some((o) => boxesMeet(o, b, LEGEND_PAD_PX));
+    };
+    const step = h + LEGEND_PAD_PX;
+    for (let k = 0; k * step <= r; k++) {
+      for (const dy of k === 0 ? [0] : [k * step, -k * step]) {
+        const dx = Math.sqrt(r * r - dy * dy);
+        const y = ccy + dy - h / 2;
+        const right = Math.min(ccx + dx + LEGEND_GAP_PX, boxPx - 6 - w);
+        if (clear(right, y)) return { left: right, top: ccy + dy, anchor: "left" };
+        const left = Math.max(ccx - dx - LEGEND_GAP_PX - w, 6);
+        if (clear(left, y)) return { left: left + w, top: ccy + dy, anchor: "right" };
+      }
+    }
+    const x = Math.min(Math.max(ccx - w / 2, 6), boxPx - 6 - w);
+    for (const y of [ccy + r + LEGEND_GAP_PX, ccy - r - LEGEND_GAP_PX - h]) {
+      if (clear(x, y)) return { left: x, top: y + h / 2, anchor: "left" };
+    }
+    return null;
+  }, [semiMajorDeg, gridLabelsOnCanvas, cssPerDeg, panelsMode, ccx, ccy, boxPx, textWidth,
+      reservedBoxes]);
+
   // Anchors chosen last frame, so a label does not flip from one side of its
   // marker to the other while the sky moves a pixel underneath it.
   const stickyRef = useRef<Map<string, Anchor>>(new Map());
@@ -1056,419 +1157,427 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   };
 
   return (
-    <div className="flex flex-col gap-2">
-      <div
-        ref={boxRef}
-        role="application"
-        aria-label="Sky framing canvas. Tap a marked object to see what it is; its name is also a button you can reach with Tab. Arrow keys nudge center, square-bracket keys rotate, plus and minus zoom. On touch, swiping scrolls the page until you turn on finger drag."
-        tabIndex={0}
-        className="astro-surface relative aspect-square w-full min-w-[min(320px,calc(100vw-2rem))] mx-auto select-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerCancel}
-        // Capture can be revoked without a pointerup (another element takes it,
-        // the node moves in the DOM); idempotent with the two handlers above.
-        onLostPointerCapture={() => endDrag()}
-        onKeyDown={onKeyDown}
-        style={{
-          // `grabbing` for EITHER drag: a pan is the gesture this canvas is
-          // named for, and it used to be the one that never showed a held
-          // cursor at all.
-          cursor: dragMode ? "grabbing" : "grab",
-          touchAction,
-          // The 720px cap, plus a viewport-height cap the square never had.
-          // The canvas is square and width-driven, so in LANDSCAPE it grew to
-          // the column width and became TALLER than the screen: measured on a
-          // rotated phone, a 720x720 canvas against a 342px scrollport — one
-          // whole screenful with no chip, no labels, no controls on it (see
-          // shots/before-phone-landscape-full-screen3.png). 85svh keeps the
-          // whole map, and its escape chip, inside one screen. Inline rather
-          // than a Tailwind arbitrary value so the cap cannot silently vanish
-          // if the class fails to generate — losing it would blow the 720px
-          // cap too, on every viewport.
-          maxWidth: "min(720px, 85svh)",
-        }}
-      >
-        {props.overlayControls}
-        {/* 1a. WebGL tile engine (spec §5): mounts for survey mode when a slug
-              maps and WebGL is available; else the <img> pipeline below. */}
-        {useTileEngine && surveySlug && (
-          <TileEngine
-            centerRaDeg={center.ra_hours * 15}
-            centerDecDeg={center.dec_deg}
-            fovDeg={fovZoomDeg}
-            slug={surveySlug}
-            onlineFetch={onlineFetch}
-            brightness={imageBrightness}
-            onFirstTile={onTileFirst}
-            onAllFailing={onTileAllFailing}
-          />
-        )}
-
-        {/* 1b. survey image — kept EXACTLY as-is; the tile engine gates it off.
-              The LAST GOOD frame stays through failures/gestures (keep-last-good,
-              spec §1.3); the transform tracks the live view. */}
-        {mode === "survey" && !useTileEngine && shownUrl && (
-          <img
-            src={shownUrl}
-            alt=""
-            aria-hidden
-            draggable={false}
-            className="survey absolute inset-0 w-full h-full object-cover"
-            // Brightness rides the CSS var (see .survey rule); the transform is
-            // the pan/zoom tracker — never animate it (it must follow 1:1).
-            style={{
-              ["--survey-bright" as string]: imageBrightness,
-              transform: imgTransform,
-              transformOrigin: "center",
-            } as CSSProperties}
-          />
-        )}
-
-        {/* schematic backdrop: explicit user choice OR no fallback frame fetched
-              yet — never over the tile engine (it sits later in DOM order and
-              is opaque, so it would occlude the tile canvas). */}
-        {(mode === "schematic" || (!useTileEngine && !shownUrl)) && (
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_40%,#10131b,#04060a)]" aria-hidden />
-        )}
-
-        {/* visually-hidden status: announces the transient survey loading/offline
-            states (the visible chips are aria-hidden decoration). */}
-        <span className="sr-only" role="status" aria-live="polite">
-          {mode === "schematic"
-            ? "Schematic framing"
-            : surveyDegraded
-              ? (degradedText ?? `Survey unreachable, retrying, showing ${shownUrl ? "last image" : "schematic"}`)
-              : slowLoad
-                ? "Loading survey"
-                : ""}
-        </span>
-
-        {/* 2. fixed night dimmer — loading no longer blacks out the frame */}
+    <div className="sky-canvas flex flex-col gap-2">
+      {/* The square's slot. Inert here: a block the width of the column, as
+          tall as the square it holds, so every host lays out as before. It is
+          the hook a host whose height is fixed uses to size the square from
+          the height its lines below leave (the Target modal, framing.css,
+          #440 / #465): only an element between the square and those lines
+          can be the size container the square is read off. */}
+      <div className="sky-canvas-square">
         <div
-          className="absolute inset-0 bg-black pointer-events-none transition-opacity duration-200"
-          style={{ opacity: night ? 0.18 : 0 }}
-          aria-hidden
-        />
-
-        {/* first-ever tile-engine skeleton — until the first texture draws.
-            UX-07: gated on !surveyDegraded so a no-source / persistent-404 survey no
-            longer shows "LOADING…" forever; the honest empty-state below takes over. */}
-        {useTileEngine && !tileDrew && !surveyDegraded && (
-          <div className="absolute inset-0 grid place-items-center text-dim text-xs" aria-hidden>
-            <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
-          </div>
-        )}
-        {/* UX-07: honest empty-state when the survey has no reachable source.
-            On either path: the tile engine before its first drawn frame, or
-            the <img> pipeline with no good frame to keep (#404: its own
-            skeleton below said LOADING for good in exactly this state). */}
-        {surveyDegraded && (useTileEngine ? !tileDrew : mode === "survey" && !shownUrl) && (
-          <div className="absolute inset-0 grid place-items-center px-6 text-center text-dim text-xs">
-            <span>
-              {degradedText ??
-                "No sky survey available — download the offline pack or enable online fetch in Settings."}
-            </span>
-          </div>
-        )}
-
-        {/* first-ever load skeleton (img fallback path only). Gated on
-            !surveyDegraded like the tile engine's (#404): a cutout that has
-            failed is not loading, and the empty state above takes over. */}
-        {mode === "survey" && !useTileEngine && !everLoaded && !shownUrl && !surveyDegraded && (
-          <div className="absolute inset-0 grid place-items-center text-dim text-xs" aria-hidden>
-            <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
-          </div>
-        )}
-
-        {/* loading progress chip (subsequent loads) */}
-        {mode === "survey" && everLoaded && slowLoad && (
-          <div className="absolute top-2 right-2 px-2 py-0.5 text-[11px] mono text-dim bg-black/60 border border-line2 pointer-events-none">
-            LOADING…
-          </div>
-        )}
-
-        {/* 3. SVG geometry layer */}
-        <svg
-          viewBox={`0 0 ${VIEW} ${VIEW}`}
-          className="absolute inset-0 w-full h-full pointer-events-none"
-          aria-hidden
+          ref={boxRef}
+          role="application"
+          aria-label="Sky framing canvas. Tap a marked object to see what it is; its name is also a button you can reach with Tab. Arrow keys nudge center, square-bracket keys rotate, plus and minus zoom. On touch, swiping scrolls the page until you turn on finger drag."
+          tabIndex={0}
+          className="astro-surface relative aspect-square w-full min-w-[min(320px,calc(100vw-2rem))] mx-auto select-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerCancel}
+          // Capture can be revoked without a pointerup (another element takes it,
+          // the node moves in the DOM); idempotent with the two handlers above.
+          onLostPointerCapture={() => endDrag()}
+          onKeyDown={onKeyDown}
+          style={{
+            // `grabbing` for EITHER drag: a pan is the gesture this canvas is
+            // named for, and it used to be the one that never showed a held
+            // cursor at all.
+            cursor: dragMode ? "grabbing" : "grab",
+            touchAction,
+            // The 720px cap, plus a viewport-height cap the square never had.
+            // The canvas is square and width-driven, so in LANDSCAPE it grew to
+            // the column width and became TALLER than the screen: measured on a
+            // rotated phone, a 720x720 canvas against a 342px scrollport — one
+            // whole screenful with no chip, no labels, no controls on it (see
+            // shots/before-phone-landscape-full-screen3.png). 85svh keeps the
+            // whole map, and its escape chip, inside one screen. Inline rather
+            // than a Tailwind arbitrary value so the cap cannot silently vanish
+            // if the class fails to generate — losing it would blow the 720px
+            // cap too, on every viewport.
+            maxWidth: "min(720px, 85svh)",
+          }}
         >
-          {/* The planned grid: the server's panels when the caller has them
-              (PanelLayer, drawn from their sky coordinates), else FovOverlay's
-              client-side grid at the frame centre. Never both. */}
-          {panelsMode && (
-            <PanelShapes
-              placed={placedPanels}
-              view={VIEW}
-              hatchId={hatchId}
-              frameCenter={frameView}
-              objectRPx={semiMajorDeg ? semiMajorDeg * pxPerDeg : null}
+          {props.overlayControls}
+          {/* 1a. WebGL tile engine (spec §5): mounts for survey mode when a slug
+                maps and WebGL is available; else the <img> pipeline below. */}
+          {useTileEngine && surveySlug && (
+            <TileEngine
+              centerRaDeg={center.ra_hours * 15}
+              centerDecDeg={center.dec_deg}
+              fovDeg={fovZoomDeg}
+              slug={surveySlug}
+              onlineFetch={onlineFetch}
+              brightness={imageBrightness}
+              onFirstTile={onTileFirst}
+              onAllFailing={onTileAllFailing}
             />
           )}
-          {!panelsMode && props.showFraming !== false && frameView && <FovOverlay
-            view={VIEW}
-            cx={frameView.x}
-            cy={frameView.y}
-            pxPerDeg={pxPerDeg}
-            fovXDeg={fov.fov_x_deg || fovZoomDeg * 0.4}
-            fovYDeg={fov.fov_y_deg || fovZoomDeg * 0.28}
-            rotationDeg={rotationDeg}
-            rows={mosaic.rows}
-            cols={mosaic.cols}
-            overlap={mosaic.overlap}
-            objectSemiMajorDeg={semiMajorDeg}
-            objectSemiMinorDeg={semiMajorDeg}
-            haveOptics={haveOptics}
-          />}
-          {/* catalogue markers — AFTER the planned box (they are backdrop, not
-              a claim about this session) and BEFORE the live footprint, for the
-              same reason the footprint is drawn last: the truth about where the
-              hardware is pointing is never hidden under anything. */}
-          <AnnotationMarkers
-            markers={placement.markers}
-            selectedId={selectedObjectId}
-          />
-          {/* live pointing — drawn AFTER the planned box so the truth is never
-              hidden underneath the intention when the two coincide. */}
-          <PointingFrame view={VIEW} readout={pointingReadout} />
-          {/* compass N/E ticks (geometry; the N/E letters live on the HTML layer) */}
-          <g className="svg-halo" stroke="var(--accent)" strokeWidth={1.5} opacity={0.8}>
-            <line x1={cx} y1={24} x2={cx} y2={56} />
-            <line x1={VIEW - 56} y1={cy} x2={VIEW - 24} y2={cy} />
-          </g>
-        </svg>
 
-        {/* 4. HTML label layer — real CSS px, >=12px */}
-        <div className="absolute inset-0 pointer-events-none text-ink" aria-hidden>
-          {/* compass letters. The right-hand tick was labelled E and is WEST:
-              both renderers on this canvas place East to the LEFT (tileView
-              tileMesh `x = half − ξ·pxPerDeg  // East-left`, and surveyView's
-              transform for the <img> fallback), which is the standard N-up
-              astronomical orientation the survey frames arrive in. So the
-              letter, and only the letter, disagreed with every pixel under it —
-              and a compass that lies is not a decoration on a page whose whole
-              job is saying where something is. Relabelled rather than moved: the
-              tick geometry and the "Object size" clamp below it are measured
-              positions, and this needs one character, not a re-layout. */}
-          <span className="absolute left-1/2 -translate-x-1/2 top-1 text-[12px] mono">N</span>
-          <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[12px] mono">W</span>
-          {/* "Your camera" + FOV readout, pinned just above the frame footprint.
-              Anchored to END short of dead-center (not centered on it) so its
-              text never sits in the rotate handle's central column — the
-              handle's stalk/ring is centered on the same x as this label would
-              be if centered, and always touches the frame's top edge, the same
-              spot this label is pinned to (wave-2 G3: the genuine geometric
-              collision behind the invisible-handle bug). A fixed 16px clearance
-              is width-independent and comfortably exceeds the handle's widest
-              visible reach (10 viewBox-unit ring radius = 1% of canvas width,
-              <=7.2px even at the 720px canvas cap).
-              The outer span is the positioned box (maxWidth clamps the left
-              edge to the canvas; see camGuardRight/camTop above); the inner one
-              is INLINE so its plate hugs each line instead of painting one wide
-              slab, and the size half is nowrap so a wrap can only ever fall
-              between "Your camera" and the numbers. */}
-          {showCamLabel && (
-            <span
-              ref={camLabelRef}
-              className="absolute text-[12px] mono text-right leading-snug"
+          {/* 1b. survey image — kept EXACTLY as-is; the tile engine gates it off.
+                The LAST GOOD frame stays through failures/gestures (keep-last-good,
+                spec §1.3); the transform tracks the live view. */}
+          {mode === "survey" && !useTileEngine && shownUrl && (
+            <img
+              src={shownUrl}
+              alt=""
+              aria-hidden
+              draggable={false}
+              className="survey absolute inset-0 w-full h-full object-cover"
+              // Brightness rides the CSS var (see .survey rule); the transform is
+              // the pan/zoom tracker — never animate it (it must follow 1:1).
               style={{
-                left: camGuardRight,
-                top: camTop,
-                maxWidth: camMaxW,
-                transform: "translateX(-100%)",
-                overflowWrap: "anywhere",
-              }}
-            >
-              <span
-                className="px-1 bg-black/45"
-                style={{ boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" } as CSSProperties}
-              >
-                Your camera <span className="whitespace-nowrap">· {fmtAngle(fov.fov_x_deg)}×{fmtAngle(fov.fov_y_deg)}</span>
-              </span>
-            </span>
+                ["--survey-bright" as string]: imageBrightness,
+                transform: imgTransform,
+                transformOrigin: "center",
+              } as CSSProperties}
+            />
           )}
-          {/* object-size legend, pinned to the right of the ellipse — CLAMPED to
-              the canvas. When the object is larger than the view (Andromeda at
-              its default framing is 6.4x the frame) the ellipse's semi-major
-              axis runs far past the canvas edge, and this label went with it:
-              measured at 390px it sat at x=774 inside a 390px column and dragged
-              `main.scrollWidth` out to 861px, so the whole Atlas could be
-              scrolled sideways into empty space. Off the right edge it is also
-              simply invisible. Clamped, it parks on the edge it points past and
-              flips its anchor so the text stays inside. */}
-          {semiMajorDeg && gridLabelsOnCanvas && (() => {
-            const want = ccx + semiMajorDeg * cssPerDeg + 6;
-            const clamped = want > boxPx - 6;
-            return (
+
+          {/* schematic backdrop: explicit user choice OR no fallback frame fetched
+                yet — never over the tile engine (it sits later in DOM order and
+                is opaque, so it would occlude the tile canvas). */}
+          {(mode === "schematic" || (!useTileEngine && !shownUrl)) && (
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_40%,#10131b,#04060a)]" aria-hidden />
+          )}
+
+          {/* visually-hidden status: announces the transient survey loading/offline
+              states (the visible chips are aria-hidden decoration). */}
+          <span className="sr-only" role="status" aria-live="polite">
+            {mode === "schematic"
+              ? "Schematic framing"
+              : surveyDegraded
+                ? (degradedText ?? degradedLine(useTileEngine, !!shownUrl))
+                : slowLoad
+                  ? "Loading survey"
+                  : ""}
+          </span>
+
+          {/* 2. fixed night dimmer — loading no longer blacks out the frame */}
+          <div
+            className="absolute inset-0 bg-black pointer-events-none transition-opacity duration-200"
+            style={{ opacity: night ? 0.18 : 0 }}
+            aria-hidden
+          />
+
+          {/* first-ever tile-engine skeleton — until the first texture draws.
+              UX-07: gated on !surveyDegraded so a no-source / persistent-404 survey no
+              longer shows "LOADING…" forever; the honest empty-state below takes over. */}
+          {useTileEngine && !tileDrew && !surveyDegraded && (
+            <div className="absolute inset-0 grid place-items-center text-dim text-xs" aria-hidden>
+              <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
+            </div>
+          )}
+          {/* UX-07: honest empty-state when the survey has no reachable source.
+              On either path: the tile engine before its first drawn frame, or
+              the <img> pipeline with no good frame to keep (#404: its own
+              skeleton below said LOADING for good in exactly this state). With
+              no host sentence, what it advises follows `onlineFetch` (#426). */}
+          {surveyDegraded && (useTileEngine ? !tileDrew : mode === "survey" && !shownUrl) && (
+            <div className="absolute inset-0 grid place-items-center px-6 text-center text-dim text-xs">
+              <span data-role="survey-empty">
+                {degradedText ?? (onlineFetch ? NO_SURVEY_ONLINE : NO_SURVEY_OFFLINE)}
+              </span>
+            </div>
+          )}
+
+          {/* first-ever load skeleton (img fallback path only). Gated on
+              !surveyDegraded like the tile engine's (#404): a cutout that has
+              failed is not loading, and the empty state above takes over. */}
+          {mode === "survey" && !useTileEngine && !everLoaded && !shownUrl && !surveyDegraded && (
+            <div className="absolute inset-0 grid place-items-center text-dim text-xs" aria-hidden>
+              <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
+            </div>
+          )}
+
+          {/* loading progress chip (subsequent loads) */}
+          {mode === "survey" && everLoaded && slowLoad && (
+            <div className="absolute top-2 right-2 px-2 py-0.5 text-[11px] mono text-dim bg-black/60 border border-line2 pointer-events-none">
+              LOADING…
+            </div>
+          )}
+
+          {/* 3. SVG geometry layer */}
+          <svg
+            viewBox={`0 0 ${VIEW} ${VIEW}`}
+            className="absolute inset-0 w-full h-full pointer-events-none"
+            aria-hidden
+          >
+            {/* The planned grid: the server's panels when the caller has them
+                (PanelLayer, drawn from their sky coordinates), else FovOverlay's
+                client-side grid at the frame centre. Never both. */}
+            {panelsMode && (
+              <PanelShapes
+                placed={placedPanels}
+                view={VIEW}
+                hatchId={hatchId}
+                frameCenter={frameView}
+                objectRPx={semiMajorDeg ? semiMajorDeg * pxPerDeg : null}
+              />
+            )}
+            {!panelsMode && props.showFraming !== false && frameView && <FovOverlay
+              view={VIEW}
+              cx={frameView.x}
+              cy={frameView.y}
+              pxPerDeg={pxPerDeg}
+              fovXDeg={fov.fov_x_deg || fovZoomDeg * 0.4}
+              fovYDeg={fov.fov_y_deg || fovZoomDeg * 0.28}
+              rotationDeg={rotationDeg}
+              rows={mosaic.rows}
+              cols={mosaic.cols}
+              overlap={mosaic.overlap}
+              objectSemiMajorDeg={semiMajorDeg}
+              objectSemiMinorDeg={semiMajorDeg}
+              haveOptics={haveOptics}
+            />}
+            {/* catalogue markers — AFTER the planned box (they are backdrop, not
+                a claim about this session) and BEFORE the live footprint, for the
+                same reason the footprint is drawn last: the truth about where the
+                hardware is pointing is never hidden under anything. */}
+            <AnnotationMarkers
+              markers={placement.markers}
+              selectedId={selectedObjectId}
+            />
+            {/* live pointing — drawn AFTER the planned box so the truth is never
+                hidden underneath the intention when the two coincide. */}
+            <PointingFrame view={VIEW} readout={pointingReadout} />
+            {/* compass N/E ticks (geometry; the N/E letters live on the HTML layer) */}
+            <g className="svg-halo" stroke="var(--accent)" strokeWidth={1.5} opacity={0.8}>
+              <line x1={cx} y1={24} x2={cx} y2={56} />
+              <line x1={VIEW - 56} y1={cy} x2={VIEW - 24} y2={cy} />
+            </g>
+          </svg>
+
+          {/* 4. HTML label layer — real CSS px, >=12px */}
+          <div className="absolute inset-0 pointer-events-none text-ink" aria-hidden>
+            {/* compass letters. The right-hand tick was labelled E and is WEST:
+                both renderers on this canvas place East to the LEFT (tileView
+                tileMesh `x = half − ξ·pxPerDeg  // East-left`, and surveyView's
+                transform for the <img> fallback), which is the standard N-up
+                astronomical orientation the survey frames arrive in. So the
+                letter, and only the letter, disagreed with every pixel under it —
+                and a compass that lies is not a decoration on a page whose whole
+                job is saying where something is. Relabelled rather than moved: the
+                tick geometry and the "Object size" clamp below it are measured
+                positions, and this needs one character, not a re-layout. */}
+            <span className="absolute left-1/2 -translate-x-1/2 top-1 text-[12px] mono">N</span>
+            <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[12px] mono">W</span>
+            {/* "Your camera" + FOV readout, pinned just above the frame footprint.
+                Anchored to END short of dead-center (not centered on it) so its
+                text never sits in the rotate handle's central column — the
+                handle's stalk/ring is centered on the same x as this label would
+                be if centered, and always touches the frame's top edge, the same
+                spot this label is pinned to (wave-2 G3: the genuine geometric
+                collision behind the invisible-handle bug). A fixed 16px clearance
+                is width-independent and comfortably exceeds the handle's widest
+                visible reach (10 viewBox-unit ring radius = 1% of canvas width,
+                <=7.2px even at the 720px canvas cap).
+                The outer span is the positioned box (maxWidth clamps the left
+                edge to the canvas; see camGuardRight/camTop above); the inner one
+                is INLINE so its plate hugs each line instead of painting one wide
+                slab, and the size half is nowrap so a wrap can only ever fall
+                between "Your camera" and the numbers. */}
+            {showCamLabel && (
               <span
-                className="absolute text-[12px] mono whitespace-nowrap px-1 bg-black/45 text-dim"
+                ref={camLabelRef}
+                className="absolute text-[12px] mono text-right leading-snug"
                 style={{
-                  // Parked on the right edge it would land exactly on the "W"
-                  // compass letter (also right-1, vertically centred), so the
-                  // clamped position steps down clear of it.
-                  left: clamped ? boxPx - 6 : want,
-                  top: clamped ? ccy + 22 : ccy,
-                  transform: clamped ? "translate(-100%, -50%)" : "translateY(-50%)",
+                  left: camGuardRight,
+                  top: camTop,
+                  maxWidth: camMaxW,
+                  transform: "translateX(-100%)",
+                  overflowWrap: "anywhere",
                 }}
               >
-                Object size
-              </span>
-            );
-          })()}
-          {/* pixel-scale plausibility hint (top-left, real px) */}
-          {haveOptics && (
-            <span className="absolute left-1 bottom-1 text-[12px] mono bg-black/45 px-1">
-              {fov.pixel_scale_arcsec.toFixed(2)}″/px
-              {hint && <span className="text-warn ml-1">⚠ {hint}</span>}
-            </span>
-          )}
-          {/* scale-bar value */}
-          <span className="absolute right-1 bottom-1 text-[12px] mono bg-black/45 px-1 text-dim">
-            {fmtAngle(fovZoomDeg)} wide
-          </span>
-          {/* live-pointing label. Pairs with "Your camera" (the frame you are
-              PLANNING) by naming the other claim outright — this is where the
-              tube is aimed right now. Mounted last so it paints above the other
-              labels when a slew brings the two frames together. */}
-          {pointingLabel && (
-            <span
-              className="absolute text-[12px] mono px-1 bg-black/55 whitespace-nowrap text-good"
-              style={{
-                left: pointingLabel.left,
-                top: pointingLabel.top,
-                transform: "translateX(-50%)",
-              }}
-            >
-              Pointing now
-            </span>
-          )}
-          {/* Font reference for the label measurement above. Rendered (not
-              display:none) so getComputedStyle returns the real resolved font
-              rather than the initial value, and empty so it costs no layout. */}
-          <span ref={fontRef} className="absolute text-[12px] mono" aria-hidden />
-        </div>
-
-        {/* 4a. panel labels (#189 S4) — a SIBLING of the decorative layer, for
-              the reason 4b gives: they carry a panel's name and state, and with
-              onPanelTap they are the keyboard channel for it. Pointer events
-              off, taps served by pickAt. No z-index, so the rotate handle
-              (mounted later) still paints above them. */}
-        {panelsMode && (
-          <PanelLabels
-            placed={placedPanels}
-            scale={boxPx / VIEW}
-            boxPx={boxPx}
-            onPanelTap={onPanelTap}
-          />
-        )}
-
-        {/* 4b. object labels — a SIBLING of the decorative label layer above,
-              never a change to it: the compass letters and FOV readouts should
-              stay hidden from assistive tech, and these should not.
-              POINTER-EVENTS ARE OFF on purpose. A pannable canvas cannot afford
-              two dozen buttons that swallow the first 44px of every drag, so
-              pointers are served by the canvas's own hit-test (`pickAt`), which
-              knows the difference between a tap and the start of a pan.
-              `pointer-events: none` does not remove an element from the tab
-              order, so these stay the keyboard and screen-reader channel: Tab
-              to a name, Enter to open its card. Objects with a marker but no
-              label are tappable and not tabbable — the label budget is what
-              decides which objects have a name on screen at all, and a control
-              a sighted user cannot see is not a control. */}
-        {placement.labels.length > 0 && (
-          <div className="absolute inset-0 pointer-events-none z-10">
-            {placement.labels.map((l) => {
-              const row = rowsById.get(l.id);
-              const selected = selectedObjectId === l.id;
-              return (
-                <button
-                  key={l.id}
-                  type="button"
-                  data-role="object-label"
-                  data-object-id={l.id}
-                  aria-label={row ? `${l.text}. ${row.describe}` : l.text}
-                  aria-pressed={selected}
-                  className={`absolute text-[12px] mono px-1 bg-black/60 whitespace-nowrap
-                    leading-[14px] border ${selected ? "border-accent text-accent" : "border-transparent text-ink"}
-                    focus-visible:outline-none focus-visible:border-accent`}
-                  style={{ left: l.left, top: l.top, height: 16 }}
-                  onClick={() => onPickObject?.(row ?? null)}
+                <span
+                  className="px-1 bg-black/45"
+                  style={{ boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" } as CSSProperties}
                 >
-                  {l.text}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* 5. rotate handle — mounted AFTER the HTML label layer (wave-2 G3
-              fix) so it ALWAYS paints on top and stays visible/grabbable at
-              every canvas width; see RotateHandle.tsx for the root-cause note. */}
-        {haveOptics && frameView && (
-          <RotateHandle
-            view={VIEW}
-            cx={frameView.x}
-            cy={frameView.y}
-            pxPerDeg={pxPerDeg}
-            fovYDeg={gridFovY}
-            rotationDeg={rotationDeg}
-            rows={mosaic.rows}
-            overlap={mosaic.overlap}
-          />
-        )}
-
-        {/* 6. touch gesture-mode chip — mounted LAST so nothing can paint over
-              the one control that guarantees an exit. It states the CURRENT
-              effect of a swipe (word + glyph, never colour alone) rather than
-              naming a mode, because the question a thumb is about to ask is
-              "what happens if I swipe here?". Touch pointers only: on a mouse
-              it would be dead chrome, since touch-action never applies to one.
-              stopPropagation keeps the tap from being read as a pan start.
-
-              STICKY, not merely absolute (the residual the scroll-trap fix
-              left behind). Pinned to the canvas's top-left it rode the canvas:
-              armed, scroll the sky up and the chip leaves with it while the
-              surface that eats your swipes stays under your thumb. Measured
-              before this change, phone 390 portrait: canvas still on screen
-              (bottom y=141) with the chip at y=-212 — the only control that
-              can give the page back was gone. In landscape it is worse: the
-              square canvas is a whole screenful on its own (measured 720px
-              tall against a 342px scrollport), so an armed user could face a
-              screen that is nothing but trap.
-              `position: sticky` inside a canvas-sized box is exactly the
-              invariant we want — the chip is on screen whenever ANY pixel of
-              the canvas is, and gone once none is (no canvas, nothing to
-              escape). The wrapper is inert; only the button takes taps. */}
-        {touchDevice && (
-          <div className="absolute inset-0 z-20 pointer-events-none">
-            <div className="sticky top-1 p-1">
-              <button
-                type="button"
-                aria-pressed={dragSky}
-                aria-label={dragSky
-                  ? "Finger drag moves the sky. Activate to swipe-scroll the page instead."
-                  : "Swiping scrolls the page. Activate to drag the sky with one finger."}
-                className={`pointer-events-auto tap min-h-[44px] px-2 inline-flex items-center gap-1.5
-                  rounded-[10px] border bg-black/75 text-[12px] mono uppercase tracking-wider
-                  ${dragSky ? "border-accent text-accent" : "border-line2 text-dim"}`}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={() => setDragSky((v) => !v)}
+                  Your camera <span className="whitespace-nowrap">· {fmtAngle(fov.fov_x_deg)}×{fmtAngle(fov.fov_y_deg)}</span>
+                </span>
+              </span>
+            )}
+            {/* object-size legend, pinned to the right of the ellipse — CLAMPED to
+                the canvas. When the object is larger than the view (Andromeda at
+                its default framing is 6.4x the frame) the ellipse's semi-major
+                axis runs far past the canvas edge, and this label went with it:
+                measured at 390px it sat at x=774 inside a 390px column and dragged
+                `main.scrollWidth` out to 861px, so the whole Atlas could be
+                scrolled sideways into empty space. Off the right edge it is also
+                simply invisible. Clamped, it parks on the edge it points past and
+                flips its anchor so the text stays inside. Parked there it would
+                land exactly on the "W" compass letter (also right-1, vertically
+                centred), so the parked position steps down clear of it. In
+                panel mode it moves off the panel labels, or is not drawn
+                (`legend` above, #425). */}
+            {legend && (
+              <span
+                data-role="size-legend"
+                className="absolute text-[12px] leading-[18px] mono whitespace-nowrap px-1 bg-black/45 text-dim"
+                style={{
+                  left: legend.left,
+                  top: legend.top,
+                  transform: legend.anchor === "right" ? "translate(-100%, -50%)" : "translateY(-50%)",
+                }}
               >
-                <span aria-hidden>{dragSky ? "✥" : "⇕"}</span>
-                <span>{dragSky ? "Swipe moves sky" : "Swipe scrolls page"}</span>
-              </button>
-            </div>
+                {LEGEND_TEXT}
+              </span>
+            )}
+            {/* pixel-scale plausibility hint (top-left, real px) */}
+            {haveOptics && (
+              <span className="absolute left-1 bottom-1 text-[12px] mono bg-black/45 px-1">
+                {fov.pixel_scale_arcsec.toFixed(2)}″/px
+                {hint && <span className="text-warn ml-1">⚠ {hint}</span>}
+              </span>
+            )}
+            {/* scale-bar value */}
+            <span className="absolute right-1 bottom-1 text-[12px] mono bg-black/45 px-1 text-dim">
+              {fmtAngle(fovZoomDeg)} wide
+            </span>
+            {/* live-pointing label. Pairs with "Your camera" (the frame you are
+                PLANNING) by naming the other claim outright — this is where the
+                tube is aimed right now. Mounted last so it paints above the other
+                labels when a slew brings the two frames together. */}
+            {pointingLabel && (
+              <span
+                className="absolute text-[12px] mono px-1 bg-black/55 whitespace-nowrap text-good"
+                style={{
+                  left: pointingLabel.left,
+                  top: pointingLabel.top,
+                  transform: "translateX(-50%)",
+                }}
+              >
+                Pointing now
+              </span>
+            )}
+            {/* Font reference for the label measurement above. Rendered (not
+                display:none) so getComputedStyle returns the real resolved font
+                rather than the initial value, and empty so it costs no layout. */}
+            <span ref={fontRef} className="absolute text-[12px] mono" aria-hidden />
           </div>
-        )}
 
+          {/* 4a. panel labels (#189 S4) — a SIBLING of the decorative layer, for
+                the reason 4b gives: they carry a panel's name and state, and with
+                onPanelTap they are the keyboard channel for it. Pointer events
+                off, taps served by pickAt. No z-index, so the rotate handle
+                (mounted later) still paints above them. */}
+          {panelsMode && (
+            <PanelLabels
+              placed={placedPanels}
+              scale={boxPx / VIEW}
+              boxPx={boxPx}
+              onPanelTap={onPanelTap}
+            />
+          )}
+
+          {/* 4b. object labels — a SIBLING of the decorative label layer above,
+                never a change to it: the compass letters and FOV readouts should
+                stay hidden from assistive tech, and these should not.
+                POINTER-EVENTS ARE OFF on purpose. A pannable canvas cannot afford
+                two dozen buttons that swallow the first 44px of every drag, so
+                pointers are served by the canvas's own hit-test (`pickAt`), which
+                knows the difference between a tap and the start of a pan.
+                `pointer-events: none` does not remove an element from the tab
+                order, so these stay the keyboard and screen-reader channel: Tab
+                to a name, Enter to open its card. Objects with a marker but no
+                label are tappable and not tabbable — the label budget is what
+                decides which objects have a name on screen at all, and a control
+                a sighted user cannot see is not a control. */}
+          {placement.labels.length > 0 && (
+            <div className="absolute inset-0 pointer-events-none z-10">
+              {placement.labels.map((l) => {
+                const row = rowsById.get(l.id);
+                const selected = selectedObjectId === l.id;
+                return (
+                  <button
+                    key={l.id}
+                    type="button"
+                    data-role="object-label"
+                    data-object-id={l.id}
+                    aria-label={row ? `${l.text}. ${row.describe}` : l.text}
+                    aria-pressed={selected}
+                    className={`absolute text-[12px] mono px-1 bg-black/60 whitespace-nowrap
+                      leading-[14px] border ${selected ? "border-accent text-accent" : "border-transparent text-ink"}
+                      focus-visible:outline-none focus-visible:border-accent`}
+                    style={{ left: l.left, top: l.top, height: 16 }}
+                    onClick={() => onPickObject?.(row ?? null)}
+                  >
+                    {l.text}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 5. rotate handle — mounted AFTER the HTML label layer (wave-2 G3
+                fix) so it ALWAYS paints on top and stays visible/grabbable at
+                every canvas width; see RotateHandle.tsx for the root-cause note. */}
+          {haveOptics && frameView && (
+            <RotateHandle
+              view={VIEW}
+              cx={frameView.x}
+              cy={frameView.y}
+              pxPerDeg={pxPerDeg}
+              fovYDeg={gridFovY}
+              rotationDeg={rotationDeg}
+              rows={mosaic.rows}
+              overlap={mosaic.overlap}
+            />
+          )}
+
+          {/* 6. touch gesture-mode chip — mounted LAST so nothing can paint over
+                the one control that guarantees an exit. It states the CURRENT
+                effect of a swipe (word + glyph, never colour alone) rather than
+                naming a mode, because the question a thumb is about to ask is
+                "what happens if I swipe here?". Touch pointers only: on a mouse
+                it would be dead chrome, since touch-action never applies to one.
+                stopPropagation keeps the tap from being read as a pan start.
+
+                STICKY, not merely absolute (the residual the scroll-trap fix
+                left behind). Pinned to the canvas's top-left it rode the canvas:
+                armed, scroll the sky up and the chip leaves with it while the
+                surface that eats your swipes stays under your thumb. Measured
+                before this change, phone 390 portrait: canvas still on screen
+                (bottom y=141) with the chip at y=-212 — the only control that
+                can give the page back was gone. In landscape it is worse: the
+                square canvas is a whole screenful on its own (measured 720px
+                tall against a 342px scrollport), so an armed user could face a
+                screen that is nothing but trap.
+                `position: sticky` inside a canvas-sized box is exactly the
+                invariant we want — the chip is on screen whenever ANY pixel of
+                the canvas is, and gone once none is (no canvas, nothing to
+                escape). The wrapper is inert; only the button takes taps. */}
+          {touchDevice && (
+            <div className="absolute inset-0 z-20 pointer-events-none">
+              <div className="sticky top-1 p-1">
+                <button
+                  type="button"
+                  aria-pressed={dragSky}
+                  aria-label={dragSky
+                    ? "Finger drag moves the sky. Activate to swipe-scroll the page instead."
+                    : "Swiping scrolls the page. Activate to drag the sky with one finger."}
+                  className={`pointer-events-auto tap min-h-[44px] px-2 inline-flex items-center gap-1.5
+                    rounded-[10px] border bg-black/75 text-[12px] mono uppercase tracking-wider
+                    ${dragSky ? "border-accent text-accent" : "border-line2 text-dim"}`}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => setDragSky((v) => !v)}
+                >
+                  <span aria-hidden>{dragSky ? "✥" : "⇕"}</span>
+                  <span>{dragSky ? "Swipe moves sky" : "Swipe scrolls page"}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+        </div>
       </div>
 
-      {/* verdict + offline banner beneath the canvas (real text, >=12px) */}
+      {/* verdict + offline banner beneath the canvas (real text, >=12px). The
+          banner's default is worded by path (#426): it named a "schematic
+          framing" over the tile engine, which draws no schematic backdrop. */}
       {mode === "survey" && surveyDegraded && (
-        <div className="text-[12px] text-warn border border-line2 bg-black/30 px-2 py-1">
-          {degradedText ?? <>⚠ Survey unreachable — {shownUrl ? "showing the last image" : "schematic framing"}; retrying automatically.</>}
+        <div data-role="survey-degraded" className="text-[12px] text-warn border border-line2 bg-black/30 px-2 py-1">
+          {degradedText ?? degradedLine(useTileEngine, !!shownUrl)}
         </div>
       )}
       {mode === "schematic" && (

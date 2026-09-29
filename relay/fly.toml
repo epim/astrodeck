@@ -11,7 +11,12 @@
 #   fly launch --no-deploy            # create the app, accept this fly.toml
 #   fly secrets set ...               # see README "Deploy" (tokens are FILES,
 #                                     # so mount them or pass via a secret volume)
-#   fly deploy
+#   scripts/deploy_relay.ps1          # every deploy after the first (#462)
+#
+# The script runs the relay suite, then `flyctl deploy --remote-only` from this
+# directory with the commit and version as build args, then waits for
+# /healthz to report that commit. A bare `fly deploy` still works, but its
+# image carries no identity and /healthz answers "unknown" for both.
 #
 # Provision the device-token map as a mounted file or encrypted environment
 # secret (never in the image). Reserved OIDC/share features would additionally

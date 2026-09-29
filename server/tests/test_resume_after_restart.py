@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
+from astrodeck.focus.autofocus import AutofocusResult
 from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
 from astrodeck.sequence.session import Session, session_store
 
@@ -530,14 +531,33 @@ async def test_autofocus_is_not_repeated_on_every_retry(fp, monkeypatch):
     default, not a measurement). An autofocus IS the measurement, so the ladder
     says so. Without that, every retry spends minutes of mount time and focuser
     travel re-solving a problem it already solved, under exactly the conditions
-    that caused the retry."""
+    that caused the retry.
+
+    The sweep SAYS it found focus (``success`` True): only such a sweep is a
+    measurement (#457). A stub that returns nothing says nothing, and a failed
+    sweep puts the drawtube back where it forgot its count; that case, and
+    its next tick sweeping again, is test_s7_recovery_vouch_on_success's.
+
+    DELIBERATE PIN CHANGE (S7 integration, #457): the stub used to return
+    None, and the ladder vouched for any result. Against S7's resume_arm.py
+    that stub is red, as it should be: ``assert [1, 1] == [1]``, the focuser
+    swept again on the second tick because nothing said it was found. Mutant
+    "never vouch" (the ladder's ``if getattr(result, "success", None) is
+    True:`` before ``_fp.vouch`` made ``if False:``) is red on this case,
+    observed by S7-ENG-SAFE's verifier: "the focuser was measured on the first
+    tick — not again"."""
     _record_then_restart(fp)
     foc = _RecFoc(0)                       # forgot its position across the cut
     hub = _RecHub(solve_raises=RuntimeError("Not enough stars"), focuser=foc)
     arm = _arm(hub)
     monkeypatch.setattr(arm, "_can_autofocus", lambda: True)
     ran = []
-    arm._autofocus = lambda: (ran.append(1), None)[1] or _noop()
+
+    async def found_focus():
+        ran.append(1)
+        return AutofocusResult(True, 0, 2.0, [])
+
+    arm._autofocus = found_focus
 
     first = await arm._recover(_light_session())
     assert first is not None and "solve" in first.lower()

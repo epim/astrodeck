@@ -228,6 +228,9 @@ function seed(role: string, caps: string[], flows: Record<string, unknown> = {})
         dirty: false,
         sel: null, editNode: null, wire: null, tapWire: null,
         statuses: {}, logs: [], compiled: null,
+        // No session unless a case gives one, so the dormant-session arm
+        // case (section 5) cannot leave CONTINUE on a later case's RUN.
+        progress: null, sessionIds: [],
         pan: { x: 20, y: 10 }, zoom: 0.5,
         run: { ...s.flows.run, phase: "idle", etaS: null },
         ui: { ...s.flows.ui, notesOpen: false, logOpen: false },
@@ -444,6 +447,12 @@ test("the validation pill says NOT CHECKED before the checker has answered", () 
 
 // ================================== 5. RUN is armed, STOP is a single tap
 
+// Since #474 both #/next RUN buttons take their arm from one helper,
+// `runArm`, which gives STOP none.
+// MUTANT "STOP armed" (S7, scratchpad S7-URUN-mut; FlowCanvasToolbar.tsx
+// `runArm`'s `if (copy.verb === "STOP") return undefined;` removed).
+// Observed, canvasDom.test 35/36:
+//   x RUN arms before it starts, and STOP never arms: STOP is armed - an emergency motion stop must never need a second tap
 await testAsync("RUN arms before it starts, and STOP never arms", async () => {
   seed("admin", ADMIN_CAPS);
   await mount(createElement(FlowCanvasToolbar as any));
@@ -473,6 +482,45 @@ await testAsync("RUN arms before it starts, and STOP never arms", async () => {
   eq(sent.length, posts + 1, "one tap on STOP must issue exactly one request");
   eq(sent[sent.length - 1].url, "/api/sequence/abort",
     "STOP is not a flows route - a flow run IS a sequence run");
+});
+
+// OVER A DORMANT SESSION THE ARM SAYS CONTINUE (#474). The label above reads
+// CONFIRM RUN because this flow has no session. With the progress route's
+// recorded answer (a dormant session of two observing nights, 194 of 480
+// subs; server/tests/fixtures/flow_progress_continue.json, read, never
+// copied) the button reads CONTINUE, and its arm must too, with the night and
+// the counts: the rule this section states, that the armed label says what a
+// second tap does, holds for the continue as well.
+//
+// MUTANT "fixed CONFIRM RUN" (S7, scratchpad S7-URUN-mut; FlowCanvasToolbar
+// .tsx `runArm` answering `{ label: "CONFIRM RUN" }` for every verb but STOP).
+// Observed, canvasDom.test 35/36:
+//   x over a dormant session RUN arms as CONFIRM CONTINUE, with the night and the counts: the armed label keeps the verb, the night and the counts
+//     expected CONFIRM CONTINUE (night 3, 194/480 subs)
+//     got      CONFIRM RUN
+// (phoneReadouts.test.tsx goes red under the same mutant, on both #/next
+// buttons.)
+await testAsync("over a dormant session RUN arms as CONFIRM CONTINUE, with the night and the counts", async () => {
+  const { readFileSync } = await import("node:fs");
+  const rel = "../../../../../../../../server/tests/fixtures/flow_progress_continue.json";
+  let progress: any;
+  try {
+    progress = JSON.parse(readFileSync(new URL(rel, import.meta.url), "utf8") as string).response;
+  } catch (e) {
+    throw new Error(`cannot read ${rel}, the recorded answer this case is graded against: ${(e as Error).message}`);
+  }
+  seed("admin", ADMIN_CAPS, { progress });
+  await mount(createElement(FlowCanvasToolbar as any));
+
+  const run = tid("flow-run");
+  assert(/^CONTINUE /.test(String(run.textContent)), `premise: RUN reads CONTINUE, got "${run.textContent}"`);
+  const before = asked.filter((a) => a.method === "POST").length;
+  click(run);
+  await settle();
+  eq(tid("flow-run").getAttribute("data-armed"), "true", "the first tap must arm, not continue");
+  eq(String(tid("flow-run").querySelector(".nx-btn-label")?.textContent),
+    "CONFIRM CONTINUE (night 3, 194/480 subs)", "the armed label keeps the verb, the night and the counts");
+  eq(asked.filter((a) => a.method === "POST").length, before, "the first tap on CONTINUE posted a run");
 });
 
 // ============================================== 6. the dead control is gone

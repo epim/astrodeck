@@ -40,6 +40,11 @@ import { memo, type JSX, type MouseEvent as RMouseEvent } from "react";
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
 import { edgePath, portPos, type FlowTier } from "../../../../../components/flows/geometry";
 import type { FlowEdgeRec, PortKind } from "../../../../../components/flows/flowsTypes";
+// The slice's own reader of whether the compile answer is the graph on
+// screen's (#356), not a second copy of it. It is a slice, the shared logic
+// wave R7 section 2.1 keeps, and the store this file already reads is built
+// from it, so the import adds nothing to the split bundle.
+import { compiledIsCurrent } from "../../../../../components/flows/flowsSlice";
 import {
   LOOP_ARC_DASH, LOOP_CHIP_FONT_PX, loopArcOf, loopChip, loopChipBox,
 } from "../../../../../components/flows/targetSummary";
@@ -235,10 +240,16 @@ export function FlowWireLayer({ tier }: FlowWireLayerProps): JSX.Element {
   // one per wire, and the action's identity is stable so `memo` still holds.
   const select = useStore((s) => s.flowsSelect);
   // The loop chip's count comes from the last compile, and is withheld while
-  // the draft has moved on from it (`loopChip`). The plan object changes only
-  // when a compile lands, so this costs one re-render per compile.
+  // that answer is not the graph on screen's (`loopChip`). The plan object
+  // changes only when a compile lands, so this costs one re-render per
+  // compile.
   const plan = useStore((s) => s.flows.compiled?.plan ?? null);
-  const dirty = useStore((s) => s.flows.dirty);
+  // ASKED OF THE ANSWER, NOT OF THE SAVE (#356, S7), as the classic layer
+  // asks: `compiledIsCurrent` compares the graph the compile sent with the
+  // graph on screen. `dirty` cleared a round trip before a save's compile
+  // landed, drawing the old count over a new skip, and withheld the count
+  // DONE's compile of the unsaved draft had just made.
+  const current = useStore((s) => compiledIsCurrent(s.flows));
 
   const running = isRunning(phase);
   const graph = { nodes, edges };
@@ -267,7 +278,7 @@ export function FlowWireLayer({ tier }: FlowWireLayerProps): JSX.Element {
               kind={wireLane(e, nodes)}
               running={running}
               select={select}
-              chip={loopChip(graph, e, plan, dirty)}
+              chip={loopChip(graph, e, plan, !current)}
               chipX={loop.label.x}
               chipY={loop.label.y}
             />

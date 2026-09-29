@@ -331,11 +331,23 @@ function InspectorOverview() {
           save) and refuses a value FLOW_SETTINGS does not offer. The modal's
           RUN section edits the same key in the same words. Like NAME above,
           it writes and compiles nothing; the compile copies it into each
-          block's `mosaic.when_waiting`. */}
+          block's `mosaic.when_waiting`.
+          10.5px, not the NAME field's 12px (#469). The select already sits
+          under its label, so the 284 px column is all the width it can have:
+          235 px inside its border and padding, and 225 px once the column
+          scrolls, because this column is `overflow-y-auto` and a desktop
+          browser's thin scrollbar takes 10 px of it (measured in Chromium on
+          Windows by the S7-ULAYOUT verifier; index.css makes every scrollbar
+          thin). The overview's CHECKS and BEFORE YOU RUN lists make it scroll
+          on an ordinary flow. "Shoot later targets, then come back" is 35
+          characters of IBM Plex Mono, 0.6 em each, and a native select cannot
+          wrap its value: 252 px at 12px showed "Shoot later targets, then come
+          ba", and 231 px at 11px still lost its end whenever the column
+          scrolled. At 10.5px it is 220.5 px and shows whole either way. */}
       <Field label={WHEN_WAITING_OVERVIEW_LABEL}>
         <select
           data-flows-setting="whenWaiting"
-          className="field !text-[12px] !py-[7px] !px-[9px] !rounded-none"
+          className="field !text-[10.5px] !py-[7px] !px-[9px] !rounded-none"
           value={whenWaiting}
           onChange={(e) => { setSetting("whenWaiting", e.target.value); }}
         >

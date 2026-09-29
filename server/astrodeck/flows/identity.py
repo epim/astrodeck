@@ -252,17 +252,46 @@ def typed_coordinates(entry: dict) -> bool:
     block, while the Target modal, whose mirror (``framingModel.ts``
     ``typedCoordinates``) trims, showed it placed by its name and previewed
     a placement the run would never make. Both readings are graded against
-    ``tests/fixtures/typed_coordinates_cases.json``. A value that is not
-    text is read as it always was: a falsy one (an RA of the number 0) is
-    blank, and any other is its ``str``."""
+    ``tests/fixtures/typed_coordinates_cases.json``.
+
+    A VALUE THAT IS NOT TEXT (S7 orchestrator ruling 6, #387's residual). A
+    finite number is typed, 0 included, because RA 0h and Dec 0 are real
+    coordinates; None, a bool, NaN, an infinity and anything else that is
+    neither text nor a finite number are blank (``_typed``). Until S7 a falsy
+    value was blank and any other was its ``str``, so an RA of the number 0
+    was placed by its name and ``True`` was typed text that did not parse,
+    while the modal's mirror read 0 as "0" and ``true`` as "true": the two
+    placed one block two ways, #387's shape again. ``compile._text`` reads
+    the same way, so a compiled entry and the node it came from are typed
+    alike (the doctor and the save read the node, the run the entry)."""
     return _typed(entry.get("ra")) and _typed(entry.get("dec"))
 
 
 def _typed(value) -> bool:
-    """One coordinate field holds something typed: text that is not blank
-    once trimmed (``str.strip``, Python's whitespace), or a truthy value
-    that is not text, which reads as its ``str``."""
-    return bool(str(value).strip()) if value else False
+    """One coordinate field holds something typed (ruling 6): text that is
+    not blank once trimmed (``str.strip``, Python's whitespace, which the
+    modal copies with ``pyStrip``), or a finite number (``finite_number``)."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    return finite_number(value)
+
+
+def finite_number(value) -> bool:
+    """True for an int or a float that is a finite float: ruling 6's "a
+    finite number", the one test ``_typed`` and ``compile._text`` share.
+
+    NOT A BOOL, although Python's ``bool`` is an ``int``: ``True`` is the
+    number 1 to ``isinstance``, and an RA of ``true`` is no coordinate
+    anybody typed. NOT AN INT NO FLOAT HOLDS: ``float()`` of a 400-digit
+    integer raises ``OverflowError``, and the modal's ``JSON.parse`` reads the
+    same digits as ``Infinity``, so both sides read it as no number, as
+    ``compile._finite`` does for every other number the compile emits."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _identity_of(entry: dict, canonical: str | None) -> str | None:

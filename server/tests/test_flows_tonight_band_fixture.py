@@ -77,6 +77,40 @@ acti...'``. The other two halves of #470 (M31's TARGET earns no arm
 sentence, and the pool's select sentence comes first) are older than S5 and
 still open; this pin holds them as they are.
 
+THIRD DELIBERATE PIN CHANGE (#470 items 1 and 2, S7-TONIGHT; rewritten with
+the command above). The pin above held both halves as they were: the brief
+wrote one block sentence, the pool's, straight after the arming sentence,
+and M31 was never named. ``tonight.brief`` now walks the blocks in flow
+order (``_brief_walk``, ``compile.flow_order``), each block's sentence where
+the cursor reaches it and each lane after its block, so the field reads "It
+then arms M16. M16 is a 3x2 mosaic [...] For M16 it captures Ha 300 s \xd7 2
+(gain 100, bin 1). It then arms M31. For M31 it captures L 60 s \xd7 5 (gain
+100, bin 1). It then selects the best of M13, M92 - above 30\xb0, [...] For
+every member of the pool it captures L 60 s \xd7 5 (gain 100, bin 1)." Once
+more ``response.brief`` is the whole diff, and tonightMosaicBand.test.ts
+stays green on it. The fixture before the rewrite, run against the fix,
+observed (cut):
+``response.brief: 'This flow arms at astronomical dusk (\\u221230 min). It
+then arms M16. M16 is a 3x2 mosaic [...] For M16 it captures Ha 300 s \\xd7
+2 (gain 100, bin 1). It then arms M31. For M31 it captures L 60 s \\xd7 5
+(gain 100, bin 1). It then selects the best of M13, M92 - above 30\\xb0,
+[...]' != 'This flow arms at astronomical dusk (\\u221230 min). It then
+selects the best of M13, M92 - above 30\\xb0, [...] M16 is a 3x2 mosaic
+[...]'``. Each mutant below ran in the private copy scratchpad
+S7-TONIGHT-mut, from a byte backup restored with its sha256 checked.
+MUTANT "first block only" (a block sentence for the first block the walk
+reaches alone): ``test_the_fixture_is_resolve_tonights_answer`` RED
+(observed), M31 and the pool unnamed again: ``response.brief: '... For M16
+it captures Ha 300 s \\xd7 2 (gain 100, bin 1). For M31 it captures L 60 s
+\\xd7 5 (gain 100, bin 1). For every member of the pool it captures L 60 s
+\\xd7 5 (gain 100, bin 1). If the active target ...'``. MUTANT "pool
+sentence first" (every POOL sorted to the front of the walk):
+``test_the_fixture_is_resolve_tonights_answer`` RED (observed): ``'This
+flow arms at astronomical dusk (\\u221230 min). It then selects the best of
+M13, M92 - above 30\\xb0, [...] It then arms M16. M16 is a 3x2 mosaic
+[...]'``. ``test_s7_tonight_brief_blocks.py`` holds the same two halves on
+this graph sentence by sentence.
+
 Every test names the mutation it guards and quotes the failure it produced,
 each run in a private copy of ``server/`` (scratchpad ``s4-tonight-mut``,
 from byte backups), never in the shared tree.

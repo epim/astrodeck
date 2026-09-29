@@ -142,10 +142,29 @@ class TestContinuingAnAllSkippedMosaic:
         (``plan_skipped_ids`` returns the groups' lists without the plan's
         own), observed the same way at night two (``"dropped_frames":2``,
         ``assert 409 == 200``).
+
+        DELIBERATE PIN CHANGE (S7 integration, #430, S7 orchestrator ruling
+        7): the three runs used to start on the real clock, seconds apart,
+        and the answers pinned ``"night": 2`` and ``3`` as the run count.
+        CONTINUE's ``night`` is the observing night since S7, so the
+        unpinned case went red with ``{'night': 1} != {'night': 2}``. Each
+        night now starts on its own evening (``Rig.on_night``).
+
+        RED under mutant "tonight never adds a night" (``Session.night_at``
+        answering ``len(nights)``, so the evening CONTINUE is pressed on is
+        always one already run), observed in the integration's private
+        copy:
+
+            AssertionError: assert {'continued':...kept': 1, ...} ==
+            {'continued':...kept': 1, ...}
+              Differing items:
+              {'night': 1} != {'night': 2}
         """
+        rig.on_night(1)
         fid, one, ids = await _night_one(rig)
 
         await _put(rig, fid, _graph(skip=EVERY_PANEL))       # night two
+        rig.on_night(2)
         asked = await rig.run(fid)
         assert asked.status_code == 409, asked.text
         detail = asked.json()["detail"]
@@ -173,6 +192,7 @@ class TestContinuingAnAllSkippedMosaic:
         await rig.end_night()
 
         await _put(rig, fid, _graph())                        # night three
+        rig.on_night(3)
         r = await rig.run(fid)
         assert r.status_code == 200, r.text
         assert r.json()["session"] == {

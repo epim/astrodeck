@@ -75,6 +75,13 @@ def _one_catalogue_search_per_name(monkeypatch):
     monkeypatch.setattr(tonight, "resolve_target", once)
 
 
+#: The unguided sub length axis (#432): the default, a longer answer, and the
+#: longest whole second under the doctor's rule 2 line. An answer at the line
+#: or past it is refused at the door and by the generator
+#: (test_s7_wizard_unguided_cap.py), so it is not an answer this matrix can
+#: be asked about.
+UNGUIDED_AXIS = (30, 90, 119)
+
 #: Every answer the route takes: the four kinds × 64 chip subsets. With no
 #: camera field here the Mosaic kind answers as one target (see THREE_KINDS).
 EVERY_ANSWER = [
@@ -159,11 +166,49 @@ class TestEveryGeneratedGraphPassesTheDoctor:
 
         The last two used to be checked only on the DEFAULT target; they are
         checked on all three now, so this is strictly more than it replaced.
+
+        AND ACROSS THE UNGUIDED SUB LENGTH (#432, ``UNGUIDED_AXIS``): until
+        S7 no answer here passed ``unguided_exposure_s`` at all, so the bar
+        was only ever asked of the 30 s default while the route accepted up
+        to 3600 s. Each length is asked with the one-name target (the length
+        reaches only the CAPTURE LOOP, which the target does not touch), and
+        on a lane that reads it the loop must carry it, so the axis is known
+        to reach the branch it is there for.
+
+        RED under mutant "the doctor warns from 100 s" (rule 2's comparison
+        made ``exp >= 100``) in all 96 unguided answers (Deep-sky, Best of
+        several and Mosaic, each with the 32 subsets that leave Guiding
+        dark), at 119 s, observed verbatim ([deepsky] shown):
+
+            E   AssertionError: Deep-sky target [] target='M16'
+                unguided=119: doctor says ['\\u25b8 119s subs with no GUIDE
+                upstream - stars will trail at any real focal length. Add
+                Guide, or shorten the subs.']
+
+        RED under mutant "the unguided answer is not written" (the CAPTURE
+        LOOP given ``UNGUIDED_EXPOSURE_DEFAULT`` whatever the answer), in
+        the same 96, observed verbatim ([deepsky] shown):
+
+            E   AssertionError: Deep-sky target [] target='M16'
+                unguided=90: the CAPTURE LOOP holds 30, not the answer
+            E   Deep-sky target [] target='M16' unguided=119: the CAPTURE
+                LOOP holds 30, not the answer
         """
         problems: list[str] = []
-        for target in TARGET_INPUTS:
-            graph = generate(kind, opts, target)
+        reads = kind != KIND_EAA and OPT_GUIDING not in opts
+        asked = ([(t, None) for t in TARGET_INPUTS]
+                 + [(TARGET_INPUTS[1], s) for s in UNGUIDED_AXIS])
+        for target, secs in asked:
+            graph = generate(kind, opts, target, secs)
             where = f"{kind} {sorted(opts)} target={target!r}"
+            if secs is not None:
+                where += f" unguided={secs}"
+                held = [n.params["exposure"] for n in graph.nodes
+                        if n.type == "capture"]
+                if reads and held != [secs]:
+                    problems.append(f"{where}: the CAPTURE LOOP holds "
+                                    f"{', '.join(map(str, held))}, not the "
+                                    f"answer")
             loud = [i.text for i in check(graph) if i.level in ("warn", "danger")]
             if loud:
                 problems.append(f"{where}: doctor says {loud}")
@@ -259,10 +304,24 @@ class TestTheFlowLane:
         graph = generate(KIND_DEEP_SKY, set(), unguided_exposure_s=90)
         assert _one(graph, "capture").params["exposure"] == 90
 
-    @pytest.mark.parametrize("bad", [0, -30, "sixty", None, ""])
+    @pytest.mark.parametrize("bad", [0, -30, "sixty", None, "",
+                                     float("nan"), "nan"])
     def test_an_unusable_override_falls_back_to_the_default(self, bad):
         """An exposure of 0 compiles to a step that captures nothing, and the
-        wizard's whole promise is that its output runs."""
+        wizard's whole promise is that its output runs.
+
+        NaN is garbled, not an answer past the doctor's line (#432): it is
+        not above 0, and ``_unguided_seconds`` asks "above 0" rather than
+        "0 or less" so a NaN never reaches the line's comparison. RED under
+        mutant "a NaN answer is honoured" (``not secs > 0`` made ``secs <=
+        0``), in the two NaN cases, the line's refusal naming a number
+        nobody gave, observed verbatim ([nan0] shown):
+
+            E   ValueError: unguided_exposure_s is the longest sub a lane
+                with no guider is held to, and nan s is at or past the 120 s
+                the doctor warns from (rule 2: stars trail): answer less
+                than 120 s
+        """
         graph = generate(KIND_DEEP_SKY, set(), unguided_exposure_s=bad)
         assert _one(graph, "capture").params["exposure"] == UNGUIDED_EXPOSURE_DEFAULT
 

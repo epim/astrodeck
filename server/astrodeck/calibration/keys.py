@@ -109,6 +109,26 @@ def _name_digest(name: str) -> str:
 #: every platform ``persist.safe_id_path`` guards.
 DIGEST_SEP = "~"
 
+#: The most of a flat's sanitized slot name its id keeps, in UTF-8 bytes
+#: (#427). The id is a file name, and one path component holds 255: bytes on
+#: the Pi's ext4, UTF-16 units on NTFS, and a string's UTF-16 units never
+#: outnumber its UTF-8 bytes, so a bound in bytes holds on both. A bound in
+#: characters would not: 64 four-byte letters (``str.isalnum`` keeps the
+#: mathematical alphabets) are 256 bytes, over the limit before the rest of
+#: the id. With the rest, a cut id is 91 bytes and its file name 96
+#: (``flat_g100_o30_b1_f``, the 64, ``~`` and eight hex digits, then
+#: ``.fits``), which leaves the numbers room to be the camera's.
+FILTER_ID_MAX_BYTES = 64
+
+
+def _cut(safe_filter: str) -> str:
+    """``safe_filter`` cut to at most ``FILTER_ID_MAX_BYTES`` of UTF-8, and
+    never through a letter: a letter the cut would split is dropped whole.
+    The strict sanitizer's output is alnum, ``-`` and ``_``, and a lone
+    surrogate is none of those, so it always encodes."""
+    return safe_filter.encode("utf-8")[:FILTER_ID_MAX_BYTES].decode(
+        "utf-8", "ignore")
+
 
 def key_index_id(key: CalKey, temp_bin_width: float, *,
                  digest: bool = False) -> str:
@@ -129,6 +149,21 @@ def key_index_id(key: CalKey, temp_bin_width: float, *,
     set. ``digest`` touches only the filter, which only a flat's id has: a
     dark's or a bias's id is numbers this function formats, and two of them
     never collide.
+
+    ONE ID IS ONE FILE NAME, so it has a length bound (#427). A slot named
+    with 300 characters minted a file name no disk holds, the master's write
+    raised, and the build stopped before it saved the manifest. The
+    sanitized name is cut to ``FILTER_ID_MAX_BYTES`` (``_cut``), and a cut
+    counts as a change the sanitizer made: the id carries the digest of the
+    whole name, so two long names that differ only past the cut are two
+    files. So "left alone" above means a name of at most 64 bytes: a longer
+    one (up to about 230 bytes, the most whose master could be written at
+    all) keeps its name in its master's cards and its record but takes a
+    new id, and the next build writes its master under that id, the file
+    under the old one staying in ``_masters`` in no manifest row. The
+    numbers are not cut, being the camera's and a few digits long; a header
+    built to make one long (an EXPTIME of 1e300) still mints an id no disk
+    holds, and ``library`` leaves that one bucket out.
 
     "Filesystem-safe" was a claim, not a fact, until 2026-08-03. Every other
     component here is a number this function formats itself, but the filter is
@@ -170,8 +205,13 @@ def key_index_id(key: CalKey, temp_bin_width: float, *,
         # the two ids differ; an ASCII name is its own card, and its id is
         # exactly the id it always had. Names that differ only in what this
         # sanitizer drops carry a digest of the name (#372; see above).
+        #
+        # The cut is compared, not the sanitized name: a name the sanitizer
+        # left alone and the cut shortened is a changed name too, and
+        # without its digest every name that begins with the same 64 bytes
+        # would be one file (#427).
         from ..naming import sanitize_component
-        safe_filter = sanitize_component(key.filter, "strict")
+        safe_filter = _cut(sanitize_component(key.filter, "strict"))
         part = f"f{safe_filter or 'none'}"
         if digest or safe_filter != key.filter:
             part += f"{DIGEST_SEP}{_name_digest(key.filter)}"

@@ -41,7 +41,7 @@ import {
   nextRunFlags, type FlowContinueCode, type FlowContinueQuestion,
   type FlowRunAcceptance, type FlowsActions,
 } from "./flowsSlice";
-import { flowRunLive } from "./flowRunState";
+import { flowRunLive, knownSessions } from "./flowRunState";
 import {
   START_OVER_TITLE, runCopy, runReadouts, startOverBody,
   type RunCopy, type RunReadouts,
@@ -230,9 +230,11 @@ export interface FlowRunControls {
    *  TWO SOURCES (#189 S5). `flows.run.phase`, which `flowsRun` writes the
    *  moment its request returns (before the engine's first publish), and
    *  `flowRunLive`: the rig's run IS this flow's, the session the sequence
-   *  state writes being the one the progress route counts. The second is
-   *  what makes the button read STOP over a run this flow did not start from
-   *  this page, such as auto-resume on night two or another browser. */
+   *  state writes being one the slice knows as this flow's
+   *  (`knownSessions`). The second is what makes the button read STOP over a
+   *  run this flow did not start from this page, such as auto-resume on
+   *  night two or another browser, and keeps it STOP through the re-read a
+   *  save starts, which blanks the progress answer it used to read (#449). */
   running: boolean;
   /** Honest-disabled reason, or null. Never becomes a bare `disabled`. */
   reason: string | null;
@@ -282,8 +284,9 @@ function askUnmappedWith(
 export function useFlowRunControls(): FlowRunControls {
   const phase = useStore((s) => s.flows.run.phase);
   // A boolean, so exact under Object.is: a frame landing on the run wakes
-  // nothing here unless it changes whose run it is.
-  const ours = useStore((s) => flowRunLive(s.flows.progress, s.sequence));
+  // nothing here unless it changes whose run it is. Over the known sessions,
+  // never the progress answer (#449): see `running` above.
+  const ours = useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
   const running = isRunPhaseLive(phase) || ours;
 
   // The copy's two inputs. `progress` changes identity only when a new
@@ -377,10 +380,11 @@ export function useFlowRunControls(): FlowRunControls {
 /** The run readouts every monitor and the two ETA slots draw (#189 S5).
  *
  *  Fed from the sequence state while `flowRunLive` says the rig's run is this
- *  flow's, and the idle values in `flows.run` otherwise (`runReadouts`).
+ *  flow's, over the sessions the slice knows as the flow's (`knownSessions`,
+ *  #449), and the idle values in `flows.run` otherwise (`runReadouts`).
  *  Returned through `useShallow`: every member is a primitive, so a publish
  *  that changes none of them (a sky reading, a guide RMS, a hold's reason)
  *  re-renders none of the surfaces that read it. */
 export function useFlowRunReadouts(): RunReadouts {
-  return useStore(useShallow((s) => runReadouts(s.flows.progress, s.sequence, s.flows.run)));
+  return useStore(useShallow((s) => runReadouts(knownSessions(s.flows), s.sequence, s.flows.run)));
 }

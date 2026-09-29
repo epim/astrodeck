@@ -54,8 +54,10 @@ upsampling from parent tiles so the view never blanks while you drag.
 Where WebGL is available the Atlas uses the tile engine; where it isn't (or in
 Schematic mode) it falls back to a classic whole-field `<img>` cutout — same
 framing, just fetched differently. If the survey service is briefly unreachable
-it keeps the last good image and retries automatically, showing a small
-*"Survey unreachable — showing the last image"* banner.
+it retries automatically and says so in a small line under the sky: *"Survey
+tiles not loading. Retrying automatically."* from the tile engine, and from the
+cutout *"Survey unreachable, showing the last image. Retrying."*, or *"...
+showing a schematic. Retrying."* when it has no image yet.
 
 ---
 

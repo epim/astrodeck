@@ -1019,19 +1019,48 @@ class TestPastCompilePlan:
             f"at {say(numbers)}; text that is not a str at {say(texts)}")
 
     @pytest.mark.parametrize("value,reads", [
-        (float("nan"), "nan"), (float("inf"), "inf"), (12.5, "12.5"),
-        (None, ""), (0, ""), ([], ""), ("  M 31 ", "  M 31 ")],
+        (float("nan"), ""), (float("inf"), ""), (12.5, "12.5"),
+        (None, ""), (0, "0"), ([], ""), ("  M 31 ", "  M 31 "),
+        (True, ""), ([1, 2], ""), (10 ** 400, "")],
         ids=["nan", "inf", "a-number", "null", "zero", "empty-list",
-             "text-as-typed"])
+             "text-as-typed", "true", "a-list", "400-digits"])
     def test_a_text_param_is_its_text(self, value, reads):
-        """How a text param that is not text reads: a value is its ``str``,
-        a falsy one (null, 0, an empty list) is blank, as every reader of the
-        entry already took it, and text is copied as typed, untrimmed, so the
-        PLAN tab shows what the card holds.
+        """How a text param that is not text reads (S7 orchestrator ruling
+        6, ``compile._text``): a finite number is its text, 0 included;
+        anything else that is not text (null, a bool, NaN, an infinity, a
+        list, an integer no float holds) is blank; and text is copied as
+        typed, untrimmed, so the PLAN tab shows what the card holds.
+
+        DELIBERATE PIN CHANGE (ruling 6, #387's residual). S5 pinned "a value
+        is its ``str``, a falsy one (null, 0, an empty list) is blank", so a
+        NaN compiled to "nan" and 0 to "". That reading made an RA of the
+        number 0 blank and an RA of NaN typed text that did not parse, while
+        ``identity.typed_coordinates`` on the node and the modal's mirror
+        read them otherwise (``test_flows_typed_coordinates.py``). The S5 pin
+        run against the ruling-6 code, observed:
+
+            E       AssertionError: assert '' == 'nan'
+            E       AssertionError: assert '' == 'inf'
+            E       AssertionError: assert '0' == ''
+
+        RED under mutant "_text blanks 0" (``compile._text`` blanking a 0
+        as S5 did and nothing else, ``str(v) if finite_number(v) and v
+        else ""``), observed:
+
+            E       AssertionError: assert '' == '0'
+            FAILED tests/test_flows_compile_never_raises.py::TestPastCompilePlan::test_a_text_param_is_its_text[zero]
+            1 failed, 9 passed, 114 deselected
+
+        RED under mutant "_text as S5" (the whole S5 reading, ``str(v) if
+        v else ""``; re-run by the S7-COMPILE verifier) on six of the ten:
+        nan, inf, zero, true, a-list and 400-digits, e.g.:
+
+            E       AssertionError: assert '[1, 2]' == ''
 
         RED under mutant "name copied verbatim" (``_target_entry``'s
-        ``name`` back to ``params.get("name")``), observed on six of the
-        seven (text-as-typed stays green, as a control), e.g.:
+        ``name`` back to ``params.get("name")``), observed (S5) on six of
+        the seven cases it then had (text-as-typed stays green, as a
+        control), e.g.:
 
             E       AssertionError: assert nan == 'nan'
             E       AssertionError: assert 12.5 == '12.5'
@@ -1133,3 +1162,104 @@ class TestPastCompilePlan:
             {"timeout": value}).shutter_timeout_s == seconds
         assert DomePolicy.from_plan(
             {"shutter_timeout_s": value}).shutter_timeout_s == seconds
+
+
+# ------------------------------------------------ the #441 digit runs (S7)
+
+#: A run of decimal digits past CPython's 4300-digit integer string limit,
+#: on which ``int()`` raises ``ValueError``.
+RUN_PAST_THE_LIMIT = "9" * 5000
+
+#: #441's skip entry: row 1, and a column of 5000 digits.
+SKIP_PAST_THE_LIMIT = "1-" + "1" * 5000
+
+
+def _cycle_of(plan: str) -> dict:
+    """TARGET M42 -> FILTER CYCLE with ``plan`` as its slot table: #441's
+    first graph when a slot's exposure is a run past the limit."""
+    return {"nodes": [{"id": "t", "type": "target",
+                       "params": {"name": "M42", "ra": "05h 35m 17s",
+                                  "dec": "-05 23 28"}},
+                      {"id": "cy", "type": "cycle", "x": 200,
+                       "params": {"plan": plan}}],
+            "edges": [{"from": "t", "fromPort": "target", "to": "cy",
+                       "toPort": "run"}]}
+
+
+class TestThe441DigitRuns:
+    """#441's two graphs, joined to this file as the 400-digit integer was:
+    by hand, not in ``ODD``, because a longer ``ODD`` would reshuffle every
+    graph the quoted counts above were observed on. Validation takes both,
+    so a save stores them; before S7 every compile of either raised
+    ``ValueError`` out of ``compile_plan`` and the doctor. Now a slot whose
+    exposure ``int()`` refuses is dropped (``nodes.parse_cycle_plan``) and a
+    skip entry it refuses is unread (``compile.parse_skip``), and what the
+    operator reads is a note, never a 500."""
+
+    @pytest.mark.parametrize("reader", ["compile_plan", "doctor"])
+    @pytest.mark.parametrize("raw", [
+        _cycle_of("L " + RUN_PAST_THE_LIMIT),
+        _cycle_of(f"L 60, R {RUN_PAST_THE_LIMIT}"),
+        _m31_3x2(skip=SKIP_PAST_THE_LIMIT)],
+        ids=["cycle-only-slot", "cycle-one-slot-of-two", "skip"])
+    def test_compile_plan_and_the_doctor_answer(self, raw, reader):
+        """Each graph is valid (the premise: a save stores it), compiles,
+        and the doctor answers, M9's second compile included; each reader
+        asked on its own, so a doctor that raised could not hide behind a
+        compile that raised first.
+
+        RED under nodes.py mutant "guard removed" (``parse_cycle_plan``'s
+        ``int()`` unguarded, as #441 found it), observed on both cycle
+        graphs through both readers (the skip graph stays green), e.g.:
+
+            >           doctor.check(g, rig=GUARDS_OFF)
+            >               out.append((m.group(1), int(m.group(2))))
+            E               ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 5000 digits; use sys.set_int_max_str_digits() to increase the limit
+            5 failed, 3 passed, 119 deselected (the four cycle cases
+            here and ``test_the_slot_nobody_can_read_is_dropped_and_said``)
+
+        RED under compile.py mutant "guard removed" (``parse_skip``'s
+        ``int()`` pair unguarded), observed on the skip graph through
+        ``compile_plan`` alone. The doctor reads no skip for this graph
+        (#441 found only ``compile_plan`` raising on it), so skip-doctor
+        stays green under it:
+
+            >           r, c = int(m.group(1)), int(m.group(2))
+            E           ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 5000 digits; use sys.set_int_max_str_digits() to increase the limit
+            FAILED ...::test_compile_plan_and_the_doctor_answer[skip-compile_plan]
+            FAILED ...::test_the_skip_entry_nobody_can_read_is_a_note
+            2 failed, 6 passed, 119 deselected
+        """
+        g = _g(raw)
+        assert g.validation_errors() == [], "premise: a save stores it"
+        if reader == "compile_plan":
+            compile_plan(g, "n")
+        else:
+            doctor.check(g, rig=GUARDS_OFF)
+
+    def test_the_slot_nobody_can_read_is_dropped_and_said(self):
+        """A cycle of one slot past the limit compiles to no slots, and the
+        plan refuses it in words (``to_plan``'s "no filters selected"), as
+        it refuses a table of nothing readable; beside a readable slot, only
+        the readable one is shot."""
+        (entry,) = compile_plan(_g(_cycle_of("L " + RUN_PAST_THE_LIMIT)),
+                                "n")["targets"]
+        assert entry["steps"][0]["slots"] == []
+        refused = _plan_refused(_cycle_of("L " + RUN_PAST_THE_LIMIT))
+        assert "the FILTER CYCLE has no filters selected" in refused, refused
+        (entry,) = compile_plan(_g(_cycle_of(
+            f"L 60, R {RUN_PAST_THE_LIMIT}")), "n")["targets"]
+        assert entry["steps"][0]["slots"] == [{"filter": "L",
+                                               "exposure_s": 60}]
+
+    def test_the_skip_entry_nobody_can_read_is_a_note(self):
+        """The entry skips nothing and the compile says so in the note every
+        unread entry gets, naming the grid; the other five panels' plan is
+        untouched."""
+        out = compile_plan(_g(_m31_3x2(skip=SKIP_PAST_THE_LIMIT)), "n")
+        (entry,) = out["targets"]
+        assert entry["mosaic"]["skip"] == []
+        notes = [n for n in out["notes"] if n.get("node_id") == "t"
+                 and "names no panel of this grid" in n.get("text", "")]
+        assert len(notes) == 1 and notes[0]["level"] == "warn", out["notes"]
+        assert SKIP_PAST_THE_LIMIT in notes[0]["text"]

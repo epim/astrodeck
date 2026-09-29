@@ -121,7 +121,9 @@ const pathOf = (rel: string): string =>
 const { framingNote } = await import("../frame/FramingCard");
 const mosaic = await import("../frame/mosaic");
 const { MOSAIC_CHOICES, framingMeta, panelRects } = mosaic;
-const { FRAMING_REMOVED, SEND_TO_WIZARD, framingKeptDetail, mosaicPlanNote } = await import("../sheets/quickCopy");
+const {
+  FRAMING_REMOVED, SEND_TO_WIZARD, framingCentreNote, framingKeptDetail, mosaicPlanNote, offsetLabel,
+} = await import("../sheets/quickCopy");
 const { DEFAULT_OVERLAP, mosaicTotalFov } = await import("../../../../lib/framing");
 const { mosaicPitch } = await import("../../../lib/fov");
 
@@ -344,6 +346,63 @@ test("fov.ts's comments promise no order for panelOrder", () => {
     const order = hits(ORDER, c).filter((w) => w !== "\"to completion\"" && w !== "\"one panel at a time\"");
     assert(order.length === 0, `a comment in fov.ts promises ${order.join(", ")}: "${c}"`);
   }
+});
+
+// #459's second shape (S7-USKYHUB): the quick sheet's line when a kept
+// framing is centred off the target. It says where GENERATE FLOW images and
+// names the door that carries the centre; it must never make the promise the
+// FRAME note and the "Framing kept" toast made and S6 took back. Mutants in a
+// private scratch copy of ui/ (scratchpad/S7-USKYHUB-mut), each from a byte
+// backup restored with its sha256 checked. Output verbatim:
+//   MUTANT "the centre line promises GENERATE FLOW centres on the framing"
+//   (framingCentreNote's clause after the images: "; GENERATE FLOW centres the
+//   night on this framing, and SEND TO FLOW WIZARD carries it too."). Observed
+//   ("mosaicCopyPanelFirst.test: 14/15 passed"):
+//     x the quick sheet's centre line says GENERATE FLOW images the target's own position, and names the wizard: framingCentreNote(0.00008333333333333333, "M31", true) says GENERATE FLOW takes the framing's centre, the claim S6 took back (#459): "This framing is centred 1″ from M31's catalogue position. GENERATE FLOW images the catalogue position; GENERATE FLOW centres the night on this framing, and SEND TO FLOW WIZARD carries it too."
+//   MUTANT "offsetLabel prints 0 arcsec" (the Math.max(1, ...) floor gone).
+//   Observed ("14/15 passed"):
+//     x offsetLabel prints the unit the offset is read in, never 0, never 60: under half an arcsecond still posts differently, so the floor is 1″: expected 1″, got 0″
+//   MUTANT "offsetLabel prints 60 arcmin" (the arcminute branch up to 60).
+//   Observed ("14/15 passed"):
+//     x offsetLabel prints the unit the offset is read in, never 0, never 60: where arcminutes would round to 60: expected 1.0°, got 60′
+/** GENERATE FLOW's clause (up to the first ; or .) claiming a centre: "centres
+ *  the night here", "the framing centre", "this framing's centre". */
+const GENERATE_CENTRES = /GENERATE FLOW[^;.]*(\bcentr|\bhere\b)/i;
+
+test("the quick sheet's centre line says GENERATE FLOW images the target's own position, and names the wizard", () => {
+  // Known positives, so the centre scan cannot pass by matching nothing: the
+  // pre-S6 toast and split note, and the plain form of the claim.
+  for (const claim of [
+    "GENERATE FLOW centres the night here instead of on the catalogue position.",
+    PRE_S6.splitNote,
+    "GENERATE FLOW images this framing's centre.",
+  ]) assert(GENERATE_CENTRES.test(claim), `the centre scan let a centre claim through: "${claim}"`);
+  for (const fromCatalogue of [true, false]) {
+    for (const off of [0.3 / 3600, 0.25, 2.4]) {
+      const s = framingCentreNote(off, "M31", fromCatalogue);
+      const label = `framingCentreNote(${off}, "M31", ${fromCatalogue})`;
+      assertClean(label, s);
+      assert(s.includes(SEND_TO_WIZARD), `${label} does not name ${SEND_TO_WIZARD}: "${s}"`);
+      assert(!GENERATE_CENTRES.test(s),
+        `${label} says GENERATE FLOW takes the framing's centre, the claim S6 took back (#459): "${s}"`);
+      assert(s.includes(`GENERATE FLOW images ${fromCatalogue ? "the catalogue position" : "that position"}`),
+        `${label} does not say where GENERATE FLOW images: "${s}"`);
+      assert(s.includes(offsetLabel(off)), `${label} lost the offset ${offsetLabel(off)}: "${s}"`);
+      eq(/catalogue/.test(s), fromCatalogue,
+        `${label}: a catalogue position is named exactly when the sheet has one: "${s}"`);
+    }
+  }
+});
+
+test("offsetLabel prints the unit the offset is read in, never 0, never 60", () => {
+  eq(offsetLabel(0.3 / 3600), "1″", "under half an arcsecond still posts differently, so the floor is 1″:");
+  eq(offsetLabel(30 / 3600), "30″", "30 arcsec:");
+  eq(offsetLabel(59.4 / 3600), "59″", "just under the arcminute:");
+  eq(offsetLabel(59.6 / 3600), "1′", "where arcseconds would round to 60:");
+  eq(offsetLabel(0.25), "15′", "a quarter degree:");
+  eq(offsetLabel(59.4 / 60), "59′", "just under the degree:");
+  eq(offsetLabel(59.6 / 60), "1.0°", "where arcminutes would round to 60:");
+  eq(offsetLabel(2.44), "2.4°", "degrees:");
 });
 
 // ============================================================ one overlap

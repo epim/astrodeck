@@ -19,14 +19,25 @@ value the file holds there, and counts the rest. A file the OS will not open
 right now is left out, as before, and a missing one is a 404.
 
 ``fixtures/plan_list_unreadable.json`` records the routes' real answers for
-a library of one good plan and one unreadable one, for S5-PLANS-UI; the last
+a library of one good plan and two unreadable ones, for S5-PLANS-UI; the last
 class grades it byte for byte. To record it again after a DELIBERATE change:
 
     cd server && ASTRODECK_REWRITE_PLAN_LIST_FIXTURE=1 .venv/Scripts/python.exe -m pytest -q -p no:randomly -n0 tests/test_plan_library_unreadable.py
 
+THE NOT-JSON SENTENCE IS HELD BY THE RECORDING (#478, S7). Every case
+compared a not-JSON file's reason to ``NOT_JSON``, the constant the reader
+raises with, and the recording had no not-JSON row, so the S5 review's
+operator sweep changed the constant to "valid JSON", the opposite, and
+every plan test stayed green. The sentence stays one named literal that
+the reader and this file share, and the recording now holds a not-JSON
+file's row and its 422s, so a reworded ``NOT_JSON`` goes red on the byte
+grade until the fixture is re-recorded on purpose, which moves the two UI
+tests that read it as well.
+
 Every named mutation was run in a private copy of ``server/`` under the
-session scratchpad (``S5-ROUTES-mut``), from byte copies, never in the
-shared tree (#254); the failure each produced is quoted where it went red.
+session scratchpad (``S5-ROUTES-mut``; S7's in ``S7-STORE-mut``), from byte
+copies, never in the shared tree (#254); the failure each produced is
+quoted where it went red.
 """
 from __future__ import annotations
 
@@ -51,11 +62,16 @@ REWRITE = os.environ.get("ASTRODECK_REWRITE_PLAN_LIST_FIXTURE") == "1"
 #: same bytes on every run, and uuid-shaped, as the library mints them.
 GOOD_ID = "6f1c0d2e4b5a49c8a1e2f3d4c5b6a7e8"
 BAD_ID = "0b9e8d7c6a5f4e3d2c1b0a9f8e7d6c5b"
+#: The recording's third file, which does not parse (#478).
+NOT_JSON_ID = "3a9d7e5c1b0f4e2d8c6b4a2f0e8d6c4b"
 
 #: The two files' modification times: the good plan the newer, so the
 #: list's newest-first order puts it first, and fixed for the recording.
 GOOD_MTIME = 1790600000.0
 BAD_MTIME = 1790500000.0
+#: The not-JSON file the oldest, so it is listed last and the first
+#: unreadable row the UI tests find is still the Snapshot plan's.
+NOT_JSON_MTIME = 1790400000.0
 
 #: #378's probe: a plan whose first step's frame type is a word #334 no
 #: longer takes, and what the row and the 422 say about it.
@@ -423,35 +439,52 @@ class TestWhatStaysAsItWas:
 
 # ================================================== the recorded answer
 
-ABOUT = ("GET /api/plans for a library of two plan files: one good plan, "
-         "and one saved good and then hand-edited so that its first step's "
-         "frame_type is 'Snapshot', which #334 refuses; and GET "
-         "/api/plans/{id} and /export for that one, which answer 422. The "
-         "ids and the two files' mtimes are fixed. Recorded and graded byte "
-         "for byte by server/tests/test_plan_library_unreadable.py "
+ABOUT = ("GET /api/plans for a library of three plan files: one good plan; "
+         "one saved good and then hand-edited so that its first step's "
+         "frame_type is 'Snapshot', which #334 refuses; and one that is not "
+         "JSON at all (#478). Then GET /api/plans/{id} and /export for the "
+         "Snapshot plan ('get', 'export') and for the file that is not JSON "
+         "('not_json'), each of which answers 422. The ids and the three "
+         "files' mtimes are fixed. Recorded and graded byte for byte by "
+         "server/tests/test_plan_library_unreadable.py "
          "(ASTRODECK_REWRITE_PLAN_LIST_FIXTURE=1 re-records it); read by "
          "S5-PLANS-UI (#378). Never edit it by hand.")
+
+#: What the recording's third file holds: a write cut short.
+NOT_JSON_BYTES = b'{"id": "3a9d7e5c'
+
+
+def _recorded_library(lib: PlanLibrary) -> None:
+    """``_library``'s two plans and a file that does not parse, the oldest
+    of the three (#478)."""
+    _library(lib)
+    path = lib._dir / f"{NOT_JSON_ID}.json"
+    path.write_bytes(NOT_JSON_BYTES)
+    os.utime(path, (NOT_JSON_MTIME, NOT_JSON_MTIME))
+
+
+def _answer(client, url: str) -> dict:
+    r = client.get(url)
+    return {"url": url, "status": r.status_code, "body": r.json()}
 
 
 def _recording(client) -> str:
     """The fixture's text as the routes answer now."""
     listed = client.get("/api/plans")
     assert listed.status_code == 200, listed.text
-    got = client.get(f"/api/plans/{BAD_ID}")
-    exported = client.get(f"/api/plans/{BAD_ID}/export")
     doc = {"about": ABOUT, "list": listed.json(),
-           "get": {"url": f"/api/plans/{BAD_ID}", "status": got.status_code,
-                   "body": got.json()},
-           "export": {"url": f"/api/plans/{BAD_ID}/export",
-                      "status": exported.status_code,
-                      "body": exported.json()}}
+           "get": _answer(client, f"/api/plans/{BAD_ID}"),
+           "export": _answer(client, f"/api/plans/{BAD_ID}/export"),
+           "not_json": {
+               "get": _answer(client, f"/api/plans/{NOT_JSON_ID}"),
+               "export": _answer(client, f"/api/plans/{NOT_JSON_ID}/export")}}
     return json.dumps(doc, indent=1, ensure_ascii=True) + "\n"
 
 
 class TestTheRecordedAnswer:
     def test_the_file_is_the_routes_answer_byte_for_byte(self, client, lib):
         """The fixture's bytes are the recording the routes make now, one
-        good row and one unreadable row, and the file holds what the fault
+        good row and two unreadable rows, and the file holds what the fault
         needs a UI to draw: a row with no counts, and the sentence both the
         row and the 422 carry.
 
@@ -460,18 +493,24 @@ class TestTheRecordedAnswer:
         CRLF, so CRLF is read as LF and every other byte is graded.
 
         RED under mutant "fixture hand-edited" (the list row's reason's
-        'Snapshot' changed to 'Snapshots' in the copy's file), observed:
+        'Snapshot' changed to 'Snapshots' in the copy's file), observed
+        (on the three-file recording, run again in S7):
 
             E   AssertionError: the recorded answer is not the routes'; re-record it only after a deliberate change
             E   assert b'{\\n "about"...n  }\\n }\\n}\\n' == b'{\\n "about"...n  }\\n }\\n}\\n'
-            E     At index 877 diff: b's' != b"'"
+            E     At index 1001 diff: b's' != b"'"
 
         and the file as recorded with the code mutated, under "continue
-        restored" (the unreadable row gone from the answer):
+        restored" (the unreadable rows gone from the answer):
 
-            E     At index 687 diff: b',' != b'\\n'
+            E     At index 811 diff: b',' != b'\\n'
+
+        and under "sentence reworded in one place" (``NOT_JSON`` made
+        "valid JSON"), the not-JSON row's reason, observed:
+
+            E     At index 1181 diff: b'n' != b'v'
         """
-        _library(lib)
+        _recorded_library(lib)
         text = _recording(client)
         if REWRITE:
             FIXTURE.write_bytes(text.encode("utf-8"))
@@ -480,7 +519,7 @@ class TestTheRecordedAnswer:
             "the recorded answer is not the routes'; re-record it only "
             "after a deliberate change")
         doc = json.loads(on_disk)
-        good, bad = doc["list"]
+        good, bad, _not_json = doc["list"]
         assert "status" not in good and good["frames"] == 40
         assert bad == {"id": BAD_ID, "name": "NGC 7000 Ha",
                        "status": "unreadable", "unreadable": SNAPSHOT_REASON,
@@ -489,3 +528,32 @@ class TestTheRecordedAnswer:
             assert answer["status"] == 422
             assert answer["body"] == {"detail": {
                 "detail": SNAPSHOT_REASON, "code": "unreadable"}}
+
+    def test_the_recording_holds_the_not_json_sentence(self):
+        """The recorded not-JSON file (#478): its row, with no name (the
+        file gives none) and ``NOT_JSON`` as its reason, listed last, and
+        its ``GET`` and export answering 422 with the same sentence. The
+        byte grade above holds the words; this holds which row they are.
+
+        RED under mutant "sentence reworded in one place" (``plans.NOT_JSON``
+        made "valid JSON", the S5 review's sweep, the fixture left as
+        recorded), here and on the byte grade above, observed:
+
+            E   AssertionError: assert {'id': '3a9d7...t valid JSON'} == {'id': '3a9d7... 'valid JSON'}
+            E     Omitting 3 identical items, use -vv to show
+            E     Differing items:
+            E     {'unreadable': 'not valid JSON'} != {'unreadable': 'valid JSON'}
+
+        Those two were the only cases in this file it turned red (2 failed,
+        23 passed): the three not-JSON cases above compare the row to the
+        constant, which is the point of holding the words in the recording.
+        """
+        doc = json.loads(FIXTURE.read_bytes().replace(b"\r\n", b"\n"))
+        assert doc["list"][-1] == {
+            "id": NOT_JSON_ID, "status": "unreadable", "unreadable": NOT_JSON,
+            "mtime": NOT_JSON_MTIME}
+        for verb in ("get", "export"):
+            answer = doc["not_json"][verb]
+            assert answer["url"].startswith(f"/api/plans/{NOT_JSON_ID}"), verb
+            assert (answer["status"], answer["body"]) == (422, {"detail": {
+                "detail": NOT_JSON, "code": "unreadable"}}), verb

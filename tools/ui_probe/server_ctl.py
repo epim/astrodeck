@@ -45,11 +45,26 @@ server/astrodeck/devices/backend.py ROLES).
 
 Stop: taskkill /PID <pid> /T /F -- kills the whole process tree, not just the
 launcher, matching the Windows quirk this harness has to live with.
+
+Never the rig's port (#189 S7): `start` refuses port 8800 (RIG_PORT), the port
+the rig's own server listens on (CLAUDE.md, "The rig"), before it wipes or
+spawns anything. A probe server is private by its config dir, its capture dir
+and its port; one on 8800 is where a probe run, a browser tab or a seed meant
+for the rig's server would find a simulator, or a rig script meant for the
+rig find this one. probe.py refuses a base on that port too.
+
+A staged solve failure (#189 S7 item 1): `--sim-solve-fault RA_H,DEC,RADIUS`
+sets ASTRODECK_SIM_SOLVE_FAULT for the server, which the SimSolver reads
+(server/astrodeck/solve/simsolver.py) to fail every solve within RADIUS deg of
+that sky position, so one panel of a mosaic never centres. Without the flag the
+variable is removed from the server's environment, so a value left in the
+shell that runs this never stages a failure nobody asked for.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -65,6 +80,12 @@ DEFAULT_CONFIG_DIR = REPO_ROOT / ".probe" / "cfg"
 DEFAULT_CAPTURE_DIR = REPO_ROOT / ".probe" / "captures"
 DEFAULT_VENV_PYTHON = REPO_ROOT / "server" / ".venv" / "Scripts" / "python.exe"
 DEFAULT_PORT = 8801
+#: The port the rig's own AstroDeck server listens on (CLAUDE.md, "The rig").
+#: Never a probe server's: see the module docstring.
+RIG_PORT = 8800
+#: The simulator's staged solve failure (server/astrodeck/solve/simsolver.py
+#: SOLVE_FAULT_ENV), which `--sim-solve-fault` sets.
+SOLVE_FAULT_ENV = "ASTRODECK_SIM_SOLVE_FAULT"
 
 PROBE_ADMIN_USER = "probe_admin"
 PROBE_ADMIN_PASSWORD = "Probe-Admin-Pass-1!"
@@ -231,11 +252,52 @@ def _bootstrap_auth_users(client: ServerClient, config_dir: Path) -> dict:
 
 # ------------------------------------------------------------------- start
 
+def refuse_rig_port(port: int) -> str | None:
+    """Why a probe server may not listen on `port`, or None. Only RIG_PORT
+    is refused (module docstring): every other port is a private one."""
+    if port == RIG_PORT:
+        return (f"port {RIG_PORT} is the rig's server port, and a probe server "
+                f"is private: pass --port with any other port")
+    return None
+
+
+def parse_solve_fault(raw: str) -> str:
+    """`--sim-solve-fault`'s value, checked the way the SimSolver reads it:
+    three finite numbers, RA hours, Dec degrees and a positive radius in
+    degrees. Returned normalised; ValueError names what is wrong, so a typo
+    refuses the start rather than staging no failure (the SimSolver reads an
+    unreadable value as none)."""
+    parts = [p.strip() for p in (raw or "").split(",")]
+    try:
+        ra_h, dec, radius = (float(p) for p in parts)
+    except ValueError:
+        raise ValueError(f"--sim-solve-fault {raw!r} is not RA_HOURS,DEC_DEG,RADIUS_DEG")
+    if not all(math.isfinite(v) for v in (ra_h, dec, radius)):
+        raise ValueError(f"--sim-solve-fault {raw!r} is not three finite numbers")
+    if not (0.0 <= ra_h < 24.0 and -90.0 <= dec <= 90.0 and radius > 0.0):
+        raise ValueError(f"--sim-solve-fault {raw!r}: RA must be 0 to 24 h, Dec -90 "
+                         f"to 90 deg and the radius above 0 deg")
+    return f"{ra_h!r},{dec!r},{radius!r}"
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     config_dir = Path(args.config_dir).resolve()
     capture_dir = Path(args.capture_dir).resolve()
     venv_python = Path(args.venv_python).resolve()
     port = args.port
+
+    # Before anything is wiped or spawned: a refused start touches nothing.
+    refused = refuse_rig_port(port)
+    if refused:
+        _log(f"ERROR: {refused}")
+        return 2
+    fault = None
+    if args.sim_solve_fault is not None:
+        try:
+            fault = parse_solve_fault(args.sim_solve_fault)
+        except ValueError as exc:
+            _log(f"ERROR: {exc}")
+            return 2
 
     if not venv_python.is_file():
         _log(f"ERROR: venv python not found at {venv_python}")
@@ -280,6 +342,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     # refuses that unless the bind is non-loopback anyway (see __main__.py).
     env.pop("ASTRODECK_ALLOW_INSECURE_OPEN", None)
     env.pop("ASTRODECK_REQUIRE_AUTH", None)
+    # The staged solve failure is this start's to ask for, never inherited.
+    env.pop(SOLVE_FAULT_ENV, None)
+    if fault is not None:
+        env[SOLVE_FAULT_ENV] = fault
 
     if args.auth:
         _log("bootstrapping local admin via CLI create-admin (pre-start)...")
@@ -291,6 +357,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     _log(f"  ASTRODECK_CONFIG_DIR={config_dir}")
     _log(f"  ASTRODECK_CAPTURE_DIR={capture_dir}")
     _log(f"  ASTRODECK_UI_DIR={ui_dir}")
+    if fault is not None:
+        _log(f"  {SOLVE_FAULT_ENV}={fault}")
     _log(f"  log -> {log_path}")
     pid = _spawn_server(venv_python, port, env, log_path)
     pid_path.write_text(str(pid), encoding="utf-8")
@@ -335,6 +403,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         "capture_dir": str(capture_dir), "log": str(log_path),
         "auth": bool(args.auth),
         "creds_file": str(config_dir / "probe_users.json") if creds else None,
+        "sim_solve_fault": fault,
     }))
     return 0
 
@@ -401,6 +470,10 @@ def main(argv: list[str] | None = None) -> int:
                          help="seconds to wait for /healthz (default 60)")
     p_start.add_argument("--sim-timeout", type=float, default=30.0,
                          help="seconds to wait for sim camera+telescope connected")
+    p_start.add_argument("--sim-solve-fault", default=None, metavar="RA_H,DEC,RADIUS",
+                         help=f"stage a solve failure: every simulator solve within "
+                             f"RADIUS deg of (RA_H hours, DEC deg) fails "
+                             f"({SOLVE_FAULT_ENV}); off unless given")
     p_start.set_defaults(func=cmd_start)
 
     p_stop = sub.add_parser("stop", help="stop a server started by this tool")

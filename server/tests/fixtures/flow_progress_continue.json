@@ -6,7 +6,9 @@
    "id": "319caf668a27569db2239f9e8fa83396",
    "status": "dormant",
    "nights": 2,
-   "count_mode": "accepted"
+   "count_mode": "accepted",
+   "armed": true,
+   "plan_saved_ts": null
   },
   "blocks": [
    {

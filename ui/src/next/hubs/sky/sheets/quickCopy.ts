@@ -254,6 +254,46 @@ export function mosaicPlanNote(panels: number, cols: number, rows: number): stri
 }
 
 /**
+ * How far a kept framing's centre sits from where GENERATE FLOW will image:
+ * arcseconds under a minute of arc, minutes under a degree, then degrees. The
+ * line it goes in shows when the two would post different coordinates, and
+ * the payload rounds to whole seconds, so two positions a hair apart either
+ * side of a rounding edge still post differently: the floor is 1″, never a
+ * "0″" that would contradict the line it sits in. Each unit hands over where
+ * its own rounding would reach 60 (59.5), so no "60″" or "60′" is printed.
+ */
+export function offsetLabel(deg: number): string {
+  const sec = deg * 3600;
+  if (sec < 59.5) return `${Math.max(1, Math.round(sec))}″`;
+  const min = deg * 60;
+  if (min < 59.5) return `${Math.round(min)}′`;
+  return `${deg.toFixed(1)}°`;
+}
+
+/**
+ * WHERE GENERATE FLOW IMAGES, when a kept framing is centred somewhere else
+ * (#459, the issue's second shape, which changes no behaviour).
+ *
+ * The quick flow is placed at the target's own coordinates - the catalogue
+ * row's, or the position the sheet was opened with for a patch - and takes
+ * only the framing's ANGLE (`quick.tsx`'s `generate`). The FRAME card's note
+ * and the "Framing kept" toast used to say its centre went into the flow too,
+ * and nothing ever carried it there; S6 corrected them. This line is the
+ * sheet saying so at the moment it matters: a framing dragged off the object,
+ * about to be generated from. The way forward that DOES carry the centre is
+ * SEND TO FLOW WIZARD (`framingPrefill`), shown beside it.
+ *
+ * Whether GENERATE FLOW should take the framing's centre instead is the
+ * issue's first shape and waits on an owner ruling (recorded on #459).
+ */
+export function framingCentreNote(offsetDeg: number, name: string, fromCatalogue: boolean): string {
+  const from = fromCatalogue ? `${name}'s catalogue position` : "the position this sheet opened with";
+  const images = fromCatalogue ? "the catalogue position" : "that position";
+  return `This framing is centred ${offsetLabel(offsetDeg)} from ${from}. GENERATE FLOW images `
+    + `${images}, at the framing's angle; ${SEND_TO_WIZARD} carries the framing's centre.`;
+}
+
+/**
  * The toast when FRAME's framing is cleared (`SkyHub.tsx`'s `clearFrame`).
  *
  * IT SAYS WHAT CLEARING CHANGES. It read "the flow centres on the catalogue

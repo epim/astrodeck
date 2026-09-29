@@ -429,7 +429,26 @@ class TestContinueWithAPanelSkipped:
               {'kept': 2} != {'kept': 4}
               {'new': 2} != {'new': 0}
               Use -v to get more diff
+
+        DELIBERATE PIN CHANGE (S7 integration, #430, S7 orchestrator ruling
+        7): the three runs used to start on the real clock, seconds apart,
+        and the answers pinned ``"night": 2`` and ``3`` as the run count.
+        CONTINUE's ``night`` is the observing night since S7, so the
+        unpinned case went red with ``{'night': 1} != {'night': 2}``. Each
+        night now starts on its own evening (``Rig.on_night``), which is
+        what "night two" and "night three" say.
+
+        RED under mutant "tonight never adds a night" (``Session.night_at``
+        answering ``len(nights)``, so the evening CONTINUE is pressed on is
+        always one already run), observed in the integration's private
+        copy:
+
+            AssertionError: assert {'continued':...kept': 2, ...} ==
+            {'continued':...kept': 2, ...}
+              Differing items:
+              {'night': 1} != {'night': 2}
         """
+        rig.on_night(1)
         fid, sid = await _night_one(rig, mosaic)
         t12, (l12, r12) = _ids(fid, P12)
         banked = session_store.load(sid)._counts()
@@ -437,6 +456,7 @@ class TestContinueWithAPanelSkipped:
             "premise: 1-2 holds frames")
 
         mosaic.skip = [P12]                                  # night two
+        rig.on_night(2)
         r = await rig.run(fid)
         assert r.status_code == 200, r.text
         assert r.json()["session"] == {
@@ -450,6 +470,7 @@ class TestContinueWithAPanelSkipped:
             "the skipped panel's frames stay in the ledger")
 
         mosaic.skip = []                                     # night three
+        rig.on_night(3)
         r = await rig.run(fid)
         assert r.status_code == 200, r.text
         assert r.json()["session"] == {

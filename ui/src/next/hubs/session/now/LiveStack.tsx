@@ -30,7 +30,17 @@
 // mean "from the next frame", so arming it at 2am showed two of the night's
 // ninety subs. The backfill folds the earlier accepted subs in, and its count is
 // ON THE LABEL because that pass reads every one of those frames off disk: an
-// informed press, not a surprise.
+// informed press, not a surprise. The label may take two lines rather than cut
+// the count off with an ellipsis.
+//
+// THE EMPTY FACE IS LAID OUT, NOT LAID OVER (#468). The chips and the corner
+// readouts are drawn over a PICTURE, which is what they describe. With nothing
+// stacked there is no picture, and the chips said only what the card's own
+// heading says ("0 subs", "nothing stacked yet", and a stretch for an image
+// that is not there), so they are not drawn. The card and the corner readouts
+// sit in the frame's flow, which grows to hold them: centred in a fixed 180 px
+// frame, the card in the desktop column was taller than its box, and the chips
+// at the top printed over its heading and the first line of its body.
 
 import { useState, type CSSProperties, type JSX } from "react";
 
@@ -38,6 +48,7 @@ import { backfillLabel, fmtIntegration, sessionStackImageUrl } from "../../../..
 import { modeLabel } from "../../../../components/preview/SessionStack";
 import { accessPhrase, useCanControlCapture } from "../../../../lib/caps";
 import { fmtClock } from "../../../../lib/eta";
+import { fmtCount } from "../../../../lib/gallery";
 import { usePreview, useSeq, useStore, useTelemetryStale, useWsPhase } from "../../../../store";
 import { ActionButton, Bar, EmptyCard, Mono } from "../../../ui";
 import { explainLock } from "../../../shell/explain";
@@ -58,6 +69,22 @@ const CORNER: CSSProperties = {
   background: "rgba(6,7,11,.75)", border: "1px solid var(--line)",
   fontFamily: '"IBM Plex Mono", monospace', fontSize: 11,
 };
+
+/** A button label allowed onto a second line. `.nx-btn-label` never wraps and
+ *  cuts with an ellipsis, which over "1 ALREADY CAPTURED" would cut the one
+ *  number the label is there to carry. */
+const WRAP_LABEL: CSSProperties = {
+  display: "block", whiteSpace: "normal", lineHeight: 1.3, textAlign: "center",
+};
+
+/** A count of subs and its noun: "1 sub", "1,284 subs". Shared by every
+ *  surface that counts subs on the Now screen and the desktop column, and by
+ *  the FILES sheet: "FILES · 1 SUBS" (#468) is the tell of a number nobody
+ *  looked at. It lives here, and not in the FILES sheet, because that sheet is
+ *  loaded on demand and this module is already on the first paint. */
+export function subsPhrase(n: number): string {
+  return `${fmtCount(n)} ${n === 1 ? "sub" : "subs"}`;
+}
 
 /** Before the first `GET /api/sequence/stack` answers there is no stack state,
  *  and "LIVE STACK IS OFF" is a claim about the rig, not about the request. */
@@ -80,7 +107,7 @@ export const UNANSWERED_START_REASON =
  *  job is to say what the night has shot. */
 export function channelFallbackNote(name: string, frames: number): string {
   return frames > 0
-    ? `Could not load the ${name} frame (${frames} subs are stacked) - showing the combined picture.`
+    ? `Could not load the ${name} frame (${subsPhrase(frames)} ${frames === 1 ? "is" : "are"} stacked) - showing the combined picture.`
     : `Nothing stacked in ${name} yet - showing the combined picture.`;
 }
 
@@ -118,7 +145,7 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
 
   const stretchWord = stretch.toLowerCase();
   const modeBadge = shown
-    ? `${shown} only · ${status ? channelFrames(status, shown) : 0} subs · ${stretchWord} stretch`
+    ? `${shown} only · ${subsPhrase(status ? channelFrames(status, shown) : 0)} · ${stretchWord} stretch`
     : status && Array.isArray(status.channels)
       ? `${modeLabel(status)} · ${stretchWord} stretch`
       : answered ? "nothing stacked yet" : "reading the stack";
@@ -133,8 +160,11 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
     incident: incidents.length ? { pill: incidents[0].pill, color: incidents[0].color } : null,
   });
 
-  const currentLine = seq.state === "complete"
-    ? `complete · ${seq.progress?.frames_done ?? 0} subs`
+  // An ended run is counted, not trailed off: "stopped..." read as a stop still
+  // under way, over a run that had ended with one sub banked.
+  const ended = seq.state === "complete" || seq.state === "aborted" || seq.state === "error";
+  const currentLine = ended
+    ? `${seq.state === "complete" ? "complete" : phaseWord(phase)} · ${subsPhrase(seq.progress?.frames_done ?? 0)}`
     : seq.detail && /\[\d+\/\d+\]/.test(seq.detail)
       ? seq.detail
       : `${phaseWord(phase)}...`;
@@ -146,15 +176,45 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
     ? `Stacking needs ${accessPhrase("control.capture")}.`
     : answered ? null : UNANSWERED_START_REASON;
 
+  // Drawn in both faces: over the picture in its corners, and under the empty
+  // card in the frame's flow.
+  const corners = (
+    <>
+      <span style={CORNER} data-testid="live-stack-current">{currentLine}</span>
+      <span style={{ ...CORNER, color: "var(--text-dim)" }}>
+        HFR <span style={{ color: "var(--text)" }}>{hfrLine}</span>
+      </span>
+    </>
+  );
+  const linkLostOverlay = linkLost && (
+    <div
+      data-testid="live-stack-linklost"
+      style={{
+        position: "absolute", inset: 0, background: "rgba(6,7,11,.55)",
+        display: "flex", flexDirection: "column", alignItems: "center",
+        justifyContent: "center", gap: 6, textAlign: "center", padding: 8,
+      }}
+    >
+      <Mono size={10.5}>
+        LAST UPDATE {wsLastEvent ? fmtClock(wsLastEvent) : "unknown"}
+      </Mono>
+      <Mono size={10.5} tone="dim">the rig keeps imaging · retrying link...</Mono>
+    </div>
+  );
+  const subBar = (
+    <div style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}>
+      <Bar value={sub.fraction ?? 0} height={3} label="Current sub" />
+    </div>
+  );
+  const frameStyle: CSSProperties = {
+    position: "relative", flexShrink: 0, borderRadius: 16,
+    overflow: "hidden", border: "1px solid var(--line)", background: "#000",
+  };
+
   return (
     <div data-testid="now-live-stack" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <div
-        style={{
-          position: "relative", height, flexShrink: 0, borderRadius: 16,
-          overflow: "hidden", border: "1px solid var(--line)", background: "#000",
-        }}
-      >
-        {hasImage && status ? (
+      {hasImage && status ? (
+        <div data-testid="live-stack-frame" style={{ ...frameStyle, height }}>
           <img
             src={sessionStackImageUrl(status.seq, 1200, shown ?? undefined)}
             onError={() => { if (channel) setMissingKey(viewKey); }}
@@ -167,79 +227,73 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
               objectFit: "cover", opacity: 0.9, filter: cssFilter, transition: "filter .4s",
             }}
           />
-        ) : (
+
+          {linkLostOverlay}
+
           <div style={{
-            position: "absolute", inset: 10, display: "flex",
-            alignItems: "center", justifyContent: "center",
+            position: "absolute", left: 10, top: 10, display: "flex", gap: 6, flexWrap: "wrap",
           }}>
-            <EmptyCard
-              title={!answered ? "READING THE STACK"
-                : status?.enabled ? "NOTHING STACKED YET" : "LIVE STACK IS OFF"}
-              hint={!answered
-                ? UNANSWERED_HINT
-                : status?.enabled
-                  ? "The first accepted sub of the run makes the first picture."
-                  : "Every sub the run accepts is stacked per filter and composited into colour."}
-              action={
-                <ActionButton
-                  kind="primary"
-                  onPress={() => start(true)}
-                  busy={busy}
-                  lockedReason={startReason}
-                  onExplain={explainLock}
-                  data-testid="live-stack-start"
-                >
+            <span style={PILL} data-testid="live-stack-badge">
+              LIVE STACK · {subsPhrase(frames)} · {fmtIntegration(status.integrated_s ?? 0)}
+            </span>
+            <span style={{ ...PILL, color: "var(--text-dim)" }} data-testid="live-stack-mode">
+              {modeBadge}
+            </span>
+          </div>
+
+          <div style={{
+            position: "absolute", left: 10, right: 10, bottom: 10,
+            display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 8,
+          }}>
+            {corners}
+          </div>
+
+          {subBar}
+        </div>
+      ) : (
+        <div
+          data-testid="live-stack-frame"
+          style={{
+            ...frameStyle, minHeight: height, padding: 10,
+            display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 8,
+          }}
+        >
+          <EmptyCard
+            title={!answered ? "READING THE STACK"
+              : status?.enabled ? "NOTHING STACKED YET" : "LIVE STACK IS OFF"}
+            hint={!answered
+              ? UNANSWERED_HINT
+              : status?.enabled
+                ? "The first accepted sub of the run makes the first picture."
+                : "Every sub the run accepts is stacked per filter and composited into colour."}
+            action={
+              <ActionButton
+                kind="primary"
+                onPress={() => start(true)}
+                busy={busy}
+                lockedReason={startReason}
+                onExplain={explainLock}
+                data-testid="live-stack-start"
+              >
+                <span style={WRAP_LABEL}>
                   {available > 0
                     ? `STACK TONIGHT'S SUBS · ${available} ALREADY CAPTURED`
                     : "STACK TONIGHT'S SUBS"}
-                </ActionButton>
-              }
-              data-testid="live-stack-empty"
-            />
+                </span>
+              </ActionButton>
+            }
+            data-testid="live-stack-empty"
+          />
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 8,
+          }}>
+            {corners}
           </div>
-        )}
 
-        {linkLost && (
-          <div
-            data-testid="live-stack-linklost"
-            style={{
-              position: "absolute", inset: 0, background: "rgba(6,7,11,.55)",
-              display: "flex", flexDirection: "column", alignItems: "center",
-              justifyContent: "center", gap: 6, textAlign: "center", padding: 8,
-            }}
-          >
-            <Mono size={10.5}>
-              LAST UPDATE {wsLastEvent ? fmtClock(wsLastEvent) : "unknown"}
-            </Mono>
-            <Mono size={10.5} tone="dim">the rig keeps imaging · retrying link...</Mono>
-          </div>
-        )}
-
-        <div style={{
-          position: "absolute", left: 10, top: 10, display: "flex", gap: 6, flexWrap: "wrap",
-        }}>
-          <span style={PILL} data-testid="live-stack-badge">
-            LIVE STACK · {frames} subs · {fmtIntegration(status?.integrated_s ?? 0)}
-          </span>
-          <span style={{ ...PILL, color: "var(--text-dim)" }} data-testid="live-stack-mode">
-            {modeBadge}
-          </span>
+          {linkLostOverlay}
+          {subBar}
         </div>
-
-        <div style={{
-          position: "absolute", left: 10, right: 10, bottom: 10,
-          display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 8,
-        }}>
-          <span style={CORNER} data-testid="live-stack-current">{currentLine}</span>
-          <span style={{ ...CORNER, color: "var(--text-dim)" }}>
-            HFR <span style={{ color: "var(--text)" }}>{hfrLine}</span>
-          </span>
-        </div>
-
-        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}>
-          <Bar value={sub.fraction ?? 0} height={3} label="Current sub" />
-        </div>
-      </div>
+      )}
 
       {channelMissing && channel && (
         <span data-testid="channel-missing-note">

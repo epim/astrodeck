@@ -94,6 +94,19 @@ the next time the loop comes back, `Night.run` fails the test with a message
 naming the frame that was spinning and carrying the dump. Its cases are in
 test_group_harness_watchdog.py.
 
+A RUN A ROUTE STARTS (#189 S7 item 1, tests/_flow_night.py). `run` starts
+the plan and waits for the end; a night whose run ``POST
+/api/flows/{id}/run`` starts is READ WHILE IT RUNS instead. `Night.hold`
+stops `_drive` waking anything past a fake instant (an ``on_capture`` can
+hold at the start of the exposure it picks), `Night.settle` waits in real
+time until every engine task is parked there or the run has ended, and the
+test reads the routes with the clock standing still, then `Night.release`.
+`Night.arm` starts the spin watchdog before the request, petted by a task of
+its own, since the engine's first step runs inside the request's awaits;
+`Night.advance` moves the clock between two runs, and `Night.record_again`
+records a second run of the night. `run` uses none of it, and the golden
+trace is unchanged.
+
 THE SITE IS A FIXTURE, 40 N 74 W, and not anybody's rig. ``T0`` is a fixed
 instant, 2026-09-02 01:48:09 UTC, at which the fixture site is dark for five
 hours and NGC 7331 stands 3 h east of its meridian at 54 degrees. Found by
@@ -821,6 +834,12 @@ class Night:
         self.flagged: list[tuple[float, str, str]] = []
         self._goto_n: dict[str, int] = {}
         self._recording = True
+        #: The fake instant the night may not pass while a test reads it
+        #: (`hold`, `settle`), or None: `_drive` wakes nothing later than it.
+        #: Only a run started outside `run` (a route's) is read this way.
+        self._hold_at: float | None = None
+        #: The task petting the watchdog `arm` started, or None.
+        self._petter: asyncio.Task | None = None
         self._timers: list[tuple[float, int, asyncio.Future]] = []
         self._parked: dict[asyncio.Task, asyncio.Future] = {}
         self._seq = itertools.count()
@@ -1058,6 +1077,14 @@ class Night:
                 heapq.heappop(self._timers)
             if not self._timers:
                 continue
+            if self._hold_at is not None and self._timers[0][0] > self._hold_at:
+                # HELD (`hold`): every engine task is parked and the next
+                # wake is past the instant a test is reading at, so the
+                # clock stays where it is until `release`. The short real
+                # sleep only spares a core; nothing on the night's clock
+                # moves while it runs.
+                await self._real_sleep(0.001)
+                continue
             wake, _seq, fut = heapq.heappop(self._timers)
             self.clock.t = max(self.clock.t, wake)
             if self.clock.t >= self.horizon:
@@ -1074,6 +1101,125 @@ class Night:
             return await self._real_sleep(delay, result)
         await self._park(max(0.0, float(delay)))
         return result
+
+    # ------------------------------------------- a run someone else started
+    #
+    # `run` starts the plan itself and waits for the end. A night whose run a
+    # ROUTE starts (``POST /api/flows/{id}/run``, tests/_flow_night.py) is read
+    # while it runs instead: the test holds the clock at a fake instant, reads
+    # the routes while every engine task is parked there, and lets it go on.
+    # None of this is used by `run`, so no trace it records can move.
+
+    def hold(self, t: float) -> None:
+        """Let the night run up to the fake instant ``t`` (absolute) and no
+        further: `_drive` wakes no timer later than it until `release`. A
+        wake AT ``t`` still happens, so a hold at a capture's start
+        (``rec["t"]``, from ``on_capture``) stops with that exposure in
+        flight, the clock at its first instant."""
+        self._hold_at = float(t)
+
+    def release(self) -> None:
+        """Let the night run on from a `hold`."""
+        self._hold_at = None
+
+    def _held(self) -> bool:
+        """At the hold: an engine task is live, every one is parked, and no
+        timer still to fire is due at or before the hold."""
+        if self._hold_at is None:
+            return False
+        live = self._engine_tasks()
+        if not live or any(self._parked.get(t) is None or self._parked[t].done()
+                           for t in live):
+            return False
+        due = [w for w, _s, fut in self._timers if not fut.done()]
+        return not due or min(due) > self._hold_at
+
+    async def settle(self, *, wall_s: float = 60.0) -> bool:
+        """Wait until the night stands at its hold (True) or the run has
+        ended (False). A hold set later, by an ``on_capture`` that picks a
+        capture still to come, is waited for as well. Bounded in REAL time:
+        a night that neither reaches its hold nor ends in ``wall_s`` fails
+        the test, and so does a spin the watchdog `arm` started caught."""
+        loop = asyncio.get_running_loop()
+        end = loop.time() + wall_s
+        while loop.time() < end:
+            self._check_watchdog()
+            if not self.engine.running:
+                return False
+            if self._held():
+                return True
+            await self._real_sleep(0.002)
+        self._check_watchdog()
+        at = "no hold" if self._hold_at is None else f"+{self.rel(self._hold_at)} s"
+        pytest.fail(f"the night neither reached its hold ({at}) nor ended in "
+                    f"{wall_s:g} s of real time; the clock stands at "
+                    f"+{self.rel(self.clock.t)} s", pytrace=False)
+
+    async def until(self, t: float, *, wall_s: float = 60.0) -> bool:
+        """`hold` at ``t`` and `settle` there."""
+        self.hold(t)
+        return await self.settle(wall_s=wall_s)
+
+    async def finish(self, *, wall_s: float = 60.0) -> None:
+        """`release` and wait for the run to end and wind down."""
+        self.release()
+        if await self.settle(wall_s=wall_s):
+            raise AssertionError(
+                f"finish: something set a hold again (+{self.rel(self._hold_at)}"
+                f" s), an on_capture still picking captures; clear it first")
+
+    def advance(self, seconds: float) -> None:
+        """Move the fake clock on while NO RUN IS GOING: the time between
+        two runs of one night, an operator's stop and the next press. With a
+        run going the clock is the engine's, moved only at its wakes."""
+        if self._engine_tasks():
+            raise AssertionError("advance: a run is going; the clock is its own")
+        self.clock.t += float(seconds)
+
+    def record_again(self) -> None:
+        """Record the next run too. The trace, ``states``, ``lines`` and
+        ``events`` stop at a run's first terminal publish (the wind-down is
+        not the group driver's); a second run on the same night, which a
+        route can start, is recorded from its start with this."""
+        self._recording = True
+
+    def arm(self) -> None:
+        """Arm the spin watchdog (#319) for a run a route starts: armed
+        before the request, since the engine's first step runs inside the
+        request's own awaits, and petted by a task of its own on the event
+        loop, which cannot run while the loop is away. `settle` and `close`
+        read its report. `disarm` stops it; `close` does too."""
+        if self._petter is not None:
+            return
+        dog = _SpinWatchdog(self.spin_bound_s, "Night (route-started run)")
+        self.watchdog = dog
+        dog.start()
+
+        async def pet() -> None:
+            while True:
+                dog.pet()
+                await self._real_sleep(0.01)
+
+        self._petter = asyncio.get_running_loop().create_task(pet())
+
+    def disarm(self) -> None:
+        """Stop the watchdog `arm` started, and its petting task."""
+        petter, self._petter = self._petter, None
+        if petter is not None:
+            petter.cancel()
+        dog = self.watchdog
+        if dog is not None:
+            for _attempt in range(3):
+                try:
+                    dog.stop()
+                    break
+                except SpinNeverYielded:
+                    continue
+
+    def _check_watchdog(self) -> None:
+        dog = self.watchdog
+        if self._petter is not None and dog is not None and dog.report:
+            pytest.fail(dog.report, pytrace=False)
 
     # ------------------------------------------------------------- the night
 
@@ -1129,8 +1275,10 @@ class Night:
         try:
             if self.engine.running:
                 self.frozen.set()
+                self.release()
                 await self.engine.abort()
         finally:
+            self.disarm()
             self._driver.cancel()
             await asyncio.gather(self._driver, return_exceptions=True)
             # A run the watchdog broke ends with `SpinNeverYielded` as its

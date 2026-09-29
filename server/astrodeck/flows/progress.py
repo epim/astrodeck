@@ -120,13 +120,20 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
                                       count, banked, owed}]}]}],
          orphaned: {frames, steps}}
 
+    The ROUTE adds ``armed`` and ``plan_saved_ts`` to ``session``
+    (``replay_facts``, S7, #473); this answer keeps the four keys above.
+
     A TARGET block has one panel, at row 0 and col 0. A POOL block has one
     panel per member, in rank order, with row and col null: a pool is a list
     of candidates, not a grid. A panel whose entry ``to_plan`` dropped has
     ``target_id`` null and no steps, so it owes nothing, which is what the plan
-    will shoot for it. ``nights`` is how many RUNS the session has had, one
-    report id per engine start, so a restart the same night counts again
-    (#430); it is the nights run only while no night held a restart.
+    will shoot for it. ``nights`` is how many OBSERVING NIGHTS the session has
+    run (``Session.observing_nights``): one per distinct ``events.night_key``
+    of its runs' start stamps, so a restart the same night is the same night.
+    THE MEANING CHANGED IN S7 (#430, S7 orchestrator ruling 7): until then it
+    counted RUNS, one report id per engine start, and a night that held a
+    restart counted twice. The key kept its name, so every reader of it now
+    reads nights.
 
     A MOSAIC (a TARGET block with a grid, S3) has one panel per panel the
     plan shoots, in the plan's order, each at its own 0-based ``row`` and
@@ -267,8 +274,36 @@ def _summary(session: "Session | None") -> dict | None:
     if session is None:
         return None
     return {"id": session.id, "status": session.status,
-            "nights": len(session.nights),
+            "nights": len(session.observing_nights()),
             "count_mode": session.plan.count_mode}
+
+
+def replay_facts(session: "Session") -> dict:
+    """``{armed, plan_saved_ts}``: what an armed auto-resume would replay,
+    for the editor's notice (#473, S7 orchestrator ruling 1; spec 5.9: "the
+    armed session will replay the version from 2026-09-22; press CONTINUE to
+    apply your edits"). The progress ROUTE adds both to its ``session``;
+    ``flow_progress`` does not, so its own answer keeps the four keys its
+    allow-list holds it to.
+
+    ``armed``: ResumeArm would start this session (``Session.is_armed``,
+    the rule ``SessionStore.armed`` picks by): dormant, with auto-resume on.
+
+    ``plan_saved_ts``: the flow record's saved time for the version the
+    session froze (``Session.plan_saved_ts``), unix seconds, or None for a
+    session that never recorded one. Neither is derived from the site: one is
+    a status and a flag, the other the moment an operator pressed Save.
+
+    A stored time that is not a finite number reads as None, as a lock's
+    angle does (``_locked``): the server never writes one, a hand-edited
+    file can, and NaN in the answer would fail the route's JSON rendering
+    for every reader of the card."""
+    ts = session.plan_saved_ts
+    if (isinstance(ts, bool) or not isinstance(ts, (int, float))
+            or not math.isfinite(ts)):
+        ts = None
+    return {"armed": session.is_armed(),
+            "plan_saved_ts": None if ts is None else float(ts)}
 
 
 def _locked(session: "Session | None",
