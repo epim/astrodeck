@@ -52,3 +52,6 @@ ui/tools/domeshot/dome.png
 # accident; this covers it on purpose.
 .claude/workflows/
 .superpowers/
+
+# Agent mutation copies belong in the session scratch root, never here (#475).
+/scratchpad/
