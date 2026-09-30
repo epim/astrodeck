@@ -110,6 +110,31 @@ def _recovery_line() -> str:
             "run instead of being reconnected (issue #16)")
 
 
+def _mount_line(mount: dict) -> str:
+    """The mount's state in booleans, a status word and ra/dec only. (#140)
+
+    `/api/status` also carries the mount's alt/az, rounded to a tenth of a
+    degree (`hub.py`). Ra/dec say where the telescope LOOKS, which is not a
+    geolocator; alt/az say where it STANDS, in the observer's frame - and at
+    the mount's home/park position the altitude equals the site latitude to
+    that same tenth of a degree. #133 put an AM5 into exactly that state (a
+    reset mount believing it is parked at home, on the pole), and #140 is an
+    agent printing its altitude there to check tracking.
+
+    `redact.py`'s `_MOUNT_DERIVED_KEYS` already strips alt/az from every
+    non-admin API response for this reason, but rig_precheck authenticates
+    with the admin token, so nothing upstream withholds them here. The
+    withholding has to happen in this function, by never reading those two
+    keys off ``mount`` - not by rounding or formatting them differently after
+    the fact, which is the #19 key-name-filter failure repeating: a value a
+    caller can compute for itself is not made safe by hiding it downstream of
+    where it was read.
+    """
+    dec = str(mount.get("dec_str")).replace(chr(176), " deg")
+    return (f"mount: slewing={mount.get('slewing')} tracking={mount.get('tracking')} "
+            f"parked={mount.get('parked')} ra={mount.get('ra_str')} dec={dec}")
+
+
 def _session_cookie() -> str:
     with open(os.path.join(ROOT, "config", "astrodeck.json"), encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -144,9 +169,7 @@ def main(argv: list[str]) -> int:
     mount = status.get("mount") or {}
     connected = {k: bool(v.get("connected")) for k, v in (status.get("connected") or {}).items()}
     print("connected:", ", ".join(f"{k}={'yes' if v else 'NO'}" for k, v in sorted(connected.items())))
-    print(f"mount: slewing={mount.get('slewing')} tracking={mount.get('tracking')} "
-          f"parked={mount.get('parked')} ra={mount.get('ra_str')} "
-          f"dec={str(mount.get('dec_str')).replace(chr(176), ' deg')}")
+    print(_mount_line(mount))
     print(f"polar: {polar.get('state')} running={polar.get('running')} ({polar.get('message')})")
     print(f"sequence: {sequence.get('state')} running={sequence.get('running')}")
     lanes = status.get("busy_lanes") or status.get("busy") or {}

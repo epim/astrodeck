@@ -28,18 +28,43 @@ MUTATIONS RUN, and what each printed:
 
   M3, drop the coordinate type check, so a site with null coordinates reports
   as configured. 1 failed: the half-saved case.
+
+#140 EXTENDS THIS FILE with the mount's pointing. A reset AM5 (#133) comes up
+believing it is parked at home, on the celestial pole - and a mount pointing
+at the pole reports an altitude equal to the SITE LATITUDE, to the tenth of a
+degree `hub.py` rounds it to. `_mount_line` must never read `alt`/`az` off the
+mount block, the same as `redact.py`'s `_MOUNT_DERIVED_KEYS` already withholds
+them from every non-admin API caller - rig_precheck runs with the admin token,
+so nothing upstream does that for it.
+
+  M4, add `alt={mount.get('alt')} az={mount.get('az')}` to `_mount_line`'s
+  format string, the exact mistake #140 is about. 2 failed:
+
+    test_mount_line_never_prints_altitude_or_azimuth -
+      AssertionError: 41.2 reached the mount line: mount: slewing=False
+      tracking=False parked=True ra=00:00:00 dec=+90:00:00 alt=41.2 az=187.6
+
+    test_no_script_or_tool_prints_mount_altitude_or_azimuth -
+      AssertionError: mount alt/az field read found in:
+      ['scripts\\rig_precheck.py']
+
+  Both fired: the unit test on the rendered line, the static scan on the
+  source shape of the mutant itself - the two are independent defences and
+  this is evidence neither is a tautology.
 """
 from __future__ import annotations
 
 import importlib.util
 import io
 import json
+import re
 import sys
 from pathlib import Path
 
 import pytest
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "rig_precheck.py"
+_REPO_ROOT = _SCRIPT.parent.parent
 _spec = importlib.util.spec_from_file_location("astrodeck_rig_precheck", _SCRIPT)
 precheck = importlib.util.module_from_spec(_spec)
 sys.modules["astrodeck_rig_precheck"] = precheck
@@ -141,3 +166,77 @@ def test_a_zero_elevation_site_is_still_configured(tmp_path):
     has elevation 0 saved."""
     _write(tmp_path, dict(A_SITE, elevation_m=0.0))
     assert precheck._site_line() == "configured (0 m)"
+
+
+# ---------------------------------------------------- the mount line (#140)
+
+#: `hub.py` publishes the mount's alt/az rounded to a tenth of a degree
+#: alongside ra/dec, tracking and parked. This is what `/api/status` would
+#: hand back for a mount that has just reset and believes it is parked at
+#: home, on the pole (#133): the altitude equals A_SITE's fake latitude,
+#: because that is exactly the shape of the leak in #140 - not a coincidence
+#: this test constructs, the mechanism the issue is about. az is an arbitrary
+#: distinctive value so a leak of either key is caught on its own.
+A_MOUNT_AT_HOME = {
+    "slewing": False, "tracking": False, "parked": True,
+    "ra_str": "00:00:00", "dec_str": "+90:00:00",
+    "ra_hours": 0.0, "dec_deg": 90.0,
+    "alt": round(A_SITE["latitude"], 1), "az": 187.6,
+}
+
+
+def test_mount_line_never_prints_altitude_or_azimuth():
+    """THE POINT OF #140. `_mount_line` renders slewing/tracking/parked/ra/dec
+    only; the fake mount's alt/az must not reach the line in any numeric
+    rendering, the same way the site tests above check every form a float
+    prints in."""
+    line = precheck._mount_line(A_MOUNT_AT_HOME)
+    for value in (A_MOUNT_AT_HOME["alt"], A_MOUNT_AT_HOME["az"]):
+        for form in {repr(value), str(value), f"{value:.1f}", f"{value:.2f}",
+                     f"{abs(value):.1f}"}:
+            assert form not in line, f"{form} reached the mount line: {line}"
+
+
+def test_mount_line_still_says_what_it_is_for():
+    """Not "it happens to print nothing" - slewing, tracking, parked and
+    ra/dec (which are NOT site-derived; `redact.py` keeps them for every
+    principal) must still be there, or the line stopped doing its job."""
+    line = precheck._mount_line(A_MOUNT_AT_HOME)
+    assert "slewing=False" in line
+    assert "tracking=False" in line
+    assert "parked=True" in line
+    assert "ra=00:00:00" in line
+    assert "dec=" in line
+
+
+#: The shape a leak actually took in the codebase (`hub.py` line 7802):
+#: `mount.get('alt')`/`mount['az']` etc, read off a local named ``mount``.
+#: Matched with or without the leading assignment, so a fresh script that
+#: writes ``mount = status.get("mount") or {}`` and then reads a key off it
+#: is caught the moment it does, not only inside rig_precheck.py.
+_MOUNT_ALTAZ_FIELDS = ("alt", "az", "alt_deg", "az_deg",
+                       "altitude", "azimuth", "altitude_deg", "azimuth_deg")
+_MOUNT_ALTAZ_PATTERN = re.compile(
+    r"\bmount\b\s*(?:\.\s*get\(\s*|\[\s*)['\"](?:"
+    + "|".join(_MOUNT_ALTAZ_FIELDS) + r")['\"]"
+)
+
+
+def test_no_script_or_tool_prints_mount_altitude_or_azimuth():
+    """A STATIC scan, not a runtime one (#140's fix shape). The risk is not
+    confined to rig_precheck.py: any ad hoc helper under scripts/ or tools/
+    that reads `/api/status` and prints `mount.get('alt')` recreates the same
+    latitude leak. This scans for the SHAPE of that read (a `mount` variable
+    indexed or `.get()`-ed by an alt/az field name), not the word "altitude" -
+    which appears safely in `_site_line`'s own prose about the cost of an
+    unset site, and would false-positive a naive word scan."""
+    hits = []
+    for base in ("scripts", "tools"):
+        base_dir = _REPO_ROOT / base
+        if not base_dir.is_dir():
+            continue
+        for path in base_dir.rglob("*.py"):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if _MOUNT_ALTAZ_PATTERN.search(text):
+                hits.append(str(path.relative_to(_REPO_ROOT)))
+    assert not hits, f"mount alt/az field read found in: {hits}"
