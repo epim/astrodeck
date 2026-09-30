@@ -152,16 +152,62 @@ class SerialLink:
 
         Blocking; runs on a worker thread (``request``) or on whatever thread
         called ``request_sync``. Never on the event loop."""
-        self._ser.reset_input_buffer()
-        self._ser.write(lx200.build(cmd))
-        deadline = time.monotonic() + timeout
-        if reply == "hash":
-            return self._read_until_hash(deadline)
-        if reply == "ack":
-            # Read it even though nobody wants the value: an unread ack byte is
-            # left in the input buffer and answers the NEXT command instead.
-            return self._read_ack(deadline)
-        return None
+        try:
+            self._ser.reset_input_buffer()
+            self._ser.write(lx200.build(cmd))
+            deadline = time.monotonic() + timeout
+            if reply == "hash":
+                return self._read_until_hash(deadline)
+            if reply == "ack":
+                # Read it even though nobody wants the value: an unread ack
+                # byte is left in the input buffer and answers the NEXT
+                # command instead.
+                return self._read_ack(deadline)
+            return None
+        except OSError as exc:
+            # #133 (rig, 2026-09-23): a USB re-enumeration left this handle
+            # dead in the small hours and every write raised pyserial's
+            # ``SerialException`` — an ``OSError`` subclass, "WriteFile failed
+            # (PermissionError(13, 'The device does not recognize the
+            # command.', None, 22))" — for the next eight-plus hours. That
+            # exception used to pass through unchanged: the handle was left
+            # in place, so ``is_open`` (``_ser is not None``) stayed True and
+            # every caller derived ``connected`` from it, so nothing anywhere
+            # ever reopened the port. A read can fail the same way (``.read``
+            # on a device that has vanished raises too), so both are caught
+            # here, in the one place both routes already pass through.
+            raise self._mark_dead(exc) from exc
+
+    def _mark_dead(self, exc: Exception) -> LinkError:
+        """Drop the handle after a transport-level write/read failure and say
+        so as ``LinkError``, the same shape ``_abandon`` gives a stalled
+        exchange (see ``needs_reopen``) — so a driver keyed on either flag
+        reopens either way.
+
+        UNLIKE ``_abandon``, ``_port_lock`` is left alone. ``_abandon`` exists
+        for an exchange that never returns: the orphaned thread still holds
+        the lock forever, so the NEXT open needs a fresh one. Here the calling
+        thread is unwinding normally through this very exception — it is
+        already inside the ``with self._port_lock:`` (or the manual
+        acquire/release in ``request_sync``) that will release the ORIGINAL
+        lock object on its way out, and swapping it here would only cost a
+        second lock object for nothing.
+
+        NO ``bus.log`` HERE, deliberately, unlike ``_abandon``. ``_abandon``
+        runs on the event loop (``request``'s own coroutine, in its
+        ``finally``); this runs on WHATEVER THREAD CALLED IN — a worker
+        thread for the async path, or, through ``request_sync``, a plain
+        thread the pulse watchdog owns (see zwo_am5._Pulse, which avoids the
+        bus for exactly this reason: its night-log append does file I/O, and
+        a pulse thread's whole job is a timed stop with nothing else on it).
+        The raised ``LinkError`` carries ``str(exc)`` verbatim, and every
+        caller that can safely reach the bus already logs it from there —
+        dawn_park's ``_fail``, ``ZwoAm5Telescope._relink`` — so nothing is
+        lost by leaving this method to just change the state and hand the
+        exception back."""
+        self._ser = None
+        self._abandoned = True
+        return LinkError(str(exc))
 
     def _shut_error(self) -> LinkError:
         """Which kind of shut is this? (See ``request`` for why it matters.)"""
