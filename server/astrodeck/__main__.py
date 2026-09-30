@@ -195,6 +195,27 @@ def _cmd_create_admin(args: argparse.Namespace) -> int:
     return 0
 
 
+def uvicorn_config_kwargs(*, host: str, port: int, access_log_enabled: bool,
+                          trusted_proxy_ips: str, log_config: dict) -> dict:
+    """Every keyword ``_cmd_run`` hands ``uvicorn.Config``, in one place so a
+    test can build the exact production config (#550) without copying it out
+    of ``_cmd_run`` by hand and drifting from it. ``log_config`` is taken as a
+    parameter, not built here, so this stays a plain dict shuffle with no
+    import of its own -- ``_cmd_run`` imports ``logfmt`` (and ``uvicorn``)
+    lazily, after the unprivileged-runtime interlock below, and a bare
+    ``python -m astrodeck create-admin`` must still never import either."""
+    return dict(
+        host=host, port=port, log_level="info",
+        proxy_headers=bool(trusted_proxy_ips),
+        forwarded_allow_ips=trusted_proxy_ips or "",
+        access_log=access_log_enabled,
+        log_config=log_config,
+        limit_concurrency=128, backlog=128, timeout_keep_alive=5,
+        ws_max_size=1024 * 1024, ws_max_queue=16,
+        h11_max_incomplete_event_size=65536,
+    )
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """``run`` front-end (and the bare-invocation default): start uvicorn.
 
@@ -256,6 +277,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # the app or starts loading server machinery.
     import uvicorn
 
+    from . import logfmt
     from .api import create_app
     from .api.app import ALLOWED_HOSTS_ENV
     from .update import service as update_service
@@ -271,13 +293,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         return 2
     config = uvicorn.Config(
-        app, host=args.host, port=args.port, log_level="info",
-        proxy_headers=bool(trusted_proxy_ips),
-        forwarded_allow_ips=trusted_proxy_ips or "",
-        access_log=access_log_enabled,
-        limit_concurrency=128, backlog=128, timeout_keep_alive=5,
-        ws_max_size=1024 * 1024, ws_max_queue=16,
-        h11_max_incomplete_event_size=65536,
+        app, **uvicorn_config_kwargs(
+            host=args.host, port=args.port,
+            access_log_enabled=access_log_enabled,
+            trusted_proxy_ips=trusted_proxy_ips,
+            log_config=logfmt.uvicorn_log_config(),
+        ),
     )
     server = uvicorn.Server(config)
     update_service.bind_server(server)  # enables graceful exit-92 on self-update
