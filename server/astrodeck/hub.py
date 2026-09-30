@@ -4739,8 +4739,97 @@ class Hub:
             bus.log("warning", f"could not record the cooling setpoint "
                                f"({e}); it will not survive a restart", "camera")
 
-    async def restore_cooling(self) -> bool:
+    def _cooling_restore_allowed(self, now: float | None = None) -> tuple[bool, str]:
+        """Whether ``restore_cooling`` may turn the TEC on right now, and the
+        reason when it may not (#557; backlog ruling WP-10a, owner-approved
+        2026-09-30).
+
+        DARKNESS USES THE DAWN-WARM PATH'S OWN THRESHOLD
+        (``dawn_park.park_threshold_deg`` + ``catalog.coords.sun_altaz``), not
+        ``schedule.dark_enough``'s different, earlier one. This is the same
+        hardware question the dawn warm answers — should the TEC be running
+        right now — not a scheduling question, and the two are deliberately
+        allowed to disagree: ``park_threshold_deg`` is the LATER of the
+        operator's own twilight and civil twilight, so a rig that images down
+        to -18° is still treated as "night" here well past the point its own
+        schedule would call the night over.
+
+        AN UNSET SITE FAILS OPEN, unlike ``dawn_park`` itself (which goes
+        inert rather than guess, because a net that never fires just never
+        parks anything). This has to answer on every connect, and the
+        behaviour it replaces restored unconditionally — refusing here too
+        would newly break every sim/test rig that has never configured a site
+        (see test_cooling_restore.py::test_a_reconnect_puts_the_setpoint_back
+        and test_a_run_without_a_temperature_says_so.py::
+        test_the_camera_COMES_BACK_cooled, neither of which sets one up). "We
+        cannot tell" keeps the old behaviour rather than adding a new refusal.
+
+        OR A RUN IS ARMED OR DUE. Reuses ``resume_arm.resume_expected_tonight``
+        — the SAME predicate the engine's wind-down already asks before it
+        decides warming the camera would only cost the next run its first
+        frames (``SequenceEngine._wind_down_warm``). Two copies of "is this rig
+        about to image again" would drift, and the way they would drift is
+        silent.
+        """
+        t = time.time() if now is None else now
+        site = self.site
+        if site.get("is_default", True):
+            return True, ""
+        from .dawn_park import park_threshold_deg
+        from .catalog.coords import sun_altaz
+        alt, _az = sun_altaz(site["latitude"], site["longitude"], t)
+        if alt < park_threshold_deg(config_store.cfg()):
+            return True, ""
+        try:
+            from .sequence.resume_arm import resume_expected_tonight
+            session = resume_expected_tonight(self, t)
+        except Exception as e:      # noqa: BLE001 - never block a connect
+            bus.log("debug", f"could not tell whether a run is armed for "
+                             f"tonight ({e}) — judging by daylight alone",
+                    "camera")
+            session = None
+        if session is not None:
+            return True, ""
+        return False, "it is daylight and no run is armed or due"
+
+    async def _cooler_readback_confirms(self, cam: Any,
+                                        target_c: float) -> tuple[bool | None, str]:
+        """Ask the camera what it is actually doing, for ``restore_cooling``'s
+        claim (#143; backlog ruling WP-10b, owner-approved 2026-09-30).
+
+        Returns ``(True, "")`` when the readback agrees, ``(False, detail)``
+        when it disagrees, and ``(None, detail)`` when this backend cannot be
+        asked at all. The last one is NOT a disagreement — most sim/fake
+        cameras in tests implement only ``set_cooler`` — so ``restore_cooling``
+        keeps trusting the write it just made, exactly as before this fix.
+
+        0.1 °C clears float round-trip noise without accepting a materially
+        different setpoint as "the same" one — the same tolerance
+        ``DuskArm._check_cooling`` uses for the identical comparison."""
+        read_cooler = getattr(cam, "get_cooler", None)
+        if not callable(read_cooler):
+            return None, ""
+        try:
+            cooler = await asyncio.wait_for(read_cooler(), cooling.WARM_CMD_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:      # noqa: BLE001 - an unreadable cooler is not a NO
+            return None, f"the cooler could not be read back ({e})"
+        if cooler is None or cooler.get("on") is None:
+            return None, "the cooler state is unavailable"
+        if cooler.get("on") is False:
+            return False, "the camera reports the cooler OFF"
+        read_target = cooler.get("target_c")
+        if read_target is not None and abs(float(read_target) - target_c) > 0.1:
+            return False, (f"the camera reads back {read_target:g} °C, "
+                           f"not {target_c:g} °C")
+        return True, ""
+
+    async def restore_cooling(self, now: float | None = None) -> bool:
         """Re-apply the standing cooling request after a connect. True if it did.
+
+        ``now`` is a seam for tests (``_cooling_restore_allowed``'s clock);
+        every real caller connects with no argument and gets the real time.
 
         WHY THIS EXISTS. On 2026-08-09 a reconnect — issued to recover a dead
         mount link — took the camera from cooler-on/-10.0 °C to cooler-off with
@@ -4758,6 +4847,22 @@ class Hub:
         a restore that happens is worth a line, and a restore that FAILS is worth
         a louder one, because the alternative is a night of warm frames nobody
         was told about.
+
+        ONLY WHEN THE SKY OR THE SCHEDULE SAYS SO (#557). A daytime restart
+        used to re-cool the camera to its night setpoint regardless of the
+        clock: on 2026-09-29 a 10:11 deploy commanded a -10 °C target nine
+        hours before the next run and an operator had to switch the cooler off
+        by hand. A restart is not an operator's intent to image RIGHT NOW, so
+        this asks ``_cooling_restore_allowed`` first and, in daylight with
+        nothing due, leaves the cooler as found — the run's own cooling step
+        (``replan_cooling`` / ``SequenceEngine._enforce_cooling``) applies the
+        setpoint again once a run actually starts.
+
+        THE READBACK, NOT THE WRITE, IS THE CLAIM (#143). On 2026-09-23 a
+        reconnect logged "cooling restored to -10 °C" while ``/api/status``
+        read the cooler off minutes later — the log had described the call it
+        made, not what the camera did. ``_cooler_readback_confirms`` is asked
+        before this claims "restored".
         """
         cam = self.devices.get("camera")
         # RECORD THE CAPABILITY BEFORE THE EARLY RETURNS. `can_cool` exists only
@@ -4776,6 +4881,15 @@ class Hub:
             return False
         if not hasattr(cam, "set_cooler"):
             return False
+
+        allowed, why_not = self._cooling_restore_allowed(now)
+        if not allowed:
+            bus.log("info",
+                    f"cooling left off after connecting — {why_not}; the "
+                    f"standing setpoint ({target:g} °C) will be applied when "
+                    f"a run starts", "camera")
+            return False
+
         try:
             await asyncio.wait_for(cam.set_cooler(True, float(target)),
                                    cooling.WARM_CMD_TIMEOUT_S)
@@ -4786,6 +4900,14 @@ class Hub:
                     f"cooling was NOT restored to {target:g} °C after connecting "
                     f"({e}) — the camera is warm and any frames taken now will "
                     f"carry the wrong SET-TEMP", "camera")
+            return False
+
+        confirmed, detail = await self._cooler_readback_confirms(cam, float(target))
+        if confirmed is False:
+            bus.log("error",
+                    f"cooling to {target:g} °C was requested after connecting "
+                    f"but {detail} — NOT confirmed restored, and any frames "
+                    f"taken now may carry the wrong SET-TEMP", "camera")
             return False
         bus.log("info", f"cooling restored to {target:g} °C after connecting",
                 "camera")
