@@ -29,6 +29,9 @@ BOTH the on-LAN /ws handler (``api.app``) AND the relay-tunneled /ws handler
 """
 from __future__ import annotations
 
+import csv
+import io
+
 from ..auth.capabilities import (CAP_CONFIG_BACKEND, CAP_VIEW_SITE_DERIVED,
                                  CAP_VIEW_SITE_PRECISE, CAP_VIEW_WEATHER)
 from ..auth.principal import Principal
@@ -927,23 +930,177 @@ def _redact_session_for(payload: dict, principal: Principal | None) -> dict:
     return _externalize_frame_paths(payload, "path")
 
 
+# ------------------------------------------- report frame / sky-angle redaction
+# THE #19/#166 CLASS AGAIN, in a THIRD surface: a session's finished REPORT
+# (#567). ``FrameRecord.altitude_deg`` is the target's altitude at capture
+# time, computed from the saved site the same way ``mount.alt`` is — at a
+# known instant, for a known RA/Dec (the frame's own ``target`` and ``ts``),
+# an altitude is a circle on the Earth, and a few frames from one night
+# collapse it to a point, exactly as the live status audit did. It is served
+# whole to any holder of ``view.status`` — a plain viewer — because the only
+# redaction the report route ran was the path externalizer above.
+#
+# ``sky_angles`` rows (H4-ENG-C, #526 part 3) carry no altitude or azimuth —
+# ``report.SKY_ANGLE_KEYS`` is an allow-list precisely to avoid repeating that
+# mistake — but their ``exposed_at`` is the #166 class instead: a flip
+# re-slew, AND a mosaic's meridian-wait hop (both are made AT a computed
+# transit), timestamp the transit of the row's own ``target`` — the local
+# sidereal time at a known instant, i.e. the site's longitude. Every row is
+# timed at a crossing this way, not only a flip's, so the rule below plays no
+# favorites among rows: it nulls every row's ``exposed_at``, unconditionally.
+_REPORT_ALTITUDE_KEY = "altitude_deg"
+_SKY_ANGLE_TIME_KEY = "exposed_at"
+
+
+def _withhold_report_site_derived(payload: dict) -> dict:
+    """``payload`` with every frame's ``altitude_deg`` ABSENT and every
+    ``sky_angles`` row's ``exposed_at`` NULLED (#567). Returns a NEW dict —
+    ``payload`` and the lists/rows inside it are never mutated — matching
+    ``_externalize_frame_paths``'s contract, since both run over the same
+    ``frames`` list in ``_redact_report_for``.
+
+    Fails closed on shape drift: a ``frames``/``sky_angles`` entry that is not
+    a dict is left exactly as it is (nothing to key-strip), and this never
+    raises out to its caller."""
+    out = dict(payload)
+    frames = payload.get("frames")
+    if isinstance(frames, list):
+        out["frames"] = [
+            {k: v for k, v in fr.items() if k != _REPORT_ALTITUDE_KEY}
+            if isinstance(fr, dict) else fr
+            for fr in frames]
+    angles = payload.get("sky_angles")
+    if isinstance(angles, list):
+        out["sky_angles"] = [
+            {**row, _SKY_ANGLE_TIME_KEY: None}
+            if isinstance(row, dict) and _SKY_ANGLE_TIME_KEY in row else row
+            for row in angles]
+    return out
+
+
 def _redact_report_for(payload: dict, principal: Principal | None) -> dict:
-    """Session REPORT frames: ``saved_path`` becomes capture-root-relative.
+    """Session REPORT frames: ``saved_path`` becomes capture-root-relative for
+    every caller, and for a principal lacking ``view.site_derived`` every
+    frame's ``altitude_deg`` and every ``sky_angles`` row's ``exposed_at``
+    are withheld too (#567; see :func:`_withhold_report_site_derived`).
 
     ``FrameRecord`` calls the field ``saved_path`` rather than ``path`` and
     carried the absolute on-disk location, so ``GET /api/reports/{id}`` handed
     the observatory's filesystem layout to any holder of ``view.status`` — a
     plain viewer — while the session endpoint serving the same frames stripped
-    it. One name, two answers. Now one answer, and it is relative."""
-    return _externalize_frame_paths(payload, "saved_path")
+    it. One name, two answers. Now one answer, and it is relative.
+
+    Used for BOTH the full report payload (``get_report``, which has a
+    top-level ``sky_angles``) and the bare ``{"frames": [...]}`` the CSV route
+    hands in (which has none) — ``_withhold_report_site_derived`` no-ops on a
+    missing key, so one function serves both shapes.
+
+    Never raises: on any error a non-holder gets the report without its
+    ``frames``/``sky_angles`` rather than a 500 — the same fail-CLOSED rule
+    every other stripper in this module follows."""
+    payload = _externalize_frame_paths(payload, "saved_path")
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return payload
+    try:
+        return _withhold_report_site_derived(payload)
+    except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
+        out = dict(payload)
+        out.pop("frames", None)
+        out.pop("sky_angles", None)
+        return out
 
 
 def report_csv_columns(cols: list[str], principal: Principal | None) -> list[str]:
     """Column list for the frames CSV. ``saved_path`` STAYS for every caller —
     the value written under it is relative (the route externalizes each row the
     same way the JSON route does), so the column is no longer a disclosure and
-    dropping it would only make the CSV less useful than the JSON."""
-    return list(cols)
+    dropping it would only make the CSV less useful than the JSON.
+
+    ``altitude_deg`` is DROPPED for a principal lacking ``view.site_derived``
+    (#567) — the same per-frame value ``_redact_report_for`` withholds from
+    the JSON route, so the CSV and the JSON view of one report can never
+    disagree about what a viewer is allowed to read."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return list(cols)
+    return [c for c in cols if c != _REPORT_ALTITUDE_KEY]
+
+
+# ------------------------------------------------- stacking-bundle redaction
+# THE FOURTH CARRIER of the same per-frame value (#567). ``build_bundle``
+# (sequence/bundle.py) copies ``FrameRecord.altitude_deg`` onto every
+# ``LightEntry`` UNCONDITIONALLY — not only when the caller opts into
+# ``weight_altitude``, which merely folds that same value into the
+# normalized ``weight`` as well. So ``manifest_json``'s per-light rows and
+# ``weights_csv``'s ``altitude_deg`` column carry the raw value to ANY holder
+# of ``view.status`` (every role) on the DEFAULT (``weight_altitude=False``)
+# request, not only an opt-in one — the bundle.zip route never took a
+# principal at all before this.
+#
+# ``bundle_summary`` (the slim JSON ``GET .../bundle`` preview) carries no
+# per-light rows, so it needs no stripper here: the route-level refusal of
+# ``weight_altitude`` (app.py) is enough to keep its ``kept_count`` from ever
+# being altitude-ordered for a non-holder.
+_BUNDLE_ALTITUDE_KEY = "altitude_deg"
+
+
+def redact_bundle_manifest_for(manifest: dict, principal: Principal | None) -> dict:
+    """``manifest_json(bundle)``'s dict with every light row's
+    ``altitude_deg`` ABSENT for a principal lacking ``view.site_derived``
+    (#567). A holder gets ``manifest`` itself.
+
+    Rebuilds only the ``groups``/``lights`` it changes — never mutates the
+    caller's dict — and fails closed on shape drift (an unrecognized group or
+    light row is left as-is on the happy path; any exception drops every
+    group's lights rather than risk shipping the column it was asked to
+    remove)."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return manifest
+    if not isinstance(manifest, dict):
+        return manifest
+    groups = manifest.get("groups")
+    if not isinstance(groups, list):
+        return manifest
+    try:
+        new_groups = []
+        for g in groups:
+            lights = g.get("lights") if isinstance(g, dict) else None
+            if not isinstance(lights, list):
+                new_groups.append(g)
+                continue
+            new_lights = [
+                {k: v for k, v in l.items() if k != _BUNDLE_ALTITUDE_KEY}
+                if isinstance(l, dict) else l
+                for l in lights]
+            new_groups.append({**g, "lights": new_lights})
+        return {**manifest, "groups": new_groups}
+    except Exception:  # noqa: BLE001 - never 500 the zip route: fail CLOSED
+        return {**manifest, "groups": []}
+
+
+def redact_bundle_csv_for(csv_text: str, principal: Principal | None) -> str:
+    """``weights_csv(bundle)``'s text with the ``altitude_deg`` column
+    removed for a principal lacking ``view.site_derived`` (#567). A holder
+    gets ``csv_text`` itself.
+
+    Reparses and rewrites rather than splicing a column out of the raw text,
+    so a value that happens to contain a comma or a quote is never
+    mishandled. Fails closed: a body that will not parse, or carries no
+    header naming the column, is returned EMPTY rather than risk shipping the
+    column it was asked to remove."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return csv_text
+    try:
+        rows = list(csv.reader(io.StringIO(csv_text)))
+    except csv.Error:
+        return ""
+    if not rows or _BUNDLE_ALTITUDE_KEY not in rows[0]:
+        return csv_text  # nothing to strip: no header row, or no such column
+    idx = rows[0].index(_BUNDLE_ALTITUDE_KEY)
+    out = io.StringIO()
+    w = csv.writer(out)
+    for row in rows:
+        w.writerow([c for i, c in enumerate(row) if i != idx])
+    return out.getvalue()
 
 
 __all__ = [
@@ -960,6 +1117,8 @@ __all__ = [
     "_redact_session_for",
     "_redact_report_for",
     "report_csv_columns",
+    "redact_bundle_manifest_for",
+    "redact_bundle_csv_for",
     "_strip_site",
     "_strip_dew",
     "_strip_camera_dew",

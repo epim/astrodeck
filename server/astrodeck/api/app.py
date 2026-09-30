@@ -60,6 +60,7 @@ from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at m
                      _redact_resume_arm_for, _redact_sequence_for,
                      _redact_session_for, _redact_site_for,
                      _redact_switch_ports_for, _redact_ws_event,
+                     redact_bundle_csv_for, redact_bundle_manifest_for,
                      report_csv_columns)
 from ..persist import safe_id_path, safe_subpath, secure_private_tree
 from ..catalog import search          # rows AND the reasons for what is missing
@@ -5348,6 +5349,25 @@ def create_app(*, bind_host: str | None = None,
 
     # ------------------------------------------------------------------- reports
 
+    def _refuse_weight_altitude_for(principal: Principal,
+                                    weight_altitude: bool) -> None:
+        """400 when ``weight_altitude`` is requested by a principal lacking
+        ``view.site_derived`` (#567), for every bundle route that takes the
+        option: it folds each frame's altitude into the sub weights (and so
+        into a bundle group's ``kept_count``), which is the #19 class carried
+        into a bundle. REFUSED rather than silently coerced to False, so a
+        caller who asked for it learns why, instead of reading an unweighted
+        bundle as "this report has no useful altitude data".
+
+        Independent of role: a viewer-LINK's ``caps`` are an explicit per-link
+        set (``Principal``'s own contract), not necessarily a whole role's, so
+        this checks the capability rather than assuming which roles hold
+        ``control.capture`` today (see ``report_bundle_materialize``)."""
+        if weight_altitude and not principal.has(CAP_VIEW_SITE_DERIVED):
+            raise HTTPException(
+                400, "weight_altitude requires view.site_derived: it folds "
+                     "each frame's altitude into the sub weights")
+
     @app.get("/api/reports", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def list_reports():
@@ -5362,8 +5382,12 @@ def create_app(*, bind_host: str | None = None,
         trends are computed from the frame records on read, never stored as
         parallel arrays that could drift (C1-19).
 
-        Frame paths are stripped for a caller without ``config.backend``, the
-        same holder rule ``/api/sessions/{id}`` applies to the same frames."""
+        Frame paths become capture-root-relative for every caller (see
+        ``_redact_report_for``'s own docstring -- this is no longer a holder
+        rule; ``saved_path`` externalizes the same way ``/api/sessions/{id}``
+        externalizes ``path``). A principal without ``view.site_derived``
+        also loses each frame's ``altitude_deg`` and every ``sky_angles``
+        row's ``exposed_at`` (#567)."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
@@ -5380,7 +5404,10 @@ def create_app(*, bind_host: str | None = None,
         binning / ecc / altitude were silently dropped, so the CSV could not be
         used to sort subs the report viewer could already rank), and pairs the
         raw epoch ``ts`` with a readable UTC stamp instead of shipping
-        ``1785084747.5023835`` alone."""
+        ``1785084747.5023835`` alone -- EXCEPT ``altitude_deg``, which
+        ``report_csv_columns`` drops for a principal lacking
+        ``view.site_derived`` (#567), the same per-frame value the JSON route
+        withholds from the same caller."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
@@ -5412,17 +5439,23 @@ def create_app(*, bind_host: str | None = None,
         return Response(buf.getvalue(), media_type="text/csv", headers={
             "Content-Disposition": f'attachment; filename="{fname}"'})
 
-    @app.get("/api/reports/{report_id}/bundle", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/reports/{report_id}/bundle")
     @declare(CAP_VIEW_STATUS)
     async def report_bundle(report_id: str, weight_altitude: bool = False,
                             layout: str = "grouped",
-                            keep_threshold: float | None = None):
+                            keep_threshold: float | None = None,
+                            principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """Slim stacking-bundle preview (per-group counts + master-match status +
         warnings) for the report viewer panel (PRO-10 §1.5). 404 if missing.
-        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights.
-        ``layout`` picks the folder convention; ``keep_threshold`` (a normalized
-        weight in [0,1]) makes each group report ``kept_count`` — one scalar
-        instead of shipping a 2000-row weight vector to the client."""
+        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights,
+        and is REFUSED for a principal lacking ``view.site_derived`` (#567) —
+        see ``_refuse_weight_altitude_for``. ``bundle_summary`` carries no
+        per-light rows, so nothing else here needs redacting once that option
+        is refused. ``layout`` picks the folder convention; ``keep_threshold``
+        (a normalized weight in [0,1]) makes each group report ``kept_count``
+        — one scalar instead of shipping a 2000-row weight vector to the
+        client."""
+        _refuse_weight_altitude_for(principal, weight_altitude)
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
@@ -5435,16 +5468,18 @@ def create_app(*, bind_host: str | None = None,
             raise HTTPException(400, str(e))
         return bundle_summary(b)
 
-    @app.get("/api/reports/{report_id}/bundle.zip", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/reports/{report_id}/bundle.zip")
     @declare(CAP_VIEW_STATUS)
     async def report_bundle_zip(report_id: str, weight_altitude: bool = False,
                                 layout: str = "grouped",
-                                keep_threshold: float | None = None):
+                                keep_threshold: float | None = None,
+                                principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """The stacking bundle as an in-memory ``.zip`` (manifest + weights CSV +
         README + build.sh/.ps1 — NOT the FITS; §4 decision 1). Mirrors
         ``report_frames_csv``: the sanitized slug (never the raw path param) forms
         the download filename so the header can't carry CR/LF/quotes.
-        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights;
+        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights,
+        and is REFUSED for a principal lacking ``view.site_derived`` (#567);
         ``layout``/``keep_threshold`` are the PRO-10 enrichments (defaults keep the
         one-click download byte-for-byte what it was).
 
@@ -5454,7 +5489,16 @@ def create_app(*, bind_host: str | None = None,
         This route is ``view.status`` — every role — and it was the last one
         shipping ``fr.saved_path`` verbatim, in three members at once. The
         generated scripts read the user's own capture folder from
-        ``CAPTURE_ROOT`` so they still resolve."""
+        ``CAPTURE_ROOT`` so they still resolve.
+
+        NOR DOES ANY MEMBER CARRY ALTITUDE, for a principal lacking
+        ``view.site_derived`` (#567): ``build_bundle`` copies every frame's
+        ``altitude_deg`` onto its light row UNCONDITIONALLY (not only when
+        ``weight_altitude`` is set), so ``manifest.json`` and ``weights.csv``
+        are redacted the same way regardless of that option -- the #19 class,
+        carried into a bundle. ``README.txt``/``build.sh``/``build.ps1`` name
+        no per-sub metric at all, so they need no redaction here."""
+        _refuse_weight_altitude_for(principal, weight_altitude)
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
@@ -5466,10 +5510,12 @@ def create_app(*, bind_host: str | None = None,
         except ValueError as e:
             raise HTTPException(400, str(e))
         b = externalize_bundle(b, gallery_module.relpath_under_capture)
+        manifest = redact_bundle_manifest_for(manifest_json(b), principal)
+        wcsv = redact_bundle_csv_for(weights_csv(b), principal)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr("manifest.json", json.dumps(manifest_json(b), indent=2))
-            z.writestr("weights.csv", weights_csv(b))
+            z.writestr("manifest.json", json.dumps(manifest, indent=2))
+            z.writestr("weights.csv", wcsv)
             z.writestr("README.txt", readme_text(b))
             z.writestr("build.sh", build_script(b, "sh"))
             z.writestr("build.ps1", build_script(b, "ps1"))
@@ -5477,13 +5523,13 @@ def create_app(*, bind_host: str | None = None,
         return Response(buf.getvalue(), media_type="application/zip", headers={
             "Content-Disposition": f'attachment; filename="{fname}"'})
 
-    @app.post("/api/reports/{report_id}/bundle/materialize",
-              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @app.post("/api/reports/{report_id}/bundle/materialize")
     @declare(CAP_CONTROL_CAPTURE)
     async def report_bundle_materialize(report_id: str,
                                         weight_altitude: bool = False,
                                         layout: str = "grouped",
-                                        keep_threshold: float | None = None):
+                                        keep_threshold: float | None = None,
+                                        principal: Principal = Depends(require(CAP_CONTROL_CAPTURE))):
         """Lay the ACTUAL FITS out under ``captures/exports/<id>/`` for someone
         running AstroDeck ON the capture box — hardlinks where possible, so a
         200 GB night materializes instantly and costs no extra disk (§2.4).
@@ -5492,12 +5538,20 @@ def create_app(*, bind_host: str | None = None,
         WRITES to the capture box's filesystem, so it needs the same authority as
         capturing, and a verb no browser will prefetch. Returns a summary only —
         no file body; the bytes are on disk where the user's stacker can see them.
+        The summary (linked/copied/failed counts, per group) carries no per-light
+        metric, so it needs no redaction of its own; ``weight_altitude`` is still
+        REFUSED for a principal lacking ``view.site_derived`` (#567), for the
+        same reason the other two bundle routes refuse it -- a viewer-LINK's
+        capabilities are an explicit per-link set, not necessarily a whole
+        role's, so this does not assume every ``control.capture`` holder also
+        holds ``view.site_derived``.
 
         The sources are provably under CAPTURE_DIR (``build_bundle`` selects only
         ``is_local`` lights); masters may legitimately live in a shared library
         elsewhere, and they are library-chosen, not user-supplied. Every
         DESTINATION is re-validated for containment by
         ``bundle_materialize_plan``."""
+        _refuse_weight_altitude_for(principal, weight_altitude)
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
