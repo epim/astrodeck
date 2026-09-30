@@ -35,8 +35,10 @@ from astrodeck.sequence.group_rules import (
     CENTRING,
     CENTRING_HOLD_RETRY_S,
     DEFER_WAIT_S,
+    GUIDE_START,
     SET_ASIDE_EXPIRY_S,
     SET_ASIDE_RISE_DEG,
+    SET_ASIDE_RISE_FLOOR_S,
     SOLVE_TRANSIENT,
     GroupRun,
     PanelDeferred,
@@ -115,19 +117,39 @@ def test_a_centring_set_aside_expires_45_minutes_after_it_was_made():
 
 def test_a_panel_risen_10_degrees_expires_before_45_minutes():
     """The rise half: the panel centre climbed ``SET_ASIDE_RISE_DEG`` since it
-    was set aside, half an hour in, and it expires then; a tenth of a degree
-    short, it holds (the CONTROL).
+    was set aside, past ``SET_ASIDE_RISE_FLOOR_S``, and it expires then; a
+    tenth of a degree short, it holds (the CONTROL).
 
     RED under mutant "rise ignored" (the altitude comparison deleted from
     ``set_aside_expiry``), observed:
 
         AssertionError: assert None == 'rise'
     """
-    half_hour = T + 1800.0
-    assert set_aside_expiry(now=half_hour, set_at=T, alt_at_set=20.0,
+    past_floor = T + SET_ASIDE_RISE_FLOOR_S + 100.0
+    assert set_aside_expiry(now=past_floor, set_at=T, alt_at_set=20.0,
                             alt_now=30.0) == "rise"
-    assert set_aside_expiry(now=half_hour, set_at=T, alt_at_set=20.0,
+    assert set_aside_expiry(now=past_floor, set_at=T, alt_at_set=20.0,
                             alt_now=29.9) is None
+
+
+def test_the_rise_half_never_fires_before_its_geometric_floor():
+    """No latitude rises ``SET_ASIDE_RISE_DEG`` this fast (#564): even a
+    huge, physically impossible rise argument does not free the panel before
+    ``SET_ASIDE_RISE_FLOOR_S`` have passed. At the floor the same rise DOES
+    free it (the CONTROL, showing the floor gates on time, not a second
+    altitude rule), so an early "rise" answer can never come from anywhere
+    but a caller handing in a bad altitude pair.
+
+    RED under mutant "floor dropped" (the
+    ``t >= t0 + SET_ASIDE_RISE_FLOOR_S`` gate deleted from the rise half of
+    ``set_aside_expiry``), observed:
+
+        AssertionError: assert 'rise' is None
+    """
+    assert set_aside_expiry(now=T + SET_ASIDE_RISE_FLOOR_S - 0.1, set_at=T,
+                            alt_at_set=0.0, alt_now=90.0) is None
+    assert set_aside_expiry(now=T + SET_ASIDE_RISE_FLOOR_S, set_at=T,
+                            alt_at_set=0.0, alt_now=90.0) == "rise"
 
 
 def test_a_setting_panel_never_expires_by_the_rise():
@@ -239,6 +261,59 @@ def test_a_centring_miss_is_counted_where_the_pass_closes():
         ("p0", "centring failed on 1-1: plate solve failed — used raw GoTo; "
                "retried on the next pass (1 of 3 consecutive)"),)
     assert end.set_aside == ()
+
+
+def _guide_fail() -> PanelDeferred:
+    return PanelDeferred("guiding did not start", kind=GUIDE_START,
+                         last_error="no guide star found")
+
+
+def test_the_guide_start_reason_names_a_centring_miss_counted_beside_it():
+    """#575: p1 and p2 centre and then fail to start guiding (the rig's
+    fault, both attempted and both failed), while p0 misses centring in the
+    SAME pass, held and counted before the guide-start verdict is reached
+    (``close_pass`` counts ``held_centring`` first). The guiding_action
+    reason must not claim "no panel's failure count moved": p0's did, and
+    the reason names it instead of contradicting the info line the caller
+    logs for ``counted`` beside this one.
+
+    RED under mutant "the old blanket claim restored" (``also`` replaced by
+    the unconditional "No panel's failure count moved"), observed:
+
+        AssertionError: assert "No panel's failure count moved" not in (
+        "guiding did not start on any of the 2 panels tried this pass: the
+        guider's fault, not a panel's. No panel's failure count moved; the
+        plan's guiding_action decides")
+    """
+    run = _run(3)
+    _missed(run, "p0")
+    for p in ("p1", "p2"):
+        run.visit_outcome(p, complete=False, exposures=0, accepted=0,
+                          deferred=_guide_fail())
+    end = run.close_pass()
+    assert end.boundary == "guiding_action"
+    assert end.counted == (
+        ("p0", "centring failed on 1-1: plate solve failed — used raw GoTo; "
+               "retried on the next pass (1 of 3 consecutive)"),)
+    assert "No panel's failure count moved" not in end.reason, end.reason
+    assert ("1 panel in the same pass had a centring miss counted or set "
+           "aside, charged to the panel, not the guider") in end.reason, (
+        end.reason)
+
+
+def test_the_guide_start_reason_names_nothing_when_nothing_moved():
+    """CONTROL: no centring miss in the pass, so the reason still says
+    nothing moved, worded to be true either way rather than a blanket claim
+    that happens to hold here."""
+    run = _run(2)
+    for p in ("p0", "p1"):
+        run.visit_outcome(p, complete=False, exposures=0, accepted=0,
+                          deferred=_guide_fail())
+    end = run.close_pass()
+    assert end.boundary == "guiding_action"
+    assert end.counted == () and end.set_aside == ()
+    assert "no panel's centring miss was counted in the same pass" in (
+        end.reason), end.reason
 
 
 def test_a_pass_in_which_every_panel_misses_strikes_none_and_holds():
@@ -357,6 +432,42 @@ def test_an_expired_panel_is_live_again_with_a_clean_slate():
                         kind="floor")
     with pytest.raises(ValueError, match="only a centring set-aside"):
         run.expire_set_aside("p1")
+
+
+def test_an_expired_panel_starts_its_reject_count_again():
+    """#580: the docstring names three resets on expiry (``failed``,
+    ``reject_visits`` and the streak's kinds), but only ``failed``'s and the
+    streak's were ever graded. A panel can carry rejected visits INTO a
+    centring streak (a reject counts toward neither ``failed`` nor the
+    streak, #580's evidence), so p0 reaches its expiry holding 2 rejects
+    already, and if the reset dropped, one rejected visit after the expiry
+    would strike it out at once, never the clean slate the docstring
+    promises.
+
+    RED under mutant "G2" (the ``self.reject_visits[panel] = 0`` line
+    deleted from ``expire_set_aside``), observed:
+
+        AssertionError: one rejected visit after an expiry set the panel
+        aside: '1-1 rejected every frame for 3 visits while the other
+        panels were accepted' ('rejects')
+    """
+    run = _run(2)
+    for _ in range(2):
+        _shot(run, "p1")
+        run.visit_outcome("p0", complete=False, exposures=2, accepted=0)
+        run.close_pass()
+        run.start_pass()
+    assert run.reject_visits["p0"] == 2, "premise: two rejected visits"
+    _strike_out(run, "p0", beside="p1")
+    assert run.set_aside_kind["p0"] == "centring", "premise"
+    assert run.reject_visits["p0"] == 2, "premise: centring misses keep it"
+    run.expire_set_aside("p0")
+    _shot(run, "p1")
+    run.visit_outcome("p0", complete=False, exposures=2, accepted=0)
+    assert run.is_live("p0"), (
+        f"one rejected visit after an expiry set the panel aside: "
+        f"{run.set_aside.get('p0')!r} ({run.set_aside_kind.get('p0')!r})")
+    assert run.reject_visits["p0"] == 1
 
 
 def test_a_panel_that_expires_alone_starts_a_pass_of_its_own():

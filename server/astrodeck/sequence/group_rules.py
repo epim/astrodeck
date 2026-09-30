@@ -83,6 +83,26 @@ SET_ASIDE_EXPIRY_S = 2700.0
 #: nearer the equator a panel rising in the east can.
 SET_ASIDE_RISE_DEG = 10.0
 
+#: Seconds after a set-aside before the rise half of :func:`set_aside_expiry`
+#: may answer at all (#564). No latitude rises faster than 15 degrees a
+#: clock hour (the line above: a body on the celestial equator, right at the
+#: horizon; every other latitude and declination is slower), so
+#: ``SET_ASIDE_RISE_DEG`` of climb needs at least this long ANYWHERE.
+#: Answering "rise" before it would not be a real sky: it would be a caller
+#: handing in two altitudes physics cannot connect that fast, and the rule
+#: refuses to trust that instead of reading it as an equatorial site. This
+#: also holds the earliest a "rise" answer can ever come to one fixed
+#: instant, the same whatever the site, so that instant alone says nothing
+#: about it (6.9); an H4-DOC finding the ticket that opened this left open
+#: (docs/superpowers/specs/2026-09-23-flows-mosaic-target-block-design.md,
+#: 5.1) is that "rise" answering AT ALL, ahead of ``SET_ASIDE_EXPIRY_S``,
+#: still means the site is within about 28 degrees of the equator; closing
+#: that needs the branch gone outright, which a sibling ticket (#564) leaves
+#: to a later call because two tests outside this file (H4's rise case at
+#: 5 N, and the spec-claims read of that same 28 degree number) are built on
+#: the branch answering early there.
+SET_ASIDE_RISE_FLOOR_S = SET_ASIDE_RISE_DEG / 15.0 * 3600.0
+
 #: Seconds a group waits after a pass in which EVERY panel attempted (at
 #: least two) failed centring, before it starts the next pass (#534, H4
 #: orchestrator ruling 2). That pass says the sky or the geometry is to
@@ -361,9 +381,11 @@ class PassEnd:
     ``boundary``:
 
     - ``"guiding_action"``: every panel attempted this pass (at least two)
-      failed to start guiding. The rig is to blame, no per-panel counter
-      moved, and the plan's ``guiding_action`` decides, exactly as for a
-      single target: abort ends the run, skip sets the group aside
+      failed to start guiding. The rig is to blame for THAT, not a panel
+      (#575: a centring miss held from the same pass, above, may still have
+      counted or set a panel aside, and ``reason`` says so when it did), and
+      the plan's ``guiding_action`` decides, exactly as for a single target:
+      abort ends the run, skip sets the group aside
       (:meth:`GroupRun.set_aside_all`), warn shoots the panels unguided. Then
       :meth:`GroupRun.start_pass`.
     - ``"set_aside_all"``: the group anti-spin set every live member aside
@@ -477,10 +499,12 @@ def set_aside_expiry(*, now: float, set_at: float,
 
     - ``"time"``: ``SET_ASIDE_EXPIRY_S`` have passed since ``set_at``.
     - ``"rise"``: the panel centre has risen at least ``SET_ASIDE_RISE_DEG``
-      since ``set_at`` (``alt_now - alt_at_set``), before the time is up.
-      Asked only when both altitudes are given: with no site saved there is
-      no altitude, and the time half alone applies. A panel that is setting
-      never expires this way.
+      since ``set_at`` (``alt_now - alt_at_set``), before the time is up, and
+      not before ``SET_ASIDE_RISE_FLOOR_S`` have passed (#564): no latitude
+      rises that far that fast, so an earlier answer would be a bad altitude
+      pair, not a real sky. Asked only when both altitudes are given: with no
+      site saved there is no altitude, and the time half alone applies. A
+      panel that is setting never expires this way.
     - never, when ``expiries`` is at least 1: AT MOST ONE EXPIRY PER PANEL
       PER NIGHT. A panel that is tried again after its expiry and struck out
       again failed after the sky had its chance to change, so the second
@@ -509,8 +533,11 @@ def set_aside_expiry(*, now: float, set_at: float,
     if t >= t0 + SET_ASIDE_EXPIRY_S:
         return "time"
     if alt_at_set is not None and alt_now is not None:
+        # Both altitudes are checked for finite-ness whether or not the
+        # floor has passed: a NaN is a caller bug the moment it arrives, not
+        # only once the clock would otherwise let the rise half answer.
         rise = _finite("alt_now", alt_now) - _finite("alt_at_set", alt_at_set)
-        if rise >= SET_ASIDE_RISE_DEG:
+        if t >= t0 + SET_ASIDE_RISE_FLOOR_S and rise >= SET_ASIDE_RISE_DEG:
             return "rise"
     return None
 
@@ -1073,11 +1100,27 @@ class GroupRun:
 
         attempts, failures = self.guide_attempts, self.guide_failures
         if guide_start_pass_verdict(attempts, failures) == "rig":
+            # THE SENTENCE MUST NOT CLAIM WHAT THE SAME PASS JUST DID (#575).
+            # A centring miss held above can be counted, or even set a panel
+            # aside, before this verdict is reached (a pass can hold both a
+            # rig-fault guide start and a panel's own centring miss), and
+            # "no panel's failure count moved" is false exactly then. Say
+            # what moved instead of a blanket claim, so the alert this
+            # reason reaches at warning never contradicts the info lines
+            # ``close_pass``'s own caller logs for ``counted`` beside it.
+            moved = tuple(counted) + tuple(set_aside)
+            if moved:
+                noun = "panel" if len(moved) == 1 else "panels"
+                also = (f"{len(moved)} {noun} in the same pass had a "
+                        f"centring miss counted or set aside, charged to "
+                        f"the panel, not the guider")
+            else:
+                also = "no panel's centring miss was counted in the same pass"
             return PassEnd(
                 "guiding_action", tuple(set_aside),
                 f"guiding did not start on any of the {attempts} panels tried "
-                f"this pass: the guider's fault, not a panel's. No panel's "
-                f"failure count moved; the plan's guiding_action decides",
+                f"this pass: the guider's fault, not a panel's; {also}, and "
+                f"the plan's guiding_action decides",
                 tuple(counted))
 
         for panel, deferred in held:
