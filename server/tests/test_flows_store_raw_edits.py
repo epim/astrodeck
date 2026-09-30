@@ -153,13 +153,15 @@ REPARENTS = {"rename_folder", "delete_folder"}
 
 
 def _expected(before: dict, after: dict, changed: dict, edit: str) -> dict:
-    """``before`` with exactly the edit's own fields changed. A re-parent also
-    stamps ``updated_ts`` (it moved the flow); a run never does, because a run
-    is not an edit (test_run_provenance)."""
+    """``before`` with exactly the edit's own fields changed. None of the
+    three stamps ``updated_ts``: a run is not an edit (test_run_provenance),
+    and since H4 a re-parent is not one either (#512). ``updated_ts`` is what
+    the replay notice reads as "a new version was saved", and a folder
+    tidy-up used to stamp it, which told every armed flow in the folder to
+    CONTINUE to apply edits nobody made. Re-pinned for H4-FLOWS: this used to
+    copy the re-parent's new ``updated_ts`` into the expectation."""
     want = copy.deepcopy(before)
     want["flow"].update(changed)
-    if edit in REPARENTS:
-        want["flow"]["updated_ts"] = after["flow"]["updated_ts"]
     return want
 
 
@@ -186,6 +188,15 @@ class TestTheBookkeepingWritersKeepTheFilesVersion:
          +  where -1 = _rotation_on_disk({'flow': {'created_ts': 1000.0,
          'folder': 'Winter', 'graph': {...}, 'id': 'f1', ...}, 'id': 'f1',
          'schema_version': 2})
+
+    RED under mutant "rename re-stamps updated_ts" (store.py
+    ``rename_folder``: ``{"folder": new, "updated_ts": time.time()}``, the
+    code before H4's #512), re-pinned by the H4 integration: both re-parent
+    cases of this test and of the v3 control below, plus the bare-file case,
+    5 failed (rename_folder shown; delete_folder fails on the same line):
+
+        AssertionError: the rename_folder changed more than its own fields
+        assert {'flow': {'cr...a_version': 2} == {'flow': {'cr...a_version': 2}
     """
 
     @pytest.mark.parametrize("edit", sorted(EDITS))
@@ -206,7 +217,12 @@ class TestTheBookkeepingWritersKeepTheFilesVersion:
         assert after == _expected(before, after, changed, edit), (
             f"the {edit} changed more than its own fields")
         if edit in REPARENTS:
-            assert after["flow"]["updated_ts"] > 1000.0, "a move is a change"
+            # #512 (H4): a folder move is not a version. This pin read
+            # `> 1000.0, "a move is a change"` before H4; the file's fixed
+            # 1000.0 must now survive the move.
+            assert after["flow"]["updated_ts"] == 1000.0, (
+                f"the {edit} re-stamped the flow's saved time, which the "
+                f"replay notice reads as a new version (#512)")
         got = client.get("/api/flows/f1").json()
         assert got["migrated"] == NOTE, (
             f"the {edit} retired the note, and the operator never saw it")
@@ -446,6 +462,11 @@ class TestAFileWithNoFlowObjectStillMoves:
         ``isinstance(flow, dict)`` branch in ``_edit_raw`` deleted):
 
             AttributeError: 'NoneType' object has no attribute 'update'
+
+        RED under mutant "rename re-stamps updated_ts" (the code before
+        H4's #512; see the class above), at the one-field pin:
+
+            AssertionError: assert {'folder', 'updated_ts'} == {'folder'}
         """
         ensure_dir(store.dir)
         bare = store.dir / "bare.json"          # sorts before "zzz"
@@ -457,7 +478,10 @@ class TestAFileWithNoFlowObjectStillMoves:
         raw = _read(bare)
         assert raw["schema_version"] == 2 and raw["id"] == "bare"
         assert raw["flow"]["folder"] == "Spring"
-        assert set(raw["flow"]) == {"folder", "updated_ts"}
+        # Only the folder: a move is not a version (#512, H4). Before H4 the
+        # rename also wrote `updated_ts`, and this pin read
+        # {"folder", "updated_ts"}.
+        assert set(raw["flow"]) == {"folder"}
         after = _read(later)
         assert after["flow"]["folder"] == "Spring", (
             "the rename stopped partway through the folder")

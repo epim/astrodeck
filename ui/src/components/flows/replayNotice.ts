@@ -32,8 +32,9 @@
 // right, since CONTINUE starts the SAVED flow and would not apply them
 // either. A save raises it whether or not it changed anything the run
 // shoots, which is the ruling's trade. Renaming or deleting the flow's folder
-// re-stamps `updated_ts` too, and then the line claims edits nobody made
-// (#512).
+// used to re-stamp `updated_ts` too, and the line then claimed edits nobody
+// made (#512); since H4 a folder move leaves `updated_ts` alone
+// (`FlowStore.rename_folder`, test_h4_folder_move_is_not_a_version.py).
 //
 // THE DATE is `plan_saved_ts` as a LOCAL YYYY-MM-DD, in the viewer's own
 // zone: the day, on the operator's calendar, that the replayed version was

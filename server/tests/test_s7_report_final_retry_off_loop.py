@@ -42,8 +42,10 @@ import astrodeck.sequence.report as report_mod
 from astrodeck.config import Site
 from astrodeck.events import bus
 from astrodeck.flows.store import FlowStore
-from astrodeck.sequence.models import SequencePlan
+from astrodeck.persist import write_json_atomic
+from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
 from astrodeck.sequence.report import FrameRecord, SessionReporter
+from astrodeck.sequence.session import Session, SessionFrame, session_store
 
 
 @pytest.fixture(autouse=True)
@@ -417,6 +419,20 @@ _RID = "offloop-20260928-010101"
 #: is a floor: how its two ledgers share their reads is the route's
 #: business (#419 made them load each report once for both), and where the
 #: reads run is this file's. ``{fid}`` is the stored flow's id.
+#
+# SINCE H4 (re-pinned by the H4 integration):
+#   * Tonight folds the reports' ledger SUMMARIES (#536), and reads a report
+#     in full only when it has no current summary. ``finalize`` writes one, so
+#     against this fixture's finalized report Tonight made no read at all and
+#     its floor of one failed ("reached the read 0 times"). The fixture now
+#     removes the summary, so Tonight makes its one-time read, the only read
+#     of a report that route still makes, and it is that read the exercise
+#     puts off the loop. test_h4_report_summary_cost.py grades the summary
+#     path itself, the read count and its own off-loop case.
+#   * The recoverable route reads the dormant session's last report to say
+#     why it stopped (#487), a new report reader, which the inventory below
+#     found undriven. The fixture seeds a dormant session with a frame whose
+#     last run is the report on disk, so the route reaches the read once.
 _EXERCISE = [
     ("GET", "/api/reports", (1, 1), {200}),
     ("GET", f"/api/reports/{_RID}", (1, 1), {200}),
@@ -424,6 +440,7 @@ _EXERCISE = [
     ("GET", f"/api/reports/{_RID}/bundle", (1, 1), {200}),
     ("GET", f"/api/reports/{_RID}/bundle.zip", (1, 1), {200}),
     ("POST", f"/api/reports/{_RID}/bundle/materialize", (1, 1), {200, 400}),
+    ("GET", "/api/sequence/recoverable", (1, 1), {200}),
     ("GET", "/api/flows/{fid}/tonight", (1, None), {200}),
 ]
 
@@ -445,6 +462,25 @@ def client(isolated_config, tmp_path, monkeypatch):
     r.record_frame(FrameRecord(ts=1.0, target="M31", filter="L",
                                exposure_s=120.0))
     r.finalize("complete")
+    # No ledger summary (#536): Tonight then reads the report itself, once,
+    # which is the read this file puts off the loop. Written inline by the
+    # finalize above (no loop runs here), so it is there to remove.
+    summary = report_mod._summary_path(_RID)
+    assert summary.is_file(), f"premise: finalize wrote {summary.name}"
+    summary.unlink()
+    # A dormant session with a frame whose last run is that report, so the
+    # recoverable route reads it to say why the run stopped (#487).
+    target = Target(name="M31", ra_hours=0.7, dec_deg=41.3,
+                    steps=[ExposureStep(filter="L", exposure_s=120.0,
+                                        count=1)])
+    s = Session(name="offloop", created_ts=1.0, updated_ts=2.0,
+                status="dormant", plan=SequencePlan(name="offloop",
+                                                    targets=[target]),
+                nights=[_RID],
+                frames=[SessionFrame(night=_RID, target_id=target.id,
+                                     step_id=target.steps[0].id,
+                                     auto_accepted=True)])
+    write_json_atomic(session_store._path(s.id), s.model_dump(), backup=False)
     app = app_module.create_app()
     isolated_config.sweep()
     with TestClient(app, raise_server_exceptions=False) as c:
@@ -481,6 +517,25 @@ def test_every_route_that_reads_a_report_reads_it_off_the_loop(client,
     It was red the same way against the route before #419 gave it
     ``reports()``, when each lambda listed the reports itself and the
     mutant listed them on the loop instead.
+
+    RE-PINNED FOR H4 (the fixture's summary removed, the recoverable route
+    added; see ``_EXERCISE``), and re-run against the H4 routes:
+
+    RED under H4-ROUTES-A's mutant "summaries read on the loop" (the route
+    calling ``SessionReporter.summaries()`` before ``asyncio.to_thread`` and
+    handing both folds the answer), observed:
+        E   AssertionError: GET /api/flows/93e1d16a921f46c4b3bd6bd8dacd19ce/
+            tonight read a report on the loop: [{'thread':
+            'asyncio-portal-19b56e16870', 'on_loop': True, 'frames':
+            ['app.py:flow_tonight', 'report.py:summaries',
+            'report.py:_read_at']}]
+
+    RED under "recoverable reads on the loop" (``sequence_recoverable``
+    calling ``SessionReporter.read(s.nights[-1])`` directly), observed:
+        E   AssertionError: GET /api/sequence/recoverable read a report on
+            the loop: [{'thread': 'asyncio-portal-216fd29bef0', 'on_loop':
+            True, 'frames': ['app.py:sequence_recoverable',
+            'report.py:read', 'report.py:_read_at']}]
     """
     fid = client.post("/api/flows", json={"flow": {
         "name": "Off the loop", "folder": "My flows",
@@ -516,6 +571,13 @@ def test_tonight_really_read_both_ledgers(client, read_guard):
     500 with a plain-text body, observed:
         E   json.decoder.JSONDecodeError: Expecting value: line 1 column 1
             (char 0)
+
+    Since H4 the two ledgers fold the reports' summaries (#536), and the
+    fixture's report has none, so the one read here is the one-time read of
+    the report itself. Under H4-ROUTES-A's "summaries read on the loop" it is
+    red the same way (re-run by the H4 integration), observed:
+        E   json.decoder.JSONDecodeError: Expecting value: line 1 column 1
+            (char 0)
     """
     fid = client.post("/api/flows", json={"flow": {
         "name": "Both ledgers", "folder": "My flows",
@@ -531,8 +593,11 @@ def test_tonight_really_read_both_ledgers(client, read_guard):
 
 # ------------------------------------------------------- the inventory of callers
 
-#: ``SessionReporter``'s methods that read a report file.
-_READERS = {"read", "load", "list_reports", "scan_reports", "attach_existing"}
+#: ``SessionReporter``'s methods that read a report file. ``summaries`` since
+#: H4 (#536): it reads every report that has no current summary, and it is
+#: the only reader the Tonight route names now.
+_READERS = {"read", "load", "list_reports", "scan_reports", "attach_existing",
+            "summaries"}
 
 
 def _callers() -> set[tuple[str, tuple[str, ...]]]:
@@ -594,6 +659,12 @@ def test_the_exercise_covers_every_production_reader():
 
     The scan is by name, so a reader reached through an alias would slip
     it; an aliased import of ``SessionReporter`` fails here instead.
+
+    It did its job at H4: the recoverable route's new read of the dormant
+    session's last report (#487) was found undriven before the exercise
+    named it, observed on the shared tree:
+        E   AssertionError: report readers the exercise does not drive:
+            ['api/app.py:create_app.sequence_recoverable']
     """
     app = app_module.create_app()
     driven: set[str] = set()

@@ -35,13 +35,26 @@
 // with online fetch off, "not arriving, check the connection or install the
 // pack" with it on, where UX-07's told the operator to turn on what was on.
 //
+// THE VERDICT OUTLIVES THE SKY (#493). The degraded state lived in this
+// component's own state, so a sky that remounted (the modal's sky did on a
+// phone turn, 390 x 844 to 844 x 390) began again at "not degraded" with a
+// fresh tile engine, and pulsed LOADING over a survey it had already found has
+// no source until the new engine had failed its way back. It is kept per
+// survey in module memory instead (`degradedSurveys` below), which survives a
+// remount of this component or of any host above it, where state lifted into
+// the sheet would not survive the sheet's own. Keyed by survey, because the
+// verdict is one survey's: another survey opens LOADING as before. A verdict
+// that has gone stale (a pack installed since) costs one tile's round trip:
+// the engine keeps fetching while degraded and its first drawn frame clears
+// it through `onSurveyLoad`, exactly as it clears a live one.
+//
 // THE SKY'S HEIGHT IS FIXED AND THE CANVAS'S LINES ARE INSIDE IT. SkyCanvas
 // draws its degraded banner and verdict under its square, and `.tfs-sky` clips
 // whatever does not fit; framing.css sizes the square from the height those
 // lines leave (#440, #465), through the `.tfs-sky-fit` box below and the
 // canvas's own `.sky-canvas-square` slot, so this file passes nothing for it.
 
-import { useCallback, useState, type JSX } from "react";
+import { useCallback, useSyncExternalStore, type JSX } from "react";
 import { SkyCanvas } from "../../atlas/SkyCanvas";
 import type { PanelFov, SkyPanel } from "../../atlas/PanelLayer";
 import type { OpticsLike } from "../../../lib/framing";
@@ -83,13 +96,31 @@ export interface FramingSkyProps {
 
 const noop = () => {};
 
+// The surveys found degraded, for as long as the page lives (see the header).
+// A tiny external store, so every mounted sky re-renders when a verdict moves.
+const degradedSurveys = new Set<string>();
+const degradedListeners = new Set<() => void>();
+function setSurveyDegraded(survey: string, on: boolean): void {
+  if (degradedSurveys.has(survey) === on) return;
+  if (on) degradedSurveys.add(survey);
+  else degradedSurveys.delete(survey);
+  for (const l of degradedListeners) l();
+}
+function subscribeDegraded(l: () => void): () => void {
+  degradedListeners.add(l);
+  return () => { degradedListeners.delete(l); };
+}
+
 export function FramingSky(p: FramingSkyProps): JSX.Element {
-  // Above the early return: hooks cannot be conditional. Stable identities,
-  // because SkyCanvas's loaders depend on these callbacks and a new one each
-  // render would restart its fetch on every render.
-  const [degraded, setDegraded] = useState(false);
-  const onSurveyError = useCallback(() => setDegraded(true), []);
-  const onSurveyLoad = useCallback(() => setDegraded(false), []);
+  // Above the early return: hooks cannot be conditional. The callbacks change
+  // identity only with the survey, because SkyCanvas's loaders depend on them
+  // and a new one each render would restart its fetch on every render; and
+  // they close over the survey they were made for, so a late answer from the
+  // survey just left marks that one, not the one now shown.
+  const survey = p.survey;
+  const degraded = useSyncExternalStore(subscribeDegraded, () => degradedSurveys.has(survey));
+  const onSurveyError = useCallback(() => setSurveyDegraded(survey, true), [survey]);
+  const onSurveyLoad = useCallback(() => setSurveyDegraded(survey, false), [survey]);
   if (p.frameCentre === null) {
     return (
       <div className="tfs-sky-empty" data-testid="framing-sky-empty">

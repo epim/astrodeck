@@ -192,6 +192,18 @@ async def test_rain_in_the_run_start_cooling_wait_reaches_on_unsafe(
         [55.0, 519.0] s, lines ['Alpha: nothing has been shot for a while
         and the mount is still tracking it — stopping tracking until the
         next target is set up']
+
+    GRADED OVER THE WHOLE NIGHT since #530 (H4-ENG-C): the pause closes the
+    idle latch its confirmed stop satisfied, so the scheduler's wait after
+    the run-start wait makes no stop either. Mutant "the pause leaves the
+    latch open" (`_park_hold_pause`'s ``if not unconfirmed:
+    self._idle_hold_open = False`` made ``if False:``), run in the private
+    copy H4-ENG-C-mut: RED (observed), the #530 defect -
+        AssertionError: the scheduler's wait after the pause looked at a
+        mount the pause had stopped: set_tracking(False) at [55.0, 834.0]
+        s, lines ['Alpha: nothing has been shot for a while and the mount
+        is still tracking it — stopping tracking until the next target is
+        set up']
     """
     temp_store.set_safety(SafetyConfig(**PAUSE_AT_ONCE))
     run = _Clocked(sim_hub, monkeypatch, horizon_s=900.0)
@@ -260,9 +272,6 @@ async def test_rain_in_the_run_start_cooling_wait_reaches_on_unsafe(
         assert again and again[0][1] is not None, (
             f"the run-start wait did not begin again after the pause: waits "
             f"{[(run.rel([w[0]], t0)[0], w[2]) for w in waits]}")
-        # Graded up to the end of the run-start wait begun again: the
-        # scheduler's wait after it takes its own look, and calls the
-        # stopped mount still tracking (#530).
         done = again[0][1]
         offs = [t for t in run.tracking_off if t < done]
         looks = [m for t, m, _s in lines if t < done
@@ -271,8 +280,21 @@ async def test_rain_in_the_run_start_cooling_wait_reaches_on_unsafe(
             f"the run-start wait begun again after the pause looked at a "
             f"mount the pause had stopped: set_tracking(False) at "
             f"{run.rel(offs, t0)} s, lines {looks}")
+        # Each 5 s sleep of the scheduler's wait follows one idle look.
         assert run.ticks and run.ticks[-1] > done, (
-            "premise: the run went on to its scheduler")
+            "premise: the run went on to its scheduler, whose wait looked at "
+            "the mount")
+        # AND OVER THE WHOLE NIGHT (#530, H4-ENG-C). The case was graded
+        # only up to the end of the run-start wait begun again, because the
+        # scheduler's wait after it took its own look and called the
+        # stopped mount still tracking. The pause now closes the idle latch
+        # its confirmed stop satisfied, so no wait after it looks again.
+        offs = list(run.tracking_off)
+        looks = [m for t, m, _s in lines if "stopping tracking" in m]
+        assert len(offs) == 1 and offs[0] == hit and looks == [], (
+            f"the scheduler's wait after the pause looked at a mount the "
+            f"pause had stopped: set_tracking(False) at {run.rel(offs, t0)} "
+            f"s, lines {looks}")
         wet = [t for t, ok in reads if not ok]
         assert wet and wet[0] == hit, (
             f"premise: the read that reached _on_unsafe was the first wet "
@@ -313,6 +335,17 @@ async def test_rain_in_the_camera_lane_wait_reaches_on_unsafe(
         stopped: set_tracking(False) at [45.0, 204.0] s, lines ['Alpha:
         nothing has been shot for a while and the mount is still tracking
         it — stopping tracking until the next target is set up']
+
+    GRADED OVER THE WHOLE NIGHT since #530 (H4-ENG-C), the scheduler's wait
+    after the lane included. Mutant "the pause leaves the latch open"
+    (`_park_hold_pause`'s ``if not unconfirmed: self._idle_hold_open =
+    False`` made ``if False:``), run in the private copy H4-ENG-C-mut: RED
+    (observed), the #530 defect -
+        AssertionError: the scheduler's wait after the lane looked at a
+        mount the pause had stopped: set_tracking(False) at [45.0, 260.0]
+        s, lines ['Alpha: nothing has been shot for a while and the mount
+        is still tracking it — stopping tracking until the next target is
+        set up']
     """
     temp_store.set_safety(SafetyConfig(**PAUSE_AT_ONCE))
     run = _Clocked(sim_hub, monkeypatch, horizon_s=LANE_FREE_S + 60.0)
@@ -347,9 +380,6 @@ async def test_rain_in_the_camera_lane_wait_reaches_on_unsafe(
             f"the rain at {LANE_RAIN_AT:g} s reached _on_unsafe at "
             f"{run.rel(first, t0)} s; the camera-lane wait ran from "
             f"{run.rel(lane, t0)[0]} s to {run.rel(lane, t0)[1]} s")
-        # Graded up to the end of the lane wait: the scheduler's wait after
-        # it takes its own look, and calls the stopped mount still
-        # tracking (#530).
         offs = [t for t in run.tracking_off if t < lane[1]]
         looks = [m for t, m, _s in lines if t < lane[1]
                  and "stopping tracking" in m]
@@ -362,6 +392,17 @@ async def test_rain_in_the_camera_lane_wait_reaches_on_unsafe(
             f"premise: the pause closed out and the run went on to its "
             f"scheduler once the lane was free: safe again {len(said)} "
             f"time(s), 5 s sleeps after the lane at {run.rel(later[:3], t0)} s")
+        # AND OVER THE WHOLE NIGHT (#530, H4-ENG-C). The case was graded
+        # only up to the end of the lane wait, because the scheduler's wait
+        # after it took its own look (a 5 s sleep follows each, ``later``
+        # above) and called the stopped mount still tracking. The pause now
+        # closes the idle latch its confirmed stop satisfied.
+        offs = list(run.tracking_off)
+        looks = [m for t, m, _s in lines if "stopping tracking" in m]
+        assert len(offs) == 1 and offs[0] == first[0] and looks == [], (
+            f"the scheduler's wait after the lane looked at a mount the "
+            f"pause had stopped: set_tracking(False) at {run.rel(offs, t0)} "
+            f"s, lines {looks}")
     finally:
         await run.close()
 

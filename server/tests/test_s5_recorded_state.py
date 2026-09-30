@@ -19,7 +19,12 @@ test rebuilds each one and grades the file byte for byte:
   copy reads "night n" off that count (spec 5.9), so the two must agree.
   Since S7 the session also carries ``armed`` (true) and ``plan_saved_ts``
   (null: an Example is never saved, and this session predates the key),
-  and ``nights`` counts observing nights (#430, #473).
+  and ``nights`` counts observing nights (#430, #473). Since H4 it carries
+  ``continue_night`` (#511), the night CONTINUE would start, which the
+  button prints; the file records the answer at ``CONTINUE_AT`` (night 3)
+  and, as ``same_night_session``, the session the same route answered at
+  ``SAME_NIGHT_AT``, on the second recorded night itself (night 2), and
+  CONTINUE is pressed at both, each answering the recorded number.
 * ``fixtures/sequence_state_mosaic.json``: sequence states the engine
   published on the clocked simulator (``_group_harness``) for a rotating 2x2
   in which one panel is set aside by repeated centring misses: a panel
@@ -70,6 +75,7 @@ from pathlib import Path
 from _group_harness import (GROUP_NAME, Night, close_night_hub,  # noqa: F401
                             grid_plan, group_hub, group_store, night_hub)
 import astrodeck.api.app as app_module
+import astrodeck.sequence.engine as engine_module
 from astrodeck import events
 from astrodeck.api.app import _sequence_envelope
 from astrodeck.api.redact import _redact_sequence_for
@@ -106,6 +112,12 @@ RUNS = ("m31-3x2-rotating-20260921-030412", "m31-3x2-rotating-20260922-024955")
 #: wall-clock fields so it is that evening in any zone (the dev box is
 #: Pacific, CI is UTC).
 CONTINUE_AT = time.mktime((2026, 9, 22, 21, 0, 0, 0, 0, -1))
+#: A CONTINUE pressed on a night the session HAS run (#511, H4): 04:00 local
+#: on 2026-09-22, an hour after the second recorded run started (02:49:55)
+#: and before that day's noon rollover, so the same observing night, the
+#: run stopped and pressed again. The progress route answers night 2 here,
+#: and ``nights + 1`` would have printed 3.
+SAME_NIGHT_AT = time.mktime((2026, 9, 22, 4, 0, 0, 0, 0, -1))
 
 #: Accepted subs banked on each panel, ``(row, col) -> (L, R, G, B)``: 1-1
 #: finished (20 of each), the rest part-way, and two rejected subs that
@@ -192,9 +204,13 @@ class TestTheGradeReadsEitherLineEnd:
 CONTINUE_ABOUT = (
     "GET /api/flows/example-m31-mosaic/progress: the eighth Example with a "
     "dormant session of two runs on two nights, 1-1 finished and the other "
-    "panels part-way, counted in accepted mode. Built and graded byte for "
-    "byte by server/tests/test_s5_recorded_state.py, which also presses "
-    "CONTINUE and checks its night is nights + 1. Read, never copied, by "
+    "panels part-way, counted in accepted mode. 'response' is the answer at "
+    "21:00 local on the evening after the second night; 'same_night_session' "
+    "is the session the same route answered at 04:00 local on the second "
+    "night itself, the rest of that answer being 'response''s. Built and "
+    "graded byte for byte by server/tests/test_s5_recorded_state.py, which "
+    "also presses CONTINUE at both moments and checks each answers the "
+    "recorded continue_night (#511). Read, never copied, by "
     "ui/src/components/flows/__tests__/flowRunState.test.ts. Never "
     "hand-edit it.")
 
@@ -248,7 +264,7 @@ class TestTheContinueFixture:
         session, re-dumped the way the file is written, IS the file, byte
         for byte. Then CONTINUE on the same flow continues that session and
         says it starts night ``nights + 1``: the night the button's copy
-        will print from the file's ``nights`` (spec 5.9).
+        will print from the file's ``continue_night`` (spec 5.9).
 
         RED under mutant "fixture edited" (the file's 1-2 L ``banked`` 7
         made 8 by hand, nothing else touched), observed:
@@ -314,42 +330,122 @@ class TestTheContinueFixture:
             AssertionError: premise: the route read the seeded session
               Differing items:
               {'plan_saved_ts': 1789959852.0} != {'plan_saved_ts': None}
-        """
-        api, engine, _night = rig
-        s = _seed_dormant_session()
 
+        DELIBERATE RE-RECORDING IN H4 (#511): the session carries
+        ``continue_night``, so the file moved, rewritten with
+        ``ASTRODECK_REWRITE_S5_FIXTURES=1`` and read as a diff: the key
+        added to ``response``'s session (3), and ``same_night_session``
+        added beside ``response`` (the session answered at
+        ``SAME_NIGHT_AT``, 2), nothing else. Both reads are made with the
+        app's clock pinned, so the file is the same bytes whenever it is
+        graded. The S7 test against the H4 route, run in scratchpad
+        ``H4-ROUTES-B-mut``, observed:
+
+            AssertionError: premise: the route read the seeded session
+            assert {'armed': Tru...fa83396', ...} == {'armed': Tru...ghts':
+            2, ...}
+              Left contains 1 more item:
+              {'continue_night': 3}
+
+        CONTINUE is now pressed twice, at each recorded moment, and each
+        press must answer the night the file records for that moment: the
+        number the button prints (``runCopy``). The two recorded numbers are
+        themselves held to the rule, 2 on the second night and 3 the evening
+        after, so a rule that moves either is red before the file is graded
+        (and a rewrite under it could not pass). Run in scratchpad
+        ``H4-ROUTES-B-mut``: mutant "continue_night = nights + 1"
+        (``progress.continue_night`` answering
+        ``len(session.observing_nights()) + 1``), observed:
+
+            AssertionError: premise: the same-night answer is the second
+            night's
+            assert 3 == 2
+
+        and mutant "tonight is never among them"
+        (``progress.continue_night`` answering
+        ``len(session.observing_nights())``), observed:
+
+            AssertionError: premise: the route read the seeded session
+              Differing items:
+              {'continue_night': 2} != {'continue_night': 3}
+        """
+        api, engine, night = rig
+        s = _seed_dormant_session()
+        clock = _PinnedTime(SAME_NIGHT_AT)
+        monkeypatch.setattr(app_module, "time", clock)
+        # The engine's too: the CONTINUE pressed at SAME_NIGHT_AT mints its
+        # report id from it, and so counts on the second recorded night.
+        monkeypatch.setattr(engine_module, "time", clock)
+
+        r = await api.progress(EXAMPLE)
+        assert r.status_code == 200, r.text
+        same = json.loads(r.content)
+        clock.t = CONTINUE_AT
         r = await api.progress(EXAMPLE)
         assert r.status_code == 200, r.text
         answer = json.loads(r.content)
         assert answer["session"] == {"id": s.id, "status": "dormant",
                                      "nights": 2, "count_mode": "accepted",
-                                     "armed": True, "plan_saved_ts": None}, (
+                                     "armed": True, "plan_saved_ts": None,
+                                     "continue_night": 3}, (
             "premise: the route read the seeded session")
+        assert same["session"]["continue_night"] == 2, (
+            "premise: the same-night answer is the second night's")
+        assert ({**same, "session": None},
+                {**same["session"], "continue_night": None}) == (
+            {**answer, "session": None},
+            {**answer["session"], "continue_night": None}), (
+            "premise: the two answers differ in continue_night alone")
         (block,) = answer["blocks"]
         assert block["group_id"] == engine_group_id(), (
             "premise: the block names the plan's group")
-        text = _text(CONTINUE_ABOUT, {"response": answer})
+        body = {"response": answer, "same_night_session": same["session"]}
+        text = _text(CONTINUE_ABOUT, body)
         if REWRITE:
-            _write(CONTINUE_FIXTURE, CONTINUE_ABOUT, {"response": answer})
+            _write(CONTINUE_FIXTURE, CONTINUE_ABOUT, body)
         assert _on_disk(CONTINUE_FIXTURE) == text, (
             "the file is not the route's answer; rewrite it (see the module "
             "docstring)")
+        recorded = json.loads(CONTINUE_FIXTURE.read_bytes())
 
-        monkeypatch.setattr(app_module, "time", _PinnedTime(CONTINUE_AT))
+        # On the second recorded night: the run route's night is the one
+        # the file records for that moment, and not nights + 1.
+        clock.t = SAME_NIGHT_AT
         run = await api.client.post(f"/api/flows/{EXAMPLE}/run", json={})
         assert run.status_code == 200, run.text
         out = run.json()["session"]
         assert (out["id"], out["continued"]) == (s.id, True), (
             f"premise: CONTINUE continued the recorded session: {out}")
-        recorded = json.loads(CONTINUE_FIXTURE.read_bytes())["response"]
+        said = recorded["same_night_session"]["continue_night"]
+        assert out["night"] == said, (
+            f"CONTINUE on the second night starts night {out['night']}, and "
+            f"the file says the button prints {said}")
+        assert out["night"] != recorded["same_night_session"]["nights"] + 1, (
+            "premise: here nights + 1 is not the run route's night")
+        night.end("incomplete")
+        await engine._task
+        assert session_store.load(s.id).status == "dormant", (
+            "premise: the same-night run left the session dormant again")
+
+        # The evening after: a night the session has not run.
+        clock.t = CONTINUE_AT
+        run = await api.client.post(f"/api/flows/{EXAMPLE}/run", json={})
+        assert run.status_code == 200, run.text
+        out = run.json()["session"]
+        assert (out["id"], out["continued"]) == (s.id, True), (
+            f"premise: CONTINUE continued the recorded session: {out}")
         assert events.night_key(CONTINUE_AT) not in {
             events.night_key(time.mktime(time.strptime(r[-15:],
                                                        "%Y%m%d-%H%M%S")))
             for r in RUNS}, "premise: CONTINUE is pressed on a new night"
-        assert out["night"] == recorded["session"]["nights"] + 1, (
+        said = recorded["response"]["session"]["continue_night"]
+        assert out["night"] == said, (
+            f"CONTINUE starts night {out['night']}, and the file says the "
+            f"button prints {said}")
+        assert out["night"] == recorded["response"]["session"]["nights"] + 1, (
             f"CONTINUE starts night {out['night']}, and the file says "
-            f"{recorded['session']['nights']} nights so far, tonight not "
-            f"among them")
+            f"{recorded['response']['session']['nights']} nights so far, "
+            f"tonight not among them")
         assert engine._session.id == s.id
 
 
@@ -644,6 +740,18 @@ class TestTheSequenceStateFixture:
         bytes S5 recorded, and only the ``about`` and the comma after the
         viewer's wait are new above them.
 
+        REWRITTEN FOR H4 by the H4 integration, and read as a diff. Two
+        deliberate changes moved it, and nothing else: (1) a centring miss is
+        now counted at the pass boundary and not where the visit raises it
+        (#534, H4 orchestrator ruling 2), so 2-2's set-aside, which is what
+        picks the shooting state and every held state, lands one pass
+        later: those four states each read one pass on (``pass`` +1, three
+        more frames done and accepted, the clocks 90 s later), while the
+        meridian waits did not move; and (2) #513 is fixed (H4-ENG-B), so
+        the aborting state carries ``hold: null`` and a sky that is not
+        holding. The premise below that pinned #513 as it stood was flipped
+        with the file.
+
         RED under mutant "the viewer is served the panel"
         (``api.redact._withhold_group_timing`` returning the state it was
         handed), observed:
@@ -695,7 +803,8 @@ class TestTheSequenceStateFixture:
 
         RED under mutant "the abort clears the hold" (``abort()`` in
         ``sequence/engine.py`` publishing ``hold=None`` with "aborting", one
-        shape of a fix for #513), observed:
+        shape of a fix for #513), observed before H4, when this premise
+        pinned #513 as it stood:
 
             AssertionError: the aborting state no longer carries the hold's
             key; #513 is fixed, so rewrite the file and this premise
@@ -705,6 +814,17 @@ class TestTheSequenceStateFixture:
         (A clear in `_hold_for_clear`'s ``finally`` instead survives: the
         aborting state is published before the cancellation reaches the
         hold, so only the terminal state, which is not recorded, moves.)
+
+        Since H4 #513 is fixed and the premise is flipped. RED under
+        H4-ENG-B's mutant "the abort keeps the hold" (``abort()``'s
+        "aborting" publish without its ``**self._hold_cleared()``), re-run
+        by the H4 integration in a private copy of ``server/`` (scratchpad
+        ``H4-INTEG-mut``), observed:
+
+            AssertionError: the aborting state still carries the cloud hold
+            (#513): 'clouds', {'cloudy': True, 'age_s': 120, 'score': 0.93,
+            ...}
+            assert ('clouds', True) == (None, False)
 
         RED under mutant "fixture edited" (the file's aborting state's
         ``"state": "aborting"`` made "running" by hand), observed:
@@ -770,15 +890,16 @@ class TestTheSequenceStateFixture:
             f"premise: the operator's pause: {paused['detail']!r}")
         assert holding.get("hold") == "clouds" and holding["sky"]["holding"], (
             f"premise: a cloud hold: {holding.get('hold')!r}, {holding['sky']}")
-        # The Abort lands inside the hold, and the hold's ``hold: "clouds"``
-        # rides the aborting state through `_set_state`'s merge: #513, AS IT
-        # STANDS. A reader must word this state by ``state``, which says
-        # the run is stopping. When a fix for #513 clears the hold in the
-        # aborting publish, this premise and the file change together, on
-        # purpose.
-        assert aborting.get("hold") == "clouds", (
-            "the aborting state no longer carries the hold's key; #513 is "
-            "fixed, so rewrite the file and this premise together")
+        # The Abort lands inside the hold. Until H4 the hold's ``hold:
+        # "clouds"`` rode the aborting state through `_set_state`'s merge
+        # (#513), and this premise pinned it so. H4-ENG-B fixed #513: abort's
+        # "aborting" publish takes the hold off (`_hold_cleared`), before its
+        # cancellation reaches the hold, so the wind-down never reads as a
+        # hold. Flipped with the file, by the H4 integration.
+        assert (aborting.get("hold"), aborting["sky"]["holding"]) == (
+            None, False), (
+            f"the aborting state still carries the cloud hold (#513): "
+            f"{aborting.get('hold')!r}, {aborting['sky']}")
         assert (paused["group"]["panel"], holding["group"]["panel"],
                 aborting["group"]["panel"]) == ("1-1", "1-1", "1-1"), (
             "premise: the held night's states are all on 1-1")

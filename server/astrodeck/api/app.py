@@ -156,7 +156,7 @@ from ..flows.continuation import _MODE_WORDS
 from ..flows.doctor import UNGUIDED_SUB_LINE_S, check as flow_doctor
 from ..flows.models import (MY_FLOWS_FOLDER, FlowGraph, FlowRecord,
                             MigrationNote)
-from ..flows.progress import flow_progress, replay_facts
+from ..flows.progress import continue_night, flow_progress, replay_facts
 from ..flows.readouts import readouts as flow_readouts, rig_readout
 from ..flows.rig import RigFacts
 from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
@@ -164,6 +164,7 @@ from ..flows import wizard as flow_wizard
 from ..flows.to_plan import (GRID_MAX, OVERLAP_MAX_PCT, GraphNotRunnable,
                              blocking_reasons, losses, to_sequence_plan)
 from ..flows.tonight import (banked_hours_from_reports,
+                             flow_target_names,
                              frames_by_target_from_reports,
                              resolve_tonight)
 from ..rotation import angle_equals, map_sky_target, mod360
@@ -173,7 +174,7 @@ from ..sequence.models import (FrameType, TargetGroup,
                                duplicate_name_warning, plan_identity_errors,
                                quota_unbounded, replan_cooling)
 from ..sequence.policy import resolve_policy
-from ..sequence.report import SessionReporter, _slug
+from ..sequence.report import SessionReport, SessionReporter, _slug
 from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
                                build_bundle, bundle_materialize_plan,
                                bundle_summary, build_script, externalize_bundle,
@@ -1334,6 +1335,55 @@ def _freeze_saved_version(plan_saved_ts: float | None) -> None:
                            f"'{ours.name}' froze: {e}", "flow")
 
 
+#: The ``end_reason`` ``GET /api/sequence/recoverable`` answers for a run
+#: the process stopped under (#487): the one ending no report can record,
+#: because the process that would have written it is gone. The recoverable
+#: card's restart sentence reads this word and no other
+#: (``Interrupted.tsx``'s ``END_REASON_RESTART``, held to it by
+#: tests/test_h4_recoverable_says_why.py).
+RESTART_END_REASON = "restart"
+
+
+def _why_dormant(session: Session,
+                 last: SessionReport | None) -> str | None:
+    """Why ``session`` went dormant, for the recoverable card, from its last
+    report (``last``, the ``SessionReport`` of ``session.nights[-1]``, or
+    None when there is none or it could not be read) (#487).
+
+    THE REPORT'S OWN WORD, VERBATIM, WHEN IT RECORDED ONE. Every ending the
+    engine reaches in-process stamps the report through
+    ``_finalize_report``: "aborted" for a STOP, "incomplete", "dawn_cutoff",
+    "error", "unsafe" and the rest. Until #487 the route carried none of
+    them, and the card said "The server restarted" after every one,
+    including an operator's STOP.
+
+    ``RESTART_END_REASON`` FOR THE EVIDENCE A RESTART LEAVES, and only for
+    it. A process that stops under a run (a power cut, a crash, a kill by
+    PID) never reaches ``_finalize_report``, so two traces are left and
+    nothing else leaves both: the last report is on disk but records no
+    ending (``engine.start`` writes it at the start since #517, and only the
+    finalize stamps ``end_reason``), and the session was still ``active`` at
+    boot, which ``SessionStore.boot_sweep`` turns dormant and counts as a
+    death in ``crash_resumes``. Both are asked. A report with no ending on a
+    session nobody swept (a final write that failed, a file edited by hand)
+    is no evidence of a restart, and neither is a report that is missing or
+    unreadable: those answer None, and the card then states no cause.
+
+    A POLITE STOP OF THE SERVER IS NOT TOLD FROM A STOP. A teardown that
+    cancels the run task (Ctrl+C, a service stop) lands on the engine's
+    ``except CancelledError`` arm and finalizes "aborted", as STOP does;
+    only STOP disarms the session (``_finalize_report``, keyed on
+    ``_aborting``), and nothing records which it was, so both read
+    "aborted" here (#565)."""
+    if last is None:
+        return None
+    if isinstance(last.end_reason, str) and last.end_reason:
+        return last.end_reason
+    if session.crash_resumes >= 1:
+        return RESTART_END_REASON
+    return None
+
+
 def _spawn(name: str, coro, *, replace: bool = False) -> dict:
     """Run a long operation as a named background task (one per name).
 
@@ -1439,6 +1489,37 @@ def _spawn_connect(coro) -> dict:
 
 def _err(e: Exception) -> HTTPException:
     return HTTPException(status_code=409, detail=str(e))
+
+
+#: Query parameter names that carry a place or a pointing, and so may never
+#: ride a URL (#520). A URL is written down by every hop it crosses - the Fly
+#: relay's access log, a reverse proxy, the browser's history - and a pointing
+#: at a known time is a function of the site. The two routes that used to take
+#: them refuse them outright (`_refuse_site_query`); nothing else declares them,
+#: which test_h4_no_route_takes_site_query_params holds.
+_SITE_QUERY_NAMES = frozenset({"alt", "az", "lat", "lon", "site"})
+
+
+def _refuse_site_query(request: Request, instead: str) -> None:
+    """422 for a request whose query string names a place or a pointing.
+
+    REFUSED RATHER THAN IGNORED. FastAPI drops an undeclared query parameter
+    without a word, so a tab loaded before #520 would go on sending the mount's
+    alt/az - and every log between it and here would go on recording them -
+    while getting a perfectly good answer back. A 422 makes it fail where
+    somebody will see it.
+
+    The refusal names the PARAMETERS, never their values: the body goes back
+    through the same relay, and FastAPI's own 422 would echo the input.
+    """
+    named = sorted(k for k in request.query_params.keys()
+                   if k in _SITE_QUERY_NAMES)
+    if named:
+        raise HTTPException(422, detail={
+            "detail": ("this route no longer takes " + ", ".join(named)
+                       + " in its query string, where every log on the way "
+                       "writes them down: " + instead),
+            "code": "site_query_refused"})
 
 
 def _place_hint(lat: float, lon: float) -> str:
@@ -1765,6 +1846,29 @@ class FilterNamesBody(BaseModel):
     #: authoritative reader is a focus sweep, which has no plan to consult.
     exposures: list[float | None] | None = None
     gains: list[int | None] | None = None
+
+
+class CloudmapAtBody(BaseModel):
+    """``POST /api/cloudmap/at``: a direction somebody PICKED (#520).
+
+    Plain floats, deliberately without ``allow_inf_nan=False``: a NaN azimuth
+    reaches ``at_payload`` and is refused there with stage 4's sentence as a
+    400, the same answer the old query form gave, so the two forms cannot come
+    to disagree about what a domain error is."""
+    alt: float
+    az: float
+    ahead_s: float = 0.0
+
+
+class SiteSkyPreviewBody(BaseModel):
+    """``POST /api/site/sky``: the site picker's typed coordinates (#520).
+
+    In a body, where no access log writes them. Finite, because a NaN is not a
+    place and the arithmetic does not say so: measured without the check, a NaN
+    latitude came back 200 with the Sun at 90 degrees in the southern
+    hemisphere, a confident read-back for nowhere."""
+    lat: float = Field(allow_inf_nan=False)
+    lon: float = Field(allow_inf_nan=False)
 
 
 class AcknowledgeBody(BaseModel):
@@ -2324,6 +2428,17 @@ COUNTS_DORMANT_ADDENDUM = "Its armed session keeps its count until you CONTINUE.
 
 #: ``prepare_save``'s ``migrated`` keys, and what the answer says for each.
 _SAVE_NOTES = {"counts": COUNTS_SWITCHED_NOTE}
+
+#: THE NATIVE GUIDE ENGINE'S OWN SETTLE RULE (#506), ``(pixels, seconds)``:
+#: after a dither the guide star must stay within 1.5 guide-camera pixels for
+#: 10 s. The run hands the guider no settle of its own (the engine dithers
+#: with a distance alone), so this is what every dither of a native-guided
+#: night waits on, and the Tonight brief says so (``_guider_and_settle``).
+#: These are the Rust engine's ``DEFAULT_SETTLE_TOL_PX`` and
+#: ``DEFAULT_SETTLE_TIME_S`` (native/crates/astro-guide/src/engine.rs). The
+#: wheel does not export them, so they are written again here, and
+#: tests/test_h4_brief_guides_from_rig.py holds this pair to that source.
+NATIVE_GUIDE_SETTLE = (1.5, 10.0)
 
 
 def _save_answer(record: FlowRecord, migrated: list[str],
@@ -3615,9 +3730,11 @@ def create_app(*, bind_host: str | None = None,
 
     # ------------------------------------ cloud map (cloud-occlusion 6a §6)
     #
-    # Three read-only routes over the GOES cloud-occlusion model. All three are
-    # gated on view.weather, the same cap and the same trade-off as the radar
-    # map above (2026-07-17 decisions wave I2): the dome is centred on the site
+    # Three read-only routes over the GOES cloud-occlusion model, the look route
+    # answering both a GET and a POST (#520, below). All are gated on
+    # view.weather, the same cap and the same trade-off as the radar map above
+    # (2026-07-17 decisions wave I2), and test_h4_cloudmap_at_telescope holds
+    # it for both forms of the look route: the dome is centred on the site
     # and a pierce point sits within 30 km of it, so reaching these routes
     # discloses the rig's region to an operator, and a VIEWER never reaches
     # them at all.
@@ -3657,14 +3774,42 @@ def create_app(*, bind_host: str | None = None,
         except ValueError as exc:
             raise _cloudmap_400(exc) from exc
 
+    # THE LOOK ROUTE IS TWO ROUTES (#520). The panels used to send the mount's
+    # live alt/az as `GET /api/cloudmap/at?alt=&az=`, so every proxy and the
+    # Fly relay's access log recorded the pointing several times a minute - a
+    # function of the site, and at park the latitude itself (#140). Now:
+    #
+    #   * GET takes nothing but the lead time and reads the mount HERE. It is
+    #     the one the panels poll, and its URL carries nothing site-derived.
+    #   * POST carries a PICKED direction in its body, where no access log
+    #     writes it. The same gate, the same domain 400s.
+    #
+    # A GET still carrying alt or az is refused rather than ignored, so an old
+    # tab fails loudly instead of quietly going on writing the pointing into
+    # every log between it and here.
+
     @app.get("/api/cloudmap/at")
     @declare(CAP_VIEW_WEATHER)
     async def get_cloudmap_at(
-            alt: float, az: float, ahead_s: float = 0.0,
+            request: Request, ahead_s: float = 0.0,
+            principal: Principal = Depends(require(CAP_VIEW_WEATHER))):
+        _refuse_site_query(request, "/api/cloudmap/at reads the mount itself; "
+                                    "POST {alt, az, ahead_s} asks about a "
+                                    "picked point")
+        try:
+            return await cloudmap_service.telescope_payload(
+                hub.devices.get("telescope"), ahead_s=ahead_s)
+        except ValueError as exc:
+            raise _cloudmap_400(exc) from exc
+
+    @app.post("/api/cloudmap/at")
+    @declare(CAP_VIEW_WEATHER)
+    async def post_cloudmap_at(
+            body: CloudmapAtBody,
             principal: Principal = Depends(require(CAP_VIEW_WEATHER))):
         try:
             return cloudmap_service.at_payload(
-                alt_deg=alt, az_deg=az, ahead_s=ahead_s)
+                alt_deg=body.alt, az_deg=body.az, ahead_s=body.ahead_s)
         except ValueError as exc:
             raise _cloudmap_400(exc) from exc
 
@@ -5008,32 +5153,13 @@ def create_app(*, bind_host: str | None = None,
             principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         return await put_optics(body, principal)
 
-    @app.get("/api/site/sky")
-    @declare(CAP_VIEW_STATUS)
-    async def site_sky(lat: float | None = None, lon: float | None = None,
-                       principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+    def _site_sky_answer(latitude: float, longitude: float,
+                         principal: Principal) -> dict:
+        """What `/api/site/sky` says about a place, cut to what the caller may
+        hold. Takes the coordinates as numbers so the stored site and the
+        picker's typed point are answered by one body of arithmetic."""
         from ..catalog import coords
-        s = config_store.cfg().site
-        # THE lat/lon QUERY OVERRIDES ARE A HOLDER-ONLY FEATURE. A route that
-        # answers "what is the sun's altitude at the coordinates I name" is a
-        # geolocation oracle no matter how carefully its DEFAULT path is
-        # redacted: a caller sweeps candidate coordinates and keeps whichever
-        # reproduces the readings it already has. They exist for the site picker,
-        # which is admin-only anyway.
-        if (lat is not None or lon is not None) \
-                and not principal.has(CAP_VIEW_SITE_PRECISE):
-            raise HTTPException(403, "naming coordinates requires view.site_precise")
-        latitude = s.latitude if lat is None else lat
-        longitude = s.longitude if lon is None else lon
         out: dict = {}
-        # NO SITE, NO SKY (#24). Without overrides every field below is
-        # computed from the stored site, and at the 0,0 default that is the
-        # Gulf of Guinea's sun and dark window. Withheld rather than invented:
-        # an absent `dark_window` is already what a viewer receives, so every
-        # consumer handles it. Named coordinates are the site picker asking
-        # about a place on purpose, and still answer.
-        if lat is None and lon is None and not site_is_set(s):
-            return out
         # sun_alt_deg and dark_window are the SAME INFORMATION as the place_hint
         # and lst_str withheld below, arrived at by arithmetic: solar altitude
         # over a night gives latitude, and the dark-window boundaries give
@@ -5055,6 +5181,46 @@ def create_app(*, bind_host: str | None = None,
             out["place_hint"] = hint
             out["lst_str"] = coords.format_ra(coords.lst_hours(longitude))
         return out
+
+    @app.get("/api/site/sky")
+    @declare(CAP_VIEW_STATUS)
+    async def site_sky(request: Request,
+                       principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        # THE STORED SITE ONLY. The picker's lat/lon used to ride this URL as
+        # query overrides, and a URL is written down by every hop it crosses
+        # (#520); they moved to `POST /api/site/sky` below, and a GET still
+        # naming them is refused so an old tab fails where it can be seen.
+        _refuse_site_query(request, "POST {lat, lon} to /api/site/sky asks "
+                                    "about a typed place")
+        s = config_store.cfg().site
+        # NO SITE, NO SKY (#24). Every field is computed from the stored site,
+        # and at the 0,0 default that is the Gulf of Guinea's sun and dark
+        # window. Withheld rather than invented: an absent `dark_window` is
+        # already what a viewer receives, so every consumer handles it.
+        if not site_is_set(s):
+            return {}
+        return _site_sky_answer(s.latitude, s.longitude, principal)
+
+    @app.post("/api/site/sky")
+    @declare(CAP_VIEW_SITE_PRECISE)
+    async def site_sky_preview(
+            body: SiteSkyPreviewBody,
+            principal: Principal = Depends(require(CAP_VIEW_SITE_PRECISE))):
+        """The site picker's read-back: the same answer, for a TYPED place.
+
+        A HOLDER-ONLY QUESTION, gated at the dependency. A route that answers
+        "what is the sun's altitude at the coordinates I name" is a
+        geolocation oracle no matter how carefully the stored-site path is
+        redacted: a caller sweeps candidate coordinates and keeps whichever
+        reproduces the readings it already has. It exists for the site
+        picker, which only a holder of view.site_precise is shown.
+
+        A POST although it changes nothing, because its argument is a place
+        and a body is the one part of a request no access log writes down
+        (#520). It answers whether or not a site is saved: the picker is how
+        an unsited rig GETS one, so refusing it here would be circular.
+        """
+        return _site_sky_answer(body.lat, body.lon, principal)
 
     # ------------------------------------------------------------------- safety
 
@@ -5788,6 +5954,10 @@ def create_app(*, bind_host: str | None = None,
           ``resolve_policy``, the resolution ``quota_unbounded`` reads. A
           flow plan never sets either guard, so the rig's standards decide,
           and a bare plan asks for them without compiling anything.
+        * ``guide_provider``, ``guide_settle``, ``guide_dither_px`` and
+          ``guide_dither_every``: Rig > Guider's half (#506), for the Tonight
+          brief's guide sentence (``_guider_and_settle``, and the comment at
+          the call).
 
         On the event loop, like ``_camera_can_cool``: it reads the device
         map, and a caller on a worker thread is handed the value."""
@@ -5804,7 +5974,9 @@ def create_app(*, bind_host: str | None = None,
                  else "the rig's optics")
         measured = getattr(engine, "measured_cost", None)
         hop = measured("hop") if callable(measured) else None
-        policy = resolve_policy(SequencePlan(), config_store.cfg())
+        bare = SequencePlan()
+        policy = resolve_policy(bare, config_store.cfg())
+        guider, settle = _guider_and_settle()
         return RigFacts(
             fov_deg=fov,
             fov_from=(f"{where}, matched {time.strftime('%Y-%m-%d')}"
@@ -5813,7 +5985,62 @@ def create_app(*, bind_host: str | None = None,
             hop_samples=hop[1] if hop else 0,
             has_rotator=_profile_has_rotator(),
             reject_guards_off=not (policy.max_consecutive_rejects
-                                   or policy.max_consecutive_rejects_night))
+                                   or policy.max_consecutive_rejects_night),
+            # Rig > Guider's half (#506): the dither distance
+            # ``resolve_policy`` gives a plan that sets none, which a flow's
+            # plan is (the rig's ``guide.dither_pixels``), and the cadence a
+            # flow's run dithers at: ``to_sequence_plan`` never sets
+            # ``dither_every``, so the plan keeps the model's own default,
+            # whatever the GUIDE card's ``dither`` says.
+            guide_provider=guider, guide_settle=settle,
+            guide_dither_px=policy.dither_pixels,
+            guide_dither_every=bare.dither_every)
+
+    def _guider_and_settle() -> tuple[str | None, tuple | None]:
+        """The guider a flow's run will guide with and the settle its dithers
+        wait on (#506), from Rig > Guider, the source
+        ``to_plan.NODE_SETTINGS["guide"]`` tells the operator the GUIDE
+        card's ignored provider and settle come from; the brief names these
+        and never the card's.
+
+        * The guider is the label ``providers.resolve("guide")`` gives, the
+          resolver the run's guide start honours and the sheet's provider row
+          shows; None when it cannot say.
+        * The settle is the resolved guider's OWN, ``(pixels, seconds)``. The
+          engine dithers with a distance and no settle, so each guider waits
+          on its own rule: the native engine's (``NATIVE_GUIDE_SETTLE``; a
+          ``NativeGuider`` over real hardware or over the simulator alike)
+          and the PHD2 bridge's (``guide.phd2.SETTLE``, which it sends with
+          every dither). NINA settles by a rule it does not publish: None.
+
+        NOT DECIDED YET IS NONE, NOT PHD2. With no guider wired (the rig not
+        connected, as when tonight is planned in the afternoon) and no pin to
+        the bridge, the resolver can only answer its last resort, the PHD2
+        bridge, because the guide camera and mount it would weigh are absent.
+        That is not what the run will use: once the rig connects, the guide
+        start (``hub.select_guide_provider``) picks the native engine for a
+        rig pinned to it or offering it. Named, it put #506's own sentence
+        back, "guides with PHD2" and PHD2's 8 s settle, on a rig pinned to
+        the native guider. So that answer is None, and the brief says where
+        the guider comes from instead. #506 asks for the guider the run will
+        use "or leaves them out"; this leaves it out until it is known."""
+        from ..providers import guide_override_family
+        from ..providers import resolve as resolve_provider
+        try:
+            choice = resolve_provider("guide", hub)
+            pinned = guide_override_family(hub)
+        except Exception:
+            return None, None
+        if (choice.kind == "backend" and choice.label == "PHD2"
+                and getattr(hub, "guider", None) is None
+                and pinned != "backend"):
+            return None, None
+        if choice.kind in ("astrodeck", "sim"):
+            return choice.label or None, NATIVE_GUIDE_SETTLE
+        if choice.kind == "backend" and choice.label == "PHD2":
+            from ..guide.phd2 import SETTLE as phd2_settle
+            return choice.label, (phd2_settle["pixels"], phd2_settle["time"])
+        return choice.label or None, None
 
     async def _compile_payload(graph: FlowGraph, name: str, *,
                                flow_id: str = "") -> dict:
@@ -6184,7 +6411,8 @@ def create_app(*, bind_host: str | None = None,
         return await _compile_payload(body.graph or FlowGraph(), body.name or "")
 
     def _flow_progress_payload(rec: FlowRecord, flow_id: str,
-                               camera_can_cool: bool, rig: RigFacts) -> dict:
+                               camera_can_cool: bool, rig: RigFacts,
+                               now: float) -> dict:
         """The progress answer for one stored flow. Synchronous, so the route
         can run all of it on a worker thread.
 
@@ -6229,6 +6457,17 @@ def create_app(*, bind_host: str | None = None,
         its plan was frozen, never this record's ``updated_ts``: that one
         moves with every save, and read here it would say the session holds
         the version on screen, which is the opposite of the notice's point.
+
+        AND THE NIGHT A CONTINUE PRESSED NOW WOULD START (#511, H4):
+        ``continue_night``, from ``now``, the clock the route read for this
+        request and hands in. ``progress.continue_night`` asks
+        ``Session.night_at``, the rule ``_continue_flow_session`` answers
+        ``night`` by, so the button prints the run route's own number. Until
+        H4 this answer carried no clock and the button added one to
+        ``nights``, which on a night the session had already run read one
+        night more than the run route answered. Only on a dormant session:
+        only a dormant session is continued, and any other answers without
+        the key.
         """
         compiled = compile_plan(rec.graph, rec.name)
         plan, _unmapped = to_sequence_plan(
@@ -6242,6 +6481,11 @@ def create_app(*, bind_host: str | None = None,
         out = flow_progress(compiled, plan, session, flow_id=flow_id)
         if session is not None:
             out["session"].update(replay_facts(session))
+            # Present only on a dormant session, as ``locked_angle`` is only
+            # where there is a lock: any other session answers as S7's did.
+            night = continue_night(session, now)
+            if night is not None:
+                out["session"]["continue_night"] = night
         return out
 
     # ORDERING: declared with the static /api/flows/<segment> routes, before
@@ -6272,8 +6516,13 @@ def create_app(*, bind_host: str | None = None,
         ``plan_saved_ts`` (S7, #473): a status and a flag, and the moment an
         operator pressed Save, none of them from the site. Its ``nights``
         counts observing nights since S7 (#430), from the runs' own start
-        stamps, never from the site. Anything site-derived belongs on
-        GET /api/flows/{flow_id}/tonight, which is CAP_VIEW_SITE_DERIVED.
+        stamps, never from the site. Since H4 the session also carries
+        ``continue_night`` (#511): the night CONTINUE would start now, from
+        the clock read here and the server's local noon-to-noon night key,
+        a count and never a time, and none of it from the site; the allow-
+        list and the site-move test walk it valued. Anything site-derived
+        belongs on GET /api/flows/{flow_id}/tonight, which is
+        CAP_VIEW_SITE_DERIVED.
 
         OFF THE EVENT LOOP: a compile, a scan of every session file on disk
         and a count, for each card of a library that asks for its chips.
@@ -6294,8 +6543,12 @@ def create_app(*, bind_host: str | None = None,
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
         try:
+            # The request's clock, read here and handed in: the one clock
+            # ``continue_night`` counts by (#511), read as the run route
+            # reads its own, from this module's ``time``.
             return await asyncio.to_thread(_flow_progress_payload, rec, flow_id,
-                                           _camera_can_cool(), _rig_facts())
+                                           _camera_can_cool(), _rig_facts(),
+                                           time.time())
         except GraphNotRunnable as e:
             raise HTTPException(422, detail={"detail": str(e), "code": e.code})
 
@@ -6397,6 +6650,10 @@ def create_app(*, bind_host: str | None = None,
         engine MEASURED (``RigFacts.hop_cost_s``, None until a hop is timed,
         never the engine's seed). The device reads are made here, on the
         loop, and the values handed over, as the progress route does.
+
+        THE BRIEF'S GUIDE SENTENCE READS THE SAME RIG FACTS (#506): the
+        guider the run will use and its settle and dither, Rig > Guider's
+        (``_guider_and_settle``), never the GUIDE card's.
         """
         try:
             rec = await asyncio.to_thread(flow_store.get, flow_id)
@@ -6404,34 +6661,43 @@ def create_app(*, bind_host: str | None = None,
             raise HTTPException(404, detail={"code": "not_found"})
         can_cool, rig = _camera_can_cool(), _rig_facts()
 
-        # THE REPORTS THEMSELVES, NOT THEIR SUMMARIES (#419). Both folds read
-        # each report's ``by_filter`` and ``targets``, and ``list_reports``
-        # builds a summary of eight scalars that carries neither, so both
-        # folds answered {} on every flow: BUDGET's "0 h banked" and every
-        # CAMPAIGN member at 0, whatever was on disk. So each listed report
-        # is loaded (``SessionReporter.load``), which is what the folds'
-        # docstrings always said the route supplies. A report that cannot be
-        # read is left out, as the list leaves it out, and ``read`` says so
-        # in the log. Loaded ONCE for both folds, and only when
-        # ``resolve_tonight`` asks, on ITS worker thread: this runs inside
-        # the to_thread below and never on the loop.
+        # THE LEDGER'S SUMMARIES, NOT THE REPORTS (#536, H4 orchestrator
+        # ruling 6). Both folds read each report's per-filter accepted frames
+        # and integration, per target and over the report, which is all a
+        # summary holds (``report_summary``, written by ``finalize``). Loading
+        # every report for them (#419's fix, after ``list_reports``' eight
+        # scalars had folded to {}) made each open of the sheet read every
+        # report in full twice, once to list it and once to load it. The
+        # summaries reader (``SessionReporter.summaries``) opens no report
+        # whose summary is current, and reads a report with none once,
+        # writing its summary for the next request, so a report older than
+        # the summaries still counts. A report that cannot be read is left out
+        # and logged, as the list leaves it out. Read ONCE for both folds, and
+        # only when ``resolve_tonight`` asks, on ITS worker thread: this runs
+        # inside the to_thread below and never on the loop.
         @functools.cache
-        def reports() -> tuple:
-            return tuple(r for r in (SessionReporter.load(s["id"])
-                                     for s in SessionReporter.list_reports())
-                         if r is not None)
+        def summaries() -> tuple:
+            return tuple(SessionReporter.summaries())
 
         return await asyncio.to_thread(
             resolve_tonight, rec.graph, hub.site, name=rec.name,
-            banked=lambda: banked_hours_from_reports(reports()),
+            # BUDGET: this flow's own targets' hours (#536), the names its run
+            # records frames under, a mosaic's by panel. M16's Ha is not
+            # M31's progress, and the row says "for these targets".
+            banked=lambda: banked_hours_from_reports(
+                summaries(), targets=flow_target_names(rec.graph, rec.name)),
             # The CAMPAIGN tab's per-member progress. Same ledger, different
-            # fold: BUDGET wants hours per filter across everything, a campaign
-            # wants accepted frames per filter PER TARGET, because a pool member
-            # is retired by its own quota and nobody else's.
-            frames_by_target=lambda: frames_by_target_from_reports(reports()),
+            # fold: BUDGET wants hours per filter over the flow's targets, a
+            # campaign wants accepted frames per filter PER TARGET, because a
+            # pool member is retired by its own quota and nobody else's.
+            frames_by_target=lambda: frames_by_target_from_reports(
+                summaries()),
             hop_cost_s=rig.hop_cost_s,
+            rig=rig,
+            # Tonight reads the progress answer's blocks and never its
+            # session, so the clock handed in moves nothing it reads.
             progress=lambda: _flow_progress_payload(rec, flow_id, can_cool,
-                                                    rig))
+                                                    rig, time.time()))
 
     @app.post("/api/flows/{flow_id}/run",
               dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
@@ -9262,14 +9528,38 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/sequence/recoverable", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def sequence_recoverable():
-        # Re-backed on the session store (spec §2): a dormant session WITH
-        # frames is recoverable. Route path unchanged for UI compatibility.
+        """The session RECOVER would resume, and why it went dormant.
+
+        Re-backed on the session store (spec §2): a dormant session WITH
+        frames is recoverable, whatever made it dormant, an operator's STOP
+        included. Route path unchanged for UI compatibility.
+
+        ``end_reason`` (#487) is why, from the session's last report
+        (``_why_dormant``): the report's own word, ``RESTART_END_REASON`` for
+        the traces only a process that stopped under the run leaves, or null
+        when there is nothing to read. The recoverable card words its cause
+        from this and nothing else; before #487 it said "The server
+        restarted" after every ending, a STOP too.
+
+        The report is read OFF THE LOOP: ``SessionReporter.read`` retries a
+        refused read with sleeps (#370, #477). A read that raises (the ACL
+        layer's refusal) is no report here, and the card still appears: a
+        cause that cannot be read is a cause not stated, never a failed
+        card."""
         s = session_store.recoverable()
         if s is None:
             return {"recoverable": False}
+        last = None
+        if s.nights:
+            try:
+                last = (await asyncio.to_thread(SessionReporter.read,
+                                                s.nights[-1])).report
+            except Exception:      # noqa: BLE001 - no cause, never no card
+                last = None
         return {"recoverable": True, "session_id": s.id, "name": s.name,
                 "frames_done": sum(s.done_map().values()),
-                "frames_total": s.plan.total_frames(), "ts": s.updated_ts}
+                "frames_total": s.plan.total_frames(), "ts": s.updated_ts,
+                "end_reason": _why_dormant(s, last)}
 
     @app.post("/api/sequence/recover", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"SequenceEngine.start"})

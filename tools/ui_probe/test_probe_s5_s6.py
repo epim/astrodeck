@@ -15,6 +15,13 @@ verbatim output are kept there).
 The real page was walked with these checks too: routes_s5_s6.json's
 `_mutations` entries record what they said about the UI as it stood before
 each fix, and about each fix undone in a private build.
+
+Mosaic slice H4 added ScrollbarTest (#535), CatalogueWalkTest (the one-tap
+catalogue pick of #492 and #440's verdict case, walked with the real route on
+a fixture of the defect), RunCopyTest's `continue_night` rule (#511), and the
+route-file cases for them; every browser here is `probe._Browsers`'. Those
+mutants ran in a private mirror (scratchpad H4-PROBE-LAYOUT-mut, 2026-09-29;
+mutate.py and every verbatim output are kept there).
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -135,12 +142,14 @@ class _Browser(unittest.TestCase):
         cls.worker.start()
         cls.base = f"http://127.0.0.1:{cls.server.server_port}"
         cls.pw = sync_playwright().start()
-        cls.browser = cls.pw.chromium.launch(headless=True)
+        # The probe's own browsers: a desktop walk here draws its scrollbars,
+        # as the real walks do (probe.py HIDE_SCROLLBARS, #535).
+        cls.browsers = probe._Browsers(cls.pw)
         cls.tmp = tempfile.TemporaryDirectory()
 
     @classmethod
     def tearDownClass(cls):
-        cls.browser.close()
+        cls.browsers.close()
         cls.pw.stop()
         cls.server.shutdown()
         cls.server.server_close()
@@ -151,11 +160,7 @@ class _Browser(unittest.TestCase):
              post_api: dict | None = None) -> dict:
         Handler.state = {"page": html, "api": api or {}, "post_api": post_api or {}}
         route = {"name": "fixture", "url": "#/", "testid": "view", **route}
-        if phone:
-            ctx = self.browser.new_context(viewport={"width": 390, "height": 844},
-                                           is_mobile=True, has_touch=True)
-        else:
-            ctx = self.browser.new_context(viewport={"width": 1440, "height": 900})
+        ctx = self.browsers.context(390 if phone else 1440)
         try:
             return probe._run_isolated_route(ctx, self.base, route, Path(self.tmp.name),
                                              390 if phone else 1440)
@@ -338,8 +343,14 @@ PROG = "/api/flows/f1/progress"
 FLOW = "/api/flows/f1"
 
 
-def progress(status="dormant", nights=1, blocks=((13, 80), (2, 10))):
-    return {"flow_id": "f1", "session": {"id": "s1", "status": status, "nights": nights},
+def progress(status="dormant", nights=5, blocks=((13, 80), (2, 10)), continue_night=2):
+    """A progress answer. `nights` is not the night CONTINUE starts: the route's
+    `continue_night` is (#511), and the two differ here on purpose (5 + 1 is
+    not 2), so a probe that added one to `nights` reads a different night."""
+    session = {"id": "s1", "status": status, "nights": nights}
+    if continue_night is not None:
+        session["continue_night"] = continue_night
+    return {"flow_id": "f1", "session": session,
             "blocks": [{"banked": b, "total": t} for b, t in blocks]}
 
 
@@ -352,11 +363,45 @@ class RunCopyTest(_Browser):
                          {PROG: prog, FLOW: {"id": "f1", "name": "M31 2x2"}})
 
     def test_the_routes_numbers_pass(self):
-        """CONTROL: night = nights + 1; the counts are EVERY block's banked
-        over its total, summed (13 + 2 of 80 + 10); the name in capitals."""
+        """CONTROL: the night is the route's `continue_night` (2), the night the
+        run route answers, never `nights` plus one (6); the counts are EVERY
+        block's banked over its total, summed (13 + 2 of 80 + 10); the name in
+        capitals. runCopy.ts prints exactly that since H4-ROUTES-B (#511).
+
+        Mutation "nights plus one" (probe.py `_run_copy_want`: `night =
+        _whole_number(session.get("continue_night"))` -> `night =
+        int(session["nights"]) + 1`, the rule until H4), observed red:
+            AssertionError: False is not true : ['run_copy: control
+            \\'[data-testid="run"]\\' reads \\'CONTINUE M31 2X2 (night 2, 15/90
+            subs)\\', and the progress route says \\'CONTINUE M31 2X2 (night 6,
+            15/90 subs)\\'', 'run_copy: the session continues night 6, and the
+            walk expects night 2']
+        and red the same way in the four other cases of this class, each
+        route's night read as 6."""
         r = self.walk_copy("CONTINUE M31 2X2 (night 2, 15/90 subs)", progress())
         self.assertPasses(r)
         self.assertEqual(r["run_copy"]["want"]["text"], "CONTINUE M31 2X2 (night 2, 15/90 subs)")
+
+    def test_a_route_that_names_no_night_gets_counts_and_no_night(self):
+        """A dormant session whose route carries no `continue_night` (a server
+        older than H4): the button prints the counts alone, `(15/90 subs)`,
+        and never a night worked out from `nights`; a walk that expects a
+        night is told the route named none.
+
+        Mutation "a night guessed when the route names none" (probe.py
+        `_run_copy_want`: `night = ... continue_night ...` -> `... or
+        int(session["nights"]) + 1`), observed red:
+            AssertionError: False is not true : ['run_copy: control
+            \\'[data-testid="run"]\\' reads \\'CONTINUE M31 2X2 (15/90 subs)\\', and
+            the progress route says \\'CONTINUE M31 2X2 (night 6, 15/90 subs)\\'']"""
+        prog = progress(continue_night=None)
+        no_night = {"run_copy": {"selector": '[data-testid="run"]', "flow": "f1",
+                                 "min_banked": 1, "timeout_ms": 1500}}
+        r = self.walk_copy("CONTINUE M31 2X2 (15/90 subs)", prog, no_night)
+        self.assertPasses(r)
+        self.assertIsNone(r["run_copy"]["want"]["night"])
+        r = self.walk_copy("CONTINUE M31 2X2 (15/90 subs)", progress(continue_night=None))
+        self.assertFailsOnlyFor(r, "names no night for CONTINUE")
 
     def test_counts_of_one_block_fail(self):
         """A button that counted the first block only.
@@ -378,13 +423,14 @@ class RunCopyTest(_Browser):
         self.assertFailsOnlyFor(r, "names no dormant session")
 
     def test_the_night_the_walk_expects_is_held(self):
-        """A first run's abort continues night 2; a button and a route that
-        agree on night 1 are both wrong for this walk.
+        """The walk says which night it expects (here 2, a session moved onto an
+        earlier night); a button and a route that agree on night 1 are both
+        wrong for this walk.
 
         Mutation "night not held" (probe.py `_check_run_copy`: the `night`
         test deleted), observed red:
             AssertionError: True is not false : the probe passed a page it must fail"""
-        r = self.walk_copy("CONTINUE M31 2X2 (night 1, 15/90 subs)", progress(nights=0))
+        r = self.walk_copy("CONTINUE M31 2X2 (night 1, 15/90 subs)", progress(continue_night=1))
         self.assertFailsOnlyFor(r, "continues night 1, and the walk expects night 2")
 
     def test_counts_of_nothing_banked_do_not_show_counts_carry(self):
@@ -827,7 +873,7 @@ class SeedSaveFlowTest(_Browser):
         op = {"save_flow": {"id": "p1", "name": "M31 2x2", "graph": GRAPH,
                             "expect_node": {"id": "n2", "type": "target", "min_panels": 4},
                             **spec}}
-        ctx = self.browser.new_context()
+        ctx = self.browsers.for_width(1440).new_context()
         try:
             return probe._seed(ctx.request, self.base, [op])
         finally:
@@ -896,7 +942,7 @@ class RequireSimTest(_Browser):
 
     def seed_status(self, answer):
         Handler.state = {"api": {"/api/status": answer} if answer is not None else {}}
-        ctx = self.browser.new_context()
+        ctx = self.browsers.for_width(1440).new_context()
         try:
             return probe._seed(ctx.request, self.base, [{"require_sim": True}])
         finally:
@@ -965,6 +1011,247 @@ class ConsoleSafeTest(unittest.TestCase):
 
 # --------------------------------------------------------------- route file
 
+# ---------------------------------------------------------------- scrollbar
+
+# #469's column: the classic inspector's FLOW panel, 284 px with a left
+# border, `overflow-y-auto`, index.css's `scrollbar-width: thin`, holding the
+# "While a mosaic waits" select. Tall content in a short column scrolls.
+COLUMN = ('<div data-flows-inspector="true" style="width:284px;height:%dpx;overflow-y:%s;'
+          'border-left:1px solid #888;scrollbar-width:thin"><label style="display:block;'
+          'height:600px">While a mosaic waits <select style="font-size:10.5px"><option>Shoot '
+          'later targets, then come back</option></select></label></div>')
+SCROLLBAR = {"scrollbar": [{"selector": '[data-flows-inspector="true"]', "min_px": 8,
+                            "timeout_ms": 1000}]}
+
+
+class ScrollbarTest(_Browser):
+    """`scrollbar` (#535): on the real page a desktop walk says first that the
+    column it measures in draws its bar, so a browser that hid its bars fails
+    there by name instead of passing every fit a bar too generously."""
+
+    def test_a_scrolling_column_draws_its_bar_on_a_desktop_walk(self):
+        """CONTROL, and the case itself: in the probe's desktop browser the
+        thin bar takes 10 px of the 284 px column (283 inside its border with
+        the bar hidden, 273 with it drawn: what the real page measured).
+
+        Mutation "default launch restored" (probe.py `_launch_args`: returns
+        {} for every width), observed red:
+            AssertionError: False is not true : ['scrollbar:
+            \\'[data-flows-inspector="true"]\\' scrolls (600px of content in
+            300px) and its scrollbar takes 0px of its 284px, need >= 8px: this
+            browser hides its scrollbars, so every fit measured in this column
+            is a bar too generous (#535)']"""
+        r = self.walk(page(COLUMN % (300, "auto")), SCROLLBAR, phone=False)
+        self.assertPasses(r)
+        got = r["scrollbar"][0]["measured"]
+        self.assertEqual((got["scrolls"], got["width"], got["inner"], got["bar"]),
+                         (True, 284, 273, 10))
+
+    def test_a_scrolling_column_whose_bar_takes_no_width_fails(self):
+        """What the check is for, with the probe unmutated: the same column,
+        scrolling the same 600 px in 300, in the probe's PHONE browser, which
+        is Playwright's default launch, `--hide-scrollbars` and all (a phone
+        overlays its bar: 0 px, LaunchTest). A desktop walk in a browser like
+        this measured #469's column a bar too wide, and the check must name
+        it. Without this case the bar was graded only under the launch mutant
+        above, so a check that asked only whether the column scrolls passed
+        every case here (found by the verifier, 2026-09-29, whose mutant ran
+        in scratchpad H4-PROBE-LAYOUT-verify-mut).
+
+        Mutation "bar not graded" (probe.py `_check_scrollbar`: `return
+        bool(got.get("scrolls")) and got.get("bar", 0) >= need, got` ->
+        `return bool(got.get("scrolls")), got`), observed red (it survived
+        every other case in the probe's suites):
+            AssertionError: True is not false : the probe passed a page it
+            must fail"""
+        r = self.walk(page(COLUMN % (300, "auto")), SCROLLBAR, phone=True)
+        self.assertFailsOnlyFor(r, "scrollbar:")
+        self.assertIn("scrollbar takes 0px of its 284px, need >= 8px", r["reasons"][0])
+        got = r["scrollbar"][0]["measured"]
+        self.assertEqual((got["scrolls"], got["bar"]), (True, 0))
+
+    def test_a_column_that_does_not_scroll_fails_as_one(self):
+        """A column with room for all it holds draws no bar in any browser, so
+        it shows nothing about the launch: the walk must name a column that
+        scrolls, and the reason says it does not, not that bars are hidden.
+
+        Mutation "the not-scrolling reason dropped" (probe.py
+        `_check_scrollbar`: the `elif not got.get("scrolls")` branch deleted),
+        observed red, the reason blaming the launch for a column with room:
+            AssertionError: 'does not scroll' not found in 'scrollbar:
+            \\'[data-flows-inspector="true"]\\' scrolls (800px of content in
+            800px) and its scrollbar takes 0px of its 284px, need >= 8px: this
+            browser hides its scrollbars, ...'
+        and red the same way in the next case."""
+        r = self.walk(page(COLUMN % (800, "auto")), SCROLLBAR, phone=False)
+        self.assertFailsOnlyFor(r, "scrollbar:")
+        self.assertIn("does not scroll", r["reasons"][0])
+
+    def test_a_box_that_clips_is_not_a_column_that_scrolls(self):
+        """`overflow: hidden` with more content than room: a person cannot
+        scroll it and no browser draws it a bar.
+
+        Mutation "overflow not read" (probe.py SCROLLBAR_JS: `scrolls` is the
+        content test alone), observed red:
+            AssertionError: 'does not scroll' not found in 'scrollbar:
+            \\'[data-flows-inspector="true"]\\' scrolls (600px of content in
+            300px) and its scrollbar takes 0px of its 284px, need >= 8px: this
+            browser hides its scrollbars, ...'"""
+        r = self.walk(page(COLUMN % (300, "hidden")), SCROLLBAR, phone=False)
+        self.assertFailsOnlyFor(r, "scrollbar:")
+        self.assertIn("does not scroll", r["reasons"][0])
+        self.assertIn("overflow-y hidden", r["reasons"][0])
+
+
+# ------------------------------------------------- one tap on a catalogue row
+
+# The phone's doors to the Target modal and the modal's sky and WHERE search,
+# as #492 found them: typing mode (a focused text field in the scroller)
+# shrinks the sky from 390 to 337.6 px (40svh), and leaving it grows the sky
+# back. The result button's mousedown is cancelled (H4-UFRAME's fix), unless
+# the variant is `press_moves_focus`: then the press takes focus off the field,
+# the sky grows 52 px before the release, and the release lands on the field
+# that moved under it. The degraded line arrives 300 ms after the modal opens
+# (the tiles failing); a pick draws the verdict line under it. `square_fills`
+# is the sky's square read off the sky, not its slot (#495's mutant).
+CATALOGUE_PAGE = """<!doctype html><html><head><meta name="viewport" content="width=device-width">
+<style>*,::before,::after{box-sizing:border-box} body{margin:0;font:14px/1.5 sans-serif}
+button,input{font:inherit;min-height:44px}
+.fx-sky{flex:none;height:390px;min-width:0;position:relative;overflow:hidden;container-type:size;
+ display:flex;align-items:center;justify-content:center}
+[data-typing="true"] .fx-sky{height:337.6px}
+.fx-fit{width:min(100cqw,100cqh);height:min(100cqw,100cqh)}
+.sky-canvas{display:flex;flex-direction:column;gap:8px;height:100%%}
+.sky-canvas-square{flex:1 1 0;min-height:0;display:flex;align-items:center;justify-content:center%(slot)s}
+.fx-app{position:relative;width:min(100cqw,100cqh);aspect-ratio:1/1}
+.fx-n{position:absolute;left:50%%;transform:translateX(-50%%);top:4px;font:12px/18px monospace}
+.fx-w{position:absolute;right:4px;top:50%%;transform:translateY(-50%%);font:12px/18px monospace}
+.fx-line{flex:none;font-size:12px;line-height:18px;padding:4px 8px;border:1px solid #888}
+</style></head><body>
+<header>ASTRODECK</header>
+<main id="main-body"><p>%(filler)s</p>
+ <button type="button" data-testid="flow-open-probe-s5-phone" onclick="show('stages')">M31 2x2</button>
+ <div id="stages" data-testid="session-flow-stages" hidden>
+  <div data-testid="flow-stage-row"><button type="button" class="nx-row" onclick="show('node')"><span class="nx-row-title">TARGET</span> <span>M31</span></button></div>
+ </div>
+ <div id="node" hidden><button type="button" data-testid="flow-node-frame" onclick="openSheet()">FRAME ON SKY</button></div>
+</main>
+<div id="sheet" hidden>
+ <div data-testid="target-framing-sheet" id="tfs" style="position:fixed;inset:0;display:flex;flex-direction:column;background:#fff">
+  <header style="flex:none;height:48px">FRAME M31</header>
+  <div data-testid="framing-sky" class="fx-sky"><div class="fx-fit"><div class="sky-canvas" id="skycol">
+   <div class="sky-canvas-square"><div role="application" class="fx-app">
+    <span class="fx-n">N</span><span class="fx-w">W</span>
+    <div style="position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:4px;z-index:5">
+     <button type="button">MOVE SKY</button><button type="button">MOVE GRID</button></div>
+   </div></div>
+   <div data-role="survey-degraded" class="fx-line" id="degraded" hidden>Survey tiles not loading. Retrying automatically.</div>
+  </div></div></div>
+  <div id="scroller" style="flex:1 1 auto;min-height:0;overflow-y:auto">
+   <section><h3 style="margin:0">WHERE</h3>
+    <input id="search" aria-label="Search the target catalog" oninput="search(this.value)" style="width:100%%">
+    <div id="results" hidden><button type="button" id="m31" onclick="pick()"%(press)s style="width:100%%;text-align:left"><span><span class="text-accent">M31</span> Andromeda Galaxy</span></button></div>
+    <p style="height:600px">%(filler)s</p></section>
+  </div>
+ </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+function show(id) { $(id).hidden = false; }
+function openSheet() {
+  $('main-body').hidden = true; $('sheet').hidden = false;
+  setTimeout(() => { $('degraded').hidden = false; }, 300);
+}
+const isText = (el) => !!el && el.tagName === 'INPUT';
+function setTyping(on) {
+  if (on) $('tfs').setAttribute('data-typing', 'true'); else $('tfs').removeAttribute('data-typing');
+}
+$('scroller').addEventListener('focusin', (e) => setTyping(isText(e.target)));
+$('scroller').addEventListener('focusout', (e) => setTyping(isText(e.relatedTarget)));
+function search(v) { $('results').hidden = !v.trim(); }
+function pick() {
+  $('search').value = ''; $('results').hidden = true;
+  if (!$('verdict')) {
+    const d = document.createElement('div');
+    d.id = 'verdict'; d.className = 'fx-line'; d.style.border = '0'; d.style.padding = '0';
+    d.textContent = 'Object is 6.4x your frame - needs a mosaic';
+    $('skycol').appendChild(d);
+  }
+  $('search').blur();
+}
+</script>
+</body></html>"""
+
+VERDICT = '[data-testid="framing-sky"] .sky-canvas > div:text-matches("^Object (is|fills) ")'
+RESULT = '[data-testid="target-framing-sheet"] button:has(span.text-accent:text-is("M31"))'
+
+
+def catalogue_page(variant: str) -> str:
+    return CATALOGUE_PAGE % {
+        "filler": FILLER,
+        "slot": "" if variant == "square_fills" else ";container-type:size",
+        "press": "" if variant == "press_moves_focus" else ' onmousedown="event.preventDefault()"'}
+
+
+class CatalogueWalkTest(_Browser):
+    """s5-frame-catalogue-pick-phone, the REAL route, on a fixture of #492:
+    one tap on a WHERE result must pick it, and the sky is then graded with
+    the verdict line under the canvas (#440)."""
+
+    def walk_pick(self, variant: str, short: bool = False) -> dict:
+        route = _route("s5-frame-catalogue-pick-phone")
+        if short:
+            for check in ("contained", "apart"):
+                for spec in route[check]:
+                    spec["timeout_ms"] = 1500  # the wait, not the check
+        return self.walk(catalogue_page(variant), route)
+
+    def test_one_tap_picks_and_the_sky_holds_both_lines(self):
+        """CONTROL: the press keeps focus on the field, the release lands on
+        the row, the verdict line is drawn, and the canvas, the move pair and
+        the compass letters are whole inside the sky with both lines under the
+        canvas. The row is tapped once."""
+        r = self.walk_pick("good")
+        self.assertPasses(r)
+        taps = [s for s in r["click_log"] if s["text"] == RESULT]
+        self.assertEqual([s["action"] for s in taps], ["tap"])
+        self.assertEqual(len(r["apart"][0]["others"]), 2)
+
+    def test_a_press_that_moves_focus_loses_the_one_tap(self):
+        """#492 IN MINIATURE. The press takes focus off the field, the sky grows
+        52 px under the finger and the release lands on the field: the tap is
+        lost, the verdict never comes, and the walk fails on that step, the
+        first of its reasons. A second tap, where the row has moved to, would
+        pick it, which is why the walk taps once.
+
+        Mutation "a second tap on the result" (routes_s5_s6.json: the RESULT
+        step repeated after itself), observed red:
+            AssertionError: True is not false : the probe passed a page it must fail"""
+        r = self.walk_pick("press_moves_focus", short=True)
+        self.assertFailsOnlyFor(r, 'text-matches("^Object (is|fills) ")')
+        self.assertTrue(r["reasons"][0].startswith(f"required step {VERDICT!r} failed"),
+                        r["reasons"])
+
+    def test_the_verdict_line_case_is_graded_whole(self):
+        """#440's verdict case: with the pick landed and two lines under the
+        canvas, a square read off the sky runs 31 px past its top and over the
+        lines, and the walk fails for exactly that.
+
+        Mutation "containment not graded" (probe.py `_contained_attempt`: `ok =
+        True`), observed red:
+            AssertionError: Items in the second set but not the first:
+            'contained'
+        Mutation "overlap not graded" (probe.py `_apart_attempt`: `hit =
+        False`), observed red:
+            AssertionError: Items in the second set but not the first:
+            'apart'"""
+        r = self.walk_pick("square_fills")
+        self.assertFailsOnlyFor(r, "contained:", "apart:")
+        self.assertEqual({x.split(":")[0] for x in r["reasons"]}, {"contained", "apart"})
+        app = next(row for row in r["contained"][0]["rows"] if row["selector"].endswith('[role="application"]'))
+        self.assertEqual(app["over"]["top"], 31)
+
+
 class RouteFileTest(unittest.TestCase):
     """What the acceptance asks of routes_s5_s6.json, held so an edit that
     drops it is red here rather than a quieter probe."""
@@ -1007,22 +1294,93 @@ class RouteFileTest(unittest.TestCase):
             self.assertIn({"selector": '[data-testid="framing-done"]', "equals": 0}, r["count"])
 
     def test_the_continue_walks_hold_continue_and_the_confirm(self):
-        """(b): CONTINUE with the route's numbers on night 2 with a sub banked,
-        START OVER opened then CANCELled, and no run request sent.
+        """(b): CONTINUE with the route's numbers on night 1 with a sub banked,
+        START OVER opened then CANCELled, and no run request sent. Night 1: a
+        first run aborted the same evening continues that night, the night the
+        run route answers (#511, fixed in H4-ROUTES-B); the walks expected
+        night 2, the old `nights` plus one, until H4-PROBE-LAYOUT.
 
         Mutation "the confirm not guarded" (routes_s5_s6.json:
         s5-continue-desktop's forbid_requests deleted), observed red:
-            AssertionError: None != [{'method': 'POST', 'url': '**/api/flows/*/run'}]"""
+            AssertionError: None != [{'method': 'POST', 'url': '**/api/flows/*/run'}]
+        Mutation "night 2 again" (routes_s5_s6.json: s5-continue-phone's
+        run_copy night -> 2, as before H4), observed red:
+            AssertionError: Tuples differ: ('probe-s5-phone', 2, 1) !=
+            ('probe-s5-phone', 1, 1)"""
         for name, flow in (("s5-continue-phone", "probe-s5-phone"),
                            ("s5-continue-desktop", "probe-s5-desk")):
             r = _route(name)
             self.assertEqual(r.get("forbid_requests"),
                              [{"method": "POST", "url": "**/api/flows/*/run"}])
             self.assertEqual((r["run_copy"]["flow"], r["run_copy"]["night"],
-                              r["run_copy"]["min_banked"]), (flow, 2, 1), name)
+                              r["run_copy"]["min_banked"]), (flow, 1, 1), name)
             steps = json.dumps(r["click"])
             self.assertLess(steps.index("start-over"), steps.index("Start this flow over?"), name)
             self.assertIn("CANCEL" if "desktop" in name else "confirm-keep", r["click"][-1]["selector"])
+
+    def test_the_catalogue_walk_picks_with_one_tap_and_grades_the_verdict_line(self):
+        """#492 and #440's verdict case, held in the route file: the first walk
+        at 390, while the phone's flow is still editable (s5-run-phone makes
+        its modal view-only), on a touch screen; the typing premise stated
+        before the tap; exactly ONE step on the result row, followed at once
+        by a short wait for the verdict line; and the sky graded, contained
+        and apart, with the verdict line as its premise and both lines there.
+
+        Mutation "a second tap on the result" (routes_s5_s6.json: the RESULT
+        step repeated after itself), observed red:
+            AssertionError: 2 != 1
+        and the real page's red for the reverted fix is in the route's
+        `_mutations`."""
+        phone = [r["name"] for r in probe._routes_for_width(_route_file()["routes"], 390)]
+        self.assertEqual(phone[:2], ["s5-frame-catalogue-pick-phone", "s5-run-phone"])
+        r = _route("s5-frame-catalogue-pick-phone")
+        self.assertIs(r.get("touch"), True)
+        steps = r["click"]
+        on_row = [i for i, s in enumerate(steps) if s.get("selector") == RESULT]
+        self.assertEqual(len(on_row), 1)
+        after = steps[on_row[0] + 1]
+        self.assertEqual(after.get("wait_for"), VERDICT)
+        self.assertLessEqual(after.get("wait_ms", 8000), 5000)
+        typing = '[data-testid="target-framing-sheet"][data-typing="true"]'
+        self.assertIn(typing, [s.get("wait_for") for s in steps[:on_row[0]]])
+        self.assertEqual([c["when"] for c in r["contained"]] + [a["when"] for a in r["apart"]],
+                         [VERDICT, VERDICT])
+        self.assertEqual(r["apart"][0]["min_b"], 2)
+        self.assertEqual(len(r["contained"][0]["selectors"]), 5)
+
+    def test_the_running_modal_walk_holds_its_sky_whole(self):
+        """#495 on s5-frame-running-phone: the canvas and the compass letters
+        whole inside the sky and no line over the canvas, once the degraded
+        line is drawn. The view-only modal draws no MOVE pair (FramingSky has
+        no toggle when read-only), which a count holds, so the route does not
+        ask for one to be contained.
+
+        Mutation "the running walk's containment dropped" (routes_s5_s6.json:
+        s5-frame-running-phone's `contained` deleted), observed red:
+            KeyError: 'contained'"""
+        r = _route("s5-frame-running-phone")
+        sky = '[data-testid="framing-sky"]'
+        (held,) = r["contained"]
+        self.assertEqual(held["selectors"], [f'{sky} [role="application"]',
+                                             f'{sky} span:text-is("N")', f'{sky} span:text-is("W")'])
+        self.assertEqual(held["when"], f'{sky} [data-role="survey-degraded"]')
+        self.assertEqual(r["apart"][0]["a"], f'{sky} [role="application"]')
+        self.assertIn({"selector": f"{sky} .tfs-move", "equals": 0}, r["count"])
+
+    def test_the_running_desktop_modal_says_its_column_draws_its_bar(self):
+        """#535: the desktop modal walk measures its control column's bar, and
+        no phone walk asks for one (a phone's bar takes no width).
+
+        Mutation "the desktop walk's scrollbar check dropped"
+        (routes_s5_s6.json: s5-frame-running-desktop's `scrollbar` deleted),
+        observed red:
+            KeyError: 'scrollbar'"""
+        r = _route("s5-frame-running-desktop")
+        self.assertEqual([(c["selector"], c["min_px"]) for c in r["scrollbar"]],
+                         [('[data-testid="framing-scroller"]', 8)])
+        for route in _route_file()["routes"]:
+            if route["widths"] == [390]:
+                self.assertNotIn("scrollbar", json.dumps(route), route["name"])
 
     def test_the_wizard_walks_hold_one_target_and_no_plan_targets(self):
         """(c): Sky FRAME and the classic Atlas, at both widths, each ending on

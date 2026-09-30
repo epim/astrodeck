@@ -56,7 +56,22 @@ async def test_a_panel_set_aside_is_marked_skipped_once(group_hub, monkeypatch):
     case test_group_rotation.py grades for the alert and the record). The
     report's timeline marks it skipped exactly once. The three panels that
     complete are the control: none of them is marked, so the entry says
-    which panel dropped out, not that the night had panels."""
+    which panel dropped out, not that the night had panels.
+
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2): 2-2's first streak
+    of centring misses now sets it aside "for now", which expires 45 minutes
+    on; its second streak sets it aside for the night. So the session holds
+    two records, the first marked expired, where it held one before H4, and
+    the report still marks 2-2 skipped once: only the set-aside for the
+    night is a skip (5.1). RED under H4-ENG-A's mutant "report marks a
+    for-now set-aside skipped" (`_set_panel_aside`'s ``if self.reporter and
+    not expires:`` made ``if self.reporter:``), re-run by the H4 integration
+    in a private copy of server/ (scratchpad H4-INTEG-mut), observed:
+
+        AssertionError: ['skipped M31 2-2', 'skipped M31 2-2']
+        assert ['skipped M31...pped M31 2-2'] == ['skipped M31 2-2']
+          Left contains one more item: 'skipped M31 2-2'
+    """
     def goto(who, n, result):
         if who == f"{GROUP_NAME} 2-2":
             return {**result, "centered": False, "error_arcmin": None}
@@ -65,8 +80,9 @@ async def test_a_panel_set_aside_is_marked_skipped_once(group_hub, monkeypatch):
     night = await _night(group_hub, monkeypatch, grid_plan(), goto=goto)
     assert night.done, night.trace[-3:]
     stored = session_store.load(night.session_id)
-    assert [r["target_id"] for r in stored.set_aside] == ["p11"], (
-        "premise: 2-2 was set aside")
+    assert [(r["target_id"], bool(r.get("expired")))
+            for r in stored.set_aside] == [("p11", True), ("p11", False)], (
+        "premise: 2-2 was set aside for now, and then for the night")
     assert _skips(night) == [f"skipped {GROUP_NAME} 2-2"], _skips(night)
 
 

@@ -17,6 +17,17 @@ The hard-won rules from the adversarial UX critiques are encoded here:
   that 404s does not count as "verified" (C1-16).
 * **External dead-man's-switch** (C2-9): :meth:`deadman_ping` GETs the user's
   healthchecks-style URL each frame; *its absence* is what pages them.
+* **The reader never awaits a sink** (#538). The bus subscription is bounded
+  and drops its oldest event when full, and it used to be read by a loop that
+  awaited every send inline, up to ``_HTTP_TIMEOUT_S`` per sink. A hung
+  webhook and a warning more often than once per timeout backed it up past
+  ``SUBSCRIBER_MAX``, and the bus dropped the oldest: an UNSAFE edge, a
+  run_end, in silence. Now the reader maps each event and puts the alert on
+  an outbox of its own, bounded apart and drained by a sender task, so the
+  subscription is read at bus speed whatever the sinks do. A full outbox
+  gives up a warning before a state-change alert, never the reverse; and the
+  #444 ``relay_gap`` marker, which says the subscription did drop, is logged
+  once, at warning, with the count.
 
 One :class:`httpx.AsyncClient` is reused for the dispatcher's lifetime.
 """
@@ -32,12 +43,26 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .events import bus
+from .events import RELAY_GAP, bus
 
 # State-change event types are NEVER deduped (C1-18). These are subscribed by
 # event *type*, not severity, so they also bypass the per-sink min_level gate
 # (a default warning sink must still receive an info-level run_start/run_end).
+# They are also what a full outbox keeps (#538): it gives up anything else
+# first.
 _NEVER_DEDUPE = {"run_start", "run_end", "safety", "reconnect"}
+# Alerts built and not yet sent (#538). Bounded apart from the bus
+# subscription: a hung sink fills this, while the reader still drains the
+# subscription at bus speed. Small, because an alert queued at its back waits
+# that many sends, each up to _HTTP_TIMEOUT_S on a sink that never answers.
+_OUTBOX_MAX = 32
+# Free slots the reader's subscription must have before the relay_gap line
+# is said (#538, #548). The line is one bus.log, and one bus.log can put
+# three events on the subscription: the night-log writer's owed notice, the
+# summary of the storm window the line closes, and the line. Said into
+# fewer, it drops the oldest event still queued, which can be the UNSAFE
+# edge that survived the drop the line is about.
+_GAP_ROOM = 3
 # A repeated warning with the same dedupe-key inside this window is suppressed.
 _DEDUPE_WINDOW_S = 60.0
 # Bounded undelivered queue (oldest dropped when full so a dead endpoint can't
@@ -181,6 +206,16 @@ class AlertDispatcher:
         # so the user is not lulled into a false sense of monitoring. Keyed by the
         # url so a *changed* url re-warns; reset when a ping succeeds.
         self._deadman_warned: str | None = None
+        # The outbox (#538): alerts the reader built, oldest first, for the
+        # sender task. ``_outbox_ready`` wakes the sender; it is made by run()
+        # on the loop that runs it, since an asyncio.Event binds to the first
+        # loop that waits on it and the dispatcher outlives any one loop.
+        self._outbox: deque[AlertEvent] = deque()
+        self._outbox_ready: asyncio.Event | None = None
+        # The #444 marker's count: the subscription's ``dropped`` when the
+        # last gap was said, and whether one is owed (see _say_gap).
+        self._gap_said = 0
+        self._gap_owed = False
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -194,36 +229,135 @@ class AlertDispatcher:
         exit. Never raises out of the per-event handler (failures are logged +
         queued).
 
+        The loop READS; it never sends (#538). Each event is mapped to its
+        alert and put on the outbox (:meth:`_enqueue`), and the sender task
+        (:meth:`_send_loop`) does the awaiting, so a sink that takes
+        ``_HTTP_TIMEOUT_S`` to fail holds the sender and not the bus
+        subscription, which drops its oldest event when it falls
+        ``SUBSCRIBER_MAX`` behind. A ``relay_gap`` marker, the subscription
+        saying it did drop (#444), is logged (:meth:`_say_gap`).
+
         Also owns a WALL-CLOCK dead-man's-switch + heartbeat task (P0-3) so those
         pings keep firing through a legitimate safety pause / scheduler wait —
         driving them from the engine frame loop falsely pages "rig dead" the
         moment a multi-hour cloud-pause stops producing frames."""
         await self._ensure_client()
         q = self.bus.subscribe()
+        self._outbox_ready = asyncio.Event()
+        if self._outbox:
+            self._outbox_ready.set()
+        self._gap_said, self._gap_owed = 0, False
         wallclock = asyncio.create_task(self._wallclock_loop())
+        sender = asyncio.create_task(self._send_loop())
         try:
             while not self._stop.is_set():
+                if self._gap_owed and q.maxsize - q.qsize() >= _GAP_ROOM:
+                    self._say_gap(q)
                 try:
                     ev = await asyncio.wait_for(q.get(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    await self._retry_undelivered()
+                    continue
+                if ev.type == RELAY_GAP:
+                    # Said once there is room for the line (see _say_gap).
+                    self._gap_owed = True
                     continue
                 try:
-                    await self._on_bus_event(ev)
+                    self._take(ev)
                 except Exception as e:  # never kill the loop
                     self.bus.log("warning", f"alert dispatch error: {e}", "alert")
         except asyncio.CancelledError:
             raise
         finally:
-            wallclock.cancel()
-            try:
-                await wallclock
-            except (asyncio.CancelledError, Exception):
-                pass
+            for task in (sender, wallclock):
+                task.cancel()
+            for task in (sender, wallclock):
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
             self.bus.unsubscribe(q)
+            self._outbox_ready = None
             if self._client is not None:
                 await self._client.aclose()
                 self._client = None
+
+    def _take(self, ev: Any) -> None:
+        """One bus event, on the reading loop: its alert, if it has one and it
+        is not a repeat, goes on the outbox. Nothing here awaits (#538)."""
+        alert = self._alert_for(ev)
+        if alert is None or self._should_dedupe(alert):
+            return
+        self._enqueue(alert)
+
+    def _enqueue(self, alert: AlertEvent) -> None:
+        """Put ``alert`` on the outbox for the sender, making room if it is
+        full (#538).
+
+        Room is made by giving up the OLDEST alert that is not a state change
+        (``_NEVER_DEDUPE``: run_start, run_end, safety, reconnect); a warning
+        is given up before an UNSAFE edge, never the reverse. An outbox full
+        of state changes turns a warning away, and gives up its oldest state
+        change for a newer one, since the newest says what the rig is doing
+        now. The reader's dedupe has run already, so a slot holds only an
+        alert that will be sent."""
+        box = self._outbox
+        if len(box) >= _OUTBOX_MAX:
+            victim = next((a for a in box if a.type not in _NEVER_DEDUPE), None)
+            if victim is not None:
+                box.remove(victim)
+            elif alert.type in _NEVER_DEDUPE:
+                box.popleft()
+            else:
+                return
+        box.append(alert)
+        if self._outbox_ready is not None:
+            self._outbox_ready.set()
+
+    async def _send_loop(self) -> None:
+        """The sender task (#538): the outbox's alerts, oldest first, each to
+        its sinks. Idle for a second, it retries what failed before
+        (:meth:`_retry_undelivered`), which gives way to a fresh alert.
+        Never raises out of the loop."""
+        ready = self._outbox_ready
+        while not self._stop.is_set():
+            if not self._outbox:
+                ready.clear()
+                try:
+                    await asyncio.wait_for(ready.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    await self._retry_undelivered()
+                continue
+            alert = self._outbox.popleft()
+            try:
+                await self._send_all(alert)
+            except Exception as e:  # never kill the sender
+                self.bus.log("warning", f"alert dispatch error: {e}",
+                             _ALERT_LOG_SOURCE)
+
+    def _say_gap(self, q: Any) -> None:
+        """Say that the reader's subscription dropped events (#444, #538):
+        once per ``relay_gap`` marker, at warning, with the subscription's own
+        count (``Subscription.dropped``). Source ``alert``, so the line is
+        not itself turned into an alert.
+
+        Said when the subscription has room for it, not when the marker is
+        read. The marker comes off a queue that was full, and it takes no
+        entry off it; this line is published to the same bus, into that same
+        queue, where it would drop the oldest event and open a new hole,
+        whose marker would say it again, one event at a time through
+        everything queued, the UNSAFE edge among them, and the reader would
+        never yield. Room for ``_GAP_ROOM`` events, not one: the line can
+        bring a storm summary and a night-log notice with it, and in one
+        free slot the summary took the slot and the line dropped the next
+        event, the UNSAFE edge in the case that showed it. The reads after
+        the marker make the room."""
+        self._gap_owed = False
+        total = getattr(q, "dropped", 0)
+        missed, self._gap_said = total - self._gap_said, total
+        self.bus.log("warning",
+                     f"alert dispatcher missed {missed} bus event(s), {total} "
+                     f"since it started; any alert among them was not sent",
+                     _ALERT_LOG_SOURCE)
 
     async def _wallclock_loop(self) -> None:
         """Independent wall-clock driver for the dead-man's-switch + heartbeat
@@ -257,8 +391,21 @@ class AlertDispatcher:
     # -- bus event -> alert mapping --------------------------------------------
 
     async def _on_bus_event(self, ev: Any) -> None:
-        """Translate one bus :class:`~astrodeck.events.Event` into zero or more
-        outbound alerts."""
+        """Translate one bus event into its alert and send it now, inline.
+
+        The run loop does not call this: it maps with :meth:`_alert_for` and
+        queues the alert for the sender (#538), because awaiting the send
+        here is what backed the bus subscription up. It stays for a caller
+        that wants the whole path in one await, through the same mapping,
+        dedupe and sinks, as the no-light alert's test does."""
+        alert = self._alert_for(ev)
+        if alert is not None:
+            await self._dispatch(alert)
+
+    def _alert_for(self, ev: Any) -> AlertEvent | None:
+        """The alert one bus :class:`~astrodeck.events.Event` maps to, or
+        None. Synchronous, so the reader can map at bus speed; it keeps the
+        safety edge tracker, so each event must pass through it once."""
         t = ev.type
         data = ev.data or {}
         alert: AlertEvent | None = None
@@ -306,14 +453,12 @@ class AlertDispatcher:
             alert = AlertEvent(data["level"], data["level"],
                                data.get("message", ""),
                                source=data.get("source", ""))
-
-        if alert is None:
-            return
-        await self._dispatch(alert)
+        return alert
 
     async def emit_heartbeat(self, message: str) -> None:
         """Engine helper: emit a progress heartbeat to sinks whose
-        ``heartbeat_min`` has elapsed."""
+        ``heartbeat_min`` has elapsed. Sent inline, so its caller waits on
+        the sinks; the engine's frame path is such a caller (#542)."""
         await self._dispatch(AlertEvent("heartbeat", "info", message))
 
     # -- dispatch + send -------------------------------------------------------
@@ -370,8 +515,15 @@ class AlertDispatcher:
         return last is not None and (now - last) < _DEDUPE_WINDOW_S
 
     async def _dispatch(self, alert: AlertEvent) -> None:
+        """Dedupe, then send now. For a caller that awaits the send (the
+        heartbeat); the reader dedupes and queues instead (#538)."""
         if self._should_dedupe(alert):
             return
+        await self._send_all(alert)
+
+    async def _send_all(self, alert: AlertEvent) -> None:
+        """Send one alert to each sink that wants it, now. A failure is
+        logged, published and queued for retry, never raised."""
         for sink in self._sinks_for(alert):
             ok, err = await self._send(sink, alert)
             if not ok:
@@ -481,11 +633,20 @@ class AlertDispatcher:
 
     async def _retry_undelivered(self) -> None:
         """Flush the undelivered queue when connectivity returns. Each item gets
-        one attempt per pass; a still-failing item is re-queued at the back."""
+        one attempt per pass; a still-failing item is re-queued at the back.
+
+        The pass stops for a fresh alert on the outbox (#538). On a sink that
+        never answers each attempt takes ``_HTTP_TIMEOUT_S``, so a full pass
+        is ``_UNDELIVERED_MAX`` of them, over half an hour at the defaults,
+        and an UNSAFE edge arriving at its start would wait for its end. It
+        waits for the one attempt in flight; what the pass did not reach
+        stays queued for the next."""
         if not self._undelivered:
             return
         n = len(self._undelivered)
         for _ in range(n):
+            if self._outbox:
+                break
             try:
                 sink, ev = self._undelivered.popleft()
             except IndexError:

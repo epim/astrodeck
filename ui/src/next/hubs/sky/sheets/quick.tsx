@@ -74,6 +74,16 @@ import { fovFromOptics } from "../../../../lib/framing";
 import { angularSepDeg } from "../../../../lib/atlasFov";
 import { useCatalogTarget, useCatalogTargets, type SearchRow } from "./targetsCatalog";
 import { useVisibilityNight } from "./quickVisibility";
+// The deep module, as `quickPayload` above: it imports nothing but the store.
+import {
+  FLOW_OPEN_FAILED, flowOpenFailure, libraryErrorNow, openFlowById,
+} from "../../session/flows/openFlow";
+
+/** The second half of GENERATE FLOW's toast when the flow it saved did not
+ *  open (#499): the quick route stored it, so nothing is lost, and GENERATE
+ *  pressed again would store a second one. */
+export const QUICK_SAVED_NOT_OPENED =
+  "The new flow is saved in My flows; open it from Session - Flows.";
 
 /** The six automation chips, in the design's own order (proto logic.js:198). */
 const AUTOMATION: { key: string; label: string }[] = [
@@ -131,7 +141,6 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
   const frame = useFrameSettings("capture");
   const weather = useWeather();
   const enqueueToast = useStore((s) => s.enqueueToast);
-  const flowsOpen = useStore((s) => s.flowsOpen);
 
   const poolIds = useMemo(
     () => (params.pool ?? "").split(",").map((s) => s.trim()).filter(Boolean),
@@ -502,7 +511,27 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       // draw a synthetic MOSAIC row. Both went with S6 (#196): the flow this
       // sheet saved is the whole night it asked for, one target, and a mosaic
       // is planned through SEND TO FLOW WIZARD (`sendToWizard` above).
-      await flowsOpen(id);
+      //
+      // THE CARD OPENS ONLY ON THE FLOW THIS SHEET SAVED (#499). `flowsOpen`
+      // leaves the record that was open before in place when its read fails,
+      // and since #450 refuses to replace a flow whose unsaved edits its save
+      // did not keep; this navigated whatever it did, onto a card for the new
+      // flow over another flow's record. `openFlowById` says what landed, and
+      // on false the sheet stays, with the flow it made named as saved: GENERATE
+      // again would make a second one. On the #450 refusal the store has
+      // already said why under this same title, and this toast coalesces onto
+      // it (the store's x2 rule), so the operator reads that reason once, and
+      // not this toast's line that the flow is saved: the refusal sends them
+      // to the flow open in Session - Flows, where the new one is listed too.
+      const errorBefore = libraryErrorNow();
+      if (!(await openFlowById(id))) {
+        enqueueToast({
+          level: "error",
+          title: FLOW_OPEN_FAILED,
+          detail: `${flowOpenFailure(errorBefore)} ${QUICK_SAVED_NOT_OPENED}`,
+        });
+        return;
+      }
       nav.sheet("flow", { id });
     } catch (e) {
       // THE SAVE AND THE RUN ARE TWO OUTCOMES OF ONE REQUEST, and the answer is

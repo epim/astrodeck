@@ -1,5 +1,5 @@
 {
- "about": "GET /api/flows/example-m31-mosaic/progress: the eighth Example with a dormant session of two runs on two nights, 1-1 finished and the other panels part-way, counted in accepted mode. Built and graded byte for byte by server/tests/test_s5_recorded_state.py, which also presses CONTINUE and checks its night is nights + 1. Read, never copied, by ui/src/components/flows/__tests__/flowRunState.test.ts. Never hand-edit it.",
+ "about": "GET /api/flows/example-m31-mosaic/progress: the eighth Example with a dormant session of two runs on two nights, 1-1 finished and the other panels part-way, counted in accepted mode. 'response' is the answer at 21:00 local on the evening after the second night; 'same_night_session' is the session the same route answered at 04:00 local on the second night itself, the rest of that answer being 'response''s. Built and graded byte for byte by server/tests/test_s5_recorded_state.py, which also presses CONTINUE at both moments and checks each answers the recorded continue_night (#511). Read, never copied, by ui/src/components/flows/__tests__/flowRunState.test.ts. Never hand-edit it.",
  "response": {
   "flow_id": "example-m31-mosaic",
   "session": {
@@ -8,7 +8,8 @@
    "nights": 2,
    "count_mode": "accepted",
    "armed": true,
-   "plan_saved_ts": null
+   "plan_saved_ts": null,
+   "continue_night": 3
   },
   "blocks": [
    {
@@ -314,5 +315,14 @@
    "frames": 0,
    "steps": 0
   }
+ },
+ "same_night_session": {
+  "id": "319caf668a27569db2239f9e8fa83396",
+  "status": "dormant",
+  "nights": 2,
+  "count_mode": "accepted",
+  "armed": true,
+  "plan_saved_ts": null,
+  "continue_night": 2
  }
 }

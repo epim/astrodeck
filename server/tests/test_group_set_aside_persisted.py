@@ -212,13 +212,23 @@ async def test_panel_set_aside_not_retried_same_night(group_hub, monkeypatch):
     the same night. RED (observed):
         AssertionError: ['M31 2-2', 'M31 2-2', 'M31 2-2']
         assert [(1788317289....0, 'M31 2-2')] == []
+
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). 2-2's misses are its
+    own (its neighbours centre), but a streak of centring misses now sets it
+    aside "for now": the set-aside expires once a night, 45 minutes on,
+    2-2 strikes out again, and only then is it set aside for the night. So
+    the first night leaves two records for tonight, the first marked
+    expired, where it left one before H4. The restart honours the second
+    and hops nowhere, as before; what this case grades did not move.
     """
     first = await _night(group_hub, monkeypatch, grid_plan(),
                          goto=_never_centres("2-2"))
     assert first.done
     records = first.stored.set_aside
-    assert [(r["target_id"], r["step_id"], r["night"]) for r in records] == [
-        ("p11", None, night_key(T0))], records
+    assert [(r["target_id"], r["step_id"], r["night"], bool(r.get("expired")))
+            for r in records] == [
+        ("p11", None, night_key(T0), True),
+        ("p11", None, night_key(T0), False)], records
 
     again = await _night(group_hub, monkeypatch, grid_plan(), t0=LATER_TONIGHT,
                          session=first.stored, goto=_never_centres("2-2"))

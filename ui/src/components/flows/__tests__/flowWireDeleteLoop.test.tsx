@@ -25,7 +25,13 @@
 //   3. And there its 26 px box lies inside the tab's container, which clips,
 //      at 360, 375 and 414 px (#428): centred on the drop, 7 px inside the
 //      edge, it reached 6 px past it and was drawn cut off.
-//   4. CONTROL: any other selected wire's control is still at its anchors'
+//   4. And there the box meets no card the tab lays out (#502): moved in off
+//      the edge it reached 12 px into the right column, and on a lane whose
+//      tail sits in that column the middle of the drop is beside the tail,
+//      so the box covered the tail's corner. Graded on the eighth Example and
+//      on such a lane, at the same three widths, with a named mutant for each
+//      of the three conditions.
+//   5. CONTROL: any other selected wire's control is still at its anchors'
 //      midpoint.
 //
 // Each named mutation was run in a private scratch copy of ui/ (never the
@@ -295,39 +301,142 @@ Object.defineProperty(win.HTMLElement.prototype, "clientWidth", {
 });
 g.ResizeObserver = class { observe() {} disconnect() {} };
 
-for (const w of [360, 375, 414]) {
-  test(`[phone FLOW ${w} px] the 26 px remove control lies inside the container and still covers the wire`, () => {
-    phoneW = w;
-    act(() => root.render(null));
-    act(() => {
-      useStore.setState({
-        flows: { ...FLOWS_INIT, graph: { nodes: NODES, edges: EDGES }, sel: { kind: "edge", id: "loop" } },
-      } as any);
+// ===================================== ... and meets no card there (#502)
+//
+// The same mounted tab, and a third condition: the control's box meets no
+// card the tab lays out, each card's formula box (`cardBox`) at the layout's
+// position. The eighth Example puts the lane's tail, FILTER CYCLE, in the
+// LEFT column, where nothing stands beside the drop. The second lane,
+// DUSK -> TARGET -> AUTOFOCUS -> FILTER CYCLE -> REPORT (#502's own case),
+// puts the tail in the RIGHT column, beside the drop: the drop runs from the
+// cycle's pass port (y 522) to the run (y 566), inside the cycle's height
+// (415..558), so no height on it clears the cycle. The rise, at x 7 beside
+// the left column, runs from the run up to the TARGET's `next` (y 204); its
+// middle, 385, is beside AUTOFOCUS (276..399), and the nearest clear height
+// is 399 + 13 = 412, the box held inside the container at x 13. Worked by
+// hand from the layout's positions, the same at every width, since the left
+// column never moves.
+//
+// RENAMED (H4-UCANVAS, #502): these cases were "[phone FLOW <w> px] the 26 px
+// remove control lies inside the container and still covers the wire", on
+// the eighth Example alone; the records above that quote the old name are
+// what those mutants turned red then.
+//
+// Each named mutation was run in the private copy scratchpad/H4-UCANVAS-mut
+// (geometry.ts `loopControlSpot`), one per condition:
+//
+// MUTANT "the box centred on the leg" (`const cx = Math.min(x1 - half,
+// Math.max(x0 + half, a.x));` made `const cx = a.x;`: the box not held inside
+// the container). Observed, flowWireDeleteLoop.test 2/9, every one of the six
+// on the container alone (and the 375 px case above, "expected 362, got
+// 368"); each line is followed by its path, of which two:
+//   x [phone FLOW 360 px, the eighth Example] the 26 px remove control lies inside the container, covers the wire and meets no card: the control spans x 340..366, outside [0, 360]
+//   x [phone FLOW 375 px, the eighth Example] the 26 px remove control lies inside the container, covers the wire and meets no card: the control spans x 355..381, outside [0, 375]
+//     path M164 661 L358 661 Q368 661, 368 671 L368 695 Q368 705, 358 705 L17 705 Q7 705, 7 695 L7 214 Q7 204, 17 204 L211 204
+//   x [phone FLOW 414 px, the eighth Example] the 26 px remove control lies inside the container, covers the wire and meets no card: the control spans x 394..420, outside [0, 414]
+//   x [phone FLOW 360 px, a lane whose tail sits in the right column] the 26 px remove control lies inside the container, covers the wire and meets no card: the control spans x -6..20, outside [0, 360]
+//   x [phone FLOW 375 px, a lane whose tail sits in the right column] the 26 px remove control lies inside the container, covers the wire and meets no card: the control spans x -6..20, outside [0, 375]
+//     path M361 522 L364.5 522 Q368 522, 368 525.5 L368 556 Q368 566, 358 566 L17 566 Q7 566, 7 556 L7 214 Q7 204, 17 204 L211 204
+//   x [phone FLOW 414 px, a lane whose tail sits in the right column] the 26 px remove control lies inside the container, covers the wire and meets no card: the control spans x -6..20, outside [0, 414]
+// MUTANT "held a whole box in" (the same line with `size` for `half`: the
+// box moved in so far the leg no longer runs through it). Observed,
+// flowWireDeleteLoop.test 2/9, every one of the six on the wire alone (and
+// the 375 px case above, "the 26 px control at (349, 683) covers none of
+// the drawn arc"):
+//   x [phone FLOW 360 px, the eighth Example] the 26 px remove control lies inside the container, covers the wire and meets no card: the control [x 321..347, y 670..696] covers none of the arc
+//   x [phone FLOW 375 px, the eighth Example] the 26 px remove control lies inside the container, covers the wire and meets no card: the control [x 336..362, y 670..696] covers none of the arc
+//   x [phone FLOW 414 px, the eighth Example] the 26 px remove control lies inside the container, covers the wire and meets no card: the control [x 375..401, y 670..696] covers none of the arc
+//   x [phone FLOW 360 px, a lane whose tail sits in the right column] the 26 px remove control lies inside the container, covers the wire and meets no card: the control [x 13..39, y 399..425] covers none of the arc
+//   x [phone FLOW 375 px, a lane whose tail sits in the right column] the 26 px remove control lies inside the container, covers the wire and meets no card: the control [x 13..39, y 399..425] covers none of the arc
+//   x [phone FLOW 414 px, a lane whose tail sits in the right column] the 26 px remove control lies inside the container, covers the wire and meets no card: the control [x 13..39, y 399..425] covers none of the arc
+// MUTANT "no card rules a height out" (`.filter((c) => c.x < cx + half &&
+// c.x + c.w > cx - half)` made `.filter(() => false)`: the box at the drop's
+// middle, #428's place, whatever stands there, which is #502 as filed).
+// Observed, flowWireDeleteLoop.test 6/9, the right-column tail on the cards
+// alone, the eighth Example green:
+//   x [phone FLOW 360 px, a lane whose tail sits in the right column] the 26 px remove control lies inside the container, covers the wire and meets no card: the control [x 334..360, y 531..557] meets CYCLE cy [x 196..346, y 415..558]
+//     path M346 522 L349.5 522 Q353 522, 353 525.5 L353 556 Q353 566, 343 566 L17 566 Q7 566, 7 556 L7 214 Q7 204, 17 204 L196 204
+//   x [phone FLOW 375 px, a lane whose tail sits in the right column] the 26 px remove control lies inside the container, covers the wire and meets no card: the control [x 349..375, y 531..557] meets CYCLE cy [x 211..361, y 415..558]
+//     path M361 522 L364.5 522 Q368 522, 368 525.5 L368 556 Q368 566, 358 566 L17 566 Q7 566, 7 556 L7 214 Q7 204, 17 204 L211 204
+//   x [phone FLOW 414 px, a lane whose tail sits in the right column] the 26 px remove control lies inside the container, covers the wire and meets no card: the control [x 388..414, y 531..557] meets CYCLE cy [x 250..400, y 415..558]
+//     path M400 522 L403.5 522 Q407 522, 407 525.5 L407 556 Q407 566, 397 566 L17 566 Q7 566, 7 556 L7 214 Q7 204, 17 204 L250 204
+// The two place pins at the end of the case see the choice between legs and
+// heights (loopArc.test.ts's mutants "the rise before the drop", observed
+// here 5/9 with the eighth Example's control at "13,454.5", and "the first
+// clear height, not the nearest", 6/9 with the right-column tail's at
+// "13,263").
+
+/** #502's lane: the tail, FILTER CYCLE, the fourth card of the flow order,
+ *  so the column layout puts it in the right column. */
+const RIGHT_TAIL: { nodes: FlowNodeRec[]; edges: FlowEdgeRec[] } = {
+  nodes: ([["d", "dusk"], ["t", "target"], ["af", "autofocus"], ["cy", "cycle"], ["r", "report"]] as const)
+    .map(([id, type], i) => ({
+      id, type, x: 30 + i * 240, y: 60,
+      params: type === "target"
+        ? { ...NODE_DEFS.target.params, name: "M31", rows: 2, cols: 3, angle: "Rotate to PA", rotation: 55 }
+        : { ...(NODE_DEFS as any)[type].params },
+    })),
+  edges: [
+    E("e1", "d", "window", "t", "arm"), E("e2", "t", "target", "af", "run"),
+    E("e3", "af", "focused", "cy", "run"), E("e4", "cy", "complete", "r", "session"),
+    E("loop", "cy", "pass", "t", "next"),
+  ],
+};
+
+const LANES: [string, { nodes: FlowNodeRec[]; edges: FlowEdgeRec[] }, string, string][] = [
+  ["the eighth Example", { nodes: NODES, edges: EDGES }, "n2", "n7"],
+  ["a lane whose tail sits in the right column", RIGHT_TAIL, "t", "cy"],
+];
+
+for (const [lane, graph, target, tail] of LANES) {
+  for (const w of [360, 375, 414]) {
+    test(`[phone FLOW ${w} px, ${lane}] the 26 px remove control lies inside the container, covers the wire and meets no card`, () => {
+      phoneW = w;
+      act(() => root.render(null));
+      act(() => {
+        useStore.setState({
+          flows: { ...FLOWS_INIT, graph, sel: { kind: "edge", id: "loop" } },
+        } as any);
+      });
+      act(() => root.render(React.createElement(FlowPhoneGraph)));
+      const { colL, colR } = layoutColumns(w);
+      const wc = colR + 150 + AUTO_PAD;
+      eq(wc, w, "precondition: the layout fills the container");
+      // The tab laid itself out at `w`: the TARGET stands where the layout at
+      // `w` puts it, so the control below was placed for this width.
+      const layout = computeAutoLayout(graph, w, NODE_DEFS);
+      const tStyle = container.querySelector(`[data-node-id="${target}"]`)?.getAttribute("style") ?? "";
+      ok(tStyle.includes(`translate3d(${layout.pos[target].x}px,${layout.pos[target].y}px,0)`),
+        `precondition: the tab did not lay out at ${w} px: ${tStyle}`);
+      eq(layout.pos[tail].x, graph === RIGHT_TAIL ? colR : colL,
+        `precondition: the tail's column (${graph === RIGHT_TAIL ? "right" : "left"})`);
+      const cut = container.querySelector("[data-flows-wire-selected]");
+      ok(cut, "the tab drew no remove control for the selected loop wire");
+      const at = controlAt();
+      const size = parseFloat(cut.style.width);
+      eq(`${size} x ${parseFloat(cut.style.height)}`, "26 x 26", "precondition: the phone FLOW control's size");
+      const box = { x0: at.x - size / 2, x1: at.x + size / 2, y0: at.y - size / 2, y1: at.y + size / 2 };
+      const d = container.querySelector("[data-loop-arc-path]")?.getAttribute("d") ?? "";
+      ok(d, "the tab drew no loop arc");
+      const bad: string[] = [];
+      if (box.x0 < 0 || box.x1 > wc) bad.push(`the control spans x ${box.x0}..${box.x1}, outside [0, ${wc}]`);
+      if (!samplePath(d).some((p) => p.x > box.x0 && p.x < box.x1 && p.y > box.y0 && p.y < box.y1)) {
+        bad.push(`the control [x ${box.x0}..${box.x1}, y ${box.y0}..${box.y1}] covers none of the arc`);
+      }
+      for (const n of graph.nodes) {
+        const b = cardBox({ ...n, ...layout.pos[n.id] }, NODE_DEFS, "phone");
+        if (box.x0 < b.x + b.w && box.x1 > b.x && box.y0 < b.y + b.h && box.y1 > b.y) {
+          bad.push(`the control [x ${box.x0}..${box.x1}, y ${box.y0}..${box.y1}] meets `
+            + `${n.type.toUpperCase()} ${n.id} [x ${b.x}..${b.x + b.w}, y ${b.y}..${b.y + b.h}]`);
+        }
+      }
+      ok(bad.length === 0, `${bad.join("; ")}\n    path ${d}`);
+      // Where it stands, worked by hand: on the eighth Example #428's place, 6
+      // px in from the middle of the drop (the drop's middle is clear there);
+      // on the right-column tail the rise's nearest clear height (above).
+      eq(`${at.x},${at.y}`, graph === RIGHT_TAIL ? "13,412" : `${w - 14 + 7 - 6},683`, "the control's place");
     });
-    act(() => root.render(React.createElement(FlowPhoneGraph)));
-    const wc = layoutColumns(w).colR + 150 + AUTO_PAD;
-    eq(wc, w, "precondition: the layout fills the container");
-    // The tab laid itself out at `w`: the TARGET stands where the layout at
-    // `w` puts it, so the control below was placed for this width.
-    const layout = computeAutoLayout({ nodes: NODES, edges: EDGES }, w, NODE_DEFS);
-    const tStyle = container.querySelector('[data-node-id="n2"]')?.getAttribute("style") ?? "";
-    ok(tStyle.includes(`translate3d(${layout.pos.n2.x}px,${layout.pos.n2.y}px,0)`),
-      `precondition: the tab did not lay out at ${w} px: ${tStyle}`);
-    const cut = container.querySelector("[data-flows-wire-selected]");
-    ok(cut, "the tab drew no remove control for the selected loop wire");
-    const at = controlAt();
-    const size = parseFloat(cut.style.width);
-    eq(`${size} x ${parseFloat(cut.style.height)}`, "26 x 26", "precondition: the phone FLOW control's size");
-    const box = { x0: at.x - size / 2, x1: at.x + size / 2, y0: at.y - size / 2, y1: at.y + size / 2 };
-    const d = container.querySelector("[data-loop-arc-path]")?.getAttribute("d") ?? "";
-    ok(d, "the tab drew no loop arc");
-    const bad: string[] = [];
-    if (box.x0 < 0 || box.x1 > wc) bad.push(`the control spans x ${box.x0}..${box.x1}, outside [0, ${wc}]`);
-    if (!samplePath(d).some((p) => p.x > box.x0 && p.x < box.x1 && p.y > box.y0 && p.y < box.y1)) {
-      bad.push(`the control [x ${box.x0}..${box.x1}, y ${box.y0}..${box.y1}] covers none of the arc`);
-    }
-    ok(bad.length === 0, `${bad.join("; ")}\n    path ${d}`);
-  });
+  }
 }
 
 // ----------------------------------------------------------------- report

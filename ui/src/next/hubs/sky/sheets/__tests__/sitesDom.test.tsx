@@ -163,6 +163,34 @@ await test("…and the radio MARKER follows the newly-applied site once config c
   assert(/Back Lawn selected/.test(toasts), `no confirmation toast named where it applied: ${toasts}`);
 });
 
+// RE-PINNED FOR #520, DELIBERATELY. The editor's hemisphere read-back asked
+// `GET /api/site/sky?lat=..&lon=..`, and a URL is written down by every hop it
+// crosses - the remote relay's access log included - so the coordinates an
+// admin is about to save went into it. They are a POST body now. The mock
+// above answers /api/site/sky for any method, so this case asserts the method,
+// the URL and the body rather than trusting the hint to have arrived.
+//
+// MUTANT "restore sites.tsx's GET template" (the effect back to
+// `api.get(`/api/site/sky?lat=${latSigned}&lon=${lonSigned}`)`), run
+// 2026-09-29 in a private scratch copy of ui/ (scratchpad/H4-PRIV-mut) from a
+// byte backup restored with its sha256 checked. Observed ("sitesDom.test: 4/5
+// passed"):
+//   x the editor's read-back POSTs the typed coordinates and puts none in a URL: a read-back put a query string on its URL: ["GET /api/site/sky?lat=47.6062&lon=-122.3321"] (expected 0, got 1)
+await test("the editor's read-back POSTs the typed coordinates and puts none in a URL", async () => {
+  click(q('[data-testid="edit-site-loc1"]'));
+  await act(async () => { await new Promise((r) => setTimeout(r, 450)); });
+  await settle();
+  const sky = asked.filter((a) => a.includes("/api/site/sky"));
+  assert(sky.length >= 1, "the editor never asked for its read-back, so this case graded nothing");
+  eq(sky.filter((a) => a.includes("?")).length, 0,
+    `a read-back put a query string on its URL: ${JSON.stringify(sky)}`);
+  assert(sky.every((a) => a.startsWith("POST ")), `a read-back was not a POST: ${JSON.stringify(sky)}`);
+  const body = bodies[sky[sky.length - 1]] as { lat?: number; lon?: number } | undefined;
+  eq(JSON.stringify(body), JSON.stringify({ lat: 47.6062, lon: -122.3321 }),
+    "the read-back's body is not the coordinates in the editor");
+  assert(/N hemisphere/.test(container.textContent), "the read-back's answer was never drawn");
+});
+
 await act(async () => { root.unmount(); });
 
 // =========================================================== VIEWER: render

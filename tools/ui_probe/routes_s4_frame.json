@@ -12,7 +12,7 @@
   "routes": [
     {
       "name": "s4-frame-phone",
-      "_mutations": ["C1 'move pair back in the top-left' (framing.css .tfs-move right: 8px -> left: 8px), observed red: control '[data-testid=\"framing-sky\"] button:text-is(\"MOVE SKY\")' is covered: the point at its centre is not the control ({'x': 52, 'y': 78, 'in_view': True, 'inside': False, 'hit': '<span>Swipe scrolls page</span>'})", "C2 'bar text inline again' (framing.css .tfs-bar-text without display: block), observed red: text '0/80' ([data-testid=\"framing-panels\"] .tfs-bar-text) is clipped 4px by 'tfs-bar' (6 of 6 with text)", "C3 'PEAK column back to 44 px' (framing.css .tfs-c-alt flex: 0 0 44px, no nowrap), observed red: text 'no peak' ([data-testid=\"framing-alt-cell\"]) wraps onto 2 lines, and must sit on one (6 of 6 with text)", "The walk before any fix (2026-09-26) failed on all three at once, and on nothing else."],
+      "_mutations": ["C1 'move pair back in the top-left' (framing.css .tfs-move right: 8px -> left: 8px), observed red: control '[data-testid=\"framing-sky\"] button:text-is(\"MOVE SKY\")' is covered: the point at its centre is not the control ({'x': 52, 'y': 78, 'in_view': True, 'inside': False, 'hit': '<span>Swipe scrolls page</span>'})", "C2 'bar text inline again' (framing.css .tfs-bar-text without display: block), observed red: text '0/80' ([data-testid=\"framing-panels\"] .tfs-bar-text) is clipped 4px by 'tfs-bar' (6 of 6 with text)", "C3 'PEAK column back to 44 px' (framing.css .tfs-c-alt flex: 0 0 44px, no nowrap), observed red: text 'no peak' ([data-testid=\"framing-alt-cell\"]) wraps onto 2 lines, and must sit on one (6 of 6 with text)", "The walk before any fix (2026-09-26) failed on all three at once, and on nothing else.", "H4 'square fills the box' (framing.css: `container-type: size` dropped from `.tfs-sky-fit .sky-canvas-square`, #495's mutant; a private build on a local simulator server, 2026-09-29), observed red, and on nothing else: apart: 'Survey tiles not loading. Retrying automatically.' ([data-testid=\"framing-sky\"] .sky-canvas > :not(.sky-canvas-square)) lies over '[data-testid=\"framing-sky\"] [role=\"application\"]' by 10px down and 390px across: its box {'left': 0, 'top': 410, 'right': 390, 'bottom': 438}, the other's {'left': 0, 'top': 30, 'right': 390, 'bottom': 420} | contained: '[data-testid=\"framing-sky\"] [role=\"application\"]' runs past '[data-testid=\"framing-sky\"]' (top 18px): its box {'left': 0, 'top': 30, 'right': 390, 'bottom': 420}, the container's {'left': 0, 'top': 48, 'right': 390, 'bottom': 438} | contained: '[data-testid=\"framing-sky\"] button:text-is(\"MOVE SKY\")' runs past '[data-testid=\"framing-sky\"]' (top 10px): its box {'left': 294.7, 'top': 38, 'right': 382, 'bottom': 82}, the container's {'left': 0, 'top': 48, 'right': 390, 'bottom': 438} | contained: '[data-testid=\"framing-sky\"] span:text-is(\"N\")' runs past '[data-testid=\"framing-sky\"]' (top 14px): its box {'left': 191.4, 'top': 34, 'right': 198.6, 'bottom': 52}, the container's {'left': 0, 'top': 48, 'right': 390, 'bottom': 438}. The same build PASSED this walk under the route file as it stood before H4 (no `contained`, no `apart`), which is #495; the unmutated build passes it (the control)."],
       "shot": "s4-frame-phone",
       "widths": [390],
       "url": "#/session/flows?open=probe-s4-m31-mosaic",
@@ -27,6 +27,13 @@
       "boxes": [
         { "selector": "[data-testid=\"framing-sky\"]", "min_width": 350, "min_height": 350 },
         { "selector": "[data-testid=\"framing-sky\"] [role=\"application\"]", "min_width": 350, "min_height": 350 }
+      ],
+      "contained": [
+        { "within": "[data-testid=\"framing-sky\"]", "when": "[data-testid=\"framing-sky\"] [data-role=\"survey-degraded\"]",
+          "selectors": ["[data-testid=\"framing-sky\"] [role=\"application\"]", "[data-testid=\"framing-sky\"] button:text-is(\"MOVE SKY\")", "[data-testid=\"framing-sky\"] button:text-is(\"MOVE GRID\")", "[data-testid=\"framing-sky\"] span:text-is(\"N\")", "[data-testid=\"framing-sky\"] span:text-is(\"W\")"] }
+      ],
+      "apart": [
+        { "a": "[data-testid=\"framing-sky\"] [role=\"application\"]", "b": "[data-testid=\"framing-sky\"] .sky-canvas > :not(.sky-canvas-square)", "min_b": 1, "when": "[data-testid=\"framing-sky\"] [data-role=\"survey-degraded\"]" }
       ],
       "reachable": [
         "[data-testid=\"framing-header\"] button:text-is(\"CANCEL\")",
@@ -43,13 +50,14 @@
     },
     {
       "name": "s4-frame-classic-desktop",
-      "_mutations": ["C2 'bar text inline again' (framing.css .tfs-bar-text without display: block), observed red: text '0/80' ([data-testid=\"framing-panels\"] .tfs-bar-text) is clipped 4px by 'tfs-bar' (6 of 6 with text)", "C3 'PEAK column back to 44 px' (framing.css .tfs-c-alt flex: 0 0 44px, no nowrap), observed red: text 'no peak' ([data-testid=\"framing-alt-cell\"]) wraps onto 2 lines, and must sit on one (6 of 6 with text)", "C1 stays green here, correctly: the touch chip is drawn only on a device with a touch point."],
+      "_mutations": ["C2 'bar text inline again' (framing.css .tfs-bar-text without display: block), observed red: text '0/80' ([data-testid=\"framing-panels\"] .tfs-bar-text) is clipped 4px by 'tfs-bar' (6 of 6 with text)", "C3 'PEAK column back to 44 px' (framing.css .tfs-c-alt flex: 0 0 44px, no nowrap), observed red: text 'no peak' ([data-testid=\"framing-alt-cell\"]) wraps onto 2 lines, and must sit on one (6 of 6 with text)", "C1 stays green here, correctly: the touch chip is drawn only on a device with a touch point.", "H4 'default launch restored' (probe.py `_launch_args` returning {} for every width, Playwright's --hide-scrollbars back, #535), on the unmutated build, observed red, and on nothing else: mid-walk check at step 2: scrollbar: '[data-flows-inspector=\"true\"]' scrolls (1867px of content in 766px) and its scrollbar takes 0px of its 284px, need >= 8px: this browser hides its scrollbars, so every fit measured in this column is a bar too generous (#535) | scrollbar: '[data-testid=\"framing-scroller\"]' scrolls (2176px of content in 804px) and its scrollbar takes 0px of its 359px, need >= 8px: this browser hides its scrollbars, so every fit measured in this column is a bar too generous (#535). With the bar drawn the FLOW panel's column is 273 px inside its border and its 'While a mosaic waits' select 243 px wide, against 283 and 253 with it hidden (#469's column), and the control column is 349 px, against 359: the only numbers of this walk the launch changes."],
       "shot": "s4-frame-classic-desktop",
       "widths": [1440],
       "url": "#/classic/flows",
       "_note": "The classic editor: the library card opens the flow, a press on the TARGET card's title strip selects it (its centre is a port label, so the press is at an offset inside the card), and the inspector's FRAME ON SKY opens the same shared sheet the phone reached.",
       "click": [
         { "selector": "[data-flow-id=\"probe-s4-m31-mosaic\"]", "required": true },
+        { "check": { "scrollbar": [{ "selector": "[data-flows-inspector=\"true\"]", "min_px": 8 }] } },
         { "selector": "[data-node-id=\"n2\"]", "position": { "x": 40, "y": 14 }, "required": true },
         { "selector": "[data-flows-frame=\"n2\"]", "required": true }
       ],
@@ -59,6 +67,7 @@
         { "selector": "[data-testid=\"framing-sky\"]", "min_width": 970, "min_height": 760 },
         { "selector": "[data-testid=\"framing-sky\"] [role=\"application\"]", "min_width": 640, "min_height": 640 }
       ],
+      "scrollbar": [{ "selector": "[data-testid=\"framing-scroller\"]", "min_px": 8 }],
       "reachable": [
         "[data-testid=\"framing-header\"] button:text-is(\"CANCEL\")",
         "button:has([data-testid=\"framing-done\"])",

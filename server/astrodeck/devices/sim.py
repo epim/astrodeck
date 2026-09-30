@@ -301,6 +301,19 @@ class SimRig:
         # 0.0 by default so every existing sim solve/TPPA test is byte-identical
         # (the polar_misalignment opt-in precedent); rotate-loop tests set it.
         self.rotator_pa_offset_deg = 0.0
+        #: Play in the rotator's train, in degrees (#526): how far the motor
+        #: turns on a reversal before the camera turns with it. 0.0 by
+        #: default, the same opt-in idiom, so the camera follows the motor
+        #: exactly and every existing rotate test is byte-identical.
+        #: ``rotator_mech_deg`` stays the CAMERA's mechanical angle, the one
+        #: ``SimSolver`` measures, and ``SimRotator`` reports the MOTOR's,
+        #: ``rotator_mech_deg + rotator_slack_deg``, as a real rotator reports
+        #: its step count and cannot see the play.
+        self.rotator_backlash_deg = 0.0
+        #: Where the motor sits in the play, motor minus camera, held within
+        #: +/- half of ``rotator_backlash_deg``: +half after a move of
+        #: increasing angle, -half after a move of decreasing angle.
+        self.rotator_slack_deg = 0.0
         self.pointing_error_deg = 0.04  # goto lands slightly off until synced
         self.sensor_temp = -9.8
         # --- native-TPPA test hook: injected polar-axis misalignment ----------
@@ -1414,6 +1427,9 @@ class SimRotator(Rotator):
         self.rig = rig
         self._halt = asyncio.Event()
         self._moving = False
+        #: Every mechanical angle ``move_mechanical`` was asked for, in order
+        #: (#526): what a test reads to see the one-side approach's legs.
+        self.moves: list[float] = []
 
     async def connect(self) -> None:
         await asyncio.sleep(_sim_delay(0.05))
@@ -1423,7 +1439,9 @@ class SimRotator(Rotator):
         self.connected = False
 
     async def get_mechanical_position(self) -> float:
-        return self.rig.rotator_mech_deg % 360.0
+        # The MOTOR's angle (see ``SimRig.rotator_backlash_deg``): the camera's
+        # plus the slack, which stays 0.0 while the rig has no play.
+        return (self.rig.rotator_mech_deg + self.rig.rotator_slack_deg) % 360.0
 
     async def is_moving(self) -> bool:
         return self._moving
@@ -1431,8 +1449,31 @@ class SimRotator(Rotator):
     async def halt(self) -> None:
         self._halt.set()
 
+    def _turn(self, step: float) -> None:
+        """Turn the motor by ``step`` and carry the camera through the play.
+
+        The motor runs inside the play without moving the camera until it
+        meets the far side, and then drives it: slack is motor minus camera,
+        held within +/- half the play. With no play the slack stays 0.0 and
+        the camera turns by exactly ``step``, today's arithmetic bit for bit
+        (test_sim_pacing.py compares the rig's angle as float bits)."""
+        rig = self.rig
+        half = rig.rotator_backlash_deg / 2.0
+        if half <= 0.0:
+            rig.rotator_mech_deg = (rig.rotator_mech_deg + step) % 360.0
+            return
+        slack = rig.rotator_slack_deg + step
+        driven = 0.0
+        if slack > half:
+            driven, slack = slack - half, half
+        elif slack < -half:
+            driven, slack = slack + half, -half
+        rig.rotator_slack_deg = slack
+        rig.rotator_mech_deg = (rig.rotator_mech_deg + driven) % 360.0
+
     async def move_mechanical(self, mech_deg: float) -> None:
         target = mech_deg % 360.0
+        self.moves.append(target)
         self._halt.clear()
         self._moving = True
         try:
@@ -1442,21 +1483,30 @@ class SimRotator(Rotator):
             # resolves the exact-180° tie to -180 (Python's % returns [0, 360),
             # so 360 % 360 == 0 → 0 - 180 == -180), sending the rotator the "long"
             # way round for an exact opposite target. This form ties to +180.
-            raw = (target - self.rig.rotator_mech_deg) % 360.0
+            # Measured from the MOTOR, which is what the target is in; with no
+            # slack that is the camera's angle, read exactly as it always was.
+            slack = self.rig.rotator_slack_deg
+            motor = (self.rig.rotator_mech_deg + slack if slack
+                     else self.rig.rotator_mech_deg)
+            raw = (target - motor) % 360.0
             delta = raw if raw <= 180.0 else raw - 360.0
             steps = max(1, int(abs(delta) / 2.0))
             step = delta / steps
             for _ in range(steps):
                 if self._halt.is_set():
                     return
-                self.rig.rotator_mech_deg = (self.rig.rotator_mech_deg + step) % 360.0
+                self._turn(step)
                 # Pacing only, through _sim_delay like the mount's slew
                 # (#207): the angle advances by a step fixed by the travel
                 # alone, so the dwell never reaches a value. Still one (zero)
                 # sleep per step under the fast path, so a halt can land
                 # mid-move.
                 await asyncio.sleep(_sim_delay(abs(step) / self.MOVE_RATE))
-            self.rig.rotator_mech_deg = target
+            # The motor lands on the target exactly; the camera sits the
+            # slack behind it, which is the target itself with no play.
+            slack = self.rig.rotator_slack_deg
+            self.rig.rotator_mech_deg = ((target - slack) % 360.0 if slack
+                                         else target)
         finally:
             self._moving = False
 

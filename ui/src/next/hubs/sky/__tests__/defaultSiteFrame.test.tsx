@@ -25,24 +25,32 @@
 //   * LOCK IN FINDER locks M31 at both hours: the lock card names it and says
 //     it was not ranked, the toast names it and carries the model's sentence
 //     for why the list is empty, and no refusal is said.
-//   * The hold WINS over whatever catalogue row sits under the reticle. The
-//     region double answers every request with a DECOY at the centre it was
-//     asked about, so the finder always has a real lock of its own under the
-//     reticle to be displaced by; that is asserted before the lock card is.
+//   * ON A DEFAULT SITE THE HOLD IS UNPLACED (#503): the finder places nothing
+//     at the placeholder, so the held card prints no altitude and no window,
+//     its obstruction is UNKNOWN rather than false, and its primary is SET A
+//     SITE FIRST - never IMAGE, at either hour - which opens the site sheet.
 //   * FRAME in the finder frames M31, and the hold survives FRAME.
 //   * The hold ends when the operator aims elsewhere: a drag (the view moves)
 //     and a tap on the decoy at the reticle (the tracked id changes while the
 //     view barely does), each on its own.
+//   * The hold WINS over whatever catalogue row sits under the reticle. The
+//     region double answers every request with a DECOY at the centre it was
+//     asked about, so the finder always has a real lock of its own under the
+//     reticle to be displaced by; that is asserted before the lock card is.
+//     Since #503 only a site with coordinates asks the region at all, so the
+//     decoy cases run on the SAVED site whose list failed (section 4).
 //   * With no list, a deep link to an id nobody framed is still refused, and
 //     says it cannot be found without the list, with the same reason.
 //   * With a list that simply does not carry M31 (a saved site), LOCK IN
 //     FINDER refuses it as before: the hold is for a missing list, not for a
 //     missing row.
-//   * The held card's obstruction verdict: none from a default site's
-//     placeholder horizon (the primary stays IMAGE with M31 at -44 there),
-//     and the saved site's own horizon when a SAVED site's list failed (a
-//     500): BEHIND OBSTRUCTION at the DOWN hour, IMAGE at the UP hour.
-//   * A tap on empty sky in the atlas still aims the finder on a default site.
+//   * When a SAVED site's list failed (a 500), the held card is PLACED by the
+//     model: the saved site's own horizon judges it (BEHIND OBSTRUCTION at the
+//     DOWN hour, IMAGE at the UP hour), and its window is the model's own walk
+//     to dawn - never a "window 0m" nobody computed for an object that rises
+//     (#508), while one that never clears the floor reads its computed 0m.
+//   * A tap on empty sky in the atlas aims the finder on a saved site, and on
+//     a default site moves the atlas and claims nothing on the finder.
 //
 // MUTATION RECORD: see the block at the foot of this file.
 
@@ -106,10 +114,20 @@ let listComputed = false;
 /** Tonight's list failing for a reason that is NOT the no-site 409 (a 500),
  *  on a SAVED site: the hold still happens, and the site's horizon judges it. */
 let tonightFails = false;
+/** The NIGHT failing too (`/api/visibility` a 500), so the finder knows no
+ *  dawn to walk a window to - the verifier's case at the foot of section 4. */
+let nightFails = false;
 
 const M31 = {
   id: "m31", name: "M31", type: "Galaxy",
   ra_hours: 0.7123, dec_deg: 41.269, mag: 3.4, size_arcmin: 190,
+};
+/** The control for the window (#508): the galaxy nearest the south celestial
+ *  pole, which from the equator never gets a degree up, so its window is a
+ *  real, computed 0. */
+const NGC2573 = {
+  id: "ngc2573", name: "NGC 2573", type: "Galaxy",
+  ra_hours: 1.6947, dec_deg: -89.3347, mag: 13.4, size_arcmin: 1.9,
 };
 
 function res(status: number, data: unknown) {
@@ -134,6 +152,7 @@ g.fetch = async (url: any) => {
     return listComputed ? res(200, { date: "2026-09-10", site_is_default: false, picks: [] }) : noSite();
   }
   if (u.includes("/api/visibility")) {
+    if (nightFails) return res(500, { detail: "Internal Server Error" });
     if (!listComputed && !tonightFails) return noSite();
     return res(200, {
       date: "2026-09-10", transit_unix: NOW / 1000 + 3600, transit_alt: 48, transit_in_daylight: false,
@@ -181,8 +200,10 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
 const { nav, resetRouterCacheForTests } = await import("../../../router");
-const { altAzOf } = await import("../../../../lib/altaz");
+const { altAzOf, lstHours } = await import("../../../../lib/altaz");
 const { DEFAULT_OVERLAP } = await import("../../../../lib/framing");
+const { D2R, FLOOR_DEG, minutesAboveFloor, walkTrack } = await import("../finder");
+const { windowLabel } = await import("../finder/model");
 const {
   SkyHub, FRAME_NEEDS_AIM, HELD_STATUS, LOCK_WAIT_MS, lockHeld, lockNoList, lockNotListed,
 } = await import("../SkyHub");
@@ -223,8 +244,11 @@ const toasts = (): Array<{ title?: string; detail?: string; level?: string }> =>
   useStore.getState().toasts as any;
 const lockName = (): string | null => byId("sky-lock-name")?.textContent ?? null;
 const locked = (id: string): boolean => byId(id)?.getAttribute("aria-disabled") === "true";
-/** Which of `lockCta`'s cases the lock card's primary is drawing. */
+/** Which of `lockCardCta`'s cases the lock card's primary is drawing. */
 const ctaKind = (): string | null => byId("sky-cta")?.getAttribute("data-cta") ?? null;
+/** The lock card's two readings that a placement fills. */
+const lockAlt = (): string | null => byId("sky-lock-alt")?.textContent ?? null;
+const lockWindow = (): string | null => byId("sky-lock-window")?.textContent ?? null;
 
 /** A tap on the atlas canvas, `skyAtlasDom`'s own helper: the canvas is given
  *  a 400 px box so the tap's client coordinates mean a point on the sky. */
@@ -317,9 +341,48 @@ async function mount(at: number, site: any, computed: boolean): Promise<{ unmoun
  *  does is left for the test's own assertion to report, rather than thrown
  *  here outside any test, where it would end the file instead of failing a
  *  case. */
-async function lockInFinder(): Promise<void> {
+async function lockInFinder(name = "M31"): Promise<void> {
   await click(byId("atlas-lock-in-finder"), "LOCK IN FINDER");
-  await until("the lock card", () => lockName() === "M31", 4000).catch(() => { /* graded by the case */ });
+  await until("the lock card", () => lockName() === name, 4000).catch(() => { /* graded by the case */ });
+}
+
+/** Put another catalogue object on the framing session, as an atlas search
+ *  pick would, so LOCK IN FINDER hands that one over. */
+function frameObject(row: typeof M31): void {
+  act(() => {
+    useStore.setState({
+      framing: {
+        ...(useStore.getState().framing as any),
+        target: { ...row },
+        center: { ra_hours: row.ra_hours, dec_deg: row.dec_deg },
+      },
+    } as never);
+  });
+}
+
+/**
+ * The window the MODEL walks for an object on section 4's saved site: 0 N 0 E,
+ * dawn five hours off (the visibility double's `dark_end_unix`), the 15 degree
+ * floor with the horizon layer on and no line drawn, no forecast. The walk is
+ * the app's own, so this pins that the held card carries the model's figure
+ * rather than restating how it is made; `peakAlt` below checks what the walk
+ * says against the sky itself.
+ */
+function modelWindow(row: { ra_hours: number; dec_deg: number }, nowMs: number): number {
+  const lst = lstHours(0, nowMs / 1000);
+  return minutesAboveFloor(walkTrack(row.dec_deg * D2R, (lst - row.ra_hours) * 15 * D2R, {
+    latDeg: 0, hoursToDawn: 5, horizon: [], horizonMinDeg: 15, maskOn: true, holdAt: () => false,
+  }));
+}
+
+/** The highest the object gets in the next five hours at 0 N 0 E, sampled
+ *  every six minutes with `altAzOf`, not with the walk. */
+function peakAlt(row: { ra_hours: number; dec_deg: number }, nowMs: number): number {
+  let best = -90;
+  for (let m = 0; m <= 300; m += 6) {
+    best = Math.max(best, altAzOf(row.ra_hours, row.dec_deg, 0, 0, nowMs / 1000 + m * 60).altDeg);
+  }
+  return best;
 }
 
 /** The finder's own lock (the model's, not the hub's) is the decoy under the
@@ -366,9 +429,24 @@ await testAsync("premise: M31 is up at the placeholder at one hour and below the
     await holdsM31(m.why, "UP hour");
   });
 
-  await testAsync("UP hour: the decoy under the reticle does not take the lock", async () => {
-    await decoyUnderReticle();
-    eq(lockName(), "M31", "a catalogue row under the reticle displaced the held object:");
+  // M31 is 28 degrees up at the PLACEHOLDER here, which is exactly the hour a
+  // placeholder verdict would have read as clear.
+  await testAsync("UP hour, default site: the hold is unplaced - no altitude, no window, and SET A SITE FIRST, never IMAGE", () => {
+    eq(lockName(), "M31", "precondition: M31 held");
+    eq(lockAlt(), "-", "the held card prints an altitude computed at the placeholder:");
+    eq(lockWindow(), "-", "the held card prints a window nobody walked:");
+    eq(ctaKind(), "site", "the held card's primary read an unknown obstruction as a verdict:");
+    eq(locked("sky-cta"), false, "SET A SITE FIRST is locked, so the one fix on the card cannot be pressed:");
+  });
+
+  // RE-PINNED (H4-USKY, #503). This case was "the decoy under the reticle does
+  // not take the lock", on this default site. A default site no longer asks
+  // the region about the placeholder's sky, so no decoy is placed here; the
+  // same rule is graded with a real decoy in section 4, on a saved site.
+  await testAsync("UP hour, default site: nothing is placed under the reticle to compete with the hold", () => {
+    eq(container.querySelectorAll("[data-sky-marker]").length, 0,
+      "the finder placed catalogue rows at the placeholder:");
+    eq(lockName(), "M31", "the hold did not stand on an empty finder:");
   });
 
   await testAsync("UP hour: the finder's FRAME frames M31, and the hold survives FRAME", async () => {
@@ -382,32 +460,36 @@ await testAsync("premise: M31 is up at the placeholder at one hour and below the
   m.unmount();
 }
 
-// ================ 1b. the UP hour, default site: a tap on empty sky still aims
-// The finder PLACES the sky at the placeholder whatever `is_default` says, so
-// `aimAtSky` converts with that pair (`placeLat`), not the claim pair
-// (`trackLat`, null here): a default site still has a finder to aim. The
-// atlas's reticle readout is `model.patch`, which is derived from the finder's
-// view, so it carries the tapped position only if the aim reached the finder.
+// ======= 1b. the UP hour, default site: a tap on empty sky claims nothing
+// RE-PINNED (H4-USKY, #503). This section held that a tap on bare sky AIMED
+// THE FINDER on a default site, converting with the placeholder pair the
+// finder then placed its sky with (`placeLat`/`placeLon`) - so the atlas's
+// reticle readout read "reticle 23h 15m 30s +10 · UP · cloud -", a verdict
+// about the placeholder's horizon. The finder places nothing at the
+// placeholder now and that pair is retired: the tap still moves the ATLAS (the
+// framing's centre, and the framed object cleared), and the finder, with no
+// coordinates to aim by, makes no claim at all. The aim on a site WITH
+// coordinates is graded in section 4.
+const PATCH = { ra_hours: 23.2583, dec_deg: 10 };  // 23h 15m 30s +10
 {
   const m = await mount(NOW_UP, DEFAULT_SITE, false);
-  const PATCH = { ra_hours: 23.2583, dec_deg: 10 };  // 23h 15m 30s +10
 
-  await testAsync("UP hour, default site: a tap on empty sky aims the finder there", async () => {
+  await testAsync("UP hour, default site: a tap on empty sky moves the atlas and claims nothing on the finder", async () => {
     const alt = altAzOf(PATCH.ra_hours, PATCH.dec_deg, 0, 0, NOW_UP / 1000).altDeg;
-    assert(alt > 15, `precondition: the patch is at ${alt.toFixed(1)} deg at the placeholder, not up`);
+    assert(alt > 15, `precondition: the patch is at ${alt.toFixed(1)} deg at the placeholder, so a placeholder verdict would read UP`);
     act(() => {
       useStore.setState({
         framing: { ...(useStore.getState().framing as any), center: { ...PATCH }, fovZoomDeg: 10 },
       } as never);
     });
     await settle();
-    const before = byId("atlas-aim")?.textContent ?? "";
-    assert(!/reticle\s+23h\s*15m/.test(before), `precondition: the reticle is already on the patch: "${before}"`);
+    eq(useStore.getState().framing?.target?.id ?? null, "m31", "precondition: M31 is the framed object before the tap");
     tapCanvas(200, 200);           // dead centre: the tangent point itself
     await settle();
-    const readout = byId("atlas-aim")?.textContent ?? "";
-    assert(/reticle\s+23h\s*15m/.test(readout),
-      `a tap on bare sky did not move the finder's aim on a default site: "${readout}"`);
+    eq(useStore.getState().framing?.target ?? null, null,
+      "the tap never reached the atlas's aim (the framed object is still set):");
+    eq(byId("atlas-aim")?.textContent ?? null, null,
+      "the finder's reticle claims a position and a verdict at the placeholder:");
   });
 
   m.unmount();
@@ -431,14 +513,26 @@ await testAsync("premise: M31 is up at the placeholder at one hour and below the
   // M31 is 44 degrees under the PLACEHOLDER's horizon here. "Behind the
   // horizon" is a claim about the operator's sky, and a default site is no
   // site, so the held card makes none - the same rule that keeps FRAME live.
-  await testAsync("DOWN hour: a default site's placeholder horizon gives the held object no obstruction verdict", () => {
+  //
+  // RE-PINNED (H4-USKY, the E item of #503). This case pinned `ctaKind()` to
+  // "image": no verdict, so the primary offered IMAGE M31 - for an object whose
+  // altitude nobody knew, 44 degrees under the only horizon anybody had
+  // computed. That was the placeholder `obstructed: false` read as clear. The
+  // obstruction is UNKNOWN now, and an unknown is neither verdict: the primary
+  // is SET A SITE FIRST at this hour as at the UP hour.
+  await testAsync("DOWN hour: a default site gives the held object no verdict either way - SET A SITE FIRST, never IMAGE", () => {
     eq(lockName(), "M31", "precondition: M31 held");
-    eq(ctaKind(), "image", "the held card's primary judged M31 against the placeholder's horizon:");
+    eq(ctaKind(), "site", "the held card's primary read an unknown obstruction as a verdict:");
+    eq(lockAlt(), "-", "the held card prints an altitude computed at the placeholder:");
+    eq(lockWindow(), "-", "the held card prints a window nobody walked:");
   });
 
-  await testAsync("DOWN hour: the decoy under the clamped reticle does not take the lock", async () => {
-    await decoyUnderReticle();
-    eq(lockName(), "M31", "a catalogue row under the reticle displaced the held object:");
+  await testAsync("SET A SITE FIRST opens the site sheet, and the hold survives the round trip", async () => {
+    await click(byId("sky-cta"), "SET A SITE FIRST");
+    assert(/\/sites(\?|$)/.test(win.location.hash), `the primary did not open the site sheet: ${win.location.hash}`);
+    act(() => { nav.closeSheet(); });
+    await settle();
+    eq(lockName(), "M31", "closing the site sheet dropped the hold:");
   });
 
   await testAsync("a drag of the finder ends the hold", async () => {
@@ -451,18 +545,17 @@ await testAsync("premise: M31 is up at the placeholder at one hour and below the
     assert(lockName() !== "M31", "the finder was dragged off the held object and the card still names it");
   });
 
-  // Held again, from the atlas, for the tracked-id half of the rule.
-  await click(byId("sky-atlas-mode"), "ATLAS");
-  act(() => { useStore.setState({ toasts: [] } as never); });
-  await lockInFinder();
-  await testAsync("a tap on the decoy at the reticle ends the hold, though the view barely moves", async () => {
-    eq(lockName(), "M31", "precondition: M31 held again");
-    await decoyUnderReticle();
-    await click(container.querySelector('[data-sky-marker="decoy"]'), "the decoy's marker");
-    eq(lockName(), "DECOY", "a tap on another object left the hold standing:");
-  });
-
+  // RE-PINNED (H4-USKY, #503 and #504): the pinned refusal. It still stands -
+  // a bare `?lock=<id>` brings no row, and with no list there is nothing to
+  // find the id in, so it is refused and says why. What moved is what it is
+  // graded against: it followed a tap on the decoy and pinned the lock as
+  // "DECOY". A default site places no decoy now (the tracked-id half of the
+  // hold's rule moved to section 4 with it), so the lock the refusal must not
+  // move is the empty one the drag above left: no lock card at all. And a row
+  // is what #504 made a search pick carry, so the case also grades that a bare
+  // id is not held as though it had brought one.
   await testAsync("with no list, a deep link to an id nobody framed is refused, and says why", async () => {
+    eq(lockName(), null, "precondition: nothing is locked after the drag");
     act(() => { useStore.setState({ toasts: [] } as never); });
     act(() => { nav.go("/sky?lock=m101"); });
     await until("the refusal", () => toasts().some((t) => (t.title ?? "").includes("m101")), LOCK_WAIT_MS + 6000);
@@ -470,7 +563,8 @@ await testAsync("premise: M31 is up at the placeholder at one hour and below the
     eq(said.length, 1, "the refusal was said more than once:");
     eq(said[0].title, lockNoList("m101"), "with no list, the refusal blames tonight's list for leaving it out:");
     eq(said[0].detail, m.why, "the refusal does not say why there is no list:");
-    eq(lockName(), "DECOY", "a refused id moved the lock:");
+    eq(lockName(), null, "a refused id moved the lock:");
+    assert(!/lock=/.test(win.location.hash), `the refused link was left in the URL: ${win.location.hash}`);
   });
 
   m.unmount();
@@ -502,6 +596,10 @@ await testAsync("premise: M31 is up at the placeholder at one hour and below the
 // sends the object to a quick session. At the DOWN hour M31 is at -44.5 under
 // a 15 degree floor; at the UP hour, 28.4 above it (the control that keeps the
 // rule from passing by calling everything obstructed).
+//
+// Here the site HAS coordinates, so the finder places the sky and asks the
+// region about it, and the DECOY is under the reticle: the hold-wins and
+// tracked-id cases live here since #503 (see section 2's re-pin).
 tonightFails = true;
 for (const [at, hour, want] of [[NOW_DOWN, "DOWN", "obstructed"], [NOW_UP, "UP", "image"]] as const) {
   const m = await mount(at, SAVED_SITE, false);
@@ -512,8 +610,96 @@ for (const [at, hour, want] of [[NOW_DOWN, "DOWN", "obstructed"], [NOW_UP, "UP",
     eq(toasts().filter((t) => t.title === lockHeld("M31")).length, 1, "the hold was not said, once:");
     eq(ctaKind(), want, `the held card's primary at the ${hour} hour:`);
     eq(locked("sky-cta"), want === "obstructed", `the held card's primary lock state at the ${hour} hour:`);
+    assert(/^-?\d+°$/.test(lockAlt() ?? ""), `the held card on a saved site prints no altitude: "${lockAlt()}"`);
+  });
+
+  await testAsync(`${hour} hour, saved site: the decoy under the ${hour === "DOWN" ? "clamped " : ""}reticle does not take the lock`, async () => {
+    await decoyUnderReticle();
+    eq(lockName(), "M31", "a catalogue row under the reticle displaced the held object:");
+  });
+
+  if (hour === "UP") {
+    // #508. M31 is rising here (28 degrees now, towards 49 at transit), so it
+    // clears the 25 degree floor for the whole five hours to dawn: a card
+    // reading "window 0m" says the opposite of the sky.
+    await testAsync("UP hour, saved site: the held card's window is the model's own walk, not a 0m nobody computed", () => {
+      const peak = peakAlt(M31, NOW_UP);
+      assert(peak > FLOOR_DEG, `premise: M31 peaks at ${peak.toFixed(1)} deg in the next five hours, not above the ${FLOOR_DEG} degree floor`);
+      const want = modelWindow(M31, NOW_UP);
+      assert(want > 0, `premise: the model's walk gives M31 ${want} minutes, not a window`);
+      eq(lockName(), "M31", "precondition: M31 held");
+      assert(lockWindow() !== "0m", "the held card reads 'window 0m' for an object that rises above the floor tonight");
+      eq(lockWindow(), windowLabel(want), "the held card's window is not the model's walk:");
+    });
+
+    await testAsync("a tap on the decoy at the reticle ends the hold, though the view barely moves", async () => {
+      eq(lockName(), "M31", "precondition: M31 held");
+      await click(container.querySelector('[data-sky-marker="decoy"]'), "the decoy's marker");
+      eq(lockName(), "DECOY", "a tap on another object left the hold standing:");
+    });
+
+    // The aim on a site WITH coordinates, which section 1b's re-pin moved
+    // here: `aimAtSky` converts through `model.place`, and the atlas's reticle
+    // readout is `model.patch`, derived from the finder's view, so it carries
+    // the tapped position only if the aim reached the finder.
+    await testAsync("UP hour, saved site: a tap on empty sky aims the finder there", async () => {
+      const alt = altAzOf(PATCH.ra_hours, PATCH.dec_deg, 0, 0, NOW_UP / 1000).altDeg;
+      assert(alt > 15, `precondition: the patch is at ${alt.toFixed(1)} deg, not up`);
+      await click(byId("sky-atlas-mode"), "ATLAS");
+      act(() => {
+        useStore.setState({
+          framing: { ...(useStore.getState().framing as any), center: { ...PATCH }, fovZoomDeg: 10 },
+        } as never);
+      });
+      await settle();
+      const before = byId("atlas-aim")?.textContent ?? "";
+      assert(!/reticle\s+23h\s*15m/.test(before), `precondition: the reticle is already on the patch: "${before}"`);
+      tapCanvas(200, 200);           // dead centre: the tangent point itself
+      await settle();
+      const readout = byId("atlas-aim")?.textContent ?? "";
+      assert(/reticle\s+23h\s*15m/.test(readout),
+        `a tap on bare sky did not move the finder's aim on a saved site: "${readout}"`);
+    });
+  }
+  m.unmount();
+}
+
+// The control for #508: an object that never clears the floor tonight reads
+// its COMPUTED 0m - the window is a measurement, and 0 is one of its answers.
+{
+  const m = await mount(NOW_UP, SAVED_SITE, false);
+  frameObject(NGC2573);
+  await lockInFinder("NGC 2573");
+  await testAsync("control, UP hour, saved site: a held object that never rises reads its computed 0m", () => {
+    const peak = peakAlt(NGC2573, NOW_UP);
+    assert(peak < FLOOR_DEG, `premise: NGC 2573 peaks at ${peak.toFixed(1)} deg, above the ${FLOOR_DEG} degree floor`);
+    eq(modelWindow(NGC2573, NOW_UP), 0, "premise: the model's walk gives NGC 2573 a window:");
+    eq(lockName(), "NGC 2573", "LOCK IN FINDER did not hold NGC 2573:");
+    eq(lockWindow(), "0m", "a computed zero window is not printed as one:");
   });
   m.unmount();
+}
+
+// Added by the H4-USKY verifier (#508, the same placeholder by another road).
+// The walk runs from now to the night's dawn, and the night comes from
+// `/api/visibility`. When that fails as well as tonight's list - one outage
+// failing both is the likely case, and a failed list is what causes the hold -
+// the finder knows no dawn, `walkTrack` returns nothing, and `place` handed the
+// card a 0: "window 0m" for M31, which is rising and clears the floor all
+// night. The card is still PLACED here (a saved site has coordinates), so the
+// altitude stands; only the window has nothing to be walked to.
+{
+  nightFails = true;
+  const m = await mount(NOW_UP, SAVED_SITE, false);
+  await lockInFinder();
+  await testAsync("UP hour, saved site, list AND night failed: the held card prints no window, not a 0m walked to no dawn", () => {
+    eq(lockName(), "M31", "precondition: M31 held");
+    assert(/^-?\d+°$/.test(lockAlt() ?? ""), `precondition: the held card on a saved site is placed: "${lockAlt()}"`);
+    assert(peakAlt(M31, NOW_UP) > FLOOR_DEG, "premise: M31 clears the floor tonight");
+    eq(lockWindow(), "-", "the held card prints a window walked to a dawn nobody knows:");
+  });
+  m.unmount();
+  nightFails = false;
 }
 tonightFails = false;
 
@@ -604,6 +790,98 @@ Date.now = realNow;
 //   skyAtlasDom 22/22, skyHubDom 11/11, skyLockCtaDom 8/8, skyLockParam 4/4).
 //   Observed ("16/17 passed"):
 //     x UP hour, default site: a tap on empty sky aims the finder there: a tap on bare sky did not move the finder's aim on a default site: "reticle 21h 19m 47s +45° 00′ 00″ · UP · cloud -"
+//
+// RE-PINNED, 2026-09-29 (H4-USKY, #503, #504, #508 and the E item). A default
+// site places nothing at the placeholder now, so five pins above moved, each
+// deliberately and each marked RE-PINNED where it stands: the default-site
+// decoy cases went to section 4 (no decoy is placed on a default site); the
+// DOWN-hour verdict pin went from "image" to "site" (an unknown obstruction is
+// neither verdict); section 1b went from "a tap aims the finder" to "a tap
+// moves the atlas and claims nothing", its aim moving to section 4's saved
+// site; and the pinned refusal of a bare `?lock=m101` is graded against the
+// empty lock the drag leaves rather than "DECOY". The records above describe
+// the file as it was when they ran: the "aimAtSky uses the claim pair"
+// mutant has no code left to mutate (`placeLat`/`placeLon` are retired), and
+// the "a default site's placeholder horizon judges the hold" mutant's term
+// (`siteSaved &&`) went with the replicated horizon context into
+// `model.place`.
+//
+// H4-USKY MUTATION RECORD, 2026-09-29, each mutant run in a private scratch
+// copy of ui/ (the session scratchpad's H4-USKY-mut, never the shared tree,
+// #254), from a byte backup restored with its sha256 checked. Output verbatim.
+//
+//   MUTANT "haveCoords ignores is_default" (finder/model.ts: the
+//   `&& site.is_default !== true` term dropped). Observed ("17/23 passed"):
+//     x UP hour, default site: the hold is unplaced - no altitude, no window, and SET A SITE FIRST, never IMAGE: the held card prints an altitude computed at the placeholder: expected "-", got "28°"
+//     x UP hour, default site: nothing is placed under the reticle to compete with the hold: the finder placed catalogue rows at the placeholder: expected 0, got 1
+//     x UP hour, default site: a tap on empty sky moves the atlas and claims nothing on the finder: the finder's reticle claims a position and a verdict at the placeholder: expected null, got "reticle 23h 15m 30s +10° 00′ 00″ · UP · cloud -"
+//     x DOWN hour: a default site gives the held object no verdict either way - SET A SITE FIRST, never IMAGE: the held card's primary read an unknown obstruction as a verdict: expected "site", got "obstructed"
+//     x SET A SITE FIRST opens the site sheet, and the hold survives the round trip: the primary did not open the site sheet: #/sky
+//     x with no list, a deep link to an id nobody framed is refused, and says why: precondition: nothing is locked after the drag expected null, got "DECOY"
+//
+//   MUTANT "obstructed: false placeholder" (SkyHub.tsx `heldTarget`: the
+//   unplaced lock's `obstructed: null` written `false`, the #466 card's
+//   placeholder). Observed ("20/23 passed"):
+//     x UP hour, default site: the hold is unplaced - no altitude, no window, and SET A SITE FIRST, never IMAGE: the held card's primary read an unknown obstruction as a verdict: expected "site", got "image"
+//     x DOWN hour: a default site gives the held object no verdict either way - SET A SITE FIRST, never IMAGE: the held card's primary read an unknown obstruction as a verdict: expected "site", got "image"
+//     x SET A SITE FIRST opens the site sheet, and the hold survives the round trip: the primary did not open the site sheet: #/sky/quick?target=m31
+//
+//   MUTANT "heldTarget passes 0" (the placed lock's `windowMinutes:
+//   at.windowMinutes` written `0`, #508's code). Observed ("22/23 passed"):
+//     x UP hour, saved site: the held card's window is the model's own walk, not a 0m nobody computed: the held card reads 'window 0m' for an object that rises above the floor tonight
+//   and MUTANT "heldTarget passes 0" on the UNPLACED lock (its `windowMinutes:
+//   null` written `0`). Observed ("21/23 passed"):
+//     x UP hour, default site: the hold is unplaced - no altitude, no window, and SET A SITE FIRST, never IMAGE: the held card prints a window nobody walked: expected "-", got "0m"
+//     x DOWN hour: a default site gives the held object no verdict either way - SET A SITE FIRST, never IMAGE: the held card prints a window nobody walked: expected "-", got "0m"
+//
+//   MUTANT (control) "heldTarget passes null" (the placed lock's window
+//   written `null`, which would pass every "never 0m" case by printing "-"
+//   for everything). Observed ("21/23 passed"):
+//     x UP hour, saved site: the held card's window is the model's own walk, not a 0m nobody computed: the held card's window is not the model's walk: expected "5h 15m", got "-"
+//     x control, UP hour, saved site: a held object that never rises reads its computed 0m: a computed zero window is not printed as one: expected "0m", got "-"
+//
+//   MUTANT "hold needs a placement" (the hold's branch also requiring
+//   `model.place` to answer, the old `placeLat !== null` guard). Observed
+//   ("16/23 passed"):
+//     x UP hour: LOCK IN FINDER locks M31 with no list, and says why the list is empty: UP hour: LOCK IN FINDER did not lock the object the atlas handed over: expected "M31", got null
+//     x UP hour, default site: the hold is unplaced - no altitude, no window, and SET A SITE FIRST, never IMAGE: precondition: M31 held expected "M31", got null
+//     x UP hour, default site: nothing is placed under the reticle to compete with the hold: the hold did not stand on an empty finder: expected "M31", got null
+//     x UP hour: the finder's FRAME frames M31, and the hold survives FRAME: FRAME did not open
+//     x DOWN hour: LOCK IN FINDER locks M31 with no list, and says why the list is empty: DOWN hour: LOCK IN FINDER did not lock the object the atlas handed over: expected "M31", got null
+//     x DOWN hour: a default site gives the held object no verdict either way - SET A SITE FIRST, never IMAGE: precondition: M31 held expected "M31", got null
+//     x SET A SITE FIRST opens the site sheet, and the hold survives the round trip: no SET A SITE FIRST to press - the fixture is wrong, not the component
+//
+//   MUTANT (control) "hold whenever a row travels" (the hold's `rankingError
+//   != null` term dropped). Observed ("22/23 passed"):
+//     x control: with a list that does not carry M31, LOCK IN FINDER refuses it and holds nothing: timed out after 8500ms waiting for the refusal
+//
+//   MUTANT "windowLabel folds null into 0m" (finder/model.ts `windowLabel`:
+//   `reachWindowLabel(minutes ?? 0)`). Observed ("21/23 passed"):
+//     x UP hour, default site: the hold is unplaced - no altitude, no window, and SET A SITE FIRST, never IMAGE: the held card prints a window nobody walked: expected "-", got "0m"
+//     x DOWN hour: a default site gives the held object no verdict either way - SET A SITE FIRST, never IMAGE: the held card prints a window nobody walked: expected "-", got "0m"
+//
+//   MUTANT "aimAtSky never aims" (SkyHub.tsx `aimAtSky`: the finder's
+//   `setView` after `model.place` removed). Observed ("22/23 passed"):
+//     x UP hour, saved site: a tap on empty sky aims the finder there: a tap on bare sky did not move the finder's aim on a saved site: "reticle 00h 42m 44s +41° 16′ 08″ · UP · cloud -"
+//
+// H4-USKY VERIFIER'S RECORD, 2026-09-29, in its own private scratch copy of
+// ui/ (the session scratchpad's H4-USKY-verifyB-mut), each from a byte backup
+// restored with its sha256 checked. THE DEFECT: `model.place` walked the held
+// object's window whether or not a night was known, so with `/api/visibility`
+// failing beside tonight's list the card read "window 0m" for a rising M31
+// (probed first on the unfixed code: the section 4 window case, with the night
+// made to fail, observed "the held card reads 'window 0m' for an object that
+// rises above the floor tonight"). `place` now answers null until a dawn is
+// known. Output verbatim:
+//
+//   MUTANT "place walks with no dawn" (finder/model.ts `dawnKnown = true`,
+//   the code as it was). Observed ("defaultSiteFrame.test: 23/24 passed"):
+//     x UP hour, saved site, list AND night failed: the held card prints no window, not a 0m walked to no dawn: the held card prints a window walked to a dawn nobody knows: expected "-", got "0m"
+//
+//   MUTANT (control) "place never walks" (`dawnKnown = false`), which would
+//   pass the case above by printing "-" for everything. Observed ("22/24"):
+//     x UP hour, saved site: the held card's window is the model's own walk, not a 0m nobody computed: the held card's window is not the model's walk: expected "5h 15m", got "-"
+//     x control, UP hour, saved site: a held object that never rises reads its computed 0m: a computed zero window is not printed as one: expected "0m", got "-"
 
 // ------------------------------------------------------------------- tally
 const total = passed + failed;

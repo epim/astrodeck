@@ -645,11 +645,18 @@ def test_site_sky_refuses_caller_named_coordinates_for_a_non_holder(tmp_path,
                                                                     monkeypatch):
     """The lat/lon overrides make this an oracle regardless of what the default
     path returns: a caller sweeps candidates and keeps whichever reproduces the
-    readings it already has."""
+    readings it already has.
+
+    RE-PINNED FOR #520, DELIBERATELY. The named coordinates used to ride the
+    query string (`GET /api/site/sky?lat=&lon=`), where every hop's access log
+    writes them down. They are a POST body now, and the rule this case holds is
+    unchanged: a caller without view.site_precise is refused. The GET form is
+    refused for everybody (test_h4_site_sky_preview_post)."""
     store, app = _make_client(tmp_path, monkeypatch)
     _install(principal_for_role("operator"))
     with TestClient(app) as c:
-        assert c.get("/api/site/sky?lat=40&lon=-74").status_code == 403
+        assert c.post("/api/site/sky",
+                      json={"lat": 40, "lon": -74}).status_code == 403
 
 
 def test_site_sky_full_for_admin(tmp_path, monkeypatch):

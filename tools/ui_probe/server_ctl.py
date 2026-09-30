@@ -53,6 +53,19 @@ and its port; one on 8800 is where a probe run, a browser tab or a seed meant
 for the rig's server would find a simulator, or a rig script meant for the
 rig find this one. probe.py refuses a base on that port too.
 
+The probe marker (#539): `start` writes `.astrodeck-probe` (PROBE_MARKER)
+into the config and the capture directory it creates, holding the port and
+pid of the server it started and the directory itself, once the server is
+spawned. seed_session.py, which rewrites a session and can arm it for an
+unattended start, refuses any directory without one, so the marker is the
+claim "a probe start made this directory", and `start` makes it only where
+that is true: a directory that did not exist before this start (or that
+--fresh wiped), or one holding the marker an earlier start wrote for that
+directory. A directory that was there without one, which may be a real
+install's, is used as asked but never marked, and the start says so; so is
+one holding a marker copied from another directory, which marking again
+would pass off as this directory's.
+
 A staged solve failure (#189 S7 item 1): `--sim-solve-fault RA_H,DEC,RADIUS`
 sets ASTRODECK_SIM_SOLVE_FAULT for the server, which the SimSolver reads
 (server/astrodeck/solve/simsolver.py) to fail every solve within RADIUS deg of
@@ -86,6 +99,11 @@ RIG_PORT = 8800
 #: The simulator's staged solve failure (server/astrodeck/solve/simsolver.py
 #: SOLVE_FAULT_ENV), which `--sim-solve-fault` sets.
 SOLVE_FAULT_ENV = "ASTRODECK_SIM_SOLVE_FAULT"
+#: The marker `start` leaves in each directory it creates (module docstring,
+#: #539). seed_session.py reads it under its own PROBE_MARKER: the two run
+#: under different pythons and import nothing of each other, so the server
+#: suite's test_h4_seed_session_allow_list.py holds them to one another.
+PROBE_MARKER = ".astrodeck-probe"
 
 PROBE_ADMIN_USER = "probe_admin"
 PROBE_ADMIN_PASSWORD = "Probe-Admin-Pass-1!"
@@ -145,6 +163,48 @@ class ServerClient:
 def _rmtree_if_exists(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
+
+
+def write_probe_marker(directory: Path, port: int, pid: int) -> Path:
+    """Leave the probe marker in `directory`: one line of JSON naming the
+    server's port and pid and the directory itself, resolved, which
+    seed_session.py compares with the directory it is given, so a probe
+    directory copied elsewhere is not taken for a probe server's."""
+    path = directory / PROBE_MARKER
+    path.write_text(json.dumps({"port": port, "pid": pid,
+                                "dir": str(directory.resolve())}) + "\n",
+                    encoding="utf-8")
+    return path
+
+
+def _marked_here(directory: Path) -> bool:
+    """Whether `directory` holds the marker an earlier start wrote for it:
+    `write_probe_marker`'s JSON, naming this directory. A marker copied in
+    from another directory, which seed_session.py refuses, is not one, and
+    marking it again would write this directory's name into it and let the
+    copy through; nor is a file of that name holding anything else."""
+    try:
+        data = json.loads((directory / PROBE_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    where = data.get("dir") if isinstance(data, dict) else None
+    if not (isinstance(where, str) and where):
+        return False
+    try:
+        other = Path(where).resolve()
+    except (OSError, ValueError):
+        return False
+    return os.path.normcase(str(other)) == os.path.normcase(str(directory.resolve()))
+
+
+def _dirs_to_mark(dirs: tuple[Path, ...]) -> list[Path]:
+    """Which of `dirs` this start may mark, asked BEFORE it creates any: one
+    that is not there yet (this start creates it), or one holding the marker
+    an earlier start wrote for it (`_marked_here`). Never one that was there
+    without that marker: it may be a real install's (module docstring,
+    #539)."""
+    return [d for d in dict.fromkeys(dirs)
+            if not d.exists() or _marked_here(d)]
 
 
 def _wait_healthz(client: ServerClient, timeout_s: float) -> None:
@@ -308,6 +368,9 @@ def cmd_start(args: argparse.Namespace) -> int:
         _rmtree_if_exists(config_dir)
         _rmtree_if_exists(capture_dir)
 
+    # Asked before the two are created, and written once the server's pid is
+    # known (below): the marker is the claim that this start made them.
+    to_mark = _dirs_to_mark((config_dir, capture_dir))
     config_dir.mkdir(parents=True, exist_ok=True)
     capture_dir.mkdir(parents=True, exist_ok=True)
     log_path = config_dir / "server.log"
@@ -363,6 +426,16 @@ def cmd_start(args: argparse.Namespace) -> int:
     pid = _spawn_server(venv_python, port, env, log_path)
     pid_path.write_text(str(pid), encoding="utf-8")
     _log(f"server pid={pid}")
+    for directory in dict.fromkeys((config_dir, capture_dir)):
+        if directory in to_mark:
+            write_probe_marker(directory, port, pid)
+            _log(f"  marked {directory} ({PROBE_MARKER})")
+        else:
+            _log(f"WARNING: {directory} was there before this start without a "
+                 f"{PROBE_MARKER} marker written for it, so it is not marked, and "
+                 f"seed_session.py "
+                 f"will refuse it: start with --fresh, or a new directory, for a "
+                 f"probe that seeds sessions")
 
     client = ServerClient(base)
     try:

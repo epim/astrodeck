@@ -20,7 +20,13 @@
 // sits on the arc's `handle`, a point on the drop, from the same `wireLoopArc`
 // the layer draws the arc with, so on the phone FLOW tab it follows the arc
 // that tab draws (#360); there it stands 6 px in from the drop, so the
-// container's edge does not cut it, and still covers it (#428).
+// container's edge does not cut it, and still covers it (#428). And there it
+// also stays off every card the tab lays out (#502): moved in off the edge,
+// the 26 px box reached 12 px into the cards' column, and when the lane's tail
+// sits in the right column the middle of the drop is beside the tail, so the
+// box covered the tail's corner. It now takes the clear height on the drop
+// nearest its middle, or, when the drop has none, on the rise
+// (`geometry.loopControlSpot`).
 //
 // This owns `data-flows-wire-selected`, which is the ONLY thing capture 15
 // waits for — "the selected wire's remove control must be visible". A control
@@ -28,8 +34,10 @@
 // the picture.
 import { useStore } from "../../store";
 import { AUTO_PAD } from "./autoLayout";
-import { wireAnchors, wireLoopArc, wireMidpoint } from "./FlowWireLayer";
-import type { FlowTier, Point } from "./geometry";
+import { placedCards, wireAnchors, wireLoopArc, wireMidpoint } from "./FlowWireLayer";
+import {
+  loopControlSpot, type CardBox, type FlowTier, type LoopArc, type Point,
+} from "./geometry";
 import { COLUMN_LOOP_STUB } from "./targetSummary";
 import type { FlowEdgeRec } from "./flowsTypes";
 
@@ -61,6 +69,30 @@ const SIZE_AUTO = 26;
  *  still covers the wire it removes. Zero on the canvas, where the drop
  *  stands 24 px clear of the cards and nothing clips. */
 export const LOOP_CONTROL_INSET_AUTO = Math.max(0, SIZE_AUTO / 2 - (AUTO_PAD - COLUMN_LOOP_STUB));
+
+/** Where the phone FLOW tab puts the loop's remove control (#502): a place
+ *  where its 26 px box lies inside the tab's container, covers the arc and
+ *  meets no card the tab lays out (`loopControlSpot`, which holds the box
+ *  inside the container by moving it in `LOOP_CONTROL_INSET_AUTO` off a leg).
+ *
+ *  THE CONTAINER'S RIGHT EDGE IS READ OFF THE LAYOUT. The columns fill it,
+ *  the right one standing `AUTO_PAD` inside it (autoLayout.ts
+ *  `layoutColumns`), and this control is not handed the width the tab
+ *  measured. With no card in the right column the edge found is the left
+ *  column's plus the gutter, inside the real one, so the box can only stand
+ *  further in, never past the edge.
+ *
+ *  With no clear place on either leg the control stays where #428 put it,
+ *  6 px in from the middle of the drop: covering a card is better than
+ *  offering no way to remove the wire. */
+function phoneLoopSpot(
+  loop: LoopArc,
+  cards: readonly CardBox[],
+): Point {
+  const right = Math.max(...cards.map((b) => b.x + b.w)) + AUTO_PAD;
+  return loopControlSpot(loop, SIZE_AUTO, 0, right, cards)
+    ?? { x: loop.handle.x - LOOP_CONTROL_INSET_AUTO, y: loop.handle.y };
+}
 
 export interface FlowWireDeleteProps {
   /** The selected edge. Passed in rather than read from the store because the
@@ -101,11 +133,14 @@ export default function FlowWireDelete({
 
   const sz = auto ? SIZE_AUTO : SIZE_CANVAS;
   const loop = wireLoopArc(edge, { nodes, edges }, tier, auto, positions);
-  // On the loop, its handle on the drop, and on the phone FLOW tab moved in
-  // off the container's edge (#428, `LOOP_CONTROL_INSET_AUTO`).
-  const { x: mx, y: my } = loop
-    ? { x: loop.handle.x - (auto ? LOOP_CONTROL_INSET_AUTO : 0), y: loop.handle.y }
-    : wireMidpoint(a.p1, a.p2);
+  // On the loop: on the canvas its handle on the drop, where the drop stands
+  // 24 px clear of the cards and nothing clips; on the phone FLOW tab inside
+  // the container and off every card (#428, #502, `phoneLoopSpot`).
+  const { x: mx, y: my } = !loop
+    ? wireMidpoint(a.p1, a.p2)
+    : auto
+      ? phoneLoopSpot(loop, placedCards(nodes, tier, positions))
+      : loop.handle;
 
   return (
     <button

@@ -15,6 +15,7 @@ import os
 import shutil
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -272,6 +273,48 @@ CENTERING_STUCK_MIN_ERR_FACTOR = 5.0
 #: the loop gave up. 0.5° sits above plate-solve rotation noise so a genuine
 #: slow approach is not mistaken for divergence.
 ROTATE_MIN_GAIN_DEG = 0.5
+
+#: A rotate move whose solved sky change is under this fraction of the move
+#: commanded is logged as "the rotator moved but the camera did not" (#526,
+#: H4 orchestrator ruling 3). On 2026-09-28 a -5.7 degree correction after
+#: the flip turned the camera +0.5 degrees, and the loop said only that it was
+#: not converging; the line names the commanded and the solved numbers, so
+#: play or slip in the train is told apart from a sign or wrap error.
+ROTATE_FOLLOW_FRACTION = 0.5
+
+#: Where every plate-solve frame is written, under ``CAPTURE_DIR`` (#532).
+#: The gallery and the calibration library both skip it by name.
+SOLVE_DIRNAME = "_solve"
+
+#: How many times a plate-solve frame's write is tried when another process
+#: holds the file (#532), each try under a new name. On 2026-09-29 an agent
+#: copying the last ``_solve/solve.fits`` off the rig held it as the engine
+#: wrote the next one to the same fixed path, and the solve failed outright
+#: with WinError 32, a centring strike toward setting the panel aside. A
+#: fresh name per frame is the fix; this is the backstop for a scanner or an
+#: indexer that opens the new file as it is created.
+SOLVE_WRITE_ATTEMPTS = 4
+
+#: The first wait between those tries, doubled after each: 0.2, 0.4 and
+#: 0.8 s, 1.4 s in all, awaited with ``asyncio.sleep``, never on the loop.
+SOLVE_WRITE_BACKOFF_S = 0.2
+
+#: A solve frame's file older than this, of the kind about to be written,
+#: was left by a solve that never finished (a server killed mid-solve), and
+#: the next solve of that kind sweeps it. Ten minutes is past any solve that
+#: is still running: ASTAP's own bound is 60 s.
+SOLVE_LEFTOVER_AGE_S = 600.0
+
+#: The inspection copy of each kind's newest frame is ``latest-<kind>.fits``:
+#: the frame itself, renamed there after its solve, so an operator or agent
+#: can copy it off without holding any file a solve writes or reads (#532).
+SOLVE_LATEST_PREFIX = "latest-"
+
+#: Windows' ERROR_SHARING_VIOLATION: another process has the file open in a
+#: way that excludes this one. Python raises it as a ``PermissionError`` whose
+#: ``winerror`` is 32 (its ``errno`` is EACCES, which a real permission
+#: problem shares, so the Windows code is the one asked).
+_ERROR_SHARING_VIOLATION = 32
 
 #: Bound on the one pier-side read ``meridian_flip`` takes either side of its
 #: re-slew. The same 30 s the sequence engine gives every other mount query
@@ -657,6 +700,134 @@ async def _run_to_its_bound(make, timeout_s: float) -> BaseException | None:
     if step.cancelled():
         return asyncio.CancelledError()
     return step.exception()
+
+
+# ------------------------------------------------------------ solve frames
+#
+# EVERY PLATE-SOLVE FRAME GETS ITS OWN NAME (#532). The solve, rotate, rotator
+# sync and guide-offset paths each wrote one fixed file (``_solve/solve.fits``
+# and its siblings), so any other process holding the last one open (a copy
+# off the rig, an antivirus scan, a search indexer, a file-browser preview)
+# made the next solve fail outright on Windows, and on a mosaic that failure
+# was a centring strike against a panel that had done nothing wrong. Now each
+# frame is written to ``<kind>-<token>.fits``, handed to the solver, and
+# renamed to ``latest-<kind>.fits`` once the solver is done with it: the one
+# file an outside reader may hold is one no solve writes to or reads.
+
+
+class SolveFrameTransient(DeviceError):
+    """A plate-solve frame could not be written because another process held
+    the file, on every one of ``SOLVE_WRITE_ATTEMPTS`` tries (#532).
+
+    A ``DeviceError``, so every caller that already survives a failed solve
+    survives this. It is not the sky's or the panel's fault, and
+    ``goto_and_center`` says so in its result as ``solve_transient: True``
+    (H4 contract 1), which the engine does not count as a centring strike."""
+
+
+def _sharing_violation(e: BaseException) -> bool:
+    """True for a Windows sharing violation, the transient this retries."""
+    return (isinstance(e, PermissionError)
+            and getattr(e, "winerror", None) == _ERROR_SHARING_VIOLATION)
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Remove ``path`` if it can be removed. Never raises: tidying a solve's
+    files must never be what fails a solve."""
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
+
+
+def _sweep_solve_leftovers(folder: Path, kind: str) -> None:
+    """Remove the frames of ``kind`` a solve that never finished left behind:
+    a unique name older than ``SOLVE_LEFTOVER_AGE_S``, with any sidecars, and
+    the fixed name every version before #532 wrote (``<kind>.fits``), which
+    nothing writes any more. Blocking; never raises. A fresh name is left
+    alone, since it may be a solve running now."""
+    if not folder.is_dir():
+        return
+    cutoff = time.time() - SOLVE_LEFTOVER_AGE_S
+    doomed = [folder / f"{kind}.fits"]
+    with contextlib.suppress(OSError):
+        for p in folder.glob(f"{kind}-*"):
+            with contextlib.suppress(OSError):
+                if p.stat().st_mtime < cutoff:
+                    doomed.append(p)
+    for p in doomed:
+        _unlink_quietly(p)
+
+
+async def _write_solve_frame(frame: Any, kind: str, *,
+                             ra_hours: float | None, dec_deg: float | None,
+                             instrument: str) -> Path:
+    """Write ``frame`` to a new ``_solve/<kind>-<token>.fits`` for a solver,
+    and return the path (#532).
+
+    A SHARING VIOLATION IS TRIED AGAIN, under a new name, after an
+    ``asyncio.sleep`` backoff (``SOLVE_WRITE_BACKOFF_S``, doubling), up to
+    ``SOLVE_WRITE_ATTEMPTS`` tries in all; then ``SolveFrameTransient``. Any
+    other failure (a full disk, a missing drive, a real permission problem)
+    raises at once as it always did: retrying it would only delay the same
+    answer. Offloaded, as every solve write was, so the disk never freezes
+    the event loop."""
+    folder = CAPTURE_DIR / SOLVE_DIRNAME
+    await asyncio.to_thread(_sweep_solve_leftovers, folder, kind)
+    for attempt in range(1, SOLVE_WRITE_ATTEMPTS + 1):
+        path = folder / f"{kind}-{uuid.uuid4().hex[:12]}.fits"
+        try:
+            await asyncio.to_thread(save_fits, frame, path, ra_hours=ra_hours,
+                                    dec_deg=dec_deg, instrument=instrument)
+            return path
+        except PermissionError as e:
+            if not _sharing_violation(e):
+                raise
+            await asyncio.to_thread(_unlink_quietly, path)
+            if attempt >= SOLVE_WRITE_ATTEMPTS:
+                bus.log("warning", f"plate solve: another process held the "
+                                   f"{kind} frame's file on every try "
+                                   f"({e})", "solve")
+                # WORDS ONLY, like every failed solve's message: it can
+                # become a hold's reason, and the path in ``e`` is a new
+                # name on every try.
+                raise SolveFrameTransient(
+                    f"the {kind} frame could not be written: another process "
+                    f"held the file on every try, each under a new name (a "
+                    f"Windows sharing violation); a transient fault on this "
+                    f"computer, not the sky's") from e
+            wait = SOLVE_WRITE_BACKOFF_S * 2 ** (attempt - 1)
+            bus.log("info", f"plate solve: another process held the {kind} "
+                            f"frame's file ({e}); writing it again under a "
+                            f"new name in {wait:g} s", "solve")
+            await asyncio.sleep(wait)
+    raise AssertionError("unreachable")          # pragma: no cover
+
+
+def _retire_solve_frame_sync(path: Path, kind: str) -> None:
+    """Blocking half of ``_retire_solve_frame``. Never raises."""
+    for sidecar in (path.with_suffix(".ini"), path.with_suffix(".wcs")):
+        _unlink_quietly(sidecar)
+    try:
+        os.replace(path, path.with_name(f"{SOLVE_LATEST_PREFIX}{kind}.fits"))
+    except OSError:
+        # The inspection copy is held open (somebody is copying it off) or
+        # the rename failed some other way: the frame goes, the copy stays
+        # as it was, and the solve that is done with it is not told.
+        _unlink_quietly(path)
+
+
+async def _retire_solve_frame(path: Path, kind: str) -> None:
+    """Once the solver is done with ``path``: delete the solver's sidecars
+    (ASTAP's ``.ini`` and ``.wcs``, which it removes itself only when it
+    produced a result), and rename the frame to ``latest-<kind>.fits``, the
+    inspection copy, or delete it when that rename fails. After the solve,
+    so no solve ever reads or writes the copy. Never raises, but for a
+    cancel."""
+    try:
+        await asyncio.to_thread(_retire_solve_frame_sync, path, kind)
+    except asyncio.CancelledError:
+        raise
+    except Exception:                  # noqa: BLE001 - see the docstring
+        pass
 
 
 class Hub:
@@ -5989,6 +6160,57 @@ class Hub:
                                f"{label} ({e}) — the next frame's filter move "
                                f"will correct it", "solve")
 
+    async def _narrowband_filter_loaded(self) -> str | None:
+        """The name of the filter a solve frame is about to be exposed
+        through, when that filter is marked narrowband; None for anything
+        else, a wheel that cannot be read included (#531).
+
+        Read AFTER ``_borrow_wheel_for_solve`` and before the shutter opens,
+        because by the time a solve fails the borrow has put the wheel back
+        on the run's filter: read then, a frame shot through L after an SII
+        frame would be blamed on SII. The light check names the filter
+        instead of calling a narrowband frame a capped optic. Never raises."""
+        fw = self.devices.get("filterwheel")
+        if fw is None or not getattr(fw, "connected", False):
+            return None
+        try:
+            slot = int(await fw.get_position())
+            names = list(getattr(fw, "filter_names", []) or [])
+            if 0 <= slot < len(names) and fw.is_narrowband(slot):
+                return str(names[slot])
+        except asyncio.CancelledError:
+            raise
+        except Exception:                # noqa: BLE001 - no name, no claim
+            return None
+        return None
+
+    async def _approach_rotator(self, rot, sky_deg: float, mech_now: float,
+                                rcfg) -> None:
+        """Move ``rot`` to the sky angle ``sky_deg``, arriving from the one
+        approach direction (#526, H4 orchestrator ruling 3).
+
+        ``rotation.one_sided_moves`` plans it from ``mech_now``, the
+        mechanical angle just read: one move when the travel already runs the
+        approach way, else ``ROTATOR_BACKLASH_DEG`` past the target and back,
+        or direct, said in the log, when that overshoot would cross the edge
+        of a limited mechanical range, or mechanical 0 on a full one.
+        Mechanical moves, through the same
+        offset ``Rotator.move_to`` applies, so the overshoot leg can be named
+        in the rotator's own terms."""
+        target = _rotation.mod360(sky_deg + float(rot.sync_offset_deg))
+        plan = _rotation.one_sided_moves(mech_now, target, rcfg.range_type,
+                                         rcfg.range_start_deg)
+        if plan.skipped:
+            bus.log("info", f"rotator: {plan.skipped}", "rotator")
+        elif len(plan.moves) > 1:
+            bus.log("info",
+                    f"rotator: the move to mechanical {target:.2f}° runs "
+                    f"against the approach direction, so it goes "
+                    f"{_rotation.ROTATOR_BACKLASH_DEG:g}° past, to "
+                    f"{plan.moves[0]:.2f}°, and comes back", "rotator")
+        for mech in plan.moves:
+            await rot.move_mechanical(mech)
+
     async def measure_guide_offset(self, *, exposure_s: float = 4.0,
                                    guide_exposure_s: float = 4.0) -> dict:
         """Plate-solve BOTH cameras where the mount is now, and diff the centres.
@@ -6065,12 +6287,24 @@ class Hub:
         if guide_fl and g_h and g_px:
             guide_fov = (g_h * g_px * 206.265 / guide_fl) / 3600.0
 
-        async def _expose(device, seconds, path_name, fov, binning):
-            async with self.exposure_guard("guide-scope offset"):
-                frame = await device.expose(seconds, 200, 30, binning=binning)
-            tmp = CAPTURE_DIR / "_solve" / path_name
-            await asyncio.to_thread(save_fits, frame, tmp, ra_hours=ra_hint,
-                                    dec_deg=dec_hint, instrument=device.name)
+        async def _expose(device, seconds, kind, fov, binning, *,
+                          borrow: bool):
+            # THE IMAGING FRAME BORROWS THE SOLVE FILTER (#531), as every
+            # solve of the imaging camera does: the measurement is taken
+            # between runs, often straight after a narrowband frame. The
+            # guide camera's frame does not, since the wheel is not in its
+            # light path.
+            borrowed_slot = (await self._borrow_wheel_for_solve()
+                             if borrow else None)
+            try:
+                async with self.exposure_guard("guide-scope offset"):
+                    frame = await device.expose(seconds, 200, 30,
+                                                binning=binning)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
+            tmp = await _write_solve_frame(frame, kind, ra_hours=ra_hint,
+                                           dec_deg=dec_hint,
+                                           instrument=device.name)
             bus.log("info", f"guide-offset: solving {device.name} "
                             f"(fov hint {fov or 'auto'})…", "solve")
             return tmp
@@ -6087,14 +6321,22 @@ class Hub:
         # the position angle the offset is stored against, so a run that dies
         # after one solve has produced the more useful half.
         main_angle = await _sky_angle.exposure_context(self, cam)
-        main_path = await _expose(cam, exposure_s, "guide_offset_main.fits",
-                                  main_fov, 2)
-        main = await solver.solve(main_path, ra_hint=ra_hint, dec_hint=dec_hint,
-                                  fov_deg_hint=main_fov)
+        main_path = await _expose(cam, exposure_s, "guide_offset_main",
+                                  main_fov, 2, borrow=True)
+        try:
+            main = await solver.solve(main_path, ra_hint=ra_hint,
+                                      dec_hint=dec_hint, fov_deg_hint=main_fov)
+        finally:
+            await _retire_solve_frame(main_path, "guide_offset_main")
         await _sky_angle.note_solved_rotation(
             self, main, source="guide-scope offset", context=main_angle)
-        guide = await _solve_guide_frame(await _expose(
-            guide_cam, guide_exposure_s, "guide_offset_guide.fits", guide_fov, 1))
+        guide_path = await _expose(guide_cam, guide_exposure_s,
+                                   "guide_offset_guide", guide_fov, 1,
+                                   borrow=False)
+        try:
+            guide = await _solve_guide_frame(guide_path)
+        finally:
+            await _retire_solve_frame(guide_path, "guide_offset_guide")
 
         out = {
             "main": {"ok": main.success, "ra_hours": main.ra_hours,
@@ -6207,6 +6449,10 @@ class Hub:
                 # What the rotator and the pier side were as the shutter
                 # opened, so the solve below may calibrate the rotator.
                 angle = await _sky_angle.exposure_context(self, cam)
+                # The filter the frame goes through, if it is still a
+                # narrowband one after the borrow (#531): the light check
+                # names it rather than calling the optic capped.
+                through = await self._narrowband_filter_loaded()
                 async with self.exposure_guard("plate solve"):
                     # When the shutter opened, against when the last GoTo
                     # came to rest (#402), inside the guard so a wait for
@@ -6220,12 +6466,11 @@ class Hub:
             # Save the captured frame to a temp FITS for the local solver. Works for
             # NINA too: NinaCamera populates ``frame.data`` (a decoded grayscale copy)
             # which is enough for ASTAP star detection, and save_fits writes the
-            # RA/Dec hints into the header. Offloaded so the disk write never freezes
-            # the event loop on the Windows target.
-            tmp = CAPTURE_DIR / "_solve" / "solve.fits"
-            await asyncio.to_thread(
-                save_fits, frame, tmp,
-                ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
+            # RA/Dec hints into the header. Under a name of its own (#532), so a
+            # reader holding an earlier frame cannot fail this one.
+            tmp = await _write_solve_frame(frame, "solve", ra_hours=ra_hint,
+                                           dec_deg=dec_hint,
+                                           instrument=cam.name)
             # FOV hint from the configured optics (bin-1, bin-independent — correct
             # even though the solve frame is binned 2×). None → ASTAP radius search,
             # preserving the old behavior when optics aren't known.
@@ -6237,8 +6482,12 @@ class Hub:
                     f"plate solving with {solver.name} (fov hint {fov_hint or 'auto'})…",
                     "solve")
             bus.publish("mount", action="solve_activity", activity="solving")
-            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                        fov_deg_hint=fov_hint)
+            try:
+                result = await solver.solve(tmp, ra_hint=ra_hint,
+                                            dec_hint=dec_hint,
+                                            fov_deg_hint=fov_hint)
+            finally:
+                await _retire_solve_frame(tmp, "solve")
         finally:
             bus.publish("mount", action="solve_activity", activity=None)
         if not result.success:
@@ -6251,7 +6500,8 @@ class Hub:
             # of a full frame is not worth paying on every centring attempt.
             from .solve import light as _light
             raise await _light.failed_solve_error(
-                frame, result, prefix="plate solve failed", hub=self)
+                frame, result, prefix="plate solve failed", hub=self,
+                narrowband_filter=through)
         # ASTAP returns J2000. Sync the mount in the frame IT expects (JNOW for a
         # real Alpaca mount, else unchanged) so a plate-solve sync does not corrupt
         # a JNOW mount's alignment model by ~20 arcmin. The returned dict stays
@@ -6333,18 +6583,30 @@ class Hub:
         bus.publish("mount", action="solve_activity", activity="exposing",
                     exposure_s=exposure_s)
         try:
-            angle = await _sky_angle.exposure_context(self, cam)
-            async with self.exposure_guard("rotator sync"):
-                frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            # The solve filter is borrowed here too (#531), exactly as
+            # ``solve_and_sync`` borrows it: a sync is pressed between runs,
+            # and the wheel may still hold the last run's narrowband filter.
+            borrowed_slot = await self._borrow_wheel_for_solve()
+            try:
+                angle = await _sky_angle.exposure_context(self, cam)
+                through = await self._narrowband_filter_loaded()
+                async with self.exposure_guard("rotator sync"):
+                    frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
             self.last_frame = frame
             await self._publish_preview(frame)
-            tmp = CAPTURE_DIR / "_solve" / "rotsync.fits"
-            await asyncio.to_thread(save_fits, frame, tmp, ra_hours=ra_hint,
-                                    dec_deg=dec_hint, instrument=cam.name)
+            tmp = await _write_solve_frame(frame, "rotsync", ra_hours=ra_hint,
+                                           dec_deg=dec_hint,
+                                           instrument=cam.name)
             opt = self.effective_optics()
             bus.publish("mount", action="solve_activity", activity="solving")
-            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                        fov_deg_hint=opt["fov_h_deg"] or None)
+            try:
+                result = await solver.solve(
+                    tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                    fov_deg_hint=opt["fov_h_deg"] or None)
+            finally:
+                await _retire_solve_frame(tmp, "rotsync")
         finally:
             bus.publish("mount", action="solve_activity", activity=None)
         if not result.success:
@@ -6353,7 +6615,7 @@ class Hub:
             from .solve import light as _light
             raise await _light.failed_solve_error(
                 frame, result, prefix="rotator sync: plate solve failed",
-                hub=self)
+                hub=self, narrowband_filter=through)
         rec = await _sky_angle.note_solved_rotation(
             self, result, source="rotator sync", context=angle)
         if rec is None:
@@ -6424,6 +6686,10 @@ class Hub:
         """The solve→move→solve attempts themselves. Split out only so
         ``rotate_to_pa`` can wrap them in the loop-resume ``finally`` above
         without indenting the whole body."""
+        # The last move this loop made, as (solved PA before it, mechanical
+        # angle before it, the sky move commanded), so the next solve can say
+        # whether the camera followed it (#526).
+        last_move: tuple[float, float, float] | None = None
         for attempt in range(1, max_attempts + 1):
             # This fence gates only the NEXT attempt's dispatch below; it does
             # NOT cancel an in-flight ``rot.move_to`` from a PRIOR attempt —
@@ -6444,24 +6710,41 @@ class Hub:
                             tel, ra_hint, dec_hint)
                 except Exception:
                     ra_hint = dec_hint = None
-            angle = await _sky_angle.exposure_context(self, cam)
-            async with self.exposure_guard("rotate to PA"):
-                frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            # THE SOLVE FILTER IS BORROWED (#531), exactly as ``solve_and_sync``
+            # borrows it: a luminance-class slot around the exposure only, the
+            # wheel put back in the ``finally``, so the engine's focuser offset
+            # delta sees no change. On 2026-09-29 the first rig mosaic began
+            # straight after a run that ended on SII, and this loop, which
+            # borrowed nothing, shot every rotation's solve frame through the
+            # 3 nm filter: "no light, optic capped" at each panel, and each
+            # panel shot unrotated, while the centring solve 25 s later,
+            # through L, read the sky.
+            borrowed_slot = await self._borrow_wheel_for_solve()
+            try:
+                angle = await _sky_angle.exposure_context(self, cam)
+                through = await self._narrowband_filter_loaded()
+                async with self.exposure_guard("rotate to PA"):
+                    frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
             self.last_frame = frame
             await self._publish_preview(frame)
-            tmp = CAPTURE_DIR / "_solve" / "rotate.fits"
-            await asyncio.to_thread(
-                save_fits, frame, tmp,
-                ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
+            tmp = await _write_solve_frame(frame, "rotate", ra_hours=ra_hint,
+                                           dec_deg=dec_hint,
+                                           instrument=cam.name)
             opt = self.effective_optics()
-            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                        fov_deg_hint=opt["fov_h_deg"] or None)
+            try:
+                result = await solver.solve(
+                    tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                    fov_deg_hint=opt["fov_h_deg"] or None)
+            finally:
+                await _retire_solve_frame(tmp, "rotate")
             if not result.success:
                 # Judged for light (#251, see ``solve_and_sync``).
                 from .solve import light as _light
                 raise await _light.failed_solve_error(
                     frame, result, prefix="rotate: plate solve failed",
-                    hub=self)
+                    hub=self, narrowband_filter=through)
             # The loop's next move is computed through the rotator's offset, so
             # an attempt whose solve could not calibrate it must stop here: a
             # move commanded through a stale offset is a rotation to the wrong
@@ -6478,6 +6761,24 @@ class Hub:
                     f"{rec['reason']}")
             orientation = rec["pa_deg"]
             mech = await rot.get_mechanical_position()
+            if last_move is not None:
+                # DID THE CAMERA FOLLOW THE LAST MOVE (#526)? Asked before the
+                # convergence test and the not-converging abort below, so the
+                # line that tells play or slip in the train apart from a sign
+                # error is in the log before the abort that ends the loop.
+                pa_before, mech_before, commanded = last_move
+                turned = ((orientation - pa_before + 180.0) % 360.0) - 180.0
+                if abs(turned) < ROTATE_FOLLOW_FRACTION * abs(commanded):
+                    reported = ((float(mech) - mech_before + 180.0)
+                                % 360.0) - 180.0
+                    bus.log("warning",
+                            f"rotator attempt {attempt}/{max_attempts}: the "
+                            f"rotator moved but the camera did not: commanded "
+                            f"{commanded:+.1f}°, the rotator reports "
+                            f"{reported:+.1f}°, and the solve saw the camera "
+                            f"turn {turned:+.1f}° (PA {pa_before:.1f}° -> "
+                            f"{orientation:.1f}°); play in the train or a "
+                            f"slipping camera would do this", "rotator")
             prev = target
             target = _rotation.map_sky_target(prev, mech, rot.sync_offset_deg,
                                               rcfg.range_type,
@@ -6541,7 +6842,11 @@ class Hub:
                     f"move. Attempts (attempt, solved PA, target, error, "
                     f"commanded): {trail}")
             prev_error = error
-            await rot.move_to(_rotation.mod360(orientation + distance))
+            # From one side, every time (#526): see ``_approach_rotator``.
+            await self._approach_rotator(
+                rot, _rotation.mod360(orientation + distance), float(mech),
+                rcfg)
+            last_move = (orientation, float(mech), distance)
             moved = True
         last_error = f"(last error {error:.1f}°)" if error is not None else "(no attempts ran)"
         raise DeviceError(
@@ -6693,7 +6998,15 @@ class Hub:
         became of the angle: ``rotation`` is the rotate loop's result (None
         when it did not run), ``rotation_skipped`` means a connected rotator
         tried and failed, and ``rotation_unavailable`` means there was no
-        connected rotator to ask. The last two keys appear only when true."""
+        connected rotator to ask. The last two keys appear only when true.
+
+        ``solve_transient: True`` (H4 contract 1, #532) means a solve frame,
+        the rotate's or a centring attempt's, could not be written because
+        another process held the file on every one of the bounded retries
+        (``SolveFrameTransient``). It appears only when true, beside the key
+        that says what the failure cost (``solve_failed`` or
+        ``rotation_skipped``), and says the failure was this computer's, not
+        the sky's or the target's."""
         if solve_exposure_s is None:
             solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
@@ -6758,6 +7071,12 @@ class Hub:
         # because the remedies differ: that one may succeed on a retry, this
         # one needs somebody to connect a device.
         rotation_unavailable = False
+        # A solve frame another process would not let us write, on every
+        # bounded retry (#532, H4 contract 1): the rotate's or a centring
+        # attempt's. Not the sky's fault and not the panel's, so the engine
+        # does not count it as a centring strike; every return from here on
+        # carries it once it is true.
+        solve_transient = False
         rot = self.devices.get("rotator")
         if rotation_deg is not None and rot is not None and rot.connected:
             # THE ROTATE SHORTCUT (U-06, mosaic spec 5.6 step 3). Asked before
@@ -6786,6 +7105,7 @@ class Hub:
                             f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
                             f"continuing without rotation", "rotator")
                     rotation_skipped = True
+                    solve_transient = isinstance(e, SolveFrameTransient)
         elif rotation_deg is not None:
             rotation_unavailable = True
             # Logged here, once, not per attempt: the answer cannot change
@@ -6803,7 +7123,8 @@ class Hub:
         _rot_keys = {"rotation": rotation_result,
                      **({"rotation_skipped": True} if rotation_skipped else {}),
                      **({"rotation_unavailable": True}
-                        if rotation_unavailable else {})}
+                        if rotation_unavailable else {}),
+                     **({"solve_transient": True} if solve_transient else {})}
         last_err = None
         for attempt in range(1, max_attempts + 1):
             bus.publish("mount", action="centering", attempt=attempt)
@@ -6843,8 +7164,10 @@ class Hub:
                 bus.log("warning",
                         f"centering: plate solve failed ({e}); using raw GoTo", "solve")
                 self.note_pointing_verified(False, reason=str("centering did not converge"))
-                return {"centered": False, "error_arcmin": None,
-                        "attempts": attempt, "solve_failed": True} | _rot_keys
+                return ({"centered": False, "error_arcmin": None,
+                         "attempts": attempt, "solve_failed": True} | _rot_keys
+                        | ({"solve_transient": True}
+                           if isinstance(e, SolveFrameTransient) else {}))
             err = _ang_sep_deg(solved["ra_hours"], solved["dec_deg"], ra_hours, dec_deg)
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:

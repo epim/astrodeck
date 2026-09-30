@@ -62,7 +62,14 @@ _GATE_RISE_TOL_S = 5.0
 
 
 def _lat_lon(site: dict[str, Any]) -> tuple[float, float]:
-    """Extract (latitude, longitude) from a hub-style site dict."""
+    """Extract (latitude, longitude) from a hub-style site dict.
+
+    It does not ask whether a site is saved, and for one nobody has saved it
+    hands back the placeholder's 0,0. A caller has to ask first:
+    test_every_site_consumer_asks_whether_there_is_a_site counts a call to it
+    as a read of the site, so a caller that does not ask fails there unless it
+    is listed with its reason (`gating_status` and `constraint_gate` are, for
+    #540). `resolve_window` reads `site_gate.site_lat_lon` instead (#527)."""
     return float(site["latitude"]), float(site["longitude"])
 
 
@@ -378,7 +385,7 @@ def effective_floor(min_alt_deg: float, horizon: list[tuple[float, float]] | Non
 # --------------------------------------------------------------------- windows
 
 def _resolve_event_ts(mode: str, offset_min: int, time_str: str | None,
-                      lat: float, lon: float, twilight_deg: float,
+                      latlon: tuple[float, float] | None, twilight_deg: float,
                       now: float) -> float | None:
     """Resolve one schedule boundary (dusk/dawn/time) to a unix ts *for tonight*.
 
@@ -387,16 +394,22 @@ def _resolve_event_ts(mode: str, offset_min: int, time_str: str | None,
     forward so a dusk that already passed still opens the window (fixes the
     ~23h-in-the-future re-resolution). ``time`` resolves ``"HH:MM"`` to the
     occurrence nearest ``now`` (within ±12h), so an evening start already past
-    stays tonight instead of rolling to tomorrow."""
+    stays tonight instead of rolling to tomorrow.
+
+    ``latlon`` is None when no site is saved, and dusk/dawn are then None too
+    (#527), as a polar dusk already is: there is no Sun to cross a twilight
+    angle for a site nobody has named. ``now`` and ``time`` need no site."""
     if mode == "now":
         return now
     if mode == "none":
         return None
+    if mode in ("dusk", "dawn") and latlon is None:
+        return None
     if mode == "dusk":
-        base = _night_dusk(lat, lon, twilight_deg, now)
+        base = _night_dusk(latlon[0], latlon[1], twilight_deg, now)
         return None if base is None else base + offset_min * 60.0
     if mode == "dawn":
-        base = _night_dawn(lat, lon, twilight_deg, now)
+        base = _night_dawn(latlon[0], latlon[1], twilight_deg, now)
         return None if base is None else base + offset_min * 60.0
     if mode == "time":
         return _clock_time_near_now(time_str, now)
@@ -440,12 +453,28 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
     ``(start, stop)`` pair, then compares live ``now`` against the frozen window —
     so a dawn that passes mid-run closes the window instead of re-resolving into
     tomorrow (§1.6 / gating_status ``window=`` param).
+
+    NO SITE, NO SUN BOUNDARY (#527). With no site saved a dusk or dawn
+    boundary is ``None``: unresolvable, as a polar dusk is. It used to be the
+    Sun's crossing at the 0,0 placeholder, so a DUSK flow on a fresh rig
+    waited twelve hours for dusk in the Gulf of Guinea and said nothing, and
+    ``resume_arm.window_open`` opened an armed DUSK session on 0,0's night.
+    ``now`` and ``time`` boundaries need no site and are unchanged. What
+    follows from the ``None`` is each reader's own rule: the engine's gating
+    reads a ``None`` start as not waiting on the clock, so the run starts,
+    and ``window_open``'s ``start is not None`` keeps auto-resume off, the
+    conservative direction.
     """
-    lat, lon = _lat_lon(site)
+    # `site_lat_lon` asks `site_is_set`, and answers None for the placeholder
+    # and for a half-saved site with no numbers yet. The `_lat_lon` this read
+    # before asked nothing: it answered 0,0 for the first and raised for the
+    # second.
+    from ..site_gate import site_lat_lon
+    latlon = site_lat_lon(site)
     start = _resolve_event_ts(sched.start_mode, sched.start_offset_min,
-                              sched.start_time, lat, lon, twilight_deg, now)
+                              sched.start_time, latlon, twilight_deg, now)
     stop = _resolve_event_ts(sched.stop_mode, sched.stop_offset_min,
-                             sched.stop_time, lat, lon, twilight_deg, now)
+                             sched.stop_time, latlon, twilight_deg, now)
     # max_run_min caps the window relative to the resolved start.
     if sched.max_run_min and start is not None:
         cap = start + sched.max_run_min * 60.0
@@ -813,18 +842,29 @@ def _time_to_gate(target: "Target", lat: float, lon: float, gate: float,
     has no wait. `gating_status` asks only for a target below its gate, and
     `ResumeArm._floor_eta_note` only after reading one below its floor.
 
-    The span scanned is as it was, whole steps from ``now``, so a crossing
-    no step reaches still answers ``None``."""
+    THE SCAN COVERS THE WINDOW, NO MORE AND NO LESS (#498). It used to take
+    ``max(1, int(span / _PEAK_STEP_S))`` whole steps from ``now``, which is
+    not the window in either direction: the partial last step was never
+    scanned, so a target rising between the last whole step and ``stop_ts``
+    answered ``None`` (and `gating_status` published ``eta_s`` 0 for a wait
+    of minutes), and a window shorter than one step was scanned a whole step
+    past its close. Each step is now clamped to the horizon, with a last,
+    shorter step ending on it when the span is not a whole number of steps,
+    so the bisection above refines a crossing in that part step as it does
+    in any other, and a crossing after the close is never answered. A
+    crossing inside no step still answers ``None``."""
     def alt(t: float) -> float:
         return target_altitude(target.ra_hours, target.dec_deg, lat, lon, t)
 
     if alt(now) >= gate:
         return 0.0
     horizon = stop_ts if stop_ts is not None else now + _SIDEREAL_DAY_S
-    steps = max(1, int((horizon - now) / _PEAK_STEP_S))
+    # Rounded UP, so a part step at the end is a step of its own. Nothing to
+    # scan once the horizon is not after ``now``.
+    steps = max(0, math.ceil((horizon - now) / _PEAK_STEP_S))
     below = now
     for i in range(1, steps + 1):
-        t = now + i * _PEAK_STEP_S
+        t = min(now + i * _PEAK_STEP_S, horizon)
         if alt(t) >= gate:
             # [below, t] brackets the crossing: below the gate at its low
             # end, at or above it at its high end. Halve it, keeping both.

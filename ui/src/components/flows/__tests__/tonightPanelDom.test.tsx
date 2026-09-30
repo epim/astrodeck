@@ -453,6 +453,95 @@ test("no brief means no empty bordered box", () => {
   assert.ok(!q("[data-tonight-brief]"), "nothing drawn for an absent brief");
 });
 
+// ───────────────────────────────── 5. BUDGET says whose hours it banks (#536)
+//
+// `GET /api/flows/{id}/tonight` folds only this flow's own targets' reports
+// into BUDGET's banked hours (#536, H4 orchestrator ruling 6); it used to fold
+// the whole archive, so an M31 flow's Ha bar held M16's nights. The server's
+// BUDGET row says so, "1 h banked for these targets", and STORY is where this
+// panel draws it.
+//
+// THE SERVER'S WORDS, READ, NOT COPIED: the answer is
+// `tonight_budget_for_these_targets.json` in the #/next sheet's __tests__,
+// which server/tests/test_h4_budget_for_these_targets.py keeps equal to
+// `resolve_tonight`'s answer for an M31 flow with M31's and M16's reports in
+// the ledger; budgetForTheseTargets.test.tsx mounts the same file on #/next.
+//
+// MUTANT "the words dropped" (tonight.py `_story`: `_FOR_THESE` left out of
+// both BUDGET sentences, the fixture rewritten by the server test under the
+// mutant), run in the private copy scratchpad H4-ROUTES-A-mut from a byte
+// backup. Observed:
+//   tonightPanelDom.test: 19/20 passed
+//     x every BUDGET row on STORY says its banked hours are for these targets: a
+//       BUDGET row on the classic panel does not say whose hours it banks: "Ha: 1
+//       h banked / 2 h goal — tonight adds ≈2 h; the session ledger resumes the
+//       remainder next clear night"
+// The control before it stays green under that mutant. It can fail: MUTANT
+// "BUDGET rows not drawn" (TonightStory.tsx mapping
+// `story.filter((r) => r.label !== "BUDGET")`), same copy. Observed:
+//   tonightPanelDom.test: 18/20 passed
+//     x control: STORY draws the server's two BUDGET rows, stamped BUDGET,
+//       numbers and all: STORY drew 0 BUDGET rows, not the server's 2
+const { readFileSync } = await import("node:fs");
+const BUDGET_FIXTURE =
+  "../../../next/hubs/session/flows/tonight/__tests__/tonight_budget_for_these_targets.json";
+
+/** The server's answer; unreadable FAILS the file rather than skipping it. */
+function readBudgetAnswer(): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(new URL(BUDGET_FIXTURE, import.meta.url), "utf8") as string;
+  } catch (e) {
+    throw new Error(`cannot read ${BUDGET_FIXTURE}: ${(e as Error).message}`);
+  }
+  const response = (JSON.parse(text) as { response?: Record<string, unknown> }).response;
+  if (!response || !Array.isArray(response.story) || response.story.length === 0) {
+    throw new Error(`${BUDGET_FIXTURE} holds no BUDGET story rows`);
+  }
+  return response;
+}
+const BUDGET_ANSWER = readBudgetAnswer();
+const BUDGET_ROWS = (BUDGET_ANSWER.story as { label: string; msg: string }[])
+  .filter((r) => r.label === "BUDGET");
+
+/** STORY's drawn rows as `[stamp, sentence]`, each row's two spans. */
+function storyRows(): [string, string][] {
+  const body = q("[data-flows-tonight='story']");
+  if (!body) throw new Error("STORY never rendered");
+  return (Array.from(body.querySelectorAll("span")) as any[])
+    .filter((s) => s.nextElementSibling && s.parentElement?.children.length === 2
+      && s === s.parentElement.children[0])
+    .map((s) => [s.textContent.trim(), s.nextElementSibling.textContent]);
+}
+
+test("control: STORY draws the server's two BUDGET rows, stamped BUDGET, numbers and all", () => {
+  render({
+    tonight: { ...OK_PAYLOAD, ...BUDGET_ANSWER },
+    ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "story" },
+  });
+  assert.equal(BUDGET_ROWS.length, 2, "precondition: the answer holds two BUDGET rows");
+  const budget = storyRows().filter(([stamp]) => stamp === "BUDGET");
+  assert.equal(budget.length, 2, `STORY drew ${budget.length} BUDGET rows, not the server's 2`);
+  assert.ok(budget[0][1].startsWith("Ha: 1 h banked"), `the capture row's figure: "${budget[0][1]}"`);
+  assert.ok(budget[1][1].includes("0.2 h banked in its filters"), `the cycle row's figure: "${budget[1][1]}"`);
+});
+
+test("every BUDGET row on STORY says its banked hours are for these targets", () => {
+  render({
+    tonight: { ...OK_PAYLOAD, ...BUDGET_ANSWER },
+    ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "story" },
+  });
+  const budget = storyRows().filter(([stamp]) => stamp === "BUDGET");
+  for (const [, sentence] of budget) {
+    assert.ok(/ h banked (in its filters )?for these targets/.test(sentence),
+      `a BUDGET row on the classic panel does not say whose hours it banks: "${sentence}"`);
+  }
+  for (const row of BUDGET_ROWS) {
+    assert.ok(budget.some(([, sentence]) => sentence === row.msg),
+      `the server's row is not drawn as the server wrote it: "${row.msg}"`);
+  }
+});
+
 // ------------------------------------------------------------------- report
 act(() => { root.unmount(); });
 const total = passed + failed;

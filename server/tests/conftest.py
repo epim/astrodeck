@@ -790,6 +790,48 @@ def _no_inherited_focus_calibration():
         path.unlink(missing_ok=True)
 
 
+def _inert_gateway_probe(timeout_s: float) -> None:
+    """The suite's gateway probe: "could not tell", having run nothing."""
+    return None
+
+
+def _inert_dns_probe(host: str, timeout_s: float) -> None:
+    """The suite's DNS probe: "could not tell", having looked nothing up."""
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _no_test_probes_the_real_network(monkeypatch):
+    """No test runs the relay client's system link probes (#521, H4; #571).
+
+    Since H4 the relay client checks the rig's own network after every drop:
+    ``route print`` (or ``/proc/net/route``), a ping of the default gateway,
+    and a lookup of the relay's host. A client built directly gets no probes,
+    which is what every relay test does. But ``run_relay_client``, the app's
+    lifespan entry, reads ``SYSTEM_LINK_PROBES`` at call time, so a test that
+    enables remote and enters ``TestClient(app)`` starts the production
+    client. Two did (``test_remote_status.py``'s tunneled-request and
+    device-token cases, on ``wss://relay.example.test``): the dial failed, the
+    drop's check ran, and the suite pinged the developer's router and asked
+    the resolver about the relay host, from a module whose docstring says "no
+    network". Found by H4-RELAY's verifier, who instrumented the two probes
+    and saw one call from each case.
+
+    Replaced here, per test, by probes that answer "could not tell" and touch
+    nothing, so the check still runs and says its line. A test that grades
+    the system probes calls them by name (``_system_gateway_probe``) with the
+    OS pieces patched, and ``test_the_lifespan_client_carries_the_system_probes``
+    patches this name itself. The guard, with its mutant, is
+    ``test_h4_no_test_probes_the_real_network.py``.
+    """
+    import astrodeck.remote.relay_client as relay_client
+    monkeypatch.setattr(
+        relay_client, "SYSTEM_LINK_PROBES",
+        relay_client.LinkProbes(gateway=_inert_gateway_probe,
+                                dns=_inert_dns_probe))
+    yield
+
+
 class _CaptureRoots:
     """Where the capture root is while the suite runs (#309); state shared by
     the two fixtures below and read by test_capture_root_isolated.py."""

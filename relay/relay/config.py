@@ -30,7 +30,10 @@ environment variables. Keys:
   RELAY_WS_MAX_TOTAL       concurrent browser websockets process-wide. default 64.
   RELAY_UPSTREAM_TIMEOUT_S idle response/write deadline. default 30.
   RELAY_FORWARDED_ALLOW_IPS comma-separated immediate proxy IPs/CIDRs. default "".
-  RELAY_UVICORN_ACCESS_LOG enable Uvicorn access logging. default true.
+  RELAY_UVICORN_ACCESS_LOG enable Uvicorn access logging. default true. The
+                           line carries the PATH ONLY: every query string is
+                           withheld (``server.PathOnlyAccessFormatter``, #520),
+                           so a URL parameter never reaches the log pipeline.
 
 Device tokens + the principal/viewer signing keys are loaded from files/secret
 mounts (NEVER baked into the image): see ``load_device_tokens`` and the README.

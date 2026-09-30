@@ -100,7 +100,7 @@ const ok = (data: unknown) => ({
 /** Set to a promise to make the NEXT matching write hang, so a test can look at
  *  the button while the request is genuinely in flight. */
 let hold: { path: string; release: () => void; gate: Promise<void> } | null = null;
-g.fetch = async (url: string, init?: { method?: string }) => {
+g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const u = String(url);
   const method = init?.method ?? "GET";
   asked.push(`${method} ${u}`);
@@ -112,8 +112,20 @@ g.fetch = async (url: string, init?: { method?: string }) => {
   // The read-back route, answered with the coordinates it was ASKED about — the
   // only way to tell "the sentence for these fields" from "the sentence for the
   // fields as they were two keystrokes ago".
-  const sky = /\/api\/site\/sky\?lat=([-\d.]+)&lon=([-\d.]+)/.exec(u);
-  if (sky) return ok({ place_hint: `HINT(${sky[1]},${sky[2]})`, sun_alt_deg: -20 });
+  //
+  // RE-PINNED FOR #520, DELIBERATELY: the typed coordinates are a POST body
+  // now, not `?lat=&lon=` on a GET, because a URL is written down by every hop
+  // it crosses. Read from the body, so a panel that sent them anywhere else
+  // gets no hint and the read-back cases below go red. MUTANT "restore
+  // SitePanel's ?lat=&lon=" (the effect back to the GET template), run
+  // 2026-09-29 in a private scratch copy of ui/ (scratchpad/H4-PRIV-mut).
+  // Observed ("settingsGatesDom.test: 22/24 passed"):
+  //   x the site read-back describes the CURRENT fields — the precondition: the read-back never resolved for the seeded site: [...]
+  //   x …and lands on the new one once the lookup returns: the read-back never caught up with the flipped hemisphere: [...]
+  if (u.endsWith("/api/site/sky") && method === "POST" && init?.body) {
+    const b = JSON.parse(init.body) as { lat: number; lon: number };
+    return ok({ place_hint: `HINT(${b.lat},${b.lon})`, sun_alt_deg: -20 });
+  }
   if (u.includes("/password")) {
     return pwWorks
       ? ok({})

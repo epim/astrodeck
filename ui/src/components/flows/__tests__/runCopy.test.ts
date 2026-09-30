@@ -13,10 +13,13 @@
 //     called "M31") with a dormant, armed session of two runs on two nights,
 //     194 of 480 subs banked. Since S7 the route's `nights` counts OBSERVING
 //     nights (#430, S7 orchestrator ruling 7), so the recorded 2 is two
-//     nights. server/tests/test_s5_recorded_state.py also presses CONTINUE on
-//     it, on an evening the session has not run, and checks the run route's
-//     night is the route's `nights` plus one: the ROUTE'S RECORDED ANSWER for
-//     the night this copy prints, 3.
+//     nights. Since H4 its session carries `continue_night` (#511), the night
+//     a CONTINUE pressed then would start: `response` is the answer on an
+//     evening the session has not run (3), and `same_night_session` the
+//     session the same route answered on the second recorded night itself
+//     (2). server/tests/test_s5_recorded_state.py presses CONTINUE at both
+//     moments and checks the run route answers each recorded number: the
+//     ROUTE'S RECORDED ANSWERS for the night this copy prints.
 //   server/tests/fixtures/sequence_state_mosaic.json
 //     GET /api/sequence/state for a rotating 2x2, also called "M31", run under
 //     that session's id: a panel being shot with the hops not yet costed, and
@@ -24,7 +27,7 @@
 //
 // WHAT IS GUARDED
 //
-//   1. runCopy: CONTINUE <FLOW NAME> (night <nights + 1>, <banked>/<total>
+//   1. runCopy: CONTINUE <FLOW NAME> (night <continue_night>, <banked>/<total>
 //      subs) over a dormant session, the sums over the BLOCKS; RUN over no
 //      session, an abandoned one (the route answers null), a complete one and
 //      an active one that is not live here; STOP while live.
@@ -32,15 +35,20 @@
 //      the numbers on the CONTINUE beside it.
 //   3. runReadouts: fed from the sequence state only while the run is this
 //      flow's, with "hops not yet costed" while `hops_costed` is false, the
-//      mosaic's stage as "M31 1-1 · pass 3", and across a meridian wait the
+//      mosaic's stage as "M31 1-1 · pass 4" (pass 3 before the H4 rewrite of
+//      the recorded night, which counts a centring miss at its pass boundary,
+//      #534, so the shooting state is picked a pass later), and across a
+//      meridian wait the
 //      same words for an operator and a viewer with nothing site-derived;
 //      otherwise the idle values. Asked with the known sessions, as every
 //      store reader asks (#449); since S7 it takes no progress answer.
-//   4. THE NIGHT READS THE OBSERVING-NIGHT COUNT (#430, S7 orchestrator
-//      ruling 7): the copy's night is the route's recorded `nights` plus one,
-//      compared with the literal the run route answered (3), and runCopy.ts
-//      and flowsApi.ts say it is the observing-night count, not the run
-//      count.
+//   4. THE NIGHT IS THE RUN ROUTE'S OWN (#511, H4), over THE OBSERVING-NIGHT
+//      COUNT (#430, S7 orchestrator ruling 7): the copy's night is the
+//      route's recorded `continue_night`, compared with the literals the run
+//      route answered at each recorded moment (3 on the evening after, 2 on
+//      the second night itself, where `nights + 1` would print 3); a route
+//      that names no night gets no night number; and runCopy.ts and
+//      flowsApi.ts say so.
 //   5. runCopy.ts's NOTHING SITE-DERIVED paragraph names the ETA's flip term,
 //      #166 item 1 (#510, B16).
 //
@@ -48,7 +56,8 @@
 // (scratchpad/S5-RUNUI-mut, #254), from a byte backup of runCopy.ts restored
 // and hash-compared after each run, and the failure it produced is quoted.
 // The S7 ones (sections 4 and 5, and the re-runs marked S7) were run the
-// same way in scratchpad S7-URUN-mut.
+// same way in scratchpad S7-URUN-mut, and the H4 ones (marked H4) in
+// scratchpad H4-ROUTES-B-mut.
 
 // @ts-ignore  no @types/node guaranteed; tsx supplies fs at runtime
 import { readFileSync } from "node:fs";
@@ -95,12 +104,18 @@ function readFixture(name: string): Record<string, unknown> {
   return JSON.parse(text) as Record<string, unknown>;
 }
 
-const PROGRESS = readFixture("flow_progress_continue.json").response as FlowProgress;
+const CONTINUE_FILE = readFixture("flow_progress_continue.json");
+const PROGRESS = CONTINUE_FILE.response as FlowProgress;
+/** The session the progress route answered on the second recorded night
+ *  itself, a night the session has run (#511); the rest of that answer is
+ *  PROGRESS's. */
+const SAME_NIGHT_SESSION = CONTINUE_FILE.same_night_session as FlowProgress["session"];
 const STATES = readFixture("sequence_state_mosaic.json").states as Record<string, SequenceState>;
 const SHOOTING = STATES.shooting;
 const WAIT_OPERATOR = STATES.meridian_wait_operator;
 const WAIT_VIEWER = STATES.meridian_wait_viewer;
-if (!PROGRESS?.session || !SHOOTING?.group || !WAIT_OPERATOR?.group || !WAIT_VIEWER?.group) {
+if (!PROGRESS?.session || !SAME_NIGHT_SESSION || !SHOOTING?.group || !WAIT_OPERATOR?.group
+    || !WAIT_VIEWER?.group) {
   throw new Error("the recorded fixtures do not hold the progress answer and the three states");
 }
 
@@ -110,8 +125,8 @@ if (!PROGRESS?.session || !SHOOTING?.group || !WAIT_OPERATOR?.group || !WAIT_VIE
 const FLOW_NAME = SHOOTING.session!.name;
 
 /** The route's own numbers, summed here the way the spec says: over the
- *  blocks, nothing else. */
-const NIGHT = PROGRESS.session!.nights + 1;
+ *  blocks, nothing else. The night is the route's `continue_night` (#511). */
+const NIGHT = PROGRESS.session!.continue_night;
 const BANKED = PROGRESS.blocks.reduce((n, b) => n + b.banked, 0);
 const TOTAL = PROGRESS.blocks.reduce((n, b) => n + b.total, 0);
 
@@ -239,10 +254,19 @@ test("runCopy: STOP while live, whatever the route says", () => {
   eq(runCopy(FLOW_NAME, null, true).text, "STOP", "a live run before any answer");
 });
 
+// DELIBERATE PIN CHANGE (H4, #511): the copy no longer reads `nights` at all,
+// so the unreadable night is `continue_night`'s, and a night the route did not
+// send drops the night alone: the counts are the route's numbers and stay.
+// The S7 case against the H4 copy, observed (runCopy.test 11/14):
+//   x runCopy: numbers that do not read as numbers are not put on the button: the press still continues, so the verb stays
+//     expected "CONTINUE M31 MOSAIC"
+//     got      "CONTINUE M31 MOSAIC (night 3, 194/480 subs)"
 test("runCopy: numbers that do not read as numbers are not put on the button", () => {
-  const c = runCopy(FLOW_NAME, withSession(PROGRESS, { nights: Number.NaN }), false);
-  eq(c.text, "CONTINUE M31 MOSAIC", "the press still continues, so the verb stays");
+  const c = runCopy(FLOW_NAME, withSession(PROGRESS, { continue_night: Number.NaN }), false);
+  eq(c.text, "CONTINUE M31 MOSAIC (194/480 subs)",
+    "the press still continues, so the verb stays, and a night that is not a number is not printed");
   const bad: FlowProgress = { ...PROGRESS, blocks: [{ ...PROGRESS.blocks[0], total: "480" as never }] };
+  eq(runCopy(FLOW_NAME, bad, false).text, "CONTINUE M31 MOSAIC", "a total that is not a number");
   eq(runCopy(FLOW_NAME, bad, false).detail, "", "a total that is not a number");
   eq(runCopy("  ", PROGRESS, false).text, "CONTINUE (night 3, 194/480 subs)",
     "a flow with no name yet leaves the name out rather than print a gap");
@@ -257,8 +281,15 @@ test("startOverBody: START OVER says what it leaves, with CONTINUE's numbers", (
   assert(body.includes("CONTINUE will not go back to it"),
     `and that CONTINUE never reopens it (spec 5.9): ${body}`);
   assert(body.includes("194 of 480 subs"), `and what this one holds: ${body}`);
-  assert(!/\d+ of \d+/.test(startOverBody(runCopy(FLOW_NAME, withSession(PROGRESS, { nights: Number.NaN }), false))),
+  // DELIBERATE PIN CHANGE (H4, #511): the case with no numbers is a total that
+  // is not a number, since a night that is not one no longer blanks the
+  // counts. The S7 case against the H4 copy, observed (runCopy.test 11/14):
+  //   x startOverBody: START OVER says what it leaves, with CONTINUE's numbers: no numbers the button did not have
+  const bad: FlowProgress = { ...PROGRESS, blocks: [{ ...PROGRESS.blocks[0], total: "480" as never }] };
+  assert(!/\d+ of \d+/.test(startOverBody(runCopy(FLOW_NAME, bad, false))),
     "no numbers the button did not have");
+  assert(startOverBody(runCopy(FLOW_NAME, withSession(PROGRESS, { continue_night: null }), false))
+    .includes("194 of 480 subs"), "the counts the button shows without a night");
 });
 
 // ------------------------------------------------------------- runReadouts
@@ -277,8 +308,14 @@ test("runReadouts: a panel being shot, fed from the sequence state", () => {
   eq(r.etaS, SHOOTING.progress!.eta_s, "ETA, the rig's own number");
   eq(SHOOTING.progress!.hops_costed, false, "premise: the recorded clock has not costed a hop");
   eq(r.etaNote, HOPS_NOT_COSTED, "the ETA's note while hops_costed is false");
-  eq(r.stage, "M31 1-1 · pass 3", "STAGE, the mosaic, its panel and its pass");
-  eq([r.frames, r.frameGoal], [6, 120], "FRAMES, from the sequence state");
+  // Pass 4 and 9 frames since the H4 rewrite of the recorded night (pass 3
+  // and 6 before it; see the header, item 3). RED against the file restored
+  // from its pre-H4 bytes, run by the H4 integration (observed, 14/16):
+  //   x runReadouts: a panel being shot, fed from the sequence state: STAGE, the mosaic, its panel and its pass
+  //     expected "M31 1-1 · pass 4"
+  //     got      "M31 1-1 · pass 3"
+  eq(r.stage, "M31 1-1 · pass 4", "STAGE, the mosaic, its panel and its pass");
+  eq([r.frames, r.frameGoal], [9, 120], "FRAMES, from the sequence state");
 });
 
 test("runReadouts: no note once a hop is costed, nor from a server that sends no flag", () => {
@@ -348,7 +385,7 @@ test("runReadouts: the engine's live states in the flow's words, and a single ta
   eq(runStage(single), "NGC 7331", "a single target reads the target the engine names");
   eq(runStage({ ...single, target: undefined }), null, "and nothing when it names none");
   const first = { ...SHOOTING, group: { ...SHOOTING.group!, panel: null } };
-  eq(runStage(first), "M31 · pass 3", "a group before its first visit names no panel");
+  eq(runStage(first), "M31 · pass 4", "a group before its first visit names no panel");
 });
 
 // ------------------------------------------------------- source, as text
@@ -410,6 +447,11 @@ function commentBetween(src: string, start: string, end: string, what: string): 
 // doc back to S5's "How many RUNS the session has had"). Observed,
 // runCopy.test 13/14:
 //   x the night reads the observing-night count, against the route's recorded answer: flowsApi.ts does not say nights counts observing nights: export interface FlowProgressSession { id: string; status: "active" | "dormant" | "complete"; How many RUNS the session has had: one report per engine start, so a restart on the same night counts again (#430). Equal to the nights it has run only while no night held a restart; CONTINUE's `night` is this plus one. */ nights: number;
+// DELIBERATE PIN CHANGE (H4, #511): runCopy's docstring now leads with the
+// run route's night and says the observing-night count underneath; the S7
+// wording is gone because the S7 rule is. The S7 assertion against the H4
+// docstring, observed (runCopy.test 11/14):
+//   x the night reads the observing-night count, against the route's recorded answer: runCopy's docstring does not say the night reads the observing-night count: The RUN button's copy. STOP while `live` (the engine owns the rig for this flow): the button then aborts, whatever the progress route says. CONTINUE when the route names a DORMANT session, the one case in which `run_flow` continues rather than starts fresh (server `run_flow`: "it is continued only if it is dormant"). THE NIGHT IS THE RUN ROUTE'S OWN (#511, H4): ...
 test("the night reads the observing-night count, against the route's recorded answer", () => {
   eq(PROGRESS.session!.nights, 2, "premise: the route recorded two observing nights");
   const c = runCopy(FLOW_NAME, PROGRESS, false);
@@ -418,11 +460,15 @@ test("the night reads the observing-night count, against the route's recorded an
 
   const doc = commentBetween(source("../runCopy.ts"), "/** The RUN button's copy.",
     "export function runCopy(", "runCopy's docstring");
-  assert(doc.includes("THE NIGHT READS THE OBSERVING-NIGHT COUNT"),
+  assert(doc.includes("THE NIGHT IS THE RUN ROUTE'S OWN") && doc.includes("`continue_night`"),
+    `runCopy's docstring does not say the night is the run route's continue_night: ${doc}`);
+  assert(doc.includes("THE OBSERVING-NIGHT COUNT"),
     `runCopy's docstring does not say the night reads the observing-night count: ${doc}`);
   assert(!/counts the session's RUNS/.test(doc),
     `runCopy's docstring still says the copy reads the run count: ${doc}`);
-  assert(doc.includes("#511"), `runCopy's docstring does not name the same-night gap (#511): ${doc}`);
+  assert(!/prints\s+it plus one/.test(doc),
+    `runCopy's docstring still says the button adds one to nights: ${doc}`);
+  assert(doc.includes("#511"), `runCopy's docstring does not name #511: ${doc}`);
 
   const api = commentBetween(source("../../../lib/flowsApi.ts"), "export interface FlowProgressSession {",
     "count_mode:", "FlowProgressSession.nights");
@@ -430,6 +476,65 @@ test("the night reads the observing-night count, against the route's recorded an
     `flowsApi.ts does not say nights counts observing nights: ${api}`);
   assert(!/How many RUNS the session has had/.test(api),
     `flowsApi.ts still says nights counts runs: ${api}`);
+});
+
+// ------------------------------- 4b. the run route's own night (#511, H4)
+// THE SAME-NIGHT RECORDING. On the second recorded night itself, the progress
+// route answered continue_night 2 and CONTINUE, pressed then, answered night 2
+// (test_s5_recorded_state.py, SAME_NIGHT_AT). The session has run two nights,
+// so the S5 rule, `nights + 1`, prints 3 there: the #511 case.
+//
+// MUTANT "button adds one to nights" (H4; runCopy's night back to
+// `finite(session.nights) ? session.nights + 1 : null`). Observed,
+// runCopy.test 13/16:
+//   x runCopy: numbers that do not read as numbers are not put on the button: the press still continues, so the verb stays, and a night that is not a number is not printed
+//     expected "CONTINUE M31 MOSAIC (194/480 subs)"
+//     got      "CONTINUE M31 MOSAIC (night 3, 194/480 subs)"
+//   x #511: the night is the run route's own, on the night the session already ran: the night the run route answered for a CONTINUE on the second night itself
+//     expected "(night 2, 194/480 subs)"
+//     got      "(night 3, 194/480 subs)"
+//   x #511: a route that names no night gets no night number, never a guessed one: a server older than H4 (no key)
+//     expected ["CONTINUE","(194/480 subs)",null]
+//     got      ["CONTINUE","(night 3, 194/480 subs)",3]
+// MUTANT "a missing night is guessed" (H4; `continue_night` read when it is a
+// number and `nights + 1` otherwise). Observed, runCopy.test 14/16:
+//   x runCopy: numbers that do not read as numbers are not put on the button: the press still continues, so the verb stays, and a night that is not a number is not printed
+//     expected "CONTINUE M31 MOSAIC (194/480 subs)"
+//     got      "CONTINUE M31 MOSAIC (night 3, 194/480 subs)"
+//   x #511: a route that names no night gets no night number, never a guessed one: a server older than H4 (no key)
+//     expected ["CONTINUE","(194/480 subs)",null]
+//     got      ["CONTINUE","(night 3, 194/480 subs)",3]
+// MUTANT "no counts without a night" (H4; the parenthetical dropped whole
+// when the route names no night). Observed, runCopy.test 14/16:
+//   x runCopy: numbers that do not read as numbers are not put on the button: the press still continues, so the verb stays, and a night that is not a number is not printed
+//     expected "CONTINUE M31 MOSAIC (194/480 subs)"
+//     got      "CONTINUE M31 MOSAIC"
+//   x #511: a route that names no night gets no night number, never a guessed one: a server older than H4 (no key)
+//     expected ["CONTINUE","(194/480 subs)",null]
+//     got      ["CONTINUE","",null]
+test("#511: the night is the run route's own, on the night the session already ran", () => {
+  const same: FlowProgress = { ...PROGRESS, session: SAME_NIGHT_SESSION };
+  eq([SAME_NIGHT_SESSION!.status, SAME_NIGHT_SESSION!.nights], ["dormant", 2],
+    "premise: the recorded session, dormant after two observing nights");
+  eq(SAME_NIGHT_SESSION!.continue_night, 2, "premise: the route recorded night 2 for that moment");
+  const c = runCopy(FLOW_NAME, same, false);
+  eq(c.detail, "(night 2, 194/480 subs)",
+    "the night the run route answered for a CONTINUE on the second night itself");
+  eq(c.night, 2, "the number the button prints");
+  // CONTROL: the evening after, the same session reads one more.
+  eq(runCopy(FLOW_NAME, PROGRESS, false).night, 3, "the evening after");
+});
+
+test("#511: a route that names no night gets no night number, never a guessed one", () => {
+  const absent = withSession(PROGRESS, {});
+  delete (absent.session as { continue_night?: number | null }).continue_night;
+  for (const [what, p] of [["a server older than H4 (no key)", absent],
+    ["a null night", withSession(PROGRESS, { continue_night: null })]] as const) {
+    const c = runCopy(FLOW_NAME, p, false);
+    eq([c.verb, c.detail, c.night], ["CONTINUE", "(194/480 subs)", null], what);
+    eq([c.banked, c.total], [194, 480], `${what}: the counts are still the route's`);
+    assert(!/night/.test(c.text), `${what}: a night number on the button: ${c.text}`);
+  }
 });
 
 // ----------------------------------- 5. NOTHING SITE-DERIVED, and #166 item 1

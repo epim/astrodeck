@@ -415,8 +415,10 @@ async def test_a_hop_whose_start_failed_keeps_the_count_it_came_with(
 async def test_a_followers_visit_is_a_hop_and_starts_its_own_budget(
         group_hub, group_store, monkeypatch):
     """A follower's visit is a hop too (`_visit_follower` calls `_hop`). A
-    1x2 whose panels never centre defers both on every pass, so each pass
-    ends in a deferral wait, and a follower, a plain target after the
+    rotating 1x2 whose rotator never turns the camera to the mosaic's angle
+    defers both panels on every pass (``rotation_skipped``, counted at
+    once), so each pass ends in a deferral wait, and a follower, a plain
+    target after the
     mosaic, fills each wait in one visit bounded by its end
     (test_group_follower_fills_defer_wait.py); after the third pass both
     panels are set aside and the follower runs on as a plain target. The
@@ -440,18 +442,35 @@ async def test_a_followers_visit_is_a_hop_and_starts_its_own_budget(
         assert ['1/2', '2/2', '1/2', '2/2'] == ['1/2', '2/2'... '1/2',
         '2/2']
           Right contains 2 more items, first extra item: '1/2'
+
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). The panels used to
+    never CENTRE. Since H4 a pass in which every panel tried misses its
+    centring holds the group with no strikes, for as long as the window
+    lasts, so the mosaic was never set aside and the night never ended (the
+    case failed at the 16 h fake horizon). A rotator that does not turn is
+    still counted against each panel at once and raised by the hop checks
+    before the guider start, so the premises here hold as they did: two
+    deferral waits, then the set-aside, and no panel's hop reaching its
+    guider start. RED under the same mutant, re-run by the H4 integration
+    against this rotation deferral (observed):
+
+        AssertionError: ['1/2', '2/2', '1/2', '2/2']
+        assert ['1/2', '2/2', '1/2', '2/2'] == ['1/2', '2/2'... '1/2',
+        '2/2']
+          Right contains 2 more items, first extra item: '1/2'
     """
     group_store.set_escalation(EscalationConfig(require_guiding=False,
                                                 guiding_action="warn"))
     follower = "Follower"
 
-    def never_centres(who, n, result):
+    def never_turns(who, n, result):
         if who.startswith(GROUP_NAME + " "):
-            return dict(result, centered=False, error_arcmin=None)
+            return dict(result, rotation_skipped=True)
         return result
 
     plan = grid_plan(rows=1, cols=2,
                      after=[single(follower, count=40)],
+                     group_kw={"rotate": True, "pa_deg": 30.0},
                      **_plan_kw(max_consecutive_rejects=30))
     guider = group_hub.guider
 
@@ -459,7 +478,7 @@ async def test_a_followers_visit_is_a_hop_and_starts_its_own_budget(
         if rec["target"] == follower:
             guider.active = False
 
-    night = Night(group_hub, monkeypatch, goto=never_centres,
+    night = Night(group_hub, monkeypatch, goto=never_turns,
                   stars=lambda who, f: 50 if guider.active else 0)
     night.on_capture = on_capture
     try:

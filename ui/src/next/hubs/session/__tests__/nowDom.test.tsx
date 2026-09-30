@@ -224,7 +224,7 @@ const {
   TONIGHT_LOCK_NOTE, TONIGHT_AND_RUN_LOCK_NOTE, tonightLockNote,
   RUNNABLE_ROW_CAP, TONIGHT_RESOLVE_CAP,
 } = await import("../now/NowEmpty");
-const { RERUN_PHONE_REASON } = await import("../now/Interrupted");
+const { RERUN_PHONE_REASON, STOPPED_BY_HAND } = await import("../now/Interrupted");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -990,6 +990,95 @@ await testAsync("RE-RUN names the door it opens, not a run it does not start", a
   const text = card2.textContent as string;
   assert(/whichever plan is LOADED/.test(text),
     `the card does not say why re-running is two steps: "${text.slice(0, 300)}"`);
+  RECOVERABLE = { recoverable: false };
+});
+
+// ================= 12. the interrupted card says why only from end_reason (#487)
+//
+// The card printed "The server restarted; the frames on disk are intact." after
+// every ending, and after an operator's STOP of a run that had banked two subs
+// it told them the rig had restarted. The recoverable route now carries
+// `end_reason` (server `_why_dormant`): "aborted" after a STOP and "restart"
+// for the traces only a process that stopped under the run leaves (the words
+// test_h4_recoverable_says_why.py records the real route answering, and holds
+// Interrupted.tsx's constants to). The card words a cause from that alone.
+//
+// Each mutant was run in a private copy of ui/ (scratchpad H4-ROUTES-B-mut),
+// from a byte backup of Interrupted.tsx restored and hash-compared after each.
+//
+// MUTANT "card prints the restart sentence unconditionally" (the cause line
+// back to the literal "The server restarted; the frames on disk are intact.").
+// Observed, nowDom.test 26/28:
+//   x an abort after two banked subs never says the server restarted: a STOP after two subs is told the server restarted: "RESUME INTERRUPTED RUNM31 2x2 desk stopped at frame 2 of 80 on 08:33. The server restarted; the frames on disk are intact.RESUME FROM FRAME 2/80OPEN THE PLAN EDITOR TO RE-RUNResume picks up at frame 2"
+//   x an ending the card cannot word, or no end_reason at all, states no cause: incomplete: told the server restarted: "RESUME INTERRUPTED RUNM31 2x2 desk stopped at frame 2 of 80 on 08:33. The server restarted; the frames on disk are intact.RESUME FROM FRAME 2/80OPEN THE PLAN EDITOR TO RE-RUNResume picks up at frame 2"
+// MUTANT "any other ending is a restart" (`causeSentence` answering the restart
+// sentence for every `end_reason` that is not "aborted" and not empty).
+// Observed, nowDom.test 27/28:
+//   x an ending the card cannot word, or no end_reason at all, states no cause: incomplete: told the server restarted: "RESUME INTERRUPTED RUNM31 2x2 desk stopped at frame 2 of 80 on 08:33. The server restarted; the frames on disk are intact.RESUME FROM FRAME 2/80OPEN THE PLAN EDITOR TO RE-RUNResume picks up at frame 2"
+// MUTANT "no end_reason is a restart" (`causeSentence` answering the restart
+// sentence when `end_reason` is missing or null, the card's old default for an
+// older server). Observed, nowDom.test 27/28:
+//   x an ending the card cannot word, or no end_reason at all, states no cause: null: told the server restarted: "RESUME INTERRUPTED RUNM31 2x2 desk stopped at frame 2 of 80 on 08:33. The server restarted; the frames on disk are intact.RESUME FROM FRAME 2/80OPEN THE PLAN EDITOR TO RE-RUNResume picks up at frame 2"
+
+/** The interrupted card mounted over one recoverable answer: its text, after
+ *  the fetch it makes on mount has landed. */
+async function interruptedText(answer: Record<string, unknown>): Promise<string> {
+  RECOVERABLE = {
+    recoverable: true, session_id: "sess-1", name: "M31 2x2 desk",
+    frames_done: 2, frames_total: 80, ts: 1_757_000_000, ...answer,
+  };
+  await act(async () => { root.render(createElement("div")); });
+  await act(async () => {
+    useStore.setState({ principal: OPERATOR, sequence: { state: "idle" } } as never);
+  });
+  await act(async () => { root.render(createElement(NowScreen)); });
+  await settle();
+  await settle();
+  const card3 = byId("now-interrupted");
+  assert(card3 != null,
+    "the interrupted card never rendered - the fixture is wrong, not the cause line");
+  const text = card3.textContent as string;
+  assert(/stopped at frame 2 of 80/.test(text),
+    `premise: the card reads this answer: "${text.slice(0, 200)}"`);
+  return text;
+}
+
+await testAsync("an abort after two banked subs never says the server restarted", async () => {
+  const text = await interruptedText({ end_reason: "aborted" });
+  assert(!/The server restarted/.test(text),
+    `a STOP after two subs is told the server restarted: "${text.slice(0, 200)}"`);
+  assert(text.includes(`${STOPPED_BY_HAND}; the frames on disk are intact.`),
+    `a STOP after two subs does not say who stopped it: "${text.slice(0, 200)}"`);
+  assert(/you stopped it/i.test(text), `the STOP is not worded as the operator's: "${text.slice(0, 200)}"`);
+  RECOVERABLE = { recoverable: false };
+});
+
+await testAsync("CONTROL: a boot-sweep restart still says the server restarted", async () => {
+  const text = await interruptedText({ end_reason: "restart" });
+  assert(text.includes("The server restarted; the frames on disk are intact."),
+    `the restart the boot sweep counted is not said: "${text.slice(0, 200)}"`);
+  assert(!/you stopped it/i.test(text), `a restart is told it was a STOP: "${text.slice(0, 200)}"`);
+  RECOVERABLE = { recoverable: false };
+});
+
+await testAsync("an ending the card cannot word, or no end_reason at all, states no cause", async () => {
+  // The sky, the window, an error and an unsafe stop each end a run for their
+  // own reasons; the card names none of them, and above all not a restart. A
+  // null end_reason (nothing to read) and an older server's answer, with no
+  // key, are the same: no cause sentence.
+  for (const [what, answer] of [
+    ["incomplete", { end_reason: "incomplete" }],
+    ["dawn_cutoff", { end_reason: "dawn_cutoff" }],
+    ["error", { end_reason: "error" }],
+    ["null", { end_reason: null }],
+    ["no key (an older server)", {}],
+  ] as const) {
+    const text = await interruptedText(answer);
+    assert(!/The server restarted/.test(text), `${what}: told the server restarted: "${text.slice(0, 200)}"`);
+    assert(!/you stopped it/i.test(text), `${what}: told it was a STOP: "${text.slice(0, 200)}"`);
+    assert(text.includes(". The frames on disk are intact."),
+      `${what}: the card lost its frames sentence: "${text.slice(0, 200)}"`);
+  }
   RECOVERABLE = { recoverable: false };
 });
 

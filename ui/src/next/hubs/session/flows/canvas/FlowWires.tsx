@@ -27,19 +27,31 @@
 // and a label chip, all from the pure `targetSummary.ts` the classic layer
 // shares, so the two canvases cannot draw the loop differently.
 //
+// THE RUN STANDS LOWER HERE (#357). This canvas's cards grow past the formula
+// box the arc routes under - a wrapped footer, a pill, EDIT STAGE - so the
+// run is lowered by what a card can reach (`CARD_OVERHANG_PX`, FlowNode.tsx)
+// through `geometry.lowerLoopRun`, and the remove control follows it. Still
+// the formula, never the DOM, and the classic canvas's arc is unchanged.
+//
 // RE-RENDER SHAPE. The layer subscribes to the node array, the edge array and
 // the run phase; each edge is its own memo'd child taking only primitives, and
-// it reads its own source-node status and its own selectedness with narrow
-// selectors. So a `flow.node` tick for one stage re-paths that stage's outgoing
-// wires and nothing else, and the pending wire - which changes on every
-// pointermove - is a separate component so dragging one wire does not re-path
-// the other twenty.
+// it reads its own source-stage status and its own selectedness with narrow
+// selectors. So selecting a wire re-renders the wire that was selected and the
+// one that now is, and nothing else, and the pending wire - which changes on
+// every pointermove - is a separate component so dragging one wire does not
+// re-path the other twenty. Nothing writes a stage's status today
+// (`flows.statuses`, #464: no topic carries it, and the published sequence
+// state never names the stage), so every wire reads idle and that selector
+// wakes none; it is kept narrow so that a status feed, once there is one,
+// re-renders one stage's outgoing wires and not the layer.
 
 import { memo, type JSX, type MouseEvent as RMouseEvent } from "react";
 
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
-import { edgePath, portPos, type FlowTier } from "../../../../../components/flows/geometry";
-import type { FlowEdgeRec, PortKind } from "../../../../../components/flows/flowsTypes";
+import {
+  edgePath, lowerLoopRun, portPos, type FlowTier, type LoopArc,
+} from "../../../../../components/flows/geometry";
+import type { FlowEdgeRec, FlowNodeRec, PortKind } from "../../../../../components/flows/flowsTypes";
 // The slice's own reader of whether the compile answer is the graph on
 // screen's (#356), not a second copy of it. It is a slice, the shared logic
 // wave R7 section 2.1 keeps, and the store this file already reads is built
@@ -53,6 +65,30 @@ import {
   HIT_W_CANVAS, isRunning, isWireActive, wireAnchors, wireDash, wireLane,
   wireMidpoint, wireStroke, wireWidth,
 } from "./canvasModel";
+import { CARD_OVERHANG_PX } from "./FlowNode";
+
+// ---------------------------------------------------------------- loop arc
+
+/** The panel loop's arc for one wire as THIS canvas draws it, or null for a
+ *  wire that is not a loop wire.
+ *
+ *  `loopArcOf` decides which wires are arcs and routes the arc under the
+ *  body by the card formula, as it does for the classic layer; this canvas
+ *  then lowers the run by `CARD_OVERHANG_PX`, how far one of its cards can
+ *  reach below that formula (#357). The same as a drop of `LOOP_ARC_DROP +
+ *  CARD_OVERHANG_PX` (`lowerLoopRun`), so the run and its chip stand
+ *  `LOOP_ARC_DROP` clear of the card as drawn rather than behind its footer.
+ *
+ *  ONE RESOLVER FOR THE LAYER AND THE REMOVE CONTROL, so the control stands
+ *  on the drop of the arc drawn here, not on the canvas's shorter one. */
+export function nextLoopArc(
+  edge: FlowEdgeRec,
+  graph: { nodes: readonly FlowNodeRec[]; edges: readonly FlowEdgeRec[] },
+  tier: FlowTier,
+): LoopArc | null {
+  const loop = loopArcOf(edge, graph, tier);
+  return loop && lowerLoopRun(loop, CARD_OVERHANG_PX);
+}
 
 // --------------------------------------------------------------- one wire
 
@@ -71,7 +107,8 @@ interface FlowWireProps {
 
 function FlowWireBase({ edgeId, fromNode, d, kind, running, select }: FlowWireProps): JSX.Element {
   // A string and a boolean. zustand compares the selector's RESULT with
-  // Object.is, so a status frame for another stage cannot reach this wire.
+  // Object.is, so selecting another wire cannot reach this one, nor could a
+  // status written for another stage (nothing writes one today, #464).
   const status = useStore((s) => s.flows.statuses[fromNode] ?? "idle");
   const selected = useStore((s) => s.flows.sel?.kind === "edge" && s.flows.sel.id === edgeId);
 
@@ -233,8 +270,9 @@ export interface FlowWireLayerProps {
 export function FlowWireLayer({ tier }: FlowWireLayerProps): JSX.Element {
   const nodes = useStore((s) => s.flows.graph.nodes);
   const edges = useStore((s) => s.flows.graph.edges);
-  // A string, so the layer re-renders once when a run starts or ends - not on
-  // the per-stage status frames, which each wire reads for itself.
+  // A string, so the layer re-renders once when a run starts or ends. A
+  // stage's status is each wire's own read (`FlowWireBase`), never the
+  // layer's; nothing writes one today (#464).
   const phase = useStore((s) => s.flows.run.phase);
   // Read once and handed down: one subscription for the whole layer instead of
   // one per wire, and the action's identity is stable so `memo` still holds.
@@ -266,8 +304,9 @@ export function FlowWireLayer({ tier }: FlowWireLayerProps): JSX.Element {
         // reads as a deliberate connection.
         if (!a) return null;
         // The panel loop: a backward event wire into a TARGET's `next`, routed
-        // under the lane from the card formula.
-        const loop = loopArcOf(e, graph, tier);
+        // under the lane from the card formula and clear of this canvas's
+        // cards as drawn (`nextLoopArc`).
+        const loop = nextLoopArc(e, graph, tier);
         if (loop) {
           return (
             <FlowLoopArc
@@ -340,7 +379,7 @@ export function FlowWireDelete({ edge, tier }: FlowWireDeleteProps): JSX.Element
   const a = wireAnchors(edge, nodes, tier);
   if (!a) return null;
 
-  const loop = loopArcOf(edge, { nodes, edges }, tier);
+  const loop = nextLoopArc(edge, { nodes, edges }, tier);
   const { x: mx, y: my } = loop ? loop.handle : wireMidpoint(a.p1, a.p2);
 
   return (

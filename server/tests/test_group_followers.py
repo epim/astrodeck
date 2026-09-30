@@ -310,6 +310,23 @@ async def test_an_after_group_follower_is_skipped_once_the_mosaic_is_set_aside(
     then SKIPPED FOR THE NIGHT, NOT DONE: never slewed to, marked skipped,
     still owed, and the session stays dormant for the next night.
 
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). A lone panel's miss
+    is still its own and still counts, but a streak of centring misses now
+    sets the panel aside "for now": the set-aside expires once a night, 45
+    minutes on here, the panel strikes out again, and only that second
+    streak sets it aside for the night. So the session holds two records
+    for 1-1, the first marked expired, where it held one before H4, and
+    the follower waits for the mosaic through the expiry, as a follower of
+    a live mosaic does, until the mosaic is set aside for the night.
+
+    MUTANT "after_group ignored", re-run by the H4 integration in a private
+    copy of server/ (scratchpad H4-INTEG-mut; `_follower_gate`'s
+    ``after_group`` branch made ``if False:``): RED (observed):
+        AssertionError: [(1788313689.0, 'M31 1-1'), (1788313689.0,
+        'Follower'), (1788313989.0, 'M31 1-1'), (1788313989.0, 'Follower'),
+        (1788314289.0, 'M31 1-1'), (1788314289.0, 'Follower'), ...]
+        assert False
+
     MUTANT "after_group ignored": RED (observed):
         AssertionError: [(1788313689.0, 'M31 1-1'), (1788313989.0, 'M31 1-1'),
         (1788314289.0, 'M31 1-1'), (1788314289.0, 'Follower')]
@@ -330,7 +347,10 @@ async def test_an_after_group_follower_is_skipped_once_the_mosaic_is_set_aside(
                  panel_kw={"ha_h": -2.0})
     night = await _night(group_hub, monkeypatch, plan, goto=no_centre)
     assert night.done, night.trace[-3:]
-    assert [r["target_id"] for r in night.stored.set_aside] == ["p00"]
+    # The first streak's record, expired (#534), and the second's.
+    assert [(r["target_id"], bool(r.get("expired")))
+            for r in night.stored.set_aside] == [("p00", True),
+                                                 ("p00", False)]
     assert all(who != FOLLOWER for _t, who in night.gotos), night.gotos
     assert night.captures == [], night.captures[:2]
     assert night.said("Follower: skipped for tonight: the M31 mosaic it "

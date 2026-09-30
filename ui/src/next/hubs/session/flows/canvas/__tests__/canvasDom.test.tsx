@@ -123,8 +123,12 @@ const { FlowCanvasSurface } = await import("../FlowCanvasSurface");
 const { FlowCanvasToolbar } = await import("../FlowCanvasToolbar");
 const { FlowStagesPhoneSheet } = await import("../FlowStagesPhoneSheet");
 const { flowCanvasSheets } = await import("../sheets");
+// The empty log's two sentences, as the #/next strip states them (#529);
+// canvasModel's own IDLE_LOG_TEXT is no longer drawn. phoneReadouts.test.tsx
+// case 8 holds them to the classic strip's words.
+const { EMPTY_LOG_TEXT, RUN_EMPTY_LOG_TEXT } = await import("../FlowLogStrip");
 const {
-  ADD_STAGE_LABEL, CHECKS_DRAFT_PREFIX, IDLE_LOG_TEXT, RUN_UNSAVED_REASON,
+  ADD_STAGE_LABEL, CHECKS_DRAFT_PREFIX, RUN_UNSAVED_REASON,
   SAVE_CLEAN_REASON, SAVE_READONLY_REASON, SAVE_STATE_CLEAN, SAVE_STATE_DIRTY,
   SAVE_STATE_READONLY, resolveWireDrop,
   MARK_LOST, MARK_PARTIAL, MARK_RIG, RIG_VALUE_PREFIX,
@@ -162,6 +166,11 @@ const settle = async (): Promise<void> => {
 };
 const tid = (t: string): any => container.querySelector(`[data-testid="${t}"]`);
 const all = (sel: string): any[] => [...container.querySelectorAll(sel)];
+/** The log strip's collapsed message, never the whole bar: the bar reads
+ *  "LOG" and the message with no space between, where `\bIdle\b` finds no
+ *  word boundary (#529). */
+const logBar = (): string =>
+  String(container.querySelector('[data-testid="flow-log-toggle"] .nx-flow-log-last')?.textContent ?? "");
 const click = (el: any): void => {
   act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
 };
@@ -258,12 +267,40 @@ test("precondition: the canvas rendered the seeded graph, stages and wires", () 
   assert(/DUSK WINDOW/.test(container.textContent), "the stage card carries the vocabulary's own label");
   assert(tid("flow-zoom") != null, "the zoom cluster is missing");
   assert(tid("flow-log") != null, "the log strip is missing");
-  assert(container.textContent.includes(IDLE_LOG_TEXT),
-    `an empty ring must say so with a hyphen, got "${String(container.textContent).slice(0, 200)}"`);
+  // No run of this flow is live here, so the empty ring says there are no
+  // events yet (the live sentence is phoneReadouts.test.tsx case 8's).
+  eq(logBar(), EMPTY_LOG_TEXT, "an empty ring outside a run");
+  assert(!logBar().includes(RUN_EMPTY_LOG_TEXT), "the live sentence outside a run");
 });
 
-test("the log's idle sentence carries a hyphen, not an em-dash (defect 4)", () => {
-  assert(!/Idle\s*—/.test(container.textContent), "the em-dash came back into IDLE_LOG_TEXT");
+// Each mutant below was run in the private copy scratchpad H4-ULOG-mut, from
+// a byte backup of the mutated file restored and SHA-256 compared.
+// MUTANT "Idle kept, em-dash and all" (canvas/FlowLogStrip.tsx's bar
+// printing the legacy "Idle — no events yet" in place of
+// `emptyLogText(live)`). Observed, canvasDom.test 34/36:
+//   x precondition: the canvas rendered the seeded graph, stages and wires: an empty ring outside a run
+//   expected no events yet
+//   got      Idle — no events yet
+//   x the log's empty sentence carries no em-dash (defect 4) and no Idle (#529): the em-dash came back into the empty log: "Idle — no events yet"
+// MUTANT "Idle kept on the #/next strip" (canvas/FlowLogStrip.tsx printing
+// "Idle - no events yet" in place of `emptyLogText(live)`, the hyphen the
+// #/next copy rule asks for, so only the Idle check below can see it; the
+// mutant "Idle kept (the #/next rule)", on `emptyLogText` itself, fails the
+// same two lines). Observed, canvasDom.test 34/36:
+//   x precondition: the canvas rendered the seeded graph, stages and wires: an empty ring outside a run
+//   expected no events yet
+//   got      Idle - no events yet
+//   x the log's empty sentence carries no em-dash (defect 4) and no Idle (#529): the empty log says Idle, the STATE readout's word: "Idle - no events yet"
+// MUTANT "live copy shown outside a run (the #/next rule)"
+// (canvas/FlowLogStrip.tsx `emptyLogText` answering the run sentence
+// whatever it is handed). Observed, canvasDom.test 35/36:
+//   x precondition: the canvas rendered the seeded graph, stages and wires: an empty ring outside a run
+//   expected no events yet
+//   got      no log lines: the server publishes none for a flow run
+test("the log's empty sentence carries no em-dash (defect 4) and no Idle (#529)", () => {
+  const bar = logBar();
+  assert(!bar.includes("—"), `the em-dash came back into the empty log: "${bar}"`);
+  assert(!/\bIdle\b/i.test(bar), `the empty log says Idle, the STATE readout's word: "${bar}"`);
 });
 
 test("every wire anchor came from the shared geometry, so a wire ends on its dot", () => {

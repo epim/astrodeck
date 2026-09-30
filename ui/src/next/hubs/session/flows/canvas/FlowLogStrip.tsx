@@ -6,6 +6,18 @@
 // given and, if nothing arrived, keeps saying so. A scripted run narration here
 // would be a sentence about a rig that never spoke.
 //
+// WHAT IT SAYS WHEN NOTHING ARRIVED (#529). Until H4 it said "Idle - no events
+// yet" (canvasModel's IDLE_LOG_TEXT) through every live run, while the toolbar
+// beside it offered STOP: "Idle" describes the run, and the run was not idle.
+// It now says what is true of the log: while this flow's run is live, as the
+// run readouts decide it, that the server publishes no log lines for a flow
+// run; otherwise "no events yet". The phone stage sheet's LOG prints the same
+// `emptyLogText`. Both sentences are the classic strip's, word for word, and
+// restated here rather than imported: that file is a presentation module,
+// which r7Parity keeps out of the #/next tree, the reason canvasModel restates
+// the rest of it too. phoneReadouts.test.tsx case 8 holds all four log
+// surfaces to the classic's words, so a restatement that drifts goes red.
+//
 // The ring lives in the store (120 lines). This shows the newest 60, newest
 // first - the line you want mid-run is the one that just landed, and a
 // chronological panel puts it at the bottom of a box already scrolled to the
@@ -16,17 +28,39 @@
 
 import { useMemo, type JSX } from "react";
 
+import { flowRunLive, knownSessions } from "../../../../../components/flows/flowRunState";
 import { useStore } from "../../../../../store";
 import { Label, Mono } from "../../../../ui";
-import { IDLE_LOG_TEXT, LOG_TONE, logTail, logTime } from "./canvasModel";
+import { LOG_TONE, logTail, logTime } from "./canvasModel";
+
+/** The empty log's words while no run of this flow is live. No "Idle":
+ *  whether a run is idle is the STATE readout's to say, not the log's. */
+export const EMPTY_LOG_TEXT = "no events yet";
+
+/** The empty log's words while this flow's run is live (#529): no server
+ *  topic carries a flow's log lines (there is no `flow.log` event), so an
+ *  empty log beside a live run says why it is empty, or it reads as a run
+ *  that has gone quiet. Once a `flow.log` topic exists it is false and goes. */
+export const RUN_EMPTY_LOG_TEXT = "no log lines: the server publishes none for a flow run";
+
+/** What an empty log says. `runLive` is whether this flow's run is live,
+ *  as the run readouts decide it (`useFlowRunReadouts().fed`). */
+export function emptyLogText(runLive: boolean): string {
+  return runLive ? RUN_EMPTY_LOG_TEXT : EMPTY_LOG_TEXT;
+}
 
 export function FlowLogStrip(): JSX.Element {
-  // Three exact selectors. `logs` changes identity only when a line is
-  // appended; `logOpen` is a boolean, so the `ui` object being replaced by an
-  // unrelated `flowsSetUi` does not re-render the strip.
+  // Four exact selectors. `logs` changes identity only when a line is
+  // appended; `logOpen` and `live` are booleans, so the `ui` object being
+  // replaced by an unrelated `flowsSetUi`, or a frame landing on the run, does
+  // not re-render the strip.
   const logs = useStore((s) => s.flows.logs);
   const open = useStore((s) => s.flows.ui.logOpen);
   const setUi = useStore((s) => s.flowsSetUi);
+  // `useFlowRunReadouts().fed` as one boolean: the readouts are fed exactly
+  // when `flowRunLive` answers true of the sessions the slice knows as the
+  // flow's (#449), the question the RUN button asks too.
+  const live = useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
 
   const lines = useMemo(() => logTail(logs), [logs]);
   const last = logs.length ? logs[logs.length - 1] : null;
@@ -57,7 +91,7 @@ export function FlowLogStrip(): JSX.Element {
         <Label size={10}>LOG</Label>
         <span className="nx-flow-log-last">
           <Mono size={10.5} tone={last ? LOG_TONE[last.tone] : "dim"}>
-            {last ? last.msg : IDLE_LOG_TEXT}
+            {last ? last.msg : emptyLogText(live)}
           </Mono>
         </span>
         <span className="nx-flow-log-chev" aria-hidden="true" data-open={open ? "true" : "false"} />

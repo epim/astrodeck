@@ -117,6 +117,7 @@ from ..solve.light import (BIAS_MASTER, CLOUD, DARK_MASTER, EXPLICIT,
                            NO_LIGHT_WORDS, SELF_SHOT, FailedSolveError,
                            NoLightError)
 from . import schedule
+from .group_rules import CENTRING, set_aside_expiry
 from .models import (Target, TargetGroup, duplicate_name_warning,
                      plan_identity_errors, quota_unbounded, replan_cooling)
 from .panel_order import OrderSnapshot, order_panels
@@ -299,6 +300,50 @@ def _owes(target: Target, remaining: dict[str, int]) -> bool:
     return any(remaining.get(s.id, 0) > 0 for s in target.steps)
 
 
+def standing_set_asides(session: Session, night: str,
+                        now: float | None) -> list[dict]:
+    """``night``'s set-aside records that still stand at ``now``: those
+    ``Session.set_aside_on`` reads, less every centring set-aside whose 45
+    minutes have passed (#534, H4 orchestrator ruling 2).
+
+    A CRASH-RESUME IS NOT HELD ALL NIGHT BY A SET-ASIDE THAT HAS EXPIRED. A
+    centring set-aside expires once a night, when ``SET_ASIDE_EXPIRY_S`` have
+    passed since it was made or when its panel has risen
+    ``SET_ASIDE_RISE_DEG`` since, whichever comes first
+    (``group_rules.set_aside_expiry``), and the run marks the record when it
+    sees it expire. A run that died first never marks it, and read as it
+    stands the record would keep the panel out of every re-centre, and a
+    session whose only work it was out of every start (``NOTHING_TONIGHT``),
+    for the rest of the night. The time half needs no ephemeris, so it is
+    applied here; the rise half is the run's to apply, and holding a little
+    longer than the run would is the side to err on for a slew nobody
+    watches. The run, started, reads the same record and expires it at its
+    first selection by the same rule, so the two agree.
+
+    Only a whole panel's record of kind ``"centring"``, with the clock time
+    it was made, and only while the panel has not expired tonight already
+    (``Session.set_aside_expiries_on``): at most one expiry per panel per
+    night. A record without a kind or a ``ts``, as every record before H4
+    is, never expires. ``now`` None applies nothing (the answer before)."""
+    records = session.set_aside_on(night)
+    if now is None:
+        return records
+    counts = getattr(session, "set_aside_expiries_on", None)
+    expiries = counts(night) if counts is not None else {}
+
+    def expired(rec: dict) -> bool:
+        ts = rec.get("ts")
+        if (rec.get("step_id") is not None or rec.get("kind") != CENTRING
+                or isinstance(ts, bool) or not isinstance(ts, (int, float))
+                or not math.isfinite(ts)):
+            return False
+        return set_aside_expiry(
+            now=now, set_at=float(ts),
+            expiries=int(expiries.get(rec.get("target_id"), 0))) == "time"
+
+    return [r for r in records if not expired(r)]
+
+
 def _set_aside_tonight(target: Target, remaining: dict[str, int],
                        records: list[dict]) -> bool:
     """Is ``target`` set aside for the night ``records`` belong to?
@@ -447,7 +492,8 @@ def recentre_candidates(session: Session, night: str,
     * A target is a candidate while it owes frames and is not set aside for
       ``night`` (``Session.set_aside``, spec 3.4). A complete target is
       never shot again, and a set-aside one is not retried until another
-      night. Calibration never slews.
+      night, save a centring set-aside whose 45 minutes have passed at
+      ``now`` (``standing_set_asides``, #534). Calibration never slews.
     * THE RUN'S WALK. ``walk`` is the plan's targets in the order the run
       walks them, ``schedule.schedule_order`` (``ResumeArm._walk``), and
       plan order when it is not given. Each ``plan.groups`` entry stands at
@@ -511,7 +557,7 @@ def recentre_candidates(session: Session, night: str,
 
     plan = session.plan
     remaining = session.remaining()
-    records = session.set_aside_on(night)
+    records = standing_set_asides(session, night, now)
     groups = {g.id: g for g in plan.groups}
     owing_groups = {t.mosaic_group for t in plan.targets
                     if t.mosaic_group in groups and _owes(t, remaining)}
@@ -779,6 +825,10 @@ class ResumeArm:
         #: focuser: a later night or another process has no business finding
         #: it (learned facts belong in process memory).
         self._recovery_sweep: _LadderSweep | None = None
+        #: The sessions already told that auto-resume stays off because a
+        #: DUSK window cannot be placed with no site saved (#527): one line
+        #: per session, not one per minute (`_dusk_without_a_site`).
+        self._dusk_no_site_said: set[str] = set()
 
     @property
     def recovering(self) -> bool:
@@ -1084,6 +1134,34 @@ class ResumeArm:
         twilight = cfg.safety.twilight_deg if cfg else -12.0
         return window_open(session, self.hub.site, twilight, now)
 
+    def _dusk_without_a_site(self, session: Session) -> str:
+        """The names of ``session``'s DUSK-windowed targets, when no site is
+        saved and every target it would shoot opens on the Sun (#527); ""
+        otherwise.
+
+        With no site `schedule.resolve_window` answers None for a dusk or
+        dawn boundary (H4-SCHED), where it used to answer 0,0's dusk, and
+        `window_open`'s ``start is not None`` then keeps auto-resume off:
+        the conservative direction, and nothing said so. The tick's other
+        lines would say the wrong thing instead ("it is not dark", "starts
+        when the window opens"), about a window that cannot open.
+
+        EVERY target, not any: a session that also holds a ``now`` or
+        ``time`` target opens on that one's window, which needs no site, and
+        its run then says which DUSK window it did not apply (the engine's
+        own line). A calibration target opens the window at any hour, so a
+        session holding one never reaches the tick's closed branch."""
+        from ..site_gate import site_lat_lon
+        if site_lat_lon(self.hub.site) is not None:
+            return ""
+        lights = [t for t in session.plan.targets if not t.calibration]
+        if not lights or any(t.schedule.start_mode not in ("dusk", "dawn")
+                             for t in lights):
+            return ""
+        names = [t.name for t in lights]
+        return ", ".join(names[:3]) + (f" and {len(names) - 3} more"
+                                       if len(names) > 3 else "")
+
     def _walk(self, session: Session, now: float) -> list[Target]:
         """The session's targets in the order its run will walk them (#159):
         ``schedule.schedule_order``, the call ``_run_scheduled`` makes at run
@@ -1151,6 +1229,24 @@ class ResumeArm:
             # tomorrow, and the window reopening is already "a fresh night"
             # to this tick (``_gave_up_for`` below).
             self._no_light_spell = None
+            # A DUSK WINDOW WITH NO SITE NEVER OPENS (#527), so none of the
+            # lines below is true of it: it is not waiting for dark, and it
+            # does not start "when the window opens". Said once per session,
+            # and held on the reason, before any of them.
+            dusk = self._dusk_without_a_site(armed)
+            if dusk:
+                self._set_hold(armed, "its DUSK window cannot be placed with "
+                                      "no site saved, so auto-resume stays "
+                                      "off until a site is saved")
+                if armed.id not in self._dusk_no_site_said:
+                    self._dusk_no_site_said.add(armed.id)
+                    bus.log("warning",
+                            f"auto-resume stays off for '{armed.name}': the "
+                            f"DUSK window of {dusk} needs a saved site to "
+                            f"find dusk, and no site is saved, so the window "
+                            f"never opens. Save the site, or start the run by "
+                            f"hand", "sequence")
+                return
             # Read BEFORE the hold below replaces it: was the last refusal
             # "nothing to shoot tonight" (#284)?
             set_aside = self._held_nothing_tonight == armed.id

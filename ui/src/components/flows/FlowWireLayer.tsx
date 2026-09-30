@@ -33,16 +33,21 @@
 // RE-RENDER SHAPE. The layer subscribes to the node array, the edge array and
 // the run phase; each edge is its own memo'd child taking only PRIMITIVES, and
 // it reads its own source-node status and its own selectedness with narrow
-// selectors that return a string and a boolean. So a `flow.node` tick for one
-// stage re-renders that stage's outgoing wires and nothing else, and the pending
-// wire — which changes on every pointermove — is a separate component so
-// dragging one wire does not re-path the other twenty.
+// selectors that return a string and a boolean. So selecting a wire re-renders
+// the wire that was selected and the one that now is, and nothing else, and the
+// pending wire — which changes on every pointermove — is a separate component
+// so dragging one wire does not re-path the other twenty. Nothing writes a
+// stage's status today (`flows.statuses`, #464: no topic carries it, and the
+// published sequence state never names the stage), so every wire reads idle
+// and that selector wakes none; it is kept narrow so that a status feed, once
+// there is one, re-renders one stage's outgoing wires and not the layer.
 import { memo } from "react";
 import type { MouseEvent as RMouseEvent } from "react";
 import { useStore } from "../../store";
 import { NODE_DEFS } from "./nodeDefs";
 import {
-  edgePath, portPos, type EdgeMode, type FlowTier, type LoopArc, type Point,
+  cardBox, edgePath, portPos, type CardBox, type EdgeMode, type FlowTier, type LoopArc,
+  type Point,
 } from "./geometry";
 import type { FlowEdgeRec, FlowNodeRec, FlowRunPhase, PortKind } from "./flowsTypes";
 import { compiledIsCurrent } from "./flowsSlice";
@@ -77,6 +82,18 @@ function placed(
 ): FlowNodeRec {
   const p = positions?.[node.id];
   return p ? { ...node, x: p.x, y: p.y } : node;
+}
+
+/** Every card's formula box (`geometry.cardBox`) where this surface draws it:
+ *  at its auto-graph position on the phone FLOW tab, at its stored one
+ *  elsewhere. What the loop's remove control must stay off (#502), from the
+ *  same substitution the wires are anchored with. */
+export function placedCards(
+  nodes: readonly FlowNodeRec[],
+  tier: FlowTier,
+  positions?: Readonly<Record<string, Point>>,
+): CardBox[] {
+  return nodes.map((n) => cardBox(placed(n, positions), NODE_DEFS, tier));
 }
 
 /** Which lane a wire is in — decided by the SOURCE port's kind, never the
@@ -226,7 +243,8 @@ interface FlowWireProps {
 
 function FlowWire({ edgeId, fromNode, d, kind, running, hitW, select }: FlowWireProps) {
   // A string and a boolean. zustand compares the selector's RESULT with
-  // Object.is, so a status frame for another stage cannot reach this wire.
+  // Object.is, so selecting another wire cannot reach this one, nor could a
+  // status written for another stage (nothing writes one today, #464).
   const status = useStore((s) => s.flows.statuses[fromNode] ?? "idle");
   const selected = useStore(
     (s) => s.flows.sel?.kind === "edge" && s.flows.sel.id === edgeId);
@@ -417,8 +435,9 @@ export default function FlowWireLayer({
 }: FlowWireLayerProps) {
   const nodes = useStore((s) => s.flows.graph.nodes);
   const edges = useStore((s) => s.flows.graph.edges);
-  // A string, so the layer re-renders once when a run starts or ends — not on
-  // the per-node status frames, which each wire reads for itself.
+  // A string, so the layer re-renders once when a run starts or ends. A
+  // stage's status is each wire's own read (`FlowWire`), never the layer's;
+  // nothing writes one today (#464).
   const phase = useStore((s) => s.flows.run.phase);
   // Read once and handed down: one subscription for the whole layer instead of
   // one per wire, and the action's identity is stable so `memo` still holds.

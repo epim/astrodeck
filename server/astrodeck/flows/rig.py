@@ -10,7 +10,10 @@ knows (spec 3.3, 1.8):
 * M10 and the brief weigh a MEASURED hop cost against a visit;
 * M8 asks whether the active profile has a rotator;
 * M9 previews the ``quota_unbounded`` refusal, which needs to know whether
-  both reject guards are off.
+  both reject guards are off;
+* the Tonight brief names the guider the run will guide with, and the settle
+  and dither it will use, from Rig > Guider rather than the GUIDE card whose
+  settings never reach the run (#506).
 
 The route reads those off the hub, the way ``to_plan`` is handed ``cool_to``,
 and passes them in as a :class:`RigFacts`. The rules take the value; they never
@@ -74,6 +77,22 @@ class RigFacts:
     has_rotator: Optional[bool] = None
     #: Whether both reject guards (per step and per night) are off (M9).
     reject_guards_off: Optional[bool] = None
+    #: THE GUIDER THE RUN WILL GUIDE WITH (#506), as the guide resolver labels
+    #: it and Rig > Guider shows it: "AstroDeck native", "Simulator", "PHD2"
+    #: or "NINA". The GUIDE card's `provider` never reaches the run
+    #: (``to_plan.NODE_SETTINGS["guide"]``), so the brief names this instead.
+    guide_provider: Optional[str] = None
+    #: The settle every dither waits on, ``(pixels, seconds)``: the guide
+    #: star within this many guide-camera pixels for this long. The run hands
+    #: the guider no settle of its own, so this is the guider's own rule; None
+    #: where the guider does not publish it (NINA settles by its own).
+    guide_settle: Optional[tuple[float, float]] = None
+    #: The dither distance in guide-camera pixels, Rig > Guider's (the rig's
+    #: standard; a flow plan never sets one). 0 is a real reading.
+    guide_dither_px: Optional[float] = None
+    #: Frames between dithers, the cadence a flow's run dithers at. 0 is
+    #: "never".
+    guide_dither_every: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.fov_deg is not None:
@@ -108,3 +127,39 @@ class RigFacts:
             object.__setattr__(self, "hop_cost_s", cost)
         _optional_bool(self.has_rotator, "has_rotator")
         _optional_bool(self.reject_guards_off, "reject_guards_off")
+        if self.guide_provider is not None and (
+                not isinstance(self.guide_provider, str)
+                or not self.guide_provider.strip()):
+            # "" would print "guides with  (...)": no name is None.
+            raise ValueError(
+                f"guide_provider is a name or None, not "
+                f"{self.guide_provider!r}")
+        if self.guide_settle is not None:
+            if (isinstance(self.guide_settle, (str, bytes))
+                    or not hasattr(self.guide_settle, "__len__")
+                    or len(self.guide_settle) != 2):
+                raise ValueError(
+                    f"guide_settle is a (pixels, seconds) pair, not "
+                    f"{self.guide_settle!r}")
+            object.__setattr__(self, "guide_settle", (
+                _finite_positive(self.guide_settle[0], "guide_settle pixels"),
+                _finite_positive(self.guide_settle[1],
+                                 "guide_settle seconds")))
+        if self.guide_dither_px is not None:
+            try:
+                px = float(self.guide_dither_px)
+            except (TypeError, ValueError):
+                px = math.nan
+            if isinstance(self.guide_dither_px, bool) or not (
+                    math.isfinite(px) and px >= 0):
+                raise ValueError(
+                    f"guide_dither_px is a finite distance of 0 or more, "
+                    f"not {self.guide_dither_px!r}; an unknown one is None")
+            object.__setattr__(self, "guide_dither_px", px)
+        if self.guide_dither_every is not None and (
+                isinstance(self.guide_dither_every, bool)
+                or not isinstance(self.guide_dither_every, int)
+                or self.guide_dither_every < 0):
+            raise ValueError(
+                f"guide_dither_every is a count of frames, not "
+                f"{self.guide_dither_every!r}")

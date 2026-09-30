@@ -18,9 +18,16 @@ that without a rotate solve; the last case here runs the two together.
 Every mutation named below was run in a private scratch copy of ``server/``
 (issue #254), never in the shared tree. The failure each produced is recorded
 verbatim on the test that caught it.
+
+RE-PINNED FOR #532 (H4). Every solve frame now has a name of its own
+(``rotate-<token>.fits``), so the last case's spy records each solve by its
+kind, the name with the token taken out. Left comparing raw names, its
+``"rotate.fits" not in seen`` would have passed whether or not the rotate loop
+ran.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -30,6 +37,18 @@ from _simhub import sim_hub  # noqa: F401 (fixture import)
 from astrodeck.solve.simsolver import SimSolver
 
 RA, DEC = 5.0, 10.0
+
+#: A solve frame's name since #532: ``<kind>-<12 hex digits>.fits``.
+_UNIQUE = re.compile(r"^(?P<kind>.+)-[0-9a-f]{12}\.fits$")
+
+
+def _kind_of(fits_path) -> str:
+    """``rotate.fits`` for ``rotate-4c1297bee2b9.fits``; a name without a
+    token is kept as it is."""
+    name = Path(fits_path).name
+    m = _UNIQUE.match(name)
+    return f"{m.group('kind')}.fits" if m else name
+
 
 #: What the spy answers in place of a real re-centre.
 _CANNED = {"centered": True, "error_arcmin": 0.2, "attempts": 1,
@@ -144,7 +163,7 @@ async def test_a_flip_recentre_at_the_half_turn_twin_does_not_turn_the_rotator(
     real = SimSolver.solve
 
     async def spy(self, fits_path, **kw):
-        seen.append(Path(fits_path).name)
+        seen.append(_kind_of(fits_path))
         return await real(self, fits_path, **kw)
 
     monkeypatch.setattr(SimSolver, "solve", spy)
@@ -155,5 +174,8 @@ async def test_a_flip_recentre_at_the_half_turn_twin_does_not_turn_the_rotator(
     assert rot is not None and rot["shortcut"] is True, result
     assert rot["error_deg"] == pytest.approx(0.5, abs=0.01), rot
     assert "rotate.fits" not in seen, seen
+    # The spy saw the centring solves, so the line above is a count of a
+    # list that holds solves, not of an empty one.
+    assert "solve.fits" in seen, seen
     assert rig.rotator_mech_deg == pytest.approx(10.0)
     assert result["centered"] is True, result

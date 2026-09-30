@@ -245,6 +245,21 @@ under "S5 and S6, and Revision 9" hold the rest, one per section S5 or S6
 edited, and Revision 9's table against the sections that carry the two
 slices' mark (``_S56``).
 
+S7's first item and its carry-over are held under "S7 and Revision 10".
+The fourth hardening round (H4) was built under six orchestrator rulings,
+recorded as owner list items 53 to 58 (#520, #534, #526, #507, #518,
+#536), with #357's question kept for the owner as item 59, and H4-DOC
+recorded it in Revision 11 and corrected S7's record. It turned five
+claims above red on H4's code (3.3's rig facts, 2.3's degraded state, 5.7's
+retry band, 5.9's button night and S3 item 5's loader) and made ten more
+stale in words that still passed (S7's "open" marks for #498, #502, #511,
+#512 and #513, the status line, items 45 and 49, "Not built in S7" and
+S6's sentence on what S7 fixed); each is re-pinned with its record of the
+change, and the #239 check reads H4's label. The tests under "H4 and
+Revision 11" hold the rest, one per section H4 edited, and Revision 11's
+table, a row per item, against the sections that carry H4's mark
+(``_H4``).
+
 WHAT THIS CANNOT DO. It reads words, so it proves the spec SAYS a thing, not
 that the thing holds everywhere the spec implies. Where a claim describes
 code, the code half is asserted too, as the shape of that code (a call made,
@@ -3778,7 +3793,8 @@ def test_5_9_says_a_no_light_solve_backs_off_and_resume_arm_does(monkeypatch):
 #: "**H3 orchestrator ruling N:" or, since S2, S3, S4, S5 and S7, "**S2
 #: orchestrator ruling N:", "**S3 orchestrator ruling N:", "**S4
 #: orchestrator ruling N:", "**S5 orchestrator ruling N:" and "**S7
-#: orchestrator ruling N:"; S6 made none). ``issues`` is the run of
+#: orchestrator ruling N:"; S6 made none; and since the fourth hardening
+#: round, "**H4 orchestrator ruling N:"). ``issues`` is the run of
 #: issue numbers written just before the label in the same parenthesis,
 #: "(#224, #225, owner ruling 2 ...)", which is what the entry must be
 #: about.
@@ -3786,7 +3802,7 @@ _CITE = re.compile(
     r"(?P<issues>(?:#\d+[,;] ?)*)"
     r"(?<![\w'])(?P<whose>[Oo]wner|H2 orchestrator|H3 orchestrator"
     r"|S2 orchestrator|S3 orchestrator|S4 orchestrator|S5 orchestrator"
-    r"|S7 orchestrator) "
+    r"|S7 orchestrator|H4 orchestrator) "
     r"rulings? (?P<nums>\d+(?:(?:, and |, | and )\d+)*)\b")
 #: Where a citation says which owner-list item records it.
 _ITEM = re.compile(r'[ ,;(]*(?:spec[ ,;]*)?"?(?:Still waiting on the owner'
@@ -3816,7 +3832,7 @@ def _ruling_entries() -> dict[tuple[str, int], tuple[str, int | None]]:
     None for an owner's ruling)."""
     entries: dict[tuple[str, int], tuple[str, int | None]] = {}
     for line in _section("Still").splitlines():
-        m = re.match(r"(\d+)\. \*\*((?:H[23]|S[23457]) orchestrator) ruling "
+        m = re.match(r"(\d+)\. \*\*((?:H[234]|S[23457]) orchestrator) ruling "
                      r"(\d+):", line)
         if m:
             key = (m.group(2), int(m.group(3)))
@@ -4210,6 +4226,53 @@ def test_every_ruling_the_server_cites_is_the_spec_entry_it_names():
     over two lines):
 
         2 passed, 151 deselected in 2.44s
+
+    SINCE H4 the scan reads H4's label too, "H4 orchestrator ruling N",
+    and the spec's entries for it, owner list items 53 to 58. H4's code
+    cited its rulings from its first task on, and until this record the
+    scan could not see one: `_CITE` knew no "H4 orchestrator", so a
+    citation of a ruling the spec does not record, or one beside the wrong
+    issue, passed. The mutants below ran in H4-DOC's private copy (the
+    session scratchpad's ``H4-DOC-mut``), each file from a byte backup,
+    sha256 checked after.
+
+    Unchanged, and so a test that could not fail, under the group_rules.py
+    mutant "an H4 citation beside the wrong issue" (the
+    ``SET_ASIDE_EXPIRY_S`` comment citing "(#526, H4 orchestrator ruling
+    2)") with the scan as S7 left it, blind to H4:
+
+        1 passed, 152 deselected in 3.43s
+
+    RED under the same mutant with the scan that reads H4:
+
+        AssertionError: astrodeck/sequence/group_rules.py: '#526, H4
+        orchestrator ruling 2' cites H4 orchestrator ruling 2 beside ['#526'],
+        and the spec's entry names none of them
+        assert ['astrodeck/s...none of them'] == []
+          Left contains one more item: "astrodeck/sequence/group_rules.py:
+          '#526, H4 orchestrator ruling 2' cites H4 orchestrator ruling 2
+          beside ['#526'], and the spec's entry names none of them"
+          Use -v to get more diff
+
+    RED under the rotation.py mutant "cite H4 orchestrator ruling 7" (the
+    ``ROTATOR_BACKLASH_DEG`` comment's "(#526, H4 orchestrator ruling 3)"
+    made "(#526, H4 orchestrator ruling 7)"):
+
+        AssertionError: astrodeck/rotation.py: '#526, H4 orchestrator ruling 7'
+        names no H4 orchestrator ruling 7 the spec records
+        assert ['astrodeck/r...spec records'] == []
+          Left contains one more item: "astrodeck/rotation.py: '#526, H4
+          orchestrator ruling 7' names no H4 orchestrator ruling 7 the spec
+          records"
+          Use -v to get more diff
+
+    RED under the spec mutant "drop owner list item 58" (ruling 6's entry
+    taken out, item 59 left where it is):
+
+        AssertionError: assert {('H2 orchest...tor', 6), ...} <= {('H2
+        orchest...tor', 1), ...}
+          Extra items in the left set:
+          ('H4 orchestrator', 6)
     """
     entries = _ruling_entries()
     # Premise: the spec's entries were read, all eight kinds of them.
@@ -4219,7 +4282,8 @@ def test_every_ruling_the_server_cites_is_the_spec_entry_it_names():
             ("S3 orchestrator", 8), ("S4 orchestrator", 1),
             ("S4 orchestrator", 9), ("S5 orchestrator", 1),
             ("S5 orchestrator", 3), ("S7 orchestrator", 1),
-            ("S7 orchestrator", 10)} <= set(entries)
+            ("S7 orchestrator", 10), ("H4 orchestrator", 1),
+            ("H4 orchestrator", 6)} <= set(entries)
     # Premise: the scan reads S3's label. The tree cannot show it until
     # S3's code is committed, so the pattern is asked on the shape S3's
     # code cites a ruling in.
@@ -4242,6 +4306,11 @@ def test_every_ruling_the_server_cites_is_the_spec_entry_it_names():
     reads_s7 = s7 is not None and s7.group("whose") == "S7 orchestrator"
     assert reads_s7, ("the scan does not read 'S7 orchestrator ruling N', "
                       "so no S7 citation is checked")
+    # And H4's.
+    h4 = _CITE.search("(#534, H4 orchestrator ruling 2)")
+    reads_h4 = h4 is not None and h4.group("whose") == "H4 orchestrator"
+    assert reads_h4, ("the scan does not read 'H4 orchestrator ruling N', "
+                      "so no H4 citation is checked")
     here = Path(__file__).resolve()
     problems: list[str] = []
     found: set[tuple[str, str, int]] = set()
@@ -4309,6 +4378,13 @@ def test_every_ruling_the_server_cites_is_the_spec_entry_it_names():
             ("astrodeck/sequence/session.py", "S7 orchestrator", 7),
             ("tests/test_probe_route_files_tracked.py", "S7 orchestrator",
              8)} <= found
+    # And H4's, where H4's code cites them in server/ (ruling 1's code,
+    # the routes and the relay, cites the issue alone).
+    assert {("astrodeck/sequence/group_rules.py", "H4 orchestrator", 2),
+            ("astrodeck/rotation.py", "H4 orchestrator", 3),
+            ("astrodeck/focus/native.py", "H4 orchestrator", 4),
+            ("astrodeck/flows/wizard.py", "H4 orchestrator", 5),
+            ("astrodeck/sequence/report.py", "H4 orchestrator", 6)} <= found
     assert problems == [], "\n".join(problems)
 
 
@@ -4731,6 +4807,39 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
         lists describe the code as it stands after S5 and S6.'; S7's first item
         is built, and Revision 10 records it
         assert not True
+
+    SINCE H4 it names Revision 11 the same way: the fourth hardening round
+    and the orchestrator's rulings for it, a round that changed part of
+    what S2 to S7 built and is not yet committed, and the sections
+    Revision 11 lists describing the code as H4 leaves it. The sentence on
+    Revision 10's sections no longer ends at "after S7's first item.",
+    which this test held and which went RED on H4-DOC's spec; it now holds
+    the sentence that goes on, and refuses the old. Run in H4-DOC's private
+    copy of the spec (the session scratchpad's ``H4-DOC-mut``).
+
+    It went RED on the new line, before this test knew the new sentence:
+
+        AssertionError: the status line must say: "The sections Revision 10
+        lists describe the code as it stands after S7's first item."
+        assert False
+
+    RED under the spec mutant "the status line without Revision 11" (the
+    line as S7-DOC left it):
+
+        AssertionError: the status line must say: "The sections Revision 10
+        lists describe the code as it stands after S7's first item, and H4 left
+        what they describe as it was, except in the sections Revision 11 lists
+        too."
+        assert False
+
+    RED under the spec mutant "Revision 10's old sentence beside the new
+    one" (" The sections Revision 10 lists describe the code as it stands
+    after S7's first item." put back before "Elsewhere"):
+
+        AssertionError: the status line still says "The sections Revision 10
+        lists describe the code as it stands after S7's first item."; H4 has
+        changed the code, and Revision 11 records it
+        assert not True
     """
     status = _line(_spec(), "- Status:")
     blanket = "where the text below describes them, it describes the code" \
@@ -4774,7 +4883,13 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
                    "simulator end to end, is built on top of S5 and S6; its "
                    "supervised rig night waits on the operator and a "
                    "deploy.", "The sections Revision 10 lists describe the "
-                   "code as it stands after S7's first item."),
+                   "code as it stands after S7's first item, and H4 left what "
+                   "they describe as it was, except in the sections Revision "
+                   "11 lists too.", "the fourth hardening round and the "
+                   "orchestrator's rulings for it (Revision 11)", "A fourth "
+                   "hardening round, H4, has since changed part of what S2 to "
+                   "S7 built, and is not yet committed.", "The sections "
+                   "Revision 11 lists describe the code as H4 leaves it."),
           "the status line")
     for stale in ("as built so far", "is being built on top of S3",
                   "after the second wave of S4",
@@ -4789,6 +4904,11 @@ def test_the_status_line_scopes_what_describes_the_code_as_built():
     kept9 = old9 in status
     assert not kept9, (f"the status line still says {old9!r}; S7's first "
                        f"item is built, and Revision 10 records it")
+    old10 = ("The sections Revision 10 lists describe the code as it stands "
+             "after S7's first item.")
+    kept10 = old10 in status
+    assert not kept10, (f"the status line still says {old10!r}; H4 has "
+                        f"changed the code, and Revision 11 records it")
     waves = "waves" in status
     assert not waves, ("the status line still counts S3's waves; S3 is "
                        "built, and Revision 7 records all of it")
@@ -6958,10 +7078,24 @@ def _target_row(key: str) -> list[str]:
     return hits[0]
 
 
+def _overlap_pct() -> float:
+    """``catalog.framing.DEFAULT_OVERLAP`` in percent, read at call time, so
+    a code mutant of the constant reaches it."""
+    from astrodeck.catalog import framing
+    return framing.DEFAULT_OVERLAP * 100
+
+
+#: A 3.1 cell that names a constant where it once wrote a number, and the
+#: value it stands for (since H4, #461: the TARGET's ``overlap`` row says
+#: "`DEFAULT_OVERLAP` in percent", which nodes.py derives it from).
+_CONSTANT_CELLS = {"DEFAULT_OVERLAP": _overlap_pct}
+
+
 def _cell_value(cell: str):
     """The value a 3.1 table cell gives, from the backticked token it opens
-    with: ``""`` is the empty string, a number is a number, else the text;
-    None when it opens with words instead (a value derived at compile, or
+    with: ``""`` is the empty string, a number is a number, a constant's
+    name (`_CONSTANT_CELLS`) that constant's value, else the text; None
+    when it opens with words instead (a value derived at compile, or
     written by the server)."""
     m = re.match(r"`([^`]*)`", cell)
     if m is None:
@@ -6969,6 +7103,8 @@ def _cell_value(cell: str):
     token = m.group(1)
     if token == '""':
         return ""
+    if token in _CONSTANT_CELLS:
+        return _CONSTANT_CELLS[token]()
     try:
         return float(token)
     except ValueError:
@@ -7073,6 +7209,29 @@ def test_3_1_says_the_created_as_column_as_s3_built_it():
         assert 'Any angle' == 'Rotate to PA'
           - Rotate to PA
           + Any angle
+
+    SINCE H4 the ``overlap`` row names the constant S7 derived the default
+    from, "`DEFAULT_OVERLAP` in percent", where it wrote a literal 25 (the
+    S7 review's E item, #461; H4, #461), and its Created-as cell is
+    "same". `_cell_value` reads that name as the constant's value in
+    percent (`_CONSTANT_CELLS`), so the row is graded like the rest. On
+    H4-DOC's spec, before `_cell_value` knew the name, the row went RED:
+
+        AssertionError: 3.1's table defaults 'overlap' to 'DEFAULT_OVERLAP';
+        nodes.py to 25
+        assert False
+
+    RED under the nodes.py mutant "a TARGET overlap of its own again"
+    (TARGET's ``"overlap": Derived(target_overlap_pct)`` made ``"overlap":
+    30``), in H4-DOC's private copy (the session scratchpad's
+    ``H4-DOC-mut``, from a byte backup, sha256 checked after):
+
+        AssertionError: 3.1's table defaults 'overlap' to 25.0; nodes.py to 30
+        assert False
+
+    That the row says "in percent", and nodes.py and ``nodeDefs.ts``
+    derive the number rather than write it, is
+    test_2_4_and_3_1_say_the_overlap_constant_as_built's.
     """
     from astrodeck.flows import nodes as nodes_mod
     s31 = _section("3.1")
@@ -11551,7 +11710,8 @@ def test_3_3_and_1_8_say_the_rig_facts_and_the_save_answer_as_s3_built():
     `generate_answer` call passes ``rig=_rig_facts()`` and the measured
     angle, reads ``last_sky_angle``, adds ``notes`` and answers the 422;
     Tonight's `resolve_tonight` call passes ``hop_cost_s`` and ``progress``;
-    `_rig_facts` builds a `RigFacts` of exactly the six facts, from
+    `_rig_facts` builds a `RigFacts` of exactly the six facts (ten since
+    H4, below), from
     ``effective_optics``, ``measured_cost``, `_profile_has_rotator` and
     ``resolve_policy``; `_persist_flow` writes through ``save_and_report``
     and answers `_save_answer`; and `get_flow` asks `current_for_flow` and
@@ -11689,6 +11849,43 @@ def test_3_3_and_1_8_say_the_rig_facts_and_the_save_answer_as_s3_built():
 
     Unchanged under the control "an unrelated edit in section 7" (its Engine
     heading reworded): every test in this file passed on it (74 passed).
+
+    SINCE H4 `_rig_facts` builds four more facts, the guider, its settle,
+    the dither distance and its cadence (H4, #506: ``guide_provider``,
+    ``guide_settle``, ``guide_dither_px`` and ``guide_dither_every``), so
+    the list of facts held here has ten. On H4's code, before this test
+    knew them, it went RED:
+
+        AssertionError: _rig_facts builds (facts, reads missing) = (['fov_deg',
+        'fov_from', 'guide_dither_every', 'guide_dither_px', 'guide_provider',
+        'guide_settle', 'has_rotator', 'hop_cost_s', 'hop_samples',
+        'reject_guards_off'], []); 3.3 says the field, the hop and its
+        samples, the rotator and the guards
+        assert (['fov_deg', ...le', ...], []) == (['fov_deg', ...rds_off'],
+        [])
+          At index 0 diff: ['fov_deg', 'fov_from', 'guide_dither_every',
+          'guide_dither_px', 'guide_provider', 'guide_settle', 'has_rotator',
+          'hop_cost_s', 'hop_samples', 'reject_guards_off'] != ['fov_deg',
+          'fov_from', 'has_rotator', 'hop_cost_s', 'hop_samples',
+          'reject_guards_off']
+          Use -v to get more diff
+
+    RED under the app.py mutant "the rig facts without the guider"
+    (``guide_provider=guider, guide_settle=settle,`` taken out of
+    `_rig_facts`'s call), in H4-DOC's private copy:
+
+        AssertionError: _rig_facts builds (facts, reads missing) = (['fov_deg',
+        'fov_from', 'guide_dither_every', 'guide_dither_px', 'has_rotator',
+        'hop_cost_s', 'hop_samples', 'reject_guards_off'], []); 3.3 says the
+        field, the hop and its samples, the rotator and the guards, and since
+        H4 the guider, its settle and the dither
+        assert (['fov_deg', ..._s', ...], []) == (['fov_deg', ...le', ...], [])
+          At index 0 diff: ['fov_deg', 'fov_from', 'guide_dither_every',
+          'guide_dither_px', 'has_rotator', 'hop_cost_s', 'hop_samples',
+          'reject_guards_off'] != ['fov_deg', 'fov_from', 'guide_dither_every',
+          'guide_dither_px', 'guide_provider', 'guide_settle', 'has_rotator',
+          'hop_cost_s', 'hop_samples', 'reject_guards_off']
+          Use -v to get more diff
     """
     import astrodeck.api.app as app_mod
     from astrodeck.flows.models import FlowRecord
@@ -11775,10 +11972,17 @@ def test_3_3_and_1_8_say_the_rig_facts_and_the_save_answer_as_s3_built():
            [w for w in ("effective_optics", "'measured_cost'",
                         "_profile_has_rotator()", "resolve_policy(")
             if w not in reads])
-    assert got == (["fov_deg", "fov_from", "has_rotator", "hop_cost_s",
-                    "hop_samples", "reject_guards_off"], []), (
+    # Since H4 the rig facts carry the guider, its settle and the dither
+    # too (#506), read through `_guider_and_settle` and the policy; the
+    # sentence that says so is
+    # test_3_3_and_s3_say_the_guider_and_the_budget_as_h4_built_them's.
+    assert got == (["fov_deg", "fov_from", "guide_dither_every",
+                    "guide_dither_px", "guide_provider", "guide_settle",
+                    "has_rotator", "hop_cost_s", "hop_samples",
+                    "reject_guards_off"], []), (
         f"_rig_facts builds (facts, reads missing) = {got}; 3.3 says the "
-        f"field, the hop and its samples, the rotator and the guards")
+        f"field, the hop and its samples, the rotator and the guards, and "
+        f"since H4 the guider, its settle and the dither")
     persist = _app_def("_persist_flow")
     answered = [ast.unparse(r.value) for r in ast.walk(persist)
                 if isinstance(r, ast.Return) and r.value is not None]
@@ -20840,6 +21044,38 @@ def test_2_3_says_the_sky_as_s5_built_it():
         AssertionError: 2.3 must say: 'Until S5 object labels did not make
         room for panel labels'
         assert False
+
+    SINCE H4 the modal's sky keeps its degraded verdict in module memory
+    keyed by survey, read through ``useSyncExternalStore``, where it was the
+    component's own ``useState`` (H4, #493; the sentence is
+    test_1_8_and_2_3_say_the_quick_line_and_the_sky_as_h4_built_them's),
+    so a remount keeps it; it is still the modal's own and not
+    SkyCanvas's, as S5 said, and the fourth element now reads the store.
+    On H4's code, before this test knew it, it went RED:
+
+        AssertionError: (object labels keep out of panel labels, no camera
+        label in panel mode, the survey signals FramingSky wires, its own
+        degraded state) = (True, True, ['surveyDegraded={degraded}',
+        'onSurveyError={onSurveyError}', 'onSurveyLoad={onSurveyLoad}'],
+        False); 2.3 says so
+        assert (True, True, ...oad}'], False) == (True, True, ...Load}'],
+        True)
+          At index 3 diff: False != True
+          Use -v to get more diff
+
+    RED under the FramingSky.tsx mutant "the verdict in the component
+    again" (``useSyncExternalStore(subscribeDegraded, () =>
+    degradedSurveys.has(survey))`` made ``useState(false)[0]``), in
+    H4-DOC's private copy:
+
+        AssertionError: (object labels keep out of panel labels, no camera
+        label in panel mode, the survey signals FramingSky wires, its own
+        degraded state) = (True, True, ['surveyDegraded={degraded}',
+        'onSurveyError={onSurveyError}', 'onSurveyLoad={onSurveyLoad}'],
+        False); 2.3 says so
+        assert (True, True, ...oad}'], False) == (True, True, ...Load}'], True)
+          At index 3 diff: False != True
+          Use -v to get more diff
     """
     canvas = _ui("components/atlas/SkyCanvas.tsx")
     reserved = re.search(r"const reservedBoxes = useMemo<Rect\[\]>\(\(\) => "
@@ -20852,7 +21088,11 @@ def test_2_3_says_the_sky_as_s5_built_it():
            [p for p in ("surveyDegraded={degraded}",
                         "onSurveyError={onSurveyError}",
                         "onSurveyLoad={onSurveyLoad}") if p in sky],
-           "const [degraded, setDegraded] = useState(false);" in sky)
+           # Its own verdict: since H4 (#493) kept in module memory by
+           # survey, which outlives a remount, where it was a useState.
+           "const degradedSurveys = new Set<string>();" in sky
+           and "useSyncExternalStore(subscribeDegraded, () => "
+               "degradedSurveys.has(survey))" in sky)
     assert got == (True, True, ["surveyDegraded={degraded}",
                                 "onSurveyError={onSurveyError}",
                                 "onSurveyLoad={onSurveyLoad}"], True), (
@@ -21465,6 +21705,51 @@ def test_5_7_says_the_flip_retry_waits_past_the_crossing():
         assert ((0.0, 0.0), ..., True, True)) == ((15.0, 0.0),..., True, True))
           At index 0 diff: (0.0, 0.0) != (15.0, 0.0)
           Use -v to get more diff
+
+    SINCE H4 the gate and the hold reach the band through one flip point
+    (H4, #505): `_flip_point` is `_flip_retry_past_s`'s one asker, and the
+    gate and the hold each ask `_flip_point` (the hold only when the gate
+    handed it none), so "both for the flip gate's frame window and for its
+    hold" still holds, through the point, and the readers are read as two
+    lists. The S5 mutant "the hold waits for the crossing" above is of a
+    line H4 took out. On H4's code, before this test knew it, it went RED:
+
+        AssertionError: (the retry band for a no-op target and another, the
+        flip-point readers asking it, (the engine's no-op words, the hub's, the
+        lead read from lead_s)) = ((15.0, 0.0), [], (True, True, True)); 5.7
+        says so
+        assert ((15.0, 0.0),..., True, True)) == ((15.0, 0.0),..., True,
+        True))
+          At index 1 diff: [] != ['_maybe_meridian_flip',
+          '_wait_for_flip_point']
+          Use -v to get more diff
+
+    RED under the engine.py mutant "the band read outside the point"
+    (`_flip_point`'s ``past_s = self._flip_retry_past_s(target)`` made
+    ``past_s = 15.0``), in H4-DOC's private copy:
+
+        AssertionError: (the retry band for a no-op target and another, the
+        flip-point readers asking it, (the engine's no-op words, the hub's, the
+        lead read from lead_s)) = ((15.0, 0.0), ([], ['_maybe_meridian_flip',
+        '_wait_for_flip_point']), (True, True, True)); 5.7 says so
+        assert ((15.0, 0.0),..., True, True)) == ((15.0, 0.0),..., True, True))
+          At index 1 diff: ([], ['_maybe_meridian_flip',
+          '_wait_for_flip_point']) != (['_flip_point'],
+          ['_maybe_meridian_flip', '_wait_for_flip_point'])
+          Use -v to get more diff
+
+    RED under the engine.py mutant "the hold measures its own point" (the
+    hold's ``point = self._flip_point(target, lead_s)`` made ``point =
+    None``):
+
+        AssertionError: (the retry band for a no-op target and another, the
+        flip-point readers asking it, (the engine's no-op words, the hub's, the
+        lead read from lead_s)) = ((15.0, 0.0), (['_flip_point'],
+        ['_maybe_meridian_flip']), (True, True, True)); 5.7 says so
+        assert ((15.0, 0.0),..., True, True)) == ((15.0, 0.0),..., True, True))
+          At index 1 diff: (['_flip_point'], ['_maybe_meridian_flip']) !=
+          (['_flip_point'], ['_maybe_meridian_flip', '_wait_for_flip_point'])
+          Use -v to get more diff
     """
     from _group_harness import MERIDIAN_HOLD_BOUND_S
     from astrodeck import hub as hub_mod
@@ -21478,10 +21763,17 @@ def test_5_7_says_the_flip_retry_waits_past_the_crossing():
                  eng, SimpleNamespace(id="t-1", name="A")),
              SequenceEngine._flip_retry_past_s(
                  eng, SimpleNamespace(id="t-2", name="B")))
-    askers = sorted(name for name in ("_maybe_meridian_flip",
-                                      "_wait_for_flip_point")
-                    if _self_calls(_tree(getattr(SequenceEngine, name)),
-                                   "_flip_retry_past_s"))
+    # Since H4 (#505) the gate and the hold reach the band through one
+    # flip point, `_flip_point`, which is the band's one asker.
+    askers = (sorted(name for name in ("_maybe_meridian_flip",
+                                       "_wait_for_flip_point",
+                                       "_flip_point")
+                     if _self_calls(_tree(getattr(SequenceEngine, name)),
+                                    "_flip_retry_past_s")),
+              sorted(name for name in ("_maybe_meridian_flip",
+                                       "_wait_for_flip_point")
+                     if _self_calls(_tree(getattr(SequenceEngine, name)),
+                                    "_flip_point")))
     engine_src = inspect.getsource(engine_mod)
     hub_src = inspect.getsource(hub_mod)
     words = ("nothing flipped this time either" in engine_src,
@@ -21489,8 +21781,9 @@ def test_5_7_says_the_flip_retry_waits_past_the_crossing():
              'f"dropping the {lead_s / 60:.0f} min lead' in engine_src)
     lead = SequencePlan.model_fields["meridian_flip_lead_min"].default
     got = (bands, askers, words)
-    assert got == ((margin, 0.0), ["_maybe_meridian_flip",
-                                   "_wait_for_flip_point"],
+    assert got == ((margin, 0.0), (["_flip_point"],
+                                   ["_maybe_meridian_flip",
+                                    "_wait_for_flip_point"]),
                    (True, True, True)), (
         f"(the retry band for a no-op target and another, the flip-point "
         f"readers asking it, (the engine's no-op words, the hub's, the lead "
@@ -21668,15 +21961,53 @@ def test_5_9_says_the_button_copy_as_s5_built_it():
         the flow\\'s name in capitals and "(night n, banked/total subs)" only
         while the progress route names a dormant session'
         assert False
+
+    SINCE H4 the night is the progress route's ``continue_night`` and never
+    ``nights`` plus one (H4, #511; the route's half and 5.9's new sentence
+    are test_5_9_says_the_night_the_list_and_the_card_as_h4_built_them's),
+    and a detail with no night reads the counts alone, so the rule's third
+    and fifth elements read the new lines; S5's sentence, "the night is
+    the session's `nights` plus one", stays as its record of S5, and 5.9
+    now says what H4 changed. On H4's code, before this test knew it, it
+    went RED:
+
+        AssertionError: ((STOP when live, RUN unless dormant, night = nights +
+        1, the name in capitals, the detail's template), START OVER confirms
+        and runs fresh, (the four surfaces)) = ((True, True, False, True,
+        False), True, (True, True, True, True)); 5.9 says so
+        assert ((True, True,..., True, True)) == ((True, True,..., True,
+        True))
+          At index 0 diff: (True, True, False, True, False) != (True, True,
+          True, True, True)
+          Use -v to get more diff
+
+    RED under the runCopy.ts mutant "nights plus one again" (the night line
+    made ``const night = readable ? session.nights + 1 : null;``, with
+    `FlowProgressSession`'s ``nights`` kept), in H4-DOC's private copy:
+
+        AssertionError: ((STOP when live, RUN unless dormant, night = nights +
+        1, the name in capitals, the detail's template), START OVER confirms
+        and runs fresh, (the four surfaces)) = ((True, True, False, True,
+        True), True, (True, True, True, True)); 5.9 says so
+        assert ((True, True,..., True, True)) == ((True, True,..., True, True))
+          At index 0 diff: (True, True, False, True, True) != (True, True,
+          True, True, True)
+          Use -v to get more diff
     """
     copy = _ui("components/flows/runCopy.ts")
     fn = _ts_function(copy, "runCopy")
-    template = re.search(r"const detail = night === null \? \"\" : `\(night "
-                         r"\$\{night\}, \$\{banked\}/\$\{total\} subs\)`;", fn)
+    # Since H4 (#511) the detail with no night is the counts alone.
+    template = ('const detail = !readable ? ""' in fn
+                and ": night === null ? `(${counts})` : `(night ${night}, "
+                    "${counts})`;" in fn
+                and "const counts = `${banked}/${total} subs`;" in fn)
     rule = ('if (live) return plain("STOP");' in fn,
             'if (!session || session.status !== "dormant") return '
             'plain("RUN");' in fn,
-            "const night = readable ? session.nights + 1 : null;" in fn,
+            # Since H4 (#511) the route's own night, never ``nights`` plus
+            # one; S5's sentence is history the spec keeps.
+            "const night = readable && finite(session.continue_night) ? "
+            "session.continue_night : null;" in fn,
             "(flowName ?? \"\").trim().toUpperCase()" in fn,
             bool(template))
     controls = _ui("components/flows/flowRunControls.tsx")
@@ -22406,6 +22737,41 @@ def test_the_owner_list_records_the_s7_orchestrator_rulings():
         assert (True, False, True) == (True, True, True)
           At index 1 diff: False != True
           Use -v to get more diff
+
+    SINCE H4 items 45 and 49 say what H4 built of the two halves S7 left:
+    the #/next Monitor's mount read takes the stamp (H4, #476) and the
+    button prints the route's `continue_night` (H4, #511). Their old
+    phrases went RED on H4-DOC's spec, the first before this test knew the
+    new words:
+
+        AssertionError: owner list item 45 must say: "The #/next Monitor's own
+        mount read does not yet"
+        assert False
+
+    and the second with the first taken out (in H4-DOC's private copy, the
+    session scratchpad's ``H4-DOC-mut``):
+
+        AssertionError: owner list item 49 must say: '(#511; 5.9)'
+        assert False
+
+    RED under the spec mutant "item 45 as S7 left it" (its H4 sentence
+    undone, in the same copy):
+
+        AssertionError: owner list item 45 must say: "Until H4 the #/next
+        Monitor's own mount read did not; since H4 it takes the same stamp
+        before its fetch (H4, #476; 5.10)"
+        assert False
+
+    RED under the spec mutant "item 49 as S7 left it":
+
+        AssertionError: owner list item 49 must say: 'until H4 the button\'s
+        own "plus one" was still S5\'s'
+        assert False
+
+    Both codes are held by the H4 tests (test_5_10_says_the_readers_and_
+    the_tunnel_as_h4_built_them, test_5_9_says_the_night_the_list_and_the_
+    card_as_h4_built_them), and items 53 to 59 by test_the_owner_list_
+    records_the_h4_orchestrator_rulings.
     """
     owner = _section("Still")
     numbers = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", owner,
@@ -22451,7 +22817,9 @@ def test_the_owner_list_records_the_s7_orchestrator_rulings():
             (45, ("does not apply its `sequence` or its `status` if an event "
                   "of that type was handled after the request was sent",
                   "`preview_id` keeps its replace rule", "`snapshotStamp`",
-                  "The #/next Monitor's own mount read does not yet")),
+                  "Until H4 the #/next Monitor's own mount read did not; "
+                  "since H4 it takes the same stamp before its fetch (H4, "
+                  "#476; 5.10)")),
             (46, ("an unreadable poll keeps waiting until the park's deadline",
                   "answers \"unconfirmed\" only at the deadline",
                   "re-pinned as a deliberate pin change with its old failure "
@@ -22465,7 +22833,9 @@ def test_the_owner_list_records_the_s7_orchestrator_rulings():
             (49, ("the observing night the run started in", "keyed the way "
                   "`captures/logs/<night>.jsonl` is keyed", "a restart in the "
                   "same night continues that night's entry", "`report_night`",
-                  "(#511; 5.9)")),
+                  "until H4 the button's own \"plus one\" was still S5's",
+                  "since H4 the button prints the night the route answers, "
+                  "`continue_night` (H4, #511; 5.9)")),
             (50, ("moves into `server/tests`", "the Playwright walks stay "
                   "manual and skip without Playwright",
                   "`server/tests/test_probe_route_files_tracked.py`",
@@ -22741,6 +23111,29 @@ def test_1_4_says_the_chip_and_the_toggle_as_s7_built_them():
         assert (['components..., False, True) == (['components...e, True, True)
           At index 2 diff: False != True
           Use -v to get more diff
+
+    SINCE H4 #502 is fixed (H4, #502; the #/next run and the phone control
+    are test_1_4_says_the_next_run_and_the_phone_control_as_h4_built_them's),
+    so the sentence says "until H4 it covered 12 px" and "(#502, fixed in
+    H4, below)", and this test holds that in place of "(#502, open)", which
+    went RED on H4-DOC's spec before this test knew the new words:
+
+        AssertionError: 1.4 must say: '(#502, open)'
+        assert False
+
+    RED under the spec mutant "the old words beside the new" (" Once
+    (#502, open)." put after "(#502, fixed in H4, below)."), which only the
+    refusal catches, in H4-DOC's private copy:
+
+        AssertionError: 1.4 still says #502 is open; H4 fixed it
+        assert not True
+
+    RED under the spec mutant "#502 open again" (H4-DOC's 1.4 edit undone,
+    in its private copy, the session scratchpad's ``H4-DOC-mut``):
+
+        AssertionError: 1.4 must say: 'until H4 it covered 12 px of a tail
+        card'
+        assert False
     """
     layers = [rel for rel in ("components/flows/FlowWireLayer.tsx",
                               "next/hubs/session/flows/canvas/FlowWires.tsx")
@@ -22774,7 +23167,10 @@ def test_1_4_says_the_chip_and_the_toggle_as_s7_built_them():
         "The modal's RUN toggle opens from `targetLoops`", "(`tailWire`)",
         f"`LOOP_CONTROL_INSET_AUTO` ({inset:g} px)",
         f"its {size:g} px box ends at the container's edge",
-        "(#502, open)"), "1.4")
+        "until H4 it covered 12 px of a tail card",
+        "(#502, fixed in H4, below)"), "1.4")
+    stale = "(#502, open)" in _section("1.4")
+    assert not stale, "1.4 still says #502 is open; H4 fixed it"
 
 
 def test_1_8_and_2_2_say_the_cap_and_the_fraction_as_s7_built_them():
@@ -23017,7 +23413,31 @@ def test_2_6_says_run_mode_as_s7_built_it():
     (`panelRows`, #528); `panelStateOf`'s current state, with its words,
     handed the sequence state by `runPanelsOf` and the sheet, the panel
     drawn with the corner ticks and told to a screen reader in PANELS'
-    words (#451, built by the S7 integration); #513 open.
+    words (#451, built by the S7 integration); #513 open until H4.
+
+    SINCE H4 #513 is fixed (H4, #513; its sentence is
+    test_2_6_and_5_8_say_the_hold_and_the_latch_as_h4_built_them's), so
+    2.6 says "Until H4 an Abort during a cloud hold also left the hold's
+    reason standing", and this test holds that in place of "(#513,
+    open)", which went RED on H4-DOC's spec before this test knew it:
+
+        AssertionError: 2.6 must say: '(#513, open)'
+        assert False
+
+    RED under the spec mutant "the old words beside the new" (" Once
+    (#513, open)." put after the new sentence), which only the refusal
+    catches, in H4-DOC's private copy:
+
+        AssertionError: 2.6 still says #513 is open; H4 fixed it
+        assert not True
+
+    RED under the spec mutant "#513 open again" (H4-DOC's 2.6 edit undone,
+    in its private copy, the session scratchpad's ``H4-DOC-mut``):
+
+        AssertionError: 2.6 must say: "Until H4 an Abort during a cloud hold
+        also left the hold's reason standing in the aborting and aborted states
+        (#513)."
+        assert False
 
     The code: `knownSessions`'s answer; the four readers asking through it;
     the slice's progress write adding to the list and its open keeping it
@@ -23142,9 +23562,13 @@ def test_2_6_says_run_mode_as_s7_built_it():
         "`runPanelsOf`, hands it the sequence state, which both require "
         "since the S7 integration, so the modal no longer says \"shooting "
         "now\"", "(`panelDrawState`)", "the panel's `words`",
-        "(#451, built by the S7 integration)", "(#513, open)",
+        "(#451, built by the S7 integration)",
+        "Until H4 an Abort during a cloud hold also left the hold's reason "
+        "standing in the aborting and aborted states (#513).",
         "Until S7, after every save made during a run, run mode let go for "
         "one progress round trip"), "2.6")
+    stale = "(#513, open)" in _section("2.6")
+    assert not stale, "2.6 still says #513 is open; H4 fixed it"
 
 
 def test_3_2_and_3_3_say_the_readers_as_s7_built_them():
@@ -23239,7 +23663,31 @@ def test_5_1_says_a_consumed_jump_completes_as_s7_built_it(monkeypatch):
     skipping nothing, the rules owed once and the target kept at the front
     of ``remaining``; #490 open. And the gate's rise estimate (S7, #434):
     0 at the gate, else bisected to `_GATE_RISE_TOL_S`, the upper end,
-    `_time_to_gate`; #498 open.
+    `_time_to_gate`; #498 open until H4.
+
+    SINCE H4 #498 is fixed (H4, #498; the scan's new reach is
+    test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them's), so
+    5.1 says "Until H4 the scan covered whole 600 s steps", and this test
+    holds that in place of "(#498, open)", which went RED on H4-DOC's spec
+    before this test knew it:
+
+        AssertionError: 5.1 must say: '(#498, open)'
+        assert False
+
+    RED under the spec mutant "the old words beside the new" (" Once
+    (#498, open)." put after the new sentence), which only the refusal
+    catches, in H4-DOC's private copy:
+
+        AssertionError: 5.1 still says #498 is open; H4 fixed it
+        assert not True
+
+    RED under the spec mutant "#498 open again" (H4-DOC's 5.1 edit undone,
+    in its private copy, the session scratchpad's ``H4-DOC-mut``):
+
+        AssertionError: 5.1 must say: "Until H4 the scan covered whole 600 s
+        steps from now, so a rise in the part step before the window's end
+        answered none (#498)."
+        assert False
 
     The code: `_apply_jump` run on a stand-in with a recording reporter, a
     run jump and a skip of itself, complete and not; the scheduler arm's
@@ -23380,8 +23828,12 @@ def test_5_1_says_a_consumed_jump_completes_as_s7_built_it(monkeypatch):
                 "itself skips nothing", "the target is kept at the front of "
                 "`remaining`", "(#490, open)",
                 f"`_GATE_RISE_TOL_S` ({schedule._GATE_RISE_TOL_S:g} s) or "
-                f"narrower", "(S7, #434; `_time_to_gate`)", "(#498, open)"),
-          "5.1")
+                f"narrower", "(S7, #434; `_time_to_gate`)",
+                "Until H4 the scan covered whole 600 s steps from now, so a "
+                "rise in the part step before the window's end answered none "
+                "(#498)."), "5.1")
+    stale = "(#498, open)" in s51
+    assert not stale, "5.1 still says #498 is open; H4 fixed it"
 
 
 def test_5_6_says_the_ladder_vouches_only_a_success():
@@ -23613,7 +24065,48 @@ def test_5_9_says_nights_and_the_notice_as_s7_built_them():
     two-tap arm keeping the copy (`runArm`, #474); #511 open and the
     sessions list noted on #430. And that the replay line is built (S7,
     #473, S7 orchestrator ruling 1): `replay_facts`, `_freeze_saved_version`,
-    `replayNotice` on three surfaces; #512 open.
+    `replayNotice` on three surfaces; #512 open until H4.
+
+    SINCE H4 #511 and #512 are fixed and the sessions list counts nights
+    (H4, #511, #512, #430; test_5_9_says_the_night_the_list_and_the_card_
+    as_h4_built_them holds what H4 built), so 5.9 says "Until H4 the button
+    added one to `nights`" and "Until H4 a folder rename or delete
+    re-stamped each flow's saved time", and this test holds those in place
+    of "(#511, open)" and "(#512, open)" and refuses the old words, "the
+    sessions list still counts runs" among them. On H4-DOC's spec the old
+    pins went RED, the first before this test knew the new words:
+
+        AssertionError: 5.9 must say: '(#511, open)'
+        assert False
+
+    and the second with the first taken out (in H4-DOC's private copy, the
+    session scratchpad's ``H4-DOC-mut``):
+
+        AssertionError: 5.9 must say: '(#512, open)'
+        assert False
+
+    RED under the spec mutant "the old words beside the new" ("; the
+    sessions list still counts runs." put after the new sentence), which
+    only the refusal catches:
+
+        AssertionError: 5.9 still says 'the sessions list still counts runs';
+        H4 fixed it
+        assert not True
+
+    RED under the spec mutant "#511 open again" (the button sentence's H4
+    edit undone, in the same copy):
+
+        AssertionError: 5.9 must say: 'Until H4 the button added one to
+        `nights`, and the progress route carried no clock'
+        assert False
+
+    RED under the spec mutant "#512 open again" (the folder sentence's H4
+    edit undone):
+
+        AssertionError: 5.9 must say: "Until H4 a folder rename or delete
+        re-stamped each flow's saved time, so the line then asked for edits
+        nobody made (#512)."
+        assert False
 
     The code: the route's ``nights``; `SessionStore.armed` asking
     `is_armed`; `runArm`'s label from the copy; `replayNotice` called by
@@ -23669,11 +24162,20 @@ def test_5_9_says_nights_and_the_notice_as_s7_built_them():
         "orchestrator ruling 7).", "`report_night` reads the local start "
         "stamp a report id carries and keys it with `events.night_key`",
         "`Session.observing_nights`", "(`night_at`)",
-        "(`Session.is_armed`)", "(`runArm`, S7, #474)", "(#511, open)",
-        "(noted on #430)", "Until S7 `nights` counted the session's runs",
+        "(`Session.is_armed`)", "(`runArm`, S7, #474)",
+        "Until H4 the button added one to `nights`, and the progress route "
+        "carried no clock", "the button read one night more than the run "
+        "route answers (#511), and the sessions list counted runs (noted on "
+        "#430)", "Until S7 `nights` counted the session's runs",
         "Built (S7, #473, S7 orchestrator ruling 1)", "(`replay_facts`)",
-        "(`_freeze_saved_version`)", "(`replayNotice`)", "(#512, open)"),
+        "(`_freeze_saved_version`)", "(`replayNotice`)",
+        "Until H4 a folder rename or delete re-stamped each flow's saved "
+        "time, so the line then asked for edits nobody made (#512)."),
           "5.9")
+    for stale in ("(#511, open)", "(#512, open)",
+                  "the sessions list still counts runs"):
+        kept = stale in _section("5.9")
+        assert not kept, f"5.9 still says {stale!r}; H4 fixed it"
 
 
 def test_s3_item_5_says_every_block_as_s7_built_it():
@@ -23758,6 +24260,40 @@ def test_s3_item_5_says_every_block_as_s7_built_it():
         assert (['M31', 'M33'], True, False) == (['M31', 'M33'], True, True)
           At index 2 diff: False != True
           Use -v to get more diff
+
+    SINCE H4 the route folds the ledger's summaries, not the reports (H4,
+    #536, H4 orchestrator ruling 6): the same cached loader, now
+    ``summaries()`` over `SessionReporter.summaries`, called only from the
+    two callables `resolve_tonight` runs on its worker thread, and BUDGET's
+    fold handed the flow's own target names. What H4 built of BUDGET is
+    test_3_3_and_s3_say_the_guider_and_the_budget_as_h4_built_them's. On
+    H4's code, before this test knew it, the loader went RED:
+
+        AssertionError: (the blocks the brief arms, in order; the #/next head
+        line; the route's cached report loader) = (['M31', 'M33'], True,
+        False); S3 item 5 says so: This flow arms M31. ...
+        assert (['M31', 'M33'], True, False) == (['M31', 'M33'], True, True)
+          At index 2 diff: False != True
+          Use -v to get more diff
+
+    RED under the app.py mutant "each fold reads the ledger itself"
+    (``@functools.cache`` taken off ``summaries``), in H4-DOC's private
+    copy:
+
+        AssertionError: (the blocks the brief arms, in order; the #/next head
+        line; the route's cached report loader) = (['M31', 'M33'], True,
+        False); S3 item 5 says so: This flow arms M31. M31 is a 2x2 mosaic of 4
+        panels at 25% overlap, laid out at PA 30° with the rotator turned to it
+        at every panel. After 3 passes of its filters on a panel it moves on to
+        the next (least complete first), and comes back until every panel has
+        its subs. A visit is 3 passes rather than the 1 asked, since it lasts
+        at least its 12 min minimum and a pass takes 5 min. The hop between
+        panels has not been measured on this rig yet. For M31 it captures Ha
+        300 s × 4 (gain 100, bin 1). It then arms M33. For M33 it captures L 60
+        s × 5 (gain 100, bin 1).
+        assert (['M31', 'M33'], True, False) == (['M31', 'M33'], True, True)
+          At index 2 diff: False != True
+          Use -v to get more diff
     """
     from astrodeck.flows import tonight
     lanes = _flow([("t", "target", {"name": "M31", "ra": "00h 42m 44s",
@@ -23787,12 +24323,17 @@ def test_s3_item_5_says_every_block_as_s7_built_it():
                 "next/hubs/session/flows/tonight/TonightCampaignCard.tsx"))
     # The cached loader, called only from the callables resolve_tonight
     # runs on its worker thread, never on the loop.
-    app = APP.read_text(encoding="utf-8")
-    loader = ("@functools.cache\n        def reports() -> tuple:" in app
-              and "banked=lambda: banked_hours_from_reports(reports())," in app
-              and "frames_by_target=lambda: frames_by_target_from_reports("
-                  "reports())," in app
-              and app.count("(reports())") == 2)
+    # Since H4 (#536, H4 orchestrator ruling 6) the folds read the
+    # ledger's summaries, cached the same way, on the same thread.
+    route = _app_function("flow_tonight")
+    loader = ("@functools.cache\n        def summaries() -> tuple:" in route
+              and "return tuple(SessionReporter.summaries())" in route
+              and "banked=lambda: banked_hours_from_reports(\n"
+                  "                summaries(), " in route
+              and "frames_by_target=lambda: frames_by_target_from_reports(\n"
+                  "                summaries())," in route
+              and route.count("summaries(),") + route.count("summaries()),")
+              == 2)
     got = (armed, head, loader)
     assert got == (["M31", "M33"], True, True), (
         f"(the blocks the brief arms, in order; the #/next head line; the "
@@ -23945,6 +24486,32 @@ def test_section_8_s7_says_what_item_1_built():
         AssertionError: section 8's S7 must say: 'though its RUN stays locked
         (#499, the half the integration left)'
         assert False
+
+    SINCE H4 both halves S7 left are built (H4, #476, #499), so "Not built
+    in S7" says "Until H4 the #/next Monitor's mount read applied ..."
+    and "Until H4 the Sky flow card drew ...", each naming H4's fix, and
+    the "Filed in S7" marks say "fixed, all but ..., which H4 fixed",
+    which the partition above still reads as fixed. The two old pins went
+    RED on H4-DOC's spec, the first before this test knew the new words:
+
+        AssertionError: section 8's S7 must say: '(#476)'
+        assert False
+
+    and the second with the first taken out (in H4-DOC's private copy, the
+    session scratchpad's ``H4-DOC-mut``):
+
+        AssertionError: section 8's S7 must say: 'though its RUN stays locked
+        (#499, the half the integration left)'
+        assert False
+
+    RED under the spec mutant "the mount read still unbuilt" ("Not built in
+    S7"'s #476 sentence as S7 left it, in the same copy):
+
+        AssertionError: section 8's S7 must say: '(#476; built in H4, 5.10)'
+        assert False
+
+    What H4 built of the rest of S7's list is
+    test_section_8_s7_says_what_h4_fixed_of_it's.
     """
     from _flow_night import WALL_BUDGET_S
     from astrodeck.solve import simsolver
@@ -24026,11 +24593,13 @@ def test_section_8_s7_says_what_item_1_built():
         "Items 2 to 4, the supervised rig night, the hop cost and the "
         "defaults set from it, the night-log review and an issue for every "
         "human intervention, wait on the operator and a deploy of S4 to S7",
-        "(#464, above)", "(#476)", "The integration built the three halves "
+        "(#464, above)", "(#476; built in H4, 5.10)",
+        "The integration built the three halves "
         "the tasks left, each above: the classic campaign card's null quota "
         "(#424), the run-mode panel's current state reaching the sheet "
         "(#451, 2.6) and the FILES button's count (#468)",
-        "though its RUN stays locked (#499, the half the integration left)",
+        "though its RUN stayed locked (#499, the half the integration left; "
+        "built in H4, below)",
         "what its first panels showed is filed (#531, #532, #534: three "
         "centring strikes set every panel aside within 18 minutes)"),
         "section 8's S7")
@@ -24245,6 +24814,33 @@ def test_section_8_s7_and_s6_say_what_s7_built_beside_item_1():
         #450, and built the second of #459's two shapes, and the verifier's
         #445 is re-verified (S7, #432, #433, #450, #459, #445; section 8's S7)"
         assert False
+
+    SINCE H4 the S6 sentence also records the TARGET node's overlap default
+    S7 derived from `DEFAULT_OVERLAP` (#461), which S7's record left out
+    (the S7 review's E item), so this test holds the sentence with it. The
+    old pin went RED on H4-DOC's spec, before this test knew the new
+    sentence, with the failure the "S6 without S7's sentence" mutant
+    above produced, word for word:
+
+        AssertionError: section 8's S6 must say: "S7 fixed #432 (1.8), #433 and
+        #450, and built the second of #459's two shapes, and the verifier's
+        #445 is re-verified (S7, #432, #433, #450, #459, #445; section 8's S7)"
+        assert False
+
+    RED under the spec mutant "S6's sentence without the default" (the
+    sentence as S7 left it, in H4-DOC's private copy, the session
+    scratchpad's ``H4-DOC-mut``):
+
+        AssertionError: section 8's S6 must say: "S7 fixed #432 (1.8), #433 and
+        #450, built the second of #459's two shapes, and derived the TARGET
+        node's overlap default from `DEFAULT_OVERLAP` on both sides, where each
+        wrote 25 (#461; 3.1), and the verifier's #445 is re-verified (S7, #432,
+        #433, #450, #459, #445, #461; section 8's S7)"
+        assert False
+
+    The rest of the S7 record H4 corrected (the tests named for #459 and
+    #528, the overlap default in "Beside item 1", Revision 10's rows) is
+    test_section_8_s6_and_s7_say_the_record_as_h4_corrected_it's.
     """
     from astrodeck import events as events_mod
     from astrodeck.calibration import keys as cal_keys
@@ -24297,6 +24893,1975 @@ def test_section_8_s7_and_s6_say_what_s7_built_beside_item_1():
         "the second of #459's shapes"), "section 8's S7")
     _says(_line(_section("S6:"), "**Filed in S6, and not built** (S6, "
                                  "#196)."),
-          ("S7 fixed #432 (1.8), #433 and #450, and built the second of "
-           "#459's two shapes, and the verifier's #445 is re-verified (S7, "
-           "#432, #433, #450, #459, #445; section 8's S7)",), "section 8's S6")
+          ("S7 fixed #432 (1.8), #433 and #450, built the second of #459's "
+           "two shapes, and derived the TARGET node's overlap default from "
+           "`DEFAULT_OVERLAP` on both sides, where each wrote 25 (#461; 3.1), "
+           "and the verifier's #445 is re-verified (S7, #432, #433, #450, "
+           "#459, #445, #461; section 8's S7)",), "section 8's S6")
+
+
+# ============================================ H4 and Revision 11 (H4-DOC)
+#
+# The fourth hardening round (H4, #189) changed part of what S2 to S7
+# built, under six orchestrator rulings (owner list items 53 to 58), and
+# H4-DOC recorded it in Revision 11 and corrected S7's record. Every test
+# below holds one section H4 edited to the code it now describes, and takes
+# each number and each sentence from that code, the UI's from its source
+# text. Mutants: the spec, this file and the code in H4-DOC's private copy
+# under the session scratchpad (``H4-DOC-mut``, never the shared tree,
+# #254, and never a relative scratchpad/ path, #475), each file from a byte
+# backup and checked byte-identical (sha256) after its run; every mutant's
+# control, the same copy unmutated, passed first.
+
+#: H4's mark on an edit of the body (Revision 11): "H4" alone, as "H2" and
+#: "H3" are, since the body names no hardening round as a plan.
+_H4 = re.compile(r"\bH4\b")
+
+#: Owner list items 53 to 58: the H4 orchestrator ruling each records, the
+#: issue it decides and the section it rules on.
+_H4_RULINGS = {53: (1, ("#520",), "6.9"), 54: (2, ("#534",), "5.1"),
+               55: (3, ("#526",), "5.6"), 56: (4, ("#507",), "5.6"),
+               57: (5, ("#518",), "1.8"),
+               58: (6, ("#536",), "section 8's S3 item 5")}
+
+#: Every issue H4 built or recorded, each of which Revision 11 gives a row.
+#: The real-page probe's (#535, #495, #440's real-page half and #492's
+#: one-tap walk) ran beside H4-DOC and are not recorded.
+_H4_ISSUES = ("#520", "#531", "#534", "#526", "#532", "#507", "#506",
+              "#521", "#357", "#430", "#461", "#476", "#499", "#480", "#489",
+              "#498", "#505", "#513", "#530", "#537", "#483", "#485", "#487",
+              "#511", "#512", "#527", "#538", "#539", "#488", "#492", "#493",
+              "#502", "#503", "#504", "#508", "#529", "#518", "#536", "#466")
+
+
+def _h4_source_missing(cell: str) -> list[str]:
+    """`_source_names_exist` over H4's wider tree: H4 built code in the
+    relay and the probe too, so a ``.py`` file may be under
+    ``relay/relay``, ``relay/tests`` or ``tools/ui_probe`` as well as
+    server/, and a name may be defined in any of them."""
+    homes = (_SERVER / "astrodeck", _SERVER / "tests", _ROOT / "relay"
+             / "relay", _ROOT / "relay" / "tests", _ROOT / "tools"
+             / "ui_probe")
+    corpus = "\n".join(p.read_text(encoding="utf-8") for home in homes
+                       for p in home.rglob("*.py"))
+    files = re.findall(r"`([^`]+\.py)`", cell)
+    missing = [n for n in files
+               if not any((home / n).is_file()
+                          or any(home.rglob(Path(n).name)) for home in homes)]
+    return missing + _source_names_exist(
+        re.sub(r"`[^`]+\.py`", "", cell), corpus)
+
+
+def _ts_code(text: str) -> str:
+    """TypeScript source with its comments taken out: block comments, then
+    each line comment to the end of its own line only."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def _py_consts(text: str, names) -> dict:
+    """The values ``const NAME = <arithmetic>;`` gives each name in a
+    TypeScript module, for numbers written as a sum or a product of
+    literals (``5 + 2``, ``10 * 1.5``)."""
+    out = {}
+    for name in names:
+        m = re.search(rf"^const {name} = ([0-9 .+*]+);", text, re.MULTILINE)
+        assert m, f"no const {name} of literal arithmetic"
+        out[name] = eval(m.group(1), {"__builtins__": {}})  # noqa: S307
+    return out
+
+
+def _rise_latitude_bound() -> float:
+    """The latitude, in degrees from the equator, within which a centring
+    set-aside's rise branch can end it before its time (#564): an altitude
+    changes at most at the sidereal rate times cos(latitude), and H4
+    orchestrator ruling 2 asks ``SET_ASIDE_RISE_DEG`` of rise inside
+    ``SET_ASIDE_EXPIRY_S``. 27.57 at 10 degrees in 45 minutes, read from the
+    constants, so a change of either moves it."""
+    from astrodeck.sequence import group_rules
+    from astrodeck.sequence import schedule
+    rate = 360.0 / (schedule._SIDEREAL_DAY_S / 3600.0)
+    need = group_rules.SET_ASIDE_RISE_DEG / (
+        group_rules.SET_ASIDE_EXPIRY_S / 3600.0)
+    return math.degrees(math.acos(need / rate))
+
+
+def test_revision_11_lists_every_section_h4_edited():
+    """Revision 11, "the fourth hardening round, H4", has one row per item
+    H4 built or recorded, each row naming the sections that item edited,
+    so that together its rows list every section that carries an H4 edit
+    and no other, by the scan Revisions 4 to 10 use (`_carried`) with H4's
+    mark (``_H4``). Its rows are numbered from 1; every issue H4 built or
+    recorded (`_H4_ISSUES`) has a row; every row names a test and no
+    commit, since H4 is not committed; its preamble names the rows of
+    Revision 10 that its rows supersede, computed from the two tables, and
+    says what the table covers and what it leaves to the probe; and every
+    code name and test its Source column gives is in the tree, H4's relay
+    and probe code included (`_h4_source_missing`).
+
+    Before the spec carried Revision 11 this test was RED at its first
+    assertion (H4-DOC, the spec as S7 left it):
+
+        AssertionError: the spec must have one Revision 11, the fourth
+        hardening round
+        assert [] == ['Revision 11...g round, H4)']
+          Right contains one more item: 'Revision 11 (the fourth hardening
+          round, H4)'
+          Use -v to get more diff
+
+    RED under the spec mutant "drop the #513 row" (Revision 11's row 18
+    taken out, the rest renumbered), whose sections other rows still list:
+
+        AssertionError: (issues H4 built with no row, rows naming no test, rows
+        naming a commit) = (['#513'], [], []); Revision 11 has a row per item,
+        each with its code and its test, and H4 is not committed
+        assert (['#513'], [], []) == ([], [], [])
+          At index 0 diff: ['#513'] != []
+          Use -v to get more diff
+
+    RED under the spec mutant "an H4 edit in 2.7 with no row" ("(H4,
+    #189)" added to 2.7's last line):
+
+        AssertionError: Revision 11 lists ['1.4', '1.8', '2.3', '2.4', '2.6',
+        '3.1', '3.2', '3.3', '3.4', '5.1', '5.10', '5.6', '5.7', '5.8', '5.9',
+        '6.9', 'S3', 'S6', 'S7', 'owner list']; the sections carrying H4's
+        edits are ['1.4', '1.8', '2.3', '2.4', '2.6', '2.7', '3.1', '3.2',
+        '3.3', '3.4', '5.1', '5.10', '5.6', '5.7', '5.8', '5.9', '6.9', 'S3',
+        'S6', 'S7', 'owner list']
+        assert ['1.4', '1.8'...', '2.7', ...] == ['1.4', '1.8'...', '3.1', ...]
+          At index 5 diff: '2.7' != '3.1'
+          Left contains one more item: 'owner list'
+          Use -v to get more diff
+
+    RED under the spec mutant "the preamble without the rows it
+    supersedes" ("Revision 10's rows 2, 3, ... and 24" taken out):
+
+        AssertionError: Revision 11's preamble must say "Revision 10's rows 2,
+        3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 19, 20 and 24" are
+        superseded
+        assert False
+
+    RED under the engine.py mutant "_hold_cleared renamed _hold_clear" (its
+    ``def`` and both calls, in the copy):
+
+        AssertionError: Revision 11's Source column names code that is not in
+        the tree: {'18': ['_hold_cleared']}
+        assert {'18': ['_hold_cleared']} == {}
+          Left contains 1 more item:
+          {'18': ['_hold_cleared']}
+          Use -v to get more diff
+
+    Unchanged under the control "an unrelated edit in section 7" (its
+    Engine heading reworded), in the same copy:
+
+        169 passed in 101.12s (0:01:41)
+    """
+    blocks = _blocks()
+    rev11 = [(name, text) for name, text in blocks
+             if name.startswith("Revision 11")]
+    assert [name for name, _text in rev11] == [
+        "Revision 11 (the fourth hardening round, H4)"], (
+        "the spec must have one Revision 11, the fourth hardening round")
+    rows = _rows(rev11[0][1])
+    listed = set().union(*(_where(r[1]) for r in rows))
+    carried = _carried(_H4)
+    # Premise: every section H4 is known to have edited is found.
+    assert {"1.4", "1.8", "2.3", "2.4", "2.6", "3.1", "3.2", "3.3", "3.4",
+            "5.1", "5.6", "5.7", "5.8", "5.9", "5.10", "6.9", "S3", "S6",
+            "S7", "owner list"} <= carried
+    assert sorted(carried) == sorted(listed), (
+        f"Revision 11 lists {sorted(listed)}; the sections carrying H4's "
+        f"edits are {sorted(carried)}")
+    assert [r[0] for r in rows] == [str(i) for i in range(1, len(rows) + 1)]
+    unrowed = [issue for issue in _H4_ISSUES
+               if not any(_names(r[4], issue) for r in rows)]
+    untested = [r[0] for r in rows if not re.search(
+        r"`(?:test_\w+\.py|\w+\.test\.tsx?)`", r[4])]
+    commits = [r[0] for r in rows if re.search(r"\b[0-9a-f]{7,40}\b", r[4])]
+    got = (unrowed, untested, commits)
+    assert got == ([], [], []), (
+        f"(issues H4 built with no row, rows naming no test, rows naming a "
+        f"commit) = {got}; Revision 11 has a row per item, each with its "
+        f"code and its test, and H4 is not committed")
+    rev10 = [text for name, text in blocks if name.startswith("Revision 10")]
+    superseded = [r[0] for r in _rows(rev10[0]) if _where(r[1]) & listed]
+    assert superseded == ["2", "3", "5", "6", "7", "8", "9", "10", "11",
+                          "12", "13", "14", "15", "17", "19", "20",
+                          "24"], superseded
+    preamble = _line(rev11[0][1], "2026-09-29. A fourth hardening round "
+                                  "(H4, #189)")
+    named = (f"Revision 10's rows {', '.join(superseded[:-1])} and "
+             f"{superseded[-1]}")
+    said = named in preamble
+    assert said, f"Revision 11's preamble must say {named!r} are superseded"
+    _says(preamble, ("the owner list records them as items 53 to 58",
+                     "item 59 keeps for the owner a question S7 left",
+                     "H4 is not yet committed, so the Source column names "
+                     "code and tests, never a commit",
+                     "An H4 edit says \"H4\"", "one row per item H4 built or "
+                     "recorded, each naming the sections it edited, the "
+                     "code, and the test that proves it",
+                     "the real-page probe's items (#535, #495, the "
+                     "real-page half of #440 and #492's one-tap walk) ran "
+                     "beside this record and are not recorded here",
+                     "Revision 10's rows 7, 19 and 20 now also name the "
+                     "tests S7 wrote for #528 and #459",
+                     "H4's included, is the entry this spec records under "
+                     "that label (#239)", "the pins H4's tasks left red in "
+                     "files no H4 task owned are the integration's"),
+          "Revision 11's preamble")
+    missing = {r[0]: gone for r in rows if (gone := _h4_source_missing(r[4]))}
+    assert missing == {}, (f"Revision 11's Source column names code that is "
+                           f"not in the tree: {missing}")
+
+
+def test_the_owner_list_records_the_h4_orchestrator_rulings():
+    """The owner list records H4 orchestrator rulings 1 to 6 as items 53 to
+    58, each labelled the orchestrator's, binding until the owner
+    overturns it, opening with the issue it decides and the section it
+    rules on, each one the spec has, and carrying the ruling as the
+    orchestrator gave it and what H4 built of it; item 59 keeps #357's
+    question for the owner, as the S7 record noted it; and a closing note
+    says items 53 to 58 are not the owner's, binding until the owner
+    overturns them, with the numbers that collide computed: all six with
+    Revision 2's, H3's, S3's, S4's and S7's, 1 to 3 with S2's and S5's,
+    and 1 and 2 with H2's.
+
+    Each ruling's code half is asked too: ruling 1's refused names and the
+    look route's only parameter; ruling 2's 45 minutes, 10 degrees and 10
+    minutes, and the expiry once a night, by behaviour; ruling 3's 5
+    degrees and one side, by behaviour, and its half; ruling 4's retry at
+    twice the exposure; ruling 5's refusal, by behaviour, at the doctor's
+    line; ruling 6's row words and the flow's own names, by behaviour.
+
+    Before the spec carried items 53 to 59 this test was RED at its first
+    item (H4-DOC, the spec as S7 left it):
+
+        AssertionError: expected exactly one line starting '53. ', found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under the spec mutant "label H4 ruling 3 an owner ruling" (item
+    55's bold head made "**Owner ruling 3:"):
+
+        AssertionError: owner list item 55 must record H4 orchestrator ruling
+        3, labelled as the orchestrator's
+        assert False
+
+    RED under the spec mutant "the note counts H2's collisions as 1, 2 and
+    8":
+
+        AssertionError: the note on items 53 to 58 must say: 'two are also H2
+        orchestrator rulings 1 and 2'
+        assert False
+
+    RED under the spec mutant "#357's question dropped" (item 59 taken
+    out):
+
+        AssertionError: expected exactly one line starting '59. ', found 0
+        assert 0 == 1
+         +  where 0 = len([])
+
+    RED under the group_rules.py mutant "an hour, not 45 minutes"
+    (``SET_ASIDE_EXPIRY_S = 2700.0`` made ``3600.0``):
+
+        AssertionError: owner list item 54 must say: 'when the target has risen
+        10 degrees since the set-aside or 60 minutes have passed, whichever
+        comes first'
+        assert False
+
+    RED under the tonight.py mutant "the row says for this flow"
+    (``_FOR_THESE = "for these targets"`` made ``"for this flow"``):
+
+        AssertionError: owner list item 58 must say: 'the row says "for this
+        flow"'
+        assert False
+
+    SINCE THE H4-DOC VERIFIER item 54 says what is filed against ruling 2
+    as written, for the owner who may overturn it: the all-fail hold's
+    missing bound and alert (#563) and the rise branch's timing (#564),
+    each filed before H4-DOC ran. On the spec as H4-DOC left it, in the
+    verifier's private copy (the session scratchpad's
+    ``H4-DOC-verify-mut``):
+
+        AssertionError: owner list item 54 must say: 'Filed against the ruling
+        as written: the all-fail hold has no bound but the window and raises
+        no alert, so a rig-side solve fault slews every panel every 10
+        minutes all night (#563)'
+        assert False
+    """
+    from astrodeck.flows import tonight as tonight_mod
+    from astrodeck.flows import wizard as wizard_mod
+    from astrodeck.focus import native as native_mod
+    from astrodeck.sequence import group_rules
+    from astrodeck import hub as hub_mod
+    from astrodeck import rotation
+    owner = _section("Still")
+    spec_lines = _spec().splitlines()
+    for item, (ruling, issues, sections) in _H4_RULINGS.items():
+        line = _line(owner, f"{item}. ")
+        labelled = line.startswith(f"{item}. **H4 orchestrator ruling "
+                                   f"{ruling}:")
+        assert labelled, (f"owner list item {item} must record H4 "
+                          f"orchestrator ruling {ruling}, labelled as the "
+                          f"orchestrator's")
+        _says(line, ("Binding until the owner overturns it.",
+                     f"Built (H4, {', '.join(issues)})"),
+              f"owner list item {item}")
+        head = re.match(r"\d+\. \*\*[^*]+\*\* \(([^)]*)\)", line)
+        want = f"{', '.join(issues)}; {sections}"
+        got = head.group(1) if head else None
+        assert got == want, (f"owner list item {item}'s parenthesis reads "
+                             f"{got!r}; H4 orchestrator ruling {ruling} rules "
+                             f"on {want!r}")
+        for label in re.findall(r"\b([1-9A-Z]\.\d+)\b", sections):
+            places = [ln for ln in spec_lines
+                      if (ln.startswith("### ")
+                          and ln[4:].split(" ", 1)[0] == label)
+                      or ln.startswith(f"| {label} |")]
+            assert len(places) == 1, (
+                f"owner list item {item} rules on {label}, and the spec has "
+                f"{len(places)} headings or section rows of that number")
+    backlash = rotation.ROTATOR_BACKLASH_DEG
+    expiry_min = group_rules.SET_ASIDE_EXPIRY_S / 60
+    hold_min = group_rules.CENTRING_HOLD_RETRY_S / 60
+    for item, phrases in (
+            (53, ("takes no coordinates from the client: the server reads "
+                  "the mount itself", "in a POST body, never a query string",
+                  "The relay's access log stops logging query strings, for "
+                  "every route", "`GET /api/cloudmap/at` takes only "
+                  "`ahead_s`", "422 `site_query_refused` "
+                  "(`_refuse_site_query`)", "`?<withheld>`", "(#550)")),
+            (54, (f"when the target has risen "
+                  f"{group_rules.SET_ASIDE_RISE_DEG:g} "
+                  f"degrees since the set-aside or {expiry_min:g} minutes "
+                  f"have passed, whichever comes first", "the group holds "
+                  "like a cloud hold, with no strikes, retrying every "
+                  f"{hold_min:g} minutes within the night",
+                  f"`SET_ASIDE_EXPIRY_S` ({group_rules.SET_ASIDE_EXPIRY_S:g} "
+                  f"s)", f"`CENTRING_HOLD_RETRY_S` "
+                  f"({group_rules.CENTRING_HOLD_RETRY_S:g} s)",
+                  "`centring_pass_verdict`", "(`SOLVE_TRANSIENT`)",
+                  # What is filed against the ruling as written.
+                  "Filed against the ruling as written: the all-fail hold "
+                  "has no bound but the window and raises no alert, so a "
+                  f"rig-side solve fault slews every panel every "
+                  f"{hold_min:g} minutes all night (#563)",
+                  f"the rise can end a set-aside before the {expiry_min:g} "
+                  f"minutes only within about "
+                  f"{round(_rise_latitude_bound())} degrees of the equator, "
+                  f"so the moment it does tells a viewer that much (#564)")),
+            (55, (f"it overshoots by `ROTATOR_BACKLASH_DEG` (default "
+                  f"{backlash:g}, a named constant) and returns",
+                  "\"the rotator moved but the camera did not\" with both "
+                  "numbers", "the data #145 needs",
+                  "`rotation.one_sided_moves`", "`ROTATE_FOLLOW_FRACTION`",
+                  "`SessionReporter.record_sky_angle`")),
+            (56, ("retries once at twice the exposure", "continues at the "
+                  "last good position and re-sweeps at the first frame whose "
+                  "star count clears the sparse threshold",
+                  "`SPARSE_FIELD_WARN`", "`_carry_on_after_sparse_failures`",
+                  "(#558)")),
+            (57, ("refuses (422) an unguided narrowband sub at or past "
+                  "`doctor.UNGUIDED_SUB_LINE_S`, naming the limit",
+                  "`_within_the_unguided_line`, which refuses any unguided "
+                  "sub at or past the line, narrowband or not",
+                  "`UNGUIDED_NOTE`")),
+            (58, (f"the row says \"{tonight_mod._FOR_THESE}\"",
+                  "a per-report summary written at finalise, read by the "
+                  "route instead of every report", "`flow_target_names`",
+                  "`SessionReporter.summaries`"))):
+        _says(_line(owner, f"{item}. "), phrases, f"owner list item {item}")
+    question = _line(owner, "59. ")
+    _says(question, ("59. Open question: the panel-first footer, read "
+                     "literally, and the #/next arc (#357; 1.2, 1.4).",
+                     "S7 orchestrator ruling 9 (item 51)",
+                     "The owner decides between that step and the literal "
+                     "reading", "recording the #/next overlap as accepted"),
+          "owner list item 59")
+    _says(_line(owner, "51. "), ("(noted on #357 for the owner; 1.2), which "
+                                 "item 59 asks",), "owner list item 51")
+    numbers = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. ", owner,
+                                                    re.MULTILINE)]
+    assert numbers == list(range(1, 60)), (
+        f"the owner list is numbered {numbers}; it runs from 1 to 59 with "
+        f"no gap")
+    note = _line(owner, "Items 53 to 58 are not the owner's rulings.")
+    h4 = {ruling for ruling, _issues, _sections in _H4_RULINGS.values()}
+    revision_2 = {int(m.group(1)) for m in re.finditer(
+        r"^### Ruling (\d+):", _spec(), re.MULTILINE)}
+    h3 = {ruling for ruling, _issue in _H3_RULINGS.values()}
+    s2 = {ruling for ruling, _issue in _S2_RULINGS.values()}
+    s3 = {ruling for ruling, _issues in _S3_RULINGS.values()}
+    s4 = {ruling for ruling, _issues in _S4_RULINGS.values()}
+    s5 = {ruling for ruling, _issues, _sections in _S5_RULINGS.values()}
+    s7 = {ruling for ruling, _issues, _sections in _S7_RULINGS.values()}
+    h2 = sorted(h4 & set(_H2_RULINGS.values()))
+    six = h4 & revision_2 & h3 & s3 & s4 & s7
+    assert (h4 == set(range(1, 7)) and six == h4
+            and sorted(h4 & s2) == sorted(h4 & s5) == [1, 2, 3]
+            and h2 == [1, 2]), (
+        "premise: H4's numbers are 1 to 6, all also Revision 2's, H3's, "
+        "S3's, S4's and S7's, 1 to 3 S2's and S5's, and 1 and 2 H2's")
+    _says(note, ("the fourth hardening round (H4, #189)",
+                 "binding until the owner overturns it (Revision 11)",
+                 "H4's code is to cite them by these labels, never as owner "
+                 "rulings", "not Revision 2's numbering, nor H2's, nor "
+                 "H3's, nor S2's, nor S3's, nor S4's, nor S5's, nor S7's",
+                 f"All {len(six) and 'six'} of its numbers are also Revision "
+                 f"2's, H3's, S3's, S4's and S7's", "three of them are also "
+                 "S2's and S5's", f"two are also H2 orchestrator rulings "
+                 f"{_joined(h2)}", "Item 59 is a question S7 left and H4 "
+                 "kept for the owner."), "the note on items 53 to 58")
+    # Ruling 1's code: the names refused, and the look route's only
+    # parameter besides the request and the principal.
+    import astrodeck.api.app as app_mod
+    look = _app_def("get_cloudmap_at")
+    params = [a.arg for a in look.args.args]
+    relay = (_ROOT / "relay" / "relay" / "server.py").read_text(
+        encoding="utf-8")
+    withheld = re.search(r'^QUERY_WITHHELD = "([^"]*)"', relay, re.MULTILINE)
+    got1 = (sorted(app_mod._SITE_QUERY_NAMES), params,
+            withheld.group(1) if withheld else None)
+    assert got1 == (["alt", "az", "lat", "lon", "site"],
+                    ["request", "ahead_s", "principal"], "?<withheld>"), (
+        f"(the names a GET is refused for, the look route's parameters, "
+        f"the relay's withheld query) = {got1}; owner list item 53 says so")
+    # Ruling 2's code, by behaviour: time and rise, once a night.
+    t0 = 1_700_000_000.0
+    expiry = group_rules.set_aside_expiry
+    rise = group_rules.SET_ASIDE_RISE_DEG
+    got2 = (expiry(now=t0 + group_rules.SET_ASIDE_EXPIRY_S, set_at=t0),
+            expiry(now=t0 + group_rules.SET_ASIDE_EXPIRY_S - 1, set_at=t0),
+            expiry(now=t0 + 60, set_at=t0, alt_at_set=20.0,
+                   alt_now=20.0 + rise),
+            expiry(now=t0 + group_rules.SET_ASIDE_EXPIRY_S, set_at=t0,
+                   expiries=1))
+    assert (got2, expiry_min, hold_min, rise) == (
+        ("time", None, "rise", None), 45, 10, 10), (
+        f"(expired at the time, a second before, risen, a second expiry; "
+        f"minutes, hold minutes, degrees) = "
+        f"{(got2, expiry_min, hold_min, rise)}"
+        f"; owner list item 54 says 45 minutes or 10 degrees, once a night, "
+        f"and a 10 minute hold")
+    # Ruling 3's code: the last leg always turns up, 5 degrees past; under
+    # half the commanded move is the follow line's.
+    down = rotation.one_sided_moves(30.0, 10.0, "full", 0.0)
+    up = rotation.one_sided_moves(10.0, 30.0, "full", 0.0)
+    got3 = (backlash, down.moves, up.moves, hub_mod.ROTATE_FOLLOW_FRACTION)
+    assert got3 == (5.0, (10.0 - backlash, 10.0), (30.0,), 0.5), (
+        f"(the overshoot, a move down, a move up, the follow fraction) = "
+        f"{got3}; owner list item 55 says 5 degrees past and back, and "
+        f"under half")
+    # Ruling 4's code: the retry at twice the exposure.
+    engine_src = inspect.getsource(engine_mod)
+    got4 = (native_mod.SPARSE_FIELD_WARN,
+            "result = await _sweep(2 * exposure_s)" in engine_src)
+    assert got4[1], (f"(the sparse line, the retry at twice the exposure) = "
+                     f"{got4}; owner list item 56 says so")
+    # Ruling 5's code, by behaviour: refused at the line, not under it.
+    from astrodeck.flows import doctor as doctor_mod
+    m31 = {"name": "M31", "ra": "00h 42m 44s", "dec": "+41 16 09"}
+    line = doctor_mod.UNGUIDED_SUB_LINE_S
+    try:
+        wizard_mod.quick(m31, filters=["Ha"], guided=False,
+                         exposures_s={"Ha": line})
+        refused = None
+    except ValueError as exc:
+        refused = str(exc)
+    under = wizard_mod.quick(m31, filters=["Ha"], guided=False,
+                             exposures_s={"Ha": line - 30})
+    got5 = (refused is not None and f"under {line:g} s" in refused,
+            type(under).__name__)
+    assert got5 == (True, "FlowRecord"), (
+        f"(Ha at the line refused naming it, Ha under it made) = {got5}; "
+        f"owner list item 57 says so")
+    # Ruling 6's code, by behaviour: a single target's flow names that
+    # target and nothing else. A mosaic by its live panels and a pool by its
+    # members are test_h4_budget_for_these_targets.py's.
+    single = _flow([("t", "target", {"name": "M33", "ra": "01h 33m 51s",
+                                     "dec": "+30 39 37"}),
+                    ("c", "capture", {"filter": "L", "exposure": 60,
+                                      "count": 5})],
+                   ["t.target -> c.run"])
+    names = tonight_mod.flow_target_names(single, "flow")
+    assert names == ["M33"], (f"flow_target_names reads {names}; owner list "
+                              f"item 58 says the flow's own targets")
+
+
+def test_2_4_and_3_1_say_the_overlap_constant_as_built():
+    """2.4 says what S6 and S7 built of its one overlap constant (H4,
+    #461): `catalog/framing.py`'s `DEFAULT_OVERLAP`, 0.25, mirrored as
+    `lib/framing.ts`'s and held to it by `test_overlap_constant_one.py`,
+    read by the store's framing seed and the Sky's FRAME mode, whose 0.15
+    is gone and which re-exports it as `OVERLAP`, and the TARGET node's
+    default derived from it on both sides; and 3.1's ``overlap`` row names
+    the constant in percent, where it wrote a literal 25 (the S7 review's
+    E item).
+
+    The code: the two constants equal; ``store.ts``'s seed and
+    ``mosaic.ts``'s re-export; nodes.py's TARGET default a `Derived` over
+    `target_overlap_pct`, which answers the constant in percent; and
+    ``nodeDefs.ts`` writing ``DEFAULT_OVERLAP * 100``.
+
+    RED under the spec mutant "3.1's overlap a literal 25 again" (the row
+    put back as S7 left it):
+
+        AssertionError: 3.1's overlap row reads (the constant in percent, its
+        record, created as, a literal 25) = (False, False, '`25`', True); the
+        default is derived from DEFAULT_OVERLAP
+        assert (False, False, '`25`', True) == (True, True, 'same', False)
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    RED under the mosaic.ts mutant "the Sky's own 0.15 again" (``export {
+    DEFAULT_OVERLAP as OVERLAP };`` made ``export const OVERLAP = 0.15;``):
+
+        AssertionError: (the two constants equal, the store's seed, the Sky's
+        re-export and no 0.15, nodes.py's derived default, nodeDefs.ts's) =
+        (True, True, False, True, True); 2.4 and 3.1 say so
+        assert (True, True, ...e, True, True) == (True, True, True, True, True)
+          At index 2 diff: False != True
+          Use -v to get more diff
+
+    RED under the nodeDefs.ts mutant "the mirror's own 25 again" (the
+    TARGET's ``overlap: DEFAULT_OVERLAP * 100`` made ``overlap: 25``):
+
+        AssertionError: (the two constants equal, the store's seed, the Sky's
+        re-export and no 0.15, nodes.py's derived default, nodeDefs.ts's) =
+        (True, True, True, True, False); 2.4 and 3.1 say so
+        assert (True, True, ..., True, False) == (True, True, True, True, True)
+          At index 4 diff: False != True
+          Use -v to get more diff
+    """
+    from astrodeck.catalog import framing
+    from astrodeck.flows import nodes as nodes_mod
+    ts = _ts_const(_ui("lib/framing.ts"), "DEFAULT_OVERLAP")
+    store = _ui("store.ts")
+    mosaic = _ui("next/hubs/sky/frame/mosaic.ts")
+    node_defs = _ui("components/flows/nodeDefs.ts")
+    nodes_src = inspect.getsource(nodes_mod)
+    got = (ts == framing.DEFAULT_OVERLAP,
+           "mosaic: { rows: 1, cols: 1, overlap: DEFAULT_OVERLAP }" in store,
+           "export { DEFAULT_OVERLAP as OVERLAP };" in mosaic
+           and "0.15" not in _ts_code(mosaic),
+           '"overlap": Derived(target_overlap_pct)' in nodes_src
+           and nodes_mod.target_overlap_pct() == framing.DEFAULT_OVERLAP * 100,
+           "overlap: DEFAULT_OVERLAP * 100," in node_defs)
+    assert got == (True, True, True, True, True), (
+        f"(the two constants equal, the store's seed, the Sky's re-export "
+        f"and no 0.15, nodes.py's derived default, nodeDefs.ts's) = {got}; "
+        f"2.4 and 3.1 say so")
+    s24 = _line(_section("2.4"), "- COLS and ROWS steppers")
+    _says(s24, ("As built (H4, #461, recording what S6 and S7 did)",
+                f"`catalog/framing.py`'s `DEFAULT_OVERLAP`, "
+                f"{framing.DEFAULT_OVERLAP:g}, mirrored as `lib/framing.ts`'s "
+                f"`DEFAULT_OVERLAP` and held to it by "
+                f"`test_overlap_constant_one.py`",
+                "(`mosaic.ts`, whose 0.15 is gone and which re-exports the "
+                "constant as `OVERLAP`)", "(`target_overlap_pct`, "
+                "`nodeDefs.ts`), where each wrote a number of its own (3.1)"),
+          "2.4")
+    row = _target_row("overlap")
+    cells = (row[2].startswith("`DEFAULT_OVERLAP` in percent"),
+             "(`target_overlap_pct`; derived since S7, recorded by H4, #461)"
+             in row[2], row[3], "`25`" in " | ".join(row))
+    assert cells == (True, True, "same", False), (
+        f"3.1's overlap row reads (the constant in percent, its record, "
+        f"created as, a literal 25) = {cells}; the default is derived from "
+        f"DEFAULT_OVERLAP")
+
+
+def test_section_8_s6_and_s7_say_the_record_as_h4_corrected_it():
+    """Section 8's S6 no longer says the store keeps the retired Plan
+    banner's slice and `mosaic.ts` three Plan helpers, which the S5 and S6
+    integration deleted (H4, #461), and S6's sentence on what S7 fixed
+    names the TARGET overlap default (#461). Section 8's S7 names the
+    tests that prove #459's second shape and #528's run order,
+    `quickImagesCatalogue.test.tsx` and `panelRowsSetAside.test.ts`, and
+    records the overlap default in "Beside item 1"; its "Filed in S7"
+    marks for #476 and #499 and "Not built in S7" agree, each half S7 left
+    named as built in H4; and Revision 10's rows 7, 19 and 20 name the
+    tests and the default (the S7 reviews' E items).
+
+    The code: no banner slice in ``store.ts`` and none of the three
+    helpers in ``mosaic.ts`` or anywhere in ``ui/src``'s code; the two
+    named tests exist and are about #459 and #528.
+
+    RED under the spec mutant "S6's sentence as S6 left it" ("The store
+    keeps the retired Plan banner's slice ..." put back):
+
+        AssertionError: section 8's S6 must say: "The store kept the retired
+        Plan banner's slice, always empty, and `mosaic.ts` kept three Plan
+        helpers with no production caller (`panelsToTargets`, `mosaicGroupId`
+        and `mosaicBaseName`)"
+        assert False
+
+    RED under the spec mutant "#499 fixed but for the card again" (its
+    "Filed in S7" mark made "#499 (fixed, but for the Sky flow card)"):
+
+        AssertionError: (halves marked fixed by H4, halves Not built does not
+        say H4 built, stale words) = (['476'], [], ['fixed, but for']); the
+        marks and Not built in S7 agree
+        assert (['476'], [],...ed, but for']) == (['476', '499'], [], [])
+          At index 0 diff: ['476'] != ['476', '499']
+          Use -v to get more diff
+
+    RED under the spec mutant "Beside item 1 names the copy test alone"
+    (the #459 parenthesis put back to "(`mosaicCopyPanelFirst.test.ts`)"):
+
+        AssertionError: S7's Beside item 1 must say: "the second of #459's
+        shapes (`quickImagesCatalogue.test.tsx`, mounted, beside
+        `mosaicCopyPanelFirst.test.ts`, which holds `framingCentreNote`'s
+        words)"
+        assert False
+
+    RED under the mosaic.ts mutant "a Plan helper back" (``export function
+    panelsToTargets() {}`` added):
+
+        AssertionError: the retired banner slice or a Plan helper is still in
+        code: ['next/hubs/sky/frame/mosaic.ts']; section 8's S6 says both went
+        assert ['next/hubs/s...me/mosaic.ts'] == []
+          Left contains one more item: 'next/hubs/sky/frame/mosaic.ts'
+          Use -v to get more diff
+    """
+    s6 = _line(_section("S6:"), "**Filed in S6, and not built** (S6, #196).")
+    _says(s6, ("The store kept the retired Plan banner's slice, always "
+               "empty, and `mosaic.ts` kept three Plan helpers with no "
+               "production caller (`panelsToTargets`, `mosaicGroupId` and "
+               "`mosaicBaseName`)", "until the integration deleted the slice "
+               "with its action and hook, and the three helpers, as the "
+               "paragraph above says (H4, #461)", "derived the TARGET "
+               "node's overlap default from `DEFAULT_OVERLAP` on both sides"),
+          "section 8's S6")
+    kept = "The store keeps the retired Plan banner's slice" in s6
+    assert not kept, "section 8's S6 still says the banner slice is kept"
+    helpers = ("panelsToTargets", "mosaicGroupId", "mosaicBaseName")
+    code = {p.relative_to(UI_SRC).as_posix(): p.read_text(encoding="utf-8")
+            for p in UI_SRC.rglob("*.ts*") if "__tests__" not in p.parts}
+    left = sorted({rel for rel, text in code.items()
+                   for name in helpers + ("atlasBannerPending",)
+                   if re.search(rf"\b{name}\b", _ts_code(text))})
+    assert left == [], (f"the retired banner slice or a Plan helper is still "
+                        f"in code: {left}; section 8's S6 says both went")
+    s7 = _section("S7:")
+    beside = _line(s7, "**Beside item 1** (S7, #189).")
+    _says(beside, ("(2.6; the order's test is `panelRowsSetAside.test.ts`, "
+                   "#528)", "the second of #459's shapes "
+                   "(`quickImagesCatalogue.test.tsx`, mounted, beside "
+                   "`mosaicCopyPanelFirst.test.ts`, which holds "
+                   "`framingCentreNote`'s words)", "the TARGET node's "
+                   "overlap default is derived from `DEFAULT_OVERLAP` on both "
+                   "sides, where each wrote 25 (#461; 3.1, 2.4; "
+                   "`test_overlap_constant_one.py`)"), "S7's Beside item 1")
+    quick = next(UI_SRC.rglob("quickImagesCatalogue.test.tsx"))
+    rows_test = next(UI_SRC.rglob("panelRowsSetAside.test.ts"))
+    about = ("#459" in quick.read_text(encoding="utf-8"),
+             "#528" in rows_test.read_text(encoding="utf-8"))
+    assert about == (True, True), (
+        f"(quickImagesCatalogue is about #459, panelRowsSetAside about "
+        f"#528) = {about}")
+    filed = _line(s7, "**Filed in S7** (S7, #189)")
+    not_built = _line(s7, "**Not built in S7.**")
+    halves = re.findall(r"#(\d+) \(fixed, all but ([^,]+), which H4 fixed\)",
+                        filed)
+    unmatched = [n for n, _what in halves if not re.search(
+        rf"Until H4 [^.]*\(#{n}[^)]*built in H4", not_built)]
+    stale = [s for s in ("fixed, but for", "The #/next Monitor's mount read "
+                         "still", "The Sky flow card still draws")
+             if s in filed or s in not_built]
+    got = (sorted(n for n, _what in halves), unmatched, stale)
+    assert got == (["476", "499"], [], []), (
+        f"(halves marked fixed by H4, halves Not built does not say H4 built, "
+        f"stale words) = {got}; the marks and Not built in S7 agree")
+    rev10 = [text for name, text in _blocks()
+             if name.startswith("Revision 10")]
+    r10 = {r[0]: r for r in _rows(rev10[0])}
+    named = ("`panelRowsSetAside.test.ts`" in r10["7"][4],
+             all(n in r10["19"][4] for n in (
+                 "#461", "`quickImagesCatalogue.test.tsx`",
+                 "`target_overlap_pct`", "`test_overlap_constant_one.py`")),
+             "overlap default derived from `DEFAULT_OVERLAP`" in r10["19"][3],
+             all(n in r10["20"][4] for n in (
+                 "#461", "`test_overlap_constant_one.py`",
+                 "`quickImagesCatalogue.test.tsx`",
+                 "`panelRowsSetAside.test.ts`")),
+             "the TARGET overlap default derived" in r10["20"][3])
+    assert named == (True, True, True, True, True), (
+        f"Revision 10's rows 7, 19 and 20 name (the #528 test, the #459 test "
+        f"and the default, the default in row 19, row 20's names, the "
+        f"default in row 20) = {named}")
+
+
+def test_section_8_s7_says_what_h4_fixed_of_it():
+    """Section 8's S7 says which of the issues S7 filed and left open H4
+    fixed, and which are still open (H4, #189): the two sets and the probe's
+    two cover S7's "Left open" list, the halves of #476 and #499 and the
+    reviews' #537 to #539 exactly, with none twice; each fixed one has a
+    Revision 11 row; and it says what H4 built of the Sky flow card, the
+    #/next Sky finder and the probe's seeder.
+
+    The code: the Sky flow card and the quick sheet opening through
+    `openFlowById`; the finder reading a site marked default as none; the
+    lock card's two words; the seeder's marker, the server's own.
+
+    RED under the spec mutant "#530 left out" (taken out of the fixed
+    list):
+
+        AssertionError: (S7's open issues H4 neither fixed nor lists open,
+        issues listed that are not S7's open ones, issues listed twice) =
+        ([530], [], []); the record partitions what S7 left
+        assert ([530], [], []) == ([], [], [])
+          At index 0 diff: [530] != []
+          Use -v to get more diff
+
+    RED under the spec mutant "#486 fixed as well" (added to the fixed list
+    and left in the open one):
+
+        AssertionError: (S7's open issues H4 neither fixed nor lists open,
+        issues listed that are not S7's open ones, issues listed twice) = ([],
+        [], [486]); the record partitions what S7 left
+        assert ([], [], [486]) == ([], [], [])
+          At index 2 diff: [486] != []
+          Use -v to get more diff
+
+    RED under the flow.tsx mutant "the card opens without waiting"
+    (``void openFlowById(id).then(`` made ``void Promise.resolve(true)
+    .then(``):
+
+        AssertionError: (the card opening through openFlowById, the quick sheet
+        too, a default site as none, the lock card's words, one probe marker) =
+        (False, True, True, ('SET A SITE FIRST', 'POSITION HIDDEN FOR THIS
+        ROLE'), True); section 8's S7 says so
+        assert (False, True,... ROLE'), True) == (True, True, ... ROLE'), True)
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    #544, SINCE THE H4 SPEC-FIDELITY REVIEW. The record said "the patch card
+    and the status row still print a verdict for a sky nothing placed
+    (#544)", and this test pinned only "(#544)", while the H4 integration
+    had fixed it (PatchCard.tsx, StatusRow.tsx, SkyHub.tsx): a claim the
+    code contradicted, held by a pin that could not tell. The sentence now
+    says what the code does, and the code is asked. Mutants run in a
+    private copy (the session scratchpad's ``H4-REVIEW-SPEC-mut``), each
+    file from a byte backup, sha256 checked after; the unmutated copy
+    passed first and last.
+
+    RED under the spec mutant "the old sentence back":
+
+        AssertionError: section 8's S7 since S7 must say: 'and with nothing
+        placed, the patch card prints no status word and no count'
+        assert False
+
+    RED under the spec mutant "the old sentence beside the new" (the new
+    one kept, "; the patch card and the status row still print a verdict
+    for a sky nothing placed." after it):
+
+        AssertionError: section 8's S7 still says 'still print a verdict for
+        a sky nothing placed'; the H4 integration fixed #544
+
+    RED under the PatchCard.tsx mutant "BELOW HORIZON for every null patch"
+    (``patch?.statusTxt ?? (unplaced ? null : "BELOW HORIZON")`` made
+    ``patch?.statusTxt ?? "BELOW HORIZON"``), under "the patch count printed
+    with nothing placed" (``{reachCount != null && (`` made ``{(``), under
+    the SkyHub.tsx mutant "the hub counts a sky nothing placed" (its
+    ``reachCount`` made ``model.reachCount``) and under the StatusRow.tsx
+    mutant "the status row always prints a number" (the null branch taken
+    out of the pill's label), each at its own index:
+
+        AssertionError: (no status word for an unplaced patch, no count
+        without one, no number on the status row without one, the hub's
+        count withheld with nothing placed) = (False, True, True, True);
+        section 8's S7 says so (#544)
+
+    and ``(True, False, True, True)``, ``(True, True, True, False)`` and
+    ``(True, True, False, True)``. The status row's check reads the label's
+    null branch and not the bare ``reachCount == null``: the pill's
+    ``ariaLabel`` asks that too, and a first version passed the StatusRow
+    mutant on it.
+    """
+    s7 = _section("S7:")
+    since = _line(s7, "**Since S7** (H4, #189).")
+    filed = _line(s7, "**Filed in S7** (S7, #189)")
+
+    def issues(text: str) -> set[int]:
+        return {int(n) for n in re.findall(r"#(\d+)", text)}
+
+    left_text = filed.partition("Left open:")[2]
+    left = {int(n) for a, b in re.findall(r"#(\d+) to #(\d+)", left_text)
+            for n in range(int(a), int(b) + 1)} | issues(left_text)
+    head, _, rest = since.partition("Of the night's issues")
+    fixed = issues(head.replace("#566", "")) - {189}
+    still_text = rest.partition("Still open of S7's:")[2].partition(";")[0]
+    still = issues(still_text)
+    probe_text = rest.partition(still_text)[2].partition("the real-page "
+                                                         "probe's")[0]
+    probe = issues(probe_text)
+    expected = left | {476, 499, 537, 538, 539}
+    covered = fixed | still | probe
+    overlap = sorted((fixed & still) | (fixed & probe) | (still & probe))
+    got = (sorted(expected - covered), sorted(covered - expected), overlap)
+    assert got == ([], [], []), (
+        f"(S7's open issues H4 neither fixed nor lists open, issues listed "
+        f"that are not S7's open ones, issues listed twice) = {got}; the "
+        f"record partitions what S7 left")
+    assert {476, 480, 530, 536, 537} <= fixed and probe == {495, 535}, (
+        f"premise: the fixed list was read ({sorted(fixed)}), and the probe's "
+        f"two ({sorted(probe)})")
+    rev11 = [text for name, text in _blocks()
+             if name.startswith("Revision 11")]
+    sources = " ".join(r[4] for r in _rows(rev11[0]))
+    unrowed = sorted(n for n in fixed if not _names(sources, f"#{n}"))
+    assert unrowed == [], (f"H4 fixed {unrowed} and Revision 11 gives them no "
+                           f"row")
+    _says(since, ("(`openFlowById`; `skyFlowCardWaits.test.tsx`, #499)",
+                  "four other callers that open a flow without waiting for it "
+                  "are filed as #553", "`useSkyModel` reads a site marked "
+                  "default as none", "(`UnplacedTarget`, `lockCardCta`: SET A "
+                  "SITE FIRST, or POSITION HIDDEN FOR THIS ROLE)",
+                  "(`lockRowParams`)", "and with nothing placed, the patch "
+                  "card prints no status word and no count",
+                  "and the status row prints no number (`PATCH_NEEDS_SITE`, "
+                  "`PATCH_HIDDEN_FOR_ROLE`, `PatchCard.tsx`, `StatusRow.tsx`; "
+                  "`defaultSitePlacement.test.tsx`, #544", "(`PROBE_MARKER`, "
+                  "`write_probe_marker`; "
+                  "`test_h4_seed_session_allow_list.py`, #539)",
+                  "(`test_s7_sim_solve_failure.py`, re-pinned, #534)",
+                  "The claims of `test_mosaic_spec_claims.py` that went red "
+                  "on H4's code are re-pinned with Revision 11"),
+          "section 8's S7 since S7")
+    card = _ui("next/hubs/sky/sheets/flow.tsx")
+    quick = _ui("next/hubs/sky/sheets/quick.tsx")
+    lock = _ui("next/hubs/sky/cards/LockCard.tsx")
+    seed = (_ROOT / "tools" / "ui_probe" / "seed_session.py").read_text(
+        encoding="utf-8")
+    ctl = (_ROOT / "tools" / "ui_probe" / "server_ctl.py").read_text(
+        encoding="utf-8")
+    marker = [re.search(r'^PROBE_MARKER = "([^"]+)"', t, re.MULTILINE)
+              for t in (seed, ctl)]
+    code = ("void openFlowById(id).then(" in card,
+            "await openFlowById(id)" in quick,
+            "&& site.is_default !== true" in _ui(
+                "next/hubs/sky/finder/model.ts"),
+            (_ts_const(lock, "SITE_CTA_LABEL"),
+             _ts_const(lock, "UNPLACED_CTA_LABEL")),
+            all(marker) and marker[0].group(1) == marker[1].group(1))
+    assert code == (True, True, True, ("SET A SITE FIRST",
+                                       "POSITION HIDDEN FOR THIS ROLE"),
+                    True), (
+        f"(the card opening through openFlowById, the quick sheet too, a "
+        f"default site as none, the lock card's words, one probe marker) = "
+        f"{code}; section 8's S7 says so")
+    # #544, filed by H4 and fixed by its integration after this record first
+    # called it open. Its own assertions, so the tuple above keeps the
+    # failure recorded for it: the old sentence gone, and the code the new
+    # one describes, read with comments taken out.
+    stale = "still print a verdict for a sky nothing placed"
+    assert stale not in since, (
+        f"section 8's S7 still says {stale!r}; the H4 integration fixed "
+        f"#544")
+    patch = _ts_code(_ui("next/hubs/sky/cards/PatchCard.tsx"))
+    row = _ts_code(_ui("next/hubs/sky/cards/StatusRow.tsx"))
+    hub = _ts_code(_ui("next/hubs/sky/SkyHub.tsx"))
+    unplaced = (
+        'patch?.statusTxt ?? (unplaced ? null : "BELOW HORIZON")' in patch,
+        "{reachCount != null && (" in patch,
+        bool(re.search(r"\{reachCount == null\s*\?\s*<>Suggested targets",
+                       row)),
+        "model.placementNote != null && model.targets.length === 0" in hub)
+    assert unplaced == (True, True, True, True), (
+        f"(no status word for an unplaced patch, no count without one, no "
+        f"number on the status row without one, the hub's count withheld "
+        f"with nothing placed) = {unplaced}; section 8's S7 says so (#544)")
+
+
+def test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them():
+    """5.1 says what H4 built of a centring miss (H4, #534, #532, H4
+    orchestrator ruling 2): the miss judged at the pass boundary
+    (`centring_pass_verdict`), a pass whose two or more panels all missed
+    holding the group `CENTRING_HOLD_RETRY_S` with no strikes (the
+    boundary's ``centring_hold``, decided before the guide-start rule), a
+    streak's set-aside for now expiring once a night at `SET_ASIDE_EXPIRY_S`
+    or `SET_ASIDE_RISE_DEG` of rise (`set_aside_expiry`,
+    `_expire_set_aside`), the report's skip only for the night, a transient
+    solve's `solve_transient` striking nothing, and the hold bounded by
+    the window alone; and (H4, #537, #498, #507) a complete target owed
+    nothing dropped (`_drop_complete`), the gate scan reaching the
+    window's close, and an autofocus failure under skip reaching the
+    plain-stop row only after its sparse retry. #498's "open" is history.
+
+    The code: the numbers from `group_rules`; `centring_pass_verdict` and
+    `set_aside_expiry` by behaviour; `SOLVE_TRANSIENT` among the kinds;
+    the engine's ``centring_hold`` arm waiting `CENTRING_HOLD_RETRY_S`;
+    `_drop_complete` called at the start and at every selection; the scan's
+    last step clipped to its horizon.
+
+    RED under the spec mutant "the hold at 300 s" (its "(600 s)" made
+    "(300 s)"):
+
+        AssertionError: 5.1 must say: '`centring_hold` outcome, decided before
+        the guide-start rule, holds the group `CENTRING_HOLD_RETRY_S` (600 s)'
+        assert False
+
+    RED under the group_rules.py mutant "one miss of one is the sky" (the
+    verdict's ``attempted >= 2`` made ``attempted >= 1``):
+
+        AssertionError: ((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed; half
+        the rise before the time; the transient kind a kind), (the hold arm's
+        wait, the drop's calls, the scan to the horizon)) = ((('sky', 'sky',
+        'panel'), None, True), (True, 2, True)); 5.1 says so
+        assert ((('sky', 'sk...rue, 2, True)) == ((('sky', 'pa...rue, 2, True))
+          At index 0 diff: (('sky', 'sky', 'panel'), None, True) != (('sky',
+          'panel', 'panel'), None, True)
+          Use -v to get more diff
+
+    RED under the engine.py mutant "the hold waits the deferral's 300 s"
+    (``wait_s=CENTRING_HOLD_RETRY_S,`` taken out of the ``centring_hold``
+    arm):
+
+        AssertionError: ((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed; half
+        the rise before the time; the transient kind a kind), (the hold arm's
+        wait, the drop's calls, the scan to the horizon)) = ((('sky', 'panel',
+        'panel'), None, True), (False, 2, True)); 5.1 says so
+        assert ((('sky', 'pa...lse, 2, True)) == ((('sky', 'pa...rue, 2, True))
+          At index 1 diff: (False, 2, True) != (True, 2, True)
+          Use -v to get more diff
+
+    RED under the schedule.py mutant "whole steps again" (the scan's ``t =
+    min(now + i * _PEAK_STEP_S, horizon)`` made ``t = now + i *
+    _PEAK_STEP_S``):
+
+        AssertionError: ((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed; half
+        the rise before the time; the transient kind a kind), (the hold arm's
+        wait, the drop's calls, the scan to the horizon)) = ((('sky', 'panel',
+        'panel'), None, True), (True, 2, False)); 5.1 says so
+        assert ((('sky', 'pa...ue, 2, False)) == ((('sky', 'pa...rue, 2, True))
+          At index 1 diff: (True, 2, False) != (True, 2, True)
+          Use -v to get more diff
+
+    SINCE THE H4-DOC VERIFIER 5.1 cites what is filed against ruling 2 as
+    written, where it says what each is about: the hold that has no bound
+    but the window logs its one line at info, which the alert dispatcher
+    does not forward (#563), and the rise branch can end a set-aside before
+    its time only within `_rise_latitude_bound` of the equator (about 28
+    degrees at 10 degrees in 45 minutes), so an early expiry tells a viewer
+    that much (#564). Both issues were filed before H4-DOC ran. In the
+    verifier's private copy (the session scratchpad's ``H4-DOC-verify-mut``,
+    each file from a byte backup, sha256 checked after), on the spec as
+    H4-DOC left it:
+
+        AssertionError: 5.1 must say: 'waits all night, its line at info,
+        which no alert sink is sent (#563;'
+        assert False
+
+    RED under the spec mutant "the bound at 27" (its "within about 28
+    degrees" made "27", the solar rate's answer and the issue's):
+
+        AssertionError: 5.1 must say: 'but a rise of 10 degrees inside 45
+        minutes is possible only within about 28 degrees of the equator, so
+        an expiry before the time tells a viewer that much, #564)'
+        assert False
+
+    RED under the engine.py mutant "the hold alerts" (the arm's
+    ``bus.log("info", ...)`` made ``bus.log("warning", ...)``):
+
+        AssertionError: the centring hold's arm logs at ['warning']; 5.1 says
+        its one line is at info, which no alert sink is sent (#563)
+        assert ['warning'] == ['info']
+          At index 0 diff: 'warning' != 'info'
+          Use -v to get more diff
+    """
+    from astrodeck.sequence import group_rules
+    from astrodeck.sequence import schedule
+    hold = group_rules.CENTRING_HOLD_RETRY_S
+    expiry = group_rules.SET_ASIDE_EXPIRY_S
+    rise = group_rules.SET_ASIDE_RISE_DEG
+    s51 = _section("5.1")
+    _says(s51, ("**As built since H4, a centring miss and the pass it falls "
+                "in** (H4, #534, #532, H4 orchestrator ruling 2).",
+                "(`centring_pass_verdict`, over the panels the pass visited, "
+                "each once)", "When at least two were attempted and every "
+                "one missed, the sky or the geometry is to blame",
+                f"`centring_hold` outcome, decided before the guide-start "
+                f"rule, holds the group `CENTRING_HOLD_RETRY_S` ({hold:g} s)",
+                "A miss beside a panel that centred is that panel's, and "
+                "counts.", f"`SET_ASIDE_EXPIRY_S` ({expiry:g} s) after it or "
+                f"once the panel's centre has risen `SET_ASIDE_RISE_DEG` "
+                f"({rise:g} degrees) since, whichever comes first",
+                "(`set_aside_expiry`;", "(`_expire_set_aside`)",
+                "The report marks a panel skipped only when it is set aside "
+                "for the night.", "kind `solve_transient`, which strikes "
+                "nothing and which the centring rule leaves out (5.6 step 4)",
+                "The hold has no bound but the window",
+                "**Since H4 a complete target owed nothing leaves the run, "
+                "and the scan covers the window** (H4, #537, #498, #507).",
+                "(`_drop_complete`)", "(`GroupRun.note_complete`)",
+                "(`_accepted_now`;", "`_time_to_gate` steps to the window's "
+                "close and no further", "with no stop the scan covers the "
+                "full sidereal day", "An autofocus that fails under skip "
+                "reaches the plain-stop row only after its sparse-field "
+                "retry (5.6 step 6)."), "5.1")
+    verdict = group_rules.centring_pass_verdict
+    t0 = 1_700_000_000.0
+    behaviour = ((verdict(2, 2), verdict(1, 1), verdict(3, 2)),
+                 group_rules.set_aside_expiry(now=t0 + 60, set_at=t0,
+                                              alt_at_set=20.0,
+                                              alt_now=20.0 + rise / 2),
+                 group_rules.SOLVE_TRANSIENT in group_rules.DEFERRAL_KINDS)
+    engine_src = inspect.getsource(engine_mod)
+    arm = engine_src[engine_src.index(
+        'elif end.boundary == "centring_hold":'):]
+    arm = arm[:arm.index("run.start_pass()")]
+    scan = inspect.getsource(schedule._time_to_gate)
+    code = ("wait_s=CENTRING_HOLD_RETRY_S" in arm,
+            engine_src.count("self._drop_complete(remaining, index_of)"),
+            "t = min(now + i * _PEAK_STEP_S, horizon)" in scan
+            and "math.ceil((horizon - now) / _PEAK_STEP_S)" in scan)
+    got = (behaviour, code)
+    assert got == ((("sky", "panel", "panel"), None, True), (True, 2, True)), (
+        f"((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed; half the rise "
+        f"before the time; the transient kind a kind), (the hold arm's wait, "
+        f"the drop's calls, the scan to the horizon)) = {got}; 5.1 says so")
+    # What is filed against ruling 2 as written, where 5.1 says what it is
+    # about: the hold's line at info, which the alert dispatcher does not
+    # forward (it sends warning and error lines), so a rig fault holds all
+    # night unannounced (#563); and the rise branch's timing, which can end
+    # a set-aside early only near the equator (#564). Their own assertion,
+    # so the tuple above keeps the failures recorded for it.
+    bound = round(_rise_latitude_bound())
+    _says(s51, ("waits all night, its line at info, which no alert sink is "
+                "sent (#563;", f"but a rise of {rise:g} degrees inside "
+                f"{expiry / 60:g} minutes is possible only within about "
+                f"{bound} degrees of the equator, so an expiry before the "
+                f"time tells a viewer that much, #564)"), "5.1")
+    logs = re.findall(r'bus\.log\("(\w+)"', arm)
+    assert logs == ["info"], (
+        f"the centring hold's arm logs at {logs}; 5.1 says its one line is "
+        f"at info, which no alert sink is sent (#563)")
+
+
+def test_5_6_says_the_hop_as_h4_built_it():
+    """5.6 says what H4 built of the hop (H4, #531, #526, #532, #507, #534,
+    H4 orchestrator rulings 2 to 4): the rotate loop, the rotator sync and
+    the guide-offset frame borrowing the solve filter, and a narrowband
+    frame's verdict naming its filter; the one-side approach
+    `ROTATOR_BACKLASH_DEG` past and back, direct at a range's edge, and the
+    follow line under `ROTATE_FOLLOW_FRACTION`; a solve frame per name,
+    retried `SOLVE_WRITE_ATTEMPTS` times and then transient; the sky angle
+    after an untouched slew; a miss judged with its pass and a held solve
+    striking nothing (step 4); and the sparse-field retry at twice the
+    exposure under `SPARSE_FIELD_WARN`, the carry-on and the owed re-sweep
+    (step 6).
+
+    The code: the hub's three solving paths each borrowing and returning
+    the wheel; light.py's `NARROWBAND` and its words; `one_sided_moves` by
+    behaviour, the edge included; the hub's constants; the report's keys;
+    native.py's line; the retry's doubled exposure.
+
+    RED under the spec mutant "the overshoot at 3 degrees" (step 3's "(5
+    degrees)" made "(3 degrees)"):
+
+        AssertionError: 5.6 must say: 'a move that travels the other way goes
+        `ROTATOR_BACKLASH_DEG` (5 degrees) past its target and comes back to
+        it'
+        assert False
+
+    RED under the hub.py mutant "the rotate solves through the run's
+    filter" (`_rotate_to_pa_attempts`'s borrow taken out, the call made
+    ``None``):
+
+        AssertionError: (the paths borrowing and returning the wheel, the
+        verdict's kind, its words, (a move down, a move to within the edge,
+        said), the report's keys, the retry doubled, the approach carried out)
+        = (['measure_guide_offset', 'sync_rotator_to_sky'], 'narrowband', True,
+        ((5.0, 10.0), (3.0,), True), True, True, True); 5.6 says so
+        assert (['measure_gu...ue, True, ...) == (['_rotate_to...ue, True, ...)
+          At index 0 diff: ['measure_guide_offset', 'sync_rotator_to_sky'] !=
+          ['_rotate_to_pa_attempts', 'measure_guide_offset',
+          'sync_rotator_to_sky']
+          Use -v to get more diff
+
+    RED under the rotation.py mutant "no edge at mechanical 0" (the full
+    range's ``else 0.0`` edge made ``else None`` and asked only on a
+    limited range):
+
+        AssertionError: (the paths borrowing and returning the wheel, the
+        verdict's kind, its words, (a move down, a move to within the edge,
+        said), the report's keys, the retry doubled, the approach carried out)
+        = (['_rotate_to_pa_attempts', 'measure_guide_offset',
+        'sync_rotator_to_sky'], 'narrowband', True, ((5.0, 10.0), (358.0, 3.0),
+        False), True, True, True); 5.6 says so
+        assert (['_rotate_to...ue, True, ...) == (['_rotate_to...ue, True, ...)
+          At index 3 diff: ((5.0, 10.0), (358.0, 3.0), False) != ((5.0, 10.0),
+          (3.0,), True)
+          Use -v to get more diff
+    """
+    from astrodeck import hub as hub_mod
+    from astrodeck import rotation
+    from astrodeck.focus import native as native_mod
+    from astrodeck.sequence import report as report_mod
+    from astrodeck.solve import light
+    back = rotation.ROTATOR_BACKLASH_DEG
+    follow = hub_mod.ROTATE_FOLLOW_FRACTION
+    tries = hub_mod.SOLVE_WRITE_ATTEMPTS
+    sparse = native_mod.SPARSE_FIELD_WARN
+    s56 = _section("5.6")
+    _says(s56, ("**As built since H4, the rotate's solve and its approach** "
+                "(H4, #531, #526, #532, H4 orchestrator ruling 3).",
+                "(`_rotate_to_pa_attempts`), the rotator sync "
+                "(`sync_rotator_to_sky`) and the guide-offset measurement's "
+                "imaging frame borrow the solve filter exactly as "
+                "`solve_and_sync` does", "(`_narrowband_filter_loaded`)",
+                "`NARROWBAND`, \"little light through the narrowband filter "
+                "'S'\", raised as a plain `FailedSolveError` and never "
+                "`NoLightError`", f"a move that travels the other way goes "
+                f"`ROTATOR_BACKLASH_DEG` ({back:g} degrees) past its target "
+                f"and comes back to it", "or mechanical 0 on a full range, "
+                "goes direct and says so", f"under `ROTATE_FOLLOW_FRACTION` "
+                f"({follow:g}) of the commanded one logs \"the rotator moved "
+                f"but the camera did not\"", "`captures/_solve/<kind>-<12 "
+                f"hex>.fits`", f"`SOLVE_WRITE_ATTEMPTS` ({tries}) in all",
+                "`latest-<kind>.fits`", "`solve_transient: True` beside "
+                "`solve_failed`, or beside `rotation_skipped`",
+                "the session report's `sky_angles` rows (`_record_sky_angle`, "
+                "`_rotator_untouched`, `SessionReporter.record_sky_angle`, "
+                "`SKY_ANGLE_KEYS`;", "(6.9, #567)",
+                "**Since H4 a miss is judged with its pass** (H4, #534, #532, "
+                "H4 orchestrator ruling 2).", "(`_group_hop_checks`; "
+                "`test_h4_transient_solve_end_to_end.py`)",
+                "**As built since H4, a sparse field** (H4, #507, H4 "
+                "orchestrator ruling 4).", f"fewer than `SPARSE_FIELD_WARN` "
+                f"({sparse}) stars", "retries it once at twice the exposure, "
+                "with the same filter, gain and binning, before "
+                "`af_failure_action` applies", "(`_carry_on_after_sparse_"
+                "failures`)", "(`_note_sparse_resweep`)", "(#558)"), "5.6")
+    hub_src = inspect.getsource(hub_mod.Hub)
+    borrowing = sorted(name for name in ("_rotate_to_pa_attempts",
+                                         "sync_rotator_to_sky",
+                                         "measure_guide_offset")
+                       if _self_calls(_tree(getattr(hub_mod.Hub, name)),
+                                      "_borrow_wheel_for_solve")
+                       and _self_calls(_tree(getattr(hub_mod.Hub, name)),
+                                       "_return_wheel_after_solve"))
+    edge = rotation.one_sided_moves(10.0, 3.0, "full", 0.0)
+    moves = (rotation.one_sided_moves(30.0, 10.0, "full", 0.0).moves,
+             edge.moves, edge.skipped is not None)
+    engine_src = inspect.getsource(engine_mod)
+    got = (borrowing, light.NARROWBAND,
+           "little light through the narrowband filter" in inspect.getsource(
+               light), moves,
+           {"exposed_at", "target", "pier_side", "mechanical_deg"}
+           <= set(report_mod.SKY_ANGLE_KEYS),
+           "result = await _sweep(2 * exposure_s)" in engine_src,
+           "_approach_rotator" in hub_src)
+    assert got == (["_rotate_to_pa_attempts", "measure_guide_offset",
+                    "sync_rotator_to_sky"], "narrowband", True,
+                   ((10.0 - back, 10.0), (3.0,), True), True, True, True), (
+        f"(the paths borrowing and returning the wheel, the verdict's kind, "
+        f"its words, (a move down, a move to within the edge, said), the "
+        f"report's keys, the retry doubled, the approach carried out) = "
+        f"{got}; 5.6 says so")
+
+
+def test_5_7_says_one_flip_point_as_h4_built_it():
+    """5.7 says that since H4 the gate and its hold aim at one flip point
+    (H4, #505): `_flip_point`, its zero the meridian unless the mount
+    reports a nearer limit, the band only at the meridian, handed from the
+    gate to the hold (`_flip_point_handed`), and `_flip_retry_past_s` asked
+    by it alone; and (#489) the process learns that the mount does not
+    flip early only from an attempt more than `MERIDIAN_SIDE_MARGIN_S`
+    before transit. #566 is filed from #505, and S7's "Open:" sentence is
+    history.
+
+    The code: `_flip_point` on a stand-in, a mount limit giving no band and
+    the meridian the band; the gate handing its point; the goto reading
+    the point's ``transit_at``.
+
+    RED under the spec mutant "the band past a mount limit" ("the band is
+    added past the zero only when the zero is the meridian itself" made
+    "the band is added past the zero"):
+
+        AssertionError: 5.7 must say: 'the band is added past the zero only
+        when the zero is the meridian itself'
+        assert False
+
+    RED under the spec mutant "the old Open: beside the new" (" Open: the
+    #127 trait is learned from attempts made past the meridian." put after
+    the "Until H4" sentence):
+
+        AssertionError: 5.7 still says #489 and #505 are open
+        assert not True
+
+    RED under the engine.py mutant "the band past any zero" (`_flip_point`'s
+    ``else:`` before ``past_s = ...`` taken away, so the band is added past
+    a mount limit too):
+
+        AssertionError: (a FlipPoint, the meridian's zero and band, a nearer
+        limit's zero and band, the gate handing its point) = (True, 'meridian',
+        15.0, 'mount limit', 15.0, True); 5.7 says so
+        assert (True, 'merid...', 15.0, True) == (True, 'merid...t', 0.0, True)
+          At index 4 diff: 15.0 != 0.0
+          Use -v to get more diff
+
+    SINCE THE H4-DOC VERIFIER the goto's half has an assertion of its own.
+    "The code" above named the goto reading the point's ``transit_at``, and
+    nothing here asserted it: every test in this file naming H4 or 5.7
+    passed under the engine.py mutant "the countdown from the lead again"
+    (``before_transit_s = point.transit_at - time.time()`` made
+    ``before_transit_s = lead_s``, #489's own shape), and under the mutant
+    "learning at the band's edge" (``before_transit_s >
+    MERIDIAN_SIDE_MARGIN_S`` made ``>=``), with this test as H4-DOC left
+    it, in the verifier's private copy (the session scratchpad's
+    ``H4-DOC-verify-mut``, from a byte backup, sha256 checked after):
+
+        21 passed, 148 deselected in 28.69s
+        21 passed, 148 deselected in 28.61s
+
+    RED under the first with the assertion:
+
+        AssertionError: (the goto's countdown read from the point's
+        transit_at, learning only more than the band before transit) =
+        (False, True); 5.7 says so
+        assert (False, True) == (True, True)
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    RED under the second:
+
+        AssertionError: (the goto's countdown read from the point's
+        transit_at, learning only more than the band before transit) =
+        (True, False); 5.7 says so
+        assert (True, False) == (True, True)
+          At index 1 diff: False != True
+          Use -v to get more diff
+
+    The learning itself, by behaviour, is
+    test_h4_flip_learns_before_transit.py's.
+    """
+    from astrodeck.sequence.engine import FlipPoint
+    margin = engine_mod.MERIDIAN_SIDE_MARGIN_S
+    s57 = _section("5.7")
+    _says(s57, ("Until H4 the #127 trait was learned from attempts made past "
+                "the meridian (#489)", "**Since H4 one flip point, and "
+                "learning only before transit** (H4, #505, #489).",
+                "(`_flip_point`, a `FlipPoint`)", "the band is added past "
+                "the zero only when the zero is the meridian itself",
+                "(`_flip_point_handed`)", "`_flip_retry_past_s` has one "
+                "asker, `_flip_point`", "The goto reads the point's "
+                "`transit_at` for #127's learning", "made more than "
+                "`MERIDIAN_SIDE_MARGIN_S` before transit with both side reads "
+                "made", "(#566, filed from #505)"), "5.7")
+    stale = "Open: the #127 trait is learned" in s57
+    assert not stale, "5.7 still says #489 and #505 are open"
+    # An invented site, not the rig's.
+    eng = SimpleNamespace(hub=SimpleNamespace(
+        site={"latitude": 10.0, "longitude": 20.0, "is_default": False}))
+    eng._flip_retry_past_s = lambda target: margin
+    from astrodeck.sequence import schedule
+    now = 1_700_000_000.0
+    # A target two hours east of the meridian at ``now``, so its crossing
+    # is ahead and a limit halfway there is nearer than it.
+    east = schedule.hours_to_meridian_flip(0.0, 20.0, now)
+    target = SimpleNamespace(id="t", name="A",
+                             ra_hours=(2.0 - east) % 24.0)
+    meridian = SequenceEngine._flip_point(eng, target, 0.0, None, now=now)
+    transit_h = (meridian.transit_at - now) / 3600.0
+    limit = SequenceEngine._flip_point(eng, target, 0.0, transit_h / 2,
+                                       now=now)
+    gate = ast.unparse(_tree(SequenceEngine._maybe_meridian_flip))
+    got = (isinstance(meridian, FlipPoint), meridian.zero,
+           meridian.past_s, limit.zero, limit.past_s,
+           "self._flip_point_handed = point" in gate)
+    assert got == (True, "meridian", margin, "mount limit", 0.0, True), (
+        f"(a FlipPoint, the meridian's zero and band, a nearer limit's zero "
+        f"and band, the gate handing its point) = {got}; 5.7 says so")
+    # The goto's half (#489): the countdown read from the point's
+    # ``transit_at`` as the goto is asked for, and only an attempt MORE than
+    # the band before transit teaches. Its own assertion, so the tuple
+    # above keeps the failures recorded for it.
+    learns = ("before_transit_s = point.transit_at - time.time()" in gate,
+              "if before_transit_s > MERIDIAN_SIDE_MARGIN_S and" in gate)
+    assert learns == (True, True), (
+        f"(the goto's countdown read from the point's transit_at, learning "
+        f"only more than the band before transit) = {learns}; 5.7 says so")
+
+
+def test_2_6_and_5_8_say_the_hold_and_the_latch_as_h4_built_them():
+    """2.6 says that since H4 an Abort or a SafetyAbort during a cloud hold
+    takes the hold off the published state, by one rule (`_hold_cleared`,
+    H4, #513), and that a centring set-aside that can still expire is set
+    aside for now while PANELS still words it "set aside tonight" (H4,
+    #534); 5.8 says a pause closes the idle latch it satisfied (H4, #530)
+    and that `_monitor_to_read`'s second half is now held by a case with
+    the plan's check off. S7's "Open:" sentence on #530 is history.
+
+    The code: `_hold_cleared` asked by the hold's exit and by `abort`; the
+    pause's close-out closing `_idle_hold_open`; the guard's two halves;
+    the engine's "for now" words.
+
+    RED under the spec mutant "5.8 back to open" (its "Until H4, after a
+    safety pause ..." sentence put back as "Open: ..."):
+
+        AssertionError: 5.8 must say: "Until H4, after a safety pause with no
+        target to re-acquire, the scheduler wait's idle look called the stopped
+        mount still tracking and stopped it again (#530)."
+        assert False
+
+    RED under the spec mutant "the old Open: beside the new" (" Open: after
+    a safety pause with no target to re-acquire, it stops it again." put
+    after 5.8's "Until H4" sentence):
+
+        AssertionError: 5.8 still says #530 is open
+        assert not True
+
+    RED under the engine.py mutant "the abort keeps the hold" (`abort`'s
+    ``**self._hold_cleared()`` taken out of its aborting publish):
+
+        AssertionError: (the callers of _hold_cleared, the pause closing the
+        latch, the guard's two halves, the for-now words) =
+        (['_hold_for_clear'], True, True, True); 2.6 and 5.8 say so
+        assert (['_hold_for_...e, True, True) == (['_hold_for_...e, True, True)
+          At index 0 diff: ['_hold_for_clear'] != ['_hold_for_clear', 'abort']
+          Use -v to get more diff
+    """
+    s26 = _section("2.6")
+    s58 = _section("5.8")
+    _says(s26, ("**As built since H4** (H4, #513, #534).",
+                "by one rule for both (`_hold_cleared`; "
+                "`test_h4_abort_clears_the_hold.py`)",
+                "\"current panel, run stopping\" through an Abort, never "
+                "\"holding for cloud\"", "\"set aside for now, not for the "
+                "night\"", "PANELS still words it \"set aside tonight\", "
+                "because `types.ts`'s `SetAsideRecord` does not carry the "
+                "record's kind"), "2.6")
+    _says(s58, ("Until H4, after a safety pause with no target to "
+                "re-acquire, the scheduler wait's idle look called the "
+                "stopped mount still tracking and stopped it again (#530).",
+                "**Since H4 a pause closes the idle latch it satisfied, and "
+                "an Abort clears the hold** (H4, #530, #513).",
+                "closes the idle latch (`_idle_hold_open`) once its stop is "
+                "confirmed, before the re-check of the target's floor",
+                "(`_hold_cleared`, 2.6)", "`_monitor_to_read` answers a "
+                "monitor only while the gate is armed and the plan asks for "
+                "its safety check", "(`test_h4_monitor_to_read_needs_safety_"
+                "check.py`)"), "5.8")
+    stale = "Open: after a safety pause with no target" in s58
+    assert not stale, "5.8 still says #530 is open"
+    engine_src = inspect.getsource(engine_mod)
+    askers = sorted(name for name in ("abort", "_hold_for_clear")
+                    if "self._hold_cleared()" in ast.unparse(
+                        _tree(getattr(SequenceEngine, name))))
+    pause = ast.unparse(_tree(SequenceEngine._park_hold_pause))
+    monitor = ast.unparse(_tree(SequenceEngine._monitor_to_read))
+    got = (askers, "self._idle_hold_open = False" in pause,
+           "plan.safety_check" in monitor and "safety.enabled" in monitor,
+           "for now, not for the night" in engine_src)
+    assert got == (["_hold_for_clear", "abort"], True, True, True), (
+        f"(the callers of _hold_cleared, the pause closing the latch, the "
+        f"guard's two halves, the for-now words) = {got}; 2.6 and 5.8 say so")
+
+
+def test_5_9_says_the_night_the_list_and_the_card_as_h4_built_them():
+    """5.9 says what H4 built across nights (H4, #511, #430, #487, #512,
+    #527, #534): the progress route's `continue_night`, from
+    `Session.night_at`, printed by `runCopy`, the counts alone without it;
+    `SessionStore.list` counting observing nights; the interrupted card's
+    `end_reason`, `RESTART_END_REASON` from `_why_dormant`; a folder move
+    that is no version; a restart waiting for a centring set-aside's
+    expiry; and no DUSK or DAWN boundary placed with no site saved, said
+    by the engine and by ResumeArm (`_dusk_without_a_site`), with #559,
+    #540 and #543 filed.
+
+    The code: `continue_night` by behaviour against `night_at`; the list's
+    row as its source writes it (the list's behaviour is
+    test_h4_sessions_list_counts_nights.py's); `rename_folder` writing the
+    folder alone; `resolve_window` asking `site_lat_lon`.
+
+    RED under the spec mutant "5.9's night plus one again" (the H4
+    paragraph's "`continue_night`" made "`nights` plus one"):
+
+        AssertionError: 5.9 must say: "adds `continue_night` to a dormant
+        session, the night CONTINUE's run would answer, from `Session.night_at`
+        at the request's own time (`progress.continue_night`)"
+        assert False
+
+    RED under the session.py mutant "the list counts runs" (the row's
+    ``len(s.observing_nights())`` made ``len(s.nights)``):
+
+        AssertionError: (the route's night the run's, the list counting
+        observing nights, a folder rename writing no saved time, the window
+        asking for a site) = (True, False, True, True); 5.9 says so
+        assert (True, False, True, True) == (True, True, True, True)
+          At index 1 diff: False != True
+          Use -v to get more diff
+    """
+    from astrodeck.flows import progress as progress_mod
+    from astrodeck.flows import store as store_mod
+    from astrodeck.sequence import schedule
+    from astrodeck.sequence.models import SequencePlan
+    s59 = _section("5.9")
+    _says(s59, ("**Since H4 CONTINUE's night comes from the route, and every "
+                "list counts nights** (H4, #511, #430, #487, #527, #534).",
+                "adds `continue_night` to a dormant session, the night "
+                "CONTINUE's run would answer, from `Session.night_at` at the "
+                "request's own time (`progress.continue_night`)", "with the "
+                "key absent prints the counts alone and no night",
+                "`SessionStore.list` answers `nights` as the session's "
+                "observing nights", "`RESTART_END_REASON` when the last "
+                "report records no ending and the session counts a crash "
+                "resume (`_why_dormant`)", "(#565)", "A restart the same "
+                "night waits for a centring set-aside's expiry rather than "
+                "skipping the panel", "`schedule.resolve_window` answers none "
+                "for it (`_resolve_event_ts`, over `site_gate.site_lat_lon`)",
+                "(`_dusk_without_a_site`;", "(#559)", "(#540)", "(#543)",
+                "Since H4 a folder move is not a version (H4, #512): "
+                "`rename_folder` writes the folder alone"), "5.9")
+    runs = session_mod.Session(
+        status="dormant", plan=SequencePlan(name="p", targets=[]),
+        nights=["m31-20260928-221500", "m31-20260929-013000"])
+    later = time.mktime(time.strptime("20260929-213000", "%Y%m%d-%H%M%S"))
+    listed = inspect.getsource(session_mod.SessionStore.list)
+    rename = ast.unparse(_tree(store_mod.FlowStore.rename_folder))
+    window = inspect.getsource(schedule.resolve_window)
+    got = (progress_mod.continue_night(runs, later) == runs.night_at(later),
+           '"nights": len(s.observing_nights())' in listed,
+           "self._edit_raw(path, raw, {'folder': new})" in rename,
+           "site_lat_lon" in window)
+    assert got == (True, True, True, True), (
+        f"(the route's night the run's, the list counting observing nights, "
+        f"a folder rename writing no saved time, the window asking for a "
+        f"site) = {got}; 5.9 says so")
+
+
+def test_5_10_says_the_readers_and_the_tunnel_as_h4_built_them():
+    """5.10 says what H4 built of what reaches a reader (H4, #476, #488,
+    #529, #480, #538, #485, #521): the #/next Monitor's mount read stamped
+    before its fetch; the wait line's meridian words with no time and the
+    server's words for any other wait; a flow's empty log worded by
+    whether its run is live; each subscription served on its own loop;
+    the alert dispatcher's outbox and gap line; the tunnel's gap marker for
+    an event it cannot encode; and the relay's end line and the rig's link
+    check.
+
+    The code: ``LiveScreen.tsx`` stamping before its fetch and asking per
+    type; `MERIDIAN_WAIT_TEXT`; the two log sentences, the same on both
+    canvases; `Subscription.home_loop`; the dispatcher's two constants;
+    `tunnel_end_line`.
+
+    RED under the LiveScreen.tsx mutant "the stamp after the fetch" (the
+    ``const stamp = snapshotStamp();`` line moved below the fetch):
+
+        AssertionError: (the mount read stamped first, the meridian words, no
+        Idle, both canvases' words the same, the home loop, the outbox and gap
+        room, the relay's end line) = (False, True, True, True, True, (32, 3),
+        True); 5.10 says so
+        assert (False, True,... (32, 3), ...) == (True, True, ... (32, 3), ...)
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    RED under the #/next FlowLogStrip.tsx mutant "Idle again" (its
+    ``EMPTY_LOG_TEXT`` made ``"Idle - no events yet"``):
+
+        AssertionError: (the mount read stamped first, the meridian words, no
+        Idle, both canvases' words the same, the home loop, the outbox and gap
+        room, the relay's end line) = (True, True, True, False, True, (32, 3),
+        True); 5.10 says so
+        assert (True, True, ... (32, 3), ...) == (True, True, ... (32, 3), ...)
+          At index 3 diff: False != True
+          Use -v to get more diff
+    """
+    from astrodeck import alerting
+    from astrodeck import events as events_mod
+    s510 = _section("5.10")
+    wait = _ts_const(_ui("lib/scheduleStatus.ts"), "MERIDIAN_WAIT_TEXT")
+    classic = _ui("components/flows/FlowLogStrip.tsx")
+    nxt = _ui("next/hubs/session/flows/canvas/FlowLogStrip.tsx")
+    empty = _ts_const(classic, "EMPTY_LOG_TEXT")
+    run_empty = _ts_const(classic, "RUN_EMPTY_LOG_TEXT")
+    _says(s510, ("**Since H4 the #/next Monitor keeps a newer event, a wait "
+                 "says what it waits for, and an empty log says why** (H4, "
+                 "#476, #488, #529).", "`LiveScreen.tsx`'s mount read takes "
+                 "`snapshotStamp()` before its fetch", "words a meridian wait "
+                 "as `MERIDIAN_WAIT_TEXT`, with no time", "any other wait "
+                 "prints the server's own words with no time",
+                 f"an empty log says \"{run_empty}\" while this flow's run is "
+                 f"live", f"and \"{empty}\" otherwise",
+                 "**Since H4 the bus serves each subscriber on its own loop, "
+                 "and the tunnel says what it dropped** (H4, #480, #538, "
+                 "#485, #521).", "(`Subscription.home_loop`)",
+                 "(`_send_loop`, `_OUTBOX_MAX`)", "(`_GAP_ROOM`)", "(#549)",
+                 "(#542)", "(`_send_ws_event`;", "(`tunnel_end_line`)",
+                 "(`LinkProbes`;", "(#556)"), "5.10")
+    live = _ui("next/hubs/monitor/live/LiveScreen.tsx")
+    stamped = (live.index("const stamp = snapshotStamp();")
+               < live.index("/api/monitor/snapshot")
+               and 'stamp.fresh("status")' in live
+               and 'stamp.fresh("sequence")' in live)
+    relay = (_ROOT / "relay" / "relay" / "server.py").read_text(
+        encoding="utf-8")
+    got = (stamped, wait.startswith("Waiting for the meridian"),
+           "Idle" not in empty + run_empty,
+           (_ts_const(nxt, "EMPTY_LOG_TEXT"),
+            _ts_const(nxt, "RUN_EMPTY_LOG_TEXT")) == (empty, run_empty),
+           "home_loop" in inspect.getsource(events_mod.Subscription),
+           (alerting._OUTBOX_MAX, alerting._GAP_ROOM),
+           "def tunnel_end_line(" in relay)
+    assert got == (True, True, True, True, True, (32, 3), True), (
+        f"(the mount read stamped first, the meridian words, no Idle, both "
+        f"canvases' words the same, the home loop, the outbox and gap room, "
+        f"the relay's end line) = {got}; 5.10 says so")
+
+
+def test_1_4_says_the_next_run_and_the_phone_control_as_h4_built_them():
+    """1.4 says that since H4 the #/next run is lowered by
+    `CARD_OVERHANG_PX` (H4, #357), computed in ``FlowNode.tsx`` from the
+    card's stack less `nodeLayoutHeight` of a card with no rows, through
+    `nextLoopArc` over `loopArcOf` and `geometry.lowerLoopRun`, the eighth
+    Example's run at 332 px where it was at 231 and 28 below the card as
+    drawn; that the classic phone remove control sits at a clear spot on
+    the arc (`phoneLoopSpot`, over `loopControlSpot` and `placedCards`,
+    #502); that three card states are filed as #554; and that the arc's
+    other way is the owner's (item 59).
+
+    The code: the overhang computed here from the constants beside the
+    card's classes and `nodeLayoutHeight`'s formula, 101; the three
+    numbers the sentence gives, each the others' sum with the overhang and
+    `LOOP_ARC_DROP`; `nextLoopArc`'s body; the phone path's call.
+
+    RED under the spec mutant "the overhang at 90 px" (its "(101 px)" made
+    "(90 px)"):
+
+        AssertionError: 1.4 must say: '`CARD_OVERHANG_PX` (101 px)'
+        assert False
+
+    RED under the FlowNode.tsx mutant "no EDIT STAGE in the budget" (``+
+    FOOT_GAP_PX + BUTTON_PX`` taken off `CARD_OVERHANG_PX`):
+
+        AssertionError: (the overhang's formula, its value, (the drawn bottom
+        the old run plus the overhang less the drop, the run the drop below
+        it), nextLoopArc's body, the phone control's spot) = (False, 101.0,
+        (True, True), True, True); 1.4 says so
+        assert (False, 101.0...), True, True) == (True, 101, (...), True, True)
+          At index 0 diff: False != True
+          Use -v to get more diff
+    """
+    node = _ui("next/hubs/session/flows/canvas/FlowNode.tsx")
+    geometry = _ui("components/flows/geometry.ts")
+    c = _py_consts(node, ("CARD_BORDER_PX", "CARD_HEAD_PX", "PORTS_PAD_PX",
+                          "FOOT_PAD_PX", "FOOT_GAP_PX", "FOOT_LINE_PX",
+                          "PILL_PX", "BUTTON_PX", "FOOTER_LINES"))
+    formula = ("export const CARD_OVERHANG_PX = 2 * CARD_BORDER_PX + "
+               "CARD_HEAD_PX + PORTS_PAD_PX + FOOT_PAD_PX + FOOTER_LINES * "
+               "FOOT_LINE_PX + FOOT_GAP_PX + PILL_PX + FOOT_GAP_PX + "
+               "BUTTON_PX - nodeLayoutHeight(NO_ROWS, NODE_DEFS);")
+    no_rows = ("return NODE_HEADER_H + nodeRows(node, defs) * PORT_ROW_H + "
+               "26;" in geometry)
+    header = _ts_const(geometry, "NODE_HEADER_H")
+    overhang = (2 * c["CARD_BORDER_PX"] + c["CARD_HEAD_PX"]
+                + c["PORTS_PAD_PX"] + c["FOOT_PAD_PX"]
+                + c["FOOTER_LINES"] * c["FOOT_LINE_PX"] + c["FOOT_GAP_PX"]
+                + c["PILL_PX"] + c["FOOT_GAP_PX"] + c["BUTTON_PX"]
+                - (header + 26))
+    drop = _ts_const(geometry, "LOOP_ARC_DROP")
+    s14 = _section("1.4")
+    para = _line(s14, "**As built since H4, the #/next run and the phone "
+                      "control** (H4, #357, #502).")
+    run, was, drawn = (int(n) for n in re.search(
+        r"the run is at (\d+) px, where it was at (\d+), 28 below the FILTER "
+        r"CYCLE card, whose drawn bottom is at (\d+)", para).groups())
+    wires = _flat(_ts_function(_ui(
+        "next/hubs/session/flows/canvas/FlowWires.tsx"), "nextLoopArc"))
+    delete = _ui("components/flows/FlowWireDelete.tsx")
+    got = (formula in _flat(node) and no_rows, overhang,
+           (drawn - was == overhang - drop, run - drawn == drop),
+           "const loop = loopArcOf(edge, graph, tier); return loop && "
+           "lowerLoopRun(loop, CARD_OVERHANG_PX);" in wires,
+           "phoneLoopSpot(loop, placedCards(nodes, tier, positions))"
+           in delete)
+    assert got == (True, 101, (True, True), True, True), (
+        f"(the overhang's formula, its value, (the drawn bottom the old run "
+        f"plus the overhang less the drop, the run the drop below it), "
+        f"nextLoopArc's body, the phone control's spot) = {got}; 1.4 says so")
+    _says(para, (f"`CARD_OVERHANG_PX` ({overhang:g} px)", "`nextLoopArc` in "
+                 "next's `FlowWires.tsx` still resolves the arc through "
+                 "`loopArcOf`", "(`geometry.lowerLoopRun`)", "the classic arc "
+                 "is unchanged, byte for byte", "(`phoneLoopSpot`, over "
+                 "`geometry.loopControlSpot` and the card boxes `placedCards` "
+                 "gives)", "filed as #554", "is the owner's to choose (owner "
+                 "list item 59)"), "1.4")
+
+
+def test_1_8_and_2_3_say_the_quick_line_and_the_sky_as_h4_built_them():
+    """1.8 says that since H4 an unguided quick flow keeps every sub under
+    the doctor's line (H4, #518, H4 orchestrator ruling 5): refused with a
+    422 before it generates (`_within_the_unguided_line`), naming the limit
+    and every filter past it, judged after rounding, the line read at call
+    time, and the #/next quick sheet showing it beside the Guide switch
+    (`UNGUIDED_NOTE`); and 2.3 says a WHERE result takes one tap and a
+    small or remounted sky says "no source" without waiting out the retry
+    (H4, #492, #493: `allFailingAt`, the verdict kept by survey). Their
+    "open" sentences are history.
+
+    The code: the refusal judged after rounding (a typed 119.6 refused as
+    the 120 written, naming the limit and the filter) and a sub a second
+    under the line made, by behaviour; the quick sheet's mirror equal to
+    the doctor's line; the result buttons' cancelled mousedown;
+    `allFailingAt`'s bounds.
+
+    RED under the spec mutant "the quick flow still open" (1.8's "Until H4
+    an unguided narrowband quick flow wrote" put back as "An unguided
+    narrowband quick flow still writes ... open (#518)."):
+
+        AssertionError: 1.8 must say: 'Until H4 an unguided narrowband quick
+        flow wrote 180 s subs'
+        assert False
+
+    RED under the spec mutant "the old words beside the new" (" Once the
+    first tap on a WHERE result is lost on a phone." put after "#491 is
+    still open."):
+
+        AssertionError: 1.8 and 2.3 still say ['the first tap on a WHERE result
+        is lost on a phone']; H4 fixed them
+        assert ['the first t...t on a phone'] == []
+          Left contains one more item: 'the first tap on a WHERE result is lost
+          on a phone'
+          Use -v to get more diff
+
+    RED under the quick.tsx mutant "the mirror at 180" (``export const
+    UNGUIDED_SUB_LINE_S = 120;`` made ``180``):
+
+        AssertionError: (the sheet's mirror the doctor's line, the result's
+        mousedown cancelled, allFailingAt's bounds) = (False, True, True); 1.8
+        and 2.3 say so
+        assert (False, True, True) == (True, True, True)
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    SINCE THE H4-DOC VERIFIER the refusal is asked here, by behaviour.
+    "The code" above named "the refusal at the line and none under it, by
+    behaviour", and nothing here asked it, so the spec's "a typed 119.6 is
+    refused as 120" was held by its words alone: every test in this file
+    naming H4 or 1.8 passed under the wizard.py mutant "judged as typed"
+    (`quick`'s ``_within_the_unguided_line(parse_cycle_plan(plan),
+    guided)`` handed the typed exposures instead of the slot table as
+    written), with this test as H4-DOC left it, in the verifier's private
+    copy (the session scratchpad's ``H4-DOC-verify-mut``, from a byte
+    backup, sha256 checked after):
+
+        20 passed, 149 deselected in 29.01s
+
+    RED under the same mutant with the refusal asked:
+
+        AssertionError: (a typed 119.6 refused as 120, naming the limit and
+        the filter; 119 made) = (False, 'FlowRecord'); 1.8 says so
+        assert (False, 'FlowRecord') == (True, 'FlowRecord')
+          At index 0 diff: False != True
+          Use -v to get more diff
+
+    The refusal at the line itself and under it is also owner list item
+    57's code half (test_the_owner_list_records_the_h4_orchestrator_
+    rulings), and every filter and channel shape is
+    test_h4_quick_unguided_line.py's.
+    """
+    from astrodeck.flows import doctor as doctor_mod
+    line = doctor_mod.UNGUIDED_SUB_LINE_S
+    s18 = _section("1.8")
+    _says(s18, ("Until H4 an unguided narrowband quick flow wrote 180 s subs",
+                "Since H4 (H4, #518, H4 orchestrator ruling 5) the quick flow "
+                "refuses, with a 422 and before it generates",
+                "(`_within_the_unguided_line`)", "so a typed 119.6 is refused "
+                f"as {line:g}", "the line is read from "
+                "`doctor.UNGUIDED_SUB_LINE_S` when the flow is asked for",
+                "(`UNGUIDED_NOTE`, over its mirror of the line, "
+                "`UNGUIDED_SUB_LINE_S`;"), "1.8")
+    s23 = _section("2.3")
+    _says(s23, ("until H4 the first tap on a WHERE result was lost on a phone "
+                "(#492)", "**As built since H4** (H4, #492, #493).",
+                "the result buttons cancel their mousedown",
+                "once `allFailingAt(need)` of its fetches have failed",
+                "held between 1 and 8", "FramingSky keeps that verdict in "
+                "module memory keyed by survey", "#491 is still open."),
+          "2.3")
+    stale = [s for s, text in (
+        ("An unguided narrowband quick flow still writes 180 s subs", s18),
+        ("the first tap on a WHERE result is lost on a phone", s23),
+        ("a view of fewer than 8 tiles says LOADING", s23)) if s in text]
+    assert stale == [], f"1.8 and 2.3 still say {stale}; H4 fixed them"
+    quick = _ui("next/hubs/session/flows/create/quick.tsx")
+    search = _ui("components/atlas/CatalogSearch.tsx")
+    engine = _ui("components/atlas/TileEngine.tsx")
+    got = (_ts_const(quick, "UNGUIDED_SUB_LINE_S") == line,
+           "onMouseDown={(e) => e.preventDefault()}" in search,
+           "return Math.max(1, Math.min(ALL_FAILING_CAP, need));" in engine
+           and _ts_const(engine, "ALL_FAILING_CAP") == 8)
+    assert got == (True, True, True), (
+        f"(the sheet's mirror the doctor's line, the result's mousedown "
+        f"cancelled, allFailingAt's bounds) = {got}; 1.8 and 2.3 say so")
+    # The refusal, by behaviour: judged on the sub as the flow would hold
+    # it, after rounding, so a typed line - 0.4 (119.6 at 120) is refused as
+    # the line, naming the limit and the filter; a sub a whole second under
+    # the line is made. Its own assertion, so the tuple above keeps the
+    # failure recorded for it.
+    from astrodeck.flows import wizard as wizard_mod
+    m31 = {"name": "M31", "ra": "00h 42m 44s", "dec": "+41 16 09"}
+    try:
+        wizard_mod.quick(m31, filters=["Ha"], guided=False,
+                         exposures_s={"Ha": line - 0.4})
+        refused = None
+    except ValueError as exc:
+        refused = str(exc)
+    under = wizard_mod.quick(m31, filters=["Ha"], guided=False,
+                             exposures_s={"Ha": line - 1})
+    judged = (refused is not None and f"under {line:g} s" in refused
+              and f"Ha {line:g} s is at or past it" in refused,
+              type(under).__name__)
+    assert judged == (True, "FlowRecord"), (
+        f"(a typed {line - 0.4:g} refused as {line:g}, naming the limit and "
+        f"the filter; {line - 1:g} made) = {judged}; 1.8 says so")
+
+
+def test_3_2_and_3_4_say_the_offset_and_the_record_as_h4_built_them():
+    """3.2 says a DUSK offset is whole minutes since H4 (H4, #483): a finite
+    fractional offset refused on every DUSK WINDOW in words naming the
+    card, the node, the value and the whole minutes either side
+    (`WHOLE_MINUTE_PARAMS`, `WHOLE_MINUTES_REFUSAL`), an infinity or a NaN
+    not refused, and a refused schedule field named by the card that holds
+    it (`_dusk_fields`); and 3.4 says a set-aside record carries `kind`,
+    `ts` and `expired` since H4 (H4, #534), with `note_set_aside_expired`,
+    `set_aside_on` leaving an expired record out and `set_aside_expiries_on`.
+
+    The code: the refusal's words, filled for the spec's example; the
+    session's three methods by behaviour.
+
+    RED under the spec mutant "3.2's example at -30.5" (its "-30.7" made
+    "-30.5" in the quoted refusal only):
+
+        AssertionError: 3.2 must say: '"DUSK WINDOW \'n1\': \'offset\' is
+        -30.7, and the window opens a whole number of minutes from dusk: use
+        -31 or -30"'
+        assert False
+
+    RED under the spec mutant "the old Open: beside the new" (" Open: a
+    fractional DUSK offset is stored." put after 3.2's "Until H4"
+    sentence):
+
+        AssertionError: 3.2 still says #483 is open; H4 fixed it
+        assert not True
+
+    RED under the session.py mutant "an expired record still counts"
+    (`set_aside_on` returning every record of the night, expired or not):
+
+        AssertionError: (tonight's standing set-asides, tonight's expiries) =
+        (['p1', 'p2'], {'p1': 1}); 3.4 says an expired record is left out and
+        counted
+        assert (['p1', 'p2'], {'p1': 1}) == (['p2'], {'p1': 1})
+          At index 0 diff: ['p1', 'p2'] != ['p2']
+          Use -v to get more diff
+    """
+    from astrodeck.flows import models as flow_models
+    from astrodeck.sequence.models import SequencePlan
+    s32 = _section("3.2")
+    words = flow_models.WHOLE_MINUTES_REFUSAL.format(
+        label="DUSK WINDOW", node="n1", key="offset", value=-30.7,
+        floor=-31, ceil=-30)
+    _says(s32, ("**As built since H4** (H4, #483).", f"\"{words}\"",
+                "(`WHOLE_MINUTE_PARAMS`, `WHOLE_MINUTES_REFUSAL`)",
+                "an infinity, a NaN or an integer past a float's range is not "
+                "refused", "(`_dusk_fields`, beside `_pool_overrides`)"),
+          "3.2")
+    stale = "Open: a fractional DUSK offset is stored" in s32
+    assert not stale, "3.2 still says #483 is open; H4 fixed it"
+    s34 = _section("3.4")
+    _says(s34, ("Since H4 (H4, #534, H4 orchestrator ruling 2) a record also "
+                "carries `kind` and `ts`", "`note_set_aside_expired` marks a "
+                "centring set-aside expired and saves it at once",
+                "`set_aside_on` leaves an expired record out",
+                "`set_aside_expiries_on` counts tonight's expiries per target",
+                "Only a set-aside for the night is still never retried that "
+                "night."), "3.4")
+    s = session_mod.Session(status="dormant",
+                            plan=SequencePlan(name="p", targets=[]))
+    s.note_set_aside("p1", "centring failed", night="2026-09-29",
+                     kind="centring", ts=1.0)
+    s.note_set_aside("p2", "the floor", night="2026-09-29", kind="floor",
+                     ts=2.0)
+    s.note_set_aside_expired("p1", night="2026-09-29")
+    got = (sorted(r["target_id"] for r in s.set_aside_on("2026-09-29")),
+           s.set_aside_expiries_on("2026-09-29"))
+    assert got == (["p2"], {"p1": 1}), (
+        f"(tonight's standing set-asides, tonight's expiries) = {got}; 3.4 "
+        f"says an expired record is left out and counted")
+
+
+def test_3_3_and_s3_say_the_guider_and_the_budget_as_h4_built_them():
+    """3.3 says the rig facts carry the guider since H4 (H4, #506): four
+    fields, the resolved guider with its own settle (`_guider_and_settle`,
+    `NATIVE_GUIDE_SETTLE` 1.5 px for 10 s, PHD2's 1.5 px for 8 s, none for
+    NINA or an unwired last resort), the dither distance and cadence, and
+    the brief's GUIDE sentence from these alone (`_guide_clause`); and
+    section 8's S3 item 5 says BUDGET counts the flow's own targets from
+    the ledger's summaries (H4, #536, H4 orchestrator ruling 6:
+    `flow_target_names`, `_FOR_THESE`, `_write_summary`,
+    `SessionReporter.summaries`), with #562 filed.
+
+    The code: `NATIVE_GUIDE_SETTLE` and PHD2's settle, the numbers the
+    sentence gives; `_guide_clause` reading the rig facts and no param;
+    the summaries' folder; the route handing BUDGET the flow's own names.
+
+    RED under the app.py mutant "the native settle at 2 px" (``NATIVE_GUIDE_
+    SETTLE = (1.5, 10.0)`` made ``(2.0, 10.0)``):
+
+        AssertionError: 3.3 must say: '`NATIVE_GUIDE_SETTLE`, 2 px for 10 s'
+        assert False
+
+    RED under the spec mutant "BUDGET over every flow" (S3 item 5's
+    "`flow_target_names`" taken out of its H4 sentence):
+
+        AssertionError: section 8's S3 item 5 must say: '(`flow_target_names`:
+        a single target and a pool member by name, a mosaic by its live panels,
+        never the bare block name)'
+        assert False
+    """
+    import astrodeck.api.app as app_mod
+    from astrodeck.flows import tonight as tonight_mod
+    from astrodeck.guide.phd2 import SETTLE as phd2_settle
+    from astrodeck.sequence import report as report_mod
+    native = app_mod.NATIVE_GUIDE_SETTLE
+    phd2 = (phd2_settle["pixels"], phd2_settle["time"])
+    s33 = _section("3.3")
+    _says(s33, ("**Since H4 the rig facts carry the guider** (H4, #506).",
+                "`guide_provider`, `guide_settle`, `guide_dither_px` and "
+                "`guide_dither_every`",
+                f"`NATIVE_GUIDE_SETTLE`, {native[0]:g} px for {native[1]:g} "
+                f"s", f"PHD2's {phd2[0]:g} px for "
+                f"{phd2[1]:g} s", "none for NINA", "and no guider at all "
+                "while the resolver's only answer is the bridge",
+                "(`_guide_clause`; section 8's S3 item 5;"), "3.3")
+    item5 = _line(_section("S3:"), "Item 4 is the `KIND_MOSAIC` kind")
+    _says(item5, ("**Since H4 BUDGET counts this flow's own targets** (H4, "
+                  "#536, H4 orchestrator ruling 6)", "(`flow_target_names`: a "
+                  "single target and a pool member by name, a mosaic by its "
+                  "live panels, never the bare block name)",
+                  f"each BUDGET row says \"banked "
+                  f"{tonight_mod._FOR_THESE}\" (`_FOR_THESE`)",
+                  "(`_write_summary`, `captures/reports/summaries/<stem>."
+                  "json`)", "(`SessionReporter.summaries`)", "(#562)",
+                  "The brief's GUIDE sentence is the rig's"),
+          "section 8's S3 item 5")
+    clause = ast.unparse(_tree(tonight_mod._guide_clause))
+    route = _app_function("flow_tonight")
+    got = ("rig." in clause and "params" not in clause,
+           report_mod._summaries_dir().name,
+           "targets=flow_target_names(rec.graph, rec.name)" in route)
+    assert got == (True, "summaries", True), (
+        f"(the guide clause reading the rig facts and no param, the "
+        f"summaries' folder, BUDGET handed the flow's names) = {got}; 3.3 "
+        f"and S3 item 5 say so")
+
+
+def test_6_9_says_no_route_takes_a_place_in_its_query_as_h4_built_it():
+    """Section 6's 6.9 row says that since H4 no route takes a place or a
+    pointing in its query string (H4, #520, H4 orchestrator ruling 1): the
+    cloud map at the telescope reads the mount, a picked point and a site
+    to preview travel in a POST body, the site behind `view.site_precise`,
+    a GET naming `alt`, `az`, `lat`, `lon` or `site` refused 422
+    `site_query_refused` (`_refuse_site_query`), and the relay's logs
+    writing the path with the query withheld; with #550 and #567 filed.
+
+    The code: the refused names and the code; the site preview's POST
+    declared with the precise-site capability, its place read from its
+    body model alone; the relay's formatter substituting `QUERY_WITHHELD`;
+    the UI's scan test in the tree.
+
+    RED under the spec mutant "6.9 names lat as allowed" (its "`alt`,
+    `az`, `lat`, `lon` or `site`" made "`alt`, `az`, `lon` or `site`"):
+
+        AssertionError: 6.9 must say: 'a GET still carrying `alt`, `az`, `lat`,
+        `lon` or `site` is refused, 422 `site_query_refused`'
+        assert False
+
+    RED under the app.py mutant "the site in the GET again" (``site``
+    taken out of `_SITE_QUERY_NAMES`):
+
+        AssertionError: 6.9 must say: 'a GET still carrying `alt`, `az`, `lat`
+        or `lon` is refused, 422 `site_query_refused`'
+        assert False
+
+    SINCE THE H4-DOC VERIFIER "the preview reading its body" reads the
+    body. It was ``"lat" in preview``, which any mention of the word
+    answers: every test in this file naming H4 or 6.9 passed under the
+    app.py mutant "the place in the query again" (`site_sky_preview`'s
+    ``body: SiteSkyPreviewBody`` made ``lat: float, lon: float``, which
+    FastAPI reads from a POST's query string, and its answer made
+    ``_site_sky_answer(lat, lon, principal)``), with this test as H4-DOC
+    left it, in the verifier's private copy (the session scratchpad's
+    ``H4-DOC-verify-mut``, from a byte backup, sha256 checked after):
+
+        18 passed, 151 deselected in 29.20s
+
+    RED under the same mutant with the parameters and the answer read:
+
+        AssertionError: (the refused names, the refusal's code, the
+        preview's capability, the relay's formatter, the UI's scan, the
+        preview reading its body) = (['alt', 'az', 'lat', 'lon', 'site'],
+        True, ('CAP_VIEW_SITE_PRECISE', 'view.site_precise'), True, True,
+        False); 6.9 says so
+        assert (['alt', 'az'..., True, False) == (['alt', 'az'...e, True, True)
+          At index 5 diff: False != True
+          Use -v to get more diff
+
+    And the row names the rise branch's timing beside the report's rows
+    (#564, filed before H4-DOC ran): a set-aside that expires before its
+    45 minutes can do so only near the equator. On the spec as H4-DOC left
+    it, in the same copy:
+
+        AssertionError: 6.9 must say: '(#567), and the moment a centring
+        set-aside expires before its 45 minutes (#564)'
+        assert False
+    """
+    import astrodeck.api.app as app_mod
+    from astrodeck.sequence import group_rules
+    row = [ln for ln in _spec().splitlines() if ln.startswith("| 6.9 |")]
+    assert len(row) == 1
+    names = sorted(app_mod._SITE_QUERY_NAMES)
+    spelled = ", ".join(f"`{n}`" for n in names[:-1]) + f" or `{names[-1]}`"
+    _says(row[0], ("**Since H4 no route takes a place or a pointing in its "
+                   "query string** (H4, #520, H4 orchestrator ruling 1).",
+                   "(`GET /api/cloudmap/at` takes only `ahead_s`)",
+                   "behind `view.site_precise`", f"a GET still carrying "
+                   f"{spelled} is refused, 422 `site_query_refused`",
+                   "(`_refuse_site_query`)", "(`QUERY_WITHHELD`, "
+                   "`PathOnlyAccessFormatter`)", "(#550)", "(#567)",
+                   # The rise branch's timing (#564), in the privacy row.
+                   f"(#567), and the moment a centring set-aside expires "
+                   f"before its {group_rules.SET_ASIDE_EXPIRY_S / 60:g} "
+                   f"minutes (#564)"), "6.9")
+    preview_def = _app_def("site_sky_preview")
+    preview = ast.unparse(preview_def)
+    # The place comes from the body model and nowhere else: a scalar
+    # parameter on a POST is read from the query string, #520's leak.
+    params = [(a.arg, ast.unparse(a.annotation) if a.annotation else None)
+              for a in preview_def.args.args]
+    from_body = (params == [("body", "SiteSkyPreviewBody"),
+                            ("principal", "Principal")]
+                 and "_site_sky_answer(body.lat, body.lon, principal)"
+                 in preview)
+    app_src = APP.read_text(encoding="utf-8")
+    decl = re.search(r'@app\.post\("/api/site/sky"\)\n\s+@declare\((\w+)\)',
+                     app_src)
+    relay = (_ROOT / "relay" / "relay" / "server.py").read_text(
+        encoding="utf-8")
+    from astrodeck.auth import capabilities
+    got = (names, '"code": "site_query_refused"' in app_src,
+           (decl.group(1) if decl else None,
+            capabilities.CAP_VIEW_SITE_PRECISE),
+           "class PathOnlyAccessFormatter" in relay
+           and "QUERY_WITHHELD" in relay,
+           any(UI_SRC.rglob("noSiteParamsInQueryStrings.test.ts")),
+           from_body)
+    assert got == (["alt", "az", "lat", "lon", "site"], True,
+                   ("CAP_VIEW_SITE_PRECISE", "view.site_precise"), True, True,
+                   True), (
+        f"(the refused names, the refusal's code, the preview's capability, "
+        f"the relay's formatter, the UI's scan, the preview reading its "
+        f"body) = {got}; 6.9 says so")

@@ -39,7 +39,7 @@
 import { readFileSync } from "node:fs";
 
 import {
-  cardBox, loopArc, loopArcPath, edgePath, portPos,
+  cardBox, loopArc, loopArcPath, loopControlSpot, lowerLoopRun, edgePath, portPos,
   LOOP_ARC_DROP, LOOP_ARC_STUB, NODE_W_PHONE, NODE_W_WIDE,
   type CardBox, type Point,
 } from "../geometry";
@@ -489,6 +489,105 @@ test("the column layout's numbers: legs half the gutter out, the run in the midd
   eq(COLUMN_LOOP_DROP * 2, next.y - (tail.y + tail.h), "twice the drop is the gap under the tail");
   eq(COLUMN_LOOP_STUB * 2, AUTO_PAD, "twice the stub is the gutter");
   eq(tail.x, AUTO_PAD, "precondition: the left column stands AUTO_PAD in");
+});
+
+// ================================== a lowered run (#357) and a clear spot (#502)
+//
+// `lowerLoopRun` is how the #/next layer keeps its run clear of a card that
+// grows past the formula box (canvas/__tests__/loopArcNext.test.tsx grades it
+// mounted); `loopControlSpot` is where the classic phone FLOW tab puts the
+// loop's remove control (flowWireDeleteLoop.test.tsx grades it mounted, one
+// mutant per condition). Here, the formula of each, on the eighth Example's
+// desktop arc: the drop at x 1202 from y 167 to 231, the rise at x 246 from
+// y 127 to 231.
+
+// CONTROL for every `lowerLoopRun` mutant, and for the refactor that moved
+// the chip and the handle into one builder: lowered by nothing, the arc is
+// the arc, and it is still the route the tests above pin.
+test("CONTROL: lowerLoopRun by 0 hands back the same route", () => {
+  const arc = loopArc(byId(M31, "n7"), "pass", byId(M31, "n2"), "next", panelLane(M31, "n2"),
+    NODE_DEFS, "desktop")!;
+  const same = lowerLoopRun(arc, 0);
+  eq(same.d, arc.d, "the path");
+  eq(JSON.stringify([same.runY, same.label, same.handle]),
+    JSON.stringify([231, { x: 724, y: 231 }, { x: 1202, y: 199 }]), "the run, the chip, the handle");
+});
+
+// MUTANT "only the drop's foot lowered" (lowerLoopRun moves the bottom of the
+// drop and not the far end of the run, so the run slants), run in the private
+// copy scratchpad/H4-UCANVAS-mut. Observed, loopArc.test 19/20 (and
+// loopArcNext.test.tsx 9/12, its path, run and CONTROL cases):
+//   x lowerLoopRun: the run, its chip and the handle move; the anchors and the
+//     legs' x do not: one straight run at 332 from right of the cycle to left
+//     of the TARGET: [[167,1178,1192],[127,256,270]]
+test("lowerLoopRun: the run, its chip and the handle move; the anchors and the legs' x do not", () => {
+  const arc = loopArc(byId(M31, "n7"), "pass", byId(M31, "n2"), "next", panelLane(M31, "n2"),
+    NODE_DEFS, "desktop")!;
+  const low = lowerLoopRun(arc, 101);
+  eq(low.runY, 332, "the run 101 px lower");
+  const runs = horizontalRuns(low.d).filter(([y]) => y === 332);
+  assert(runs.some(([, a, b]) => Math.max(a, b) > 1178 && Math.min(a, b) < 270),
+    `one straight run at 332 from right of the cycle to left of the TARGET: ${JSON.stringify(horizontalRuns(low.d))}`);
+  eq(JSON.stringify([low.label, low.handle]),
+    JSON.stringify([{ x: 724, y: 332 }, { x: 1202, y: (167 + 332) / 2 }]), "the chip and the handle");
+  const pts = samplePath(low.d);
+  eq(`${pts[0].x} ${pts[0].y}|${pts[pts.length - 1].x} ${pts[pts.length - 1].y}`,
+    "1178 167|270 127", "the two anchors");
+  eq(Math.max(...pts.map((p) => p.x)), 1202, "the drop's x");
+  eq(Math.min(...pts.map((p) => p.x)), 246, "the rise's x");
+});
+
+// The remove control's place on the same arc, a 26 px box, with made-up
+// cards standing beside the legs. Each mutant run in the private copy
+// scratchpad/H4-UCANVAS-mut. MUTANT "the rise before the drop" (the two legs
+// tried in the other order). Observed, loopArc.test 19/20 (and
+// flowWireDeleteLoop.test.tsx 5/9, the eighth Example's phone control moved
+// to the rise):
+//   x loopControlSpot: the nearest clear height to a leg's middle, the drop
+//     first, else none: no card: the drop's middle
+//     expected 1202,199
+//     got      246,179
+// MUTANT "the first clear height, not the nearest" (the candidates taken in
+// order, unsorted). Observed, loopArc.test 19/20 (and
+// flowWireDeleteLoop.test.tsx 6/9, the right-column tail's control at
+// 13,263):
+//   x loopControlSpot: the nearest clear height to a leg's middle, the drop
+//     first, else none: the nearer end of the band the card rules out
+//     expected 1202,213
+//     got      1202,177
+// MUTANT "a place over a card rather than none" (the drop's middle returned
+// when no height on either leg is clear). Observed, loopArc.test 19/20
+// (flowWireDeleteLoop.test.tsx 9/9: its lanes always have a clear height,
+// and FlowWireDelete's own fallback is that same place):
+//   x loopControlSpot: the nearest clear height to a leg's middle, the drop
+//     first, else none: no clear height on either leg
+//     expected none
+//     got      1202,199
+// And the three #502 mutants flowWireDeleteLoop.test.tsx records, one per
+// condition, each turn one case here red: "the box centred on the leg" and
+// "held a whole box in" the container case ("expected 1195,199", got
+// 1202,199 and 1182,199), "no card rules a height out" the band case
+// ("expected 1202,213, got 1202,199").
+test("loopControlSpot: the nearest clear height to a leg's middle, the drop first, else none", () => {
+  const arc = loopArc(byId(M31, "n7"), "pass", byId(M31, "n2"), "next", panelLane(M31, "n2"),
+    NODE_DEFS, "desktop")!;
+  const at = (cards: CardBox[], x1 = 10_000): string => {
+    const p = loopControlSpot(arc, 26, 0, x1, cards);
+    return p ? `${p.x},${p.y}` : "none";
+  };
+  // Nothing beside it: the middle of the drop, which is the handle.
+  eq(at([]), "1202,199", "no card: the drop's middle");
+  // A card beside the drop from y 190 to 200 rules out centres from 177 to
+  // 213; 213 is nearer the middle (199) than 177.
+  const low: CardBox = { x: 1190, y: 190, w: 60, h: 10 };
+  eq(at([low]), "1202,213", "the nearer end of the band the card rules out");
+  // A card beside the whole drop: the rise's middle, (127 + 231) / 2.
+  const wall: CardBox = { x: 1190, y: 100, w: 60, h: 200 };
+  eq(at([wall]), "246,179", "the drop blocked: the rise's middle");
+  // Both legs blocked: none.
+  eq(at([wall, { x: 230, y: 100, w: 30, h: 200 }]), "none", "no clear height on either leg");
+  // A container edge 6 px right of the drop holds the box in by 7.
+  eq(at([], 1208), "1195,199", "held inside the container");
 });
 
 // CONTROL: the stock bezier is untouched. Every other wire still draws with

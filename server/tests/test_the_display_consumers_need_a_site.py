@@ -20,7 +20,11 @@ MUTATIONS RUN, and what each printed:
 
   M1, delete the `if lat is None and lon is None and not site_is_set(s)`
   return in `site_sky`. 2 failed: the unsited operator and admin both got
-  `sun_alt_deg` and `dark_window` for 0,0.
+  `sun_alt_deg` and `dark_window` for 0,0. (Since #520 the GET takes no
+  coordinates and the line is `if not site_is_set(s)`; the picker's named
+  point is `site_sky_preview`, a POST. Re-run against the new line on
+  2026-09-29, in a scratch copy: the same 2 failed, the unsited operator on
+  `assert ('sun_alt_deg' not in {'dark_window': {...}, 'sun_alt_deg': ...})`.)
   M2, delete the `if latlon is not None` in `comets.row` (compute from the
   raw site). 1 failed: `alt` was present.
   M3, delete the `raise ValueError` in `sky_context`. 1 failed: a sun
@@ -77,12 +81,20 @@ def _store(tmp_path, monkeypatch, *, sited):
 
 @pytest.fixture
 def sky(tmp_path, monkeypatch):
-    def _get(role, *, sited, query=""):
+    """``named`` is the site picker's typed point.
+
+    RE-PINNED FOR #520, DELIBERATELY. It used to be a ``query`` string appended
+    to the GET (``?lat=40&lon=-74``); a URL is written down by every hop it
+    crosses, so the picker's question is a POST body now. What each case below
+    asserts about the answer is unchanged."""
+    def _get(role, *, sited, named=None):
         _store(tmp_path, monkeypatch, sited=sited)
         set_active_provider(_Fixed(principal_for_role(role)))
         try:
             with TestClient(app_module.create_app()) as c:
-                return c.get("/api/site/sky" + query)
+                if named is not None:
+                    return c.post("/api/site/sky", json=named)
+                return c.get("/api/site/sky")
         finally:
             reset_active_provider()
     return _get
@@ -113,7 +125,7 @@ def test_a_sited_operator_still_gets_the_sky(sky):
 def test_the_site_picker_can_still_ask_about_a_place(sky):
     """Named coordinates are a deliberate question, not a default. The picker
     is how an unsited rig GETS a site, so refusing it here would be circular."""
-    body = sky("admin", sited=False, query="?lat=40&lon=-74").json()
+    body = sky("admin", sited=False, named={"lat": 40, "lon": -74}).json()
     assert "sun_alt_deg" in body, body
 
 

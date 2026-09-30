@@ -58,11 +58,13 @@ export interface RunCopy {
   /** The flow's name in the button's capitals, on CONTINUE only; "" otherwise. */
   name: string;
   /** "(night 3, 412/1890 subs)" on CONTINUE when the route's numbers are
-   *  readable; "" otherwise. */
+   *  readable; "(412/1890 subs)" when the route names no night (a server
+   *  older than H4); "" otherwise. */
   detail: string;
   /** The whole line, for an accessible name and a tooltip. */
   text: string;
-  /** The numbers `detail` is made of, or null when there is no detail. */
+  /** The numbers `detail` is made of: `night` null when the route named
+   *  none, and all three null when there is no detail. */
   night: number | null;
   banked: number | null;
   total: number | null;
@@ -77,21 +79,23 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
  *
  *  CONTINUE when the route names a DORMANT session, the one case in which
  *  `run_flow` continues rather than starts fresh (server `run_flow`: "it is
- *  continued only if it is dormant"). THE NIGHT READS THE OBSERVING-NIGHT
- *  COUNT (#430, S7 orchestrator ruling 7): the route's `nights` is the
- *  observing nights the session has run (server `Session.observing_nights`,
- *  so a restart in the same night is the same night), and the button prints
- *  it plus one, the night the run route answers for a CONTINUE on an evening
- *  the session has not run (`Session.night_at`), so there the button and the
- *  run's own log line agree. Until S7 `nights` counted RUNS, and a night
- *  that held a restart read as the next night on both. The route sends no
- *  clock, so the button cannot tell a night the session already ran: a
- *  second CONTINUE in the same evening reads one more than the route
- *  answers (#511). The
- *  counts are the blocks' `banked` over their `total`, summed over the blocks
- *  and nothing else. A block's sums already hold its panels, so adding the
- *  panels again would count every sub twice; skipped panels and orphaned
- *  frames are in no block's sums because they fill no quota.
+ *  continued only if it is dormant"). THE NIGHT IS THE RUN ROUTE'S OWN
+ *  (#511, H4): the route's `continue_night`, the night a CONTINUE pressed
+ *  now would start, which the progress route answers from its own clock
+ *  through `Session.night_at`, the rule the run route answers `night` by.
+ *  So a second CONTINUE in the same evening reads the night the log is
+ *  already writing, and the next evening one more. It reads THE
+ *  OBSERVING-NIGHT COUNT (#430, S7 orchestrator ruling 7) underneath: a
+ *  restart in the same night is the same night. Until H4 the button printed
+ *  the route's `nights` plus one, because the route sent no clock, and on a
+ *  night the session had already run it read one more than the run route
+ *  answered. A route that names no night (a server older than H4) gets no
+ *  night number on the button, never a guessed one: the counts are printed
+ *  alone. The counts are the blocks' `banked` over their `total`, summed
+ *  over the blocks and nothing else. A block's sums already hold its
+ *  panels, so adding the panels again would count every sub twice; skipped
+ *  panels and orphaned frames are in no block's sums because they fill no
+ *  quota.
  *
  *  RUN otherwise: no answer yet, no session (never run, or the newest was
  *  abandoned: the route answers null for both), a complete session, or an
@@ -112,22 +116,25 @@ export function runCopy(flowName: string, progress: FlowProgress | null | undefi
   const blocks = Array.isArray(progress?.blocks) ? progress!.blocks : [];
   let banked = 0;
   let total = 0;
-  let readable = finite(session.nights);
+  let readable = true;
   for (const b of blocks) {
     if (!finite(b?.banked) || !finite(b?.total)) { readable = false; break; }
     banked += b.banked;
     total += b.total;
   }
-  const night = readable ? session.nights + 1 : null;
-  const detail = night === null ? "" : `(night ${night}, ${banked}/${total} subs)`;
+  // The route's own number or none: never `nights` plus one (#511).
+  const night = readable && finite(session.continue_night) ? session.continue_night : null;
+  const counts = `${banked}/${total} subs`;
+  const detail = !readable ? ""
+    : night === null ? `(${counts})` : `(night ${night}, ${counts})`;
   return {
     verb: "CONTINUE",
     name,
     detail,
     text: ["CONTINUE", name, detail].filter((p) => p !== "").join(" "),
     night,
-    banked: night === null ? null : banked,
-    total: night === null ? null : total,
+    banked: readable ? banked : null,
+    total: readable ? total : null,
   };
 }
 

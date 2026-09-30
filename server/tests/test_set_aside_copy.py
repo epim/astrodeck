@@ -280,6 +280,21 @@ async def test_a_panel_set_aside_says_tonight(group_hub, monkeypatch):
         assert ('set aside for tonight' in 'M31: centring failed on 2-2 on 3
         consecutive visits: plate solve failed — used raw GoTo; set aside for
         the rest of this run')
+
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). A streak of centring
+    misses now sets 2-2 aside "for now" first: that set-aside expires 45
+    minutes on, and a restart tonight WOULD retry it, so its line must not
+    say it does not. Its second streak sets it aside for the night, and that
+    line is the one this case grades for "tonight". Before H4 there was one
+    line. RED under "the for-now line says tonight" (engine.py
+    `_set_panel_aside`: ``if say and expires:`` made ``if False:``, so the
+    first set-aside logs the night's sentence), run by the H4 integration
+    in a private copy of server/ (scratchpad H4-INTEG-mut), observed:
+
+        AssertionError: the for-now set-aside said it lasts the night: 'M31:
+        centring failed on 2-2 on 3 consecutive visits: plate solve failed
+        — used raw GoTo; set aside for tonight: a restart tonight does not
+        retry it, the next night does'
     """
     def goto(who, n, result):
         if who == f"{GROUP_NAME} 2-2":
@@ -293,9 +308,16 @@ async def test_a_panel_set_aside_says_tonight(group_hub, monkeypatch):
         await night.close()
     lines = [m for _t, lvl, m in night.lines
              if lvl == "warning" and "set aside" in m]
-    assert len(lines) == 1, lines
-    line = lines[0]
-    assert line.startswith(f"{GROUP_NAME}: centring failed on 2-2 on 3 "
-                           f"consecutive visits: "), line
+    assert len(lines) == 2, lines
+    for line in lines:
+        assert line.startswith(f"{GROUP_NAME}: centring failed on 2-2 on 3 "
+                               f"consecutive visits: "), line
+    first, line = lines
+    # The first streak's set-aside expires tonight (#534): it says so, and
+    # never that a restart tonight does not retry it.
+    assert ("set aside for now, not for the night" in first
+            and "set aside for tonight" not in first
+            and TONIGHT[0] not in first), (
+        f"the for-now set-aside said it lasts the night: {first!r}")
     assert "set aside for tonight" in line and _wrong(line) == [], (
         _wrong(line), line)

@@ -403,10 +403,23 @@ class TestWhoMayReadIt:
 #:       Extra items in the left set:
 #:       'plan_saved_ts'
 #:       'armed'
+#:
+#: DELIBERATE PIN CHANGE (H4, #511): the session gains ``continue_night``,
+#: which the ROUTE adds (``progress.continue_night``) from the clock it read
+#: for the request, on a dormant session only: the night a CONTINUE pressed
+#: now would start, keyed by the server's local noon-to-noon night key, a
+#: count and never a time, and not from the site (the site-move test below
+#: walks it valued). The S7 list against the H4 route, observed:
+#:
+#:     AssertionError: session carries keys outside the allow-list
+#:     assert {'armed', 'co...aved_ts', ...} <= {'armed', 'co...ts',
+#:     'status'}
+#:       Extra items in the left set:
+#:       'continue_night'
 ALLOWED = {
     "top": {"flow_id", "session", "blocks", "orphaned"},
     "session": {"id", "status", "nights", "count_mode", "armed",
-                "plan_saved_ts"},
+                "plan_saved_ts", "continue_night"},
     "block": {"node_id", "name", "kind", "banked", "owed", "total", "panels",
               "grid", "skipped", "group_id"},
     "grid": {"rows", "cols"},
@@ -424,24 +437,47 @@ ALLOWED = {
 SAVED_TS = 1790012345.678
 
 
-async def _seeded_target_and_pool(api) -> str:
+#: The seeded session's one run, stamped the way the engine mints a report
+#: id: 13:00 local on 2026-09-20, after that day's noon rollover, so its
+#: night is 2026-09-20 (H4, #511).
+SEEDED_RUN = "progress-me-20260920-130000"
+
+
+def _seeded_clock():
+    """The app's clock for the seeded answer: 16:00 local the same day, so
+    ``continue_night`` is 1 (tonight is the seeded run's night). Chosen
+    between the two synthetic sites' solar offsets past the noon rollover
+    (SITE_B's longitude is 3.0 h west of zero, SITE_A's 4.9 h): a night
+    key read at the site's solar time instead of the server's local clock
+    lands on 2026-09-20 for one site and 2026-09-19 for the other, so the
+    site-move test can see it (H4, #511)."""
+    return _Clock(_local(2026, 9, 20, 16, 0))
+
+
+async def _seeded_target_and_pool(api, monkeypatch) -> str:
     """The TARGET + POOL + mosaic flow with a session that holds a frame on
     the first step of every target that has one (five: the two pool members
     and the mosaic's three live panels) and two frames on a step the flow no
     longer has. Since S7 it is armed and carries ``plan_saved_ts`` (#473), so
-    the site and allow-list tests walk both keys with values, not nulls."""
+    the site and allow-list tests walk both keys with values, not nulls.
+    Since H4 its run is stamped (``SEEDED_RUN``) and the app's clock is
+    pinned (``_seeded_clock``), so ``continue_night`` is valued too, and
+    valued where a site-derived night would part the two sites (#511)."""
     fid = await api.save_flow(TARGET_POOL_AND_MOSAIC)
     _c, plan = _compiled(TARGET_POOL_AND_MOSAIC, fid)
     frames = [f for t in plan.targets if t.steps
               for f in _frames(t.id, t.steps[0].id, 1)]
     _seed(fid, plan, frames + _frames(plan.targets[0].id, "gone", 2),
-          created=100.0, auto_resume=True, plan_saved_ts=SAVED_TS)
+          created=100.0, auto_resume=True, plan_saved_ts=SAVED_TS,
+          nights=(SEEDED_RUN,))
+    monkeypatch.setattr(app_module, "time", _seeded_clock())
     return fid
 
 
 class TestItCarriesNoSiteData:
     @pytest.mark.parametrize("role", ["viewer", "admin"])
-    async def test_the_body_does_not_move_when_the_site_does(self, api, role):
+    async def test_the_body_does_not_move_when_the_site_does(self, api, role,
+                                                             monkeypatch):
         """The same flow and the same ledger read under two synthetic sites:
         the bytes are identical. A viewer is the caller spec 6.9 is about;
         an admin is asked too, because the spec says the route carries no
@@ -492,8 +528,39 @@ class TestItCarriesNoSiteData:
         and mutant "no replay facts on the route", for both roles, observed:
 
             KeyError: 'armed'
+
+        SINCE H4 the session also carries ``continue_night`` (#511), valued
+        here (1: the app's clock is pinned to the seeded run's own night,
+        ``_seeded_clock``), so the equality is over a real number, at a
+        clock where a night read from the site would differ between the two
+        sites. It is keyed by the server's local night, never the site.
+        Run in scratchpad ``H4-ROUTES-B-mut``: mutant "the night from the
+        site's clock" (``progress.continue_night`` asking ``night_at`` at
+        ``now`` shifted by the configured longitude's solar offset,
+        ``config_store.cfg().site.longitude / 15`` hours), for both roles,
+        observed:
+
+            AssertionError: the body moved with the site
+            assert b'{"flow_id":...2,"steps":1}}' ==
+            b'{"flow_id":...2,"steps":1}}'
+              At index 212 diff: b'2' != b'1'
+
+        mutant "no CONTINUE night on the route" (``app.py``'s
+        ``continue_night`` line removed), for both roles, observed:
+
+            AssertionError: premise: H4's CONTINUE night is in the body
+            assert 'continue_night' in {'armed': True, 'count_mode':
+            'attempts', 'id': 'f95efb7c690441efa3d12072d1a8bc39', 'nights':
+            1, ...}
+
+        and mutant "continue_night = nights + 1" (see
+        test_h4_continue_night.py), for both roles, the last line, observed:
+
+            AssertionError: the CONTINUE night is the seeded run's own
+            night, the server's local night at the pinned clock
+            assert 2 == 1
         """
-        fid = await _seeded_target_and_pool(api)
+        fid = await _seeded_target_and_pool(api, monkeypatch)
         set_active_provider(_Fixed(principal_for_role(role)))
         bodies = []
         for lat, lon in (SITE_A, SITE_B):
@@ -512,9 +579,14 @@ class TestItCarriesNoSiteData:
             "premise: the mosaic's group id is in the body")
         assert (got["session"]["armed"], got["session"]["plan_saved_ts"]) == (
             True, SAVED_TS), "premise: S7's two keys are in the body, valued"
+        assert "continue_night" in got["session"], (
+            "premise: H4's CONTINUE night is in the body")
         assert bodies[0] == bodies[1], "the body moved with the site"
+        assert got["session"]["continue_night"] == 1, (
+            "the CONTINUE night is the seeded run's own night, the server's "
+            "local night at the pinned clock")
 
-    async def test_every_key_is_on_the_allow_list(self, api):
+    async def test_every_key_is_on_the_allow_list(self, api, monkeypatch):
         """Every level of a populated answer, walked at the wire.
 
         RED under mutation "add a transit altitude":
@@ -534,7 +606,7 @@ class TestItCarriesNoSiteData:
               Extra items in the left set:
               'transit_alt_deg'
         """
-        fid = await _seeded_target_and_pool(api)
+        fid = await _seeded_target_and_pool(api, monkeypatch)
         api.store.set_site(Site(name="fixture", latitude=SITE_A[0],
                                 longitude=SITE_A[1], elevation_m=10.0,
                                 is_default=False))
@@ -691,7 +763,22 @@ class TestTheCounts:
         #       {'session': {'count_mode': 'accepted', 'id':
         #       '50136158bc2648b2911dc35f94ee7c77', 'nights': 1, 'status':
         #       'dormant'}}
-        expected["session"].update({"armed": False, "plan_saved_ts": None})
+        #
+        # DELIBERATE PIN CHANGE (H4, #511): and ``continue_night``, 2 here,
+        # as a literal: the seeded run id carries no stamp, so it is a night
+        # of its own and tonight is never it. The S7 dict against the H4
+        # route, observed:
+        #
+        #     AssertionError: assert {'blocks': [{...1b4cf7', ...}} ==
+        #     {'blocks': [{...hts': 1, ...}}
+        #       Differing items:
+        #       {'session': {'armed': False, 'continue_night': 2,
+        #       'count_mode': 'accepted', 'id':
+        #       'e7a7a0e831474efe8c04c577241b4cf7', ...}} != {'session':
+        #       {'armed': False, 'count_mode': 'accepted', 'id':
+        #       'e7a7a0e831474efe8c04c577241b4cf7', 'nights': 1, ...}}
+        expected["session"].update({"armed": False, "plan_saved_ts": None,
+                                    "continue_night": 2})
         assert _steps(expected) == [(lum.id, 3, 0), (red.id, 1, 1)], (
             "premise: L is capped at its count and the rejected R is not "
             "banked")
@@ -754,6 +841,9 @@ class TestTheCounts:
         #     {'count_mode'...': 'complete'}
         #       Left contains 2 more items:
         #       {'armed': False, 'plan_saved_ts': None}
+        #
+        # Unchanged in H4 (#511): a complete session, which RUN starts afresh
+        # rather than continues, carries no ``continue_night``.
         assert got["session"] == {"id": done.id, "status": "complete",
                                   "nights": 1, "count_mode": "attempts",
                                   "armed": False, "plan_saved_ts": None}
@@ -1120,6 +1210,28 @@ class TestContinue:
 
               Differing items:
               {'plan_saved_ts': None} != {'plan_saved_ts': 1790646749.0710003}
+
+        DELIBERATE PIN CHANGE IN H4 (#511): the dormant read carries
+        ``continue_night``. At 21:00 on the night the session just ran it
+        says 1, and the CONTINUE pressed at 21:30 answers night 1, which is
+        #511's case (``nights + 1`` would have printed 2); the live reads
+        carry no key, since a live session is stopped, not continued.
+        test_h4_continue_night.py grades the rule. The S7 dict against the
+        H4 route, observed at the dormant read:
+
+            AssertionError: assert {'armed': Tru...33bbc87', ...} ==
+            {'armed': Tru...ghts': 1, ...}
+              Left contains 1 more item:
+              {'continue_night': 1}
+
+        Run in scratchpad ``H4-ROUTES-B-mut``, mutant "continue_night =
+        nights + 1" (see test_h4_continue_night.py) turns the dormant read
+        red, observed:
+
+            AssertionError: assert {'armed': Tru...d223271', ...} ==
+            {'armed': Tru...d223271', ...}
+              Differing items:
+              {'continue_night': 2} != {'continue_night': 1}
         """
         api, engine, night = rig
         fid = await api.save_flow(LR)
@@ -1148,13 +1260,17 @@ class TestContinue:
         one = await api.ok(fid)
         assert one["session"] == {"id": sid, "status": "dormant",
                                   "nights": 1, "count_mode": "accepted",
-                                  "armed": True, "plan_saved_ts": saved}
+                                  "armed": True, "plan_saved_ts": saved,
+                                  "continue_night": 1}
         assert _steps(one) == _steps(live)
 
         clock.t = _local(2026, 9, 20, 21, 30)
         r = await api.client.post(f"/api/flows/{fid}/run", json={})
         assert r.status_code == 200, r.text
         assert r.json()["session"]["continued"] is True
+        assert (r.json()["session"]["night"]
+                == one["session"]["continue_night"]), (
+            "the run route's night is the one the dormant read said")
         assert engine._session.id == sid, "premise: night two continued"
         assert [s.id for t in engine.plan.targets for s in t.steps] == \
             counted, "premise: night two compiled the same ids"

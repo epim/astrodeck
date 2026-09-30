@@ -46,6 +46,7 @@ from ..sequence.models import ActionKind, SequencePlan, TriggerKind
 from . import identity, tonight
 from .compile import lane_refusals
 from .models import FlowGraph
+from .nodes import NODE_DEFS
 from .rig import RigFacts
 
 #: The engine's real vocabularies, read off the ``Literal`` types rather than
@@ -190,6 +191,10 @@ HOLD_HONOURED: dict[tuple[str, str, str], str] = {
 #: identical to ``Schedule``'s. They are simply at the wrong NESTING LEVEL:
 #: ``SequencePlan`` has no schedule, ``Target`` does.
 SCHEDULE_KEYS = ("start_mode", "start_offset_min", "stop_mode", "min_altitude_deg")
+
+#: How a refusal names the card those keys come from (#483): its own label,
+#: read off the vocabulary so a renamed card is renamed here too.
+DUSK_BLOCK = NODE_DEFS["dusk"].label
 
 #: A pool member's constraints are also real ``Schedule`` fields.
 POOL_SCHEDULE_KEYS = {"min_altitude_deg": "min_altitude_deg",
@@ -482,6 +487,25 @@ class GraphNotRunnable(ValueError):
 
 # --------------------------------------------------------------------- pieces
 
+def _pool_overrides(entry: dict) -> dict:
+    """The ``Schedule`` fields one entry writes itself: a POOL member's
+    constraints (``POOL_SCHEDULE_KEYS``), each one the entry carries.
+
+    ONE RULE, TWO READERS: ``_target_schedule`` merges these over the DUSK
+    WINDOW's block, and ``to_sequence_plan``'s refusal names the DUSK WINDOW
+    for exactly the fields left to it (#483), so the card a refusal sends
+    the operator to is the card whose value the plan holds."""
+    return {dst: entry[src] for src, dst in POOL_SCHEDULE_KEYS.items()
+            if entry.get(src) is not None}
+
+
+def _dusk_fields(base: dict, entry: dict) -> frozenset[str]:
+    """The fields of one target's ``schedule`` the DUSK WINDOW wrote: its
+    block's (``base``), less any the entry wrote over (``_pool_overrides``).
+    A POOL member's floor is always its POOL's, whatever the night's is."""
+    return frozenset(base) - frozenset(_pool_overrides(entry))
+
+
 def _target_schedule(base: dict, entry: dict, *, is_pool: bool) -> dict:
     """The ``Schedule`` block for one target.
 
@@ -491,10 +515,7 @@ def _target_schedule(base: dict, entry: dict, *, is_pool: bool) -> dict:
     operator who set a 30 degree floor on the night and 40 on one candidate
     meant 40 for that candidate.
     """
-    sched = dict(base)
-    for src, dst in POOL_SCHEDULE_KEYS.items():
-        if entry.get(src) is not None:
-            sched[dst] = entry[src]
+    sched = {**base, **_pool_overrides(entry)}
     if is_pool:
         # The closest honest approximation of "best of several" the existing
         # model can express. Under the default "wait", member 1 blocks the whole
@@ -1645,6 +1666,10 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     # value the plan's models refuse is named by its block (#362 item 1).
     target_blocks: list[str] = []
     group_blocks: list[str] = []
+    # And, index for index with the targets, the `schedule` fields the DUSK
+    # WINDOW wrote there, the ones no POOL wrote over (`_pool_overrides`): a
+    # refused one names the DUSK WINDOW, not the target carrying a copy (#483).
+    dusk_fields: list[frozenset[str]] = []
     # Each entry with the targets it became, for the count mode and the
     # followers, which are settled once every block is built.
     built: list[tuple[dict, list[dict]]] = []
@@ -1682,6 +1707,8 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                         "when_waiting")}
             targets.extend(panels)
             target_blocks.extend(_block_label(entry) for _ in panels)
+            dusk_fields.extend(_dusk_fields(base_schedule, entry)
+                               for _ in panels)
             built.append((entry, panels))
             continue
 
@@ -1721,6 +1748,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                   members_seen=members_seen, canonical=canonical, key=key)
         targets.append(target)
         target_blocks.append(_block_label(entry))
+        dusk_fields.append(_dusk_fields(base_schedule, entry))
         built.append((entry, [target]))
         pooled += 1 if is_pool else 0
 
@@ -1812,13 +1840,27 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
 
     def where(loc: tuple) -> tuple[str, str]:
         """``(block, field)`` for one refused value's location in ``fields``:
-        a target's or a group's block, a rule by its trigger and action, or
-        the flow for a plan-level field."""
+        a target's or a group's block, the DUSK WINDOW for a ``schedule``
+        field it wrote, a rule by its trigger and action, or the flow for a
+        plan-level field.
+
+        THE DUSK WINDOW, NOT THE TARGET (#483). Every target carries a copy
+        of the DUSK WINDOW's block in its ``schedule``, so a fractional
+        offset was named by each target that carried it, "TARGET M31 -
+        Andromeda: schedule.start_offset_min of -30.7", and a POOL's four
+        members were four clauses, each sending the operator to a card that
+        does not hold the value. Named by the DUSK WINDOW, the copies are
+        one fault in one place, and ``_refused_values`` says it once. A
+        field a POOL wrote over the night's is that member's, as before."""
         head, index = (loc + (None, None))[:2]
         rules = fields["instructions"]
         if isinstance(index, int):
             if head == "targets" and index < len(target_blocks):
-                return target_blocks[index], _path(loc[2:])
+                rest = loc[2:]
+                if (len(rest) > 1 and rest[0] == "schedule"
+                        and rest[1] in dusk_fields[index]):
+                    return DUSK_BLOCK, _path(rest)
+                return target_blocks[index], _path(rest)
             if head == "groups" and index < len(group_blocks):
                 return group_blocks[index], _path(loc[2:])
             if head == "instructions" and index < len(rules):

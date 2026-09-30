@@ -1349,6 +1349,50 @@ def _one_channel_exposure_s(exposures_s: dict[str, float] | None) -> int:
     return QUICK_BROADBAND_EXPOSURE_S
 
 
+def _one_channel_label(exposures_s: dict[str, float] | None) -> str:
+    """What a refusal calls the one channel: the label the sheet keyed its
+    exposure by ("OSC"), which is the only name on screen, else "one
+    channel". Never a filter name, for ``_one_channel_exposure_s``'s
+    reason: there is no slot to name."""
+    keys = list((exposures_s or {}).keys())
+    label = str(keys[0]).strip()[:40] if len(keys) == 1 else ""
+    return label or "one channel"
+
+
+def _within_the_unguided_line(subs: Iterable[tuple[str, int]],
+                              guided: bool) -> None:
+    """Refuse an unguided quick flow whose subs reach the doctor's line
+    (#518, H4 orchestrator ruling 5).
+
+    ``subs`` are ``(name, seconds)`` AS THE FLOW WOULD HOLD THEM, after the
+    generator's rounding, so 119.6 typed is judged as the 120 written, the
+    sub the doctor sees. The line is ``doctor.UNGUIDED_SUB_LINE_S``, read
+    here at call time, the one copy of the number (#432): moving it moves
+    this refusal and rule 2 together.
+
+    REFUSED, NOT SHORTENED, as the wizard door refuses a row past its cap
+    (``_within_the_unguided_cap``): the sub is the operator's answer, or
+    the default the sheet showed them, and a night quietly shot shorter
+    than asked is the wrong night told as the right one. Narrowband is the
+    ruling's case, where the generator's own 180 s default lands. Broadband
+    and one channel at or past the line are refused by the same rule,
+    because rule 2 warns on every unguided sub of that length whatever its
+    filter, and the issue's matrix grades all three. A guided flow is never
+    held to it: rule 2 asks only of a stage with no GUIDE upstream."""
+    if guided:
+        return
+    line = doctor.UNGUIDED_SUB_LINE_S
+    over = [f"{name} {secs:g} s" for name, secs in subs if not secs < line]
+    if not over:
+        return
+    one = len(over) == 1
+    raise ValueError(
+        f"an unguided quick flow holds every sub under {line:g} s, where the "
+        f"doctor warns that stars trail with no GUIDE stage (rule 2), and "
+        f"{', '.join(over)} {'is' if one else 'are'} at or past it: turn "
+        f"Guide on, or shorten {'it' if one else 'them'}")
+
+
 def quick(target: dict,
           subs_per_filter: int = 10,
           filters: Iterable[str] | None = None,
@@ -1370,6 +1414,13 @@ def quick(target: dict,
     rather than a one-slot FILTER CYCLE: a cycle of one interleaves nothing, and
     the slot's name would be invented - and an invented filter name is what lands
     in the FITS header and in the calibration key.
+
+    AN UNGUIDED FLOW STAYS UNDER THE UNGUIDED LINE (#518). With ``guided``
+    false, a sub at or past ``doctor.UNGUIDED_SUB_LINE_S`` is a ValueError
+    naming the filter and the limit (``_within_the_unguided_line``), which
+    the route answers 422 ``invalid_quick_flow``: until H4 an unguided
+    narrowband flow took the 180 s default and opened with rule 2's warning,
+    and ``run: true`` started it in the same request.
 
     Returns a :class:`FlowRecord`, unsaved. The route persists it through the
     same ``_persist_flow`` every other write uses, so the four server-owned
@@ -1395,14 +1446,18 @@ def quick(target: dict,
 
     if picked:
         plan = cycle_plan_for(picked, wheel, exposures_s)
+        # Judged on the slot table as written, before anything is generated.
+        _within_the_unguided_line(parse_cycle_plan(plan), guided)
         graph = generate(KIND_DEEP_SKY, opts, tname,
                          cycle_plan=plan, cycles=subs, coords=coords,
                          safety_abort=True)
         channels = ", ".join(f for f, _ in parse_cycle_plan(plan))
     else:
+        one = _one_channel_exposure_s(exposures_s)
+        _within_the_unguided_line([(_one_channel_label(exposures_s), one)],
+                                  guided)
         graph = generate(KIND_DEEP_SKY, opts, tname,
                          coords=coords, safety_abort=True)
-        one = _one_channel_exposure_s(exposures_s)
         cap = next(n for n in graph.nodes if n.type == "capture")
         # No filter NAME on a rig with no wheel: the frames are one channel and
         # writing a label into FILTER would file them under a slot that does not

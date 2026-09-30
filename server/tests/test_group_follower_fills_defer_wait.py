@@ -21,10 +21,29 @@ follower is picked in a visit that hands the cursor back when the next pass
 may begin.
 
 THE RUNS are the real `_run_scheduled` on the clocked simulator
-(tests/_group_harness.py). The mosaic is a 1x2 whose panels never centre, so
-every pass defers both and the group is set aside after three passes
+(tests/_group_harness.py). The mosaic is a rotating 1x2 whose rotator never
+turns the camera to the mosaic's angle (``rotation_skipped`` on every hop),
+so every pass defers both and the group is set aside after three passes
 (``max_failed_visits``). A follower, when there is one, is a plain target
 after the mosaic in plan order, 40 frames of L.
+
+RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). The mosaic's panels used
+to never CENTRE. Since H4 a pass in which every panel tried missed its
+centring is the sky's or the geometry's fault: no panel is struck, the group
+holds ``CENTRING_HOLD_RETRY_S`` and tries again for as long as the window
+lasts, so that night never set the mosaic aside and never ended (each case
+failed at the 16 h fake horizon). A rotator that did not turn is still
+counted against each panel at once and never expires, which is the
+deferral wait this file is about, so the night is S2's again, pass for pass
+and second for second: under this rotation deferral the three cases passed
+unchanged. The centring hold's own wait, and a follower in it, are
+test_h4_centring_group_hold.py's. The first five mutants below were run
+again against the rotation deferral by the H4 integration (scratchpad
+H4-INTEG-mut), and each failed as recorded in the cases, word for word:
+"blocking wait" (with the boundary's publish kept, as S2 published it)
+"2 failed, 1 passed", the control the one that passed; "no hold" 3 failed;
+"the wait not counted" and "early teardown" 1 failed each; "the wait
+resets the failures" 3 failed at the 16 h fake horizon.
 
 Each case names the mutant it was shown RED under, with the failure observed,
 verbatim. Every mutant was applied in a private scratch copy of server/
@@ -60,23 +79,27 @@ PANELS = (f"{GROUP_NAME} 1-1", f"{GROUP_NAME} 1-2")
 WAITING = f"waiting {DEFER_WAIT_S:.0f} s before the next pass"
 
 
-def _never_centres(who, n, result):
-    """Every panel's centring fails, on every hop; the follower centres."""
+def _never_turns(who, n, result):
+    """Every panel's hop centres but its rotator does not turn the camera to
+    the mosaic's angle, on every hop: a ``rotation`` deferral, counted at
+    once (5.6 step 4). The follower is not rotated, and centres."""
     if who.startswith(GROUP_NAME + " "):
-        return dict(result, centered=False, error_arcmin=None)
+        return dict(result, rotation_skipped=True)
     return result
 
 
 def _plan(*, follower: bool = True, panel_kw: dict | None = None):
-    """A 1x2 mosaic 2 h east of the meridian, far from any flip, and, when
-    ``follower``, one plain target after it: 40 frames of L."""
+    """A rotating 1x2 mosaic (PA 30) 2 h east of the meridian, far from any
+    flip, and, when ``follower``, one plain target after it: 40 frames of
+    L."""
     after = [single(FOLLOWER, count=40)] if follower else []
-    return grid_plan(rows=1, cols=2, after=after, panel_kw=panel_kw)
+    return grid_plan(rows=1, cols=2, after=after, panel_kw=panel_kw,
+                     group_kw={"rotate": True, "pa_deg": 30.0})
 
 
 async def _night(hub, monkeypatch, plan, *, before_run=None,
                  wall_s: float = 60.0) -> Night:
-    night = Night(hub, monkeypatch, goto=_never_centres)
+    night = Night(hub, monkeypatch, goto=_never_turns)
     if before_run is not None:
         before_run(night)
     try:

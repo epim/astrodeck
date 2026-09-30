@@ -1,9 +1,9 @@
 {
   "_comment": "Mosaic slices S5 and S6 on the real page (#189; spec 2026-09-23 flows mosaic, section 8 S5 and S6, and S4's probe as the precedent: visible=true, a view marker on every walk). S5: a rotating 2x2 flow started on the simulator by its RUN button, the phone stage sheet's readouts naming the engine's panel and pass while RUN reads STOP, the Target modal opening view-only with the shooting panel, and after Abort, RUN reading CONTINUE with the progress route's numbers and START OVER behind a confirm. S6: Sky FRAME and the classic Atlas each hand their framing to SEND TO FLOW WIZARD, whose steps end on a review of exactly one TARGET, with no Plan targets left behind. Phone walks at 390 x 844 with touch, desktop walks at 1440 x 900, every one by the clicks a person makes, never a deep link. Run against a LOCAL simulator server only, never the rig: `python tools/ui_probe/server_ctl.py start --fresh --port 8857` (any port but 8800; it connects the simulator), then `python tools/ui_probe/probe.py --routes tools/ui_probe/routes_s5_s6.json --widths 390,1440 --port 8857 --out .probe/out/s5-s6`, then `server_ctl.py stop`. The widths must run 390 first: the desktop's seed refuses an engine the phone left running. The probe's own cases for this file are test_probe_s5_s6.py.",
-  "_order": "The walks are one night in order, because the engine is one engine. At 390: s5-run-phone presses RUN and leaves the run going; s5-frame-running-phone opens the Target modal while it runs; s5-continue-phone waits for the first banked sub, presses STOP, and grades CONTINUE and START OVER's confirm; s6-sky-wizard-phone and s6-atlas-wizard-phone each save a flow through the wizard. At 1440 the same on the classic editor and the classic Atlas, on a second flow, and s6-sky-wizard-desktop. Each route is a fresh page, so each proves its own door; the run is the server's, so it outlives the page that started it.",
+  "_order": "The walks are one night in order, because the engine is one engine. At 390: s5-run-phone presses RUN and leaves the run going; s5-frame-running-phone opens the Target modal while it runs; s5-continue-phone waits for the first banked sub, presses STOP, and grades CONTINUE and START OVER's confirm; s6-sky-wizard-phone and s6-atlas-wizard-phone each save a flow through the wizard. At 1440 the same on the classic editor and the classic Atlas, on a second flow, and s6-sky-wizard-desktop. Each route is a fresh page, so each proves its own door; the run is the server's, so it outlives the page that started it. Since H4 the night begins with s5-frame-catalogue-pick-phone, which opens the phone's flow's Target modal and picks a WHERE result with one tap before anything runs: after s5-run-phone that modal is view-only.",
   "_seed": "First `require_sim`: these walks press RUN, so the probe refuses a server whose rig is not the simulator (GET /api/status `mode`), at every width, before anything is saved or pressed. Then two flows DRAWN here, not copied from the eighth Example: that one waits for dusk (its DUSK node), autofocuses and guides, and its 120 s subs would keep a walk minutes from its first frame. Each is ONE TARGET of 2 x 2 panels at PA 55, rotating (the loop wire from the FILTER CYCLE's 'pass done' to the TARGET's 'next panel'), with 20 passes of one 10 s L sub, so 80 subs: on the simulator the first slew and centre take about 28 s, the first autofocus 28 s more, and then a sub lands every 12 s, the panel changing with every pass (measured 2026-09-28). With no DUSK node the run starts now, and with no site set nothing gates it on altitude. The TARGET is framed for the simulator's field, 0.494 x 0.371 deg (the compile's rig facts on a fresh config), and `runnable` refuses a server whose compile would call that a loss, since RUN would then stop on a question the walk does not answer. `fresh` refuses a server that already holds a session for the flow, or whose engine is running: this walk must be the flow's first run. The phone's flow is seeded only at 390 and the desktop's only at 1440 (seed `widths`), because a flow seeded again after its walk would find its own session and refuse.",
-  "_names": "The flow names are short on purpose: the phone footer's RUN button is the screen less its gutters, 358 px, and CONTINUE's line is the verb, the name and the parenthetical, of which only the name may be cut (runCopy.ts). 'M31 2x2' fits beside '(night 2, n/80 subs)' there, so the probe can hold that NO text is cut, the name included, rather than exempting the one part the design lets go.",
-  "_found": "Found by this probe's first walks, 2026-09-28, and each opened and looked at in its screenshots: #463, fixed in the working tree (the phone RUN footer shrunk to its words, stages reading IDLE through the run, ADD STAGE and the LOG squashed, the TONIGHT sub cut, the wizard's title cut and its rail on two baselines, and the probe dying on a reason it could not print); open, in files this task does not own: #464 (flows.statuses never written, both canvases), #465 (the phone modal's sky clips its degraded line; s5-frame-running-phone stays red), #466 (the Sky hub judges FRAME at the placeholder site), #467 (RunControls buzzes on mount; s6-sky-wizard-desktop stays red), #468 (the desktop session column misdescribes a flow's run), #469 (the 'While a mosaic waits' select cut); and more evidence on #357 (the classic TARGET card's footer).",
+  "_names": "The flow names are short on purpose: the phone footer's RUN button is the screen less its gutters, 358 px, and CONTINUE's line is the verb, the name and the parenthetical, of which only the name may be cut (runCopy.ts). 'M31 2x2' fits beside '(night 1, n/80 subs)' there (routes_s7.json's CONTINUE walks read night 2, one character no wider), so the probe can hold that NO text is cut, the name included, rather than exempting the one part the design lets go.",
+  "_found": "Found by this probe's first walks, 2026-09-28, and each opened and looked at in its screenshots: #463, fixed in the working tree (the phone RUN footer shrunk to its words, stages reading IDLE through the run, ADD STAGE and the LOG squashed, the TONIGHT sub cut, the wizard's title cut and its rail on two baselines, and the probe dying on a reason it could not print); open, in files this task does not own: #464 (flows.statuses never written, both canvases), #465 (the phone modal's sky clips its degraded line; s5-frame-running-phone stays red), #466 (the Sky hub judges FRAME at the placeholder site), #467 (RunControls buzzes on mount; s6-sky-wizard-desktop stays red), #468 (the desktop session column misdescribes a flow's run), #469 (the 'While a mosaic waits' select cut); and more evidence on #357 (the classic TARGET card's footer). Found by H4-PROBE-LAYOUT's re-baseline, 2026-09-29: s6-sky-wizard-phone and s6-sky-wizard-desktop are red at FRAME, with scrollbars drawn and hidden alike, since H4-USKY (#503): with no site saved the finder places nothing, so its FRAME is locked, and the refusal says 'Aim above the horizon first' while the reticle reads alt 45 (#568, open, with the ways to restage the walks).",
   "_expected_errors_why": "Measured on the sim rig, as routes_s4_frame.json records: no offline sky pack and online fetch off by default, so every survey tile 404s (the console carries only the status text). A fresh config has no site, so the Sky hub's tonight list and visibility answer 409 (the Sky walks only); any other 4xx still fails the route.",
   "seed": [
     { "require_sim": true },
@@ -43,6 +43,44 @@
       "runnable": true, "fresh": true } }
   ],
   "routes": [
+    {
+      "name": "s5-frame-catalogue-pick-phone",
+      "_mutations": ["H4 '#492 fix reverted' (CatalogSearch.tsx as committed at HEAD: H4-UFRAME's whole diff to it, the result rows' mousedown cancel, the input ref and the blur after a pick; a private build on a local simulator server, 2026-09-29), observed red: required step '[data-testid=\"framing-sky\"] .sky-canvas > div:text-matches(\"^Object (is|fills) \")' failed: no visible match within 4000 ms | count '[data-testid=\"framing-sky\"] .sky-canvas > div:text-matches(\"^Object (is|fills) \")' is 0, need == 1 | apart: the state it grades never arrived: '[data-testid=\"framing-sky\"] .sky-canvas > div:text-matches(\"^Object (is|fills) \")' was not visible within 15000 ms | contained: the state it grades never arrived: '[data-testid=\"framing-sky\"] .sky-canvas > div:text-matches(\"^Object (is|fills) \")' was not visible within 15000 ms. On that build, measured by hand in the same session: the M31 row sat at y 527 in typing mode, and after one tap the field still read 'M 31' and no verdict was drawn.", "H4 'square fills the box' (as s4-frame-phone's), observed red with both lines under the canvas: apart: 'Survey tiles not loading. Retrying automatically.' ([data-testid=\"framing-sky\"] .sky-canvas > :not(.sky-canvas-square)) lies over '[data-testid=\"framing-sky\"] [role=\"application\"]' by 23px down and 390px across: its box {'left': 0, 'top': 384, 'right': 390, 'bottom': 412}, the other's {'left': 0, 'top': 17, 'right': 390, 'bottom': 407} | contained: '[data-testid=\"framing-sky\"] [role=\"application\"]' runs past '[data-testid=\"framing-sky\"]' (top 31px): its box {'left': 0, 'top': 17, 'right': 390, 'bottom': 407}, the container's {'left': 0, 'top': 48, 'right': 390, 'bottom': 438} | contained: '[data-testid=\"framing-sky\"] button:text-is(\"MOVE SKY\")' runs past '[data-testid=\"framing-sky\"]' (top 23px): its box {'left': 294.7, 'top': 25, 'right': 382, 'bottom': 69}, the container's {'left': 0, 'top': 48, 'right': 390, 'bottom': 438} | contained: '[data-testid=\"framing-sky\"] span:text-is(\"N\")' runs past '[data-testid=\"framing-sky\"]' (top 27px): its box {'left': 191.4, 'top': 21, 'right': 198.6, 'bottom': 39}, the container's {'left': 0, 'top': 48, 'right': 390, 'bottom': 438}", "The unmutated build passes (the control): one tap picks M31, and the canvas (48 to 376), the degraded line (384 to 412) and the verdict (420 to 438) lie inside the sky (48 to 438)."],
+      "shot": "s5-frame-catalogue-pick-phone",
+      "widths": [390],
+      "touch": true,
+      "url": "#/session/flows",
+      "_note": "The Target modal on a phone, a WHERE catalogue result picked with ONE tap (#492), then the sky graded with the verdict line under the canvas (#440: 'Object is N x your frame - needs a mosaic', drawn once a catalogue entry is picked) as well as the degraded line (a fresh config has no sky source). It is the first walk of the night because the phone's flow is editable only until s5-run-phone presses RUN (a running flow's modal is view-only and its search is disabled), and it saves nothing: the pick changes the modal's draft, which the next route's fresh page does not have. It lives in this file and not routes_s4_frame.json, whose route list is a claim of spec section 8's S4 that test_mosaic_spec_claims.py holds. S4's doors, then a tap on the search field (typing mode: the sky shrinks to 40svh, #492's premise, held by the wait_for), 'M 31' typed, and one tap on the M31 result. Before H4-UFRAME the press moved focus off the field, the modal left typing mode, the sky grew 52 px and the list moved under the finger, so the release landed elsewhere and the pick took two taps. The walk taps ONCE and requires the verdict within 4 s: a second tap would hide the defect. Then the canvas, MOVE SKY, MOVE GRID and the compass letters must lie whole inside the sky, and neither line over the canvas, with both lines showing (min_b 2).",
+      "click": [
+        { "selector": "[data-testid=\"flow-open-probe-s5-phone\"]", "required": true },
+        { "selector": "[data-testid=\"session-flow-stages\"] [data-testid=\"flow-stage-row\"] button.nx-row:has(.nx-row-title:text-is(\"TARGET\"))", "required": true },
+        { "selector": "[data-testid=\"flow-node-frame\"]", "required": true },
+        { "wait_for": "[data-testid=\"framing-sky\"] [data-role=\"survey-degraded\"]", "wait_ms": 20000 },
+        { "selector": "[data-testid=\"target-framing-sheet\"] input[aria-label=\"Search the target catalog\"]", "required": true },
+        { "fill": "[data-testid=\"target-framing-sheet\"] input[aria-label=\"Search the target catalog\"]", "value": "M 31" },
+        { "wait_for": "[data-testid=\"target-framing-sheet\"][data-typing=\"true\"]" },
+        { "shot": "typing" },
+        { "selector": "[data-testid=\"target-framing-sheet\"] button:has(span.text-accent:text-is(\"M31\"))", "required": true },
+        { "wait_for": "[data-testid=\"framing-sky\"] .sky-canvas > div:text-matches(\"^Object (is|fills) \")", "wait_ms": 4000 },
+        { "shot": "picked" }
+      ],
+      "testid": "target-framing-sheet",
+      "count": [
+        { "selector": "[data-testid=\"framing-sky\"] .sky-canvas > div:text-matches(\"^Object (is|fills) \")", "equals": 1 },
+        { "selector": "[data-testid=\"target-framing-sheet\"][data-typing=\"true\"]", "equals": 0 }
+      ],
+      "contained": [
+        { "within": "[data-testid=\"framing-sky\"]", "when": "[data-testid=\"framing-sky\"] .sky-canvas > div:text-matches(\"^Object (is|fills) \")",
+          "selectors": ["[data-testid=\"framing-sky\"] [role=\"application\"]", "[data-testid=\"framing-sky\"] button:text-is(\"MOVE SKY\")", "[data-testid=\"framing-sky\"] button:text-is(\"MOVE GRID\")", "[data-testid=\"framing-sky\"] span:text-is(\"N\")", "[data-testid=\"framing-sky\"] span:text-is(\"W\")"] }
+      ],
+      "apart": [
+        { "a": "[data-testid=\"framing-sky\"] [role=\"application\"]", "b": "[data-testid=\"framing-sky\"] .sky-canvas > :not(.sky-canvas-square)", "min_b": 2, "when": "[data-testid=\"framing-sky\"] .sky-canvas > div:text-matches(\"^Object (is|fills) \")" }
+      ],
+      "text_intact": [
+        { "selector": "[data-testid=\"framing-sky\"] .sky-canvas > :not(.sky-canvas-square)" }
+      ],
+      "expected_errors": ["/api/survey/tile/", "status of 404"]
+    },
     {
       "name": "s5-run-phone",
       "shot": "s5-run-phone",
@@ -90,6 +128,7 @@
     },
     {
       "name": "s5-frame-running-phone",
+      "_mutations": ["H4 'square fills the box' (as routes_s4_frame.json's s4-frame-phone), observed red, and on nothing else: apart: 'Survey tiles not loading. Retrying automatically.' ([data-testid=\"framing-sky\"] .sky-canvas > :not(.sky-canvas-square)) lies over '[data-testid=\"framing-sky\"] [role=\"application\"]' by 10.0px down and 390px across: its box {'left': 0, 'top': 439.7, 'right': 390, 'bottom': 467.7}, the other's {'left': 0, 'top': 59.7, 'right': 390, 'bottom': 449.7} | contained: '[data-testid=\"framing-sky\"] [role=\"application\"]' runs past '[data-testid=\"framing-sky\"]' (top 18px): its box {'left': 0, 'top': 59.7, 'right': 390, 'bottom': 449.7}, the container's {'left': 0, 'top': 77.7, 'right': 390, 'bottom': 467.7} | contained: '[data-testid=\"framing-sky\"] span:text-is(\"N\")' runs past '[data-testid=\"framing-sky\"]' (top 14px): its box {'left': 191.4, 'top': 63.7, 'right': 198.6, 'bottom': 81.7}, the container's {'left': 0, 'top': 77.7, 'right': 390, 'bottom': 467.7}. The same build PASSED this walk under the route file as it stood before H4, which is #495; the unmutated build passes it."],
       "shot": "s5-frame-running-phone",
       "_known": [
         "Fixed in S7 (#465, S7-USKY: the degraded line sits under the sky's square, which is sized from its container), and this walk passed in S7-USKY's and S7-PROBE's runs. Until then it was red, outside S56-PROBE's files (FramingSky.tsx, framing.css, SkyCanvas.tsx): text 'U+26A0 Survey unreachable - schematic framing; retrying automatic' ([data-testid=\"framing-sky\"] div.text-warn) was clipped 11px by 'tfs-sky' (1 of 1 with text), while every other check on this walk passed: the view-only line, no DONE, the disabled fieldset, '1-1: shooting now' equal to the engine's panel, the sky's size, 34 buttons reachable."
@@ -109,11 +148,20 @@
       ],
       "count": [
         { "selector": "[data-testid=\"framing-done\"]", "equals": 0 },
-        { "selector": "[data-testid=\"target-framing-sheet\"] fieldset:disabled", "min": 1 }
+        { "selector": "[data-testid=\"target-framing-sheet\"] fieldset:disabled", "min": 1 },
+        { "selector": "[data-testid=\"framing-sky\"] .tfs-move", "equals": 0 }
       ],
       "boxes": [
         { "selector": "[data-testid=\"framing-sky\"]", "min_width": 350, "min_height": 350 },
         { "selector": "[data-testid=\"framing-sky\"] [role=\"application\"]", "min_width": 350, "min_height": 350 }
+      ],
+      "_contained": "The sky of the view-only modal holds its canvas and compass whole, and no line over the canvas, once the degraded line is drawn (#495, #440). MOVE SKY and MOVE GRID are not drawn here: FramingSky draws the drag toggle only when the sky is not read-only, and the count above holds that there is none, so s4-frame-phone and s5-frame-catalogue-pick-phone hold the toggle.",
+      "contained": [
+        { "within": "[data-testid=\"framing-sky\"]", "when": "[data-testid=\"framing-sky\"] [data-role=\"survey-degraded\"]",
+          "selectors": ["[data-testid=\"framing-sky\"] [role=\"application\"]", "[data-testid=\"framing-sky\"] span:text-is(\"N\")", "[data-testid=\"framing-sky\"] span:text-is(\"W\")"] }
+      ],
+      "apart": [
+        { "a": "[data-testid=\"framing-sky\"] [role=\"application\"]", "b": "[data-testid=\"framing-sky\"] .sky-canvas > :not(.sky-canvas-square)", "min_b": 1, "when": "[data-testid=\"framing-sky\"] [data-role=\"survey-degraded\"]" }
       ],
       "reachable_all": [ { "within": "[data-testid=\"target-framing-sheet\"]", "min_height": 32 } ],
       "text_intact": [
@@ -129,12 +177,10 @@
     {
       "name": "s5-continue-phone",
       "shot": "s5-continue-phone",
-      "_mutations": [
-        "On the build before #463 the walk passed its first checks (the fills check did not exist yet) with CONTINUE 349 px of the 358 px footer, right inset 25 (report.jsonl, 2026-09-28): the footer column's defect shows as 'not full' for a name that fits and as the counts off the screen for one that does not. `fills` grades it; U1 on s5-run-phone is its real-page red."
-      ],
+      "_mutations": ["On the build before #463 the walk passed its first checks (the fills check did not exist yet) with CONTINUE 349 px of the 358 px footer, right inset 25 (report.jsonl, 2026-09-28): the footer column's defect shows as 'not full' for a name that fits and as the counts off the screen for one that does not. `fills` grades it; U1 on s5-run-phone is its real-page red.", "H4 'the old night rule' (probe.py and this file as committed before H4: `nights` plus one, night 2), on the current build, observed red: run_copy: control '[data-testid=\"flow-stages-run\"]' reads 'CONTINUE M31 2X2 (night 1, 1/80 subs)', and the progress route says 'CONTINUE M31 2X2 (night 2, 1/80 subs)'. The page was right, as the run route answers (#511, fixed by H4-ROUTES-B); the probe now reads `continue_night` and this walk expects night 1."],
       "widths": [390],
       "url": "#/session/flows",
-      "_note": "Abort by STOP (one tap: a motion stop is never armed), once the FRAMES readout shows a banked sub, so the counts CONTINUE carries are not all 0. RUN must then read CONTINUE with the progress route's own numbers, night 2 (a first run's abort continues its session), and START OVER must ask before it does anything: the walk opens its confirm, photographs it, and CANCELs, and no run request may leave the page (forbid_requests), so a START OVER that posted past its confirm fails however the page looks after.",
+      "_note": "Abort by STOP (one tap: a motion stop is never armed), once the FRAMES readout shows a banked sub, so the counts CONTINUE carries are not all 0. RUN must then read CONTINUE with the progress route's own numbers, night 1: a first run aborted the same evening continues that night, the night the run route answers (#511; the button read night 2, nights plus one, until H4-ROUTES-B gave the route continue_night, and this walk expected 2 until H4-PROBE-LAYOUT), and START OVER must ask before it does anything: the walk opens its confirm, photographs it, and CANCELs, and no run request may leave the page (forbid_requests), so a START OVER that posted past its confirm fails however the page looks after.",
       "click": [
         { "selector": "[data-testid=\"flow-open-probe-s5-phone\"]", "required": true },
         { "wait_for": "[data-testid=\"flow-stages-frames\"] :text-matches(\"^[1-9][0-9]* / [0-9]+$\")", "wait_ms": 120000 },
@@ -147,7 +193,7 @@
         { "selector": "[data-testid=\"confirm-scrim\"] [data-testid=\"confirm-keep\"]", "required": true }
       ],
       "testid": "session-flow-stages",
-      "run_copy": { "selector": "[data-testid=\"flow-stages-run\"]", "flow": "probe-s5-phone", "night": 2, "min_banked": 1 },
+      "run_copy": { "selector": "[data-testid=\"flow-stages-run\"]", "flow": "probe-s5-phone", "night": 1, "min_banked": 1 },
       "count": [
         { "selector": "[data-testid=\"confirm-scrim\"]", "equals": 0 },
         { "selector": "[data-testid=\"flow-stages-start-over\"]", "equals": 1 }
@@ -292,6 +338,7 @@
     },
     {
       "name": "s5-frame-running-desktop",
+      "_mutations": ["H4 'default launch restored' (probe.py `_launch_args` returning {} for every width, #535), on the unmutated build, observed red, and on nothing else: scrollbar: '[data-testid=\"framing-scroller\"]' scrolls (2132px of content in 774px) and its scrollbar takes 0px of its 359px, need >= 8px: this browser hides its scrollbars, so every fit measured in this column is a bar too generous (#535)"],
       "shot": "s5-frame-running-desktop",
       "widths": [1440],
       "url": "#/classic/flows",
@@ -314,6 +361,7 @@
         { "selector": "[data-testid=\"framing-sky\"]", "min_width": 970, "min_height": 760 },
         { "selector": "[data-testid=\"framing-sky\"] [role=\"application\"]", "min_width": 640, "min_height": 640 }
       ],
+      "scrollbar": [ { "selector": "[data-testid=\"framing-scroller\"]", "min_px": 8 } ],
       "reachable_all": [ { "within": "[data-testid=\"target-framing-sheet\"]", "min_height": 32 } ],
       "text_intact": [
         { "selector": "[data-testid=\"framing-view-why\"]" },
@@ -348,7 +396,7 @@
         { "selector": "[role=\"alertdialog\"]", "equals": 0 },
         { "selector": "main header [data-testid=\"flow-start-over\"]", "equals": 1 }
       ],
-      "run_copy": { "selector": "main header button:has([data-testid=\"run-copy\"])", "flow": "probe-s5-desk", "night": 2, "min_banked": 1 },
+      "run_copy": { "selector": "main header button:has([data-testid=\"run-copy\"])", "flow": "probe-s5-desk", "night": 1, "min_banked": 1 },
       "forbid_requests": [ { "method": "POST", "url": "**/api/flows/*/run" } ],
       "reachable_all": [ { "within": "main header" } ],
       "text_intact": [

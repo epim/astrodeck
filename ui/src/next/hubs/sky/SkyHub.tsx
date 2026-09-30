@@ -61,7 +61,12 @@ import {
   type SkyKind,
   type SkyTarget,
 } from "./finder";
-import { KIND_LABEL, isObstructedAt, kindOf, paletteFor } from "./finder";
+import { KIND_LABEL, displayName, fullName, kindOf, paletteFor } from "./finder";
+import type { Placement } from "./finder/model";
+import {
+  LOCK_ROW_KEYS, lockRowFromParams,
+  type CatalogRowLike, type LockTarget,
+} from "./finder/targets";
 import { windSummary } from "../weather/dome/domeOverlay";
 import { altAzOf } from "../../../lib/altaz";
 import { BrowseBanner } from "./cards/BrowseBanner";
@@ -69,11 +74,11 @@ import { StatusRow } from "./cards/StatusRow";
 import { DomeCard, DOME_CARD_ID } from "./cards/DomeCard";
 import { LensDial } from "./cards/LensDial";
 import { LayersPopover, type LayerKey } from "./cards/LayersPopover";
-import { LockCard } from "./cards/LockCard";
+import { LockCard, lockCardCta, type LockCardCta } from "./cards/LockCard";
 import { PatchCard } from "./cards/PatchCard";
 import { ReachStrip } from "./cards/ReachStrip";
 import { SkyGlyph } from "./cards/glyphs";
-import { obstructedReason, ctaToast, type LockCta } from "./cards/lockCta";
+import { obstructedReason, ctaToast } from "./cards/lockCta";
 import { AtlasHost } from "./atlas/AtlasHost";
 import { FrameHost } from "./frame/FrameHost";
 import { FramingCard } from "./frame/FramingCard";
@@ -178,9 +183,18 @@ export const lockHeld = (name: string): string =>
   `${name} is locked from the catalogue - there is no tonight's list to find it in`;
 
 /** The status chip on a lock held from the catalogue. Nothing on that card
- *  was ranked: there is no reach window, no transit and no cloud reading for
- *  an object the ranking never saw, and the chip says so rather than CLEAR. */
+ *  was ranked: there is no transit and no cloud reading for an object the
+ *  ranking never saw, and the chip says so rather than CLEAR. */
 export const HELD_STATUS = "NOT RANKED";
+
+/**
+ * Why the primary is locked on a lock this ROLE cannot place (#504): a site is
+ * saved and its coordinates are withheld from this principal, so the finder
+ * has no altitude for the object and no horizon to judge it against. The card
+ * reads POSITION HIDDEN FOR THIS ROLE; this is what a press or a hold says.
+ */
+export const unplacedReason = (name: string): string =>
+  `${name} cannot be placed for this role, so nothing here can say whether it is up.`;
 
 /** How close the finder's view must still be to where a hold aimed it for the
  *  hold to stand. An untouched view equals the aim; the smallest gesture moves
@@ -214,7 +228,7 @@ interface FrameState {
  *  sources send `size_arcmin` and the finder now carries it through the merge.
  *  A row that carried none still hands over 0, and 0 draws no ellipse - which
  *  is the honest outcome of not knowing the size rather than a guessed one. */
-export function entryOf(t: SkyTarget): CatalogEntry {
+export function entryOf(t: LockTarget): CatalogEntry {
   return {
     id: t.id,
     name: t.name,
@@ -227,51 +241,64 @@ export function entryOf(t: SkyTarget): CatalogEntry {
 }
 
 /**
- * The lock card's target for a catalogue object HELD by LOCK IN FINDER when
- * tonight's list cannot carry it (#466) - `entryOf` run backwards.
+ * The lock card's target for a catalogue object HELD when tonight's list
+ * cannot carry it (#466, #504) - `entryOf` run backwards. The row is the one
+ * LOCK IN FINDER framed or a targets-sheet search pick carried in the hash.
  *
- * The position is the finder's own: `at` is the object's alt/az computed the
- * way the model places every row it has no server alt/az for, so the card, the
- * reticle and the dome agree about where it is. Everything the RANKING would
- * have added is absent rather than invented: no cloud reading (null, which is
- * not 0%), no transit, a zero window and a zero score, under a status chip
- * that says the object was not ranked.
+ * `at` is the MODEL's placement (`SkyModel.place`): the object put on this sky
+ * exactly as a row with its RA/Dec would be - its alt/az, whether the finder's
+ * horizon rule hides it, and its window off the same walk to dawn - so the
+ * card, the reticle and the dome agree about where it is and what is in the
+ * way. Everything only the RANKING adds is absent rather than invented: no
+ * cloud reading (null, which is not 0%), no transit and a zero score, under a
+ * status chip that says the object was not ranked.
  *
- * `obstructed` is NOT one of those, and the caller passes it: the finder
- * judges it locally for every row it places, ranked or not, and the lock
- * card's primary gates on it (`lockCta`: BEHIND OBSTRUCTION, not IMAGE). A
- * hard `false` here offered IMAGE M31 at alt -45 under a saved site's 15
- * degree horizon whenever tonight's list failed for any reason but a 409.
+ * WITH NO PLACEMENT (no site saved, or a role the coordinates are withheld
+ * from, #503) the lock is an `UnplacedTarget`: no altitude, no window, and an
+ * obstruction that is UNKNOWN, not false. Each was a placeholder once - the
+ * window a `0` that printed "window 0m" (#508), the verdict a `false` that the
+ * primary read as clear and offered IMAGE M31 for an object 44 degrees under
+ * the horizon of a placeholder site - and a placeholder in a field a consumer
+ * renders or gates on is a claim nothing keeps.
  */
 export function heldTarget(
-  entry: CatalogEntry,
-  at: { altDeg: number; azDeg: number },
+  row: CatalogRowLike,
+  at: Placement | null,
   wheel: Parameters<typeof paletteFor>[2],
-  obstructed: boolean,
-): SkyTarget {
-  const type = entry.type ?? "";
-  const kind = kindOf({ id: entry.id, type, ra_hours: entry.ra_hours, dec_deg: entry.dec_deg }) ?? "nebula";
-  return {
-    id: entry.id,
-    name: entry.name || entry.id,
-    full: type,
+): LockTarget {
+  const type = (row.type ?? "").trim();
+  const kind = kindOf(row) ?? "nebula";
+  // The finder's own two row-shape rules, so a held body is titled by its label
+  // and not by its describe sentence, exactly as the same row is in the list.
+  const full = fullName(row);
+  const size = row.size_arcmin;
+  const common = {
+    id: row.id,
+    name: displayName(row),
+    full: full !== "" ? full : type,
     kind,
-    ra_hours: entry.ra_hours,
-    dec_deg: entry.dec_deg,
-    altNow: at.altDeg,
-    azNow: at.azDeg,
+    ra_hours: row.ra_hours,
+    dec_deg: row.dec_deg,
     cloudPct: null,
-    obstructed,
     clouded: false,
     color: "color-mix(in srgb, var(--text) 70%, transparent)",
     statusTxt: HELD_STATUS,
     palette: paletteFor(kind, type, wheel),
     // 0 is the catalogue's "no extent", and absent is the finder's.
-    sizeArcmin: entry.size_arcmin > 0 ? entry.size_arcmin : undefined,
+    sizeArcmin: typeof size === "number" && size > 0 ? size : undefined,
     transitLabel: "-",
-    windowMinutes: 0,
     score: 0,
     moonSepDeg: null,
+  };
+  if (at == null) {
+    return { ...common, altNow: null, azNow: null, obstructed: null, windowMinutes: null };
+  }
+  return {
+    ...common,
+    altNow: at.altDeg,
+    azNow: at.azDeg,
+    obstructed: at.obstructed,
+    windowMinutes: at.windowMinutes,
   };
 }
 
@@ -327,27 +354,26 @@ export function SkyHub(): JSX.Element {
 
   const site = useSite();
   /**
-   * TWO QUESTIONS ABOUT THE SITE, and a default site answers them differently.
+   * A DEFAULT SITE IS NO SITE (#466, #503, the class of #24 and #121 in the UI).
    *
    * `trackLat`/`trackLon` are for a CLAIM about the operator's sky: is this
-   * centre above the horizon, may FRAME go. A DEFAULT SITE IS NO SITE for that
-   * (#466, the class of #24 and #121 in the UI): a fresh config's site is
+   * centre above the horizon, may FRAME go. A fresh config's site is
    * `is_default: true` with placeholder coordinates, and reading them as a site
    * refused FRAME for a horizon at a place that is not the operator's, at some
    * hours of the day and not others. So they are null unless a site was saved,
    * which is what every consumer below already does with no site.
    *
-   * `placeLat`/`placeLon` are where the FINDER places the sky, which claims
-   * nothing: `useSkyModel` places every row at whatever coordinates the site
-   * block carries, placeholder or not, so an aim converted with the same pair
-   * lands exactly where the model will draw it. That round trip is the only
-   * thing they are used for.
+   * There used to be a second pair, `placeLat`/`placeLon`: where the FINDER
+   * placed the sky, which was the placeholder too, because `useSkyModel`
+   * placed every row at whatever numbers the site block carried. The model no
+   * longer places anything at the placeholder (#503), so the pair is retired:
+   * whatever this file has to put on the finder's sky - a held lock, the aim of
+   * a tap on the atlas - goes through `model.place`, which answers from the
+   * model's own coordinates and answers null where it has none.
    */
   const siteSaved = site != null && site.is_default !== true;
-  const placeLat = typeof site?.latitude === "number" ? site.latitude : null;
-  const placeLon = typeof site?.longitude === "number" ? site.longitude : null;
-  const trackLat = siteSaved ? placeLat : null;
-  const trackLon = siteSaved ? placeLon : null;
+  const trackLat = siteSaved && typeof site?.latitude === "number" ? site.latitude : null;
+  const trackLon = siteSaved && typeof site?.longitude === "number" ? site.longitude : null;
   const [lensOpen, setLensOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [surveyOpen, setSurveyOpen] = useState(false);
@@ -397,10 +423,11 @@ export function SkyHub(): JSX.Element {
   // ---- `#/sky?lock=<id>`, the way every other screen aims this one ---------
   //
   // The targets sheet's rows and the catalog search's picks both aim by
-  // navigating to `#/sky?lock=<id>` (sheets/targets.tsx `aim()`): a sheet is
-  // route state, not a child of the screen underneath it, so the id cannot be
-  // handed over as a prop and travels in the hash instead - which also makes
-  // the choice a deep link support can read out over the phone.
+  // navigating to `#/sky?lock=<id>` (sheets/targets.tsx `aim()`, and `aimRow()`
+  // for a search pick, which carries the catalogue row beside the id - #504):
+  // a sheet is route state, not a child of the screen underneath it, so the id
+  // cannot be handed over as a prop and travels in the hash instead - which
+  // also makes the choice a deep link support can read out over the phone.
   //
   // THE PARAM IS CONSUMED, NOT LEFT LYING. It is cleared with `nav.replace` the
   // moment it has been acted on, for two reasons: a later re-render (the 30 s
@@ -421,6 +448,10 @@ export function SkyHub(): JSX.Element {
     const r = routeRef.current;
     const params = { ...r.params };
     delete params.lock;
+    // The row a search pick carried goes WITH the id (#504): left behind, it
+    // would sit in the URL describing a lock that has already been taken, and
+    // hand the next bare `?lock=` a row that is not its own.
+    for (const k of LOCK_ROW_KEYS) delete params[k];
     nav.replace(buildHash({ hub: r.hub, sub: r.sub, sheets: r.sheets, params }));
   }, []);
 
@@ -429,11 +460,11 @@ export function SkyHub(): JSX.Element {
   const rankingError = model.rankingError;
   const rankingErrorRef = useRef(rankingError);
   rankingErrorRef.current = rankingError;
-  const nowRef = useRef(model.nowMs);
-  nowRef.current = model.nowMs;
+  const placeRef = useRef(model.place);
+  placeRef.current = model.place;
 
   /**
-   * A LOCK HELD FROM THE CATALOGUE (#466).
+   * A LOCK HELD FROM THE CATALOGUE (#466, #504).
    *
    * The deep link aims at an id in the merged ranking, and tonight's list is
    * that ranking's main source. With no site saved `GET /api/catalog/tonight`
@@ -442,15 +473,18 @@ export function SkyHub(): JSX.Element {
    * tonight's list") - after which the finder's FRAME framed the reach list's
    * first object instead, under a card titled with that object's name.
    *
-   * So when the list cannot be computed and the id is the FRAMED object's, the
-   * hub holds that catalogue row as the lock: the finder is aimed at it and
-   * follows its id, the lock card and FRAME name it, and the toast says why the
-   * list is empty instead of refusing the object. `view` is where the finder's
-   * aim landed, captured on the render after the aim (the model clamps an aim
-   * below the horizon, and the hold compares against what it stored, not what
-   * it asked for).
+   * So when the list cannot be computed and the link brings a catalogue ROW for
+   * its id, the hub holds that row as the lock: the finder follows its id (and
+   * is aimed at it, where there is a placement to aim at), the lock card and
+   * FRAME name it, and the toast says why the list is empty instead of refusing
+   * the object. Two doors bring a row: LOCK IN FINDER, whose row is the framing
+   * session's target, and a targets-sheet search pick, whose row travels in the
+   * hash (`finder/targets.ts lockRowParams`). `view` is where the finder's aim
+   * landed, captured on the render after the aim (the model clamps an aim below
+   * the horizon, and the hold compares against what it stored, not what it
+   * asked for).
    */
-  const [held, setHeld] = useState<{ entry: CatalogEntry; view: { az: number; alt: number } | null } | null>(null);
+  const [held, setHeld] = useState<{ entry: CatalogRowLike; view: { az: number; alt: number } | null } | null>(null);
 
   useEffect(() => {
     if (lockParam == null || lockParam === "") {
@@ -475,20 +509,31 @@ export function SkyHub(): JSX.Element {
       clearLockParam();
       return;
     }
-    // NO LIST TO FIND IT IN, and the object is the one on the framing session
-    // (LOCK IN FINDER hands over `framing.target`): hold it. Only then - with a
-    // list that simply does not carry the id, the refusal below is still the
-    // honest answer. And only with coordinates to place it: a role that sees
-    // none has no finder to aim, and the card would print an altitude nobody
-    // computed.
+    // NO LIST TO FIND IT IN, and the link brought the object's row: the one a
+    // search pick carried in the hash, or else the framing session's (LOCK IN
+    // FINDER hands over `framing.target`). Hold it. Only then - with a list
+    // that simply does not carry the id, the refusal below is still the honest
+    // answer, row or no row.
+    //
+    // WITH OR WITHOUT A PLACEMENT (#504). A role that sees no coordinates, and
+    // since #503 a default site, has no altitude for the object, and the hold
+    // used to require one - so both fell through to the refusal. The finder is
+    // then not aimed (there is nowhere on its sky to aim at), but it still
+    // tracks the id, which is what keeps the hold standing, and the card names
+    // the object with no altitude on it rather than refusing it.
+    const carried = lockRowFromParams(routeRef.current.params);
     const framed = useStore.getState().framing?.target;
-    if (rankingError != null && framed != null && framed.id === lockParam
-      && placeLat !== null && placeLon !== null) {
+    const row: CatalogRowLike | null = carried != null && carried.id === lockParam
+      ? carried
+      : framed != null && framed.id === lockParam ? framed : null;
+    if (rankingError != null && row != null) {
       handledLockRef.current = lockParam;
-      const { altDeg, azDeg } = altAzOf(framed.ra_hours, framed.dec_deg, placeLat, placeLon, nowRef.current / 1000);
-      setViewRef.current({ az: azDeg, alt: altDeg, trackId: framed.id });
-      setHeld({ entry: framed, view: null });
-      toastRef.current({ level: "info", title: lockHeld(framed.name || framed.id), detail: rankingError });
+      const at = placeRef.current(row.ra_hours, row.dec_deg);
+      setViewRef.current(at != null
+        ? { az: at.azDeg, alt: at.altDeg, trackId: row.id }
+        : { trackId: row.id });
+      setHeld({ entry: row, view: null });
+      toastRef.current({ level: "info", title: lockHeld(displayName(row)), detail: rankingError });
       clearLockParam();
       return;
     }
@@ -506,7 +551,7 @@ export function SkyHub(): JSX.Element {
       clearLockParam();
     }, LOCK_WAIT_MS);
     return () => clearTimeout(timer);
-  }, [lockParam, targets, aimReady, clearLockParam, rankingError, placeLat, placeLon]);
+  }, [lockParam, targets, aimReady, clearLockParam, rankingError]);
 
   // Where the hold's aim landed, read on the render after it (see above).
   const modelAz = model.az;
@@ -532,41 +577,27 @@ export function SkyHub(): JSX.Element {
       || (Math.abs(modelAz - held.view.az) < HELD_VIEW_EPS_DEG
         && Math.abs(modelAlt - held.view.alt) < HELD_VIEW_EPS_DEG));
   const wheelForHold = status?.filterwheel ?? null;
-  const heldMaskOn = model.layers.horizon;
-  const heldHorizon = model.horizonPoints;
-  const heldFloorDeg = site?.horizon_min_deg ?? 0;
-  const heldLock: SkyTarget | null = useMemo(() => {
+  const modelPlace = model.place;
+  const heldLock: LockTarget | null = useMemo(() => {
     if (!heldActive || held == null) return null;
     const own = targets.find((x) => x.id === held.entry.id);
     if (own) return own;
-    if (placeLat === null || placeLon === null) return null;
-    const at = altAzOf(held.entry.ra_hours, held.entry.dec_deg, placeLat, placeLon, model.nowMs / 1000);
-    // BEHIND THE HORIZON BY THE FINDER'S OWN RULE, on a saved site: the
-    // context `useSkyModel` judges every row it places with (`trackCtx`: the
-    // drawn line and the flat floor only while the horizon layer is on, else
-    // below 0). `isObstructedAt` reads only the horizon pair; the other fields
-    // are filled because the type asks for them. The fallback runs whenever
-    // the region round the aim does not carry the object, and an object far
-    // below the horizon is the usual such case: its aim is clamped at -12 and
-    // the region is asked about the sky above it (32.5 degrees above M31 at
-    // -44.5).
+    // THE MODEL PLACES IT, as it places every row it has no server alt/az for:
+    // the same altitude, the same horizon rule (`trackCtx`: the drawn line and
+    // the flat floor only while the horizon layer is on) and the same walk to
+    // dawn for its window (#508). The fallback runs whenever the region round
+    // the aim does not carry the object, and an object far below the horizon
+    // is the usual such case: its aim is clamped at -12 and the region is asked
+    // about the sky above it (32.5 degrees above M31 at -44.5).
     //
-    // A DEFAULT site gives no verdict: "behind the horizon" is a claim about
-    // the operator's sky, and the placeholder's horizon is nobody's - the rule
-    // `trackLat` keeps for FRAME above (#466).
-    const obstructed = siteSaved && isObstructedAt(at.altDeg, at.azDeg, {
-      latDeg: placeLat,
-      hoursToDawn: 0,
-      horizon: heldMaskOn ? heldHorizon : [],
-      horizonMinDeg: heldMaskOn ? heldFloorDeg : 0,
-      maskOn: heldMaskOn,
-      holdAt: () => false,
-    });
-    return heldTarget(held.entry, at, wheelForHold, obstructed);
-  }, [heldActive, held, targets, placeLat, placeLon, model.nowMs, wheelForHold,
-    siteSaved, heldMaskOn, heldHorizon, heldFloorDeg]);
+    // With no coordinates - a default site (#503) or a role they are withheld
+    // from - `place` answers null and the lock is UNPLACED: no altitude, no
+    // window and no verdict, because "behind the horizon" and "up" are both
+    // claims about a sky nobody can compute here.
+    return heldTarget(held.entry, modelPlace(held.entry.ra_hours, held.entry.dec_deg), wheelForHold);
+  }, [heldActive, held, targets, modelPlace, wheelForHold]);
 
-  const lock = heldLock ?? model.lock;
+  const lock: LockTarget | null = heldLock ?? model.lock;
   const capture = useLock({ cap: "control.capture", needsRole: "camera", busyLane: "capture" });
   const onExplain = capture.onExplain;
 
@@ -687,7 +718,7 @@ export function SkyHub(): JSX.Element {
   }, [frame.on, model.mode, surveyDegraded, onlineFetch]);
 
   const enterFrame = useCallback(
-    (t: SkyTarget, keep: boolean) => {
+    (t: LockTarget, keep: boolean) => {
       if (!keep) {
         openFraming(entryOf(t));
         // A fresh session: one frame, no angle, no kept panels, at the ONE
@@ -702,7 +733,12 @@ export function SkyHub(): JSX.Element {
       // back to whatever sat under the reticle instead of the object framed. So
       // the held id stays tracked and the hold re-reads where this aim lands.
       const keepHold = held != null && held.entry.id === t.id;
-      model.setView({ az: t.azNow, alt: t.altNow, trackId: keepHold ? t.id : null });
+      // An unplaced lock has nowhere on the finder's sky to aim at, so only the
+      // tracked id is written and the view stays where it is (#503).
+      const trackId = keepHold ? t.id : null;
+      model.setView(t.altNow != null && t.azNow != null
+        ? { az: t.azNow, alt: t.altNow, trackId }
+        : { trackId });
       if (keepHold) setHeld({ entry: held.entry, view: null });
       setFrame({ on: true, set: keep, id: t.id });
     },
@@ -1171,10 +1207,12 @@ export function SkyHub(): JSX.Element {
    *
    * With no coordinates there is no alt/az to compute and the finder cannot
    * be aimed at all; the atlas still moves, and `model.placementNote` is
-   * already on screen saying why the rest of it cannot. The conversion uses the
-   * finder's own placement (`placeLat`/`placeLon`), not the claim pair: it is a
-   * round trip through the frame the model draws in, exact at any coordinates,
-   * and a default site still has a finder to aim (#466).
+   * already on screen saying why the rest of it cannot. The conversion is the
+   * model's own placement (`model.place`), a round trip through the frame the
+   * model draws in. A DEFAULT site is one of the no-coordinates cases now
+   * (#503): the finder used to be aimed at the placeholder's alt/az, and the
+   * reticle then read "UP" or "BEHIND HORIZON" for a sky that is not the
+   * operator's.
    */
   const aimAtSky = useCallback(
     (raHours: number, decDeg: number) => {
@@ -1184,11 +1222,11 @@ export function SkyHub(): JSX.Element {
         center: { ra_hours: raHours, dec_deg: decDeg },
         freeroamId: `Sky ${raHours.toFixed(2)}h ${decDeg >= 0 ? "+" : ""}${decDeg.toFixed(1)}°`,
       });
-      if (placeLat === null || placeLon === null) return;
-      const { altDeg, azDeg } = altAzOf(raHours, decDeg, placeLat, placeLon, modelNowMs / 1000);
-      model.setView({ az: azDeg, alt: altDeg, trackId: null });
+      const at = model.place(raHours, decDeg);
+      if (at == null) return;
+      model.setView({ az: at.azDeg, alt: at.altDeg, trackId: null });
     },
-    [setFraming, claimAtlasView, placeLat, placeLon, modelNowMs, model],
+    [setFraming, claimAtlasView, model],
   );
 
   /**
@@ -1336,8 +1374,8 @@ export function SkyHub(): JSX.Element {
   }, [wheel, quickExp, planHours, dawnH, model.nowMs]);
 
   // ---- actions ------------------------------------------------------------
-  const goQuick = (t: SkyTarget) => nav.sheet("quick", { target: t.id });
-  const goVideo = (t: SkyTarget) =>
+  const goQuick = (t: LockTarget) => nav.sheet("quick", { target: t.id });
+  const goVideo = (t: LockTarget) =>
     nav.go(
       `/rig/capture?mode=video&target=${encodeURIComponent(t.name)}` +
       `&ra=${t.ra_hours}&dec=${t.dec_deg}`,
@@ -1357,15 +1395,22 @@ export function SkyHub(): JSX.Element {
    * passes` fetch and the withheld-reason copy), so the id travels in the hash
    * the same way `?lock=` does.
    */
-  const goPasses = (t: SkyTarget) => nav.sheet("targets", { sat: t.id });
+  const goPasses = (t: LockTarget) => nav.sheet("targets", { sat: t.id });
 
-  const pressPrimary = (cta: LockCta) => {
+  const pressPrimary = (cta: LockCardCta) => {
     if (!lock) return;
-    const t = ctaToast(cta.kind);
-    if (t) enqueueToast({ level: t.level, title: t.title });
+    if (cta.kind !== "site" && cta.kind !== "unplaced") {
+      const t = ctaToast(cta.kind);
+      if (t) enqueueToast({ level: t.level, title: t.title });
+    }
     switch (cta.kind) {
       case "connect":
         nav.go("/rig/devices");
+        return;
+      case "site":
+        // The site pill's own sheet: the fix for a lock nobody could place is
+        // a saved site, and this is where one is saved (#503).
+        nav.sheet("sites");
         return;
       case "video":
         goVideo(lock);
@@ -1374,6 +1419,7 @@ export function SkyHub(): JSX.Element {
         goPasses(lock);
         return;
       case "obstructed":
+      case "unplaced":
         return;
       default:
         goQuick(lock);
@@ -1442,10 +1488,20 @@ export function SkyHub(): JSX.Element {
   // The CONNECT case is deliberately LIVE: pressing it is how you get a rig, so
   // locking it behind "connect a camera first" would be the app refusing to help
   // with the only thing wrong with it.
+  //
+  // SET A SITE FIRST is live for the same reason (#503): it opens the site
+  // sheet, commands nothing, and a saved site is the one thing that would let
+  // the card say whether the object is up. POSITION HIDDEN FOR THIS ROLE is
+  // the opposite case - nothing this reader can press fixes it - so it is
+  // locked with the sentence that says why. The card and this line read the
+  // same `lockCardCta`, so the reason can never belong to another case.
   const ctaConnect = !equipConnected;
-  const primaryReason = ctaConnect
+  const lockCtaKind = lock ? lockCardCta(lock, equipConnected, siteSaved).kind : null;
+  const primaryReason = ctaConnect || lockCtaKind === "site"
     ? null
-    : capture.lockedReason ?? (lock?.obstructed ? obstructedReason(lock.name, model.siteName) : null);
+    : capture.lockedReason ?? (lock?.obstructed === true
+      ? obstructedReason(lock.name, model.siteName)
+      : lock != null && lockCtaKind === "unplaced" ? unplacedReason(lock.name) : null);
   // Both secondaries refuse a SATELLITE before they refuse anything else - see
   // `goPasses` above for why the branch exists while `SATELLITE_MARKERS` is
   // false. The primary needs no such clause: `lockCta` already routes a
@@ -1561,12 +1617,22 @@ export function SkyHub(): JSX.Element {
     </div>
   );
 
+  // A COUNT ONLY OF WHAT WAS PLACED (#544, the #503 residual). With no
+  // coordinates (`placementNote` set) and no row the rig placed itself, the
+  // reach count is 0 because nothing could be judged, not because nothing is
+  // up, so the status row and the patch card print no count at all. A role
+  // without the coordinates that the rig placed rows for is still counted:
+  // those rows were judged, by the rig.
+  const reachCount = model.placementNote != null && model.targets.length === 0
+    ? null
+    : model.reachCount;
+
   return (
     <div data-testid="hub-sky" style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
       {!equipConnected && <BrowseBanner />}
 
       <StatusRow
-        reachCount={model.reachCount}
+        reachCount={reachCount}
         clearPct={model.clearPct}
         siteName={model.siteName}
         onDome={onDome}
@@ -1713,6 +1779,20 @@ export function SkyHub(): JSX.Element {
         </Card>
       )}
 
+      {/* WHY THE FINDER IS EMPTY, when there are no coordinates to place its
+          sky with (#503): no saved site, or a role they are withheld from. The
+          atlas prints the same sentence among its own notes, so this card is
+          for the finder modes only. Without it a default site's MAP was a
+          blank box and a reach count of zero, with nothing to say that the
+          sky had not been placed rather than that nothing was up. */}
+      {!atlasOn && model.placementNote && (
+        <Card tone="dashed" data-testid="sky-placement-note">
+          <div style={{ fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5 }}>
+            {model.placementNote}
+          </div>
+        </Card>
+      )}
+
       {!model.reticle.haveOptics && model.reticle.missingNote && (
         <Card tone="dashed" data-testid="sky-optics-note">
           <div style={{ fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5 }}>
@@ -1809,6 +1889,7 @@ export function SkyHub(): JSX.Element {
         <LockCard
           lock={lock}
           equipConnected={equipConnected}
+          siteSaved={siteSaved}
           planSummary={planSummary}
           framed={framedForLock}
           onAdjustFrame={() => enterFrame(lock, true)}
@@ -1828,8 +1909,9 @@ export function SkyHub(): JSX.Element {
       ) : (
         <PatchCard
           patch={model.patch}
-          reachCount={model.reachCount}
+          reachCount={reachCount}
           targetCount={model.targets.length}
+          placementNote={model.placementNote}
           onImagePatch={pressPatch}
           onFramePatch={enterFreeRoam}
           framed={framedForPatch}
@@ -1841,7 +1923,14 @@ export function SkyHub(): JSX.Element {
         />
       ))}
 
-      {!atlasOn && (
+      {/* NOT ON AN UNPLACEABLE SKY WITH NOTHING ON IT (#503). The strip's
+          empty state says everything is "behind your horizon or under cloud",
+          which is a verdict about every object at once - and with no
+          coordinates nothing was judged at all. The placement note above says
+          what is true instead. A strip with chips in it still shows: those
+          are rows the rig placed itself, which a role without the site's
+          coordinates can still be given. */}
+      {!atlasOn && (model.placementNote == null || model.reachList.length > 0) && (
         <ReachStrip
           reachList={model.reachList}
           onAim={(t) => model.setView({ az: t.azNow, alt: t.altNow, trackId: t.id })}
@@ -1856,7 +1945,10 @@ export function SkyHub(): JSX.Element {
       <DomeCard
         canViewWeather={canViewWeather}
         pointing={pointing}
-        target={lock ? { alt: lock.altNow, az: lock.azNow, name: lock.name } : null}
+        // An unplaced lock has no point on the hemisphere to mark (#503).
+        target={lock && lock.altNow != null && lock.azNow != null
+          ? { alt: lock.altNow, az: lock.azNow, name: lock.name }
+          : null}
         horizon={horizonPoints}
         wind={domeWind}
         tracks={model.dome.tracks}

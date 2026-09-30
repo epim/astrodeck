@@ -25,9 +25,10 @@ loopback fixtures: no AstroDeck server, no UI build, no rig.
 `routes_s5_s6.json`, and `test_probe_s7.py` the S7 probe, `routes_s7.json`,
 `seed_session.py` and `server_ctl.py`'s two S7 flags. They are run by hand, and
 by `run.ps1` before it builds anything, with the same system python everything
-else here needs (152 tests, 333 s on the dev box on 2026-09-29, 57 of them
-test_probe_s7.py's; two of those also run `seed_session.py` under the server
-venv, and skip, saying so, without it):
+else here needs (180 tests, 387 s on the dev box on 2026-09-29 after mosaic
+slice H4: 3 in test_probe_isolation.py, 48 in test_probe_s4.py, 72 in
+test_probe_s5_s6.py and 57 in test_probe_s7.py; two of the last also run
+`seed_session.py` under the server venv, and skip, saying so, without it):
 
 ```powershell
 cd tools\ui_probe
@@ -118,14 +119,114 @@ docstring, point 7):
   `server/tests/test_s7_simsolver_fault.py`). Without the flag the variable is
   removed from the server's environment.
 - **`seed_session.py`**: run by the server's venv, never the system python;
-  refuses a directory under the repository's `server/` or `captures/` (where a
-  checkout's server keeps the developer's own config and captures when no
-  directory is set), a session a run owns, and a move that leaves a run on
-  tonight's night.
+  refuses any directory that does not carry the probe marker
+  (`.astrodeck-probe`, #539), which `server_ctl.py start` writes into the
+  config and capture directories it creates, holding the port and pid of the
+  server it started and the directory itself. So a directory is written only
+  when a probe start made it: never the developer's own `server/` or
+  `captures/`, and never a real install's, which the old deny-list of those
+  two let through. A marker naming the rig's port, or naming another
+  directory (a probe directory copied elsewhere), is refused too, as are a
+  session a run owns and a move that leaves a run on tonight's night. A
+  directory made by an older `server_ctl.py` has no marker; start the server
+  again with `--fresh`.
 
 Commit `routes_s7.json` with `test_probe_s7.py`, by explicit pathspec: the
 route-file guard in the server suite fails a tracked test whose route file is
 not tracked.
+
+## Mosaic slice H4: the browser a walk runs in, where boxes sit, one tap
+
+Each is described where it is implemented (probe.py's module docstring,
+point 8). No new route file: the walks extend the three tracked ones, so the
+route-file guard stays green.
+
+**Desktop walks draw their scrollbars (#535).** Playwright launches Chromium
+with `--hide-scrollbars` unless told not to, so every desktop column that
+scrolls was measured one bar too wide (index.css draws a 10 px thin bar on
+every element). #469's "While a mosaic waits" select passed the probe whole in
+the classic inspector's 284 px column and was cut on the operator's screen.
+`probe._Browsers` now launches one Chromium per kind of screen: a desktop width
+with that default left out (`_launch_args`, `HIDE_SCROLLBARS`), a phone width
+with Playwright's default, since a phone overlays its bar on the content (0 px
+either way, measured). `main` and every `test_probe_*.py` take their browsers
+from it, and `test_probe_isolation.LaunchTest` holds, off the syntax tree,
+that nothing else launches one. `scrollbar: [{"selector", "min_px"}]` is the
+harness grading itself on the real page: the column scrolls, and its bar
+takes at least `min_px` of its width. The classic desktop walk measures the
+FLOW panel's column (`[data-flows-inspector]`, #469's) mid-walk and the modal's
+control column (`framing-scroller`) at its end; `s5-frame-running-desktop`
+measures the latter too. No phone walk asks for one.
+
+**Where a box sits (#495, #440).** Every earlier check grades an element
+alone, so a canvas pushed 18 px under the Target modal's sky, with MOVE SKY
+10 px under and a status line over its bottom, passed both frame walks.
+`contained: [{"within", "selectors", "when"}]` holds each visible match whole
+inside the padding box of its nearest `within` ancestor (where `overflow`
+clips); a selector with no visible match fails. `apart: [{"a", "b", "min_b",
+"when"}]` holds the first `a` (the canvas) clear of every `b` (the lines under
+it), at least `min_b` of them. `when` names the state graded, waited for up to
+`timeout_ms`: the canvas fits the sky exactly until a line is drawn under it,
+so a check made before the line would grade nothing. Used on
+`s4-frame-phone` and `s5-frame-running-phone` (the canvas, MOVE SKY, MOVE GRID
+and the N and W letters within `[data-testid=framing-sky]`, once the degraded
+line shows; the view-only modal draws no MOVE pair, which a count holds), and
+on the one-tap walk below.
+
+**One tap on a catalogue result (#492, #440's verdict case).**
+`s5-frame-catalogue-pick-phone`, the first walk of `routes_s5_s6.json`, opens
+the phone's flow's Target modal before anything runs, taps the search field
+(typing mode shrinks the sky), types "M 31" and taps the M31 row ONCE, then
+needs the verdict line within 4 s and grades `contained` and `apart` with both
+lines under the canvas. It lives there and not in `routes_s4_frame.json`,
+whose route list is a claim of spec section 8's S4 that
+`test_mosaic_spec_claims.py` holds.
+
+**CONTINUE's night (#511).** `run_copy` expects the night the progress route
+names (`continue_night`, what runCopy.ts prints since H4-ROUTES-B), never
+`nights` plus one; a route that names none gets the counts alone. A first run
+aborted the same evening continues night 1, so the S5 CONTINUE walks expect
+night 1; the S7 ones, moved onto an earlier night, still expect 2. The probe
+as committed before H4 grades the right button wrong on the current build
+(`s5-continue-phone`'s `_mutations`, #569).
+
+**Real-page results, 2026-09-29** (a private build of the working tree, local
+simulator servers, never the rig; each route's `_mutations` quotes them):
+
+- The unmutated build passes every walk above.
+- The "square fills the box" build (`container-type` dropped from
+  `.sky-canvas-square`) fails `s4-frame-phone`, `s5-frame-running-phone` and the
+  one-tap walk on `contained` and `apart` alone; the route files as committed
+  before H4 passed the first two on that build.
+- A build with H4-UFRAME's #492 fix reverted fails the one-tap walk: the tap
+  is lost and the verdict never comes.
+- The probe with Playwright's default launch restored fails exactly the three
+  desktop `scrollbar` checks.
+
+**The desktop re-baseline** (every desktop walk of the three files, with the
+bar drawn and with it hidden, diffed value by value; `routes_s7.json`
+scenario 4 walked at a night fixture site from a scratch copy, the file's own
+being in daylight at the time): no text, fit, reach or readout verdict
+changed. What changed: the three `scrollbar` checks (bar 10 px, 0 hidden), and
+the modal control column's six section headings, 349 px wide with the bar
+against 359 hidden (their centres 5 px left). `s6-sky-wizard-phone` and
+`s6-sky-wizard-desktop` are red with either launch since H4-USKY: with no site
+saved the finder places nothing and FRAME is locked, its refusal saying "Aim
+above the horizon first" while the reticle reads alt 45 (#568, open).
+
+The H4 walks were run like this, each server private to its run:
+
+```powershell
+cd ui; node_modules\.bin\vite build --outDir <scratch>\dist --emptyOutDir; cd ..
+python tools\ui_probe\server_ctl.py start --fresh --port 8883 `
+    --config-dir <scratch>\cfg --capture-dir <scratch>\cap --ui-dir <scratch>\dist
+python tools\ui_probe\probe.py --routes tools\ui_probe\routes_s4_frame.json `
+    --widths 390,1440 --port 8883 --out <scratch>\out-s4
+python tools\ui_probe\server_ctl.py stop --config-dir <scratch>\cfg
+```
+
+`routes_s5_s6.json` needs a fresh server of its own (its seeds refuse a server
+that already ran its flows).
 
 ## One command
 
@@ -196,7 +297,9 @@ python tools\ui_probe\server_ctl.py stop
   `taskkill /PID <pid> /T /F` (kills the whole process tree -- necessary on
   Windows, since a bare kill of the launcher PID alone can leave the actual
   uvicorn process running).
-- `probe.py` -- the Playwright walk. Takes a route list, a base URL, and a
+- `probe.py` -- the Playwright walk, in one Chromium per kind of screen (a
+  desktop width's draws its scrollbars; see the H4 section above). Takes a
+  route list, a base URL, and a
   set of widths; for each (width, route) pair it navigates, runs a vacuity
   guard, performs the route's click steps, asserts a view-specific marker is
   VISIBLE, measures horizontal overflow, collects console errors and failed
