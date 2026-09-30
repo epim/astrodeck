@@ -565,6 +565,54 @@ async def test_a_constraint_wait_park_holds_on_the_idle_clock(sim_hub, monkeypat
         await run.close()
 
 
+# ----------------------------------------- the calibration block that never tore down
+
+async def test_a_calibration_block_after_a_light_target_park_holds_mid_block(
+        sim_hub, monkeypatch, bus_lines):
+    """Alpha shoots one light frame, then a long dark block runs (#199). The
+    calibration frame loop never slews, never centres and never stops
+    tracking on its own, so Alpha — still tracked from the light target — was
+    watched by nothing for as long as the block lasted. It must be park-held
+    DURING the block, at the first per-frame look past WAIT_TEARDOWN_S, not
+    only once the whole block finishes.
+
+    Mutant "no check in the calibration loop" (the `_idle_hold_tick` call
+    deleted from `_run_calibration`'s frame loop): RED -
+        AssertionError: the mount kept tracking Alpha, unwatched, through the
+        whole dark block; set_tracking(False) at [] s
+    """
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
+    t0 = run.t0
+    a = _target("Alpha", _ra_at(-3.0, t0), 20.0)      # high, rising, flip hours off
+    cal_exp = 10.0
+    # 200 frames of 10 s is 2000 s of block — far past the 600 s horizon, so
+    # the block is still running when the test looks (never mistake the
+    # end-of-block teardown, which the bug already handled, for the mid-block
+    # check under test).
+    darks = Target(name="Darks", ra_hours=0.0, dec_deg=0.0, calibration=True,
+                   center=False, autofocus_first=False,
+                   steps=[ExposureStep(exposure_s=cal_exp, gain=100, count=200,
+                                       frame_type="Dark")])
+
+    try:
+        await run.night(_plan(a, darks))
+        idle = run.exposure_end("Alpha")
+        offs = [t for t in run.tracking_off if t >= idle]
+        assert offs, (
+            f"the mount kept tracking Alpha, unwatched, through the whole "
+            f"dark block; set_tracking(False) at "
+            f"{run.rel(run.tracking_off, idle)} s")
+        assert TEARDOWN <= offs[0] - idle <= TEARDOWN + cal_exp, (
+            f"park-held {offs[0] - idle:.1f} s after Alpha's last exposure; "
+            f"the idle clock is {TEARDOWN:.0f} s plus at most one "
+            f"{cal_exp:.0f} s calibration frame")
+        assert run.tracking() is False
+        lines = _park_lines(bus_lines)
+        assert len(lines) == 1 and "Alpha" in lines[0], lines
+    finally:
+        await run.close()
+
+
 # --------------------------------------------- the floor and the flip, before 120 s
 
 async def test_a_target_sinking_through_the_floor_is_park_held_at_that_tick(
