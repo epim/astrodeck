@@ -35,13 +35,29 @@ answers ``armed: true`` (the replay notice needs it). The walk keeps the armed
 session from being resumed under it by the site probe.py saves first, where
 the sun is up (``daylight_site``): auto-resume opens no window in daylight.
 
+WHOSE DIRECTORIES (#539). Only a probe server's. ``server_ctl.py start``
+writes a marker, ``.astrodeck-probe`` (``PROBE_MARKER``), into each config
+and capture directory it creates, holding the port and pid of the server it
+started and the directory itself, and this script refuses any directory
+without one before it reads anything in it. The guard used to be a
+deny-list of the checkout's ``server/`` and ``captures/``, and every other
+directory passed, a real install's among them: there ``--arm`` would hand
+ResumeArm a dormant armed session to start at its next tick after dark,
+which is unattended mount motion (spec 2026-09-23, Revision 2, ruling 7), and
+the daylight site above keeps no window shut on a server the probe never
+saved it to. A marker naming the rig's port 8800 is refused (server_ctl.py
+never starts a server there, so no probe start wrote it), and so is one
+naming another directory: a probe directory copied somewhere else was not
+created there by a probe start. The guard reads the marker from disk and
+asks no server anything; asking whether the rig's server answers would be a
+call to the rig's port.
+
 REFUSALS, each in words and before anything is written: a directory that is
-not given, or that lies inside the repository's ``server/`` or ``captures/``
-(where the server keeps the developer's real config and captures when no
-directory is set); no session for the flow; a session that is not
-dormant (a run owns it, and would write over the change); a run id with no
-stamp; and a move that leaves a run on tonight's observing night, since
-CONTINUE would then not be a second night at all.
+not given, that carries no marker, or whose marker is unreadable, names the
+rig's port or names another directory; no session for the flow; a session
+that is not dormant (a run owns it, and would write over the change); a run
+id with no stamp; and a move that leaves a run on tonight's observing night,
+since CONTINUE would then not be a second night at all.
 
 Prints one JSON object on stdout: the session id, the report ids before and
 after, the observing nights, the frame count, whether it is armed, and
@@ -57,38 +73,104 @@ import sys
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
 
 class SeedRefused(RuntimeError):
     pass
 
 
-#: Where a server run from this checkout keeps the developer's own state when
-#: no directory is set: the config in ``server/config`` (config.py
-#: ``CONFIG_DIR``, under ``server/``) and the captures, sessions and reports
-#: in the repository's ``captures/`` (hub.py ``CAPTURE_DIR``, which is NOT
-#: under ``server/``). Both are refused, and everything under them.
-_DEVELOPERS_OWN = ((REPO_ROOT / "server", "server/"),
-                   (REPO_ROOT / "captures", "captures/"))
+#: The file ``server_ctl.py start`` writes into each config and capture
+#: directory it creates (#539, module docstring), and the only proof this
+#: script accepts that a directory is a probe server's. server_ctl.py writes
+#: it under its own ``PROBE_MARKER``: the two scripts run under different
+#: pythons and import nothing of each other, as probe.py keeps its own
+#: ``RIG_PORT``, so the server suite's test_h4_seed_session_allow_list.py
+#: holds the two names, and a marker one writes and the other reads, to one
+#: another.
+PROBE_MARKER = ".astrodeck-probe"
+#: The port the rig's own AstroDeck server listens on (CLAUDE.md, "The rig";
+#: server_ctl.py and probe.py ``RIG_PORT``). A marker naming it is refused.
+RIG_PORT = 8800
+#: server_ctl.py's marker is a line of JSON; a file of that name longer than
+#: this is not one, and is not read to its end.
+_MARKER_MAX_BYTES = 4096
+
+
+def _is_int(value) -> bool:
+    # JSON's true is Python's 1: a marker saying "port": true names no port.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _marker(path: Path, flag: str) -> dict:
+    """``path``'s probe marker, read and checked for the shape server_ctl.py
+    writes (``{"port", "pid", "dir"}``). A directory with no marker is
+    refused before any file in it is opened: ``is_file`` asks the file
+    system, and the marker is the one file this guard ever opens."""
+    marker = path / PROBE_MARKER
+    if not marker.is_file():
+        raise SeedRefused(
+            f"{flag} {path} carries no {PROBE_MARKER} marker, so no probe server's "
+            f"server_ctl.py start created it, and it may be the developer's own or "
+            f"a real observatory's config or captures: pass the directory "
+            f"server_ctl.py start made for the private server (one made before the "
+            f"marker existed needs server_ctl.py start --fresh)")
+
+    def unreadable(why: str) -> SeedRefused:
+        return SeedRefused(f"{flag} {path}: its {PROBE_MARKER} marker {why}, so it is "
+                           f"not one server_ctl.py start wrote")
+
+    try:
+        with open(marker, "rb") as f:
+            raw = f.read(_MARKER_MAX_BYTES + 1)
+    except OSError as exc:
+        raise unreadable(f"cannot be read ({exc.__class__.__name__})") from None
+    if len(raw) > _MARKER_MAX_BYTES:
+        raise unreadable(f"is longer than {_MARKER_MAX_BYTES} bytes")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise unreadable("is not JSON") from None
+    if not isinstance(data, dict):
+        raise unreadable("is not a JSON object")
+    port, pid, where = data.get("port"), data.get("pid"), data.get("dir")
+    if not (_is_int(port) and 0 < port < 65536):
+        raise unreadable("names no port")
+    if not (_is_int(pid) and pid > 0):
+        raise unreadable("names no pid")
+    if not (isinstance(where, str) and where):
+        raise unreadable("names no directory")
+    return {"port": port, "pid": pid, "dir": where}
+
+
+def _same_dir(a: Path, b: str) -> bool:
+    try:
+        other = Path(b).resolve()
+    except (OSError, ValueError):
+        return False
+    return os.path.normcase(str(a)) == os.path.normcase(str(other))
 
 
 def _private(raw: str | None, flag: str) -> Path:
-    """A directory the caller named, which is not the developer's own
-    (``_DEVELOPERS_OWN``): this script edits session files, and there it would
-    edit the developer's real sessions."""
+    """A directory the caller named, which a probe server's ``server_ctl.py
+    start`` created: it carries that start's marker (``_marker``), for this
+    directory and not the rig's port (#539, module docstring). This script
+    edits session files and can arm one for an unattended start, so a
+    directory is refused unless it is shown to be a probe's, never let
+    through because it is not on a list of the developer's own."""
     if not raw:
         raise SeedRefused(f"{flag} is required: this script writes only a private "
                           f"server's directories, never a default")
     path = Path(raw).resolve()
-    for own_dir, name in _DEVELOPERS_OWN:
-        own = own_dir.resolve()
-        if path == own or own in path.parents:
-            raise SeedRefused(f"{flag} {path} is inside the repository's {name} "
-                              f"directory, which holds the developer's own config "
-                              f"or captures: pass the private server's directory")
     if not path.is_dir():
         raise SeedRefused(f"{flag} {path} is not a directory")
+    marker = _marker(path, flag)
+    if marker["port"] == RIG_PORT:
+        raise SeedRefused(f"{flag} {path}: its {PROBE_MARKER} marker names port "
+                          f"{RIG_PORT}, the rig's server port, and a probe server is "
+                          f"never started there: this is not a probe server's directory")
+    if not _same_dir(path, marker["dir"]):
+        raise SeedRefused(f"{flag} {path}: its {PROBE_MARKER} marker was written for "
+                          f"another directory, {marker['dir']}, so this one is a copy "
+                          f"no probe start created: pass the directory the start made")
     return path
 
 
@@ -217,6 +299,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--arm", action="store_true",
                     help="arm the session for auto-resume, disarming every other")
     args = ap.parse_args(argv)
+    # Both directories shown to be a probe server's before anything in
+    # either is read, and before the store is imported (#539).
     try:
         cfg = _private(args.config_dir, "--config-dir")
         cap = _private(args.capture_dir, "--capture-dir")

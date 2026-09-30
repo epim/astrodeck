@@ -40,10 +40,23 @@
 // FramingSky and CompassSurvey (ClassicAtlasSky.tsx) are the two hosts that
 // show that default, so each is driven here in both states of onlineFetch.
 //
+// NO SOURCE WITHOUT THE WAIT (#493, H4-UFRAME). Two things kept a sky with no
+// source saying LOADING long after it knew. The tile engine called a view
+// all-failing only after 8 consecutive failures, which a view of fewer than 8
+// tiles reaches only one 45 s negative-cache pass at a time, so the compass
+// sky, which opens 55 deg wide on three tiles, took about 90 s: its cases here
+// used to zoom in with the + key to get past that, and now grade it at the
+// width it opens at (the engine's own rule is graded in
+// atlas/__tests__/tileEngineAllFailing.test.tsx). And FramingSky kept its
+// degraded state itself, so a sky remounted on a phone turn started again
+// from "not degraded" on a fresh engine and pulsed LOADING until that engine
+// had failed its way back; the verdict is now remembered per survey across
+// mounts.
+//
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
-// S5-SKY-mut for S5's, S7-USKY-mut for S7's), never in the shared tree
-// (#254), and the failure it produced is quoted verbatim. S5's quotes carry
-// the copy as it read then.
+// S5-SKY-mut for S5's, S7-USKY-mut for S7's, H4-UFRAME-mut for H4's), never
+// in the shared tree (#254), and the failure it produced is quoted verbatim.
+// S5's quotes carry the copy as it read then.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -84,11 +97,17 @@ win.HTMLCanvasElement.prototype.getContext = function (kind: string) {
 // route (the <img> path) always fails. Every request is counted, so a case
 // can say how many 404s it took, and every survey id a cutout asked for is
 // kept, so a case can say whether the server would have served it at all.
-const net = { tiles: "404" as "404" | "ok", tileCalls: 0, cutoutCalls: 0, cutoutSurveys: [] as string[] };
+const net = {
+  tiles: "404" as "404" | "ok", tileCalls: 0, cutoutCalls: 0, cutoutSurveys: [] as string[],
+  /** Every tile asked, as "slug/order/npix", so a case can say whether any
+   *  tile was asked twice (a second pass). */
+  tileKeys: [] as string[],
+};
 win.fetch = async (url: string) => {
   const s = String(url);
   if (s.includes("/api/survey/tile/")) {
     net.tileCalls++;
+    net.tileKeys.push(s.replace(/^.*\/api\/survey\/tile\//, "").replace(/\.jpg$/, ""));
     if (net.tiles === "ok") return { ok: true, status: 200, blob: async () => ({}) };
     return { ok: false, status: 404, blob: async () => ({}) };
   }
@@ -303,6 +322,75 @@ await test("online fetch off, tile engine: the canvas says UX-07's sentence and 
   }
 });
 
+// ================================================ a remount keeps the verdict
+// The modal's sky remounted on a phone turn (390 x 844 to 844 x 390, #493)
+// came back pulsing LOADING over a survey it had already found has no source:
+// the degraded state lived in the FramingSky that was thrown away, and the new
+// one began at "not degraded" with a fresh engine that had to fail its way
+// back. The same sky is unmounted and mounted again here, and graded in the
+// commit that mounts it, before its new engine has asked for a single tile, so
+// nothing this mount did can be what made it degraded.
+act(() => { root.unmount(); });
+const rootR = createRoot(container);
+const callsBeforeRemount = net.tileCalls;
+act(() => { rootR.render(createElement(FramingSky, props())); });
+
+// Mutant "state reset on remount" (FramingSky's degraded state back in its own
+// useState(false), as before this change): 12/13 passed, this case red:
+//   x a remounted sky on a survey already found degraded is degraded from its
+//     first commit, before its new engine has asked for a tile: the remounted
+//     sky says LOADING over a survey already found to have no source (0 tile
+//     requests since the remount): "MOVE SKYMOVE GRIDLOADING
+//     color…NW1.46″/px8.00° wide1-1, pending1-2, pending1-3, pending2-3,
+//     pending2-2, pending2-1, pending"
+await test("a remounted sky on a survey already found degraded is degraded from its first commit, before its new engine has asked for a tile", () => {
+  const since = net.tileCalls - callsBeforeRemount;
+  assert(skyBox()?.querySelector("canvas") != null, "the remounted sky has no tile engine - this would grade the wrong path");
+  assert(since === 0, `precondition: the new engine has already asked for ${since} tiles, so this mount could have degraded itself`);
+  assert(!LOADING.test(text()),
+    `the remounted sky says LOADING over a survey already found to have no source (${since} tile requests since the remount): ${JSON.stringify(text().slice(0, 200))}`);
+  const empty = emptyText();
+  assert(empty !== null && UX07.test(empty), `the remounted sky does not say UX-07's sentence: ${JSON.stringify(empty)}`);
+  const line = lineText();
+  assert(line !== null && TILE_LINE.test(line), `the remounted sky's line under the canvas reads ${JSON.stringify(line)}`);
+});
+
+// Control: the verdict is the survey's. A sky on a survey nobody has found
+// degraded opens LOADING, as it always did. Graded in the commit that mounts
+// it, in a container of its own, and unmounted at once, so its engine never
+// gets to find anything.
+//
+// Mutant "one flag for every survey" (the remembered verdict is one entry for
+// every survey, not keyed by survey): 11/13 passed:
+//   x control: a sky on a survey never found degraded opens LOADING, not the
+//     empty state: a sky on CDS/P/DSS2/red, which nothing has found degraded,
+//     opens on the empty state: "MOVE SKYMOVE GRIDSurvey tiles not loading.
+//     Retrying automatically.No sky survey available: download the offline
+//     pack or enable online fetch in Settings.NW1.46″/px8.00° wide1-1,
+//     pending1-2, pending1-3,"
+//   x online fetch on, FramingSky: the canvas says the survey is not arriving,
+//     check the connection or install the pack, and never to turn fetch on:
+//     only 0 tile requests with online fetch on, under the engine's 8-failure
+//     threshold - the fixture never degraded
+// (the second: the <img> half's Mellinger verdict, never cleared, opened the
+// DSS2 color sky degraded before its engine had asked for anything).
+await test("control: a sky on a survey never found degraded opens LOADING, not the empty state", () => {
+  const box = win.document.createElement("div");
+  win.document.body.appendChild(box);
+  const r = createRoot(box);
+  try {
+    act(() => { r.render(createElement(FramingSky, props({ survey: "CDS/P/DSS2/red" }))); });
+    const t = String(box.textContent ?? "");
+    assert(box.querySelector("canvas") != null, "the DSS2 red sky has no tile engine - this control would grade the wrong path");
+    assert(box.querySelector('[data-role="survey-empty"]') == null && !TILE_LINE.test(t),
+      `a sky on CDS/P/DSS2/red, which nothing has found degraded, opens on the empty state: ${JSON.stringify(t.slice(0, 200))}`);
+    assert(LOADING.test(t), `a sky on CDS/P/DSS2/red does not open LOADING: ${JSON.stringify(t.slice(0, 200))}`);
+  } finally {
+    act(() => { r.unmount(); });
+    box.remove();
+  }
+});
+
 // Mutant "load never clears" (FramingSky wires onSurveyError but not
 // onSurveyLoad, so nothing ever takes the state down):
 //   failed, 4/5 (the canvas's status line opens with a warning-sign glyph,
@@ -314,13 +402,18 @@ await test("online fetch off, tile engine: the canvas says UX-07's sentence and 
 //     pending2-1, pending[warning sign] Survey unreachable — schematic framing;
 //     retrying automatically."
 await test("when the tiles come back, the engine's first drawn frame clears the degraded state", async () => {
-  assert(EMPTY_STATE.test(text()) && TILE_LINE.test(text()),
+  // Waited for, not read at once: this case grades the recovery, and the
+  // remounted sky's own engine degrades it in one pass whether or not the
+  // remount kept the verdict (the case above grades that).
+  const degraded = await waitFor(() => EMPTY_STATE.test(text()) && TILE_LINE.test(text()), 3000);
+  assert(degraded,
     `precondition: the sky is not degraded, so there is nothing for the tiles to clear: ${JSON.stringify(text().slice(0, 200))}`);
   net.tiles = "ok";
   // The failed tiles sit in the engine's 45 s negative cache, so the sky is
   // moved to fresh tiles, which is what a pan or zoom back to fetchable sky
-  // does in the modal.
-  act(() => { root.render(createElement(FramingSky, props({ zoomDeg: 3 }))); });
+  // does in the modal. It is the remounted sky (above) that recovers: a
+  // verdict remembered across mounts has to be cleared by the tiles too.
+  act(() => { rootR.render(createElement(FramingSky, props({ zoomDeg: 3 }))); });
   const calls = net.tileCalls;
   // The in-canvas empty state is drawn only until the engine's first drawn
   // frame (its own first-draw flag), whatever the host does, so its going is
@@ -338,7 +431,7 @@ await test("when the tiles come back, the engine's first drawn frame clears the 
   assert(!LOADING.test(text()), "LOADING came back after the tiles answered");
 });
 
-act(() => { root.unmount(); });
+act(() => { rootR.unmount(); });
 net.tiles = "404";
 
 // ================================================ the <img> cutout pipeline
@@ -553,32 +646,33 @@ const DISPLAY = { accepts: () => true, imagery: true, objects: false, controls: 
  *  server/astrodeck/catalog/survey.py). */
 const SERVED = new Set(["CDS/P/DSS2/color", "CDS/P/DSS2/red", "CDS/P/2MASS/color"]);
 
-/** Mount the compass sky with the store saying `onlineFetch`, zoom it in, and
- *  let its survey degrade. The root is handed back for the case to unmount;
- *  if anything here throws, it is unmounted first, so the next case does not
- *  mount a second root on the same container. */
+/** How long a compass case waits for the empty state: far inside the 45 s
+ *  negative-cache pass, so only a view called in its FIRST pass can meet it. */
+const ONE_PASS_MS = 3000;
+
+/** Mount the compass sky with the store saying `onlineFetch`, at the width it
+ *  opens at, and let its survey degrade. The root is handed back for the case
+ *  to unmount; if anything here throws, it is unmounted first, so the next
+ *  case does not mount a second root on the same container. */
 async function compass(onlineFetch: boolean): Promise<{ root: any; empty: string | null; line: string | null;
-                                                        tiles: number; unserved: string[] }> {
+                                                        tiles: number; repeats: string[]; unserved: string[] }> {
   useStore.setState({ config: { survey: { online_fetch: onlineFetch } }, night: false, framing: null } as never);
   const r = createRoot(container);
   try {
     const calls = net.tileCalls;
+    const keys = net.tileKeys.length;
     const cutouts = net.cutoutSurveys.length;
     act(() => { r.render(createElement(CompassSurvey, { center: COMPASS_CENTRE, display: DISPLAY })); });
-    // The compass sky opens 55 deg wide, where the whole view is three tiles:
-    // under the engine's 8-failure threshold, so on a rig with no source it
-    // reports nothing until its 45 s negative cache has let it ask twice more
-    // (#493).
-    // Zoomed in with the + key, as a person would, to about 8 deg (the canvas
-    // clamps to 10, then each press is 1/1.12), where the view has enough
-    // tiles to fail in one pass.
-    for (let i = 0; i < 3; i++) {
-      act(() => { skyBox().dispatchEvent(new win.KeyboardEvent("keydown", { key: "+", bubbles: true })); });
-    }
-    assert(/7\.97° wide/.test(text()), `the + key did not zoom the compass sky to 7.97 deg: ${JSON.stringify(text().slice(0, 200))}`);
-    await waitFor(() => emptyText() !== null, 3000);
+    // The compass sky opens 55 deg wide, where the whole view is three tiles
+    // (#493). These cases used to zoom it in with the + key to about 8 deg,
+    // because the engine's fixed 8-failure threshold was out of a 3-tile
+    // view's reach for 45 s at a time; it is graded where it opens now.
+    assert(/55\.00° wide/.test(text()), `the compass sky did not open 55 deg wide: ${JSON.stringify(text().slice(0, 200))}`);
+    await waitFor(() => emptyText() !== null, ONE_PASS_MS);
+    const asked = net.tileKeys.slice(keys);
     return {
       root: r, empty: emptyText(), line: lineText(), tiles: net.tileCalls - calls,
+      repeats: asked.filter((k, i) => asked.indexOf(k) !== i),
       unserved: net.cutoutSurveys.slice(cutouts).filter((s) => !SERVED.has(s)),
     };
   } catch (e) {
@@ -588,6 +682,20 @@ async function compass(onlineFetch: boolean): Promise<{ root: any; empty: string
 }
 const UNSERVED = (asked: string[]) =>
   `the compass sky asked the cutout route for ${JSON.stringify(asked)}, which it does not serve: every request is refused, whatever the rig's pack or network`;
+
+// Mutant "fixed 8" (TileEngine's all-failing threshold back to a fixed 8
+// consecutive failures, as before #493), graded here on the real host at the
+// width it opens at: 11/13 passed, both compass cases red:
+//   x CompassSurvey, online fetch off: it asks for a survey the server serves,
+//     and says UX-07's sentence: the compass sky's 3 tiles all answered 404
+//     and after 3000 ms it still says no empty state: "LOADING
+//     color…NW55.00° wideFollowing your phone · compass alignment is
+//     approximate. Turn the compass off to return to your saved framing."
+//   x CompassSurvey, online fetch on: it says the survey is not arriving,
+//     check the connection or install the pack, and never to turn fetch on:
+//     the compass sky with online fetch on shows no empty state: "LOADING
+//     color…NW55.00° wideFollowing your phone · compass alignment is
+//     approximate. Turn the compass off to return to your saved framing."
 
 // Mutant "compass survey bare id" (CompassSurvey's fallback survey back to
 // 'DSS2/color', as before this change): failed, 9/11:
@@ -605,8 +713,13 @@ await test("CompassSurvey, online fetch off: it asks for a survey the server ser
     assert(c.unserved.length === 0, UNSERVED(c.unserved));
     assert(skyBox()?.querySelector("canvas") != null,
       "the compass sky's tile engine did not mount: it has no tile slug for the survey it names");
-    assert(c.tiles >= 8, `the compass sky made ${c.tiles} tile requests, under the engine's 8-failure threshold - it never degraded`);
-    assert(c.empty !== null && UX07.test(c.empty), `with online fetch off the compass sky says ${JSON.stringify(c.empty)}, not UX-07's sentence`);
+    assert(c.tiles > 0 && c.tiles < 8,
+      `precondition: the compass sky's opening view made ${c.tiles} tile requests; #493 is a view of fewer than 8`);
+    assert(c.empty !== null,
+      `the compass sky's ${c.tiles} tiles all answered 404 and after ${ONE_PASS_MS} ms it still says no empty state: ` +
+      JSON.stringify(text().slice(0, 200)));
+    assert(c.repeats.length === 0, `the compass sky asked ${JSON.stringify(c.repeats)} twice: that is a second pass, not the first`);
+    assert(UX07.test(c.empty!), `with online fetch off the compass sky says ${JSON.stringify(c.empty)}, not UX-07's sentence`);
     assert(c.line !== null && TILE_LINE.test(c.line) && !NO_DASH_OR_GLYPH.test(c.line),
       `the compass sky's line under the canvas reads ${JSON.stringify(c.line)}`);
   } finally {

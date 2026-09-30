@@ -868,16 +868,24 @@ class FlowStore:
         file on disk, the operator's by construction (the Examples are code);
         a file this build cannot open is a row, not a record, so it stays put.
 
-        A RAW EDIT: ``folder`` and ``updated_ts``, nothing else, and each file
-        keeps its ``schema_version`` (carry-over 1, ``_edit_raw``). Tidying a
-        folder must not re-mean the flows in it."""
+        A RAW EDIT: ``folder``, nothing else, and each file keeps its
+        ``schema_version`` (carry-over 1, ``_edit_raw``). Tidying a folder
+        must not re-mean the flows in it.
+
+        A FOLDER IS NOT A VERSION (#512): ``updated_ts`` is left alone, as
+        ``touch_run`` leaves it for a run. The replay notice reads that field
+        as "a new version of this flow was saved" (``replay_facts``,
+        ``_freeze_saved_version``, spec 5.9), and this wrote it, so after a
+        folder tidy-up every armed flow in the folder told the operator to
+        press CONTINUE to apply edits nobody made. The library's order by
+        ``updated_ts`` stays put with it: a move is not an edit there either.
+        """
         if old == EXAMPLES_FOLDER or new == EXAMPLES_FOLDER:
             raise ReadOnlyFlow("the Examples folder is fixed")
         moved = 0
         for path, raw, record, _reason in self._entries(pristine=True):
             if record is not None and record.folder == old:
-                self._edit_raw(path, raw, {"folder": new,
-                                           "updated_ts": time.time()})
+                self._edit_raw(path, raw, {"folder": new})
                 moved += 1
         return moved
 

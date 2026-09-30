@@ -35,10 +35,27 @@ Every read blocks, its retry included (``time.sleep``), so a coroutine calls
 the readers through :func:`asyncio.to_thread`, never on the loop (#477);
 tests/test_s7_report_final_retry_off_loop.py drives every route that reads a
 report with the read refusing a thread whose loop is running.
+
+THE LEDGER'S SUMMARIES (#536, H4 orchestrator ruling 6). The Tonight route's
+two folds, BUDGET's hours per filter and CAMPAIGN's frames per target, need
+only each report's per-filter accepted integration and frames, per target and
+over the report. They loaded every report in full on every request, and
+``list_reports`` read every file in full once more to list them, so the sheet
+slowed with the archive: on Windows the ACL check each read makes costs about
+4 ms before a byte is parsed. So :meth:`SessionReporter.finalize` writes a
+small summary beside the report (:func:`report_summary`, in
+``reports/summaries``), and :meth:`SessionReporter.summaries` reads those
+instead. A report with no summary, or one that changed after its summary was
+written, is loaded once and its summary built and written then: the rule for
+reports finalised before summaries existed, for a report still being written,
+and for a crash-resumed night appended to after its first finalize.
 """
 from __future__ import annotations
 
 import asyncio
+import json
+import math
+import os
 import re
 import threading
 import time
@@ -49,6 +66,7 @@ from typing import Any, NamedTuple
 from pydantic import BaseModel, Field
 
 from .. import hub as _hubmod
+from .. import persist as _persist
 from ..events import bus
 from ..persist import (PrivatePermissionsError, ensure_dir, list_json,
                        read_json, write_json_atomic)
@@ -96,6 +114,21 @@ def _reports_dir() -> Path:
     """``captures/reports`` — resolved live so tests that monkeypatch
     ``hub.CAPTURE_DIR`` redirect the report store too."""
     return _hubmod.CAPTURE_DIR / "reports"
+
+
+#: The shape of a ledger summary (:func:`report_summary`). A summary of any
+#: other shape, an older one included, is one this build does not read: the
+#: report is summarised again, rather than keys whose meaning may have moved
+#: being folded under the old one.
+SUMMARY_SCHEMA = 1
+
+
+def _summaries_dir() -> Path:
+    """``captures/reports/summaries``: a directory BESIDE the reports, not
+    files among them. ``list_json`` lists every ``*.json`` in
+    ``captures/reports`` as a report, so a summary written there would be a
+    night of no frames on the operator's report list."""
+    return _reports_dir() / "summaries"
 
 
 def _slug(text: str) -> str:
@@ -246,6 +279,18 @@ class TargetBreakdown(BaseModel):
     by_filter: list[FilterBreakdown] = Field(default_factory=list)
 
 
+#: Every key a ``sky_angles`` row carries, and the only ones
+#: (:meth:`SessionReporter.record_sky_angle`): when the solve's frame was
+#: exposed, which target, the pier side then, the rotator's mechanical angle
+#: then (None with no rotator, or none readable), the PA the solve measured,
+#: and which solve path measured it. An ALLOW-list, not a filter on the
+#: hub's record: no altitude or azimuth, which at a known moment and target
+#: is the site's latitude (#19, #140), and nothing the hub's record grows
+#: later reaches the report by default.
+SKY_ANGLE_KEYS = ("exposed_at", "target", "pier_side", "mechanical_deg",
+                  "pa_deg", "source")
+
+
 class SessionReport(BaseModel):
     id: str
     plan_name: str = ""
@@ -269,6 +314,18 @@ class SessionReport(BaseModel):
     #: layer is the one on screen is precisely how Polar ran simulated for
     #: weeks. Empty on reports written before this field existed.
     policy: dict[str, dict] = Field(default_factory=dict)
+    #: THE SKY ANGLE AFTER EVERY SLEW THAT LEFT THE ROTATOR ALONE (#526 part
+    #: 3, H4 orchestrator ruling 3), one row per slew, in the order they
+    #: were made: :data:`SKY_ANGLE_KEYS` and nothing else. On 2026-09-28 the
+    #: camera's angle moved 2.7 degrees over a plain re-slew with the rotator
+    #: not commanded, and several degrees with pointing and pier side at a
+    #: fixed mechanical angle; only the night log's lines said so. These rows
+    #: are what measures that slip against pier side on the next nights, and
+    #: what #145 and S8 wait on. Empty on reports written before this field.
+    #: A flip re-slew's ``exposed_at`` is the time of a computed meridian
+    #: event (the #166 class), which `GET /api/reports/{id}` serves a viewer
+    #: whole until its redaction withholds it (#567).
+    sky_angles: list[dict] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------- header builder
@@ -396,6 +453,154 @@ class _Totals:
         return t
 
 
+# ----------------------------------------------------------- ledger summaries
+
+#: Summary paths already warned about as unwritable, with the reason, so a
+#: summaries directory that stays unwritable says so once and not on every
+#: Tonight request (the ring is 200 lines; see ``_REPORTED_UNREADABLE``).
+_REPORTED_UNWRITABLE: dict[str, str] = {}
+
+
+def _source(st: os.stat_result) -> dict:
+    """What a summary was built from: the report file's size and modification
+    time, to the nanosecond. A summary is trusted only while its report still
+    stats the same. A report written since, whether a snapshot of a night
+    still running, the final write or a crash-resume's appends, stats
+    differently and is summarised again."""
+    return {"size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}
+
+
+def report_summary(report: SessionReport, source: dict) -> dict:
+    """The ledger's summary of one report (#536): per target and per filter,
+    the ACCEPTED frames and the accepted light integration, and the same two
+    per filter over the whole report; nothing else.
+
+    The numbers are the report's own ``targets`` and ``by_filter`` breakdowns
+    (``_Totals.add``: every accepted frame counts toward ``frames``, and only
+    an accepted LIGHT frame's exposure toward ``integration_s``), so the two
+    folds that read a summary (``tonight.banked_hours_from_reports`` and
+    ``frames_by_target_from_reports``) answer from it exactly what they
+    answered from the report, in every reading. The report-wide rows are
+    kept for the fold's archive-wide reading (no ``targets``): without them
+    that reading would answer 0 h from a summary where the report holds
+    hours, a zero nobody measured. Rejects are left out because neither fold
+    counts them: a rejected sub is one the night still owes. ``source`` is
+    :func:`_source` of the file the numbers were read from."""
+    def rows(breakdown: list[FilterBreakdown]) -> list[dict]:
+        return [{"filter": fb.filter, "frames": fb.frames,
+                 "integration_s": fb.integration_s} for fb in breakdown]
+    return {
+        "schema": SUMMARY_SCHEMA,
+        "id": report.id,
+        "source": dict(source),
+        "by_filter": rows(report.by_filter),
+        "targets": [{"name": tb.name, "by_filter": rows(tb.by_filter)}
+                    for tb in report.targets],
+    }
+
+
+def _summary_path(stem: str) -> Path:
+    return _summaries_dir() / f"{stem}.json"
+
+
+def _read_summary(stem: str) -> dict | None:
+    """The summary written for the report file ``<stem>.json``, or None when
+    there is none this build can use: missing, unreadable, not JSON, or of
+    another :data:`SUMMARY_SCHEMA`. None is never read as zero hours; the
+    caller summarises the report instead.
+
+    A PLAIN READ, NOT ``read_json``. ``read_json`` first re-applies the
+    private ACL, the repair for a file an older release created with broad
+    access, and on Windows that check alone costs about 4 ms a file (3.9 ms
+    measured over 500 files on the development box), which over a few
+    thousand summaries is the cost this ledger exists to remove. Every
+    summary was created by :func:`_write_summary` through
+    ``write_json_atomic``'s private staging file, so no older file needs the
+    repair, and reading one widens nothing. A ``PermissionError`` is retried
+    as a report read is (#370): on Windows it is what a read gets while a
+    writer is replacing the file."""
+    path = _summary_path(stem)
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            break
+        except PermissionError:
+            if attempts > _READ_RETRIES:
+                return None
+            time.sleep(_READ_BACKOFF_S * attempts)
+        except (OSError, ValueError):
+            return None
+    if (not isinstance(raw, dict) or raw.get("schema") != SUMMARY_SCHEMA
+            or not isinstance(raw.get("source"), dict)
+            or not isinstance(raw.get("by_filter"), list)
+            or not isinstance(raw.get("targets"), list)):
+        return None
+    return raw
+
+
+def _write_summary(stem: str, summary: dict) -> bool:
+    """Write one summary, and say whether it was written.
+
+    Never raises. A summary that could not be written costs the next reader
+    one full read of its report and nothing else, so neither the run's
+    finalize nor the Tonight route should fail over one. The failure is
+    logged once per path and reason, the path shown relative to the capture
+    root as every report log line shows it (:func:`_shown`). No ``.bak`` is
+    kept: a summary is rebuilt from its report, never restored.
+
+    THROUGH ``persist``'s WRITER, NOT THIS MODULE'S ``write_json_atomic``
+    NAME. That name is the REPORT's write, which the #370 and #477 tests
+    count and refuse one call at a time (test_report_load_reason.py,
+    test_s7_report_final_retry_off_loop.py: the final write, then its one
+    retry). A summary written through it would be counted among them and
+    move every count without the report's own writes changing; its failures
+    are the summary's, graded in tests/test_h4_report_summary_cost.py."""
+    path = _summary_path(stem)
+    try:
+        _persist.write_json_atomic(path, summary, backup=False)
+    except (OSError, PrivatePermissionsError, PrivateAclError) as e:
+        said = _described(e)
+        if _REPORTED_UNWRITABLE.get(str(path)) != said:
+            _REPORTED_UNWRITABLE[str(path)] = said
+            bus.log("warning", f"session report summary could not be written "
+                               f"at reports/summaries/{path.name}: {said}",
+                    "report")
+        return False
+    _REPORTED_UNWRITABLE.pop(str(path), None)
+    return True
+
+
+def _report_files() -> list[tuple[Path, dict]]:
+    """Every report file with its :func:`_source`, from ONE walk of the
+    directory that opens none of them.
+
+    ``os.scandir`` hands back each entry's size and modification time from
+    the listing itself on Windows, so the ledger can tell a fresh summary
+    from a stale one without reading a single report (2 ms for 2000 files
+    on the development box, against 20 ms for an ``os.stat`` of each). The
+    files are the ones ``list_json`` lists: every ``*.json`` that is a file,
+    matched without case on Windows as its glob matches them. A file that
+    goes between the listing and its stat is not there, and is left out."""
+    out: list[tuple[Path, dict]] = []
+    try:
+        with os.scandir(_reports_dir()) as entries:
+            for entry in entries:
+                if not os.path.normcase(entry.name).endswith(".json"):
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                    out.append((Path(entry.path), _source(entry.stat())))
+                except FileNotFoundError:
+                    continue
+    except FileNotFoundError:
+        return []
+    out.sort(key=lambda item: item[0].name)
+    return out
+
+
 # ------------------------------------------------------------------------ reporter
 
 class SessionReporter:
@@ -425,6 +630,8 @@ class SessionReporter:
         #: the engine at start via :meth:`record_policy`. A plain dict so a
         #: reporter built in a test without an engine simply carries nothing.
         self._policy: dict[str, dict] = {}
+        #: The ``sky_angles`` rows (#526 part 3), see :meth:`record_sky_angle`.
+        self._sky_angles: list[dict] = []
         self._lock = asyncio.Lock()
         # Serializes the ACTUAL disk write across threads. record_frame's snapshot
         # runs _persist on a worker thread (asyncio.to_thread) while finalize() runs
@@ -475,6 +682,36 @@ class SessionReporter:
 
     def record_safety(self, reason: str, action: str) -> None:
         self._safety.append({"ts": time.time(), "reason": reason, "action": action})
+        self._schedule_write()
+
+    def record_sky_angle(self, *, target: str, exposed_at: float,
+                         pier_side: str | None, mechanical_deg: float | None,
+                         pa_deg: float, source: str) -> None:
+        """Append one row to the report's ``sky_angles`` (#526 part 3) and
+        schedule a snapshot write, as :meth:`record_safety` does.
+
+        One call per slew that left the rotator untouched, with the sky angle
+        that slew's own solve measured (the engine's `_record_sky_angle`
+        decides which slews, and that the record is fresh for the slew).
+        Keyword-only and field by field, so the row is exactly
+        :data:`SKY_ANGLE_KEYS` whatever the caller holds: a caller cannot
+        hand the hub's whole record through, and a key the record grows
+        later reaches the report only by being named here. A pier side that
+        is not "east" or "west" is stored as None, the answer for "nobody
+        could say", as the hub's record itself writes it, and so is a
+        mechanical angle that is not a finite number, which the report's
+        JSON could not carry."""
+        side = str(pier_side).lower() if pier_side is not None else None
+        mech = None if mechanical_deg is None else float(mechanical_deg)
+        self._sky_angles.append({
+            "exposed_at": float(exposed_at),
+            "target": str(target),
+            "pier_side": side if side in ("east", "west") else None,
+            "mechanical_deg": mech if mech is not None and math.isfinite(mech)
+            else None,
+            "pa_deg": float(pa_deg),
+            "source": str(source),
+        })
         self._schedule_write()
 
     def mark_skipped(self, target: Any) -> None:
@@ -586,6 +823,14 @@ class SessionReporter:
                     return None
                 write_json_atomic(path, report.model_dump())
                 self._written = number
+                if report.ended_at is not None:
+                    # A FINISHED report's summary, under the same lock as
+                    # its write (#536): finalize's, its retry on a thread of
+                    # its own, and a snapshot scheduled before finalize that
+                    # lands after it (identical but for its stat) each leave
+                    # the summary describing the file on disk, in the order
+                    # the files were written. Never raises.
+                    self._summarise(path, report)
             return None
         except (OSError, PrivatePermissionsError, PrivateAclError) as e:
             return e
@@ -633,6 +878,7 @@ class SessionReporter:
             by_filter=by_filter, targets=targets,
             safety_events=list(self._safety), frames=list(self._frames),
             policy=dict(self._policy),
+            sky_angles=[dict(r) for r in self._sky_angles],
         )
 
     def record_policy(self, record: dict[str, dict]) -> None:
@@ -665,12 +911,39 @@ class SessionReporter:
         when this is called on a running loop (#477), so the report may land
         a moment after the return: the retry is under the same snapshot
         numbers and lock (#420), and a snapshot built before this call still
-        cannot replace it."""
+        cannot replace it.
+
+        THE LEDGER'S SUMMARY GOES WITH IT (#536): every write of a finished
+        report, this one, its retry, and a snapshot scheduled before this
+        call that lands after it, writes the report's summary beside it in
+        the same locked step (:meth:`_write`, :meth:`_summarise`), so a
+        Tonight request after the night reads a few hundred bytes for it and
+        not the report. A write that fails leaves no summary, and the next
+        reader summarises the report once."""
         self._ended_at = time.time()
         self._end_reason = end_reason
         number, report = self._snapshot()
         self._persist(report, number, final=True)
         return report
+
+    @staticmethod
+    def _summarise(path: Path, report: SessionReport) -> None:
+        """Write the summary of ``report``, just written to ``path`` as a
+        finished report, stamped with the stat of that file.
+
+        Called by :meth:`_write` while it still holds ``_persist_lock``, so
+        the stat is of the write just made and no other write of this report
+        can come between the two: the summary on disk describes the report on
+        disk, in the order they were written, until something writes the
+        report again, and then its stat moves and the next reader summarises
+        it afresh. On whichever thread made the write: the loop's for
+        finalize's own, a worker's for a snapshot or the final retry. A
+        summary is a small fraction of the report's size. Never raises."""
+        try:
+            source = _source(path.stat())
+        except OSError:
+            return
+        _write_summary(path.stem, report_summary(report, source))
 
     # -- class-level reads -----------------------------------------------------
 
@@ -752,7 +1025,14 @@ class SessionReporter:
 
         Blocking, the retry's sleeps included: a coroutine calls this, or
         :meth:`load`, through ``asyncio.to_thread`` (#477)."""
-        path = _reports_dir() / f"{_slug(report_id)}.json"
+        return SessionReporter._read_at(
+            _reports_dir() / f"{_slug(report_id)}.json")
+
+    @staticmethod
+    def _read_at(path: Path) -> ReportRead:
+        """:meth:`read`, of the file at ``path``. The ledger reads a report
+        by the file it listed (:meth:`summaries`), whose stat its summary
+        records, and not by an id that ``_slug`` could send to another."""
         raw, reason, detail, attempts = _read_report_file(path)
         if reason is None:
             try:
@@ -765,6 +1045,64 @@ class SessionReporter:
         if reason != "missing":
             _warn_unreadable(path, reason, detail)
         return ReportRead(None, reason, detail, path, attempts)
+
+    @staticmethod
+    def summaries() -> list[dict]:
+        """Every report's :func:`report_summary`, for the Tonight ledger's
+        folds (#536, H4 orchestrator ruling 6), in report file order.
+
+        ONE WALK OF ``captures/reports`` THAT OPENS NO REPORT
+        (:func:`_report_files`), then per report:
+
+        * a summary whose recorded stat is the file's own is read and used,
+          and the report is not opened: after a night, the summary
+          ``finalize`` wrote;
+        * any other report is read in full ONCE, here, and its summary built
+          and written for the next reader, stamped with the stat taken from
+          the listing, before the read. That is the rule for a report
+          finalised before summaries existed, for one never finalised (a run
+          that died, or tonight's, still being written), for a finalize
+          whose summary was not written, and for a night a crash-resume
+          appended to after its summary. Stamped with the stat from BEFORE
+          the read, a report rewritten during the read carries an older stat
+          than its file, so the next reader summarises it again rather than
+          trusting numbers older than the file;
+        * a report that cannot be read is left out, logged by the read once
+          per path and reason (#370), as ``list_reports`` leaves it out. A
+          file gone since the listing is not there, and says nothing.
+
+        So a report is never counted as zero for want of a summary: it has
+        one, or it is read. The first read after an upgrade pays one full
+        read per old report, once, and says so in the log; tonight's report
+        is read in full on each call while the run writes it, since each of
+        its snapshots moves its stat.
+
+        Blocking, one read per summary and one per report without a usable
+        one: a coroutine calls this through ``asyncio.to_thread`` (#477).
+        The Tonight route calls it inside ``resolve_tonight``'s thread."""
+        out: list[dict] = []
+        unsummarised = 0
+        for path, source in _report_files():
+            summary = _read_summary(path.stem)
+            if summary is not None and summary.get("source") == source:
+                out.append(summary)
+                continue
+            got = SessionReporter._read_at(path)
+            if got.report is None:
+                continue
+            if summary is None:
+                unsummarised += 1
+            summary = report_summary(got.report, source)
+            _write_summary(path.stem, summary)
+            out.append(summary)
+        if unsummarised:
+            # Once per report, not per request: its summary is written above,
+            # so the next call finds it. Not a warning; nothing is wrong.
+            bus.log("info", f"{unsummarised} session report"
+                            f"{'' if unsummarised == 1 else 's'} had no ledger "
+                            f"summary, so each was read in full once and "
+                            f"summarised for the next Tonight read", "report")
+        return out
 
     @staticmethod
     def attach_existing(report_id: str) -> "SessionReporter | None":
@@ -791,6 +1129,11 @@ class SessionReporter:
         # `__new__` skips __init__, so every private field has to be set here;
         # this one was the reminder of that.
         r._policy = dict(getattr(rep, "policy", {}) or {})
+        # The night's sky angles so far, for the same reason (#526 part 3): a
+        # crash-resume appends to them, and one that started the list empty
+        # would write the night's first half out of the file at its first
+        # snapshot.
+        r._sky_angles = [dict(x) for x in getattr(rep, "sky_angles", []) or []]
         r._lock = asyncio.Lock()
         r._persist_lock = threading.Lock()
         r._built = 0

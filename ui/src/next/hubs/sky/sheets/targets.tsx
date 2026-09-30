@@ -49,15 +49,17 @@ import { useCapability } from "../../../../lib/caps";
 import { difficultyGlyph, difficultyLabel } from "../../../../lib/difficulty";
 
 import type { CatalogEntry, CometRow, DifficultyTier, SatelliteRow } from "../../../../types";
-import { windowLabel } from "../../../lib/reach";
 import {
   COMET_GEOCENTRIC_NOTE,
   KIND_ICON,
   useEphemerisRows,
   useSatellitePasses,
+  windowLabel,
+  type CatalogRowLike,
   type SkyKind,
   type SkyTarget,
 } from "../finder";
+import { lockRowParams } from "../finder/targets";
 import { LensDial } from "../cards/LensDial";
 import { LENS_LEARN } from "../cards/lens";
 import { PassesCard } from "../cards/PassesCard";
@@ -135,6 +137,22 @@ export function TargetsSheet(p: SheetProps): JSX.Element {
   };
 
   /**
+   * Aim the finder at a SEARCH HIT, and hand it the whole row (#504).
+   *
+   * A row of the ranked list is in tonight's list by construction, so its id
+   * is all the hub needs. A search hit is not: with no site saved tonight's
+   * list is a 409 and a role without `view.site_derived` is never ranked, so
+   * the hub had an id it could find nowhere and refused it after
+   * `LOCK_WAIT_MS` - while the same object reached through the atlas's LOCK IN
+   * FINDER was held, because the hub could read that one's row off the framing
+   * session. So the row travels in the hash beside the id
+   * (`finder/targets.ts lockRowParams`), and the hub holds it the same way.
+   */
+  const aimRow = (row: CatalogRowLike): void => {
+    nav.go(`/sky?${new URLSearchParams(lockRowParams(row)).toString()}`);
+  };
+
+  /**
    * A SEARCH HIT, ROUTED BY WHAT IT IS.
    *
    * Everything else aims the finder. A satellite cannot BE aimed at: it is not
@@ -157,7 +175,9 @@ export function TargetsSheet(p: SheetProps): JSX.Element {
       setPickedSat(row as SatelliteRow);
       return;
     }
-    aim(e.id);
+    // The wire row, `kind` and all: the hub names a held body by its label
+    // only if the discriminator arrives with it.
+    aimRow(row as CatalogRowLike);
   };
 
   /**

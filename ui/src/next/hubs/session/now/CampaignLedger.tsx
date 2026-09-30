@@ -3,8 +3,9 @@
 //
 // THE ROWS ARE THE SERVER'S OWN `budget` ARRAY. Nothing here computes a banked
 // figure; `flows/tonight.py` folds accepted integration per filter over the
-// whole report archive and this draws it. See `useCampaign.ts` for the fetch and
-// for why tonight's share is measured from the LIVE ledger instead.
+// reports of this flow's own targets (#536, since H4; the whole report archive
+// before) and this draws it. See `useCampaign.ts` for the fetch and for why
+// tonight's share is measured from the LIVE ledger instead.
 //
 // `banked_h === null` IS NOT ZERO, AND IT LOOKS DIFFERENT. A null row draws an
 // outlined empty track and reads `- / 6 h`, with the server's own sentence under

@@ -19,6 +19,13 @@ listed report is loaded (``SessionReporter.load``) inside the worker thread
 ``resolve_tonight`` runs on, never on the event loop, and once for both
 folds.
 
+SINCE H4 (#536, H4 orchestrator ruling 6) the route folds each report's
+LEDGER summary, which ``finalize`` writes beside it and which carries the
+same ``by_filter`` and ``targets`` numbers the folds read (not the eight
+scalars of ``list_reports``, which are still not folded). A report with no
+current summary is read in full once and summarised. So the answers below
+did not move; the read the last case spies did (see its docstring).
+
 THE HARNESS is ``test_flows_progress_route.py``'s ``api``: the real app over
 ASGI, a throwaway config store swept into every module, flow library and
 captures directory. The route is ``CAP_VIEW_SITE_DERIVED`` and answers only
@@ -33,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 
+import astrodeck.sequence.report as report_mod
 from astrodeck.config import Site
 from astrodeck.sequence.models import SequencePlan
 from astrodeck.sequence.report import FrameRecord, SessionReporter
@@ -111,53 +119,104 @@ class TestTheRouteFoldsTheReports:
 
     async def test_each_report_is_loaded_once_off_the_loop(self, api,
                                                            monkeypatch):
-        """``SessionReporter.load`` runs in a thread with no event loop (the
-        worker ``resolve_tonight`` runs on), once per report for both folds.
+        """The ledger is read once for both folds, in a thread with no event
+        loop (the worker ``resolve_tonight`` runs on), and a report with no
+        summary is read in full once there.
 
-        RED under mutant "loaded on the loop" (the reports loaded in the
-        route handler before ``asyncio.to_thread``, and the BUDGET fold
-        handed that tuple), observed:
+        RE-PINNED FOR H4 (#536, H4 orchestrator ruling 6). This case spied
+        ``SessionReporter.load`` and wanted one call per report. The route
+        now folds each report's ledger summary (``SessionReporter.summaries``,
+        the same ``by_filter`` and ``targets`` numbers, written by
+        ``finalize``), reads a report only when it has no current summary,
+        and reads it through ``_read_at``, not ``load``; so the spy saw no
+        call and the case failed with ``assert [] == [(rid, False)]``. It now
+        spies the two things the claim is about: the ledger read
+        (``summaries``, once for both folds) and the report read
+        (``_read_at``), against a report whose summary is removed, so the
+        route has a report to read. test_h4_report_summary_cost.py grades
+        the summary itself and the reads it saves.
+
+        Its three mutants as S7 recorded them, observed before H4:
+
+        "loaded on the loop" (the reports loaded in the route handler before
+        ``asyncio.to_thread``, and the BUDGET fold handed that tuple):
 
             AssertionError: assert [('M31_campai...71320', True)] ==
             [('M31_campai...1320', False)]
-              At index 0 diff: ('M31_campaign-20260921-071320', True) !=
-              ('M31_campaign-20260921-071320', False)
 
-        RED under mutant "loaded per fold" (the ``functools.cache`` on
-        ``reports`` removed), observed:
+        "loaded per fold" (the ``functools.cache`` on ``reports`` removed):
 
             AssertionError: assert [('M31_campai...1320', False)] ==
             [('M31_campai...1320', False)]
               Left contains one more item: ('M31_campaign-20260921-071320',
               False)
 
-        RED under mutant "folds list_reports summaries", which loads
-        nothing, observed:
+        "folds list_reports summaries", which loads nothing:
 
             AssertionError: assert [] == [('M31_campai...1320', False)]
 
+        And against the H4 route, re-run by the H4 integration in a private
+        copy of ``server/`` (scratchpad ``H4-INTEG-mut``):
+
+        "summaries read on the loop" (H4-ROUTES-A's: the route calling
+        ``SessionReporter.summaries()`` before ``asyncio.to_thread`` and
+        handing both folds the answer), observed:
+
+            AssertionError: the ledger was not read once, off the loop:
+            [True]
+            assert [True] == [False]
+
+        "summaries read per fold" (the ``functools.cache`` on the route's
+        ``summaries`` removed), observed:
+
+            AssertionError: the ledger was not read once, off the loop:
+            [False, False]
+            assert [False, False] == [False]
+
         (The report's id carries the dev box's local stamp of its start.)
         """
-        rid = _write_report()
+        # On a worker thread, where no loop runs: every snapshot is written
+        # inline, so none is still rewriting the report (and its summary)
+        # when the summary is removed below.
+        rid = await asyncio.to_thread(_write_report)
+        summary = report_mod._summary_path(rid)
+        assert summary.is_file(), f"premise: finalize wrote {summary.name}"
+        summary.unlink()
         fid = await api.save_flow(POOL_HA)
-        real = SessionReporter.load
-        calls: list[tuple[str, bool]] = []
 
-        def spy(report_id):
+        def on_loop() -> bool:
             try:
                 asyncio.get_running_loop()
-                on_loop = True
             except RuntimeError:
-                on_loop = False
-            calls.append((report_id, on_loop))
-            return real(report_id)
+                return False
+            return True
 
-        monkeypatch.setattr(SessionReporter, "load", staticmethod(spy))
+        real_summaries = SessionReporter.summaries
+        real_read_at = SessionReporter._read_at
+        ledgers: list[bool] = []
+        reads: list[tuple[str, bool]] = []
+
+        def summaries_spy():
+            ledgers.append(on_loop())
+            return real_summaries()
+
+        def read_spy(path):
+            reads.append((path.stem, on_loop()))
+            return real_read_at(path)
+
+        monkeypatch.setattr(SessionReporter, "summaries",
+                            staticmethod(summaries_spy))
+        monkeypatch.setattr(SessionReporter, "_read_at",
+                            staticmethod(read_spy))
         got = await _tonight(api, fid)
-        assert calls == [(rid, False)]
+        assert ledgers == [False], (
+            f"the ledger was not read once, off the loop: {ledgers}")
+        assert reads == [(rid, False)], (
+            f"the report with no summary was not read once, off the loop: "
+            f"{reads}")
         assert {m["name"]: m["banked"]
                 for m in got["campaign"]["members"]}["M31"] == 4, (
-            "premise: the spied load is the one the folds read")
+            "premise: the spied ledger is the one the folds read")
 
     async def test_control_no_report_banks_nothing_and_says_it_looked(
             self, api):

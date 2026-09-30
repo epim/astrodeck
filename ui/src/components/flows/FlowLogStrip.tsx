@@ -10,20 +10,62 @@
 // given and, if nothing arrived, keeps saying so. A scripted animation here
 // would be a sentence about a rig that never spoke.
 //
+// WHAT THE EMPTY RING SAYS IS ABOUT THE LOG, NEVER THE RUN (#529). It said
+// "Idle — no events yet" through every live run, under a STATE readout
+// reading RUNNING: the "no events yet" half was true and "Idle" was not, and
+// nothing on the page said which of the two was wrong. So the run's state is
+// left to the STATE readout, and the empty ring says what is true of the log:
+// during a live run of this flow (the readouts' own rule, so the two can
+// never disagree about whether it is live) that the server publishes no log
+// lines for a flow run, and otherwise that there are no events yet. This
+// strip and the classic phone MONITOR print `emptyLogText`; the #/next canvas
+// strip and phone stage sheet print canvas/FlowLogStrip's restatement of it
+// (r7Parity keeps the #/next tree off this presentation module), and
+// phoneReadouts.test.tsx case 8 holds all four to these words.
+//
 // The ring lives in the store (LOG_RING = 120). This shows the newest 60.
 import { useMemo } from "react";
 import { useStore } from "../../store";
+import { flowRunLive, knownSessions } from "./flowRunState";
 import type { FlowLogLine, FlowLogTone } from "./flowsTypes";
 
 /** How many of the store's 120-entry ring the expanded panel shows. §C.12. */
 export const LOG_TAIL = 60;
 
-/** Shown in the collapsed bar when the ring is empty.
+/** The empty ring's words while no run of this flow is live: the flow has
+ *  not run, has finished, or the rig is running another flow's. No "Idle":
+ *  whether a run is idle is the STATE readout's to say, not the log's. */
+export const EMPTY_LOG_TEXT = "no events yet";
+
+/** The empty ring's words while this flow's run is live (#529).
  *
- *  It is the literal truth and it must stay the literal truth: with no `flow.log`
- *  event the ring stays empty through a whole run, and "no events yet" is then
- *  the only honest thing on screen. */
-export const IDLE_LOG_TEXT = "Idle — no events yet";
+ *  It is the literal truth and it must stay the literal truth: no server
+ *  topic carries a flow's log lines (there is no `flow.log` event), so the
+ *  ring stays empty through a whole run unless this page itself appended a
+ *  line, and an empty log beside a live run must say why it is empty, or it
+ *  reads as a run that has gone quiet. Once a `flow.log` topic exists this
+ *  sentence is false and goes. No em-dash: the #/next surfaces print the same
+ *  words, and their copy rule is hyphens. */
+export const RUN_EMPTY_LOG_TEXT = "no log lines: the server publishes none for a flow run";
+
+/** What an empty log says. `runLive` is whether this flow's run is live,
+ *  as the run readouts decide it (`useFlowRunReadouts().fed`, or
+ *  `useFlowRunFed` for a surface that draws no readouts). */
+export function emptyLogText(runLive: boolean): string {
+  return runLive ? RUN_EMPTY_LOG_TEXT : EMPTY_LOG_TEXT;
+}
+
+/** `useFlowRunReadouts().fed`, for a log that draws none of the readouts.
+ *
+ *  The readouts are fed exactly when `flowRunLive` answers true of the
+ *  sessions the slice knows as the flow's (runCopy `runReadouts`, #449), and
+ *  this asks the same reader the same question, as the RUN button's `ours`
+ *  does, so the log can never call a run live that STATE calls idle, or the
+ *  other way round. Read as one boolean, exact under Object.is: a frame
+ *  landing on the run moves the readouts' numbers and wakes no log. */
+export function useFlowRunFed(): boolean {
+  return useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
+}
 
 /** Tone → text colour. NOT the toast ladder: §C.12 is explicit that the log's
  *  default rung is `--text-dim` where a toast's is `--accent`. good/warn/bad
@@ -59,12 +101,14 @@ export function logTime(ts: number): string {
  *  pointers and buying the hit area InfoDot-style as candidate answers, and
  *  picking one here would close it. The design's height is what renders. */
 export default function FlowLogStrip() {
-  // Three exact selectors. `logs` changes identity only when a line is
-  // appended; `logOpen` is a boolean, so the `ui` object being replaced by an
-  // unrelated flowsSetUi (say, opening TONIGHT) does not re-render the strip.
+  // Four exact selectors. `logs` changes identity only when a line is
+  // appended; `logOpen` and `live` are booleans, so the `ui` object being
+  // replaced by an unrelated flowsSetUi (say, opening TONIGHT), or a frame
+  // landing on the run, does not re-render the strip.
   const logs = useStore((s) => s.flows.logs);
   const open = useStore((s) => s.flows.ui.logOpen);
   const setUi = useStore((s) => s.flowsSetUi);
+  const live = useFlowRunFed();
 
   const lines = useMemo(() => logTail(logs), [logs]);
   const last = logs.length ? logs[logs.length - 1] : null;
@@ -104,7 +148,7 @@ export default function FlowLogStrip() {
             last ? LOG_TONE_CLASS[last.tone] : "text-faint"
           }`}
         >
-          {last ? last.msg : IDLE_LOG_TEXT}
+          {last ? last.msg : emptyLogText(live)}
         </span>
         <span aria-hidden className="flex-none font-mono text-[10px] text-faint">
           {open ? "▾" : "▴"}

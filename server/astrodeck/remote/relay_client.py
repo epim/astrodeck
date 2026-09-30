@@ -35,12 +35,17 @@ import contextlib
 import ipaddress
 import random
 import re
+import socket
+import subprocess
+import sys
+import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from ..config import RemoteConfig
-from ..events import Event, bus
+from ..events import RELAY_GAP, Event, bus
 from .protocol import (DEFAULT_MAX_PAYLOAD, DEFAULT_MAX_WIRE_SIZE, PROTO_VERSION,
                        Frame, FrameType, ProtocolError, decode_frame,
                        encode_frame)
@@ -100,6 +105,146 @@ _OPEN_WS_STREAMS_MAX = 16
 _HELLO_ACK_TIMEOUT_S = 10.0
 _TASK_TEARDOWN_TIMEOUT_S = 2.0
 
+# THE LINK CHECK AFTER EVERY DROP (#521). The tunnel drops in clusters, each
+# logged as "no close frame received or sent", a sentence that is the same
+# whether the rig's internet went, the relay went, or a NAT between them
+# forgot the flow. So each drop is followed by one line from the rig's side:
+# is the default gateway reachable, does DNS resolve the relay's host, and how
+# long before the drop the relay last sent a frame. The next cluster then
+# classifies itself instead of needing log forensics.
+#
+# The whole check has this bound, from the drop to its line. A probe still
+# out at the bound is reported as no answer, which is itself the finding (a
+# DNS lookup that hangs is a DNS that does not work).
+_LINK_CHECK_BOUND_S = 3.0
+# Probe threads still alive (a lookup that never came back) past which a new
+# probe is not started and answers "unknown". getaddrinfo cannot be
+# cancelled, so without a cap a link that hangs every lookup would add two
+# threads per drop for as long as it lasted.
+_LINK_PROBE_THREADS_MAX = 8
+# Windows: keep the ping and route children from opening a console window
+# when the server runs detached. 0 (no flags) everywhere else.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+@dataclass(frozen=True)
+class LinkProbes:
+    """The two questions a drop asks of the rig's own network (#521).
+
+    Each is a BLOCKING callable, run on a thread of its own, never on the
+    event loop: ``gateway(timeout_s)`` answers whether the default gateway
+    replies, ``dns(host, timeout_s)`` whether the relay's host resolves. True
+    is yes, False is no, None is "could not tell" (no ping on this system, a
+    route table this code cannot read). Tests inject their own; the lifespan
+    client uses ``SYSTEM_LINK_PROBES``. Neither returns an address, so none
+    can reach a log."""
+
+    gateway: Callable[[float], "bool | None"]
+    dns: Callable[[str, float], "bool | None"]
+
+
+def _gateway_from_proc_route(text: str) -> str:
+    """The default IPv4 gateway in a Linux ``/proc/net/route`` table, or ""
+    when the table has no default route.
+
+    The Gateway column is the address as the kernel holds it, a 32-bit word in
+    host order printed in hex, which on every board this runs on is little
+    endian: ``0101A8C0`` is 192.168.1.1."""
+    for line in text.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 4 or fields[1] != "00000000":
+            continue
+        try:
+            gateway, flags = int(fields[2], 16), int(fields[3], 16)
+        except ValueError:
+            continue
+        if flags & 0x2 and gateway:          # RTF_GATEWAY
+            return socket.inet_ntoa(gateway.to_bytes(4, "little"))
+    return ""
+
+
+def _gateway_from_route_print(text: str) -> str:
+    """The default IPv4 gateway in Windows ``route print -4 0.0.0.0`` output,
+    or "" when there is none. The column headers are localised; the rows are
+    numbers in every language, so the row is matched and not the header."""
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[0] == "0.0.0.0" and fields[1] == "0.0.0.0":
+            with contextlib.suppress(ValueError):
+                return str(ipaddress.IPv4Address(fields[2]))
+    return ""
+
+
+def _default_gateway(timeout_s: float) -> "str | None":
+    """The default gateway's address, "" for no default route (the link is
+    down), or None when this system's route table cannot be read."""
+    try:
+        if sys.platform.startswith("linux"):
+            with open("/proc/net/route", encoding="ascii") as fh:
+                return _gateway_from_proc_route(fh.read())
+        if sys.platform == "win32":
+            done = subprocess.run(
+                ["route", "print", "-4", "0.0.0.0"], capture_output=True,
+                timeout=timeout_s, creationflags=_NO_WINDOW)
+            return _gateway_from_route_print(
+                done.stdout.decode("ascii", "replace"))
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
+    return None
+
+
+def _ping(address: str, timeout_s: float) -> "bool | None":
+    """One ICMP echo to ``address``: True on a reply, False on none, None
+    when no ``ping`` could be run."""
+    if sys.platform == "win32":
+        cmd = ["ping", "-n", "1", "-w", str(max(1, int(timeout_s * 1000))),
+               address]
+    else:
+        cmd = ["ping", "-c", "1", "-W", str(max(1, int(timeout_s))), address]
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=timeout_s + 1.0,
+                              creationflags=_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return False
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if sys.platform == "win32":
+        # Windows ping exits 0 when a router answers "Destination host
+        # unreachable" on the target's behalf; only an echo reply carries
+        # TTL=, and it does in every language ping speaks.
+        return done.returncode == 0 and b"TTL=" in (done.stdout or b"").upper()
+    return done.returncode == 0
+
+
+def _system_gateway_probe(timeout_s: float) -> "bool | None":
+    """Does the default gateway answer a ping? Half the budget for reading the
+    route, half for the echo."""
+    gateway = _default_gateway(timeout_s / 2)
+    if gateway is None:
+        return None
+    if not gateway:
+        return False       # no default route at all: nothing to reach
+    return _ping(gateway, timeout_s / 2)
+
+
+def _system_dns_probe(host: str, timeout_s: float) -> bool:
+    """Does ``host`` resolve? The answer is yes or no, never the addresses.
+
+    ``timeout_s`` is unused: getaddrinfo takes no timeout, which is why the
+    probe runs on its own thread and the caller bounds the wait."""
+    try:
+        return bool(socket.getaddrinfo(host, None, type=socket.SOCK_STREAM))
+    except (OSError, UnicodeError):     # socket.gaierror is an OSError
+        return False
+
+
+#: The probes the lifespan client asks after every drop.
+SYSTEM_LINK_PROBES = LinkProbes(gateway=_system_gateway_probe,
+                                dns=_system_dns_probe)
+
+# A probe that was not started because too many earlier ones are still out.
+_PROBE_NOT_STARTED = object()
+
 
 def _validate_relay_config(cfg: RemoteConfig) -> None:
     """Fail closed before disclosing the device token or accepting work.
@@ -141,24 +286,57 @@ class _WsSendGuard:
     that event and keep the shared telemetry stream alive, but a repeating
     oversize event (e.g. a large preview frame every exposure) would spam the bus
     log. Warn at most once per ``_WARN_INTERVAL_S`` and fold the running count
-    into that one line."""
+    into that one line.
+
+    It also holds what the drop owes the VIEWER (#485): ``gap_seq`` is the
+    ``seq`` of the last event dropped since the viewer was last told, or None
+    when nothing is owed. The log line is for the operator; the browser had
+    no notice at all, and a LAN viewer (no frame ceiling) and a remote one
+    disagreed silently."""
 
     _WARN_INTERVAL_S = 30.0
 
     def __init__(self) -> None:
         self.dropped = 0
         self._last_warn = float("-inf")
+        self.gap_seq: int | None = None
 
-    def note_drop(self, exc: Exception) -> None:
+    def note_drop(self, exc: Exception, seq: int | None = None) -> None:
         import time as _t
         self.dropped += 1
+        if seq is not None:
+            self.gap_seq = seq
         now = _t.monotonic()
         if now - self._last_warn >= self._WARN_INTERVAL_S:
             self._last_warn = now
             bus.log("warning",
                     f"tunneled ws: dropped {self.dropped} oversize/unsendable "
-                    f"event(s); telemetry stream kept alive "
+                    f"event(s); telemetry stream kept alive and the viewer "
+                    f"told to re-read the snapshot "
                     f"(last: {type(exc).__name__}: {exc})", "remote")
+
+
+def _probe_answer(fut: asyncio.Future, bound: float) -> str:
+    """One probe's answer as the link-check line says it: yes, no, or why it
+    could not say. Read before the check cancels what is still out."""
+    if not fut.done() or fut.cancelled():
+        return f"no (no answer in {bound:g}s)"
+    if fut.exception() is not None:
+        return "unknown (the probe failed)"
+    result = fut.result()
+    if result is _PROBE_NOT_STARTED:
+        return "unknown (earlier probes are still out)"
+    if result is None:
+        return "unknown"
+    return "yes" if result else "no"
+
+
+def _frame_age_words(frame_age: float | None) -> str:
+    """How long before the drop the relay last sent a frame, or that it sent
+    none this session (a dial that never reached it)."""
+    if frame_age is None:
+        return "no relay frame this session"
+    return f"last relay frame {frame_age:.1f}s before the drop"
 
 
 def scope_is_remote(scope: dict) -> bool:
@@ -360,12 +538,26 @@ class RelayClient:
         config_provider: Callable[[], RemoteConfig],
         *,
         connect: Callable[[str], Awaitable[Any]] | None = None,
+        link_probes: LinkProbes | None = None,
     ):
         self._app = app
         self._config = config_provider
         # Injectable connect (tests pass a fake bidi channel); default lazy-imports
         # websockets so a LAN-only install never needs the dependency.
         self._connect = connect or self._default_connect
+        # The link check after each drop (#521). None runs no check: a client
+        # built directly (every test that injects a connect) touches no
+        # network it was not handed. ``run_relay_client`` passes the system
+        # probes, so the production client always checks.
+        self._link_probes = link_probes
+        self._link_check: asyncio.Task | None = None
+        self._probe_threads = 0
+        # Per session, reset at each dial: the host the dial resolves (None
+        # until the config validated, so a config error runs no check), when
+        # the relay last sent a frame, and when the session's read ended.
+        self._dial_host: str | None = None
+        self._last_frame_at: float | None = None
+        self._dropped_at: float | None = None
         self._generation = 0
         self._stop = asyncio.Event()
         # Live per-connection state (reset on each (re)connect).
@@ -416,6 +608,15 @@ class RelayClient:
 
         Returns when ``stop()`` is signaled. NEVER raises -- a connection failure
         is logged once and retried; the home runs local-only meanwhile."""
+        try:
+            await self._supervise()
+        finally:
+            # A check still waiting on its probes is bounded anyway; leaving
+            # it would only outlive the loop at shutdown.
+            if self._link_check is not None and not self._link_check.done():
+                self._link_check.cancel()
+
+    async def _supervise(self) -> None:
         attempt = 0
         while not self._stop.is_set():
             started = time.monotonic()
@@ -457,6 +658,9 @@ class RelayClient:
                         f"relay connection lost gen={self._generation} after "
                         f"{held:.1f}s ({type(exc).__name__}: {exc}); "
                         f"retrying local-only", "remote")
+                # Started, not awaited: the check runs beside the backoff and
+                # the re-dial below, and says its line when it has it.
+                self._after_drop(self._generation)
             if self._stop.is_set():
                 break
             # Belt-and-braces: the backoff math is now overflow-safe, but this
@@ -470,6 +674,105 @@ class RelayClient:
             attempt += 1
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
+
+    # -- the link check after a drop (#521) ------------------------------------
+
+    def _after_drop(self, gen: int) -> None:
+        """Start the link check for the drop that ended ``gen`` and return at
+        once. Never raises and never awaits: it sits on the supervisor's path
+        to the re-dial.
+
+        No check when no probes were given, or when the failure came before a
+        dial (a config that did not validate is not a link problem). One check
+        at a time: a drop inside the previous check's bound says so in its
+        own line rather than starting a second set of probes, since both would
+        be asking about the same moment."""
+        try:
+            probes, host = self._link_probes, self._dial_host
+            if probes is None or not host:
+                return
+            frame_age = None
+            if self._last_frame_at is not None:
+                end = (self._dropped_at if self._dropped_at is not None
+                       else time.monotonic())
+                frame_age = max(0.0, end - self._last_frame_at)
+            if self._link_check is not None and not self._link_check.done():
+                bus.log("info",
+                        f"relay link check gen={gen}: skipped, the previous "
+                        f"drop's check is still waiting on its probes; "
+                        f"{_frame_age_words(frame_age)}", "remote")
+                return
+            self._link_check = asyncio.create_task(
+                self._check_link(gen, host, frame_age, probes))
+        except Exception:  # noqa: BLE001 - a diagnostic must never cost the re-dial
+            return
+
+    async def _check_link(self, gen: int, host: str, frame_age: float | None,
+                          probes: LinkProbes) -> None:
+        """Ask both probes at once, wait at most ``_LINK_CHECK_BOUND_S`` for
+        their answers, and log one line. A probe still out at the bound is
+        left to finish on its thread and reported as no answer."""
+        bound = _LINK_CHECK_BOUND_S
+        gateway = self._probe(probes.gateway, bound)
+        dns = self._probe(probes.dns, host, bound)
+        try:
+            await asyncio.wait({gateway, dns}, timeout=bound)
+            words = [
+                f"default gateway reachable {_probe_answer(gateway, bound)}",
+                f"DNS for the relay host resolves {_probe_answer(dns, bound)}",
+                _frame_age_words(frame_age),
+            ]
+        finally:
+            # Also when this check is itself cancelled at shutdown: a probe
+            # that answers later then settles nothing, and an exception it
+            # raises is never left on a future no one reads.
+            for fut in (gateway, dns):
+                fut.cancel()      # a no-op on an answered one
+        bus.log("info", f"relay link check gen={gen}: " + "; ".join(words),
+                "remote")
+
+    def _probe(self, fn: Callable[..., "bool | None"], *args: Any) -> asyncio.Future:
+        """Run one blocking probe on a daemon thread of its own and return a
+        future for its answer.
+
+        Not ``asyncio.to_thread``: that is the loop's default executor, where
+        ``websockets.connect`` resolves the relay's host for the re-dial, so a
+        hung lookup here would queue the re-dial's own lookup behind it. A
+        daemon thread also does not hold the process open at exit, which a
+        lookup the OS never answers would do to an executor's worker."""
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        if self._probe_threads >= _LINK_PROBE_THREADS_MAX:
+            fut.set_result(_PROBE_NOT_STARTED)
+            return fut
+
+        def work() -> None:
+            try:
+                outcome: tuple = (fn(*args), None)
+            except Exception as exc:  # noqa: BLE001 - a probe that fails says unknown
+                outcome = (None, exc)
+            with contextlib.suppress(RuntimeError):    # the loop closed meanwhile
+                loop.call_soon_threadsafe(self._settle_probe, fut, outcome)
+
+        self._probe_threads += 1
+        try:
+            threading.Thread(target=work, name="relay-link-probe",
+                             daemon=True).start()
+        except RuntimeError:                           # no thread to be had
+            self._probe_threads -= 1
+            fut.set_result(None)
+        return fut
+
+    def _settle_probe(self, fut: asyncio.Future, outcome: tuple) -> None:
+        """On the loop: the probe's thread is done, answered in time or not."""
+        self._probe_threads = max(0, self._probe_threads - 1)
+        if fut.done():            # the check gave up on it at the bound
+            return
+        result, exc = outcome
+        if exc is not None:
+            fut.set_exception(exc)
+        else:
+            fut.set_result(result)
 
     # -- connection ------------------------------------------------------------
 
@@ -490,7 +793,11 @@ class RelayClient:
     async def _serve_once(self, cfg: RemoteConfig) -> None:
         """One full connection lifetime: connect, HELLO, dispatch frames until the
         socket closes. Cleans up all per-connection state on exit."""
+        self._dial_host = None
+        self._last_frame_at = None
+        self._dropped_at = None
         _validate_relay_config(cfg)
+        self._dial_host = urlsplit(cfg.relay_url).hostname
         ws = await self._connect(cfg.relay_url)
         self._ws = ws
         # A task stuck on an older transport must never hold the next
@@ -514,6 +821,7 @@ class RelayClient:
                     messages.__anext__(), timeout=_HELLO_ACK_TIMEOUT_S)
             except (asyncio.TimeoutError, StopAsyncIteration) as exc:
                 raise ProtocolError("relay did not complete HELLO handshake") from exc
+            self._last_frame_at = time.monotonic()
             ack = decode_frame(raw_ack)
             if ack.type != FrameType.HELLO_ACK or ack.header.get("ok") is not True:
                 # Do not reflect an untrusted relay-supplied reason into the
@@ -529,6 +837,10 @@ class RelayClient:
             config_watch = asyncio.create_task(
                 self._watch_connection_config(ws, cfg))
             async for raw in messages:
+                # Every frame counts, the relay's keepalive PINGs included
+                # (one each ping interval, 10 s by default): the age at the
+                # drop is how long the relay had been silent.
+                self._last_frame_at = time.monotonic()
                 try:
                     frame = decode_frame(raw)
                 except Exception as exc:  # noqa: BLE001 - a bad frame closes the conn
@@ -536,6 +848,10 @@ class RelayClient:
                     raise
                 await self._dispatch(frame)
         finally:
+            # The moment the read ended, before the teardown below, which can
+            # take up to _TASK_TEARDOWN_TIMEOUT_S and is not the relay's
+            # silence.
+            self._dropped_at = time.monotonic()
             self._connected = False
             self._connected_since = None
             if config_watch is not None:
@@ -662,15 +978,39 @@ class RelayClient:
 
         A raw-SEND failure (a dead socket) is deliberately NOT caught here: it
         propagates so the stream closes -- a broken transport is not a per-event
-        problem and must end the stream, exactly as before."""
+        problem and must end the stream, exactly as before.
+
+        THE DROP OWES THE VIEWER A MARKER (#485). Dropping kept the stream
+        alive and told nobody: the browser went on showing the state before
+        the lost event (for a terminal ``sequence`` transition, a run that
+        looked unfinished) until the next event of the same type. So the drop
+        is recorded on ``guard``, and the next frame that DOES encode goes out
+        behind one ``{"type":"relay_gap"}`` marker, the bytes the bus and the
+        relay send after their own drops, which ui/src/ws.ts answers by
+        re-reading the monitor snapshot over the HTTP tunnel. That read is
+        chunked, so it carries the state the frame could not. The marker
+        takes the dropped event's ``seq``, which the drop had spent, so the
+        numbers stay increasing. A frame that is itself a relay_gap marker
+        (the bus dropped from this subscriber too) is the notice already, and
+        pays the debt without a second one in front of it."""
         try:
             data = encode_frame(FrameType.WS_DATA, wire_stream_id,
                                 {"ws_id": ws_id, "seq": seq}, _event_payload(obj))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - oversize/unserializable: drop 1 event
-            guard.note_drop(exc)
+            guard.note_drop(exc, seq)
             return
+        if guard.gap_seq is not None:
+            if not (isinstance(obj, dict) and obj.get("type") == RELAY_GAP):
+                marker = encode_frame(
+                    FrameType.WS_DATA, wire_stream_id,
+                    {"ws_id": ws_id, "seq": guard.gap_seq}, _GAP_PAYLOAD)
+                if ws is None:
+                    await self._raw_send(marker)
+                else:
+                    await self._raw_send_on(ws, marker)
+            guard.gap_seq = None
         if ws is None:
             await self._raw_send(data)
         else:
@@ -922,9 +1262,11 @@ class RelayClient:
         any event (``_redact_ws_event`` returns it unchanged), the relay passes it
         on, and the browser re-reads the monitor snapshot. ``seq`` in the WS_DATA
         header numbers what this loop tries to send, after the queue and after
-        redaction, so a drop at the bus leaves no hole in it (an event too large
-        to encode does, its number spent before the encode fails). Nothing reads
-        it to find a drop either way: the relay records it and moves on.
+        redaction, so a drop at the bus leaves no hole in it. An event too large
+        to encode spends its number, and the ``relay_gap`` marker it owes the
+        viewer goes out under that number ahead of the next frame that encodes
+        (#485, ``_send_ws_event``). Nothing reads ``seq`` to find a drop either
+        way: the relay records it and moves on; the marker is the notice.
 
         Unlike a LAN client, a remote viewer is authorized PER SOCKET here (the LAN
         handler's accept-gate is not reached over the tunnel): we resolve the
@@ -1015,6 +1357,13 @@ def _event_payload(obj: dict) -> bytes:
     return json.dumps(obj, separators=(",", ":")).encode("utf-8")
 
 
+#: The gap marker's payload, ``{"type":"relay_gap"}``: byte for byte what
+#: the relay sends after its own drops (relay/relay/proxy.py
+#: ``RELAY_GAP_FRAME``) and what a bus ``GapMarker`` encodes to, so the
+#: browser sees one notice whichever hop lost the event (#485).
+_GAP_PAYLOAD = _event_payload({"type": RELAY_GAP})
+
+
 # The client the CURRENT app lifespan launched, or None when remote is off. A
 # module singleton (the ConfigStore/location_store pattern) rather than app
 # state, so a read route can answer without the lifespan having to hand the
@@ -1062,7 +1411,12 @@ async def run_relay_client(
     if not (cfg.enabled and cfg.relay_url):
         _current_client = None
         return None
-    client = RelayClient(app, config_provider)
+    # The system probes, read at call time: the one client that dials in
+    # production is the one that checks the link after each drop (#521).
+    # Read at call time also means a test that enables remote and enters the
+    # app's lifespan gets them, so the suite's conftest swaps this name for
+    # inert probes (test_h4_no_test_probes_the_real_network.py).
+    client = RelayClient(app, config_provider, link_probes=SYSTEM_LINK_PROBES)
     _current_client = client
     asyncio.create_task(client.run())
     return client

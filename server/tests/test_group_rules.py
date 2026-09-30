@@ -233,6 +233,18 @@ def _defer(kind="centring", reason="the centring solve did not converge",
     return PanelDeferred(reason, kind=kind, last_error=err)
 
 
+def _inline(reason="the mount chose the other pier side",
+            err="read east, wanted west"):
+    """A deferral the VISIT counts, at once: the side the hop read contradicts
+    the group's (5.6 step 5). Since H4 (#534, H4 orchestrator ruling 2) a
+    centring miss, ``_defer()``'s kind, is held to the pass boundary as a
+    failed guide start is, because only the whole pass says whether the
+    panel or the sky is to blame; so the tests of the visit's own count were
+    re-pinned to this kind, and the held centring count is pinned in
+    tests/test_h4_group_rules_centring.py."""
+    return PanelDeferred(reason, kind="pier_side", last_error=err)
+
+
 def test_a_complete_panel_is_removed_and_leaves_the_live_set():
     """Row 1: a complete panel is removed. It is no longer live, so the reject
     rule and the pass boundary stop counting it.
@@ -305,14 +317,14 @@ def test_an_accepted_visit_requeues_and_resets_both_counters():
     run = _run()
     for _ in range(2):
         run.visit_outcome("p0", complete=False, exposures=0, accepted=0,
-                          deferred=_defer())
+                          deferred=_inline())
     act = run.visit_outcome("p0", complete=False, exposures=7, accepted=2)
     assert act.action == "requeue"
     assert "p0" in run.visited
     assert run.failed["p0"] == 0
     for _ in range(2):
         act = run.visit_outcome("p0", complete=False, exposures=0, accepted=0,
-                                deferred=_defer())
+                                deferred=_inline())
     assert act.action == "requeue"
     assert run.failed["p0"] == 2
 
@@ -415,6 +427,10 @@ def test_a_deferral_counts_and_sets_the_panel_aside_at_the_bound():
     consecutive failures the panel is set aside with a reason that names the
     panel, the cause and the last error.
 
+    Re-pinned in H4 (#534) to a pier-side deferral, which the visit still
+    counts at once: a centring miss is now counted where the pass closes
+    (tests/test_h4_group_rules_centring.py).
+
     MUTATION "no failure counter" (a deferral requeues without counting).
     Observed:
         AssertionError: assert 'requeue' == 'set_aside'
@@ -422,7 +438,7 @@ def test_a_deferral_counts_and_sets_the_panel_aside_at_the_bound():
     run = _run()
     for i in range(3):
         act = run.visit_outcome("p1", complete=False, exposures=0, accepted=0,
-                                deferred=_defer())
+                                deferred=_inline())
         assert "p1" in run.visited
         assert run.deferred_this_pass == 1
         if i < 2:
@@ -431,8 +447,8 @@ def test_a_deferral_counts_and_sets_the_panel_aside_at_the_bound():
             run.close_pass()
             run.start_pass()
     assert act.action == "set_aside"
-    assert act.reason == ("the centring solve did not converge on 1-2 on 3 "
-                          "consecutive visits: 3 attempts, 4.2 arcmin off")
+    assert act.reason == ("the mount chose the other pier side on 1-2 on 3 "
+                          "consecutive visits: read east, wanted west")
     assert run.set_aside["p1"] == act.reason
 
 
@@ -446,10 +462,16 @@ def test_a_mixed_streak_names_the_last_cause():
           chose the other pier side: read east, wanted west
         + the mount chose the other pier side on 1-1 on 3 consecutive visits:
           read east, wanted west
+
+    Re-pinned in H4 (#534): the streak's first failure was a centring miss,
+    which the visit no longer counts (the pass boundary does), so it is an
+    unmeasured sky angle here, which the visit still counts.
     """
     run = _run()
     run.visit_outcome("p0", complete=False, exposures=0, accepted=0,
-                      deferred=_defer())
+                      deferred=_defer(kind="angle",
+                                      reason="the sky angle was not measured",
+                                      err=""))
     run.visit_outcome("p0", complete=False, exposures=0, accepted=0,
                       deferred=_defer(kind="rotation",
                                       reason="the rotator skipped its move",
@@ -466,16 +488,19 @@ def test_a_mixed_streak_names_the_last_cause():
 
 
 def test_a_banked_frame_clears_the_kinds_of_the_old_streak():
-    """A rotator skip, then a visit that banks a frame, then three centring
-    failures: the streak that sets the panel aside is three centring failures,
-    and the sentence says so, not "deferred ..., the last because" as if the
-    rotator skip were part of it.
+    """A rotator skip, then a visit that banks a frame, then three pier-side
+    deferrals: the streak that sets the panel aside is three pier-side
+    deferrals, and the sentence says so, not "deferred ..., the last because"
+    as if the rotator skip were part of it.
+
+    Re-pinned in H4 (#534) from three centring misses, which the visit no
+    longer counts (the pass boundary does), to a kind the visit still counts.
 
     MUTATION "streak kinds kept across an accepted visit". Observed:
-        - the centring solve did not converge on 1-1 on 3 consecutive visits:
-          3 attempts, 4.2 arcmin off
+        - the mount chose the other pier side on 1-1 on 3 consecutive visits:
+          read east, wanted west
         + 1-1 was deferred on 3 consecutive visits, the last because the
-          centring solve did not converge: 3 attempts, 4.2 arcmin off
+          mount chose the other pier side: read east, wanted west
     """
     run = _run()
     run.visit_outcome("p0", complete=False, exposures=0, accepted=0,
@@ -485,10 +510,10 @@ def test_a_banked_frame_clears_the_kinds_of_the_old_streak():
     run.visit_outcome("p0", complete=False, exposures=7, accepted=1)
     for _ in range(3):
         act = run.visit_outcome("p0", complete=False, exposures=0, accepted=0,
-                                deferred=_defer())
+                                deferred=_inline())
     assert act.action == "set_aside"
-    assert act.reason == ("the centring solve did not converge on 1-1 on 3 "
-                          "consecutive visits: 3 attempts, 4.2 arcmin off")
+    assert act.reason == ("the mount chose the other pier side on 1-1 on 3 "
+                          "consecutive visits: read east, wanted west")
 
 
 def test_a_deferral_after_banked_frames_starts_a_new_streak_of_one():

@@ -167,6 +167,17 @@ async def test_the_crossing_night_reads_the_meridian_on_its_own_clock(
     S56-INTEG-mut: RED (observed):
         assert (10770.644, 7) == (10772.28, 5)
 
+    UNCHANGED BY #505 (H4-ENG-C), ON PURPOSE. The gate now hands its flip
+    point to the hold (`_flip_point_handed`), and with the meridian as the
+    zero the hold still reads the countdown again on every tick, from the
+    lead and band the gate decided, so this trace is the same to the
+    millisecond. MUTANT "the handed meridian point extrapolated" (the hold
+    waiting for the gate's ``at`` on the meridian path too, ``elif lon is
+    not None:`` made ``elif False:`` in `_wait_for_flip_point`), run in the
+    private copy H4-ENG-C-mut: RED (observed), the hour angle's sidereal
+    rate carried into the wait from the gate:
+        assert (10772.855, 4) == (10772.28, 5)
+
     MUTANT "the harness leaves the poller running" (`Night.__init__` no
     longer stopping the hub's status poll): RED (observed):
         AssertionError: the hub's real-time status poll was running at 4 of

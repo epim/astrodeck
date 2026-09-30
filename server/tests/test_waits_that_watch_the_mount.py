@@ -347,7 +347,21 @@ async def test_control_the_safety_pause_gate_does_not_watch(sim_hub,
     drifted sensor here, before `_setup_target`. Its gate does not watch:
     the pause's own stop is the only ``set_tracking(False)``, no idle stop is
     decided, no line says the mount is "still tracking" (it is not), and the
-    latch is left open for the setup.
+    latch is left CLOSED by the pause's close-out.
+
+    RE-PINNED FOR H4 (#530). This case said "the latch is left open for the
+    setup" and asserted ``engine._idle_hold_open`` after the pause. Since
+    H4-ENG-C a pause whose stop was read back as confirmed closes the latch
+    that stop satisfied, before it re-acquires, and it is the REAL
+    `_setup_target` that re-opens it when a target is acquired. Here the
+    setup is a spy, so nothing re-opens it, and the pause's close-out is what
+    the last line sees. RED under H4-ENG-C's mutant "the pause leaves the
+    latch open" (engine.py: the close-out's ``if not unconfirmed:`` made
+    ``if False:``), re-run by the H4 integration. Observed:
+
+        assert (not True)
+         +  where True = <astrodeck.sequence.engine.SequenceEngine object at
+         0x0000018F39619C70>._idle_hold_open
 
     The real `_park_hold_pause`, driven directly: every safety read is safe,
     the setup is a spy, and the pause and cooling cadences are cut to real
@@ -420,6 +434,8 @@ async def test_control_the_safety_pause_gate_does_not_watch(sim_hub,
             f"the safety pause's cooler gate watched a mount the pause had "
             f"already stopped: set_tracking(False) {len(stops)} time(s) "
             f"({stops}), lines {_park_lines(bus_lines)}")
-        assert engine._idle_hold_open and engine._idle_stop_task is None
+        # Closed by the close-out's confirmed stop (#530); the spy setup
+        # re-opens nothing.
+        assert not engine._idle_hold_open and engine._idle_stop_task is None
     finally:
         await engine._cancel_idle_stop_retry()

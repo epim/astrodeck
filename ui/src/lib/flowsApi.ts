@@ -318,20 +318,37 @@ export interface FlowProgressSession {
    *  restart counted twice; the key kept its name and changed its meaning.
    *
    *  CONTINUE's `night` (`FlowRunSession.night`) is this plus one on a night
-   *  the session has not run, and this on a night it has. This answer
-   *  carries no clock, so the button (`runCopy`) prints this plus one, the
-   *  night a CONTINUE starts on an evening the session has not run, and is
-   *  one ahead of the run route on a same-night re-press (#511). */
+   *  the session has not run, and this on a night it has, so the button
+   *  never adds one to it: it prints `continue_night`, below (#511). */
   nights: number;
   count_mode: "attempts" | "accepted";
+  /** The night a CONTINUE pressed now would start: the number the run
+   *  route then answers as `FlowRunSession.night` (#511, H4). The ROUTE adds
+   *  it (server `progress.continue_night`) from the clock it read for the
+   *  request, through `Session.night_at`, the rule the run route itself
+   *  answers by, so the button and the run's own log line cannot disagree.
+   *  Until H4 this answer carried no clock and the button printed `nights`
+   *  plus one, one night ahead of the run route on a night the session had
+   *  already run (a second CONTINUE in the evening, a CONTINUE after a
+   *  crash).
+   *
+   *  PRESENT ONLY ON A DORMANT SESSION, the one status `run_flow`
+   *  continues, the way a panel carries `locked_angle` only where there is a
+   *  lock: an active or complete session answers without it, and so does a
+   *  server older than H4. `runCopy` reads it through `finite`, so the
+   *  button then prints no night rather than guess one. A count keyed by
+   *  the server's local noon-to-noon night, never a time and never the
+   *  site. */
+  continue_night?: number;
   /** Whether auto-resume would start this session at dusk: dormant, with
    *  auto-resume on (server `Session.is_armed`, the rule ResumeArm picks
    *  by). Added by the ROUTE (`progress.replay_facts`; #473, S7 orchestrator
    *  ruling 1), which since S7 always sends it. OPTIONAL because a server
    *  older than S7 sends neither this nor `plan_saved_ts`, and every reader
    *  must survive that answer: `replayNotice` reads a missing value as not
-   *  armed. test_types_mirror_status.py holds these two, and only these, as
-   *  the optional members. */
+   *  armed. test_types_mirror_status.py holds these two as the optional
+   *  members the route always sends; `continue_night`, which it sends only
+   *  sometimes, is optional by that test's carried-sometimes rule. */
   armed?: boolean;
   /** The flow record's saved time (`updated_ts`, unix seconds) for the
    *  version this session froze: what an armed auto-resume would replay.

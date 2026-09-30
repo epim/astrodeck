@@ -76,14 +76,34 @@ def _own_floor(plan, label: str) -> None:
 
 async def test_a_pass_whose_only_exposure_was_floor_stopped_does_not_wait(
         group_hub, monkeypatch):
-    """A 1x2. 1-1 never centres, so every visit to it defers (counted at
-    once, 3 in a row sets it aside). 1-2 shoots its L, and at the frame
-    boundary before its R it is below its own floor: set aside tonight,
-    one exposure into the visit. That exposure is pass 1's only one, and
-    it is an exposure all the same: pass 1 ends as a pass that shot, and
-    pass 2 begins at once, with no ``DEFER_WAIT_S`` and no anti-spin
-    set-aside. Pass 2 is 1-1's deferral alone and does wait; pass 3 sets
-    1-1 aside and the night ends.
+    """A 1x2. 1-1 never centres, so every visit to it defers (3 in a row
+    sets it aside). 1-2 shoots its L, and at the frame boundary before its
+    R it is below its own floor: set aside tonight, one exposure into the
+    visit. That exposure is pass 1's only one, and it is an exposure all
+    the same: pass 1 ends as a pass that shot, and pass 2 begins at once,
+    with no ``DEFER_WAIT_S`` and no anti-spin set-aside. Pass 2 is 1-1's
+    deferral alone and does wait; pass 3 sets 1-1 aside.
+
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). 1-1's misses are
+    still its own (1-2 centred beside it in pass 1, and from pass 2 it is
+    the lone panel tried), so they still count, now at the pass boundary.
+    But a centring set-aside is now "for now": it expires once a night,
+    45 minutes on here (``SET_ASIDE_EXPIRY_S``), and 1-1 is tried again
+    with a clean slate, strikes out again (passes 4 to 6, waiting 300 s
+    after 4 and 5), and is set aside for the night, and only then does the
+    night end. So the session holds two centring records for 1-1, the first
+    marked expired, and 1-1 is hopped six times. Before H4 the records were
+    ``["p01", "p00"]``, the waits pass 2's alone and the hops three. What
+    this case grades, that pass 1 shot and pass 2 did not wait, is
+    unchanged. RED under the same mutant, re-run by the H4 integration in
+    a private copy of server/ (scratchpad H4-INTEG-mut), pass 1 again
+    waiting 300 s for nothing (observed):
+        AssertionError: ['M31: pass 1 took no exposures and deferred 1
+        visits; waiting 300 s before the next pass', 'M31: pass 2 took no
+        expos...300 s before the next pass', 'M31: pass 5 took no exposures
+        and deferred 1 visits; waiting 300 s before the next pass']
+        assert ['M31: pass 1...he next pass'] == ['M31: pass 2...he next
+        pass']
 
     MUTANT "no note_visit" (the ``run.note_visit(...)`` call deleted from
     `_visit_panel`'s FloorStop arm): RED, pass 1 reads as a pass of no
@@ -121,14 +141,19 @@ async def test_a_pass_whose_only_exposure_was_floor_stopped_does_not_wait(
     assert night.done, night.lines[-4:]
     assert _shot(night, "1-2") == ["L"], night.shots()
     assert _shot(night, "1-1") == [], night.shots()
-    assert [r["target_id"] for r in night.stored.set_aside] == ["p01", "p00"], (
-        night.stored.set_aside)
+    # 1-2's floor, 1-1's first streak (expired, #534) and its second (for
+    # the night).
+    assert [(r["target_id"], r["kind"], bool(r.get("expired")))
+            for r in night.stored.set_aside] == [
+        ("p01", "floor", False), ("p00", "centring", True),
+        ("p00", "centring", False)], night.stored.set_aside
 
     waits = night.said("waiting 300 s before the next pass")
-    assert waits == ["M31: pass 2 took no exposures and deferred 1 visits; "
-                     "waiting 300 s before the next pass"], waits
+    assert waits == [f"M31: pass {n} took no exposures and deferred 1 visits; "
+                     f"waiting 300 s before the next pass"
+                     for n in (2, 4, 5)], waits
     hops = _gotos(night, "1-1")
-    assert len(hops) == 3, hops
+    assert len(hops) == 6, hops
     assert hops[1] - hops[0] < DEFER_WAIT_S <= hops[2] - hops[1], (
         f"1-1's hops at {hops}: pass 2 began at once, pass 3 after the wait")
 

@@ -21,10 +21,18 @@ The shortcut skips the rotate solve when all three hold:
   so without the mod the shortcut would miss every hop after a flip.
 
 Every case counts the SOLVER'S calls on the simulator, told apart by the file
-each path writes (``_solve/rotsync.fits`` for the calibration below,
-``_solve/rotate.fits`` for the rotate loop, ``_solve/solve.fits`` for the
-centring). The count is of real solves made by the real rotate loop against the
-sim rotator, not of calls to a double.
+each path writes (``_solve/rotsync-<token>.fits`` for the calibration below,
+``_solve/rotate-<token>.fits`` for the rotate loop, ``_solve/solve-<token>.fits``
+for the centring). The count is of real solves made by the real rotate loop
+against the sim rotator, not of calls to a double.
+
+RE-PINNED FOR #532 (H4). Every solve frame now has a name of its own, so the
+spy records each call by its KIND, the name with the token taken out
+(``rotate-4c1297bee2b9.fits`` is recorded as ``rotate.fits``). The counts, and
+the failures recorded below from before the change, read exactly as they did.
+Left counting the raw names, the counts of zero would have passed whatever the
+shortcut did; ``test_h4_solve_frame_unique_names.py`` pins the names
+themselves.
 
 THE CONTROLS' COUNTS ARE COMPUTED, and one differs from the task's shorthand.
 When a single condition fails, the real rotate loop runs. With the camera
@@ -42,6 +50,7 @@ verbatim on the test that caught it.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -67,16 +76,29 @@ def _mount_on_the_target(sim_hub):
     sim_hub.sim_rig.dec_deg = DEC
 
 
+#: A solve frame's name since #532: ``<kind>-<12 hex digits>.fits``.
+_UNIQUE = re.compile(r"^(?P<kind>.+)-[0-9a-f]{12}\.fits$")
+
+
+def _kind_of(fits_path) -> str:
+    """The frame's kind as a file name, ``rotate.fits`` for
+    ``rotate-4c1297bee2b9.fits``: the token taken out, so the counts below
+    count paths, not names. A name without a token is kept as it is."""
+    name = Path(fits_path).name
+    m = _UNIQUE.match(name)
+    return f"{m.group('kind')}.fits" if m else name
+
+
 @pytest.fixture
 def solves(monkeypatch):
-    """The name of the file every solver call was asked to solve, in order.
-    Delegates to the real ``SimSolver.solve``, so every solve still measures
-    the sim rig's true angle."""
+    """The kind of file every solver call was asked to solve, in order (see
+    ``_kind_of``). Delegates to the real ``SimSolver.solve``, so every solve
+    still measures the sim rig's true angle."""
     seen: list[str] = []
     real = SimSolver.solve
 
     async def spy(self, fits_path, **kw):
-        seen.append(Path(fits_path).name)
+        seen.append(_kind_of(fits_path))
         return await real(self, fits_path, **kw)
 
     monkeypatch.setattr(SimSolver, "solve", spy)

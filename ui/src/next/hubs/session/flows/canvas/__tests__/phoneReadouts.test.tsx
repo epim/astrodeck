@@ -19,7 +19,7 @@
 // WHAT IS GUARDED
 //
 //   1. THE READOUTS, while the run is this flow's: STATE, ETA with "hops not
-//      yet costed" while `hops_costed` is false, STAGE "M31 1-1 · pass 3",
+//      yet costed" while `hops_costed` is false, STAGE "M31 1-1 · pass 4",
 //      FRAMES from the sequence state, on both phone monitors; the header's
 //      and the toolbar's ETA from the same number. Across a meridian wait the
 //      stage names the mosaic and the wait, with nothing site-derived, for an
@@ -41,6 +41,11 @@
 //      counts, and "CONFIRM RUN" with nothing to continue.
 //   7. STOP IS ONE TAP on both #/next buttons: over a live run of this flow
 //      neither carries an arm, and one tap posts exactly one abort.
+//   8. THE EMPTY LOG (#529), on its own four surfaces (the two canvas log
+//      strips and the two phone monitors): through a live run of this flow
+//      it says the server publishes no log lines for a flow run, never
+//      "Idle"; outside one it says "no events yet"; and a line the log was
+//      given (a refused start's) is shown over either sentence.
 //
 // SINCE #449 the seed also holds the slice's `sessionIds`, and the fake rig
 // answers the progress route with the recorded answer: the readouts ask the
@@ -57,7 +62,9 @@
 // S7 (scratchpad S7-URUN-mut), so every S5 count here is of eleven cases, not
 // twelve. Case 7 arrived with the S7 verification (scratchpad
 // S7-URUN-verify-mut), so case 6's counts, quoted as N/12, are of twelve
-// cases, not thirteen.
+// cases, not thirteen. Case 8's nine cases arrived in H4 (scratchpad
+// H4-ULOG-mut), so every count before case 8's is of thirteen cases or
+// fewer, and case 8's own are of twenty-two.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -109,10 +116,23 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------- the fake rig
 const asked: { url: string; method: string; body: any }[] = [];
+/** While set, the run route refuses a start with a 409 carrying this
+ *  sentence, as the server does when the engine is already running (case 8's
+ *  control). */
+let refuseRun: string | null = null;
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
   const body = init?.body ? JSON.parse(init.body) : undefined;
   asked.push({ url, method, body });
+  if (refuseRun !== null && /\/run$/.test(url) && method === "POST") {
+    const refusal = { detail: refuseRun };
+    return {
+      ok: false, status: 409, statusText: "Conflict",
+      headers: { get: () => "application/json" },
+      json: async () => refusal,
+      text: async () => JSON.stringify(refusal),
+    };
+  }
   let data: any = { ok: true };
   if (/\/run$/.test(url) && method === "POST") {
     data = { started: true, flow_id: RECORD.id, frames: 120, unmapped: [] };
@@ -166,6 +186,10 @@ const { FlowCanvasToolbar } = await import("../FlowCanvasToolbar");
 const { default: FlowPhoneMonitor } = await import("../../../../../../components/flows/FlowPhoneMonitor");
 const { default: FlowHeader } = await import("../../../../../../components/flows/FlowHeader");
 const { HOPS_NOT_COSTED, START_OVER_TITLE } = await import("../../../../../../components/flows/runCopy");
+const {
+  default: ClassicLogStrip, EMPTY_LOG_TEXT, RUN_EMPTY_LOG_TEXT,
+} = await import("../../../../../../components/flows/FlowLogStrip");
+const { FlowLogStrip: NextLogStrip } = await import("../FlowLogStrip");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -339,20 +363,29 @@ function lineOf(surface: string): string {
 //   expected "RUNNING · ETA 288:48"
 //   got      "IDLE · ETA -"
 await test("a panel being shot: both monitors, the header and the toolbar read the sequence state", async () => {
+  // The recorded shooting state since the H4 rewrite of the night (a
+  // centring miss is counted at its pass boundary, #534, so the state is
+  // picked a pass later): 16752 s left, pass 4, 9 frames. Before it the pins
+  // read 288:48 (17328 s), pass 3 and 6 / 120; the mutant records in this
+  // file quote those, as observed then. RED against the file restored from
+  // its pre-H4 bytes, run by the H4 integration (observed, 20/22):
+  //   x a panel being shot: both monitors, the header and the toolbar read the sequence state: next-phone: ETA, the rig's 16752 s
+  //   expected "279:12"
+  //   got      "288:48"
   seed(SHOOTING);
   await mount();
   for (const m of MONITORS) {
     eq(tile(m, "state").value, "RUNNING", `${m}: STATE`);
-    eq(tile(m, "eta").value, "288:48", `${m}: ETA, the rig's 17328 s`);
+    eq(tile(m, "eta").value, "279:12", `${m}: ETA, the rig's 16752 s`);
     eq(tile(m, "eta").sub, HOPS_NOT_COSTED, `${m}: the ETA's note`);
-    eq(tile(m, "stage").value, "M31 1-1 · pass 3", `${m}: STAGE`);
-    eq(tile(m, "frames").value, "6 / 120", `${m}: FRAMES`);
+    eq(tile(m, "stage").value, "M31 1-1 · pass 4", `${m}: STAGE`);
+    eq(tile(m, "frames").value, "9 / 120", `${m}: FRAMES`);
   }
-  eq(liveLine(), "RUNNING · ETA 288:48", "the phone sheet's live line, under its title");
-  eq(text(within("classic-header", "flow-header-eta")), "ETA 288:48 · hops not yet costed",
+  eq(liveLine(), "RUNNING · ETA 279:12", "the phone sheet's live line, under its title");
+  eq(text(within("classic-header", "flow-header-eta")), "ETA 279:12 · hops not yet costed",
     "the header's ETA, with its note");
   const bar = within("next-toolbar", "flow-eta");
-  assert(bar != null && text(bar).includes("288:48"), `the toolbar's ETA: ${text(bar)}`);
+  assert(bar != null && text(bar).includes("279:12"), `the toolbar's ETA: ${text(bar)}`);
   eq(text(within("next-toolbar", "flow-eta-note")), HOPS_NOT_COSTED, "the toolbar's note");
   // The run is live and this flow's, so every RUN surface offers STOP.
   eq(text(within("next-phone", "flow-stages-run")), "STOP", "the phone sheet's button");
@@ -364,7 +397,7 @@ await test("a costed clock carries no note, on any of the four", async () => {
   seed({ ...SHOOTING, progress: { ...SHOOTING.progress, hops_costed: true } });
   await mount();
   for (const m of MONITORS) eq(tile(m, "eta").sub, "", `${m}: no note once a hop is costed`);
-  eq(text(within("classic-header", "flow-header-eta")), "ETA 288:48", "the header's ETA alone");
+  eq(text(within("classic-header", "flow-header-eta")), "ETA 279:12", "the header's ETA alone");
   absent(within("next-toolbar", "flow-eta-note"), "the toolbar's note is gone");
 });
 
@@ -437,7 +470,7 @@ await test("an ETA for a run this flow started, beside another flow's live run, 
   await mount();
   eq(text(within("classic-header", "flow-header-eta")), "ETA —", "the header's ETA");
   assert(text(within("next-toolbar", "flow-eta")).includes("-")
-    && !text(within("next-toolbar", "flow-eta")).includes("288:48"),
+    && !text(within("next-toolbar", "flow-eta")).includes("279:12"),
   `the toolbar's ETA: ${text(within("next-toolbar", "flow-eta"))}`);
   eq(tile("next-phone", "frames").value, "0 / 48", "the run route's own goal, not the other run's 120");
 });
@@ -783,6 +816,252 @@ await test("STOP on either #/next button is one tap: no arm, one abort", async (
     await settle();
     eq(aborts(), before + 1, `${s}: one tap on STOP must post exactly one abort`);
   }
+});
+
+// ========================================= 8. the empty log, on all four (#529)
+
+// THE LOG'S FOUR SURFACES, ONE TREE: the classic canvas's log rail, the
+// classic phone MONITOR tab, the #/next canvas's log strip and the #/next
+// phone stage sheet's LOG. Nothing writes `flows.logs` from the rig (there is
+// no `flow.log` topic), so through a live run of the flow each shows its
+// empty sentence, and until H4 every one of them said "Idle — no events yet"
+// (the #/next pair with a hyphen) directly under STATE RUNNING: the S7
+// probe's rotating 2x2 walk saw it on the classic phone MONITOR tab. Each
+// surface is its own case, so a surface that keeps the old words, or asks
+// its own question about the run, is the case that goes red.
+const LOG_SURFACES = ["classic-strip", "classic-monitor", "next-strip", "next-phone"] as const;
+type LogSurface = typeof LOG_SURFACES[number];
+
+async function mountLogs(): Promise<void> {
+  const box = (surface: LogSurface, child: any) =>
+    createElement("div", { key: surface, "data-surface": surface }, child);
+  await act(async () => { root.render(createElement("div")); });
+  await act(async () => {
+    root.render(createElement(Fragment, null,
+      box("classic-strip", createElement(ClassicLogStrip as any)),
+      box("classic-monitor", createElement(FlowPhoneMonitor as any)),
+      box("next-strip", createElement(NextLogStrip as any)),
+      box("next-phone", createElement(FlowStagesPhoneSheet as any, { params: { open: RECORD.id }, depth: 0 })),
+    ));
+  });
+  await settle();
+}
+
+/** The words one surface's log shows: the collapsed bar's message on the two
+ *  canvas strips (the empty ring's sentence, or the newest line), the log
+ *  panel on the two phone monitors.
+ *
+ *  The bar's MESSAGE, never the whole bar: the bar reads "LOG" and then the
+ *  message with no space between them, so its text is "LOGIdle - no events
+ *  yet", where `\bIdle\b` finds no word boundary. Read that way, the Idle
+ *  check below passed on both strips under "Idle kept" (the first run of the
+ *  mutants, scratchpad H4-ULOG-mut), a check that could not fail. */
+function logOf(surface: LogSurface): string {
+  const box = container.querySelector(`[data-surface="${surface}"]`);
+  const el = surface === "classic-strip" ? box?.querySelector("button[aria-expanded] > span:nth-of-type(2)")
+    : surface === "next-strip" ? box?.querySelector('[data-testid="flow-log-toggle"] .nx-flow-log-last')
+      : surface === "classic-monitor" ? box?.querySelector('[role="log"]')
+        : box?.querySelector('[data-testid="flow-stages-log"]');
+  assert(el != null, `${surface}: no log on the surface`);
+  return text(el);
+}
+
+/** Both monitors' STATE, the readouts the log's sentence must agree with. */
+const states = (): string =>
+  MONITORS.map((m) => `${m} ${tile(m, "state").value}`).join(", ");
+
+// Each mutant below was run in the private copy scratchpad H4-ULOG-mut, from
+// a byte backup of the mutated file restored and SHA-256 compared. Each
+// per-surface mutant turns that surface's two cases red, this one and the
+// next, and no other surface's.
+// The rule lives twice, word for word: `emptyLogText` in the classic strip,
+// which the classic rail and MONITOR print, and its restatement in the
+// #/next strip, which the #/next strip and stage sheet print (r7Parity keeps
+// the #/next tree off the classic presentation module). These cases compare
+// all four with the CLASSIC module's words, so a restatement that drifts is
+// red here, where canvasDom.test.tsx, reading the #/next words, stays green.
+// Word for word, not by `includes`: with only the `includes` checks, a
+// restatement that grew a suffix passed every case here (the H4-ULOG
+// verification, scratchpad H4-ULOG-verify-mut), so each case ends on an
+// exact comparison, placed last so every failure recorded below is still
+// the first one its case reports.
+// MUTANT "the #/next restatement grows a suffix, outside a run"
+// (canvas/FlowLogStrip.tsx's EMPTY_LOG_TEXT made "no events yet on this
+// rig"; canvasDom.test.tsx stays 36/36 under it). Observed,
+// phoneReadouts.test 20/22:
+//   x outside a live run of this flow, the empty log says no events yet: next-strip: next-strip, another flow's live run: the empty log outside a run of this flow, word for word
+//   expected "no events yet"
+//   got      "no events yet on this rig"
+//   x outside a live run of this flow, the empty log says no events yet: next-phone: next-phone, another flow's live run: the empty log outside a run of this flow, word for word
+//   expected "no events yet"
+//   got      "no events yet on this rig"
+// MUTANT "the #/next restatement grows a suffix, during a run"
+// (canvas/FlowLogStrip.tsx's RUN_EMPTY_LOG_TEXT given a trailing " yet";
+// canvasDom.test.tsx stays 36/36 under it). Observed, phoneReadouts.test
+// 20/22:
+//   x while this flow's run is live, the empty log says the server publishes no log lines: next-strip: next-strip: the empty log during a live run of this flow, word for word
+//   expected "no log lines: the server publishes none for a flow run"
+//   got      "no log lines: the server publishes none for a flow run yet"
+//   x while this flow's run is live, the empty log says the server publishes no log lines: next-phone: next-phone: the empty log during a live run of this flow, word for word
+//   expected "no log lines: the server publishes none for a flow run"
+//   got      "no log lines: the server publishes none for a flow run yet"
+// MUTANT "Idle kept (the classic rule)" (components/flows/FlowLogStrip.tsx
+// `emptyLogText` answering the old "Idle — no events yet" whatever the
+// run). Observed, phoneReadouts.test 18/22:
+//   x while this flow's run is live, the empty log says the server publishes no log lines: classic-strip: classic-strip: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "Idle — no events yet"
+//   x while this flow's run is live, the empty log says the server publishes no log lines: classic-monitor: classic-monitor: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "Idle — no events yet"
+//   x outside a live run of this flow, the empty log says no events yet: classic-strip: classic-strip, another flow's live run: the log says Idle: "Idle — no events yet"
+//   x outside a live run of this flow, the empty log says no events yet: classic-monitor: classic-monitor, another flow's live run: the log says Idle: "Idle — no events yet"
+// MUTANT "Idle kept (the #/next rule)" (canvas/FlowLogStrip.tsx
+// `emptyLogText` answering "Idle - no events yet" whatever the run).
+// Observed, phoneReadouts.test 18/22:
+//   x while this flow's run is live, the empty log says the server publishes no log lines: next-strip: next-strip: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "Idle - no events yet"
+//   x while this flow's run is live, the empty log says the server publishes no log lines: next-phone: next-phone: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "Idle - no events yet"
+//   x outside a live run of this flow, the empty log says no events yet: next-strip: next-strip, another flow's live run: the log says Idle: "Idle - no events yet"
+//   x outside a live run of this flow, the empty log says no events yet: next-phone: next-phone, another flow's live run: the log says Idle: "Idle - no events yet"
+// MUTANT "the #/next restatement drifts" (canvas/FlowLogStrip.tsx's
+// RUN_EMPTY_LOG_TEXT reworded "no log lines from the server during a flow
+// run"; canvasDom.test.tsx stays 36/36 under it). Observed,
+// phoneReadouts.test 20/22:
+//   x while this flow's run is live, the empty log says the server publishes no log lines: next-strip: next-strip: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "no log lines from the server during a flow run"
+//   x while this flow's run is live, the empty log says the server publishes no log lines: next-phone: next-phone: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "no log lines from the server during a flow run"
+// MUTANT "Idle kept on the classic rail" (FlowLogStrip.tsx's bar printing
+// "Idle — no events yet" in place of `emptyLogText(live)`). Observed,
+// phoneReadouts.test 20/22:
+//   x while this flow's run is live, the empty log says the server publishes no log lines: classic-strip: classic-strip: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "Idle — no events yet"
+//   x outside a live run of this flow, the empty log says no events yet: classic-strip: classic-strip, another flow's live run: the log says Idle: "Idle — no events yet"
+// MUTANT "Idle kept on the classic MONITOR" (FlowPhoneMonitor.tsx printing
+// "Idle — no events yet" in place of `emptyLogText(r.fed)`). Observed,
+// phoneReadouts.test 20/22:
+//   x while this flow's run is live, the empty log says the server publishes no log lines: classic-monitor: classic-monitor: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "Idle — no events yet"
+//   x outside a live run of this flow, the empty log says no events yet: classic-monitor: classic-monitor, another flow's live run: the log says Idle: "Idle — no events yet"
+// MUTANT "Idle kept on the #/next strip" (canvas/FlowLogStrip.tsx printing
+// "Idle - no events yet" in place of `emptyLogText(live)`). Observed,
+// phoneReadouts.test 20/22:
+//   x while this flow's run is live, the empty log says the server publishes no log lines: next-strip: next-strip: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "Idle - no events yet"
+//   x outside a live run of this flow, the empty log says no events yet: next-strip: next-strip, another flow's live run: the log says Idle: "Idle - no events yet"
+// MUTANT "Idle kept on the #/next stage sheet" (FlowStagesPhoneSheet.tsx
+// printing "Idle - no events yet" in place of `emptyLogText(readouts.fed)`).
+// Observed, phoneReadouts.test 20/22:
+//   x while this flow's run is live, the empty log says the server publishes no log lines: next-phone: next-phone: during a live run of this flow the empty log must say the server publishes no log lines for a flow run, got "Idle - no events yet"
+//   x outside a live run of this flow, the empty log says no events yet: next-phone: next-phone, another flow's live run: the log says Idle: "Idle - no events yet"
+for (const s of LOG_SURFACES) {
+  await test(`while this flow's run is live, the empty log says the server publishes no log lines: ${s}`, async () => {
+    seed(SHOOTING);
+    await mountLogs();
+    eq(states(), "next-phone RUNNING, classic-monitor RUNNING",
+      "premise: the recorded run is this flow's and live, so the readouts are fed");
+    const log = logOf(s);
+    assert(log.includes(RUN_EMPTY_LOG_TEXT),
+      `${s}: during a live run of this flow the empty log must say the server publishes `
+      + `no log lines for a flow run, got "${log}"`);
+    assert(!/\bIdle\b/i.test(log), `${s}: the log says Idle beside STATE RUNNING: "${log}"`);
+    // The whole of it, not a part: `includes` above lets a restatement that
+    // only grows a prefix or a suffix through (the mutants "the #/next
+    // restatement grows a suffix", above).
+    eq(log, RUN_EMPTY_LOG_TEXT, `${s}: the empty log during a live run of this flow, word for word`);
+  });
+}
+
+// OUTSIDE A LIVE RUN OF THIS FLOW, three ways: another flow's run live on the
+// rig (the readouts idle while the rig RUNS, the case the live sentence must
+// not reach, since the server's silence is about a run this flow is not
+// making), this flow's run once complete, and no run at all.
+//
+// MUTANT "live copy shown outside a run (the classic rule)"
+// (components/flows/FlowLogStrip.tsx `emptyLogText` answering the run
+// sentence whatever it is handed). Observed, phoneReadouts.test 20/22:
+//   x outside a live run of this flow, the empty log says no events yet: classic-strip: classic-strip, another flow's live run: the empty log must say "no events yet" and nothing about a run, got "no log lines: the server publishes none for a flow run"
+//   x outside a live run of this flow, the empty log says no events yet: classic-monitor: classic-monitor, another flow's live run: the empty log must say "no events yet" and nothing about a run, got "no log lines: the server publishes none for a flow run"
+// MUTANT "live copy shown outside a run (the #/next rule)"
+// (canvas/FlowLogStrip.tsx `emptyLogText` the same way). Observed,
+// phoneReadouts.test 20/22:
+//   x outside a live run of this flow, the empty log says no events yet: next-strip: next-strip, another flow's live run: the empty log must say "no events yet" and nothing about a run, got "no log lines: the server publishes none for a flow run"
+//   x outside a live run of this flow, the empty log says no events yet: next-phone: next-phone, another flow's live run: the empty log must say "no events yet" and nothing about a run, got "no log lines: the server publishes none for a flow run"
+// The two strips draw no readouts, so each asks whether the run is live for
+// itself, of `flowRunLive` over the known sessions, the readouts' own rule;
+// the two phone monitors read the readouts' `fed`.
+// MUTANT "the classic strip asks whether any run is live"
+// (components/flows/FlowLogStrip.tsx `useFlowRunFed` answering whether the
+// sequence state is one of runIsLive's four states, whoever's run it is).
+// Observed, phoneReadouts.test 21/22:
+//   x outside a live run of this flow, the empty log says no events yet: classic-strip: classic-strip, another flow's live run: the empty log must say "no events yet" and nothing about a run, got "no log lines: the server publishes none for a flow run"
+// MUTANT "the #/next strip asks whether any run is live"
+// (canvas/FlowLogStrip.tsx's `live` selector the same way). Observed,
+// phoneReadouts.test 21/22:
+//   x outside a live run of this flow, the empty log says no events yet: next-strip: next-strip, another flow's live run: the empty log must say "no events yet" and nothing about a run, got "no log lines: the server publishes none for a flow run"
+const OUTSIDE: [string, any][] = [
+  ["another flow's live run", { ...SHOOTING, session: { ...SHOOTING.session, id: "another-flows-session" } }],
+  ["this flow's run once complete", { ...SHOOTING, state: "complete" }],
+  ["no run at all", { state: "idle" }],
+];
+for (const s of LOG_SURFACES) {
+  await test(`outside a live run of this flow, the empty log says no events yet: ${s}`, async () => {
+    for (const [why, sequence] of OUTSIDE) {
+      seed(sequence);
+      await mountLogs();
+      eq(states(), "next-phone IDLE, classic-monitor IDLE", `premise, ${why}: the readouts are not fed`);
+      const log = logOf(s);
+      assert(log.includes(EMPTY_LOG_TEXT) && !log.includes(RUN_EMPTY_LOG_TEXT),
+        `${s}, ${why}: the empty log must say "${EMPTY_LOG_TEXT}" and nothing about a run, got "${log}"`);
+      assert(!/\bIdle\b/i.test(log), `${s}, ${why}: the log says Idle: "${log}"`);
+      eq(log, EMPTY_LOG_TEXT, `${s}, ${why}: the empty log outside a run of this flow, word for word`);
+    }
+  });
+}
+
+// CONTROL: A LINE THE LOG WAS GIVEN IS SHOWN, IN AND OUT OF A RUN. RUN pressed
+// on the classic MONITOR while another flow's run holds the rig, and the run
+// route refusing it with the engine's own sentence, is the one start the
+// slice logs (`flowsRun`'s "could not start: ..."). Every surface shows that
+// line, and neither empty sentence; and it stays shown once this flow's run
+// is live, where the empty sentence would otherwise say the server sends
+// none.
+//
+// This case passed before the fix as well as after it (the lines were always
+// shown), which is what a control is for. Neither change of sentence may
+// reach a log that holds a line:
+// MUTANT "the empty sentence over the lines" (FlowPhoneMonitor.tsx's
+// `lines.length === 0 ?` made `true ?`, so its log prints the empty sentence
+// whatever the ring holds). Observed, phoneReadouts.test 21/22:
+//   x a refused start's line still shows on all four, in and out of a run: classic-monitor, beside another flow's run: the refused start's line is not shown: "no events yet"
+// MUTANT "the #/next strip's bar ignores the ring" (canvas/FlowLogStrip.tsx's
+// bar printing `emptyLogText(live)` in place of the newest line). Observed,
+// phoneReadouts.test 21/22:
+//   x a refused start's line still shows on all four, in and out of a run: next-strip, beside another flow's run: the refused start's line is not shown: "no events yet"
+await test("a refused start's line still shows on all four, in and out of a run", async () => {
+  const REFUSAL = "a sequence is already running";
+  const LINE_SAID = `could not start: ${REFUSAL}`;
+  seed(OUTSIDE[0][1]);
+  await mountLogs();
+  const verb = within("classic-monitor", "run-copy-verb");
+  const press = verb?.closest("button");
+  assert(press != null && text(verb) === "CONTINUE",
+    `premise: the classic MONITOR offers CONTINUE beside another flow's run, got "${text(verb)}"`);
+  const before = runPosts().length;
+  refuseRun = REFUSAL;
+  try {
+    click(press);
+    await settle();
+  } finally {
+    refuseRun = null;
+  }
+  eq(runPosts().length, before + 1, "premise: the press posted one start, which the rig refused");
+  const check = (when: string): void => {
+    for (const s of LOG_SURFACES) {
+      const log = logOf(s);
+      assert(log.includes(LINE_SAID), `${s}, ${when}: the refused start's line is not shown: "${log}"`);
+      assert(!log.includes(EMPTY_LOG_TEXT) && !log.includes(RUN_EMPTY_LOG_TEXT),
+        `${s}, ${when}: an empty sentence is shown over a line the log holds: "${log}"`);
+    }
+  };
+  check("beside another flow's run");
+  // This flow's run goes live, as the socket would write it: the log keeps
+  // the line it holds.
+  act(() => { useStore.setState({ sequence: JSON.parse(JSON.stringify(SHOOTING)) } as never); });
+  await settle();
+  eq(states(), "next-phone RUNNING, classic-monitor RUNNING", "premise: this flow's run is now live");
+  check("once this flow's run is live");
 });
 
 // ------------------------------------------------------------------- tally

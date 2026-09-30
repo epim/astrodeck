@@ -5,8 +5,11 @@
 // (`server/astrodeck/flows/tonight.py:449`). Each row is
 // `{filter, goal_h, banked_h, tonight_h, has_ledger}`, one row per DISTINCT
 // capture step, and `banked_h` is hours of ACCEPTED integration folded over the
-// whole report archive. Its GOAL rows ARE the ledger card's per-filter rows,
-// one-to-one. Nothing here computes a banked figure the server did not send.
+// reports of THIS FLOW'S OWN TARGETS (a mosaic's by panel): since H4 the route
+// folds no other target's hours into it (#536, H4 orchestrator ruling 6, server
+// `flow_target_names`), where it folded the whole report archive. Its GOAL rows
+// ARE the ledger card's per-filter rows, one-to-one. Nothing here computes a
+// banked figure the server did not send.
 //
 // `goal_h === null` IS NO GOAL, NOT A GOAL OF 0. Since #189 S4 (S4 orchestrator
 // ruling 5, #338) the array also carries one row per FILTER CYCLE, with
@@ -96,7 +99,7 @@ export interface CampaignRead {
   budget: BudgetRow[];
   hasLedger: boolean;
   goalH: number;
-  /** Banked over the archive PLUS tonight's live share. */
+  /** Banked for this flow's own targets (#536) PLUS tonight's live share. */
   bankedH: number;
   tonightH: number;
   night: number;

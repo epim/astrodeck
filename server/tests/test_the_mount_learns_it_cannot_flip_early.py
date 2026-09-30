@@ -53,6 +53,8 @@ from __future__ import annotations
 
 import pytest
 
+from astrodeck.sequence import schedule
+
 # rootdir-relative. `sim_hub` comes with `_flip_engine` deliberately: the
 # harness pairs them (a real site, a sim rig, and the engine built on it), and
 # a second copy of the fixture here would be a second thing to keep in step.
@@ -125,12 +127,39 @@ async def test_an_attempt_at_the_crossing_teaches_nothing_about_early_flips(
     """A flip taken with the lead already at zero is the ORDINARY flip. That
     it worked says nothing about whether an EARLY one would have, and writing
     it down as "this mount flips early" would restore the useless attempt on
-    every later target."""
+    every later target.
+
+    RE-PINNED FOR H4 (#489). The retry is now put AT the crossing: the
+    target's RA is moved so it transited 20 s ago before the retry runs.
+    Before H4 the engine read "at the crossing" from the retry's lead being
+    zero, so this case could leave the target where the harness armed it,
+    9 min before transit, and let the stubbed hold stand in for the wait.
+    Since #489 the engine reads how far before transit the goto itself is
+    made, which is the fact that decides whether a flip says anything about
+    flipping early, and a zero-lead goto 9 min before transit is an early
+    attempt: left as it was, this case taught "flips early: True" and failed.
+
+    RED under M2 as re-run by the H4 integration ("learn from an attempt
+    taken at the crossing as well": engine.py's
+    ``if (before_transit_s > MERIDIAN_SIDE_MARGIN_S`` made ``if (True``).
+    Observed:
+
+        AssertionError: a flip that succeeded AT THE CROSSING was recorded
+        as evidence that this mount flips EARLY, which puts the useless
+        attempt back
+        assert True is False
+         +  where True = _mount_flips_early()
+    """
     e, t, st = _flip_engine(sim_hub, monkeypatch, the_slew_flips=False)
     await e._maybe_meridian_flip(t, next_exposure_s=180.0)   # learns False
     assert e._mount_flips_early() is False
     assert e._flip_lead_s(t) == 0.0, "premise: the retry has no lead"
 
+    # The retry is made past the meridian, 20 s after transit, the crossing
+    # the stubbed hold would have waited for. This is the harness's own
+    # arming rule (`_flip_engine`: RA = LST + ttf) with ttf at -20 s.
+    t.ra_hours = (schedule.lst_hours(sim_hub.site["longitude"])
+                  - 20.0 / 3600.0) % 24.0
     st["flips"] = True                       # the retry, at the crossing, works
     await e._maybe_meridian_flip(t, next_exposure_s=100000.0)
 

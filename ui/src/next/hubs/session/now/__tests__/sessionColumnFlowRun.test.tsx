@@ -101,6 +101,13 @@
 //   G  "any mosaic_group is a panel"     a group entry no longer required
 //   X  "a panel dedupes a pool"          a target sharing a panel's step dropped
 //   Q  "a null panel is named"           panelNamed without its panel check
+//
+// H4-UMON (#488) added the case on the wait line across a meridian wait, seen
+// red under this mutant (scratchpad H4-UMON-mut), and re-pinned mutant A's
+// quote, whose wait line was that defect:
+//   FW "fall through to the window sentence"  scheduleStatus.ts waitingText
+//                                        words every reason that is not an
+//                                        altitude gate as the window
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -548,6 +555,14 @@ await testAsync("a mixed plan counts its panels in full and its pools once, and 
 //     (operator): the header names the panel or pass an operator is served
 //     across the wait: "M31 · 4 panelsmosaic · pass 17 · 22m 30s · finishes
 //     ~21:40WAITINGWaiting for the observing window to open."
+// RE-PINNED BY H4-UMON (#488), deliberately: that quote's wait line was the
+// defect #488 reports, the meridian wait worded as the window. Mutant A re-run
+// then over the fixed formatter, in a private copy of ui/ (scratchpad
+// H4-UMON-mut), observed (16/17; the finish clock is that run's wall clock):
+//   x across a meridian wait the line names the mosaic and no panel
+//     (operator): the header names the panel or pass an operator is served
+//     across the wait: "M31 · 4 panelsmosaic · pass 17 · 22m 30s · finishes
+//     ~12:04WAITINGWaiting for the meridian, so the mosaic changes pier side once."
 await testAsync("across a meridian wait the line names the mosaic and no panel (operator)", async () => {
   await mountColumn(clone(WAIT_OPERATOR));
   const gp = WAIT_OPERATOR.group;
@@ -561,6 +576,44 @@ await testAsync("across a meridian wait the line names the mosaic and no panel (
   const gp = WAIT_VIEWER.group;
   eq(textOf("now-target-line"), `${gp.name} · ${gp.panels_total} panels`, "the target line across the wait:");
   assert(textOf("now-kind-line").startsWith("mosaic"), `the viewer's kind line: "${textOf("now-kind-line")}"`);
+});
+
+// A MERIDIAN WAIT READS AS ONE (#488; spec 5.7, 5.10, 6.9). Both recorded
+// waits carry the engine's `schedule: {state: "waiting", reason: "the mosaic
+// waits for the meridian, so it changes pier side once", eta_s: 0}`, beside a
+// live meridian countdown. The header's wait line read "Waiting for the
+// observing window to open." over them (the pre-#488 quote under mutant A
+// above), with the window open. It now says the mosaic waits for the meridian,
+// with no countdown and no clock, for an operator and a viewer alike.
+// Added by H4-UMON (#488). Mutant FW ("fall through to the window sentence";
+// scheduleStatus.ts's waitingText without its meridian branch, every reason
+// that is not an altitude gate worded as the window, the pre-#488 code), run
+// in a private copy of ui/ (scratchpad H4-UMON-mut) from a byte backup
+// restored and hash-compared, observed (16/17):
+//   x across a meridian wait the wait line says the mosaic waits for the
+//     meridian, with no countdown and no clock: the operator's wait line
+//     across the meridian wait:
+//     expected Waiting for the meridian, so the mosaic changes pier side once.
+//     got      Waiting for the observing window to open.
+// and scheduleStatus.test.ts's mutant M ("meridian branch dropped"; the
+// meridian reason printed as the server's words) turned it red the same way,
+// 16/17, with "got      Waiting: the mosaic waits for the meridian, so it
+// changes pier side once."
+await testAsync("across a meridian wait the wait line says the mosaic waits for the meridian, with no countdown and no clock", async () => {
+  const cases: Array<[string, any, unknown]> = [
+    ["operator", WAIT_OPERATOR, OPERATOR],
+    ["viewer", WAIT_VIEWER, VIEWER],
+  ];
+  for (const [who, state, principal] of cases) {
+    assert(state.schedule?.state === "waiting" && /meridian/.test(state.schedule?.reason ?? ""),
+      `precondition: the recorded ${who} wait no longer carries the engine's meridian schedule block`);
+    await mountColumn(clone(state), principal);
+    const line = textOf("now-wait-line");
+    eq(line, "Waiting for the meridian, so the mosaic changes pier side once.",
+      `the ${who}'s wait line across the meridian wait:`);
+    assert(!/\d{1,2}:\d{2}|\babout\b|under a minute|\bmin\b|\bhr\b/.test(line),
+      `a countdown or clock in the ${who}'s wait line: "${line}"`);
+  }
 });
 
 // Before its first visit a group has no current panel: `panel` is null (spec

@@ -1,5 +1,19 @@
-// Interrupted.tsx - "the server restarted mid-run" as a state with its own
-// actions (GAP-ANALYSIS section 11).
+// Interrupted.tsx - a run that stopped short of its plan, with frames on disk,
+// as a state with its own actions (GAP-ANALYSIS section 11).
+//
+// THE CAUSE IS THE SERVER'S WORD, OR NONE (#487). The card used to open on "the
+// server restarted mid-run" and print "The server restarted" after every
+// ending, and an operator who had pressed STOP was told the rig had restarted,
+// which reads as a crash they never saw. The recoverable route now says why the
+// session went dormant (`end_reason`, from its last report, server
+// `_why_dormant`), and the card words a cause from that alone: "aborted" is
+// the operator's STOP; `END_REASON_RESTART` is the server's word for the traces
+// only a process that stopped under the run leaves (a last report that never
+// recorded an ending, on a session the boot sweep turned dormant); any other
+// ending, and an answer with no `end_reason` at all (an older server), gets no
+// cause sentence. A sentence about a cause the answer did not carry is the
+// defect, not a fallback. One gap stays, the server's: a polite stop of the
+// server under a run finalizes "aborted" too, so it reads as a STOP (#565).
 //
 // THE DISTINCTION THIS CARD EXISTS FOR is worth 75 minutes of clear sky on
 // narrowband: RESUME picks up at frame N, re-running starts over at frame 1 and
@@ -46,6 +60,29 @@ export const RERUN_TITLE =
   "Opens the plan editor, where RE-RUN PLAN starts over at frame 1 "
   + "- the frames already on disk are not reused";
 
+/** The recoverable route's `end_reason` after an operator's STOP: the word
+ *  the engine's finalize stamps on the report (`_finalize_report("aborted")`). */
+export const END_REASON_ABORTED = "aborted";
+/** The recoverable route's `end_reason` for the evidence a restart leaves:
+ *  server `RESTART_END_REASON`, which test_h4_recoverable_says_why.py holds
+ *  this constant to. */
+export const END_REASON_RESTART = "restart";
+/** The cause sentence for an operator's STOP. */
+export const STOPPED_BY_HAND = "You stopped it";
+/** The cause sentence for a restart, said only on `END_REASON_RESTART`. */
+export const SERVER_RESTARTED = "The server restarted";
+
+/** The card's cause sentence for the route's `end_reason`, or null when the
+ *  answer carries no cause the card can word: every other ending (the sky, the
+ *  window, an error, an unsafe stop each end a run for their own reasons, and
+ *  a guess among them would be the #487 defect again), null, and a server
+ *  older than #487 that sends no `end_reason`. */
+export function causeSentence(endReason: unknown): string | null {
+  if (endReason === END_REASON_ABORTED) return STOPPED_BY_HAND;
+  if (endReason === END_REASON_RESTART) return SERVER_RESTARTED;
+  return null;
+}
+
 interface Recoverable {
   recoverable: boolean;
   session_id?: string;
@@ -53,6 +90,9 @@ interface Recoverable {
   frames_done?: number;
   frames_total?: number;
   ts?: number;
+  /** Why the session went dormant (#487): the last report's own word,
+   *  `END_REASON_RESTART`, or null. Absent from a server older than #487. */
+  end_reason?: string | null;
 }
 
 const LIVE = new Set(["running", "holding", "paused", "aborting"]);
@@ -105,6 +145,7 @@ export function Interrupted(): JSX.Element | null {
   const done = rec.frames_done ?? 0;
   const total = rec.frames_total ?? 0;
   const when = rec.ts ? fmtClock(rec.ts * 1000) : null;
+  const cause = causeSentence(rec.end_reason);
   const lockedReason = canControl ? null : `Resuming a run needs ${accessPhrase("control.mount")}.`;
 
   return (
@@ -117,7 +158,8 @@ export function Interrupted(): JSX.Element | null {
       <Label size={11}>RESUME INTERRUPTED RUN</Label>
       <Mono size={10.5} tone="dim">
         {rec.name ?? "The last run"} stopped at frame {done} of {total}
-        {when ? ` on ${when}` : ""}. The server restarted; the frames on disk are intact.
+        {when ? ` on ${when}` : ""}.{" "}
+        {cause ? `${cause}; the frames on disk are intact.` : "The frames on disk are intact."}
       </Mono>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <ActionButton

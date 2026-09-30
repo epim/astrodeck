@@ -82,15 +82,48 @@ OPENS = T0 + 591.0
 LATER = "Later"
 
 
-def _up_panels(*, opens: bool = True) -> list[Target]:
+#: M31's layout angle when the set-aside cases rotate it (below).
+UP_PA = 30.0
+
+
+def _up_panels(*, opens: bool = True, rotating: bool = False) -> list[Target]:
     """The upstream 2x2, two L frames a panel, one a visit, its window opening
-    at ``OPENS`` unless ``opens`` is False."""
+    at ``OPENS`` unless ``opens`` is False; at ``UP_PA`` when ``rotating``."""
     kw = {}
     if opens:
         hhmm = _time.strftime("%H:%M", _time.localtime(OPENS))
         kw["schedule_kw"] = {"start_mode": "time", "start_time": hhmm}
+    if rotating:
+        kw["rotation_deg"] = UP_PA
     return [panel(r, c, filters=("L",), count=2, **kw)
             for r in range(2) for c in range(2)]
+
+
+def _up_group(*, rotating: bool = False) -> TargetGroup:
+    """M31's group, rotating at ``UP_PA`` when ``rotating``."""
+    kw = {"rotate": True, "pa_deg": UP_PA} if rotating else {}
+    return TargetGroup(id=UP_ID, name=UP_NAME,
+                       geometry={"rows": 2, "cols": 2}, **kw)
+
+
+def _up_never_turns(who, n, result):
+    """How the set-aside cases set M31 aside tonight: every M31 hop centres
+    and its rotator does not turn the camera to the mosaic's angle
+    (``rotation_skipped``), a ``rotation`` deferral counted against the panel
+    at once (5.6 step 4), so each panel is set aside at its third pass, at
+    600 s, for the night. Every other hop centres.
+
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). These cases used to
+    have no M31 panel ever CENTRE. Since H4 a pass in which every panel tried
+    missed its centring holds the group with no strikes, for as long as the
+    window lasts, so M31 was never set aside, M33 waited for it all night
+    (#563) and each case failed at the 16 h fake horizon ("centring failed
+    on every one of the 4 panels tried in pass 96"). A rotator that did not
+    turn sets M31 aside exactly as the misses did before H4, pass for pass
+    and second for second, which is the event these cases are about."""
+    if who.startswith(UP_NAME):
+        return dict(result, rotation_skipped=True)
+    return result
 
 
 def _down_panel(col: int, *, after: str | None) -> Target:
@@ -105,14 +138,15 @@ def _down_panel(col: int, *, after: str | None) -> Target:
                                       exposure_s=30.0, count=2, per_visit=1)])
 
 
-def _plan(*, gates=(UP_ID, UP_ID), opens: bool = True, after=()) -> SequencePlan:
+def _plan(*, gates=(UP_ID, UP_ID), opens: bool = True, after=(),
+          rotating: bool = False) -> SequencePlan:
     """M31 then M33, M33's two panels waiting for the groups in ``gates``
-    (None: that panel has no gate), then ``after``'s plain targets."""
-    groups = [TargetGroup(id=UP_ID, name=UP_NAME,
-                          geometry={"rows": 2, "cols": 2}),
+    (None: that panel has no gate), then ``after``'s plain targets. M31
+    rotates at ``UP_PA`` when ``rotating``."""
+    groups = [_up_group(rotating=rotating),
               TargetGroup(id=DOWN_ID, name=DOWN_NAME,
                           geometry={"rows": 1, "cols": 2})]
-    targets = [*_up_panels(opens=opens),
+    targets = [*_up_panels(opens=opens, rotating=rotating),
                *[_down_panel(c, after=g) for c, g in enumerate(gates)],
                *after]
     plan = SequencePlan(name="two mosaics", targets=targets, groups=groups,
@@ -337,14 +371,15 @@ async def test_a_downstream_mosaic_is_skipped_once_the_upstream_is_set_aside(
           Left contains 120 more items, first extra item: {'id':
         'm33-mosaic', 'meridian_wait': False, 'mode': 'rotate', 'name':
         'M33', ...}
-    """
-    def no_centre(who, n, result):
-        if who.startswith(UP_NAME):
-            return dict(result, centered=False, error_arcmin=None)
-        return result
 
-    night = await _night(group_hub, monkeypatch, _plan(opens=False),
-                         goto=no_centre)
+    RE-PINNED FOR H4: M31 is set aside by a rotator that never turns, no
+    longer by centring misses (`_up_never_turns` says why). The three
+    mutants above were run again by the H4 integration against it, each RED
+    with the words recorded above.
+    """
+    night = await _night(group_hub, monkeypatch,
+                         _plan(opens=False, rotating=True),
+                         goto=_up_never_turns)
     assert night.done, night.lines[-4:]
     assert sorted(r["target_id"] for r in night.stored.set_aside) == [
         "p00", "p01", "p10", "p11"], night.stored.set_aside
@@ -375,7 +410,8 @@ def _hhmm(t: float) -> str:
 
 async def _skip_night(hub, monkeypatch, *, late_window: bool
                       ) -> tuple[Night, float, list[tuple]]:
-    """M31, never centring, is set aside at 600 s; M33 waits for it; "Later"
+    """M31, whose rotator never turns (`_up_never_turns`, re-pinned for H4
+    from "never centring"), is set aside at 600 s; M33 waits for it; "Later"
     waits for it too, and its window closes at 471 s (``stop_time``), so once
     M33 leaves nothing is left that can be shot tonight. With
     ``late_window``, M33 1-1's own window opens about two hours in (1-2's is
@@ -389,19 +425,14 @@ async def _skip_night(hub, monkeypatch, *, late_window: bool
                                      stop_time=_hhmm(OPENS - 120.0)),
                    steps=[ExposureStep(id="later-L", filter="L",
                                        exposure_s=30.0, count=1)])
-    plan = _plan(opens=False, after=[later])
+    plan = _plan(opens=False, after=[later], rotating=True)
     if late_window:
         q00 = next(t for t in plan.targets if t.id == "q00")
         q00.schedule = Schedule(start_mode="time",
                                 start_time=_hhmm(OPENS + 6600.0))
         assert plan_identity_errors(plan) == [], plan_identity_errors(plan)
 
-    def no_centre(who, n, result):
-        if who.startswith(UP_NAME):
-            return dict(result, centered=False, error_arcmin=None)
-        return result
-
-    night = await _night(hub, monkeypatch, plan, goto=no_centre)
+    night = await _night(hub, monkeypatch, plan, goto=_up_never_turns)
     assert night.done, night.lines[-4:]
     skip = [t for t, _lv, m in night.lines
             if m.startswith("M33: skipped for tonight")]
@@ -435,6 +466,17 @@ async def test_a_skipped_group_is_not_then_waited_for(group_hub, monkeypatch):
         [(600.0, 'running', 'waiting for M33 1-1', 'M33'), (7191.0,
         'complete', 'stopped at dawn (windows closed)', None)]
         assert 6591.0 == 0.0
+
+    NO LONGER RED, found by the H4 integration: re-run against the rotation
+    deferral (`_up_never_turns`) in a private copy of server/ (scratchpad
+    H4-INTEG-mut), the mutant leaves this case and its control green (2
+    passed). The engine's own comment on that ``continue`` says why: since
+    #374 a WAITING member meets the gate as well and leaves with its group,
+    so no panel of the skipped group can be the stale waiter any more, and
+    the re-ask is belt and braces. The change is #374's (S5), not H4's:
+    the same mutant on HEAD's tree before H4 (``git archive HEAD``, scratchpad
+    H4-INTEG-head), with this case as it read then, also gave 2 passed.
+    Filed as #572. The case still grades that the night ends at the skip.
     """
     night, skip_t, published = await _skip_night(group_hub, monkeypatch,
                                                  late_window=True)
@@ -471,6 +513,11 @@ async def test_one_upstream_set_aside_skips_a_group_another_still_holds(
     M33 held until M51 was done and only then skipped (observed):
         AssertionError: M33 was skipped at 1851 s, after M51's frames
         assert 1851.0 == 600.0
+
+    RE-PINNED FOR H4: M31 is set aside by a rotator that never turns
+    (`_up_never_turns`), and its set-aside time is read off its own
+    deferral lines. The mutant, re-run by the H4 integration against it, is
+    RED with the words recorded above.
     """
     m51_opens = OPENS + 1200.0
     m51 = [Target(id=f"r0{c}", name=f"M51 1-{c + 1}",
@@ -483,14 +530,14 @@ async def test_one_upstream_set_aside_skips_a_group_another_still_holds(
                                       exposure_s=30.0, count=1,
                                       per_visit=1)])
            for c in range(2)]
-    groups = [TargetGroup(id=UP_ID, name=UP_NAME,
-                          geometry={"rows": 2, "cols": 2}),
+    groups = [_up_group(rotating=True),
               TargetGroup(id="m51-mosaic", name="M51",
                           geometry={"rows": 1, "cols": 2}),
               TargetGroup(id=DOWN_ID, name=DOWN_NAME,
                           geometry={"rows": 1, "cols": 2})]
     plan = SequencePlan(name="three mosaics", groups=groups,
-                        targets=[*_up_panels(opens=False), *m51,
+                        targets=[*_up_panels(opens=False, rotating=True),
+                                 *m51,
                                  _down_panel(0, after=UP_ID),
                                  _down_panel(1, after="m51-mosaic")],
                         guide=False, dither_every=0, autofocus_every=0,
@@ -498,20 +545,17 @@ async def test_one_upstream_set_aside_skips_a_group_another_still_holds(
                         warm_cooler_when_done=False, recover_guiding=False)
     assert plan_identity_errors(plan) == [], plan_identity_errors(plan)
 
-    def no_centre(who, n, result):
-        if who.startswith(UP_NAME):
-            return dict(result, centered=False, error_arcmin=None)
-        return result
-
-    night = await _night(group_hub, monkeypatch, plan, goto=no_centre)
+    night = await _night(group_hub, monkeypatch, plan, goto=_up_never_turns)
     assert night.done, night.lines[-4:]
     skip = [(night.rel(t), m) for t, _lv, m in night.lines
             if m.startswith("M33: skipped for tonight")]
     assert [m for _t, m in skip] == [
         "M33: skipped for tonight: the M31 mosaic it waits for is set aside "
         "tonight; not done, so the next night takes it up"], skip
+    # M31's own deferral lines (`_up_never_turns`, re-pinned for H4 from
+    # "M31: centring failed"); the last is the set-aside.
     set_aside = max(night.rel(t) for t, _lv, m in night.lines
-                    if m.startswith("M31: centring failed"))
+                    if m.startswith("M31: the rotator did not turn"))
     m51_frames = _starts(night, "M51")
     assert len(m51_frames) == 2 and min(m51_frames) >= m51_opens - 1.0, (
         f"premise: M51 shot both panels once its window opened: "

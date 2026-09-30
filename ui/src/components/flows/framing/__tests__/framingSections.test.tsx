@@ -1035,9 +1035,24 @@ await test("PANELS says what the run is doing to its panel, on the recorded stat
       assert(!text.includes(SHOOTING_NOW), `PANELS says "${SHOOTING_NOW}" while the run is ${kind}: ${text}`);
     }
   }
-  // The recorded abort still carries the hold's key (#513): the words are
-  // the state's, so it reads as stopping, never as holding.
-  eq(RUN_FX.aborting.hold, "clouds", "premise: the recorded abort carries the hold's key");
+  // An abort that still carries the hold's key (#513) reads as stopping,
+  // never as holding: the words are the state's. Since H4 the engine takes
+  // the hold off the aborting publish, so the recorded abort carries none
+  // (premise), and the key a pre-H4 server left on it is put back here.
+  // Re-pinned by the H4 integration: this read the key off the recorded
+  // abort, which was then premise enough. RED under flowRunState.test.ts's
+  // mutant "worded by the hold" (panelStateOf asking `run.hold` before the
+  // state), run by the H4 integration (observed, 22/23):
+  //   x PANELS says what the run is doing to its panel, on the recorded states: shot, paused, holding
+  //     for cloud, stopping: PANELS under an abort that still carries the hold's key: expected
+  //     {"1-1":"1-1: current panel, run stopping","2-2":"set aside tonight: centring failed on 2-2 on
+  //     3 consecutive visits: plate solve failed — used raw GoTo"}, got {"1-1":"1-1: current panel,
+  //     holding for cloud","2-2":"set aside tonight: centring failed on 2-2 on 3 consecutive visits:
+  //     plate solve failed — used raw GoTo"}
+  eq(RUN_FX.aborting.hold ?? null, null, "premise: the recorded abort carries no hold (#513, H4)");
+  mountRunPanels({ ...RUN_FX.aborting, hold: "clouds" });
+  eq(panelRunLines(), { "1-1": `1-1: ${CURRENT_STOPPING}`, "2-2": aside },
+    "PANELS under an abort that still carries the hold's key");
   // A hold whose reason the engine does not name is a hold, not cloud.
   eq(runLine({ kind: "current", run: "holding", hold: null }), CURRENT_HOLDING, "a hold that names no reason");
   eq(runLine({ kind: "current", run: "holding", hold: "clouds" }), CURRENT_HOLDING_FOR_CLOUD, "a hold for cloud");

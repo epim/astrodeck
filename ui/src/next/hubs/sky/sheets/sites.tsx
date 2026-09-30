@@ -218,8 +218,11 @@ export function SitesSheet(_props: SheetProps): JSX.Element {
     if (!editing || !canSeePrecise || !coordsEntered) { setHintAt(null); return; }
     let dead = false;
     const timer = setTimeout(() => {
-      api.get<{ place_hint?: string; sun_alt_deg?: number }>(
-        `/api/site/sky?lat=${latSigned}&lon=${lonSigned}`,
+      // A POST BODY, NOT A QUERY STRING (#520): these are the coordinates an
+      // admin is about to save, and a URL is written down by every hop it
+      // crosses, the remote relay's access log included.
+      api.post<{ place_hint?: string; sun_alt_deg?: number }>(
+        "/api/site/sky", { lat: latSigned, lon: lonSigned },
       ).then((s) => {
         if (dead) return;
         setHintAt({

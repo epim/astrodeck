@@ -58,14 +58,15 @@ FLOW_LOOP_REFUSAL = ("this flow loops back on itself at {src} -> {dst}; "
                      "a flow lane runs once")
 
 #: The params ``compile_plan`` takes ``int()`` of, by node type (#328): a
-#: FILTER CYCLE's two counts and a POOL's quota. THE ONE EXCEPTION TO
-#: "permissive about params" (the module docstring), and a narrow one: a
-#: value that is a number but not a finite one above 0 is refused at the
-#: door. An infinity or a NaN is a number ``int()`` raises on and JSON cannot
-#: carry, so a flow saved with one could never be compiled, previewed or run
-#: again, and nothing on screen said why; 0 or a negative is no number of
-#: anything. Text that is not a number at all is not judged here: the compile
-#: reads it as the default, as it reads every other param it cannot parse.
+#: FILTER CYCLE's two counts and a POOL's quota. AN EXCEPTION TO
+#: "permissive about params" (the module docstring; the other is
+#: ``WHOLE_MINUTE_PARAMS``, #483), and a narrow one: a value that is a
+#: number but not a finite one above 0 is refused at the door. An infinity
+#: or a NaN is a number ``int()`` raises on and JSON cannot carry, so a flow
+#: saved with one could never be compiled, previewed or run again, and
+#: nothing on screen said why; 0 or a negative is no number of anything.
+#: Text that is not a number at all is not judged here: the compile reads it
+#: as the default, as it reads every other param it cannot parse.
 COUNT_PARAMS: dict[str, tuple[str, ...]] = {
     "cycle": ("cycles", "perCycle"),
     "pool": ("quota",),
@@ -92,6 +93,44 @@ def _not_a_count(value) -> bool:
     except OverflowError:
         return True
     return not math.isfinite(number) or number <= 0
+
+
+#: The params the run reads as a WHOLE NUMBER OF MINUTES, by node type
+#: (#483): a DUSK WINDOW's offset from dusk, which the compile copies into
+#: ``schedule.start_offset_min`` and ``Schedule`` types as an ``int``. The
+#: second exception to "permissive about params", taken for #328's reason:
+#: a fraction here was read three ways downstream. The save stored -30.7,
+#: the compile emitted it and Tonight opened its window 30.7 min before
+#: dusk, the brief cut it to "(−30 min)", and only ``/run`` refused it, in
+#: words naming a TARGET. Refused at the door, it is never read at all.
+#:
+#: ONLY A FINITE FRACTION. An infinity, a NaN or an integer past a float's
+#: range is no number of minutes either, but #423 settled that a save
+#: stores one and the brief says it cannot be read, so none is applied;
+#: text that is not a number reads as no offset, as the compile reads it.
+WHOLE_MINUTE_PARAMS: dict[str, tuple[str, ...]] = {
+    "dusk": ("offset",),
+}
+
+#: The refusal for one of those, filled with the card's label, the node id,
+#: the param, the value as stored and the whole minutes either side of it.
+WHOLE_MINUTES_REFUSAL = ("{label} {node!r}: {key!r} is {value!r}, and the "
+                         "window opens a whole number of minutes from dusk: "
+                         "use {floor} or {ceil}")
+
+
+def _fraction(value) -> float | None:
+    """``value`` as a float when it is a FINITE number with a fractional part
+    (#483), else None: a whole number, an infinity, a NaN, an integer past a
+    float's range, None and text that is not a number are all None, each
+    for the reason ``WHOLE_MINUTE_PARAMS`` gives."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number.is_integer():
+        return None
+    return number
 
 #: Flow-level settings: one answer per FLOW, not per block (spec 1.6, Revision
 #: 2 ruling 1). ``{key: {"default": missing-key value, "options": [...]}}``.
@@ -297,6 +336,19 @@ class FlowGraph(BaseModel):
                     out.append(COUNT_REFUSAL.format(
                         label=NODE_DEFS[n.type].label, node=n.id, key=key,
                         value=value))
+
+        # AN OFFSET IS WHOLE MINUTES (#483): see WHOLE_MINUTE_PARAMS. Every
+        # DUSK WINDOW on the canvas, though the compile reads the first: a
+        # card holding a value no reader can use is not one to store.
+        for n in self.nodes:
+            for key in WHOLE_MINUTE_PARAMS.get(n.type, ()):
+                value = (n.params or {}).get(key)
+                number = _fraction(value)
+                if number is not None:
+                    out.append(WHOLE_MINUTES_REFUSAL.format(
+                        label=NODE_DEFS[n.type].label, node=n.id, key=key,
+                        value=value, floor=math.floor(number),
+                        ceil=math.ceil(number)))
 
         if len(known) != len(self.nodes):
             pass        # already reported as duplicates

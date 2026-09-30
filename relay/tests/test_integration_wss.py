@@ -417,6 +417,27 @@ async def test_a_stalled_event_loop_does_not_drop_a_healthy_tunnel():
       test_a_body_that_stops_half_way...: AssertionError: got a clean
         18-byte 502 response for a 40-byte body ... b'home tunnel failed'
       4 failed, 3 passed
+
+    WHAT THIS GUARDS: THE HARNESS, NOT RELAY CODE (H4, the E item on this
+    case). Its one mutant above is a constant of this file, and no relay code
+    is graded in the window it tests: at _QUIET_PING_S the relay's
+    ``_ping_loop`` is still asleep in its first 30 s interval when the
+    request is served, so no keepalive check, lenient or strict, runs during
+    the stall or after it. What it holds is that this file's home-bearing
+    cases run at an interval no stall of the shared loop can reach, which is
+    what made #438 deterministic. The keepalive itself is graded on the wire
+    by test_a_home_that_stops_answering_pings_is_torn_down. A relay-side
+    mutant confirms it, run from a private copy on 2026-09-29:
+    MUTATION "every tunnel is stale" (``ScopeTunnel.is_stale`` in
+    relay/registry.py returns True whatever the last PONG). Observed, the
+    two cases run together:
+      PASSED tests/test_integration_wss.py::test_a_stalled_event_loop_does_not_drop_a_healthy_tunnel
+      FAILED tests/test_integration_wss.py::test_a_home_that_stops_answering_pings_is_torn_down
+          AssertionError: {'code': 1001, 'pings': 0}
+          assert 0 >= 1
+      1 failed, 1 passed
+    The keepalive case going red shows the mutant was live (the relay hung
+    up before its first PING); this case stayed green through it.
     """
     relay_port = _free_port()
     app = create_app(_cfg(relay_port))

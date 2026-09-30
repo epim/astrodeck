@@ -67,6 +67,12 @@ here is a number an operator acts on:
   the site; it is thrown away here, never used and never emitted. A lock's
   times are never emitted either: when the first solve ran is when the run
   first reached the target, a moment its altitude at the site decides.
+* CONTINUE'S NIGHT COMES FROM THE ROUTE THAT HAS THE CLOCK (#511, H4). The
+  route adds ``continue_night`` (``continue_night`` below) with the clock it
+  reads and hands in, never one read here, so ``flow_progress`` itself still
+  takes none. It is a small count keyed by ``events.night_key``, local noon
+  to local noon in the SERVER'S zone: the site is never asked, so moving it
+  moves nothing (the route's #19 test moves the site with the key valued).
 
 Pure otherwise: no devices, no store, and no clock or config of its own.
 """
@@ -121,7 +127,8 @@ def flow_progress(compiled: dict, plan: "SequencePlan",
          orphaned: {frames, steps}}
 
     The ROUTE adds ``armed`` and ``plan_saved_ts`` to ``session``
-    (``replay_facts``, S7, #473); this answer keeps the four keys above.
+    (``replay_facts``, S7, #473) and ``continue_night`` (``continue_night``,
+    H4, #511); this answer keeps the four keys above.
 
     A TARGET block has one panel, at row 0 and col 0. A POOL block has one
     panel per member, in rank order, with row and col null: a pool is a list
@@ -304,6 +311,36 @@ def replay_facts(session: "Session") -> dict:
         ts = None
     return {"armed": session.is_armed(),
             "plan_saved_ts": None if ts is None else float(ts)}
+
+
+def continue_night(session: "Session", now: float) -> int | None:
+    """The night a CONTINUE pressed at ``now`` would start: the number
+    ``POST /api/flows/{id}/run`` answers as its ``session.night``, or None
+    when the press would continue nothing (#511, H4; spec 5.9, S7
+    orchestrator ruling 7). The progress ROUTE adds it to its ``session``
+    beside ``replay_facts``, with the clock it read for the request.
+
+    ONE RULE WITH THE RUN ROUTE: ``Session.night_at``, the method
+    ``_continue_flow_session`` asks, so the button and the run's own log line
+    cannot count the night differently. Until H4 the button printed
+    ``nights + 1``, because this answer carried no clock, and on a night the
+    session had already run (a second CONTINUE in the evening, a CONTINUE
+    after a crash) it read one night more than the run route answered.
+
+    NONE UNLESS THE SESSION IS DORMANT. ``run_flow`` continues a dormant
+    session and no other: a complete one starts fresh, as night 1 of a new
+    session, and an active one is the rig's live run, which RUN stops. A
+    night number beside either would state a CONTINUE that no press makes,
+    so the route then leaves the key out, the way a panel carries
+    ``locked_angle`` only where there is a lock.
+
+    NOT DERIVED FROM THE SITE: ``night_at`` keys ``now`` with
+    ``events.night_key``, the server's own local noon-to-noon date, which is
+    how ``captures/logs/<night>.jsonl`` is named. A count of nights, never a
+    time of day; the route's #19 test moves the site with this valued."""
+    if session.status != "dormant":
+        return None
+    return session.night_at(now)
 
 
 def _locked(session: "Session | None",

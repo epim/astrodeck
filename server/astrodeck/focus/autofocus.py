@@ -666,6 +666,19 @@ class AutofocusResult:
     #: already worked out — and logged where nobody could see it — that the
     #: field was too sparse for the exposure and binning it was given.
     advice: str | None = None
+    #: True on a FAILED result whose field was sparse (#507, H4 orchestrator
+    #: ruling 4): fewer than ``focus.native.SPARSE_FIELD_WARN`` stars at the
+    #: start position, on a probe frame that was not clipped. The sequence
+    #: engine retries exactly this failure once at twice the exposure, the
+    #: remedy the sweep's own warning names ("try a longer exposure"), before
+    #: its ``af_failure_action`` applies. Only the native sweep, the provider
+    #: the rig runs, measures a start count and sets it; every other path
+    #: leaves it False, and a False is never retried.
+    sparse_field: bool = False
+    #: The stars the probe frame counted at the start position, when the
+    #: sweep got that far; None otherwise. Carried for the engine's lines,
+    #: which say the number a sparse-field retry was decided on.
+    start_stars: int | None = None
 
 
 #: The BROADBAND sweep pair. Named rather than left in the signature because a

@@ -41,6 +41,7 @@ import {
   useBackendLinks, useBootConnectFailed, useProviders, usePhotometry, useSnapshotPreviewId,
 } from "../../../../store";
 import { newestPreviewId, showingLivePreview } from "../../../../lib/lastFrameId";
+import { snapshotStamp } from "../../../../ws";
 import { accessPhrase, useCan, useCanViewWeather } from "../../../../lib/caps";
 import { useLock } from "../../../lib/gateHook";
 import { explainLock } from "../../../shell/explain";
@@ -232,19 +233,31 @@ export function LiveScreen(): JSX.Element {
   // ws.ts now reads the snapshot on every connect, reconnect and relay gap and
   // records the id in `snapshotPreviewId`; this mount read writes to the same
   // field, so a page opened long after the socket came up still asks the rig.
+  //
+  // THE STAMP IS TAKEN BEFORE THE FETCH (#476, S7 orchestrator ruling 3). The
+  // socket keeps delivering while this read is in flight, and the server builds
+  // its answer when the request reaches it, so a live event handled after the
+  // request went out is newer than the answer. Applied on arrival, the answer
+  // wrote the older state over it: a run's `complete`, published once and
+  // never again, went back to `running`, and PAUSE and STOP came back for a
+  // run that had ended. So each part is applied only while no live event of
+  // its type has been handled since the send, the rule ws.ts's
+  // rehydrateFromSnapshot and the classic Monitor's first read obey; ws.ts's
+  // snapshotStamp says why it counts events rather than timing them.
   const snapshotPreviewId = useSnapshotPreviewId();
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
+        const stamp = snapshotStamp();
         const res = await fetch(u("/api/monitor/snapshot"));
         if (!res.ok) return;
         const snap = (await res.json()) as Partial<MonitorSnapshot>;
         if (cancelled) return;
         const ts = Date.now() / 1000;
         const st = useStore.getState();
-        if (snap.status) st.handleEvent({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
-        if (snap.sequence) st.handleEvent({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+        if (snap.status && stamp.fresh("status")) st.handleEvent({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
+        if (snap.sequence && stamp.fresh("sequence")) st.handleEvent({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
         // Only ever RAISES the field. This read can resolve after a newer one
         // ws.ts made at connect, and an older answer must not pull the tile
         // back. (ws.ts itself replaces: a restarted server counts from 1, and

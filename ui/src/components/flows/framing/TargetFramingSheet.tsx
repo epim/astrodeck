@@ -674,6 +674,14 @@ function FramingSheetBody({ node, onClose, viewWhy, runMode }: {
               </div>
               {move && <div data-testid="framing-move">{move}</div>}
             </div>
+            {/* The typing mark resizes the sky, and so moves everything under
+                it: it must not change between a press and its release, or the
+                release lands on another row (#492). WHERE's catalogue results
+                keep the search focused through a press (CatalogSearch cancels
+                their mousedown), so no blur reaches this during a tap; the
+                field's blur once the pick has landed is what grows the sky
+                back. A relatedTarget test here could not do it: WebKit blurs
+                the field to nothing on a button press. */}
             <div
               className="tfs-scroller"
               data-testid="framing-scroller"

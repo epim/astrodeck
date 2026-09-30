@@ -29,6 +29,22 @@ const CONCURRENCY = 6;
 const BITMAP_LRU = 256;
 const NEG_TTL_MS = 45_000;
 const PARENT_WALK = 5;
+/** Consecutive failures that call a big blank view all-failing. */
+const ALL_FAILING_CAP = 8;
+
+/** How many consecutive failures call a blank view all-failing (#493): every
+ *  tile the view needs, up to the cap. `need` is the frame's fetch plan, the
+ *  visible tiles AND the coarser ancestors that could still be upsampled into
+ *  them, because a view is black until one of those arrives: once each has
+ *  failed, nothing in flight can draw it. A fixed 8 was a threshold only a big
+ *  view could reach in one pass. A failed tile is asked again only when its
+ *  45 s negative-cache entry lapses, so a view of n < 8 tiles failed n per
+ *  pass and needed ceil(8 / n) passes: CompassSurvey opens 55 deg wide, three
+ *  tiles, and on a rig with no source said LOADING for about 90 s. Never
+ *  below 1, so a frame with nothing planned cannot fire on nothing. */
+export function allFailingAt(need: number): number {
+  return Math.max(1, Math.min(ALL_FAILING_CAP, need));
+}
 
 export function TileEngine(props: TileEngineProps): JSX.Element {
   const {
@@ -52,6 +68,9 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
   // failed fetch; cleared when content returns (draw loop) or the survey changes.
   const reportedFailing = useRef(false);
   const consecFail = useRef(0);
+  // How many tiles the CURRENT view needs (its last frame's fetch plan), for
+  // the all-failing threshold (`allFailingAt`).
+  const viewNeeds = useRef(0);
   // False after unmount: a fetch that outraces its abort (e.g. past the body
   // read when cleanup runs) can neither repopulate caches nor fire callbacks.
   const live = useRef(true);
@@ -60,8 +79,10 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
   // and inflight is empty, the rAF loop has no dirty source left (dirty is
   // only set on init/prop-change/fetch-success/fetch-failure) and idles
   // forever: recovery after the pack/network comes back needs user
-  // interaction, and on a static view with <8 visible tiles onAllFailing can
-  // never fire. One shared timer (not per-tile) is enough because the +250ms
+  // interaction. (It was also the only way a static view of fewer than 8
+  // tiles ever reached the old fixed 8-failure threshold, one 45 s pass at a
+  // time; `allFailingAt` now calls such a view in its first pass, #493.)
+  // One shared timer (not per-tile) is enough because the +250ms
   // slack guarantees every entry marked while it is pending has expired by
   // the time it fires.
   const wakeTimer = useRef<number | null>(null);
@@ -142,13 +163,16 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
         consecFail.current += 1;
         // Re-dirty so the next frame enqueues the next-priority tiles (the
         // failed key is negative-cached); without this, concurrency (6) would
-        // cap the consecutive-failure count below the 8-failure threshold.
+        // cap the consecutive-failure count below the threshold.
         dirty.current = true;
         // Surface the degraded banner when the CURRENT view is a black canvas and
         // fetches keep failing — even if we drew content earlier (a pan into
         // unfetched / interrupted / offline sky). Edge-guarded so it fires once
-        // per episode; cleared when content returns below.
-        if (consecFail.current >= 8 && viewBlank.current && !reportedFailing.current) {
+        // per episode; cleared when content returns below. The threshold is
+        // every tile the view needs, up to 8, so a small view is called in the
+        // same pass as a big one (#493).
+        if (consecFail.current >= allFailingAt(viewNeeds.current)
+            && viewBlank.current && !reportedFailing.current) {
           reportedFailing.current = true;
           onAllFailing();
         }
@@ -190,6 +214,10 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
         tiles, order, v.centerRaDeg, v.centerDecDeg,
         (o, n) => bitmaps.current.has(keyOf(o, n)), PARENT_WALK,
       );
+      // Deduped, and it keeps negative-cached keys (only `enqueue` skips
+      // them), so on a blank view this stays the whole set the view needs
+      // while its tiles fail one by one.
+      viewNeeds.current = plan.length;
 
       // Abort fetches for keys that left the plan (pans, zooms, and survey
       // switches all cancel stale loads and free their concurrency slots).

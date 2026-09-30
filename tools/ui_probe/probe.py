@@ -72,6 +72,17 @@ and the vacuity lesson in verify-on-the-real-thing.md:
      (`run_flow`) and move its session onto an earlier night (`seed_session`,
      through the server's own venv). A seed op may be limited to some routes.
      Nothing here ever runs against the rig's port (RIG_PORT).
+  8. Where a box sits, in the browser a person has (mosaic slice H4: #535,
+     #495, #440, #492). A desktop walk's Chromium draws its scrollbars,
+     where Playwright's default hid them and so measured every scrolling
+     desktop column one bar too wide (`_Browsers`, HIDE_SCROLLBARS); a phone
+     walk keeps the default, since a phone's bar takes no width. `scrollbar`
+     holds on the real page that a scrolling column's bar is there. Every
+     earlier check grades an element alone, so a canvas pushed under the
+     sky's clip passed: `contained` holds each element whole inside the box
+     that clips it, and `apart` holds a canvas clear of the lines drawn under
+     it, each in a state the route names (`when`: the survey degraded, a
+     catalogue verdict showing). Each is described where it is implemented.
 
 Usage:
     python tools/ui_probe/probe.py --routes tools/ui_probe/routes_classic.json \\
@@ -134,11 +145,75 @@ def _new_context(browser, width: int):
     a touch screen (has_touch, is_mobile), because a phone walk is taps
     (#189 S7: "390 x 844 with touch"). One constructor for main and for the
     probe's own tests, so a profile that lost its touch is a profile the
-    tests see."""
+    tests see. The browser comes from `_Browsers.for_width(width)`, which
+    decides whether its scrollbars are drawn."""
     profile = _viewport_for(width)
     return browser.new_context(
         viewport={"width": width, "height": profile["height"]},
         is_mobile=profile["is_mobile"], has_touch=profile["has_touch"])
+
+
+# SCROLLBARS ARE PART OF THE LAYOUT BEING GRADED (#535). Playwright passes
+# Chromium `--hide-scrollbars` on every launch unless told not to, so on the
+# probe's pages a column that scrolls kept its whole width, and every check of
+# whether something fits a desktop column was made against a box about 10 px
+# wider than a Windows desktop browser gives it (index.css sets
+# `scrollbar-width: thin` on every element, a 10 px bar). #469's "While a
+# mosaic waits" select passed the probe whole at 11px in the classic
+# inspector's 284 px column and was cut on the operator's screen: measured on
+# the real page on 2026-09-29, that column (`[data-flows-inspector]`) scrolls
+# 1928 px of content in 766 and is 273 px inside with the bar drawn, 283 with
+# it hidden, and the select in it 243 px wide against 253. So a desktop walk
+# launches with that default left out and sees the bar a desktop browser
+# draws. A phone walk keeps the default: a phone's scrollbar overlays the
+# content and takes no width, which is what the hidden bar measures too.
+HIDE_SCROLLBARS = "--hide-scrollbars"
+
+
+def _launch_args(width: int) -> dict[str, Any]:
+    """The `chromium.launch()` keywords a walk at `width` needs: a desktop
+    width draws its scrollbars (`ignore_default_args`), a phone width
+    (WIDTH_PROFILES' `is_mobile`) keeps Playwright's default. See
+    HIDE_SCROLLBARS."""
+    if _viewport_for(width)["is_mobile"]:
+        return {}
+    return {"ignore_default_args": [HIDE_SCROLLBARS]}
+
+
+class _Browsers:
+    """One Chromium per kind of screen, each launched the first time a walk
+    at such a width asks for it, with `_launch_args` (a launch flag is the
+    browser's, not a context's, so a phone walk and a desktop walk cannot
+    share one). `main` and every one of the probe's own tests take their
+    browsers from here, so a test grades the page as the probe's walks see
+    it, scrollbars included; test_probe_isolation.py holds that nothing
+    else launches one. `launch` is passed to every launch (a channel, say)."""
+
+    def __init__(self, playwright, headless: bool = True, **launch: Any) -> None:
+        self._pw = playwright
+        self._headless = headless
+        self._launch = launch
+        self._by_args: dict[tuple, Any] = {}
+
+    def for_width(self, width: int):
+        args = _launch_args(width)
+        key = tuple(sorted((k, tuple(v)) for k, v in args.items()))
+        if key not in self._by_args:
+            self._by_args[key] = self._pw.chromium.launch(
+                headless=self._headless, **self._launch, **args)
+        return self._by_args[key]
+
+    def context(self, width: int):
+        """`_new_context(width)` on the browser for `width`."""
+        return _new_context(self.for_width(width), width)
+
+    def close(self) -> None:
+        browsers, self._by_args = list(self._by_args.values()), {}
+        for browser in browsers:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
 
 FORBIDDEN_SUBSTRINGS = ["sign in to control", "display disconnected"]
@@ -693,6 +768,278 @@ def _check_boxes(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
     return results, reasons
 
 
+# ------------------------------------------------- where a box sits (H4)
+#
+# Module docstring point 8. Every check above grades an element ALONE: it is
+# visible, big enough, whole, unclipped, answering at its centre. None of them
+# asks where it sits relative to the box that clips it, and so a canvas
+# pushed 18 px under the Target modal's sky, its MOVE SKY toggle 10 px under
+# with it, and a status line painted over the canvas's bottom edge passed
+# both frame walks (#495, measured on the real page with the "square fills
+# the box" build of #440's fix: the sky 48 to 438, the canvas 30 to 420,
+# MOVE SKY's top at 38, the N at 34, the degraded line at 410 over the
+# canvas). MOVE SKY's centre still answered the hit test, the line's text was
+# whole, and every size floor held.
+
+# The element's box against the PADDING box of its nearest ancestor that
+# `within` names (where that ancestor's `overflow` clips), in CSS px: `over`
+# is how far the element runs past each edge (negative inside).
+CONTAINED_JS = """(el, within) => {
+  const q = (v) => Math.round(v * 10) / 10;
+  const r = el.getBoundingClientRect();
+  const box = {left: q(r.left), top: q(r.top), right: q(r.right), bottom: q(r.bottom)};
+  const a = el.parentElement ? el.parentElement.closest(within) : null;
+  if (!a) return {box, within: null, over: null};
+  const b = a.getBoundingClientRect();
+  const L = b.left + a.clientLeft, T = b.top + a.clientTop;
+  const R = L + a.clientWidth, B = T + a.clientHeight;
+  return {box, within: {left: q(L), top: q(T), right: q(R), bottom: q(B)},
+          over: {left: q(L - r.left), top: q(T - r.top), right: q(r.right - R),
+                 bottom: q(r.bottom - B)}};
+}"""
+
+# Boxes, for `apart`: the element's border box in CSS px.
+BOX_JS = """(el) => { const r = el.getBoundingClientRect(); const q = (v) => Math.round(v * 10) / 10;
+  return {left: q(r.left), top: q(r.top), right: q(r.right), bottom: q(r.bottom),
+          text: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 50)}; }"""
+
+# A scroller's own word for whether it scrolls and how much of its width its
+# scrollbar takes: its border box less its client width and its borders. It
+# scrolls when its content is taller than it AND its overflow lets a person
+# scroll it (`auto` or `scroll`): an `overflow: hidden` box with more content
+# than room draws no bar, and is a clip, not a column that scrolls.
+SCROLLBAR_JS = """(el) => {
+  const cs = getComputedStyle(el);
+  const bl = parseFloat(cs.borderLeftWidth) || 0, br = parseFloat(cs.borderRightWidth) || 0;
+  const scrolls = /(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 1;
+  return {scrolls, content: el.scrollHeight,
+          client: el.clientHeight, width: el.offsetWidth, inner: el.clientWidth,
+          bar: Math.round((el.offsetWidth - el.clientWidth - bl - br) * 10) / 10,
+          overflow_y: cs.overflowY, scrollbar_width: cs.scrollbarWidth};
+}"""
+
+#: How far a box may run past an edge, or into another box, before it counts:
+#: the half pixel `text_intact` allows a glyph, for sub-pixel layout.
+LAYOUT_TOLERANCE_PX = 0.5
+
+
+def _await_premise(page, when: str | None, timeout_ms: int) -> bool:
+    """Wait up to `timeout_ms` for `when` to be visible; True at once when
+    there is no premise. A layout check grades a STATE (the survey degraded,
+    a verdict under the canvas), and a check made before the state arrives
+    grades the layout it exists to catch the absence of: the canvas fits the
+    sky exactly until a line is drawn under it."""
+    if not when:
+        return True
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        if _visible_css_matches(page, when):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        page.wait_for_timeout(200)
+
+
+def _contained_attempt(page, spec: dict) -> tuple[bool, list[dict], list[str]]:
+    within = spec["within"]
+    rows: list[dict] = []
+    problems: list[str] = []
+    for sel in spec.get("selectors", []):
+        found = _visible_css_matches(page, sel)
+        if not found:
+            rows.append({"selector": sel, "ok": False, "why": "not visible"})
+            problems.append(f"contained: {sel!r} is not visible, so nothing says it sits "
+                            f"inside {within!r}")
+            continue
+        for i, el in enumerate(found):
+            try:
+                got = el.evaluate(CONTAINED_JS, within)
+            except Exception as exc:
+                got = {"error": str(exc)}
+            name = sel if len(found) == 1 else f"{sel} #{i + 1}"
+            over = got.get("over")
+            if got.get("error") or over is None:
+                rows.append({"selector": name, "ok": False, **got})
+                problems.append(f"contained: {name!r} has no ancestor {within!r}"
+                                if not got.get("error") else
+                                f"contained: {name!r} could not be measured: {got['error']}")
+                continue
+            worst = max(over.values())
+            ok = worst <= LAYOUT_TOLERANCE_PX
+            rows.append({"selector": name, "ok": ok, **got})
+            if not ok:
+                edges = ", ".join(f"{e} {v}px" for e, v in over.items() if v > LAYOUT_TOLERANCE_PX)
+                problems.append(f"contained: {name!r} runs past {within!r} ({edges}): its box "
+                                f"{got['box']}, the container's {got['within']}")
+    if not spec.get("selectors"):
+        problems.append(f"contained: no selectors, so nothing is held inside {within!r}")
+    return not problems, rows, problems
+
+
+def _check_contained(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
+    """`contained: [{"within", "selectors", "when", "timeout_ms", "settle_ms"}]`:
+    every visible match of each selector lies whole, within
+    LAYOUT_TOLERANCE_PX, inside the padding box of its nearest ancestor that
+    `within` (plain CSS, for `closest`) names: the box that clips it. Each
+    selector must match at least one visible element, so a control that went
+    missing is a failure and never a pass on nothing to measure.
+
+    `when` is the state graded (`_await_premise`): the check waits up to
+    `timeout_ms` (default 15000) for it, and its absence is the failure,
+    named. Then the layout is read until it holds or `settle_ms` (default
+    1500) runs out, and the last reading is reported: a line that has just
+    appeared may take a frame to lay out, and an overflow that lasts is not
+    a frame late."""
+    results: list[dict] = []
+    reasons: list[str] = []
+    for spec in specs:
+        within = spec["within"]
+        when = spec.get("when")
+        if not _await_premise(page, when, spec.get("timeout_ms", 15000)):
+            results.append({"within": within, "ok": False, "when": when, "premise": False})
+            reasons.append(f"contained: the state it grades never arrived: {when!r} was not "
+                           f"visible within {spec.get('timeout_ms', 15000)} ms")
+            continue
+        def attempt(spec=spec):
+            held, rows, problems = _contained_attempt(page, spec)
+            return held, (rows, problems)
+
+        ok, (rows, problems) = _poll(page, spec.get("settle_ms", 1500), attempt)
+        results.append({"within": within, "when": when, "ok": ok, "rows": rows})
+        reasons.extend(problems)
+    return results, reasons
+
+
+def _overlap(a: dict, b: dict) -> tuple[float, float]:
+    """How far two boxes overlap across and down, in CSS px (<= 0: apart)."""
+    return (round(min(a["right"], b["right"]) - max(a["left"], b["left"]), 1),
+            round(min(a["bottom"], b["bottom"]) - max(a["top"], b["top"]), 1))
+
+
+def _apart_attempt(page, spec: dict) -> tuple[bool, dict]:
+    a_sel, b_sel = spec["a"], spec["b"]
+    info: dict[str, Any] = {"a": a_sel, "b": b_sel, "box": None, "others": [], "why": None}
+    a_found = _visible_css_matches(page, a_sel)
+    if not a_found:
+        info["why"] = f"apart: {a_sel!r} is not visible"
+        return False, info
+    try:
+        a_box = a_found[0].evaluate(BOX_JS)
+    except Exception as exc:
+        info["why"] = f"apart: {a_sel!r} could not be measured ({exc})"
+        return False, info
+    info["box"] = a_box
+    need = spec.get("min_b", 1)
+    b_found = _visible_css_matches(page, b_sel)
+    if len(b_found) < need:
+        info["why"] = (f"apart: {len(b_found)} visible {b_sel!r}, need >= {need}: "
+                       f"nothing to hold apart from {a_sel!r}")
+        return False, info
+    problems: list[str] = []
+    for el in b_found:
+        try:
+            box = el.evaluate(BOX_JS)
+        except Exception as exc:
+            problems.append(f"apart: a {b_sel!r} could not be measured ({exc})")
+            continue
+        across, down = _overlap(a_box, box)
+        hit = across > LAYOUT_TOLERANCE_PX and down > LAYOUT_TOLERANCE_PX
+        info["others"].append({**box, "overlap": [across, down], "ok": not hit})
+        if hit:
+            # The boxes without their text: the line's words are quoted
+            # first, and the canvas's text is every label drawn on it.
+            edges = lambda b: {k: v for k, v in b.items() if k != "text"}  # noqa: E731
+            problems.append(f"apart: {box['text']!r} ({b_sel}) lies over {a_sel!r} by "
+                            f"{down}px down and {across}px across: its box {edges(box)}, "
+                            f"the other's {edges(a_box)}")
+    info["why"] = problems[0] if problems else None
+    info["problems"] = problems
+    return not problems, info
+
+
+def _check_apart(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
+    """`apart: [{"a", "b", "min_b", "when", "timeout_ms", "settle_ms"}]`: the
+    first visible `a` (the canvas) and every visible `b` (the lines drawn
+    under it) do not overlap by more than LAYOUT_TOLERANCE_PX both ways. At
+    least `min_b` (default 1) `b` must be visible, waited for with the
+    premise `when` for up to `timeout_ms`: a check of "no line lies over the
+    canvas" passes on a canvas with no lines. `contained` cannot see this: a
+    line inside the clip, over the square's bottom 18 px, is inside the box.
+    Read as `contained` is (`settle_ms`)."""
+    results: list[dict] = []
+    reasons: list[str] = []
+    for spec in specs:
+        when = spec.get("when")
+        timeout = spec.get("timeout_ms", 15000)
+        need = spec.get("min_b", 1)
+        premise = _await_premise(page, when, timeout)
+        if premise:
+            # The lines are part of the state: wait for as many as the walk
+            # expects before reading how they sit.
+            deadline = time.monotonic() + timeout / 1000.0
+            while (len(_visible_css_matches(page, spec["b"])) < need
+                   and time.monotonic() < deadline):
+                page.wait_for_timeout(200)
+        if not premise:
+            results.append({"a": spec["a"], "b": spec["b"], "ok": False, "premise": False})
+            reasons.append(f"apart: the state it grades never arrived: {when!r} was not "
+                           f"visible within {timeout} ms")
+            continue
+        ok, info = _poll(page, spec.get("settle_ms", 1500), lambda spec=spec: _apart_attempt(page, spec))
+        results.append({"ok": ok, **info})
+        if not ok:
+            reasons.extend(info.get("problems") or [info["why"]])
+    return results, reasons
+
+
+def _check_scrollbar(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
+    """`scrollbar: [{"selector", "min_px", "timeout_ms"}]`: the first visible
+    match scrolls, and its scrollbar takes at least `min_px` of its width
+    (SCROLLBAR_JS), read until it does or `timeout_ms` (default 5000) runs
+    out, since a column's content may arrive after it does. This is the
+    harness grading itself on the real page (#535): a desktop walk in a
+    browser that hid its scrollbars would measure every fit in this column
+    one bar too generous, and pass the layout #469 cut, so a walk that
+    measures in a scrolling column says first that the bar is there. A
+    column that does not scroll shows nothing either way, and fails: the
+    walk must name a column that scrolls in the state it reaches."""
+    results: list[dict] = []
+    reasons: list[str] = []
+    for spec in specs:
+        sel = spec["selector"]
+        need = spec.get("min_px", 8)
+
+        def attempt(sel=sel, need=need):
+            found = _visible_css_matches(page, sel)
+            if not found:
+                return False, None
+            try:
+                got = found[0].evaluate(SCROLLBAR_JS)
+            except Exception as exc:
+                return False, {"error": str(exc)}
+            return bool(got.get("scrolls")) and got.get("bar", 0) >= need, got
+
+        ok, got = _poll(page, spec.get("timeout_ms", 5000), attempt)
+        results.append({"selector": sel, "ok": ok, "need": need, "measured": got})
+        if ok:
+            continue
+        if got is None:
+            reasons.append(f"scrollbar: {sel!r} is not visible")
+        elif got.get("error"):
+            reasons.append(f"scrollbar: {sel!r} could not be measured: {got['error']}")
+        elif not got.get("scrolls"):
+            reasons.append(f"scrollbar: {sel!r} does not scroll ({got['content']}px of content "
+                           f"in {got['client']}px, overflow-y {got['overflow_y']}), so it shows "
+                           f"nothing of the scrollbar")
+        else:
+            reasons.append(f"scrollbar: {sel!r} scrolls ({got['content']}px of content in "
+                           f"{got['client']}px) and its scrollbar takes {got['bar']}px of its "
+                           f"{got['width']}px, need >= {need}px: this browser hides its "
+                           f"scrollbars, so every fit measured in this column is a bar too "
+                           f"generous (#535)")
+    return results, reasons
+
+
 def _check_reachable(page, selectors: list[str]) -> tuple[list[dict], list[str]]:
     """`reachable: [<selector>, ...]`: every visible match must answer the hit
     test once scrolled into view. A control another control lies over is one
@@ -1098,10 +1445,18 @@ def _check_api_text(page, specs: list[dict]) -> tuple[list[dict], list[str]]:
 def _run_copy_want(page, flow: str) -> tuple[dict | None, str | None]:
     """What RUN must say over this flow's session, from the server alone:
     `CONTINUE <NAME> (night <n>, <banked>/<total> subs)`, where the night is
-    the session's `nights` plus one and the counts are the blocks' `banked`
-    and `total` summed (runCopy.ts `runCopy`, spec 5.9), and the name is the
-    stored flow's in capitals. (None, why) when the route names no dormant
-    session, since CONTINUE is then not what RUN should say at all."""
+    the route's `continue_night`, the night a CONTINUE pressed now would
+    start, and the counts are the blocks' `banked` and `total` summed
+    (runCopy.ts `runCopy`, spec 5.9), and the name is the stored flow's in
+    capitals. A route that names no night gets `(<banked>/<total> subs)`
+    and no night, as the button prints it: never a night worked out here.
+
+    Until H4 this was the session's `nights` plus one, the rule the button
+    had then, and the probe went on grading it after the button changed
+    (#511, H4-ROUTES-B; #569): over a first run aborted the same evening the
+    page reads night 1, as the run route answers, and a probe still adding
+    one called the right button wrong. (None, why) when the route names no
+    dormant session, since CONTINUE is then not what RUN should say at all."""
     status, prog = _api_json(page, f"/api/flows/{quote(flow)}/progress")
     if status != 200 or not isinstance(prog, dict):
         return None, f"GET /api/flows/{flow}/progress -> {status}"
@@ -1113,23 +1468,36 @@ def _run_copy_want(page, flow: str) -> tuple[dict | None, str | None]:
         blocks = prog.get("blocks") or []
         banked = sum(int(b["banked"]) for b in blocks)
         total = sum(int(b["total"]) for b in blocks)
-        night = int(session["nights"]) + 1
     except (KeyError, TypeError, ValueError) as exc:
         return None, f"the progress route's numbers do not read as numbers ({exc!r})"
+    night = _whole_number(session.get("continue_night"))
     status, rec = _api_json(page, f"/api/flows/{quote(flow)}")
     if status != 200 or not isinstance(rec, dict):
         return None, f"GET /api/flows/{flow} -> {status}"
     name = str(rec.get("name") or "").strip().upper()
-    text = " ".join(p for p in ("CONTINUE", name, f"(night {night}, {banked}/{total} subs)") if p)
+    detail = (f"({banked}/{total} subs)" if night is None
+              else f"(night {night}, {banked}/{total} subs)")
+    text = " ".join(p for p in ("CONTINUE", name, detail) if p)
     return {"text": text, "night": night, "banked": banked, "total": total,
             "session": session.get("id")}, None
+
+
+def _whole_number(value: Any) -> int | float | None:
+    """A finite JSON number as runCopy.ts prints it (2, never 2.0), or None
+    for anything else: its `finite` test, which a bool does not pass."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
+        return None
+    return int(value) if float(value).is_integer() else value
 
 
 def _check_run_copy(page, spec: dict) -> tuple[dict, list[str]]:
     """`run_copy: {"selector", "flow", "night", "min_banked", "timeout_ms"}`:
     the RUN button's text holds exactly the CONTINUE line the progress route
     makes (`_run_copy_want`), read afresh on every poll. `night` pins the
-    night the walk expects (a first run's abort continues night 2), and
+    night the walk expects (a first run aborted this evening continues night
+    1, #511; one moved onto an earlier observing night continues night 2), and
     `min_banked` that some subs were banked, so a button that printed 0 for
     every count could not pass a walk that shot one."""
     sel = spec["selector"]
@@ -1152,7 +1520,10 @@ def _check_run_copy(page, spec: dict) -> tuple[dict, list[str]]:
         reasons.append(f"run_copy: control {sel!r} reads {info['got']!r}, and the "
                        f"progress route says {want['text']!r}")
     if want is not None:
-        if "night" in spec and want["night"] != spec["night"]:
+        if "night" in spec and want["night"] is None:
+            reasons.append(f"run_copy: the progress route names no night for CONTINUE "
+                           f"(no continue_night), and the walk expects night {spec['night']}")
+        elif "night" in spec and want["night"] != spec["night"]:
             reasons.append(f"run_copy: the session continues night {want['night']}, "
                            f"and the walk expects night {spec['night']}")
         if want["banked"] < spec.get("min_banked", 0):
@@ -1622,6 +1993,9 @@ MID_WALK_CHECKS = {
     "api_text": lambda page, spec: _check_api_text(page, spec),
     "readouts": lambda page, spec: _check_readouts(page, spec),
     "run_copy": lambda page, spec: _check_run_copy(page, spec),
+    "contained": lambda page, spec: _check_contained(page, spec),
+    "apart": lambda page, spec: _check_apart(page, spec),
+    "scrollbar": lambda page, spec: _check_scrollbar(page, spec),
 }
 
 
@@ -2220,6 +2594,17 @@ def _run_usable_checks(page, route: dict, gate: "_Gate | None", width_dir: Path,
         reasons.extend(why)
     if route.get("boxes"):
         out["boxes"], why = _check_boxes(page, route["boxes"])
+        reasons.extend(why)
+    # Where boxes sit (module docstring point 8), before `reachable` and
+    # `labels` scroll the view about: each waits for its own premise.
+    if route.get("scrollbar"):
+        out["scrollbar"], why = _check_scrollbar(page, route["scrollbar"])
+        reasons.extend(why)
+    if route.get("apart"):
+        out["apart"], why = _check_apart(page, route["apart"])
+        reasons.extend(why)
+    if route.get("contained"):
+        out["contained"], why = _check_contained(page, route["contained"])
         reasons.extend(why)
     if route.get("reachable"):
         out["reachable"], why = _check_reachable(page, route["reachable"])
@@ -2865,10 +3250,12 @@ def main(argv: list[str] | None = None) -> int:
     login_failures: list[str] = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not args.headed)
+        # A browser per kind of screen: a desktop width draws its scrollbars,
+        # a phone width does not (HIDE_SCROLLBARS, #535).
+        browsers = _Browsers(p, headless=not args.headed)
         try:
             for width in widths:
-                context = _new_context(browser, width)
+                context = browsers.context(width)
                 page = context.new_page()
                 if args.auth:
                     try:
@@ -2920,7 +3307,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 context.close()
         finally:
-            browser.close()
+            browsers.close()
 
     report_path = out_dir / "report.jsonl"
     with open(report_path, "w", encoding="utf-8") as f:

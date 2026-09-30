@@ -1,0 +1,37 @@
+{
+ "about": "GET /api/sessions rows for one session of the flow 'M42 LR', recorded by server/tests/test_h4_sessions_list_counts_nights.py (#430, H4 task H4-SESSIONS). 'one_night': after a start at 21:00 and a restart at 01:30, one observing night. 'next_evening': after a third start at 20:00 the next evening. 'runs' is the session's run count, len(Session.nights), which the row does not carry. The session's and the flow's ids are fixed stand-ins; every other value is the route's. Rewrite with ASTRODECK_REWRITE_H4_SESSIONS_FIXTURE=1; never hand-edit.",
+ "one_night": {
+  "runs": 2,
+  "row": {
+   "id": "deff3cf892d358b293d710e6e5f7e021",
+   "name": "M42 LR",
+   "status": "dormant",
+   "created_ts": 1789952400.0,
+   "updated_ts": 1789968600.0,
+   "nights": 1,
+   "accepted": 2,
+   "total": 5,
+   "auto_resume": true,
+   "owed": 3,
+   "origin": "flow",
+   "origin_id": "5f6cad6c2b435604ae943c0bc80d134a"
+  }
+ },
+ "next_evening": {
+  "runs": 3,
+  "row": {
+   "id": "deff3cf892d358b293d710e6e5f7e021",
+   "name": "M42 LR",
+   "status": "dormant",
+   "created_ts": 1789952400.0,
+   "updated_ts": 1790035200.0,
+   "nights": 2,
+   "accepted": 3,
+   "total": 5,
+   "auto_resume": true,
+   "owed": 2,
+   "origin": "flow",
+   "origin_id": "5f6cad6c2b435604ae943c0bc80d134a"
+  }
+ }
+}

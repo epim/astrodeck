@@ -180,6 +180,11 @@ class Session(BaseModel):
     # Plain dicts rather than a model, as the spec has it: no record can make
     # a file fail validation, and a file that fails validation vanishes from
     # every scan (``load_all``). Written only through ``note_set_aside``.
+    # Since H4 (#534, H4 orchestrator ruling 2) the engine also writes the
+    # record's ``kind`` and ``ts``, and a centring set-aside that expires is
+    # marked ``"expired": True`` (``note_set_aside_expired``), so a restart
+    # tonight takes that panel up again and never expires it a second time.
+    # All three are additive, with SESSION_SCHEMA still 1.
     set_aside: list[dict] = Field(default_factory=list)
     # LOCKED ANGLES (Revision 2, ruling 9): ``{target_id: {pa_deg, solved_at,
     # exposed_at, source}}``. An unframed TARGET takes the position angle its
@@ -271,7 +276,8 @@ class Session(BaseModel):
 
     # ---- set aside and locks (run-owned; the engine writes, a resume reads) --
     def note_set_aside(self, target_id: str, reason: str, *, night: str,
-                       step_id: str | None = None) -> dict:
+                       step_id: str | None = None, kind: str | None = None,
+                       ts: float | None = None) -> dict:
         """Record that ``target_id`` (or one of its steps) is set aside for the
         night ``night``, and return the record. Appended, never replacing: the
         second panel set aside tonight must not erase the first.
@@ -279,21 +285,80 @@ class Session(BaseModel):
         ``night`` is the ``events.night_key()`` of the moment, the key a
         crash-resume asks with. An empty one is refused, because no night key
         is ever "": the record would be read by no night, and the set-aside
-        would silently not survive the crash it is kept for."""
+        would silently not survive the crash it is kept for.
+
+        ``kind`` and ``ts`` (#534, H4 orchestrator ruling 2): what set it
+        aside, in a word (``"centring"`` is the one kind that expires,
+        ``group_rules.set_aside_expiry``), and the clock time it was set
+        aside at, which the expiry's 45 minutes run from. Written only when
+        given, so the record keeps the spec's four keys for a caller that
+        knows neither, and a reader treats a record without them as one that
+        never expires, which is what every record written before them was.
+        NOTHING SITE-DERIVED IS STORED: the panel's altitude when it was set
+        aside, which the expiry's other half compares, is recomputed from
+        ``ts`` and the target's coordinates when the check runs (6.9)."""
         if not night:
             raise ValueError(
                 f"a set-aside record needs the night it applies to "
                 f"(events.night_key()), got {night!r}")
         record = {"target_id": target_id, "step_id": step_id,
                   "reason": reason, "night": night}
+        if kind is not None:
+            record["kind"] = str(kind)
+        if ts is not None:
+            t = float(ts)
+            # The API renders JSON without NaN, and a record whose clock is
+            # not a number could never expire by it anyway.
+            if not math.isfinite(t):
+                raise ValueError(f"a set-aside's ts must be a finite clock "
+                                 f"time, got {ts!r}")
+            record["ts"] = t
         self.set_aside.append(record)
         return record
 
+    def note_set_aside_expired(self, target_id: str, *,
+                               night: str) -> dict | None:
+        """Mark ``target_id``'s standing CENTRING set-aside for ``night``
+        expired (#534), and return the record, or None when it has none.
+
+        The marker is ``"expired": True``, on the record itself: the record
+        stays, as history and as the night's count of expiries, which is at
+        most one per panel (``set_aside_expiries_on``), and ``set_aside_on``
+        no longer reads it, so a restart tonight takes the panel up again
+        instead of skipping it. A plain flag and no time: an expiry by the
+        panel's rise happens at a moment the site decides, and the session is
+        served to every role (6.9, the #19 class)."""
+        for rec in reversed(self.set_aside):
+            if (rec.get("target_id") == target_id
+                    and rec.get("step_id") is None
+                    and rec.get("night") == night
+                    and rec.get("kind") == "centring"
+                    and not rec.get("expired")):
+                rec["expired"] = True
+                return rec
+        return None
+
     def set_aside_on(self, night: str) -> list[dict]:
-        """The set-aside records for ``night``, in the order they were made.
-        A crash-resume passes ``events.night_key()`` and does not retry these;
-        any other night's records are history."""
-        return [r for r in self.set_aside if r.get("night") == night]
+        """The set-aside records for ``night`` that still stand, in the order
+        they were made. A crash-resume passes ``events.night_key()`` and does
+        not retry these; any other night's records are history, and so is a
+        centring set-aside that has expired (``note_set_aside_expired``,
+        #534): its panel is tried again tonight."""
+        return [r for r in self.set_aside
+                if r.get("night") == night and not r.get("expired")]
+
+    def set_aside_expiries_on(self, night: str) -> dict[str, int]:
+        """How many times each target's set-aside expired on ``night`` (#534):
+        the expired whole-target records, by target id. AT MOST ONE EXPIRY
+        PER PANEL PER NIGHT is read from here, by the engine at a restart and
+        by the resume arm, so the second set-aside of a night stands for the
+        rest of it however often the run is restarted."""
+        out: dict[str, int] = {}
+        for r in self.set_aside:
+            if (r.get("night") == night and r.get("expired")
+                    and r.get("step_id") is None and r.get("target_id")):
+                out[r["target_id"]] = out.get(r["target_id"], 0) + 1
+        return out
 
     def lock_angle(self, target_id: str, pa_deg: float, *, solved_at: float,
                    exposed_at: float | None, source: str) -> dict:
@@ -1088,7 +1153,15 @@ class SessionStore:
     def list(self) -> list[dict]:
         """Lightweight rows for GET /api/sessions (spec §6), newest first,
         with a row for every file the store cannot read (``_unreadable_row``,
-        #242) sorted in among them by the file's mtime."""
+        #242) sorted in among them by the file's mtime.
+
+        ``nights`` IS THE OBSERVING NIGHTS, ``len(s.observing_nights())``
+        (#430, S7 orchestrator ruling 7), the one reading the flow card and
+        CONTINUE's answer give. It was ``len(s.nights)``, one report id per
+        ``engine.start``, so a session restarted the same night read "2
+        nights" in the Sessions panel beside "night 1" on its flow card.
+        Display only: nothing that decides what runs reads these rows, the
+        list route is their one reader."""
         rows: list[dict] = []
         for path, raw, s, why in self._entries():
             if s is None:
@@ -1099,7 +1172,8 @@ class SessionStore:
             rows.append({
                 "id": s.id, "name": s.name, "status": s.status,
                 "created_ts": s.created_ts, "updated_ts": s.updated_ts,
-                "nights": len(s.nights), "accepted": s.total_accepted(),
+                "nights": len(s.observing_nights()),
+                "accepted": s.total_accepted(),
                 "total": s.plan.total_frames(), "auto_resume": s.auto_resume,
                 "owed": s.owed(), "origin": s.origin, "origin_id": s.origin_id,
             })

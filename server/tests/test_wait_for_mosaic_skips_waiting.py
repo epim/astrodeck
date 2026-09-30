@@ -18,8 +18,9 @@ ready path, so no "waits:" line is said before a target is ready.
 THE NIGHTS, the issue's probe on the clocked simulator
 (tests/_group_harness.py; the real `_run_scheduled`, `_eligibility_now`,
 `_follower_gate`, `_group_gate`, `_skip_group_tonight`): an upstream 2x2
-"M31", one L frame a panel, open from the start, whose panels never centre,
-so each is deferred on three consecutive passes and set aside at 600 s.
+"M31", one L frame a panel, open from the start, rotating at PA 30, whose
+rotator never turns the camera to the mosaic's angle, so each panel is
+deferred on three consecutive passes and set aside at 600 s.
 Downstream, under "Wait for the mosaic", "M33", whose window opens at
 ``OPENS`` (about two hours in): a single target carrying ``after_group``
 (the follower carrier), or a 1x2 group whose two panels carry it, as the
@@ -37,6 +38,20 @@ never in the shared tree (#254):
   ``if gate.kind == "skip":`` made ``if gate.kind == "skip" or (state !=
   "ready" and gate.kind != "ready"):``, a fix that reads the upstream's wait
   as a skip. The controls are for it.
+
+RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). M31's panels used to
+never CENTRE (and, in the controls, to miss on pass 1 only). Since H4 a pass
+in which every panel tried missed its centring is the sky's or the
+geometry's fault: no panel is struck and the group holds
+``CENTRING_HOLD_RETRY_S`` and tries again for as long as the window lasts.
+So the set-aside cases never set M31 aside and failed at the 16 h fake
+horizon ("centring failed on every one of the 4 panels tried in pass 96"),
+and the controls' pass 1 was a centring hold, not the deferral their
+premise names. A rotator that did not turn (``rotation_skipped``) is still
+a ``rotation`` deferral counted against each panel at once, which sets M31
+aside at 600 s as the misses did before H4, and on pass 1 only is the one
+deferral wait the controls want. Both mutants were run again by the H4
+integration against it, each RED with the words recorded below.
 """
 from __future__ import annotations
 
@@ -89,14 +104,20 @@ def _downstream(carrier: str) -> tuple[list[Target], list[TargetGroup]]:
                                  geometry={"rows": 1, "cols": 2})]
 
 
+#: M31's layout angle: it rotates, so a hop whose rotator did not turn
+#: defers its panel (5.6 step 4, `_up_unturned`).
+UP_PA = 30.0
+
+
 def _plan(carrier: str) -> SequencePlan:
-    up = [panel(r, c, filters=("L",), count=1)
+    up = [panel(r, c, filters=("L",), count=1, rotation_deg=UP_PA)
           for r in range(2) for c in range(2)]
     down, down_groups = _downstream(carrier)
     plan = SequencePlan(
         name="wait for the mosaic", targets=[*up, *down],
         groups=[TargetGroup(id=UP_ID, name=UP_NAME,
-                            geometry={"rows": 2, "cols": 2}), *down_groups],
+                            geometry={"rows": 2, "cols": 2},
+                            rotate=True, pa_deg=UP_PA), *down_groups],
         guide=False, dither_every=0, autofocus_every=0, meridian_flip=False,
         park_when_done=False, warm_cooler_when_done=False,
         recover_guiding=False)
@@ -104,12 +125,15 @@ def _plan(carrier: str) -> SequencePlan:
     return plan
 
 
-def _up_misses(passes: int):
-    """A goto script: every M31 hop misses its centring on the panel's first
-    ``passes`` visits, and every other hop centres."""
+def _up_unturned(passes: int):
+    """A goto script: every M31 hop centres, and on the panel's first
+    ``passes`` visits its rotator does not turn the camera to the mosaic's
+    angle (``rotation_skipped``); every other hop centres and turns. Before
+    H4 this was ``_up_misses``, the same visits missing their centring (see
+    the module docstring for why that no longer sets M31 aside)."""
     def goto(who: str, n: int, result: dict) -> dict:
         if who.startswith(UP_NAME) and n <= passes:
-            return dict(result, centered=False, error_arcmin=None)
+            return dict(result, rotation_skipped=True)
         return result
     return goto
 
@@ -131,10 +155,10 @@ def _published(night: Night) -> list[tuple[float, dict]]:
 @pytest.mark.parametrize("carrier", CARRIERS)
 async def test_a_waiting_target_leaves_when_its_mosaic_is_set_aside(
         group_hub, monkeypatch, carrier):
-    """No M31 panel ever centres, so M31 is set aside at its third pass.
-    M33 is still waiting on its own window then, two hours off; nothing it
-    waits for can come tonight, so it is skipped for the night at that
-    selection, said once for the target or the mosaic, and the terminal
+    """No M31 panel's rotator ever turns, so M31 is set aside at its third
+    pass. M33 is still waiting on its own window then, two hours off;
+    nothing it waits for can come tonight, so it is skipped for the night at
+    that selection, said once for the target or the mosaic, and the terminal
     publish comes at M31's set-aside, not at M33's window. It was never
     slewed to or shot, and it is still owed, so the session stays dormant.
 
@@ -161,13 +185,14 @@ async def test_a_waiting_target_leaves_when_its_mosaic_is_set_aside(
         skipped for tonight: the M31 mosaic it waits for is set aside
         tonight; not done, so the next night takes it up')
     """
-    night = await _night(group_hub, monkeypatch, _plan(carrier), _up_misses(99))
+    night = await _night(group_hub, monkeypatch, _plan(carrier),
+                         _up_unturned(99))
     assert night.done, night.lines[-4:]
     assert sorted(r["target_id"] for r in night.stored.set_aside) == [
         "p00", "p01", "p10", "p11"], (
         f"premise: M31 was set aside tonight: {night.stored.set_aside}")
     set_aside = max(night.rel(t) for t, _lv, m in night.lines
-                    if m.startswith("M31: centring failed"))
+                    if m.startswith("M31: the rotator did not turn"))
     published = _published(night)
     end_t, end = published[-1]
     assert end.get("state") == "complete", end
@@ -187,9 +212,10 @@ async def test_a_waiting_target_leaves_when_its_mosaic_is_set_aside(
 @pytest.mark.parametrize("carrier", CARRIERS)
 async def test_while_its_mosaic_is_live_a_waiting_target_keeps_waiting(
         group_hub, monkeypatch, carrier):
-    """CONTROL. M31 misses its centring on the first pass only: it waits out
-    one deferral and then shoots and completes, so it is live while M33
-    waits on its window. The skip half, asked of the waiting M33 all that
+    """CONTROL. M31's rotator fails to turn on the first pass only: it
+    waits out one deferral and then shoots and completes, so it is live
+    while M33 waits on its window. The skip half, asked of the waiting M33
+    all that
     time, answers "wait" and then "ready", neither a skip: M33 is never
     skipped, is shot once its window opens, and the night completes. GREEN
     under the mutant "skip half asked only for ready targets" (observed): it
@@ -203,7 +229,8 @@ async def test_while_its_mosaic_is_live_a_waiting_target_keeps_waiting(
         assert not ['M33: skipped for tonight: after the M31 mosaic; not
         done, so the next night takes it up']
     """
-    night = await _night(group_hub, monkeypatch, _plan(carrier), _up_misses(1))
+    night = await _night(group_hub, monkeypatch, _plan(carrier),
+                         _up_unturned(1))
     assert night.done, night.lines[-4:]
     assert night.said("M31: pass 1 took no exposures"), (
         f"premise: M31 waited out a deferral while M33 waited: "

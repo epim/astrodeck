@@ -53,14 +53,20 @@ export interface CloudmapDome {
 
 export interface CloudmapAt {
   enabled: boolean;
-  alt_deg: number;
-  az_deg: number;
+  /** The direction asked about. Present only on a PICKED point's answer
+   *  (`getCloudmapAtPoint`): the telescope answer does not echo the mount's
+   *  pointing, which is the value #520 took out of every URL. */
+  alt_deg?: number;
+  az_deg?: number;
   ahead_s: number;
   probability: number | null;
-  /** "mask_only" | "forecast" | "no_data" -- what the number is based on.
-   *  "no_data" is what you get before two granules exist, because motion needs
-   *  a pair to correlate. */
+  /** "mask_only" | "forecast" | "no_data" | "no_pointing" -- what the number
+   *  is based on. "no_data" is what you get before two granules exist,
+   *  because motion needs a pair to correlate; "no_pointing" is the telescope
+   *  answer with no mount, or a mount below the horizon. */
   basis: string;
+  /** The server's sentence about the basis, e.g. why there is no pointing. */
+  reason?: string;
   crossing_km: number | null;
   pierce_lat_deg?: number | null;
   pierce_lon_deg?: number | null;
@@ -131,9 +137,26 @@ export function resetCloudmapDomeCache(): void {
   domeInFlight.clear();
 }
 
-export const getCloudmapAt = (alt: number, az: number, aheadS = 0): Promise<CloudmapAt> =>
-  api.get<CloudmapAt>(
-    `/api/cloudmap/at?alt=${alt.toFixed(3)}&az=${az.toFixed(3)}&ahead_s=${Math.round(aheadS)}`);
+/** The sky along the TELESCOPE's pointing, now or `aheadS` seconds ahead.
+ *
+ *  NO COORDINATES LEAVE THE BROWSER (#520). This used to build the URL from
+ *  the mount's alt/az to three decimals, so the remote relay's access log held
+ *  the live pointing several times a minute - and a pointing at a known time
+ *  is a function of the site, at park its altitude the latitude itself. The
+ *  server reads the mount and answers for it; the lead time is the one thing
+ *  the URL carries. A server from before #520 requires alt and az and answers
+ *  this with a 422, which the ladder draws as "?" until the rig is updated. */
+export const getCloudmapAt = (aheadS = 0): Promise<CloudmapAt> =>
+  api.get<CloudmapAt>(`/api/cloudmap/at?ahead_s=${Math.round(aheadS)}`);
+
+/** The sky along a direction somebody PICKED - a tap on the dome, say.
+ *
+ *  A POST although it reads, because its argument is a direction and a body
+ *  is the one part of a request no access log writes down (#520). Never call
+ *  it with the mount's own pointing: `getCloudmapAt` asks about that without
+ *  sending it anywhere. */
+export const getCloudmapAtPoint = (alt: number, az: number, aheadS = 0): Promise<CloudmapAt> =>
+  api.post<CloudmapAt>("/api/cloudmap/at", { alt, az, ahead_s: Math.round(aheadS) });
 
 /** The persisted config block, as GET /api/config returns it. */
 export interface CloudmapConfig {

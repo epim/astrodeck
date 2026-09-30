@@ -427,6 +427,23 @@ EXAMPLE_BRIEFS = {
         "unconditionally - a stale reading counts as unsafe."),
 }
 
+#: THE ONE CLAUSE H4 CHANGED ON PURPOSE (#506). The brief used to name the
+#: GUIDE card's own params, which the run never uses (``to_plan``'s
+#: NODE_SETTINGS["guide"]: guider, settle and dither come from Rig >
+#: Guider), so every Example read "guides with PHD2 (...)" whatever the rig
+#: guided with. Since H4 it names the rig's guider (``_guide_clause``), and
+#: with no rig facts handed in, as ``brief(graph)`` is called here, it says
+#: where they come from instead. The pins above are kept as recorded before
+#: #470's walk; the test swaps this clause and nothing else (re-pinned by the
+#: H4 integration).
+GUIDE_CLAUSE_BEFORE_H4 = "guides with PHD2 (settle below 1.5″, dither every 3 frames)"
+GUIDE_CLAUSE_NO_RIG = "guides (guider, settle and dither from Rig > Guider)"
+
+
+def _as_h4_reads(pin: str) -> str:
+    """A pin as it reads since #506: the GUIDE clause swapped, once."""
+    return pin.replace(GUIDE_CLAUSE_BEFORE_H4, GUIDE_CLAUSE_NO_RIG)
+
 
 class TestOneBlockReadsAsBefore:
     def test_all_eight_examples_read_byte_for_byte_as_before(self):
@@ -455,14 +472,42 @@ class TestOneBlockReadsAsBefore:
         frames). Capture interleaves one sub per filter per pass - [...] -
         so every channel grows evenly. It then selects the best of M33,
         [...]".
+
+        RE-PINNED FOR H4: every pin is read through ``_as_h4_reads``, the
+        GUIDE clause swapped for the no-rig one (#506), after a check that
+        each pin carries the old clause exactly once where its Example has a
+        GUIDE stage (all but EAA), so the swap cannot pass by matching
+        nothing. Before the re-pin, the tree after H4 read (observed):
+
+            AssertionError: example-campaign reads differently: This flow
+            arms at astronomical dusk (\\u221230 min), [...] For each target
+            it autofocuses (v-curve sweep), guides (guider, settle and
+            dither from Rig > Guider). Capture interleaves [...]
+
+        RED under H4-ROUTES-A's mutant "brief reads the card params" (the
+        ``_guide_clause(rig)`` stage put back as the card's "guides with
+        {provider} (settle below {settle}″, dither every {dither}
+        frames)"), re-run by the H4 integration, observed:
+
+            AssertionError: example-campaign reads differently: This flow
+            arms at astronomical dusk (\\u221230 min), [...] For each target
+            it autofocuses (v-curve sweep), guides with PHD2 (settle below
+            1.5\\u2033, dither every 3 frames). Capture interleaves [...]
         """
         ids = [r.id for r in examples()]
         assert len(ids) == 8 and all(i in EXAMPLE_BRIEFS for i in ids), ids
+        for key, pin in EXAMPLE_BRIEFS.items():
+            want = 0 if key == "example-eaa" else 1
+            assert pin.count(GUIDE_CLAUSE_BEFORE_H4) == want, (
+                f"premise: {key}'s pin carries the old GUIDE clause "
+                f"{pin.count(GUIDE_CLAUSE_BEFORE_H4)} times, not {want}")
         for r in examples():
-            hop = EXAMPLE_BRIEFS.get(f"{r.id}@160", EXAMPLE_BRIEFS[r.id])
+            pin = _as_h4_reads(EXAMPLE_BRIEFS[r.id])
+            hop = _as_h4_reads(EXAMPLE_BRIEFS.get(f"{r.id}@160",
+                                                  EXAMPLE_BRIEFS[r.id]))
             got = (brief(r.graph), brief(r.graph, hop_cost_s=160.0),
                    brief(r.graph, plan=compile_plan(r.graph, r.name)))
-            assert got == (EXAMPLE_BRIEFS[r.id], hop, EXAMPLE_BRIEFS[r.id]), (
+            assert got == (pin, hop, pin), (
                 f"{r.id} reads differently: {got[0]}")
 
 

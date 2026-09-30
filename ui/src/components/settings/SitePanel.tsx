@@ -181,7 +181,7 @@ export default function SitePanel(): JSX.Element {
 
   // --------------------------------------------- "…which is where?" read-back
   // UX review #12 (the S4 pattern: the system knows and shows something else).
-  // GET /api/site/sky already computes the ONE string that catches a flipped
+  // /api/site/sky already computes the ONE string that catches a flipped
   // sign in half a second — place_hint, e.g. "N hemisphere · W longitude ·
   // ~N. America" — and nothing rendered it. This reads it for the values
   // CURRENTLY IN THE FORM, not for the saved site: a US longitude typed as
@@ -216,9 +216,12 @@ export default function SitePanel(): JSX.Element {
     // debounced: this would otherwise fire once per keystroke while typing a
     // coordinate. 350ms still lands well inside "half a second".
     const timer = setTimeout(() => {
+      // A POST BODY, NOT A QUERY STRING (#520): these are the coordinates
+      // being typed in, and a URL is written down by every hop it crosses,
+      // the remote relay's access log included.
       api
-        .get<{ place_hint?: string; sun_alt_deg?: number }>(
-          `/api/site/sky?lat=${latSigned}&lon=${lonSigned}`,
+        .post<{ place_hint?: string; sun_alt_deg?: number }>(
+          "/api/site/sky", { lat: latSigned, lon: lonSigned },
         )
         .then((s) => {
           if (dead) return;

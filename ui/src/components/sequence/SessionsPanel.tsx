@@ -211,7 +211,12 @@ export default function SessionsPanel() {
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-display font-semibold text-accent tracking-wider">{r.name}</span>
                 <StatusChip status={r.status} />
-                <span className="mono text-[11px] text-dim">
+                {/* `nights` is the OBSERVING nights the session has run, the
+                    server's `len(s.observing_nights())` (#430): a restart the
+                    same night is the same night here, as on the flow card and
+                    in CONTINUE. Printed as sent, never plus one for tonight.
+                    Until H4 the server sent the run count. */}
+                <span className="mono text-[11px] text-dim" data-testid="session-counts">
                   {r.accepted}/{r.total} · {r.nights} night{r.nights === 1 ? "" : "s"}
                 </span>
                 {/* #35 — which "Tonight" is this one? */}

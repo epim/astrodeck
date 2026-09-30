@@ -1,13 +1,17 @@
 // FlowNodeCard.tsx — one node on the graph.
 //
 // THIS IS THE COMPONENT THE RE-RENDER DISCIPLINE EXISTS FOR. The README's rule
-// is that a `flow.node` status tick re-renders ONE node, not the canvas, and
-// §B.3 spells out how that holds: the canvas is the only subscriber to the node
+// is that a write about one node re-renders ONE node, not the canvas, and §B.3
+// spells out how that holds: the canvas is the only subscriber to the node
 // ARRAY and passes each node down as a prop, while the card subscribes to its
 // own status and its own selected-ness with selectors that return a PRIMITIVE.
-// zustand compares the selector's result with Object.is, so a status write for
-// node B cannot wake node A. `memo` below then stops the canvas's own re-renders
-// from walking every card.
+// zustand compares the selector's result with Object.is, so selecting node B
+// cannot wake node A. The README states the rule for a `flow.node` status
+// tick, and nothing sends one: no topic carries a stage's status and nothing
+// writes `flows.statuses` (#464, `asStatus` below), so every LED reads idle.
+// The status selector is kept as narrow as the rest so that a status feed,
+// once there is one, still wakes one card. `memo` below then stops the
+// canvas's own re-renders from walking every card.
 //
 // Never reach for a `useFlowNode(id)` shape here (§B.3 marks it a trap): it
 // returns the node object, which is reference-equal only for as long as every

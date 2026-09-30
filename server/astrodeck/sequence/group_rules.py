@@ -61,6 +61,39 @@ REACH_RECHECK_S = 60.0
 #: this factor (A.4).
 SOLAR_PER_SIDEREAL = 0.9972696
 
+#: Seconds after which a CENTRING set-aside expires and the panel is tried
+#: once more tonight (#534, H4 orchestrator ruling 2). Three passes over a
+#: 3x2 take about 18 minutes, so three centring strikes can land inside the
+#: one early hour a target spends low behind a tree or in the haze near the
+#: horizon, and before this the rest of the night was lost to that hour (the
+#: first rig mosaic, NGC 1499 on 2026-09-29, lost every panel in 18 min
+#: although it transited hours later). 45 minutes is long enough for the sky
+#: to have changed under a panel that failed for the sky's reasons, and a
+#: panel that fails again after it is set aside for the rest of the night.
+SET_ASIDE_EXPIRY_S = 2700.0
+
+#: Degrees a centring set-aside's panel must have RISEN since it was set
+#: aside for the set-aside to expire before ``SET_ASIDE_EXPIRY_S`` (#534).
+#: A panel that has climbed this far has left the obstruction or the thick
+#: air it failed in, whatever the clock says. The altitudes it compares are
+#: SITE-DERIVED: the engine computes both when it asks, from the time the
+#: panel was set aside and its coordinates, stores neither, and never says
+#: either (6.9). At 40 degrees of latitude nothing rises faster than about
+#: 11.5 degrees an hour, so there this half can never beat the 45 minutes;
+#: nearer the equator a panel rising in the east can.
+SET_ASIDE_RISE_DEG = 10.0
+
+#: Seconds a group waits after a pass in which EVERY panel attempted (at
+#: least two) failed centring, before it starts the next pass (#534, H4
+#: orchestrator ruling 2). That pass says the sky or the geometry is to
+#: blame, not the panels, as "when every member rejects, the sky is to
+#: blame" (5.1), so no panel is struck, and the group holds, the way a cloud
+#: hold waits for the sky rather than giving up on it. Twice
+#: ``DEFER_WAIT_S``: whatever hid every panel at once (a cloud bank, a
+#: target low behind the trees) takes longer to clear than one panel's
+#: guide star.
+CENTRING_HOLD_RETRY_S = 600.0
+
 
 def _finite(name: str, value: Any) -> float:
     """``value`` as a finite float, or ``ValueError``.
@@ -136,12 +169,36 @@ GUIDE_LOST = "guide_lost"
 #: its own floor (``FloorStop``, set aside tonight at once).
 TARGET_STOP = "target_stop"
 
+#: The kind a member's hop carries when it did not centre under
+#: ``require_centred`` (5.6 step 4). Since H4 a rule reads it, as the guide
+#: rule reads :data:`GUIDE_START`: the centring pass rule
+#: (:func:`centring_pass_verdict`) asks whether every attempted panel failed
+#: with it, and a streak made only of it is the one set-aside that expires
+#: (:func:`set_aside_expiry`), both #534.
+CENTRING = "centring"
+
+#: The kind a member's hop carries when a solve it needed could not RUN, for
+#: a reason that clears by itself: the centring result carries
+#: ``solve_transient`` (#532, contract 1 of the H4 orchestrator; the hub
+#: sets it, for instance, when another process held the solve frame's file
+#: open, WinError 32), beside a centring miss or beside the rotate loop's
+#: ``rotation_skipped``. Nothing about the panel or the sky failed, so it
+#: counts toward neither ``failed`` nor the centring pass rule. It is still
+#: a deferral for the pass boundary (``deferred_this_pass``): a pass whose
+#: only visits were these waits ``DEFER_WAIT_S`` and tries again, where a
+#: pass of no exposures and no deferrals would set the whole mosaic aside.
+SOLVE_TRANSIENT = "solve_transient"
+
 #: Every kind a deferral may carry. A closed set, because the guide rule
 #: matches on a spelling: a deferral spelt ``"centering"`` or ``"guide-start"``
 #: by a later author would otherwise pass as an unknown kind the rule silently
 #: ignores. The hop raises:
 #:
-#: - ``"centring"``: ``centered: False`` under ``require_centred`` (5.6 step 4)
+#: - ``"centring"`` (:data:`CENTRING`): ``centered: False`` under
+#:   ``require_centred`` (5.6 step 4)
+#: - ``"solve_transient"`` (:data:`SOLVE_TRANSIENT`): the same miss, or a
+#:   ``rotation_skipped``, when the centring result says a solve could not
+#:   run for a transient reason (#532)
 #: - ``"rotation"``: ``rotation_skipped`` or ``rotation_unavailable`` with
 #:   ``rotate`` set (5.6 step 4)
 #: - ``"angle"``: the sky angle is off, or was not measured, in a case that
@@ -157,8 +214,9 @@ TARGET_STOP = "target_stop"
 #: and the group driver makes ``"target_stop"`` (:data:`TARGET_STOP`) from a
 #: plain ``StopTarget`` raised anywhere in the visit, at the hop or in the
 #: frame loop.
-DEFERRAL_KINDS = frozenset({"centring", "rotation", "angle", "pier_side",
-                            GUIDE_START, GUIDE_LOST, TARGET_STOP})
+DEFERRAL_KINDS = frozenset({CENTRING, "rotation", "angle", "pier_side",
+                            GUIDE_START, GUIDE_LOST, TARGET_STOP,
+                            SOLVE_TRANSIENT})
 
 
 class PanelDeferred(Exception):
@@ -321,15 +379,28 @@ class PassEnd:
       scheduler waits on, never a sleep inside the boundary).
     - ``"next_pass"``: :meth:`GroupRun.start_pass` and re-sort the group's
       slice of ``remaining``.
+    - ``"centring_hold"``: every panel attempted this pass (at least two)
+      failed centring (#534, :func:`centring_pass_verdict`). The sky or the
+      geometry is to blame, no panel is struck, and
+      :meth:`GroupRun.defer_next_pass` holds every live member for
+      ``CENTRING_HOLD_RETRY_S`` before :meth:`GroupRun.start_pass` begins the
+      next pass behind the hold. Decided before the guide rule: a pass in
+      which no panel centred made no guide attempt.
 
     ``set_aside``: ``(target_id, reason)`` for every panel set aside at this
     boundary, each owed its own warning alert and ``Session.set_aside``
-    record. ``reason``: the boundary in words, for the log.
+    record. ``reason``: the boundary in words, for the log. ``counted``:
+    ``(target_id, reason)`` for every held centring failure this boundary
+    counted without setting its panel aside, "(1 of 3 consecutive)": the
+    count the visit's own line said before centring failures were held
+    (#534), said now where it is made.
     """
 
-    boundary: PassBoundary | Literal["guiding_action", "none_live"]
+    boundary: PassBoundary | Literal["guiding_action", "none_live",
+                                     "centring_hold"]
     set_aside: tuple[tuple[str, str], ...]
     reason: str
+    counted: tuple[tuple[str, str], ...] = ()
 
 
 def guide_start_pass_verdict(attempted: int, failed: int) -> Literal["rig", "panel"]:
@@ -356,6 +427,92 @@ def guide_start_pass_verdict(attempted: int, failed: int) -> Literal["rig", "pan
     if attempted >= 2 and failed == attempted:
         return "rig"
     return "panel"
+
+
+def centring_pass_verdict(attempted: int,
+                          failed: int) -> Literal["sky", "panel"]:
+    """Whose fault is a pass's failed centrings (#534, H4 orchestrator ruling
+    2)? The guide-start rule's shape (:func:`guide_start_pass_verdict`), for
+    the hop's first check.
+
+    ``attempted`` counts the panels VISITED this pass, each once, whatever
+    their visit came to, save one whose solve could not run
+    (:data:`SOLVE_TRANSIENT`, #532), which the rule leaves out; ``failed`` counts
+    those whose hop did not centre (:data:`CENTRING`). A visit that shot a
+    frame, or deferred for anything that comes after the centring (the
+    rotator, the angle, the pier side, the guider), centred, or its hop
+    would have stopped at the miss. At least two attempted and every one
+    failed is ``"sky"``: the sky or the geometry is to blame, not the
+    panels (a cloud bank, a target low behind the trees, the haze near the
+    horizon), the same reasoning as "when every member rejects, the sky is
+    to blame" (5.1). Anything else is ``"panel"``: one miss out of one
+    attempt proves nothing about the sky, and a miss beside a panel that
+    centred is that panel's.
+
+    WHY IT MATTERS: the first rig mosaic (NGC 1499, 2026-09-29) started low
+    in the east behind an obstruction, every panel failed centring, and the
+    three-strike rule set all six aside in 18 minutes, although the target
+    rose clear within the hour. Charged to the sky, such a pass strikes no
+    panel and the group waits ``CENTRING_HOLD_RETRY_S`` and tries again.
+    """
+    _count("attempted", attempted)
+    _count("failed", failed)
+    if failed > attempted:
+        raise ValueError(
+            f"failed ({failed}) cannot exceed attempted ({attempted})")
+    if attempted >= 2 and failed == attempted:
+        return "sky"
+    return "panel"
+
+
+ExpiryCause = Literal["time", "rise"]
+
+
+def set_aside_expiry(*, now: float, set_at: float,
+                     alt_at_set: float | None = None,
+                     alt_now: float | None = None,
+                     expiries: int = 0) -> ExpiryCause | None:
+    """Has a CENTRING set-aside expired, and why (#534, H4 orchestrator
+    ruling 2)? ``None`` while it holds.
+
+    - ``"time"``: ``SET_ASIDE_EXPIRY_S`` have passed since ``set_at``.
+    - ``"rise"``: the panel centre has risen at least ``SET_ASIDE_RISE_DEG``
+      since ``set_at`` (``alt_now - alt_at_set``), before the time is up.
+      Asked only when both altitudes are given: with no site saved there is
+      no altitude, and the time half alone applies. A panel that is setting
+      never expires this way.
+    - never, when ``expiries`` is at least 1: AT MOST ONE EXPIRY PER PANEL
+      PER NIGHT. A panel that is tried again after its expiry and struck out
+      again failed after the sky had its chance to change, so the second
+      set-aside is for the rest of the night; expired again it would be
+      retried every 45 minutes all night, three hops each time, which is the
+      starving panel S2's rule exists to stop (#180).
+
+    The time half wins when both hold, because it is the one that is not
+    site-derived: a line saying why the set-aside expired then says nothing
+    about the site (6.9).
+
+    Only a centring set-aside asks this. The engine decides that (a streak
+    of centring failures and nothing else, :meth:`GroupRun.set_aside_kind`);
+    a floor, a reject guard, a pier refusal or any other set-aside never
+    expires, since waiting does not change what set it aside, or the night
+    already waited for it.
+    """
+    t = _finite("now", now)
+    t0 = _finite("set_at", set_at)
+    if _count("expiries", expiries) >= 1:
+        return None
+    # The same sum the engine wakes at (``set_at + SET_ASIDE_EXPIRY_S``), so
+    # a wake at that instant finds the set-aside expired: written as
+    # ``now - set_at``, the float difference of two unix times can come out
+    # an ulp short of the constant and the wake would find nothing to do.
+    if t >= t0 + SET_ASIDE_EXPIRY_S:
+        return "time"
+    if alt_at_set is not None and alt_now is not None:
+        rise = _finite("alt_now", alt_now) - _finite("alt_at_set", alt_at_set)
+        if rise >= SET_ASIDE_RISE_DEG:
+            return "rise"
+    return None
 
 
 def no_guider_defers(*, live: int, require_guiding: bool) -> bool:
@@ -452,9 +609,19 @@ class GroupRun:
       a resume does not recompute from the ledger.
     - ``defer_until``: the end of the deferral wait an all-deferred pass
       began (:meth:`defer_next_pass`, #304), or None. A clock time the engine
-      hands in; nothing here reads a clock.
+      hands in; nothing here reads a clock. ``defer_why``: what began it,
+      ``"deferred"`` (every visit deferred, ``DEFER_WAIT_S``) or
+      ``"centring"`` (the centring hold, ``CENTRING_HOLD_RETRY_S``, #534), for
+      the words the wait is published in.
     - ``let_through``: the members a selection of this pass found it may
       visit (:meth:`note_let_through`), for :meth:`visitable`.
+    - ``set_aside_kind``: what kind of set-aside each entry of ``set_aside``
+      is (#534): ``"centring"`` for a streak of centring failures and nothing
+      else, the one kind that expires (:func:`set_aside_expiry`), and a word
+      for each other cause. The engine records it with the set-aside.
+    - ``expired``: the panels whose centring set-aside expired this run
+      (:meth:`expire_set_aside`). The engine keeps the night's count, which a
+      restart reads back from ``Session.set_aside``.
     """
 
     def __init__(self, members: Mapping[str, str], *, max_failed_visits: int):
@@ -480,7 +647,10 @@ class GroupRun:
         self.acquired = False
         self.angle_verified = False
         self.defer_until: float | None = None
+        self.defer_why: Literal["deferred", "centring"] = "deferred"
         self.let_through: set[str] = set()
+        self.set_aside_kind: dict[str, str] = {}
+        self.expired: set[str] = set()
         # The reject rule's window, "since this panel's previous visit", on a
         # visit counter rather than the clock: two visits can share a clock
         # second on a fake clock, and the order of visits is what the rule
@@ -495,6 +665,13 @@ class GroupRun:
         self.guide_attempts = 0
         self.guide_failures = 0
         self._held: list[tuple[str, PanelDeferred]] = []
+        # The centring pass rule's ledger for the current pass (#534): the
+        # panels visited, each once, and those whose hop did not centre. Sets,
+        # because a no-op jump takes a panel up again in the same pass, and
+        # the rule is about panels, not visits.
+        self.centring_attempted: set[str] = set()
+        self.centring_failed: set[str] = set()
+        self._held_centring: list[tuple[str, PanelDeferred]] = []
 
     # -- membership
 
@@ -530,21 +707,68 @@ class GroupRun:
         return [p for p in self.members if self.is_live(p)
                 and (p in self.visited or p in self.let_through)]
 
-    def set_aside_panel(self, panel: str, reason: str) -> None:
+    def set_aside_panel(self, panel: str, reason: str, *,
+                        kind: str = "panel") -> None:
         """Set one panel aside tonight for a cause the engine decided: its
         floor under ``on_floor = advance``, a pier-side change with flips off
-        (5.1 selection, item 1)."""
+        (5.1 selection, item 1), or a record a restart read back, whose
+        ``kind`` it passes on (#534: a centring one may still expire)."""
         self._check_live(panel)
         self.set_aside[panel] = str(reason)
+        self.set_aside_kind[panel] = str(kind)
 
-    def set_aside_all(self, reason: str) -> list[str]:
+    def set_aside_all(self, reason: str, *, kind: str = "group") -> list[str]:
         """Set every live member aside tonight (``guiding_action`` skip after a
         rig-fault pass, a fixed camera's angle beyond tolerance). Returns the
         panels it set aside."""
         panels = self.live()
         for p in panels:
             self.set_aside[p] = str(reason)
+            self.set_aside_kind[p] = str(kind)
         return panels
+
+    def expire_set_aside(self, panel: str) -> None:
+        """A panel's CENTRING set-aside has expired (#534,
+        :func:`set_aside_expiry`): it is live again, to be visited once more
+        tonight, with a clean slate.
+
+        ``failed``, ``reject_visits`` and the streak's kinds start again at
+        nothing, so it is set aside once more only after ``max_failed_visits``
+        further failures, never at its first; and it is not visited in this
+        pass, so the pass takes it up. Only a centring set-aside expires;
+        asked of any other, or of a panel that is not set aside, this is a
+        caller bug and says so. The engine keeps the one-expiry-a-night
+        count (``expired`` holds this run's)."""
+        if panel not in self.members:
+            raise ValueError(f"{panel!r} is not a member of this group")
+        if panel not in self.set_aside:
+            raise ValueError(f"{self.members[panel]} is not set aside")
+        if self.set_aside_kind.get(panel) != CENTRING:
+            raise ValueError(
+                f"{self.members[panel]}'s set-aside is not a centring one "
+                f"({self.set_aside_kind.get(panel)!r}), and only a centring "
+                f"set-aside expires")
+        # NO PASS IS IN PROGRESS WHEN NO OTHER MEMBER IS LIVE. The boundary
+        # that set the last of them aside answered ``none_live`` and started
+        # no pass, so the counts still standing are that closed pass's: read
+        # by the next boundary, its exposures and its centring ledger would
+        # decide a pass this panel was never part of. So the panel comes
+        # back into a pass of its own, as :meth:`start_pass` would begin it.
+        alone = not any(self.is_live(q) for q in self.members if q != panel)
+        del self.set_aside[panel]
+        self.set_aside_kind.pop(panel, None)
+        self.failed[panel] = 0
+        self.reject_visits[panel] = 0
+        self._streak_kinds[panel] = set()
+        self.visited.discard(panel)
+        self.expired.add(panel)
+        if alone:
+            # Anything still held belongs to panels that are not live, the
+            # only kind there is here, and a count for them would set aside
+            # nothing: the boundary drops those too (``is_live``).
+            self._held = []
+            self._held_centring = []
+            self.start_pass()
 
     def _check_live(self, panel: str) -> None:
         if panel not in self.members:
@@ -584,6 +808,13 @@ class GroupRun:
           (:meth:`close_pass`). A deferral after banked frames (a guiding loss
           mid-visit) resets first and then counts, so it starts a new streak
           of one.
+        - a CENTRING miss (#534) is held until the pass closes, as a failed
+          guide start is, and for the same reason: only the whole pass says
+          whether it was the panel's fault or the sky's
+          (:func:`centring_pass_verdict`).
+        - a solve that could not run (:data:`SOLVE_TRANSIENT`, #532) is
+          marked visited and counted toward ``deferred_this_pass`` only: no
+          ``failed``, no reset, and no place in the centring pass rule.
 
         A plain StopTarget reaches here as a ``PanelDeferred`` of kind
         :data:`TARGET_STOP`, made by the driver (#316). A floor stop, a
@@ -593,9 +824,13 @@ class GroupRun:
         too (#322).
         """
         guide_failed = deferred is not None and deferred.kind == GUIDE_START
+        centring_failed = deferred is not None and deferred.kind == CENTRING
+        transient = deferred is not None and deferred.kind == SOLVE_TRANSIENT
         previous = self._record(panel, exposures=exposures, accepted=accepted,
                                 guide_failed=guide_failed,
-                                guide_started=guide_started)
+                                guide_started=guide_started,
+                                centring_failed=centring_failed,
+                                transient=transient)
         label = self.members[panel]
 
         if complete:
@@ -619,6 +854,20 @@ class GroupRun:
                     f"{self._deferral_words(label, deferred)}; retried on the "
                     f"next pass (counted when the pass ends: a guider that "
                     f"fails on every panel is the rig's fault)")
+            if centring_failed:
+                self._held_centring.append((panel, deferred))
+                return VisitAction(
+                    "requeue",
+                    f"{self._deferral_words(label, deferred)}; retried on the "
+                    f"next pass (counted when the pass ends: a centring that "
+                    f"fails on every panel is the sky's or the geometry's, "
+                    f"not a panel's)")
+            if transient:
+                return VisitAction(
+                    "requeue",
+                    f"{self._deferral_words(label, deferred)}; retried on the "
+                    f"next pass (not counted as a failed visit: the solve "
+                    f"could not run, and nothing about the panel failed)")
             return self._count_failure(panel, deferred)
 
         if accepted > 0:
@@ -633,6 +882,7 @@ class GroupRun:
                     reason = (f"{label} rejected every frame for {_visits(n)} "
                               f"while the other panels were accepted")
                     self.set_aside[panel] = reason
+                    self.set_aside_kind[panel] = "rejects"
                     return VisitAction("set_aside", reason)
                 return VisitAction(
                     "requeue",
@@ -671,10 +921,12 @@ class GroupRun:
         visits deferred, the group anti-spin (every live member set aside
         tonight) when they took nothing; and a guider that started on the
         floor-stopped panel was missing from a pass that could then read as
-        the guider's fault.
+        the guider's fault. A visit that shot frames centred, so it is a
+        centring attempt that worked (#534).
         """
         self._record(panel, exposures=exposures, accepted=accepted,
-                     guide_failed=False, guide_started=guide_started)
+                     guide_failed=False, guide_started=guide_started,
+                     centring_failed=False, transient=False)
 
     def note_complete(self, panel: str) -> None:
         """A panel the engine found complete after a visit whose outcome it
@@ -692,11 +944,19 @@ class GroupRun:
         self.completed.add(panel)
 
     def _record(self, panel: str, *, exposures: int, accepted: int,
-                guide_failed: bool, guide_started: bool) -> int:
+                guide_failed: bool, guide_started: bool,
+                centring_failed: bool, transient: bool) -> int:
         """The bookkeeping every visit makes, whoever decides its outcome
         (:meth:`visit_outcome`, :meth:`note_visit`): one definition, so the
         two cannot come to count a visit differently. Returns the sequence
-        number of the panel's previous visit, the reject rule's window."""
+        number of the panel's previous visit, the reject rule's window.
+
+        Every visit but a transient solve's is a centring attempt (#534):
+        the hop checks the centring first, so a visit that got past it
+        centred. A transient solve is left out of the rule entirely (#532),
+        whichever solve could not run: a centring solve that could not run
+        tried nothing, and the key the hub sets does not say which solve it
+        was."""
         self._check_live(panel)
         exposures = _count("exposures", exposures)
         accepted = _count("accepted", accepted)
@@ -716,6 +976,10 @@ class GroupRun:
             self.guide_failures += 1
         elif guide_started:
             self.guide_attempts += 1
+        if not transient:
+            self.centring_attempted.add(panel)
+        if centring_failed:
+            self.centring_failed.add(panel)
         return previous
 
     def _another_live_member_accepted_since(self, panel: str,
@@ -747,31 +1011,75 @@ class GroupRun:
             reason = (f"{label} was deferred on {_visits(n, 'consecutive ')}, "
                       f"the last because {deferred.reason}{tail}")
         self.set_aside[panel] = reason
+        # A STREAK OF CENTRING FAILURES AND NOTHING ELSE is the one set-aside
+        # that expires (#534, :func:`set_aside_expiry`): what hid the panel
+        # (an obstruction low in the east, the haze near the horizon) is the
+        # kind of cause the passing hour clears. A streak with any other
+        # failure in it failed for a reason waiting does not change, so it is
+        # set aside for the night as before.
+        self.set_aside_kind[panel] = (
+            CENTRING if self._streak_kinds[panel] == {CENTRING} else "deferred")
         return VisitAction("set_aside", reason)
 
     # -- the pass
 
     def close_pass(self) -> PassEnd:
-        """Decide the pass boundary: the guide-start rule first, then the
-        held guide deferrals, then :func:`pass_boundary`.
+        """Decide the pass boundary: the centring pass rule and the
+        guide-start rule first, then the held deferrals, then
+        :func:`pass_boundary`.
 
         Call it when no unvisited member is eligible but a visited one is
-        (5.1). The guide rule comes first because a rig-fault pass must move
-        no counter, and a rig-fault pass is exactly the one whose zero
-        exposures and all-deferred visits would otherwise read as a deferral
-        wait. Nothing is cleared here; :meth:`start_pass` begins the next
-        pass.
+        (5.1). The two pass rules come first because a pass the sky or the
+        rig is to blame for must move no counter, and such a pass is exactly
+        the one whose zero exposures and all-deferred visits would otherwise
+        read as a deferral wait. They cannot both hold: a pass in which no
+        panel centred made no guide attempt, since the hop checks the
+        centring first (5.6 steps 4 and 7). Nothing is cleared here;
+        :meth:`start_pass` begins the next pass.
         """
         held, self._held = self._held, []
+        held_centring, self._held_centring = self._held_centring, []
+        tried = len(self.centring_attempted)
+        if centring_pass_verdict(tried, len(self.centring_failed)) == "sky":
+            # THE SKY OR THE GEOMETRY, NOT THE PANELS (#534, H4 orchestrator
+            # ruling 2). Every panel tried failed to centre, so what failed
+            # is what they share: the target low behind an obstruction, a
+            # cloud bank, the haze near the horizon. No panel is struck, and
+            # the group waits and tries again, as a cloud hold waits for the
+            # sky rather than giving up on it.
+            return PassEnd(
+                "centring_hold", (),
+                f"centring failed on every one of the {tried} panels tried in "
+                f"pass {self.pass_no}: the sky or the geometry is to blame, "
+                f"not a panel, so no panel's failure count moved; holding the "
+                f"mosaic {CENTRING_HOLD_RETRY_S / 60:.0f} minutes before the "
+                f"next pass")
+
+        set_aside: list[tuple[str, str]] = []
+        counted: list[tuple[str, str]] = []
+        # A centring miss in a pass where another panel centred is that
+        # panel's, and counts as every other deferral does, what the visit's
+        # own line counted before centring misses were held (#534). Counted
+        # before the guide rule decides, which a rig-fault pass may end
+        # early: a panel centred there too, so its misses are the panels'.
+        for panel, deferred in held_centring:
+            if not self.is_live(panel):
+                continue
+            act = self._count_failure(panel, deferred)
+            if act.action == "set_aside":
+                set_aside.append((panel, act.reason))
+            else:
+                counted.append((panel, act.reason))
+
         attempts, failures = self.guide_attempts, self.guide_failures
         if guide_start_pass_verdict(attempts, failures) == "rig":
             return PassEnd(
-                "guiding_action", (),
+                "guiding_action", tuple(set_aside),
                 f"guiding did not start on any of the {attempts} panels tried "
                 f"this pass: the guider's fault, not a panel's. No panel's "
-                f"failure count moved; the plan's guiding_action decides")
+                f"failure count moved; the plan's guiding_action decides",
+                tuple(counted))
 
-        set_aside: list[tuple[str, str]] = []
         for panel, deferred in held:
             if not self.is_live(panel):
                 continue
@@ -783,37 +1091,40 @@ class GroupRun:
         if not live:
             return PassEnd("none_live", tuple(set_aside),
                            "no panel is left to shoot tonight: every one is "
-                           "complete or set aside")
+                           "complete or set aside", tuple(counted))
         boundary = pass_boundary(self.exposures_this_pass, self.deferred_this_pass)
         if boundary == "set_aside_all":
             reason = (f"a full pass over {len(live)} panels took no exposures; "
                       f"setting the mosaic aside for tonight")
             for p in live:
                 self.set_aside[p] = reason
+                self.set_aside_kind[p] = "group"
                 set_aside.append((p, reason))
-            return PassEnd(boundary, tuple(set_aside), reason)
+            return PassEnd(boundary, tuple(set_aside), reason, tuple(counted))
         if boundary == "defer_wait":
             return PassEnd(
                 boundary, tuple(set_aside),
                 f"pass {self.pass_no} took no exposures and deferred "
                 f"{self.deferred_this_pass} visits; waiting "
-                f"{DEFER_WAIT_S:.0f} s before the next pass")
+                f"{DEFER_WAIT_S:.0f} s before the next pass", tuple(counted))
         return PassEnd(
             boundary, tuple(set_aside),
             f"pass {self.pass_no} ended with {self.exposures_this_pass} "
-            f"exposures and {self.deferred_this_pass} deferrals")
+            f"exposures and {self.deferred_this_pass} deferrals",
+            tuple(counted))
 
     def start_pass(self) -> None:
         """Begin the next pass: clear ``visited``, ``let_through`` and the
-        pass's counts.
+        pass's counts, the two pass rules' ledgers included.
 
-        Refuses while guide deferrals are held, because that means the pass
-        was never closed and those failures would be dropped uncounted.
+        Refuses while guide or centring deferrals are held, because that
+        means the pass was never closed and those failures would be dropped
+        uncounted.
         """
-        if self._held:
+        if self._held or self._held_centring:
             raise RuntimeError(
-                "close_pass() first: this pass still holds guide-start "
-                "deferrals that only the pass boundary can count")
+                "close_pass() first: this pass still holds guide-start or "
+                "centring deferrals that only the pass boundary can count")
         self.pass_no += 1
         self.visited.clear()
         self.let_through.clear()
@@ -821,13 +1132,22 @@ class GroupRun:
         self.deferred_this_pass = 0
         self.guide_attempts = 0
         self.guide_failures = 0
+        self.centring_attempted.clear()
+        self.centring_failed.clear()
 
     # -- the deferral wait (#304)
 
-    def defer_next_pass(self, now: float) -> float:
-        """Hold every live member until ``now + DEFER_WAIT_S``, the wait a
+    def defer_next_pass(self, now: float, *, wait_s: float = DEFER_WAIT_S,
+                        why: Literal["deferred", "centring"] = "deferred"
+                        ) -> float:
+        """Hold every live member until ``now + wait_s``, the wait a
         ``defer_wait`` boundary begins (5.1 pass boundary, item 2), and
-        return that time.
+        return that time. ``wait_s`` is ``DEFER_WAIT_S`` there, and
+        ``CENTRING_HOLD_RETRY_S`` for the hold a ``centring_hold`` boundary
+        begins (#534), which ``why`` names (``defer_why``) for the words the
+        wait is published in. One wait, whichever began it: the scheduler
+        holds the members as waiters until it ends, and a follower may fill
+        it.
 
         THE WAIT IS A STATE, NOT A SLEEP (#304). S2 slept it out inside the
         pass boundary, so for five minutes the scheduler could choose
@@ -838,9 +1158,16 @@ class GroupRun:
         own wait runs (the safety gate and the idle watch with it), and a
         ready follower may take the gap in a visit bounded by this time.
 
-        ``max_failed_visits`` still bounds how often it happens per panel:
-        nothing here touches the failure counts."""
-        self.defer_until = _finite("now", now) + DEFER_WAIT_S
+        ``max_failed_visits`` still bounds how often a deferral wait happens
+        per panel: nothing here touches the failure counts. A centring hold
+        is not bounded that way, by the ruling: it holds the group within
+        the night for as long as every panel tried fails, and the night's
+        window ends it."""
+        wait = _nonneg("wait_s", wait_s)
+        if why not in ("deferred", "centring"):
+            raise ValueError(f"why must be 'deferred' or 'centring', got {why!r}")
+        self.defer_until = _finite("now", now) + wait
+        self.defer_why = why
         return self.defer_until
 
     def deferring(self, now: float) -> bool:

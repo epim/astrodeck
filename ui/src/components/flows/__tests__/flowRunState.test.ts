@@ -42,7 +42,10 @@
 //      for an operator or a viewer alike; and the panel the group is on
 //      while the run is paused, holding or stopping is CURRENT, with the
 //      run's state, never shot (#451), worded by the state even when an
-//      Abort in a hold still carries the hold's key (#513).
+//      Abort in a hold still carries the hold's key (#513). Since H4 the
+//      engine takes the hold off the aborting publish (#513 fixed), so the
+//      recorded abort carries none; the case gives it back the key a pre-H4
+//      server left on it, and grades the recorded abort as well.
 //
 // Every mutant below was run in a private scratch copy of ui/ (scratchpad
 // s5-feed-mut, from a byte backup of flowRunState.ts, restored and
@@ -154,9 +157,16 @@ test("premise: the held night's states are this flow's run, each with its group 
   }
   eq(HOLDING.hold, "clouds", "the hold's reason");
   eq(HOLDING.sky?.holding, true, "the hold's own flag");
-  // #513, as the engine publishes it today: an Abort pressed in the hold
-  // carries the hold's key into "aborting".
-  eq(ABORTING.hold, "clouds", "the aborting state's leftover hold");
+  // #513, FIXED IN H4: an Abort pressed in the hold takes the hold off the
+  // "aborting" publish, key and flag both. Until H4 the hold's key rode
+  // into "aborting" and this premise pinned it so ("clouds"); re-pinned by
+  // the H4 integration with the rewritten file. RED against the file as
+  // recorded before H4 (observed, 19/20, the file restored from its pre-H4 bytes):
+  //   x premise: the held night's states are this flow's run, each with its group on 1-1: the aborting state carries no hold (#513)
+  //     expected null
+  //     got      "clouds"
+  eq(ABORTING.hold ?? null, null, "the aborting state carries no hold (#513)");
+  eq(ABORTING.sky?.holding, false, "the aborting state's sky is not holding (#513)");
 });
 
 // ------------------------------------------------------------ flowRunLive
@@ -187,6 +197,16 @@ test("flowRunLive: the recorded run is the recorded flow's while it is live", ()
     "the viewer's meridian wait: liveness does not ride the withheld panel");
 });
 
+// MUTANT "flowRunLive answers true for any known session" (H4, the run-mode
+// E item; scratchpad H4-ULOG-mut, from a byte backup of flowRunState.ts
+// restored and SHA-256 compared: `known.includes(running)` made
+// `known.length > 0`, so a run is this flow's whenever the slice knows any
+// session at all, whichever session the rig is writing). Only this case
+// holds that line; the empty-id case stays green on the reader's own
+// empty-id test. Observed, 19/20:
+//   x flowRunLive: another flow's live run is not this flow's: another flow's run
+//     expected false
+//     got      true
 test("flowRunLive: another flow's live run is not this flow's", () => {
   eq(flowRunLive(KNOWN, anotherFlowsRun(SHOOTING)), false, "another flow's run");
 });
@@ -411,9 +431,17 @@ test("panelStateOf: while the run is paused, holding for cloud or stopping, its 
 //     expected {"kind":"current","run":"aborting","hold":null}
 //     got      {"kind":"current","run":"holding","hold":"clouds"}
 test("panelStateOf: an Abort pressed in a cloud hold is worded by its state, not by the hold it still carries", () => {
-  assert(ABORTING.hold === "clouds", "premise: the recorded abort still carries the hold's key (#513)");
-  eq(panelStateOf("1-1", ABORTING.group!, ABORTING), { kind: "current", run: "aborting", hold: null },
+  // Since H4 the recorded abort carries no hold (#513 fixed), so the key a
+  // pre-H4 server left on it is put back here: the rule still has to hold
+  // for a publish that carries one. Re-pinned by the H4 integration: this
+  // case read the key off the recorded abort, with a premise that it was
+  // there. The mutant above was run again against it (observed, the same
+  // two lines, 18/20 of this file as it now stands).
+  const STALE: SequenceState = { ...ABORTING, hold: "clouds" };
+  eq(panelStateOf("1-1", STALE.group!, STALE), { kind: "current", run: "aborting", hold: null },
     "1-1 while the run stops, the hold's key still on it");
+  eq(panelStateOf("1-1", ABORTING.group!, ABORTING), { kind: "current", run: "aborting", hold: null },
+    "1-1 while the recorded run stops");
   // A hold whose reason is not one the words know is still a hold.
   eq(panelStateOf("1-1", HOLDING.group!, { ...HOLDING, hold: undefined }),
     { kind: "current", run: "holding", hold: null }, "1-1 in a hold that names no reason");

@@ -17,6 +17,10 @@ verbatim output are kept there).
 The acceptance's three named mutants are "readouts check always passes"
 (ReadoutsTest), "phone walk without touch" (TouchTest) and "port 8800
 accepted" (RigPortTest, once in probe.py and once in server_ctl.py).
+
+Mosaic slice H4 takes every browser here from `probe._Browsers` (#535), and
+re-pinned the seed_session cases to the probe marker H4-PROBE-GUARD made the
+script require (#539): each marks the temporary directories it passes.
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -162,12 +166,14 @@ class _Browser(unittest.TestCase):
         cls.worker.start()
         cls.base = f"http://127.0.0.1:{cls.server.server_port}"
         cls.pw = sync_playwright().start()
-        cls.browser = cls.pw.chromium.launch(headless=True)
+        # The probe's own browsers: a desktop walk here draws its scrollbars,
+        # as the real walks do (probe.py HIDE_SCROLLBARS, #535).
+        cls.browsers = probe._Browsers(cls.pw)
         cls.tmp = tempfile.TemporaryDirectory()
 
     @classmethod
     def tearDownClass(cls):
-        cls.browser.close()
+        cls.browsers.close()
         cls.pw.stop()
         cls.server.shutdown()
         cls.server.server_close()
@@ -180,11 +186,12 @@ class _Browser(unittest.TestCase):
     def walk(self, html: str, route: dict, api: dict | None = None, width: int = 390,
              write_api: dict | None = None) -> dict:
         """One route on the fixture, in the context the probe itself builds
-        for `width` (`probe._new_context`), so a profile that lost its touch
-        is the profile these cases walk in."""
+        for `width` (`probe._new_context`), on the browser it launches for
+        that width (`probe._Browsers`), so a profile that lost its touch, or a
+        desktop browser that hid its scrollbars, is what these cases walk in."""
         Handler.state = {"page": html, "api": api or {}, "write_api": write_api or {}}
         route = {"name": "fixture", "url": "#/", "testid": "view", **route}
-        ctx = probe._new_context(self.browser, width)
+        ctx = self.browsers.context(width)
         try:
             return probe._run_isolated_route(ctx, self.base, route, Path(self.tmp.name), width)
         finally:
@@ -762,7 +769,7 @@ class _Seeding(_Browser):
 
     def seed(self, ops, api=None, write_api=None, ctx=None):
         Handler.state = {"page": page(""), "api": api or {}, "write_api": write_api or {}}
-        c = self.browser.new_context()
+        c = self.browsers.for_width(1440).new_context()
         try:
             return probe._seed(c.request, self.base, ops, ctx)
         finally:
@@ -830,7 +837,7 @@ class SiteSeedTest(_Seeding):
 
     def _meridian(self, graph, api, write):
         Handler.state = {"page": page(""), "api": api, "write_api": write}
-        c = self.browser.new_context()
+        c = self.browsers.for_width(1440).new_context()
         try:
             return probe._graph_with_meridian_ra(c.request, self.base, graph,
                                                  {"node": "n2", "minutes_east": 5.0})
@@ -1016,8 +1023,25 @@ class SeedSessionScriptTest(unittest.TestCase):
         server/config (config.py) and the repository's captures/ (hub.py's
         CAPTURE_DIR is the repository root's captures/, not server/'s), each
         refused for THAT reason, so a path that merely does not exist cannot
-        pass this for it.
+        pass this for it. Since H4-PROBE-GUARD (#539) the refusal is not a
+        list of the developer's directories but the absence of the marker
+        server_ctl.py writes into the directories it creates, and its message
+        still says the directory may be the developer's own
+        (server/tests/test_h4_seed_session_allow_list.py holds that rule); a
+        directory is accepted only once a probe start has marked it.
 
+        Mutation "the accepted directory not marked" (this case's
+        `write_probe_marker` line deleted, the case as it stood before
+        H4-PROBE-LAYOUT re-pinned it), observed red (the probe suite's
+        baseline run, and again in the private mirror, 2026-09-29):
+            seed_session.SeedRefused: --config-dir <tmp> carries no
+            .astrodeck-probe marker, so no probe server's server_ctl.py start
+            created it, and it may be the developer's own or a real
+            observatory's config or captures: pass the directory
+            server_ctl.py start made for the private server (one made before
+            the marker existed needs server_ctl.py start --fresh)
+
+        The mutation first recorded here, gone with the list it mutated:
         Mutation "the developer's captures accepted" (seed_session.py
         `_DEVELOPERS_OWN` without its captures/ entry, which is how the script
         first shipped: it refused server/ alone while its docstring said it
@@ -1032,6 +1056,7 @@ class SeedSessionScriptTest(unittest.TestCase):
         with self.assertRaises(seed_session.SeedRefused):
             seed_session._private(None, "--capture-dir")
         with tempfile.TemporaryDirectory() as tmp:
+            server_ctl.write_probe_marker(Path(tmp).resolve(), 8871, 1)
             self.assertEqual(seed_session._private(tmp, "--config-dir"), Path(tmp).resolve())
 
     @unittest.skipUnless(VENV_PYTHON.is_file(), f"needs the server venv at {VENV_PYTHON}")
@@ -1046,11 +1071,22 @@ class SeedSessionScriptTest(unittest.TestCase):
         Mutation "frames left on the night they were shot" (seed_session.py:
         the frame loop's test made `if False:`), observed red:
             AssertionError: Lists differ: ['s7-20260929-000730',
-            's7-20260929-000730'] != ['s7-20260928-000730', 's7-20260928-000730']"""
+            's7-20260929-000730'] != ['s7-20260928-000730', 's7-20260928-000730']
+
+        The store's directories carry the marker a probe start writes (#539,
+        H4-PROBE-GUARD). Mutation "the store not marked" (the two
+        `write_probe_marker` lines deleted, the case as it stood before
+        H4-PROBE-LAYOUT re-pinned it), observed red (the probe suite's
+        baseline run, 2026-09-29):
+            AssertionError: 2 != 0 : seed_session: REFUSED: --config-dir
+            <tmp>/cfg carries no .astrodeck-probe marker, so no probe server's
+            server_ctl.py start created it, ..."""
         with tempfile.TemporaryDirectory() as tmp:
             cfg, cap = Path(tmp) / "cfg", Path(tmp) / "cap"
             cfg.mkdir()
             cap.mkdir()
+            server_ctl.write_probe_marker(cfg, 8871, 1)
+            server_ctl.write_probe_marker(cap, 8871, 1)
             env = {**os.environ, "ASTRODECK_CONFIG_DIR": str(cfg),
                    "ASTRODECK_CAPTURE_DIR": str(cap)}
             made = subprocess.run([str(VENV_PYTHON), "-c", MAKE_SESSION], env=env,
@@ -1085,10 +1121,22 @@ class SeedSessionScriptTest(unittest.TestCase):
 
     @unittest.skipUnless(VENV_PYTHON.is_file(), f"needs the server venv at {VENV_PYTHON}")
     def test_a_session_a_run_owns_is_refused(self):
+        """A session a run owns is never moved or armed. Its directories carry
+        the probe marker (#539), so the refusal seen is the one this case is
+        for.
+
+        Mutation "the store not marked" (the two `write_probe_marker` lines
+        deleted, the case as it stood before H4-PROBE-LAYOUT re-pinned it),
+        observed red (the probe suite's baseline run, 2026-09-29):
+            AssertionError: "'active', not dormant" not found in
+            "seed_session: REFUSED: --config-dir <tmp>/cfg carries no
+            .astrodeck-probe marker, ..." """
         with tempfile.TemporaryDirectory() as tmp:
             cfg, cap = Path(tmp) / "cfg", Path(tmp) / "cap"
             cfg.mkdir()
             cap.mkdir()
+            server_ctl.write_probe_marker(cfg, 8871, 1)
+            server_ctl.write_probe_marker(cap, 8871, 1)
             env = {**os.environ, "ASTRODECK_CONFIG_DIR": str(cfg),
                    "ASTRODECK_CAPTURE_DIR": str(cap)}
             made = subprocess.run([str(VENV_PYTHON), "-c", MAKE_SESSION, "active"], env=env,

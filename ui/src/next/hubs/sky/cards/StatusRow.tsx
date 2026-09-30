@@ -20,6 +20,13 @@
 // It is never locked, for the same reason: scrolling this screen needs no
 // capability. The dome card carries its own `view.weather` gate and says so in
 // its own words, which is where a refusal belongs - on the thing refused.
+//
+// WITH NOTHING PLACED THERE IS NO NUMBER (#544, the #503 residual). With no
+// coordinates to place the sky with (no saved site, or a role the position is
+// withheld from) and no row the rig placed itself, the count was "Show 0
+// suggested targets": a 0 that reads as "nothing is worth pointing at" when
+// nothing could be judged at all. The hub passes null then, and the pill keeps
+// only its way in; the placement note under the finder says why.
 
 import type { JSX } from "react";
 import { Mono, Pill } from "../../../ui";
@@ -27,7 +34,9 @@ import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 
 export interface StatusRowProps {
-  reachCount: number;
+  /** The ranked list's in-reach count, or null when nothing was placed to
+   *  count (#544). */
+  reachCount: number | null;
   clearPct: number | null;
   siteName: string;
   /** Scrolls the skydome card into view. The hub owns the anchor and honours
@@ -58,9 +67,11 @@ export function StatusRow({
         tone="dim"
         onClick={() => nav.sheet("targets")}
         data-testid="sky-suggested"
-        ariaLabel={`show ${reachCount} suggested targets`}
+        ariaLabel={reachCount == null ? "show suggested targets" : `show ${reachCount} suggested targets`}
       >
-        Show <span style={{ color: "var(--accent)" }}>{reachCount}</span> suggested targets ›
+        {reachCount == null
+          ? <>Suggested targets ›</>
+          : <>Show <span style={{ color: "var(--accent)" }}>{reachCount}</span> suggested targets ›</>}
       </Pill>
 
       {/* No reading is not zero cloud. `clear -` is the honest form and the

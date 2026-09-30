@@ -47,6 +47,11 @@ for (const k of [
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------- the fake rig
+// `nights: 2` left as it was on purpose when the row began counting OBSERVING
+// nights (#430, H4): the detail below holds two ids that carry no start
+// stamp, and the server counts each such id as a night of its own, so this
+// pair is still what it would send. The count itself is graded against the
+// route's recorded rows in sessionsPanelNightsDom.test.tsx.
 const READABLE = {
   id: "s-ok", name: "M31 LRGB", status: "dormant",
   created_ts: 1_756_900_000, updated_ts: 1_757_000_100,

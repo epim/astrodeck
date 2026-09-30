@@ -41,6 +41,11 @@ The verdicts (``classify``):
   * no reference: no verdict, and the failure keeps today's words and says no
     level check was possible.
 
+One more, from ``failed_solve_error`` and never from ``classify``: a frame at
+the no-light level that its caller says was exposed through a narrowband
+filter is NARROWBAND, "little light through the narrowband filter 'S'",
+which claims nothing about a cap (#531, ``narrowband_words``).
+
 A REFERENCE HAS A FLOOR AND A CEILING. A dark master IS the no-light level,
 so the two are the same number. A bias-based reference is not: it is the
 bias plus the LEAST dark current the doubling law allows, a floor, and the
@@ -134,7 +139,9 @@ failed solve, through ``failed_solve_error``: ``Hub.solve_and_sync`` (which
 covers auto-resume's recovery solve, goto centring and the solve route),
 ``Hub.sync_rotator_to_sky``, ``Hub._rotate_to_pa_attempts`` and polar
 alignment's ``_capture_and_solve``. ``tests/test_failed_solve_says_no_light.py``
-scans for a new one. A no-light verdict raises ``NoLightError``, a
+scans for a new one. The three hub paths borrow the solve filter and pass
+``narrowband_filter`` when the frame was still exposed through one (#531);
+polar alignment chooses its own filter and passes none. A no-light verdict raises ``NoLightError``, a
 ``DeviceError``, so every existing caller still catches it, and a caller that
 must act on it (``ResumeArm``) branches on the TYPE, never on the text.
 
@@ -171,9 +178,31 @@ NO_LIGHT = "no_light"
 CLOUD = "cloud"
 UNKNOWN = "unknown"
 
+#: The fourth verdict, which ``classify`` never returns: a frame at the
+#: no-light level that was exposed through a narrowband filter (#531). Only
+#: ``failed_solve_error`` gives it, from ``NO_LIGHT`` and the filter its
+#: caller names (see ``narrowband_words``).
+NARROWBAND = "narrowband"
+
 #: The no-light verdict in words. The failure message and ResumeArm's alert
 #: both say this; neither carries a number in it.
 NO_LIGHT_WORDS = "no light: the optic is capped, covered or obstructed"
+
+
+def narrowband_words(filter_name: str) -> str:
+    """The ``NARROWBAND`` verdict in words, naming the filter (#531).
+
+    THE DEFECT. On 2026-09-29 the first rig mosaic started straight after a
+    run that ended on SII, and the rotate loop, which then borrowed no solve
+    filter, shot its 3 s solve frames through the 3 nm filter. They read
+    238 ADU against a 237 ADU reference, and this module said "the optic is
+    capped, covered or obstructed" at every panel: the optic was open, and
+    a short exposure through a narrowband filter reads the no-light level
+    too. The frame cannot tell a cap from a narrow passband, so the verdict
+    names the filter and makes no claim about a cap. The rotate loop now
+    borrows the solve filter; this is what is said when there was nothing
+    broader to borrow, or when the solve scope was set to that filter."""
+    return f"little light through the narrowband filter {filter_name!r}"
 
 #: ``classify``'s reason when it is handed no reference; ``judge_frame``
 #: replaces it with the library's own account of what is missing.
@@ -767,12 +796,25 @@ def error_for(verdict: LightVerdict, solver_message: str,
     NO VERDICT KEEPS TODAY'S WORDS. ``f"{prefix}: {solver_message}"`` is the
     message every caller raised before this module existed, and it is kept as
     the start of the message, so nothing that reads it changes; the clause
-    after it says no level check was possible and why."""
+    after it says no level check was possible and why.
+
+    A NARROWBAND VERDICT IS NOT A NO-LIGHT ONE (#531). It leads with the
+    filter (``verdict.why``, from ``narrowband_words``) and raises the plain
+    ``FailedSolveError``: a ``NoLightError`` sends ResumeArm's push alert
+    about a cap, and backs it off to an hourly retry on a dark master, for
+    an optic that is open."""
     if verdict.kind == NO_LIGHT:
         return NoLightError(
             f"{prefix}: {NO_LIGHT_WORDS} (the frame reads at the level this "
             f"camera reads with no light on it; the solver said: "
             f"{solver_message})", verdict)
+    if verdict.kind == NARROWBAND:
+        return FailedSolveError(
+            f"{prefix}: {verdict.why} (the frame reads at the level this "
+            f"camera reads with no light on it, which a solve exposure "
+            f"through a narrowband filter reads with the optic open, so it "
+            f"is no evidence of a cap; the solver said: {solver_message})",
+            verdict)
     if verdict.kind == CLOUD:
         return FailedSolveError(
             f"{prefix}: {solver_message} (the background is above the level "
@@ -924,7 +966,9 @@ async def _self_reference(frame: Any, hub: Any
 
 
 async def failed_solve_error(frame: Any, result: Any, *, prefix: str,
-                             hub: Any) -> FailedSolveError:
+                             hub: Any,
+                             narrowband_filter: str | None = None
+                             ) -> FailedSolveError:
     """THE ONE CALL a solve path makes on a failed solve, and raises:
 
         if not result.success:
@@ -935,6 +979,13 @@ async def failed_solve_error(frame: Any, result: Any, *, prefix: str,
     event loop (the medians of a frame and up to three masters), logs one info
     line with the numbers, and returns the exception to raise:
     ``NoLightError`` for a no-light verdict, ``FailedSolveError`` otherwise.
+
+    ``narrowband_filter`` is the name of the filter the frame was exposed
+    through when that filter is narrowband, else None (#531). The caller
+    reads it as the shutter opens, since the wheel it borrowed for the solve
+    is back on the run's filter by the time the solve fails. A no-light
+    verdict on such a frame becomes ``NARROWBAND``, named after the filter
+    (``narrowband_words``), and never a ``NoLightError``.
 
     WHEN THE LIBRARY HOLDS NOTHING AT THE FRAME'S READOUT, it shoots the
     self-reference first (#262, S2 orchestrator ruling 2, owner list item
@@ -966,6 +1017,11 @@ async def failed_solve_error(frame: Any, result: Any, *, prefix: str,
     except Exception as e:                     # noqa: BLE001 - see docstring
         verdict = LightVerdict(UNKNOWN, why="the level check itself failed")
         bus.log("warning", f"solve light check failed: {e}", "solve")
+    if verdict.kind == NO_LIGHT and narrowband_filter:
+        # The numbers stay: the evidence line below still prints the level
+        # and the reference, beside the filter that explains them.
+        verdict = replace(verdict, kind=NARROWBAND,
+                          why=narrowband_words(str(narrowband_filter)))
     tail = f" (the camera said: {said})" if said else ""
     bus.log("info", f"failed solve, light check: {verdict.evidence()}{tail}",
             "solve")

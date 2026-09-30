@@ -31,7 +31,7 @@ import { useStore } from "../../store";
 import { HonestButton } from "../ui";
 import { START_OVER_LABEL, useFlowRunControls, useFlowRunReadouts } from "./flowRunControls";
 import { RunWords, formatEta } from "./FlowHeader";
-import { LOG_TONE_CLASS, logTail, logTime, IDLE_LOG_TEXT } from "./FlowLogStrip";
+import { LOG_TONE_CLASS, emptyLogText, logTail, logTime } from "./FlowLogStrip";
 
 /** One label-over-value cell. `value` is mono so a changing number does not
  *  reflow the row under a thumb. `sub` is a qualifier the value needs to be
@@ -87,8 +87,11 @@ export default function FlowPhoneMonitor(): JSX.Element {
         role="log"
         className="panel !p-3 flex-1 min-h-[160px] overflow-y-auto flex flex-col gap-[3px]"
       >
+        {/* An empty log says why it is empty, never "Idle" (#529): the
+            readouts above say what the run is doing, and under a live run
+            of this flow (`r.fed`, their own rule) "Idle" contradicted STATE. */}
         {lines.length === 0 ? (
-          <span className="font-mono text-[10.5px] text-faint">{IDLE_LOG_TEXT}</span>
+          <span className="font-mono text-[10.5px] text-faint">{emptyLogText(r.fed)}</span>
         ) : (
           lines.map((l) => (
             <div key={l.id} className={`font-mono text-[10.5px] ${LOG_TONE_CLASS[l.tone]}`}>

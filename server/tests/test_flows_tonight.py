@@ -333,11 +333,30 @@ class TestTheIntegrationLedger:
         assert "No session ledger" in msg
 
     def test_an_injected_ledger_reaches_the_row_and_the_sentence(self):
+        """DELIBERATE PIN CHANGE (#536, H4 orchestrator ruling 6). The banked
+        figure now says whose hours it holds, since the route folds only
+        this flow's targets' reports: "4.2 h banked for these targets / 12 h
+        goal". The pin read "4.2 h banked / 12 h goal", and against the
+        change it observed:
+
+            AssertionError: assert '4.2 h banked / 12 h goal' in 'Ha: 4.2 h
+            banked for these targets / 12 h goal \\u2014 tonight adds
+            \\u22481 h; the session ledger resumes the remainder next clear
+            night'
+
+        RED under mutant "the words dropped" (``_FOR_THESE`` left out of
+        the sentence in ``_story``), run in the private copy scratchpad
+        ``H4-ROUTES-A-mut`` from a byte backup, observed:
+
+            AssertionError: assert '4.2 h banked for these targets / 12 h
+            goal' in 'Ha: 4.2 h banked / 12 h goal — tonight adds ≈1 h; the
+            session ledger resumes the remainder next clear night'
+        """
         out = _tonight(banked=lambda: {"Ha": 4.2})
         row = out["budget"][0]
         assert row["has_ledger"] is True and row["banked_h"] == 4.2
         msg = next(s["msg"] for s in out["story"] if s["label"] == "BUDGET")
-        assert "4.2 h banked / 12 h goal" in msg
+        assert "4.2 h banked for these targets / 12 h goal" in msg
 
     def test_a_ledger_that_cannot_be_read_degrades_to_no_ledger(self):
         """``captures/reports`` living on the same SD card as everything else,
@@ -392,10 +411,12 @@ class TestBankedHoursFromReports:
         assert banked_hours_from_reports([]) == {}
 
     def test_naming_targets_counts_only_their_hours(self):
-        """TODO(flows-handoff) in the source: the default counts every Ha hour
-        in the archive whatever it was pointed at, which fills M31's bar with
-        M16's frames for anyone running two narrowband projects. This is the
-        other reading, available for when the endpoint picks one."""
+        """The default counts every Ha hour in the archive whatever it was
+        pointed at, which fills M31's bar with M16's frames for anyone
+        running two narrowband projects. This is the per-target reading, the
+        one the route has used since #536 (H4 orchestrator ruling 6), with
+        the flow's own names (test_h4_budget_for_these_targets.py grades the
+        route)."""
         archive = [{"by_filter": [{"filter": "Ha", "integration_s": 7200}],
                     "targets": [
                         {"name": "M16", "by_filter": [

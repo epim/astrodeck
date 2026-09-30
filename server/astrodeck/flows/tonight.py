@@ -55,6 +55,7 @@ from .compile import (_finite, _grid_of, compile_plan, flow_order, grid_size,
                       is_multi_panel, loop_wires, owner_of, parse_skip)
 from .models import FlowGraph, _not_a_count
 from .nodes import NODE_DEFS, parse_cycle_plan, target_angle
+from .rig import RigFacts
 
 #: Fallback imaging twilight when neither the caller nor the config has one.
 #: Same number ``schedule.observing_night`` falls back to; duplicated rather
@@ -234,19 +235,25 @@ def banked_hours_from_reports(reports: Iterable[Any],
     The BUDGET row's "4.2 h banked", and the only honest source for it is
     ``report.py``'s append-only ledger, which is on disk. This function is the
     pure half — fold a sequence of ``SessionReport``-shaped things into a
-    mapping — so the route can supply the impure half (``SessionReporter.load``
-    over ``list_reports()``) and this module can stay callable without one.
+    mapping — so the route can supply the impure half (the reports' ledger
+    summaries, ``SessionReporter.summaries``, #536) and this module can stay
+    callable without one. A summary carries a report's ``by_filter`` and its
+    ``targets``, the only two fields read here, so it answers both readings
+    below exactly as the report would.
 
     ``targets``, when given, restricts the sum to reports' per-target
     breakdowns for those names.
 
-    TODO(flows-handoff): whose Ha counts toward THIS flow's Ha goal? The README
-    says "integration ledger per filter (banked vs goal)", which is what the
-    default does — every Ha hour in the archive, whatever it was pointed at.
-    That is wrong for anyone who shoots two Ha projects: M16's hours would fill
-    M31's bar and the flow would stop asking for frames it still needs. Passing
-    ``targets`` gives the per-target reading; which one the endpoint should use
-    is the design question, and inventing a third is not this module's call.
+    WHOSE HA COUNTS TOWARD THIS FLOW'S HA GOAL: THIS FLOW'S TARGETS' (#536, H4
+    orchestrator ruling 6). The route passes ``targets``, the names this
+    flow's run records frames under (``flow_target_names``: the compiled
+    targets, a mosaic's panels by their panel names), and the row says "for
+    these targets". The default, every hour in a filter in the archive
+    whatever it was pointed at, filled M31's bar with M16's frames for anyone
+    shooting two Ha projects, and since #419 made the route read the reports
+    it did: an operator reading "banked vs goal" took the archive's hours
+    for the flow's progress. The default stays for a caller that has already
+    chosen its reports.
     """
     wanted = {str(t) for t in targets} if targets is not None else None
     out: dict[str, float] = {}
@@ -267,6 +274,53 @@ def banked_hours_from_reports(reports: Iterable[Any],
             if str(_field(tb, "name", "")) in wanted:
                 fold(_field(tb, "by_filter"))
     return out
+
+
+def flow_target_names(plan: dict | FlowGraph, name: str = "") -> list[str]:
+    """The names this flow's run records its frames under, in plan order: the
+    ledger's meaning of "this flow's own targets" (#536, H4 orchestrator
+    ruling 6).
+
+    ``plan`` is the graph, compiled here as ``resolve_tonight`` compiles it,
+    or a compiled plan. A single target and a pool member are recorded under
+    their compiled name. A MULTI-PANEL TARGET IS RECORDED BY PANEL: the run
+    names each panel "<name> <row>-<col>", 1-based (``to_plan``'s
+    ``_expand_mosaic``), and a report's rows carry those names, so its names
+    are its live panels', and never the bare block name, under which only a
+    different, single-target flow of the same object records frames. A
+    skipped panel is left out as the plan leaves it out, so what is counted
+    as banked matches the goal, which is the live panels' (``_budget``). The
+    names are the ones ``to_sequence_plan`` gives its targets, which
+    tests/test_h4_budget_for_these_targets.py holds this to; a target the
+    plan drops for want of coordinates is still named, since it is still
+    this flow's.
+    """
+    plan_dict = (compile_plan(plan, name) if isinstance(plan, FlowGraph)
+                 else dict(plan or {}))
+    out: list[str] = []
+    for entry in plan_dict.get("targets") or []:
+        label = str(entry.get("name") or "").strip()
+        grid = _mosaic_grid(entry)
+        if grid is None:
+            names = [label]
+        else:
+            rows, cols, skip = grid
+            names = [f"{label} {_panel_label(r, c)}" if label
+                     else _panel_label(r, c)
+                     for r in range(rows) for c in range(cols)
+                     if (r, c) not in skip]
+        for n in names:
+            if n and n not in out:
+                out.append(n)
+    return out
+
+
+#: What a BUDGET row's banked figure says it holds (#536): the hours of this
+#: flow's own targets (``flow_target_names``), which is what the route counts.
+#: Both Tonight surfaces print the server's row as it is, so this is the one
+#: place the words live; tonightPanelDom.test.tsx and
+#: budgetForTheseTargets.test.tsx read them off the server's answer.
+_FOR_THESE = "for these targets"
 
 
 # --------------------------------------------------------------- target coords
@@ -499,7 +553,8 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
                     resolve_name: Callable[[str], tuple[float, float] | None] | None = None,
                     step_min: int = CURVE_STEP_MIN,
                     hop_cost_s: float | None = None,
-                    progress: ProgressSource = None) -> dict:
+                    progress: ProgressSource = None,
+                    rig: RigFacts | None = None) -> dict:
     """Everything the Tonight panel draws, for one flow, at one instant.
 
     ``plan`` is a compiled plan (``compile.compile_plan``) or the graph itself,
@@ -508,10 +563,12 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
     compiling it would be able to render a night the run would not run.
 
     ``banked`` is the session ledger, injected: hours already in the bank per
-    filter. It is a callable and not a mapping so the route can read
-    ``captures/reports`` lazily and this function can stay pure; the default is
-    NO LEDGER, and a budget row then says the goal and tonight's contribution
-    and explicitly does not claim a banked figure.
+    filter, FOR THIS FLOW'S TARGETS, since the BUDGET row says so (#536; the
+    route folds the ledger with ``targets=flow_target_names(...)``). It is a
+    callable and not a mapping so the route can read ``captures/reports``
+    lazily and this function can stay pure; the default is NO LEDGER, and a
+    budget row then says the goal and tonight's contribution and explicitly
+    does not claim a banked figure.
 
     ``hop_cost_s`` is the MEASURED mean cost of one hop between targets, in
     seconds (``SequenceEngine.measured_cost("hop")``'s mean, #189 S3), or
@@ -519,6 +576,12 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
     rows add the hops (``_budget``) and its brief sentence names the cost
     (``brief``). None is never replaced by the engine's 150 s seed: a seed is
     a guess, and the brief says "not measured yet" instead.
+
+    ``rig`` is the route's one reading of the rig (``flows.rig.RigFacts``).
+    Only the brief reads it, for the guider the run will guide with and its
+    settle and dither (#506); None, as a test or a preview hands over, is a
+    rig nobody described, and the brief then names Rig > Guider as their
+    source rather than a number.
 
     ``progress`` is the flow's progress answer, ``progress.flow_progress``'s,
     or a callable returning it (read lazily, and only for a flow with a
@@ -662,8 +725,10 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
         # the same rule the dawn story already follows for the report sink.
         "campaign": _campaign(graph, frames_by_target, progress),
         # The brief is handed this compile, so the visit it states is read
-        # off the same entry the budget prices its hops from.
-        "brief": brief(graph, hop_cost_s=hop_cost_s, plan=plan_dict),
+        # off the same entry the budget prices its hops from, and the rig
+        # facts, so the guider it names is the one the run will use (#506).
+        "brief": brief(graph, hop_cost_s=hop_cost_s, plan=plan_dict,
+                       rig=rig),
     }
     out["story"] = _story(out, plan_dict, graph)
     return out
@@ -1571,8 +1636,42 @@ def _block_sentence(block, lead: str) -> str:
     return f"{lead}arms {p.get('name')}."
 
 
+def _frames(n: int) -> str:
+    return "frame" if n == 1 else f"{n} frames"
+
+
+def _guide_clause(rig: RigFacts | None) -> str:
+    """The brief's words for a GUIDE stage, from the rig facts (#506).
+
+    "guides with AstroDeck native (settle below 1.5 px for 10 s, dither 3 px
+    every 3 frames)": the provider as the guide resolver labels it, the
+    settle every dither waits on, and the dither distance and cadence the
+    run uses (``RigFacts``' ``guide_*`` fields, read by the route from the
+    rig, the source ``to_plan.NODE_SETTINGS["guide"]`` cites). Pixels, not
+    arcseconds: a settle is measured on the guide camera, where the old
+    sentence's ″ had no image scale behind it. A fact the rig could not
+    give is left out rather than guessed, and a guider that settles by its
+    own rule (NINA) is said to. With no provider there is nothing to name,
+    so the clause says where the guider, settle and dither come from and
+    prints no number."""
+    provider = rig.guide_provider if rig is not None else None
+    if not provider:
+        return "guides (guider, settle and dither from Rig > Guider)"
+    parts: list[str] = []
+    if rig.guide_settle is not None:
+        px, secs = rig.guide_settle
+        parts.append(f"settle below {px:g} px for {secs:g} s")
+    else:
+        parts.append(f"{provider}'s own settle")
+    if rig.guide_dither_every is not None and rig.guide_dither_px is not None:
+        parts.append("no dither" if rig.guide_dither_every == 0 else
+                     f"dither {rig.guide_dither_px:g} px every "
+                     f"{_frames(rig.guide_dither_every)}")
+    return f"guides with {provider} ({', '.join(parts)})"
+
+
 def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
-          plan: dict | None = None) -> str:
+          plan: dict | None = None, rig: RigFacts | None = None) -> str:
     """The STORY tab's mechanical brief: the graph, read back as prose.
 
     "Generated deterministically from the graph, sentence per capability, params
@@ -1596,6 +1695,18 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
     solver never reached the run: every run centred to the hub's 0.02 deg,
     and since S3 to the TARGET's own centring. A legacy SLEW left on a canvas
     is the doctor's to name (L1), not a promise for the brief to repeat.
+
+    THE GUIDE SENTENCE SAYS WHAT THE RUN WILL DO, FROM THE RIG (#506). The
+    GUIDE stage decides one thing, that the night guides (#239 stage C), and
+    the compile's own note for it says the card's settle, dither and provider
+    are ignored and "come from Rig > Guider instead". The brief read "guides
+    with PHD2 (settle below 1.5″, dither every 3 frames)" off those very
+    params, the card's defaults, on a rig guiding with its native guider, so
+    the one sentence read before a night contradicted the run-start answer's
+    ``unmapped`` list. Now it names what ``rig`` says (``_guide_clause``):
+    the provider the resolver picks, the settle every dither waits on and
+    the dither distance and cadence the run uses. With no rig facts it names
+    none of them and says where they come from.
 
     EVERY CAPTURE STAGE GETS A SENTENCE (#395), in lane order
     (``_capture_stages``, ``_stage_sentence``): a FILTER CYCLE then a CAPTURE
@@ -1661,15 +1772,17 @@ def brief(graph: FlowGraph | None, *, hop_cost_s: float | None = None,
                   f"({str(df.params.get('method')).lower()}) in the twilight window")
         seg.append(t + ".")
 
-    rig: list[str] = []
+    # `stages`, not `rig`: `rig` is the rig facts handed in.
+    stages: list[str] = []
     if af is not None:
-        rig.append(f"autofocuses ({str(af.params.get('method')).lower()})")
+        stages.append(f"autofocuses ({str(af.params.get('method')).lower()})")
     if guide is not None:
-        rig.append(f"guides with {guide.params.get('provider')} (settle below "
-                   f"{guide.params.get('settle')}″, dither every "
-                   f"{guide.params.get('dither')} frames)")
-    rig_owed = [] if not rig else [
-        "For each target it " + ", ".join(rig) + "."]
+        # The stage's presence, with the rig's guider (#506). Never the
+        # card's `provider`, `settle` or `dither`: none of them reaches the
+        # run (`to_plan.NODE_SETTINGS["guide"]`).
+        stages.append(_guide_clause(rig))
+    rig_owed = [] if not stages else [
+        "For each target it " + ", ".join(stages) + "."]
 
     # EVERY BLOCK, WHERE ITS LANE RUNS (#470). This wrote one arm sentence,
     # the first POOL's or, with none, the first TARGET's, ahead of every
@@ -1811,7 +1924,11 @@ def frames_by_target_from_reports(reports: Iterable[Any]
 
     The pure half of the CAMPAIGN tab's progress, matching
     ``banked_hours_from_reports`` in shape and for the same reason: the route
-    supplies the impure half and this module stays callable without a disk.
+    supplies the impure half, the reports' ledger summaries
+    (``SessionReporter.summaries``, which carry each report's ``targets``,
+    #536), and this module stays callable without a disk. No ``targets``
+    filter is needed here: the answer is keyed by target, and a pool member
+    reads only its own row.
 
     ACCEPTED FRAMES, not captured. A rejected sub is one the night has to shoot
     again, so counting it toward a quota would retire a target that still owes
@@ -2197,7 +2314,10 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
                                "warm, close — fail closed", TONE_BAD, "ANY"))
 
     # 9. the budget. A mosaic's row (it has `panels`) says the figures are
-    #    every panel's, and what moving between them costs once measured.
+    #    every panel's, and what moving between them costs once measured. A
+    #    banked figure says whose hours it holds, "for these targets" (#536),
+    #    because the route counts only this flow's targets' reports
+    #    (`flow_target_names`) and the archive's total is a different number.
     for b in out["budget"]:
         panels = hops = ""
         if "panels" in b:
@@ -2220,9 +2340,9 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
                     f"≈{b['tonight_h']:g} h of shutter{panels}{hops}")
             rules.append(row(
                 None,
-                (f"{head}, {b['banked_h']:g} h banked in its filters — "
-                 f"{owes}; the session ledger resumes the remainder next "
-                 f"clear night") if b["has_ledger"] else
+                (f"{head}, {b['banked_h']:g} h banked in its filters "
+                 f"{_FOR_THESE} — {owes}; the session ledger resumes the "
+                 f"remainder next clear night") if b["has_ledger"] else
                 (f"{head} — {owes}. No session ledger was read, so nothing "
                  f"here is counted as already banked"),
                 TONE_GOOD, "BUDGET"))
@@ -2230,9 +2350,10 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
         if b["has_ledger"]:
             rules.append(row(
                 None,
-                f"{b['filter']}: {b['banked_h']:g} h banked / {b['goal_h']:g} h "
-                f"goal{panels} — tonight adds ≈{b['tonight_h']:g} h{hops}; the "
-                f"session ledger resumes the remainder next clear night",
+                f"{b['filter']}: {b['banked_h']:g} h banked {_FOR_THESE} / "
+                f"{b['goal_h']:g} h goal{panels} — tonight adds "
+                f"≈{b['tonight_h']:g} h{hops}; the session ledger resumes the "
+                f"remainder next clear night",
                 TONE_GOOD, "BUDGET"))
         else:
             rules.append(row(

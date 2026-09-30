@@ -320,10 +320,18 @@ class TestWhatStaysLegal:
                     g = flow_wizard.generate(kind, combo, "M 31")
                     if g.validation_errors():
                         bad.append((kind, combo, g.validation_errors()))
-        for filters, guided in ((["L", "R"], True), ([], False), (["Ha"], False)):
+        # The unguided Ha case holds its sub at 90 s. Since H4 (#518) an
+        # unguided quick flow at or past the unguided line (120 s) is refused,
+        # and Ha's 180 s default is past it, so this case, which passed no
+        # exposures before H4, raised the ValueError instead of building a
+        # graph. The graph under test is the same shape either way.
+        for filters, guided, exposures in ((["L", "R"], True, None),
+                                           ([], False, None),
+                                           (["Ha"], False, {"Ha": 90})):
             g = flow_wizard.quick({"name": "M 31", "ra": "00h 42m 44s",
                                    "dec": "+41 16 09"}, subs_per_filter=3,
-                                  filters=filters, guided=guided).graph
+                                  filters=filters, exposures_s=exposures,
+                                  guided=guided).graph
             if g.validation_errors():
                 bad.append(("quick", filters, g.validation_errors()))
         assert bad == []

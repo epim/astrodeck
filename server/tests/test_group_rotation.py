@@ -453,6 +453,19 @@ async def test_a_panel_that_will_not_centre_is_deferred_three_times_then_set_asi
         assert False
          +  where False = <_group_harness.Night object at
         0x000001DBD8C38C80>.done
+
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). 2-2's misses are
+    its own (its neighbours centre), and its third sets it aside, but a
+    streak of centring misses now sets it aside "for now": the set-aside
+    expires 45 minutes on (2-2 is hopped again at 3240 s), it strikes out
+    again, and that second streak is the one set aside for tonight, with
+    the WARNING this case reads. So 2-2 is hopped six times, not three, the
+    session holds two records (the first marked expired), and there is
+    still exactly one "set aside for tonight" line. The same mutant, re-run
+    by the H4 integration in a private copy of server/ (scratchpad
+    H4-INTEG-mut), is still RED at the fake horizon, with the failure
+    recorded above word for word ("(203, [(1788371229.0, 'info', 'M31: pass
+    194 took no exposures ...").
     """
     def goto(who, n, result):
         if who == _name("2-2"):
@@ -462,7 +475,7 @@ async def test_a_panel_that_will_not_centre_is_deferred_three_times_then_set_asi
     night = await _night(group_hub, monkeypatch, grid_plan(), goto=goto)
     assert night.done, (len(night.gotos), night.lines[-3:])
     assert _shot(night, "2-2") == [], night.shots()
-    assert len(_gotos(night, "2-2")) == 3, _gotos(night, "2-2")
+    assert len(_gotos(night, "2-2")) == 6, _gotos(night, "2-2")
     alerts = [(lvl, m) for _t, lvl, m in night.lines
               if "2-2" in m and "set aside for tonight" in m]
     assert len(alerts) == 1 and alerts[0][0] == "warning", alerts
@@ -470,7 +483,9 @@ async def test_a_panel_that_will_not_centre_is_deferred_three_times_then_set_asi
             "failed" in alerts[0][1]), alerts
     for label in ("1-1", "1-2", "2-1"):
         assert _shot(night, label) == ["L", "R"] * 3, label
-    assert [r["target_id"] for r in night.stored.set_aside] == ["p11"]
+    assert [(r["target_id"], bool(r.get("expired")))
+            for r in night.stored.set_aside] == [("p11", True),
+                                                 ("p11", False)]
 
 
 async def test_control_a_group_that_does_not_require_centring_shoots_the_panel(
@@ -576,6 +591,13 @@ async def test_an_all_deferred_pass_waits_through_the_safety_gate(
     `_close_group_pass` deleted): RED (observed):
         AssertionError: pass 2 began 0 s after pass 1
         assert 0.0 >= 300.0
+
+    SINCE H4 (#534, H4 orchestrator ruling 2) this pass, every panel tried
+    missing its centring, is the centring hold: no panel is struck, and the
+    group waits ``CENTRING_HOLD_RETRY_S`` (600 s), not ``DEFER_WAIT_S``,
+    through the same wait path and safety gate. The bounds below are
+    ``DEFER_WAIT_S`` lower bounds and still hold; the hold's own length is
+    graded in test_h4_centring_group_hold.py. Noted by the H4 integration.
     """
     def goto(who, n, result):
         return {**result, "centered": n > 1,

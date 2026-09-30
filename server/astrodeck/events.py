@@ -38,6 +38,19 @@ the frame the relay sends after its own drops, and the browser answers it by
 re-reading the monitor snapshot. The drop used to be silent, so a phone that
 lost a ``preview`` sat on an older frame until the next exposure, the failure
 #399 fixed at the relay hop.
+
+The bus is thread-aware (#480). A subscription is an ``asyncio.Queue`` of the
+loop it subscribed from, and code handed to ``asyncio.to_thread`` logs too
+(``SessionReporter._persist`` says a failed snapshot write from its worker).
+``put_nowait`` from a foreign thread wakes a parked ``get()`` through
+``loop.call_soon``, which is not thread-safe: the loop is not woken, so the
+line waits for something else to wake it, and asyncio's debug mode raises
+out of ``bus.log`` instead. So each subscription records its loop at
+``subscribe``, and a publish made off that loop's thread hands the delivery
+to it with ``call_soon_threadsafe``. The ring and the night log are still
+appended at once, on the caller's thread, so the record never waits on a
+loop. With no loop running a subscriber is served inline, as before, and one
+whose loop has closed is skipped: its reader is gone.
 """
 from __future__ import annotations
 
@@ -75,6 +88,15 @@ RELAY_GAP = "relay_gap"
 def _now() -> float:
     """Monotonic seconds — in one place so tests can drive both cooldowns."""
     return time.monotonic()
+
+
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    """The loop running on the calling thread, or None: a worker thread, or
+    synchronous code with no loop running (#480)."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
 
 
 def _wall() -> float:
@@ -394,10 +416,20 @@ class Subscription(asyncio.Queue):
     ``LifoQueue`` and ``PriorityQueue`` are), so ``get()``,
     ``wait_for(q.get(), ...)`` and every consumer's loop work as before, the
     LAN ``/ws`` and ``_run_ws`` among them, and each forwards the marker like
-    any event. ``qsize()`` counts events; a marker owed takes no slot."""
+    any event. ``qsize()`` counts events; a marker owed takes no slot.
 
-    def __init__(self, maxsize: int = SUBSCRIBER_MAX) -> None:
+    ``home_loop`` is the loop the subscriber subscribed from, the one that
+    will await ``get()``, or None when nothing was running (#480). It is kept
+    per subscription, not once for the bus, because one process can run two
+    live loops that both subscribe: the test client's portal thread and the
+    test's own, and a subscriber belongs to the loop that reads it."""
+
+    def __init__(self, maxsize: int = SUBSCRIBER_MAX,
+                 loop: asyncio.AbstractEventLoop | None = None) -> None:
         super().__init__(maxsize)
+        #: the loop that reads this queue, or None (see the class docstring).
+        #: Not ``_loop``: ``asyncio.Queue`` binds that one itself.
+        self.home_loop = loop
         #: events ``EventBus._deliver`` has dropped from this queue, ever.
         self.dropped = 0
         self._seq = 0               # the number given to the last event queued
@@ -460,7 +492,9 @@ class EventBus:
         self._in_notice = False
 
     def subscribe(self) -> Subscription:
-        q = Subscription(SUBSCRIBER_MAX)
+        # The loop running here is the one that will read the queue: every
+        # consumer subscribes from the coroutine that then awaits it (#480).
+        q = Subscription(SUBSCRIBER_MAX, loop=_running_loop())
         self._subscribers.add(q)
         return q
 
@@ -486,25 +520,72 @@ class EventBus:
         self._deliver(Event(type=type, data=data))
 
     def _deliver(self, ev: Event) -> None:
-        """Ring, disk, subscribers — the fan-out, past the storm limiter."""
+        """Ring, disk, subscribers — the fan-out, past the storm limiter.
+
+        The ring and the night file are written here, on the caller's
+        thread, whichever it is: the record of a line never waits on a loop
+        (#480). Only the subscribers' queues belong to a loop."""
         if ev.type == "log":
             self._history.append(ev)
             if not is_site_derived(ev.to_json()):
                 self._history_unflagged.append(ev)
             if self.night_log is not None:
                 self.night_log.append(ev)
+        self._fan_out(ev)
+
+    def _fan_out(self, ev: Event) -> None:
+        """Put ``ev`` in every subscriber's queue, on that queue's loop.
+
+        A subscriber whose loop is the one running here, or that has no loop,
+        is served now, as always: that is every publish made on the loop, in
+        order and synchronously. So is one whose loop is stopped, since no
+        thread is running it to race. One whose loop is running on another
+        thread is handed to that loop with ``call_soon_threadsafe``, which
+        wakes it; a put from here would wake a parked ``get()`` through the
+        non-thread-safe ``call_soon`` (#480). One handoff per loop, not per
+        subscriber, so the loop is woken once and serves its subscribers in
+        the order this publish reached them. One whose loop has closed is
+        skipped: nothing can read it any more, and a put that woke a reader
+        parked on it would raise ``Event loop is closed`` out of the
+        publish."""
+        here = _running_loop()
+        handoff: dict[asyncio.AbstractEventLoop, list[Subscription]] = {}
         for q in list(self._subscribers):
+            home = q.home_loop
+            if home is None or home is here:
+                self._offer(q, ev)
+            elif home.is_closed():
+                continue
+            elif not home.is_running():
+                self._offer(q, ev)
+            else:
+                handoff.setdefault(home, []).append(q)
+        for home, subs in handoff.items():
             try:
-                q.put_nowait(ev)
-            except asyncio.QueueFull:
-                # Slow consumer: drop the oldest to keep the stream live, and
-                # count it on this subscriber (#444). The hole the drop leaves
-                # in the subscription's numbers is what makes its next read a
-                # GapMarker; the count is the running total, for anyone asking
-                # how far behind this consumer has fallen.
-                q.drop_oldest()
-                q.dropped += 1
-                q.put_nowait(ev)
+                home.call_soon_threadsafe(self._offer_all, subs, ev)
+            except RuntimeError:
+                pass                    # closed since the check: skipped too
+
+    def _offer_all(self, subs: list[Subscription], ev: Event) -> None:
+        """A handed-off delivery, run on the subscribers' own loop. One that
+        unsubscribed while the handoff waited is left alone."""
+        for q in subs:
+            if q in self._subscribers:
+                self._offer(q, ev)
+
+    @staticmethod
+    def _offer(q: Subscription, ev: Event) -> None:
+        try:
+            q.put_nowait(ev)
+        except asyncio.QueueFull:
+            # Slow consumer: drop the oldest to keep the stream live, and
+            # count it on this subscriber (#444). The hole the drop leaves
+            # in the subscription's numbers is what makes its next read a
+            # GapMarker; the count is the running total, for anyone asking
+            # how far behind this consumer has fallen.
+            q.drop_oldest()
+            q.dropped += 1
+            q.put_nowait(ev)
 
     # -- storm limiter ---------------------------------------------------------
 

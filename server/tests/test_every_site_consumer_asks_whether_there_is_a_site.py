@@ -18,7 +18,9 @@ latitude or longitude out of a site. Either ask :func:`site_is_set` (or take the
 coordinates from :func:`site_lat_lon`, which answers None rather than 0,0), or
 add the function to ``UNGUARDED`` below with a reason. The list is meant to
 shrink. It is checked for staleness in both directions, so an entry that no
-longer reads a site fails too rather than rotting.
+longer reads a site fails too rather than rotting. A call to an extractor such
+as ``schedule._lat_lon`` is a read (``EXTRACTORS``, #527), and ``GUARDED`` pins
+by name the consumers that once did not ask and now do.
 """
 from __future__ import annotations
 
@@ -36,6 +38,16 @@ ASKS = {"site_is_set", "site_lat_lon", "is_default"}
 
 # The site's coordinates, by every name they are read under in this tree.
 COORDS = {"latitude", "longitude", "lat", "lon"}
+
+# Functions that hand back a site's coordinates. A call to one is a read of the
+# site exactly as `site["latitude"]` is, so its caller is a consumer (#527).
+# Before this set the scan could not see `_lat_lon`'s callers at all: the
+# extractor's own allowlist entry said the guard belonged at each caller, and
+# nothing held any caller to it, which is how `resolve_window` resolved a dusk
+# at 0,0. `site_lat_lon` is here too, although it asks by construction (it is
+# in ASKS), so that its callers count as GUARDED consumers rather than as
+# functions that never read a site.
+EXTRACTORS = {"_lat_lon", "site_lat_lon"}
 
 
 def _is_site_ish(node: ast.AST) -> bool:
@@ -70,6 +82,13 @@ def _reads_a_coordinate(node: ast.AST) -> bool:
             args = node.args
             if args and isinstance(args[0], ast.Constant) and args[0].value in COORDS:
                 return True
+    # _lat_lon(site) / schedule._lat_lon(self.hub.site): an extractor's call.
+    if isinstance(node, ast.Call):
+        callee = node.func
+        name = (callee.id if isinstance(callee, ast.Name)
+                else callee.attr if isinstance(callee, ast.Attribute) else None)
+        if name in EXTRACTORS:
+            return True
     return False
 
 
@@ -84,10 +103,10 @@ def _asks(node: ast.AST) -> bool:
     return False
 
 
-def _scan() -> dict[str, list[int]]:
-    """``{"module:function": [line, ...]}`` for every function that reads a
-    coordinate out of a site and never asks whether there is one."""
-    found: dict[str, list[int]] = {}
+def _consumers() -> dict[str, tuple[list[int], bool]]:
+    """``{"module:function": ([line, ...], asks)}`` for every function that
+    reads a coordinate out of a site, and whether it asks if there is one."""
+    found: dict[str, tuple[list[int], bool]] = {}
     for path in sorted(ROOT.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         rel = path.relative_to(ROOT).as_posix()
@@ -98,9 +117,20 @@ def _scan() -> dict[str, list[int]]:
             # so a guard in the enclosing scope counts for it. That is right:
             # `if not site_is_set(site): return` above a closure does protect it.
             hits = [n.lineno for n in ast.walk(fn) if _reads_a_coordinate(n)]
-            if hits and not _asks(fn):
-                found[f"{rel}:{fn.name}"] = sorted(set(hits))
+            if hits:
+                found[f"{rel}:{fn.name}"] = (sorted(set(hits)), _asks(fn))
     return found
+
+
+def _scan() -> dict[str, list[int]]:
+    """``{"module:function": [line, ...]}`` for every function that reads a
+    coordinate out of a site and never asks whether there is one."""
+    return {k: hits for k, (hits, asks) in _consumers().items() if not asks}
+
+
+def _guarded() -> set[str]:
+    """Every function that reads a coordinate out of a site and asks first."""
+    return {k for k, (_hits, asks) in _consumers().items() if asks}
 
 
 # Every consumer that still computes from the site without asking, with the
@@ -143,16 +173,61 @@ UNGUARDED: dict[str, str] = {
     # The comet row, /api/site/sky's default path, guided.sky_context and the
     # cloudmap refresh followed: test_the_display_consumers_need_a_site.
 
+    # --- THE SCHEDULER JUDGES A TARGET. Visible only since the scan counts a
+    # call to `_lat_lon` as a read (EXTRACTORS, #527). `resolve_window`, which
+    # made that visible, is guarded and in GUARDED below. The first two are
+    # #540; the third is not reached at the placeholder.
+    "sequence/schedule.py:gating_status":
+        "reads `_lat_lon(site)` for the target's altitude, its peak across "
+        "the window and its rise estimate, so on a default site a start "
+        "altitude is judged at 0,0 and a target can wait hours for a rise "
+        "that is not the rig's (#540). Left for #540: what an altitude gate "
+        "should do with no site is a decision about the engine, not the "
+        "window (#527's schedule half, H4-SCHED).",
+    "sequence/schedule.py:constraint_gate":
+        "reads `_lat_lon(site)` for the hour angle and the Moon's altitude, "
+        "so on a default site an hour-angle limit can close a target's "
+        "window for the night at longitude 0 (#540). Left for #540 with "
+        "gating_status, whose gating it is part of.",
+    "sequence/resume_arm.py:_floor_eta_note":
+        "reads `schedule._lat_lon(self.hub.site)` for the start-floor hold's "
+        "ETA, but is called only after `engine._frame_altitude` read an "
+        "altitude below the floor, and that answers None at a default site "
+        "(#121), so the note is never computed at the placeholder. The claim "
+        "rests on its one caller, in `ResumeArm`'s re-centre floor check; a "
+        "second caller would need its own guard.",
+
     # --- NOT A REAL SITE BY CONSTRUCTION.
     "devices/sim.py:_side_for_ra":
         "the simulator's own pier-side model. There is no operator and no "
         "mount; 0,0 is as good a fiction as any.",
     "sequence/schedule.py:_lat_lon":
-        "the shared extractor the sun and twilight helpers read through. It "
-        "cannot answer None: dark_enough is the one deliberate fail-open in "
-        "this whole audit (see site_gate's module docstring), and a raising "
-        "extractor underneath it would turn that exception into a crash. The "
-        "guard for this family belongs at each CALLER, not here.",
+        "the shared extractor `gating_status`, `constraint_gate` and "
+        "`ResumeArm._floor_eta_note` read through. It returns floats, never "
+        "None, because `gating_status` and `constraint_gate` unpack it and "
+        "compute at once, so a None would raise in the scheduler's tick "
+        "rather than refuse. The guard "
+        "belongs at each CALLER, and since #527 this scan holds each caller "
+        "to that: a call to it is a read (EXTRACTORS), so every caller is "
+        "guarded or listed here. (This reason used to name the sun and "
+        "twilight helpers and `dark_enough` as its readers. None of them "
+        "reads through it: `dark_enough` and `observing_night` read "
+        "`site_gate.site_lat_lon`, and the sun helpers take bare numbers.)",
+}
+
+# Consumers that ask, pinned by name. The scan above finds a consumer that
+# does not ask; it cannot notice one that stops being a consumer it can see,
+# because a function whose read moved behind a helper the scan does not know
+# drops out of both lists at once. Each entry here was once a consumer that
+# did not ask, and must stay one that reads the site where the scan can see it
+# and asks.
+GUARDED: dict[str, str] = {
+    "sequence/schedule.py:resolve_window":
+        "#527: resolved a DUSK or DAWN boundary at the 0,0 placeholder, so a "
+        "DUSK flow on a fresh rig waited twelve hours for Gulf of Guinea dusk "
+        "and auto-resume opened on 0,0's night. It now reads "
+        "`site_gate.site_lat_lon` and answers None for a sun boundary "
+        "(test_h4_dusk_window_needs_a_site).",
 }
 
 
@@ -181,6 +256,82 @@ def test_the_allowlist_does_not_rot():
     assert not stale, (
         "these are listed as unguarded consumers but no longer read a site "
         f"coordinate, or no longer exist: {stale}")
+
+
+def test_the_guarded_set_still_reads_the_site_and_asks():
+    """Each GUARDED consumer still reads the site where the scan sees it, and
+    asks first (#527).
+
+    MUTANT "guard removed: placeholder dusk returned" (H4-SCHED;
+    `resolve_window` reading the site through `_lat_lon` again, never
+    asking): RED here (observed):
+        AssertionError: these are pinned as consumers that ask whether a
+        site is set, and the scan no longer sees them read a site and ask:
+        ['sequence/schedule.py:resolve_window']. If a read moved behind a
+        new helper, add the helper to EXTRACTORS; if the guard went, put it
+        back.
+        assert not ['sequence/schedule.py:resolve_window']
+    and the gate above goes red with it, naming `resolve_window` as an
+    unlisted consumer (observed):
+        AssertionError: these read a site coordinate without asking whether
+        a site is set, and at the 0,0 default they will answer for the Gulf
+        of Guinea:
+            sequence/schedule.py:resolve_window (lines [472])
+        [the "Guard them" hint]
+        assert not {'sequence/schedule.py:resolve_window': [472]}
+
+    MUTANT "the extractor arm dropped" (the `EXTRACTORS` arm of
+    `_reads_a_coordinate` taken out): RED here (observed), since
+    `resolve_window` reads through `site_lat_lon` and the scan no longer sees
+    it read at all:
+        AssertionError: these are pinned as consumers that ask whether a
+        site is set, and the scan no longer sees them read a site and ask:
+        ['sequence/schedule.py:resolve_window']. [the hint]
+        assert not ['sequence/schedule.py:resolve_window']
+    The staleness case goes red with it (observed), its three new entries
+    no longer seen to read a site:
+        AssertionError: these are listed as unguarded consumers but no
+        longer read a site coordinate, or no longer exist:
+        ['sequence/resume_arm.py:_floor_eta_note',
+        'sequence/schedule.py:constraint_gate',
+        'sequence/schedule.py:gating_status']
+    """
+    guarded = _guarded()
+    lost = sorted(k for k in GUARDED if k not in guarded)
+    assert not lost, (
+        "these are pinned as consumers that ask whether a site is set, and "
+        f"the scan no longer sees them read a site and ask: {lost}. If a read "
+        "moved behind a new helper, add the helper to EXTRACTORS; if the "
+        "guard went, put it back.")
+
+
+def test_a_call_to_an_extractor_is_a_read():
+    """The guard on the new arm. `_lat_lon` hands back 0,0 for a site nobody
+    saved, so calling it is reading the site, however it is spelled; and a
+    caller that asks `site_is_set` first is guarded.
+
+    MUTATION "the extractor arm dropped": RED (observed):
+        AssertionError: _lat_lon(site)
+        assert False
+         +  where False = any(<generator object
+         test_a_call_to_an_extractor_is_a_read.<locals>.<genexpr> at ...>)
+    """
+    for call in ("_lat_lon(site)", "schedule._lat_lon(self.hub.site)",
+                 "site_lat_lon(site)"):
+        fn = ast.parse(
+            f"def f(site, self, schedule):\n    return {call}\n").body[0]
+        assert any(_reads_a_coordinate(n) for n in ast.walk(fn)), call
+    unguarded = ast.parse(
+        "def f(site):\n"
+        "    lat, lon = _lat_lon(site)\n"
+        "    return lat\n").body[0]
+    assert not _asks(unguarded), "a bare `_lat_lon` call reads as asking"
+    asks = ast.parse(
+        "def f(site):\n"
+        "    if not site_is_set(site):\n"
+        "        return None\n"
+        "    return _lat_lon(site)\n").body[0]
+    assert _asks(asks), "the scan cannot see a guard before an extractor"
 
 
 def test_the_scan_can_see_a_consumer_at_all():

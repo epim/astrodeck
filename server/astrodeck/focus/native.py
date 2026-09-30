@@ -89,6 +89,21 @@ FLAT_TIP_BAND = 0.1
 #: not cause.
 FLAT_FAILURES = ("not_enough_spread", "fit_unavailable")
 
+#: Below this many stars at the start position the field is doubtful rather
+#: than hopeless, so the sweep WARNS and proceeds (see the probe in
+#: `run_native_autofocus`). Deliberately not a refusal: a synthetic field of 11
+#: stars converges perfectly well, and blocking a sweep that would have worked
+#: is worse than attempting one that might not. (Measured on a real rig: 24
+#: stars at bin 1 became 8 at bin 2 and 0 a few thousand steps out, which is
+#: the case this warns about.)
+#:
+#: MODULE-LEVEL SINCE #507 (H4 orchestrator ruling 4), because the sequence
+#: engine reads the same line twice: a failure on a field under it is retried
+#: once at twice the exposure (``AutofocusResult.sparse_field``), and when the
+#: retry fails too, a light frame whose star count reaches it is what owes the
+#: sweep again. Two copies of 15 is how the two would come to disagree.
+SPARSE_FIELD_WARN = 15
+
 
 def vcurve_report(points: list[tuple[int, float, float]],
                   counts: list[int]) -> str:
@@ -424,13 +439,9 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     #: them — defocusing spreads each star over more pixels and only ever finds
     #: fewer. This is the "certainly hopeless" line, and it refuses.
     MIN_STARS_TO_SWEEP = 4
-    #: Below this it is doubtful rather than hopeless, so it WARNS and proceeds.
-    #: Deliberately not a refusal: a synthetic field of 11 stars converges
-    #: perfectly well, and blocking a sweep that would have worked is worse than
-    #: attempting one that might not — the user can halt, and now knows why if
-    #: it fails. (Measured on a real rig: 24 stars at bin 1 became 8 at bin 2
-    #: and 0 a few thousand steps out, which is the case this warns about.)
-    SPARSE_FIELD_WARN = 15
+    # Below the module's SPARSE_FIELD_WARN it is doubtful rather than
+    # hopeless, so it WARNS and proceeds; see the constant for why that is not
+    # a refusal, and for the engine's two readers of the same line (#507).
 
     #: How far past the REQUESTED window the search may roam, as a multiple of
     #: its half-span. The engine legitimately extends beyond the requested
@@ -480,7 +491,26 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     #: camera that will not expose) says nothing about the field rather than
     #: reporting an imaginary zero.
     n0 = -1
+    #: The probe frame's clipped fraction, 0 until the probe has been taken.
+    probe_sat = 0.0
     levers = sweep_levers(exposure_s, binning)
+
+    def _failed(reason: str, pts, advice: str | None) -> AutofocusResult:
+        """A failed result, saying whether it failed on a SPARSE FIELD (#507,
+        H4 orchestrator ruling 4): the probe counted fewer than
+        ``SPARSE_FIELD_WARN`` stars at the start position, on a frame that
+        was not clipped. The sequence engine retries exactly that failure
+        once at twice the exposure, the remedy this run's own warning names.
+
+        Not on a clipped probe, whatever its count: its "few stars" are
+        merged ones, and a longer exposure is the one change guaranteed to
+        make the next sweep worse (the overexposure branch below says so in
+        its own advice). Not before the probe either (``n0`` -1): a camera
+        that would not expose has measured no field at all."""
+        sparse = 0 <= n0 < SPARSE_FIELD_WARN and probe_sat < OVEREXPOSED_FRAC
+        return AutofocusResult(False, start_pos, None, pts, reason,
+                               advice=advice, sparse_field=sparse,
+                               start_stars=n0 if n0 >= 0 else None)
 
     def _advice(*, ok: bool) -> str | None:
         """The specific guidance THIS run earned — the sentence that used to go
@@ -640,8 +670,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                         message=reason, advice=advice)
             bus.log("warning",
                     f"autofocus not attempted: {reason}. {advice}", "focus")
-            return AutofocusResult(False, start_pos, None, [], reason,
-                                   advice=advice)
+            return _failed(reason, [], advice)
         if probe_sat >= OVEREXPOSED_FRAC:
             # Measurable, but on borrowed time: clipped cores read fat and
             # flat, so the curve's tip is distorted even when the fit succeeds.
@@ -753,8 +782,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     # (position, hfr) everywhere else.
                     bus.publish("focus", state="failed", points=_pts(),
                                 best=None, message=reason, advice=advice)
-                    return AutofocusResult(False, start_pos, None,
-                                           _result_pts(), reason, advice=advice)
+                    return _failed(reason, _result_pts(), advice)
                 if frame is None:
                     await _approach(pos)
                     _activity("exposing", index=attempted)
@@ -965,9 +993,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                         bus.log("warning", vcurve_report(points, counts), "focus")
                         bus.publish("focus", state="failed", points=_pts(),
                                     best=None, message=reason, advice=advice)
-                        return AutofocusResult(False, start_pos, None,
-                                               _result_pts(), reason,
-                                               advice=advice)
+                        return _failed(reason, _result_pts(), advice)
                     continue
 
                 # σ for the fit is the standard error of THIS median, not the raw
@@ -1148,8 +1174,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # keep quiet there rather than crowd out the engine's reason
                 # (test_autofocus_advice.py).
                 bus.log("warning", f"curve check agrees: {salvage.reason}", "focus")
-                return AutofocusResult(False, start_pos, None, _result_pts(),
-                                       reason, advice=advice)
+                return _failed(reason, _result_pts(), advice)
 
             else:  # pragma: no cover - defensive: unknown engine action
                 raise DeviceError(f"native autofocus: unexpected step {action!r}")

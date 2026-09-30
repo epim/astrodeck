@@ -108,9 +108,10 @@ import { PLAN_EDITOR_PHONE_REASON } from "../../sheets/planEditor";
 import { leaveFlowEditor } from "../openFlow";
 import { FlowPortRow, LOOP_PANELS_LABEL, offersLoopPanels } from "./FlowNode";
 import { RunCopyWords, runArm } from "./FlowCanvasToolbar";
+import { emptyLogText } from "./FlowLogStrip";
 import { FlowTapWireBar } from "./FlowTapWireBar";
 import {
-  ADD_STAGE_LABEL, IDLE_LOG_TEXT, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD,
+  ADD_STAGE_LABEL, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD,
   NO_WIRES_TEXT, RIG_VALUE_PREFIX, asNodeStatus, formatEta, framesWord, logTail,
   logTime, markTone, markWord, nodeMarkDetail, nodeMarkLevel, rigValueFor,
   saveLockReason, saveStateTone, saveStateWord, stageWord,
@@ -686,9 +687,12 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
       </div>
 
       <Label size={10}>LOG</Label>
+      {/* An empty log says why it is empty, never "Idle" (#529): the STATE
+          tile says what the run is doing, and under a live run of this flow
+          (`readouts.fed`, the tiles' own rule) "Idle" contradicted it. */}
       <div role="log" className="nx-flow-log-body" data-testid="flow-stages-log" style={NO_SHRINK}>
         {lines.length === 0 ? (
-          <Mono size={10.5} tone="dim">{IDLE_LOG_TEXT}</Mono>
+          <Mono size={10.5} tone="dim">{emptyLogText(readouts.fed)}</Mono>
         ) : (
           lines.map((l) => (
             <div key={l.id} className="nx-flow-log-line">
