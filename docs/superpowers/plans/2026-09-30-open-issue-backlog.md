@@ -49,6 +49,8 @@ Two WPs that both edit engine.py may share a wave when the engine functions each
 
 ## Owner decisions (ask all at once, now)
 
+**APPROVED 2026-09-30 14:07: the owner approved every recommended answer below ("Approve all recommended").** Each row is now a ruling. Cite them as "backlog ruling D-nn (owner-approved 2026-09-30)".
+
 Each row gives a recommended answer so it can be approved in one line. A gated WP waits for its decision. If its wave arrives with no ruling, the WP ships the parts the decision does not cover, or moves to the next wave where its files are free.
 
 | D | Needed by | Question | Recommended answer | Blocks |
