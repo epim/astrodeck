@@ -48,7 +48,7 @@
 // with the flow as `?open=`. The decision is `paletteDrop.ts`'s, shared with
 // the sheet, so the two palettes cannot disagree about which stages open it.
 
-import { useEffect, useRef, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 
 import { useStore } from "../../../../store";
 import { buildHash, nav, useRoute } from "../../../router";
@@ -63,7 +63,9 @@ import {
 // no component: it reads the store and opens the framing door through the router.
 import { droppedStageId, frameDroppedStage } from "./inspector/paletteDrop";
 import { CalibrationMatrixCard } from "./tonight";
-import { leaveFlowEditor } from "./openFlow";
+import {
+  FLOW_OPEN_FAILED, flowOpenFailure, leaveFlowEditor, libraryErrorNow, openFlowById,
+} from "./openFlow";
 import "./canvas/canvas.css";
 
 /** The legacy `?open=` value that meant "open the canvas on its library
@@ -99,7 +101,6 @@ export interface FlowsCanvasHostProps {
 
 export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
   const route = useRoute();
-  const flowsOpen = useStore((s) => s.flowsOpen);
   const setUi = useStore((s) => s.flowsSetUi);
   const openId = useStore((s) => s.flows.record?.id ?? null);
   const desktop = useBreakpoint() === "desktop";
@@ -113,13 +114,46 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
     frameDroppedStage(type, droppedStageId(type, id), openId);
   };
 
+  /** The last open this host asked for that did not land (#553): which flow,
+   *  the record that was open when it was asked, and the reason. */
+  const [failure, setFailure] = useState<
+    { id: string; from: string | null; reason: string } | null
+  >(null);
+
+  // THROUGH `openFlowById`, NOT A BARE `flowsOpen`. `flowsOpen` swallows its
+  // own failure and leaves the record that was open before in place, so a
+  // failed read of the flow this route names used to leave the CANVAS, the
+  // TOOLBAR (with its live RUN) and the INSPECTOR all drawing whatever flow
+  // was open before - a route for flow B rendering flow A's graph, with RUN
+  // able to start it. `mine` below is the one gate every one of those reads
+  // goes through; while it is false the host shows a waiting card instead,
+  // never the three panels above. A late answer to an earlier attempt
+  // (another id, or the record changed under it) is dropped.
   useEffect(() => {
-    if (!named) return;
-    // Idempotent: re-opening the flow already on the canvas would discard an
-    // unsaved edit and re-run the compile for nothing.
-    if (openId === named) return;
-    void flowsOpen(named);
-  }, [named, openId, flowsOpen]);
+    if (!named || openId === named) return;
+    let current = true;
+    const before = libraryErrorNow();
+    void openFlowById(named).then((landed) => {
+      if (current && !landed) setFailure({ id: named, from: openId, reason: flowOpenFailure(before) });
+    });
+    return () => { current = false; };
+  }, [named, openId]);
+
+  // THE ONE TEST every read of the open record below is gated on. A route
+  // naming no flow at all is never "mine" either - the pre-existing NO FLOW
+  // OPEN card below already covers it, through the same `waiting` value.
+  const mine = named !== null && openId === named;
+  const failed = failure !== null && failure.id === named && failure.from === openId
+    ? failure.reason : null;
+  /** What the host shows INSTEAD of the canvas, toolbar and inspector while
+   *  the open record is not the flow this route names (or none is named);
+   *  null once it is mine. */
+  const waiting: { title: string; hint: string } | null = mine ? null
+    : named === null
+      ? { title: "NO FLOW OPEN", hint: CANVAS_NO_FLOW_HINT }
+      : failed !== null
+        ? { title: FLOW_OPEN_FAILED.toUpperCase(), hint: failed }
+        : { title: "OPENING THIS FLOW", hint: "This flow's canvas shows once it has loaded." };
 
   // PUT `?open=` BACK WHEN A SHEET TAKES IT AWAY.
   //
@@ -219,9 +253,13 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
         <span aria-hidden="true">&lsaquo; </span>MY FLOWS
       </button>
 
-      <FlowCanvasToolbar />
+      {/* NOT WHILE WAITING (#553): the toolbar reads the open record's name,
+          save state and RUN button directly off the store, with no id check
+          of its own - it cannot be trusted with a record that is not this
+          route's flow, so it does not mount until `mine` says it is. */}
+      {mine && <FlowCanvasToolbar />}
 
-      {named ? (
+      {mine ? (
         <div className="nx-flow-row">
           {/* The rail is docked only where 192 px of it does not eat the graph.
               At tablet the same list is one tap away as the `flowPalette`
@@ -254,10 +292,13 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
         </div>
       ) : (
         <div className="nx-flow-row" data-empty="true">
+          {/* NOTHING OF THE OPEN RECORD: not its canvas, its toolbar or its
+              inspector, every one of which is another flow's (or none) while
+              this is up (#553). */}
           <EmptyCard
-            data-testid="flows-canvas-no-flow"
-            title="NO FLOW OPEN"
-            hint={CANVAS_NO_FLOW_HINT}
+            data-testid={named === null ? "flows-canvas-no-flow" : "flows-canvas-waiting"}
+            title={waiting?.title ?? "NO FLOW OPEN"}
+            hint={waiting?.hint ?? CANVAS_NO_FLOW_HINT}
           />
         </div>
       )}

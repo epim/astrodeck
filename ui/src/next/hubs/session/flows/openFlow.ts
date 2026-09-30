@@ -67,13 +67,22 @@ export async function openFlowById(id: string): Promise<boolean> {
  *  edits (#450), and the mismatch sentence when it wrote neither.
  *
  *  Read AFTER {@link openFlowById} resolves false. `libraryError` is the field
- *  `flowsOpen` writes on a failed read and on that refusal, and it is also
- *  written by a failed library load and a failed save, so a stale one is
- *  possible - hence the comparison against what was there before the call
- *  rather than a bare read. */
+ *  `flowsOpen` writes on a failed read and on that refusal.
+ *
+ *  `previousError` IS NO LONGER COMPARED (#555). `flowsOpen` now clears
+ *  `libraryError` itself before every open that gets far enough to try a read
+ *  (see its comment, "CLEARED HERE"), so any value left once `openFlowById`
+ *  resolves false was written by THIS attempt - whether or not its text
+ *  happens to match an earlier failure's. The old `now !== previousError`
+ *  text comparison read two identical, back-to-back "no flow named <id>"
+ *  errors as "nothing changed" and reported the SECOND one as
+ *  {@link FLOW_OPEN_MISMATCH} - a claim ("the server answered with a
+ *  different flow") the code path never checked. The parameter stays so
+ *  every existing call site keeps its shape; a caller may pass `null`. */
 export function flowOpenFailure(previousError: string | null): string {
+  void previousError;
   const now = useStore.getState().flows.libraryError;
-  return now && now !== previousError ? now : FLOW_OPEN_MISMATCH;
+  return now ?? FLOW_OPEN_MISMATCH;
 }
 
 /** The error that was showing before an open, for {@link flowOpenFailure}. */

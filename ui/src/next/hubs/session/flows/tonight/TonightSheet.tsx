@@ -22,7 +22,7 @@
 // re-resolved when the sheet OPENS (and when the open flow changes), not when
 // the reader moves between four views of the same payload.
 
-import { useEffect, useMemo, type JSX } from "react";
+import { useEffect, useMemo, useState, type JSX } from "react";
 
 import type { TonightTab } from "../../../../../components/flows/flowsTypes";
 import { capAllowed } from "../../../../../lib/caps";
@@ -33,6 +33,7 @@ import { nav } from "../../../../router";
 import { explainLock } from "../../../../shell/explain";
 import { ActionButton, LockNote, Mono, Segmented, Sheet } from "../../../../ui";
 import type { SheetProps } from "../../../sheets";
+import { flowOpenFailure, libraryErrorNow, openFlowById } from "../openFlow";
 import { TonightCampaignCard } from "./TonightCampaignCard";
 import { TonightPlanBlock } from "./TonightPlanBlock";
 import { TonightStoryList } from "./TonightStoryList";
@@ -49,11 +50,20 @@ import "./tonight.css";
 export const TONIGHT_NO_FLOW =
   "No flow is open, so there is no graph to resolve a night for. Open a flow from MY FLOWS first.";
 
+/** Shown while the open this sheet asked for (`?id=`) is still out, in place
+ *  of the four tabs (#553). Read-only, so a wrong flow drawn here cannot
+ *  START anything the way a stray RUN could - but it can still MISLEAD: this
+ *  sheet used to resolve and draw whatever flow was already open under a
+ *  route naming a different one, the moment its own open failed to land
+ *  (`flowsOpen` swallows its failure and leaves the previous record in
+ *  place). `mine` is the one gate every read of the open record now goes
+ *  through. */
+export const TONIGHT_OPENING = "This flow has not opened yet.";
+
 export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
   const tab = useStore((s) => s.flows.ui.tonightTab);
   const setUi = useStore((s) => s.flowsSetUi);
   const fetchTonight = useStore((s) => s.flowsFetchTonight);
-  const flowsOpen = useStore((s) => s.flowsOpen);
   const flowId = useStore((s) => s.flows.record?.id ?? "");
   const flowName = useStore((s) => s.flows.record?.name ?? "");
   const payload = useStore((s) => s.flows.tonight);
@@ -63,39 +73,74 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
   const principal = usePrincipal();
   const locked = capAllowed(principal, "view.site_derived") ? null : TONIGHT_LOCK_REASON;
 
-  // Parked, without a second request: `GET /api/sequence/resume-arm` already
-  // returns the auto_resume-armed dormant session, and `SessionStore.armed()`
-  // IS "dormant and auto_resume". Asking another route for the same fact would
-  // be a chance for the two to disagree.
-  const seq = useSeq();
-  const resumeArm = useResumeArm();
-  const armed = resumeArm?.armed ?? null;
-  const parked = !runIsLive(seq) && armed != null
-    && armed.origin === "flow" && armed.origin_id === flowId && flowId !== "";
-
   // A deep link carries the flow it was opened for. Idempotent: re-opening the
   // flow already on the canvas would discard an unsaved edit and re-run the
   // compile for nothing, so this fires only when they differ.
   const wantId = params.id ?? "";
+
+  /** The last open this sheet asked for that did not land: which flow, the
+   *  record that was open when it was asked, and the reason. A new attempt
+   *  starts exactly when `wantId` or `flowId` changes, so a failure recorded
+   *  under an earlier one no longer matches. */
+  const [failure, setFailure] = useState<
+    { id: string; from: string | null; reason: string } | null
+  >(null);
+
+  // THROUGH `openFlowById`, NOT A BARE `flowsOpen` (#553). `flowsOpen`
+  // swallows its own failure and leaves the record that was open before in
+  // place, so a failed read of the flow this route names used to resolve and
+  // draw the NIGHT of whatever flow was open before, under a link naming a
+  // different one - read-only, so it misleads rather than starts anything,
+  // but it is the same defect class. `mine` below is the one gate every read
+  // of the open record goes through. A late answer to an earlier attempt
+  // (another id, or the record changed under it) is dropped.
   useEffect(() => {
     if (locked || !wantId || wantId === flowId) return;
-    void flowsOpen(wantId);
-  }, [locked, wantId, flowId, flowsOpen]);
+    let current = true;
+    const before = libraryErrorNow();
+    void openFlowById(wantId).then((landed) => {
+      if (current && !landed) setFailure({ id: wantId, from: flowId, reason: flowOpenFailure(before) });
+    });
+    return () => { current = false; };
+  }, [locked, wantId, flowId]);
+
+  // A route with no `?id=` draws whatever is open (the canvas's own TONIGHT
+  // row, which never names a flow the store does not already hold); one that
+  // does is "mine" only once its own open has landed.
+  const mine = wantId === "" || wantId === flowId;
+  const failed = !mine && failure !== null && failure.id === wantId && failure.from === flowId
+    ? failure.reason : null;
+
+  // Parked, without a second request: `GET /api/sequence/resume-arm` already
+  // returns the auto_resume-armed dormant session, and `SessionStore.armed()`
+  // IS "dormant and auto_resume". Asking another route for the same fact would
+  // be a chance for the two to disagree. Gated on `mine`: while waiting,
+  // `flowId` is another flow's, and a resume line about it would describe the
+  // wrong session under this route's title.
+  const seq = useSeq();
+  const resumeArm = useResumeArm();
+  const armed = resumeArm?.armed ?? null;
+  const parked = mine && !runIsLive(seq) && armed != null
+    && armed.origin === "flow" && armed.origin_id === flowId && flowId !== "";
 
   // Re-resolved when the sheet opens on a flow, not cached: this is an answer
   // about a specific instant, and a sheet reopened two hours later would
   // otherwise show a window that has since closed. `tab` is deliberately NOT a
-  // dependency - four views of one payload are not four questions.
+  // dependency - four views of one payload are not four questions. Gated on
+  // `mine` too: while waiting, `flowId` is not this route's flow, and asking
+  // for ITS tonight would draw an answer about the wrong one the moment it
+  // arrived.
   useEffect(() => {
-    if (locked || !flowId) return;
+    if (locked || !flowId || !mine) return;
     void fetchTonight();
-  }, [locked, flowId, fetchTonight]);
+  }, [locked, flowId, mine, fetchTonight]);
 
   // Memoised on the payload: the sheet re-renders on every store tick that
   // touches the flows slice, and `readTonight` walks every target curve and
-  // every story row.
-  const read = useMemo(() => readTonight(payload), [payload]);
-  const live = nightLine(read?.night ?? null);
+  // every story row. Read only once this sheet's own flow is open - while
+  // waiting, `payload` is another flow's cached answer (or none).
+  const read = useMemo(() => (mine ? readTonight(payload) : null), [mine, payload]);
+  const live = mine ? nightLine(read?.night ?? null) : "";
 
   let body: JSX.Element;
   if (locked) {
@@ -104,6 +149,16 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
         Dusk, astronomical dark, the moon and every target window are worked out
         from where the rig is standing, so none of the four tabs can be drawn
         without that access. Nothing was requested from the rig.
+      </p>
+    );
+  } else if (!mine) {
+    // NOTHING OF THE OPEN RECORD (#553): not its night, its plan or its
+    // campaign, every one of which is another flow's (or none) while this is
+    // up. Takes priority over PLAN's own "answers even while the site is
+    // unset" - a compile of the wrong flow is not an exception to that rule.
+    body = (
+      <p className="nx-tn-note" data-testid={failed !== null ? "tonight-open-failed" : "tonight-opening"}>
+        {failed ?? TONIGHT_OPENING}
       </p>
     );
   } else if (!flowId) {
@@ -166,7 +221,7 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
     <Sheet
       data-testid="session-flow-tonight"
       title="TONIGHT"
-      sub={flowName || "no flow open"}
+      sub={mine ? flowName || "no flow open" : undefined}
       live={live === "" ? undefined : live}
       icon={<NxIcon name="clock" size={18} />}
       onBack={() => nav.back()}
