@@ -228,11 +228,19 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     colorVar: "--accent",
     ins: [],
     outs: [_f("window", "window opens"), _e("nightend", "night ends")],
-    params: { start: "Astro dusk", offset: -30, stop: "Dawn", minAlt: 30, repeat: "Single night" },
+    // `startClock`/`stopClock` are "HH:MM" text, read only when `start` or
+    // `stop` is "Clock time" (#191) - nodes.py carries the same pair, in the
+    // same order, for the same reason (see its comment there).
+    params: {
+      start: "Astro dusk", offset: -30, startClock: "",
+      stop: "Dawn", stopClock: "", minAlt: 30, repeat: "Single night",
+    },
     fields: [
       { key: "start", label: "Start", control: "select", options: ["Astro dusk", "Nautical dusk", "Civil dusk", "Clock time"] },
       { key: "offset", label: "Offset", control: "text", unit: "min" },
+      { key: "startClock", label: "Start clock time", control: "text" },
       { key: "stop", label: "Stop", control: "select", options: ["Dawn", "Clock time", "None"] },
+      { key: "stopClock", label: "Stop clock time", control: "text" },
       { key: "minAlt", label: "Min target altitude", control: "text", unit: "°" },
       { key: "repeat", label: "Repeat", control: "select", options: ["Single night", "Nightly until pool complete", "Nightly ×30"] },
     ],

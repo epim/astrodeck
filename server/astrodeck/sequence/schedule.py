@@ -672,13 +672,28 @@ def constraint_gate(target: "Target", site: dict[str, Any],
     Moon-sep / illumination are IMAGE-QUALITY gates: they only bite while the Moon
     is UP (mirrors ``visibility._moon_factor``'s moon-up rule); a Moon below the
     horizon imposes no gate. This is the scheduler path only — unlike the Sun, the
-    Moon is not a motion-boundary safety constraint."""
-    sched = target.schedule
-    lat, lon = _lat_lon(site)
+    Moon is not a motion-boundary safety constraint.
 
-    # --- hour angle (altitude-independent; predictable) ---
+    NO SITE, NO CONSTRAINT (#540). An hour-angle limit needs the site's
+    longitude (for local sidereal time) and a Moon constraint needs its
+    lat/lon too; asked through `_lat_lon` (the old reading here) both got
+    the 0,0 placeholder's, so an hour-angle limit could close a target's
+    window for the night at longitude 0. With no site saved, either check
+    that needs coordinates is skipped rather than judged there, so this
+    returns ``None`` (nothing constrains the target) exactly as it does when
+    the schedule sets no limit at all - the same "not a wait" answer
+    `gating_status` gives its own callers for the same reason. `gating_status`
+    itself never reaches this with no site (it answers before calling in);
+    this guard is for `constraint_gate`'s other caller, direct callers in
+    tests included."""
+    sched = target.schedule
+    from ..site_gate import site_lat_lon
+    latlon = site_lat_lon(site)
+
+    # --- hour angle (longitude only; predictable) ---
     lim = float(getattr(sched, "max_hour_angle_h", 0.0) or 0.0)
-    if lim > 0.0:
+    if lim > 0.0 and latlon is not None:
+        lon = latlon[1]
         ha = hour_angle_h(target.ra_hours, lon, now)
         if ha > lim:
             return ("window_closed", f"past hour-angle limit (+{lim:g}h)", 0.0)
@@ -689,7 +704,8 @@ def constraint_gate(target: "Target", site: dict[str, Any],
     # --- moon (only while the Moon is up — moon-up gates the constraint) ---
     sep_min = float(getattr(sched, "min_moon_sep_deg", 0.0) or 0.0)
     illum_max = float(getattr(sched, "max_moon_illum_pct", 0.0) or 0.0)
-    if sep_min > 0.0 or illum_max > 0.0:
+    if (sep_min > 0.0 or illum_max > 0.0) and latlon is not None:
+        lat, lon = latlon
         m_ra, m_dec = moon_radec(now)
         m_alt, _ = altaz(m_ra, m_dec, lat, lon, now)
         if m_alt > 0.0:
@@ -765,15 +781,12 @@ def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
     tomorrow every scheduler tick — the §1.6 window-freeze bug). When ``None``
     (pre-flight / one-shot callers) it resolves the window at ``now`` as before.
     """
-    lat, lon = _lat_lon(site)
     sched = target.schedule
     if window is not None:
         start_ts, stop_ts = window
     else:
         start_ts, stop_ts = resolve_window(sched, site, twilight_deg, now)
     gate = float(sched.min_altitude_deg or 0.0)
-    if target_alt is None:
-        target_alt = target_altitude(target.ra_hours, target.dec_deg, lat, lon, now)
 
     def out(state: str, reason: str, eta_s: float) -> dict[str, Any]:
         return {"state": state, "reason": reason, "eta_s": max(0.0, eta_s),
@@ -782,6 +795,28 @@ def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
     # 1. window already closed?
     if stop_ts is not None and now >= stop_ts:
         return out("window_closed", "observing window has closed", 0.0)
+
+    # NO SITE (#540). An altitude gate, an hour-angle limit and a Moon
+    # constraint all need real coordinates; asked through `_lat_lon` (its old
+    # reading here) they got the 0,0 placeholder's instead and judged the
+    # Gulf of Guinea's sky - a start altitude judged there, and a target set
+    # aside for the night on an hour angle at longitude 0, neither of which
+    # is an answer about the rig's sky (#540's observation). Treated the way
+    # `_frame_altitude`'s None is treated (#121): not a wait, so a run is
+    # never held on a gate that cannot be evaluated, and said in the reason
+    # ("no site") instead of a number, so a caller can tell an unjudged gate
+    # from a genuinely open one. The clock-only checks above and below (the
+    # window's own stop/start) still apply: no site does not mean no
+    # schedule, only that altitude, hour-angle and Moon cannot be judged.
+    from ..site_gate import site_lat_lon
+    latlon = site_lat_lon(site)
+    if latlon is None:
+        if start_ts is not None and now < start_ts:
+            return out("waiting", "waiting for start time", start_ts - now)
+        return out("ready", "no site", 0.0)
+    lat, lon = latlon
+    if target_alt is None:
+        target_alt = target_altitude(target.ra_hours, target.dec_deg, lat, lon, now)
 
     # 2. never clears the start gate across the window? (pre-flight warning)
     if gate > 0.0:

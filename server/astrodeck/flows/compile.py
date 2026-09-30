@@ -143,9 +143,32 @@ def _num(v, default=0):
     # hold a 400-digit one) is no number this compile can read, and
     # ``float()`` of it raises that, not ValueError.
     try:
-        return int(v) if float(v).is_integer() else float(v)
+        f = float(v)
     except (TypeError, ValueError, OverflowError):
         return default
+    if not f.is_integer():
+        return f
+    # TRY ``int(v)`` FIRST, NOT ``int(f)`` ALONE (#547, and the regression a
+    # first fix here made: a 301-digit exposure that WAS read exactly,
+    # digit for digit, coming back rounded through float64 instead).
+    # ``int()`` is EXACT for any plain integer text, of any length -
+    # Python's ints are arbitrary precision - which is what a 301-digit
+    # value stored as text depends on: ``float(v)`` above already collapsed
+    # it to ~17 significant digits, so ``int(f)`` would hand back a
+    # DIFFERENT huge number, silently, the same "a claim nothing keeps"
+    # shape #547 is itself about. ``int(v)`` only raises here for
+    # WHOLE-NUMBER TEXT WITH A DECIMAL POINT OR AN EXPONENT ("-30.0",
+    # "10.0", "1e1") — ``int()`` never parses either, only ``float()``
+    # does — which is #547's actual bug: the old code took that path
+    # unconditionally (``int(v) if float(v).is_integer() else float(v)``),
+    # so EVERY float-shaped whole number, however small, hit the
+    # exception and silently became ``default``. Only THAT case falls
+    # through to ``int(f)``, and only such text is short enough for the
+    # float round trip to be exact.
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return int(f)
 
 
 def _finite(v, default=0):
@@ -242,6 +265,80 @@ NEXT_PORT = "next"
 #: (``one_panel_pass_wires``).
 PASS_TYPES: frozenset[str] = frozenset(
     t for t, d in NODE_DEFS.items() if d.port(PASS_PORT, "out") is not None)
+
+
+def _dusk_schedule(dusk: FlowNode, notes: list[dict]) -> dict:
+    """The ``schedule`` dict one DUSK WINDOW block compiles to (#191).
+
+    START. "Clock time" reads as ``start_mode: "time"`` with ``start_time``
+    the card's own "HH:MM" text (``schedule._resolve_event_ts`` already
+    reads that mode). Every other choice - the three sun-based ones (Astro,
+    Nautical, Civil dusk), and anything this build does not recognise, such
+    as a hand-edited file - reads as ``"dusk"``, the one this compile has
+    always emitted.
+
+    A RESIDUAL, NOT CLOSED HERE: the three sun-based choices still all
+    compile to that one rig-wide ``start_mode: "dusk"``. ``Schedule``
+    (sequence/models.py) carries no PER-TARGET twilight angle to tell civil
+    (-6 deg), nautical (-12) and astronomical (-18) apart, only the rig's
+    single ``safety.twilight_deg``, so on a rig left at its default every
+    choice here still arms at the same instant. Giving each its own angle
+    needs a field on ``Schedule``, a file this compile has no ownership to
+    add in this pass. What IS fixed: "Clock time" used to compile to that
+    same "dusk" mode too, with no field to even hold a time, so picking it
+    silently kept the sun-based arming; it now reads as its own mode below.
+
+    STOP. "Dawn" and "Clock time" read as their own ``Schedule`` modes
+    (``dawn``/``time``, the latter with ``stop_time``); "None" reads as
+    ``"none"``, as it always has, but ``notes`` now gets a warning for it.
+    BEFORE THIS, "Clock time" ALSO fell through to ``"none"`` - only the
+    literal string "Dawn" was ever matched - so a flow the operator gave a
+    real stop time ran with none at all, the same silent drop as the Start
+    side, and a Stop of "None" gave no warning that the run would not park
+    itself.
+
+    ``notes`` is the compile's own list (mutated, not returned): the same
+    one ``_target_entry``'s skip warning and ``_scope_note`` write into, so
+    every compile warning reaches the caller through one list regardless of
+    which block raised it.
+
+    KEY ORDER IS PINNED (test_flows_compile.py's byte-identical guard on
+    every Example): the four keys a DUSK WINDOW has always emitted keep
+    their original order and are never conditional, so a flow that picks
+    neither Clock time choice - every Example, and every flow saved before
+    it existed - compiles to the exact dict it always did. ``start_time``
+    and ``stop_time`` are appended after them, only for the choice that
+    needs one, so they are simply ABSENT rather than empty for every other
+    flow - the same "not there at all" reading ``mosaic`` gives a 1x1
+    TARGET (S3's own precedent)."""
+    start = str(dusk.params.get("start") or "")
+    stop = str(dusk.params.get("stop") or "")
+    start_mode = "time" if start == "Clock time" else "dusk"
+    if stop == "Clock time":
+        stop_mode = "time"
+    elif stop == "Dawn":
+        stop_mode = "dawn"
+    else:
+        # "None", or anything this build does not recognise: no stop, as a
+        # flow saved before "Clock time" existed already reads (back-compat),
+        # but now said out loud rather than left for the operator to notice
+        # at dawn, imaging on (#191's Impact: dawn park stands off, and
+        # nothing else ends a light run at sunrise).
+        stop_mode = "none"
+        notes.append({"node_id": dusk.id, "level": "warn", "text": (
+            "DUSK WINDOW's Stop is None: this run images into daylight and "
+            "does not park at dawn.")})
+    schedule: dict = {
+        "start_mode": start_mode,
+        "start_offset_min": _finite(dusk.params.get("offset")),
+        "stop_mode": stop_mode,
+        "min_altitude_deg": _finite(dusk.params.get("minAlt")),
+    }
+    if start_mode == "time":
+        schedule["start_time"] = _text(dusk.params.get("startClock"))
+    if stop_mode == "time":
+        schedule["stop_time"] = _text(dusk.params.get("stopClock"))
+    return schedule
 
 
 def _grid_dim(value) -> int:
@@ -1168,12 +1265,7 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     flats = next((n for n in graph.nodes if n.type == "duskflats"), None)
 
     if dusk is not None:
-        schedule = {
-            "start_mode": "dusk",
-            "start_offset_min": _finite(dusk.params.get("offset")),
-            "stop_mode": "dawn" if dusk.params.get("stop") == "Dawn" else "none",
-            "min_altitude_deg": _finite(dusk.params.get("minAlt")),
-        }
+        schedule = _dusk_schedule(dusk, notes)
     else:
         # No dusk node = run now. NOT "never": a flow with no window is one the
         # operator starts by hand, which is exactly the EAA example.

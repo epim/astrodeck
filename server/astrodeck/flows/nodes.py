@@ -186,8 +186,15 @@ NODE_DEFS: dict[str, NodeDef] = {
         # becomes a scheduled hold — the capture cursor survives it and the flow
         # re-arms at the next dusk, mid-cycle.
         outs=(_f("window", "window opens"), _e("nightend", "night ends")),
-        params={"start": "Astro dusk", "offset": -30, "stop": "Dawn",
-                "minAlt": 30, "repeat": "Single night"}),
+        # `startClock`/`stopClock` are "HH:MM" text, read only when `start` or
+        # `stop` is "Clock time" (#191): before these existed the choice had
+        # nowhere to write its time, so picking "Clock time" compiled to the
+        # same sun-based start every other choice did, silently. Blank by
+        # default, as an operator who has not picked the clock option yet
+        # has typed no time.
+        params={"start": "Astro dusk", "offset": -30, "startClock": "",
+                "stop": "Dawn", "stopClock": "", "minAlt": 30,
+                "repeat": "Single night"}),
     "target": NodeDef(
         type="target", label="TARGET", cat="SOURCE",
         # ONE BLOCK, ONE OR MANY PANELS (spec 1.2). `next` is the panel loop's

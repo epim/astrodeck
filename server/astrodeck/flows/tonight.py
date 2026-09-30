@@ -49,8 +49,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..sequence.schedule import (hours_to_meridian_flip, observing_night,
-                                 prev_sun_event)
+from ..sequence.schedule import (_clock_time_near_now, hours_to_meridian_flip,
+                                 observing_night, prev_sun_event)
 from .compile import (_finite, _grid_of, compile_plan, flow_order, grid_size,
                       is_multi_panel, loop_wires, owner_of, parse_skip)
 from .models import FlowGraph, _not_a_count
@@ -625,12 +625,33 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
     automation = plan_dict.get("automation") or {}
     offset_min = _num(sched.get("start_offset_min"))
     start_mode = str(sched.get("start_mode") or "now")
+    stop_mode = str(sched.get("stop_mode") or "")
     min_alt = _num(sched.get("min_altitude_deg"), DEFAULT_MIN_ALT_DEG)
 
-    # The autorun window, as the ENGINE will resolve it: dusk plus the node's
-    # offset, closing at dawn only when the flow says stop at dawn.
-    window_start = dusk + offset_min * 60.0 if start_mode == "dusk" else t_now
-    window_stop = dawn if str(sched.get("stop_mode") or "") == "dawn" else None
+    # The autorun window, as the ENGINE will resolve it (#191): dusk plus the
+    # node's offset for a sun-based start; the nearest occurrence of the
+    # card's own clock time for "Clock time" (``schedule._clock_time_near_now``,
+    # the same reading ``resolve_window`` gives that mode); ``now`` for
+    # anything else, as a flow with no window runs. BEFORE THIS a "Clock
+    # time" start drew the timeline from ``now``, same as no window at all,
+    # although the compiled schedule already carried a real start time.
+    if start_mode == "dusk":
+        window_start = dusk + offset_min * 60.0
+    elif start_mode == "time":
+        window_start = _clock_time_near_now(sched.get("start_time"), t_now) or t_now
+    else:
+        window_start = t_now
+    # Closing at dawn for "dawn", at the card's own clock time for "Clock
+    # time" (None when it does not parse - unresolvable, as a boundary
+    # already reads elsewhere, #527), and not at all for "none" - which
+    # compile_plan now warns about instead of leaving the operator to find
+    # out at dawn (#191).
+    if stop_mode == "dawn":
+        window_stop = dawn
+    elif stop_mode == "time":
+        window_stop = _clock_time_near_now(sched.get("stop_time"), t_now)
+    else:
+        window_stop = None
 
     # Lazy: visibility pulls astropy, FastAPI and the hub. Importing the flows
     # package should not drag a router in behind it.
@@ -2205,6 +2226,8 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     """
     night, automation = out["night"], (plan.get("automation") or {})
     sched = plan.get("schedule") or {}
+    start_mode = str(sched.get("start_mode") or "")
+    stop_mode = str(sched.get("stop_mode") or "")
     dusk, dawn = night["dusk_unix"], night["dawn_unix"]
     tw = out["twilight_deg"]
     timed: list[dict] = []
@@ -2214,12 +2237,18 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
         return {"t_unix": t_unix, "label": label, "msg": msg, "tone": tone}
 
     # 1. the window opens
-    if str(sched.get("start_mode") or "") == "dusk":
+    if start_mode == "dusk":
         offset = _num(sched.get("start_offset_min"))
         applied = (f", {_signed(offset, '+.0f')} min offset applied" if offset
                    else "")
         timed.append(row(night["window_start_unix"],
                          f"Autorun window opens (sun {_signed(tw)}°{applied})"))
+    elif start_mode == "time":
+        # #191: before this, a DUSK WINDOW's "Clock time" Start fell into the
+        # `else` below and told the operator there was no window at all,
+        # although the compile had a real start time for it.
+        timed.append(row(night["window_start_unix"],
+                         "Autorun window opens at the set clock time"))
     else:
         timed.append(row(out["now_unix"],
                          "No dusk window in this flow — the run starts when you "
@@ -2371,7 +2400,47 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
         closers += ", dome closes"
     if graph is not None and any(n.type == "report" for n in graph.nodes):
         closers += ", session report appended"
-    timed.append(row(dawn, f"Dawn: loop ends, mount parks, camera warms{closers}"))
+    # THIS ROW USED TO CLAIM A DAWN PARK UNCONDITIONALLY WHENEVER A DUSK
+    # WINDOW WAS DRAWN (#191): whatever its Stop said, the story's closing
+    # sentence still promised "Dawn: loop ends, mount parks, camera warms" -
+    # the same broken promise the auto-resume tooltip made, per the owner's
+    # 2026-09-24 answer on #189.
+    # Now it says what the compiled ``stop_mode`` actually does.
+    #
+    # A FLOW WITH NO DUSK WINDOW AT ALL IS A DIFFERENT CASE, NOT "no stop
+    # configured": ``compile_plan`` never writes a ``stop_mode`` key for one
+    # (its schedule is just ``{"start_mode": "now"}``), and `plan_extras`
+    # parks and warms when ANY run ends, dusk-bounded or not
+    # (test_flows_night_ends_parked.py holds that claim against the plan's
+    # own flag). So the absence of the KEY, not the value "none", is what
+    # keeps this the old unconditional line - checked first, since
+    # `str(sched.get("stop_mode") or "")` cannot tell "no key" from "none"
+    # by itself.
+    #
+    # WITH A DUSK WINDOW: dawn parks as it always has, timed at ``dawn``,
+    # which the sort below still reads as the last row (the true end of the
+    # astronomical night, later than any other event this tab draws).
+    # "Clock time" parks too (``park_when_done`` runs whenever the run ends,
+    # not only at dawn), but AT ITS OWN CLOCK, which can fall earlier than
+    # moonset or astronomical dark - so this row is NOT forced to be last;
+    # the timeline is a chronological list, and an early stop is not "the
+    # end" of it, only of the run. "None" - or a "Clock time" whose text did
+    # not parse - gets the warning ``compile_plan`` already wrote, repeated
+    # here (timed at ``dawn``, the instant the false promise used to name)
+    # because this is where an operator reads the night, not the editor's
+    # issue list.
+    if "stop_mode" not in sched or stop_mode == "dawn":
+        timed.append(row(dawn, f"Dawn: loop ends, mount parks, camera warms{closers}"))
+    elif stop_mode == "time" and night["window_stop_unix"] is not None:
+        timed.append(row(night["window_stop_unix"],
+                         f"Run stops at the set clock time: mount parks, "
+                         f"camera warms{closers}"))
+    else:
+        timed.append(row(
+            dawn,
+            "Dawn passes with no Stop configured: imaging continues into "
+            "daylight and the mount is not parked - give the DUSK WINDOW a "
+            "Stop", TONE_WARN))
 
     timed.sort(key=lambda r: r["t_unix"] if r["t_unix"] is not None else 0.0)
     # ...then the hourless rows, then the dawn line last, which is the
