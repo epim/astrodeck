@@ -15,8 +15,11 @@ The hard-won rules from the adversarial UX critiques are encoded here:
   retry queue; it is *never* allowed to propagate and kill the subscriber loop.
 * **A real round-trip test** sets ``sink.verified`` only on a genuine 2xx — a POST
   that 404s does not count as "verified" (C1-16).
-* **External dead-man's-switch** (C2-9): :meth:`deadman_ping` GETs the user's
-  healthchecks-style URL each frame; *its absence* is what pages them.
+* **External dead-man's-switch** (C2-9, #542): :meth:`deadman_ping` GETs the
+  user's healthchecks-style URL on a wall-clock cadence
+  (:meth:`_wallclock_loop`, independent of the engine's frames) and again,
+  best-effort, whenever the engine's frame path calls it; *its absence* is
+  what pages them.
 * **The reader never awaits a sink** (#538). The bus subscription is bounded
   and drops its oldest event when full, and it used to be read by a loop that
   awaited every send inline, up to ``_HTTP_TIMEOUT_S`` per sink. A hung
@@ -28,6 +31,30 @@ The hard-won rules from the adversarial UX critiques are encoded here:
   gives up a warning before a state-change alert, never the reverse; and the
   #444 ``relay_gap`` marker, which says the subscription did drop, is logged
   once, at warning, with the count.
+* **A hung sink cannot delay a different sink, and an eviction is not
+  silent** (#549). The outbox's single sender used to send an alert to each
+  of its sinks IN TURN, so a hung webhook held a healthy ntfy sink's copy of
+  the SAME alert behind it — and held every later, already-queued alert
+  behind it too, an UNSAFE edge arriving after a burst of warnings among
+  them, minutes late. :meth:`_fan_out` now hands each alert to every
+  targeted sink's own bounded lane at once (:class:`_SinkLane`), and each
+  lane is drained by its own task, so only that sink's own backlog can ever
+  delay it. A lane still gives a warning up to keep a state change (never
+  the reverse, unchanged from the shared outbox's rule), and now COUNTS what
+  it gives up and says so once it has room, the ``relay_gap`` pattern
+  applied to a sink instead of the bus subscription.
+* **Neither the dead-man ping nor the heartbeat holds the frame loop**
+  (#542). ``SequenceEngine._frame_alerts_tick`` awaits :meth:`deadman_ping`
+  and :meth:`emit_heartbeat` after every frame's safety gate; both used to
+  await the actual send, so a monitor or sink that took the connection and
+  never answered held every frame up to ``_HTTP_TIMEOUT_S``, twice over when
+  a heartbeat was also due. While the outbox pipeline is live (:meth:`run`
+  has started it), :meth:`deadman_ping` fires the real GET as its own task
+  (a single-flight guard means a still-running ping just absorbs the next
+  tick) and :meth:`emit_heartbeat` only dedupes and enqueues; neither awaits
+  a sink. A bare dispatcher (no :meth:`run`, the shape most of this module's
+  own tests build) keeps the old inline behaviour, so a direct caller still
+  sees a real result.
 
 One :class:`httpx.AsyncClient` is reused for the dispatcher's lifetime.
 """
@@ -183,6 +210,51 @@ class AlertEvent:
         return f"{self.type}:{self.level}:{self.message}"
 
 
+class _SinkLane:
+    """One configured sink's own outbound queue (#549). A hung sink's
+    backlog lives only here, so it can never delay a DIFFERENT sink's
+    delivery of the same alert — that sink has its own lane and its own
+    draining task.
+
+    Bounded and evicted by the same rule as the shared outbox
+    (:meth:`AlertDispatcher._enqueue`): full, it gives up its oldest
+    non-state-change alert; full of state changes, it gives up its oldest
+    for a newer one; a plain alert arriving to a lane already full of state
+    changes is refused outright. Unlike the outbox, an eviction here is
+    COUNTED (``evicted``) and flagged (``eviction_owed``) so the dispatcher
+    can say it once there is room, mirroring ``_say_gap`` (#444) for a sink
+    instead of the bus subscription. Draining is plain FIFO — a lane never
+    reorders what it holds, only decides what to drop when it is full."""
+
+    __slots__ = ("sink_id", "queue", "ready", "evicted", "evicted_said",
+                 "eviction_owed")
+
+    def __init__(self, sink_id: str):
+        self.sink_id = sink_id
+        self.queue: deque[AlertEvent] = deque()
+        self.ready = asyncio.Event()
+        self.evicted = 0
+        self.evicted_said = 0
+        self.eviction_owed = False
+
+    def push(self, alert: AlertEvent) -> None:
+        if len(self.queue) >= _OUTBOX_MAX:
+            victim = next((a for a in self.queue if a.type not in _NEVER_DEDUPE),
+                          None)
+            if victim is not None:
+                self.queue.remove(victim)
+            elif alert.type in _NEVER_DEDUPE:
+                self.queue.popleft()
+            else:
+                self.evicted += 1
+                self.eviction_owed = True
+                return
+            self.evicted += 1
+            self.eviction_owed = True
+        self.queue.append(alert)
+        self.ready.set()
+
+
 class AlertDispatcher:
     """Maps bus events to outbound alerts. Construct with the bus and a
     ``get_config`` callable returning the live :class:`~astrodeck.config.AppConfig`
@@ -216,6 +288,16 @@ class AlertDispatcher:
         # last gap was said, and whether one is owed (see _say_gap).
         self._gap_said = 0
         self._gap_owed = False
+        # Per-sink lanes (#549): sink id -> its own queue, and sink id -> its
+        # own draining task. Populated lazily by _fan_out as sinks are first
+        # targeted; cleared at the start and end of run() (a fresh run gets
+        # fresh lanes rather than replaying a previous run's backlog).
+        self._lanes: dict[str, _SinkLane] = {}
+        self._lane_tasks: dict[str, asyncio.Task] = {}
+        # The dead-man ping's own in-flight task while the outbox pipeline is
+        # live (#542): a single-flight guard so a still-running ping absorbs
+        # the next tick instead of piling another request up behind it.
+        self._deadman_task: asyncio.Task | None = None
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -231,11 +313,13 @@ class AlertDispatcher:
 
         The loop READS; it never sends (#538). Each event is mapped to its
         alert and put on the outbox (:meth:`_enqueue`), and the sender task
-        (:meth:`_send_loop`) does the awaiting, so a sink that takes
-        ``_HTTP_TIMEOUT_S`` to fail holds the sender and not the bus
-        subscription, which drops its oldest event when it falls
-        ``SUBSCRIBER_MAX`` behind. A ``relay_gap`` marker, the subscription
-        saying it did drop (#444), is logged (:meth:`_say_gap`).
+        (:meth:`_send_loop`) fans it out to each targeted sink's own lane
+        (:meth:`_fan_out`, #549) without awaiting a send either, so a sink
+        that takes ``_HTTP_TIMEOUT_S`` to fail holds only that sink's own
+        lane task, never this loop, the bus subscription (which drops its
+        oldest event when it falls ``SUBSCRIBER_MAX`` behind), or a
+        different sink. A ``relay_gap`` marker, the subscription saying it
+        did drop (#444), is logged (:meth:`_say_gap`).
 
         Also owns a WALL-CLOCK dead-man's-switch + heartbeat task (P0-3) so those
         pings keep firing through a legitimate safety pause / scheduler wait —
@@ -247,6 +331,9 @@ class AlertDispatcher:
         if self._outbox:
             self._outbox_ready.set()
         self._gap_said, self._gap_owed = 0, False
+        self._lanes = {}
+        self._lane_tasks = {}
+        self._deadman_task = None
         wallclock = asyncio.create_task(self._wallclock_loop())
         sender = asyncio.create_task(self._send_loop())
         try:
@@ -275,6 +362,25 @@ class AlertDispatcher:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+            # sender is done, so _fan_out cannot start a new lane task past
+            # this point (#549) — safe to cancel the whole set now.
+            lane_tasks = list(self._lane_tasks.values())
+            for task in lane_tasks:
+                task.cancel()
+            for task in lane_tasks:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._lane_tasks = {}
+            self._lanes = {}
+            if self._deadman_task is not None:
+                self._deadman_task.cancel()
+                try:
+                    await self._deadman_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._deadman_task = None
             self.bus.unsubscribe(q)
             self._outbox_ready = None
             if self._client is not None:
@@ -314,8 +420,10 @@ class AlertDispatcher:
             self._outbox_ready.set()
 
     async def _send_loop(self) -> None:
-        """The sender task (#538): the outbox's alerts, oldest first, each to
-        its sinks. Idle for a second, it retries what failed before
+        """The outbox's alerts, oldest first, each handed to its sinks' own
+        lanes (:meth:`_fan_out`, #549) — this loop never sends, so a hung
+        sink holds only its own lane, never this loop and never a
+        different sink. Idle for a second, it retries what failed before
         (:meth:`_retry_undelivered`), which gives way to a fresh alert.
         Never raises out of the loop."""
         ready = self._outbox_ready
@@ -329,10 +437,74 @@ class AlertDispatcher:
                 continue
             alert = self._outbox.popleft()
             try:
-                await self._send_all(alert)
+                self._fan_out(alert)
             except Exception as e:  # never kill the sender
                 self.bus.log("warning", f"alert dispatch error: {e}",
                              _ALERT_LOG_SOURCE)
+
+    def _fan_out(self, alert: AlertEvent) -> None:
+        """Hand ``alert`` to every sink that currently wants it, each onto
+        that sink's OWN lane (#549). Synchronous — it only resolves the sink
+        list, appends to a deque and wakes an ``asyncio.Event``, so handing
+        off never waits on a slow sink. A sink's lane and draining task are
+        created the first time that sink is targeted."""
+        for sink in self._sinks_for(alert):
+            lane = self._lanes.get(sink.id)
+            if lane is None:
+                lane = self._lanes[sink.id] = _SinkLane(sink.id)
+            task = self._lane_tasks.get(sink.id)
+            if task is None or task.done():
+                self._lane_tasks[sink.id] = asyncio.create_task(
+                    self._lane_loop(lane))
+            lane.push(alert)
+
+    async def _lane_loop(self, lane: "_SinkLane") -> None:
+        """One sink's own dedicated sender (#549). Drains ``lane`` strictly
+        FIFO, one send at a time, so alerts to THIS sink stay in the order
+        they arrived; a hung send here can delay only more of this same
+        lane, never a different sink's lane, which has its own task. Idle,
+        it says an owed eviction once there is room for the line (mirrors
+        :meth:`_say_gap` for a sink instead of the bus subscription)."""
+        try:
+            while not self._stop.is_set():
+                if lane.eviction_owed and len(lane.queue) < _OUTBOX_MAX:
+                    self._say_lane_eviction(lane)
+                if not lane.queue:
+                    lane.ready.clear()
+                    try:
+                        await asyncio.wait_for(lane.ready.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                alert = lane.queue.popleft()
+                sink = next((s for s in getattr(self.get_config(), "alerts", [])
+                            if s.id == lane.sink_id), None)
+                if sink is None:
+                    continue  # the sink was removed from config while queued
+                try:
+                    await self._send_and_track(sink, alert)
+                except Exception as e:  # never kill the lane
+                    self.bus.log("warning", f"alert dispatch error: {e}",
+                                 _ALERT_LOG_SOURCE)
+        except asyncio.CancelledError:
+            raise
+
+    def _say_lane_eviction(self, lane: "_SinkLane") -> None:
+        """Say once that one sink's own lane dropped alerts because it could
+        not keep up (#549): the ``_say_gap`` pattern (#444), scoped to a
+        sink instead of the bus subscription. Source ``alert``, so the line
+        is not itself turned into a new alert."""
+        lane.eviction_owed = False
+        missed = lane.evicted - lane.evicted_said
+        lane.evicted_said = lane.evicted
+        if missed <= 0:
+            return
+        self.bus.log(
+            "warning",
+            f"alert dispatcher dropped {missed} queued alert(s) for sink "
+            f"{lane.sink_id}: it could not keep up, {lane.evicted} since it "
+            f"started",
+            _ALERT_LOG_SOURCE)
 
     def _say_gap(self, q: Any) -> None:
         """Say that the reader's subscription dropped events (#444, #538):
@@ -457,9 +629,20 @@ class AlertDispatcher:
 
     async def emit_heartbeat(self, message: str) -> None:
         """Engine helper: emit a progress heartbeat to sinks whose
-        ``heartbeat_min`` has elapsed. Sent inline, so its caller waits on
-        the sinks; the engine's frame path is such a caller (#542)."""
-        await self._dispatch(AlertEvent("heartbeat", "info", message))
+        ``heartbeat_min`` has elapsed.
+
+        While the outbox pipeline is live (:meth:`run` has started it), this
+        only dedupes and enqueues (#542): the caller — the engine's own
+        per-frame path is one — must never wait on a sink. With no pipeline
+        running (a bare dispatcher, as most of this module's tests build),
+        it falls back to sending inline so the alert is not silently
+        dropped on the floor."""
+        alert = AlertEvent("heartbeat", "info", message)
+        if self._outbox_ready is not None:
+            if not self._should_dedupe(alert):
+                self._enqueue(alert)
+            return
+        await self._dispatch(alert)
 
     # -- dispatch + send -------------------------------------------------------
 
@@ -515,22 +698,33 @@ class AlertDispatcher:
         return last is not None and (now - last) < _DEDUPE_WINDOW_S
 
     async def _dispatch(self, alert: AlertEvent) -> None:
-        """Dedupe, then send now. For a caller that awaits the send (the
-        heartbeat); the reader dedupes and queues instead (#538)."""
+        """Dedupe, then send now. For a caller that awaits the send directly
+        (``test()``, and a bare dispatcher's fallback paths); the reader
+        dedupes and queues instead (#538), and a live dispatcher's
+        :meth:`emit_heartbeat` does the same (#542)."""
         if self._should_dedupe(alert):
             return
         await self._send_all(alert)
 
     async def _send_all(self, alert: AlertEvent) -> None:
-        """Send one alert to each sink that wants it, now. A failure is
-        logged, published and queued for retry, never raised."""
+        """Send one alert to each sink that wants it, now, one at a time.
+        For a caller that awaits the whole round trip; the queued path
+        (:meth:`_fan_out`, #549) hands each sink its own lane instead, so a
+        hung one here cannot delay this caller's other sinks — that
+        guarantee is theirs, not this method's."""
         for sink in self._sinks_for(alert):
-            ok, err = await self._send(sink, alert)
-            if not ok:
-                self.bus.log("warning",
-                             f"{sink.kind} alert failed: {err}", "alert")
-                self.bus.publish("alert", sink=sink.id, ok=False, error=str(err))
-                self._undelivered.append((sink, alert))
+            await self._send_and_track(sink, alert)
+
+    async def _send_and_track(self, sink: Any, alert: AlertEvent) -> None:
+        """Send one alert to one sink; on failure, log, publish and queue
+        for retry. Shared by the immediate :meth:`_send_all` path and each
+        sink's own lane task (:meth:`_lane_loop`, #549), never raised."""
+        ok, err = await self._send(sink, alert)
+        if not ok:
+            self.bus.log("warning",
+                         f"{sink.kind} alert failed: {err}", "alert")
+            self.bus.publish("alert", sink=sink.id, ok=False, error=str(err))
+            self._undelivered.append((sink, alert))
 
     async def _send(self, sink: Any, ev: AlertEvent) -> tuple[bool, str | None]:
         """Deliver one alert to one sink. Returns ``(ok, error)``; never raises."""
@@ -681,9 +875,28 @@ class AlertDispatcher:
     # -- dead-man's-switch -----------------------------------------------------
 
     async def deadman_ping(self) -> None:
-        """GET the configured external healthcheck URL. Absence of these pings is
-        what triggers *their* alert (C2-9). A transport failure is not surfaced —
-        a missed ping is the signal, not an error to page on.
+        """Trigger a GET of the configured external healthcheck URL (#542).
+
+        While the outbox pipeline is live (:meth:`run` has started it — the
+        wall-clock task and the engine's frame path are both such callers),
+        the real ping runs on its own task and this returns at once: a
+        stalled monitor must never hold up either caller. A ping already in
+        flight absorbs this call rather than piling another request up
+        behind it. With no pipeline running (a bare dispatcher, as this
+        module's own tests below build), it pings inline so a direct caller
+        sees the real result — see :meth:`_deadman_ping_now` for what the
+        ping itself does and why."""
+        if self._outbox_ready is None:
+            await self._deadman_ping_now()
+            return
+        if self._deadman_task is not None and not self._deadman_task.done():
+            return
+        self._deadman_task = asyncio.create_task(self._deadman_ping_now())
+
+    async def _deadman_ping_now(self) -> None:
+        """The dead-man ping itself. Absence of these pings is what triggers
+        *their* alert (C2-9). A transport failure is not surfaced — a missed
+        ping is the signal, not an error to page on.
 
         Two P0-3 fixes vs. the original silent path:
 
