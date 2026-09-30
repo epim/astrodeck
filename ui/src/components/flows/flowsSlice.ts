@@ -1000,6 +1000,17 @@ export function createFlowsActions(
           return;
         }
       }
+      // CLEARED HERE, not before the refusal check above (#555). That check
+      // either returns early having written ITS OWN `libraryError`
+      // (FLOW_OPEN_OVER_UNSAVED) or falls through here, meaning this open is
+      // really going to try a read. Clearing right before the read - rather
+      // than trusting `flowOpenFailure`'s old text comparison against a value
+      // captured before this call - is what lets a caught failure below be
+      // told apart from a stale leftover: whatever `libraryError` holds once
+      // this function returns, it is this attempt's, never an earlier one's,
+      // even when the server gives the identical reason twice in a row (the
+      // repeated "no flow named <id>" case #555 found unproven).
+      set((s) => patch(s, { libraryError: null }));
       try {
         const rec = (await flowsApi.get(id)) as FlowRecordRec;
         set((s) => patch(s, {

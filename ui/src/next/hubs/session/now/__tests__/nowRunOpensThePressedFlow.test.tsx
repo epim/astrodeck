@@ -110,6 +110,8 @@ let asked: string[] = [];
 let refusePut: string | null = null;
 /** When set, a GET of flow B answers with this record instead of B's. */
 let bAnswers: any = null;
+/** When set, a GET of flow B answers 404 with this detail instead of 200. */
+let bNotFound: string | null = null;
 
 g.fetch = async (url: any, init?: any) => {
   const u = String(url);
@@ -133,6 +135,7 @@ g.fetch = async (url: any, init?: any) => {
       const body = init?.body ? JSON.parse(init.body) : {};
       return reply(200, { ...record(id), ...(body.flow ?? body), id });
     }
+    if (id === B && bNotFound) return reply(404, { detail: bNotFound });
     if (id === B && bAnswers) return reply(200, bAnswers);
     if (id === A || id === B) return reply(200, record(id));
   }
@@ -274,6 +277,33 @@ await test("a 200 that carries another flow's record starts nothing", async () =
       `the row did not say the server answered with another flow: ${JSON.stringify(said)}`);
   } finally {
     bAnswers = null;
+  }
+});
+
+await test("a plain 404 on flow B's read starts nothing and says the server's reason", async () => {
+  // Flow A clean, so no save is asked; B's read is the ordinary failure this
+  // class is about - not the #450 refusal, not a 200 carrying the wrong
+  // record, but a flow that no longer exists. #499's own remaining item: the
+  // #450 case's toast merges into the store's own (same title), and the 200
+  // case's is FLOW_OPEN_MISMATCH, so neither proves the row prints the
+  // server's OWN reason. This is the one case where nothing else writes
+  // `libraryError`, so the toast is entirely the row's, and it has to carry
+  // the 404's detail verbatim.
+  bNotFound = "no flow named flow-b";
+  try {
+    await mount(false);
+    await press(`run-flow-${B}`);
+    assert(asked.includes(`GET /api/flows/${B}`),
+      `premise: flow B was never read; requests: ${asked.join(", ")}`);
+    assert(!asked.includes(`PUT /api/flows/${A}`),
+      `premise: flow A was clean, so no save-first PUT should have been sent; requests: ${asked.join(", ")}`);
+    eq(runs(), [], "a press on flow B's row posted a run:");
+    const said = toastsTitled(FLOW_OPEN_FAILED);
+    assert(said.some((t) => String(t.detail).includes(bNotFound as string)
+      && String(t.detail).includes("Nothing was started.")),
+      `the row did not carry the server's own 404 reason: ${JSON.stringify(said)}`);
+  } finally {
+    bNotFound = null;
   }
 });
 

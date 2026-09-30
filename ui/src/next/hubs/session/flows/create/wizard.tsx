@@ -39,11 +39,20 @@ import {
   ActionButton, Card, Chip, Field, Label, LockNote, Mono, Segmented, Sheet, TextInput,
 } from "../../../../ui";
 import {
+  FLOW_OPEN_FAILED, flowOpenFailure, libraryErrorNow, openFlowById,
+} from "../openFlow";
+import {
   AUTOMATIONS, AUTOMATION_DEFAULTS, BLANK_FAILED, BLANK_NAME, BLANK_TAGLINE, BUSY_REASON,
   GENERATE_FAILED, KIND_SUB, KINDS, TARGET_PLACEHOLDER, WIZARD_NOTE, blankNodes,
   type WizardKind,
 } from "./wizardModel";
 import "./create.css";
+
+/** The second half of GENERATE FLOW's / START BLANK's toast when the flow
+ *  they just made did not open (#553): the server already saved it, so
+ *  nothing is lost, and pressing the button again would make a second one. */
+export const WIZARD_SAVED_NOT_OPENED =
+  "The new flow is saved in My flows; open it from Session - Flows.";
 
 /** Where a freshly created flow opens, as a route.
  *
@@ -63,7 +72,6 @@ export function newFlowRoute(id: string, phone: boolean): string {
 }
 
 export function FlowNewSheet(): JSX.Element {
-  const flowsOpen = useStore((s) => s.flowsOpen);
   const enqueueToast = useStore((s) => s.enqueueToast);
   const canCreate = useCanControlCapture();
   const phone = useBreakpoint() === "phone";
@@ -97,11 +105,25 @@ export function FlowNewSheet(): JSX.Element {
         target: target.trim(),
       })) as { id?: string };
       if (!rec?.id) throw new Error("the server returned a flow with no id");
-      // OPEN FIRST, THEN NAVIGATE. The host that renders `?open=` opens the flow
-      // itself when it does not already have it, so arriving with the record
-      // already loaded is what keeps that to ONE `GET /api/flows/<id>` instead
-      // of a race between this call and the host's effect.
-      await flowsOpen(rec.id);
+      // OPEN, AND NAVIGATE ONLY WHEN IT LANDED (#553). `flowsOpen` leaves the
+      // record that was open before in place when its read fails, and since
+      // #450 refuses to replace a flow whose unsaved edits its save did not
+      // keep - so navigating whatever the open did used to send the operator
+      // onto a route for the new flow, drawing another flow's canvas or stage
+      // list underneath it (`FlowsCanvasHost`, `FlowStagesPhoneSheet`, both
+      // #553). `openFlowById` says what landed; on false this sheet stays
+      // open, with the new flow already saved and reachable from Session -
+      // Flows, so GENERATE pressed again would make a second one rather than
+      // silently reopening the failed one.
+      const before = libraryErrorNow();
+      if (!(await openFlowById(rec.id))) {
+        enqueueToast({
+          level: "error",
+          title: FLOW_OPEN_FAILED,
+          detail: `${flowOpenFailure(before)} ${WIZARD_SAVED_NOT_OPENED}`,
+        });
+        return;
+      }
       nav.go(newFlowRoute(rec.id, phone));
     } catch (e) {
       enqueueToast({
@@ -125,7 +147,16 @@ export function FlowNewSheet(): JSX.Element {
         graph: { nodes: blankNodes(), edges: [] },
       })) as { id?: string };
       if (!rec?.id) throw new Error("the server returned a flow with no id");
-      await flowsOpen(rec.id);
+      // Same door as GENERATE, and the same reason (#553).
+      const before = libraryErrorNow();
+      if (!(await openFlowById(rec.id))) {
+        enqueueToast({
+          level: "error",
+          title: FLOW_OPEN_FAILED,
+          detail: `${flowOpenFailure(before)} ${WIZARD_SAVED_NOT_OPENED}`,
+        });
+        return;
+      }
       nav.go(newFlowRoute(rec.id, phone));
     } catch (e) {
       enqueueToast({
