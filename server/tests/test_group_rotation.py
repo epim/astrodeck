@@ -884,15 +884,20 @@ async def test_two_panels_failing_beside_two_that_guide_are_the_panels_fault(
         warn (the group goes unguided, so 1-2 and 2-1 are shot unguided):
             AssertionError: ('complete', 'all targets complete')
             assert 'complete' == 'incomplete'
-        skip (the whole mosaic is set aside after pass 1):
+        skip (the whole mosaic is set aside after pass 1; RE-PINNED FOR #575,
+        the reason no longer makes the blanket claim "No panel's failure
+        count moved" -- this scenario counts none, and now says so instead
+        of asserting it categorically):
             AssertionError: ["M31: guiding did not start on 1-2: no guide star
             found (attempt 1); retried on the next pass (counted when the pass
             ...rt on any panel of M31; the mosaic is set aside for tonight: a
             restart tonight does not retry it, the next night does']
             assert not ["M31: guiding did not start on any of the 2 panels
-            tried this pass: the guider's fault, not a panel's. No panel's
-            fai...rt on any panel of M31; the mosaic is set aside for tonight:
-            a restart tonight does not retry it, the next night does']
+            tried this pass: the guider's fault, not a panel's; no panel's
+            centring miss was counted in the same pass, and the plan's
+            guiding_action decides', 'M31: guiding did not start on any
+            panel of M31; the mosaic is set aside for tonight: a restart
+            tonight does not retry it, the next night does']
         abort:
             AssertionError: ('unsafe', 'guiding required but it did not start
             on any panel of M31')

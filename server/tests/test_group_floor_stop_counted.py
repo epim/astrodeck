@@ -173,8 +173,8 @@ async def test_a_floor_stopped_panels_guider_start_counts_for_its_pass(
     attempts and two failures, the guider's fault (observed):
         AssertionError: pass 1 was judged the guider's fault: ["M31: guiding
         did not start on any of the 2 panels tried this pass: the guider's
-        fault, not a panel's. No panel's failure count moved; the plan's
-        guiding_action decides"]
+        fault, not a panel's; no panel's centring miss was counted in the
+        same pass, and the plan's guiding_action decides"]
         assert ([])
     and the same under "note_visit drops the guide start" in `GroupRun`
     (observed).
