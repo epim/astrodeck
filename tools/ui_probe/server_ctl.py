@@ -66,6 +66,16 @@ install's, is used as asked but never marked, and the start says so; so is
 one holding a marker copied from another directory, which marking again
 would pass off as this directory's.
 
+`--fresh` requires that same marker before it deletes anything (#541): a
+mistyped or pasted --config-dir/--capture-dir used to be `shutil.rmtree`'d
+with no check at all. It now refuses to wipe an existing directory that
+carries no marker naming it, unless that directory is the checkout's own
+`<repo>/.probe/` or lives under it, which is accepted unmarked once (this
+default predates the marker) and marked like any other directory `--fresh`
+just cleared. Both directories are checked before either is deleted, so a
+refusal on one leaves both untouched. Backlog ruling D-02 (owner-approved
+2026-09-30).
+
 A staged solve failure (#189 S7 item 1): `--sim-solve-fault RA_H,DEC,RADIUS`
 sets ASTRODECK_SIM_SOLVE_FAULT for the server, which the SimSolver reads
 (server/astrodeck/solve/simsolver.py) to fail every solve within RADIUS deg of
@@ -205,6 +215,44 @@ def _dirs_to_mark(dirs: tuple[Path, ...]) -> list[Path]:
     #539)."""
     return [d for d in dict.fromkeys(dirs)
             if not d.exists() or _marked_here(d)]
+
+
+def _under_probe_default(path: Path) -> bool:
+    """Whether `path` is the checkout's own `<repo>/.probe/`, or lives under
+    it: the one place D-02 (backlog ruling D-02, owner-approved 2026-09-30)
+    lets `--fresh` wipe an unmarked directory, because a checkout's default
+    probe directories can predate the marker and would otherwise need a
+    manual delete on every stale checkout. Resolved against the CURRENT
+    REPO_ROOT (a module global, not a value closed over earlier), so a test
+    can point it at a scratch tree without touching the real checkout."""
+    try:
+        probe_root = (REPO_ROOT / ".probe").resolve()
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return resolved == probe_root or probe_root in resolved.parents
+
+
+def _refuse_fresh_wipe(directory: Path, flag: str) -> str | None:
+    """Why `--fresh` may not wipe `directory`, or None. Nothing to refuse if
+    it does not exist yet. One holding the marker an earlier start wrote for
+    it (`_marked_here`) is a probe directory by its own claim. Anything else
+    that already exists outside the checkout's own `<repo>/.probe/` may be a
+    real install's (#541): D-02 requires the marker there, so it is refused
+    rather than wiped."""
+    if not directory.exists():
+        return None
+    if _marked_here(directory):
+        return None
+    if _under_probe_default(directory):
+        return None
+    return (f"{flag} {directory} exists and carries no {PROBE_MARKER} marker "
+            f"naming it, so it may be a real install's directory and not one "
+            f"a probe start made: refusing to wipe it (#541). Delete it by "
+            f"hand if it is safe to lose, or pass a directory under "
+            f"{REPO_ROOT / '.probe'} (accepted unmarked once) or one this "
+            f"tool already marked (backlog ruling D-02, owner-approved "
+            f"2026-09-30).")
 
 
 def _wait_healthz(client: ServerClient, timeout_s: float) -> None:
@@ -364,6 +412,16 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 2
 
     if args.fresh:
+        # Both are checked before either is deleted (#541): a refusal on one
+        # must not leave the other already wiped.
+        refusals = [r for r in (
+            _refuse_fresh_wipe(config_dir, "--config-dir"),
+            _refuse_fresh_wipe(capture_dir, "--capture-dir"),
+        ) if r]
+        if refusals:
+            for why in refusals:
+                _log(f"ERROR: {why}")
+            return 2
         _log(f"--fresh: wiping {config_dir} and {capture_dir}")
         _rmtree_if_exists(config_dir)
         _rmtree_if_exists(capture_dir)
