@@ -6716,7 +6716,7 @@ class SequenceEngine:
 
     @staticmethod
     def _group_hop_checks(target: Target, group: TargetGroup, result: dict,
-                          miss: str | None) -> None:
+                          miss: str | None, *, angle_ok: bool = False) -> None:
         """A member's hop is checked against what its centring measured, and
         raises `PanelDeferred` when the panel cannot be laid now but may be on
         the next pass (#189 S2, spec 5.6 step 4):
@@ -6727,6 +6727,14 @@ class SequenceEngine:
           rotator tried and failed) or ``rotation_unavailable`` (no rotator
           answered, I-15): the frame would be at whatever angle the camera
           sits, and a mosaic's panels must share one.
+
+        EXCEPT a stopped-short rotation whose hop measured the camera within
+        the group's angle tolerance (``angle_ok``, `_hop_angle_within`): the
+        panels share the angle the tolerance allows, which is all the mosaic
+        needs, and ``_group_angle_check`` then verifies it. The rotator on
+        astrotown moved -5.7 deg with the camera not following (2026-09-28,
+        #526), and each such visit was a strike toward setting the panel
+        aside (#534).
 
         Each deferral says why in words, with what the call reported, which
         the set-aside alert repeats after ``max_failed_visits`` of them.
@@ -6759,12 +6767,31 @@ class SequenceEngine:
                 raise PanelDeferred("the rotator's solve could not run, so "
                                     "the camera was not turned to the "
                                     "mosaic's angle", kind=SOLVE_TRANSIENT)
-            if result.get("rotation_skipped"):
+            if result.get("rotation_skipped") and not angle_ok:
                 raise PanelDeferred("the rotator did not turn the camera to "
                                     "the mosaic's angle", kind="rotation")
             if result.get("rotation_unavailable"):
                 raise PanelDeferred("no rotator was there to turn the camera "
                                     "to the mosaic's angle", kind="rotation")
+
+    @staticmethod
+    def _hop_angle_within(group: TargetGroup, rec: dict | None,
+                          since: float) -> bool:
+        """True when this hop measured the camera within the group's angle
+        tolerance of its layout angle, mod 180: a record exposed at or after
+        ``since`` (the hop start), judged by `angle_check.angle_verdict`, the
+        rule ``_group_angle_check`` applies. A group with no finite angle or
+        tolerance has nothing to judge by, and a missing, stale or unreadable
+        record is no evidence: each answers False, so the deferral stands."""
+        pa, tol = group.pa_deg, group.angle_tolerance_deg
+        if (pa is None or tol is None or not math.isfinite(pa)
+                or not math.isfinite(tol) or tol < 0):
+            return False
+        try:
+            return angle_verdict(rec, planned_pa_deg=pa, since_ts=since,
+                                 tolerance_deg=tol).kind == "ok"
+        except ValueError:
+            return False
 
     # ---- the angle: the check on every hop (U-04) and ruling 9's lock ------
     #
@@ -7434,7 +7461,9 @@ class SequenceEngine:
         # which a panel about to be retried on the next pass need not pay.
         member = self._group_of(target)
         if member is not None and hop_centring is not None:
-            self._group_hop_checks(target, member, hop_centring, hop_miss)
+            self._group_hop_checks(
+                target, member, hop_centring, hop_miss,
+                angle_ok=self._hop_angle_within(member, hop_angle, hop_wall0))
         if member is not None and "telescope" in self.hub.devices:
             await self._group_angle_check(target, member, hop_centring,
                                           hop_angle, hop_wall0)
