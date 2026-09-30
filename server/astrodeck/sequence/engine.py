@@ -397,6 +397,7 @@ TRACKING_RECOVERY_TIMEOUT_S = 2400.0
 MOUNT_RECONNECT_TIMEOUT_S = 30.0  # reopening a dropped link so a wind-down can park
 FILTER_MOVE_TIMEOUT_S = 90.0    # a filter-wheel slot change (incl. settle)
 FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can crawl)
+FOCUSER_QUERY_TIMEOUT_S = 30.0  # a single get_position read, not a move (#577)
 CALIBRATOR_CMD_TIMEOUT_S = 30.0  # flat panel on/off / cover move (PRO-5)
 FLAT_METER_MAX_S = 8            # trial metering captures cap (belt-and-braces)
 
@@ -7915,6 +7916,19 @@ class SequenceEngine:
                     # motion, so the mount-limit half stays inert (it is reached
                     # only under context == "slew") while the monitor half runs.
                     await self._safety_gate(context="frame", target=target)
+                    # THE MOUNT APPLIES TO CALIBRATION TOO (#199). A target run
+                    # before this one leaves the mount tracking it — this loop
+                    # never slews, never centres and never stops tracking on
+                    # its own — and nothing else watches that target while the
+                    # block runs: the idle clock, the floor and the flip point
+                    # are checked per light-frame and by `_wait_until`, and
+                    # this frame loop is neither. Ahead by one exposure, since
+                    # that is how far off this loop's next look is; a dark or
+                    # bias set can run for hours, and without this the hazard
+                    # went unwatched for the whole block instead of the first
+                    # WAIT_TEARDOWN_S past the last light frame ("safety rides
+                    # value paths" — see `_idle_hold_tick`).
+                    await self._idle_hold_tick(ahead_s=step.exposure_s)
                     # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
                     await self._frame_alerts_tick()
                     # heal a dropped device before the exposure that needs it
@@ -8359,6 +8373,10 @@ class SequenceEngine:
                                    f"{step.exposure_s:g}s  [{shown}/{step.count}]")
             self._hold_step = step
             info = await self._capture(step, target)
+            # Read right as the shutter closes (#134): whichever branch below
+            # banks this frame hands it to `_record_frame`, which clears the
+            # #72 recovery bound only on this evidence.
+            guided = await self._frame_was_guided()
             # The frame loop's last look at the mount (#165). Accepted or
             # rejected, the exposure is what the idle clock runs from.
             self._idle_since = time.time()
@@ -8454,7 +8472,7 @@ class SequenceEngine:
                                 f"focus baseline HFR {self._focus_baseline_hfr:.2f} px "
                                 f"(relative watchdogs measure against this)",
                                 "sequence")
-                self._record_frame(key, i, target, step, info)
+                self._record_frame(key, i, target, step, info, guided=guided)
                 i += 1
                 taken_this_visit += 1
             elif quota:
@@ -8479,7 +8497,8 @@ class SequenceEngine:
             else:
                 # attempts mode: legacy escalation path (warn / discard).
                 if not await self._handle_reject(info, key, i, target, step):
-                    self._record_frame(key, i, target, step, info, accepted=False)
+                    self._record_frame(key, i, target, step, info,
+                                       accepted=False, guided=guided)
                 i += 1
                 taken_this_visit += 1
             if ctx is not None:
@@ -8501,7 +8520,8 @@ class SequenceEngine:
             if retake:
                 # attempts mode, retake: unlink and re-expose, after the rules.
                 if not await self._handle_reject(info, key, i, target, step):
-                    self._record_frame(key, i, target, step, info, accepted=False)
+                    self._record_frame(key, i, target, step, info,
+                                       accepted=False, guided=guided)
                 i += 1
                 taken_this_visit += 1
 
@@ -8651,7 +8671,10 @@ class SequenceEngine:
             accepted = self._check_quality(new_info)
             self._reporter_record(target, step, new_info, accepted=accepted)
             if accepted:
-                self._record_frame(key, i, target, step, new_info)
+                # This retake's OWN exposure (#134): the guider may have come
+                # back, or gone down, since the frame that was rejected.
+                self._record_frame(key, i, target, step, new_info,
+                                   guided=await self._frame_was_guided())
                 return True
             # retaken frame still bad → discard and stop retaking this one.
             self._unlink_saved(new_info)
@@ -11560,7 +11583,7 @@ class SequenceEngine:
         self._frame_started_at = time.time()
 
     def _record_frame(self, key: str, i: int, target: Target, step, info: dict,
-                      *, accepted: bool = True) -> None:
+                      *, accepted: bool = True, guided: bool = True) -> None:
         now = time.time()
         # Per-frame overhead EMA: cadence minus exposure, EXCLUDING any frame that
         # carried a dither/AF/flip (those are accounted analytically, so folding
@@ -11583,11 +11606,17 @@ class SequenceEngine:
         self._frame_started_at = 0.0   # frame complete — no longer in flight
         self._done[key] = i + 1
         self._frames_done += 1
-        # A banked frame is the only evidence that recovery actually worked, so
-        # it is what clears the bound (#72). Clearing it when start_guiding
-        # returned would have re-armed the loop on every cycle of the night
-        # that produced this issue.
-        self._guiding_recoveries = 0
+        # A banked frame is evidence that recovery actually worked ONLY WHEN
+        # IT IS EVIDENCE GUIDING HELD (#134): every recorded frame used to
+        # clear the bound, rejected-but-kept ones included, so a trailed
+        # frame shot unguided cleared the very attempt that produced it —
+        # see `_frame_was_guided`. ``guided`` defaults True for callers with
+        # nothing to confirm (a calibration frame, which never guides).
+        # Clearing it when start_guiding merely RETURNED, rather than on
+        # this evidence, would have re-armed the loop on every cycle of the
+        # night that produced the #72 issue this bound exists for.
+        if guided:
+            self._guiding_recoveries = 0
         # ledger append + atomic session save replaces the retired resume-file
         # _persist (same per-frame write cost — sessions spec §3).
         self._record_session_frame(target, step, info, auto_accepted=accepted)
@@ -13317,6 +13346,37 @@ class SequenceEngine:
             return
         # ...and do not hand control back until the guider has stopped pulsing.
         await self._await_guider_quiet("the next frame")
+
+    async def _frame_was_guided(self) -> bool:
+        """Is the frame that just closed its shutter evidence guiding held
+        (#134)?
+
+        `_record_frame` clears the #72 recovery bound on a banked frame, and
+        used to clear it on ANY banked frame — rejected ones kept under
+        ``hfr_reject_action = "warn"`` included. On a night the mount's own
+        link was dead (#133), every cycle re-centred, failed to restart the
+        guider, shot one trailed frame anyway, and that frame's own banking
+        reset the count the failed attempt had just spent: 62 "(1/2)"
+        attempts, 0 "(2/2)"s, and the stand-down never reached. A banked
+        frame is evidence an exposure finished, not evidence recovery
+        worked — only THIS answers that.
+
+        True when guiding is not this plan's business at all (no plan, the
+        plan does not guide, or no guider is connected), since nothing here
+        is recovery's to bound. Otherwise the guider's own ``is_active()``
+        (#165-style: asked of the device, not a locally-cached flag) —
+        cheap and unbounded like every other per-frame call of it
+        (`_maybe_recover_guiding`, `_maybe_hold_for_relocks`), and unable to
+        raise (the ABC's default reads an in-memory stats snapshot)."""
+        if not (self.plan and self.plan.guide):
+            return True
+        g = self.hub.guider
+        if g is None or not getattr(g, "connected", False):
+            return True
+        try:
+            return bool(await g.is_active())
+        except Exception:            # noqa: BLE001 - unreadable is not confirmed
+            return False
 
     async def _maybe_hold_for_relocks(self, target=None) -> None:
         """GN-03: treat a guider that keeps RE-LOCKING as a guiding failure.
@@ -15351,12 +15411,20 @@ class SequenceEngine:
         if restored is not None:
             try:
                 foc = self.hub.devices.get("focuser")
-                pos = int(await _bounded(foc.get_position(),
-                                         FOCUSER_MOVE_TIMEOUT_S,
-                                         "focuser get_position"))
-            except SafetyAbort:
+                # asyncio.wait_for, not `_bounded` (#577): `_bounded` turns a
+                # timeout into a SafetyAbort for a caller that means the abort
+                # to end the run, and this read is taken only to fill in a
+                # log number. A read that fails, timeout included, names no
+                # number instead (the promise the docstring above makes) —
+                # the shape `_rotator_evidence`'s read already uses. Bounded
+                # by a QUERY budget, not FOCUSER_MOVE_TIMEOUT_S: this is one
+                # get_position, never a move.
+                pos = int(await asyncio.wait_for(foc.get_position(),
+                                                 FOCUSER_QUERY_TIMEOUT_S))
+            except asyncio.CancelledError:
                 raise
-            except Exception:   # noqa: BLE001 - a log line never ends a run
+            except Exception:   # noqa: BLE001 - a log line never ends a run,
+                               # a timeout included
                 pos = None
             started = (f"the focus it had before the sweeps, since putting "
                        f"{restored!r} back after they ran through luminance "
