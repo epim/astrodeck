@@ -274,6 +274,7 @@ Harness owners: `_group_harness.py` goes to WP-33, `_flow_night.py` to WP-34, an
 | WP-35 | Cancel-safe task awaits, part A (non-hot files) | #252 | P2 | server/astrodeck/aio.py; server/astrodeck/focus/autofocus.py; server/astrodeck/remote/relay_client.py; server/astrodeck/alerting.py; server/astrodeck/dawn_park.py; server/astrodeck/dew.py; server/astrodeck/dusk_arm.py; server/astrodeck/gallery.py; server/astrodeck/guide/phd2.py; server/astrodeck/polar/session.py; server/astrodeck/sun_watch.py; server/astrodeck/sync/runner.py; server/astrodeck/cloudmap/service.py; server/astrodeck/catalog/ephemeris/elements.py; server/tests/test_no_task_await_eats_its_callers_cancel.py | L | WP-02, WP-03, WP-04, WP-28 |
 | WP-36 | Tap wiring gets the drag rules; stale comments | #197 (a), #397 (b), #593 (c) | P2 | ui/src/components/flows/flowsSlice.ts; ui/src/components/flows/FlowCanvas.tsx; ui/src/components/flows/flowLoop.ts; ui/src/components/flows/FlowPhoneGraph.tsx; ui/src/next/hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx; ui/src/next/hubs/session/flows/canvas/FlowCanvasSurface.tsx; ui/src/store.ts; docs/superpowers/specs/2026-09-23-flows-mosaic-target-block-design.md | L | WP-08, WP-16 |
 | WP-62 | Pier-side test reaches the config singleton everywhere | #497 | P3 | server/tests/conftest.py; server/tests/test_pier_side_is_published.py | M | WP-27 |
+| WP-70 | Relay keeps its tunnel evidence: no access line per health probe | #617 | P2 | relay/relay/server.py; new relay/tests/test_w4_healthz_writes_no_access_line.py | M | WP-13 |
 
 Fix shapes:
 
@@ -296,7 +297,8 @@ Fix shapes:
   - (a) flowsConnect runs the lane and self-wire checks for both drag and tap, and the self-wire toast exists.
   - (b) The comment matches the compile's consumed-wire behaviour.
   - (c) Correct the three "flow.node tick" comments and add the Revision 11 row.
-- WP-62: A sys.modules sweep in conftest.py reaches every module that bound config_store, and test_pier_side_is_published's `_am5` helper patches through it instead of a single-module attribute. A named mutant removes the sweep, and a seeded order-dependent failure turns red without it. The failure was intermittent (one parallel run), so the proof is the seeded order, not a rerun. config.py is not edited.
+- WP-62: A sys.modules sweep in conftest.py reaches every module that bound config_store, and test_pier_side_is_published's `_am5` helper patches through it instead of a single-module attribute. A named mutant removes the sweep, and a seeded order-dependent failure turns red without it. The failure was intermittent (one parallel run), so the proof is the seeded order, not a rerun. config.py is not edited. Two lessons from WP-27 apply here. First, a leak-then-check pair of tests cannot fail under the suite's `--dist worksteal`, which puts the two halves on different workers, so the seeded failure must happen inside one process (pytester with xdist off, or seed and check in one test). Run the mutant under the suite's normal command. Second, autouse fixtures set up in dir()-alphabetical order and tear down in reverse, so a cleanup fixture must sort before every fixture that takes `monkeypatch`, or it runs before the leftover exists.
+- WP-70: The relay writes no access line for `/healthz`, through an access-log filter beside #520's path-only formatter. A health probe arrives every 15 s, which today fills flyctl's 100-line buffer in about 25 minutes. Tunnel connect and tunnel-end lines still print. A test pins both halves, with the named mutant "filter removed". Optional, if it stays small: a bounded in-process ring of the last tunnel start and end events (close code and reason, never the client address), served on an authenticated admin route. Deploy with the next relay version through scripts/deploy_relay.ps1.
 
 ## Wave 5
 
@@ -317,7 +319,7 @@ WP-32b needs D-05. If D-05 has no ruling when the wave starts, WP-32b waits for 
 | WP-63 | Intermittent altitude-floor test explains itself | #442 | P3 | server/tests/test_altitude_floor.py | M | none |
 | WP-64 | Focus: remove the unreachable before-the-probe arm | #583 | P3 | server/astrodeck/focus/native.py | S | none |
 | WP-65 | UI names the sessions a run start disarmed | UI half of WP-31 (a) | P0 | ui/src/next/hubs/session/now/NowEmpty.tsx; ui/src/components/flows/flowRunControls.tsx | M | WP-31, D-04 |
-| WP-68 | Test waits bounded by time, not by round count | #610 (a), #615 (b) | P3 | new server/tests/_deadline.py; new server/tests/test_w5_no_round_count_waits.py; the 19 files #610 names: server/tests/test_alerting.py, test_app_route_concurrency.py, test_asiair_backend.py, test_camera_yield_for_solve.py, test_capture_promote.py, test_cloudmap_service.py, test_dawn_park.py, test_gallery_thumb_warm.py, test_h4_oversize_event_owes_a_gap.py, test_h4_relay_link_check.py, test_hold_repoint_resets_the_retry_warning.py, test_no_light_self_reference.py, test_remote_e2e.py, test_remote_status.py, test_resume_recovery_focus_counts.py, test_s7_report_final_retry_off_loop.py, test_sun_watch.py, test_zwo_am5.py, test_zwo_am5_pulse_stop.py | L | none |
+| WP-68 | Test waits bounded by time, not by round count | #610 (a), #615 (b), #620 (c) | P3 | new server/tests/_deadline.py; new server/tests/test_w5_no_round_count_waits.py; server/tests/test_group_harness_watchdog.py; the 19 files #610 names: server/tests/test_alerting.py, test_app_route_concurrency.py, test_asiair_backend.py, test_camera_yield_for_solve.py, test_capture_promote.py, test_cloudmap_service.py, test_dawn_park.py, test_gallery_thumb_warm.py, test_h4_oversize_event_owes_a_gap.py, test_h4_relay_link_check.py, test_hold_repoint_resets_the_retry_warning.py, test_no_light_self_reference.py, test_remote_e2e.py, test_remote_status.py, test_resume_recovery_focus_counts.py, test_s7_report_final_retry_off_loop.py, test_sun_watch.py, test_zwo_am5.py, test_zwo_am5_pulse_stop.py | L | none |
 | WP-69 | UI test environment: an export that never resolves; a probe under the Temp root | #614 (a), #612 (b) | P3 | ui/src/components/flows/__tests__/flowInspectorNotes.test.tsx; ui/src/next/hubs/sky/sheets/__tests__/photosphereReplay.test.ts; ui/run-tests.mjs | M | none |
 
 Fix shapes:
@@ -348,6 +350,7 @@ Fix shapes:
 - WP-68
   - (a) Each of #610's 27 loops waits on a monotonic deadline, from one helper in `_deadline.py`, instead of a round count. Linux and Windows then get the same wall time. Linux sleeps for what it is asked; Windows rounds up to 15.6 ms. A guard test scans server/tests for a `for _ in range(N)` loop around an awaited sleep and fails on a new one. Deliberate round counts are allowlisted by name. The named mutant reverts one converted loop to `range(N)` with Linux sleep granularity simulated.
   - (b) #615 is intermittent. Its assertion prints the recovery ladder's state and the sweep count, and its wait moves to the deadline helper. The proof is a forced slow path or a seeded order, not a rerun. If the cause turns out to be in production code, the return reports it and the issue stays open, marked intermittent.
+  - (c) #620 is intermittent. The spin test's bound moves to the harness clock or to the watchdog's own reported elapsed time, and the assertion prints the watchdog's timeline. The proof is a run beside a CPU burner, not a rerun.
 - WP-69
   - (a) #614 is intermittent, seen on the CI runner only. Reproduce it with a stress loop (50 runs, under load). Then make the requestAnimationFrame polyfill stop after unmount, or use a rAF that act() can drain. run-tests.mjs prints which phase timed out (cases, or the default export after the tally). The proof is the stress loop, plus the named mutant "polyfill keeps scheduling after unmount" going red under it.
   - (b) #612 fails every time when the repo is checked out under the Temp scratch root, which is where every wave worktree lives. rmTemp is defined in the test itself. Find why the fixed-name probe at REPO_ROOT is gone before the finally block runs, and make the case independent of where the repo is checked out, for example a probe inside a directory the case created. Prove it in a scratch worktree and in the main tree.
@@ -554,7 +557,7 @@ Still to file:
 - The reap-by-poll wind-down latency (from the verify-first item, if it is not already filed).
 - Whatever defects coders and verifiers report in their returns.
 
-## Filed while waves 1 and 2 ran (homes)
+## Filed while waves 1 to 3 ran (homes)
 
 | Issue | State | Home |
 |---|---|---|
@@ -566,3 +569,7 @@ Still to file:
 | #612 | open | photosphereReplay guard probe fails under the Temp root. WP-69 (b) in wave 5. |
 | #614 | open, intermittent | flowInspectorNotes export never resolves on the CI runner. WP-69 (a) in wave 5. |
 | #615 | open, intermittent | resume_recovery_focus_counts failed once under full xdist. WP-68 (b) in wave 5. |
+| #617 | open | The relay logs every health probe, so flyctl's buffer holds about 25 minutes. WP-70 in wave 4. |
+| #618 | open | D-03's same-reason set-aside is dormant: every solve failure carries one generic text. Needs engine.py and hub.py, so it goes to the engine lane after WP-59, or to an earlier engine slot if one frees. Until then D-03's counted path (alert at 3, set aside at 6) bounds the cost. |
+| #619 | open | Pre-flight lacks the ceiling and pier legs, and the plan-wide never-rises warning ignores the horizon mask (#132 siblings). Wave 10, the first wave where hub.py and app.py are both free. |
+| #620 | open, intermittent | The group-harness watchdog spin test overruns its 1.0 s bound under load. WP-68 (c) in wave 5. |
