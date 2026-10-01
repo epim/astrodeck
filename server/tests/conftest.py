@@ -1147,10 +1147,13 @@ def _reset_active_auth_provider():
     and others already do, resetting in their own ``finally``) -- this
     fixture only guarantees what the test did NOT ask for.
 
-    RED under mutant (this fixture deleted): see
-    test_wcs_stamp.py::test_b_wcs_config_route_round_trips_under_the_open_default,
-    which runs right after a sibling test that sets a provider and
-    deliberately never resets it.
+    RED under mutant (the ``reset_active_provider()`` calls removed from both
+    halves): see
+    test_wcs_stamp.py::test_the_active_auth_provider_reset_leaves_the_open_default_for_the_next_request,
+    which seeds a leftover provider itself and drives this fixture's real
+    generator directly, so it goes red in the normal xdist suite run (W3
+    integration, #443/WP-27 re-pin -- the old two-test pair relied on
+    definition order, which ``-n 12 --dist worksteal`` does not preserve).
     """
     from astrodeck.auth import reset_active_provider
     reset_active_provider()

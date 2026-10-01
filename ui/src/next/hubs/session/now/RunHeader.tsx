@@ -119,7 +119,11 @@ export function RunHeader({ compact = false }: { compact?: boolean }): JSX.Eleme
   const planTargets = session?.plan?.targets;
   const sessionTargets = Array.isArray(planTargets) ? planTargets.length : null;
   const group = groupOf(seq);
-  const targetLine = campaign
+  // #430 remainder: no night number when `campaign.night`/`totalNights` is
+  // null (the session has no matching list row yet) - fall back to the same
+  // target line a non-campaign run would show, rather than guessing a night
+  // count from the run total.
+  const targetLine = campaign && campaign.night != null && campaign.totalNights != null
     ? `${runWhere(seq)} · campaign night ${campaign.night} of ~${campaign.totalNights}`
     : runTargetLine(seq, sessionTargets);
 

@@ -14,14 +14,18 @@
 // the log.
 //
 // The fix (#430's last comment, item 1; WP-25 plan "with no list row, show no
-// night number rather than the run count") does not touch `campaign.night` or
-// `campaign.totalNights` themselves - `crossHub.ts`'s `CampaignChrome.night` and
-// `RunHeader.tsx` both type that field as a plain `number` and sit outside this
-// work package's files, so narrowing it to `number | null` here would break
-// their compilation, not fix their copy. What WP-25 owns is the campaign card's
-// OWN sentence (`campaign.summary`, drawn only by `CampaignLedger.tsx`): with no
-// row, it says the banked/goal/nights-left facts the route itself measured and
-// leaves the night number out, rather than guess at one it cannot stand behind.
+// night number rather than the run count") landed here first as the campaign
+// card's OWN sentence (`campaign.summary`, drawn only by `CampaignLedger.tsx`,
+// pinned below): with no row, it says the banked/goal/nights-left facts the
+// route itself measured and leaves the night number out, rather than guess at
+// one it cannot stand behind.
+//
+// `campaign.night`/`campaign.totalNights` THEMSELVES were widened to
+// `number | null` later (#430 remainder, WP-25 new defect, W3 integration):
+// `crossHub.ts`'s `CampaignChrome.night`, `RunHeader.tsx`'s target line and
+// the Flows list row's campaign meta line all read those fields directly and
+// fell back to the same run-count guess `summary` had already stopped
+// making. See `w3CampaignNightNullSurfaces.test.tsx` for that half.
 //
 // NAMED MUTANT, run from a byte copy of useCampaign.ts and restored
 // byte-identical afterwards (sha256 checked). The observed failure is quoted at

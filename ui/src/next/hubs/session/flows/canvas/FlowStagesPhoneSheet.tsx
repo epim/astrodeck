@@ -137,9 +137,17 @@ export const FLOW_STAGES_UNTITLED = "FLOW";
  *  B's row starting flow A because a failed read of B left A's stage list
  *  and RUN live under B's route. Mirrors the pattern already built twice,
  *  `FlowFrameSheet.tsx` (`FRAME_FLOW_LOADING`/`FRAME_OTHER_FLOW`, #384) and
- *  the Sky flow card (`sky/sheets/flow.tsx`, #499). */
+ *  the Sky flow card (`sky/sheets/flow.tsx`, #499).
+ *
+ *  #592 class (WP-61 new defect, W3 integration): this used to be "This
+ *  flow's stages show once it has loaded", which told the reader nothing the
+ *  title "OPENING THIS FLOW" had not already - the exact defect #592 fixed in
+ *  `sky/sheets/flow.tsx`'s `FLOW_CARD_LOADING`. In that shape, this now names
+ *  the cause the title does not: the open is a request this sheet made, and
+ *  it has not come back yet. */
 export const FLOW_STAGES_LOADING =
-  "This flow's stages show once it has loaded.";
+  "The open this sheet asked for has not answered yet, so there is nothing "
+  + "here to show.";
 
 /** The waiting card's reason for a route with no `?open=` at all: nothing was
  *  asked for, so whatever is open in the store belongs to some other visit
@@ -154,8 +162,14 @@ export const FLOW_STAGES_NO_ID =
 export const FLOW_STAGES_NOT_OPENED_REASON =
   "That flow did not open, so there is nothing here to run or save.";
 
-/** RUN's and SAVE's locked reason while the open is still out. */
-const FLOW_STAGES_LOADING_REASON = "Loading this flow…";
+/** RUN's and SAVE's locked reason while the open is still out.
+ *
+ *  #592 class (WP-61 new defect, W3 integration): this used to be "Loading
+ *  this flow…", which repeated the waiting card's own loading state and
+ *  never said what RUN or SAVE was missing. In the shape of
+ *  {@link FLOW_STAGES_NOT_OPENED_REASON}, it now does. */
+const FLOW_STAGES_LOADING_REASON =
+  "This flow has not loaded yet, so there is nothing here to run or save.";
 
 /** The stage list's reading order.
  *
