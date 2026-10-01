@@ -1,0 +1,3180 @@
+{
+  "schema_version": 1,
+  "base": "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b",
+  "baseline_docs_revision": "b79c271f51133cf35b5c1f927ffd7817417f99b0",
+  "verification_scope": "Source-traced operator instructions. Runtime runs are owned and recorded by the root worker; this ledger does not label source traces as executed runs.",
+  "claims": [
+    {
+      "id": "OP-001",
+      "page": "docs/guide/next-ui.md",
+      "claim": "The server root opens the classic interface. `#/next` opens the alternative interface at the sky screen. Both interfaces use the same server and equipment; changing the interface is not a separate simulator or a second rig.",
+      "sources": [
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+          "line": 29
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-002",
+      "page": "docs/guide/next-ui.md",
+      "claim": "1. Keep the server address and port, and replace its fragment with `#/next`.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-003",
+      "page": "docs/guide/next-ui.md",
+      "claim": "2. Navigate with **SKY**, **WEATHER**, **SESSION**, **RIG**, **MONITOR** and **SETTINGS**. The available hubs depend on your account capabilities.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/index.ts",
+          "line": 117
+        },
+        {
+          "path": "ui/src/next/hubs/index.ts",
+          "line": 207
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-004",
+      "page": "docs/guide/next-ui.md",
+      "claim": "3. Use the following fragments for direct links. `next` is an entry alias, not a path prefix: use `#/session/flows`, not `#/next/session/flows`.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 121
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-005",
+      "page": "docs/guide/next-ui.md",
+      "claim": "| Task | Alternative interface |\n| --- | --- |\n| Find and frame a target | `#/sky` |\n| Forecast | `#/weather/conditions` |\n| Flow library | `#/session/flows` |\n| Current run | `#/session/now` |\n| Sessions | `#/session/gallery` |\n| Equipment | `#/rig/devices` |\n| Manual capture | `#/rig/capture` |\n| Live monitor | `#/monitor/live` |\n| Event log | `#/monitor/log` |",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 36
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-006",
+      "page": "docs/guide/next-ui.md",
+      "claim": "4. Return to the classic interface with `#/classic`. An explicit classic page link is `#/classic/capture` or `#/classic/monitor`. A bare `#/monitor` selects the alternative hub.",
+      "sources": [
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 101
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-007",
+      "page": "docs/guide/next-ui.md",
+      "claim": "On a phone, opening a flow shows its stage list, including stage editing and tap-to-wire controls. The pannable canvas and the plan editor require a tablet or desktop.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 80
+        },
+        {
+          "path": "ui/src/next/hubs/session/sheets/planEditor.tsx",
+          "line": 51
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-008",
+      "page": "docs/guide/next-ui.md",
+      "claim": "A locked control can explain why it cannot act. Read that reason before changing equipment or permissions. Browser Back closes an open sheet or returns to the preceding route.",
+      "sources": [
+        {
+          "path": "ui/src/next/ui/ActionButton.tsx",
+          "line": 15
+        },
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 47
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-009",
+      "page": "docs/guide/sky-atlas.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then go to **SKY** (`#/sky`). The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-010",
+      "page": "docs/guide/sky-atlas.md",
+      "claim": "1. Open the target list at `#/sky/targets`. Search by name in **Search the target catalog**, then select a result to aim the finder at it.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/sky/sheets/targets.tsx",
+          "line": 31
+        },
+        {
+          "path": "ui/src/components/atlas/CatalogSearch.tsx",
+          "line": 253
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-011",
+      "page": "docs/guide/sky-atlas.md",
+      "claim": "2. Check the target and observing window against your saved site and horizon. If site placement is unknown, finish [Site and locations](site-and-locations.md) before trusting the local sky view.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/sky/SkyHub.tsx",
+          "line": 137
+        },
+        {
+          "path": "ui/src/next/hubs/sky/sheets/targets.tsx",
+          "line": 321
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-012",
+      "page": "docs/guide/sky-atlas.md",
+      "claim": "3. Select **ATLAS** to inspect the map. Select **FRAME** to frame the current target or patch of sky; an unavailable action explains what is missing.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/sky/SkyHub.tsx",
+          "line": 1590
+        },
+        {
+          "path": "ui/src/next/hubs/sky/SkyHub.tsx",
+          "line": 1299
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-013",
+      "page": "docs/guide/sky-atlas.md",
+      "claim": "1. Configure telescope and camera optics first. In framing mode, use **MATCH CAMERA** to match the view to one camera field, or **FIT OBJECT** when the catalogue supplies an object size.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/sky/frame/FrameTools.tsx",
+          "line": 27
+        },
+        {
+          "path": "ui/src/next/hubs/sky/frame/FrameTools.tsx",
+          "line": 166
+        },
+        {
+          "path": "ui/src/next/hubs/sky/frame/FrameTools.tsx",
+          "line": 158
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-014",
+      "page": "docs/guide/sky-atlas.md",
+      "claim": "2. Drag the sky to move the framing centre. Set **PA** or turn the rotation dial. This plans a camera angle; without a rotator, the camera must be turned by hand before the run.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/sky/frame/FramingCard.tsx",
+          "line": 211
+        },
+        {
+          "path": "ui/src/next/hubs/sky/frame/FramingCard.tsx",
+          "line": 251
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-015",
+      "page": "docs/guide/sky-atlas.md",
+      "claim": "3. Choose a grid in the framing card, then select **SEND TO FLOW WIZARD** to carry its centre, angle, grid and overlap into a flow. Review the resulting stages before running it. See [Flows and mosaics](flows-and-mosaics.md) for the saved flow editor.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/sky/sheets/quickCopy.ts",
+          "line": 228
+        },
+        {
+          "path": "ui/src/next/hubs/sky/frame/FramingCard.tsx",
+          "line": 64
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-016",
+      "page": "docs/guide/sky-atlas.md",
+      "claim": "The target list ranks suggestions for tonight and provides filters. Treat the ranking as a planning aid: review the target, local horizon and current conditions before starting a run.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/sky/sheets/targets.tsx",
+          "line": 321
+        },
+        {
+          "path": "server/astrodeck/catalog/tonight.py",
+          "line": 10
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-017",
+      "page": "docs/guide/sky-atlas.md",
+      "claim": "The schematic sky can be used offline. Survey imagery is separate: no DSS2 tile pack is distributed with releases. An operator can fetch survey tiles from inside Atlas for personal use; imagery needs the relevant attribution and is not a guarantee of offline coverage. This guide contains no survey screenshots.",
+      "sources": [
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 40
+        },
+        {
+          "path": "ui/src/next/hubs/sky/SkyHub.tsx",
+          "line": 1715
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-018",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then open **SESSION** > **FLOWS** (`#/session/flows`). The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-019",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "A flow is a saved graph of stages and wires. The compiler translates it into a sequence plan; its checks and the connected rig determine what can run.",
+      "sources": [
+        {
+          "path": "server/astrodeck/flows/compile.py",
+          "line": 1132
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 232
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-020",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "Native guiding and native autofocus require `astrodeck_native`, which published releases do not include yet ([#630](https://github.com/epim/astrodeck/issues/630)). A connected device alone does not supply that engine.",
+      "sources": [
+        {
+          "path": "server/astrodeck/focus/native.py",
+          "line": 305
+        },
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 42
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-021",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "1. Select **+ NEW FLOW**. Choose **Deep-sky target**, **Best of several** or **EAA quick look**, then enter a catalogue target. Select only the automation you intend to use.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 459
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
+          "line": 18
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/create/wizard.tsx",
+          "line": 248
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-022",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "2. Select **GENERATE FLOW** to save and open the generated graph. **START BLANK** instead creates an unwired target and capture stage, so it still needs a target, settings and wires before it is runnable.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/flows/create/wizard.tsx",
+          "line": 51
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
+          "line": 72
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/create/wizard.tsx",
+          "line": 8
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-023",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "3. Inspect every stage and the compiler checks. The generator includes dusk waiting and autofocus even with **Guiding** turned off. Flow-derived targets request autofocus even if its block is deleted. Without an available autofocus provider, use [manual capture](capture.md) or a [plan](plan-and-sequences.md) with its target autofocus option off for your first run.",
+      "sources": [
+        {
+          "path": "server/astrodeck/flows/wizard.py",
+          "line": 924
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
+          "line": 30
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 415
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-024",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "4. To remove a stage, select it, choose **DELETE STAGE**, then **CONFIRM DELETE**. Its incoming and outgoing wires are also deleted, and this surface has no undo. Reconnect the intended flow path and review the compiler result; deletion does not create a bypass or disable engine defaults such as target autofocus.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/flows/inspector/FlowNodeEditor.tsx",
+          "line": 137
+        },
+        {
+          "path": "ui/src/components/flows/flowsSlice.ts",
+          "line": 1365
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 415
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-025",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "5. For a brief simulator check once the required providers work, select **CAPTURE LOOP** and set **Exposure** to 1 second, **Count** to 1 and **Integration goal** to 0. The goal is a planning budget, not a run quota. Review the dusk window, target visibility and any other capture stages too; a small frame count does not skip waiting, autofocus or centring.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 473
+        },
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 488
+        },
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 491
+        },
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 496
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 710
+        },
+        {
+          "path": "server/astrodeck/flows/wizard.py",
+          "line": 924
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-026",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "6. Select **SAVE**, wait for the saved state, then read the checks and any run refusal. For a new flow, select **RUN**, then **CONFIRM RUN**. An existing dormant session instead offers continuation with its flow name and recorded progress. Use [Monitor](monitor.md) to follow the actual run. Saving or generating a flow has not yet captured anything.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/flows/canvas/FlowCanvasToolbar.tsx",
+          "line": 146
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/canvas/FlowCanvasToolbar.tsx",
+          "line": 139
+        },
+        {
+          "path": "ui/src/components/flows/runCopy.ts",
+          "line": 8
+        },
+        {
+          "path": "ui/src/components/flows/flowRunControls.tsx",
+          "line": 24
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-027",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "After a completed flow, the toolbar can still show **STOP**. Verify that the run is idle in [Monitor](monitor.md), then reload the page before starting again. Do not press the stale **STOP** to clear it: it can start another run.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/flowRunControls.tsx",
+          "line": 290
+        },
+        {
+          "path": "ui/src/components/flows/flowRunControls.tsx",
+          "line": 382
+        },
+        {
+          "path": "ui/src/components/flows/runCopy.ts",
+          "line": 111
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/canvas/FlowCanvasToolbar.tsx",
+          "line": 140
+        },
+        {
+          "path": "ui/src/components/flows/flowsSlice.ts",
+          "line": 235
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-028",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "1. Select the **TARGET** stage, then **FRAME ON SKY**. The framing dialog edits this stage locally; it does not replace another sky framing session.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 268
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/inspector/FlowNodeEditor.tsx",
+          "line": 39
+        },
+        {
+          "path": "ui/src/components/flows/FlowInspector.tsx",
+          "line": 95
+        },
+        {
+          "path": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
+          "line": 8
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-029",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "2. Choose the target in **WHERE**. Confirm its **NAME**, **RA** and **DEC** before adjusting the grid.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/framing/sections/WhereSection.tsx",
+          "line": 49
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/WhereSection.tsx",
+          "line": 54
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/WhereSection.tsx",
+          "line": 59
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/WhereSection.tsx",
+          "line": 65
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-030",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "3. Confirm the telescope and camera optics are configured. Under **GRID**, select **MATCH CAMERA** to record the live camera field in this target. A known live field is not necessarily recorded in the draft yet. Set **COLS** to 2, **ROWS** to 2 and **OVERLAP** to the percentage you intend to keep between panels, such as 25. Check the drawn footprint.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/framing/sections/GridSection.tsx",
+          "line": 92
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/GridSection.tsx",
+          "line": 5
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/GridSection.tsx",
+          "line": 93
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/GridSection.tsx",
+          "line": 95
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/GridSection.tsx",
+          "line": 97
+        },
+        {
+          "path": "ui/src/components/flows/framing/framingModel.ts",
+          "line": 525
+        },
+        {
+          "path": "ui/src/components/flows/framing/framingModel.ts",
+          "line": 868
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-031",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "4. Under **ANGLE**, choose an explicit camera angle for the mosaic. **ANY ANGLE** is insufficient for a multi-panel grid. Use **ROTATE TO** with an available rotator, or **CAMERA FIXED AT** for a camera you align by hand, and enter the intended position angle. A simulator example with its rotator can use 0 degrees. Review **CENTRING**, its tolerance and retry count. Local ASTAP requires a separate installation and compatible star database.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/framing/sections/AngleSection.tsx",
+          "line": 70
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/AngleSection.tsx",
+          "line": 36
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/CentringSection.tsx",
+          "line": 45
+        },
+        {
+          "path": "ui/src/components/flows/framing/framingModel.ts",
+          "line": 575
+        },
+        {
+          "path": "ui/src/components/flows/framing/framingModel.ts",
+          "line": 506
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "line": 103
+        },
+        {
+          "path": "server/astrodeck/solve/astap.py",
+          "line": 41
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-032",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "5. Under **PANELS**, review **ORDER** and each panel's **SHOOT** selection. A skipped panel is not a completed panel.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
+          "line": 238
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
+          "line": 240
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
+          "line": 252
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 107
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-033",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "6. Under **RUN**, choose **Rotate panels every pass** if the sequence should revisit panels in turns. This manages the pass-loop wire. With rotation off, the lane works panel by panel. Review **PASSES PER VISIT** and **AT LEAST** when rotation is enabled.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/framing/sections/RunSection.tsx",
+          "line": 93
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/RunSection.tsx",
+          "line": 41
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/RunSection.tsx",
+          "line": 103
+        },
+        {
+          "path": "ui/src/components/flows/framing/sections/RunSection.tsx",
+          "line": 105
+        },
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 327
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-034",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "7. Select **DONE**, wait for the compile, and review its checks. If a changed framing would restart recorded counts, read the confirmation before choosing **RE-FRAME**. The old banked subs stay on disk, but the affected layout starts counting from zero. Running flows and read-only examples open framing for inspection rather than editing.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
+          "line": 613
+        },
+        {
+          "path": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
+          "line": 626
+        },
+        {
+          "path": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
+          "line": 114
+        },
+        {
+          "path": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
+          "line": 108
+        },
+        {
+          "path": "ui/src/components/flows/framing/framingModel.ts",
+          "line": 792
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-035",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "New target blocks count accepted subs. Existing saved targets can retain their older count mode. Review banked progress and [Sessions](sessions-multi-night.md) before changing framing or restarting a campaign.",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 302
+        },
+        {
+          "path": "server/astrodeck/sequence/session.py",
+          "line": 437
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-036",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "Read **CHECKS**, **NOT HONOURED BY A RUN** and **BEFORE YOU RUN** after each change. The table distinguishes what a block represents from what the current engine actually uses. Accepting a reported loss does not implement the missing behaviour.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/flows/inspector/FlowInspectorColumn.tsx",
+          "line": 208
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/inspector/FlowInspectorColumn.tsx",
+          "line": 225
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/inspector/FlowInspectorColumn.tsx",
+          "line": 241
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1994
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-037",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **DUSK WINDOW** | Sets the observing window. Sun-based timing needs a configured site. A single-night run and a campaign have different resume behaviour; the 30-night choice is not an enforced night-count limit. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 236
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 964
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-038",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **TARGET** | Owns target identity, coordinates, camera angle, centring and mosaic grid. Its panel lane can run panel by panel or rotate by pass. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 268
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1319
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-039",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **SAFETY MONITOR** | Represents the unsafe watch. The engine reads the connected monitor and safety settings even without this block; the card does not replace the configured source or stale-reading policy. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 332
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 375
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-040",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **CLOUD WATCH** | Supplies cloud event wires. The detector uses captured-frame evidence; the card's source, cloud-percentage and clear-time controls do not configure a forecast or a new physical sensor. Read the reported losses. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 357
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 874
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-041",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **DOME CONTROL** | Declares dome intent. The node's binding and timeout do not reach the engine. Unsafe closure depends on safety configuration; a promised closure the rig cannot honour blocks a dome run. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 377
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 986
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-042",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **FLAT PANEL** | Represents panel readiness for calibration wiring. It is not a working automatic flat-acquisition stage; the calibration queue's flat leg is not implemented. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 399
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1016
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-043",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **SLEW + CENTER** | Legacy block: saved flows can still contain it, but it is not offered in the palette. Set centring on TARGET; the legacy block's tolerance, retry count and solver choice are not used. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 418
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 393
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-044",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **AUTOFOCUS** | Flow-derived targets request autofocus at their start with or without this block. Sweep geometry comes from the focuser, not this card's method, step size or samples. A working provider is required. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 435
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 407
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-045",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **GUIDE** | Its presence enables guiding. Provider, settle and dither settings come from the guider configuration, not these card fields. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 456
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 422
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-046",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **CAPTURE LOOP** | Captures the selected filter, exposure, gain, binning and frame count. Integration hours are a planning budget, not a run quota; absolute reject-HFR on the card is not the rig's grading rule. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 473
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1132
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-047",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **FILTER CYCLE** | Interleaves the configured wheel-slot table over passes. Capture settings reach the plan; the card's absolute reject-HFR setting does not. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 503
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1132
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-048",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **DUSK FLATS** | Visible in the vocabulary, but this stage is not connected to the execution engine. It will not take dusk flats. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 529
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1012
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-049",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **CALIBRATION QUEUE** | Can fund dark frames during a cloud hold. A shutdown-complete wire can fund day darks after a normal night. Queue ordering, bias and flat legs are not implemented. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 551
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1016
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-050",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **TARGET POOL** | Supplies candidate targets to the scheduler. Completed quotas are skipped across nights; targets set aside still owe frames. Frame counts end the campaign, not its estimated integration hours. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 587
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 211
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-051",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **CONDITION** | Creates a supported trigger and threshold. Read compile losses for unsupported triggers; its window and fire-once fields are not carried. Rules are evaluated at frame boundaries. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 627
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 443
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-052",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **HOLD / RESUME** | A pause event invokes the self-releasing cloud hold, which keeps dawn and safety checks active. The engine uses its 45-minute bound; the card's Max hold and other policy fields do not override it. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 657
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 90
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-053",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **NOTIFY** | A supported event can call the engine's notification action. Sink routing comes from configured alerts; message text and severity on this node are not carried. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 695
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 913
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-054",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **REFOCUS** | A supported event wire invokes autofocus at a frame boundary. The node's boundary field does not change that timing. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 713
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 455
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-055",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **PARK + CLOSE** | Represents scheduled shutdown. Flow-derived plans already request park and warm, and wind-down closes the dust cover. Dome closure needs the configured policy. The card's Hold cold choice does not keep the camera cold indefinitely. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 730
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1197
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-056",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **ABORT + PARK** | A supported event invokes abort and park. Warming depends on the configured unsafe action, not the card alone. This is different from the operator's manual STOP, which does not park. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 757
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 467
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-057",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "| **SESSION REPORT** | The engine writes a report for every run, even without this block. Its format and destination fields do not override the engine's report location. |",
+      "sources": [
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 776
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 430
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-058",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "The current shutdown warning can incorrectly say that no darks are taken after shutdown ([#646](https://github.com/epim/astrodeck/issues/646)). A funded shutdown-complete calibration lane can take day darks after a normal night, between park and warm-up. See [Unattended nights](unattended-nights.md) for the abort and unsafe-trip limits.",
+      "sources": [
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1054
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 149
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-059",
+      "page": "docs/guide/flows-and-mosaics.md",
+      "claim": "Flow wires carry the sequence path; event wires express conditions and actions. Connect compatible port kinds. A mosaic pass loop is an event wire from the last stage's pass output to the owning target's next-panel input, not an arbitrary cycle in the sequence path.",
+      "sources": [
+        {
+          "path": "server/astrodeck/flows/nodes.py",
+          "line": 9
+        },
+        {
+          "path": "ui/src/components/flows/flowsSlice.ts",
+          "line": 1414
+        },
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 327
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-060",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then open **SESSION** > **FLOWS**, then **PLAN EDITOR** on a tablet or desktop. The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-061",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "The plan editor is a separate way to inspect and edit the sequence plan. A flow run compiles its graph again; changing the plan editor does not rewrite a flow's stages. Use the flow editor for changes you want to keep in a flow.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        },
+        {
+          "path": "ui/src/next/hubs/session/sheets/planEditor.tsx",
+          "line": 51
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 232
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-062",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "1. Set **PLAN NAME**, or choose **LOAD** in the saved plan list. Use **IMPORT** for a saved plan file. Check the loaded target list before proceeding.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+          "line": 238
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+          "line": 358
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+          "line": 281
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-063",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "2. Use **ADD TARGET** to add a target. Review its coordinates and the **Centre on this target** and **Autofocus first** choices. Leave autofocus off when its provider is unavailable; centring needs a working plate solver.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanTargets.tsx",
+          "line": 257
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+          "line": 138
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+          "line": 145
+        },
+        {
+          "path": "server/astrodeck/focus/native.py",
+          "line": 305
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "line": 103
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-064",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "3. For each capture step, choose its frame type and filter, then set **EXPOSURE**, **GAIN** and **COUNT**. Review binning and any calibration-frame settings before running.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+          "line": 287
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+          "line": 298
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+          "line": 307
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-065",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "4. Review the automation, schedule and instruction sections. Remove any actions that require equipment or providers you do not have. Save with **SAVE**, or use **SAVE AS** to keep a second plan.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanEditor.tsx",
+          "line": 64
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+          "line": 263
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+          "line": 6
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-066",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "1. Read the preflight result and resolve refusals before starting. If a run later fails, **HOW TO FIX** explains a reported problem when that control is offered.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+          "line": 219
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanPreflight.tsx",
+          "line": 16
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-067",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "2. Select **START SEQUENCE**, then press again while **TAP AGAIN TO START** is shown. Watch [Monitor](monitor.md). This starts the loaded plan; use a session resume action to continue recorded multi-night progress.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanPreflight.tsx",
+          "line": 214
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanPreflight.tsx",
+          "line": 208
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-068",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "3. **PAUSE** finishes an exposure already in flight before stopping at a frame boundary. During that interval **CANCEL PAUSE** keeps the run going; after the pause takes effect, **RESUME** continues it.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+          "line": 2
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+          "line": 243
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-069",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "4. **STOP** requires a second press while **TAP AGAIN TO STOP** is shown. A manual stop does not park the mount. Check the resulting status and log. **RE-RUN PLAN** starts over; use the recovery or session-resume action when you intend to retain progress.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+          "line": 264
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+          "line": 305
+        },
+        {
+          "path": "ui/src/next/hubs/session/now/RunControls.tsx",
+          "line": 57
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-070",
+      "page": "docs/guide/plan-and-sequences.md",
+      "claim": "Use [Sessions and multiple nights](sessions-multi-night.md) for accepted-frame quotas, dormant sessions, updating a saved session from a changed plan and resuming it. Use [Flows and mosaics](flows-and-mosaics.md) for panel order and pass rotation.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/session.py",
+          "line": 437
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-071",
+      "page": "docs/guide/capture.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then open **RIG** > **CAPTURE** (`#/rig/capture`). The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-072",
+      "page": "docs/guide/capture.md",
+      "claim": "1. Connect a camera in [Equipment and profiles](equipment-and-profiles.md). Select **STILL · FRAMES**. Wait for any sequence or other camera task to release the camera.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+          "line": 495
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+          "line": 55
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-073",
+      "page": "docs/guide/capture.md",
+      "claim": "2. Set **EXPOSURE**, **GAIN**, **COUNT** and **BINNING**. Set **FILTER** when a wheel is available. For a first check, use one short exposure and settings appropriate to the connected camera.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+          "line": 300
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+          "line": 250
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+          "line": 262
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+          "line": 288
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+          "line": 238
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-074",
+      "page": "docs/guide/capture.md",
+      "claim": "3. Choose the frame type and enable **SAVE FITS TO LIBRARY** if you want a file. Preview-only work and a saved capture are different outcomes.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+          "line": 557
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+          "line": 591
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-075",
+      "page": "docs/guide/capture.md",
+      "claim": "4. Press the **CAPTURE** button whose suffix shows the count, exposure and filter. Wait for exposure and readout to finish, then inspect the result. **STOP** ends an active manual capture or loop.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+          "line": 86
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+          "line": 106
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-076",
+      "page": "docs/guide/capture.md",
+      "claim": "5. If the result was not saved and the server still holds the frame, **SAVE TO GALLERY** can save that exposure. **RE-SHOOT AND SAVE** takes a new exposure instead. Read any buffer or save refusal before retrying; a preview alone is not proof that a FITS file is on disk.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/capture/ResultCard.tsx",
+          "line": 3
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/ResultCard.tsx",
+          "line": 10
+        },
+        {
+          "path": "server/astrodeck/api/app.py",
+          "line": 7600
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-077",
+      "page": "docs/guide/capture.md",
+      "claim": "Review the last frame, measured star quality and capture readouts before increasing exposure length. A preview is a display rendering; keep the FITS file for processing. The save switch determines whether manual frames enter the capture library.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+          "line": 50
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+          "line": 591
+        },
+        {
+          "path": "server/astrodeck/imaging/fitsio.py",
+          "line": 63
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-078",
+      "page": "docs/guide/capture.md",
+      "claim": "Use **LOOP** for repeated frames while checking framing or focus. Use **LIVE VIEW** for a running stack, and **STOP** to end the capture loop. Trail rejection changes the live stack; it is not a promise to remove every satellite trail from saved files.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+          "line": 132
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+          "line": 144
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+          "line": 34
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-079",
+      "page": "docs/guide/capture.md",
+      "claim": "Select the appropriate frame type and physically block light as required by your equipment. **MATCH LAST LIGHTS** copies the most recent light-frame settings when that snapshot is available. Check exposure, gain, offset, binning and cooler target before shooting calibration frames.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+          "line": 584
+        },
+        {
+          "path": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+          "line": 39
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-080",
+      "page": "docs/guide/capture.md",
+      "claim": "Saved-light plate solving is configured with the optics settings. It requires an available solver; local ASTAP and its compatible star database are separate prerequisites. A failed or absent solve is not evidence that a file has measured pointing.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/settings/sheets/OpticsSheet.tsx",
+          "line": 913
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "line": 103
+        },
+        {
+          "path": "server/astrodeck/solve/astap.py",
+          "line": 41
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-081",
+      "page": "docs/guide/capture.md",
+      "claim": "Open the guider device for its camera preview and guiding state. The imaging camera and guide camera are separate roles; use [Guiding](guiding.md) for the provider and calibration checks.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 47
+        },
+        {
+          "path": "ui/src/next/hubs/rig/lib/guiderModel.ts",
+          "line": 1
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-082",
+      "page": "docs/guide/focus.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then open the focuser device from **RIG** > **DEVICES**. The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-083",
+      "page": "docs/guide/focus.md",
+      "claim": "Native guiding and native autofocus require `astrodeck_native`, which published releases do not include yet ([#630](https://github.com/epim/astrodeck/issues/630)). A connected device alone does not supply that engine.",
+      "sources": [
+        {
+          "path": "server/astrodeck/focus/native.py",
+          "line": 305
+        },
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 42
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-084",
+      "page": "docs/guide/focus.md",
+      "claim": "1. Check that the focuser and imaging camera are connected. In **FOCUS FRAME**, select **SINGLE** for one measurement or **LOOP** to repeat frames. Focus frames use their own exposure settings.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1022
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1038
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1051
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-085",
+      "page": "docs/guide/focus.md",
+      "claim": "2. Adjust position with the inward and outward step buttons. Start with a step size suited to your focuser, watch the image, and reduce the move as stars sharpen. Use **GO TO POSITION** and **GO** for an absolute position supported by the device.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1075
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1099
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 954
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-086",
+      "page": "docs/guide/focus.md",
+      "claim": "3. Use **HALT** to stop focuser motion and **STOP** to end the focus-frame loop. Read the movement status before issuing another move.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1126
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 35
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1092
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-087",
+      "page": "docs/guide/focus.md",
+      "claim": "1. Review **AUTOFOCUS PROVIDER** and the reason shown for its selection. A backend can provide its own autofocus; selecting the native provider still requires the missing release engine described above.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1339
+        },
+        {
+          "path": "server/astrodeck/focus/autofocus.py",
+          "line": 706
+        },
+        {
+          "path": "server/astrodeck/focus/native.py",
+          "line": 305
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-088",
+      "page": "docs/guide/focus.md",
+      "claim": "2. Open **Autofocus settings** and review **STEP SIZE**, **STEPS EACH SIDE**, **EXPOSURE**, **GAIN** and **BINNING**. Read the proposed sweep summary and provider note before starting. A backend provider can own its exposure, gain and binning; when the note says those values are not sent, configure them in that backend.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1213
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1220
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1236
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1256
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1282
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1294
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1328
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-089",
+      "page": "docs/guide/focus.md",
+      "claim": "3. Select **AUTOFOCUS NOW**. Wait for the result and inspect the star image and measured curve. Read any refusal or failure advice before retrying; an unavailable engine cannot be fixed by changing sweep settings.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1192
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1605
+        },
+        {
+          "path": "server/astrodeck/focus/native.py",
+          "line": 305
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-090",
+      "page": "docs/guide/focus.md",
+      "claim": "Fit the mask, then use **BAHTINOV MODE** and its **START** control to measure the diffraction pattern. Adjust focus while watching the result, stop the mode when finished, and remove the mask before imaging.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1582
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 1596
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+          "line": 223
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-091",
+      "page": "docs/guide/guiding.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then open the guider device from **RIG** > **DEVICES**. The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-092",
+      "page": "docs/guide/guiding.md",
+      "claim": "Native guiding and native autofocus require `astrodeck_native`, which published releases do not include yet ([#630](https://github.com/epim/astrodeck/issues/630)). A connected device alone does not supply that engine.",
+      "sources": [
+        {
+          "path": "server/astrodeck/focus/native.py",
+          "line": 305
+        },
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 42
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-093",
+      "page": "docs/guide/guiding.md",
+      "claim": "Review the guide provider and its availability reason. AstroDeck has native, PHD2 and NINA guider paths. PHD2 must be running and connected to its equipment when selected; a saved provider choice is not proof that guiding has started.",
+      "sources": [
+        {
+          "path": "server/astrodeck/providers.py",
+          "line": 29
+        },
+        {
+          "path": "server/astrodeck/guide/phd2.py",
+          "line": 1
+        },
+        {
+          "path": "ui/src/components/GuideProviderControl.tsx",
+          "line": 20
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-094",
+      "page": "docs/guide/guiding.md",
+      "claim": "Alongside NINA, use the available backend capabilities. Alongside ASIAIR, you can plan and check weather in AstroDeck while capturing and guiding in the ASIAIR app. Standalone control depends on supported devices and installed providers. These are separate operating choices, not a claim of an official ASIAIR API.",
+      "sources": [
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 17
+        },
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 43
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-095",
+      "page": "docs/guide/guiding.md",
+      "claim": "1. Confirm the guide camera can see stars and the mount is tracking. Review **EXPOSURE** and the calibration state in the guider device.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 539
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 667
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-096",
+      "page": "docs/guide/guiding.md",
+      "claim": "2. Select **LOOP + PICK STAR**. Wait for the provider to report guiding, then inspect the star and error readouts. Do not infer guiding from a connected camera alone.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 726
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 565
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-097",
+      "page": "docs/guide/guiding.md",
+      "claim": "3. Use **DITHER NOW** only while guiding is active. Review **SETTLE PX**, **SETTLE S** and **TIMEOUT S** if you need to override the guider defaults.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 637
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 641
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 643
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 645
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-098",
+      "page": "docs/guide/guiding.md",
+      "claim": "4. Select **STOP GUIDING** to stop manual guiding. During a sequence, use its run controls and inspect the log before changing guider settings.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 715
+        },
+        {
+          "path": "ui/src/next/hubs/session/now/RunControls.tsx",
+          "line": 145
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-099",
+      "page": "docs/guide/guiding.md",
+      "claim": "The **GUIDING ASSISTANT** requires the native guider. Read what it will measure. **ALSO MEASURE MOUNT SLACK (MOVES THE SCOPE)** adds physical mount movement, so enable it only when that movement is appropriate. Start with **RUN GUIDING ASSISTANT**, then review its results before **APPLY RECOMMENDED SETTINGS** or **APPLY SELECTED**.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 1163
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 1067
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 1188
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 1201
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 1221
+        },
+        {
+          "path": "ui/src/next/hubs/rig/sheets/guider.tsx",
+          "line": 1274
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-100",
+      "page": "docs/guide/guiding.md",
+      "claim": "Compare guiding measurements under comparable conditions. A different night, star field, exposure or provider is not a controlled before-and-after test. The live RMS value describes the reported guide error, not a guarantee of image sharpness.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/monitor/live/LiveScreen.tsx",
+          "line": 473
+        },
+        {
+          "path": "server/astrodeck/guide/phd2.py",
+          "line": 393
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-101",
+      "page": "docs/guide/monitor.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then open **MONITOR** > **LIVE** (`#/monitor/live`), or **SESSION** > **NOW** for the current run. The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-102",
+      "page": "docs/guide/monitor.md",
+      "claim": "1. Read the run state and target before the preview. **RUN PROGRESS** reports captured progress and waiting states; its ETA can be absent until enough timing data exists and is withheld while paused.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/monitor/live/RunProgress.tsx",
+          "line": 108
+        },
+        {
+          "path": "ui/src/next/hubs/monitor/live/RunProgress.tsx",
+          "line": 94
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-103",
+      "page": "docs/guide/monitor.md",
+      "claim": "2. Inspect **LAST FRAME**, guiding and **THERMAL** readouts. A displayed last frame can remain after a run ends; it is not evidence that a sequence is still running.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/monitor/live/LiveScreen.tsx",
+          "line": 522
+        },
+        {
+          "path": "ui/src/next/hubs/monitor/live/LiveScreen.tsx",
+          "line": 507
+        },
+        {
+          "path": "ui/src/lib/lastSessionFrame.ts",
+          "line": 48
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-104",
+      "page": "docs/guide/monitor.md",
+      "claim": "3. Open **LOG** for the recorded events and refusal reasons. Check timestamps and the current state before retrying a command.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/index.ts",
+          "line": 117
+        },
+        {
+          "path": "ui/src/next/hubs/monitor/log/LogScreen.tsx",
+          "line": 1
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-105",
+      "page": "docs/guide/monitor.md",
+      "claim": "**PAUSE** waits for an exposure already in flight. Keep the telescope and light path undisturbed until the pause takes effect. **RESUME** continues a paused run; during the pending pause the control can instead cancel it.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/now/RunControls.tsx",
+          "line": 139
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+          "line": 2
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+          "line": 243
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-106",
+      "page": "docs/guide/monitor.md",
+      "claim": "**STOP** ends the run through its abort path but does not park the mount. Read the confirmation and resulting state. Do not treat a browser timeout as proof that the rig ignored the stop; check the monitor and log before repeating it.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/now/RunControls.tsx",
+          "line": 145
+        },
+        {
+          "path": "ui/src/next/hubs/session/now/RunControls.tsx",
+          "line": 57
+        },
+        {
+          "path": "ui/src/components/flows/flowRunControls.tsx",
+          "line": 321
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+          "line": 274
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-107",
+      "page": "docs/guide/monitor.md",
+      "claim": "Read the waiting reason first: dusk, a paused exposure, cloud hold, safety or a stalled task require different responses. Forecast cloud advice and image-based cloud detection are different inputs. Use [Weather](weather.md) and [Safety](safety-and-automation.md) before overriding a condition.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/monitor/live/RunProgress.tsx",
+          "line": 170
+        },
+        {
+          "path": "server/astrodeck/weather.py",
+          "line": 749
+        },
+        {
+          "path": "server/astrodeck/sequence/cloudstate.py",
+          "line": 44
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-108",
+      "page": "docs/guide/monitor.md",
+      "claim": "When an interrupted run is recoverable, **RESUME INTERRUPTED RUN** shows the recorded progress. The resume button includes the saved frame counts. Review the interruption reason and equipment state before resuming. Starting over is a separate action.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/now/Interrupted.tsx",
+          "line": 158
+        },
+        {
+          "path": "ui/src/next/hubs/session/now/Interrupted.tsx",
+          "line": 173
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-109",
+      "page": "docs/guide/weather.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then open **WEATHER** > **CONDITIONS** (`#/weather/conditions`). The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-110",
+      "page": "docs/guide/weather.md",
+      "claim": "Weather views require the weather-view capability; some accounts do not see the hub. Forecasts, radar and satellite products are advice. They do not replace a connected safety monitor.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/weather/WeatherHub.tsx",
+          "line": 17
+        },
+        {
+          "path": "server/astrodeck/weather.py",
+          "line": 749
+        },
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 25
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-111",
+      "page": "docs/guide/weather.md",
+      "claim": "1. Confirm the saved observing site, then select **WEATHER SETTINGS** and enable **Weather enabled**.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/weather/WeatherHub.tsx",
+          "line": 116
+        },
+        {
+          "path": "ui/src/next/hubs/weather/tuning/WeatherTuningPanel.tsx",
+          "line": 172
+        },
+        {
+          "path": "ui/src/next/hubs/weather/tuning/WeatherTuningPanel.tsx",
+          "line": 179
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-112",
+      "page": "docs/guide/weather.md",
+      "claim": "2. Review **Cloud threshold (%)** and **Sustained for (min)** for cloud advice. Return to **CONDITIONS** and inspect the forecast and update state.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/weather/tuning/WeatherTuningPanel.tsx",
+          "line": 188
+        },
+        {
+          "path": "ui/src/next/hubs/weather/tuning/WeatherTuningPanel.tsx",
+          "line": 202
+        },
+        {
+          "path": "ui/src/next/hubs/index.ts",
+          "line": 117
+        },
+        {
+          "path": "server/astrodeck/weather.py",
+          "line": 749
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-113",
+      "page": "docs/guide/weather.md",
+      "claim": "3. Use **RADAR** for the map and **SKY** for the local sky conditions view. Read unavailable or stale-data messages; an empty layer is not a clear-sky measurement.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/index.ts",
+          "line": 117
+        },
+        {
+          "path": "ui/src/next/hubs/weather/radar/RadarScreen.tsx",
+          "line": 1
+        },
+        {
+          "path": "ui/src/next/hubs/weather/dome/DomeScreen.tsx",
+          "line": 1
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-114",
+      "page": "docs/guide/weather.md",
+      "claim": "Positive forecast precipitation within the next hour can veto auto-resume. Forecast cloud cover does not. Disabled, missing or failed forecast data does not provide a rain veto; this is not the same as an unsafe or stale reading from a connected safety monitor.",
+      "sources": [
+        {
+          "path": "server/astrodeck/weather.py",
+          "line": 685
+        },
+        {
+          "path": "server/astrodeck/sequence/resume_arm.py",
+          "line": 1957
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-115",
+      "page": "docs/guide/weather.md",
+      "claim": "**IGNORE WEATHER TONIGHT** overrides that forecast-rain veto until the next dusk. It does not disable the safety monitor. Read the warning before enabling it; it is not a way to clear a hardware safety fault.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/weather/conditions/ConditionsScreen.tsx",
+          "line": 336
+        },
+        {
+          "path": "ui/src/next/hubs/weather/conditions/ConditionsScreen.tsx",
+          "line": 338
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-116",
+      "page": "docs/guide/weather.md",
+      "claim": "Radar and satellite coverage depend on the selected product and location. Satellite cloud estimates and motion displays are advisory; they do not certify conditions at the telescope. Image-based cloud checks instead measure captured frames and can drive a configured cloud hold.",
+      "sources": [
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 25
+        },
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 26
+        },
+        {
+          "path": "server/astrodeck/imaging/clouds.py",
+          "line": 40
+        },
+        {
+          "path": "server/astrodeck/sequence/cloudstate.py",
+          "line": 44
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-117",
+      "page": "docs/guide/weather.md",
+      "claim": "The settings include an optional Astrospheric API key for its forecast data. Supply your own authorized access; do not assume a paid account or its API terms cover redistribution or every client use. Keep the key out of screenshots and reports.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/weather/tuning/WeatherTuningPanel.tsx",
+          "line": 234
+        },
+        {
+          "path": "tools/licence/service-data-audit.md",
+          "line": 17
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-118",
+      "page": "docs/guide/safety-and-automation.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then review **SETTINGS** and the connected devices in **RIG**. The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-119",
+      "page": "docs/guide/safety-and-automation.md",
+      "claim": "Automation acts on configured limits and available devices. A forecast is not a rain sensor, and a connected safety monitor is not proof that every stop, park, roof or warm-up action works with your equipment.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 683
+        },
+        {
+          "path": "server/astrodeck/weather.py",
+          "line": 749
+        },
+        {
+          "path": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+          "line": 201
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-120",
+      "page": "docs/guide/safety-and-automation.md",
+      "claim": "1. Open the safety settings at `#/settings/general/safetyTuning`. Inspect **LIVE SAFETY STATUS**, then **WHEN A LIMIT TRIPS** and **LIMITS THE RIG ENFORCES**. Check the action configured for each limit.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+          "line": 143
+        },
+        {
+          "path": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+          "line": 193
+        },
+        {
+          "path": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+          "line": 201
+        },
+        {
+          "path": "ui/src/next/hubs/settings/sheets/SafetyTuningSheet.tsx",
+          "line": 1
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-121",
+      "page": "docs/guide/safety-and-automation.md",
+      "claim": "2. Confirm the monitor is connected and reporting safe before a run. A connected monitor that has not reported, is stale or reports unsafe can prevent recovery movement. With no monitor connected, auto-resume can still be armed after a warning; missing equipment is not a safe reading.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/resume_arm.py",
+          "line": 1957
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 38
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-122",
+      "page": "docs/guide/safety-and-automation.md",
+      "claim": "3. Review the Sun guard, local horizon, mount limits and planned target path before moving. Keep guards enabled for real equipment; simulator checks do not validate physical clearance.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 950
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 693
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-123",
+      "page": "docs/guide/safety-and-automation.md",
+      "claim": "A graphical horizon editor is available at `#/sky/horizon`. Draw or adjust the obstruction line from the telescope's position, inspect the result, and save it. A camera scan is an estimate that needs review; it can include photographs of your surroundings.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/sky/sheets/horizon.tsx",
+          "line": 440
+        },
+        {
+          "path": "ui/src/next/hubs/sky/sheets/horizon.tsx",
+          "line": 611
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-124",
+      "page": "docs/guide/safety-and-automation.md",
+      "claim": "Review **WARM RAMP** and the run's park, flip and enclosure actions. Configure only actions the connected devices can perform. A manual sequence stop does not park the mount. Test the separate shutdown actions while present before relying on them overnight.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+          "line": 209
+        },
+        {
+          "path": "server/astrodeck/flows/nodes.py",
+          "line": 125
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 5
+        },
+        {
+          "path": "ui/src/next/hubs/session/now/RunControls.tsx",
+          "line": 57
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-125",
+      "page": "docs/guide/safety-and-automation.md",
+      "claim": "Use the alert settings and **ALERTS** screen to inspect delivery rather than assuming a configured destination received a message. Follow [Unattended nights](unattended-nights.md) before arming dusk resume.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/index.ts",
+          "line": 117
+        },
+        {
+          "path": "ui/src/next/hubs/monitor/alerts/AlertsScreen.tsx",
+          "line": 1
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-126",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then open **SESSION** > **GALLERY** (`#/session/gallery`). The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-127",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "A session records the plan and captured-frame progress across nights. A dormant session can be resumed. New target blocks count accepted subs, so rejected frames can remain on disk without satisfying the quota. Older saved targets can retain the previous count mode.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/session.py",
+          "line": 437
+        },
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 302
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 80
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-128",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "1. Select the session in the gallery and inspect its status and accepted counts. Use **MORE** for its available actions; unavailable actions show their reason.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/gallery/SessionCard.tsx",
+          "line": 196
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 77
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-129",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "2. Use **REPORT** when a report exists. For per-session frame review, open **PLAN EDITOR** from the flow library, find **SESSIONS**, then choose **review frames**. Review rejected frames before changing a quota or restarting.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 101
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/sessions/PlanSessionsSection.tsx",
+          "line": 194
+        },
+        {
+          "path": "ui/src/next/hubs/session/plan/sessions/PlanSessionsSection.tsx",
+          "line": 259
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-130",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "3. Choose **RESUME** on a dormant session to continue its remaining work. This is different from re-running a plan from the start.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 86
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 128
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-131",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "Load and edit the intended plan first. On its dormant session, choose **UPDATE FROM PLAN** and read the merge preview: matched steps keep progress, new steps start at zero, and dropped steps stop counting toward quotas while their frames remain in the ledger.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 91
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 46
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-132",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "Use **AUTO-RESUME OFF** to arm a dormant session; the enabled action reads **AUTO-RESUME ON**. Read the warning if no safety monitor is connected. Complete [Unattended nights](unattended-nights.md) before leaving it armed.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 96
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 38
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-133",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "1. Open the files sheet at `#/session/gallery/files?src=manual` for manual captures, or use the current run's files action. Choose the session or manual source before selecting files.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/sheets/files.tsx",
+          "line": 4
+        },
+        {
+          "path": "ui/src/next/hubs/session/now/RunControls.tsx",
+          "line": 195
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-134",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "2. Choose **FITS originals** for the saved data or **JPEG previews** for display images. Select the required files and use the download button, whose label gives the selected count and size.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/sheets/files.tsx",
+          "line": 682
+        },
+        {
+          "path": "ui/src/next/hubs/session/sheets/files.tsx",
+          "line": 683
+        },
+        {
+          "path": "ui/src/next/hubs/session/sheets/files.tsx",
+          "line": 447
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-135",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "3. **DOWNLOAD BUNDLE** provides the report-backed manifest and build script; the photos stay on the rig. Read its missing-file and calibration warnings. It does not replace downloading the FITS originals.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/sheets/files.tsx",
+          "line": 1338
+        },
+        {
+          "path": "ui/src/next/hubs/session/sheets/files.tsx",
+          "line": 1341
+        },
+        {
+          "path": "server/astrodeck/sequence/bundle.py",
+          "line": 124
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-136",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "4. Keep originals backed up. A materialized server-side bundle can use hard links, so editing a linked FITS file in place also edits the original. Deleting an export link does not by itself delete the original file's other link. Treat materialized trees as read-only.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/bundle.py",
+          "line": 797
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-137",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "Session ledgers and saved files survive a server restart on persistent storage. Check the recovered session and equipment before resuming; an interrupted run is not proof that the hardware returned to a safe position.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/gallery/GalleryScreen.tsx",
+          "line": 43
+        },
+        {
+          "path": "server/astrodeck/sequence/resume_arm.py",
+          "line": 203
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-138",
+      "page": "docs/guide/sessions-multi-night.md",
+      "claim": "**ABANDON** removes a session from the active panel but keeps its ledger and thumbnails. **DELETE** removes the session ledger and thumbnails; saved FITS frames are not deleted by that action. Read the confirmation before using either.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 106
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 113
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 34
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-139",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "These steps use the alternative interface. Open `#/next`, then review **SESSION**, **WEATHER** and **MONITOR** before arming a session. The server root opens the classic interface; see [Interface routes](next-ui.md) if your screen looks different.",
+      "sources": [
+        {
+          "path": "ui/src/next/router.ts",
+          "line": 94
+        },
+        {
+          "path": "ui/src/rootChoice.ts",
+          "line": 39
+        },
+        {
+          "path": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+          "line": 615
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-140",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "Native guiding and native autofocus require `astrodeck_native`, which published releases do not include yet ([#630](https://github.com/epim/astrodeck/issues/630)). A connected device alone does not supply that engine.",
+      "sources": [
+        {
+          "path": "server/astrodeck/focus/native.py",
+          "line": 305
+        },
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 42
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-141",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "A saved flow is only a plan. Complete a supervised run with the same devices, providers and shutdown settings before using it unattended. The procedures below describe configured behaviour, not a hardware safety certification.",
+      "sources": [
+        {
+          "path": "server/astrodeck/flows/compile.py",
+          "line": 1132
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 683
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-142",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "1. Check the site, clock, optics, horizon and equipment connections. Confirm the connected safety monitor has a current reading. Resolve every run refusal and unsupported stage in [Flows and mosaics](flows-and-mosaics.md).",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/resume_arm.py",
+          "line": 1957
+        },
+        {
+          "path": "ui/src/components/flows/FlowInspector.tsx",
+          "line": 341
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-143",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "2. Confirm that autofocus, guiding and plate solving work with the selected providers. Native focus and guide need the separate engine; local ASTAP needs its separate installation and star database.",
+      "sources": [
+        {
+          "path": "server/astrodeck/focus/native.py",
+          "line": 305
+        },
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 42
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "line": 103
+        },
+        {
+          "path": "server/astrodeck/solve/astap.py",
+          "line": 41
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-144",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "3. Review the intended park, warm-up and enclosure behaviour. A manual stop does not park the mount. Test the separate shutdown actions while present and verify the resulting equipment state in [Monitor](monitor.md).",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 683
+        },
+        {
+          "path": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+          "line": 209
+        },
+        {
+          "path": "ui/src/next/hubs/session/now/RunControls.tsx",
+          "line": 57
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-145",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "4. Review forecast availability and any weather override. Forecast rain can prevent a dusk restart, forecast cloud does not, and missing forecast data does not supply a veto. When safety monitoring is enabled, a connected unsafe or stale safety monitor remains a separate blocker.",
+      "sources": [
+        {
+          "path": "server/astrodeck/weather.py",
+          "line": 685
+        },
+        {
+          "path": "server/astrodeck/sequence/resume_arm.py",
+          "line": 1951
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-146",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "1. In **SESSION** > **GALLERY**, choose a dormant session with work remaining. Open its **MORE** actions and select **AUTO-RESUME OFF** to enable it. Read the no-monitor warning if one is shown.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/index.ts",
+          "line": 117
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/SessionCard.tsx",
+          "line": 196
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 96
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 38
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-147",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "2. The menu closes after the action. Reopen **MORE** and confirm **AUTO-RESUME ON**. You can also inspect the armed state in **SESSION** > **NOW**. Do not call the session running until the monitor reports that it has started.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 96
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/SessionCard.tsx",
+          "line": 120
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/SessionCard.tsx",
+          "line": 196
+        },
+        {
+          "path": "ui/src/next/hubs/index.ts",
+          "line": 117
+        },
+        {
+          "path": "ui/src/next/hubs/session/now/NowEmpty.tsx",
+          "line": 11
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-148",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "3. To cancel future starts, open **MORE** again and select **AUTO-RESUME ON** to turn it off. The menu closes again; reopen **MORE** to verify **AUTO-RESUME OFF**. If recovery is already moving through its restart steps, use **STOP AUTO-RESUME** on the current-run screen and check the result.",
+      "sources": [
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 96
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/SessionCard.tsx",
+          "line": 120
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/SessionCard.tsx",
+          "line": 196
+        },
+        {
+          "path": "ui/src/next/hubs/session/now/NowEmpty.tsx",
+          "line": 678
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-149",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "Cloud-hold and dawn coverage here combines source tracing with controlled automated tests, including injected conditions and clocks. It does not demonstrate a naturally occurring simulator cloud hold or a real unattended night. A completed simulator capture or flow is separate evidence. See the [procedure evidence](../../tools/docs/procedure-evidence.md) for the executed steps and limits.",
+      "sources": [
+        {
+          "path": "server/tests/test_the_cloud_hold_does_not_recurse.py",
+          "line": 27
+        },
+        {
+          "path": "server/tests/test_dawn_park.py",
+          "line": 5
+        },
+        {
+          "path": "tools/docs/procedure-evidence.md",
+          "line": 27
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-150",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "A configured cloud hold uses image-based cloud checks. Read the actual hold reason and wait state. Depending on the configured recovery actions, the system can pause lights, run calibration work and re-acquire the target before resuming. Do not assume tracking remains on throughout every hold.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/cloudstate.py",
+          "line": 44
+        },
+        {
+          "path": "tools/site/claims-ledger.md",
+          "line": 29
+        },
+        {
+          "path": "server/astrodeck/flows/wizard.py",
+          "line": 1014
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-151",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "The engine bounds one cloud hold at 45 minutes. Its timeout check runs between guarded operations and frames, so this is not a promise of a hardware stop at an exact second. Expiry takes the safety-abort park path; warming follows the configured unsafe action. A second hold request does not restart the timer. Changing the **HOLD / RESUME** card's **Max hold** field does not change this engine constant.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 141
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 10474
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 10557
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 3000
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1058
+        },
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 657
+        },
+        {
+          "path": "ui/src/components/flows/nodeDefs.ts",
+          "line": 675
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-152",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "If recovery fails or the safety state changes, inspect the log and equipment before retrying. A cloudy forecast, missing stars and an unsafe safety-monitor reading are different conditions; clearing one does not clear the others.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/resume_arm.py",
+          "line": 1957
+        },
+        {
+          "path": "server/astrodeck/weather.py",
+          "line": 749
+        },
+        {
+          "path": "server/astrodeck/sequence/resume_arm.py",
+          "line": 2055
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-153",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "The mosaic held-pass rule, tracked as D-03, counts consecutive passes in which all attempted live panels fail centring or all defer for transient solves. It alerts at 3 held passes and sets the group aside for the night at 6. Two consecutive held passes with the same specific rig-side reason can set it aside sooner. Generic solve failure is not treated as a specific rig-side diagnosis.",
+      "sources": [
+        {
+          "path": "server/astrodeck/sequence/group_rules.py",
+          "line": 119
+        },
+        {
+          "path": "server/astrodeck/sequence/group_rules.py",
+          "line": 131
+        },
+        {
+          "path": "server/astrodeck/sequence/group_rules.py",
+          "line": 1301
+        },
+        {
+          "path": "server/tests/test_w3_held_pass_escalation.py",
+          "line": 29
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-154",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "This rule also applies when only one live panel remains. It counts passes, not minutes; do not treat the third-pass alert as an exact half-hour timer. Inspect the reported cause and fix it before resuming. A group set aside for the night is not complete, and a restart that night does not erase the set-aside.",
+      "sources": [
+        {
+          "path": "server/tests/test_w4_last_live_panel_held.py",
+          "line": 1
+        },
+        {
+          "path": "server/astrodeck/sequence/group_rules.py",
+          "line": 113
+        },
+        {
+          "path": "server/astrodeck/sequence/group_rules.py",
+          "line": 122
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-155",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "A flow-derived plan requests park and camera warm-up when its observing window ends, including dawn. The wind-down closes the dust cover; roof or dome closure depends on the configured policy. If a funded shutdown calibration lane requests day darks, a normal night can take them between park and warm-up. An abort or unsafe trip does not run that day-darks lane.",
+      "sources": [
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1197
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 131
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 178
+        },
+        {
+          "path": "server/astrodeck/sequence/engine.py",
+          "line": 2946
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "OP-156",
+      "page": "docs/guide/unattended-nights.md",
+      "claim": "For a continuing campaign, remaining work stays in the session ledger and a later window can resume it. Before that restart, forecast rain can veto it; cloud advice alone cannot. Missing forecast data gives no rain veto. Review the armed state after the night, and disarm it if the rig is no longer ready.",
+      "sources": [
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 964
+        },
+        {
+          "path": "server/astrodeck/weather.py",
+          "line": 685
+        },
+        {
+          "path": "ui/src/next/hubs/session/gallery/cardActions.ts",
+          "line": 96
+        }
+      ],
+      "verified_by": "source-trace"
+    }
+  ]
+}

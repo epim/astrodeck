@@ -1,197 +1,83 @@
-# Equipment & profiles
+<a id="equipment--profiles"></a>
 
-This page connects real gear. AstroDeck separates **drivers** (how to reach a
-backend) from **assignments** (which driver runs each device role) and lets you
-save the whole arrangement as a **profile**. Connecting equipment, applying a
-profile, and managing profiles all need `config.backend`, which by default
-only an **admin** account holds — operator does not, and the in-app lock
-notes say so (*"Read-only — connecting equipment needs admin access."*). See
-[remote-access-and-roles.md](remote-access-and-roles.md).
+# Equipment and profiles
 
-**Jargon:** a **role** is a device slot — `Camera`, `Mount`, `Focuser`,
-`Guider` (the PHD2/NINA guiding connection), `Guide camera` (a dedicated
-Alpaca/native camera for the native guider — see [Guiding](guiding.md)),
-`Filter wheel`, `Power / switch`, `Safety monitor`, `Rotator`. A **driver** is
-a way to reach a backend: a **NINA** instance, an **Alpaca** server, or
-**PHD2** (plus the built-in Simulator, AstroDeck native, and ASTAP).
+These procedures use the classic interface at `#/classic`. The alternative interface has its own [Rig and settings layout](next-ui.md). Connecting equipment and managing profiles require admin access (`config.backend`) and a direct connection to the controller, not the relay.
 
----
+<a id="step-1--declare-your-drivers"></a>
 
-## Step 1 — Declare your drivers
+## Step 1: Declare your drivers
 
-Go to **Settings → Connect → Backend Drivers**. You declare each backend once, globally,
-then reference it from device slots. In the **Add driver** form:
+1. Open **Settings**, then **Connect**, then **Backend Drivers**.
+2. In **Add driver**, choose **Type**, enter **Host** and **Port**, and optionally enter **Label (optional)**. Choose the backend you actually run: **NINA**, **Alpaca server**, or **PHD2**. Press **Add**.
+3. For native hardware attached to this computer, press **Scan for USB/serial hardware**. Review the results and add only the devices you intend to use.
+4. Use **Probe** to refresh a configured backend's offers. Discovery is evidence that a device was found, not a successful observing test.
 
-- **Type** — **NINA**, **Alpaca server**, or **PHD2**.
-- **Host** — the machine's address (e.g. `192.168.1.50`, or `astrotown.lan`).
-- **Port** — defaults per type: **NINA 1888**, **Alpaca 11111**, **PHD2 4400**.
-  Leave blank to use the default.
-- **Label (optional)** — a friendly name.
+NINA's Advanced API normally uses port 1888; PHD2 normally uses 4400. Use the port your backend actually listens on. Alpaca discovery can find an advertised server without assuming a fixed port.
 
-Press **Add**. For NINA and Alpaca you can **⟳ Scan network** to auto-discover
-instances instead of typing the host.
+<a id="step-2--assign-devices-to-roles"></a>
 
-Each configured driver row has an enable **toggle**, a **Probe** button (force a
-re-check of what it offers), and **Delete**. A **Built-in** section lists the
-implicit drivers — **Simulator**, **AstroDeck native**, **ASTAP** — which are
-detected, not configured. Each row summarises what it currently offers (e.g.
-*"camera: ASI2600MM · telescope: EQ6-R · tasks: autofocus"*).
+## Step 2: Assign devices to roles
 
----
+1. Open **Equipment**. For each role, select the intended enabled, reachable driver and, where offered, its device.
+2. Check the camera, mount, focuser, filter wheel and guide-camera assignments individually. A guider connection and a guide-camera device are different roles.
+3. Read any missing or unreachable-device message before connecting.
 
-## Step 2 — Assign devices to roles
+<a id="step-3--connect"></a>
 
-On the **Equipment** view, the **Devices** panel has one row per role. For each
-role, pick which driver runs it from the dropdown. **The one rule:** only drivers
-that are enabled, reachable, and actually offer that device appear in the list.
-When a driver offers several devices for a role (common with Alpaca), a second
-dropdown picks the specific device.
+## Step 3: Connect
 
-Each slot shows its state: `UNASSIGNED`, `ASSIGNED`, `DRIVER REMOVED`, `DRIVER
-UNREACHABLE`, `DRIVER DISABLED`, or `DEVICE MISSING` — so a broken assignment is
-obvious.
+1. In **Rig Actions**, press the **Connect Rig** button, which also displays the number of assigned roles.
+2. Read the confirmation before accepting a connection that can operate real motion devices.
+3. Check **Link Status** and each device's error message. Partial connection is not a working full rig.
 
----
+On a fresh disconnected setup, **Simulator** assigns simulator devices. It is a demonstration choice, not a reconnect command for a real rig. **Disconnect** drops the rig and may abort an active sequence; read its confirmation first.
 
-## Step 3 — Connect
+<a id="rotator"></a>
 
-In the **Rig Actions** panel:
+<a id="task-providers-autofocus-polar-align-plate-solve"></a>
 
-- **Connect Rig (N)** — connect all N assigned devices. If the rig includes a
-  **real** mount, focuser, or rotator, you'll get a hold-to-confirm ("Connect
-  this rig?") first — a safeguard against unexpected motion.
-- **▶ Simulator rig** — assigns *every* device role to the built-in simulator
-  and connects it in one step, then runs through the exact same connect path
-  as **Connect Rig**. That's deliberate: the **Devices** panel's assignments,
-  the **Link Status** grid, and the toast all agree on one connected rig —
-  there's no separate legacy shortcut that could leave them disagreeing.
-- **Disconnect** — drop everything.
+## Task providers
 
-Either button reports the outcome as a toast, e.g. *"Rig connected — 7/7
-roles up"*; if some roles failed to come up the per-row error shows inline
-on that role's slot in **Devices**.
+Device drivers and task engines are separate. The **Tasks** panel lets you select **Autofocus**, **Polar align**, and **Plate solve** providers. Read the resolved provider and its reason instead of assuming that an installed camera driver supplies every task.
 
-The **Link Status** panel (also on Settings → Connect and Settings →
-Profiles) shows the per-role connected/error state at a glance — it is
-populated from the same connect path as both buttons above, so it never lags
-behind what Devices shows.
+Native guiding and native autofocus require `astrodeck_native`. Published releases do not include it yet (#630). PHD2 can provide guiding; NINA can supply the task providers its backend advertises. ASTAP is a separate executable and star-database installation for standalone solving.
 
----
+<a id="the-imaging-train-focal-length-and-the-scopes-name"></a>
 
-## Task providers (autofocus, polar align, plate solve)
+## The imaging train
 
-The **Tasks** panel routes the three "smart" operations to whichever engine you
-want:
+1. Open **Settings**, **Connect**, **Imaging train**.
+2. Enter **Focal length (mm)** for the complete optical train, including its reducer or extender, and **Telescope name** for the optical tube.
+3. Leave **Take sensor details from the camera** enabled when the driver reports correct values; otherwise enter the sensor details deliberately.
+4. Set **Guide scope focal length (mm)** for a separate guide train when you use one.
 
-- **Autofocus**, **Polar align**, **Plate solve** — each has a dropdown.
-- **Auto (best available)** lets AstroDeck pick; or choose a specific provider —
-  **AstroDeck native**, **NINA** (the connected bridge), **ASTAP** (solve), or
-  **Simulator**.
+These values feed scale and framing calculations. Check them before treating a failed solve as a device failure.
 
-Each row explains *why* it resolved the way it did (e.g. *"NINA bridge present —
-using its TPPA plugin"*, *"ASTAP found at …"*, *"native V-curve engine drives the
-camera + focuser"*). Provider badges elsewhere in the app (e.g. **AF · AstroDeck
-native**, **TPPA · NINA**) show which engine is actually running a task.
+<a id="related"></a>
 
-Guiding has its own provider override with the same "who runs it" shape
-(Auto / AstroDeck native / PHD2 / NINA bridge / Simulator) but lives on the
-**Guide** view instead of this panel, since it depends on a guide camera + mount
-connection rather than a driver's task offer — see
-[Guiding](guiding.md#provider--phd2-fallback).
-
----
-
-## The imaging train (focal length, and the scope's name)
-
-**Settings → Connect → Imaging train.** Get this right before your first plate
-solve, not after: focal length sets the image scale that plate solving, the
-framing overlay and the guiding readout all depend on, and a wrong value makes
-solves fail with nothing on screen explaining why.
-
-- **Focal length (mm)** — the *effective* focal length of the whole train,
-  including any reducer or extender. A 0.8× reducer on a 530 mm scope is 424,
-  not 530. This is the single most common cause of "plate solving just doesn't
-  work".
-- **Telescope name** — written to the FITS `TELESCOP` card, which stackers group
-  on. Name the **optical tube**, not the mount: a wrong string here silently
-  splits one target across two groups at stacking time.
-- **Take sensor details from the camera** — on by default, and right for almost
-  every rig. Turn it off to pin pixel size and sensor dimensions by hand, which
-  is worth doing when a driver reports the wrong pixel size, or to keep a working
-  image scale while the camera is unplugged.
-- **Guide scope focal length** — the *guide* train, not the imaging one. Without
-  it, guiding RMS is reported in pixels at an assumed 1″/px rather than in real
-  arcseconds. Leave it blank if you do not guide.
-
-The Sky Atlas sidebar has an inline focal-length field too, and both write the
-same setting.
-
----
-
-## Rotator
-
-When a rotator is connected, the Equipment view shows a **Rotator** card:
-
-- **Move to** a position angle (with **Go**, `−1°` / `+1°` nudges, and **Halt**),
-  and **Rotate to PA (plate solve)** to converge on a sky angle by solving.
-- **Range of motion** — pick **full**, **half**, or **quarter** (to model
-  cable-wrap limits). For half/quarter, set the mechanical **Start** (or **Set to
-  current position**) and a **Tolerance** (in mod-180 degrees; default 1°).
-
-Defaults are full range, start 0°, tolerance 1°. If you ask for a PA outside the
-range, the card warns it will image at the nearest reachable angle instead.
-
----
+<a id="routes"></a>
 
 ## Profiles
 
-A **profile** saves your whole rig — the per-role driver assignments, plus
-optional per-rig optics, site name, and task routing — so you can restore a setup
-in one tap. Two places manage them:
+1. With the intended devices connected, open **Settings**, **Profiles**.
+2. Under **Save Current Rig**, enter **Profile name**, then press **Save Rig**.
+3. Review the saved profile and press **Activate** when you want it to connect those devices. Read the confirmation if another rig or operation is active.
+4. Use **Reconnect** on the active profile to bring it back after a connection failure.
 
-- **Equipment → Profiles**: **Save current assignments as** (name it, **Save**),
-  then per row **Load** (repopulate the assignments to review before connecting)
-  and **Activate**.
-- **Settings → Profiles**: the full card list, plus a **Save Current Rig**
-  panel that captures the *connected* rig as a new profile. Each card notes
-  its backend mode (**Native / Alpaca**, **NINA bridge**, **Mixed backends**,
-  or **Empty**) and device count, and offers:
-  - **Activate** (or **Reconnect** if it's already the active profile) — sets
-    it as the boot profile and connects it now.
-  - **Rename** — an inline field (Enter or the check button to save, Escape
-    or the × to cancel).
-  - **Update** — a hold-to-confirm control that overwrites this profile's
-    stored devices/backend/site name with whatever rig is *currently
-    connected*, while keeping the profile's own optics, task-provider
-    overrides, and PHD2/NINA-port settings untouched. It gets the same
-    hold friction as Delete because it destroys the profile's previous
-    device intent.
-  - **↓ Export** — downloads the full profile as JSON.
-  - **Delete** — a danger-styled, hold-to-confirm button (icon + label, not a
-    bare ×).
-  - Above the card list, the panel header has **Import** (upload a
-    previously exported profile JSON) and **Refresh**.
+Activating a profile also selects it for automatic connection at server startup. **Update** overwrites the profile from the connected rig; **Delete** removes the saved profile. Export a copy before replacing a configuration you may need again.
 
-The **active** profile **auto-connects on boot**. Activating a profile with real
-motion devices asks you to confirm first, and offers **Force activate** if the
-rig is busy.
+## Native hardware and backend limits
 
----
+| Path | Implemented behavior and evidence limit |
+|---|---|
+| ZWO AM5 family | USB serial mount driver; recorded native movement/tracking validation names the AM5N |
+| ZWO ASI cameras | ASICamera2 enumeration and capture; native cooler and anti-dew control are absent |
+| Player One cameras | SDK camera path includes cooling and dew controls where advertised; recorded checks name the Poseidon-M Pro |
+| ZWO EAF / CAA | Native accessory drivers exist; recorded checks and model coverage differ |
+| Wanderer Snowflake | Native serial filter-wheel driver |
+| ASCOM devices | Use an Alpaca backend, or the Windows COM-host route where configured |
 
-## Routes
+See the [hardware page](https://epim.github.io/astrodeck/hardware.html) for the recorded checks. Supported means an implemented path; it does not certify every model, feature or full unattended night. No hardware was exercised to write this guide.
 
-Drivers: `GET /api/drivers`, `POST /api/config/drivers`,
-`PATCH`/`DELETE /api/config/drivers/{id}`, `POST /api/drivers/{id}/probe`.
-Connect: `POST /api/connect/rig` (and `/sim`, `/alpaca`, `/nina`, `/phd2`),
-`POST /api/disconnect`. Task routing: `POST /api/config/providers`. Rotator:
-`POST /api/config/rotator`, `/api/rotator/move`, `/halt`, `/reverse`,
-`/rotate-to-pa`. Profiles: `GET/POST /api/profiles`,
-`POST /api/profiles/{id}/activate`, `/capture`, etc. Connect/profile writes
-require `config.backend`; rotator moves require `control.mount`.
-
----
-
-## Related
-
-- [Getting started](getting-started.md) — the simulator rig on first launch.
-- [Focus](focus.md) · [Sky Atlas](sky-atlas.md) — task providers in action.
+For ASIAIR owners, Atlas planning and weather are usable alongside the box. The optional `asiair` extra adds an experimental libasi backend. It has not been validated on real hardware; filter-wheel and rotator control are not established. Do not replace a working ASIAIR session on the assumption of feature parity.

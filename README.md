@@ -8,34 +8,45 @@ report. It runs on a mini-PC or a Pi at the scope. You open a page.
 
 [**Overview and documentation →**](https://epim.github.io/astrodeck/)
 
-![version](https://img.shields.io/badge/version-0.3.22-4DD9E8)
+![version](https://img.shields.io/badge/version-0.3.39-4DD9E8)
 ![python](https://img.shields.io/badge/python-3.11%2B-4DD9E8)
 ![platforms](https://img.shields.io/badge/runs%20on-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS%20%C2%B7%20Pi-4DD9E8)
 ![licence](https://img.shields.io/badge/licence-Apache--2.0-8A97AE)
 
-> **Under real stars.** Whole nights, unattended, on a Player One Poseidon-M PRO,
-> a ZWO AM5N harmonic mount, a ZWO EAF, a Wanderer filter wheel and a ZWO guide
-> camera. Meridian flips at the limit, dawn cutoff, park and warm, and a session
-> that picks itself back up the following night.
+> **Under real stars.** Recorded device checks include a Player One Poseidon-M Pro,
+> a ZWO AM5N mount, a ZWO EAF, a Wanderer filter wheel and a ZWO guide camera.
+> The [hardware page](https://epim.github.io/astrodeck/hardware.html) says what was
+> checked. Driver support is not a claim that every control or unattended night
+> has been validated.
 
 ---
 
-## Try it in two minutes, with no hardware
+<a id="try-it-in-two-minutes-with-no-hardware"></a>
+
+## Try it with no hardware
+
+From a source checkout, build the UI with Node.js 24 before starting Python:
 
 ```powershell
-cd server
+cd ui
+npm ci
+npm run build
+cd ../server
 python -m venv .venv
 .venv\Scripts\pip install -e .
 .venv\Scripts\python -m astrodeck            # http://localhost:8800
 ```
 
-Open **Equipment**, press **Simulator rig**. Eleven devices connect in three
-seconds.
+Open **Equipment** in the classic interface, then press **Simulator**.
+For a numbered first-light walkthrough in the alternative interface, use
+[getting started](docs/guide/getting-started.md). The bare root opens classic;
+`/#/next` opens the alternative interface.
 
 The simulator renders a real star field that answers to where the mount points,
-where the focuser sits and which filter is in the light path. Autofocus walks a
-real V curve, the solver solves and the guider guides, so a two-target night
-runs to completion while it rains outside. Put the blackout filter in and the
+where the focuser sits and which filter is in the light path. The simulator lets you exercise imaging and planning without hardware. Native
+autofocus and native guiding need `astrodeck_native`, which published releases
+do not include yet (#630); standalone ASTAP solving needs a separate executable
+and star database. Put the blackout filter in and the
 frame goes dark, because the simulator knows what a blackout filter does.
 
 You can learn the whole app on a cloudy Tuesday and be fluent before your next
@@ -58,7 +69,7 @@ altitude and a below-horizon guard. Plate solve and sync. Park, unpark, tracking
 rates, and a meridian flip that re-reads the pier side afterwards instead of
 believing the mount's first answer.
 
-**Guiding.** Built-in guide engine, or PHD2, or NINA's. RA/Dec error graph,
+**Guiding.** Native guide engine when installed, or PHD2, or NINA's. RA/Dec error graph,
 scatter plot, RMS, dithering. A Guiding Assistant measures your seeing and Dec
 backlash and suggests settings you are free to ignore.
 
@@ -76,123 +87,111 @@ the canvas tells you which of your rules it cannot run, so you find out at your
 desk instead of at 3am.
 
 **Weather awareness.** Forecast from Open-Meteo or Astrospheric, and a sky dome
-that shades your whole hemisphere with real GOES satellite cloud. You can see at
-a glance which half of your sky is clear, whether the bank moving in will reach
-your target before you finish, and which of tonight's candidates will stay in
-the open. Picking a target stops being a guess.
+that projects GOES satellite cloud estimates within its coverage footprint.
+The layer reports stale or unavailable data and can help compare directions and
+short-term cloud motion. It is advisory, not a guarantee of clear sky.
 
 **Multi-night sessions.** Set a target once and keep adding to it across as
 many nights and reboots as it takes. AstroDeck scores every frame for HFR, star
-count and guide RMS, you can overrule any call it makes, and it re-arms itself
-at dusk when the target rises again. You never re-count what you already shot.
+count and guide RMS when available, and you can review frame grades. An armed
+session can resume remaining work in its next observing window after its
+restart checks pass. You never re-count what you already shot.
 
-**Data out.** Full FITS headers, per-frame WCS written back after a solve, an
-end-of-night report, and a stacking bundle: one zip pre-sorted into PixInsight,
-Siril or APP layouts with matching calibration masters and a quality score per
-frame.
+**Data out.** FITS originals, optional WCS stamping after a solve, and an
+end-of-night report. Download selected originals from the gallery. The stacking
+bundle supplies a manifest and build script for PixInsight, Siril or APP layouts;
+the photos stay on the rig until you download them.
 
 **Watching from bed.** Monitor dashboard with ETA, progress, cooler, guide RMS,
 meridian countdown, HFR trend and a live thumbnail. One tap turns the entire
 interface dark-adaptation red, with day and night brightness remembered
 separately.
 
-**Sharing the rig.** Viewer, operator and admin roles gate every capability.
-Google sign-in or local accounts, read-only share links, and precise site
+**Sharing the rig.** Viewer, syncer, operator and admin roles gate capabilities.
+Google sign-in or local accounts, viewer accounts for watching, and precise site
 coordinates that stay admin-only. Remote access dials one outbound connection to
 a forward-only relay, so there is nothing to port-forward, and every tunnelled
 request is re-authenticated at home.
 
-**Staying current.** Releases are Ed25519 signed and verify fail-closed. A
-supervisor applies them, rolls back on its own if one is bad, and will not
-interrupt a running sequence or a moving mount.
+**Staying current.** The supervised source-release path verifies Ed25519
+signatures, checks whether it can apply an update, and supports health-probe
+rollback. Standalone executables use a separate download-and-replace path.
+Release signing is distinct from operating-system executable code signing.
 
 ---
 
 ## Standalone, or alongside what you already run
 
-AstroDeck is a complete observatory controller. It brings its own star
-detection, autofocus, plate solving, polar alignment, guiding and sequencing,
-and it can run a rig with no other astronomy software installed.
+AstroDeck can control a standalone rig through supported drivers. It supplies
+imaging, planning and sequencing, with task providers for focus, solving,
+polar alignment and guiding. Native focus/guiding need the optional native
+engine; ASTAP is a separate install.
 
 It also plays well with others. If you already have a setup you like, point
 AstroDeck at it and keep everything where it is.
 
 | Route | What drives the hardware | What AstroDeck adds |
 |---|---|---|
-| **Standalone** | AstroDeck, via native drivers or ASCOM Alpaca | Everything below |
+| **Standalone** | AstroDeck, via native drivers or ASCOM Alpaca | Imaging, planning and automation with available devices and task providers |
 | **Alongside NINA** | NINA, via its Advanced API (port `1888`) | Touch UI, Flows, session ledger, Sky Atlas, weather model, remote access, phone dashboard |
-| **Alongside ASIAIR** | The ASIAIR box, over its own network protocol | Same, with guiding left to the box |
+| **Alongside ASIAIR** | The ASIAIR app retains capture and guiding | Atlas planning and weather; optional experimental backend described below |
 
-All three are supported permanently. Use AstroDeck for the parts where it helps
-and keep whatever already works.
+Use AstroDeck for the parts where it helps and keep whatever already works.
+The backend capability sets differ; the ASIAIR integration is experimental.
 
 ### Feature matrix
 
 Where a feature depends on the route you chose, this is what each one does.
 
-| | Standalone | With NINA | With ASIAIR |
+| | Standalone | With NINA | Alongside ASIAIR |
 |---|---|---|---|
-| Camera: expose, download linear FITS | Yes | Yes | Yes |
-| Camera: cooler and temperature | Yes | Yes | Yes |
-| Camera: dew heater | Yes | No | Yes |
-| Mount: slew, sync, track, park, jog | Yes | Yes | Yes |
-| Mount: drive rate | Yes | Yes | Yes |
-| Focuser: absolute move, temperature | Yes | Yes | Yes |
-| Filter wheel | Yes | Yes | Not yet |
-| Rotator | Yes | Yes | Not yet |
-| Power ports | Yes | No | Yes (4 DC) |
-| Guiding | Built-in or PHD2 | NINA's guider | Left to the box |
-| Plate solving | ASTAP | ASTAP or NINA's | ASTAP |
-| Autofocus (V-curve, HFR) | Yes | Yes | Yes |
-| Polar alignment (TPPA) | Yes | Yes | Yes |
-| Live stacking | Yes | Yes | Yes |
-| Astro Flows | Yes | Yes | Yes |
-| Multi-night session ledger | Yes | Yes | Yes |
-| Sky Atlas and Tonight | Yes | Yes | Yes |
-| Weather model and cloud dome | Yes | Yes | Yes |
-| Monitor dashboard and alerts | Yes | Yes | Yes |
-| Remote access relay | Yes | Yes | Yes |
-| Roles and share links | Yes | Yes | Yes |
+| Hardware control | Implemented native or Alpaca device capabilities | Advanced API device/task offers | Keep control in ASIAIR; optional backend unverified on hardware |
+| Guiding | Native engine when installed, or PHD2 | NINA guider path | Keep guiding in ASIAIR |
+| Plate solving | Separately installed ASTAP | ASTAP or available NINA provider | Planning does not require taking over solving |
+| Flows and sessions | Requires the selected devices and providers | Requires available bridge capabilities | No unattended-control parity claim |
+| Atlas and weather | Available with required site/data configuration | Same planning tools | Same planning tools |
+| Monitor and access roles | AstroDeck state and account capabilities | AstroDeck's bridged state | Planning use does not imply box telemetry parity |
 
-The ASIAIR filter wheel and rotator are the two commands that could not be
-mapped to certainty without a box on the bench. A guess there rotates to the
-wrong angle or images through the wrong filter in silence, so AstroDeck declines
-to guess. That backend needs one extra install step,
+The optional ASIAIR backend has fake-transport tests, not real-hardware
+validation. Filter-wheel and rotator control are not established. It needs
+one extra install step,
 `pip install -e .[asiair]`, which pulls in the MIT-licensed
 [libasi](https://github.com/epim/libasi). Skip it and the backend is absent.
 
-AstroDeck sees that the ASIAIR is guiding and does not fight it.
+The backend includes a busy-state guard. That implementation is not a
+substitute for validation against a real ASIAIR.
 
 ---
 
 ## Hardware
 
-**Native drivers.** No vendor software or ASCOM layer to install. Verified
-means whole unattended nights on a real rig. Supported means the driver
-reaches it through the same SDK or protocol, but nobody has run it through a
-night yet.
+**Native drivers.** These use vendor SDKs or serial protocols without an ASCOM
+layer. SDK availability still matters. Verified means a named check is recorded
+for that device; Supported means an implemented driver path. Neither certifies
+every control or an unattended night.
 
 | Vendor | Device | How | Status |
 |---|---|---|---|
-| ZWO | AM5 / AM5N mounts | LX200 ASCII over USB serial | Verified |
+| ZWO | AM5N mount | LX200 ASCII over USB serial | Recorded movement/tracking checks |
+| ZWO | Other AM5-family mounts | Family serial driver | Supported |
 | ZWO | ASI220MM camera | ASICamera2 SDK | Verified |
-| ZWO | Any other uncooled ASI camera, mono or colour | ASICamera2 SDK, whichever model it lists | Supported |
+| ZWO | Other SDK-listed uncooled ASI cameras | ASICamera2 SDK, whichever model it lists | Supported |
 | ZWO | Cooled ASI cameras | Exposes and reads temperature; no cooler control yet | Use Alpaca for now |
-| ZWO | EAF focuser | ZWO USB SDK | Verified |
+| ZWO | EAF focuser | ZWO USB SDK | Supported; recorded inventory only |
 | ZWO | CAA rotator | ZWO USB SDK | Supported |
 | ZWO | ASIAIR (as a backend) | Its own network protocol, via libasi | Untested on hardware |
 | Player One | Poseidon-M PRO camera | Player One SDK, gain modes included | Verified |
-| Player One | Any other Player One camera | Player One SDK; cooling, dew heater and read modes all wired | Supported |
+| Player One | Other SDK-listed Player One cameras | Player One SDK; cooling, dew heater and read modes all wired | Supported |
 | Wanderer Astro | Snowflake filter wheel | Native serial | Verified |
 
-The ZWO EFW has no native driver; like any ASCOM device it connects through
-the bundled COM host or Alpaca.
+The ZWO EFW has no native driver. Use a compatible filter-wheel driver through
+Alpaca or the optional Windows COM host, and check the controls it exposes.
 
-**Everything else.** Anything with an **ASCOM Alpaca** endpoint connects
-directly: ZWO, Pegasus Astro, QHY, PrimaLuceLab, Optec, Lakeside, Moonlite and
-the rest of the ASCOM world through ASCOM Remote. Anything with a Windows-only
-ASCOM driver works through the bundled COM host, which AstroDeck starts and
-manages for you.
+**Other drivers.** **ASCOM Alpaca** connects supported roles through an Alpaca
+server, including ASCOM Remote. On Windows, the optional COM host exposes
+supported ASCOM driver roles when the ASCOM Platform and device driver are
+installed. Check the capabilities offered by your backend and device; a protocol
+connection does not establish that every control works.
 
 | Function | Supported |
 |---|---|
@@ -200,12 +199,11 @@ manages for you.
 | Guider | Built-in engine, PHD2, NINA |
 | Weather | Open-Meteo, Astrospheric |
 | Cloud model | NOAA GOES-18 / GOES-19 |
-| Sky survey | DSS2 via HiPS, with a ~250 MB offline pack |
+| Sky survey | Offline schematic sky; optional personally fetched HiPS tiles |
 | Alerts | ntfy, Telegram, webhook, dead-man's heartbeat |
 
-**Not on the list?** Ask. Adding a backend means implementing a handful of small
-async methods against `devices/base.py`, and nothing else in the codebase
-changes. Third-party backends can also ship as separate packages and register
+**Not on the list?** Ask. A backend implements the device interfaces in `devices/base.py`;
+its capabilities determine which operations the app can offer. Third-party backends can also ship as separate packages and register
 themselves through an entry point, with no fork required. Open an issue with the
 gear you have.
 
@@ -213,19 +211,13 @@ gear you have.
 
 ## The sky map works with no internet
 
-The Atlas renders survey imagery as a smoothly zoomable WebGL tile map, warped
-through the exact TAN projection and upsampled from parent tiles so the view
-never blanks while you drag.
+The Atlas has a schematic sky when offline. Where survey tiles have been
+fetched, it can render imagery with framing overlays.
 
-Observing somewhere without signal is the normal case, so take the sky with you:
-
-```
-cd server && python -m astrodeck.catalog.survey_pack fetch
-```
-
-About 250 MB, and also the automatic fallback whenever the online service is
-unreachable. Online deep-zooms grow it on disk as a side effect. DSS2 imagery
-© AAO/STScI, from public CDS/ESA HiPS mirrors.
+Observing somewhere without signal is the normal case. Fetch the tiles you
+need inside Atlas for your own use before leaving, then check the planned area
+offline. AstroDeck distributes no survey tiles or DSS2 pack. Do not assume every
+zoom level was cached. DSS2 imagery (c) AAO/STScI, served from CDS/ESA HiPS mirrors.
 
 ---
 
@@ -233,11 +225,10 @@ unreachable. Online deep-zooms grow it on disk as a side effect. DSS2 imagery
 
 Everything above `devices/base.py` is vendor agnostic. The sequencer does not
 know what brand your mount is; it knows a mount can slew, report a pier side and
-refuse. Swap a camera vendor and the autofocus routine does not change. Add a
-backend and no existing code moves.
+refuse. Swap a camera vendor and the autofocus routine does not change. A backend can add device support through the same interface.
 
-That is also why the three routes above are permanent options: they are all
-backends behind the same seam.
+That seam lets standalone drivers and software bridges use the same device
+roles while keeping their capability differences visible.
 
 ---
 
@@ -247,12 +238,11 @@ v0.3. It runs on a real rig most clear nights, and it is not finished.
 
 - **Guiding and plate solving work and still have sharp corners.** Used every
   session; both can still fail with a message that could be clearer.
-- **No flats wizard.** You can shoot flats, with auto-exposure and a
-  calibration library behind them, but nobody has built the guided walkthrough.
+- **Native engine packaging is incomplete (#630).** Published releases omit
+  `astrodeck_native`; native autofocus and guiding need a separate build.
 - **The ASIAIR backend has never touched real hardware.** Written against the
   protocol, tested against a fake.
-- **The cloud model needs a GOES footprint.** North and South America are
-  covered. Europe, Africa, Asia and Oceania are not, and AstroDeck says so
+- **The cloud model needs a GOES footprint.** Coverage is principally the Americas, within the selected satellite footprint. Europe, Africa, Asia and Oceania are not, and AstroDeck says so
   rather than rendering an empty sky as clear.
 - **Binaries are not code-signed**, so Windows and macOS both warn on first run.
 
@@ -263,8 +253,8 @@ v0.3. It runs on a real rig most clear nights, and it is not finished.
 | | |
 |---|---|
 | **One file you run** | [`docs/guide/install-binary.md`](docs/guide/install-binary.md): Windows, Linux or Mac, with no Python or Node to install. |
-| **Docker, Raspberry Pi included** | [`docs/guide/install-docker.md`](docs/guide/install-docker.md): `docker compose up -d`, multi-arch. |
-| **From source** | the two-minute recipe above. |
+| **Docker, Raspberry Pi included** | [`docs/guide/install-docker.md`](docs/guide/install-docker.md): build, create an administrator, then start the stack. |
+| **From source** | the source recipe above and [getting started](docs/guide/getting-started.md). |
 
 ---
 
@@ -272,13 +262,14 @@ v0.3. It runs on a real rig most clear nights, and it is not finished.
 
 The full site lives at
 **[epim.github.io/astrodeck](https://epim.github.io/astrodeck/)**: overview,
-Astro Flows, weather awareness, the hardware matrix and the user guide.
+Astro Flows, weather awareness, hardware evidence, and getting-started links.
 
 In this repo:
 
 - [`docs/guide/`](docs/guide/README.md): task-focused how-tos: getting started,
   equipment, capture, focus, Sky Atlas, plans, sessions, Monitor, weather,
   remote access and roles, site and locations, safety, troubleshooting.
+- [Windows rig](docs/guide/windows-rig.md) and [Orange Pi appliance](docs/guide/orange-pi-appliance.md): platform setup.
 - [`docs/quickstart.md`](docs/quickstart.md): install, first simulator session,
   real gear, connecting NINA.
 - [`docs/overview.md`](docs/overview.md): purpose, philosophy, architecture.
@@ -305,9 +296,11 @@ relay/       the forward-only remote-access relay
 ```
 
 ```powershell
-cd server && .venv\Scripts\python -m pytest -q
-cd ui      && npm test
-cd ui      && npm run dev          # Vite, proxies to :8800
+cd server
+.venv/Scripts/python -m pytest -q
+cd ../ui
+npm test
+npm run dev          # Vite, proxies to :8800
 ```
 
 Contributions welcome, and so are bug reports from rigs that look nothing like
@@ -315,5 +308,6 @@ mine. See [`docs/development.md`](docs/development.md).
 
 ---
 
-Apache-2.0. Not affiliated with ZWO, Player One, Wanderer Astro, or the NINA or
+Apache-2.0 for the top-level project; native components and third-party materials
+have their own terms in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Not affiliated with ZWO, Player One, Wanderer Astro, or the NINA or
 PHD2 projects.
