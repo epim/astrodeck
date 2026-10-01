@@ -38,7 +38,9 @@ import {
   type KeyboardEvent as RKeyboardEvent, type CSSProperties, type ReactNode,
 } from "react";
 import type { CatalogEntry } from "../../types";
-import { fovFromOptics, deproject, plausibilityHint, type OpticsLike } from "../../lib/framing";
+import {
+  fovFromOptics, deproject, plausibilityHint, mosaicTotalFov, type OpticsLike,
+} from "../../lib/framing";
 import { surveyTransform, type SurveyGeom } from "../../lib/surveyView";
 import {
   pointingFov, pointingCaption, skyToView,
@@ -63,7 +65,19 @@ import { TileEngine } from "./TileEngine";
 
 const VIEW = 1000; // SVG viewBox edge (geometry units)
 const ZOOM_MIN = 0.1;
+/** The ordinary ceiling: wide enough for any single frame. A configured
+ *  mosaic can need more (below), which is the only case this is ever raised
+ *  for — a lone frame's own FOV never approaches it. */
 const ZOOM_MAX = 10;
+/** Width, CSS px, of the raster the `<img>` pipeline fetches for one cutout
+ *  (surveyUrl below), held fixed regardless of zoom. The tile engine streams
+ *  HiPS tiles at a resolution picked for the current zoom instead, so this
+ *  name is meaningless on that path. */
+const SURVEY_CUTOUT_PX = 768;
+/** Below this many source px across, a panel reads as a blur rather than a
+ *  picture (#182): a bundled order-3 offline pack was measured drawing a
+ *  0.5 deg panel about 35 px across, well under this line. */
+const PANEL_COARSE_PX = 48;
 
 /** How far a pointer may travel and still be a tap, CSS px. */
 const TAP_SLOP_PX = 8;
@@ -244,8 +258,10 @@ export interface SkyCanvasProps {
   onSurveyLoad?: () => void;
 }
 
-function clampZoom(v: number): number {
-  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v));
+/** `max` defaults to the ordinary ceiling; callers pass the grid-fitted one
+ *  (`zoomMax` below) where a configured mosaic needs more room (#182). */
+function clampZoom(v: number, max: number = ZOOM_MAX): number {
+  return Math.min(max, Math.max(ZOOM_MIN, v));
 }
 
 /** Two boxes closer than `pad` px on both axes (skyMarkers' own test). */
@@ -392,6 +408,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // The rotate handle hangs off the top of the grid that is DRAWN, so with
   // panels it is sized from the field they were tiled for.
   const gridFovY = panelsMode && panelFov && panelFov.fov_y_deg > 0 ? panelFov.fov_y_deg : fov.fov_y_deg;
+  const gridFovX = panelsMode && panelFov && panelFov.fov_x_deg > 0 ? panelFov.fov_x_deg : fov.fov_x_deg;
 
   // ---- WebGL tile engine gate (spec §5) ----
   const surveySlug = SURVEY_SLUGS[survey] ?? null;
@@ -407,6 +424,31 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const onTileAllFailing = useCallback(() => {
     onSurveyError?.();
   }, [onSurveyError]);
+
+  // ---- zoom ceiling fitted to the configured mosaic (#182) --------------
+  // A 10x10 grid of 2 deg panels needs 20 deg to show whole; the fixed 10 deg
+  // ZOOM_MAX cropped it with no explanation (the framing modal has no way to
+  // zoom out far enough to ask for the whole grid). `mosaicTotalFov` degrades
+  // to the single frame's own size at rows=cols=1, which is always far under
+  // ZOOM_MAX in practice, so a non-mosaic view never raises the ceiling.
+  const gridSpanDeg = useMemo(() => {
+    if (!(gridFovX > 0 && gridFovY > 0)) return 0;
+    const { total_fov_x_deg, total_fov_y_deg } =
+      mosaicTotalFov(mosaic.cols, mosaic.rows, mosaic.overlap, gridFovX, gridFovY);
+    return Math.max(total_fov_x_deg, total_fov_y_deg);
+  }, [mosaic.cols, mosaic.rows, mosaic.overlap, gridFovX, gridFovY]);
+  const zoomMax = Math.max(ZOOM_MAX, gridSpanDeg);
+
+  // ---- "survey too coarse at this zoom" notice (#182) --------------------
+  // Only the <img> pipeline fetches a fixed-width raster (SURVEY_CUTOUT_PX),
+  // so only its per-panel pixel count can be estimated here; the tile engine
+  // picks its own resolution for the zoom and is not claimed to be coarse.
+  const panelPxAcross = haveOptics && fovZoomDeg > 0
+    ? (Math.min(gridFovX, gridFovY) / fovZoomDeg) * SURVEY_CUTOUT_PX
+    : null;
+  const surveyCoarse =
+    mode === "survey" && !useTileEngine && mosaic.rows * mosaic.cols > 1 &&
+    panelPxAcross !== null && panelPxAcross < PANEL_COARSE_PX;
 
   // ---- responsive square sizing ----
   useEffect(() => {
@@ -792,6 +834,11 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   fovZoomRef.current = fovZoomDeg;
   const onZoomRef = useRef(onZoom);
   onZoomRef.current = onZoom;
+  // The grid-fitted ceiling (#182) through a ref too, for the same reason:
+  // the listener below is attached once ([]), so a later change to the
+  // mosaic or optics must still reach it without a re-attach.
+  const zoomMaxRef = useRef(zoomMax);
+  zoomMaxRef.current = zoomMax;
   useEffect(() => {
     const el = boxRef.current;
     if (!el) return;
@@ -799,7 +846,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       if (e.target instanceof Element && e.target.closest('[data-atlas-controls]')) return;
       e.preventDefault(); // honored: registered with passive: false
       const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12;
-      onZoomRef.current(clampZoom(fovZoomRef.current * factor));
+      onZoomRef.current(clampZoom(fovZoomRef.current * factor, zoomMaxRef.current));
     };
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
@@ -817,8 +864,8 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       case "ArrowDown": deta = -stepDeg; break;
       case "[": onRotate((rotationDeg - 5 + 360) % 360); e.preventDefault(); return;
       case "]": onRotate((rotationDeg + 5) % 360); e.preventDefault(); return;
-      case "+": case "=": onZoom(clampZoom(fovZoomDeg / 1.12)); e.preventDefault(); return;
-      case "-": onZoom(clampZoom(fovZoomDeg * 1.12)); e.preventDefault(); return;
+      case "+": case "=": onZoom(clampZoom(fovZoomDeg / 1.12, zoomMax)); e.preventDefault(); return;
+      case "-": onZoom(clampZoom(fovZoomDeg * 1.12, zoomMax)); e.preventDefault(); return;
       default: return;
     }
     e.preventDefault();
@@ -1003,11 +1050,45 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     return out;
   }, [panelsMode, placedPanels, boxPx, textWidth]);
 
+  // ---- overlayControls' measured footprint (#491, third instance) --------
+  // The modal's MOVE SKY / MOVE GRID pair (`.tfs-move`, framing.css) is
+  // position:absolute, sized by its own text and padding, not by SkyCanvas:
+  // the reservation used to be a guessed 56 px column, and measured on the
+  // real 390x844 page the pair was 87.3 px wide, so the left 31 px of both
+  // buttons sat outside it and a label could be placed partly under them.
+  // The ref + ResizeObserver here mirror camLabelRef/camLabelH above: the
+  // RENDERED footprint is read off the DOM, never assumed, so a caller's own
+  // styling (not ours to predict) is still kept clear, whatever it measures.
+  // `overlayWrapRef` carries no layout of its own (no position, no size
+  // rule), so wrapping the caller's single root node in it does not change
+  // where that node's own `position: absolute` resolves against — still
+  // this canvas's `.astro-surface` box, exactly as an unwrapped child would.
+  const hasOverlayControls = !!props.overlayControls;
+  const overlayWrapRef = useRef<HTMLDivElement | null>(null);
+  const [overlayBox, setOverlayBox] = useState<Rect | null>(null);
+  useLayoutEffect(() => {
+    const wrap = overlayWrapRef.current;
+    const box = boxRef.current;
+    const target = wrap?.firstElementChild as HTMLElement | null | undefined;
+    if (!hasOverlayControls || !wrap || !box || !target) {
+      setOverlayBox(null);
+      return;
+    }
+    const read = () => {
+      const t = target.getBoundingClientRect();
+      const b = box.getBoundingClientRect();
+      setOverlayBox({ x: t.left - b.left, y: t.top - b.top, w: t.width, h: t.height });
+    };
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(target);
+    return () => ro.disconnect();
+  }, [hasOverlayControls, boxPx]);
+
   // Boxes the canvas's own furniture already occupies, so an object label
   // never lands on top of the compass letters, the readouts, the two labels
   // that name the frames, or a panel's label (#385: an object's name drawn
   // over a panel label covers the one control that skips that panel). CSS px.
-  const hasOverlayControls = !!props.overlayControls;
   const reservedBoxes = useMemo<Rect[]>(() => {
     const boxes: Rect[] = [
       { x: boxPx / 2 - 10, y: 0, w: 20, h: 20 },              // N
@@ -1015,7 +1096,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       { x: 0, y: boxPx - 22, w: 130, h: 22 },                 // px-scale readout
       { x: boxPx - 120, y: boxPx - 22, w: 120, h: 22 },       // scale bar
     ];
-    if (hasOverlayControls) boxes.push({ x: boxPx - 64, y: 8, w: 56, h: 198 });
+    if (overlayBox) boxes.push(overlayBox);
     boxes.push(...panelLabelBoxes);
     if (showCamLabel) {
       boxes.push({
@@ -1028,7 +1109,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     }
     return boxes;
   }, [boxPx, showCamLabel, camGuardRight, camMaxW, camTop, camLabelH, pointingLabel,
-      hasOverlayControls, panelLabelBoxes]);
+      overlayBox, panelLabelBoxes]);
 
   // ---- the "Object size" legend, CSS px (#425) ----
   // `left`/`top` are its anchor: the middle of its left edge, or of its right
@@ -1050,8 +1131,9 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // under the ellipse, then over it. Nowhere clear, it is not drawn, as the
   // "Your camera" label is not in panel mode: a legend that covers a skip
   // toggle costs more than the one word it adds, and the GRID section names
-  // the object's size in figures. Object labels do not keep off the legend
-  // yet: it is not among `reservedBoxes` (#491).
+  // the object's size in figures. Object labels keep off the legend in turn
+  // (`reservedForObjects` below, #491): the legend is placed FIRST, against
+  // `reservedBoxes` alone, so it cannot be told to dodge its own box.
   const legend = useMemo<{ left: number; top: number; anchor: "left" | "right" } | null>(() => {
     if (!semiMajorDeg || !gridLabelsOnCanvas) return null;
     const r = semiMajorDeg * cssPerDeg;
@@ -1087,6 +1169,26 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   }, [semiMajorDeg, gridLabelsOnCanvas, cssPerDeg, panelsMode, ccx, ccy, boxPx, textWidth,
       reservedBoxes]);
 
+  // The legend's own box, in the same CSS-px coordinates the render below
+  // uses to draw it (anchor "right" = right-edge-at-`left`, else left-edge):
+  // kept separate from `reservedBoxes` so the legend's own search above is
+  // never asked to dodge itself.
+  const legendBoxRect = useMemo<Rect | null>(() => {
+    if (!legend) return null;
+    const w = textWidth(LEGEND_TEXT) + LEGEND_PLATE_PX;
+    const h = LEGEND_H;
+    return legend.anchor === "right"
+      ? { x: legend.left - w, y: legend.top - h / 2, w, h }
+      : { x: legend.left, y: legend.top - h / 2, w, h };
+  }, [legend, textWidth]);
+  // What object labels dodge: the canvas furniture, PLUS the legend (#491) -
+  // added here rather than in `reservedBoxes` itself so the legend is always
+  // placed first, against the furniture alone.
+  const reservedForObjects = useMemo<Rect[]>(
+    () => (legendBoxRect ? [...reservedBoxes, legendBoxRect] : reservedBoxes),
+    [reservedBoxes, legendBoxRect],
+  );
+
   // Anchors chosen last frame, so a label does not flip from one side of its
   // marker to the other while the sky moves a pixel underneath it.
   const stickyRef = useRef<Map<string, Anchor>>(new Map());
@@ -1104,7 +1206,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           boxPx,
           measure,
           sticky: stickyRef.current,
-          reserved: reservedBoxes,
+          reserved: reservedForObjects,
           // FovOverlay already draws the FRAMED object's angular extent,
           // centred on the view. A second ellipse for the same object, at its
           // true position, would put two different claims about one object's
@@ -1113,7 +1215,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
         },
       ),
     [skyRows, center.ra_hours, center.dec_deg, pxPerDeg, boxPx, measure,
-     reservedBoxes, catalogTarget?.id],
+     reservedForObjects, catalogTarget?.id],
   );
   useEffect(() => {
     stickyRef.current = placement.anchors;
@@ -1198,7 +1300,10 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             maxWidth: "min(720px, 85svh)",
           }}
         >
-          {props.overlayControls}
+          {/* The wrapper carries no position/size CSS of its own (see
+              overlayWrapRef above): overlayControls' own root keeps resolving
+              its `position: absolute` against THIS box, unchanged. */}
+          <div ref={overlayWrapRef}>{props.overlayControls}</div>
           {/* 1a. WebGL tile engine (spec §5): mounts for survey mode when a slug
                 maps and WebGL is available; else the <img> pipeline below. */}
           {useTileEngine && surveySlug && (
@@ -1578,6 +1683,18 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       {mode === "survey" && surveyDegraded && (
         <div data-role="survey-degraded" className="text-[12px] text-warn border border-line2 bg-black/30 px-2 py-1">
           {degradedText ?? degradedLine(useTileEngine, !!shownUrl)}
+        </div>
+      )}
+      {/* #182: the <img> pipeline's fixed-width cutout maps a mosaic's panels
+          onto fewer and fewer source px as the zoom widens to fit the grid;
+          below PANEL_COARSE_PX that is a blur, not a picture, and this says
+          so instead of leaving it unexplained. Independent of the degraded
+          banner above — this is a working survey that is merely too coarse,
+          not an unreachable one. */}
+      {!surveyDegraded && surveyCoarse && panelPxAcross !== null && (
+        <div data-role="survey-coarse" className="text-[12px] text-warn border border-line2 bg-black/30 px-2 py-1">
+          The survey is coarse at this zoom: each panel is about {Math.round(panelPxAcross)} px
+          across. Zoom in, or use a higher-resolution survey, to see detail.
         </div>
       )}
       {mode === "schematic" && (
