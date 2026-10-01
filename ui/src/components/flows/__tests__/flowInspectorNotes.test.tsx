@@ -43,7 +43,18 @@ for (const k of [
   const v = k === "window" ? win : win[k];
   Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
 }
-g.requestAnimationFrame = (cb: (t: number) => void) => setTimeout(() => cb(0), 0);
+// Issue #614: this used to be a bare `setTimeout(() => cb(0), 0)` with no way
+// to tell the file's own root is gone. That is suspect, not proven -- nothing
+// under test here actually calls requestAnimationFrame on the render path
+// `setUnmapped` exercises -- but a stray frame requested after `root.unmount()`
+// below (by a future row this file comes to cover, or by React itself under
+// some build) would otherwise go on firing into whatever this file's
+// `process.exit()`-less import() does next, which is exactly the shape of "7/7
+// passed, then the export never resolves" seen on a loaded CI runner. Once
+// `root.unmount()` runs, new frames are dropped rather than scheduled.
+let framesSuppressed = false;
+g.requestAnimationFrame = (cb: (t: number) => void) =>
+  framesSuppressed ? 0 : setTimeout(() => cb(0), 0);
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------------- imports
@@ -211,8 +222,30 @@ test("no unmapped rows at all prints neither heading", () => {
     `a flow with nothing to report printed a heading: ${headings.join(" | ")}`);
 });
 
-// ------------------------------------------------------------------- report
 act(() => { root.unmount(); });
+framesSuppressed = true;
+
+// --------------------------------------------------------- #614 regression
+// This has to be a real timer round trip, not a synchronous check: the whole
+// point is whether a callback handed to requestAnimationFrame AFTER unmount
+// still gets invoked once its setTimeout(0) would fire. 20ms is generous next
+// to a 0ms delay and still trivial next to the 60s TIMEOUT_MS run-tests.mjs
+// gives the whole file.
+let lateFrameFired = false;
+g.requestAnimationFrame(() => { lateFrameFired = true; });
+await new Promise<void>((resolve) => setTimeout(resolve, 20));
+test("the rAF polyfill drops a frame requested after this file's own root unmounted", () => {
+  // MUTATION (named "polyfill keeps scheduling after unmount"): drop the
+  // `framesSuppressed ? 0 :` guard above, back to a bare
+  // `setTimeout(() => cb(0), 0)`. Observed: lateFrameFired is true here and
+  // this assertion throws "a frame scheduled after unmount still fired".
+  assert.ok(!lateFrameFired,
+    "a frame scheduled after root.unmount() still fired -- a leftover rAF "
+    + "loop kept going exactly like this would keep this file's own "
+    + "process.exit() waiting on a loaded CI runner (#614)");
+});
+
+// ------------------------------------------------------------------- report
 const total = passed + failed;
 console.log(`flowInspectorNotes.test: ${passed}/${total} passed`);
 for (const f of failures) console.log("  " + f);

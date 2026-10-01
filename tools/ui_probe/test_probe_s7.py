@@ -1047,12 +1047,54 @@ class SeedSessionScriptTest(unittest.TestCase):
         first shipped: it refused server/ alone while its docstring said it
         protected the developer's captures), observed red (verifier's
         scratchpad S7-PROBE-verify-mut, 2026-09-29):
-            AssertionError: SeedRefused not raised : <the copy's root>\\captures"""
-        for own in (REPO_ROOT / "server" / "config", REPO_ROOT / "server",
-                    REPO_ROOT / "captures", REPO_ROOT / "captures" / "sessions"):
-            with self.assertRaises(seed_session.SeedRefused, msg=str(own)) as caught:
-                seed_session._private(str(own), "--capture-dir")
-            self.assertIn("developer's own", str(caught.exception))
+            AssertionError: SeedRefused not raised : <the copy's root>\\captures
+
+        Issue #624: server/config and captures/ (and captures/sessions) are
+        .gitignore'd runtime output, written only once a server has actually
+        run against this checkout. A fresh clone, CI checkout or wave worktree
+        does not have them, so `seed_session._private`'s own `is_dir()` check
+        refused first, with "... is not a directory" -- never reaching the
+        marker-absence refusal this case exists to grade, and the assertIn
+        below failed on the wrong message. Each missing one is made here, as
+        an empty stand-in for the span of this case, and removed after:
+        creating a throwaway directory under these exact names is safe (a
+        real server run would make the same ones, and `_private` never writes
+        into them -- it only reads `is_dir()` and the marker file).
+        `REPO_ROOT / "server"` is tracked and always present, so it is never
+        among `created`.
+
+        Named mutant: delete the `if not marker.is_file(): raise ...` ownership
+        check in seed_session.py's `_marker` (the one piece of this script that
+        decides whether a directory is proven to be a probe server's). Observed
+        red with every one of these four directories present and empty (2026-10
+        -01, this worktree): the later `open(marker, "rb")` still raises on the
+        now-unchecked missing file, but as a plain OSError its own `except`
+        catches and rewords, so this reaches the assertIn instead of crashing,
+        and fails there --
+            AssertionError: "developer's own" not found in '--capture-dir
+            ...\\server\\config: its .astrodeck-probe marker cannot be read
+            (FileNotFoundError), so it is not one server_ctl.py start wrote'
+        (a SeedRefused is still raised, so assertRaises is satisfied -- the
+        ownership wording the removed check alone was responsible for is
+        what is gone)."""
+        checked = (REPO_ROOT / "server" / "config", REPO_ROOT / "server",
+                   REPO_ROOT / "captures", REPO_ROOT / "captures" / "sessions")
+        created = [own for own in checked if not own.is_dir()]
+        for own in created:
+            own.mkdir(parents=True, exist_ok=True)
+        try:
+            for own in checked:
+                with self.assertRaises(seed_session.SeedRefused, msg=str(own)) as caught:
+                    seed_session._private(str(own), "--capture-dir")
+                self.assertIn("developer's own", str(caught.exception))
+        finally:
+            # Deepest first: captures/sessions before captures, so the parent
+            # is empty by the time its own rmdir runs. suppress rather than
+            # assert -- a cleanup slip must never stand in for this case's
+            # own result.
+            for own in sorted(created, key=lambda p: len(p.parts), reverse=True):
+                with contextlib.suppress(OSError):
+                    own.rmdir()
         with self.assertRaises(seed_session.SeedRefused):
             seed_session._private(None, "--capture-dir")
         with tempfile.TemporaryDirectory() as tmp:
