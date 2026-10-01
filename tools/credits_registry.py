@@ -79,7 +79,7 @@ TEXT_OVERRIDES: dict[str, dict] = {
             "Chosen over Skyfield, which is by the same author and equally "
             "correct on satellites, because Skyfield's planetary half wants a "
             "downloaded JPL kernel and this app has to work at a dark site "
-            "with no network. sgp4 ships no data files at all."),
+            "with no network. The package also carries its verification corpus; it does not need a downloaded planetary kernel."),
     },
     "pyserial": {
         # The wheel's METADATA says only "License: BSD", which is vaguer than
@@ -94,6 +94,14 @@ TEXT_OVERRIDES: dict[str, dict] = {
             "was taken from the project's own LICENSE.txt. The SPDX header in "
             "serial/__init__.py agrees: BSD-3-Clause, Chris Liechti."),
     },
+}
+
+
+# These build dependencies place their own licensed runtime/helper or CSS bytes
+# in the actual SPA. The October artifact audit observed their output.
+NPM_RUNTIME_CONTRIBUTORS = {
+    "vite": "Runtime module-preload, preload and bundled CommonJS helpers. Vite's LICENSE.md also carries the bundled plugin notices.",
+    "tailwindcss": "The shipped CSS includes Tailwind's preflight rules; build-time classification does not erase their MIT notice.",
 }
 
 
@@ -134,8 +142,8 @@ VENDORED: dict[str, dict] = {
             "and warranty disclaimer but replaces MIT's grant with its own "
             "prose, which contains no distribution verb (no copy, publish, "
             "distribute, sublicense or sell) and limits the SDK to \"secondary "
-            "development of our company's cameras\". AstroDeck redistributes six "
-            "compiled binaries on it. Owner decision: get written confirmation "
+            "development of our company's cameras\". The inspected Windows executable and examined published "
+            "archives contain six compiled libraries; the source tarball excludes them. Owner decision: get written confirmation "
             "from support@player-one-astronomy.com, or stop shipping the "
             "binaries and require a vendor install."),
         "requires": (lp.NOTICE,),
@@ -157,8 +165,9 @@ VENDORED: dict[str, dict] = {
             "A reasonable reading is that redistribution is intended: a runtime "
             "library is useless unless it ships, and the retained clause "
             "presupposes that copies will be distributed. But that is an "
-            "inference, not a grant, and AstroDeck currently redistributes six "
-            "compiled binaries on it. Written confirmation from "
+            "inference, not a grant. The fresh Windows executable and examined "
+            "published archives contain all six SDK libraries, while the inspected "
+            "source tarball excludes them. Written confirmation from "
             "support@player-one-astronomy.com would close this; until then it "
             "is listed here rather than quietly filed under MIT."),
     },
@@ -224,7 +233,7 @@ DATA: dict[str, dict] = {
             "get_constellation over AstroDeck's own object list, so the rows are "
             "measurements rather than a copied table. The authority underneath "
             "is the IAU constellation boundary system defined by Eugene "
-            "Delporte in 1930, which astropy carries; the code that does the "
+            "Delporte in 1930, implemented by Astropy using the Roman et al. 1987 boundary table; the code that does the "
             "lookup is Astropy, BSD-3-Clause, credited in full under Python "
             "packages. Positions are precessed from J2000 to the B1875 epoch the "
             "boundaries are drawn in — skipping that moves 1,127 of 13,369 "
@@ -311,77 +320,38 @@ DATA_EXTRA: list[dict] = [
     {
         "name": "IAU Catalog of Star Names (IAU-CSN)",
         "version": "2022-04-04 edition, cut at V <= 4.00",
-        "spdx": "CC-BY-4.0",
-        "url": "https://exopla.net/star-names/modern-iau-star-names/",
-        "texts": [_file("CC BY 4.0 legal code", "cc-by-4.0.txt")],
+        "spdx": 'LicenseRef-IAU-CSN-CC-Attribution-Unversioned',
+        "url": 'https://www.pas.rochester.edu/~emamajek/WGSN/IAU-CSN.txt',
+        "texts": [],
         "notes": (
-            "The 241 named naked-eye stars AstroDeck can point at by name "
-            "(Vega, Deneb, Albireo...), embedded in "
-            "server/astrodeck/catalog/brightstars.py. Compiled by the IAU "
-            "Working Group on Star Names (WGSN).\n\n"
-            "WE CHANGED IT: the catalogue was cut to stars brighter than "
-            "magnitude 4.00 and reduced to the name, position and magnitude "
-            "columns. No name, position or magnitude was altered.\n\n"
-            "Version note: the catalogue file states \"Creative Commons "
-            "Attribution\" without naming a version. CC BY 4.0 is inferred from "
-            "the IAU's site-wide copyright statement; the catalogue itself never "
-            "says 4.0."),
+            "IAU Working Group on Star Names catalogue, 2022-04-04 edition. AstroDeck embeds 241 rows in brightstars.py, retaining names, positions and magnitudes for stars with V <= 4.00. The cut and reduced columns are AstroDeck's changes; the retained values are unaltered.\n\nThe catalogue header names Creative Commons Attribution but no version. The previous CC BY 4.0 label depended on a separate IAU website inference whose source could not be reverified. This entry preserves that uncertainty rather than treating the inference as a specific grant."),
+        'flag': 'The 2022-04-04 source header grants Creative Commons Attribution without specifying a version. A 4.0 grant has not been independently established; preserve attribution and obtain a version clarification.',
+        'requires': ['attribution', 'state-changes'],
     },
     {
-        "name": "DSS2 colour imagery (bundled offline survey pack)",
-        "version": "HEALPix order 3, ~1,020 tiles",
-        "spdx": "LicenseRef-DSS-AllRightsReserved",
-        "url": "https://archive.stsci.edu/dss/copyright.html",
+        "name": 'DSS2 imagery (optional remote survey)',
+        "version": 'CDS/P/DSS2/color',
+        "spdx": 'ODbL-1.0 AND LicenseRef-DSS-AllRightsReserved',
+        "texts": [_file("Open Database License 1.0", "bundled-odbl-1.0.txt")],
+        "url": 'https://archive.stsci.edu/dss/copyright.html',
         "flag": (
-            "DSS/DSS2 imagery is copyrighted All Rights Reserved (AAO Board, "
-            "Caltech, AURA, UK SERC/PPARC). The only published permission is a "
-            "NON-PROFIT research/teaching USE grant; third-party REDISTRIBUTION "
-            "is nowhere authorised, and colour DSS is explicitly directed to "
-            "archive@stsci.edu. Release builds bundle ~45 MB of these tiles. "
-            "Owner decision: obtain written permission from STScI, or swap the "
-            "offline pack to an openly-licensed survey."),
+            "Original-image redistribution permission remains unresolved. CDS's ODbL grant covers its HiPS database and does not replace the DSS image copyright. Do not enable release bundling without owner clearance."),
         "notes": (
-            "The sky imagery behind the Atlas when the rig has no internet. "
-            "Release builds embed a low-resolution DSS2-colour tile pack so the "
-            "Atlas is not blank offline.\n\n"
-            "OPEN QUESTION FOR THE OWNER — the most serious item on this page. "
-            "The Digitized Sky Surveys are not public domain and not openly "
-            "licensed. STScI's terms read: \"Scientists and educators conducting "
-            "research, teaching (including textbooks), or other non-profit "
-            "activities may use data from the copyrighted collections freely and "
-            "without restriction\" and \"Commercial, for-profit use of the "
-            "copyrighted collections is prohibited without written permission\". "
-            "Colour DSS has its own carve-out: \"For use of color DSS images not "
-            "covered by above use policy, contact archive@stsci.edu.\"\n\n"
-            "Neither statement addresses a third party redistributing the "
-            "imagery inside a downloadable product, which is what bundling the "
-            "pack does. CDS, who host the tiles, permit mirroring only where "
-            "\"the copyright on the original data authorises this "
-            "redistribution\" — the one condition that cannot be established "
-            "here. Their HiPS status for this survey is clonableOnce.\n\n"
-            "Fetching tiles on demand for your own viewing is a different act "
-            "and sits comfortably inside the use grant. It is the bundled pack "
-            "that needs a decision.\n\n"
-            "Required acknowledgement, given here: \"The Digitized Sky Surveys "
-            "were produced at the Space Telescope Science Institute under U.S. "
-            "Government grant NAG W-2166. The images of these surveys are based "
-            "on photographic data obtained using the Oschin Schmidt Telescope on "
-            "Palomar Mountain and the UK Schmidt Telescope. The plates were "
-            "processed into the present compressed digital form with the "
-            "permission of these institutions.\" Colourised and HEALPixed by CDS."),
+            'Optional Atlas imagery fetched to the operator\'s cache. The inspected local source tarball contains no survey pack; source staging and seeding reject bundled DSS2 color. The frozen build specification has a separate whole-directory inclusion path and must be checked on its own. Offline Atlas uses the schematic sky without downloaded tiles.\n\nThe current CDS color record declares ODbL-1.0 for the HiPS database, with CNRS/Unistra copyright and a one-generation cloning status. Original DSS image rights remain separate. STScI permits specified nonprofit uses and requires written permission for commercial uses outside that grant. Fetching locally does not settle every deployment or public-output use.\n\nAcknowledgement: "The Digitized Sky Surveys were produced at the Space Telescope Science Institute under U.S. Government grant NAG W-2166. The images of these surveys are based on photographic data obtained using the Oschin Schmidt Telescope on Palomar Mountain and the UK Schmidt Telescope. The plates were processed into the present compressed digital form with the permission of these institutions." Colourised and HEALPixed by CDS. When publicly using the database or a produced work, retain the applicable ODbL database attribution and licence reference; adapted databases may require share-alike and access to the database or alterations. These conditions do not license AstroDeck application code under ODbL.'),
+        'group': 'remote-data',
+        'requires': [lp.LICENSE_TEXT, lp.ATTRIBUTION, lp.SHARE_ALIKE],
+        'tier': 'remote-data',
     },
     {
-        "name": "2MASS colour imagery",
-        "spdx": "LicenseRef-Terms-Of-Service",
-        "url": "https://irsa.ipac.caltech.edu/Missions/2mass.html",
+        "name": '2MASS colour imagery (optional remote survey)',
+        "spdx": 'ODbL-1.0 AND LicenseRef-2MASS-Acknowledgement',
+        "texts": [_file("Open Database License 1.0", "bundled-odbl-1.0.txt")],
+        "url": 'https://alasky.cds.unistra.fr/MocServer/query?ID=CDS/P/2MASS/color&fmt=html&get=record',
         "notes": (
-            "An alternative sky survey in the Atlas, fetched on demand and never "
-            "bundled. Acknowledgement, as asked for: \"This publication makes "
-            "use of data products from the Two Micron All Sky Survey, which is a "
-            "joint project of the University of Massachusetts and the Infrared "
-            "Processing and Analysis Center/California Institute of Technology, "
-            "funded by the National Aeronautics and Space Administration and the "
-            "National Science Foundation.\""),
+            'Optional 2MASS Atlas imagery fetched on demand to the operator\'s cache. No 2MASS tiles occur in the inspected local source tarball. The current CDS HiPS record declares ODbL-1.0 for its database, with CNRS/Unistra copyright. That database licence is separate from the original 2MASS data products.\n\nAcknowledgement: "This publication makes use of data products from the Two Micron All Sky Survey, which is a joint project of the University of Massachusetts and the Infrared Processing and Analysis Center/California Institute of Technology, funded by the National Aeronautics and Space Administration and the National Science Foundation." Public use of the database or a produced work needs the applicable CDS database attribution and ODbL licence reference. Adapted databases can carry share-alike and database-access obligations; this is not a licence on AstroDeck application code.'),
+        'group': 'remote-data',
+        'requires': [lp.LICENSE_TEXT, lp.ATTRIBUTION, lp.SHARE_ALIKE],
+        'tier': 'remote-data',
     },
 ]
 
@@ -450,132 +420,58 @@ OPTIONAL_UNINSTALLED: dict[str, dict] = {
 SERVICES: list[dict] = [
     {
         "name": "NOAA GOES on AWS",
-        "spdx": "LicenseRef-Public-Domain",
-        "url": "https://registry.opendata.aws/noaa-goes/",
+        "spdx": 'LicenseRef-NOAA-NODD-Terms',
+        "url": 'https://registry.opendata.aws/noaa-goes/',
         "hosts": [
             "noaa-goes18.s3.amazonaws.com",
             "noaa-goes19.s3.amazonaws.com",
             "s3.amazonaws.com",
         ],
         "notes": (
-            "GOES-R Advanced Baseline Imager cloud products \u2014 the clear-sky "
-            "mask and cloud-top height behind the cloud-occlusion model. Read "
-            "anonymously from the public buckets NOAA publish through their Open "
-            "Data Dissemination programme; no key, no account, no cost.\n\n"
-            "NOAA data is a work of the United States government and is in the "
-            "public domain (17 U.S.C. \u00a7 105). The AWS Open Data registry "
-            "entry states plainly: \"There are no restrictions on the use of this "
-            "data.\" Nothing is legally owed here.\n\n"
-            "Credited anyway, because taking a public good silently is a poor "
-            "way to treat one. The sky is measured by an instrument somebody "
-            "else paid for.\n\n"
-            "NOT YET ON SCREEN. Open-Meteo is named in the sky-conditions panel "
-            "every time it shows a forecast; there is no cloud-map panel yet, so "
-            "this entry is the only place NOAA is currently credited. When that "
-            "panel lands it should name NOAA the same way. Written down here "
-            "rather than asserted as done, because a credit line that describes "
-            "a screen nobody built is the same defect as a docstring describing "
-            "a fix nobody called."),
+            "NOAA GOES-R ABI clear-sky-mask and cloud-top-height products feed AstroDeck's cloud model. Granules are downloaded from public NOAA buckets and cached on the operator's machine; none occur in the inspected local source tarball.\n\nNOAA permits use of the NODD data and requests source attribution for unaltered data. Its terms prohibit implying NOAA endorsement or affiliation and presenting modified data as original NOAA data. AstroDeck's cloud probability, height projection and motion displays are processed outputs of AstroDeck, not NOAA forecasts or NOAA-validated safety decisions."),
+        'requires': ['attribution', 'state-changes'],
     },
     {
         "name": "Open-Meteo",
-        "spdx": "CC-BY-4.0",
-        "url": "https://open-meteo.com/",
+        "spdx": 'CC-BY-4.0',
+        "url": 'https://open-meteo.com/en/licence',
         "hosts": ["api.open-meteo.com"],
         "texts": [_file("CC BY 4.0 legal code", "cc-by-4.0.txt")],
         "notes": (
-            "Cloud cover, temperature, humidity and dewpoint — the forecast "
-            "behind the sky-conditions panel and the weather safety gate. "
-            "Open-Meteo publish their API data under CC BY 4.0. Weather data "
-            "reaches Open-Meteo from national weather services including NOAA, "
-            "ECMWF, DWD and Meteo-France; Open-Meteo relicense their own output "
-            "as CC BY 4.0 and ask for no pass-through credit, with one caveat "
-            "worth knowing: their UK Met Office source is CC BY-SA.\n\n"
-            "WHAT THEY ASK FOR, exactly: \"You must include a link next to any "
-            "location Open-Meteo data are displayed\", with the example markup "
-            "<a href=\"https://open-meteo.com/\">Weather data by "
-            "Open-Meteo.com</a>.\n\n"
-            "The sky-conditions panel names Open-Meteo on screen every time it "
-            "shows a forecast, and does so only when Open-Meteo data is actually "
-            "flowing. See the gap note in "
-            "docs/superpowers/backlog/2026-08-08-third-party-licences.md about "
-            "making that label a link."),
+            "Open-Meteo forecasts supply weather conditions, wind readouts and derived forecast-cloud bands. The data are CC BY 4.0: credit Open-Meteo, link the licence and identify changes. Open-Meteo additionally requires a source link beside every location displaying its data. The Conditions views have these links; newer wind and cloud-band displays still need them.\n\nThe free API endpoint is limited to non-commercial use and published request limits. Commercial use requires the appropriate paid service. These service conditions are separate from the data licence. Public OSS client distribution does not establish an exception for every deployment or the aggregate traffic from many installs. The normal refresh is 15 minutes with a bounded retry; this is not a guarantee about shared-IP traffic.\n\nDerived cloud bands and app summaries are AstroDeck processing of the provider's forecast. AstroDeck does not redistribute the separately licensed Open-Meteo server implementation."),
+        'requires': ['attribution', 'license', 'state-changes'],
     },
     {
         "name": "Astrospheric",
-        "spdx": "LicenseRef-Astrospheric-Proprietary",
-        "url": "https://www.astrospheric.com/privacypolicy.html",
+        "spdx": 'LicenseRef-Astrospheric-Proprietary',
+        "url": 'https://www.astrospheric.com/privacypolicy',
         "hosts": ["astrosphericpublicaccess.azurewebsites.net"],
         "flag": (
-            "Astrospheric's Terms of Use grant no redistribution right and scope "
-            "API access to Professional members' PERSONAL projects; shipping the "
-            "integration in a public product appears to need their written "
-            "permission. Owner decision: seek permission, or remove."),
+            "Public OSS integration and many independent installs remain an owner permission question under the API's personal-project scope. Per-user keys and an instance acknowledgement do not establish vendor permission. Obtain written clarification covering this use."),
         "notes": (
-            "Astronomical seeing and transparency forecasts, used only when you "
-            "supply your own API key. Astrospheric derive these from Environment "
-            "and Climate Change Canada's RDPS/HRDPS models. Credited on screen "
-            "beside Open-Meteo whenever Astrospheric samples are actually "
-            "flowing — never when they are not.\n\n"
-            "OPEN QUESTION FOR THE OWNER. Astrospheric's terms say "
-            "\"Unauthorized use, reproduction, distribution, or exploitation of "
-            "Astrospheric's assets, APIs, or content outside of the Service is "
-            "strictly prohibited\", and their API documentation scopes the Data "
-            "API to \"Astrospheric Professional members for use in personal "
-            "projects\", directing public or commercial projects to contact "
-            "them. AstroDeck is a public product that ships an Astrospheric "
-            "client. Each user supplies their own key and their own forecast is "
-            "never cached beyond the display, which is the mitigating fact — but "
-            "it is not a permission. Written confirmation would close this.\n\n"
-            "Pass-through credit their upstream asks for: \"Contains information "
-            "licenced under the Data Server End-use Licence of Environment and "
-            "Climate Change Canada.\""),
+            'Optional seeing and transparency forecasts use the operator\'s own Astrospheric key and an in-memory forecast cache. Current v1 and v2 API documentation describe access for Professional members\' personal projects; broader uses are directed to the vendor.\n\nOur reading: the public client and its independent deployments need clarification from Astrospheric. The checked terms do not by themselves prove that publishing independently written client source is infringement, nor do a user\'s key and acknowledgement prove this public integration is authorized. The existing acknowledgement records the operator\'s assertion only.\n\nUpstream acknowledgement: "Contains information licenced under the Data Server End-use Licence of Environment and Climate Change Canada." Licence: https://eccc-msc.github.io/open-data/licence/readme_en/. ECCC\'s underlying data permission does not replace Astrospheric\'s service terms.'),
+        'requires': ['attribution'],
     },
     {
         "name": "CelesTrak",
-        # Same shape as the IEM entry: a service re-delivering US Government
-        # data, asking to be identified rather than licensed. Deliberately NOT
-        # a new LicenseRef with an owner-decision flag on it -- a flag means
-        # "somebody has to read the terms and decide", and there is nothing
-        # here to decide: we fetch, we cache locally, we redistribute nothing.
-        "spdx": "LicenseRef-Public-Domain",
-        "url": "https://celestrak.org/",
+        # Service access conditions are separate from the origin of the data.
+        "spdx": 'LicenseRef-CelesTrak-Service-Terms',
+        "url": 'https://celestrak.org/usage-policy.php',
         "hosts": ["celestrak.org"],
         "notes": (
-            "Where AstroDeck gets satellite orbital elements from — the GP "
-            "element sets behind the satellite search and the pass predictor. "
-            "CelesTrak is Dr T.S. Kelso's service, and has been the public "
-            "source for two-line element sets since 1985; the elements "
-            "themselves originate with the US Space Force's 18th Space Defense "
-            "Squadron and are US Government work.\n\n"
-            "WHAT WE DO WITH IT: AstroDeck fetches the curated `visual` group "
-            "(plus the ISS, Tiangong and Hubble by catalogue number), caches "
-            "the result on this rig's own disk so a dark site keeps working "
-            "offline, and does NOT redistribute it — no element set ships in a "
-            "release, and nothing is re-served to anyone else.\n\n"
-            "CelesTrak ask clients not to fetch a given file more than four "
-            "times a day and to identify themselves. Both are honoured: the "
-            "refresh interval is twelve hours and every request carries the "
-            "same `AstroDeck/0.1` user agent the weather client sends."),
+            'CelesTrak supplies the visual GP group and selected catalogue IDs as JSON. AstroDeck keeps an operator-local cache; no active orbital-element cache occurs in the inspected local source tarball. The normal scheduled refresh is 12 hours and requests identify the AstroDeck client.\n\nCurrent CelesTrak policy says to stop automated queries after a non-200 response and report the problem for human investigation. It now describes GP updates every two hours. The nominal AstroDeck interval is conservative, but the failure and manual-refresh paths do not prove this policy is honored. Service conditions are distinct from the origins of the underlying observations; a public-domain label does not dispose of those conditions.'),
+        'flag': "Current error paths can keep retrying a due cache every minute and continue individual queries after group failure. This conflicts with CelesTrak's stop-on-error instructions and needs a separate behavior fix.",
+        'requires': [],
     },
     {
         "name": "IAU Minor Planet Center",
-        "spdx": "LicenseRef-Public-Domain",
-        "url": "https://www.minorplanetcenter.net/",
+        "spdx": 'LicenseRef-MPC-Data-Terms',
+        "url": 'https://docs.minorplanetcenter.net/mpc-ops-docs/faqs/',
         "hosts": ["minorplanetcenter.net", "www.minorplanetcenter.net"],
         "notes": (
-            "Where AstroDeck gets comet orbital elements from: `CometEls.txt`, "
-            "the MPC's orbit file for every known comet. The Minor Planet "
-            "Center operates at the Smithsonian Astrophysical Observatory "
-            "under the auspices of Division F of the International "
-            "Astronomical Union, and is funded by NASA.\n\n"
-            "MPC data are freely available and the Center asks to be "
-            "acknowledged, which is what this entry does. The underlying "
-            "OBSERVATIONS belong to the observers who submitted them — "
-            "professional surveys and amateurs alike — and the orbits are "
-            "computed from their work; that credit passes through.\n\n"
-            "The file is fetched weekly at most (the MPC republish it weekly), "
-            "cached on this rig's disk, and never redistributed in a release."),
+            "The Minor Planet Center supplies CometEls.txt orbital elements. AstroDeck caches these on the operator's machine. No comet-element cache occurs in the inspected local source tarball. The normal refresh interval is one week; failure and manual-refresh paths can make additional requests.\n\nMPC says its database is freely available to the public and asks clients to avoid excessive requests. This is evidence for the intended runtime access, not an explicit public-domain dedication. Acknowledge the MPC, its cited funders and the observers whose measurements support the computed orbits."),
+        'flag': 'The checked MPC FAQ says data are freely available, but does not establish CC0 or a public-domain dedication. Confirm terms before proposing bulk redistribution.',
+        'requires': ['attribution'],
     },
     {
         "name": "Iowa Environmental Mesonet (Iowa State University)",
@@ -593,29 +489,22 @@ SERVICES: list[dict] = [
     },
     {
         "name": "CDS - Centre de Donnees astronomiques de Strasbourg",
-        "spdx": "LicenseRef-CDS-Credit",
+        "spdx": 'LicenseRef-CDS-Survey-Terms',
         "url": "https://cds.unistra.fr/",
         "hosts": ["alasky.cds.unistra.fr", "alaskybis.cds.unistra.fr"],
         "notes": (
-            "Sky survey imagery behind the Atlas: the hips2fits cutout service "
-            "and the HiPS tile mirrors, operated by CDS at the Universite de "
-            "Strasbourg / CNRS. AstroDeck acknowledges the use of the Aladin sky "
-            "atlas and the HiPS services developed at CDS.\n\n"
-            "Online fetching is OFF by default — an observatory usually has no "
-            "internet, so the local survey pack is the primary source and CDS is "
-            "asked only when you turn it on."),
+            'CDS operates the HiPS tiles and hips2fits cutout services used for optional Atlas imagery. AstroDeck acknowledges the Aladin sky atlas and HiPS services developed at CDS, Universite de Strasbourg/CNRS.\n\nSurvey-specific records govern the database and original-image rights. The checked DSS2 color and 2MASS color records declare ODbL-1.0 for their HiPS databases; original-image terms remain separate. Preserve CDS and originating-survey credits and applicable database notices with public use. No survey pack occurs in the inspected local source tarball. Offline Atlas can draw a schematic sky.'),
+        'requires': ['attribution'],
     },
     {
         "name": "ESA / ESAC Science Data Centre",
-        "spdx": "LicenseRef-ESA-Credit",
+        "spdx": 'LicenseRef-ESA-Survey-Mirror',
         "url": "https://www.cosmos.esa.int/",
         "hosts": ["skies.esac.esa.int"],
         "texts": [],
         "notes": (
-            "The first-choice mirror for DSS2-colour and 2MASS-colour sky tiles, "
-            "operated by the European Space Agency at ESAC, Madrid. ESA's "
-            "default terms for its public material are CC BY-SA 3.0 IGO with "
-            "credit to ESA."),
+            "ESA/ESAC supplies the first configured mirror for DSS2 color and 2MASS color tiles. Credit ESA as the mirror operator and retain CDS and originating-survey acknowledgements.\n\nThese are third-party survey holdings. ESA's general licence for its own public material is not evidence that it relicenses DSS or 2MASS. Use the survey-specific notices and database terms; the checked CDS records describe the ESA copies as unclonable mirrors."),
+        'requires': ['attribution'],
     },
     {
         "name": "GitHub",

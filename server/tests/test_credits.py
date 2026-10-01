@@ -30,6 +30,7 @@ coverage is enforced everywhere, in both directions.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sys
 import tomllib
@@ -420,3 +421,60 @@ def test_screen_covers_every_group_the_generator_produced(credits):
     for group in credits["groups"]:
         assert group["entries"], f"group {group['id']} would render empty"
         assert group["title"] and group["blurb"], f"group {group['id']} is unlabelled"
+
+
+def test_project_credit_version_matches_current_manifest(credits):
+    """PROJECT-VERSION mutant: stale project version must not pass dependency-only gates."""
+    actual = tomllib.loads((REPO / "server/pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    assert credits["project"]["version"] == actual, "credits project version is stale"
+
+
+def test_generated_registry_policy_and_text_inputs_are_current(credits):
+    """INPUT-FRESHNESS mutant: changed registry prose must require regeneration."""
+    fingerprints = credits.get("input_fingerprints", {})
+    required = {
+        "tools/gen_credits.py", "tools/credits_registry.py", "tools/licence_policy.py",
+        "server/pyproject.toml", "ui/package-lock.json", "native/Cargo.lock",
+        "native/Cargo.toml", "LICENSE", "tools/licence/bundled-components.json",
+    }
+    required.update(p.relative_to(REPO).as_posix() for p in (REPO / "tools/licence_texts").glob("*") if p.is_file())
+    required.update(p.relative_to(REPO).as_posix() for p in (REPO / "native/crates").glob("*/Cargo.toml"))
+    assert set(fingerprints) == required, "generated credits omit or add source inputs"
+    stale = [name for name in sorted(required)
+             if fingerprints[name] != hashlib.sha256(
+                 (REPO / name).read_text(encoding="utf-8").encode("utf-8")).hexdigest()]
+    assert not stale, "generated credit inputs are stale: " + ", ".join(stale)
+
+
+def test_compiler_runtime_contributors_are_credited(entries):
+    """DEV-RUNTIME mutant: development classification cannot erase emitted code."""
+    have = _named(entries)
+    for name in registry.NPM_RUNTIME_CONTRIBUTORS:
+        assert _norm(name) in have, "emitted compiler runtime has no credit: " + name
+        assert have[_norm(name)]["texts"], "emitted compiler runtime has no notice: " + name
+
+
+def test_reviewed_copyleft_components_remain_owner_decisions():
+    for expression in ("LGPL-3.0-or-later", "GPL-3.0-or-later WITH GCC-exception-3.1"):
+        result = policy.resolve(expression)
+        assert result.policies and result.needs_text
+        assert result.flag, "reviewed copyleft component lost its owner gate"
+    for expression in ("GPL-3.0-only", "AGPL-3.0-only", "SSPL-1.0", "MIT OR LGPL-3.0-or-later"):
+        with pytest.raises(policy.Flag):
+            policy.resolve(expression)
+
+
+def test_reviewed_artifact_component_manifest_is_credited_with_exact_notices(credits, entries):
+    specs = json.loads((REPO / "tools/licence/bundled-components.json").read_text(encoding="utf-8"))
+    have = {entry["name"]: entry for entry in entries}
+    for spec in specs:
+        assert spec["name"] in have, "observed binary component has no credit: " + spec["name"]
+        entry = have[spec["name"]]
+        assert entry["version"] == spec["version"]
+        assert entry["spdx"] == spec["spdx"]
+        rendered = [credits["licenses"].get(ref["hash"], "") for ref in entry["texts"]]
+        for text in spec["texts"]:
+            original = (REPO / text["licence_text"]).read_text(encoding="utf-8").strip("\n")
+            assert original in rendered, "observed binary component lost its complete notice"
+        if spec.get("flag"):
+            assert entry.get("flag"), "observed restricted component lost its owner decision"
