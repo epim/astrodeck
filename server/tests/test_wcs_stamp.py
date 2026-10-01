@@ -264,6 +264,45 @@ async def test_wcs_worker_is_cancelled_on_teardown(wcs_hub, monkeypatch):
 
 # ------------------------------------------------------- config route (§3 / RBAC)
 
+def test_a_provider_left_active_by_a_prior_test_does_not_leak_here():
+    """Simulates the shape #443 found: some earlier test on the same worker
+    called ``set_active_provider`` and never reset it (unlike this file's
+    own ``test_wcs_config_route_requires_site_optics_cap``, which resets in
+    a ``finally``). No cleanup here ON PURPOSE -- the isolation this proves
+    does not come from this test behaving, it comes from the autouse fixture
+    in conftest.py, which is what the next test depends on. Pytest collects
+    a module's tests in definition order and this suite runs with no
+    randomization plugin, so the test right below always runs immediately
+    after this one under ``-n0``."""
+    from astrodeck.auth import TokenAdminProvider, set_active_provider
+    set_active_provider(TokenAdminProvider("left-active-on-purpose-" + "x" * 16))
+
+
+def test_b_wcs_config_route_round_trips_under_the_open_default(tmp_path, monkeypatch):
+    """The same request ``test_wcs_config_route_round_trips_and_gates`` makes
+    (#443): a fresh app, no credentials, relying on the open ("none"
+    provider) default. It must see 200 regardless of what the test
+    immediately above -- or any other test on this worker -- left the active
+    provider set to; only the autouse reset in conftest.py
+    (``_reset_active_auth_provider``) buys that.
+
+    RED under mutant (that fixture deleted from conftest.py), observed:
+
+        >       assert r.status_code == 200, r.text
+        E       AssertionError: {"detail":"authentication required"}
+        E       assert 401 == 200
+    """
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_mod, "config_store", store)
+    monkeypatch.setattr(hub_module, "config_store", store)
+    monkeypatch.setattr(app_module, "config_store", store)
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path / "captures")
+    c = TestClient(app_module.create_app())
+    r = c.post("/api/config/wcs", json={"solve_saved_lights": True,
+                                        "wcs_stamp": {"solver": "astap"}})
+    assert r.status_code == 200, r.text
+
+
 def test_wcs_config_route_round_trips_and_gates(tmp_path, monkeypatch):
     store = ConfigStore(path=tmp_path / "astrodeck.json")
     monkeypatch.setattr(config_mod, "config_store", store)
