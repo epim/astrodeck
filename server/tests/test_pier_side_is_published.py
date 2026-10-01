@@ -83,8 +83,9 @@ class _Link:
 
 
 def _am5(monkeypatch, *, measured: PierSide, ra_now: float, lon: float = 0.0):
-    from astrodeck.config import AppConfig, config_store
+    from astrodeck.config import AppConfig
     from astrodeck.devices.backends.zwo_am5 import ZwoAm5Telescope
+    from conftest import _sweep_config_store  # rootdir-relative, as test_no_route_leaks_the_site_coordinates does
 
     tel = ZwoAm5Telescope.__new__(ZwoAm5Telescope)
     tel.name = "AM5 under test"
@@ -100,7 +101,26 @@ def _am5(monkeypatch, *, measured: PierSide, ra_now: float, lon: float = 0.0):
     cfg = AppConfig()
     cfg.site.longitude = lon
     cfg.site.is_default = False        # a saved site: #24 refuses to predict without one
-    monkeypatch.setattr(config_store, "cfg", lambda: cfg)
+
+    class _Stub:
+        """A ``config_store``-shaped stand-in: the driver's only call through
+        it is ``cfg()`` (zwo_am5.destination_pier_side), so that is all this
+        answers."""
+
+        def cfg(self):
+            return cfg
+
+    # SWEPT (#497), not a single-object patch: zwo_am5.py binds its own
+    # module-level `config_store` at import (`from ...config import
+    # config_store`), a reference that can diverge from the object this
+    # file's own import would fetch -- a reload of astrodeck.config, or some
+    # earlier test's own un-swept rebind in one module (the #19 class). A
+    # single-object patch then misses the driver entirely: it keeps reading
+    # its own stale store, with no saved site, and destination_pier_side
+    # answers UNKNOWN instead of predicting a side -- observed once, in a
+    # parallel run (#497). See test_the_patch_reaches_a_module_bound_store_
+    # not_just_the_shared_one for the seeded proof.
+    _sweep_config_store(monkeypatch, _Stub())
     return tel
 
 
@@ -182,6 +202,61 @@ class TestTheAm5PredictsItsDestination:
 
         tel.pier_side = _dead
         assert await tel.destination_pier_side(6.0, 20.0) is PierSide.UNKNOWN
+
+    async def test_the_patch_reaches_a_module_bound_store_not_just_the_shared_one(
+            self, monkeypatch):
+        """#497, SEEDED rather than left to a rerun. ``_am5`` must reach every
+        module's own ``config_store`` binding, not just the one object this
+        test file's own import currently names, because a module can diverge
+        from it -- a reload of ``astrodeck.config``, or some earlier test's own
+        un-swept rebind of the name in one module (the #19 class) -- and be
+        left reading a stale store with no saved site. That is exactly how the
+        far-side prediction read UNKNOWN in one parallel run instead of the
+        predicted side (#497): ``zwo_am5.py`` binds its own module-level
+        ``config_store`` at import, and was not among the handful of modules
+        the old single-object patch reached.
+
+        Seeded here, in one process, rather than relying on two tests landing
+        on the same xdist worker in the right order: the suite runs ``--dist
+        worksteal``, which puts a leak and the test that would notice it on
+        DIFFERENT workers as often as not (a WP-27 lesson), so a leak-then-
+        check pair cannot prove this reliably. This test manufactures the
+        exact divergence by hand and is the proof, not a rerun.
+
+        RED under mutant (``_am5`` reverted to its old single-object patch,
+        ``monkeypatch.setattr(config_store, "cfg", lambda: cfg)``), verbatim:
+
+            assert await tel.destination_pier_side(ra_dest, 20.0) is \\
+            PierSide.EAST
+        AssertionError: assert <PierSide.UNKNOWN: 'unknown'> is <PierSide.EAST: 'east'>
+        """
+        from astrodeck.config import AppConfig
+        from astrodeck.devices.backends import zwo_am5 as zwo_am5_mod
+
+        # Seed the divergence by hand: zwo_am5's own binding now differs from
+        # astrodeck.config's, as if an earlier test's reload or un-swept
+        # rebind (the #19 class) had left it stuck on a stand-in store with
+        # no saved site -- the state #497 was found in. A fresh AppConfig()
+        # defaults to is_default=True, so this store answers "no site" until
+        # something points zwo_am5 at a store that disagrees.
+        stale = AppConfig()
+
+        class _StaleStore:
+            def cfg(self):
+                return stale
+
+        monkeypatch.setattr(zwo_am5_mod, "config_store", _StaleStore())
+
+        now = time.time()
+        lon = -110.0
+        ra_now = _ra_at_hour_angle(-2.0, lon, now)       # still east: tube west
+        tel = _am5(monkeypatch, measured=PierSide.WEST, ra_now=ra_now, lon=lon)
+        ra_dest = _ra_at_hour_angle(+2.0, lon, now)      # past: tube east
+        assert await tel.destination_pier_side(ra_dest, 20.0) is \
+            PierSide.EAST, (
+            "_am5's patch did not reach zwo_am5's own config_store binding, "
+            "which this test seeded to diverge from astrodeck.config's -- "
+            "the same divergence #497 observed in one parallel run")
 
 
 # ------------------------------------------------- the published status block
