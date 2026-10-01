@@ -395,8 +395,30 @@ export function useCampaign(): CampaignState {
   const nightNo = row?.nights ?? (session?.nights?.length ?? 1);
   const totalNights = nightNo + nightsLeft;
 
-  const summary = `night ${nightNo} of ~${totalNights} · ${bankedH.toFixed(1)} of `
-    + `${goalH} h · ~${nightsLeft} clear night${nightsLeft === 1 ? "" : "s"} left`;
+  // WITH A SESSION BUT NO LIST ROW, NO NIGHT NUMBER (#430's remaining item 1).
+  // `nightNo` above still falls back to `session.nights.length` for
+  // `campaign.night`/`totalNights`, because `crossHub.ts`'s
+  // `CampaignChrome.night` and `RunHeader.tsx` both type that field as a plain
+  // `number` and sit outside this work package's files - narrowing it to
+  // `number | null` here would fail their compilation, not fix their copy
+  // (filed as a new defect for the work package that owns them). But
+  // `session.nights` is report ids, one per `engine.start` (#430's root
+  // defect), so reading its LENGTH is a RUN count, not an observing-night
+  // count: a same-night restart gets counted twice. `nightUnknown` names
+  // exactly the case that reads it - a session exists (so there is a
+  // `nights` list to misread) and its row has not arrived or never matched -
+  // and NOT the case where there is no session at all: there `nightNo` is
+  // the untouched literal default of night 1, which is simply correct before
+  // anything has run, not a guess. The campaign card's own sentence is the
+  // one surface WP-25 does own, so only it drops the night number here; it
+  // still says what the route measured (the bank, the goal, the clear-nights
+  // projection).
+  const nightUnknown = !row && session != null;
+  const summary = nightUnknown
+    ? `${bankedH.toFixed(1)} of ${goalH} h · `
+      + `~${nightsLeft} clear night${nightsLeft === 1 ? "" : "s"} left`
+    : `night ${nightNo} of ~${totalNights} · ${bankedH.toFixed(1)} of `
+      + `${goalH} h · ~${nightsLeft} clear night${nightsLeft === 1 ? "" : "s"} left`;
 
   // ---- the night strip ----------------------------------------------------
   const perNightGoalS = totalNights > 0 ? (goalH * 3600) / totalNights : 0;
