@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-import os
 import time
 from pathlib import Path
 from statistics import median
@@ -172,6 +171,33 @@ RECONNECT_BACKOFF_S = 5.0       # between reconnect_resume attempts on one role
 # warning and the scheduler degrades to normal ordering. Degrade-and-warn, never
 # abort — finishing the plan beats killing a real imaging night over a rule typo.
 MAX_JUMPS = 64
+
+#: Test seam for the two real-time holds below (`_await_target_window`,
+#: `_hold_for_light`), WP-31 integration follow-up (backlog wave 4,
+#: owner-approved 2026-09-30). PRODUCTION CODE MUST NOT BRANCH ON A TEST
+#: FLAG: WP-31 first wrote these as ``os.environ.get("ASTRODECK_FAST_TEST")
+#: == "1"`` reads, the same env var ``devices.sim`` and ``solve.simsolver``
+#: use for their own pacing (their docstrings: "read LIVE on every call")
+#: -- but those two are device/solver SIMULATORS, built only to stand in
+#: for hardware that is not there, where faking elapsed time is the whole
+#: point. A hold here is not pacing a fake device; it is the engine
+#: deciding whether to wait for a real sky. A probe or a simulator SERVER
+#: started with that flag set (to get the sim's fast pacing) would then
+#: also silently skip holding for a target's own window or for light,
+#: which is a behaviour change a deployment flag must never cause.
+#:
+#: This switch defaults to the real behaviour (both holds run for real)
+#: and only the test harness ever sets it: server/tests/conftest.py flips
+#: it for the whole suite in an autouse fixture (``_skip_target_holds``),
+#: and the one test that proves the real wait itself
+#: (test_w4_target_window_and_light_hold.py::
+#: test_await_target_window_holds_until_it_opens) flips it back for
+#: itself, the same way it used to delete the env var. A guard test
+#: (test_w4_no_engine_fast_test_read.py) asserts no module under
+#: server/astrodeck except devices/sim.py and solve/simsolver.py reads
+#: ASTRODECK_FAST_TEST at all, so this constant cannot regress back into a
+#: second env-var read beside this one.
+_SKIP_TARGET_HOLDS_FOR_TEST = False
 
 #: How many times a level-triggered rule may be re-armed after its action FAILED
 #: before it is left disarmed. 3 is two retries past the first attempt: enough to
@@ -7393,25 +7419,23 @@ class SequenceEngine:
             # altitude floor's question once it is running (#604), not this
             # pre-slew gate's.
             return
-        if os.environ.get("ASTRODECK_FAST_TEST") == "1":
-            # THE SAME FAST-TEST SEAM devices.sim._sim_delay reads (its own
-            # docstring: "read LIVE on every call"), extended here because
-            # this wait has the identical shape: how long it takes depends
-            # only on the WALL CLOCK against a window computed from whatever
-            # site and coordinates the caller happens to carry, never on a
-            # value the wait produces. Measured: this gate, inserted
-            # unconditionally into `_setup_target`, first took the whole
-            # existing engine suite from seconds to real HOURS -- hundreds
-            # of tests build a bare-double hub (``site = {}``, which
-            # ``site_gate.site_is_set`` reads as a configured site at 0N 0E,
-            # by the same "no is_default key means real" rule every
-            # hand-built site dict relies on) and a fixed test RA/Dec with
-            # no relationship to the wall clock the suite happens to run at,
-            # so the gap this loop would wait out is effectively arbitrary
-            # and occasionally measured in hours, not minutes. A test that
-            # wants this wait exercised for real (this file's own) opts out
-            # with ``monkeypatch.delenv("ASTRODECK_FAST_TEST")``, the same
-            # door every real-dwell test in this suite already uses.
+        if _SKIP_TARGET_HOLDS_FOR_TEST:
+            # TEST SEAM, NOT A PRODUCTION BRANCH (see the constant's own
+            # comment): how long this wait takes depends only on the WALL
+            # CLOCK against a window computed from whatever site and
+            # coordinates the caller happens to carry, never on a value the
+            # wait produces. Measured: this gate, inserted unconditionally
+            # into `_setup_target`, first took the whole existing engine
+            # suite from seconds to real HOURS -- hundreds of tests build a
+            # bare-double hub (``site = {}``, which ``site_gate.site_is_set``
+            # reads as a configured site at 0N 0E, by the same "no
+            # is_default key means real" rule every hand-built site dict
+            # relies on) and a fixed test RA/Dec with no relationship to the
+            # wall clock the suite happens to run at, so the gap this loop
+            # would wait out is effectively arbitrary and occasionally
+            # measured in hours, not minutes. A test that wants this wait
+            # exercised for real (this file's own) opts back in by flipping
+            # this switch off for itself.
             return
         said = False
         while time.time() < window["start_unix"]:
@@ -7531,8 +7555,9 @@ class SequenceEngine:
             # retry COUNT and its condition are real state (`_centre_once`'s
             # own answer, `_NO_LIGHT_MAX_RETRIES`), never faked here --
             # only how long each wait between them takes. Collapsed under
-            # the suite's fast-test flag so a test whose stub answers "no
-            # light" for a plain target (test_engine_safety.py's
+            # the test seam (see `_SKIP_TARGET_HOLDS_FOR_TEST`'s own
+            # comment) so a test whose stub answers "no light" for a plain
+            # target (test_engine_safety.py's
             # `test_center_solve_failure_does_not_crash_run`, among others)
             # retries all six attempts in well under a second instead of
             # racing its own ``wait_for(timeout=...)`` against a real
@@ -7542,8 +7567,7 @@ class SequenceEngine:
             # runs, real dwell's own hazard (`_await_target_window`'s
             # comment at its own fast-test check explains the measurement).
             await asyncio.sleep(
-                0.0 if os.environ.get("ASTRODECK_FAST_TEST") == "1"
-                else CENTRING_HOLD_RETRY_S)
+                0.0 if _SKIP_TARGET_HOLDS_FOR_TEST else CENTRING_HOLD_RETRY_S)
             attempts += 1
             hop_centring = await self._centre_once(target, rotation)
         return hop_centring

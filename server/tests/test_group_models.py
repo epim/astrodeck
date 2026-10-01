@@ -176,8 +176,14 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
 #: no stage names always does), so it is part of this hash exactly as it is
 #: part of ``GOLDEN_SHA256`` and every other hash in that file - the two
 #: files' same-named constants still agree.
+#:
+#: RE-PINNED AGAIN IN BACKLOG WP-34 (#195, 2026-09-30): the golden's
+#: ``resume_across_nights: false`` (``SequencePlan``'s new field; #195:
+#: "Single night" means auto-resume does not arm across nights) rides along
+#: unchanged the same way, so the two files' same-named constants still
+#: agree.
 GOLDEN_SHA256_BEFORE_S2 = \
-    "f000dc81be0067a3a8c9d31b652d4ca6a4595b3220078c6111387017064a6734"
+    "a167e74ca39cf15f18c7930431e6685f9dfc87d0c23771622285e4d3513bd03c"
 
 #: The keys S2 adds to the dump, and the defaults the golden carries them at.
 S2_PLAN_KEYS = {"groups": []}

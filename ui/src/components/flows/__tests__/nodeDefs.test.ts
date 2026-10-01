@@ -755,6 +755,46 @@ test("capture's integration-goal unit keeps its zero sentinel", () => {
     "without the sentinel, 0 reads as 'shoot nothing' instead of 'no goal'");
 });
 
+// -------------------------------------------------------------------- help
+
+test("exactly one field in the whole vocabulary carries help text, DUSK WINDOW's repeat", () => {
+  // Pinned the same way as the cycleplan control above (#195): `help` exists
+  // for exactly the field whose plain label used to promise something the
+  // compile did not keep ("Single night" sounded like a no-op, and silently
+  // meant "never auto-resume"). A second field growing one unnoticed is not
+  // a defect by itself, but this count moving is the signal that a field's
+  // own help needs the same compiled-behaviour check the next test runs on
+  // this one.
+  const found = TYPES.flatMap((t) =>
+    defOf(t).fields.filter((f) => "help" in f && (f.help ?? "").length > 0)
+      .map((f) => `${t}.${f.key}`));
+  eq(found.join(","), "dusk.repeat", "fields carrying help text");
+});
+
+test("DUSK WINDOW's repeat help says what the compiled field does: Single "
+  + "night means auto-resume does not arm across nights", () => {
+  // server/astrodeck/flows/compile.py: `resume_across_nights = repeat !=
+  // "Single night"`, and `ResumeArm.tick` reads that field to decide
+  // whether a session dormant at dawn re-arms itself for the next dusk
+  // (#195). The help text is this UI's only account of that compiled
+  // behaviour — a copy that drifted from it would again promise a no-op
+  // where the run instead goes dormant and stays there.
+  //
+  // NAMED MUTANT: in nodeDefs.ts, change dusk.repeat's `help` string to
+  // describe only what the other two choices do, dropping the "Single
+  // night: ..." sentence entirely (the shape a copy edit that trims
+  // instead of updates would take). RED, observed:
+  //     help does not name the option it explains first
+  const help = defOf("dusk").fields.find((f) => f.key === "repeat")?.help ?? "";
+  assert(help.length > 0, "dusk.repeat has no help text");
+  assert(help.startsWith("Single night:"),
+    "help does not name the option it explains first");
+  assert(help.includes("does not start itself again"),
+    "dusk.repeat's help never says Single night does not arm auto-resume");
+  assert(help.includes("CONTINUE it by hand"),
+    "help drops the operator's own recovery action for Single night");
+});
+
 // -------------------------------------------------------------------- desc
 test("every node has a one-line description", () => {
   for (const t of TYPES) {

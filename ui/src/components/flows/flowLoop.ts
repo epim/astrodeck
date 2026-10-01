@@ -34,31 +34,38 @@
 //
 // THE SAME IS TRUE OF THE LANE CHECK AND THE SELF-WIRE REFUSAL (#197). A drag
 // refuses both BEFORE `flowsConnect` is ever called (`resolveWireDrop`'s own
-// rules 3 and 4, copied in canvasModel.ts for the #/next canvas), so neither
-// case reaches the store from a drag. Tap-to-wire (`flowsTapPort`) has no
-// resolver of its own and calls `flowsConnect` directly, so without a second
-// gate THERE a flow output tapped onto an event input would wire, and a stage
-// tapped into itself would too — the defect #197 found. `flowsConnect` now
-// runs `laneMismatchRefusal` and a bare `from === to` test itself, so every
-// gesture gets the same answer whether or not it passed through a resolver
-// first; `laneMismatchRefusal` is exported here so the classic resolver can
-// share its sentence with the store instead of spelling it twice.
+// rules 3 and 4), so neither case reaches the store from a drag. Tap-to-wire
+// (`flowsTapPort`) has no resolver of its own and calls `flowsConnect`
+// directly, so without a second gate THERE a flow output tapped onto an event
+// input would wire, and a stage tapped into itself would too — the defect
+// #197 found. `flowsConnect` now runs `laneMismatchRefusal` and a bare `from
+// === to` test itself, so every gesture gets the same answer whether or not
+// it passed through a resolver first; `laneMismatchRefusal` is exported here
+// so EVERY caller shares its sentence instead of spelling it out again. Rule
+// 3 (self-wire) is still a silent one-line check each resolver keeps for
+// itself — there is no sentence to share, since a drag never shows one. Rule
+// 4 (lane mismatch) is not: `FlowCanvas.tsx`'s classic resolver and
+// `canvasModel.ts`'s #/next one both call this function directly (backlog
+// WP-36, #197 follow-up, 2026-09-30 — canvasModel.ts used to spell its own
+// copy of the sentence instead).
 
 import { NODE_DEFS } from "./nodeDefs";
 import type { PortDir } from "./geometry";
 import type { FlowEdgeRec, FlowNodeRec, PortKind } from "./flowsTypes";
 
 /** The toast tap-to-wire shows for a self-wire (#197, `flowsConnect`). A drag
- *  refuses the same case SILENTLY (`resolveWireDrop` rule 3, and its
- *  canvasModel.ts copy), run before `flowsConnect` is ever called, so this
+ *  refuses the same case SILENTLY (`resolveWireDrop` rule 3, each resolver's
+ *  own one-line check), run before `flowsConnect` is ever called, so this
  *  sentence is only ever seen from a tap: an operator who taps a second port
  *  on the stage they just armed meant it, unlike a drag that ends where it
  *  started, and the asymmetry is deliberate. */
 export const SELF_WIRE_REFUSAL = "Can't wire a stage to itself";
 
 /** The sentence for a lane mismatch — a flow port wired to an event port, or
- *  the reverse — the same words `resolveWireDrop` toasts on a drag (rule 4;
- *  canvasModel.ts's copy). Null when `kOut` and `kIn` agree, or when either
+ *  the reverse — the same words `resolveWireDrop` toasts on a drag (rule 4),
+ *  in both the classic and the #/next resolver, which call this function
+ *  directly rather than keeping their own copy of it (backlog WP-36, #197
+ *  follow-up, 2026-09-30). Null when `kOut` and `kIn` agree, or when either
  *  is unknown: a port a saved graph names that the vocabulary has since
  *  dropped is the caller's own refusal to make, never this one's. */
 export function laneMismatchRefusal(

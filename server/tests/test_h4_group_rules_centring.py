@@ -448,10 +448,9 @@ def test_an_expired_panel_starts_its_reject_count_again():
 def test_a_panel_that_expires_alone_starts_a_pass_of_its_own():
     """1-1 completes and 1-2 is struck out: the boundary answers
     ``none_live`` and starts no pass. When 1-2's set-aside expires it comes
-    back into a pass of its own, so its lone miss is judged on that pass: no
-    exposures, one deferral, a ``DEFER_WAIT_S`` wait before it is tried
-    again, and never the old pass's frames, which would send it straight
-    back for its next strike.
+    back into a pass of its own, so its lone miss is judged on THAT pass,
+    never the old pass's frames, which would send it straight back for its
+    next strike.
 
     RED under mutant "no fresh pass after a lone expiry" (the ``alone``
     branch of ``expire_set_aside`` deleted), observed:
@@ -459,6 +458,19 @@ def test_a_panel_that_expires_alone_starts_a_pass_of_its_own():
         assert 3 == (3 + 1)
          +  where 3 = <astrodeck.sequence.group_rules.GroupRun object at
         0x00000153F537F830>.pass_no
+
+    RE-PINNED FOR WP-33 under backlog ruling D-03 (owner-approved
+    2026-09-30, #591): once 1-2 is back, it is the group's ONLY live member
+    (1-1 completed earlier), and D-03 widens ``centring_pass_verdict`` to
+    call a single live panel's own miss the sky's too, so this fresh pass's
+    lone miss is read as ``"centring_hold"`` -- the group holding, held
+    streak 1, nothing counted against 1-2's own floor -- not the plain
+    ``"defer_wait"`` a lone panel's deferral read before D-03 (which would
+    have counted the miss, ``failed["p1"] == 1``). What this case still
+    grades, that the fresh pass starts clean and never carries over the
+    closed pass's own tallies (the completed p0's old centring attempt
+    among them, which would otherwise make this pass's ``tried`` 2 and
+    miss the live-aware "sky" match entirely), is unchanged.
     """
     run = _run(2)
     for _ in range(2):
@@ -475,8 +487,9 @@ def test_a_panel_that_expires_alone_starts_a_pass_of_its_own():
     assert run.pass_no == before + 1
     _missed(run, "p1")
     end = run.close_pass()
-    assert end.boundary == "defer_wait"
-    assert run.failed["p1"] == 1
+    assert end.boundary == "centring_hold"
+    assert end.held_streak == 1
+    assert run.failed["p1"] == 0
 
 
 def test_a_pass_still_holding_centring_misses_cannot_be_skipped():

@@ -7280,6 +7280,7 @@ def create_app(*, bind_host: str | None = None,
                 raise HTTPException(409, "cannot abandon a running session")
             s.status = "abandoned"
             s.auto_resume = False
+        disarmed: list[dict] = []
         if body.auto_resume is not None:
             # ARMING AN ACTIVE SESSION IS THE POINT, NOT AN EDGE CASE.
             #
@@ -7313,7 +7314,21 @@ def create_app(*, bind_host: str | None = None,
                             "stopped before its next step",
                             session_id=other.id)
                         await asyncio.to_thread(session_store.save, other)
+                        disarmed.append({"id": other.id,
+                                         "name": other.name or other.plan.name})
             s.auto_resume = body.auto_resume
+        if disarmed:
+            # NAMED, NOT SILENT (#595, backlog ruling D-04, owner-approved
+            # 2026-09-30). #595's own text: "the same applies to PATCH
+            # auto_resume" -- this route runs its own copy of the singleton
+            # `engine.start` disarms with (above), so it owes the same
+            # warning and the same `disarmed` field in its response, not
+            # left for a caller to notice only by re-reading /api/sessions.
+            names = ", ".join(d["name"] or d["id"] for d in disarmed)
+            bus.log("warning",
+                    f"arming '{s.name or s.plan.name or s.id}' disarmed "
+                    f"auto-resume for: {names}",
+                    "sequence")
         # A DISARM STOPS THE LADDER RECOVERING THIS SESSION (#220). It used to
         # be read only after the ladder, by ResumeArm's re-check, so the mount
         # was solved and re-centred, minutes of motion, for a session the
@@ -7336,6 +7351,12 @@ def create_app(*, bind_host: str | None = None,
                "remaining": s.remaining()}
         if merge is not None:
             out["merge"] = merge
+        if disarmed:
+            # #595, D-04: present only when this PATCH actually disarmed
+            # another session, exactly as engine.start's own callers carry
+            # it (above), so a caller that arms a session here is told the
+            # same way a fresh run or CONTINUE would tell it.
+            out["disarmed"] = disarmed
         return out
 
     @app.patch("/api/sessions/{session_id}/frames/{frame_id}",

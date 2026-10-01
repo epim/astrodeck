@@ -64,21 +64,32 @@ MOSAIC_ID = "example-m31-mosaic"
 #: (``compile._dusk_schedule``), a field no Example's plan had when these
 #: hashes were last captured, so all seven move together. Regenerated from
 #: the same ``_plan_digest`` against the fixed code, with no other change.
+#:
+#: RE-PINNED AGAIN FOR BACKLOG WP-34 (#195, 2026-09-30): ``SequencePlan``
+#: gained ``resume_across_nights``, a field every one of these seven dumps
+#: now carries (``plan.model_dump`` writes every field, not only the ones
+#: ``compile_plan`` chose to write), so all seven move together again, this
+#: time whatever its value: True for example-campaign and example-eaa
+#: (their DUSK WINDOWs are not "Single night"), False for the other five
+#: (#195: "Single night" means auto-resume does not arm across nights).
+#: Diffed against the pre-change dump for each of the seven and confirmed
+#: this one key is the only thing that moved. Regenerated from the same
+#: ``_plan_digest`` against the fixed code, with no other change.
 HEAD_PLAN_SHA256 = {
     "example-campaign":
-        "3bc040abec506830760d47d0bfb97bd42fb0cfa8b29d3b3cbda69fa0f22dcd2e",
+        "712f21bc36fc88d0a52addba55d2f2b80852d087081d9636559863f1cb0cfede",
     "example-m31":
-        "75b4a78ab5b1f08e9c2d4c9b08a151e585f908985ba08cebf2755902f4b82caf",
+        "a3d327a352ee887fc00b058ede3ae0c73fbe4467c6708da66d0051442a373bad",
     "example-m16":
-        "7d42e252dda7627eab10e6ffc272cf2e10a7e275f41adf00f38e6ad18fa18e6e",
+        "ad6365b76d02fc7a9fd55239b36a2bd9f00df1b48d47998a74a7fa100f66e0fd",
     "example-cycle":
-        "a5154a8ecf00924d66d3bafc550dc51c42334a0a1c5821ddd075e1252b34a442",
+        "e91f2e1e86e1f1565f213b1cb029ee76a10fb92afd8e45243bb1d1fe8fcf6031",
     "example-pool":
-        "351e2f59b35bb89e918aac6b4d427d9cfcb0cd286e55dafed849f58b36ae3f1b",
+        "cd874f8c7eedb6b169dab1c42f07e96d1d6c2aed1cfc6fbb303e948f3c27985c",
     "example-nb":
-        "9c6be3da7f0f187b06e13b82bb11ed64ffc2832fe93ddad020004a4494442784",
+        "2e178320e071762d3d2d06b31758343b1b93c47119fe37c89d6649b68f520ea3",
     "example-eaa":
-        "84382925b6c39a038e633a2cb9e09077a8bd2e308349db89dee555ac03baeef0",
+        "fe4981cb80d1fe65d33bffa6333c2f99881713523cfe2c4424f313e7d70c9e47",
 }
 
 

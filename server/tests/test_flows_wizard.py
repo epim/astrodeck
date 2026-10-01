@@ -574,8 +574,17 @@ THREE_ANSWER_GRAPHS_SHA256 = \
 #: resolving to its own Sun altitude, `compile._dusk_schedule`), a field
 #: ``Schedule`` did not have when this hash was captured. Checked:
 #: regenerated with the SAME ``count_mode`` reset and no other change.
+#:
+#: RE-PINNED AGAIN IN BACKLOG WP-34 (#195, 2026-09-30), deliberately, for
+#: one change and nothing else: ``SequencePlan`` gained
+#: ``resume_across_nights``, which every one of the 192 dumped plans now
+#: carries (``plan.model_dump`` writes every field) -- and, checked against
+#: every one of them, always ``False``: the generator's DUSK WINDOW has no
+#: explicit ``repeat``, which defaults to "Single night" (#195: "Single
+#: night" means auto-resume does not arm across nights). Checked:
+#: regenerated with the SAME ``count_mode`` reset and no other change.
 WIZARD_PLANS_SHA256 = \
-    "122ff5c79e4feacf261e5621aae18b71fe31d64047a6c34a92bd92ecb73a79ac"
+    "fc0f81225f71d4c263299ba40c3cd8367b13b37c7cfd349db522e9ed21828037"
 
 #: The pre-S3 TARGET's missing-key coordinates: M31's, verbatim.
 _OLD_M31 = ("00h 42m 44s", "+41° 16′ 09″")

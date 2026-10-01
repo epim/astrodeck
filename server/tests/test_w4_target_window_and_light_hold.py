@@ -116,12 +116,17 @@ async def test_await_target_window_holds_until_it_opens(sim_hub, monkeypatch):
 
     -- the hold returns at once instead of waiting for the window.
 
-    REAL DWELL, OPTED IN (the suite's own convention, `_fast_sim_delays`'s
-    docstring: "opts back OUT with monkeypatch.delenv(...)"): this wait is
-    collapsed under ``ASTRODECK_FAST_TEST`` exactly as a simulated device's
-    pacing is (see the comment at that check in `_await_target_window`), so
-    proving the hold itself needs the real flag gone for this one test."""
-    monkeypatch.delenv("ASTRODECK_FAST_TEST", raising=False)
+    REAL DWELL, OPTED IN. RE-PINNED FOR WP-31's own follow-up (backlog wave
+    4, owner-approved 2026-09-30): this wait used to collapse under
+    ``ASTRODECK_FAST_TEST`` directly, the same flag a simulated device's
+    pacing reads, and this test opted out with ``monkeypatch.delenv(
+    "ASTRODECK_FAST_TEST")``. Production code must not branch on a test
+    flag (test_w4_no_engine_fast_test_read.py), so the hold now reads its
+    own module switch (``engine_mod._SKIP_TARGET_HOLDS_FOR_TEST``,
+    conftest's ``_skip_target_holds`` sets it for the whole suite), and
+    proving the hold itself needs that switch flipped back to ``False``
+    for this one test instead."""
+    monkeypatch.setattr(engine_mod, "_SKIP_TARGET_HOLDS_FOR_TEST", False)
     engine = SequenceEngine(sim_hub)
     target = _target()
     opens_at = time.time() + 0.6
