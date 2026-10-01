@@ -60,13 +60,21 @@ Fly's TLS.
 
 ```bash
 cd relay
-fly launch --no-deploy            # create the app, accept the bundled fly.toml
+fly launch --no-deploy            # one-time: create the app, accept the bundled fly.toml
 # Provision the device-token map as a mounted file or encrypted environment
 # secret. Signing seeds are unnecessary while the reserved OIDC/share routes
 # remain disabled.
 fly secrets set RELAY_ORIGIN=relay.example.com
-fly deploy
 ```
+
+Every deploy after that, including the first, goes through
+`scripts/deploy_relay.ps1` (run from the repo root), not a bare `fly deploy`.
+The script passes the build identity (commit, AstroDeck version) as
+`--build-arg` and waits for `/healthz` to report it before declaring the
+deploy done. A bare `fly deploy` here still runs, but the image it produces
+carries no identity: `/healthz` answers `"unknown"` for both `version` and
+`commit`, and nothing checks that the deploy reached the code you meant to
+ship (#486).
 
 The bundled `fly.toml` pins **one always-on machine** (`min_machines_running = 1`,
 `auto_stop_machines = false`) so a home's WSS stays pinned to one instance, exposes
@@ -162,7 +170,9 @@ secret.
 ## 4. Reach it from a remote browser
 
 Once the home's tunnel is up (confirm it in the home/relay logs; `/healthz`
-intentionally exposes liveness only), open:
+answers liveness plus the deployed build's `version` and `commit`, each
+`"unknown"` when the image was built without `scripts/deploy_relay.ps1`),
+open:
 
 ```
 https://relay.example.com/h/home-1/
