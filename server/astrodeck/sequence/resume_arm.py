@@ -536,8 +536,9 @@ def recentre_candidates(session: Session, night: str,
       hour angle at the 0,0 default is somewhere else's too.
 
     What this still does not model: the run's placement of a group's
-    followers behind its panels (#283's comment), and the ladder commanding
-    a locked angle with no rotator connected (#295).
+    followers behind its panels (#283's comment). (The ladder used to
+    command a locked angle to a disconnected rotator too, #295; fixed in
+    ``commanded_rotation``, which checks the rig it is handed.)
 
     Pure: it reads the session, the walk, the site and the clock it is
     handed and nothing else, and it takes the night key as an argument so
@@ -651,17 +652,33 @@ def nothing_to_shoot_tonight(session: Session,
     return light and not calibration
 
 
-def commanded_rotation(session: Session, target: Target) -> float | None:
+def commanded_rotation(session: Session, target: Target,
+                       hub=None) -> float | None:
     """The angle a re-centre on ``target`` commands, or None for none
     (Revision 2, ruling 9: "the rotator is set explicitly at the start of
     every run").
 
     THE PLANNED ANGLE FIRST. A framed target carries its ``rotation_deg``,
-    and a group's member carries its group's PA there. Then THE LOCKED ANGLE:
-    an unframed target whose first imaging solve locked its angle
+    and a group's member carries its group's PA there. It is commanded
+    whatever the rig, as it always was: the hub says when no rotator
+    answered, and that is the operator's own request going unmet.
+
+    THE LOCKED ANGLE IS COMMANDED ONLY TO A CONNECTED ROTATOR (#295). An
+    unframed target whose first imaging solve locked its angle
     (``Session.locked_angles``) is re-centred at that angle, so a resumed
-    night stacks with the nights before it. With neither, None, and the
-    re-centre call is exactly today's.
+    night stacks with the nights before it -- but only when ``hub`` names a
+    connected rotator, the same check ``SequenceEngine._commanded_rotation``
+    makes before it commands a lock. With no rotator there is nothing to
+    turn, and commanding one anyway had the hub warn on every auto-resume
+    re-centre of an unframed target that a rotation was asked for, naming an
+    angle the operator never set, while the engine's own setup of the same
+    target said nothing (or gave the real camera-angle check). With neither
+    a planned angle nor a usable, commandable lock, None, and the re-centre
+    call is exactly today's.
+
+    ``hub=None`` SKIPS THE ROTATOR CHECK, for a caller with no hub to ask
+    (a direct test of the lock arithmetic). Every real caller — the re-centre
+    in ``_recover`` — passes one.
 
     0 IS AN ANGLE (north up), so every test here is ``is None``.
 
@@ -679,6 +696,10 @@ def commanded_rotation(session: Session, target: Target) -> float | None:
         return None
     if not math.isfinite(pa):
         return None
+    if hub is not None:
+        rotator = hub.devices.get("rotator")
+        if rotator is None or not getattr(rotator, "connected", False):
+            return None
     return float(pa)
 
 
@@ -743,7 +764,13 @@ class ResumeArm:
         #: the refusal has site-derived numbers behind its words (#233): the
         #: reason is what anyone may read, ``site_detail`` is withheld from a
         #: viewer by ``api/redact.py``'s ``_redact_resume_arm_for``.
-        self.hold: dict | None = None
+        #:
+        #: THE BACKING FIELD FOR THE ``hold`` PROPERTY (#261), not read
+        #: directly outside it: ``_set_hold`` and ``_clear_hold`` write it,
+        #: and it keeps the last refusal even while a new ladder runs, so a
+        #: refusal the new attempt repeats still keeps the first one's
+        #: ``since``. See ``hold``.
+        self._hold: dict | None = None
         #: True while ``_recover`` runs. Written only by ``tick``; read
         #: through ``recovering``.
         self._recovering = False
@@ -848,6 +875,31 @@ class ResumeArm:
         every start that consults it would be refused until the restart.
         """
         return self._recovering
+
+    @property
+    def hold(self) -> dict | None:
+        """The service's own CURRENT refusal, or None (see ``__init__`` for
+        the published shape).
+
+        NONE WHILE THE LADDER IS RECOVERING (#261). ``_hold`` keeps the last
+        refusal across a ladder's run so a repeat of it keeps the first
+        one's ``since`` (``_set_hold``), but a hold set by an EARLIER attempt
+        is not the service's current refusal once a new attempt is under
+        way: that attempt may well succeed, and the hold said nothing had
+        changed. Masking it here, rather than clearing ``_hold`` when the
+        ladder starts, is what lets ``_set_hold`` still see the earlier
+        refusal if the new attempt repeats it.
+
+        Before this, every reader of the hold - the classic header, the
+        #/next banners, an API script - said "holding: <reason> ... starts
+        by itself when that clears" for the whole minutes a ladder spent
+        re-centring the mount for that same session, beside `recovering:
+        true`. It self-corrected once the ladder returned, which made it
+        easy to miss: nothing stayed wrong, the two fields just disagreed
+        for the minutes that mattered most."""
+        if self._recovering:
+            return None
+        return self._hold
 
     @property
     def recovery(self) -> dict | None:
@@ -1009,12 +1061,17 @@ class ResumeArm:
         ``nothing_tonight`` marks the ``NOTHING_TONIGHT`` refusal (#284).
         Every hold passes through here, so ``_held_nothing_tonight`` is true
         exactly while the latest hold is that one. It is not in the
-        published dict, which keeps its shape."""
+        published dict, which keeps its shape.
+
+        Reads and writes ``_hold``, the backing field, never the ``hold``
+        property: every call here lands while ``_recovering`` is False (the
+        property would answer the same either way), and reading through the
+        property reads the same as reading the field directly."""
         self._held_nothing_tonight = (getattr(session, "id", None)
                                       if nothing_tonight else None)
-        prior = self.hold or {}
+        prior = self._hold or {}
         same = prior.get("reason") == reason and prior.get("session_id") == getattr(session, "id", "")
-        self.hold = {
+        self._hold = {
             "reason": reason,
             "since": prior.get("since") if same else self._clock(),
             "retry_at": retry_at or None,
@@ -1023,10 +1080,10 @@ class ResumeArm:
             "owed": session.owed() if hasattr(session, "owed") else 0,
         }
         if site_detail is not None:
-            self.hold["site_detail"] = site_detail
+            self._hold["site_detail"] = site_detail
 
     def _clear_hold(self) -> None:
-        self.hold = None
+        self._hold = None
         self._held_nothing_tonight = None
 
     def _no_light_backoff(self, session, kind: str | None = None) -> float:
@@ -1169,16 +1226,24 @@ class ResumeArm:
         The run starts within moments of the ladder, so ``now`` stands in
         for its start.
 
-        A site the schedule cannot read (no latitude or longitude at all:
-        only a test double's hub has none, a real ``Hub.site`` always has
-        both) walks in plan order, which is what the ladder did before."""
+        NO LONGER GUARDED (#543). This used to wrap the call in
+        ``except (KeyError, TypeError, ValueError): return
+        list(session.plan.targets)`` for a site ``schedule_order`` could not
+        read (no latitude or longitude at all), walking plan order instead,
+        which is what the ladder did before #159. H4-SCHED (#527) moved
+        ``resolve_window`` onto ``site_gate.site_lat_lon``, which answers
+        ``None`` for such a site rather than raising, and
+        ``schedule_order``'s own sort then treats every unresolved start as
+        last and stable, which is plan order again by a different route. So
+        the except could no longer be reached, and a verifier confirmed it
+        across the 62 existing tests whose site doubles used to depend on it
+        (issue #543): all 62 still pass, through the sort instead of the
+        catch. Removed rather than kept defensive, because a branch no test
+        can reach is a branch nobody will notice rot (the class #543 names)."""
         cfg = config_store.cfg()
         twilight = cfg.safety.twilight_deg if cfg else -12.0
-        try:
-            return schedule.schedule_order(session.plan.targets,
-                                           self.hub.site, twilight, now)
-        except (KeyError, TypeError, ValueError):
-            return list(session.plan.targets)
+        return schedule.schedule_order(session.plan.targets, self.hub.site,
+                                       twilight, now)
 
     async def tick(self) -> None:
         now = self._clock()
@@ -1207,6 +1272,8 @@ class ResumeArm:
             # "disarmed from the UI" looks like — so this is not a warning. But
             # it must be VISIBLE, once, or the difference between "deliberately
             # not resuming" and "silently broken" cannot be told apart at 2am.
+            #
+            # NAMED BY ID AND ORIGIN TOO: a name alone is not a key (#139).
             stalled = [s for s in session_store.load_all()
                        if s.status == "dormant" and not s.auto_resume]
             if stalled:
@@ -1214,10 +1281,11 @@ class ResumeArm:
                 if self._quiet_note_for != newest.id:
                     self._quiet_note_for = newest.id
                     bus.log("info",
-                            f"auto-resume is NOT armed: '{newest.name}' is "
-                            f"dormant with auto-resume off, so nothing will "
-                            f"restart it. Arm it from the session list to "
-                            f"resume tonight.", "sequence")
+                            f"auto-resume is NOT armed: '{newest.name}' "
+                            f"({newest.id}, {newest.origin or 'unknown origin'})"
+                            f" is dormant with auto-resume off, so nothing "
+                            f"will restart it. Arm it from the session list "
+                            f"to resume tonight.", "sequence")
             else:
                 self._quiet_note_for = None
             return
@@ -1411,6 +1479,12 @@ class ResumeArm:
         # left cannot ride this ladder's refusal (#233). ``_ladder_left`` is
         # made here, with the flag, so a teardown route that saw
         # ``recovering`` always finds a future to wait on (#238).
+        #
+        # THE PREVIOUS HOLD STOPS BEING REPORTED HERE TOO (#261): see the
+        # ``hold`` property, below. Nothing is cleared on the backing field —
+        # a new refusal with the same words still keeps the first one's
+        # ``since`` once the ladder has returned, which clearing it here
+        # would have thrown away.
         self._recentred = None
         self._refusal_site_detail = None
         self._ladder_light = None
@@ -2135,11 +2209,12 @@ class ResumeArm:
             if self._must_stop():
                 return None
             self._ladder_step = "recentre"
-            # THE ANGLE, when there is one (ruling 9): the planned angle or
-            # the locked one (``commanded_rotation``). With neither, the call
-            # is today's, with no keyword at all, so a rig with no rotator
-            # and a plan with no angle see nothing new.
-            rotation = commanded_rotation(session, tgt)
+            # THE ANGLE, when there is one (ruling 9): the planned angle, or
+            # the locked one commanded only to a CONNECTED rotator (#295;
+            # ``commanded_rotation``). With neither, the call is today's,
+            # with no keyword at all, so a rig with no rotator and a plan
+            # with no angle (or a lock it cannot turn to) see nothing new.
+            rotation = commanded_rotation(session, tgt, self.hub)
             mark = self._solve_mark()
             try:
                 try:
