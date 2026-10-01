@@ -312,17 +312,19 @@ class MonitorCapture(unittest.TestCase):
         with self.assertRaises(ValueError):
             capture_sim.require_simulator(status)
 
-    def test_below_horizon_is_not_capture_ready(self):
+    def test_pointing_mismatch_is_not_capture_ready(self):
+        # Readiness never reads the mount's alt/az (#140); above-horizon is
+        # pinned by the target geometry tests and the server's floor gate.
         target = {"ra_hours": 4, "dec_deg": -45}
-        status = {"mount": {"ra_hours": 4, "dec_deg": -45, "alt": -5,
+        status = {"mount": {"ra_hours": 6, "dec_deg": -45,
                              "slewing": False, "parked": False}}
         self.assertFalse(capture_sim.above_horizon_target(status, target))
-        status["mount"]["alt"] = float("nan")
+        status["mount"].update({"ra_hours": 4, "dec_deg": -30})
         self.assertFalse(capture_sim.above_horizon_target(status, target))
 
     def test_unsynced_sim_pointing_error_is_capture_ready(self):
         target = {"ra_hours": 4, "dec_deg": -45}
-        status = {"mount": {"ra_hours": 4.002, "dec_deg": -44.972, "alt": 70,
+        status = {"mount": {"ra_hours": 4.002, "dec_deg": -44.972,
                              "slewing": False, "parked": False}}
         self.assertTrue(capture_sim.above_horizon_target(status, target))
         status["mount"]["slewing"] = True

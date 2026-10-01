@@ -23,7 +23,7 @@ MUTANTS = [
 
     ("MONITOR-ONLY-PLAN", "capture_sim.py", '[item for item in CAPTURE_PLAN if item[0] == MONITOR_FILE] if monitor_only else list(CAPTURE_PLAN)', 'list(CAPTURE_PLAN)', "MonitorCapture.test_monitor_plan_excludes_other_images"),
     ("CAPTURE-PROVENANCE", "capture_sim.py", 'record.setdefault("provenance", copy.deepcopy(inherited))', 'record.setdefault("provenance", copy.deepcopy(context))', "MonitorCapture.test_old_images_keep_old_provenance"),
-    ("ABOVE-HORIZON", "capture_sim.py", 'math.isfinite(altitude) and altitude > 30', 'math.isfinite(altitude)', "MonitorCapture.test_below_horizon_is_not_capture_ready"),
+    ("POINTING-READY", "capture_sim.py", 'ra_error < 0.01 and dec_error < 0.1', 'dec_error < 0.1', "MonitorCapture.test_pointing_mismatch_is_not_capture_ready"),
 
     ("HANLE-DECLINATION", "capture_sim.py", '"elevation_m": 0.0}, 20.0)', '"elevation_m": 0.0}, -45.0)', "MonitorCapture.test_hanle_target_is_above_horizon"),
 
