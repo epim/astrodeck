@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AstroDeck releases</title>
+    <meta name="description" content="Find AstroDeck release notes, platform assets and checksums. Check the contents and prerequisites for the build you choose.">
+    <link rel="canonical" href="https://epim.github.io/astrodeck/releases.html">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="AstroDeck releases">
+    <meta property="og:description" content="Find AstroDeck release notes, platform assets and checksums. Check the contents and prerequisites for the build you choose.">
+    <meta property="og:url" content="https://epim.github.io/astrodeck/releases.html">
+    <meta name="twitter:card" content="summary">
+    <meta name="theme-color" content="#132735">
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/site.css">
+    <script src="assets/theme.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="index.html" aria-label="AstroDeck home"><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="12"/><ellipse cx="18" cy="18" rx="17" ry="6" transform="rotate(-35 18 18)"/><circle cx="18" cy="18" r="2"/><path d="M18 2v5M18 29v5M2 18h5M29 18h5"/></svg>AstroDeck</a><button class="menu-toggle" data-menu-toggle type="button" aria-controls="site-nav" aria-expanded="false">Menu</button>
+        <nav class="nav" id="site-nav" aria-label="Primary">
+          <a href="index.html">Overview</a><a href="features.html">Features</a><a href="flows.html">Flows</a><a href="hardware.html">Hardware</a><a href="weather.html">Weather</a><a href="getting-started.html" class="nav-start">Get started</a><button class="theme-toggle" data-theme-toggle type="button" hidden aria-label="Change color theme">Theme: System</button>
+        </nav>
+      </div>
+    </header>
+    <main id="main" tabindex="-1">
+      <section class="page-hero">
+        <div class="wrap page-hero-grid">
+          <div data-claims="RELEASE">
+            <p class="eyebrow">
+              Releases
+            </p>
+            <h1>
+              Choose a build for your setup.
+            </h1>
+            <p class="lede">
+              GitHub Releases holds the release notes and downloadable assets. Use the files attached to the release you choose; the source version and available downloads can differ.
+            </p>
+            <div class="button-row">
+              <a class="button primary" href="https://github.com/epim/astrodeck/releases/latest">Open latest release</a><a class="button secondary" href="https://github.com/epim/astrodeck/releases">All releases</a>
+            </div>
+          </div>
+          <aside class="page-index" aria-label="On this page">
+            <p>
+              On this page
+            </p>
+            <ul>
+              <li>
+                <a href="#platforms">Download platforms</a>
+              </li>
+              <li>
+                <a href="#contents">Build contents</a>
+              </li>
+              <li>
+                <a href="#updates">Updates</a>
+              </li>
+              <li>
+                <a href="#milestones">Release records</a>
+              </li>
+              <li>
+                <a href="#source">Source code</a>
+              </li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+      <section id="platforms" class="section" data-claims="RELEASE">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              01 / Download platforms
+            </p>
+            <h2>
+              Match the operating system and architecture.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                These are the release workflow&#x27;s target names. Confirm that your chosen release includes the file and its SHA-256 sidecar before downloading.
+              </p>
+            </div>
+            <div class="table-container">
+              <table class="comparison compact-mobile">
+                <thead>
+                  <tr>
+                    <th scope="col">
+                      Platform
+                    </th>
+                    <th scope="col">
+                      Expected executable name
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th scope="row">
+                      Windows x86-64
+                    </th>
+                    <td data-label="Expected executable name">
+                      astrodeck-windows-x86_64.exe
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">
+                      Linux x86-64
+                    </th>
+                    <td data-label="Expected executable name">
+                      astrodeck-linux-x86_64
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">
+                      Linux arm64
+                    </th>
+                    <td data-label="Expected executable name">
+                      astrodeck-linux-arm64
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">
+                      macOS arm64
+                    </th>
+                    <td data-label="Expected executable name">
+                      astrodeck-macos-arm64
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="contents" class="section tinted" data-claims="WINDOWS PROVIDERS ASTAP OFFLINE">
+<div class="wrap section-layout">
+<div class="section-aside">
+            <p class="eyebrow">
+              02 / Build contents
+            </p>
+            <h2>Check what the build contains.</h2>
+          </div>
+<div class="section-content">
+<ul><li>The standalone executable includes the browser interface and Python runtime.</li><li>Native guiding and native autofocus require astrodeck_native, which published releases do not include yet. Follow issue #630 for packaging status.</li><li>ASTAP plate solving requires the solver and its star database.</li><li>The Atlas has an offline schematic sky. Fetch survey tiles from inside the Atlas on your own machine before you need photographic imagery offline.</li></ul>
+<aside class="notice"><p>DSS2 imagery (c) AAO/STScI, served from CDS/ESA HiPS mirrors.</p></aside>
+<div class="section-links"><a class="text-link" href="getting-started.html">Read setup requirements</a></div>
+</div></div>
+</section>
+      <section id="updates" class="section" data-claims="UPDATE RELEASE WINDOWS">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              03 / Updates
+            </p>
+            <h2>
+              Keep the update path clear.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                For a standalone executable, stop AstroDeck and replace the file; its default configuration and capture directories live separately. Supervised installations have a signed update path with health checks and rollback.
+              </p>
+            </div>
+            <aside class="notice">
+              <p>
+                The release tarball has Ed25519 signature and SHA-256 sidecars. That signature is separate from operating-system code signing for a standalone executable.
+              </p>
+            </aside>
+          </div>
+        </div>
+      </section>
+      <section id="milestones" class="section" data-claims="RELEASE_HISTORY">
+<div class="wrap section-layout">
+<div class="section-aside">
+            <p class="eyebrow">04 / Release records</p>
+            <h2>Recent release records</h2>
+          </div>
+<div class="section-content">
+<div class="prose"><p>These summaries follow release commits and deployment notes in the repository. Check GitHub Releases for available downloads.</p></div>
+<div class="editorial-grid">
+<article class="editorial-item"><h3>0.3.39</h3><p>Fixed session recovery, guide-pulse handling and report retries, and updated Flows and Monitor controls. Deployment now checks dependency floors.</p></article>
+<article class="editorial-item"><h3>0.3.38</h3><p>Added fixes for lost mount connections, sun checks, alert delivery and privacy in logs and reports, alongside findings from the first mosaic run.</p></article>
+<article class="editorial-item"><h3>0.3.37</h3><p>Uses the solve filter for rotation checks and accepts a rotation that stops within the mosaic&#x27;s angle tolerance.</p></article>
+<article class="editorial-item"><h3>0.3.36</h3><p>Added the mosaic Target editor and canvas, run and Continue controls, phone readouts and Send to Flow Wizard entry points.</p></article>
+</div>
+</div></div>
+</section>
+      <section id="source" class="section tinted" data-claims="LICENSE RELEASE">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              05 / Source code
+            </p>
+            <h2>
+              Read the changes behind a release.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                Review the release notes for fixes and changes that affect your rig. The source repository includes implementation details, tests and third-party notices.
+              </p>
+            </div>
+            <div class="section-links">
+              <a class="text-link" href="https://github.com/epim/astrodeck">Open the repository</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <div class="wrap">
+        <div class="footer-top">
+          <div class="footer-brand">
+            <a class="brand" href="index.html" aria-label="AstroDeck home"><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="12"/><ellipse cx="18" cy="18" rx="17" ry="6" transform="rotate(-35 18 18)"/><circle cx="18" cy="18" r="2"/><path d="M18 2v5M18 29v5M2 18h5M29 18h5"/></svg>AstroDeck</a>
+            <p>
+              Plan the night. Keep the rig in view.
+            </p>
+          </div>
+          <div class="footer-group">
+            <h2>
+              Explore
+            </h2>
+            <ul>
+              <li>
+                <a href="index.html">Overview</a>
+              </li>
+              <li>
+                <a href="features.html">Features</a>
+              </li>
+              <li>
+                <a href="flows.html">Flows</a>
+              </li>
+              <li>
+                <a href="hardware.html">Hardware</a>
+              </li>
+              <li>
+                <a href="weather.html">Weather</a>
+              </li>
+              <li>
+                <a href="getting-started.html">Get started</a>
+              </li>
+              <li>
+                <a href="releases.html">Releases</a>
+              </li>
+            </ul>
+          </div>
+          <div class="footer-group">
+            <h2>
+              Project
+            </h2>
+            <ul>
+              <li>
+                <a href="https://github.com/epim/astrodeck">Source code</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/blob/main/docs/guide/README.md">User guide</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/issues">Issues</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/blob/main/LICENSE">Apache-2.0</a>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer-bottom">
+          <p>
+            AstroDeck is open source under Apache-2.0. Device names identify compatibility; AstroDeck is not affiliated with their manufacturers. DSS2 imagery (c) AAO/STScI, served from CDS/ESA HiPS mirrors.
+          </p>
+          <a href="releases.html">Release notes</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
