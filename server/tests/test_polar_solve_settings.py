@@ -120,10 +120,19 @@ class _Session(PolarAlignSession):
 
 @pytest.fixture(autouse=True)
 def _no_disk(monkeypatch, tmp_path):
+    """Re-pinned for WP-30a (#532): the polar solve's frame write now goes
+    through ``hub._write_solve_frame``, which calls the ``save_fits`` name
+    bound in ``astrodeck.hub`` (imported there at module load), not through
+    ``astrodeck.imaging.save_fits`` at call time. Patch both -- the hub seam
+    so the polar solve path actually goes disk-free, same as
+    test_h4_solve_frame_unique_names.py, and the imaging seam for any other
+    caller that still reaches it directly."""
     import astrodeck.hub as hub_module
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     import astrodeck.imaging as imaging
     monkeypatch.setattr(imaging, "save_fits",
+                        lambda frame, path, **kw: None)
+    monkeypatch.setattr(hub_module, "save_fits",
                         lambda frame, path, **kw: None)
 
 

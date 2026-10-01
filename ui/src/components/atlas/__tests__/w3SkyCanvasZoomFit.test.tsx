@@ -133,7 +133,8 @@ function zoomOutKey(): void {
 //     modal can never show the whole grid
 test("a 10x10 grid of 2 deg panels can be zoomed all the way out to see it whole", () => {
   act(() => {
-    root.render(createElement(Harness, { mosaic: { rows: 10, cols: 10, overlap: 0 }, initial: 8 }));
+    root.render(createElement(Harness,
+      { key: "zoom-fit", mosaic: { rows: 10, cols: 10, overlap: 0 }, initial: 8 }));
   });
   for (let i = 0; i < 20; i++) zoomOutKey();
   // 10 panels of 2 deg, no overlap: 20 deg across. Repeated "-" (*1.12 each,
@@ -147,7 +148,8 @@ test("a 10x10 grid of 2 deg panels can be zoomed all the way out to see it whole
 // configured mosaic is what raises it, not merely having optics.
 test("control: a plain 1x1 view's zoom ceiling is still 10 deg", () => {
   act(() => {
-    root.render(createElement(Harness, { mosaic: { rows: 1, cols: 1, overlap: 0 }, initial: 8 }));
+    root.render(createElement(Harness,
+      { key: "zoom-1x1", mosaic: { rows: 1, cols: 1, overlap: 0 }, initial: 8 }));
   });
   for (let i = 0; i < 20; i++) zoomOutKey();
   near(currentFov, 10, 1e-6, "control: a plain 1x1 view's zoom ceiling is still 10 deg");
@@ -165,7 +167,7 @@ test("a mosaic zoomed out to fit reads as coarse, and says so", () => {
   // = 38.4 source px, under PANEL_COARSE_PX=48.
   act(() => {
     root.render(createElement(Harness, {
-      mosaic: { rows: 20, cols: 20, overlap: 0 }, initial: 8,
+      key: "coarse-20x20", mosaic: { rows: 20, cols: 20, overlap: 0 }, initial: 8,
       mode: "survey", survey: "CDS/P/UNKNOWN", // absent from SURVEY_SLUGS: no tile engine
     }));
   });
@@ -178,12 +180,39 @@ test("a mosaic zoomed out to fit reads as coarse, and says so", () => {
     `the coarse notice's own px estimate is wrong: ${JSON.stringify(notice.textContent)}`);
 });
 
-// Control: a plain single-frame survey view, well inside its own field, never
-// claims to be coarse - the notice is a mosaic-only concern (#182).
+// Control: a plain single-frame survey view never claims to be coarse - the
+// notice is a mosaic-only concern (#182), decided by `mosaic.rows * mosaic.cols
+// > 1`, not by the zoom level alone.
+//
+// RE-PINNED (W3 integration, #491 remainder): this case used to mount with
+// `initial: 2` on the SAME root the two cases above already rendered
+// `Harness` into. `root.render` on an already-mounted element of the same
+// type at the same position is an UPDATE, not a fresh mount, so React's
+// `useState(p.initial)` keeps whatever `fov` the PRECEDING case left rather
+// than re-reading `initial` - and the preceding case left it at 40 (zoomed
+// out to fit a 20x20 grid). The case only passed because `mosaic: {rows:1,
+// cols:1}` already excludes it from `surveyCoarse` regardless of zoom, so
+// the carried-over 40 deg state never got a chance to decide anything - the
+// `initial: 2` it asked for and never got made no difference either way.
+//
+// Fixed with a `key` (forces a fresh mount, fresh `useState`) AND a starting
+// zoom wide enough (40 deg, this file's own panel-fov/coarse-floor numbers:
+// `panelPxAcross = (2 / 40) * 768 = 38.4 px`, under `PANEL_COARSE_PX = 48`)
+// that if the mosaic-only gate did not exclude a 1x1 "mosaic", the per-panel
+// estimate alone WOULD read coarse - so this case now actually exercises the
+// gate, not an incidentally-too-narrow zoom.
+//
+// MUTANT "mosaic.rows * mosaic.cols > 1 -> true" (SkyCanvas.tsx's
+// `surveyCoarse`, the mosaic-size half of the gate always true), run ALONE
+// (this case only, the three above skipped) from a byte backup restored
+// byte-identical afterwards. Observed:
+//   x control: a plain 1x1 survey view never shows the coarse notice:
+//   control: a plain 1x1 survey view shows the coarse notice - it should be
+//   a mosaic-only concern
 test("control: a plain 1x1 survey view never shows the coarse notice", () => {
   act(() => {
     root.render(createElement(Harness, {
-      mosaic: { rows: 1, cols: 1, overlap: 0 }, initial: 2,
+      key: "coarse-1x1", mosaic: { rows: 1, cols: 1, overlap: 0 }, initial: 40,
       mode: "survey", survey: "CDS/P/UNKNOWN",
     }));
   });

@@ -1378,7 +1378,15 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               the <img> pipeline with no good frame to keep (#404: its own
               skeleton below said LOADING for good in exactly this state). With
               no host sentence, what it advises follows `onlineFetch` (#426). */}
-          {surveyDegraded && (useTileEngine ? !tileDrew : mode === "survey" && !shownUrl) && (
+          {/* #491 remainder (WP-24b new defect): in panel mode this used to
+              draw here regardless, centred over the WHOLE box - which is
+              exactly where the mosaic grid and `panelLabelBoxes` (#385) live,
+              so the sentence drew through the grid and over panel labels. In
+              panel mode it is rendered instead on the line under the canvas,
+              below, clear of the grid; survey mode (no panels) keeps this
+              centred placement unchanged. */}
+          {surveyDegraded && (useTileEngine ? !tileDrew : mode === "survey" && !shownUrl)
+            && !panelsMode && (
             <div className="absolute inset-0 grid place-items-center px-6 text-center text-dim text-xs">
               <span data-role="survey-empty">
                 {degradedText ?? (onlineFetch ? NO_SURVEY_ONLINE : NO_SURVEY_OFFLINE)}
@@ -1677,6 +1685,18 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
         </div>
       </div>
 
+      {/* #491 remainder (WP-24b new defect): panel mode's empty-state
+          sentence, moved off the grid to this line (its `!panelsMode`
+          sibling above keeps the in-canvas placement for plain survey
+          mode). Same `data-role="survey-empty"`, same text - only where it
+          draws changed, so it still reads as the UX-07 sentence wherever a
+          caller looks for it. */}
+      {surveyDegraded && (useTileEngine ? !tileDrew : mode === "survey" && !shownUrl)
+        && panelsMode && (
+        <div data-role="survey-empty" className="text-[12px] text-dim border border-line2 bg-black/30 px-2 py-1">
+          {degradedText ?? (onlineFetch ? NO_SURVEY_ONLINE : NO_SURVEY_OFFLINE)}
+        </div>
+      )}
       {/* verdict + offline banner beneath the canvas (real text, >=12px). The
           banner's default is worded by path (#426): it named a "schematic
           framing" over the tile engine, which draws no schematic backdrop. */}

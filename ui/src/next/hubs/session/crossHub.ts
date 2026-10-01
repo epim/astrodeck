@@ -44,11 +44,15 @@ import { useActiveSession } from "./now/sessionData";
 export interface CampaignChrome {
   flowId: string;
   name: string;
-  /** Distinct nights the ledger has recorded. */
-  night: number;
+  /** Distinct nights the ledger has recorded. null when the session has no
+   *  matching list row yet (#430 remainder): `useCampaign`'s own `night` is
+   *  null under the same condition, and this type carries that through
+   *  rather than falling back to a run count. */
+  night: number | null;
   /** DERIVED - there is no persisted planned-night count on the server, so
-   *  every string that prints it carries a tilde (plan deviation D2). */
-  totalNights: number;
+   *  every string that prints it carries a tilde (plan deviation D2). null
+   *  under the same condition as `night` above. */
+  totalNights: number | null;
   bankedH: number;
   goalH: number;
   duskMs: number | null;
@@ -123,10 +127,16 @@ export function useCampaignStrip(): CampaignStripData | null {
   if (!camp) return null;
   if (route.hub === "session" && route.sub === "now") return null;
 
+  // #430 remainder: no night number printed when it is not known, the same
+  // shape the campaign card's own `summary` sentence uses, rather than
+  // falling back to a run count.
+  const nightClause = camp.night != null && camp.totalNights != null
+    ? ` · night ${camp.night} of ~${camp.totalNights}`
+    : "";
   const line = camp.parked
     ? `CAMPAIGN · ${camp.name} · parked · resumes at dusk${
       camp.duskMs != null ? ` ${fmtClock(camp.duskMs)}` : ""}`
-    : `CAMPAIGN · ${camp.name} · night ${camp.night} of ~${camp.totalNights}`
+    : `CAMPAIGN · ${camp.name}${nightClause}`
       + ` · ${camp.bankedH.toFixed(1)} of ${camp.goalH} h banked`;
 
   return { line, tone: "accent2", onPress };
