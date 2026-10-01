@@ -79,3 +79,5 @@ The full reference covers all 21 declared node types, including legacy SLEW + CE
 - `server/astrodeck/sequence/resume_arm.py:1957`
 - `ui/src/next/hubs/sky/sheets/horizon.tsx:440`
 - `server/astrodeck/sequence/bundle.py:797`
+
+Claude tracked the completed-flow stale STOP finding as [#647](https://github.com/epim/astrodeck/issues/647). The documented workaround is to verify idle in Monitor and reload, never press the stale control.

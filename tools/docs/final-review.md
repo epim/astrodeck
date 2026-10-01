@@ -14,7 +14,7 @@ The parent reviewed navigation, installation bounds, the new platform/interface 
 
 ## Findings handed to Claude
 
-The guide documents native release omission #630, relay Compose build context #645 and the stale shutdown calibration warning #646. The privacy tooling fix #644 is already in the base revision. A separate stale Flow STOP finding was reported: after a completed run the label can remain STOP, while its action can start another run without normal confirmation. The guide says to verify idle state and reload, and not to press the stale control. Its issue number was not available at this handoff.
+The guide documents native release omission #630, relay Compose build context #645 and the stale shutdown calibration warning #646. The privacy tooling fix #644 is already in the base revision. A separate stale Flow STOP finding was reported: after a completed run the label can remain STOP, while its action can start another run without normal confirmation. The guide says to verify idle state and reload, and not to press the stale control. Claude filed it as [#647](https://github.com/epim/astrodeck/issues/647), which the guide now cites.
 
 No application fix, release certification or hardware safety claim is made by this documentation batch. Installation commands and platform/role descriptions were source-traced; the local procedure used a private editable server, a Vite build with existing dependencies and a separately built native wheel. It does not certify the full clean-install procedure or published packages.
 

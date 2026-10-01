@@ -20,7 +20,7 @@ Native guiding and native autofocus require `astrodeck_native`, which published 
 
 6. Select **SAVE**, wait for the saved state, then read the checks and any run refusal. For a new flow, select **RUN**, then **CONFIRM RUN**. An existing dormant session instead offers continuation with its flow name and recorded progress. Use [Monitor](monitor.md) to follow the actual run. Saving or generating a flow has not yet captured anything.
 
-After a completed flow, the toolbar can still show **STOP**. Verify that the run is idle in [Monitor](monitor.md), then reload the page before starting again. Do not press the stale **STOP** to clear it: it can start another run.
+After a completed flow, the toolbar can still show **STOP** ([#647](https://github.com/epim/astrodeck/issues/647)). Verify that the run is idle in [Monitor](monitor.md), then reload the page before starting again. Do not press the stale **STOP** to clear it: it can start another run.
 
 ## Frame a 2 by 2 mosaic
 

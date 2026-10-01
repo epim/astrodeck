@@ -16,7 +16,7 @@ Fresh servers used private configuration and capture directories, separate ports
 
 The first native-run simulator connection was requested but not verified before navigation. The Flow refused with no camera connected. Repeating the documented connection and waiting for RIG CONNECTED and the simulator camera row resolved it. The record preserves this refusal rather than presenting the first request as a successful connection. No cause or application defect is inferred from that attempt.
 
-After each completed Flow, returning to the canvas could leave a stale STOP control. A full page reload restored RUN. Source review found that pressing the stale STOP can start a new run without the usual confirmation; it was never pressed during these procedures. The finding was reported to Claude, and the guide describes the idle-check/reload workaround. Relevant source: ui/src/components/flows/flowRunControls.tsx:290 and :365, and FlowCanvasToolbar.tsx:141.
+After each completed Flow, returning to the canvas could leave a stale STOP control. A full page reload restored RUN. Source review found that pressing the stale STOP can start a new run without the usual confirmation; it was never pressed during these procedures. The finding is tracked as [#647](https://github.com/epim/astrodeck/issues/647), and the guide describes the idle-check/reload workaround. Relevant source: ui/src/components/flows/flowRunControls.tsx:290 and :365, and FlowCanvasToolbar.tsx:141.
 
 ## Build and installation limits
 
