@@ -435,3 +435,89 @@ entry carry what its licence actually asks for, not merely name the licence.
 | astro-star | 0.1.0 | `MPL-2.0` | full text, source for modified files | yes — text reproduced |
 | astro-tppa | 0.1.0 | `MPL-2.0` | full text, source for modified files | yes — text reproduced |
 | astrodeck-native | 0.1.0 | `MPL-2.0` | full text, source for modified files | yes — text reproduced |
+
+
+## 2026-10-01 artifact and current-service re-audit
+
+This section supersedes earlier blanket conclusions where the evidence below
+differs. The August record above is retained as history. This is an engineering
+inventory and terms review, not a legal opinion or permission from a licensor.
+
+Detailed evidence: [service and data review](../../../tools/licence/service-data-audit.md),
+[artifact/dependency review](../../../tools/licence/dependency-artifact-audit.md),
+[bundled native/interpreter components](../../../tools/licence/bundled-components.json),
+and [gate usage and limitations](../../../tools/licence/README.md).
+
+### Artifact coverage
+
+| Artifact family | What was inspected | What remains unverified |
+| --- | --- | --- |
+| Source/UI tarball | Actual scripts/build_release.py output, 478 files; seven ZWO binaries, four TSVs, 58 font files, two PWA icons, nebula raster and compiled credits | ASTAP explicitly omitted. Installed Python dependencies are not bundled in this tarball. |
+| Windows x86_64 PyInstaller executable | Fresh current-source build in a private clean Python 3.12.10 venv; 887 CArchive entries and 2,384 PYZ modules | Exact public release equivalence, complete third-party native internals and Windows runtime redistribution basis |
+| Other three executable targets | Release matrix and packaging recipe | No Linux x86_64, Linux arm64 or macOS arm64 artifact built or obtained |
+| Native wheel | Fresh offline Windows ABI3 wheel, six files, 40-package Cargo metadata graph including all five workspace crates | Other platforms; packaging still omits licence/notice bundle and corresponding-source route |
+| UI | Fresh Vite build, retained chunk inputs, all npm lock entries, byte-matched fonts | Future plugin/runtime inputs require a new classification |
+| Root and relay containers | Dockerfiles, base digest, dependency declarations | Docker daemon unavailable; no final OCI image layers or distro package inventory |
+| Orange Pi | Provisioning scripts and documented Armbian base | No appliance image, firmware/kernel inventory or matching source set inspected |
+
+The source tarball cannot certify the executable, wheel, container or appliance.
+The frozen artifact includes Python packages and data that the tarball leaves
+for installation. The DLL graph contains WCSLIB LGPL code and GCC runtime code
+under a specific exception, so a global no-GPL/LGPL statement is false.
+
+### Findings and disposition
+
+| Finding | Evidence and reading | Remedy / owner |
+| --- | --- | --- |
+| Native engine absent from binary releases; wheel notices/source route missing | Current executable has no native extension; separate wheel has only six metadata/code/SBOM files | Packaging work #630, outside this change |
+| Stale DSS2 release-fetch workflow | Source staging refuses the restricted pack, but a workflow still attempts it | Workflow work #631 |
+| Player One redistribution | Source tar excludes libraries; actual current Windows executable and examined historical archive contain all six libraries. Vendor text is not the standard MIT grant | Owner confirmation or exclusion from every packaging path, #632 |
+| Open-Meteo placement/access | Conditions has links; newer dome/wind/cloud displays lack adjacent links. Data CC BY 4.0 and service access/rate terms are separate | UI work #634; registry wording corrected |
+| CelesTrak error handling | Cache remains due after failure and retries every minute, contrary to stop-on-non-200 guidance | Behavior work #635; owner flag retained |
+| Astrospheric public client | Current API documentation scopes use to Pro members' personal projects. A key or instance acknowledgement is not vendor permission | Written public-client/many-install clarification, #636 |
+| Nebula artwork | Actual tar and executable contain a JPEG named bg_nebula.png; source/author/rights could not be established | Owner provenance or replacement/removal, #637; gate refuses it |
+| WCSLIB / GCC runtime | Actual Astropy _wcs.pyd includes WCSLIB; NumPy OpenBLAS includes GCC runtime exception code | Full authoritative notices added. Exact LGPL3+ and GPL3+ WITH GCC-exception3.1 policies remain owner-required, #638 |
+| Credits project version stale | Baseline generated 0.3.38 vs manifest 0.3.39; 129 entries and 103 texts otherwise identical | Regenerated and direct version plus input-freshness regressions, #639 |
+| CDS survey rights | Current DSS2/2MASS records have ODbL database layer; original image rights remain separate | Full ODbL and acknowledgements added; no DSS2 redistribution clearance |
+| IAU-CSN version | Actual edition says CC Attribution without a version | Specific CC BY 4.0 inference removed; obtain clarification before distribution clearance |
+| MPC / NOAA wording | Freely available is not a CC0 dedication; NOAA requests source attribution and distinction for derivatives | Registry corrected without inventing a broader grant |
+| Interpreter/compiler/vendor notices | CPython, OpenSSL, WCSLIB, OpenBLAS/LAPACK/GCC and retained setuptools vendors found in bytes; Vite/Tailwind contribute output | Sixteen artifact-component records and full notices added; compiler helper credits included |
+
+The old optional libasi 404 concern is closed for the current source URL:
+epim/libasi is reachable at reviewed revision 878baea5ec22fa4392fdc3645f05785644bb2a53,
+package 0.1.0 under MIT. The existing full text matches. The optional VCS
+dependency remains unpinned and was not installed into the base executable;
+this is source verification, not an optional-install artifact certificate.
+
+### Corrections and gates in this change
+
+The generated page now states its scope accurately and records 146 entries and
+120 distinct licence texts. Reviewed native components have exact artifact scope
+and full notices. Restricted findings remain in the first group. The licensing
+registry's three readings now distinguish database/image rights, tar/frozen
+packaging and deployment acknowledgement from vendor permission. Its remedies
+and runtime behavior are unchanged.
+
+The new tarball gate runs the real packager and checks every actual member
+against reviewed binary/data hashes, reviewed source paths/hashes, fresh UI
+outputs and generated notice bodies. Unknown ASCII tables disguised as Python
+source are rejected. Only the observed CommonJS helper is attributed to Vite;
+future virtual runtimes cannot inherit that grant automatically. The source
+manifest must be reviewed, not auto-updated to silence a failure.
+
+The executable gate reads CArchive bytes without launching the program and
+rejects new/changed payloads while retaining the baseline's known blockers.
+Its baseline is evidence, not an approval list. The live dependency gate
+reads locked offline Cargo metadata and all npm lock entries. All 269 metadata
+entries pass the explicit policy, but that does not erase embedded LGPL/GCC
+components or other artifact findings.
+
+The final corrected tarball intentionally fails for unversioned IAU-CSN rights
+and unknown nebula provenance. The current Windows probe intentionally fails
+for the documented packaging/rights gaps. Expected failure is the correct
+result until the owner resolves those findings. Exact output, artifact hashes,
+test results and mutation evidence are retained under tools/licence/.
+
+No packaging, release workflow, Dockerfile, deployed service or real rig was
+changed. An owner must resolve the listed issues and inspect each rebuilt
+artifact before claiming distribution clearance.

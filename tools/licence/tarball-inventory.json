@@ -1,0 +1,2397 @@
+{
+  "baseline": "bf3eadddcac9fb74bd802309b57ab6536c15ee36",
+  "artifact": "local non-strict tarball with freshly built UI; ASTAP omitted",
+  "sha256": "28a20a17eff0469bb31019bd019b1fdab14b967455fd6b92e9f71bc4c0cf4275",
+  "files": [
+    {
+      "path": "manifest.json",
+      "bytes": 267,
+      "sha256": "52b8c7a1b2dfb0c9ee6a941a0af1bb283d600ace01ad6bc982bbff9cbab54792"
+    },
+    {
+      "path": "server/astrodeck/__init__.py",
+      "bytes": 94,
+      "sha256": "92b24d2f97ab8ca0427a4d77b5370bffaaf1b3f9d33bdd81e62f6a0c2a3dfd42"
+    },
+    {
+      "path": "server/astrodeck/__main__.py",
+      "bytes": 16789,
+      "sha256": "d85d90d9a497ef03659f50fad89831824d52b02b26cafa41bf45b1d8235f8b15"
+    },
+    {
+      "path": "server/astrodeck/aio.py",
+      "bytes": 1889,
+      "sha256": "9e7cd5037c80fe1018302285116d6915a3feb5e108b1da3eb00c93fdb3d7ad51"
+    },
+    {
+      "path": "server/astrodeck/alerting.py",
+      "bytes": 51807,
+      "sha256": "549535326aaeba8048a249198f0614e2386a9f147af362a40f7c9ff1a28383a1"
+    },
+    {
+      "path": "server/astrodeck/align/__init__.py",
+      "bytes": 331,
+      "sha256": "550acabfe4d9b1a906ca3b3661556453b6f71f22ff9e1401ff250fd1ea9ed2e8"
+    },
+    {
+      "path": "server/astrodeck/align/guide_offset.py",
+      "bytes": 9085,
+      "sha256": "fe8f47704ab063de1828f3c3419e9639d972ec70c2d2b2d44b086eb06b2ebcae"
+    },
+    {
+      "path": "server/astrodeck/api/__init__.py",
+      "bytes": 57,
+      "sha256": "e513b696fc5166005459f8e28cf28bace37bf6ea1d0279c5781c43c641453dcd"
+    },
+    {
+      "path": "server/astrodeck/api/app.py",
+      "bytes": 598130,
+      "sha256": "993d4620b1419fb7b4700d44675f5c79154c044f8e3f2a9ccb23364900c82a94"
+    },
+    {
+      "path": "server/astrodeck/api/redact.py",
+      "bytes": 64097,
+      "sha256": "fdbddfd53ce4218681697bc5442982553e46fb1d96dc71713e5534a2c8f94c71"
+    },
+    {
+      "path": "server/astrodeck/auth/__init__.py",
+      "bytes": 4442,
+      "sha256": "3473e46c63383bde525afe1ca955e4d66bbe307138523f7c7ce2fe7e448fb675"
+    },
+    {
+      "path": "server/astrodeck/auth/audit.py",
+      "bytes": 2545,
+      "sha256": "dd19cdd8a6b4f7482cd45095fd314ce0f2137b3be0f1b030a2cea0c16666c71a"
+    },
+    {
+      "path": "server/astrodeck/auth/capabilities.py",
+      "bytes": 9028,
+      "sha256": "eea2e688d26938a479dc82ebddfffd6892faeaf54ed06a91d186cc81b0074403"
+    },
+    {
+      "path": "server/astrodeck/auth/deps.py",
+      "bytes": 15039,
+      "sha256": "9bda4553c6f28907c9704e945ed6457875ed0730de37283af243542fbfc45e57"
+    },
+    {
+      "path": "server/astrodeck/auth/eddsa.py",
+      "bytes": 6417,
+      "sha256": "2bc69aab47555a82db8b20b0790c2057060f568ee816bf57c9269a98b6f92d4f"
+    },
+    {
+      "path": "server/astrodeck/auth/google.py",
+      "bytes": 17197,
+      "sha256": "30f5401ffc746e1c8b041446a66801dc591cb4affd0dc1be58186520ba27ed1a"
+    },
+    {
+      "path": "server/astrodeck/auth/local_routes.py",
+      "bytes": 21957,
+      "sha256": "6186b22f7636f95a1ddbcb8b2060428115a4f2c06383d8257a72a95b45a6b8de"
+    },
+    {
+      "path": "server/astrodeck/auth/login_rate_limit.py",
+      "bytes": 4268,
+      "sha256": "77bf6d158c14c6e6dbe0793836b3dafc291951df3688e6c6372e1544fc9fce90"
+    },
+    {
+      "path": "server/astrodeck/auth/passwords.py",
+      "bytes": 6204,
+      "sha256": "71a8da307d1a560db1becc07dbb4e724c1f4978c99940ba6bb0c2a279cceacfc"
+    },
+    {
+      "path": "server/astrodeck/auth/principal.py",
+      "bytes": 2727,
+      "sha256": "86eac9535bc71b7177feb7929968e2f393043c6c2470c383ae3c6c427d157223"
+    },
+    {
+      "path": "server/astrodeck/auth/providers.py",
+      "bytes": 15975,
+      "sha256": "abf93392ca69232a64ff04e0e57f7f2727271627b721f0212793d9d19d24bf4c"
+    },
+    {
+      "path": "server/astrodeck/auth/rbac.py",
+      "bytes": 15555,
+      "sha256": "8e1df7a7a915cadacdc6ccac9d7c76ebde5aa63b66233a543bf9033fa0a625ff"
+    },
+    {
+      "path": "server/astrodeck/auth/routes.py",
+      "bytes": 18417,
+      "sha256": "07e76b06de23f5ba4c6b576fa3f20980605280d254c96a8722f5f81d960a4642"
+    },
+    {
+      "path": "server/astrodeck/auth/session.py",
+      "bytes": 26373,
+      "sha256": "2c7c2c365b93adcde047543527666cad86487e9245ec4675719fcbcb0e9bc8c5"
+    },
+    {
+      "path": "server/astrodeck/auth/users.py",
+      "bytes": 26591,
+      "sha256": "7d82a87c8b707dbab079b1c55da604445180923107702629603e7c0f6fa6930c"
+    },
+    {
+      "path": "server/astrodeck/auth/ws_ticket.py",
+      "bytes": 2862,
+      "sha256": "240f12988fe7f2600e199939f290372860afaea2ec85233e684b4ca324c833cc"
+    },
+    {
+      "path": "server/astrodeck/bootcause.py",
+      "bytes": 8695,
+      "sha256": "9aa66839bb2dbd5d8fcbe5fe9638d6dfc908d3d227f6b20a5324a53ae2eeac31"
+    },
+    {
+      "path": "server/astrodeck/calibration/__init__.py",
+      "bytes": 901,
+      "sha256": "024cee8e9e119f615941600e91398c81ba6548f68b7179c1e719c71f57541db8"
+    },
+    {
+      "path": "server/astrodeck/calibration/keys.py",
+      "bytes": 11555,
+      "sha256": "080107482b9d0708df1827c26a55f62e0673a23c393ce938deac3aba611e36e8"
+    },
+    {
+      "path": "server/astrodeck/calibration/library.py",
+      "bytes": 21163,
+      "sha256": "adfbe8aef8419dba1d9af61c7785c3d3b413ff7fbca16da839cc9e9dd86d07eb"
+    },
+    {
+      "path": "server/astrodeck/calibration/matcher.py",
+      "bytes": 3783,
+      "sha256": "f80ed0cf0aaebb9f6df56daee3ea6b4b531b44204c9da9548705fe60a4c01268"
+    },
+    {
+      "path": "server/astrodeck/calibration/stacker.py",
+      "bytes": 2400,
+      "sha256": "fb18b3161f43aef9d8378b6b02ca98b0823da4e9c1f2647cfe39cf50fcd8a91f"
+    },
+    {
+      "path": "server/astrodeck/capture_geometry.py",
+      "bytes": 7837,
+      "sha256": "ac306c27bc0903a299d101753b303f7ddc31ac18f18b9eda251e99f5fe8ca7cb"
+    },
+    {
+      "path": "server/astrodeck/catalog/__init__.py",
+      "bytes": 1899,
+      "sha256": "803b3bf550c06530dffe43a405e544dc452a415f7f4fce153afee5cb475ef55b"
+    },
+    {
+      "path": "server/astrodeck/catalog/brightstars.py",
+      "bytes": 26886,
+      "sha256": "73dd3027b83c40ccbb671dac2b0c6384dfab88d5b5001306eef6b649206c5c0d"
+    },
+    {
+      "path": "server/astrodeck/catalog/build_constellations.py",
+      "bytes": 4810,
+      "sha256": "a118b4ce4695902505307ba3f31fbfb8c1ec48766494fdb4c295758a9ea53876"
+    },
+    {
+      "path": "server/astrodeck/catalog/build_discoverers.py",
+      "bytes": 12884,
+      "sha256": "62fdd81702ec5d9071d5c74e3f463b05272ac16227d05b3a76bd52f7899ad08e"
+    },
+    {
+      "path": "server/astrodeck/catalog/build_ngc_extras.py",
+      "bytes": 8749,
+      "sha256": "7effdc51ee3bd6cadfe9fed74f23cb1f4ec8fc3f342ab4b661505a85994075c2"
+    },
+    {
+      "path": "server/astrodeck/catalog/constellations.py",
+      "bytes": 2144,
+      "sha256": "3346eb4c4f2bec88ac0f17a90a05c8cb10e174c614a1fee81a9943804ef2c7f5"
+    },
+    {
+      "path": "server/astrodeck/catalog/coords.py",
+      "bytes": 21801,
+      "sha256": "2f3473b55b0fa9c9d457db800933c04a33308b9832ab1c20642c657451171d72"
+    },
+    {
+      "path": "server/astrodeck/catalog/data/constellations.tsv",
+      "bytes": 240647,
+      "sha256": "0bf8ebaccea931f1073b8d8132c9127ade3ec316fb01a2dba5e42c096f934b19"
+    },
+    {
+      "path": "server/astrodeck/catalog/data/discoverers.tsv",
+      "bytes": 347143,
+      "sha256": "f64b8e8617f2f844ab492af7e1749077f9f6ec33e8260c81a72544b3f20380f9"
+    },
+    {
+      "path": "server/astrodeck/catalog/data/ngc.tsv",
+      "bytes": 602174,
+      "sha256": "89808b1a09f7f687bb5c5b2d5f3e925cef5eb07c323421e2df7b384d007ab5c7"
+    },
+    {
+      "path": "server/astrodeck/catalog/data/ngc_extras.tsv",
+      "bytes": 351064,
+      "sha256": "cd71834aaa298dbd3832365e8c60b591c83b8c00a34635551af67a6d1decf1c0"
+    },
+    {
+      "path": "server/astrodeck/catalog/describe.py",
+      "bytes": 13168,
+      "sha256": "2a49421a9f4ad416b0d58df2b341e69f896c77828edfcf84aa53f8f8903607f1"
+    },
+    {
+      "path": "server/astrodeck/catalog/difficulty.py",
+      "bytes": 3029,
+      "sha256": "9cab7f917ed6f703f1c364ec46084fa23a9cc2c7af8cab2c83e6e548d63acf7b"
+    },
+    {
+      "path": "server/astrodeck/catalog/discoverers.py",
+      "bytes": 2698,
+      "sha256": "f34d36a7dc08dd2993dcebe2f444ae8820549b45da87c2bf7bffc8b035b1f2ad"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/__init__.py",
+      "bytes": 1782,
+      "sha256": "c6f744b23e37459fe8ebdc4c41cf95b74d640e673d879a5a9d400e30b447564d"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/comets.py",
+      "bytes": 24200,
+      "sha256": "edaea2fb6de68bc5b0e6b1bd6cff9376f7376b5b98e3dd6cf8f20f0b30313968"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/elements.py",
+      "bytes": 29742,
+      "sha256": "83db6134c2923cd868c62ffbfe3371d6133ac284dde027ea6f4ed0539e69cec4"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/passes.py",
+      "bytes": 21853,
+      "sha256": "3229f46b687c13ad3096bc0fc7187197c19c8d54f28f2a3c5538ed60d81f432b"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/routes.py",
+      "bytes": 6449,
+      "sha256": "118a11eb2a8737aeeb9eb32ea8027c8fe4f44253791fb79d4ed5a28af8ae3ca9"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/satellites.py",
+      "bytes": 24452,
+      "sha256": "5debaa292242865fa3f30f356dadb9bc5873278fb5f66cebfbc0ab4a45544c2e"
+    },
+    {
+      "path": "server/astrodeck/catalog/framing.py",
+      "bytes": 46640,
+      "sha256": "1a870ed85954dea1a67642eba55e7fd052e980eede61073d8bc1a67f92bfeacb"
+    },
+    {
+      "path": "server/astrodeck/catalog/hips_local.py",
+      "bytes": 4801,
+      "sha256": "2909e25d1f3764b172127f17c7c8d7ee98dd09d8ec9dfe5cd0b8c80ca6000197"
+    },
+    {
+      "path": "server/astrodeck/catalog/ngc_extras.py",
+      "bytes": 3282,
+      "sha256": "14fd2f98be8d54bb5ab64e42edc530c6d04eb35b6b33b8be8e94e69a575d0d9a"
+    },
+    {
+      "path": "server/astrodeck/catalog/objects.py",
+      "bytes": 32820,
+      "sha256": "69fdcc2e40cd83efc1132fe468410dde8a464d762afa329e8c50b40dccce32b8"
+    },
+    {
+      "path": "server/astrodeck/catalog/region.py",
+      "bytes": 48915,
+      "sha256": "94bb7043459bbeb71b3acb0633ac5eaef241eba95cf232545ea6f8e63f71fb17"
+    },
+    {
+      "path": "server/astrodeck/catalog/solar_system.py",
+      "bytes": 23046,
+      "sha256": "757a58ae8a3768830dc4e105c46ea671be5f67088511936917d44335ae1637c0"
+    },
+    {
+      "path": "server/astrodeck/catalog/survey.py",
+      "bytes": 17663,
+      "sha256": "2b83180740cdb360ad421056724238ba3a24b8da42e872fe2629c5d27d9e7c02"
+    },
+    {
+      "path": "server/astrodeck/catalog/survey_pack.py",
+      "bytes": 17339,
+      "sha256": "a1736afa5e4e1207552982d0e950df1cf469140d5e1033f266ee8c725073a25e"
+    },
+    {
+      "path": "server/astrodeck/catalog/tiles.py",
+      "bytes": 5999,
+      "sha256": "f805953cac7cb674cb2d6f7bff7bea57aa735444c3a8a713e62cb7c419eab93e"
+    },
+    {
+      "path": "server/astrodeck/catalog/tonight.py",
+      "bytes": 978,
+      "sha256": "ad5ebf854c24d2cf8f2a9924beda3ef3212547f437acaa8a857ceb60d94662a4"
+    },
+    {
+      "path": "server/astrodeck/catalog/visibility.py",
+      "bytes": 34613,
+      "sha256": "b5f9b821ecdff835c9e86d639635e457d1b5a57829ab69275ee0f19cf3948a89"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/__init__.py",
+      "bytes": 828,
+      "sha256": "e748bfcc6d61fde4dc28ee3cd55f50e722221c7f3ece9af03f0570b1c79d5731"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/abi_grid.py",
+      "bytes": 23841,
+      "sha256": "6b62bd2d81131240a6929325a310146a39df10a341e72e9ad10fd92a257659fe"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/geometry.py",
+      "bytes": 15722,
+      "sha256": "b735e60ac9f731af394efb4d5a4f55e923bdaefb6109d3ff21bc07e3f00cd214"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/granule.py",
+      "bytes": 25506,
+      "sha256": "187ef5586193a0638bfdbebb4063cac78a0312b4f8948948769ae4c4b4c93da5"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/motion.py",
+      "bytes": 46999,
+      "sha256": "727a4ac6778b626ed6c1a38cb4682e114dd437094b9e7068ddf866ae83bf04e4"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/occlusion.py",
+      "bytes": 35665,
+      "sha256": "00ce5211e0bcbc1853f87b8bb6d604e5ef73b184917525f2159a7c471989e58f"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/platform.py",
+      "bytes": 10081,
+      "sha256": "1630cb72c628ffc6f2dbbc1213e15f2bca6e78cb730131d0808d0f2abe12617c"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/service.py",
+      "bytes": 57300,
+      "sha256": "b0c32b2a51760e5896502b1fd33bab84397d4b7750a1158802225f81a5129978"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/source.py",
+      "bytes": 18332,
+      "sha256": "69243dd80b30aa1d3c279d0244e712306be79f8c73da80bd2b5efb725a1ac4a1"
+    },
+    {
+      "path": "server/astrodeck/comhost/__init__.py",
+      "bytes": 455,
+      "sha256": "d0036de602f73c0477ad96a7de2c0e8f0fcdef31292eaab73b02bd2bf367e539"
+    },
+    {
+      "path": "server/astrodeck/comhost/__main__.py",
+      "bytes": 1240,
+      "sha256": "203d73bd3bc15517b16eb6d520d655499cad29fe1cecc19affcefd7e5623c1e0"
+    },
+    {
+      "path": "server/astrodeck/comhost/device.py",
+      "bytes": 6930,
+      "sha256": "3c7039af18ff0e7a2c93e1eec23e59474be52685150ec377067cbee372016a12"
+    },
+    {
+      "path": "server/astrodeck/comhost/handlers_aux.py",
+      "bytes": 2892,
+      "sha256": "afa597605b2ae4c38d839775cb3091c33230781e47e1190562595f1b6221580c"
+    },
+    {
+      "path": "server/astrodeck/comhost/handlers_camera.py",
+      "bytes": 3385,
+      "sha256": "89e9c4ef34cb12a9e7afcefb295322f13b68356069eb9366c5306c6cdba025c4"
+    },
+    {
+      "path": "server/astrodeck/comhost/handlers_misc.py",
+      "bytes": 2774,
+      "sha256": "04ca55c787534bc0168d37f8ee411ce9eba8d86a8b74ce69676052f0c73aa202"
+    },
+    {
+      "path": "server/astrodeck/comhost/handlers_telescope.py",
+      "bytes": 2185,
+      "sha256": "0db46459b29201518e8e9fdefac754d6e72beb7b62cfbf3f41142eccec6eb04c"
+    },
+    {
+      "path": "server/astrodeck/comhost/manager.py",
+      "bytes": 9420,
+      "sha256": "b007ecca2f885c59a7ba1d5b646ce680792a9ede650bf148210a2b9e86180199"
+    },
+    {
+      "path": "server/astrodeck/comhost/server.py",
+      "bytes": 11343,
+      "sha256": "a13960879ba931615dc67bdab0371cc6f0b91d768e40cabd1064592a6fe6d715"
+    },
+    {
+      "path": "server/astrodeck/config.py",
+      "bytes": 165598,
+      "sha256": "1ce42010735b4912d3d846a469be6fe0692b1daccbbc1139d3a103514c886aa8"
+    },
+    {
+      "path": "server/astrodeck/cooling.py",
+      "bytes": 14689,
+      "sha256": "feb24dd741cf67102b5618fb279bdabf57bd2b8fb00a438111e430d8316d4d6c"
+    },
+    {
+      "path": "server/astrodeck/dawn_park.py",
+      "bytes": 40844,
+      "sha256": "0caafc8e7ae1c80699b5c51a57a3a1ccfc868a97350d6198b8a512b86c38a4fd"
+    },
+    {
+      "path": "server/astrodeck/devices/__init__.py",
+      "bytes": 298,
+      "sha256": "76d667115da842ec37f5975871460d44d189f49886db628a3da03f539f3dddd9"
+    },
+    {
+      "path": "server/astrodeck/devices/alpaca.py",
+      "bytes": 58375,
+      "sha256": "aea49f95880e54803090963ba5631f12a97277f42e579f6683401a1f951b9c75"
+    },
+    {
+      "path": "server/astrodeck/devices/ascom_registry.py",
+      "bytes": 6101,
+      "sha256": "ed2726d5a05583dde54873d272ac9120f7fae05f84a15bf237c12900fbedeef2"
+    },
+    {
+      "path": "server/astrodeck/devices/backend.py",
+      "bytes": 11163,
+      "sha256": "05151e183f455433dd84c6b9ec2b1002a1da330086b17d9ea074cddc9e4f6816"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/__init__.py",
+      "bytes": 1328,
+      "sha256": "912ba6ce0c77c285cbee45ffbe2ae3ef7193903e432573cfde6e2174febd0f66"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/_discovery.py",
+      "bytes": 5729,
+      "sha256": "c764fb3cc9707cf486d6c189b19c56ed36d75a3a1f5ccfaaa005e41bf42f43af"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/ascom_local.py",
+      "bytes": 2960,
+      "sha256": "b1e81fe92a572f25db2edb8fff530c0000a6c2b92af69c3410d94370a3e9276c"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/asiair_backend.py",
+      "bytes": 70023,
+      "sha256": "b48ae89469364acb396b3f8dc5d33837a0691a209cd64a5b8c085a38b880d6c5"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/native_backend.py",
+      "bytes": 11175,
+      "sha256": "7e0cbd28b8cc4eef853b81c5394d6b070cbec522254cdc49f3646b026b38ce2c"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/nina_backend.py",
+      "bytes": 8050,
+      "sha256": "8b6b1b48b6d74d887ebe1e44d31c6742a5168cb664dffc1a2c0ebce25fd6f827"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/phd2_backend.py",
+      "bytes": 9334,
+      "sha256": "2cc43d1c7a359fee7f189105e63bef78c73aa55503583f33531ac49fee06455d"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/player_one.py",
+      "bytes": 4542,
+      "sha256": "a92cff19629885432b341d63ebf16df9eb49472de724f654d8f839ab54d6b33a"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/sim_backend.py",
+      "bytes": 9868,
+      "sha256": "30897d389eb5d0e418c38cbaeb382186eef52546d9fea726a95f8428af4d8173"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/wanderer_snowflake.py",
+      "bytes": 24674,
+      "sha256": "507718c408ac712fa1b02c8d2045b3b7234ce1ca596b1051cee3f5bc53af4978"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/zwo_am5.py",
+      "bytes": 80971,
+      "sha256": "9bbb0f446452e7de8955febdb2f440f3206330dc9b2706569c87d5b93c71f43a"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/zwo_asi.py",
+      "bytes": 4637,
+      "sha256": "945e20c385bb7a96a33ed5301c0f5279fb9a100a1a5e17c4f4ed7615c8c57281"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/zwo_usb.py",
+      "bytes": 35739,
+      "sha256": "31d9fc9a43a73fe8da7a029ec7539c15ae44db63a19e75ff634162e505766a0f"
+    },
+    {
+      "path": "server/astrodeck/devices/base.py",
+      "bytes": 58334,
+      "sha256": "0f6b6fefdefdf95789fc70387fef7d68d87e1385d2ded7055e00e7efe39213f3"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/__init__.py",
+      "bytes": 84,
+      "sha256": "4b6e1b2313edbf023c72df331305ef7f9ff547110f3d892b97886c0b45dabdeb"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/adapter.py",
+      "bytes": 9834,
+      "sha256": "af16285090a1b5bc694946d7a6e6aff51417effc9e7540e906221fd30b0bbfcf"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/engine.py",
+      "bytes": 16166,
+      "sha256": "260a37e092b4e545c01cd2ed1e54bb1fbafd29440eed231299b2a53de472cbf5"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/player_one.py",
+      "bytes": 11142,
+      "sha256": "b1c6eaed7271174622d5056a99aba372825d9762bebe6f1e6197f3be51eab3e9"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/player_one_sdk.py",
+      "bytes": 19888,
+      "sha256": "97d3e863d8f4e109fca7d9d7398e5f6f83a34ebdaf5115e0853159593e71d16a"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/registry.py",
+      "bytes": 872,
+      "sha256": "99d30aedaf845437efbb8f54d33d9332d4084c2d8e444b19d8ca22190917fd7d"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/zwo_asi.py",
+      "bytes": 9302,
+      "sha256": "e017f7e3a22307f486391aa556e063de7130d430a7b6ff07ca897f5d052018ed"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/zwo_asi_sdk.py",
+      "bytes": 17541,
+      "sha256": "0ea670dcf65a85099582aacddfaf6d9007a71fa2da42d69f351699a514790c42"
+    },
+    {
+      "path": "server/astrodeck/devices/fingerprint.py",
+      "bytes": 20443,
+      "sha256": "f7391b62bac8c7126c2fae19733708dcbca51b996507c02b8b32d91656318946"
+    },
+    {
+      "path": "server/astrodeck/devices/lx200.py",
+      "bytes": 4479,
+      "sha256": "bc8f64c80a540f11425f5ff01839152a5731ce238aee21344684357ead069e7a"
+    },
+    {
+      "path": "server/astrodeck/devices/nina.py",
+      "bytes": 53231,
+      "sha256": "81aac8fc98715dea02ad5c649ddecfed38b14a633fa76540644e93bee34e9768"
+    },
+    {
+      "path": "server/astrodeck/devices/orchestrator.py",
+      "bytes": 19526,
+      "sha256": "51c8569c24830b562d0a6d4f8791a222d8faffa056e507549f5db1462c3ffaf7"
+    },
+    {
+      "path": "server/astrodeck/devices/sdk_paths.py",
+      "bytes": 6344,
+      "sha256": "b45a6c0f9b65aa41e3e5da420d33610852367f7d54b5d4d1d5e63ee8e91800fc"
+    },
+    {
+      "path": "server/astrodeck/devices/serial_link.py",
+      "bytes": 18205,
+      "sha256": "aff67e58078e97b3e7d39c835c362783e113ff8a7361792b2f2eb72e69a21bf2"
+    },
+    {
+      "path": "server/astrodeck/devices/sim.py",
+      "bytes": 91180,
+      "sha256": "32270c18a4d3e3d73b353b0dd3f13d3587a43471fb8c7e783f2c80c3990326cd"
+    },
+    {
+      "path": "server/astrodeck/devices/vendor_verify.py",
+      "bytes": 7808,
+      "sha256": "b62d8cf546ad4dced34cdd912e1a566352bde8aa52ce65169dd8f5773ac75bd7"
+    },
+    {
+      "path": "server/astrodeck/devices/zwo_sdk.py",
+      "bytes": 17821,
+      "sha256": "5d06285369abf663d2b77a6a3a76e3fa42e958463f0a79e4a734a23c7b9bc104"
+    },
+    {
+      "path": "server/astrodeck/dew.py",
+      "bytes": 39943,
+      "sha256": "f5fde6264089436171865b08be7cd0f7dbeeb13940243985cf2c44798e511233"
+    },
+    {
+      "path": "server/astrodeck/drivers.py",
+      "bytes": 26797,
+      "sha256": "b1fe5c81c080f860e6f545c95f01ce15d364486ac9d4c5d8ab9475b9c6f5841e"
+    },
+    {
+      "path": "server/astrodeck/dusk_arm.py",
+      "bytes": 17428,
+      "sha256": "140b337b9e342a451121a011b4b1d08bf6a009f19fff5b04e2e9cf049acb1eb7"
+    },
+    {
+      "path": "server/astrodeck/events.py",
+      "bytes": 34279,
+      "sha256": "f78794f6e67493592e635964a565503c81d4c1773e1deb2e82513e1b0b5f1b07"
+    },
+    {
+      "path": "server/astrodeck/factory_reset.py",
+      "bytes": 13306,
+      "sha256": "0ffe7b2c596d4f12fd7ac79543f5460c7f00cc36a956a256c7f031adf99cc52b"
+    },
+    {
+      "path": "server/astrodeck/flows/__init__.py",
+      "bytes": 1512,
+      "sha256": "2554d0a7ac1110737290540e69affcaf84f95cf6f3ca7f4ec2695dcaa7e324f8"
+    },
+    {
+      "path": "server/astrodeck/flows/calibration_health.py",
+      "bytes": 32092,
+      "sha256": "db39fe99833648690690e19ae69cc6ed1b8da833672ddc41d70b93a7e4af99ee"
+    },
+    {
+      "path": "server/astrodeck/flows/compile.py",
+      "bytes": 76299,
+      "sha256": "af29008b6707a7fd1c4519e5a8c8b8a8a96f1bd79ab017a4b3a1ed8f2822440b"
+    },
+    {
+      "path": "server/astrodeck/flows/continuation.py",
+      "bytes": 32670,
+      "sha256": "634dc1d0684a5f78fd027a817da6c56b794014bd7de71c2b6e547130511b9518"
+    },
+    {
+      "path": "server/astrodeck/flows/doctor.py",
+      "bytes": 49315,
+      "sha256": "ed826ca3a09f0ae2aa86eb035aa480cd34ca08999996eb9e8e4b5ee64a78ca0b"
+    },
+    {
+      "path": "server/astrodeck/flows/examples.py",
+      "bytes": 20437,
+      "sha256": "41f338a89100766efa02a10a963c063f2646bb459997b207ae3505994e90c326"
+    },
+    {
+      "path": "server/astrodeck/flows/identity.py",
+      "bytes": 36250,
+      "sha256": "8ff03a0741abf68f265901da1943cf10c47fc0bef710bc4c776b10acaa307988"
+    },
+    {
+      "path": "server/astrodeck/flows/models.py",
+      "bytes": 23870,
+      "sha256": "9da629868899f22dc51770a8e89e05996c305c23ab09eef91e1889f7f8b330e4"
+    },
+    {
+      "path": "server/astrodeck/flows/nodes.py",
+      "bytes": 33805,
+      "sha256": "e53ebd929cff2298f597eb144ea9fe17ac078b2b7c60fcf2fce47a2fe8b36b95"
+    },
+    {
+      "path": "server/astrodeck/flows/progress.py",
+      "bytes": 34729,
+      "sha256": "23aba05c86d69817da58caeca933b945cf0e5a1271110c42e1166cd0b07c465c"
+    },
+    {
+      "path": "server/astrodeck/flows/readouts.py",
+      "bytes": 19469,
+      "sha256": "d4a4497f32edf4fc02cf3cc283bddeeb7d183f8f0de80d9644d64b027aef3789"
+    },
+    {
+      "path": "server/astrodeck/flows/rig.py",
+      "bytes": 8405,
+      "sha256": "ec0cb7379509b63a31ce0671e29b5ddd1d2c59854b4084cf9a2204518fd611d0"
+    },
+    {
+      "path": "server/astrodeck/flows/save_rules.py",
+      "bytes": 15882,
+      "sha256": "c184253a3aa0527f3c9581756e37c50c95f816ee6478a4ea611747cd73c22cbe"
+    },
+    {
+      "path": "server/astrodeck/flows/store.py",
+      "bytes": 46601,
+      "sha256": "639517728aee610b7d440d670247675d8fffafdfe7a28b2af539813d42c5ea7a"
+    },
+    {
+      "path": "server/astrodeck/flows/to_plan.py",
+      "bytes": 107786,
+      "sha256": "debf4a28a97ce631e9aebf1716d133d8692f9361196270d66168b2e5e63ffc52"
+    },
+    {
+      "path": "server/astrodeck/flows/tonight.py",
+      "bytes": 127110,
+      "sha256": "c4cc7f90bc1b3dfe31e620f4b3c9fe2684ec9da88dde29ed84936c221b357642"
+    },
+    {
+      "path": "server/astrodeck/flows/wizard.py",
+      "bytes": 78742,
+      "sha256": "2fd2c31b9c17e7881d671d018da92f46dcb37f2c3ab9474322a32b3b07aef7c1"
+    },
+    {
+      "path": "server/astrodeck/focus/__init__.py",
+      "bytes": 105,
+      "sha256": "427b52c8b323d9b65ceb9e30f5370763d2eed9b96d2dd480242cb410484318b3"
+    },
+    {
+      "path": "server/astrodeck/focus/approach.py",
+      "bytes": 3432,
+      "sha256": "62b2bcda260229a4e555f9ff2d2e8f39d5b62338d6050cf9e7ed32accb838fba"
+    },
+    {
+      "path": "server/astrodeck/focus/autofocus.py",
+      "bytes": 72577,
+      "sha256": "6fc5edcad7c5acfea3ac844f26fa5f3ac882ee9b5e5d9144210aac4e9ef3d2e9"
+    },
+    {
+      "path": "server/astrodeck/focus/coarse.py",
+      "bytes": 9313,
+      "sha256": "bd939c4ba631782684c1e686e82f5dcdd824e9017190167d745fc982044efa14"
+    },
+    {
+      "path": "server/astrodeck/focus/filter_offsets.py",
+      "bytes": 9388,
+      "sha256": "6bf1dd8e11cc1d60c683435bdac81a394153d5cd8bfb01cbdb5d33a7a6ea745e"
+    },
+    {
+      "path": "server/astrodeck/focus/native.py",
+      "bytes": 73025,
+      "sha256": "ee0493a09b4003644ae57a563e4655feec45b0138c893832b1b3c59afc4d8d27"
+    },
+    {
+      "path": "server/astrodeck/focus/pipeline.py",
+      "bytes": 11471,
+      "sha256": "ce9a564bf0265c0f22a3943d2d62327350c17095ed5de640ed67285080766b99"
+    },
+    {
+      "path": "server/astrodeck/focus/search.py",
+      "bytes": 6050,
+      "sha256": "db0ed1c2d8b87f193715595b414db01bd566d86008b59221b766ecad147db0e2"
+    },
+    {
+      "path": "server/astrodeck/focus/span.py",
+      "bytes": 13870,
+      "sha256": "b409ddc963abce281f6f7cdffb78bb54e309f34d81b1993760523eebf9e45c5e"
+    },
+    {
+      "path": "server/astrodeck/focus/tempcomp.py",
+      "bytes": 11733,
+      "sha256": "227aea10ad7f49b81fc0284f67abe76ee4f1990eb0fedc3eb9e36fa840677966"
+    },
+    {
+      "path": "server/astrodeck/focus/window.py",
+      "bytes": 5183,
+      "sha256": "ccb58a7850c636d18a9deceac3a9ee1d33eb0c63df7887580ca0e931dc280534"
+    },
+    {
+      "path": "server/astrodeck/gallery.py",
+      "bytes": 69105,
+      "sha256": "bfded6075b8030dda6486680e4651463f609539b983c33497f8d80993a4ffe46"
+    },
+    {
+      "path": "server/astrodeck/gallery_index.py",
+      "bytes": 4284,
+      "sha256": "f77a9f5546fd5e0d1c9e69084d64ccf2555030ecaf995e11e9294c921969f9fc"
+    },
+    {
+      "path": "server/astrodeck/gallery_listing.py",
+      "bytes": 6049,
+      "sha256": "091befce757bf5514d6f8e970dc38a6751dbcee574e832571e72bc196c672c63"
+    },
+    {
+      "path": "server/astrodeck/guide/__init__.py",
+      "bytes": 217,
+      "sha256": "e22c4a8ac26ec21a3c1f7ba50cf0682d07547ea5e8230ff5e4ae2b633d10dd6f"
+    },
+    {
+      "path": "server/astrodeck/guide/assistant.py",
+      "bytes": 32939,
+      "sha256": "04a2bc0eefe53b38e1817bd4352edd47ddcc04cce436eedc4035a0a07a0b2f80"
+    },
+    {
+      "path": "server/astrodeck/guide/base.py",
+      "bytes": 10567,
+      "sha256": "93599859096dad6227a36ac656eb12fe6ac971f1420a182b9507fadd10d522c3"
+    },
+    {
+      "path": "server/astrodeck/guide/native.py",
+      "bytes": 181118,
+      "sha256": "567dafdaa2506e21d83502d1bdfe8f9c2490f1230a94eb6750f7c34f75f69971"
+    },
+    {
+      "path": "server/astrodeck/guide/phd2.py",
+      "bytes": 20623,
+      "sha256": "d1bbdc6ae28d707f6fe7affdb1d904af5d4706a89cae447c62a7ee9c57651bae"
+    },
+    {
+      "path": "server/astrodeck/guide/simguider.py",
+      "bytes": 4928,
+      "sha256": "3f90180d9fe8a038f64e3a5f90c34ce69d171d5c0f37065ea533604f97f3b7a7"
+    },
+    {
+      "path": "server/astrodeck/guided.py",
+      "bytes": 7246,
+      "sha256": "61c7200ecfa30b13bb54988a2418731c7118ad1397634ab14726519df29afd0d"
+    },
+    {
+      "path": "server/astrodeck/guided_recovery.py",
+      "bytes": 5694,
+      "sha256": "2957ac721afaa8cb373dbb23c88ed3018275a992a9ff79a92c123a7bf66604a6"
+    },
+    {
+      "path": "server/astrodeck/hub.py",
+      "bytes": 481441,
+      "sha256": "a308684c1465e197249e41ef9f3e038adcb79035d2c5523d6330fe7d7b742815"
+    },
+    {
+      "path": "server/astrodeck/imaging/__init__.py",
+      "bytes": 2199,
+      "sha256": "e26195d6d9dac7e5950446c72bea519246063d500088d38f31150e0b035ea9ee"
+    },
+    {
+      "path": "server/astrodeck/imaging/bahtinov.py",
+      "bytes": 13605,
+      "sha256": "465eccfa1045e6c4973cf1d6eca80d7fd30997422898e1d2791b59a91b1949e0"
+    },
+    {
+      "path": "server/astrodeck/imaging/clouds.py",
+      "bytes": 8460,
+      "sha256": "bf5d06ee32261f52b062a3b22b8979f7776ccf7943e7f9564d86203c1ad409a0"
+    },
+    {
+      "path": "server/astrodeck/imaging/darks.py",
+      "bytes": 34006,
+      "sha256": "c7d1d18675ec61dc767fec06474bcc2999eb12dd0a5fbd9ccf9a4c0b5bf6ff4b"
+    },
+    {
+      "path": "server/astrodeck/imaging/defocus.py",
+      "bytes": 17081,
+      "sha256": "977117377df016e5e02f7e8f50a672d4aff70bbf3d74b1853910b7bd798d0369"
+    },
+    {
+      "path": "server/astrodeck/imaging/egain.py",
+      "bytes": 3848,
+      "sha256": "c69e22dff654e06905590588d6bf0293184766e83269e527d967122fa850cd26"
+    },
+    {
+      "path": "server/astrodeck/imaging/fitsio.py",
+      "bytes": 27336,
+      "sha256": "3d01e5bacc4db90299c16429cd310f00609208c5f275a05f44c7ef65908be9f5"
+    },
+    {
+      "path": "server/astrodeck/imaging/flats.py",
+      "bytes": 3846,
+      "sha256": "c1f7dead9a566c6e035502981ff77d7231708c261550e272c233fad68095ca8d"
+    },
+    {
+      "path": "server/astrodeck/imaging/livestack.py",
+      "bytes": 13996,
+      "sha256": "1cd3b7a0c40b0dbe15092bcc405564c9bee902cb714b1998195504000db2b64b"
+    },
+    {
+      "path": "server/astrodeck/imaging/lucky.py",
+      "bytes": 13802,
+      "sha256": "a95d12806641d13701019454c2f23237ebbac225eb04f2797d5ee2a6b6da776f"
+    },
+    {
+      "path": "server/astrodeck/imaging/nightstack.py",
+      "bytes": 58064,
+      "sha256": "a148b0750df5117f6f665d7f9f34ac235ecf41c0f02d75464408cbf310d1c811"
+    },
+    {
+      "path": "server/astrodeck/imaging/processing.py",
+      "bytes": 12248,
+      "sha256": "82a31bdbda64ee9e5df9c1ddf48907e7be6c3858e19ace4b99e0eed1b8a5644e"
+    },
+    {
+      "path": "server/astrodeck/imaging/readnoise.py",
+      "bytes": 1644,
+      "sha256": "553b9dc23b7305af9e9c72792f813c4cb4ff0c9f4fe364fcccc7c3d40b8fe225"
+    },
+    {
+      "path": "server/astrodeck/imaging/registration.py",
+      "bytes": 6426,
+      "sha256": "94d02763a6512af943115fa4365ed3bdab15d730853f19573e67fb5a2cfc8b74"
+    },
+    {
+      "path": "server/astrodeck/imaging/ser.py",
+      "bytes": 21751,
+      "sha256": "9afde2c3cc1e0a6f5a063915106c26e8b823a16ca4bd29c2fb6cc82ef20f3fda"
+    },
+    {
+      "path": "server/astrodeck/imaging/sessionstack.py",
+      "bytes": 45090,
+      "sha256": "b931171bdf372c6c76143280b1117fcc96a8585a699d36f7defcb1e9fa56fdb0"
+    },
+    {
+      "path": "server/astrodeck/imaging/share.py",
+      "bytes": 4265,
+      "sha256": "bfb5e2e1ba0c43ddbfa4205e7748fd65dbac883163f9f67fe822ef977566ff29"
+    },
+    {
+      "path": "server/astrodeck/imaging/stackbackfill.py",
+      "bytes": 12933,
+      "sha256": "c553366628287d053c172408d654e92a0e860148cd043ea6cb7d1750019d9a6b"
+    },
+    {
+      "path": "server/astrodeck/imaging/stars.py",
+      "bytes": 100202,
+      "sha256": "d92af5b08140f912fc799e2e86cbfcf7f396a2db408c289a9b2cd1960bc0e5c9"
+    },
+    {
+      "path": "server/astrodeck/imaging/video.py",
+      "bytes": 32289,
+      "sha256": "2345a26420ac5c0d5e872fe85c13c2e591a359755401357c6daf467092446d1d"
+    },
+    {
+      "path": "server/astrodeck/imaging/video_routes.py",
+      "bytes": 10093,
+      "sha256": "3f9e116874d4ece8a0530cbd0e3aaf86ec6861080d34f84509f3aabf918e3ff9"
+    },
+    {
+      "path": "server/astrodeck/licensing.py",
+      "bytes": 11786,
+      "sha256": "b25b6792af370bdb5ab8ce93704405aabe501154cbd113b060c6a3bcde175897"
+    },
+    {
+      "path": "server/astrodeck/locations.py",
+      "bytes": 14151,
+      "sha256": "0c54bd15d89e1d05b93fd3ad08fe7ac79c284bb24ee57a2147db72c7dcc5b286"
+    },
+    {
+      "path": "server/astrodeck/logfmt.py",
+      "bytes": 3516,
+      "sha256": "b5b4cc1aacbf5c13a67cb0189a26658b12212a1f288551ffa57f47c0ae902277"
+    },
+    {
+      "path": "server/astrodeck/mount_offset.py",
+      "bytes": 9051,
+      "sha256": "7ec850e0959b7241d9e254ac6f8e38f3e9d591d6cdbcb5c5adb08364c21035e3"
+    },
+    {
+      "path": "server/astrodeck/naming.py",
+      "bytes": 9860,
+      "sha256": "03aa3f14aee2840346133dc5dbb6006a716b62a0aa8a41448400a88ef4ac8ee8"
+    },
+    {
+      "path": "server/astrodeck/persist.py",
+      "bytes": 23817,
+      "sha256": "6a8b65a498a521d7088545a410af1cff8c69f9b8158ac78eeb6d38a3d9a8a43d"
+    },
+    {
+      "path": "server/astrodeck/planning.py",
+      "bytes": 11035,
+      "sha256": "452d1141b504b09e9f8103755001265341d0e00ae6bcfcbf48af523da5cd4470"
+    },
+    {
+      "path": "server/astrodeck/plans.py",
+      "bytes": 19265,
+      "sha256": "8b96535313f14b4aeca15bd98f3f81bae17d33e1986d7f3e106be1cc6ae9b697"
+    },
+    {
+      "path": "server/astrodeck/polar/__init__.py",
+      "bytes": 75,
+      "sha256": "3946cf44f3b93bff330e6e991807bce6a79ac7735a879b46f55c049e0f33c389"
+    },
+    {
+      "path": "server/astrodeck/polar/native.py",
+      "bytes": 109556,
+      "sha256": "3cb84447fb3e9d45724344aa4f6601fba095957ec2bddd36ebd2927e39e5357a"
+    },
+    {
+      "path": "server/astrodeck/polar/session.py",
+      "bytes": 21154,
+      "sha256": "b0ef7958ff3994664c6de3887a64bb3e7b73d6799457def5ce37225d6d2f2e66"
+    },
+    {
+      "path": "server/astrodeck/power_guard.py",
+      "bytes": 12979,
+      "sha256": "bdef84f30aa7aa536cb3c4595e210a7282600d90e048bf100ac1a85f55426fbb"
+    },
+    {
+      "path": "server/astrodeck/profiles.py",
+      "bytes": 29122,
+      "sha256": "fd9f16b373bbfeacbf4986a6b50af2c68198deba232782f8837973d93832e004"
+    },
+    {
+      "path": "server/astrodeck/provenance.py",
+      "bytes": 14145,
+      "sha256": "18883856b1e3c4468f60421903fabe0aa32279e7a7458493b60c60a217bfd3bb"
+    },
+    {
+      "path": "server/astrodeck/providers.py",
+      "bytes": 33453,
+      "sha256": "46df1e70b3cc7a4eecdcf25865d385743542c7deeec52c2be35a7e948ad587e3"
+    },
+    {
+      "path": "server/astrodeck/remote/__init__.py",
+      "bytes": 1395,
+      "sha256": "c991bdcaf429ba7b346d6598c994389a9684f8f7113a889b004154f5fa5094c9"
+    },
+    {
+      "path": "server/astrodeck/remote/protocol.py",
+      "bytes": 7708,
+      "sha256": "d53010fd080322f41ec5fa684eded50c352bae80534032bf6c6b1cada7afea01"
+    },
+    {
+      "path": "server/astrodeck/remote/relay_client.py",
+      "bytes": 72134,
+      "sha256": "0c9e01466e53fc5a62a213d0fc2c2875630de4507064429c989e91e69f76e31d"
+    },
+    {
+      "path": "server/astrodeck/rotation.py",
+      "bytes": 8568,
+      "sha256": "e46a5e63a5b15d31b4e01bd413503005fa68c4f7c3aa8b7fac0d5ef1aa387f4c"
+    },
+    {
+      "path": "server/astrodeck/runtime_security.py",
+      "bytes": 8473,
+      "sha256": "ee900ec587f1c9ed3311cc8aa34fd6ef77400e7c260c225242c89468131c815b"
+    },
+    {
+      "path": "server/astrodeck/sequence/__init__.py",
+      "bytes": 348,
+      "sha256": "acf20e170cf6ec04f52d7c14a2ecda4bd3292475ef685379ab6588a31a980621"
+    },
+    {
+      "path": "server/astrodeck/sequence/angle_check.py",
+      "bytes": 10684,
+      "sha256": "ca701f51be62c4a729de7fa83d5d45b76e23792664727525a1003acc28010d63"
+    },
+    {
+      "path": "server/astrodeck/sequence/bundle.py",
+      "bytes": 47509,
+      "sha256": "38694eab39c89290188fac41f63ac4bd9dd62815aa09aeca93d8af0cb5ef6af8"
+    },
+    {
+      "path": "server/astrodeck/sequence/cloudstate.py",
+      "bytes": 9112,
+      "sha256": "2d260a53842f3019658f7fad7d7bc4034bf96c8d5993aabbbbd63f2ed45fc7ef"
+    },
+    {
+      "path": "server/astrodeck/sequence/engine.py",
+      "bytes": 951930,
+      "sha256": "6690298e2fab58a2d42096b4c03feefc58ad4a17d3aed19c94f7b04a6185231c"
+    },
+    {
+      "path": "server/astrodeck/sequence/group_rules.py",
+      "bytes": 90078,
+      "sha256": "97fd3e0cfed38f6158f24ccc5dc2b7cdee30af0a2297aec7a9d184e9789796d9"
+    },
+    {
+      "path": "server/astrodeck/sequence/instructions.py",
+      "bytes": 14225,
+      "sha256": "3632679789eec438dc9c3ddf372b8d6baf639d985e3d6783039d1c26fa899fac"
+    },
+    {
+      "path": "server/astrodeck/sequence/models.py",
+      "bytes": 51178,
+      "sha256": "2958bc182c02446345beafd3087c770a3edc9267e4ee48f9635553b7418a51dc"
+    },
+    {
+      "path": "server/astrodeck/sequence/panel_order.py",
+      "bytes": 10591,
+      "sha256": "00af33a8846864623298529d67cb07ae8c2d65dbb1523884b8d1785cfeb7131c"
+    },
+    {
+      "path": "server/astrodeck/sequence/policy.py",
+      "bytes": 10419,
+      "sha256": "8ba77f4b34cc7d58527852d5270be8ee819f7bc6250ea076f2902961270d7e66"
+    },
+    {
+      "path": "server/astrodeck/sequence/report.py",
+      "bytes": 65478,
+      "sha256": "a58bf3d5cce0fa1806a9f76c444652fa48efda216e2c2388df98f559ddd65c3d"
+    },
+    {
+      "path": "server/astrodeck/sequence/resume_arm.py",
+      "bytes": 141937,
+      "sha256": "23a56b3bf1d1f4531e0aacfe755f7f22e145e62754f56a1b2718943b1cd58d0c"
+    },
+    {
+      "path": "server/astrodeck/sequence/roof.py",
+      "bytes": 3983,
+      "sha256": "63b6329b25010c13392ffc6a7d93aae41bf0725be8a45fa2dc483071d74a8952"
+    },
+    {
+      "path": "server/astrodeck/sequence/schedule.py",
+      "bytes": 53243,
+      "sha256": "149d78ed06a6548523798b03d68c910a88f4eb3a80d04d7756736bf27465f8d9"
+    },
+    {
+      "path": "server/astrodeck/sequence/session.py",
+      "bytes": 69564,
+      "sha256": "4b74cdf1237160aea49c0ac9c605bb56185b0c8e747b3e09198767d833f08215"
+    },
+    {
+      "path": "server/astrodeck/sequence/session_files.py",
+      "bytes": 9489,
+      "sha256": "3dcf4c0ef896ff914c682892f3440c8e1e23973fe75f3ed8933bf818a50a17a6"
+    },
+    {
+      "path": "server/astrodeck/site_gate.py",
+      "bytes": 3940,
+      "sha256": "37fde68b08631f54106996fc2e8e6b5716d83f02fef342c1a3e21f9ec4df8402"
+    },
+    {
+      "path": "server/astrodeck/site_gps.py",
+      "bytes": 3270,
+      "sha256": "4fa1de059d46bbc97c50685f18f1bf494fc7dd700993bb244745c92e41494d43"
+    },
+    {
+      "path": "server/astrodeck/sky_angle.py",
+      "bytes": 14851,
+      "sha256": "bb4ce890ac4f9c2eae6a2b81d3c1389c1a8bc758fff329c6271724455010d9a0"
+    },
+    {
+      "path": "server/astrodeck/solve/__init__.py",
+      "bytes": 1264,
+      "sha256": "b49c3529c7af2b334c961c02b98a1ba6096d6fb3a8779e435e8bb455609dc2c4"
+    },
+    {
+      "path": "server/astrodeck/solve/astap.py",
+      "bytes": 10670,
+      "sha256": "1877d508aec6008eb790580ce8ea188fb079dd345391010fa29e8804963f8e67"
+    },
+    {
+      "path": "server/astrodeck/solve/base.py",
+      "bytes": 1991,
+      "sha256": "ae316faf5d81e6acaa544d4ecb8927f1336622ac1e3e6e5481bcfe921e2d9106"
+    },
+    {
+      "path": "server/astrodeck/solve/gate.py",
+      "bytes": 1831,
+      "sha256": "7a61e1aafb0b0b32784fd9152008980743bf8129e2aee2259fa4136894cb39c0"
+    },
+    {
+      "path": "server/astrodeck/solve/light.py",
+      "bytes": 55657,
+      "sha256": "b3fb18c05188ad49913dd3b242973c25caf1cfbb3169c533790e889d221f5836"
+    },
+    {
+      "path": "server/astrodeck/solve/simsolver.py",
+      "bytes": 10798,
+      "sha256": "7d3f3191f5be2a7747cd72ecb647370d55aada92423354c161d7399050df4a0b"
+    },
+    {
+      "path": "server/astrodeck/sun_watch.py",
+      "bytes": 28236,
+      "sha256": "41c677c6a62ac15453e11fc7ed576609fdda59275fefa3cfd48c21c68512520b"
+    },
+    {
+      "path": "server/astrodeck/sync/__init__.py",
+      "bytes": 938,
+      "sha256": "d45a2a8cc1e0c04cd2c736ee392b5c5be10f19e35dcf687b8058c87d2747ce7c"
+    },
+    {
+      "path": "server/astrodeck/sync/destination.py",
+      "bytes": 4987,
+      "sha256": "9eeee813c8bfdcf5983b2573ff1fd58b68fc9b4f9c782fb2f129d91bf99d93ab"
+    },
+    {
+      "path": "server/astrodeck/sync/manifest.py",
+      "bytes": 17404,
+      "sha256": "75ada4b1d954a8331a5bd444d84d6de1332695995ce4350b8c16f9bd723a4378"
+    },
+    {
+      "path": "server/astrodeck/sync/push.py",
+      "bytes": 8979,
+      "sha256": "06c017b456cb0cf8a2b492bc5bbf30982b4f5b4bc78594bf3bc3ec91745eee3d"
+    },
+    {
+      "path": "server/astrodeck/sync/runner.py",
+      "bytes": 13211,
+      "sha256": "f393377d7ea87096cfc32a4cbc00496bed000714ecf51b9c252985f256632cce"
+    },
+    {
+      "path": "server/astrodeck/update/__init__.py",
+      "bytes": 336,
+      "sha256": "1e204da089b41108f982feb95b57dcd90e2939093ee9288e1ce5997647f3a96a"
+    },
+    {
+      "path": "server/astrodeck/update/download.py",
+      "bytes": 2753,
+      "sha256": "0be33e83463638e7a4d8601ff342bac29271ee6dc2d3109dc41cfdc5888c626d"
+    },
+    {
+      "path": "server/astrodeck/update/github.py",
+      "bytes": 4660,
+      "sha256": "570f8e570bd481d33bda192a6168d253c28fee743275b037179a265627bf1fc8"
+    },
+    {
+      "path": "server/astrodeck/update/protocol.py",
+      "bytes": 4688,
+      "sha256": "1977e723a9dbb0ed53a93e5a8c5970b1acc913a276928926e677f1419d1c8f5c"
+    },
+    {
+      "path": "server/astrodeck/update/service.py",
+      "bytes": 16568,
+      "sha256": "656cfef92e7d15848fc817c522a868cfa077bd78e0b81e68e344b219efbfa90b"
+    },
+    {
+      "path": "server/astrodeck/update/signing.py",
+      "bytes": 7438,
+      "sha256": "e92d4d8305b26b241a6c354fd74a1fe1df6d2c0f2581ee9e9a0c37dc85b298f6"
+    },
+    {
+      "path": "server/astrodeck/update/stage.py",
+      "bytes": 9091,
+      "sha256": "ae2ca5e8f38f91baf73d332c9affe944c0edb7d7d3cf032ca3fba44c93a42bdb"
+    },
+    {
+      "path": "server/astrodeck/update/state.py",
+      "bytes": 5814,
+      "sha256": "d35a3c7c152b2d411e84142a021bf8f4b355b8599b5db35ec83453a135b7c8f2"
+    },
+    {
+      "path": "server/astrodeck/update/verify.py",
+      "bytes": 624,
+      "sha256": "5b2d5f27aa7ad10a0bf9ff7ef498c0babd2f2e2be969b44425dc2ac739749535"
+    },
+    {
+      "path": "server/astrodeck/update/version.py",
+      "bytes": 3781,
+      "sha256": "d68f84c07fe951bee0a88e116c97349783f02a60dff57f7f2a70ce997145b41c"
+    },
+    {
+      "path": "server/astrodeck/vendor/manifest.json",
+      "bytes": 2480,
+      "sha256": "52a56f07d7ae48b48fdcf742e68b7302b084ac803ee14862acf3f23b20f7983c"
+    },
+    {
+      "path": "server/astrodeck/vendor/playerone/LICENSE",
+      "bytes": 1401,
+      "sha256": "f842967168887a4bc4d8b797a63b9787c2f0aab0201b0dfd55dda4bf94dcee4f"
+    },
+    {
+      "path": "server/astrodeck/vendor/playerone/README.md",
+      "bytes": 3465,
+      "sha256": "c55ebd03b512b401dcdb6c1a6f374043bc49680ba1e665bf75da65819a556f8d"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/ASICamera2.dll",
+      "bytes": 2852352,
+      "sha256": "0c8778c3cce2012961b079e3c7d0d8348a8b3823939335d9e98148cb5d5dc34a"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/CAARotator.dll",
+      "bytes": 58368,
+      "sha256": "23b880eeded0cb0cfbbcbd5c024468af1fab2820aa5dd4789bdda908ea8f92bd"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/EAF_focuser.dll",
+      "bytes": 1243744,
+      "sha256": "705ee6f55f7b959ac8721892bdd9166ad2f2b5ca570ec382a840063cb7c9f0f1"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/EAF_focuser.h",
+      "bytes": 28252,
+      "sha256": "a3b2c593d662f2eaa5b55589c26ddc4b19812e6465cec5157aa493b852bc664d"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/LICENSE.txt",
+      "bytes": 1095,
+      "sha256": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/README.md",
+      "bytes": 4149,
+      "sha256": "6cf34cbbe6e8cfde2b0d95dba021c93d4a7dee042cab2bf0eb875bc6d2811439"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/linux-arm64/libASICamera2.so",
+      "bytes": 4042678,
+      "sha256": "3ecf511979ed571131e7d7f4a467112aba21940b4dc91d63bd109b9683bf67c4"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/linux-arm64/libCAARotator.so",
+      "bytes": 393248,
+      "sha256": "680286a000d203883fc626e1ea4d4addadf5d93e940c33135a7ee20d98abe901"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/linux-arm64/libEAFFocuser.so",
+      "bytes": 766816,
+      "sha256": "0ce25b248a727ec4cad07cc4de4ffeb256773f9bc23794a66a8a527132d5df6d"
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/macos/libASICamera2.dylib",
+      "bytes": 6598544,
+      "sha256": "4c83b50b4b1ac7f2253c36b7889ddcbd28eaccb63e2ee9cdaea1c1f35f5cc716"
+    },
+    {
+      "path": "server/astrodeck/weather.py",
+      "bytes": 48668,
+      "sha256": "ac94462ffbda017ac9c72854e7cc6fd4dc6d0403c17a24f5cfdaa010b6adf30f"
+    },
+    {
+      "path": "server/astrodeck/windows_acl.py",
+      "bytes": 30532,
+      "sha256": "4f5279a8951503e03eaa4985ff528a2513b52f339b3a3404d2fdefceb30845ca"
+    },
+    {
+      "path": "server/pyproject.toml",
+      "bytes": 9792,
+      "sha256": "289901c6d9c778cf740ce2844edc1fa36cb080054ccde09f553c6e94aa7a5200"
+    },
+    {
+      "path": "ui/dist/assets/AtlasView-Fv7Vf20o.js",
+      "bytes": 48516,
+      "sha256": "3a1c1ac3d701e1ad7e556a2524a57c4575d3d7a458d03ca04c82d60a52c734e6"
+    },
+    {
+      "path": "ui/dist/assets/AuthMethodsSheet-CCr-4BdD.js",
+      "bytes": 8375,
+      "sha256": "2bd25a517b6d350522516bb5209215d081c852feffef61a6012eb0def92260aa"
+    },
+    {
+      "path": "ui/dist/assets/CalibrationMatrixCard-CBxpKDCp.css",
+      "bytes": 3814,
+      "sha256": "da1fbb332c72f4ef8891e2cdf2f231097efe5c0050572a9c7205556537435e61"
+    },
+    {
+      "path": "ui/dist/assets/CalibrationMatrixCard-Cejzw2Qd.js",
+      "bytes": 4274,
+      "sha256": "51d26c1504a85c28fffe555c99f7e61e4a2692fdd975adc840cc6e77f62b61e9"
+    },
+    {
+      "path": "ui/dist/assets/CalibrationSheet-CiHnnkpW.js",
+      "bytes": 5142,
+      "sha256": "88b1333510673929e79690955a500fe86c40ea1decf7675ed6267b520ad62588"
+    },
+    {
+      "path": "ui/dist/assets/CameraDial-DnCsmk5s.js",
+      "bytes": 12286,
+      "sha256": "1817d9e909f65fd1afa46e9d69778fbf0adab54edc89622daed48f6ae1db990f"
+    },
+    {
+      "path": "ui/dist/assets/CaptureView-Ct3GDLWt.js",
+      "bytes": 50458,
+      "sha256": "7295ea99e89ef0ae3431cafe124b95c58e4b4acab5d7c6460f1fd73f3b41b1ba"
+    },
+    {
+      "path": "ui/dist/assets/CatalogSearch-CqqWRJ4W.js",
+      "bytes": 3977,
+      "sha256": "e8801537b60b91f658c481309ddf1403f8f21e2c7b9c9eb97789683f84c7c8f6"
+    },
+    {
+      "path": "ui/dist/assets/ClassicSkyTools-e7A-nfHB.js",
+      "bytes": 6385,
+      "sha256": "59f8cfbf1f587f8deb574a1d78858a5a6b03985f02e2080735f3c56ba53a4e63"
+    },
+    {
+      "path": "ui/dist/assets/CloudmapSheet-DvUc0Nu8.js",
+      "bytes": 6263,
+      "sha256": "934f4a818b1171d691d58151fce3cb18f66e4c7fafbbba0f079adc3919a0916b"
+    },
+    {
+      "path": "ui/dist/assets/ConnectionSheet-B8nujt9Q.js",
+      "bytes": 13792,
+      "sha256": "458c410830479bbd769011c1263617839ed0a44d3c22fd1bd7daa66af17c9743"
+    },
+    {
+      "path": "ui/dist/assets/CreditsSheet-CYGeRrxD.js",
+      "bytes": 4845,
+      "sha256": "c9e96f986d747d72f175e0126edd4fbeac44c5d8dd7bd72c88679ac8f76c2d41"
+    },
+    {
+      "path": "ui/dist/assets/EscalationEditor-BKQiJ0fH.css",
+      "bytes": 554,
+      "sha256": "f008383e7e97e2897fa4fd9666559f8d6bcb71218386a91827d8b70978ff7430"
+    },
+    {
+      "path": "ui/dist/assets/EscalationEditor-CIWuFut0.js",
+      "bytes": 7631,
+      "sha256": "3af236a2c61eb5ac6d4299bfc4877b6c40b65ae7f159a889ccc08c9fe75b900f"
+    },
+    {
+      "path": "ui/dist/assets/FactoryResetSheet-CQwNo5e5.js",
+      "bytes": 6884,
+      "sha256": "def85938dd0f9403a3831279e7c48a0e7846d51a846b3a04023b1f5ad2246147"
+    },
+    {
+      "path": "ui/dist/assets/FlowFrameSheet-CS_g4tGE.js",
+      "bytes": 1977,
+      "sha256": "f990e8952654196bba8e80eb0937e58847e40061e9d899de38c604b6b9ce60ea"
+    },
+    {
+      "path": "ui/dist/assets/FlowLibraryCard-Dvzpq_vH.js",
+      "bytes": 3457,
+      "sha256": "39d9256d10f04b504a83173a1552a94b4069b70c53f600cdcb1021701ba49f8f"
+    },
+    {
+      "path": "ui/dist/assets/FlowStagesPhoneSheet-CS9NVypn.js",
+      "bytes": 10904,
+      "sha256": "ec591f3c61dd124ac9da849935d5b642e86ad7e5cc584dce9738dcf985ccb6da"
+    },
+    {
+      "path": "ui/dist/assets/FlowWizardSheet-C3dt6SzR.js",
+      "bytes": 1047,
+      "sha256": "a729a104597fb81e149c42dedc32fcd88b61ef9c5238c87c21e9b86044b4a5ed"
+    },
+    {
+      "path": "ui/dist/assets/FlowsView-BrrhsBOQ.js",
+      "bytes": 66953,
+      "sha256": "f1c82b79661603c35c5f697f9a763027d15249e076eb4a519f7db4fe59fc6b47"
+    },
+    {
+      "path": "ui/dist/assets/FocusLine-DeVo_F5N.css",
+      "bytes": 4487,
+      "sha256": "405f940c8f16273fd44ab44bf937c9850b8680d78ce4f93317ca8099092008d0"
+    },
+    {
+      "path": "ui/dist/assets/FocusLine-zwXZbCaA.js",
+      "bytes": 10750,
+      "sha256": "50b8d93a1192ba595bfb367c16b4fba17b56bcad52d411ad76dcccd278b7b596"
+    },
+    {
+      "path": "ui/dist/assets/FocusView-jNOvqWTf.js",
+      "bytes": 60463,
+      "sha256": "45fc0d9995219c3336090019ec979a01b713f487dc8155ed9fae251b24f4d4f7"
+    },
+    {
+      "path": "ui/dist/assets/FrameStats-8m2bLpMJ.js",
+      "bytes": 4920,
+      "sha256": "63a24280de9b5a7223064441920af60281b06b5a43d502289a62be1075ebee16"
+    },
+    {
+      "path": "ui/dist/assets/FrameTile-BbWfi0ZG.js",
+      "bytes": 5342,
+      "sha256": "44d1c21abfe4c134aad26d827db47b1d3ab0fdc67e8a1aff4dadf9b432794307"
+    },
+    {
+      "path": "ui/dist/assets/GalleryView-Cts6_jej.js",
+      "bytes": 20462,
+      "sha256": "99ab1ab4dc658b009941f34ae487fe666b2c9fb2f24c4bfe2124abfafa71ce50"
+    },
+    {
+      "path": "ui/dist/assets/GotoStrip-CvfdMA3u.js",
+      "bytes": 3217,
+      "sha256": "3c1382051d6e9bdde3a54cf262ffe190a2d75414b018a4f3c3b8ffe3dede6419"
+    },
+    {
+      "path": "ui/dist/assets/GuideFramePreview-DaB3_vJq.js",
+      "bytes": 10149,
+      "sha256": "d946a60c11bac4a75a37662cdfb646db857f6fc833bcdd41b7bcb83d1768d268"
+    },
+    {
+      "path": "ui/dist/assets/GuideQuickBar-coKfXZCJ.js",
+      "bytes": 12559,
+      "sha256": "d8e8b39c59802cc961934e6c89e8984c39a4ac95a7fc82529071c15cc08c1c36"
+    },
+    {
+      "path": "ui/dist/assets/GuideView-CR9_OFzu.js",
+      "bytes": 28778,
+      "sha256": "1a6c1f76dbb5f54a453ef66059b764e1c3e6d5e79f5e819e3ae874443fe1852f"
+    },
+    {
+      "path": "ui/dist/assets/GuidedFirstImage-B3UHQwNF.js",
+      "bytes": 8966,
+      "sha256": "c5b73619700c7911ba7ab29b7a666339907522ebf023133e05e1fe766b852214"
+    },
+    {
+      "path": "ui/dist/assets/GuidedHome-vsltdRIu.js",
+      "bytes": 6540,
+      "sha256": "98f78d5bad05ab03ca1438436f3bcd562f2b6db89f9a1958e65204bb292309c0"
+    },
+    {
+      "path": "ui/dist/assets/GuidedLocation-CfkOfd8e.js",
+      "bytes": 5775,
+      "sha256": "7aa30f2af9ee846d51bed536dd6f1ec2a00b3e69c129257783922b59654b7476"
+    },
+    {
+      "path": "ui/dist/assets/HelpSheet-Bh01id3W.css",
+      "bytes": 1930,
+      "sha256": "5098c62dce4089cc555e76aff3f9380d7c75d45c4ea7f9fcc248de3291212a92"
+    },
+    {
+      "path": "ui/dist/assets/HelpSheet-DuRBxbwC.js",
+      "bytes": 3604,
+      "sha256": "880a6ab458779085ef80a1c9d77d9fc77d4f573b85259834694dea8f2e82fa7d"
+    },
+    {
+      "path": "ui/dist/assets/LensDial-sPd06Og9.js",
+      "bytes": 5392,
+      "sha256": "477096312af517db888c21d3f043fc6c4fb85682976123aa62dcfd233d512a1f"
+    },
+    {
+      "path": "ui/dist/assets/LogExportSheet-BDbt47R-.css",
+      "bytes": 118,
+      "sha256": "356f7b5f0da6862157ef8e17a50d22401f606ca959c948ed007cc3febd0e14e6"
+    },
+    {
+      "path": "ui/dist/assets/LogExportSheet-Caxy31yc.js",
+      "bytes": 2626,
+      "sha256": "8fa7eff3ea3c5c7689635d609a58bdae79cdaebbe62bca3f543ba0d5a98beee9"
+    },
+    {
+      "path": "ui/dist/assets/MonitorHub-D6pb5KnJ.css",
+      "bytes": 1704,
+      "sha256": "eb127412a14be09118d7e4a6314fadf79db5b7b9238a93b49ae8fb2bed435503"
+    },
+    {
+      "path": "ui/dist/assets/MonitorHub-DcE_zUCf.js",
+      "bytes": 48158,
+      "sha256": "5a3a50d303bf91263907ae5a33679e7c16b2d0b78315d2ef4abd72c4e5ecf257"
+    },
+    {
+      "path": "ui/dist/assets/MonitorView-CvQVOw0s.js",
+      "bytes": 37174,
+      "sha256": "dbfe1b4cff149c53102dd0dd13f21ea2d80bd9a2aeb79ce51cf38e12dd6c639a"
+    },
+    {
+      "path": "ui/dist/assets/MosaicNightCard-CVONuvqs.js",
+      "bytes": 46165,
+      "sha256": "f41522ede9840eaf3abd4bf6605c236cdd52d958fb505f5bbb19b56868f1aa90"
+    },
+    {
+      "path": "ui/dist/assets/MountView-f3ZdSUp1.js",
+      "bytes": 10863,
+      "sha256": "37a0b068c8024f0fcb1ec361486f6ffe1f45216f449a409fe1dba2bbe583ba3c"
+    },
+    {
+      "path": "ui/dist/assets/OpticsSheet-DBk2mf0G.js",
+      "bytes": 16488,
+      "sha256": "e8017e9e649039284823c603d7f2cb9e4490abca2893acbaa9865ad34fb9994f"
+    },
+    {
+      "path": "ui/dist/assets/PolarSolveRing-BIvF84b2.js",
+      "bytes": 12232,
+      "sha256": "87b8d0be1570d3b68023fe929705cd5fd4b82dedd1405602a2d336716e944fab"
+    },
+    {
+      "path": "ui/dist/assets/PolarView-0pVMLzQt.js",
+      "bytes": 28376,
+      "sha256": "32e7a17ee850e0246c1f1566473636be1f95b7259c4d6de0c9242626cb8a57b3"
+    },
+    {
+      "path": "ui/dist/assets/PowerView-B-oJ290i.js",
+      "bytes": 4994,
+      "sha256": "be3fcded4cb85ecceea266890d1394f778859e45f03b680c82d0d8d77ceaa768"
+    },
+    {
+      "path": "ui/dist/assets/PreflightStrip-DIqjK7qr.js",
+      "bytes": 25768,
+      "sha256": "68f131261cea7dff6dad5d7bfc91639192ff1ca997e9d3d3182abe51eaceb7ca"
+    },
+    {
+      "path": "ui/dist/assets/PreviewStage-COHtbb1J.js",
+      "bytes": 38428,
+      "sha256": "5c6c632bee2abbd52a55c5e7a8d882cd08769b294981ef3838d23c2aa27a9777"
+    },
+    {
+      "path": "ui/dist/assets/QuickDefaultsSheet-BMFVML5w.js",
+      "bytes": 4477,
+      "sha256": "6e2f6e621f8af73e97d1596db9c12c28970835a888cd95389cd32c8e1b41c021"
+    },
+    {
+      "path": "ui/dist/assets/QuickFlow-rUr0-p_W.js",
+      "bytes": 8877,
+      "sha256": "373733701bfa9066d1f9bea63a195bce73fd87d725a2e5cf4f96f86485358550"
+    },
+    {
+      "path": "ui/dist/assets/RadarMap-BPoavW7F.js",
+      "bytes": 8626,
+      "sha256": "a06680fff0a5be73562a1ba70dddff11949b24e4880caa532efd96f9fcdb6eb9"
+    },
+    {
+      "path": "ui/dist/assets/ReportView-D3vcjLZJ.js",
+      "bytes": 14772,
+      "sha256": "4653df1810768824f2c5ac608066b551220ff0fa1652bef2345a5d0c88b60402"
+    },
+    {
+      "path": "ui/dist/assets/RestrictedSheet-C4XwaYzp.js",
+      "bytes": 6533,
+      "sha256": "f5c10f54661459402285b80785171ce2877769e706a4e656b606621233d577e9"
+    },
+    {
+      "path": "ui/dist/assets/RestrictedSheet-D-REbBXC.css",
+      "bytes": 2548,
+      "sha256": "4917d18cd9d8f75e7200c2678243cea6abc534f97a727a640419e6d828506e91"
+    },
+    {
+      "path": "ui/dist/assets/RigHub-CyrCgxaq.js",
+      "bytes": 56448,
+      "sha256": "93ab49bc517faf67d585c1d32fefe00850f429700fc0cc48bdc74a7e6d9b49ea"
+    },
+    {
+      "path": "ui/dist/assets/RigHub-jXlj98K-.css",
+      "bytes": 44,
+      "sha256": "339bee31e9a97191f8467a86a9e44f1fee3841dd7ded3b640d0121533924d1aa"
+    },
+    {
+      "path": "ui/dist/assets/SafetyTuningSheet-CuhO7saP.js",
+      "bytes": 4964,
+      "sha256": "60d5a88e856981b768a174dd1d69b3361923824fd489787102de6361edf1e4b8"
+    },
+    {
+      "path": "ui/dist/assets/SendToWizardSheet-DPxTlb4j.css",
+      "bytes": 2678,
+      "sha256": "2a17042c991054c3a807925ecc44a42b822894e15b5f4b9ce312e13fb55f3877"
+    },
+    {
+      "path": "ui/dist/assets/SendToWizardSheet-EQVXSbR4.js",
+      "bytes": 15821,
+      "sha256": "8ec5bc8ed2259bc72ac27ae62f1558a53e4c755fb1ff25c06df3d9d48dedfd7c"
+    },
+    {
+      "path": "ui/dist/assets/SequenceView-DmpRjUpn.js",
+      "bytes": 80210,
+      "sha256": "9762943c5c25bcb0714e4ade911c0fe57041b7c90943d033727b25a482c946bd"
+    },
+    {
+      "path": "ui/dist/assets/SessionHub-DpRAHJwN.js",
+      "bytes": 46749,
+      "sha256": "3851f13e7a469a8b962659bc612c1c25ac22a6791c9011f4bd7fe3f6b473e056"
+    },
+    {
+      "path": "ui/dist/assets/SettingsHub-DXv9zW0e.js",
+      "bytes": 17030,
+      "sha256": "16e4a906231013272453fb65b9a56c1c25f664fe974fad57e91cc11b809ad251"
+    },
+    {
+      "path": "ui/dist/assets/SettingsView-0aziT13S.js",
+      "bytes": 180619,
+      "sha256": "e6c1f2b2c7a8633830a48aa83ad95407b127fa3b4b4e1b4299f0185a2af3a1ae"
+    },
+    {
+      "path": "ui/dist/assets/SetupSheet-Cq7b80s1.js",
+      "bytes": 6481,
+      "sha256": "cb947b84f66de51550ddd3c8ffdaa1904e41e4979b9da534d5f1e99ff9663e63"
+    },
+    {
+      "path": "ui/dist/assets/SkyHub-BezUdFhT.css",
+      "bytes": 2388,
+      "sha256": "deca71447ccd13ca1bf05619e9ad1d8bceff84173b5c7270b46601d8b39c0b22"
+    },
+    {
+      "path": "ui/dist/assets/SkyHub-DMlKz2au.js",
+      "bytes": 64245,
+      "sha256": "a0f8bfcf5e022602ecfb12be523002095e595e27811019189e1cc697b4ef3a07"
+    },
+    {
+      "path": "ui/dist/assets/SkyPackSheet-BqknaqhP.js",
+      "bytes": 6561,
+      "sha256": "92b6419a07b34560c1d07b8b48897373c73a5f4fcdb7f4924039ffaf659d40f6"
+    },
+    {
+      "path": "ui/dist/assets/SkyView-CM4Cr7Yv.js",
+      "bytes": 12151,
+      "sha256": "e78e9e50d21461c22f0604f193efa8697a3166706c1b179b786c95738c4b72f7"
+    },
+    {
+      "path": "ui/dist/assets/SlewPad-D5xfc8b2.js",
+      "bytes": 11848,
+      "sha256": "17bcd3f8417ba7cfb912d491b4ae581a3bf058e3b4df38e76d0558e03158a74d"
+    },
+    {
+      "path": "ui/dist/assets/SyncSheet-CxhLxiZz.js",
+      "bytes": 4158,
+      "sha256": "c3de75b1b246048b1f6c1563a8af1db41121c5dfa38a79f61860668ca6d46071"
+    },
+    {
+      "path": "ui/dist/assets/TargetFramingSheet-CCllf4qq.css",
+      "bytes": 5435,
+      "sha256": "034f27b167e6b683321d429489253ee9fa79d5e256272cb0c48ef43af43b0ddb"
+    },
+    {
+      "path": "ui/dist/assets/TargetFramingSheet-CL0Y0BNU.js",
+      "bytes": 30926,
+      "sha256": "049ce721d4d16272decf6e5697096095e0e6d389613d24869647e1f3fbdde36a"
+    },
+    {
+      "path": "ui/dist/assets/TonightCampaign-DQ1cMcdA.js",
+      "bytes": 8179,
+      "sha256": "a876b4f42e932491f42dea01c3ab8599668c9e3605af10306d49fb9d59ae15be"
+    },
+    {
+      "path": "ui/dist/assets/TonightSheet-I8_dxYwr.js",
+      "bytes": 10725,
+      "sha256": "9f79767f7e332832dbb92b8a3a4f945179581276e301b1613060887d93f6185e"
+    },
+    {
+      "path": "ui/dist/assets/TonightView-D8M-0UV3.js",
+      "bytes": 7701,
+      "sha256": "bf91ecc2aacf24b725723b36c0e266cda027e9b2882a5a56b6a8a75d672b6094"
+    },
+    {
+      "path": "ui/dist/assets/UpdateSheet-DdpozXQv.js",
+      "bytes": 8328,
+      "sha256": "6cfcdd6eca48ddd455e5abdf2bac4edabfe8ddd7348ba42517aa0c1dbef39cd3"
+    },
+    {
+      "path": "ui/dist/assets/WcsSheet-B122RPTX.css",
+      "bytes": 1133,
+      "sha256": "1e7cf0db11415d6132ca848b9cc1e470e41e9a8ccf51097b8678ddb3e88fd2da"
+    },
+    {
+      "path": "ui/dist/assets/WcsSheet-C3nvV76o.js",
+      "bytes": 11371,
+      "sha256": "f74863c865a30c9bf190e8514baf27350a99cbcabf74e7a1395809987351e25b"
+    },
+    {
+      "path": "ui/dist/assets/WeatherHub-B4goTd6G.js",
+      "bytes": 21648,
+      "sha256": "68a056f7644e2321e02b90437957d18d5cec98476682969a8d3e8ed215dd5b19"
+    },
+    {
+      "path": "ui/dist/assets/WeatherSettingsSheet-BLnh_MPJ.css",
+      "bytes": 762,
+      "sha256": "b01c9f7815a2ab23513ff06cc6df5dd0a2f284fe7894420b1bfcea34f0bdcfc8"
+    },
+    {
+      "path": "ui/dist/assets/WeatherSettingsSheet-CzoFqb4n.js",
+      "bytes": 6166,
+      "sha256": "72b8c02e7e3eaccf21e52a45c6cebb3d6d1ee8d9c87aaaf309e03fc93b189530"
+    },
+    {
+      "path": "ui/dist/assets/addDevice-CsP0NzH6.js",
+      "bytes": 16435,
+      "sha256": "7c1764534b62b712372862ed78c4ed90493d3aff0a5ff2ad2a3791e401ea1679"
+    },
+    {
+      "path": "ui/dist/assets/archive-DSjCTtvW.css",
+      "bytes": 4420,
+      "sha256": "a8f9822e3c77a5a26a1663fa103fa7330efd5bf4e7055bf4368321535f8ce389"
+    },
+    {
+      "path": "ui/dist/assets/archive-gLjgOxhR.js",
+      "bytes": 27663,
+      "sha256": "a3f5781985944354bfce137b657a15d74fa02ad1d42ab9d346b1680a818526f5"
+    },
+    {
+      "path": "ui/dist/assets/brief-CnRbRbAA.js",
+      "bytes": 7539,
+      "sha256": "840f4db84ff58b1d65ac7efc156b89724fd686f61dff002bdd38a077b835ff0c"
+    },
+    {
+      "path": "ui/dist/assets/calibrationModel-BvSCRY95.css",
+      "bytes": 1915,
+      "sha256": "0a3bf87b81b5e31743dbe4361448b20ebd371ff809beee5eca9c584cd2271423"
+    },
+    {
+      "path": "ui/dist/assets/calibrationModel-_8Xl-VTy.js",
+      "bytes": 5468,
+      "sha256": "b551c468d6691ff1750d2cb6ea167a1b1ffc2b386b3b1f8dc6c3f1c708df86d9"
+    },
+    {
+      "path": "ui/dist/assets/camera-D42P0X9t.js",
+      "bytes": 22523,
+      "sha256": "117db58408b5900c0d71db2ec2f566bb093db80b38efbb5a4e32ec482b87ae81"
+    },
+    {
+      "path": "ui/dist/assets/canvas-C0YOmGD-.js",
+      "bytes": 10942,
+      "sha256": "1cf17ae6926dd911370f7fc2a9a3f1a551080cf15d0bea996c915ff7f6603f18"
+    },
+    {
+      "path": "ui/dist/assets/canvas-DX2xHCci.css",
+      "bytes": 8722,
+      "sha256": "c0d139e9e5b0d09c17fdbba3a82f9fb2e7d46d0e305eeca5b6d9fa098dbfcc5f"
+    },
+    {
+      "path": "ui/dist/assets/canvasModel-CFo6Wl1Q.js",
+      "bytes": 6638,
+      "sha256": "1ffc7c264b6fd4db17211e24589df971e3077adb85d60f28532d9f5660504af3"
+    },
+    {
+      "path": "ui/dist/assets/captureGate-1bEU0jQz.js",
+      "bytes": 2849,
+      "sha256": "c886a9b1c960956940e112367a5af09a52101121d8cb8c333a6e0859efd266d8"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-500-normal-BR1ody1F.woff2",
+      "bytes": 9956,
+      "sha256": "36ad966cb653de70ba37355c41003b02de8940b2df6cbcd46480a6ad8cadd65d"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-500-normal-CnUQnZ4D.woff",
+      "bytes": 13408,
+      "sha256": "4cd37544eb0dc46b75fd44315570bdcbf3fd0dc5e1286514518fd9f2c8bae556"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-600-normal-DQKfcdKo.woff",
+      "bytes": 13432,
+      "sha256": "8e64347841a0995e991c888d1a8618ac88b11655f48d2083bd4b6a5f958f6947"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-600-normal-DVQm9bgb.woff2",
+      "bytes": 9968,
+      "sha256": "a5888696e9eb1b4bbbecc8eb3922b8369f49d4bddb72263e033cbd17f399be76"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-ext-500-normal-BCHeNDEx.woff",
+      "bytes": 12180,
+      "sha256": "15fe38922b766c41e9cad1869a2284459285a5f63431bc100fc2aedc12c2eb44"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-ext-500-normal-gA6791b0.woff2",
+      "bytes": 9028,
+      "sha256": "5e6545c4da21734334bcf06853ef74df582737ae23682f8278fe9f1ba70908cc"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-ext-600-normal-CdGvbdDU.woff2",
+      "bytes": 9056,
+      "sha256": "eb128c93678bd6b08fc3f0a7b5a44e73a6a4e374d0f449f9d26cf8ad48964d40"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-ext-600-normal-nL80L4xU.woff",
+      "bytes": 12224,
+      "sha256": "cff44d740b43764ec2aa2bf4051d2eb5e4f5b796765dfc68c431094570bfc84a"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-thai-500-normal-CJG_V2_m.woff",
+      "bytes": 9908,
+      "sha256": "5862aee7c5945bf4f36c833d7cc1f74a464852628a965e3881c462b26cef35ed"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-thai-500-normal-DeexCGiz.woff2",
+      "bytes": 7512,
+      "sha256": "504a451bb8dd3da76d6ccba3fbee72ed5d40745857b1d2094469e8e72d2b7451"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-thai-600-normal-BiM5MXH8.woff",
+      "bytes": 9948,
+      "sha256": "ec10a22f3d1051567b45b46dc6bb04c2227048765baaf127be42a32fe228152e"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-thai-600-normal-C620THcd.woff2",
+      "bytes": 7564,
+      "sha256": "7031f2d8ae9189b2abb191a31dda0525d831c1bc48f2252b379f9aa218b16eee"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-vietnamese-500-normal-BVzUBLGs.woff",
+      "bytes": 5124,
+      "sha256": "34cc2dd42a28de5c52477b818d88363237624aef3c5e0565a14c1d29279ba64e"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-vietnamese-600-normal-Pvj4qcw_.woff",
+      "bytes": 5112,
+      "sha256": "77b6bab47c64eda09e9742decb8a31a0c2fec449f22a5a4e06c17df6cac18572"
+    },
+    {
+      "path": "ui/dist/assets/coords-DKcesiMX.js",
+      "bytes": 3914,
+      "sha256": "6fff35a368595f686a9412a5806b98144e6bce3694aeec1533332b26b8f2ee32"
+    },
+    {
+      "path": "ui/dist/assets/credits.generated-MQnptfaa.js",
+      "bytes": 568401,
+      "sha256": "ac044d760bfd3ac3cd06c96d5a17472c2e4db9a0adb750f5e3db4a57060c70c8"
+    },
+    {
+      "path": "ui/dist/assets/domeOverlay-Clq6Isdz.js",
+      "bytes": 25344,
+      "sha256": "f7abf703a61066a88f8811557dccb92f36f3f7c894e27f5f7d1708813e776589"
+    },
+    {
+      "path": "ui/dist/assets/driver-BoXN8nrM.js",
+      "bytes": 4820,
+      "sha256": "a2b0f5b579a3b33fe604e19a83fba05e5ed8a506b542055c7c6d2ca0efa80238"
+    },
+    {
+      "path": "ui/dist/assets/driversMeta-CodA2-xx.js",
+      "bytes": 4051,
+      "sha256": "de0439ec5c7b0142c6eb2fbf733ee41ad7aafde7d7629ff530c60dc7dfc44b66"
+    },
+    {
+      "path": "ui/dist/assets/equatorial-BD75wCVb.js",
+      "bytes": 6132,
+      "sha256": "e2df2c908387b052e223c5af0ef4d5130cc12cfb947386e06968fb678f878eaf"
+    },
+    {
+      "path": "ui/dist/assets/files-CjThvDPX.js",
+      "bytes": 26257,
+      "sha256": "b5a691c1c7b3c67e1e6139db1b7e09f9e657a175a66ce57e184f62935700b475"
+    },
+    {
+      "path": "ui/dist/assets/filesData-Dl3Bq9Ol.js",
+      "bytes": 6336,
+      "sha256": "0b03870d6fc427ae94286ae2cc67ced39d61d741f6c88d137b1af9a3714cae01"
+    },
+    {
+      "path": "ui/dist/assets/flow-DhEwM6p6.js",
+      "bytes": 8103,
+      "sha256": "6f7d7a7d29684daa2fe985458c2e3f66671dc99bdfe45eae2702dac9538066c0"
+    },
+    {
+      "path": "ui/dist/assets/focusVerdict-BEGh9rfz.js",
+      "bytes": 4112,
+      "sha256": "cb2d1f562556632666d100c1e5b1196ff8a48e138fd56eb6ddef3decadf68370"
+    },
+    {
+      "path": "ui/dist/assets/focuser-Bm9iq4zd.js",
+      "bytes": 28642,
+      "sha256": "ebbeaa4174117a2417951853860bb4dd6e26757f45201e0915c1095012632508"
+    },
+    {
+      "path": "ui/dist/assets/framingApi-C2joacDK.js",
+      "bytes": 19161,
+      "sha256": "6b6a3e120d3c75a0e935d2b107258e01b6fc7abb996be9526f5ba26b9d4be3cc"
+    },
+    {
+      "path": "ui/dist/assets/graphs-eHQ7hjl-.js",
+      "bytes": 8569,
+      "sha256": "c15e3e4e4808f4a0735fc7cab1feab38e1c387e91327bef74a6a3d4a26bca381"
+    },
+    {
+      "path": "ui/dist/assets/guider-B2uXxbwU.js",
+      "bytes": 29026,
+      "sha256": "4156b77b4949beea437c299afcb5474f555b750aff8cb1bbdc3bd09759d3386c"
+    },
+    {
+      "path": "ui/dist/assets/horizon-CcTdo1sg.js",
+      "bytes": 72558,
+      "sha256": "e893a404a328032b6deb79c60add3d084bd12eeb78947387dcb90c07fb34e06a"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-400-normal-BSMlKf0J.woff2",
+      "bytes": 8356,
+      "sha256": "7635422bd10ddbbcb0e0caa1154b928298f5c8319b8c00b30978d4395f4783ce"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-400-normal-CEL4l2ZJ.woff",
+      "bytes": 7204,
+      "sha256": "42da81a28bbcddda6768a25a4b3105ee291e69d5fa6c74747bc51bbc6718c538"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-500-normal-Ael50iVv.woff",
+      "bytes": 7208,
+      "sha256": "55a3af5e5ba0f565b4e66149cfe077ba88ac42cc3f68650a901d58eadbf9cd9b"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-500-normal-Bq9vWWag.woff2",
+      "bytes": 8460,
+      "sha256": "1d89462e86cb8e87e7e9d6f6635605bd7c3081baca6caaecee84916bf7b60edc"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-ext-400-normal-DMdlQ8Kv.woff",
+      "bytes": 5820,
+      "sha256": "0e4a2393e8ed3185ae300e4a202b6d9149d47d8a0e5bb8f1d1db33e76b86ecd1"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-ext-400-normal-xuaO2J-f.woff2",
+      "bytes": 6912,
+      "sha256": "f8c22ec1804bd6966b70f43ac7c327025645b4c09597117fca2a5a6c750106fe"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-ext-500-normal-BIfNGwUT.woff",
+      "bytes": 5772,
+      "sha256": "eadb2c427859b185761380143d1f42187fd7cbd94704b543e4c76c6368fbab52"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-ext-500-normal-BqneJy0T.woff2",
+      "bytes": 6972,
+      "sha256": "3febe5c7f22e4b07b4552738673c3dbe8bced2dc5f48b866edf7ccd9552d109a"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff",
+      "bytes": 13144,
+      "sha256": "328d50b6ece9ca25c46eea3e885ba497f6237f2fb84ef7b92f88e14a1a25e381"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2",
+      "bytes": 14708,
+      "sha256": "08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff",
+      "bytes": 13156,
+      "sha256": "09f018c58556e5801ecc49d5b5275dcff4c73311c2af6b88e31c51d76d076a9d"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2",
+      "bytes": 14888,
+      "sha256": "01d285447409c8a588692162439a038b8cbd7871309ee20267b0d2d91c6e8e22"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-ext-400-normal-BmRBH3aV.woff2",
+      "bytes": 13348,
+      "sha256": "6bc0f226a5b7884a8170e3f62c63d7675609d4631bdc5931b5cdab81821f00eb"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-ext-400-normal-D3D2R8hC.woff",
+      "bytes": 11768,
+      "sha256": "f8ddaa0ab9d3c052c9fe035751c8214b7e0d59e6e7b69b045f8659c2fe4dced2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-ext-500-normal-CAhNIIs5.woff2",
+      "bytes": 13432,
+      "sha256": "6bb06407c97584b0867a959e05e8874693bfeb8c317de190811c51598f2d99ea"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-ext-500-normal-CZ70TYgx.woff",
+      "bytes": 11768,
+      "sha256": "ff5da89c3ee20d38359943b61a7aae9200d2a0f61cf95ca10a7cccef81da2ff5"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-vietnamese-400-normal-BulugwFq.woff2",
+      "bytes": 5868,
+      "sha256": "62632b6375305e70ddcafdd895218e6ae41a184fcd280a69c739460604ca00a9"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-vietnamese-400-normal-DDuiU_S-.woff",
+      "bytes": 5620,
+      "sha256": "bced561d991e3f81c150c08e71f7fa849fcbff523560f6059245f2edce19b600"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-vietnamese-500-normal-C8zxqsMH.woff",
+      "bytes": 5616,
+      "sha256": "755f62b418df17518aa0ea16b4232e546ce949a4ab7acc577071fa9be9e3dc88"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-vietnamese-500-normal-DZ4AoWbu.woff2",
+      "bytes": 6040,
+      "sha256": "781633d95de88040fb77141d1e65d928c87c0144691fbc74da5a64d137a7e910"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-400-normal-BTotfTJu.woff",
+      "bytes": 13512,
+      "sha256": "89b819d4fef67eda2ce2c12f2f2b3978141fb73faebeb23ec895a3d7f8e66964"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-400-normal-DZqxrq2p.woff2",
+      "bytes": 14800,
+      "sha256": "69afad88a0740b6e5647f1104c9176a261f1ad9d60202f605456a983799752e9"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-500-normal-ByOcLdNv.woff",
+      "bytes": 13856,
+      "sha256": "b9d946b2b727115f06753e92054d272861a8265468bdb267bc279d1447fac20f"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-500-normal-CocWQlwt.woff2",
+      "bytes": 15000,
+      "sha256": "200be3a2a6b1789fb8824a4a74c7cccb7137e83fde6200ea78d8829f99d43546"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-ext-400-normal-Dsrv2Tcn.woff",
+      "bytes": 10288,
+      "sha256": "e60c70b37422d621549800db28c60764e16ccce7403a2d2957a8ac079818b28a"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-ext-400-normal-g30qAdWV.woff2",
+      "bytes": 12148,
+      "sha256": "e2580ad78906551e1f9ad621f608cd16ce4d5a992e53c651dd6b3504547576f2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-ext-500-normal-Cs5J6C77.woff2",
+      "bytes": 12308,
+      "sha256": "08578d906af6d986d12d966d91bf9e76a00ebb74288d5c0eb6fe27dbebe1975a"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-ext-500-normal-DB5PtV2g.woff",
+      "bytes": 10592,
+      "sha256": "19928f2f784c679937745ed3949cd9ff4c3af792e2c6b26670e0741c68610400"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-greek-400-normal-D9ESIMu3.woff",
+      "bytes": 8760,
+      "sha256": "8d899d62a1e18740c6f9d8c1a760be8e511ef222e54ab68d3bc88c94d0d104b0"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-greek-400-normal-_efipK4i.woff2",
+      "bytes": 9940,
+      "sha256": "02296067bc904d2ad19b49445bdaf6586cc44704e668e16e248f708e5005a290"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-greek-500-normal-CuWXN6rf.woff",
+      "bytes": 9148,
+      "sha256": "38489276f6e67e4f00fbea894417af635dac8368ccdf14655dd71b5b3de269e0"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-greek-500-normal-JMMifIXV.woff2",
+      "bytes": 10376,
+      "sha256": "8cb6e20b4dbbaa5f7b479d4a68cc91d3d6b370eebcd888cae9ab01052e5483f2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2",
+      "bytes": 22588,
+      "sha256": "3b646991d30055a93a4ecc499713d4347953a74a947ecab435ab72070cbdab0e"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff",
+      "bytes": 22104,
+      "sha256": "828907bfd14855c880789878bd2b38ffd284a6c27c8b80f6069900f70dae3901"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2",
+      "bytes": 24184,
+      "sha256": "0717336fb31fcdcde4b8deb3675bb4a0f7f6d484864afcd6751ac29975962203"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff",
+      "bytes": 23916,
+      "sha256": "8d2c7b2eca91869d447851a9c8bd07edf629b26025eacb882291e03b384b4e35"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-ext-400-normal-C5H60-Va.woff2",
+      "bytes": 15980,
+      "sha256": "c93d2a12aaa280f68b9ab7b726ff8dfedda67c99ef9abed047c1847a1cc6d583"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-ext-400-normal-RBey6euL.woff",
+      "bytes": 14360,
+      "sha256": "85db75b89e3c0bee23ea75ede70c73024f62516ccdb6be55eb0c5c7a7866433a"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-ext-500-normal-D0aIdm-b.woff",
+      "bytes": 14736,
+      "sha256": "6aa470ebf8dd5592084d0452b5c3a355d93b04e7eb0f5ca030d9d3a54a48fb5c"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-ext-500-normal-DakdToA3.woff2",
+      "bytes": 16456,
+      "sha256": "2846035d85100f84c79393f80f1442d4ee720129ab8b3ffa8969aae281db8c6c"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-vietnamese-400-normal-DG4YqDda.woff2",
+      "bytes": 8204,
+      "sha256": "771538f7f26551bd13ab97d585de6ce7ebe3b432837999d5b743391b48f4946a"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-vietnamese-400-normal-fK1oJ5dG.woff",
+      "bytes": 6392,
+      "sha256": "aa3bd4c4c493c3110ca5f5ac3f0cd688482982b40e4cf9cb601f931df2a8ccf5"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-vietnamese-500-normal-BEb3_waV.woff",
+      "bytes": 6588,
+      "sha256": "156142eef15bc3ea0983949aa2ccc2c4fcb8c97e5507ca019c5b1a23046a3268"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-vietnamese-500-normal-e4dixQRQ.woff2",
+      "bytes": 8416,
+      "sha256": "85ba3d9c2488a813bbf1d60da3a848bce4a97ac8c8a539289d8524aef6c471f9"
+    },
+    {
+      "path": "ui/dist/assets/index-DREoM-wA.js",
+      "bytes": 711058,
+      "sha256": "57af2124a16e2f70b3154d7131b5d98706e2eb1c3ef28872ae6306239c55f3b8"
+    },
+    {
+      "path": "ui/dist/assets/index-ij3SYHYl.css",
+      "bytes": 183327,
+      "sha256": "d6226d6ad20601af280ed7e479d4fc4e37b1191910b72bfd9c39265df22fc041"
+    },
+    {
+      "path": "ui/dist/assets/inspect-B5IPMYjJ.js",
+      "bytes": 21573,
+      "sha256": "4fbd63fd959cec6b3e0bdb29c56a6c5529672c304dce5057db1079a079033e02"
+    },
+    {
+      "path": "ui/dist/assets/model-CWnLXLbG.js",
+      "bytes": 26299,
+      "sha256": "ee42e09577bb91a9a91bf476a9669dc4dbe02d565580d272fc0db698e73a94f2"
+    },
+    {
+      "path": "ui/dist/assets/monitor-nrnCJytU.js",
+      "bytes": 21084,
+      "sha256": "6a2cac908cc1f4f9b5379e76eb7e0916e756f6ecdd2324ae6dbed16153609ac8"
+    },
+    {
+      "path": "ui/dist/assets/mosaic-D1FEr7ud.js",
+      "bytes": 3788,
+      "sha256": "dd12ebbbca4435cfc339c9a57f9913a3e7262a89f04eb81778cfb91a58e8169c"
+    },
+    {
+      "path": "ui/dist/assets/mount-LAY0v36-.js",
+      "bytes": 17369,
+      "sha256": "436bd1e68187c9072df268aa1b8f41cd5fa1bbd620c58b8d672c4db1e4b4ad4b"
+    },
+    {
+      "path": "ui/dist/assets/palette-CMyIV7pN.js",
+      "bytes": 385,
+      "sha256": "106f24e36cdffc34fba45cb17b45ab19f6c10a7ec8baefcc84d0e6252f93480d"
+    },
+    {
+      "path": "ui/dist/assets/planEditor-BDNl3m4-.css",
+      "bytes": 6332,
+      "sha256": "08bb4629ee949b17c0e8890871701fd277d8ebb2e934516555ca2ebe9024284f"
+    },
+    {
+      "path": "ui/dist/assets/planEditor-Buk1dN7W.js",
+      "bytes": 74253,
+      "sha256": "6544f7542df3aba30f752a344bf33ab37ca7e623916d2ad9e117b367ad532aa5"
+    },
+    {
+      "path": "ui/dist/assets/planning-Bd3Fzeff.js",
+      "bytes": 3195,
+      "sha256": "93f6be50dfb02f234a085e3c1bcc546e04cf56383fbb96e59510e84ac1523f38"
+    },
+    {
+      "path": "ui/dist/assets/polar-Bw4bGA6s.js",
+      "bytes": 13098,
+      "sha256": "e0450d53d320b6cc6662c762d7c350265484729b50189e8546ebde87e1a9cf30"
+    },
+    {
+      "path": "ui/dist/assets/power-OC4V6kGe.js",
+      "bytes": 11057,
+      "sha256": "542b9429ca22b9f9eb76fed1cd06f147161ca67832ad0320ba6533d7031b41a7"
+    },
+    {
+      "path": "ui/dist/assets/prefs-KyKpA78G.js",
+      "bytes": 3019,
+      "sha256": "27375e40c5f8e76ced002dc6f0de3715e8eb80062e08b336e6a3ba2fdf5c41bf"
+    },
+    {
+      "path": "ui/dist/assets/profileActive-C-cOtZF6.js",
+      "bytes": 6072,
+      "sha256": "94ba566c4f09dd5d582b3b82d772769f600aa6c3479bb17e335ee60299afc758"
+    },
+    {
+      "path": "ui/dist/assets/profiles-BCZyGP4V.css",
+      "bytes": 1999,
+      "sha256": "302df9cabffb7484abef0ddc18fea2b104d82a8662e687e92aa55ba1bc210142"
+    },
+    {
+      "path": "ui/dist/assets/profiles-BhR8fu6G.js",
+      "bytes": 12932,
+      "sha256": "388c1adcbb8648532a6c692848c09f62bce3e868738ba18d51b01b8efcd0dcaa"
+    },
+    {
+      "path": "ui/dist/assets/quick-CAsnuoQ4.js",
+      "bytes": 17358,
+      "sha256": "0b678d87b679bec65a8b768ddee36b1e52a1ab289c62127730f57adcfe3f4b5c"
+    },
+    {
+      "path": "ui/dist/assets/quick-Dqnmbs0n.js",
+      "bytes": 6731,
+      "sha256": "dba8c3b7b910f85b5374df03a520a4cb5a11d024d105707dd5d4bb23b9a5ba76"
+    },
+    {
+      "path": "ui/dist/assets/quickNightArc-D6QptiFI.js",
+      "bytes": 8131,
+      "sha256": "796fe23a26ce6a211effd17963ce1223f534632b65a8982ec50ffa7a8b185ec9"
+    },
+    {
+      "path": "ui/dist/assets/quickVisibility-BzyIt6k1.js",
+      "bytes": 4756,
+      "sha256": "ef40c5e1169d1473420e2925775e3e0a64f6fe7df6d841c2141898e0fd8c4dcb"
+    },
+    {
+      "path": "ui/dist/assets/report-BOnljnRA.css",
+      "bytes": 2523,
+      "sha256": "83946818e648857f9f121b9c50c44a6af8f6a1f0550196a159e7f0a35f7bf226"
+    },
+    {
+      "path": "ui/dist/assets/report-DvDrG8nO.js",
+      "bytes": 15624,
+      "sha256": "ba8e2a9822ca16b7da4f672ee7a94c7a31df641762aabb9380e27383349cb3f2"
+    },
+    {
+      "path": "ui/dist/assets/reportModel-BBsYXR4t.js",
+      "bytes": 4110,
+      "sha256": "80496110cdb3f18f8af5d7d8ec58386cc2a9187a6c37266301e11e5dc4461e88"
+    },
+    {
+      "path": "ui/dist/assets/rigConnect-0raWKT4C.js",
+      "bytes": 4519,
+      "sha256": "21df840ec7a8c86d06cb6bcb744f54e828770796d374e72453b4b006722482fb"
+    },
+    {
+      "path": "ui/dist/assets/rotator-BXwwkp7R.css",
+      "bytes": 1025,
+      "sha256": "3d398e72a777a9f89da2bd5fb0369a0b2fb6d3c30e91dd121a889acee5406fb9"
+    },
+    {
+      "path": "ui/dist/assets/rotator-CB_c-GMM.js",
+      "bytes": 11547,
+      "sha256": "4c22b7a2d6b43fc96438095363a7b392426132fb38fce31061f4bd1e41ed958e"
+    },
+    {
+      "path": "ui/dist/assets/safety-BRJKxmeL.js",
+      "bytes": 32667,
+      "sha256": "022fdc2f8525ce8137628b63fa065b0dbdb218a60a51a1529ec69611df20e3cf"
+    },
+    {
+      "path": "ui/dist/assets/sheets-C0bgxJus.js",
+      "bytes": 14009,
+      "sha256": "89c3e2233a944c8909bbb31e21404b7d31b2e97b095238823e6059db21a5119e"
+    },
+    {
+      "path": "ui/dist/assets/sheets-y1XU4i9H.css",
+      "bytes": 4158,
+      "sha256": "59604bbe9ad4f6142b022c12e2bb72a1ef3a21bab26ffa347e9337b77f6f9d32"
+    },
+    {
+      "path": "ui/dist/assets/sites-CQo-yzzE.js",
+      "bytes": 13165,
+      "sha256": "14bdad15909d3467b6e82289f578eb7948ab8a83f1a31d0ca904f338237ad9fe"
+    },
+    {
+      "path": "ui/dist/assets/skyAtlasMeta-BY-w3FQ1.js",
+      "bytes": 10637,
+      "sha256": "48700ab7b54da14362cf07924225c76a9d29200617b9a60838e1bbc58f3c82cf"
+    },
+    {
+      "path": "ui/dist/assets/targetSummary-DmN0vWJc.js",
+      "bytes": 3253,
+      "sha256": "76bd6a373690da654c5ac21838d44f4e4a626b9751050e3f5c9065144a56bc50"
+    },
+    {
+      "path": "ui/dist/assets/targets-Aq-Q6-BU.js",
+      "bytes": 23025,
+      "sha256": "e4f3481f6117876caa6d81a5a54975debdb16f130f34b0e7d655efb7a08d5ac4"
+    },
+    {
+      "path": "ui/dist/assets/targetsCatalog-BQbJoQws.js",
+      "bytes": 7206,
+      "sha256": "dfbe3b2f4d9eca4d6eba4defa28d10313280f011d47d66bc7e67a091dd82dd59"
+    },
+    {
+      "path": "ui/dist/assets/track-BBJbx028.js",
+      "bytes": 4489,
+      "sha256": "f0175e8b0beb70f41315530d9ae4238f7decd703b4b436815a31f1f596120c55"
+    },
+    {
+      "path": "ui/dist/assets/videoLibrary-B2yseLUt.css",
+      "bytes": 2232,
+      "sha256": "9a10dcf002a23872f23b2329a41fd6d894a42a8a2120c89fbed99e23edf77ec5"
+    },
+    {
+      "path": "ui/dist/assets/videoLibrary-CiUizlu1.js",
+      "bytes": 22560,
+      "sha256": "565e7671a2491c8a5a91e823a7bf23334caa8ef0acba94aa872f79a7a6900a1b"
+    },
+    {
+      "path": "ui/dist/assets/wheel-Bn2d4P1v.js",
+      "bytes": 17376,
+      "sha256": "6626b190208996b894449317819e9e58a31f2164b869b552a4521291674f28a5"
+    },
+    {
+      "path": "ui/dist/assets/wizard-BWMVBems.css",
+      "bytes": 1310,
+      "sha256": "4e941640d569ebc010a59d06b28c71abd89448c9b5d7216cd216efdc0a879638"
+    },
+    {
+      "path": "ui/dist/assets/wizard-YK4To_XI.js",
+      "bytes": 4456,
+      "sha256": "fbdb576e014cf4b649edc6895a6e4e0e442edb8070846fcd099fc3af27eae07b"
+    },
+    {
+      "path": "ui/dist/assets/wizardModel-DBjKZmwk.js",
+      "bytes": 7508,
+      "sha256": "521a80529b7f710e7ddc566d505a7a2a24d2c353308add1936f045ca40181c6d"
+    },
+    {
+      "path": "ui/dist/bg_nebula.png",
+      "bytes": 945918,
+      "sha256": "c44f5e8e23760a61f1685e2597124e875f3637966384c9318196606985c73b5b"
+    },
+    {
+      "path": "ui/dist/bootstrap.js",
+      "bytes": 1206,
+      "sha256": "581d7559b04b2208d06c36709df25871fe733a8f922aac5a56a4a97500906da6"
+    },
+    {
+      "path": "ui/dist/icon-192.png",
+      "bytes": 1978,
+      "sha256": "96c518555035cdea33e28146e229c3bb32aa853e72d872c43daf5603b0e47f53"
+    },
+    {
+      "path": "ui/dist/icon-512.png",
+      "bytes": 5973,
+      "sha256": "621f695dcfcbd8964b2cdbf7b15a6a7250a7df32eb3d8cc64583612c8b25ba2a"
+    },
+    {
+      "path": "ui/dist/index.html",
+      "bytes": 1658,
+      "sha256": "b5d0a3a4d394543f383bbffce95944ba45efde74d1f09562b24c16c55a0cc8c0"
+    },
+    {
+      "path": "ui/dist/manifest.json",
+      "bytes": 652,
+      "sha256": "c846e400e36c6bda888d0949af5c196f13ec7f337cf33e5dd0c5aa96fba9d1c7"
+    },
+    {
+      "path": "ui/dist/sw.js",
+      "bytes": 3991,
+      "sha256": "0721d1675336eed42740efe802fcb0b4a887a739d79d6d2ad8b3bf4be04dedd0"
+    }
+  ]
+}
