@@ -70,6 +70,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from .aio import reap
 from .events import RELAY_GAP, SITE_DERIVED_KEY, bus
 
 # State-change event types are NEVER deduped (C1-18). These are subscribed by
@@ -383,28 +384,19 @@ class AlertDispatcher:
             for task in (sender, wallclock):
                 task.cancel()
             for task in (sender, wallclock):
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await reap(task)
             # sender is done, so _fan_out cannot start a new lane task past
             # this point (#549) — safe to cancel the whole set now.
             lane_tasks = list(self._lane_tasks.values())
             for task in lane_tasks:
                 task.cancel()
             for task in lane_tasks:
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await reap(task)
             self._lane_tasks = {}
             self._lanes = {}
             if self._deadman_task is not None:
                 self._deadman_task.cancel()
-                try:
-                    await self._deadman_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await reap(self._deadman_task)
                 self._deadman_task = None
             self.bus.unsubscribe(q)
             self._outbox_ready = None
