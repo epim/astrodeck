@@ -262,26 +262,28 @@ async def _rig(pair, root):
         mp.setattr(Hub, "_enqueue_thumb", lambda self, path: None)
         mp.setattr(Hub, "ensure_status_poller",
                    lambda self: self.ensure_safety_poller())
-        # A THIRD RACER: THE HOP'S WALL TIME (#299). The engine prices
-        # each completed setup into the ETA's hop term from
-        # ``time.monotonic()`` (`_setup_target`, #189 U-07), and
-        # test_idle_park_hold's `_Clock` fakes only ``time()``, so the sample
-        # was the machine's real clock: 0 (dropped, the 150 s seed stays)
-        # when the setup finished inside one tick of Windows' 15.6 ms
+        # A THIRD RACER, ONCE HERE: THE HOP'S WALL TIME (#299). The engine
+        # prices each completed setup into the ETA's hop term from
+        # ``time.monotonic()`` (`_setup_target`, #189 U-07). Until WP-40,
+        # test_idle_park_hold's `_Clock` faked only ``time()``, so the
+        # sample was the machine's real clock: 0 (dropped, the 150 s seed
+        # stays) when the setup finished inside one tick of Windows' 15.6 ms
         # monotonic clock, one tick (0.0156 s, priced as about nothing) when
         # it crossed one. Which happened at which site was chance, and the
         # ETA's ``events_cost_s`` and ``eta_s`` then differed by 150 between
         # the two nights, read as a number that moves with the site. S2's
-        # longer hop made the crossing likely enough to see: before this
-        # line the file failed about one run in five (observed: 1 of 8, 2 of
-        # 5, 1 of 6 and one full-suite run, each on a different family),
-        # after it 10 of 10 passed. Observed, verbatim:
+        # longer hop made the crossing likely enough to see: before a fix
+        # the file failed about one run in five (observed: 1 of 8, 2 of 5,
+        # 1 of 6 and one full-suite run, each on a different family), after
+        # it 10 of 10 passed. Observed, verbatim:
         #     AssertionError: a number a viewer is shown moves with the site
         #     (idle_flip_point): {'a': ['0', '0', '1680', '1722'], 'b':
         #     ['150', '150', '1830', '1872']}
-        # So within these nights ``monotonic()`` reads the fake clock as well,
-        # as tests/_group_harness.py's clock does.
-        mp.setattr(_Clock, "monotonic", lambda self: self.t, raising=False)
+        # `_Clock.monotonic` now reads the fake clock at its source (WP-40,
+        # the "still open" item #299's diagnosis named: the other thirteen
+        # `_Clocked` files share the same racer), as
+        # tests/_group_harness.py's clock already did, so no patch is
+        # needed here any more.
         real_render = SimCamera._render
 
         def render(self, *a, **k):
@@ -690,6 +692,19 @@ def _where(found, runs) -> list[str]:
     return out
 
 
+def _stray_detail(tag: str, stray: list, runs) -> str:
+    """The failure detail for a stray number the control line did not carry
+    (#299 point 1): the numbers themselves, and ``_where`` finds each one
+    for ``tag`` alone, exactly as the tracking assertion above already names
+    a line for the family scan. Before this the control's own assertion
+    printed only the bare numbers, and the file's one real occurrence (the
+    issue) had its failure text lost to a run's truncated capture, with
+    nowhere for the next one to point."""
+    other = "b" if tag == "a" else "a"
+    only = {tag: stray, other: []}
+    return f"{stray}\n" + "\n".join(_where(only, runs))
+
+
 # ------------------------------------------------------------------ the scan
 
 @pytest.mark.parametrize("family", list(FAMILIES))
@@ -752,9 +767,33 @@ async def test_control_the_scan_sees_a_number_that_does_move(tmp_path):
     for tag in ("a", "b"):
         control = numeric_tokens("\n".join(
             m for _t, _l, m, src in runs[tag][0].lines if src == "control"))
-        assert set(found[tag]) <= set(control), (
+        stray = sorted(set(found[tag]) - set(control))
+        assert not stray, (
             f"[{tag}] a number moved that the control line did not carry: "
-            f"{sorted(set(found[tag]) - set(control))}")
+            + _stray_detail(tag, stray, runs))
+
+
+def test_a_stray_number_report_names_the_line():
+    """The control's stray-number failure must say WHERE a number was
+    shown, as the family scan's own failure already does (#299 point 1):
+    this file's one real occurrence had its failure text lost to a run's
+    truncated capture, and a report that gives only the bare numbers leaves
+    the next occurrence exactly as blind. No night needed: two one-line
+    ``_Seen`` records are enough to grade the report's shape.
+
+    Mutant "report only the numbers" (`_stray_detail` returns ``str(stray)``
+    alone, the ``_where`` call dropped): RED (observed) -
+        AssertionError: assert '[a] 12.4:' in "['12.4']"
+    """
+    seen_a = _Seen(lines=[(12.0, "warning",
+                          "Alpha: sank to 12.4, below its 30 floor",
+                          "sequence")])
+    seen_b = _Seen(lines=[(12.0, "warning",
+                          "Alpha: sank to 24.0, below its 30 floor",
+                          "sequence")])
+    runs = {"a": (seen_a, {}), "b": (seen_b, {})}
+    detail = _stray_detail("a", ["12.4"], runs)
+    assert "[a] 12.4:" in detail and "sank to 12.4" in detail, detail
 
 
 # ---------------------------------------- the two lines no night reaches

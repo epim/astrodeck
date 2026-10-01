@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 
 import numpy as np
 
@@ -75,7 +76,29 @@ def _guider(cam: _FakeGuideCam) -> NativeGuider:
 async def test_a_poll_past_the_ttl_reaches_the_sensor_again(monkeypatch):
     """THE bug. Poll, poll, poll: the second one inside the TTL is honestly the
     cache (the sensor has had no time to show anything new), the third one after
-    it must be a real exposure."""
+    it must be a real exposure.
+
+    THE FIRST HALF RACED THE WALL CLOCK TOO (#271, the half #124 did not fix).
+    ``_last_frame_at`` is stamped in `_expose_preview_frame`, before the first
+    poll's own crop and PNG-encode work (and, in a fresh worker, the lazy
+    first import of `imaging.processing`) runs — all of it inside the 50 ms
+    TTL this test used to leave standing. On a loaded machine, or a `time.
+    monotonic()` with Windows' 15.625 ms resolution, that work alone could
+    eat the TTL before the second poll ever asked, so "inside the TTL the
+    cache is the honest answer" could go RED for a reason that has nothing to
+    do with the cache. The fix makes "inside the TTL" exact the way the aged
+    half below already makes "past the TTL" exact: pin the stamp to
+    ``time.monotonic()`` right before the second poll, under a TTL wide
+    enough that nothing can elapse it before the comparison runs. The forced
+    gap proves it: a real delay between the two polls (slow encode work, a
+    scheduler that was busy) must not touch the verdict.
+
+    Mutant "unpinned second poll" (the pin and the widened TTL below deleted,
+    leaving the second poll to race the original 0.05 s TTL against the
+    forced 0.06 s gap): RED (observed) -
+        AssertionError: inside the TTL the cache is the honest answer
+        assert 2 == 1
+    """
     monkeypatch.setattr(nativemod, "_IDLE_PREVIEW_TTL_S", 0.05)
     cam = _FakeGuideCam()
     g = _guider(cam)
@@ -84,8 +107,16 @@ async def test_a_poll_past_the_ttl_reaches_the_sensor_again(monkeypatch):
     assert first and first[:8] == PNG_MAGIC
     assert cam.started == 1
 
+    # A real gap, as slow encode work or a loaded scheduler would leave one
+    # (see the docstring): the second poll must still read as inside the
+    # TTL, not race it. Pin the stamp right before asking, under a TTL this
+    # gap cannot approach, so the comparison is exact rather than lucky.
+    await asyncio.sleep(0.06)
+    monkeypatch.setattr(nativemod, "_IDLE_PREVIEW_TTL_S", 60.0)
+    g._last_frame_at = time.monotonic()
     assert await g.guide_frame() == first
     assert cam.started == 1, "inside the TTL the cache is the honest answer"
+    monkeypatch.setattr(nativemod, "_IDLE_PREVIEW_TTL_S", 0.05)
 
     # AGE THE CACHE, DO NOT SLEEP PAST THE TTL (issue #124).
     #
