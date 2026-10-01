@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "mutants": [
+    {
+      "name": "pending-source-default",
+      "file": "packaging/distribution_policy.py",
+      "test": "test_release_packaging.ReleasePolicy.test_pending_preserves_artifact_history",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "fetch-only-decision",
+      "file": "packaging/distribution_policy.py",
+      "test": "test_release_packaging.ReleasePolicy.test_fetch_only_synchronizes_every_artifact",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "dss-payload-refusal",
+      "file": "packaging/distribution_policy.py",
+      "test": "test_release_packaging.ReleasePolicy.test_dss2_is_refused_in_all_payloads",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "pending-owner-visible",
+      "file": "packaging/distribution_policy.py",
+      "test": "test_release_packaging.ReleasePolicy.test_pending_preserves_artifact_history",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "static-package-table-drift",
+      "file": "packaging/distribution_policy.py",
+      "test": "test_release_packaging.ReleasePolicy.test_static_table_drift_is_rejected",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "tar-policy-consumer",
+      "file": "scripts/build_release.py",
+      "test": "test_release_packaging.ReleasePolicy.test_real_tar_follows_selected_policy",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "installer-url-metadata-excluded",
+      "file": "packaging/metadata_payloads.py",
+      "test": "test_release_packaging.MetadataSelection.test_only_installer_local_url_is_omitted",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "spec-native-import",
+      "file": "packaging/astrodeck.spec",
+      "test": "test_release_packaging.ReleasePolicy.test_spec_collects_native_module_and_metadata",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "spec-native-metadata",
+      "file": "packaging/astrodeck.spec",
+      "test": "test_release_packaging.ReleasePolicy.test_spec_collects_native_module_and_metadata",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "spec-policy-selection",
+      "file": "packaging/astrodeck.spec",
+      "test": "test_release_packaging.ReleasePolicy.test_spec_filters_actual_sdk_and_tile_files",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "server-clean-stage",
+      "file": "packaging/build_binary.py",
+      "test": "test_release_packaging.ReleasePolicy.test_server_install_never_reuses_stale_build",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "server-wheel-policy-check",
+      "file": "packaging/build_binary.py",
+      "test": "test_release_packaging.ReleasePolicy.test_server_install_refuses_forbidden_actual_wheel_member",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-rebuild-source-data",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_rebuild_recipe_prepares_required_source_data",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-abi3-required",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_non_abi3_wheel_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-notice-files-required",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_missing_native_notices_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "pep639-utf8-text",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_non_utf8_license_file_is_rejected",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "pep639-nul-text",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_nul_license_file_is_rejected",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-source-archive-hash",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_source_archive_hash_is_verified",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-source-tree-match",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_changed_source_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-app-version-match",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_changed_release_version_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-notice-hash",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_tampered_notice_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-license-declarations",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_license_declarations_must_cover_notices",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-sbom-hash",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_tampered_sbom_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-record-coverage",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_record_must_cover_payload",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-record-digest",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_record_digest_is_verified",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-extension-hash",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_tampered_extension_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "sbom-private-reference",
+      "file": "packaging/build_native.py",
+      "test": "test_release_packaging.NativeWheel.test_sbom_paths_normalize_without_breaking_graph",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-install-mandatory",
+      "file": "packaging/build_binary.py",
+      "test": "test_release_packaging.BinaryOrchestration.test_skip_server_install_still_installs_native_before_freeze",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-probe-mandatory",
+      "file": "packaging/build_binary.py",
+      "test": "test_release_packaging.BinaryOrchestration.test_skip_server_install_still_installs_native_before_freeze",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-detector-result",
+      "file": "packaging/native_probe.py",
+      "test": "test_release_packaging.NativeProbe.test_incorrect_detector_result_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-probe-version",
+      "file": "packaging/native_probe.py",
+      "test": "test_release_packaging.NativeProbe.test_module_metadata_mismatch_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-probe-private-errors",
+      "file": "packaging/native_probe.py",
+      "test": "test_release_packaging.NativeProbe.test_probe_errors_do_not_echo_exception_text",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "native-probe-before-state",
+      "file": "packaging/entry.py",
+      "test": "test_release_packaging.NativeProbe.test_entry_probe_never_initializes_application_state",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-creation-time",
+      "file": "packaging/smoke_ownership.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_child_pid_reuse_is_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-command-identity",
+      "file": "packaging/smoke_ownership.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_wrong_command_is_not_owned",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-parent-ancestry",
+      "file": "packaging/smoke_ownership.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_unproven_ancestry_is_not_adopted",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-loopback-only",
+      "file": "packaging/smoke_ownership.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_wildcard_listener_is_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-preexisting-launch",
+      "file": "packaging/smoke_ownership.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_preexisting_launch_pid_is_refused",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-unknown-setup-cleanup",
+      "file": "packaging/smoke_ownership.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_constructor_failure_cleans_already_proven_identity",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-stop-retry",
+      "file": "packaging/build_binary.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_failed_stop_can_be_retried",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-preserve-unverified-state",
+      "file": "packaging/build_binary.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_unverified_launch_preserves_private_test_state",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-early-state-cleanup",
+      "file": "packaging/build_binary.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_launch_failure_leaves_no_test_state",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "smoke-no-raw-log-read",
+      "file": "packaging/build_binary.py",
+      "test": "test_smoke_ownership.SmokeOwnership.test_no_raw_log_read",
+      "intended_assertion_failed": true
+    }
+  ],
+  "baseline_green": true,
+  "restored_suite_green": true,
+  "exact_restored_sha256": {
+    "packaging/distribution_policy.py": "e7e856ae5e77dda4c8c52f9d87c6b35792d9648fd3918072f6ead86357f09549",
+    "scripts/build_release.py": "e95396284e8d504431d997ba4320b0631dce9af63f42ef10c19e54c2588fae3f",
+    "packaging/metadata_payloads.py": "83429b1290fee006aa6f4dd587dec27734bd093170c53b05e1e601c274c28672",
+    "packaging/astrodeck.spec": "3558a7a60d7c196697bc59a8634fb66ac764569e5f10cae31f64eb20ae4f2f0f",
+    "packaging/build_binary.py": "db893d71e2ec370a2df708017872fdb25d71dd2112b32f00f07b531dfdd521df",
+    "packaging/build_native.py": "7d1cd8d45e8abcc94a483330c7522621176c7026a59af2479b008d5a49e150f9",
+    "packaging/native_probe.py": "f1fc366f5e450ecbfe9afd62cc11fac100d4ee6309f7159772039333e104f85b",
+    "packaging/entry.py": "2a7e6474fe3fc5fa72eb4dbf7d27fe7e283bcee92a6b1284d23f4477e8566b8b",
+    "packaging/smoke_ownership.py": "f865c2025274f3d4bbb5e50cc940924643a9aec758aab3e8b234c2e2b8cf5411"
+  }
+}

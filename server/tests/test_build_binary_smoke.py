@@ -1,4 +1,8 @@
-"""The binary smoke test has to be able to START the binary it just built.
+"""Re-pinned for #654: these tests previously asserted the unsafe image-name
+cleanup hazard and raw server-log reads. Cleanup now delegates only to proven
+process identities; all OS and ownership calls in this file are mocked.
+
+The binary smoke test has to be able to START the binary it just built.
 
 The release workflow's windows-latest leg built dist/astrodeck.exe and then
 failed, every time, at the smoke step: hosted GitHub Windows runners hand every
@@ -132,6 +136,7 @@ class FakeSubprocess:
     """Stands in for the subprocess module inside build_binary, so net user,
     icacls, taskkill, netstat and tasklist are all recorded and none run."""
 
+    DEVNULL = subprocess.DEVNULL
     list2cmdline = staticmethod(subprocess.list2cmdline)
 
     def __init__(self):
@@ -158,6 +163,21 @@ class FakeSubprocess:
 
     def calls(self, tool: str) -> list[list[str]]:
         return [argv for argv, _ in self.runs if argv and argv[0] == tool]
+
+
+@pytest.fixture(autouse=True)
+def fake_ownership(monkeypatch):
+    owners = []
+    class Owner:
+        def __init__(self, pid, launched_at, exe, port, wrapper=None):
+            self.pid, self.exe, self.port, self.wrapper = pid, exe, port, wrapper
+            self.stops = 0
+            owners.append(self)
+        def verify_listener(self): return self.pid
+        def stop(self): self.stops += 1
+    monkeypatch.setattr(bb, "process_api", lambda: None)
+    monkeypatch.setattr(bb, "OwnedSmoke", Owner)
+    return owners
 
 
 @pytest.fixture
@@ -284,7 +304,8 @@ def test_an_elevated_build_runs_the_binary_as_a_throwaway_account(
     assert len(elevated.launches) == 1
     launched_name, launched_password, cmdline, cwd = elevated.launches[0]
     assert (launched_name, launched_password) == (name, password)
-    assert cmdline == f'cmd /c "{wrapper}"'
+    command = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    assert cmdline == f'"{command}" /c "{wrapper}"'
     assert cwd == state
     assert handle.pid == 4321
     assert handle.log_path == log
@@ -380,6 +401,11 @@ def test_the_loader_failure_that_says_nothing_is_named(elevated, monkeypatch,
     monkeypatch.setattr(bb, "_process_exit_code", lambda handle: 0xC0000142)
     monkeypatch.setattr(bb, "_source_version", lambda: "9.9.9")
     monkeypatch.setattr(bb, "ROOT", tmp_path)
+    import socket
+    from unittest.mock import MagicMock
+    sock = MagicMock()
+    sock.__enter__.return_value.getsockname.return_value = ("127.0.0.1", 8811)
+    monkeypatch.setattr(socket, "socket", lambda *args: sock)
     exe = tmp_path / "dist" / "astrodeck.exe"
 
     with pytest.raises(SystemExit) as excinfo:
@@ -400,20 +426,15 @@ def test_the_handle_path_polls_the_real_process(elevated, monkeypatch, tmp_path,
     assert handle.poll() == 3
 
 
-def test_stop_kills_the_wrapper_tree_then_deletes_the_account(
-        elevated, tmp_path, smoke_env):
+def test_stop_uses_proven_ownership_then_deletes_the_account(
+        elevated, tmp_path, smoke_env, fake_ownership):
     elevated.stdout_map["tasklist"] = TASKLIST
     handle = bb._launch_smoke(tmp_path / "dist" / "astrodeck.exe", 8811, smoke_env)
     name = _net_user_add(elevated)[2]
-
     handle.stop()
-
-    kills = elevated.calls("taskkill")
-    assert ["taskkill", "/PID", "4321", "/T", "/F"] in kills
-    assert ["taskkill", "/PID", "4322", "/T", "/F"] in kills, (
-        "a onefile bootloader's child has outlived its parent here before, and "
-        "a survivor would answer the next build's checks")
-    assert all("/T" in argv and "/F" in argv for argv in kills)
+    assert fake_ownership[-1].stops == 1
+    assert elevated.calls("taskkill") == []
+    assert elevated.calls("tasklist") == []
     assert ["net", "user", name, "/delete"] in elevated.calls("net")
 
 
@@ -434,25 +455,24 @@ def test_stop_after_a_reported_death_still_deletes_the_account(
     assert elevated.calls("net").count(["net", "user", name, "/delete"]) == 1
 
 
-def test_the_popen_path_delegates_poll_and_stop(monkeypatch):
-    stopped: list[object] = []
-    monkeypatch.setattr(bb, "_stop_tree", lambda proc: stopped.append(proc))
+def test_the_popen_path_delegates_poll_and_stop(fake_ownership):
     proc = FakePopen(["astrodeck.exe"])
-    handle = bb.SmokeProcess(8811, popen=proc)
+    owner = bb.OwnedSmoke(proc.pid, 0, Path("astrodeck.exe"), 8811)
+    handle = bb.SmokeProcess(8811, popen=proc, ownership=owner)
     assert handle.poll() is None
     assert handle.pid == 4242
     handle.stop()
-    assert stopped == [proc], "the plain path must still stop the process tree"
+    assert owner.stops == 1
 
 
-def test_output_tail_reports_what_the_child_wrote(tmp_path):
-    """The whole reason the wrapper redirects: the first hosted proof run died
-    eight seconds in and the log said nothing at all."""
+def test_output_tail_never_reads_server_logs(tmp_path, monkeypatch):
     log = tmp_path / "smoke.log"
+    log.write_text("private server output", encoding="utf-8")
     handle = bb.SmokeProcess(8811, log_path=log)
-    assert handle.output_tail() == "", "nothing written yet"
-    log.write_text("Traceback\nRuntimeError: it refused\n", encoding="utf-8")
-    assert handle.output_tail().endswith("RuntimeError: it refused")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("raw server log read")
+    monkeypatch.setattr(Path, "read_text", forbidden)
+    assert handle.output_tail() == ""
 
 
 def test_elevation_detection_never_raises(monkeypatch):

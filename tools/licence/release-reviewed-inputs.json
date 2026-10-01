@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "base": "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b",
+  "files": [
+    {
+      "path": "native/crates/astrodeck-native/pyproject.toml",
+      "sha256": "fa607ade14cfcb4acc58b766f869f63092b31a9363f710a0b63de3d30a578df9",
+      "review": "Read complete native pyproject delta: PEP639 license-files requires staged full texts/source and adds public source/repository URLs; package version and runtime algorithms unchanged. Final reviewed correction: PEP639 declares only four UTF-8/NUL-free text notices; the exact source archive is ordinary dist-info/source data with a separate sealed hash. Rebuild instructions restore the original archive at the Maturin include path, and maturin>=1.9 with locked builds is required."
+    },
+    {
+      "path": "packaging/astrodeck.spec",
+      "sha256": "005dac8e8c22721cd73d71b77d5741d10fe4a67b28610381031022b4c9f756e5",
+      "review": "Read spec delta: adds native module and metadata/source/notices, central per-file vendor/DSS2 selection with static-table parity, root notices, and packaging probe path; no blanket unknown payload approval."
+    },
+    {
+      "path": "packaging/build_native.py",
+      "sha256": "7d1cd8d45e8abcc94a483330c7522621176c7026a59af2479b008d5a49e150f9",
+      "review": "Read complete build/stage/seal/validate code. It stages native source privately, uses locked Cargo and ABI3, supplies full notice/source material, binds source/extension/notices/SBOM hashes and validates RECORD and compatibility. Absolute local SBOM IDs are normalized; this evidence is build provenance, not reproducible-build or compiler correctness proof. Final reviewed correction: PEP639 declares only four UTF-8/NUL-free text notices; the exact source archive is ordinary dist-info/source data with a separate sealed hash. Rebuild instructions restore the original archive at the Maturin include path, and maturin>=1.9 with locked builds is required."
+    },
+    {
+      "path": "packaging/distribution-policy.json",
+      "sha256": "d60926d6c75dbf94d552ae627ca1414ed06fe1a17479d900250d13d071a73e88",
+      "review": "Read every owner decision: Player One pending retains historical per-artifact differences; DSS2 fetch-only; artwork, WCSLIB, Astrospheric and IAU pending. This is not owner permission."
+    },
+    {
+      "path": "packaging/distribution_policy.py",
+      "sha256": "78e25447d2ff50bc3aed9b9a260bda378ec5c3e00d97e8f2d0386c7aa2302deb",
+      "review": "Read complete selector and static package-data parity/check/sync implementation. It rejects unknown modes/kinds and DSS2 redistribution, contains no package install or app/device access. Other fetch-only decisions require gate findings until payload behavior is separately changed."
+    },
+    {
+      "path": "packaging/entry.py",
+      "sha256": "079140ef2011bc22fef2bb5d563453f5f423841b444dbd8262a4700ba647fba2",
+      "review": "Read entry delta: exact --packaging-probe exits before default-state setup and application imports; delegates only to the reviewed native probe."
+    },
+    {
+      "path": "packaging/native_probe.py",
+      "sha256": "67ff1b3686e9528228d66ec6fd03606cf9bc2cfb3e2479cfee5a35d0a3331723",
+      "review": "Read complete deterministic probe. Imports native/NumPy and distribution metadata, invokes blank 32x32 uint16 star detection, emits bounded success metadata and exception type only; no application/device/config imports."
+    },
+    {
+      "path": "server/pyproject.toml",
+      "sha256": "fc26b72f7bf8f15a527b365c577c2ff5b2faff8f2f279ff3d61a4621d22e6455",
+      "review": "Read static package-data delta: explicit ZWO and Player One paths preserve pending server-wheel inclusion; distribution_policy parity enforces the selected table. No runtime dependency/version change."
+    }
+  ]
+}

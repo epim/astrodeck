@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "mutants": [
+    {
+      "name": "ignore-runtime-code-names",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_code_name_and_qualname_are_runtime_visible_proof",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "pyz-duplicate-member-bypass",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_pyz_duplicate_member_is_rejected_before_dict_conversion",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "pyz-hidden-gap-bypass",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_pyz_unexplained_payload_bytes_are_rejected",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "native-machine-header-bypass",
+      "test": "tools.licence.test_release_gate.NativeFixture.test_pe_machine_cannot_be_arm_with_x64_tag",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "replace-root-notices-and-reseal",
+      "test": "tools.licence.test_release_gate.NativeFixture.test_root_notices_cannot_be_replaced_and_resealed",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "replace-native-license-expression",
+      "test": "tools.licence.test_release_gate.NativeFixture.test_native_license_expression_must_match_reviewed_project",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "runtime-directory-authenticates-any-bytes",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_interpreter_directory_does_not_authenticate_added_source",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "binary-license-file",
+      "test": "tools.licence.test_release_gate.NativeFixture.test_declared_license_file_must_be_utf8",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "nul-license-file",
+      "test": "tools.licence.test_release_gate.NativeFixture.test_declared_license_file_cannot_contain_binary_nul",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "record-hash-bypass",
+      "test": "tools.licence.test_release_gate.NativeFixture.test_record_hash_is_checked",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "engine-seal-bypass",
+      "test": "tools.licence.test_release_gate.NativeFixture.test_extension_seal_is_checked_even_after_record_rewrite",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "source-digest-bypass",
+      "test": "tools.licence.test_release_gate.NativeFixture.test_source_digest_is_checked",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "source-archive-seal-bypass",
+      "test": "tools.licence.test_release_gate.NativeFixture.test_source_archive_seal_is_checked",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "metadata-dll-smuggling",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_server_wheel_cannot_hide_binary_in_dist_info",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "new-data-auto-approved",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_frozen_new_data_stays_unaccounted_even_with_record",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "fetch-only-grants-retained-use",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_fetch_only_does_not_clear_retained_service_or_artwork",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "pending-owner-cleared",
+      "test": "tools.licence.test_release_gate.ArchiveAndPolicyTests.test_pending_vendor_decision_preserves_binary_but_blocks_clearance",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "dss2-policy-bypass",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_dss2_fetch_only_policy_rejects_tiles",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "review-current-source-automatically",
+      "test": "tools.licence.test_release_gate.ArchiveAndPolicyTests.test_fresh_source_is_not_automatically_a_reviewed_delta",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "runtime-exception-applies-to-every-module",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_runtime_exception_does_not_cover_arbitrary_pyinstaller_modules",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "python-cargo-credit-collision",
+      "test": "tools.licence.test_release_gate.AdditionalBoundaryTests.test_python_and_cargo_names_do_not_overwrite_each_other",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "inject-auditor-future-flags",
+      "test": "tools.licence.test_release_gate.ArchiveAndPolicyTests.test_code_proof_compiles_but_never_executes",
+      "killed_by_assertion": true,
+      "returncode": 1
+    },
+    {
+      "name": "ignore-python-exception-table",
+      "test": "tools.licence.test_release_gate.ArchiveAndPolicyTests.test_exception_handlers_are_part_of_python_proof",
+      "killed_by_assertion": true,
+      "returncode": 1
+    }
+  ],
+  "baseline_green": true,
+  "restored_green": true,
+  "exact_bytes_restored": true,
+  "source_sha256": {
+    "tools/licence/audit_release.py": "bd7a7e5a7d8562300798ce182a079fa77a0d51b89ea6f8cbdca496f7f2ae6c8d",
+    "tools/licence/release_provenance.py": "c72398bf0b61ed69c0dfbc649f2b5b4130ac2a6f9492672cb25aa725869553dd"
+  }
+}

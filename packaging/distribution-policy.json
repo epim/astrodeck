@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "decisions": {
+    "playerone": {
+      "mode": "pending",
+      "pending_by_artifact": {
+        "source-tar": false,
+        "frozen": true,
+        "server-wheel": true,
+        "native-wheel": false
+      },
+      "evidence": "issues:199,632"
+    },
+    "dss2": {
+      "mode": "fetch-only",
+      "evidence": "issue:631"
+    },
+    "artwork": {
+      "mode": "pending",
+      "evidence": "issue:637"
+    },
+    "wcslib": {
+      "mode": "pending",
+      "evidence": "issue:638"
+    },
+    "astrospheric": {
+      "mode": "pending",
+      "evidence": "issue:636"
+    },
+    "iau": {
+      "mode": "pending",
+      "evidence": "owner grant required"
+    }
+  }
+}
