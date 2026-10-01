@@ -478,6 +478,29 @@ class SequencePlan(BaseModel):
     # wind-down
     park_when_done: bool = False
     warm_cooler_when_done: bool = False
+    # --- single night vs multi-night auto-resume (#195; ADDITIVE - True
+    # reproduces every existing plan BYTE-IDENTICALLY, which is what "every
+    # flow has always done" actually means today: see the note below) -------
+    #
+    # THE BUG THIS FIELD CLOSES. DUSK WINDOW's "Single night" `repeat` value
+    # changed nothing about resuming: `engine.start` arms `auto_resume`
+    # unconditionally on every run, and `ResumeArm.tick` asked only whether
+    # tonight's window was open, never how many nights this session had
+    # already run. So a flow built as "Single night" compiled to a session
+    # that came back and finished itself on the next clear night exactly like
+    # a campaign would, silently — the "a claim nothing keeps" class.
+    #
+    # True (the default) is today's actual behaviour and reaches every plan
+    # compiled before this field existed, every flow with no DUSK WINDOW, and
+    # every DUSK WINDOW whose `repeat` asks to come back across nights.
+    #
+    # False scopes `ResumeArm.tick` to the session's FIRST observing night
+    # only (`Session.observing_nights`): a crash or a reboot on THAT SAME
+    # night still resumes it - continuity within a night is a separate
+    # promise, never withdrawn here - but the window opening again on a
+    # LATER night is refused and the session is disarmed, because the
+    # operator asked for one night, not the next clear one.
+    resume_across_nights: bool = True
     # --- cloud-hold calibration (ADDITIVE; default off = every existing plan
     # behaves byte-identically) ---------------------------------------------
     #
