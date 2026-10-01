@@ -129,6 +129,7 @@ from ..calibration.matcher import LightNeed
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
 from ..mount_offset import nudge as nudge_offset
 from ..mount_offset import parse_nudge
+from ..mount_offset import POSITION_UNKNOWN_CODE, POSITION_UNKNOWN_DETAIL
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, PlanUnreadable, plan_library
 from .. import power_guard
@@ -8122,6 +8123,16 @@ def create_app(*, bind_host: str | None = None,
             tel = hub.require("telescope")
         except DeviceError as e:
             raise _err(e)
+        # #144: a nudge computes its destination by reading the CURRENT
+        # position and adding an offset, so a driver that cannot vouch for
+        # that position turns a small requested correction into a goto to
+        # wherever the mount GUESSES it last was -- exactly the state right
+        # after a reset. ``position_known`` defaults True (``getattr``, not a
+        # required attribute): a driver, or a test double, that predates this
+        # flag nudges exactly as it always has.
+        if not getattr(tel, "position_known", True):
+            raise HTTPException(409, detail={"detail": POSITION_UNKNOWN_DETAIL,
+                                             "code": POSITION_UNKNOWN_CODE})
         try:
             arcmin = parse_nudge(body.axis, body.arcmin)
         except ValueError as e:

@@ -49,6 +49,60 @@ export const SLEW_RATES: SlewRateOption[] = [
   { id: "set", label: "0.5°/s", rateDegS: 0.5 },
 ];
 
+//: Two adjacent stops closer than this ratio are one stop as far as a thumb
+//: is concerned (mirrors `hubs/rig/lib/slewStops.ts`'s own `DISTINCT_RATIO`,
+//: kept as a separate copy here because that file is next/rig-specific and
+//: this one has to stay importable by every caller of `SLEW_RATES`, next or
+//: classic). On a 1.44 deg/s mount the gap from the shipped top (0.5) to the
+//: ceiling is a factor of nearly three and the extra rung earns its place; on
+//: a 0.7 deg/s mount it would sit 0.2 from the neighbour it is supposed to be
+//: distinct from and teach a thumb nothing.
+export const CEILING_DISTINCT_RATIO = 1.4;
+
+// Never rounds up: this label is read as the mount's ceiling, and a mount
+// labelled faster than it is will be believed at the worst possible moment
+// (driving by eye right after a reset, #144).
+function ceilingLabel(degS: number): string {
+  const floored = Math.floor(degS * 100) / 100;
+  return `${String(floored)} deg/s`;
+}
+
+/** The default ladder, extended with the driver's own ceiling (#144).
+ *
+ *  `SLEW_RATES` ships three stops topping out at 0.5 deg/s, because 0.6 was
+ *  the only ceiling the client used to know -- `TOUCH_MAX_RATE_DEG_S`, the
+ *  conservative figure the server used to apply to every mount alike. A
+ *  driver that publishes `Telescope.max_rate_deg_s` can go much faster (the
+ *  AM5N measures 1.44 deg/s), and #144 was filed because the shipped ladder
+ *  was the ONLY way to drive the tube by eye after a reset: three minutes of
+ *  holding "0.5 deg/s" to cover ninety degrees of sky. `#/next`'s mount sheet
+ *  already builds this ladder for itself (`slewStops`); this is the same
+ *  rung made available to any OTHER caller of `SLEW_RATES` -- in particular
+ *  `SlewPad`'s `ratesProp ?? SLEW_RATES` default, which is what `#/classic`
+ *  still falls through to -- without that caller needing its own copy of the
+ *  arithmetic.
+ *
+ *  `null`/`undefined`/non-finite/`<= 0` returns `SLEW_RATES` UNCHANGED, BY
+ *  IDENTITY: that is "the driver did not say", not "no limit", and a caller
+ *  that never passes a ceiling must keep seeing exactly the three stops it
+ *  always has. A ceiling that is not meaningfully above the fastest shipped
+ *  stop (`CEILING_DISTINCT_RATIO`) earns no rung of its own either: labelling
+ *  a 0.52 deg/s mount's pad "0.52 deg/s" next to "0.5 deg/s" teaches a thumb
+ *  nothing and gives it one more number to misread under red light. */
+export function slewRatesWithCeiling(
+  maxRateDegS: number | null | undefined,
+): SlewRateOption[] {
+  if (maxRateDegS == null || !Number.isFinite(maxRateDegS) || maxRateDegS <= 0) {
+    return SLEW_RATES;
+  }
+  const top = SLEW_RATES[SLEW_RATES.length - 1].rateDegS;
+  if (maxRateDegS < top * CEILING_DISTINCT_RATIO) {
+    return SLEW_RATES;
+  }
+  return [...SLEW_RATES,
+    { id: "ceiling", label: ceilingLabel(maxRateDegS), rateDegS: maxRateDegS }];
+}
+
 export const TOUCH_MAX_RATE_DEG_S = 0.6; // mirror of server clamp (R2/R24)
 export const MIN_SLEW_ALT_DEG = 10;      // client alt-guard (R30)
 // ~½ the 1200ms server deadman (F-A2): ~3 stamps per window so one throttled/
