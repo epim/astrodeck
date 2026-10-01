@@ -135,7 +135,7 @@ Invoke-LoggedDeploy -Log (Join-Path $Root "deploy_$Ver.log") -Body {
     $uiChecks = @(
         @{ Pattern = 'The open this card asked for has not answered yet, so there is nothing here to show.'; Name = 'W3 #592: the sky flow card says why it is empty' },
         @{ Pattern = 'The saved FITS frames are untouched.'; Name = 'W3 #279: the delete confirm says what is kept' },
-        @{ Pattern = 'THE START IS JUDGED ON WHAT THIS PRESS WROTE'; Name = 'W2: the flow start is judged on what the press wrote' },
+        @{ Pattern = 'IGNORE FORECAST RAIN TONIGHT'; Name = 'W2 #259: the Monitor weather override for tonight' },
         @{ Pattern = 'This flow has not opened yet.'; Name = 'W1 #553: #/next acts only on the flow it opened (carried)' },
         @{ Pattern = 'Waiting for the meridian, so the mosaic changes pier side once.'; Name = 'H4 #488: a meridian wait reads as one (carried)' },
         @{ Pattern = 'flow-loop-arc'; Name = 'S4: the panel loop arc on the canvas (carried)' },
