@@ -69,6 +69,8 @@ from astrodeck.config import RemoteConfig
 from astrodeck.remote.protocol import CONTROL_STREAM_ID, FrameType, encode_frame
 from astrodeck.remote.relay_client import LinkProbes, RelayClient
 
+from _deadline import wait_until
+
 TEST_DEVICE_TOKEN = "t" * 43
 RELAY_HOST = "relay.test"
 CFG = RemoteConfig(enabled=True, relay_url=f"wss://{RELAY_HOST}/scope",
@@ -139,10 +141,12 @@ async def _one_drop(bus_lines, probes, *, first,
                          link_probes=probes)
     task = asyncio.create_task(client.run())
     try:
-        for _ in range(1000):
-            if until(bus_lines, seen):
-                break
-            await asyncio.sleep(0.01)
+        # A wall-clock deadline (#610): 1000 x sleep(0.01) is 10 s on Linux
+        # but 15.6 s on Windows (sleep rounds up to the 15.6 ms timer
+        # there), so a round count gives the two platforms different real
+        # patience.
+        await wait_until(lambda: until(bus_lines, seen), timeout_s=18.0,
+                         interval_s=0.01)
     finally:
         client.stop()
         task.cancel()
@@ -381,10 +385,10 @@ def test_a_drop_inside_the_previous_check_says_it_was_skipped(
                              link_probes=probes)
         task = asyncio.create_task(client.run())
         try:
-            for _ in range(1000):
-                if len(_checks(bus_lines)) >= 2:
-                    break
-                await asyncio.sleep(0.01)
+            # A wall-clock deadline (#610): see ``_one_drop`` above for why
+            # a round count of sub-0.1 s sleeps is platform-dependent.
+            await wait_until(lambda: len(_checks(bus_lines)) >= 2,
+                             timeout_s=18.0, interval_s=0.01)
         finally:
             client.stop()
             task.cancel()

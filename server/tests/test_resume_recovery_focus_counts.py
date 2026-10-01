@@ -24,8 +24,6 @@ server/, never in the shared tree (#254).
 """
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 import astrodeck.focus.native as native_mod
@@ -38,6 +36,8 @@ from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.models import ExposureStep, Target
 from astrodeck.sequence.resume_arm import RECOVERY_AF_BINNING, ResumeArm
 from astrodeck.sequence.session import Session, session_store
+
+from _deadline import wait_until
 
 #: The focuser temperature the ladder's sweep ends at: a number nothing else
 #: in the rig produces, so a file that holds it holds the sweep.
@@ -140,20 +140,41 @@ def _dormant_armed(*, temp_delta_c: float | None = None,
     return s
 
 
-async def _resume(hub, session: Session, bus_lines) -> ResumeArm:
+async def _resume(hub, session: Session, bus_lines,
+                  sweeps: Sweeps | None = None) -> ResumeArm:
     """One auto-resume tick, and the run it starts, to its end. Returns the
-    arm that made the start (its engine is ``arm.engine``)."""
+    arm that made the start (its engine is ``arm.engine``).
+
+    #615: this wait failed once under a full xdist run on the dev box and
+    passed on every rerun, so the run's own history is lost by the time a
+    timeout is even seen twice. If it times out again, the assertion below
+    prints what a rerun cannot recover: the recovery ladder's own state
+    (whether it is still recovering, and its step) and the sweep count each
+    of the two sweep seams made so far (when the caller hands over its
+    ``Sweeps`` double) -- so the failure explains itself the FIRST time."""
     engine = SequenceEngine(hub)
     arm = ResumeArm(engine, hub)
     await arm.tick()
     assert arm._retry_at == 0.0, (
         "premise: the tick resumed. Every bus line it emitted:\n"
         + "\n".join(f"  [{lv}] {m}" for lv, m, _s in bus_lines))
-    for _ in range(600):
-        if engine.state.get("state") == "complete":
-            break
-        await asyncio.sleep(0.05)
-    assert engine.state.get("state") == "complete", engine.state
+    # A wall-clock deadline (#610), not a round count: 600 x sleep(0.05) is
+    # 30 s on both platforms already (Windows' 15.6 ms rounding is
+    # negligible against a 50 ms ask), but every OTHER loop of this shape in
+    # the suite moved to the shared helper, so this one does too rather than
+    # being the one instance left as a round count for the guard to miss.
+    ok = await wait_until(lambda: engine.state.get("state") == "complete",
+                          timeout_s=30.0, interval_s=0.05)
+    if not ok:
+        sweep_detail = "no Sweeps double was handed to _resume"
+        if sweeps is not None:
+            sweep_detail = (f"ladder sweeps={len(sweeps.ladder)} "
+                            f"run sweeps={len(sweeps.run)} "
+                            f"labels={sweeps.labels!r}")
+        pytest.fail(
+            f"the run never reached 'complete': {engine.state}. "
+            f"Recovery ladder: recovering={arm.recovering!r} "
+            f"recovery={arm.recovery!r}. Sweeps: {sweep_detail}.")
     assert session_store.load(session.id).status == "complete"
     return arm
 
@@ -186,7 +207,7 @@ async def test_an_auto_resume_after_a_restart_sweeps_once_not_twice(
     """
     sweeps = Sweeps(rig, monkeypatch)
     s = _dormant_armed()
-    arm = await _resume(rig, s, bus_lines)
+    arm = await _resume(rig, s, bus_lines, sweeps)
     again = arm._sweep_for_start()
     assert again is None, (
         f"the start took the ladder's sweep and the arm would hand it to the "
@@ -228,7 +249,7 @@ async def test_the_recovery_sweep_is_the_first_acquisitions_only(
     """
     sweeps = Sweeps(rig, monkeypatch)
     s = _dormant_armed(names=("M42", "M43"))
-    await _resume(rig, s, bus_lines)
+    await _resume(rig, s, bus_lines, sweeps)
     assert len(sweeps.ladder) == 1, "premise: the ladder swept"
     reused = [m for _lv, m, _s in bus_lines if "focus reused" in m]
     assert sweeps.labels == ["initial autofocus"], (
@@ -250,7 +271,7 @@ async def test_a_failed_recovery_sweep_does_not_count(rig, monkeypatch,
     """
     sweeps = Sweeps(rig, monkeypatch, ladder_ok=False)
     s = _dormant_armed()
-    await _resume(rig, s, bus_lines)
+    await _resume(rig, s, bus_lines, sweeps)
     assert len(sweeps.ladder) == 1, "premise: the ladder swept"
     assert sweeps.labels == ["initial autofocus"], (
         f"the run stood on a sweep that found no focus: {sweeps.labels}")
@@ -295,7 +316,7 @@ async def test_a_temperature_moved_past_the_delta_sweeps_again(
 
     monkeypatch.setattr(ResumeArm, "_note_recovery_sweep", then_it_cools)
     s = _dormant_armed(temp_delta_c=1.0)
-    await _resume(rig, s, bus_lines)
+    await _resume(rig, s, bus_lines, sweeps)
     assert len(sweeps.ladder) == 1, "premise: the ladder swept"
     assert sweeps.labels == ["initial autofocus"], (
         f"the run's first acquisition reused a sweep the temperature had "
