@@ -14,6 +14,15 @@ passed -- verified empirically for WP-68 (two consecutive fully-green runs
 in an isolated temp root left ZERO base directories; one with a failure
 left only that failed test's own data).
 
+THE POLICY IS BACK TO THE DEFAULT FOR NOW (#659). "failed" deletes each
+passed test's tmp_path during that test's teardown, inside the real-config
+guard's window, and on Linux `shutil.rmtree` deletes through dir_fd-relative
+names: the guard resolved a tmp `config` directory against the CWD as the
+real `server/config` and failed five tests on the runner. Only `count = 1`
+stays, which bounds how many old run directories survive, not how large
+one run grows -- so #622 stays open until #659's guard fix lets "failed"
+come back, and whoever restores it updates this test with it.
+
 A setting that silently stops being read (a typo in the key, the section
 renamed, the value changed to the default by an unrelated edit) is exactly
 the kind of regression nothing else in this suite would catch -- this test
@@ -24,26 +33,24 @@ from __future__ import annotations
 
 
 def test_pyproject_sets_the_approved_tmp_path_retention(pytestconfig):
-    """backlog ruling D-nn N/A -- no ruling needed, fix shape is the plan's
-    own text for WP-68 (d) / #622: ``tmp_path_retention_policy = "failed"``
-    and ``tmp_path_retention_count = 1``, read back from pytest's own
-    parsed ini config (``pytestconfig.getini``), not re-parsed from the
+    """``tmp_path_retention_count = 1`` (WP-68 (d) / #622) and the policy
+    at pytest's default until #659 is fixed, both read back from pytest's
+    own parsed ini config (``pytestconfig.getini``), not re-parsed from the
     TOML text.
 
-    MUTANT "the policy reverts to the pytest default" (pyproject.toml's
-    ``tmp_path_retention_policy`` line deleted, so pytest falls back to its
-    shipped default, "all"): RED, observed verbatim:
-        AssertionError: tmp_path_retention_policy must be 'failed' (#622);
-        it reads 'all' -- pytest's own default retains every passed test's
-        tmp_path forever, which is the exact defect #622 reported
-        assert 'all' == 'failed'
-    Run from a byte backup of pyproject.toml, restored and SHA-256-compared
+    MUTANT "the count reverts to the pytest default" (pyproject.toml's
+    ``tmp_path_retention_count`` line deleted, so pytest falls back to 3):
+    RED. MUTANT "failed comes back before #659" (the policy line restored
+    as ``"failed"``): RED, with the message below naming #659. Both run
+    from a byte backup of pyproject.toml, restored and SHA-256-compared
     after (#254's convention)."""
     policy = pytestconfig.getini("tmp_path_retention_policy")
-    assert policy == "failed", (
-        f"tmp_path_retention_policy must be 'failed' (#622); it reads "
-        f"{policy!r} -- pytest's own default retains every passed test's "
-        f"tmp_path forever, which is the exact defect #622 reported")
+    assert policy == "all", (
+        f"tmp_path_retention_policy reads {policy!r}; it stays at pytest's "
+        f"default 'all' until #659 is fixed, because 'failed' deletes tmp "
+        f"dirs inside the real-config guard's window and the guard misreads "
+        f"Linux rmtree's dir_fd-relative names as the real config. Restore "
+        f"'failed' together with #659's fix, and update this test then")
     count = int(pytestconfig.getini("tmp_path_retention_count"))
     assert count == 1, (
         f"tmp_path_retention_count must be 1 (#622's stricter floor, below "
