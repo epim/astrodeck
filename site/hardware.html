@@ -1,282 +1,418 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hardware Support</title>
-<meta name="description" content="Native drivers, ASCOM Alpaca and the COM host. Every vendor AstroDeck drives, and how to get yours added.">
-<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
-<link rel="canonical" href="https://epim.github.io/astrodeck/hardware.html">
-<meta property="og:type" content="website">
-<meta property="og:title" content="Hardware Support | AstroDeck">
-<meta property="og:description" content="Native drivers, ASCOM Alpaca and the COM host. Every vendor AstroDeck drives, and how to get yours added.">
-<meta property="og:url" content="https://epim.github.io/astrodeck/hardware.html">
-<meta name="twitter:card" content="summary">
-<meta name="theme-color" content="#070A12">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css">
-<script src="assets/theme.js"></script>
-</head>
-<body>
-
-<header class="topbar">
-  <div class="wrap topbar-in">
-    <a class="brand" href="index.html">Astro<span>Deck</span></a>
-    <nav class="navlinks">
-      <a href="index.html">Overview</a>
-      <a href="flows.html">Flows</a>
-      <a href="weather.html">Weather</a>
-      <a href="hardware.html" aria-current="page">Hardware</a>
-      <a href="features.html" class="opt">Features</a>
-      <a href="https://github.com/epim/astrodeck" class="opt">GitHub</a>
-      <button class="themetoggle" data-theme-toggle type="button">Auto</button>
-    </nav>
-  </div>
-</header>
-
-<section class="band">
-  <div class="wrap stack gap-3">
-    <p class="eyebrow">Hardware</p>
-    <h1 style="max-width:16ch">Bring the gear you already own.</h1>
-    <p class="lead" style="max-width:56ch">
-      Three ways in: a native driver with nothing else installed, ASCOM Alpaca
-      over the network, or a Windows ASCOM driver through the COM host AstroDeck
-      starts for you. Most rigs need only the first.
-    </p>
-  </div>
-</section>
-
-<!-- ================================================================= native -->
-<section class="band band-tint">
-  <div class="wrap stack gap-4">
-    <div class="band-head">
-      <p class="eyebrow">Native drivers</p>
-      <h2>No vendor software to install.</h2>
-      <p>
-        AstroDeck talks to these over the vendor SDK or the wire protocol
-        itself. Plug in the USB cable and press connect.
-      </p>
-    </div>
-
-    <div class="tablewrap">
-      <table>
-        <thead>
-          <tr><th>Vendor</th><th>Device</th><th>How it is driven</th><th>Status</th></tr>
-        </thead>
-        <tbody>
-          <tr><td class="mono">ZWO</td><td>AM5 / AM5N harmonic mounts</td><td>Meade LX200 ASCII over USB serial</td><td class="yes">Verified</td></tr>
-          <tr><td class="mono">ZWO</td><td>ASI220MM camera</td><td>ASICamera2 SDK</td><td class="yes">Verified</td></tr>
-          <tr><td class="mono">ZWO</td><td>Any other uncooled ASI camera, mono or colour</td><td>ASICamera2 SDK, whichever model it lists</td><td class="yes">Supported</td></tr>
-          <tr><td class="mono">ZWO</td><td>Cooled ASI cameras</td><td>Exposes and reads temperature; no cooler control yet</td><td class="part">Use Alpaca for now</td></tr>
-          <tr><td class="mono">ZWO</td><td>EAF focuser</td><td>ZWO USB SDK</td><td class="yes">Verified</td></tr>
-          <tr><td class="mono">ZWO</td><td>CAA rotator</td><td>ZWO USB SDK</td><td class="yes">Supported</td></tr>
-          <tr><td class="mono">ZWO</td><td>ASIAIR, as a backend</td><td>Its own network protocol, via libasi</td><td class="part">Untested on hardware</td></tr>
-          <tr><td class="mono">Player One</td><td>Poseidon-M PRO camera</td><td>Player One SDK, gain modes included</td><td class="yes">Verified</td></tr>
-          <tr><td class="mono">Player One</td><td>Any other Player One camera</td><td>Player One SDK; cooling, dew heater and read modes all wired</td><td class="yes">Supported</td></tr>
-          <tr><td class="mono">Wanderer Astro</td><td>Snowflake filter wheel</td><td>Native serial, protocol verified on hardware</td><td class="yes">Verified</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <p class="note">
-      <strong>Verified</strong> means the device has run whole unattended nights
-      on a real rig. <strong>Supported</strong> means the driver reaches it
-      through the same SDK or protocol, but nobody has run it through a night
-      yet. The ZWO EFW has no native driver; like any ASCOM device it connects
-      through the bundled COM host or Alpaca.
-    </p>
-  </div>
-</section>
-
-<!-- ================================================================= alpaca -->
-<section class="band" id="alpaca">
-  <div class="wrap stack gap-4">
-    <div class="band-head">
-      <p class="eyebrow">Everything else</p>
-      <h2>If it speaks ASCOM, it works.</h2>
-    </div>
-
-    <div class="grid grid-2">
-      <article class="card">
-        <span class="kicker">Direct</span>
-        <h3>ASCOM Alpaca</h3>
-        <p>
-          Any Alpaca endpoint connects over the network with no bridge at all:
-          cameras, mounts, focusers, wheels, rotators, domes, safety monitors,
-          switches and weather stations. Discovery finds them, you pick roles.
-          ZWO, Pegasus Astro, QHY, PrimaLuceLab, Optec, Lakeside, Moonlite and
-          the rest of the ASCOM ecosystem all reach AstroDeck this way.
-        </p>
-      </article>
-      <article class="card">
-        <span class="kicker">Windows-only drivers</span>
-        <h3>The bundled COM host</h3>
-        <p>
-          Gear that only ships a Windows COM driver still works: AstroDeck starts
-          and manages a local COM-to-Alpaca host itself. No separate ASCOM Remote
-          install and no second thing to keep running. On Linux and macOS there
-          is no COM host at all, so nothing pretends to work.
-        </p>
-      </article>
-    </div>
-
-    <div class="tablewrap">
-      <table>
-        <thead>
-          <tr><th>Function</th><th>What AstroDeck supports</th></tr>
-        </thead>
-        <tbody>
-          <tr><td class="mono">Plate solving</td><td>ASTAP, auto-detected, with AstroDeck's own star detection and HFR behind it</td></tr>
-          <tr><td class="mono">Guiding</td><td>Built-in guide engine, PHD2, or NINA's guider</td></tr>
-          <tr><td class="mono">Polar alignment</td><td>Three-point (TPPA), native</td></tr>
-          <tr><td class="mono">Forecast</td><td>Open-Meteo, Astrospheric</td></tr>
-          <tr><td class="mono">Satellite cloud</td><td>NOAA GOES-18 and GOES-19 (Americas)</td></tr>
-          <tr><td class="mono">Sky survey</td><td>DSS2 through HiPS, plus a ~250 MB offline pack</td></tr>
-          <tr><td class="mono">Alerts</td><td>ntfy, Telegram, webhook, dead-man's heartbeat</td></tr>
-          <tr><td class="mono">Host platforms</td><td>Windows, Linux, macOS, Raspberry Pi 4/5, Orange Pi. x86-64 and arm64</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</section>
-
-<!-- ============================================================== the seam -->
-<section class="band band-tint">
-  <div class="wrap stack gap-4">
-    <div class="band-head">
-      <p class="eyebrow">Why adding one is easy</p>
-      <h2>Everything above one file is vendor agnostic.</h2>
-    </div>
-
-    <figure>
-      <div class="framed">
-        <svg viewBox="0 0 1000 250" role="img" aria-label="Layer diagram. Sequencer, autofocus, guiding, flows and the sky atlas all sit above a single device abstraction. Below it sit native drivers, ASCOM Alpaca, the COM host, NINA, ASIAIR and the simulator, all interchangeable.">
-          <g font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.3">
-            <text x="40" y="28" fill="var(--dim)">KNOWS NOTHING ABOUT YOUR BRAND</text>
-            <text x="40" y="224" fill="var(--dim)">KNOWS EVERYTHING ABOUT ONE BRAND</text>
-          </g>
-
-          <g>
-            <rect x="40" y="40" width="920" height="52" rx="3" fill="var(--surface-2)" stroke="var(--line)"/>
-            <g font-family="Archivo, sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">
-              <text x="72"  y="72">Sequencer</text>
-              <text x="212" y="72">Autofocus</text>
-              <text x="352" y="72">Guiding</text>
-              <text x="472" y="72">Flows</text>
-              <text x="592" y="72">Sky Atlas</text>
-              <text x="732" y="72">Sessions</text>
-              <text x="862" y="72">Monitor</text>
-            </g>
-          </g>
-
-          <g>
-            <rect x="40" y="106" width="920" height="38" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.4"/>
-            <text x="72" y="130" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="1.6" fill="var(--accent)">devices/base.py: THE SEAM</text>
-            <text x="620" y="130" font-family="Spectral, serif" font-size="12" fill="var(--dim)">a mount can slew, report a pier side, and refuse</text>
-          </g>
-
-          <g>
-            <rect x="40" y="158" width="920" height="52" rx="3" fill="var(--surface-2)" stroke="var(--line)"/>
-            <g font-family="Archivo, sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">
-              <text x="72"  y="190">Native</text>
-              <text x="192" y="190">Alpaca</text>
-              <text x="322" y="190">COM host</text>
-              <text x="472" y="190">NINA</text>
-              <text x="592" y="190">ASIAIR</text>
-              <text x="722" y="190">Simulator</text>
-              <text x="862" y="190">Yours</text>
-            </g>
-          </g>
-
-          <g stroke="var(--line)" stroke-dasharray="3 3">
-            <line x1="176" y1="92" x2="176" y2="106"/>
-            <line x1="500" y1="92" x2="500" y2="106"/>
-            <line x1="820" y1="92" x2="820" y2="106"/>
-            <line x1="176" y1="144" x2="176" y2="158"/>
-            <line x1="500" y1="144" x2="500" y2="158"/>
-            <line x1="820" y1="144" x2="820" y2="158"/>
-          </g>
-        </svg>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AstroDeck hardware and compatibility</title>
+    <meta name="description" content="Native drivers, ASCOM Alpaca, Windows ASCOM, NINA and the experimental ASIAIR backend. Separate driver support from documented device checks.">
+    <link rel="canonical" href="https://epim.github.io/astrodeck/hardware.html">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="AstroDeck hardware and compatibility">
+    <meta property="og:description" content="Native drivers, ASCOM Alpaca, Windows ASCOM, NINA and the experimental ASIAIR backend. Separate driver support from documented device checks.">
+    <meta property="og:url" content="https://epim.github.io/astrodeck/hardware.html">
+    <meta name="twitter:card" content="summary">
+    <meta name="theme-color" content="#132735">
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/site.css">
+    <script src="assets/theme.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="index.html" aria-label="AstroDeck home"><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="12"/><ellipse cx="18" cy="18" rx="17" ry="6" transform="rotate(-35 18 18)"/><circle cx="18" cy="18" r="2"/><path d="M18 2v5M18 29v5M2 18h5M29 18h5"/></svg>AstroDeck</a><button class="menu-toggle" data-menu-toggle type="button" aria-controls="site-nav" aria-expanded="false">Menu</button>
+        <nav class="nav" id="site-nav" aria-label="Primary">
+          <a href="index.html">Overview</a><a href="features.html">Features</a><a href="flows.html">Flows</a><a href="hardware.html" aria-current="page">Hardware</a><a href="weather.html">Weather</a><a href="getting-started.html" class="nav-start">Get started</a><button class="theme-toggle" data-theme-toggle type="button" hidden aria-label="Change color theme">Theme: System</button>
+        </nav>
       </div>
-      <figcaption>
-        Swap a camera vendor and autofocus does not change. Add a backend and no
-        existing code moves. It is also why running alongside NINA or an ASIAIR
-        is a permanent option: they are backends like any other.
-      </figcaption>
-    </figure>
-  </div>
+    </header>
+    <main id="main" tabindex="-1">
+      <section class="page-hero">
+        <div class="wrap page-hero-grid">
+          <div data-claims="DRIVERS HARDWARE_CHECKS">
+            <p class="eyebrow">
+              Hardware
+            </p>
+            <h1>
+              Check the connection before the clear night.
+            </h1>
+            <p class="lede">
+              AstroDeck works through native drivers, ASCOM Alpaca and software backends. A driver&#x27;s supported device family is broader than the hardware checked on this project.
+            </p>
+          </div>
+          <aside class="page-index" aria-label="On this page">
+            <p>
+              On this page
+            </p>
+            <ul>
+              <li>
+                <a href="#native">Native drivers</a>
+              </li>
+              <li>
+                <a href="#alpaca">ASCOM</a>
+              </li>
+              <li>
+                <a href="#nina">NINA</a>
+              </li>
+              <li>
+                <a href="#asiair">ASIAIR</a>
+              </li>
+              <li>
+                <a href="#providers">Imaging providers</a>
+              </li>
+              <li>
+                <a href="#hosts">Hosts</a>
+              </li>
+              <li>
+                <a href="#ask">Request a device</a>
+              </li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+      <section id="native" class="section" data-claims="DRIVERS HARDWARE_CHECKS ZWO_CAMERA PLAYER_CAMERA ACCESSORIES">
+<div class="wrap section-layout">
+<div class="section-aside">
+            <p class="eyebrow">
+              01 / Native drivers
+            </p>
+            <h2>Native device drivers</h2>
+          </div>
+<div class="section-content">
+<div class="prose"><p>Native drivers use vendor SDKs or serial protocols. Verified below means the named check is recorded for that device. Supported means an implemented driver path, without the same recorded check. Neither label certifies every control or a full unattended night.</p></div>
+<div class="table-container"><table class="comparison compact-mobile"><caption>Recorded checks and implemented driver paths</caption><thead><tr>
+<th scope="col">Device</th>
+<th scope="col">Connection</th>
+<th scope="col">Status</th>
+<th scope="col">Evidence and limits</th>
+</tr></thead><tbody>
+<tr><th scope="row">ZWO AM5N mount</th>
+<td data-label="Connection">USB serial</td>
+<td data-label="Status">Verified</td>
+<td data-label="Evidence and limits">Native movement and tracking checks are recorded for an AM5N.</td>
+</tr>
+<tr><th scope="row">ZWO AM5 family</th>
+<td data-label="Connection">USB serial</td>
+<td data-label="Status">Supported</td>
+<td data-label="Evidence and limits">The family driver exists; the recorded native validation names the AM5N.</td>
+</tr>
+<tr><th scope="row">ZWO ASI220MM</th>
+<td data-label="Connection">ASICamera2 SDK</td>
+<td data-label="Status">Verified</td>
+<td data-label="Evidence and limits">SDK properties and gain checks are recorded. Native cooler and anti-dew control are not implemented.</td>
+</tr>
+<tr><th scope="row">Other SDK-enumerated ZWO ASI cameras</th>
+<td data-label="Connection">ASICamera2 SDK</td>
+<td data-label="Status">Supported</td>
+<td data-label="Evidence and limits">The native adapter discovers SDK-listed cameras. Native cooler and anti-dew control are not implemented.</td>
+</tr>
+<tr><th scope="row">Player One Poseidon-M Pro</th>
+<td data-label="Connection">Player One SDK</td>
+<td data-label="Status">Verified</td>
+<td data-label="Evidence and limits">SDK properties, gain and sensor-mode checks are recorded. Fetch the SDK on your machine.</td>
+</tr>
+<tr><th scope="row">Other SDK-enumerated Player One cameras</th>
+<td data-label="Connection">Player One SDK</td>
+<td data-label="Status">Supported</td>
+<td data-label="Evidence and limits">Controls follow reported capabilities. Fetch the SDK on your machine.</td>
+</tr>
+<tr><th scope="row">ZWO EAF focuser</th>
+<td data-label="Connection">ZWO USB SDK</td>
+<td data-label="Status">Supported</td>
+<td data-label="Evidence and limits">Recorded hardware inventory identifies an EAF. The driver implements movement, position and temperature.</td>
+</tr>
+<tr><th scope="row">ZWO CAA rotator</th>
+<td data-label="Connection">ZWO USB SDK</td>
+<td data-label="Status">Supported</td>
+<td data-label="Evidence and limits">Recorded hardware inventory identifies a CAA. The driver implements rotation controls.</td>
+</tr>
+<tr><th scope="row">Wanderer Snowflake filter wheel</th>
+<td data-label="Connection">USB serial</td>
+<td data-label="Status">Verified</td>
+<td data-label="Evidence and limits">The wheel&#x27;s serial protocol is recorded as checked on hardware.</td>
+</tr>
+</tbody></table></div>
+<aside class="notice"><p>Verification is limited to the check named in each row. SDK enumeration, a connected device and a completed imaging night are different evidence.</p></aside>
+</div></div>
 </section>
-
-<!-- ================================================================== ask -->
-<section class="band" id="ask">
-  <div class="wrap stack gap-3">
-    <div class="band-head">
-      <p class="eyebrow">Not on the list?</p>
-      <h2>Ask, and it gets added.</h2>
-      <p>
-        The list above is what has been built so far, not a judgement about what
-        deserves to exist. If your gear is missing, open an issue with what you
-        have and how it connects.
-      </p>
-    </div>
-
-    <div class="grid grid-3">
-      <article class="card">
-        <span class="kicker">For you</span>
-        <h3>Open an issue</h3>
-        <p>
-          Tell us the vendor, the model, and whether it has an ASCOM driver, an
-          Alpaca endpoint or a documented serial protocol. That is usually enough
-          to know how much work it is.
-        </p>
-      </article>
-      <article class="card">
-        <span class="kicker">For a contributor</span>
-        <h3>A handful of async methods</h3>
-        <p>
-          A backend implements a small protocol against
-          <code>devices/base.py</code>. There is a contract test suite every
-          backend runs against, so "does it behave like a mount" is a question
-          with an automated answer.
-        </p>
-      </article>
-      <article class="card">
-        <span class="kicker">For a vendor</span>
-        <h3>No fork required</h3>
-        <p>
-          Backends can ship as separate packages and register themselves through
-          an entry point. Your driver stays in your repo on your own release
-          schedule, and it appears in the equipment list like any other.
-        </p>
-      </article>
-    </div>
-
-    <div class="ctarow" style="margin-top:1rem">
-      <a class="btn btn-solid" href="https://github.com/epim/astrodeck/issues">Request a device</a>
-      <a class="btn btn-ghost" href="https://github.com/epim/astrodeck/blob/main/docs/development.md">Write a backend</a>
-    </div>
-  </div>
-</section>
-
-<footer>
-  <div class="wrap">
-    <hr class="footrule" style="margin-top:0">
-    <p>
-      Not affiliated with ZWO, Player One, Wanderer Astro, Pegasus Astro, QHY,
-      PrimaLuceLab, or the NINA, PHD2 or ASTAP projects. Names are used only to
-      say what AstroDeck talks to.
-    </p>
-    <p style="margin-top:.8rem">
-      <a href="index.html">Overview</a> ·
-      <a href="flows.html">Flows</a> ·
-      <a href="weather.html">Weather</a> ·
-      <a href="features.html">Features</a> ·
-      <a href="https://github.com/epim/astrodeck">GitHub</a>
-    </p>
-  </div>
-</footer>
-
-</body>
+      <section id="alpaca" class="section tinted">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              02 / ASCOM
+            </p>
+            <h2>
+              ASCOM connections
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="editorial-grid">
+              <article class="editorial-item" data-claims="ALPACA">
+                <h3>
+                  ASCOM Alpaca
+                </h3>
+                <p>
+                  Connect compatible network devices and assign their roles. AstroDeck has adapters for cameras, mounts, focusers, filter wheels, rotators, domes, safety monitors, switches and cover calibrators.
+                </p>
+              </article>
+              <article class="editorial-item" data-claims="COM">
+                <h3>
+                  Windows ASCOM drivers
+                </h3>
+                <p>
+                  The local COM-to-Alpaca host can expose installed Windows ASCOM drivers to AstroDeck. It requires the relevant ASCOM driver and the optional COM host dependency.
+                </p>
+              </article>
+            </div>
+            <aside class="notice">
+              <p>
+                Protocol support does not verify a particular manufacturer&#x27;s driver. Check the controls your device exposes.
+              </p>
+            </aside>
+          </div>
+        </div>
+      </section>
+      <section id="nina" class="section" data-claims="NINA">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              03 / NINA
+            </p>
+            <h2>
+              Alongside NINA
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                NINA&#x27;s Advanced API plugin provides the connection. AstroDeck&#x27;s backend exposes camera, mount, focuser, filter wheel, rotator, switch and guider roles. NINA keeps the hardware connection.
+              </p>
+            </div>
+            <div class="section-links">
+              <a class="text-link" href="getting-started.html#nina">Set up the NINA connection</a>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="asiair" class="section tinted" data-claims="ASIAIR">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              04 / ASIAIR
+            </p>
+            <h2>
+              Alongside ASIAIR
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                You can use AstroDeck&#x27;s planning and weather tools while ASIAIR runs the rig. An optional experimental backend also exists for ASIAIR&#x27;s proprietary network protocol through libasi.
+              </p>
+            </div>
+            <div class="prose">
+              <ul>
+                <li>
+                  The backend exposes camera, mount, focuser and switch roles.
+                </li>
+                <li>
+                  It does not provide filter-wheel, rotator or guider roles. Guiding remains in ASIAIR.
+                </li>
+                <li>
+                  The adapter checks whether the box is busy before changing state.
+                </li>
+                <li>
+                  The repository tests use a fake transport; full AstroDeck operation on an ASIAIR is not established by those tests.
+                </li>
+                <li>
+                  Source installs require the asiair extra, which installs libasi from its repository.
+                </li>
+              </ul>
+            </div>
+            <aside class="notice">
+              <p>
+                This is not an official ASIAIR API integration. Treat the optional backend as experimental.
+              </p>
+            </aside>
+          </div>
+        </div>
+      </section>
+      <section id="providers" class="section" data-claims="PROVIDERS ASTAP GUIDE">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              05 / Imaging providers
+            </p>
+            <h2>
+              Imaging providers
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="table-container">
+              <table class="comparison compact-mobile">
+                <thead>
+                  <tr>
+                    <th scope="col">
+                      Tool
+                    </th>
+                    <th scope="col">
+                      Requirement
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th scope="row">
+                      Plate solving
+                    </th>
+                    <td data-label="Requirement">
+                      ASTAP and a compatible star database, or NINA&#x27;s solver when available.
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">
+                      Autofocus
+                    </th>
+                    <td data-label="Requirement">
+                      AstroDeck native engine or a supported backend provider.
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">
+                      Guiding
+                    </th>
+                    <td data-label="Requirement">
+                      AstroDeck native engine, PHD2 or NINA&#x27;s guider connection.
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">
+                      Polar alignment
+                    </th>
+                    <td data-label="Requirement">
+                      AstroDeck native engine or NINA TPPA when its prerequisites are present.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <aside class="notice">
+              <p>
+                Native guiding and native autofocus require astrodeck_native, which published releases do not include yet. See <a href="https://github.com/epim/astrodeck/issues/630">issue #630</a> for release packaging status.
+              </p>
+            </aside>
+          </div>
+        </div>
+      </section>
+      <section id="hosts" class="section tinted" data-claims="RELEASE ORANGE">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              06 / hosts
+            </p>
+            <h2>
+              Host platforms
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                The release workflow targets Windows x86-64, Linux x86-64, Linux arm64 and macOS arm64. Orange Pi 5 Pro appliance tooling is a separate setup path. Check a release&#x27;s asset list before choosing a download.
+              </p>
+            </div>
+            <div class="section-links">
+              <a class="text-link" href="getting-started.html">Choose a setup path</a>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="ask" class="section" data-claims="EXTENSIONS">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              07 / Request a device
+            </p>
+            <h2>
+              Tell us about missing hardware.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                Open an issue with the vendor, model and connection method. Include the driver or protocol documentation if you have it. Third-party backends can register through the package entry-point interface.
+              </p>
+            </div>
+            <div class="section-links">
+              <a class="text-link" href="https://github.com/epim/astrodeck/issues">Request a device</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <div class="wrap">
+        <div class="footer-top">
+          <div class="footer-brand">
+            <a class="brand" href="index.html" aria-label="AstroDeck home"><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="12"/><ellipse cx="18" cy="18" rx="17" ry="6" transform="rotate(-35 18 18)"/><circle cx="18" cy="18" r="2"/><path d="M18 2v5M18 29v5M2 18h5M29 18h5"/></svg>AstroDeck</a>
+            <p>
+              Plan the night. Keep the rig in view.
+            </p>
+          </div>
+          <div class="footer-group">
+            <h2>
+              Explore
+            </h2>
+            <ul>
+              <li>
+                <a href="index.html">Overview</a>
+              </li>
+              <li>
+                <a href="features.html">Features</a>
+              </li>
+              <li>
+                <a href="flows.html">Flows</a>
+              </li>
+              <li>
+                <a href="hardware.html">Hardware</a>
+              </li>
+              <li>
+                <a href="weather.html">Weather</a>
+              </li>
+              <li>
+                <a href="getting-started.html">Get started</a>
+              </li>
+              <li>
+                <a href="releases.html">Releases</a>
+              </li>
+            </ul>
+          </div>
+          <div class="footer-group">
+            <h2>
+              Project
+            </h2>
+            <ul>
+              <li>
+                <a href="https://github.com/epim/astrodeck">Source code</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/blob/main/docs/guide/README.md">User guide</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/issues">Issues</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/blob/main/LICENSE">Apache-2.0</a>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer-bottom">
+          <p>
+            AstroDeck is open source under Apache-2.0. Device names identify compatibility; AstroDeck is not affiliated with their manufacturers. DSS2 imagery (c) AAO/STScI, served from CDS/ESA HiPS mirrors.
+          </p>
+          <a href="releases.html">Release notes</a>
+        </div>
+      </div>
+    </footer>
+  </body>
 </html>
