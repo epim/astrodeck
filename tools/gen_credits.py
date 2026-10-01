@@ -9,8 +9,9 @@ the day after it ships, and being wrong here is a licence breach rather than a
 cosmetic defect. Every entry below is read out of something that already had to
 be correct for the build to work — the installed Python environment,
 ``ui/package-lock.json``, ``native/Cargo.lock``, the vendor directory, the
-catalogue data directory. Add a dependency and its credit appears; the only way
-to ship an uncredited dependency is to delete this generator.
+catalogue data directory. Artifact inspection is also required: binary wheels,
+compiler helpers and source-embedded data can contain components absent from
+their top-level package metadata.
 
 Four things are NOT in any manifest, and each gets a different treatment rather
 than a shrug:
@@ -182,7 +183,8 @@ def _resolve(entry_name: str, spdx: str | None) -> tuple[policy.Resolution | Non
     to delete the check; surfacing puts the decision on a screen the owner reads.
     """
     try:
-        return policy.resolve(spdx), None
+        resolved = policy.resolve(spdx)
+        return resolved, resolved.flag
     except policy.Flag as exc:
         return None, f"{entry_name}: {exc}"
 
@@ -370,11 +372,9 @@ def collect_npm(pool: TextPool) -> list[Entry]:
     for path, meta in sorted(lock["packages"].items()):
         if not path:
             continue  # the root project itself
-        if meta.get("dev"):
-            # Build-time only: vite/tailwind/tsc never place their own licensed
-            # bytes in the shipped bundle. Scope is stated on the screen.
-            continue
         name = path.split("node_modules/")[-1]
+        if meta.get("dev") and name not in registry.NPM_RUNTIME_CONTRIBUTORS:
+            continue  # No observed runtime bytes; see artifact input inventory.
         pkg_dir = node_modules / path
         texts = _gather_texts(pool, pkg_dir, rel_to=pkg_dir) if pkg_dir.is_dir() else []
         # Only the package's own top-level licence files — never a dependency's.
@@ -389,7 +389,7 @@ def collect_npm(pool: TextPool) -> list[Entry]:
             group="fonts" if is_font else "npm",
             url=meta.get("resolved", "").split("/-/")[0] or "",
             texts=texts,
-            notes="" if texts else
+            notes=registry.NPM_RUNTIME_CONTRIBUTORS.get(name, "") if texts else
                   "Upstream ships no licence file in the package; the SPDX id "
                   "above is from its package.json and no text could be reproduced.",
         ))
@@ -510,8 +510,36 @@ def collect_registry(pool: TextPool, key: str, group: str, tier: str) -> list[En
                  for t in spec.get("texts", [])]
         out.append(_entry(
             pool, name=spec["name"], version=spec.get("version", ""),
-            spdx=spec["spdx"], tier=tier, group=group, url=spec.get("url", ""),
+            spdx=spec["spdx"], tier=spec.get("tier", tier), group=spec.get("group", group), url=spec.get("url", ""),
             texts=texts, notes=spec["notes"], flag=spec.get("flag"),
+            requires=tuple(spec["requires"]) if "requires" in spec else None,
+            summaries=spec.get("summaries")))
+    return out
+
+
+def collect_bundled_components(pool: TextPool) -> list[Entry]:
+    """Exact components observed in the reviewed Windows artifact.
+
+    This manifest is an evidence-backed manual supplement, not discovery of
+    arbitrary future binary internals. The artifact gates retain that limit.
+    """
+    specs = json.loads(_read_text(REPO / "tools/licence/bundled-components.json"))
+    out = []
+    for spec in specs:
+        texts = []
+        for item in spec.get("texts", []):
+            path = (REPO / item["licence_text"]).resolve()
+            if not path.is_relative_to((REPO / "tools/licence_texts").resolve()):
+                raise Fatal("Bundled-component text must be in tools/licence_texts")
+            body = path.read_text(encoding="utf-8")
+            if hashlib.sha256(body.encode("utf-8")).hexdigest() != item["sha256"]:
+                raise Fatal(f"Bundled-component notice changed: {path.name}")
+            texts.append({"title": item["title"], "hash": pool.add(body)})
+        out.append(_entry(
+            pool, name=spec["name"], version=spec["version"], spdx=spec["spdx"],
+            tier="reviewed-artifact-component", group="bundled",
+            url=spec.get("url", ""), notes=spec["notes"],
+            texts=texts, flag=spec.get("flag"),
             requires=tuple(spec["requires"]) if "requires" in spec else None,
             summaries=spec.get("summaries")))
     return out
@@ -549,6 +577,8 @@ GROUPS = [
     ("data", "Catalogues and data",
      "Astronomical data shipped with AstroDeck. Where we changed the data, this "
      "says so."),
+    ("remote-data", "Optional remote survey data",
+     "Downloaded by the operator; not a claim these datasets are bundled. Database and original-image rights remain separate."),
     ("services", "Network services",
      "Services AstroDeck calls over the internet. Nothing here ships with the "
      "app; each is credited because its terms ask to be."),
@@ -558,18 +588,34 @@ GROUPS = [
      "Code written by reading someone else's source. The obligation follows the "
      "logic, not the file, so these notices travel even though no upstream line "
      "was copied."),
+    ("bundled", "Components inside the reviewed Windows artifact",
+     "Exact interpreter, native-library and vendored components observed in the October audit. These records do not certify other platforms or future builds."),
     ("python", "Python packages",
-     "The server and everything it imports. The single-file binary bundles all "
-     "of these, so all of them are redistributed."),
+     "Declared and installed Python dependency closure, including optional extras. Actual executable contents are inventoried separately; this is not proof that every package ships."),
     ("npm", "JavaScript packages",
-     "Bundled into the interface JavaScript."),
+     "Declared production dependencies plus compiler helpers observed in the built interface."),
     ("fonts", "Fonts",
      "Typefaces embedded in the interface. Fonts carry their own licence, "
      "separate from the code that renders them."),
     ("cargo", "Rust crates",
-     "Compiled into the native engine that ships as a Python extension module."),
+     "Dependencies of the native Python extension; inclusion depends on the artifact build. Published executable packaging is tracked separately."),
     ("astrodeck", "AstroDeck's own components", "Written for this project."),
 ]
+
+
+def input_fingerprints() -> dict[str, str]:
+    paths = [
+        REPO / "tools/gen_credits.py", REPO / "tools/credits_registry.py",
+        REPO / "tools/licence_policy.py", REPO / "server/pyproject.toml",
+        REPO / "ui/package-lock.json", REPO / "native/Cargo.lock",
+        REPO / "native/Cargo.toml", REPO / "LICENSE",
+        REPO / "tools/licence/bundled-components.json",
+    ]
+    paths += list((REPO / "tools/licence_texts").glob("*"))
+    paths += list((REPO / "native/crates").glob("*/Cargo.toml"))
+    return {p.relative_to(REPO).as_posix():
+            hashlib.sha256(p.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+            for p in sorted(paths) if p.is_file()}
 
 
 def build() -> dict:
@@ -584,6 +630,7 @@ def build() -> dict:
     entries += collect_registry(pool, "SERVICES", "services", "service")
     entries += collect_registry(pool, "PROGRAMS", "programs", "external-program")
     entries += collect_registry(pool, "DERIVED", "derived", "derived-source")
+    entries += collect_bundled_components(pool)
     entries += collect_own_crates(pool)
 
     # Anything the policy module refused to clear is lifted out of its ecosystem
@@ -600,17 +647,19 @@ def build() -> dict:
     pyproject = tomllib.loads(_read_text(REPO / "server" / "pyproject.toml"))
     return {
         "generator": "tools/gen_credits.py",
+        "input_fingerprints": input_fingerprints(),
         "project": {
             "name": "AstroDeck",
             "version": pyproject["project"]["version"],
             "spdx": "Apache-2.0",
         },
         "scope": (
-            "Every component whose bytes ship inside an AstroDeck release or are "
-            "compiled into one, plus every external program and network service "
-            "AstroDeck depends on at runtime. Build-time-only tooling (vite, "
-            "tailwindcss, typescript, pytest) is not listed: none of it places "
-            "its own licensed code in a shipped artifact."),
+            "Declared dependencies, observed artifact subcomponents, external "
+            "programs and network services used by AstroDeck. Compiler runtime helpers and "
+            "CSS rules that enter the output are included, even if their npm "
+            "package is a development dependency. Other development tooling "
+            "is inventoried separately. Artifact coverage and unresolved "
+            "packaging obligations are recorded in tools/licence/."),
         "licenses": pool.as_json(),
         "groups": [
             {"id": gid, "title": title, "blurb": blurb,

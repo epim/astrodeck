@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from . import config
+from .aio import reap
 from .events import bus
 from .persist import write_json_atomic
 from .profiles import profiles
@@ -58,10 +59,7 @@ class DuskArm:
     async def stop(self):
         if self._task is not None:
             self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+            await reap(self._task)
             self._task = None
         self.connecting = False
 

@@ -34,8 +34,8 @@ from __future__ import annotations
 
 import astrodeck.sequence.engine as engine_mod
 from _group_harness import GROUP_NAME, Night, grid_plan, group_hub, group_store
-from astrodeck.sequence.group_rules import (DEFER_WAIT_S, GUIDE_START,
-                                            GroupRun, PanelDeferred)
+from astrodeck.sequence.group_rules import (CENTRING_HOLD_RETRY_S, DEFER_WAIT_S,
+                                            GUIDE_START, GroupRun, PanelDeferred)
 from astrodeck.sequence.models import Schedule
 from astrodeck.sequence.session import session_store
 
@@ -84,41 +84,40 @@ async def test_a_pass_whose_only_exposure_was_floor_stopped_does_not_wait(
     with no ``DEFER_WAIT_S`` and no anti-spin set-aside. Pass 2 is 1-1's
     deferral alone and does wait; pass 3 sets 1-1 aside.
 
-    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). 1-1's misses are
-    still its own (1-2 centred beside it in pass 1, and from pass 2 it is
-    the lone panel tried), so they still count, now at the pass boundary.
-    But a centring set-aside is now "for now": it expires once a night,
-    45 minutes on here (``SET_ASIDE_EXPIRY_S``), and 1-1 is tried again
-    with a clean slate, strikes out again (passes 4 to 6, waiting 300 s
-    after 4 and 5), and is set aside for the night, and only then does the
-    night end. So the session holds two centring records for 1-1, the first
-    marked expired, and 1-1 is hopped six times. Before H4 the records were
-    ``["p01", "p00"]``, the waits pass 2's alone and the hops three. What
-    this case grades, that pass 1 shot and pass 2 did not wait, is
-    unchanged. RED under the same mutant, re-run by the H4 integration in
-    a private copy of server/ (scratchpad H4-INTEG-mut), pass 1 again
-    waiting 300 s for nothing (observed):
-        AssertionError: ['M31: pass 1 took no exposures and deferred 1
-        visits; waiting 300 s before the next pass', 'M31: pass 2 took no
-        expos...300 s before the next pass', 'M31: pass 5 took no exposures
-        and deferred 1 visits; waiting 300 s before the next pass']
-        assert ['M31: pass 1...he next pass'] == ['M31: pass 2...he next
-        pass']
+    RE-PINNED FOR WP-33 under backlog ruling D-03 (owner-approved
+    2026-09-30, #591). 1-1's pass 1 miss is still its own (1-2 centred
+    beside it that pass, so pass 1's floor is the ordinary two-tried
+    floor), and still counts at the pass boundary, unchanged. But from
+    pass 2 on 1-2 is already set aside (its own floor), so 1-1 is the
+    GROUP'S ONLY LIVE PANEL, and D-03 widened ``centring_pass_verdict``
+    to call that case the sky's too: every live member tried and missed,
+    down to the last one. So 1-1's solo misses are no longer counted
+    against ITS OWN three-strike floor at all; they HOLD the group
+    (``CENTRING_HOLD_RETRY_S`` = 600 s, not ``DEFER_WAIT_S`` = 300 s)
+    pass after pass, and D-03's own escalation -- the one this case now
+    exists to show reaches a single-panel mosaic -- takes over: an alert
+    at ``HELD_PASS_ALERT_AT`` (3) consecutive held passes and the group
+    set aside at ``HELD_PASS_SET_ASIDE_AT`` (6), with ONE group-kind
+    record, never a per-panel ``centring`` one (which only the old,
+    bypassed, three-strike path ever wrote), so there is no expiry either.
+    1-1 is hopped seven times: the one tried pass and the six held passes
+    that follow it. What this case grades, that pass 1 shot and pass 2
+    did not wait ``DEFER_WAIT_S`` for nothing, is unchanged; it waits
+    ``CENTRING_HOLD_RETRY_S`` instead, for a different, D-03, reason. RED
+    under the same mutant, re-run by the WP-33 integration in a private
+    copy of server/ (scratchpad H4-INTEG-mut), pass 1 again waiting for
+    nothing when it should have shot (observed):
+        AssertionError: [('p01', 'floor', False)]
+        assert [('p01', 'floor', False)] == [('p01', 'floor', False),
+        ('p00', 'group', False)]
 
     MUTANT "no note_visit" (the ``run.note_visit(...)`` call deleted from
     `_visit_panel`'s FloorStop arm): RED, pass 1 reads as a pass of no
-    exposures and waits 300 s for nothing (observed):
-        AssertionError: ['M31: pass 1 took no exposures and deferred 1
-        visits; waiting 300 s before the next pass', 'M31: pass 2 took no
-        exposures and deferred 1 visits; waiting 300 s before the next
-        pass']
-        assert ['M31: pass 1...he next pass'] == ['M31: pass 2...he next
-        pass']
-          At index 0 diff: 'M31: pass 1 took no exposures and deferred 1
-        visits; waiting 300 s before the next pass' != 'M31: pass 2 took no
-        exposures and deferred 1 visits; waiting 300 s before the next pass'
-          Left contains one more item: 'M31: pass 2 took no exposures and
-        deferred 1 visits; waiting 300 s before the next pass'
+    exposures and 1-2's floor stop is dropped from the ledger, so the
+    group's anti-spin set-aside fires on pass 1 instead of 1-2 ever
+    shooting (observed):
+        AssertionError: ['p01'] != ['p01', 'floor', False), ('p00',
+        'group', False)]
     The same mutant turns the guider case below RED as well, with the
     failure recorded there, and "note_visit counts nothing" in `GroupRun`
     turns both RED with the same lines (observed).
@@ -141,21 +140,29 @@ async def test_a_pass_whose_only_exposure_was_floor_stopped_does_not_wait(
     assert night.done, night.lines[-4:]
     assert _shot(night, "1-2") == ["L"], night.shots()
     assert _shot(night, "1-1") == [], night.shots()
-    # 1-2's floor, 1-1's first streak (expired, #534) and its second (for
-    # the night).
+    # 1-2's floor, then 1-1 alone holds the group under D-03 until the
+    # escalation sets the whole (one-panel) group aside; never a per-panel
+    # "centring" record, since the three-strike path is never reached once
+    # 1-1 is the group's last live panel.
     assert [(r["target_id"], r["kind"], bool(r.get("expired")))
             for r in night.stored.set_aside] == [
-        ("p01", "floor", False), ("p00", "centring", True),
-        ("p00", "centring", False)], night.stored.set_aside
+        ("p01", "floor", False), ("p00", "group", False)], night.stored.set_aside
 
-    waits = night.said("waiting 300 s before the next pass")
-    assert waits == [f"M31: pass {n} took no exposures and deferred 1 visits; "
-                     f"waiting 300 s before the next pass"
-                     for n in (2, 4, 5)], waits
+    holds = night.said("holding the mosaic 10 minutes before the next pass")
+    assert holds == [
+        f"M31: centring failed on every one of the 1 panels tried in pass "
+        f"{n}: the sky or the geometry is to blame, not a panel, so no "
+        f"panel's failure count moved; holding the mosaic 10 minutes "
+        f"before the next pass"
+        for n in (2, 3, 4, 5, 6)], holds
+    assert night.said("held for 3 passes in a row"), night.lines
     hops = _gotos(night, "1-1")
-    assert len(hops) == 6, hops
-    assert hops[1] - hops[0] < DEFER_WAIT_S <= hops[2] - hops[1], (
-        f"1-1's hops at {hops}: pass 2 began at once, pass 3 after the wait")
+    assert len(hops) == 7, hops
+    assert hops[1] - hops[0] < DEFER_WAIT_S, (
+        f"1-1's hops at {hops}: pass 2 began at once")
+    assert all(b - a == CENTRING_HOLD_RETRY_S for a, b in zip(hops[1:], hops[2:])), (
+        f"1-1's hops at {hops}: every held pass after pass 2 waits "
+        f"CENTRING_HOLD_RETRY_S, D-03's hold, not DEFER_WAIT_S")
 
 
 async def test_a_floor_stopped_panels_guider_start_counts_for_its_pass(

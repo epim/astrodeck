@@ -23,6 +23,17 @@ For each site a caller is cancelled while the task it waits on takes 0.2 s to
 die: it must end with ``CancelledError`` within the bound, and the code after
 the wait must not run. A guard then scans the whole package for the shape.
 
+#252 found the same class surviving in two spellings the guard above did not
+scan: ``with contextlib.suppress(BaseException):`` (``BaseException`` catches
+``CancelledError`` too) and ``task.cancel(); try: await task; except
+(CancelledError, ...): pass`` written out instead of a ``suppress``. WP-35
+converted every site of both spellings outside ``engine.py``, ``app.py`` and
+``resume_arm.py`` (``server/tests/test_w4_cancel_safe_awaits.py`` behaviourally
+pins two of them) and widened the guard below to scan both. The three hot
+files keep the shape until WP-59 converts them there too, and sit on the
+guard's allowlist in the meantime, named by function so a drifting line number
+cannot desync the allowlist from the site it names.
+
 Each test names the mutation it was shown RED under, run from a byte-for-byte
 backup of ``hub.py`` and restored byte-identical afterwards, with the observed
 failure quoted verbatim. The controls stay green under every one.
@@ -270,13 +281,11 @@ async def test_control_an_uncancelled_stop_loop_and_wait_returns(loop_hub):
 _PACKAGE = Path(astrodeck.__file__).resolve().parent
 
 #: What the scan counts as suppressing a cancel: ``CancelledError`` named
-#: outright, the #235 shape. NOT YET ``BaseException``, which swallows it
-#: too: ``suppress(BaseException)`` around an await of a cancelled task
-#: stands in three files this change does not own (focus/autofocus.py,
-#: remote/relay_client.py, sequence/engine.py), and the same class written
-#: as ``try: await task`` / ``except CancelledError: pass`` in more. Both are
-#: #252; add "BaseException" here, and a scan of the try form, as they close.
-_EATS_CANCEL = {"CancelledError"}
+#: outright (#235's own shape), or ``BaseException``, which catches it too
+#: (#252's first widening -- WP-35 converted the two sites that used to make
+#: this unsafe, ``focus/autofocus.py`` and ``remote/relay_client.py``; a third,
+#: ``sequence/engine.py``, is WP-59's and sits on the allowlist below).
+_EATS_CANCEL = {"CancelledError", "BaseException"}
 
 
 def _name(node) -> str | None:
@@ -319,8 +328,8 @@ def _awaits_a_task(node: ast.Await) -> bool:
 
 
 def _eaten_cancels(source: str, filename: str) -> list[str]:
-    """``file:line`` of every ``with suppress(CancelledError...)`` whose body
-    awaits a task."""
+    """``file:line`` of every ``with suppress(CancelledError/BaseException)``
+    whose body awaits a task (#235's ``suppress`` spelling)."""
     hits = []
     for node in ast.walk(ast.parse(source, filename=filename)):
         if not isinstance(node, (ast.With, ast.AsyncWith)):
@@ -334,9 +343,114 @@ def _eaten_cancels(source: str, filename: str) -> list[str]:
     return hits
 
 
-#: The #235 shape as ``stop_guiding`` had it, and the same with a bare
-#: ``CancelledError`` and an attribute: the scan must flag both, so it is
-#: shown able to fire.
+def _handler_catches_cancel(h: ast.ExceptHandler) -> bool:
+    """``except CancelledError:`` or ``except (CancelledError, ...):``,
+    bare or ``asyncio.``-qualified either way."""
+    t = h.type
+    if t is None:          # a bare `except:` catches it too, but is its own,
+        return False        # much louder, code smell -- not this scan's job.
+    if isinstance(t, ast.Tuple):
+        return any(_name(e) == "CancelledError" for e in t.elts)
+    return _name(t) == "CancelledError"
+
+
+def _handler_swallows(h: ast.ExceptHandler) -> bool:
+    """True when the handler's body never raises -- #252's ``try`` spelling
+    needs this in ADDITION to catching CancelledError, because ``except
+    CancelledError: raise`` (plain control-flow passthrough, all over
+    engine.py) is not the shape at all. A ``raise`` on only SOME branch
+    (resume_arm.py's ladder cancel, which re-raises only when the cancel was
+    not this task's own ``stop()``) also counts as "does not swallow": the
+    naive scan has no way to know the branch is exhaustive, and a false
+    negative there is far cheaper than another allowlist entry for a site
+    that already gets this right."""
+    return not any(isinstance(n, ast.Raise) for n in _walk_body(h.body))
+
+
+def _eaten_cancels_tryexcept(source: str, filename: str) -> list[str]:
+    """``file:line`` of every ``try: await <task> except CancelledError...:
+    <no raise>`` -- #252's second spelling (``task.cancel()`` then a plain
+    ``try``/``except`` where a ``suppress`` would have been, as the first
+    spelling is nothing else)."""
+    hits = []
+    for node in ast.walk(ast.parse(source, filename=filename)):
+        if not isinstance(node, ast.Try):
+            continue
+        body_awaits_a_task = any(
+            isinstance(inner, ast.Await) and _awaits_a_task(inner)
+            for inner in _walk_body(node.body))
+        if not body_awaits_a_task:
+            continue
+        if any(_handler_catches_cancel(h) and _handler_swallows(h)
+              for h in node.handlers):
+            hits.append(f"{filename}:{node.lineno}")
+    return hits
+
+
+def _qualname_at(tree: ast.AST, lineno: int) -> str | None:
+    """The dotted name of the innermost function containing ``lineno``
+    (``Class.method``, or ``outer.inner`` for a nested ``def``), or None at
+    module level. Resolves the allowlist below, which is keyed by function
+    name rather than line number because the issue's own line numbers (taken
+    from the 2026-09-24 tree) had already drifted by the time WP-35 ran."""
+    best: str | None = None
+
+    def visit(node: ast.AST, stack: list[str]) -> None:
+        nonlocal best
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            stack = stack + [node.name]
+        start, end = getattr(node, "lineno", None), getattr(node, "end_lineno", None)
+        if (start is not None and end is not None and start <= lineno <= end
+                and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            best = ".".join(stack)
+        for child in ast.iter_child_nodes(node):
+            visit(child, stack)
+
+    visit(tree, [])
+    return best
+
+
+#: Real matches of the shape that are not WP-35's (#252) to fix, kept out of
+#: ``hits`` below instead of being silently out of scan scope, so a NEW
+#: instance appearing anywhere else still fails loudly. Keyed by (path
+#: relative to the package, the enclosing function's qualified name).
+#:
+#: * The three "hot" files WP-35's plan explicitly defers (``engine.py``,
+#:   ``app.py``, ``resume_arm.py``): WP-59 converts these and removes their
+#:   entries here. Found by running this scan over the real tree rather than
+#:   copied from the issue, so the set is exact for the tree WP-35 ran on,
+#:   not the 2026-09-24 one the issue was filed against.
+#: * ``hub.py``'s ``_run_to_its_bound`` is not a bug at all: it re-awaits the
+#:   SAME shielded task in a loop until it is done, then raises the caller's
+#:   cancel itself -- but the ``raise`` sits in the surrounding ``except``,
+#:   outside the handler this scan looks inside of, so the naive check cannot
+#:   tell it apart from a swallow (#252's first comment calls this out by
+#:   name and recommends exactly this allowlisting).
+#:   ``test_teardown_cancel_cleanup.py::test_control_a_cancel_during_the_
+#:   disconnects_waits_for_them`` pins that the cancel does get out.
+#:   ``SequenceEngine._run``'s own wind-down loop at the UNSAFE teardown is
+#:   the same shape, for the same reason, and also not WP-35's file to edit.
+#: * ``weather.py``'s ``WeatherService.stop`` turned up widening this scan
+#:   for #252, is not in that issue's own list, and is not a WP-35 file
+#:   (``weather.py`` belongs to WP-37); reported as its own new defect
+#:   instead of fixed here.
+_ALLOWLIST: set[tuple[str, str]] = {
+    ("hub.py", "_run_to_its_bound"),
+    ("sequence/engine.py", "SequenceEngine.abort"),
+    ("sequence/engine.py", "SequenceEngine._run"),
+    ("sequence/engine.py", "SequenceEngine._flip_bounded"),
+    ("api/app.py", "_lifespan"),
+    ("api/app.py", "_spawn.wrapped"),
+    ("api/app.py", "_spawn_connect.wrapped"),
+    ("sequence/resume_arm.py", "ResumeArm.stop"),
+    ("weather.py", "WeatherService.stop"),
+}
+
+
+#: The #235 shape as ``stop_guiding`` had it, the same with a bare
+#: ``CancelledError`` and an attribute, and ``BaseException`` instead
+#: (#252's first widening): the scan must flag all three, so it is shown
+#: able to fire.
 _KNOWN_POSITIVE = '''
 import asyncio
 import contextlib
@@ -353,10 +467,46 @@ async def cancel(self):
     self._task.cancel()
     with suppress(CancelledError):
         await asyncio.wait_for(self._task, 5.0)
+
+async def teardown(self):
+    self._task.cancel()
+    with contextlib.suppress(BaseException):
+        await self._task
 '''
 
-#: What it must not flag: the fix, a suppress that cannot catch a cancel, and
-#: a suppress around a fresh call rather than a task.
+#: #252's second spelling: the same two shapes written as a plain
+#: ``try``/``except`` where a ``suppress`` would have been (``pass``), and
+#: one that re-raises -- which is NOT this shape and must not be flagged.
+_KNOWN_POSITIVE_TRYEXCEPT = '''
+import asyncio
+
+async def stop(self):
+    self._task.cancel()
+    try:
+        await self._task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+async def cancel(self):
+    self._task.cancel()
+    try:
+        await self._task
+    except asyncio.CancelledError:
+        pass
+
+async def propagates(self):
+    self._task.cancel()
+    try:
+        await self._task
+    except asyncio.CancelledError:
+        raise
+'''
+
+#: What it must not flag: the fix, a suppress/except that cannot catch a
+#: cancel, a suppress around a fresh call rather than a task, and a
+#: try/except that re-raises on some branch (resume_arm.py's ladder cancel
+#: shape: it only sometimes propagates, by design, and the scan must trust a
+#: ``raise`` anywhere in the handler rather than guess which branch runs).
 _KNOWN_NEGATIVE = '''
 import asyncio
 import contextlib
@@ -369,32 +519,69 @@ async def stop(self, task):
         await task
     with contextlib.suppress(asyncio.CancelledError):
         await asyncio.sleep(1.0)
+    try:
+        await asyncio.sleep(1.0)
+    except asyncio.CancelledError:
+        pass
+
+async def sometimes_propagates(self, condition):
+    try:
+        result = await self._task
+    except asyncio.CancelledError:
+        if condition:
+            raise
+        result = None
+    return result
 '''
 
 
 def test_the_scan_fires_on_the_known_shapes_and_only_them():
-    """The scan's own known positive and negative. A scan that cannot fire
+    """The scan's own known positives and negative. A scan that cannot fire
     would pass the package whatever it held."""
     assert _eaten_cancels(_KNOWN_POSITIVE, "known.py") == [
-        "known.py:10", "known.py:15"]
+        "known.py:10", "known.py:15", "known.py:20"]
+    assert _eaten_cancels_tryexcept(_KNOWN_POSITIVE_TRYEXCEPT, "known.py") == [
+        "known.py:6", "known.py:13"]
     assert _eaten_cancels(_KNOWN_NEGATIVE, "known.py") == []
+    assert _eaten_cancels_tryexcept(_KNOWN_NEGATIVE, "known.py") == []
 
 
 def test_no_await_of_a_task_under_astrodeck_suppresses_a_cancel():
-    """No ``with suppress(CancelledError...)`` around an await of a task,
-    anywhere under ``astrodeck/``. Use ``astrodeck.aio.reap``.
+    """No ``with suppress(CancelledError/BaseException)`` around an await of
+    a task, and no ``try: await <task> except CancelledError...: <no
+    raise>`` either (#252's two spellings added to #235's own), anywhere
+    under ``astrodeck/`` that is not on ``_ALLOWLIST`` above. Use
+    ``astrodeck.aio.reap``.
 
     MUTANT "restore suppress(CancelledError) around the await", at each of
-    the four sites in turn -- RED, observed verbatim (the line numbers are
-    the tree's at the time):
+    the four #235 sites in turn -- RED, observed verbatim (the line numbers
+    are the tree's at the time):
 
-        AssertionError: these await a task under suppress(CancelledError),
-        which eats a cancel of their caller too (#235); wait through
-        astrodeck.aio.reap instead: ['guide/native.py:1048']
+        AssertionError: these await a task under suppress(CancelledError) or
+        a try/except that swallows it (#235, widened by #252), which eats a
+        cancel of their caller too; wait through astrodeck.aio.reap instead:
+        ['guide/native.py:1048']
 
     and the same with ``['hub.py:4519']`` (``_cancel_warm_locked``),
     ``['hub.py:5257']`` (``start_loop``) and ``['hub.py:5322']``
     (``stop_loop_and_wait``).
+
+    MUTANT "restore try/except around the await" in ``dusk_arm.py``'s
+    ``stop`` (WP-35, #252) -- RED, observed verbatim:
+
+        AssertionError: these await a task under suppress(CancelledError) or
+        a try/except that swallows it (#235, widened by #252), which eats a
+        cancel of their caller too; wait through astrodeck.aio.reap instead:
+        ['dusk_arm.py:62']
+
+    MUTANT "restore suppress(BaseException) around the await" in
+    ``remote/relay_client.py``'s ``_serve_once`` (WP-35, #252) -- RED,
+    observed verbatim:
+
+        AssertionError: these await a task under suppress(CancelledError) or
+        a try/except that swallows it (#235, widened by #252), which eats a
+        cancel of their caller too; wait through astrodeck.aio.reap instead:
+        ['remote/relay_client.py:886']
     """
     files = [p for p in _PACKAGE.rglob("*.py") if "__pycache__" not in p.parts]
     rel = {p.relative_to(_PACKAGE).as_posix() for p in files}
@@ -402,10 +589,26 @@ def test_no_await_of_a_task_under_astrodeck_suppresses_a_cancel():
     assert {"guide/native.py", "hub.py", "aio.py"} <= rel
     assert len(files) > 100, len(files)
     hits: list[str] = []
+    allowed_seen: set[tuple[str, str]] = set()
     for p in files:
-        hits += _eaten_cancels(p.read_text(encoding="utf-8"),
-                               p.relative_to(_PACKAGE).as_posix())
+        relpath = p.relative_to(_PACKAGE).as_posix()
+        source = p.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=relpath)
+        found = (_eaten_cancels(source, relpath)
+                + _eaten_cancels_tryexcept(source, relpath))
+        for hit in found:
+            lineno = int(hit.rsplit(":", 1)[1])
+            key = (relpath, _qualname_at(tree, lineno))
+            if key in _ALLOWLIST:
+                allowed_seen.add(key)
+                continue
+            hits.append(hit)
     assert not hits, (
-        f"these await a task under suppress(CancelledError), which eats a "
-        f"cancel of their caller too (#235); wait through astrodeck.aio.reap "
-        f"instead: {hits}")
+        f"these await a task under suppress(CancelledError) or a try/except "
+        f"that swallows it (#235, widened by #252), which eats a cancel of "
+        f"their caller too; wait through astrodeck.aio.reap instead: {hits}")
+    # A stale allowlist entry (its site converted, or moved/renamed without a
+    # matching update here) would hide a REAL gap in the scan's coverage
+    # rather than a known deferral -- so every entry must still be live.
+    stale = _ALLOWLIST - allowed_seen
+    assert not stale, f"these allowlist entries no longer match anything (fixed already, or renamed?): {stale}"

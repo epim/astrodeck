@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Get started with AstroDeck</title>
+    <meta name="description" content="Start on Windows or Linux arm64, try the simulator, and check the requirements for NINA or an Orange Pi 5 Pro appliance.">
+    <link rel="canonical" href="https://epim.github.io/astrodeck/getting-started.html">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Get started with AstroDeck">
+    <meta property="og:description" content="Start on Windows or Linux arm64, try the simulator, and check the requirements for NINA or an Orange Pi 5 Pro appliance.">
+    <meta property="og:url" content="https://epim.github.io/astrodeck/getting-started.html">
+    <meta name="twitter:card" content="summary">
+    <meta name="theme-color" content="#132735">
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/site.css">
+    <script src="assets/theme.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="index.html" aria-label="AstroDeck home"><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="12"/><ellipse cx="18" cy="18" rx="17" ry="6" transform="rotate(-35 18 18)"/><circle cx="18" cy="18" r="2"/><path d="M18 2v5M18 29v5M2 18h5M29 18h5"/></svg>AstroDeck</a><button class="menu-toggle" data-menu-toggle type="button" aria-controls="site-nav" aria-expanded="false">Menu</button>
+        <nav class="nav" id="site-nav" aria-label="Primary">
+          <a href="index.html">Overview</a><a href="features.html">Features</a><a href="flows.html">Flows</a><a href="hardware.html">Hardware</a><a href="weather.html">Weather</a><a href="getting-started.html" aria-current="page" class="nav-start">Get started</a><button class="theme-toggle" data-theme-toggle type="button" hidden aria-label="Change color theme">Theme: System</button>
+        </nav>
+      </div>
+    </header>
+    <main id="main" tabindex="-1">
+      <section class="page-hero">
+        <div class="wrap page-hero-grid">
+          <div data-claims="SETUP SIM">
+            <p class="eyebrow">
+              Get started
+            </p>
+            <h1>
+              Start with a browser and a simulated rig.
+            </h1>
+            <p class="lede">
+              Choose a setup path, open AstroDeck locally and try a short exposure. Add real equipment after checking the drivers and imaging providers you need.
+            </p>
+          </div>
+          <aside class="page-index" aria-label="On this page">
+            <p>
+              On this page
+            </p>
+            <ul>
+              <li>
+                <a href="#windows">Windows</a>
+              </li>
+              <li>
+                <a href="#simulator">Simulator</a>
+              </li>
+              <li>
+                <a href="#nina">NINA</a>
+              </li>
+              <li>
+                <a href="#orange-pi">Orange Pi</a>
+              </li>
+              <li>
+                <a href="#source">Source code</a>
+              </li>
+              <li>
+                <a href="#lan">Phone and tablet</a>
+              </li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+      <section id="windows" class="section" data-claims="WINDOWS RELEASE PROVIDERS ASTAP">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              01 / Windows
+            </p>
+            <h2>
+              Windows: run the release executable.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                Open the release asset list and look for astrodeck-windows-x86_64.exe. Download the matching SHA-256 file, check the download and run the executable as your normal Windows user. It serves the browser interface without a separate Python or Node installation.
+              </p>
+            </div>
+            <ol class="steps">
+              <li>
+                <p>
+                  Run the executable from a folder you can access. Keep its console open while AstroDeck is running.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Open http://localhost:8800 on the same computer.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Use the simulator steps below to try the interface.
+                </p>
+              </li>
+              <li>
+                <p>
+                  For real equipment, check the driver and provider requirements. Native guiding and native autofocus require astrodeck_native, which published releases do not include yet. Install ASTAP separately for local plate solving.
+                </p>
+              </li>
+            </ol>
+            <aside class="notice">
+              <p>
+                The standalone executable stores configuration and captures under %LOCALAPPDATA%\AstroDeck by default. Configuration requires NTFS or ReFS. This is a standalone executable, not a Windows installer.
+              </p>
+            </aside>
+            <div class="section-links">
+              <a class="text-link" href="https://github.com/epim/astrodeck/releases/latest">Open release assets</a>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="simulator" class="section tinted" data-claims="SIM SETUP FLOW_EXAMPLES SITE">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              02 / Simulator
+            </p>
+            <h2>
+              Take the first exposure on a simulator.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                The simulated camera responds to pointing, focus and filters. It lets you explore the workflow without connecting physical equipment.
+              </p>
+            </div>
+            <ol class="steps">
+              <li>
+                <p>
+                  Open Equipment, or Rig &gt; Devices in the newer interface, and choose the simulator action.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Open Capture, set a short exposure and take a frame.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Open Flows and inspect an example. Make a copy before changing it.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Run a short plan and review its progress and frames.
+                </p>
+              </li>
+            </ol>
+            <aside class="notice">
+              <p>
+                Set an observing site before using visibility and scheduling tools. For a demonstration, use a location you are comfortable sharing.
+              </p>
+            </aside>
+          </div>
+        </div>
+      </section>
+      <section id="nina" class="section" data-claims="NINA">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              03 / NINA
+            </p>
+            <h2>
+              Connect an existing NINA setup.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                Use AstroDeck&#x27;s browser interface and Flows while NINA maintains the equipment connection. Available roles are listed on the hardware page.
+              </p>
+            </div>
+            <ol class="steps">
+              <li>
+                <p>
+                  Install and enable NINA&#x27;s Advanced API plugin on the computer running NINA.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Connect your equipment in NINA.
+                </p>
+              </li>
+              <li>
+                <p>
+                  In AstroDeck, add a NINA driver using that computer&#x27;s host and the plugin&#x27;s configured port. The backend default is 1888.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Assign the available NINA devices to roles and connect the rig.
+                </p>
+              </li>
+            </ol>
+            <div class="section-links">
+              <a class="text-link" href="hardware.html#nina">Check the NINA roles</a>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="orange-pi" class="section tinted" data-claims="ORANGE RELEASE">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              04 / Orange Pi
+            </p>
+            <h2>
+              Orange Pi 5 Pro: distinguish Linux from appliance setup.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                For an existing 64-bit Linux installation, the release workflow targets a linux-arm64 executable. Check the release assets and the device SDKs for that environment. Appliance provisioning is a separate path for a commissioned Orange Pi 5 Pro.
+              </p>
+            </div>
+            <ol class="steps">
+              <li>
+                <p>
+                  On an already commissioned appliance, use the setup network and unique password printed for that board when an onboarding window is authorized.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Connect to the AstroDeck-XXXX setup network and open http://10.42.0.1/ if the portal does not appear.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Choose the home Wi-Fi network and enter its credentials.
+                </p>
+              </li>
+              <li>
+                <p>
+                  Open the appliance on the joined network using the address provided for the board.
+                </p>
+              </li>
+            </ol>
+            <aside class="notice">
+              <p>
+                The setup hotspot is limited to a 15-minute authorized window. There is no shared fallback password. The repository contains provisioning tooling, not a generally downloadable, ready-to-flash appliance image.
+              </p>
+            </aside>
+            <div class="section-links">
+              <a class="text-link" href="https://github.com/epim/astrodeck/blob/main/orangepi5/README.md">Read appliance commissioning and recovery</a>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="source" class="section" data-claims="SOURCE PROVIDERS ASTAP ASIAIR">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              05 / Source code
+            </p>
+            <h2>
+              Build from source when you need optional components.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                A source checkout needs Python 3.11 or newer. Building the web interface uses Node 20 or newer. On Windows, these commands create an environment and install the COM host and cloudmap extras.
+              </p>
+            </div>
+            <div class="command">
+              <pre aria-label="powershell commands"><code>git clone https://github.com/epim/astrodeck.git
+cd astrodeck
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e &quot;./server[comhost,cloudmap]&quot;
+npm --prefix ui ci
+npm --prefix ui run build
+.\.venv\Scripts\python.exe -m astrodeck</code></pre>
+            </div>
+            <aside class="notice">
+              <p>
+                For AstroDeck native autofocus, guiding and polar alignment, build and install the Rust extension in the same Python environment. ASTAP and its star database are separate from that extension. The ASIAIR extra is optional and experimental.
+              </p>
+            </aside>
+            <div class="section-links">
+              <a class="text-link" href="https://github.com/epim/astrodeck/blob/main/docs/development.md">Read the development setup</a>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="lan" class="section tinted" data-claims="LAN WINDOWS">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              06 / Phone and tablet
+            </p>
+            <h2>
+              Open the interface from another device.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                A fresh instance binds to localhost. Create an admin account before allowing network access. The create-admin command prompts for a password and enables local sign-in.
+              </p>
+            </div>
+            <div class="command">
+              <pre aria-label="powershell commands"><code>.\astrodeck-windows-x86_64.exe create-admin yourname
+.\astrodeck-windows-x86_64.exe --host 0.0.0.0</code></pre>
+            </div>
+            <aside class="notice">
+              <p>
+                Use the host computer&#x27;s address and port 8800 from a phone or tablet on the same network. Keep the application running as a normal user.
+              </p>
+            </aside>
+            <div class="section-links">
+              <a class="text-link" href="https://github.com/epim/astrodeck/blob/main/docs/SECURITY.md">Read network setup details</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <div class="wrap">
+        <div class="footer-top">
+          <div class="footer-brand">
+            <a class="brand" href="index.html" aria-label="AstroDeck home"><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="12"/><ellipse cx="18" cy="18" rx="17" ry="6" transform="rotate(-35 18 18)"/><circle cx="18" cy="18" r="2"/><path d="M18 2v5M18 29v5M2 18h5M29 18h5"/></svg>AstroDeck</a>
+            <p>
+              Plan the night. Keep the rig in view.
+            </p>
+          </div>
+          <div class="footer-group">
+            <h2>
+              Explore
+            </h2>
+            <ul>
+              <li>
+                <a href="index.html">Overview</a>
+              </li>
+              <li>
+                <a href="features.html">Features</a>
+              </li>
+              <li>
+                <a href="flows.html">Flows</a>
+              </li>
+              <li>
+                <a href="hardware.html">Hardware</a>
+              </li>
+              <li>
+                <a href="weather.html">Weather</a>
+              </li>
+              <li>
+                <a href="getting-started.html">Get started</a>
+              </li>
+              <li>
+                <a href="releases.html">Releases</a>
+              </li>
+            </ul>
+          </div>
+          <div class="footer-group">
+            <h2>
+              Project
+            </h2>
+            <ul>
+              <li>
+                <a href="https://github.com/epim/astrodeck">Source code</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/blob/main/docs/guide/README.md">User guide</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/issues">Issues</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/blob/main/LICENSE">Apache-2.0</a>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer-bottom">
+          <p>
+            AstroDeck is open source under Apache-2.0. Device names identify compatibility; AstroDeck is not affiliated with their manufacturers. DSS2 imagery (c) AAO/STScI, served from CDS/ESA HiPS mirrors.
+          </p>
+          <a href="releases.html">Release notes</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

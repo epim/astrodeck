@@ -106,7 +106,11 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
 
   // Subscriptions, all narrow. This is the ONE subscriber to the node array and
   // it passes each stage down as a prop; the cards are memo'd and read only
-  // their own status. That is what makes a `flow.node` tick re-render one card
+  // their own status. That is the write discipline a `flow.node` status tick
+  // would ride on if the rig ever sent one -- nothing does (#464: no topic
+  // carries a stage's status, and the published sequence state never names
+  // one), so every card reads idle through a live run, and this subscription
+  // shape is what will let a status feed, once there is one, wake one card
   // instead of the graph.
   const nodes = useStore((s) => s.flows.graph.nodes);
   const edges = useStore((s) => s.flows.graph.edges);

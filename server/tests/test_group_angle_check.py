@@ -462,6 +462,17 @@ async def test_the_angle_lines_do_not_move_with_the_site(group_hub,
         64.0); retried on the next pass (1 of 3 consecutive)")]
         assert ["sequence 'M...cutive)', ...] == ["sequence 'M...cutive)',
         ...]
+
+    RE-PINNED FOR WP-31 (backlog ruling D-04, owner-approved 2026-09-30,
+    #595). ``engine.start`` now logs a WARNING naming every session its
+    singleton silently disarmed. Both nights here run the same
+    ``group_hub``/session store, so the second ``one()`` finds the first
+    night's session still auto-resume-armed and disarms it, logging
+    "starting 'M31 mosaic' disarmed auto-resume for: M31 mosaic" for the
+    SECOND run only -- a fact about two runs sharing one store in this
+    harness, not a site-derived number, so it is dropped from both lists
+    before the word-for-word comparison rather than weakening what this
+    case is about.
     """
     from astrodeck.config import Site
 
@@ -484,8 +495,15 @@ async def test_the_angle_lines_do_not_move_with_the_site(group_hub,
                               longitude=LON, is_default=False))
     there = await one()
     assert here.done and there.done
-    said_here = [m for _t, _l, m in here.lines]
-    said_there = [m for _t, _l, m in there.lines]
+    # D-04 (#595): the second run's engine.start sees the first run's
+    # session still auto-resume-armed in this shared store and disarms it,
+    # logging a warning that names it -- an artefact of running two nights
+    # back to back on one store, not a number either site set, so it is
+    # dropped from both sides before the comparison.
+    said_here = [m for _t, _l, m in here.lines
+                if "disarmed auto-resume for" not in m]
+    said_there = [m for _t, _l, m in there.lines
+                 if "disarmed auto-resume for" not in m]
     assert any("PA 40.0" in m for m in said_here), said_here
     assert any("own report" in m for m in said_here), said_here
     assert said_here == said_there, [
