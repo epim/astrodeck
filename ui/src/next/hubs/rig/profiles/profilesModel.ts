@@ -158,6 +158,44 @@ export const FORCE_CONFIRM = {
   cancelLabel: "Leave it running",
 };
 
+/** Turns a raw 409 `detail` fragment into a capitalized, punctuated sentence.
+ *  The server writes these lower-case on purpose, so a route can splice one
+ *  into a larger sentence (`_teardown_busy_detail` in app.py joins two with
+ *  ", and "); every UI surface that shows the fragment on its own needs the
+ *  capitalized, terminated form instead. */
+export function sentenceFrom(detail: string): string {
+  const s = detail.trim();
+  if (!s) return s;
+  const capped = s.charAt(0).toUpperCase() + s.slice(1);
+  return /[.!?]$/.test(capped) ? capped : `${capped}.`;
+}
+
+/** The force-activate confirm, worded from the server's own coded-409 detail
+ *  rather than the fixed sentence `FORCE_CONFIRM` carries (#256).
+ *
+ *  The coded 409 now has three causes (app.py's `_teardown_busy_detail`): a
+ *  sequence, capture loop or polar alignment; auto-resume's recovery ladder
+ *  re-centring the mount after a restart (#238); or - after a forced retry -
+ *  the ladder not having stopped within its own bound. The engine is IDLE
+ *  through the second one, so a fixed "a connect or sequence is already
+ *  running" sent the operator looking for a run the Monitor does not show,
+ *  and never said that forcing turns the recovering session's auto-resume
+ *  off. The server's own detail already says exactly that; this just
+ *  capitalizes it and asks the question. */
+export function forceActivateConfirm(detail: string): {
+  title: string; body: string; mode: "confirm"; tone: "danger";
+  confirmLabel: string; cancelLabel: string;
+} {
+  return {
+    title: "Rig is busy",
+    body: `${sentenceFrom(detail)} Force-activate this profile anyway?`,
+    mode: "confirm",
+    tone: "danger",
+    confirmLabel: "Force activate",
+    cancelLabel: "Leave it running",
+  };
+}
+
 /** UPDATE FROM RIG overwrites stored state - the profile's device intent - so
  *  it carries the same friction as DELETE. The legacy panel used a bare
  *  hold-button whose only explanation was a `title` attribute, which never
