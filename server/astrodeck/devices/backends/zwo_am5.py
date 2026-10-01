@@ -350,6 +350,16 @@ class ZwoAm5Telescope(Telescope):
         #: recurse back into the reopen. See _relink.
         self._relink_after = 0.0
         self._relinking = False
+        #: Serializes `_park_now` against `pulse_guide` (WP-18, #342). Both
+        #: issue motion commands on the one serial link, and a park landing
+        #: while a pulse is mid-flight can interleave with it on the wire, or
+        #: race the east strategy's tracking-suspend/resume pair: a pulse's
+        #: own `:Te#` arriving right after park's `:Td#` would put tracking
+        #: back on just before the `:hP#` that is a documented silent no-op
+        #: against (see `_park_now`'s "STOP TRACKING FIRST" note). One lock
+        #: makes "park" and "pulse" mutually exclusive instead of merely
+        #: unlikely to collide.
+        self._pulse_park_lock = asyncio.Lock()
 
     # --------------------------------------------------------------- health
 
@@ -754,46 +764,87 @@ class ZwoAm5Telescope(Telescope):
         # stop-then-park is the EMERGENCY shape: safety abort, dawn park, the
         # sun watchdog, any aborted session. So it is the sequence that must
         # work, not the one to leave as an at-scope runbook item.
-        await self._drain_halt()
-
-        # STOP TRACKING, AND VERIFY IT. The old code wrapped this in a bare
-        # ``except Exception: pass``. The instinct was right — a mount that
-        # cannot stop tracking must still get its park attempt, because this
-        # path is the last thing standing between the sun and the optics — but
-        # swallowing the failure ALSO threw away the knowledge that the park
-        # about to be sent was the known-silent one. Retry, then let the
-        # failure inform the error at the end rather than vanish.
-        tracking_off = await self._tracking_off_verified()
-        # COMPLETION SIGNAL: the parked flag, which is the hardware-verified
-        # one (:Gps# flips to '2' ~1s after :hP#). It is trustworthy at every
-        # call site because no call site reaches here with the mount already
-        # parked: ``park`` short-circuits on that, and ``find_home`` unparks
-        # first because a parked AM5 refuses :hP# outright.
         #
-        # An earlier version tried to handle a call with the mount already
-        # parked by watching for the position to stop changing instead. That
-        # was solving a problem the wrong ordering had created, and it could
-        # not work: a mount that never moved reports a perfectly stable
-        # position, so a refused :hP# read as a completed home.
-        if await self._send_park_and_wait(PARK_WAIT_S):
-            return
+        # THE WHOLE ATTEMPT TAKES _pulse_park_lock (WP-18, #342's other open
+        # item). pulse_guide takes the same lock, so a park can never land
+        # while a pulse is mid-flight on the wire, and a pulse can never start
+        # once a park has begun. Without it a guide pulse's own :Te# (the east
+        # strategy's tracking resume) could land in the exact window this
+        # method just spent clearing with :Td#, putting tracking back on right
+        # before :hP# -- the one state :hP# is a documented silent no-op
+        # against -- and the two could equally just interleave their bytes on
+        # one shared serial port.
+        async with self._pulse_park_lock:
+            await self._drain_halt()
 
-        # ONE RETRY, and only because the first failure is diagnostic rather
-        # than mysterious: a :hP# that goes unanswered for PARK_WAIT_S with
-        # tracking still on IS the documented silent no-op. Re-assert
-        # tracking-off now that the halt window is long over, and send it
-        # again. A mount that ignores the second one has a real problem worth
-        # reporting; a mount that only ever needed the drive stopped is parked.
-        still_tracking = not await self._tracking_off_verified()
-        if await self._send_park_and_wait(PARK_WAIT_S):
-            return
-        why = (" — tracking is still on, and this mount accepts :hP# and does "
-               "nothing while it is" if still_tracking or not tracking_off
-               else "")
-        raise DeviceError(
-            f"{self.name}: park did not complete within "
-            f"{PARK_WAIT_S * 2:.0f}s across two attempts (mount still reports "
-            f"unparked){why}")
+            # STOP TRACKING, AND VERIFY IT. The old code wrapped this in a bare
+            # ``except Exception: pass``. The instinct was right — a mount that
+            # cannot stop tracking must still get its park attempt, because
+            # this path is the last thing standing between the sun and the
+            # optics — but swallowing the failure ALSO threw away the
+            # knowledge that the park about to be sent was the known-silent
+            # one. Retry, then let the failure inform the error at the end
+            # rather than vanish.
+            tracking_off = await self._tracking_off_verified()
+            # COMPLETION SIGNAL: the parked flag, which is the
+            # hardware-verified one (:Gps# flips to '2' ~1s after :hP#). It is
+            # trustworthy at every call site because no call site reaches here
+            # with the mount already parked: ``park`` short-circuits on that,
+            # and ``find_home`` unparks first because a parked AM5 refuses
+            # :hP# outright.
+            #
+            # An earlier version tried to handle a call with the mount already
+            # parked by watching for the position to stop changing instead.
+            # That was solving a problem the wrong ordering had created, and
+            # it could not work: a mount that never moved reports a perfectly
+            # stable position, so a refused :hP# read as a completed home.
+            if await self._send_park_and_wait(PARK_WAIT_S):
+                return
+
+            # ONE RETRY, and only because the first failure is diagnostic
+            # rather than mysterious: a :hP# that goes unanswered for
+            # PARK_WAIT_S with tracking still on IS the documented silent
+            # no-op. Re-assert tracking-off now that the halt window is long
+            # over, and send it again. A mount that ignores the second one has
+            # a real problem worth reporting; a mount that only ever needed
+            # the drive stopped is parked.
+            still_tracking = not await self._tracking_off_verified()
+            if await self._send_park_and_wait(PARK_WAIT_S):
+                return
+            why = (" — tracking is still on, and this mount accepts :hP# and "
+                   "does nothing while it is" if still_tracking or not
+                   tracking_off else "")
+            raise DeviceError(
+                f"{self.name}: park did not complete within "
+                f"{PARK_WAIT_S * 2:.0f}s across two attempts (mount still "
+                f"reports unparked){why}")
+
+    async def _stop_tracking_for_park(self) -> None:
+        """Send ``:Td#`` unconditionally, right before every ``:hP#`` (WP-18,
+        #342's other open item, backlog ruling: "Send `:Td#` every time
+        before `:hP#`").
+
+        NOT GATED on a prior ``get_tracking()`` read, unlike
+        ``_tracking_off_verified`` above this method's only caller. A
+        read-then-send has a window, and ``_send_park_and_wait``'s own
+        re-send (S4 orchestrator ruling 9) sits right inside it: a guide
+        pulse's own ``:Te#`` (the east strategy's resume, see ``pulse_guide``)
+        can land between the last tracking check and the ``:hP#`` that
+        follows, putting tracking back on right before the one command
+        ``:hP#`` is a documented silent no-op against. Paying for an
+        idempotent ``:Td#`` on every send — the first and the re-send alike —
+        removes that window instead of narrowing it. ``_pulse_park_lock``
+        (held by the whole of ``_park_now``) closes the other half: a NEW
+        pulse cannot start once a park has begun, so this is the defence for
+        a pulse that was already mid-flight when the lock was taken.
+
+        Best-effort, like ``_tracking_off_verified`` beside it: a mount that
+        will not ack ``:Td#`` must still get its park attempt, because this
+        is the last thing standing between the sun and the optics."""
+        try:
+            await self._cmd_ack("Td", "tracking off")
+        except Exception:  # noqa: BLE001 - the park attempt must still go out
+            pass
 
     async def _send_park_and_wait(self, timeout_s: float) -> bool:
         """One ``:hP#`` and a bounded poll of the parked flag. True when parked.
@@ -834,7 +885,12 @@ class ZwoAm5Telescope(Telescope):
         and agree can prove the mount still; a read that fails proves nothing,
         so a mount whose position will not come back is never re-sent, and
         falls back to the retry ``_park_now`` has always made. A failed read
-        does not fail the park either: the parked flag decides that."""
+        does not fail the park either: the parked flag decides that.
+
+        EVERY ``:hP#`` HERE IS PRECEDED BY AN UNCONDITIONAL ``:Td#``
+        (``_stop_tracking_for_park``, #342's other open item) — including the
+        re-send below, which used to send only the bare command again."""
+        await self._stop_tracking_for_park()
         await self._request("hP", reply="none")
         loop = asyncio.get_running_loop()
         sent_at = loop.time()
@@ -861,6 +917,7 @@ class ZwoAm5Telescope(Telescope):
                         f"mount in {loop.time() - sent_at:.0f}s and it does "
                         f"not report parked, so the mount looks to have "
                         f"dropped it; sending it once more", "mount")
+                await self._stop_tracking_for_park()
                 await self._request("hP", reply="none")
         return False
 
@@ -1252,75 +1309,93 @@ class ZwoAm5Telescope(Telescope):
         Cancellation still stops the mount immediately (the thread waits on an
         Event, not a sleep), and a stop that could not be written is re-sent
         through the async path, which can reopen a dropped port -- the thread
-        deliberately cannot."""
+        deliberately cannot.
+
+        SHARES ``_pulse_park_lock`` WITH ``_park_now`` (WP-18, #342's other
+        open item). A pulse and a park are both motion commands on the one
+        serial link, and letting them land together risks interleaved bytes
+        on the wire, or a pulse's own tracking resume undoing the tracking-off
+        a concurrent park just sent. Taking the same lock here means this
+        pulse either runs to completion before a waiting park begins, or
+        waits here for an already-running park to finish first; direction
+        validation stays outside it so a bad direction fails at once."""
         d = direction.lower()[0]
         if d not in "nsew":
             raise DeviceError(f"{self.name}: bad guide direction {direction!r}")
-        secs = self._capped_ms(direction, ms) / 1000.0
-        if d == "e" and await self.get_tracking():
-            start = [("Td", "ack")]
-            stop = ("Te", "ack")
-            what_start = "pulse east (suspend tracking)"
-            what_stop = "pulse east (resume tracking)"
-        else:
-            start, stop, what_start, what_stop = self._pulse_plan(d)
-        if not hasattr(self._link, "request_sync"):
-            await self._pulse_on_the_loop(start, stop, secs, what_start,
-                                          what_stop)
-            return
+        async with self._pulse_park_lock:
+            secs = self._capped_ms(direction, ms) / 1000.0
+            if d == "e" and await self.get_tracking():
+                start = [("Td", "ack")]
+                stop = ("Te", "ack")
+                what_start = "pulse east (suspend tracking)"
+                what_stop = "pulse east (resume tracking)"
+            else:
+                start, stop, what_start, what_stop = self._pulse_plan(d)
+            if not hasattr(self._link, "request_sync"):
+                await self._pulse_on_the_loop(start, stop, secs, what_start,
+                                              what_stop)
+                return
 
-        pulse = _Pulse(self._link, self.name, start, stop, secs)
-        try:
-            await asyncio.to_thread(pulse.run)
-        except asyncio.CancelledError:
-            # The thread is still inside abort.wait: tell it to stop the mount
-            # NOW, and wait for that OFF the loop (bounded) before propagating.
-            pulse.abort.set()
-            await asyncio.to_thread(pulse.done.wait, secs + _PULSE_CANCEL_JOIN_S)
+            pulse = _Pulse(self._link, self.name, start, stop, secs)
+            try:
+                await asyncio.to_thread(pulse.run)
+            except asyncio.CancelledError:
+                # The thread is still inside abort.wait: tell it to stop the
+                # mount NOW, and wait for that OFF the loop (bounded) before
+                # propagating.
+                pulse.abort.set()
+                await asyncio.to_thread(pulse.done.wait,
+                                        secs + _PULSE_CANCEL_JOIN_S)
+                if pulse.answered:
+                    self._halting = False
+                if pulse.started and not pulse.stop_sent:
+                    # The cancel is not the emergency here; a mount still
+                    # moving is.
+                    try:
+                        await self._send_stop_on_the_loop(stop, what_stop)
+                    except Exception:   # noqa: BLE001 - the cancel still wins
+                        pass
+                raise
+            # An ack-class command was ANSWERED: the same evidence _cmd_ack
+            # acts on.
             if pulse.answered:
                 self._halting = False
-            if pulse.started and not pulse.stop_sent:
-                # The cancel is not the emergency here; a mount still moving is.
-                try:
-                    await self._send_stop_on_the_loop(stop, what_stop)
-                except Exception:   # noqa: BLE001 - the cancel still wins
-                    pass
-            raise
-        # An ack-class command was ANSWERED: the same evidence _cmd_ack acts on.
-        if pulse.answered:
-            self._halting = False
-        if not pulse.started:
-            if pulse.start_reply is not None:
-                if pulse.start_reply == lx200.REFUSED:
-                    raise await self._refused_error(what_start)
-                raise DeviceError(f"{self.name}: {what_start} rejected "
-                                  f"(reply {pulse.start_reply!r})")
-            exc = pulse.error
-            if isinstance(exc, LinkError):
-                raise self._link_error(what_start, exc) from exc
-            if exc is not None:
-                raise exc
-            raise DeviceError(f"{self.name}: {what_start} did not start")
-        if not pulse.stop_sent:
-            # The port died mid-pulse. The async path is the one that can
-            # reopen it, so the stop goes out from here -- the mount is moving.
-            bus.log("warning",
-                    f"{self.name}: could not stop the pulse from the pulse "
-                    f"thread (:{stop[0]}# -- {pulse.error or 'no reply'}); "
-                    "sending it again now", "mount")
-            await self._send_stop_on_the_loop(stop, what_stop)
-            return
-        if pulse.stop_reply is not None and pulse.stop_reply != lx200.ACK_OK:
-            # ANSWERED, and the answer was no. For the east strategy that means
-            # tracking did not resume: the star now drifts east at sidereal
-            # rate, which the guider must be told rather than left to infer.
-            bus.log("warning",
-                    f"{self.name}: could not stop the pulse -- the mount "
-                    f"refused :{stop[0]}# (reply {pulse.stop_reply!r})", "mount")
-            if pulse.stop_reply == lx200.REFUSED:
-                raise await self._refused_error(what_stop)
-            raise DeviceError(f"{self.name}: {what_stop} rejected "
-                              f"(reply {pulse.stop_reply!r})")
+            if not pulse.started:
+                if pulse.start_reply is not None:
+                    if pulse.start_reply == lx200.REFUSED:
+                        raise await self._refused_error(what_start)
+                    raise DeviceError(f"{self.name}: {what_start} rejected "
+                                      f"(reply {pulse.start_reply!r})")
+                exc = pulse.error
+                if isinstance(exc, LinkError):
+                    raise self._link_error(what_start, exc) from exc
+                if exc is not None:
+                    raise exc
+                raise DeviceError(f"{self.name}: {what_start} did not start")
+            if not pulse.stop_sent:
+                # The port died mid-pulse. The async path is the one that can
+                # reopen it, so the stop goes out from here -- the mount is
+                # moving.
+                bus.log("warning",
+                        f"{self.name}: could not stop the pulse from the "
+                        f"pulse thread (:{stop[0]}# -- "
+                        f"{pulse.error or 'no reply'}); sending it again now",
+                        "mount")
+                await self._send_stop_on_the_loop(stop, what_stop)
+                return
+            if pulse.stop_reply is not None and pulse.stop_reply != lx200.ACK_OK:
+                # ANSWERED, and the answer was no. For the east strategy that
+                # means tracking did not resume: the star now drifts east at
+                # sidereal rate, which the guider must be told rather than
+                # left to infer.
+                bus.log("warning",
+                        f"{self.name}: could not stop the pulse -- the mount "
+                        f"refused :{stop[0]}# (reply {pulse.stop_reply!r})",
+                        "mount")
+                if pulse.stop_reply == lx200.REFUSED:
+                    raise await self._refused_error(what_stop)
+                raise DeviceError(f"{self.name}: {what_stop} rejected "
+                                  f"(reply {pulse.stop_reply!r})")
 
     async def is_slewing(self) -> bool:
         # DELIBERATELY not widened to include the halt window. "_halting" means

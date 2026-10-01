@@ -129,6 +129,7 @@ from ..calibration.matcher import LightNeed
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
 from ..mount_offset import nudge as nudge_offset
 from ..mount_offset import parse_nudge
+from ..mount_offset import POSITION_UNKNOWN_CODE, POSITION_UNKNOWN_DETAIL
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, PlanUnreadable, plan_library
 from .. import power_guard
@@ -2179,6 +2180,34 @@ class PlanSaveBody(BaseModel):
     plan: SequencePlan
     id: str | None = None
     overwrite: bool = False
+
+
+def _accepted_count_mode_if_omitted(plan: SequencePlan) -> SequencePlan:
+    """``plan``, with ``count_mode`` stamped "accepted" when the CLIENT'S
+    OWN body never named it (#141, backlog WP-19(c), owner-approved
+    2026-09-30).
+
+    ``SequencePlan.count_mode``'s bare pydantic default stays "attempts"
+    (NOT flipped to "accepted"): the model is constructed at 377 sites
+    across the tree, and the coder who tried flipping the default found 2
+    regressions in a 17-file sample -- an unbounded blast radius for a fix
+    this narrow. The classic Plan tab is the ONE caller whose plans should
+    default to "accepted" (a prior UX review, #30, already made the UI's
+    OWN new-plan default send it explicitly), so this stamps it at the
+    ROUTE, only for a body that left the field out entirely.
+
+    ``plan.model_fields_set`` is what makes "omitted" legible at all: by
+    the time a route holds a validated ``SequencePlan``, a field the client
+    never sent and one the client sent as the SAME value as the bare
+    default are otherwise indistinguishable (`attempts == attempts`), so
+    checking `plan.count_mode` itself cannot tell "defaulted" from
+    "explicitly chosen". pydantic tracks, per model instance, exactly which
+    fields the input actually named -- including a NESTED model's own
+    fields, validated from its own slice of the body -- so this reads that
+    set rather than the value."""
+    if "count_mode" in plan.model_fields_set:
+        return plan
+    return plan.model_copy(update={"count_mode": "accepted"})
 
 
 class FlowWizardBody(BaseModel):
@@ -5827,7 +5856,8 @@ def create_app(*, bind_host: str | None = None,
             raise HTTPException(409, detail={
                 "detail": f"a plan named '{body.plan.name}' already exists",
                 "code": "name_collision"})
-        return await asyncio.to_thread(plan_library.save, body.plan, plan_id)
+        plan = _accepted_count_mode_if_omitted(body.plan)
+        return await asyncio.to_thread(plan_library.save, plan, plan_id)
 
     @app.delete("/api/plans/{plan_id}", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
@@ -8122,6 +8152,16 @@ def create_app(*, bind_host: str | None = None,
             tel = hub.require("telescope")
         except DeviceError as e:
             raise _err(e)
+        # #144: a nudge computes its destination by reading the CURRENT
+        # position and adding an offset, so a driver that cannot vouch for
+        # that position turns a small requested correction into a goto to
+        # wherever the mount GUESSES it last was -- exactly the state right
+        # after a reset. ``position_known`` defaults True (``getattr``, not a
+        # required attribute): a driver, or a test double, that predates this
+        # flag nudges exactly as it always has.
+        if not getattr(tel, "position_known", True):
+            raise HTTPException(409, detail={"detail": POSITION_UNKNOWN_DETAIL,
+                                             "code": POSITION_UNKNOWN_CODE})
         try:
             arcmin = parse_nudge(body.axis, body.arcmin)
         except ValueError as e:
@@ -9235,8 +9275,16 @@ def create_app(*, bind_host: str | None = None,
         # accepted a low/below-horizon target via the pre-flight gate) must
         # actually bypass the horizon 409 here.
         force = body.force
-        plan = SequencePlan.model_validate(
-            body.model_dump(exclude={"force"}))
+        # #141 (backlog WP-19(c)): ``model_dump`` fills in EVERY field,
+        # ``count_mode`` included, so checking the rebuilt plan's own
+        # ``model_fields_set`` below would always find it "set" -- the
+        # client's own OMISSION only survives on ``body`` itself, read
+        # before the dump (`_accepted_count_mode_if_omitted`'s own
+        # docstring explains why the value alone cannot say this).
+        dumped = body.model_dump(exclude={"force"})
+        if "count_mode" not in body.model_fields_set:
+            dumped["count_mode"] = "accepted"
+        plan = SequencePlan.model_validate(dumped)
         if not plan.targets or plan.total_frames() == 0:
             raise HTTPException(422, "plan has no frames")
         # BEFORE ANY OF THE PRE-FLIGHT, because a plan start is a SLEW. A

@@ -38,6 +38,27 @@ with its sha256 checked. Output verbatim.
   both cases above with the same two messages: the formatters were right and
   nothing ran them, which is the failure a test of the formatter alone would
   have passed.
+
+MUTATION run 2026-09-30, in a byte backup of this worktree (sha256-verified
+restore), for the fixture fix below (#556 residual):
+
+  M4 "the fixture does not restore the relay logger" - `"relay"` dropped
+  from `_UVICORN_LOGGERS`. 1 failed,
+  test_the_fixture_restores_the_relay_logger_after_this_files_server_ran:
+      AssertionError: the 'relay' logger was not restored after this file's
+      server ran: its handler still writes into test_h4_access_log_path_
+      only.py's own (now closed) buffer, so a later test's relay.server
+      line would be silently dropped (before=([], 0, True, False)
+      after=([<StreamHandler (NOTSET)>], 20, False, False))
+
+MUTATION run 2026-09-30, in a byte backup of this worktree (sha256-verified
+restore), for the websocket-ping pin below (#597):
+
+  M5 "the ping keywords are not pinned" - `ws_ping_interval=20.0,
+  ws_ping_timeout=20.0` dropped from `uvicorn_options`. 1 failed,
+  test_uvicorn_options_pins_the_websocket_ping_keywords:
+      AssertionError: {'access_log': True, 'backlog': 128, ...}
+      assert None == 20.0
 """
 from __future__ import annotations
 
@@ -71,7 +92,17 @@ _WAIT_S = 30.0
 
 #: The loggers uvicorn's config touches, whose state is put back afterwards so
 #: no later test inherits a handler writing into this file's buffer.
-_UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
+#:
+#: "relay" is included alongside uvicorn's own three (#556 residual):
+#: `uvicorn_log_config` also wires `relay.server`'s own info lines (the #521
+#: tunnel-end line, the SIGHUP reload line) to uvicorn's "default" handler, so
+#: `uvicorn.Config` in `_serve_and_capture` points that handler's stream at
+#: THIS file's buffer same as the other three. Leaving "relay" out of this
+#: tuple restored only the three uvicorn loggers, so after this file ran, the
+#: relay logger's handler kept writing into this file's closed buffer and any
+#: later test reading `relay.server` output (test_h4_tunnel_end_logged.py, if
+#: it ran after this file in the same process) would see nothing.
+_UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access", "relay")
 
 
 @pytest.fixture
@@ -174,3 +205,67 @@ def test_the_rule_withholds_a_query_and_leaves_everything_else():
     assert _path_only(PATH) == PATH
     for untouched in ("127.0.0.1:5000", "GET", "1.1", 200, None):
         assert _path_only(untouched) == untouched
+
+
+def test_the_fixture_restores_the_relay_logger_after_this_files_server_ran():
+    """#556 residual: ``uvicorn_log_config`` wires ``relay.server``'s own info
+    lines onto uvicorn's "default" handler (#521, #556), and
+    ``_serve_and_capture`` points every handler of every ``_UVICORN_LOGGERS``
+    logger at THIS file's buffer. If "relay" were left out of that tuple (as
+    it was before this fix), the "relay" logger's handler would keep pointing
+    at this file's buffer after the test ended, so any later test reading
+    ``relay.server`` output in the same process would see nothing.
+
+    Drives ``restore_uvicorn_logging`` by hand (its undecorated function,
+    since pytest refuses a fixture called directly) instead of taking it as a
+    test parameter, so this test can see its OWN teardown run and check what
+    it leaves behind -- something a test that merely depends on the fixture,
+    like the two above, cannot observe about its own invocation."""
+    relay_logger = logging.getLogger("relay")
+    before = (list(relay_logger.handlers), relay_logger.level,
+              relay_logger.propagate, relay_logger.disabled)
+
+    gen = restore_uvicorn_logging.__wrapped__()
+    next(gen)  # run the fixture's setup half (it only records state)
+    try:
+        async def ask(port):
+            async with httpx.AsyncClient() as client:
+                await client.get(f"http://127.0.0.1:{port}{PATH}")
+
+        asyncio.run(_serve_and_capture(ask))
+        # While the fixture is still "live" (not yet torn down), uvicorn's
+        # config wired a handler onto "relay" that writes into the buffer
+        # _serve_and_capture just read back and discarded -- the state #556's
+        # residual left in place afterwards.
+        assert relay_logger.handlers, (
+            "uvicorn never gave the 'relay' logger a handler, so this case "
+            "is grading nothing")
+    finally:
+        with contextlib.suppress(StopIteration):
+            next(gen)  # run the fixture's teardown half
+
+    after = (list(relay_logger.handlers), relay_logger.level,
+             relay_logger.propagate, relay_logger.disabled)
+    assert after == before, (
+        "the 'relay' logger was not restored after this file's server ran: "
+        f"its handler still writes into test_h4_access_log_path_only.py's "
+        f"own (now closed) buffer, so a later test's relay.server line "
+        f"would be silently dropped (before={before!r} after={after!r})")
+
+
+def test_uvicorn_options_pins_the_websocket_ping_keywords():
+    """#597: ``ws_ping_interval``/``ws_ping_timeout`` are given explicitly in
+    ``uvicorn_options`` rather than left to whatever ``uvicorn.Config``
+    defaults to, so an unpinned dependency upgrade (the relay's requirements
+    had none until this same change) cannot also silently change this wire
+    timing. Pinned at uvicorn's own current default (20.0/20.0): this closes
+    the gap, it does not change today's behaviour.
+
+    The Dockerfile's CMD is ``python -m relay`` with no arguments, so these
+    cannot be set on a command line; ``uvicorn_options`` is the one place
+    ``main`` (and this test) builds the keywords ``uvicorn.run`` receives."""
+    cfg = RelayConfig(bind_host="127.0.0.1", bind_port=_free_port(),
+                      origin="relay.test")
+    options = uvicorn_options(cfg)
+    assert options.get("ws_ping_interval") == 20.0, options
+    assert options.get("ws_ping_timeout") == 20.0, options

@@ -76,7 +76,7 @@ with the home-side `server/astrodeck/remote/protocol.py` (the scope client).
 
 | route                              | who         | purpose |
 |------------------------------------|-------------|---------|
-| `GET /healthz`                     | anyone      | liveness only |
+| `GET /healthz`                     | anyone      | liveness and build identity (`version`, `commit`; `unknown` when built without `scripts/deploy_relay.ps1`) |
 | `WS  /scope`                       | the **home**| outbound tunnel (device-token auth via `HELLO`) |
 | `WS  /h/{home_id}/ws`              | a browser   | tunnelled `/ws` event stream |
 | `ANY /h/{home_id}/{path:path}`     | a browser   | tunnelled HTTP (SPA, `/assets`, `/api`, `/auth`) |
@@ -201,12 +201,20 @@ docker run -p 8080:8080 \
 ### Fly.io
 
 ```bash
-fly launch --no-deploy            # accept the bundled fly.toml
+fly launch --no-deploy            # one-time: accept the bundled fly.toml
 # Provision the token map as a mounted file (or RELAY_DEVICE_TOKENS secret).
 # Set the public origin:
 fly secrets set RELAY_ORIGIN=relay.example.com
-fly deploy
 ```
+
+Every deploy after that, including the first, goes through
+`scripts/deploy_relay.ps1` (run from the repo root), not a bare `fly deploy`.
+The script passes the build identity (commit, AstroDeck version) as
+`--build-arg` and waits for `/healthz` to report it before declaring the
+deploy done. A bare `fly deploy` here still runs, but the image it produces
+carries no identity: `/healthz` answers `"unknown"` for both `version` and
+`commit`, and nothing checks that the deploy reached the code you meant to
+ship (#486).
 
 The bundled `fly.toml` pins **one always-on machine** (`min_machines_running=1`,
 no scale-to-zero) so a home's persistent WSS stays on the same instance, exposes

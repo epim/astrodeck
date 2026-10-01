@@ -149,23 +149,40 @@ class TestSeveralLanesNameTheirBlock:
             "For every member of the pool it captures L 60 s × 5 (gain 100, "
             "bin 1)."], f"the stage sentences are {said}"
 
-    def test_with_no_mosaic_a_stage_names_every_block_the_compile_gives_it(
+    def test_with_no_mosaic_a_stage_still_names_only_the_block_its_wires_lead_to(
             self):
-        """With no multi-panel TARGET the compile's canvas-order rule gives a
-        stage to every block the walk passed before it (its leak is I-05),
-        and the brief says so rather than read the stage as one block's.
+        """With no multi-panel TARGET at all, the SAME wire-scoped rule now
+        applies as the mosaic case above, and the brief reads each stage as
+        the one block its wires lead to, not as every block canvas order
+        passed first.
 
-        RED under the tonight.py mutant "owner_of in a graph with no mosaic"
-        (``_receivers``' ``mosaic = any(...)`` made ``mosaic = True``):
+        RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+        2026-09-30): this used to pin the OLD leak on purpose (I-05: with no
+        mosaic, the compile's canvas-order rule gave M33's CAPTURE to M31
+        too, and the brief repeated that misreading rather than inventing
+        its own). #151's general case is exactly this -- two independent
+        TARGETs and no mosaic in sight -- and ``needs_wire_scoping`` (and
+        tonight.py's ``_receivers``, which reads the same rule) now turns
+        on for it. So the brief no longer says "M31 and M33"; it says each
+        TARGET's own capture, correctly, the same shape the mosaic case
+        above already pinned.
 
-            AssertionError: For M31 it captures Ha 300 s × 4 (gain 100, bin
-            1). For M33 it captures L 60 s × 5 (gain 100, bin 1).
-            assert 'For M31 and M33 it captures L 60 s × 5 (gain 100, bin
-            1).' in 'This flow arms M31. For M31 it captures Ha 300 s × 4
-            (gain 100, bin 1). For M33 it captures L 60 s × 5 (gain 100,
-            bin 1).'
+        RED under the tonight.py mutant "owner_of in a graph with no mosaic
+        reverts to canvas order" (``_receivers``' ``scoped =
+        needs_wire_scoping(g)`` reverted to ``mosaic = any(is_multi_panel(n)
+        for n in g.nodes)``), observed: the FIRST stage (Ha, walked while
+        only M31 has been passed) still names M31 alone under canvas order
+        too, so that assertion still passes; the SECOND (L, walked once
+        both targets have been passed) is where canvas order's leak shows,
+        exactly as it did for the mosaic case before #151:
 
-        It is RED under "every stage read as one chain" too.
+            AssertionError: This flow arms M31. For M31 it captures Ha 300 s
+            × 4 (gain 100, bin 1). It then arms M33. For M31 and M33 it
+            captures L 60 s × 5 (gain 100, bin 1).
+            assert 'For M33 it captures L 60 s × 5 (gain 100, bin 1).' in
+            'This flow arms M31. For M31 it captures Ha 300 s × 4 (gain
+            100, bin 1). It then arms M33. For M31 and M33 it captures L 60
+            s × 5 (gain 100, bin 1).'
         """
         g = _two_lanes()
         single = g.model_copy(update={"nodes": [
@@ -174,10 +191,10 @@ class TestSeveralLanesNameTheirBlock:
             if n.id == "t" else n for n in g.nodes]})
         text = brief(single)
         tail = text[text.index("arms M31") + len("arms M31. "):]
-        assert "For M31 and M33 it captures L 60 s × 5 (gain 100, bin 1)." in (
-            text), tail
-        assert "For M31 it captures Ha 300 s × 4 (gain 100, bin 1)." in text, (
-            tail)
+        assert "For M31 it captures Ha 300 s × 4 (gain 100, bin 1)." in text, tail
+        assert "For M33 it captures L 60 s × 5 (gain 100, bin 1)." in text, tail
+        assert "M31 and M33" not in text, (
+            f"a stage named both blocks though each has its own wire: {text}")
 
     def test_a_stage_no_block_holds_says_it_shoots_nothing(self):
         """In a graph with a mosaic, a stage past a DOME belongs to no TARGET

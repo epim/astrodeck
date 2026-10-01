@@ -627,7 +627,12 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
             )}
             {armed && hold && !recovering && (
               <Mono size={10} tone="warn">
-                Holding: {hold.reason}. It starts by itself when that clears.
+                {/* site_detail carries the numbers behind a words-only reason
+                    (#258, #233); absent for a principal without
+                    view.site_derived, the normal case, in which nothing extra
+                    prints here. */}
+                Holding: {hold.reason}{hold.site_detail ? ` - ${hold.site_detail}` : ""}.
+                It starts by itself when that clears.
               </Mono>
             )}
             {recovering && stopRecovery.error && (

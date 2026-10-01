@@ -505,7 +505,28 @@ await testAsync("RUN arms before it starts, and STOP never arms", async () => {
   assert(/CONFIRM RUN/.test(tid("flow-run").textContent), "the armed label has to say what a second tap does");
 
   // A live run, on a FRESH tree so no armed state carries over.
-  seed("admin", ADMIN_CAPS, { run: { ...useStore.getState().flows.run, phase: "running" } });
+  //
+  // RE-PINNED (W2 integration, #162 backlog WP-16 (a), owner-approved
+  // 2026-09-30): STOP's identity now comes off `useFlowRunControls`'s `ours`
+  // (`flowRunLive(knownSessions(flows), sequence)`), the same fix
+  // flowRunControls.tsx's `act()` and the Sky flow card got, not off the
+  // display-only `flows.run.phase` latch alone. Seeding only the latch, as
+  // this fixture used to, now makes STOP's press read as a REFUSED start
+  // (no live session this flow owns), not an abort -- the toolbar is reading
+  // the identity check correctly; the fixture was the one still describing
+  // the old, phase-only world. So this now ALSO seeds a real live session
+  // ("sess-live") that is both running in `sequence` and known as this
+  // flow's own (`sessionIds`), which is what "a live run" has to mean for
+  // STOP to be a real abort rather than a stale label over nothing.
+  seed("admin", ADMIN_CAPS, {
+    run: { ...useStore.getState().flows.run, phase: "running" },
+    sessionIds: ["sess-live"],
+  });
+  act(() => {
+    useStore.setState({
+      sequence: { state: "running", session: { id: "sess-live" } },
+    } as never);
+  });
   await mount(createElement(FlowCanvasToolbar as any));
 
   const stop = tid("flow-run");

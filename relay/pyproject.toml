@@ -4,10 +4,16 @@ version = "0.1.0"
 description = "AstroDeck remote-access relay: outbound-WSS tunnel front door (no port-forwarding)"
 requires-python = ">=3.11"
 dependencies = [
-    "starlette>=1.6.0",
-    "uvicorn[standard]>=0.30",
-    "websockets>=14.0",
-    "cryptography>=50.0.0",
+    # Pinned to an exact version (#597, backlog WP-13), identical to
+    # requirements.txt: CI's relay job and deploy-relay's test job install
+    # from THIS file, so a range here would let the same drift back in that
+    # requirements.txt was pinned to stop (see that file's comment for the
+    # incident). server/tests/test_w2_relay_requirements_pinned.py grades
+    # both files line for line.
+    "starlette==1.7.0",
+    "uvicorn[standard]==0.54.0",
+    "websockets==17.1",
+    "cryptography==50.0.2",
 ]
 
 [project.optional-dependencies]

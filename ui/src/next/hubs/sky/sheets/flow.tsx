@@ -53,6 +53,7 @@ import { accessPhrase, useCanControlMount, useRoleConnected } from "../../../../
 import {
   askContinue, isRunPhaseLive, runAnsweringQuestions, runBlockedReason,
 } from "../../../../components/flows/flowRunControls";
+import { flowRunLive, knownSessions } from "../../../../components/flows/flowRunState";
 import type { FlowUnmapped } from "../../../../lib/flowsApi";
 import {
   FLOWS_NEEDS_WIDTH, UNMAPPED_CANCEL, UNMAPPED_CONFIRM, UNMAPPED_TITLE,
@@ -88,7 +89,6 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
   const graph = useStore((s) => s.flows.graph);
   const compiled = useStore((s) => s.flows.compiled);
   const compiling = useStore((s) => s.flows.compiling);
-  const phase = useStore((s) => s.flows.run.phase);
   const flowsRun = useStore((s) => s.flowsRun);
   const pushConfirm = useStore((s) => s.pushConfirm);
   const resolveConfirm = useStore((s) => s.resolveConfirm);
@@ -97,7 +97,18 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
 
   const canControlMount = useCanControlMount();
   const cameraConnected = useRoleConnected("camera").connected;
-  const running = isRunPhaseLive(phase);
+  // READ OFF THE RIG'S OWN IDENTITY, NEVER THE CLIENT'S PHASE LATCH ALONE
+  // (#162, found while verifying #454). `isRunPhaseLive(flows.run.phase)` is
+  // true forever after the first run this card ever started on this page -
+  // nothing publishes the phase back, and this card has no equivalent of
+  // NowEmpty's RUN_PHASE_GRACE_MS to clear it. Read alone it mislabelled the
+  // button RUN IN PROGRESS, kept it pressable, and skipped the camera check
+  // `runBlockedReason` only waives for an actually-live run. `flowRunLive`
+  // over `knownSessions` is grounded in the sequence state the rig publishes
+  // NOW, so it goes false the moment the run really ends - this card needs no
+  // "just pressed" grace of its own, because a successful press navigates
+  // away at once (`start` below), before this reader is asked again.
+  const running = useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
 
   const recordId = record?.id ?? null;
   // THE ONE TEST every read of the open record below is gated on, through
@@ -164,14 +175,19 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
   const runReason = runBlockedReason(canControlMount, cameraConnected, running)
     ?? waiting?.run ?? null;
 
-  /** `flowsRun` answers null for BOTH a clean start and a refusal it has already
-   *  written to the flow log, so null on its own is not "it started". The run
-   *  phase is what the engine actually said, and it is read back before this
-   *  sheet navigates away from the card the operator would need to try again. */
-  const started = (): boolean => isRunPhaseLive(useStore.getState().flows.run.phase);
-
   const start = async (): Promise<void> => {
     if (runReason) return;
+    // THE START IS JUDGED ON WHAT THIS PRESS WROTE, never on the phase alone
+    // (#162, the pattern of the Send-to-Wizard fix, #454). `flowsRun` writes a
+    // NEW `run` object with a live phase only when the server starts the run,
+    // and leaves the old one untouched when it refuses or when every question
+    // it asks is declined; nothing ever writes the phase back on its own. Read
+    // alone, `isRunPhaseLive(flows.run.phase)` stays true for the rest of the
+    // page's life once any run on it has succeeded, so a LATER refusal (a run
+    // already live, the horizon, a held camera) read as this press having
+    // started one, and the card navigated to Session - Now with no word that
+    // nothing happened.
+    const runBefore = useStore.getState().flows.run;
     // The loop the Flows RUN button uses: one question per request, and every
     // re-post carries every answer already given. A decline is silent -
     // nothing failed, the operator said no.
@@ -194,7 +210,11 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
       (q) => askContinue(q, pushConfirm, resolveConfirm, "nx-confirm-btn"),
     );
     if (cancelled) return;
-    if (started()) { nav.hub("session", "now"); return; }
+    const runAfter = useStore.getState().flows.run;
+    if (runAfter !== runBefore && isRunPhaseLive(runAfter.phase)) {
+      nav.hub("session", "now");
+      return;
+    }
     enqueueToast(answered === null
       ? {
           level: "error",

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useStore, useStatus } from "../store";
 import { Panel, Stat, Toggle, IconButton, LockedNote, SegmentedControl } from "../components/ui";
@@ -11,6 +11,7 @@ import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import GotoStrip from "../components/GotoStrip";
 import type { CatalogEntry, LogLine, PreflightAlt } from "../types";
 import { altTone, fmtAlt, fmtMag } from "../lib/catalogFormat";
+import { slewRatesWithCeiling } from "../lib/slewController";
 
 /** Severity glyph for an altitude cell — shape, not colour-only (spec §5 / critique3 #7).
  *  `alt` is absent for a viewer-role search result (no view.site_derived), in
@@ -91,6 +92,20 @@ export default function MountView() {
   const [center, setCenter] = useState(true);
 
   const m = status?.mount;
+
+  // THE SLEW PAD'S CEILING (#144, backlog WP-20). `<SlewPad />` used to be
+  // rendered with no props at all, so classic fell back to the shipped
+  // three-stop ladder (0.5 deg/s top) and the 0.6 deg/s touch-clamp default,
+  // whatever the connected driver can actually do -- on the AM5N (1.44
+  // deg/s) that made the slow, shipped rate the ONLY way to drive the tube
+  // by eye after a reset: three minutes of holding 0.5 deg/s to cover ninety
+  // degrees of sky. `#/next`'s mount sheet already builds this pair from the
+  // same status field (`slewStops`, `hubs/rig/sheets/mount.tsx`); this is
+  // the classic side of the same fix, with `slewRatesWithCeiling` in place
+  // of `#/next`'s own copy of the arithmetic.
+  const maxRateDegS = m?.max_rate_deg_s ?? null;
+  const slewRates = useMemo(() => slewRatesWithCeiling(maxRateDegS),
+                            [maxRateDegS]);
 
   // ---------------------------------------------------------- in-flight state
   // TWO KINDS OF ROUTE, TWO KINDS OF TRUTH.
@@ -503,7 +518,7 @@ export default function MountView() {
               toggles, alt-guard, NINA mode. SlewPad itself hard-guards on the cap
               (it can't post moves for a viewer); the disabled inputs here are the
               visible read-only affordance. */}
-          <SlewPad />
+          <SlewPad rates={slewRates} maxRateDegS={maxRateDegS} />
           <div className="flex items-center justify-center gap-2 mt-4 border-t border-line pt-3">
             <button className="btn tap min-h-[44px]" disabled={!canMount || solving}
               aria-busy={solving || undefined}
