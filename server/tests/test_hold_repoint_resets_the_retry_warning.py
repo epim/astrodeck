@@ -29,6 +29,7 @@ import astrodeck.sequence.engine as engine_mod
 from astrodeck.config import AppConfig, SafetyConfig
 from astrodeck.sequence import SequenceEngine, SequencePlan
 
+from _deadline import wait_until
 from test_hold_ends_the_idle_stop_retry import _target
 from test_idle_park_hold import (  # noqa: F401 (fixtures and harness)
     _ra_at, _unconfirmed_lines, sim_hub, temp_store)
@@ -36,11 +37,13 @@ from test_idle_park_hold import (  # noqa: F401 (fixtures and harness)
 
 async def _warned(lines, n: int) -> None:
     """Wait, briefly and for real, until ``n`` unconfirmed-stop warnings
-    have been said, or give up quietly and let the assertion say so."""
-    for _ in range(400):
-        if len(_unconfirmed_lines(lines)) >= n:
-            return
-        await asyncio.sleep(0.005)
+    have been said, or give up quietly and let the assertion say so.
+
+    A wall-clock deadline (#610): 400 x sleep(0.005) is 2 s on Linux but
+    6.2 s on Windows (sleep rounds up to the 15.6 ms timer there), so a
+    round count gives the two platforms different real patience."""
+    await wait_until(lambda: len(_unconfirmed_lines(lines)) >= n,
+                     timeout_s=8.0, interval_s=0.005)
 
 
 async def test_the_next_spells_unconfirmed_stop_is_said_again_after_a_repoint(

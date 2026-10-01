@@ -27,6 +27,8 @@ from astrodeck import gallery
 from astrodeck.devices.base import CameraFrame
 from astrodeck.imaging.fitsio import save_fits
 
+from _deadline import wait_until
+
 
 @pytest.fixture
 def cap(tmp_path, monkeypatch):
@@ -198,16 +200,20 @@ class TestCaptureWarmsTheThumbnail:
 
     async def test_the_worker_warms_a_real_frame(self, cap, monkeypatch):
         """End to end through the queue, with no HTTP and no camera."""
-        import asyncio
         from astrodeck.hub import Hub
         _write(cap, REL)
         monkeypatch.setattr(gallery, "capture_root", lambda: cap)
         h = Hub()
         h._enqueue_thumb(cap / REL)
-        for _ in range(200):
-            await asyncio.sleep(0.02)
-            if gallery.thumb_is_cached(REL, gallery.PRECOMPUTE_WIDTHS[0]):
-                break
+        # A wall-clock deadline (#610): 200 x sleep(0.02) is 4 s on Linux
+        # and about the same on Windows (sleep rounds up to the 15.6 ms
+        # timer there, negligible against a 20 ms ask), but every other
+        # loop of this shape in the suite used a round count too, so this
+        # one moves to the shared helper along with them rather than being
+        # the one left behind.
+        await wait_until(
+            lambda: gallery.thumb_is_cached(REL, gallery.PRECOMPUTE_WIDTHS[0]),
+            timeout_s=6.0, interval_s=0.02)
         assert gallery.thumb_is_cached(REL, gallery.PRECOMPUTE_WIDTHS[0])
         if h._thumb_task:
             h._thumb_task.cancel()

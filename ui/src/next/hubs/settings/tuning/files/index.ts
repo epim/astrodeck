@@ -19,7 +19,7 @@ export { StandardsEditor } from "./StandardsEditor";
 // finding: importing a helper out of a presentation module drags that module's
 // whole legacy render tree into the lazily-split next bundle).
 export {
-  filesLockSentence, formatBytes, lastPassLine, namingPreview, NAMING_SAMPLE,
+  filesLockSentence, formatBytes, lastPassLine, namingPreview,
   plainDashes, pushBlockedReason, STANDARDS_INPUT, syncCadenceLine,
   syncEnableBlockedReason, syncSummary, tokenText,
   type SyncTone,

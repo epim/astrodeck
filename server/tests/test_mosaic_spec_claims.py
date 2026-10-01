@@ -22494,9 +22494,21 @@ def test_9_says_what_s5_and_s6_did_to_four_rows():
     controls = _ui("components/flows/flowRunControls.tsx")
     # Since S7 the controls ask flowRunLive of the known sessions (#449;
     # the docstring's RE-PINNED IN S7).
+    #
+    # RE-PINNED AT W5 INTEGRATION (#647). I-18's own prose ("the latch still
+    # holds STOP once a run has ended (S5, #162, open)") is a narrative of
+    # what S5 left open at the time and is left as written -- this re-pin is
+    # only about the LIVE CODE CHECK below, which pinned the unbounded
+    # `isRunPhaseLive(phase) || ours` that #162 left in, line for line. #647
+    # bounded that latch (`RUN_PHASE_BRIDGE_MS` past the optimistic press,
+    # and cleared outright once `flowsSlice.ts`'s `onSequence` sees the
+    # server report the run over), so the literal line is gone; this checks
+    # the new one instead of the one #647 replaced.
     reader = ("const ours = useStore((s) => flowRunLive(knownSessions("
               "s.flows), s.sequence));" in controls
-              and "const running = isRunPhaseLive(phase) || ours;" in controls)
+              and "const bridging = isRunPhaseLive(phase) && phaseStartedAt "
+              "!== null" in controls
+              and "const running = ours || bridging;" in controls)
     model = _ui("components/flows/wizard/wizardModel.ts")
     steps = re.search(r"export const STEPS: readonly WizardStep\[\] = "
                       r"\[([^\]]*)\];", model).group(1)
@@ -24255,7 +24267,14 @@ def test_5_9_says_nights_and_the_notice_as_s7_built_them():
     armed = "is_armed()" in inspect.getsource(session_mod.SessionStore.armed)
     toolbar = _ui("next/hubs/session/flows/canvas/FlowCanvasToolbar.tsx")
     arm = _flat(_ts_function(toolbar, "runArm"))
-    armed_copy = ('if (copy.verb === "STOP") return undefined;' in arm
+    # RE-PINNED AT W5 INTEGRATION (#647). `runArm` used to skip the confirm on
+    # `copy.verb === "STOP"` -- the DISPLAYED label, which could say STOP for
+    # a press `act()` would actually START (the same stale-latch gap #430's
+    # own fix above bounds). #647 gates it on `stopsOnPress`
+    # (`useFlowRunControls`'s own `ours`, the source `act()` already decided
+    # on), so a press whose real action is a start is confirmed whatever the
+    # label reads; the label text itself (`copy.verb`) is unchanged.
+    armed_copy = ("if (stopsOnPress) return undefined;" in arm
                   and "[`${RUN_ARM_WORD} ${copy.verb}`, copy.detail]" in arm)
     surfaces = sorted(rel for rel in (
         "components/flows/FlowEditor.tsx",

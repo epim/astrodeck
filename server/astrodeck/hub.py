@@ -280,6 +280,20 @@ ROTATE_MIN_GAIN_DEG = 0.5
 #: the flip turned the camera +0.5 degrees, and the loop said only that it was
 #: not converging; the line names the commanded and the solved numbers, so
 #: play or slip in the train is told apart from a sign or wrap error.
+#:
+#: NOT D-05's threshold. D-05 (backlog ruling, owner-approved 2026-09-30;
+#: #594) asks a stricter version of this same question -- 90%, refused
+#: outright -- but as the dedicated, once-a-night ``Hub.rotator_self_test``,
+#: not this per-attempt warning: this loop is bounded by its own convergence
+#: test a few lines below (``ROTATE_MIN_GAIN_DEG``) across up to
+#: ``max_attempts`` tries at an uncertain target, and a scripted correction
+#: that merely slow-converges (a real possibility the tests in
+#: test_rotate_to_pa_convergence.py and test_h4_rotator_backlash.py exercise
+#: on purpose) can legitimately under-follow one attempt without the whole
+#: rotation being untrustworthy. ``rotator_self_test`` commands one KNOWN
+#: step for the sole purpose of measuring the coupling, with nothing else
+#: (a retry, a target-seeking adjustment) able to blur the answer -- see its
+#: own ``ROTATOR_SELF_TEST_FOLLOW_FRACTION``.
 ROTATE_FOLLOW_FRACTION = 0.5
 
 #: The least mechanical OR sky travel ``learn_rotator_sign`` (R-4, #145) will
@@ -290,6 +304,24 @@ ROTATE_FOLLOW_FRACTION = 0.5
 #: mis-sizing it (2026-08-08). Well under the default 2° step, so a healthy
 #: rotator clears it with room to spare.
 ROTATOR_SIGN_MIN_DEG = 0.5
+
+#: The commanded step ``Hub.rotator_self_test`` uses (D-05, #594): large
+#: enough that solve noise (a few hundredths of a degree) and the measured
+#: reversal backlash (0.1-0.2°) cannot masquerade as a passing fraction the
+#: way they could near ``ROTATOR_SIGN_MIN_DEG``, and the size #594's own
+#: suggested fix names ("a rotator self-test that commands +/-20 deg").
+ROTATOR_SELF_TEST_STEP_DEG = 20.0
+
+#: D-05's own number (backlog ruling, owner-approved 2026-09-30; #594): a
+#: self-test step followed by less than this fraction FAILS it, which takes
+#: rotation off for the rest of the night (``Hub._rotation_trusted = False``,
+#: ``rotate_to_pa`` then refuses outright). 0.9, not ``ROTATE_FOLLOW_FRACTION``
+#: (0.5, the per-attempt warning's older, looser number) -- #594 measured the
+#: astrotown CAA's real coupling slipping to 0.03-0.15 of commanded on moves
+#: over a few degrees, so this is the number meant to catch exactly that,
+#: deliberately kept separate from the rotate loop's own in-flight check (see
+#: ``ROTATE_FOLLOW_FRACTION``'s docstring for why the two must not share one).
+ROTATOR_SELF_TEST_FOLLOW_FRACTION = 0.9
 
 #: Where every plate-solve frame is written, under ``CAPTURE_DIR`` (#532).
 #: The gallery and the calibration library both skip it by name.
@@ -901,6 +933,20 @@ class Hub:
         #: bring back different, unmeasured hardware (``_teardown``), and the
         #: simulator's own physics are a KNOWN +1, set once on ``connect_sim``.
         self._rotator_sky_sign: int | None = None
+        #: Whether ``Hub.rotator_self_test`` (D-05, backlog ruling, owner-
+        #: approved 2026-09-30; #594) found the camera follows the rotator:
+        #: True (passed), False (failed -- ``rotate_to_pa`` then refuses
+        #: outright, "rotation is off for the night" per D-05), or None when
+        #: no self-test has run yet THIS session. None does NOT refuse --
+        #: unlike ``_rotator_sky_sign``, D-05's self-test is required only
+        #: "before the first rotating mosaic", not before every rotation, so
+        #: a fresh connect (and every test that never calls it) must rotate
+        #: exactly as it always did; only a MEASURED failure gates anything.
+        #: Process memory only, like ``_rotator_sky_sign`` beside it: a
+        #: reconnect may bring back a DIFFERENT rotator, or the same one
+        #: re-coupled since the last self-test (#594's own hardware fix),
+        #: and nothing before this process started may be trusted either way.
+        self._rotation_trusted: bool | None = None
         #: ((ra, dec), taken_at_monotonic, (ra_j2000, dec_j2000)) - see
         #: ``from_mount_frame``. One entry, because a mount points at one place.
         self._precess_memo: tuple[tuple[float, float], float,
@@ -1654,6 +1700,11 @@ class Hub:
         # or re-declare the known simulator default (``connect_sim``) --
         # never carry a sign measured against hardware that is gone.
         self._rotator_sky_sign = None
+        # D-05 (#594): the same reasoning, for the same reason, beside it --
+        # a reconnect may bring back a rotator the night's self-test never
+        # saw (or one re-coupled since a failure), so neither a PASS nor a
+        # FAIL survives it.
+        self._rotation_trusted = None
         # Warm ramp: FINALIZE (cooler off), do not merely cancel. The devices are
         # about to be disconnected a few lines below, so a cancelled ramp would
         # leave the camera holding whatever mid-ramp setpoint it happened to be
@@ -6959,6 +7010,143 @@ class Hub:
         return {"sign": sign, "mechanical_travel_deg": round(mech_travel, 2),
                 "sky_travel_deg": round(sky_travel, 2)}
 
+    async def rotator_self_test(self, step_deg: float = ROTATOR_SELF_TEST_STEP_DEG,
+                                exposure_s: float = 3.0) -> dict:
+        """D-05 (backlog ruling, owner-approved 2026-09-30; #594): once per
+        night, before the first rotating mosaic, command one KNOWN mechanical
+        step and solve before and after it, to measure whether the camera
+        actually follows the rotator. "A loose coupling reads as a healthy
+        rotator to everything except a plate solve" (the owner, #594) -- this
+        runs that plate solve deliberately, rather than waiting to find out
+        from a mosaic's panels.
+
+        PASS sets ``self._rotation_trusted = True`` and changes nothing else.
+        FAIL sets it ``False``, and every ``rotate_to_pa`` call after this
+        refuses outright (D-05: "rotation is off for the night") until the
+        next self-test passes -- a caller that still wants frames shoots them
+        at whatever fixed angle the camera already sits, by simply not asking
+        for a rotation, the same as any other target with no rotator.
+
+        A SEPARATE MEASUREMENT FROM THE PER-MOVE FOLLOW CHECK
+        (``_rotate_to_pa_attempts``'s own ``ROTATE_FOLLOW_FRACTION``, a
+        warning WP-32a already built), on purpose: that one guards a
+        correction toward an uncertain target through up to ``max_attempts``
+        retries, so a single under-followed attempt along the way is not
+        proof the coupling is bad -- the next attempt may converge anyway
+        (test_rotate_to_pa_convergence.py and test_h4_rotator_backlash.py
+        both script exactly that). This one commands a single KNOWN step for
+        the sole purpose of measuring the coupling, with nothing else -- a
+        retry, a target-seeking adjustment -- able to blur the result, which
+        is what lets it use D-05's stricter, refusing number
+        (``ROTATOR_SELF_TEST_FOLLOW_FRACTION``, 0.9) without that number
+        reaching into every ordinary rotation's in-flight retries. Both read
+        the same pure comparison (``rotation.follow_fraction``), just against
+        different thresholds for different questions.
+
+        Leaves the rotator wherever the second solve found it (``step_deg``
+        past where it started) -- like ``learn_rotator_sign``, this is a
+        calibration, not a framing command; the first real ``rotate_to_pa``
+        of the night moves it to wherever a panel needs anyway.
+
+        Raises DeviceError when either solve fails, or the rotator did not
+        move far enough to measure safely (the floor is
+        ``ROTATOR_SIGN_MIN_DEG`` -- the same number ``learn_rotator_sign``
+        uses, for the same reason: solve noise swamping too small a measured
+        step). A raised DeviceError leaves ``self._rotation_trusted``
+        UNCHANGED: a self-test that could not run said nothing about the
+        coupling, so it must not flip a prior PASS to untested or a prior
+        FAIL back to trusted."""
+        rot = self.require("rotator")
+        cam: Camera = self.require("camera")
+        from . import providers as _providers
+        solver = _providers.pick_solver(self)
+        await self.yield_camera_for("rotator self-test")
+        tel = self.devices.get("telescope")
+        ra_hint = dec_hint = None
+        if tel is not None and tel.connected:
+            with contextlib.suppress(Exception):
+                ra_hint, dec_hint = await tel.get_position()
+                if ra_hint is not None:
+                    ra_hint, dec_hint = await self.from_mount_frame(
+                        tel, ra_hint, dec_hint)
+
+        async def _solve_once() -> tuple[float, float]:
+            """One exposure + solve: (solved sky PA, mechanical angle read
+            right after) -- the same pair ``learn_rotator_sign`` and
+            ``_rotate_to_pa_attempts`` read."""
+            borrowed_slot = await self._borrow_wheel_for_solve()
+            try:
+                angle = await _sky_angle.exposure_context(self, cam)
+                through = await self._narrowband_filter_loaded()
+                async with self.exposure_guard("rotator self-test"):
+                    frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
+            self.last_frame = frame
+            await self._publish_preview(frame)
+            tmp = await _write_solve_frame(frame, "rotselftest",
+                                           ra_hours=ra_hint, dec_deg=dec_hint,
+                                           instrument=cam.name)
+            opt = self.effective_optics()
+            try:
+                result = await solver.solve(
+                    tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                    fov_deg_hint=opt["fov_h_deg"] or None)
+            finally:
+                await _retire_solve_frame(tmp, "rotselftest")
+            if not result.success:
+                from .solve import light as _light
+                raise await _light.failed_solve_error(
+                    frame, result,
+                    prefix="rotator self-test: plate solve failed",
+                    hub=self, narrowband_filter=through)
+            rec = await _sky_angle.note_solved_rotation(
+                self, result, source="rotator self-test", context=angle)
+            if rec is None:
+                raise DeviceError("rotator self-test: the solve reported "
+                                  "no usable position angle")
+            return rec["pa_deg"], float(await rot.get_mechanical_position())
+
+        sky0, mech0 = await _solve_once()
+        await rot.move_mechanical(_rotation.mod360(mech0 + step_deg))
+        sky1, mech1 = await _solve_once()
+
+        mech_travel = _rotation.mechanical_travel(mech0, mech1)
+        if abs(mech_travel) < ROTATOR_SIGN_MIN_DEG:
+            raise DeviceError(
+                f"rotator self-test: commanded {step_deg:g}° but the "
+                f"rotator only moved {mech_travel:+.2f}° mechanically -- "
+                f"too little to measure safely; check it is connected and "
+                f"free to turn")
+        # The signed-shortest-delta idiom ``_rotate_to_pa_attempts`` and
+        # ``learn_rotator_sign`` already use: a sky angle, not a mechanical
+        # one, so ``mechanical_travel`` (tied to the rotator's own range
+        # conventions) is the wrong reuse here.
+        sky_travel = ((sky1 - sky0 + 180.0) % 360.0) - 180.0
+        fraction = _rotation.follow_fraction(sky_travel, mech_travel)
+        passed = fraction >= ROTATOR_SELF_TEST_FOLLOW_FRACTION
+        self._rotation_trusted = passed
+        if passed:
+            bus.log("info",
+                    f"rotator self-test passed: the camera followed "
+                    f"{fraction:.0%} of the {mech_travel:+.2f}° commanded "
+                    f"move", "rotator")
+        else:
+            bus.log("warning",
+                    f"rotator self-test FAILED (D-05, #594): the camera "
+                    f"followed only {fraction:.0%} of the "
+                    f"{mech_travel:+.2f}° commanded move (sky "
+                    f"{sky_travel:+.2f}°); rotation is off for the night "
+                    f"and panels will be shot at a fixed angle until the "
+                    f"next self-test passes", "rotator")
+        bus.publish("rotator", action="self_test", passed=passed,
+                    fraction=round(fraction, 3),
+                    mechanical_travel_deg=round(mech_travel, 2),
+                    sky_travel_deg=round(sky_travel, 2))
+        return {"passed": passed, "fraction": round(fraction, 3),
+                "mechanical_travel_deg": round(mech_travel, 2),
+                "sky_travel_deg": round(sky_travel, 2)}
+
     async def rotate_to_pa(self, target_pa_deg: float,
                            exposure_s: float = 3.0,
                            max_attempts: int = 5) -> dict:
@@ -6966,7 +7154,9 @@ class Hub:
         enforce a sky position angle. Syncs the ROTATOR only (never the mount).
         The solver is resolved up front (motion-guarded — a sim solver can
         never drive a real rotator) and a solve failure raises DeviceError;
-        goto_and_center degrades it to rotation_skipped."""
+        goto_and_center degrades it to rotation_skipped. Refuses outright
+        while the sign is unmeasured (R-4, #145) or the nightly self-test has
+        FAILED (D-05, #594); see each check below for why."""
         rot = self.require("rotator")
         cam: Camera = self.require("camera")
         # R-4 (#145): refused OUTRIGHT, before any exposure, while the sign is
@@ -6981,6 +7171,22 @@ class Hub:
                 "rotation is refused — guessing could turn the camera the "
                 "wrong way (R-4, #145); run the sign calibration (two solves "
                 "around a small known move, see learn_rotator_sign) first")
+        # D-05 (backlog ruling, owner-approved 2026-09-30; #594): a self-test
+        # that has RUN and FAILED refuses every rotation outright, the same
+        # shape as the sign check above -- a loose coupling already measured
+        # bad does not get another chance per panel, it is off for the whole
+        # night until the next self-test passes (``rotator_self_test``). A
+        # self-test that has never run (``None``) does NOT refuse here: D-05
+        # requires it only "before the first rotating mosaic", not before
+        # every rotation, and a fresh connect must behave exactly as it did
+        # before D-05 -- the per-move follow check below is what catches a
+        # slipping camera on a call nobody self-tested first.
+        if self._rotation_trusted is False:
+            raise DeviceError(
+                "rotator: the nightly self-test found the camera does not "
+                "reliably follow the rotator (D-05, #594), so rotation is "
+                "refused for the rest of the night; panels should be shot "
+                "at a fixed angle until rotator_self_test passes again")
         from . import providers as _providers
         solver = _providers.pick_solver(self)
         rcfg = config_store.cfg().rotator
@@ -7110,9 +7316,14 @@ class Hub:
                 # convergence test and the not-converging abort below, so the
                 # line that tells play or slip in the train apart from a sign
                 # error is in the log before the abort that ends the loop.
+                # NOT D-05's refusal (see ``ROTATE_FOLLOW_FRACTION``'s
+                # docstring): this loop may legitimately under-follow one
+                # attempt of several while still converging overall, so this
+                # stays a warning, same as WP-32a left it. D-05's refusal is
+                # ``rotator_self_test``'s own, separate check, below.
                 pa_before, mech_before, commanded = last_move
                 turned = ((orientation - pa_before + 180.0) % 360.0) - 180.0
-                if abs(turned) < ROTATE_FOLLOW_FRACTION * abs(commanded):
+                if _rotation.follow_fraction(turned, commanded) < ROTATE_FOLLOW_FRACTION:
                     reported = ((float(mech) - mech_before + 180.0)
                                 % 360.0) - 180.0
                     bus.log("warning",

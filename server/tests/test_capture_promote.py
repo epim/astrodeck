@@ -26,6 +26,7 @@ import time
 from astrodeck.catalog import coords
 from astrodeck.hub import PromoteRefused
 
+from _deadline import wait_until
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 
@@ -321,10 +322,12 @@ async def test_a_failed_promote_does_not_put_an_older_frame_over_a_newer_one(
 
     monkeypatch.setattr(hub, "_save_captured_frame", _stuck_then_fails)
     press = asyncio.create_task(hub.promote_last_frame())
-    for _ in range(200):                        # let the save reach the gate
-        await asyncio.sleep(0.005)
-        if "camera" not in hub._promotable:
-            break
+    # Let the save reach the gate, on a wall-clock deadline (#610): 200 x
+    # sleep(0.005) is 1 s on Linux but 3.1 s on Windows (sleep rounds up to
+    # the 15.6 ms timer there), so a round count gives the two platforms
+    # different real patience.
+    await wait_until(lambda: "camera" not in hub._promotable, timeout_s=5.0,
+                     interval_s=0.005)
     assert "camera" not in hub._promotable, (
         "precondition: the slot is popped BEFORE the write")
 
