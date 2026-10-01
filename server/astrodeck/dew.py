@@ -68,6 +68,7 @@ import math
 import time
 
 from . import power_guard
+from .aio import reap
 from .config import DewConfig, config_store
 from .events import bus
 
@@ -243,10 +244,7 @@ class DewController:
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await reap(self._task)
             self._task = None
 
     async def _run(self) -> None:

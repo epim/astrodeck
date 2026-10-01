@@ -5,10 +5,12 @@ THE APP IS THE REAL ONE. `create_app` over ``httpx.ASGITransport`` on the
 test's own event loop, with no lifespan (so no background service ticks),
 isolated the way tests/test_flows_progress_route.py isolates it: a
 throwaway config store swept into every astrodeck module that holds one
-(`_sweep_config_store`, before and after the app is built), a throwaway flow
-library under both names the code reads (``app.flow_store`` for the routes,
-``flows.store.flow_store`` for the engine's finalize), and a throwaway
-captures directory, which holds the sessions, the reports and the night log.
+(``conftest._sweep_config_store``, before and after the app is built -- a
+shared helper since backlog WP-62, #497, 2026-09-30; this file kept a
+private copy before that), a throwaway flow library under both names the
+code reads (``app.flow_store`` for the routes, ``flows.store.flow_store``
+for the engine's finalize), and a throwaway captures directory, which holds
+the sessions, the reports and the night log.
 
 THE APP'S HUB AND ENGINE ARE A NIGHT'S. ``app.hub`` is a clocked night's
 simulator hub (`_group_harness.night_hub`) and ``app.engine`` that night's
@@ -68,7 +70,6 @@ from __future__ import annotations
 import asyncio
 import calendar
 import dataclasses
-import sys
 import time
 from typing import Any, Callable
 
@@ -88,6 +89,7 @@ from astrodeck.auth import (principal_for_role, reset_active_provider,
 from astrodeck.config import ConfigStore
 from astrodeck.flows.store import FlowStore
 from astrodeck.sequence.session import Session, session_store
+from conftest import _sweep_config_store  # rootdir-relative, as test_capture_root_isolated does
 
 NAME = "M31 2x2"
 TARGET = "M31"
@@ -220,16 +222,6 @@ class ZonedTime:
 
 
 # ------------------------------------------------------------------ the rig
-
-def _sweep_config_store(monkeypatch, store: ConfigStore) -> None:
-    """Point every imported astrodeck module's ``config_store`` at ``store``
-    (test_flows_progress_route.py's sweep: ``from .config import
-    config_store`` binds the singleton into each importer)."""
-    for name, mod in list(sys.modules.items()):
-        if (name.startswith("astrodeck") and mod is not None
-                and getattr(mod, "config_store", None) is not None):
-            monkeypatch.setattr(mod, "config_store", store, raising=False)
-
 
 class _Fixed:
     """Every request resolves to one principal (the RBAC suite's pattern)."""

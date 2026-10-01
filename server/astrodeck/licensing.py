@@ -1,25 +1,18 @@
-"""Assets we are not licensed to redistribute, and what AstroDeck does instead.
+"""Restricted-asset decisions and the application's fetch/acknowledgement flows.
 
-WHAT THIS IS FOR. The 2026-08-08 licence audit found four things we ship that
-nobody has granted us the right to ship (backlog
-``2026-08-08-third-party-licences.md`` §1). One was closed by repointing a URL.
-The other three are here. Until written permission arrives, the product must not
-distribute them — and must still be usable, which means fetching them on the
-operator's own machine under the operator's own grant, or asking before it uses
-a service whose terms do not cover us.
+The August audit identified unresolved permissions. October artifact inspection
+found that packaging paths differ: the source tarball excludes Player One
+libraries, while the inspected PyInstaller executable contains them. These
+application checks cannot substitute for inspecting the files we distribute.
 
-TWO REMEDIES, because the problems are not the same shape:
+FETCH obtains an asset from its publisher on the operator's machine. Use still
+depends on the publisher's terms; this flow is not a general permission grant.
+DSS2 database terms and original-image rights must be considered separately.
 
-  FETCH        the asset is fine to USE and not fine for US to REDISTRIBUTE.
-               So we ship nothing and pull it, on this machine, from the party
-               that publishes it. DSS2 sky tiles and the Player One SDK.
-
-  ACKNOWLEDGE  there is no asset. The CLIENT is what the terms do not permit,
-               and no amount of not-shipping-a-file fixes that. Astrospheric's
-               API is scoped to "Astrospheric Professional members for use in
-               personal projects" and we are a public product. So it stays inert
-               until somebody with authority over this instance says, on the
-               record, that this is such a use.
+ACKNOWLEDGE records the operator's statement about an Astrospheric deployment.
+The current API documentation describes Professional members' personal projects.
+Acceptance of public client distribution with many independent installations
+needs vendor clarification. The operator's acknowledgement does not supply it.
 
 SCOPE OF A CONSENT: THE INSTANCE, NOT THE PERSON. One acknowledgment covers
 everyone who uses this AstroDeck — viewers and operators do not each agree.
@@ -114,12 +107,7 @@ REGISTRY: tuple[RestrictedAsset, ...] = (
             "prohibited without written permission from the copyright "
             "holder(s). — STScI, on the Digitized Sky Surveys"),
         reading=(
-            "That is a USE grant and says nothing about third-party "
-            "redistribution. CDS, who host the tiles, permit mirroring only "
-            "where the original copyright authorises it — the one condition "
-            "that cannot be established here. So AstroDeck ships no tiles and "
-            "you fetch them yourself, which is squarely inside the use grant "
-            "above."),
+            "The current CDS color record grants ODbL-1.0 for its HiPS database. That database grant does not replace the original DSS image copyright or settle redistribution of those images. The inspected local tarball and Windows executable contain no survey tiles. The source packager rejects DSS2, but frozen builds have a separate inclusion path and need artifact checks. Local fetching remains subject to the provider's use terms; owner clearance is needed before enabling public redistribution."),
         remedy="fetch",
         source="CDS hips2fits (the survey's own publisher)",
         without=("the Atlas draws its offline schematic sky instead of "
@@ -135,14 +123,7 @@ REGISTRY: tuple[RestrictedAsset, ...] = (
             "products and this SDK to develop any products without any "
             "restrictions. — Player One Astronomy, SDK license.txt"),
         reading=(
-            "MIT-shaped — it closes with MIT's notice-retention clause and "
-            "warranty disclaimer word for word — but its GRANT paragraph, "
-            "quoted above, contains no distribution verb: not copy, publish, "
-            "distribute, sublicense or sell. A runtime library is useless "
-            "unless it ships, so redistribution is plausibly intended, and "
-            "plausibly intended is not granted. Until they confirm it in "
-            "writing, releases carry no Player One binary and this machine "
-            "fetches the SDK from the vendor."),
+            'The vendor text preserves MIT-like notice and disclaimer language but uses a different grant. Redistribution is plausible, but written confirmation remains needed. The inspected source tarball excludes Player One binaries. The fresh Windows PyInstaller artifact and examined published archives contain all six SDK libraries, so the claim that releases carry none is incorrect. The owner must obtain redistribution confirmation or correct each packaging path; fetching on one installation does not fix shipped copies.'),
         remedy="fetch",
         source="https://player-one-astronomy.com/service/software/",
         without="Player One cameras cannot be opened natively",
@@ -158,14 +139,7 @@ REGISTRY: tuple[RestrictedAsset, ...] = (
             "documentation scopes the Data API to \"Astrospheric Professional "
             "members for use in personal projects\"."),
         reading=(
-            "Nothing is being redistributed here, so there is no file to stop "
-            "shipping: the CLIENT is the thing outside their scope. AstroDeck "
-            "is a public product with an Astrospheric client in it. You supply "
-            "your own key and your forecast is never cached beyond display — "
-            "real mitigations, but facts, not a permission. So the client "
-            "stays inert until somebody states that this deployment is a Pro "
-            "member's personal project. One statement covers the whole "
-            "instance; every user of this rig inherits it."),
+            "The current API documentation describes Professional members' personal projects. Whether distributing a public client for many independently keyed installations is accepted under that scope needs vendor confirmation. A personal key and this instance-wide operator acknowledgement do not themselves grant wider rights. The existing client stays inactive until the operator acknowledges a personal-project deployment; this records their statement and does not resolve the separate public-client question."),
         remedy="acknowledge",
         source="https://www.astrospheric.com",
         without=("the weather panel keeps its Open-Meteo forecast and shows no "

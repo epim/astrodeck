@@ -1068,6 +1068,35 @@ class ResumeArm:
                 f"Arm it from the session list to pick it up again.",
                 "sequence")
 
+    def _disarm_single_night(self, session: Session, first_night: str,
+                             tonight: str) -> None:
+        """#195: ``session``'s plan asked for one night (``resume_across_
+        nights`` False) and its window has reopened on ``tonight``, which is
+        not ``first_night``. Refuse the resume and disarm, the same
+        write-locked, re-read-before-write pattern as :meth:`_disarm_stopped`,
+        so a concurrent PATCH or CONTINUE cannot be overwritten by a stale
+        copy. Best-effort for the same reason: a store that cannot be written
+        must not crash the tick, but it is said loudly, because an unsaved
+        disarm lets tomorrow's tick try again."""
+        try:
+            with session_store.write_locked():
+                fresh = session_store.load(session.id)
+                if fresh.auto_resume:
+                    fresh.auto_resume = False
+                    session_store.save(fresh)
+        except (KeyError, SessionUnreadable):
+            return                          # nothing left to disarm
+        except Exception as e:              # noqa: BLE001 - never fail a tick
+            bus.log("error", f"could not disarm '{session.name}' for its "
+                             f"single night - auto-resume may start it on a "
+                             f"later night anyway: {e}", "sequence")
+            return
+        bus.log("info",
+                f"auto-resume stays off for '{fresh.name}': this flow asked "
+                f"for a single night ({first_night}), and tonight "
+                f"({tonight}) is a different one. CONTINUE it by hand to "
+                f"shoot the rest.", "sequence")
+
     def _set_hold(self, session, reason: str, retry_at: float = 0.0,
                   site_detail: str | None = None, *,
                   nothing_tonight: bool = False) -> None:
@@ -1397,6 +1426,30 @@ class ResumeArm:
                             f"every frame it asked for.", "sequence")
             return
         self._gave_up_for = None            # window open (again): fresh night
+        # "SINGLE NIGHT" MEANS ONE NIGHT (#195). `SequencePlan.resume_across_
+        # nights` is False for exactly the flows DUSK WINDOW compiled with
+        # `repeat == "Single night"`. A crash or a reboot on the SAME night
+        # still resumes here - continuity within a night is a separate
+        # promise, and the window reopening because this tick is merely a
+        # minute later than the last one is not "a later night". But the
+        # window reopening because DAWN CAME AND WENT, and now it is open
+        # again, means a night this session never agreed to has arrived, and
+        # arming it anyway is the exact bug the owner's ruling closed: a
+        # "Single night" flow that quietly finished itself on the next clear
+        # night like a campaign would.
+        #
+        # CHECKED HERE, AHEAD OF EVERY OTHER REFUSAL BELOW, because every
+        # refusal below is a RETRY ("try again in 10 minutes") and this one
+        # is not: it is permanent for this session, so letting a crash-loop
+        # counter, an identity error or a quota refusal run first would leave
+        # the session armed and able to resume on some LATER successful tick,
+        # on a night it was never supposed to see.
+        if not armed.plan.resume_across_nights:
+            nights = armed.observing_nights()
+            tonight = night_key(now)
+            if nights and tonight not in nights:
+                self._disarm_single_night(armed, nights[0], tonight)
+                return
         # A SESSION THAT KEEPS CRASHING IS NOT A SESSION TO KEEP RESTARTING.
         #
         # Continuity is the right default and it is what the rest of this tick

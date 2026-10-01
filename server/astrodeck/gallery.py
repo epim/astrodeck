@@ -75,6 +75,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from .aio import reap
 from .events import bus, night_key
 from .persist import safe_subpath
 from .gallery_index import MetadataIndex, signature, DIRECTORY as INDEX_DIRECTORY
@@ -1462,13 +1463,9 @@ class TrashKeeper:
             self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
-        import asyncio
         if self._task is not None:
             self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await reap(self._task)
             self._task = None
 
     async def tick(self) -> dict:

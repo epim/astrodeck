@@ -76,6 +76,13 @@ for _spdx in (
        "Reproduce the copyright notice and permission notice with the "
        "distribution. No source-code obligation.")
 
+# Exact additional permissive forms found in the October artifact audit.
+_p("BSD-3-Clause-Open-MPI", (NOTICE,),
+   "Reproduce the full copyright notice, conditions and disclaimer in source "
+   "and binary distributions; do not use contributors' names for endorsement.")
+_p("BlueOak-1.0.0", ("license-or-link",),
+   "Give recipients the licence text or a link to https://blueoakcouncil.org/license/1.0.0.")
+
 # -- public-domain equivalents: nothing is owed, credit given anyway ----------
 for _spdx in ("0BSD", "CC0-1.0", "Unlicense", "WTFPL"):
     _p(_spdx, (),
@@ -139,15 +146,36 @@ _p("proprietary-redistributable", (NOTICE,),
    "Vendor SDK redistributed under the vendor's own terms; the terms text is "
    "reproduced in full below and permits shipping the compiled library.")
 
+# Survey-specific and service-specific obligations reviewed in October 2026.
+# These do not turn access terms into a general redistribution grant.
+_p("ODbL-1.0", (ATTRIBUTION, LICENSE_TEXT, SHARE_ALIKE),
+   "Preserve database attribution and the ODbL reference for relevant public use. "
+   "Publicly used adapted databases can require share-alike and access to the "
+   "database or alterations. Independent rights in contents remain separate.",
+   copyleft=True)
+_p("LicenseRef-2MASS-Acknowledgement", (ATTRIBUTION,),
+   "Retain the requested 2MASS mission acknowledgement with published material using its data.")
+_p("LicenseRef-NOAA-NODD-Terms", (ATTRIBUTION, STATE_CHANGES),
+   "NOAA requests attribution. Do not imply NOAA endorsement or present changed data as its original unaltered output.")
+_p("LicenseRef-MPC-Data-Terms", (ATTRIBUTION,),
+   "Keep source acknowledgement and observe service limits. Public availability alone does not establish a bulk redistribution grant.")
+_p("LicenseRef-CelesTrak-Service-Terms", (),
+   "Observe the current access policy, including stopping automated requests after a non-200 response and involving a human.")
+_p("LicenseRef-CDS-Survey-Terms", (ATTRIBUTION,),
+   "Retain CDS and original-survey credits and apply each survey's database and image terms separately.")
+_p("LicenseRef-ESA-Survey-Mirror", (ATTRIBUTION,),
+   "Credit the mirror operator and preserve the originating survey's terms. A mirror does not replace the original licence.")
+
+
 #: Licences that stop the build. Each is an owner decision: adopt the obligation
 #: knowingly, or remove the dependency. The generator will not choose.
 _FLAGGED: dict[str, str] = {
-    "gpl-1.0": "GPL: strong copyleft, would reach AstroDeck's own source.",
-    "gpl-2.0": "GPL: strong copyleft, would reach AstroDeck's own source.",
-    "gpl-3.0": "GPL: strong copyleft, would reach AstroDeck's own source.",
+    "gpl-1.0": "GPL: strong-copyleft distribution requires explicit owner review.",
+    "gpl-2.0": "GPL: strong-copyleft distribution requires explicit owner review.",
+    "gpl-3.0": "GPL: strong-copyleft distribution requires explicit owner review.",
     "agpl-3.0": "AGPL: copyleft that triggers on network use of the server.",
-    "lgpl-2.1": "LGPL: relinking obligation; our PyInstaller single-file binary "
-                "statically bundles, which is exactly the case LGPL constrains.",
+    "lgpl-2.1": "LGPL: review library replacement, relinking and source obligations "
+                "for the exact executable distribution form.",
     "lgpl-3.0": "LGPL: relinking obligation; see LGPL-2.1 note.",
     "sspl-1.0": "SSPL: not an OSI licence; service-source obligation.",
     "bsl-1.1": "Business Source License: use restrictions until the change date.",
@@ -251,6 +279,26 @@ def resolve(expression: str | None) -> Resolution:
     raw = (expression or "").strip()
     if not raw:
         raise Flag("no licence statement found — cannot ship without one")
+
+    # Exact, reviewed subcomponent cases from the October artifact audit.
+    # They are classified, not cleared: callers must preserve the owner flag.
+    reviewed = {
+        "lgpl-3.0-or-later": (
+            Policy("LGPL-3.0-or-later", (LICENSE_TEXT, NOTICE, "source and relinking review"),
+                   "Carry the GPL/LGPL texts and notices. Review corresponding source, "
+                   "library replacement/relinking and reverse-engineering permissions "
+                   "for this exact distribution form.", copyleft=True),
+            "WCSLIB in the onefile executable needs owner review of LGPL compliance (#638); classification is not clearance."),
+        "gpl-3.0-or-later with gcc-exception-3.1": (
+            Policy("GPL-3.0-or-later WITH GCC-exception-3.1", (LICENSE_TEXT, NOTICE),
+                   "The GCC Runtime Library Exception can permit qualifying combined "
+                   "target code under other terms. Preserve notices and verify the "
+                   "exception's conditions for the shipped runtime."),
+            "GCC runtime exception recorded explicitly; confirm the shipped component and applicable conditions (#638)."),
+    }
+    if raw.lower() in reviewed:
+        pol, flag = reviewed[raw.lower()]
+        return Resolution(policies=[pol], flag=flag)
 
     # Deliberately conservative: a licence expression that mentions GPL or a use
     # restriction ANYWHERE gets flagged, even when it offers a permissive

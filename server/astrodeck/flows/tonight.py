@@ -219,6 +219,54 @@ def _night_date(now: float, lon_deg: float) -> str:
         evening, _dt.timezone.utc).date().isoformat()
 
 
+def target_own_window(ra_hours: float, dec_deg: float, *, site: Any,
+                      min_altitude_deg: float = 0.0,
+                      now: float | None = None,
+                      date: str | None = None) -> dict | None:
+    """This target's OWN best observing window tonight: astronomical dark
+    (-18 deg, ``visibility.ASTRO_DARK_DEG``) AND above ``min_altitude_deg`` —
+    exactly ``resolve_tonight``'s per-target ``window`` (the one the Tonight
+    card draws), factored out so a caller that is not building the whole
+    card can ask it of one target. Returns ``{start_unix, end_unix,
+    mean_alt}``, or ``None`` when the site cannot be read or the target
+    never clears ``min_altitude_deg`` in the dark tonight.
+
+    THE GAP THIS CLOSES (#596, backlog shape b). A flow's compiled
+    ``Target.schedule`` carries the AUTORUN window — dusk (at the RIG's own
+    ``twilight_deg``) plus the card's offset, ONE clock shared by every
+    target in the plan. This is a different, per-target answer: NGC 7331's
+    own window opened at 20:23 on 2026-09-29 while the flow's shared autorun
+    window opened at 19:20 (dusk -30 min) — a 63-minute gap, because dusk at
+    the rig's configured twilight angle is not the same instant as THIS
+    target clearing the true dark sky and its own altitude. The engine's
+    ``_setup_target`` asks here, not the compiled schedule, before it spends
+    the night's one autofocus and guider calibration on a target that is
+    not up yet.
+
+    BEST-EFFORT, LIKE ``schedule.gating_status``'s "no site" branch: a site
+    that cannot be read answers None rather than raise, so a caller that
+    cannot judge this treats it as nothing to wait for, never as a new way
+    to withhold a run."""
+    sd, _why = _site_dict(site)
+    if sd is None:
+        return None
+    t_now = time.time() if now is None else float(now)
+    d = date or _night_date(t_now, sd["longitude"])
+    # Lazy, as ``resolve_tonight`` imports it: astropy and FastAPI should
+    # not load just because a module imported ``flows.tonight``.
+    from ..catalog.visibility import NoSite, compute_night
+    try:
+        night = compute_night(ra_hours, dec_deg, date=d,
+                              alt_limit=min_altitude_deg, site=sd)
+    except NoSite:
+        return None
+    bw = night.get("best_window")
+    if not bw:
+        return None
+    return {"start_unix": bw["start_unix"], "end_unix": bw["end_unix"],
+            "mean_alt": bw["mean_alt"]}
+
+
 # ------------------------------------------------------------------- the ledger
 
 def _field(obj: Any, name: str, default: Any = None) -> Any:

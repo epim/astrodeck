@@ -1,0 +1,1836 @@
+{
+  "schema": 1,
+  "reviewed_baseline": "bf3eadddcac9fb74bd802309b57ab6536c15ee36",
+  "scope": "Exact reviewed binary/data inputs. A changed hash or new file needs provenance review. Recorded blocked assets remain failures.",
+  "compiler_runtime_components": [
+    "vite",
+    "tailwindcss"
+  ],
+  "assets": [
+    {
+      "path": "server/astrodeck/vendor/zwo/ASICamera2.dll",
+      "sha256": "0c8778c3cce2012961b079e3c7d0d8348a8b3823939335d9e98148cb5d5dc34a",
+      "component": "ZWO SDKs",
+      "credit": "ZWO camera, focuser and rotator SDKs",
+      "spdx": "MIT",
+      "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
+      "notices": {
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/CAARotator.dll",
+      "sha256": "23b880eeded0cb0cfbbcbd5c024468af1fab2820aa5dd4789bdda908ea8f92bd",
+      "component": "ZWO SDKs",
+      "credit": "ZWO camera, focuser and rotator SDKs",
+      "spdx": "MIT",
+      "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
+      "notices": {
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/EAF_focuser.dll",
+      "sha256": "705ee6f55f7b959ac8721892bdd9166ad2f2b5ca570ec382a840063cb7c9f0f1",
+      "component": "ZWO SDKs",
+      "credit": "ZWO camera, focuser and rotator SDKs",
+      "spdx": "MIT",
+      "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
+      "notices": {
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/linux-arm64/libASICamera2.so",
+      "sha256": "3ecf511979ed571131e7d7f4a467112aba21940b4dc91d63bd109b9683bf67c4",
+      "component": "ZWO SDKs",
+      "credit": "ZWO camera, focuser and rotator SDKs",
+      "spdx": "MIT",
+      "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
+      "notices": {
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/linux-arm64/libCAARotator.so",
+      "sha256": "680286a000d203883fc626e1ea4d4addadf5d93e940c33135a7ee20d98abe901",
+      "component": "ZWO SDKs",
+      "credit": "ZWO camera, focuser and rotator SDKs",
+      "spdx": "MIT",
+      "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
+      "notices": {
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/linux-arm64/libEAFFocuser.so",
+      "sha256": "0ce25b248a727ec4cad07cc4de4ffeb256773f9bc23794a66a8a527132d5df6d",
+      "component": "ZWO SDKs",
+      "credit": "ZWO camera, focuser and rotator SDKs",
+      "spdx": "MIT",
+      "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
+      "notices": {
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+      }
+    },
+    {
+      "path": "server/astrodeck/vendor/zwo/macos/libASICamera2.dylib",
+      "sha256": "4c83b50b4b1ac7f2253c36b7889ddcbd28eaccb63e2ee9cdaea1c1f35f5cc716",
+      "component": "ZWO SDKs",
+      "credit": "ZWO camera, focuser and rotator SDKs",
+      "spdx": "MIT",
+      "source": "server/astrodeck/vendor/zwo/LICENSE.txt",
+      "notices": {
+        "server/astrodeck/vendor/zwo/LICENSE.txt": "98ad1c18048bfdabc8463740ac36a8d8cd710bdc3102ac6c22978ec50056e5a2"
+      }
+    },
+    {
+      "path": "server/astrodeck/catalog/data/constellations.tsv",
+      "sha256": "0bf8ebaccea931f1073b8d8132c9127ade3ec316fb01a2dba5e42c096f934b19",
+      "component": "Constellation assignments (IAU boundaries, via Astropy)",
+      "credit": "Constellation assignments (IAU boundaries, via Astropy)",
+      "spdx": "Apache-2.0",
+      "source": "https://www.astropy.org/"
+    },
+    {
+      "path": "server/astrodeck/catalog/data/discoverers.tsv",
+      "sha256": "f64b8e8617f2f844ab492af7e1749077f9f6ec33e8260c81a72544b3f20380f9",
+      "component": "Discoverer and discovery date (Wikidata)",
+      "credit": "Discoverer and discovery date (Wikidata)",
+      "spdx": "CC0-1.0",
+      "source": "https://www.wikidata.org/"
+    },
+    {
+      "path": "server/astrodeck/catalog/data/ngc.tsv",
+      "sha256": "89808b1a09f7f687bb5c5b2d5f3e925cef5eb07c323421e2df7b384d007ab5c7",
+      "component": "OpenNGC deep-sky catalogue",
+      "credit": "OpenNGC deep-sky catalogue",
+      "spdx": "CC-BY-SA-4.0",
+      "source": "https://github.com/mattiaverga/OpenNGC"
+    },
+    {
+      "path": "server/astrodeck/catalog/data/ngc_extras.tsv",
+      "sha256": "cd71834aaa298dbd3832365e8c60b591c83b8c00a34635551af67a6d1decf1c0",
+      "component": "OpenNGC deep-sky catalogue \u2014 extra columns (Hubble type, minor axis, redshift, NED notes)",
+      "credit": "OpenNGC deep-sky catalogue \u2014 extra columns (Hubble type, minor axis, redshift, NED notes)",
+      "spdx": "CC-BY-SA-4.0",
+      "source": "https://github.com/mattiaverga/OpenNGC"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-500-normal-BR1ody1F.woff2",
+      "sha256": "36ad966cb653de70ba37355c41003b02de8940b2df6cbcd46480a6ad8cadd65d",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-latin-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-500-normal-CnUQnZ4D.woff",
+      "sha256": "4cd37544eb0dc46b75fd44315570bdcbf3fd0dc5e1286514518fd9f2c8bae556",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-latin-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-600-normal-DQKfcdKo.woff",
+      "sha256": "8e64347841a0995e991c888d1a8618ac88b11655f48d2083bd4b6a5f958f6947",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-latin-600-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-600-normal-DVQm9bgb.woff2",
+      "sha256": "a5888696e9eb1b4bbbecc8eb3922b8369f49d4bddb72263e033cbd17f399be76",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-latin-600-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-ext-500-normal-BCHeNDEx.woff",
+      "sha256": "15fe38922b766c41e9cad1869a2284459285a5f63431bc100fc2aedc12c2eb44",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-latin-ext-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-ext-500-normal-gA6791b0.woff2",
+      "sha256": "5e6545c4da21734334bcf06853ef74df582737ae23682f8278fe9f1ba70908cc",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-latin-ext-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-ext-600-normal-CdGvbdDU.woff2",
+      "sha256": "eb128c93678bd6b08fc3f0a7b5a44e73a6a4e374d0f449f9d26cf8ad48964d40",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-latin-ext-600-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-latin-ext-600-normal-nL80L4xU.woff",
+      "sha256": "cff44d740b43764ec2aa2bf4051d2eb5e4f5b796765dfc68c431094570bfc84a",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-latin-ext-600-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-thai-500-normal-CJG_V2_m.woff",
+      "sha256": "5862aee7c5945bf4f36c833d7cc1f74a464852628a965e3881c462b26cef35ed",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-thai-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-thai-500-normal-DeexCGiz.woff2",
+      "sha256": "504a451bb8dd3da76d6ccba3fbee72ed5d40745857b1d2094469e8e72d2b7451",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-thai-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-thai-600-normal-BiM5MXH8.woff",
+      "sha256": "ec10a22f3d1051567b45b46dc6bb04c2227048765baaf127be42a32fe228152e",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-thai-600-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-thai-600-normal-C620THcd.woff2",
+      "sha256": "7031f2d8ae9189b2abb191a31dda0525d831c1bc48f2252b379f9aa218b16eee",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-thai-600-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-vietnamese-500-normal-BVzUBLGs.woff",
+      "sha256": "34cc2dd42a28de5c52477b818d88363237624aef3c5e0565a14c1d29279ba64e",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-vietnamese-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/chakra-petch-vietnamese-600-normal-Pvj4qcw_.woff",
+      "sha256": "77b6bab47c64eda09e9742decb8a31a0c2fec449f22a5a4e06c17df6cac18572",
+      "component": "@fontsource/chakra-petch",
+      "credit": "@fontsource/chakra-petch",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/chakra-petch/files/chakra-petch-vietnamese-600-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-400-normal-BSMlKf0J.woff2",
+      "sha256": "7635422bd10ddbbcb0e0caa1154b928298f5c8319b8c00b30978d4395f4783ce",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-cyrillic-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-400-normal-CEL4l2ZJ.woff",
+      "sha256": "42da81a28bbcddda6768a25a4b3105ee291e69d5fa6c74747bc51bbc6718c538",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-cyrillic-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-500-normal-Ael50iVv.woff",
+      "sha256": "55a3af5e5ba0f565b4e66149cfe077ba88ac42cc3f68650a901d58eadbf9cd9b",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-cyrillic-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-500-normal-Bq9vWWag.woff2",
+      "sha256": "1d89462e86cb8e87e7e9d6f6635605bd7c3081baca6caaecee84916bf7b60edc",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-cyrillic-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-ext-400-normal-DMdlQ8Kv.woff",
+      "sha256": "0e4a2393e8ed3185ae300e4a202b6d9149d47d8a0e5bb8f1d1db33e76b86ecd1",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-cyrillic-ext-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-ext-400-normal-xuaO2J-f.woff2",
+      "sha256": "f8c22ec1804bd6966b70f43ac7c327025645b4c09597117fca2a5a6c750106fe",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-cyrillic-ext-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-ext-500-normal-BIfNGwUT.woff",
+      "sha256": "eadb2c427859b185761380143d1f42187fd7cbd94704b543e4c76c6368fbab52",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-cyrillic-ext-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-cyrillic-ext-500-normal-BqneJy0T.woff2",
+      "sha256": "3febe5c7f22e4b07b4552738673c3dbe8bced2dc5f48b866edf7ccd9552d109a",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-cyrillic-ext-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff",
+      "sha256": "328d50b6ece9ca25c46eea3e885ba497f6237f2fb84ef7b92f88e14a1a25e381",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2",
+      "sha256": "08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff",
+      "sha256": "09f018c58556e5801ecc49d5b5275dcff4c73311c2af6b88e31c51d76d076a9d",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2",
+      "sha256": "01d285447409c8a588692162439a038b8cbd7871309ee20267b0d2d91c6e8e22",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-ext-400-normal-BmRBH3aV.woff2",
+      "sha256": "6bc0f226a5b7884a8170e3f62c63d7675609d4631bdc5931b5cdab81821f00eb",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-ext-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-ext-400-normal-D3D2R8hC.woff",
+      "sha256": "f8ddaa0ab9d3c052c9fe035751c8214b7e0d59e6e7b69b045f8659c2fe4dced2",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-ext-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-ext-500-normal-CAhNIIs5.woff2",
+      "sha256": "6bb06407c97584b0867a959e05e8874693bfeb8c317de190811c51598f2d99ea",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-ext-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-latin-ext-500-normal-CZ70TYgx.woff",
+      "sha256": "ff5da89c3ee20d38359943b61a7aae9200d2a0f61cf95ca10a7cccef81da2ff5",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-ext-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-vietnamese-400-normal-BulugwFq.woff2",
+      "sha256": "62632b6375305e70ddcafdd895218e6ae41a184fcd280a69c739460604ca00a9",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-vietnamese-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-vietnamese-400-normal-DDuiU_S-.woff",
+      "sha256": "bced561d991e3f81c150c08e71f7fa849fcbff523560f6059245f2edce19b600",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-vietnamese-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-vietnamese-500-normal-C8zxqsMH.woff",
+      "sha256": "755f62b418df17518aa0ea16b4232e546ce949a4ab7acc577071fa9be9e3dc88",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-vietnamese-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-mono-vietnamese-500-normal-DZ4AoWbu.woff2",
+      "sha256": "781633d95de88040fb77141d1e65d928c87c0144691fbc74da5a64d137a7e910",
+      "component": "@fontsource/ibm-plex-mono",
+      "credit": "@fontsource/ibm-plex-mono",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-vietnamese-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-400-normal-BTotfTJu.woff",
+      "sha256": "89b819d4fef67eda2ce2c12f2f2b3978141fb73faebeb23ec895a3d7f8e66964",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-cyrillic-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-400-normal-DZqxrq2p.woff2",
+      "sha256": "69afad88a0740b6e5647f1104c9176a261f1ad9d60202f605456a983799752e9",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-cyrillic-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-500-normal-ByOcLdNv.woff",
+      "sha256": "b9d946b2b727115f06753e92054d272861a8265468bdb267bc279d1447fac20f",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-cyrillic-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-500-normal-CocWQlwt.woff2",
+      "sha256": "200be3a2a6b1789fb8824a4a74c7cccb7137e83fde6200ea78d8829f99d43546",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-cyrillic-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-ext-400-normal-Dsrv2Tcn.woff",
+      "sha256": "e60c70b37422d621549800db28c60764e16ccce7403a2d2957a8ac079818b28a",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-cyrillic-ext-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-ext-400-normal-g30qAdWV.woff2",
+      "sha256": "e2580ad78906551e1f9ad621f608cd16ce4d5a992e53c651dd6b3504547576f2",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-cyrillic-ext-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-ext-500-normal-Cs5J6C77.woff2",
+      "sha256": "08578d906af6d986d12d966d91bf9e76a00ebb74288d5c0eb6fe27dbebe1975a",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-cyrillic-ext-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-cyrillic-ext-500-normal-DB5PtV2g.woff",
+      "sha256": "19928f2f784c679937745ed3949cd9ff4c3af792e2c6b26670e0741c68610400",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-cyrillic-ext-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-greek-400-normal-_efipK4i.woff2",
+      "sha256": "02296067bc904d2ad19b49445bdaf6586cc44704e668e16e248f708e5005a290",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-greek-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-greek-400-normal-D9ESIMu3.woff",
+      "sha256": "8d899d62a1e18740c6f9d8c1a760be8e511ef222e54ab68d3bc88c94d0d104b0",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-greek-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-greek-500-normal-CuWXN6rf.woff",
+      "sha256": "38489276f6e67e4f00fbea894417af635dac8368ccdf14655dd71b5b3de269e0",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-greek-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-greek-500-normal-JMMifIXV.woff2",
+      "sha256": "8cb6e20b4dbbaa5f7b479d4a68cc91d3d6b370eebcd888cae9ab01052e5483f2",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-greek-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-400-normal-CDDApCn2.woff2",
+      "sha256": "3b646991d30055a93a4ecc499713d4347953a74a947ecab435ab72070cbdab0e",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-400-normal-CYLoc0-x.woff",
+      "sha256": "828907bfd14855c880789878bd2b38ffd284a6c27c8b80f6069900f70dae3901",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-500-normal-6ng42L7E.woff2",
+      "sha256": "0717336fb31fcdcde4b8deb3675bb4a0f7f6d484864afcd6751ac29975962203",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff",
+      "sha256": "8d2c7b2eca91869d447851a9c8bd07edf629b26025eacb882291e03b384b4e35",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-ext-400-normal-C5H60-Va.woff2",
+      "sha256": "c93d2a12aaa280f68b9ab7b726ff8dfedda67c99ef9abed047c1847a1cc6d583",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-ext-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-ext-400-normal-RBey6euL.woff",
+      "sha256": "85db75b89e3c0bee23ea75ede70c73024f62516ccdb6be55eb0c5c7a7866433a",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-ext-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-ext-500-normal-D0aIdm-b.woff",
+      "sha256": "6aa470ebf8dd5592084d0452b5c3a355d93b04e7eb0f5ca030d9d3a54a48fb5c",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-ext-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-latin-ext-500-normal-DakdToA3.woff2",
+      "sha256": "2846035d85100f84c79393f80f1442d4ee720129ab8b3ffa8969aae281db8c6c",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-ext-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-vietnamese-400-normal-DG4YqDda.woff2",
+      "sha256": "771538f7f26551bd13ab97d585de6ce7ebe3b432837999d5b743391b48f4946a",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-vietnamese-400-normal.woff2"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-vietnamese-400-normal-fK1oJ5dG.woff",
+      "sha256": "aa3bd4c4c493c3110ca5f5ac3f0cd688482982b40e4cf9cb601f931df2a8ccf5",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-vietnamese-400-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-vietnamese-500-normal-BEb3_waV.woff",
+      "sha256": "156142eef15bc3ea0983949aa2ccc2c4fcb8c97e5507ca019c5b1a23046a3268",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-vietnamese-500-normal.woff"
+    },
+    {
+      "path": "ui/dist/assets/ibm-plex-sans-vietnamese-500-normal-e4dixQRQ.woff2",
+      "sha256": "85ba3d9c2488a813bbf1d60da3a848bce4a97ac8c8a539289d8524aef6c471f9",
+      "component": "@fontsource/ibm-plex-sans",
+      "credit": "@fontsource/ibm-plex-sans",
+      "spdx": "OFL-1.1",
+      "source": "ui/node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-vietnamese-500-normal.woff2"
+    },
+    {
+      "path": "ui/dist/icon-192.png",
+      "sha256": "96c518555035cdea33e28146e229c3bb32aa853e72d872c43daf5603b0e47f53",
+      "component": "AstroDeck PWA icon",
+      "spdx": "Apache-2.0",
+      "source": "ui/public/icon-192.png; first-party project asset introduced by ef85350b"
+    },
+    {
+      "path": "ui/dist/icon-512.png",
+      "sha256": "621f695dcfcbd8964b2cdbf7b15a6a7250a7df32eb3d8cc64583612c8b25ba2a",
+      "component": "AstroDeck PWA icon",
+      "spdx": "Apache-2.0",
+      "source": "ui/public/icon-512.png; first-party project asset introduced by ef85350b"
+    },
+    {
+      "path": "ui/dist/bg_nebula.png",
+      "sha256": "c44f5e8e23760a61f1685e2597124e875f3637966384c9318196606985c73b5b",
+      "component": "Nebula background photograph",
+      "spdx": "UNKNOWN",
+      "blocked": true,
+      "source": "ui/public/bg_nebula.png; source/creation/licence evidence requested from owner"
+    }
+  ],
+  "reviewed_sources": [
+    {
+      "path": "server/astrodeck/__init__.py",
+      "sha256": "b60ec53c7233bc65fc2fcf98999dcce72e3ecb202435a8e00161a340b88bad3f",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/__main__.py",
+      "sha256": "67c2fe7398d821db148e5b38a88988c470394990204be8ed1de0d2bc0a282cff",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/aio.py",
+      "sha256": "70180c582502761f7e514658af3c7555db86679c7a6390054326f1c5cc43a19b",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/alerting.py",
+      "sha256": "5410121dbca0ac99cb6f221e8755ce9fcc31fb42835d90c43d0c4f0e0bb4e043",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/align/__init__.py",
+      "sha256": "a492375028f1e65cf607f360424f6fdaae283d718397bd7f151c47c5322ab83c",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/align/guide_offset.py",
+      "sha256": "be7ffe927127765e83de0996c91fd88c024fe99dfd7f7763ba0eb90f3d5b523d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/api/__init__.py",
+      "sha256": "5abaf4212df43f25dcd2e0cef8da2b25a97b6756bdfe28f38f172d64f7c22a3e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/api/app.py",
+      "sha256": "e7a2f6c4eb111705034d02c22ab1f6a086235a498afe256c1e4fd2281260eb0e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/api/redact.py",
+      "sha256": "05cc9fc7ba72e772537e02b3b21baca4fd257c4de4b5ea92484a11a2a5c66ac1",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/__init__.py",
+      "sha256": "22105529f7de2f958e5a5d4120a3973b893575e0a381ea83526fd59d3f34b544",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/audit.py",
+      "sha256": "e012831f922748ffa60c61414736907ac154a87a8393de05e103a2e4379e15d4",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/capabilities.py",
+      "sha256": "a620d2fc218a568ef5a6bac1ef15bb349c52e4ee12fc5a8426c3c5afd74e0a02",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/deps.py",
+      "sha256": "fc60315d661a9ce057bddba5e69d8b3153f05f6422ea31747cf2a54f7bfcb982",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/eddsa.py",
+      "sha256": "b47d71815de7eed942b64c3502818b71a7f47f5baf62bfc9d1924cf47535ab7f",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/google.py",
+      "sha256": "2d4a15a87473b0d66627d41b25116bbcbde232e108e9185c79be7b4db25ece56",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/local_routes.py",
+      "sha256": "fa2c78a657ef9ed55fa52312a632d98877c5aad72ccba2e46f281772a91a6cdd",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/login_rate_limit.py",
+      "sha256": "244169703534801d6b9ba7a686cecc5aa97196e4905e4b183a1d62c24b7ca678",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/passwords.py",
+      "sha256": "356dc332bbe3351022b991cb3a1f424a86392878aa58e79cbc9b05659591d747",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/principal.py",
+      "sha256": "f715bab87dcc70d05363937e36c822af0c1d4a507c4e2ed639c650d46ec57104",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/providers.py",
+      "sha256": "f97724946b615ea714f08010d3d22640e6d42e251cad6cdf1efde2c9d42b7115",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/rbac.py",
+      "sha256": "a52f5259d24789b39e27cb79366d10241fe3e34a9aef5298a0da59330cf7e659",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/routes.py",
+      "sha256": "01566aee23832f7a2a5967fcf35d7b368e17de80e66434e9a0216a762d4f8eb9",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/session.py",
+      "sha256": "ee59c2ac0ce1c6bb39c6cd6d769fc99b1ad286715a7e12deb5c565562e22e2bc",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/users.py",
+      "sha256": "41d8832e0f677293955b920fb430382b867eab62da4926070519cd169f22fca2",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/auth/ws_ticket.py",
+      "sha256": "9323cfec18f9d33e8ad2444b2308de66a2481eb2a0372b26dd1ec0dd08980269",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/bootcause.py",
+      "sha256": "674fad2f62f1d2c40854fb54dccfa1b5de311b63b13550826331eaae25191378",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/calibration/__init__.py",
+      "sha256": "8632cf2a0c2b0e93fc621f41dd79fa0cb66bf6f3a16993b366ffe45e02682c83",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/calibration/keys.py",
+      "sha256": "638a16bb72a452bc8fb799fd02cb73213f922005e8287246b268d766fad9e698",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/calibration/library.py",
+      "sha256": "420090adf603b9a0fa032cb0be3d4835a6ed87ec75bb784bdae483a9f9662c5d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/calibration/matcher.py",
+      "sha256": "78e31f256635e2391863b45ab795469e4977c85bb8724216c23937e432d3ed1a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/calibration/stacker.py",
+      "sha256": "1057852e6d3fa8d4f92fbf87cd586bd3a418362f991d05f77f2b963f5e34e5b1",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/capture_geometry.py",
+      "sha256": "4404494c6b9cd16ee5badf79531aa9b5d3d5ac1018754cac94b1f65563b0930f",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/__init__.py",
+      "sha256": "86ee0ab30e1692abbff8808549e35f719d709f0ebc7e368f29b4a4b997d3cc65",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/brightstars.py",
+      "sha256": "4ce2ca10e413043fc3d04353961955a192b62d797b3a799e1b3882a3de026267",
+      "component": "Embedded IAU star-name subset",
+      "credit": "IAU Catalog of Star Names (IAU-CSN)",
+      "spdx": "LicenseRef-IAU-CSN-CC-Attribution-Unversioned"
+    },
+    {
+      "path": "server/astrodeck/catalog/build_constellations.py",
+      "sha256": "ab6b0e453055c07698f35e0eef212070ca15d668c3324e0ecd8f95352e377381",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/build_discoverers.py",
+      "sha256": "0ab17d117cfe78474ee0ec1731c5ed97d2144b70ed63a054d45c3c1dcc436f2b",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/build_ngc_extras.py",
+      "sha256": "4d7e702740de6e688a3225cced8ee605e1653ff8ecb3c530f3a513788bd7369a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/constellations.py",
+      "sha256": "7b47defede7c30f9047bfdac2c1d297eb9e49b29b74a96ed90ab8146d8ec740d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/coords.py",
+      "sha256": "5e39d9b64003dc1de5a4df8fab421cdf47d3de6aa571744039d290865fd6123c",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/describe.py",
+      "sha256": "69a8b13b22f05a982baa43b7d5df21f36cb6cc0d5b45551b530441be5e572b9c",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/difficulty.py",
+      "sha256": "0122972fb031c1764be74376fb3f90980baab34a906e98239f7dd196d2b724a2",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/discoverers.py",
+      "sha256": "f50033ce658232361016e3b3556d28193cee13c67d6e886a45f9c9c8d01589ed",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/__init__.py",
+      "sha256": "66877c05dd01b47d84cbe938bb01ebe47b1cc0884082eb4ce803977d48dc65e4",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/comets.py",
+      "sha256": "067c5e8cd8207a2f090d8f8e82d298d630db929fcd9342708036dbd2d276ac7e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/elements.py",
+      "sha256": "9ff7d1d3273a331067adc308b2a55cb099c305ecd6f6f881052391dfd65986e1",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/passes.py",
+      "sha256": "9ee826f02a87a755c0cf48b6d9dd0e305ef9fc71fbebc963ce22df536bd85ee4",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/routes.py",
+      "sha256": "d80f9d44ca08313b2527ce83c9b4073cfe2178e4e77ee1cd7d6b56c5778f65c4",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/ephemeris/satellites.py",
+      "sha256": "aed7d2f50903a87f7f4c7d482cd97929e4cad685473d8f2520f837bc24d6106e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/framing.py",
+      "sha256": "e5995ea30ac1d4f1db7e176a8e6bbe7f9963e5649a938ebe192c4a9c88d9a7d5",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/hips_local.py",
+      "sha256": "3d41a81d0943dec751a3b6d0a5d255696716bc46c8420a10e6f5f2bc0c8ec2c3",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/ngc_extras.py",
+      "sha256": "66f979bda3c7eae3f5930bc6be279a06a168b6dfb10b1ff6c383d4c1ff8b520a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/objects.py",
+      "sha256": "237782ef7870a5694385240104f9754c2231de31e874e457b8fa59f7708abac6",
+      "component": "AstroDeck curated object definitions; external tables are separately inventoried"
+    },
+    {
+      "path": "server/astrodeck/catalog/region.py",
+      "sha256": "708605df5ee23a0e8dd9f801d0b28f3c5f9e7efd57f11bfe46924dc5bcef89cb",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/solar_system.py",
+      "sha256": "ec1aa698efbd08089c81f836fb9b2362e347ac6bd561afd89faa1b27023d9b5a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/survey.py",
+      "sha256": "98f00b3819cb32234325adbfb981ee963237b09aa987cd9ddb0e1013c68315c6",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/survey_pack.py",
+      "sha256": "657e70880335847f09845c8d5c1750bdc148636aa7de383244324888ad09d392",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/tiles.py",
+      "sha256": "2a79e96b12864730788fcd95461e336f226183a04905f4f71476bb741ffc02ad",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/tonight.py",
+      "sha256": "2f1e94935350a426f2da4e89d2ef48ba21239a46598352afa4eb49e2f1ed0858",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/catalog/visibility.py",
+      "sha256": "00fbd95776a78401cbe647963a254104b105c5dd2c2ddef6697a310fec600dd7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/__init__.py",
+      "sha256": "0abdf92246f1f886a9b61c4a00672c6224dd4c5c508579827f1fda90a78d8324",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/abi_grid.py",
+      "sha256": "2651b42c49fc79ad26a5874040a223017b037f2fc6511bbed8498c090dbe4ccb",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/geometry.py",
+      "sha256": "ded8fc513ac530fcf95b657cb07d30145da0102b108570cab89538dac483090f",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/granule.py",
+      "sha256": "0c1818b39da5dea19cbaacf74afac42153dec5aeffbffbfbd5df56d80521bce9",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/motion.py",
+      "sha256": "981d77726f1b723e5e720d845a47e22810d7731369568b760370ab2d8b1a8f0f",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/occlusion.py",
+      "sha256": "12d9036ddc0b029390ef329ea26ac937f8fbb564b42c4c8d8bbd273ddfb9ea0c",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/platform.py",
+      "sha256": "e73197687bea65b5fd18f0b2ebcb43d248023d5b68f9b2a0aaa819e6bfa2a766",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/service.py",
+      "sha256": "7416633ecb4779a83fa081462eb95ae20add50b4b486ee6ff7ff6fe81cdbc594",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cloudmap/source.py",
+      "sha256": "12d67f5d43de877933f2c9aa5ae881a9e6d44c15094299340ccd06c1e50de75e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/comhost/__init__.py",
+      "sha256": "cc497426d62e77a9c88210c5e891398ef642d4187e143e5edaf1cc9933ff258d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/comhost/__main__.py",
+      "sha256": "483d9f73468c6ee100f8f38440afd7beb2c1fcdf047fae283060053ca6bb422b",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/comhost/device.py",
+      "sha256": "8fc3e3a2458ef3afa316aae07fc94acb5f1634898acaa7577bf5ea7efb860c23",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/comhost/handlers_aux.py",
+      "sha256": "6a7b238e26670122b091d6c72a12b1e64c8cb74949fe0f7f4ce7cd097642e3c3",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/comhost/handlers_camera.py",
+      "sha256": "61093a770d6be9272d9eaed7bd492cfb383e50f8e6f6d839f120a3d6650c14ec",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/comhost/handlers_misc.py",
+      "sha256": "8987282858fe36ab639351dc62c5bb5bbeca092cfc734def0cf143d2305f293f",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/comhost/handlers_telescope.py",
+      "sha256": "aa2f573343311f57ec0b4b313a15ac66a422e19980883abbe609d1d8d5989fe7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/comhost/manager.py",
+      "sha256": "f8a47b4fe4556a84135571115f292958a9072d58c4482c3e35ddbdc0ba316786",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/comhost/server.py",
+      "sha256": "c2b27b4b0c8481443e371f6a76d3dd42e029dde55087a9e5ecf53cd92f5482aa",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/config.py",
+      "sha256": "534f42a2f3f5621c6e45e48db01050b05815c5827593cfd72c9f5a4304cb8473",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/cooling.py",
+      "sha256": "68829bc3f029e4306f5a0de297279156b9eefef08f1f85aea56f5de0663fc6ed",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/dawn_park.py",
+      "sha256": "042dce8f54fd8d885e3efc666b698ea0fc73ecab365a3d348b8da2d7edcaf1a5",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/__init__.py",
+      "sha256": "55a1ddca23feb79799df94bf70868b08ac24d86a2fe22e5dd4d23d001da4e860",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/alpaca.py",
+      "sha256": "c0510d2e58e43df2a557168a9cbfdf37c4b24eed90e1666fb9721b6e551a00cd",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/ascom_registry.py",
+      "sha256": "6659f701a3182745e4464f8831d005985ae0c83bed8172f567d48ddf6409eb8d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backend.py",
+      "sha256": "2c470023d25cff865fdf3c605fadc473176a177a0249968ab370ee0a805bacee",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/__init__.py",
+      "sha256": "3210a201cb4632741e85f9da2fbc4f32a62b376a31bedab4da7fa7acaa5e7646",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/_discovery.py",
+      "sha256": "4d449bdbb51e3618cfc81f37b0cf3c0a1dd05c491b0a13a7332ff74e47023da6",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/ascom_local.py",
+      "sha256": "a0fcde73fb75b461242d2324b969a6b68e4fe24299d22a306c76297645f73d77",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/asiair_backend.py",
+      "sha256": "fa5afa84d85f190eaac884f9c0ce38428b76302a9a3cb8c81f67cd6e2f44a421",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/native_backend.py",
+      "sha256": "e02d7c2356bd0d648c37cdeb737ed7a5de8c53940bb0e277847da744fd200b2a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/nina_backend.py",
+      "sha256": "f32e187d78e811b5eba4e706ead529f82c8ec61506156b118c9fcdcc79853fe7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/phd2_backend.py",
+      "sha256": "0f067ba1e7423e940af671c4358ce0797d27fbe8632b938624f1ecb144bf37f3",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/player_one.py",
+      "sha256": "74f23f390929473052d0e9f96069d61bbd720f8734e1a80142e29900d0e3e9bd",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/sim_backend.py",
+      "sha256": "4860556262affad4abed640b08c9ea9ff8992305908638dd9b4b51bec2193fb1",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/wanderer_snowflake.py",
+      "sha256": "aaae0d18fbf90c7df058b7fe1da8bd7ed02cfbec0c107a5a225dded5aed5b911",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/zwo_am5.py",
+      "sha256": "66811970641ba473efce17df7dbd3d4dae18eac346af4b93780ecc2fd5316b52",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/zwo_asi.py",
+      "sha256": "76a37aeff9216fad6511201228915c6c329741f74a4abe2b1ed1165d743cb83a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/backends/zwo_usb.py",
+      "sha256": "2aaee154ca382c5facb264bf3d67af4beb75ae8023604cd08fbe5e98d1e4224a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/base.py",
+      "sha256": "68f9267ad7dc27a521e4a2fe38da5ae14cbff9268089ec63692fae2a1b0b8192",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/__init__.py",
+      "sha256": "33034a31ed74707dedb803978464b9f7fcf621afd931fb8a15fc5e52dd7f201a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/adapter.py",
+      "sha256": "1571d5a24a1ffcecfa118cacce8fe3b3cc3b6f1ab88305d301af56745a333157",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/engine.py",
+      "sha256": "36e698f650923875bde081af175867fac4d1a561ebe5e8663135ccc4f2f04c88",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/player_one.py",
+      "sha256": "ce43bfdb715ea81dec92c2604c4bd015f178cc6d453eb6e942cb2f6daeacb461",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/player_one_sdk.py",
+      "sha256": "c92a21d74aafe780581e309acb9fc7350ecc81710d1cf603f4ae1000f921716e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/registry.py",
+      "sha256": "8dda10da8ca5a8a3c79048c9e2c0fe941c5161a76053f62a30310056265d0eaf",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/zwo_asi.py",
+      "sha256": "4dbe9e09355f0c920fa674b3862639bb5bb23f0fae5922daff6344c07b2fe90e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/cameras/zwo_asi_sdk.py",
+      "sha256": "d4191672eed18f89f6529c739fd77ae80ed195dd89ffbeb9f958e153f905aa46",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/fingerprint.py",
+      "sha256": "33f85c057ae53518bbe6311856fe7b337fadf18440f7f4a51300819176e1e636",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/lx200.py",
+      "sha256": "6f426ec179f891ea5e2fd641660b6a40568f84fef6b127af07f9c94ad06fdc96",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/nina.py",
+      "sha256": "2ca30c28b4d4dc2cae6b383f3be3d9b66d894b485932992a18443de89575e071",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/orchestrator.py",
+      "sha256": "75fa44ec1541a4ef855eba553c192c2cce99475405760c2d08b26bb5b417eab7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/sdk_paths.py",
+      "sha256": "7538359d6e1b94ab15d7acee04d6845cc77f892e90356d288174fc76c4dee9dc",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/serial_link.py",
+      "sha256": "79c04682a7a692a76a13626d93224f59f477bb4e102356913113b84a36be807a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/sim.py",
+      "sha256": "f7251f0d1e2bdeee0db0457de37c1b81d188be129ee6591b2a36d75d9ef3f468",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/vendor_verify.py",
+      "sha256": "a063ec7d88ed1b36a2c4ef1de9a3c4aae6c8cf617e278c846298b1c16a58d73d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/devices/zwo_sdk.py",
+      "sha256": "7357ffb2ad7cc63d8690a7ddd5a88b2d3a7ed04a67f03c09ed5d5e22d29e7bb2",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/dew.py",
+      "sha256": "81f838f993687d1a2541137867a109dc632c2effd677cb80eee77c0e84cb1074",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/drivers.py",
+      "sha256": "b13a7c93a0acbe2a8d4c642a39837440bdd063c7f9fad562a029fcbc1ab65e0e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/dusk_arm.py",
+      "sha256": "2d379c9bd5b21c4fe24f9bdd33a203fb3cf18baa9de962a5e3b9c1344fac9bc5",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/events.py",
+      "sha256": "db6cb72bf1229d366d3c5f81ad389bc1f45d828fc8343628cfff62a2a8c87e76",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/factory_reset.py",
+      "sha256": "5c4e64420a39b0e2d462259c2c7fb8e9a61c0dff846bfb2efeb0aaf28c0fa3c3",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/__init__.py",
+      "sha256": "0346b1fa5eabd6a6b934e7df4e8bf4c4f3703b606d0bfb00de262a956ad3c186",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/calibration_health.py",
+      "sha256": "93ce33647daf50827c184c83ec0f4a6d5a62e2e04bfe7d2d6d9a7b9d3f081464",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/compile.py",
+      "sha256": "5f4b210f3191f1eb664eb616e395c9e977d3b5bc99af41b6b1516d2dcc5b5654",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/continuation.py",
+      "sha256": "5fd0ff60fbe2b5d096faf1e9d4d44ba131d6e39d6d266fe5ef6313341a5132d1",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/doctor.py",
+      "sha256": "b9a8d420b06f3b7cb8d976629997118e3cc4f0c8e0f33a087f635d1eada9e3cd",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/examples.py",
+      "sha256": "584b9bb5c71d76aa47376502f3bb91015e5f90286914766f7889d20c895ac8c3",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/identity.py",
+      "sha256": "1b9dc101a12fc238a12a3219c3f9c944e1ec3b79a8a61ec99520a6a37af2a959",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/models.py",
+      "sha256": "e2c3f556ab6e3948921e7f5cbf22dc1b17896e6f0f6a34ea5fa48dbd92228a2d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/nodes.py",
+      "sha256": "9517a09e4d5c503d52252d72dce773315eb1d0b25c34e37eb6b1c5f3c2c6a774",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/progress.py",
+      "sha256": "df7398877cb21090ec08d02f14349790670b6360541836e15999c2ccd8979cc9",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/readouts.py",
+      "sha256": "0bcfb2052724402ace089a0abd7f63464be8ed13dda7d4b9afc515f057007653",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/rig.py",
+      "sha256": "007042b9db38f64864acdc442413a2381b30dfe703e53a4ad08a4617c43c31f7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/save_rules.py",
+      "sha256": "e0e6947c3ed77845cea5aa135ef55c286ed0c6d5a5edd17fc2959287073e735a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/store.py",
+      "sha256": "6184169d960dd20786a1556c3888435ab8401e68e4cb99bc42ec787b931322ff",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/to_plan.py",
+      "sha256": "6c1a13b71b8ffbeea38c107dd15a7ce1ec2d46709bf0b3520fc000316d034799",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/tonight.py",
+      "sha256": "1af6a6066f0de7301ffafaa26f8e0999f2d852b745b9523dd748328adc8e250d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/flows/wizard.py",
+      "sha256": "08863ee16f71043f7436c9d7bdd7232ba315c89110de5868a8e2d763b94a43f1",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/__init__.py",
+      "sha256": "97b7f93e6c79a245d027304d7a85fd825361c6ef50b302fcb77dfe96947bbb3e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/approach.py",
+      "sha256": "84339be6b970d749b7e44c7d094d92561ab5a9cb952618909f294c90c3580580",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/autofocus.py",
+      "sha256": "09995993849f722b520add951e4da1b7c0959d798f5cbb9cac09f79aaf302d87",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/coarse.py",
+      "sha256": "48a84c50abdf663cb1195fa5bbb6effc06d4ebef42085e588d3a47384632a83e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/filter_offsets.py",
+      "sha256": "353ae75afd98ab5404a9bc31b81d0c045366cbe7ab53f416c2f2dfd7f1f34760",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/native.py",
+      "sha256": "9bdaf5cf3fd0118e08ef3c653485bd6c6086a81afa4359215d0d60a2246f27f9",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/pipeline.py",
+      "sha256": "1fc30b22a85b05d41fbdc4157f0b9ba87c6ab486e1c63e5a0125366aff62aac7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/search.py",
+      "sha256": "b1b2e3ce4d084887a7cbd6f9af72ef7caff353088fef49f1bb568abc3526a406",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/span.py",
+      "sha256": "ece44acf5a3ced7013c9bad6fb57174c7deafddbbdb38f92ce0b6d40d8f7e943",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/tempcomp.py",
+      "sha256": "baea474d4e9188057573353cd3999a31fca9dec18ccaa1210c4699ffeb90a5ea",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/focus/window.py",
+      "sha256": "1e7c4bceee1547561faf9717770bac83ea18cb7853f9deffc763d3679fab4225",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/gallery.py",
+      "sha256": "612f7078b852256feb5d87e13917c7c38b12ece91b052776c2bb95bd8f298b0a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/gallery_index.py",
+      "sha256": "dc51de25ffc4f57090a71f29156cd6d4515ca49f9eb8a61df5db0b5d2fb038c5",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/gallery_listing.py",
+      "sha256": "88db03c7594dc59c9ec70f3a08609bc2791b33b066617ddd27c6db093c4b4361",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/guide/__init__.py",
+      "sha256": "b5aeb83ecdeba500f6ce38c3dd5aa2d54eb428832e0568f3bb0d58ece4219151",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/guide/assistant.py",
+      "sha256": "f234b533b0902af762cd47f5899fd264ef4670ab11f416f9f3fdf6cd925a6cd5",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/guide/base.py",
+      "sha256": "ca53dccfab6763699c7fa90fa0e119f082ad9140a3f66787a186d886100d22ea",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/guide/native.py",
+      "sha256": "a2b1a3e01e9bab5546317c42fe304098cdc6b46fc4a5d27a1700364fc1b79547",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/guide/phd2.py",
+      "sha256": "002b1c628327eb409edb261a13444c032e29be0a0b87af627fa038b198a704b0",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/guide/simguider.py",
+      "sha256": "22e340762ccc607cf9efa0e524aee4a86578f90774768eec5cb33ce1a25d3a57",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/guided.py",
+      "sha256": "0db16951ecf9836cba9a6e9ef4d78a1a063fcd37e8b4b10a5cf4707c40b06959",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/guided_recovery.py",
+      "sha256": "919925ce398334a984b0f301efad5e94c921aaa5a30466fc1748086be7520e71",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/hub.py",
+      "sha256": "4803cac72cd4b01f6297ffa38bafe86b976af99f7e9b485b5b58e10cf96dbf8b",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/__init__.py",
+      "sha256": "ff65bd151468b9f80f69b5c49bbbeca7e8583779e460b06558949b43f3f5a446",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/bahtinov.py",
+      "sha256": "0060906a8b6209d1ef57d8c77e24977c23c040b28f62d0468a30da8d47aa68ac",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/clouds.py",
+      "sha256": "b02cf6742c840cb09403609098f36ab75fdbd928324d61b8890fdf7ce50bda52",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/darks.py",
+      "sha256": "552b93baf3b3506a6b168c4c757a429fe8f091b17a8cc2d5d6e83fc3ddc5e517",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/defocus.py",
+      "sha256": "ab62b0b000cd363d074d31289c882012051ef8cb8827fac5b7b35b467acb0dca",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/egain.py",
+      "sha256": "23ba72fa8edcced5321ed1ea395f018f47e0348163fe600f3bf1123cf4d7136d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/fitsio.py",
+      "sha256": "34586a65341d785bc9487a6424574dd45d4e7ce232375019c098812109b0766d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/flats.py",
+      "sha256": "c42b5284f83af8e8d46584544287553398251f811cf1ad0bb997a61e9c264edd",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/livestack.py",
+      "sha256": "08009f2999329aa88c3833114b06fae2b889df8376c47a30cf4b9887b8b93f30",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/lucky.py",
+      "sha256": "cc1680d9e7522d6e941f687b2f62bdc0ec3e5f52ca94c2086917dc4ee8103890",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/nightstack.py",
+      "sha256": "4bc679620e89ab5308bea7572f119dc8f0a651bbce5d74b3f9d2c665824a03d3",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/processing.py",
+      "sha256": "01c61ce076e05fe94f7bbf439f9ca835491a2f4bd4ab183c9d3308218aa31458",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/readnoise.py",
+      "sha256": "1bc604e48cdff350b352a618ada027c4c0148f7d692d0ac409e348b52c449e09",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/registration.py",
+      "sha256": "c5b84392cb2b9bd70ac624254e5fc3ec536366625a90b697b89030d73064ec46",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/ser.py",
+      "sha256": "82b9aa88a0558809ff2d6510bd0f2bf99ce52d6ecc1506ba417e9944c6887e63",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/sessionstack.py",
+      "sha256": "7662cd8b29cfe3b8bdb0d780181e7fac88532709e349fe48aaa3523d01103198",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/share.py",
+      "sha256": "08e0787ab721f83aafc92b71d62f98b54fc4ecee339b7acfc2f6b70c07723609",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/stackbackfill.py",
+      "sha256": "07c26fe3f157cc0543f68a2f8d364f7f7f2633217ccf00d8eca2c8b112f54ae4",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/stars.py",
+      "sha256": "daa3bf3129b5e92f369353c0699ee8e42e77061a5afbc6661365ab41a69b56ec",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/video.py",
+      "sha256": "fd0bed6c61ac407b69fabc493e49ffbfacf5721191f3ad433cfd3ec8cab93fb7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/imaging/video_routes.py",
+      "sha256": "f45a259a43036303aafb52932d6cf7654cd0a682079fdf3d40a6f29e5edc6359",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/licensing.py",
+      "sha256": "2f94da58fd46bf96e6ff83cd8d1d3e570aca6367e6a1b86540db1eb4019d61e7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/locations.py",
+      "sha256": "996e4ffa424e4eb0bd602a422b91550da78fc12a81c215314e68b60db6d46c4e",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/logfmt.py",
+      "sha256": "fd9029d1049eceaa826072ed8b90ee9806dc9ec141cc840a6974c929be83613d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/mount_offset.py",
+      "sha256": "739d53d1e70d9b697ec65e259df1ef522c82cc6162e42bd961cb32846e0deb26",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/naming.py",
+      "sha256": "743a29591d79de998d7b2044825b4cb562bd9ce4564fd2e3912500066556d79b",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/persist.py",
+      "sha256": "e62e2350c9717b2fa61704176f984bcc20ec1bb41f950ccc4b412d3280963d07",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/planning.py",
+      "sha256": "1bf661f760b870db6557d6e3d005d5f464f90b454d703438be2afc787003e6e9",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/plans.py",
+      "sha256": "4ed7f58841a8b5d051385bcf286b252aa294269185ea9dd7fe7d84ce0c69b78b",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/polar/__init__.py",
+      "sha256": "30a8247b26f7605fb9ff700e4338ed4dabca5c780a9139bcd68c3b14e37ff117",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/polar/native.py",
+      "sha256": "660a72ef2bdb56f679e10ec223a2be892e68ce52376071148a6fee7a3f1054fe",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/polar/session.py",
+      "sha256": "b77e05029d515e7677f16eab9ce4e97571e77a6ca831e5532357fd5363be5b47",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/power_guard.py",
+      "sha256": "f6b27f07acc27af0ecf17073c80bbbc8f563708c7c3e972a2619c181e34576a3",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/profiles.py",
+      "sha256": "9323cdf2e6bb85529349830fca0d0242216b7e25cf90ab5e9c1a7f6503347a56",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/provenance.py",
+      "sha256": "5e149cb53f755759ab1ace7befb2a9c24d49af6a3c9c7bf782e2861a28767bf7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/providers.py",
+      "sha256": "d6a949d7b2909ab3e2f5b435362db3cb9e87141928af85f69ce0e0777f448676",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/remote/__init__.py",
+      "sha256": "76c89ff22d74d21321591076be0a384a6822d5c4ce34b76bc46ed3ed047e74a7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/remote/protocol.py",
+      "sha256": "f29fbb52e9aa16bddc54bd6ac51cbc0945f57ebdc58cde5ae8fd57e15de7d2b2",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/remote/relay_client.py",
+      "sha256": "2dae18d6ad239fd34df013b1c95863b52fb5baec61d97053b86ef403df2e0214",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/rotation.py",
+      "sha256": "0c28577d786f0ba219f8da27b11b1236487909aa3119d435a6cb58540549f22a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/runtime_security.py",
+      "sha256": "5b33cd4119b3f9498fff3006c24df9c9931b6702cd99c8817afc7067aad87c82",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/__init__.py",
+      "sha256": "42fd5f5468f056386e388e2591df43881de40ee1623ef0f7de8765bc514d1999",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/angle_check.py",
+      "sha256": "4350225b0c97fdfd39681ef8d721ba36ef27cc249acf6eff53dd39c18c78ac94",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/bundle.py",
+      "sha256": "91e05a532beb0ca702b111faa429b386a1fc13d3389c7ba99ab9d227624c7ad8",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/cloudstate.py",
+      "sha256": "85ae06c69b1613eb80b0490588414932950b4a159754e099355e3cbc1a8c7610",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/engine.py",
+      "sha256": "faa0f65326d63056a46b7945ee2b8c5fb300d232ab004c6c2fa16925361ecea1",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/group_rules.py",
+      "sha256": "22f9ab543388826d36a3f1d4cf6cf670b12700135713c5709e349db8d2bd6374",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/instructions.py",
+      "sha256": "d28befab19ddd42a870f8c5079429ab831efb9e201337a689767dd166e0764a0",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/models.py",
+      "sha256": "b3b86d3f637f48b2283aeb2c419dc34216fa0c6545f81395ad471da17d1c3cef",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/panel_order.py",
+      "sha256": "3cfa695b37b10c9bc3ec79d9925e36c2716fe0936cffaadc9f6aeada21531d23",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/policy.py",
+      "sha256": "0241117aaeff9becf2bfa292a8396f33d62ab1f20c8a0841dd398a964d6966e2",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/report.py",
+      "sha256": "7709b02c70a50d8353afe5d6e8c26feafe17b39a92afec6bfe657e259d48a8c6",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/resume_arm.py",
+      "sha256": "e6890f6c9d41278b8b2009231db72dce6003f335eb22e99d1b69f19fe3d68406",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/roof.py",
+      "sha256": "6ca756d6ad189910534d34501cdcd7dbbbd0b90317a7517fd861e16acdd42868",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/schedule.py",
+      "sha256": "cfdcddc599018a1b3dac76d038872b19926812dee2517f5f49c60278f40c95d7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/session.py",
+      "sha256": "6f5320d4763116a89d77d7662b5b8b016e3c79ef1d3ca029b6777de0009e9bf7",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sequence/session_files.py",
+      "sha256": "01948c603ad505b8fa9791fe5a0eac6c5c02418af904b2438a71615061428378",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/site_gate.py",
+      "sha256": "c862d50b6c923df532dbb6e537923fe6cb064ac8f675b2d12a68e3f54a46ceb1",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/site_gps.py",
+      "sha256": "e3710f209f05de6162f16bd5ff37128cbd58e85ff6d50e19bb0d07d53f3e0496",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sky_angle.py",
+      "sha256": "07431a6cc2ef87e7173afd5d9e75f499c49d7a207d5213d782e318747da44fc9",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/solve/__init__.py",
+      "sha256": "2a88ac4f86aeead3ccef4c98dfe11b1cbf41de2e14d295622bfd5b835c39e384",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/solve/astap.py",
+      "sha256": "6db12740a0cc087d73cc9a4710678786fc83d0dfa9c37e12ad5b5b50bb3cd394",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/solve/base.py",
+      "sha256": "964a57fa41ac37fd30f54d5d4700f9d428678e15f37a822e51cdc4750c8082e9",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/solve/gate.py",
+      "sha256": "6a870b02cba0a9a255437f3c97218d43d381487df431365a76bed9fdb87fa49b",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/solve/light.py",
+      "sha256": "300565a1e88cce621de1418e92ec279474ceb43826297e8513955075ac62a125",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/solve/simsolver.py",
+      "sha256": "d3737257d424a9a090cbd998362912970042667959cd7b82cbcc975c97a5326c",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sun_watch.py",
+      "sha256": "5c020955779a65e60e3b7be61fdec45d9ae15d2167ad6eb30321b391b6abc907",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sync/__init__.py",
+      "sha256": "90563631952a10a43002ad6e37faf082b1b734e44782bea85b77072a21aca369",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sync/destination.py",
+      "sha256": "54a2020d8d55bb901e8a290b48ab873c7365a5dff86cbf0193c096b254c7e093",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sync/manifest.py",
+      "sha256": "92f81d294b686b761c9d0fb78612a3f6294332275fd0b2947e58c9bd5705e7ab",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sync/push.py",
+      "sha256": "0159b1d7df226aab2887eb6443349f2e6cc086ec718fdee97d65df8c65f7a3da",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/sync/runner.py",
+      "sha256": "3f37bdea18e9866417b4c6c78bcdee7cadeb06381d8dccc5b2d7fa3525f86b1a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/__init__.py",
+      "sha256": "a1aa7d778231d3253059e1ed64a9bb5d1c62c78e9fef64d7633ab40fe3d0f066",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/download.py",
+      "sha256": "cbdbcd9cdd6b5be6e2b1649a44fd75fac0762e9cea5af23a0479d824f07c14a8",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/github.py",
+      "sha256": "9788e96780ada717658170d5de1d125344cb81fd192456da2930f083634b16a5",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/protocol.py",
+      "sha256": "9eae5a7652953769d50e2a84a9ca18800eac2be587adc52d9691f3a1cb3ebce2",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/service.py",
+      "sha256": "96e5bdc8baa4b04e76a39eb24a742da33a484b7b05deb236fcc3c5cf9db4aa50",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/signing.py",
+      "sha256": "1455f875f960ff0d8bf67b5085cd896dcb08d5429e5800fc05081cf48653b7a0",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/stage.py",
+      "sha256": "e80ec8aa00894e04f1c4dfeca4a3fab3867848b9823137bcffe763cd49b81543",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/state.py",
+      "sha256": "ec00f0820483048e0c6fa3c6c6aeadf2c4ea73b4f7dc9596174e009e3ad0534a",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/verify.py",
+      "sha256": "7e4bc1db0e5b2e20ade480b1907c0be98dd43cefb16182a6fc7eeacecb26e266",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/update/version.py",
+      "sha256": "5baca0be7d27c6968f6bdea01dd341e4509b3e83d18945ace41c101db7375c8d",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/weather.py",
+      "sha256": "7714402c460e5cbc2e105963c823a7aaeeebd386cd85029a15a21f522657559c",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/astrodeck/windows_acl.py",
+      "sha256": "ce66a4df27ae76401003e4d31fcf73d19d90b342e106e6a90c90fb6890314e95",
+      "component": "AstroDeck application source"
+    },
+    {
+      "path": "server/pyproject.toml",
+      "sha256": "b071c09bc4489c84611896bb483266be9f4e72bb7ffd4f550df007a75acca6bf",
+      "component": "AstroDeck application source"
+    }
+  ],
+  "source_review": "Application source paths and normalized UTF8 hashes reviewed for this baseline. New or changed code requires explicit source/data provenance review; do not regenerate this allowlist as an automatic build step. Embedded bright-star data remains owner-blocked."
+}

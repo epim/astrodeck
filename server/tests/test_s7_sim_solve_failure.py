@@ -60,10 +60,14 @@ ASIDE = "centring failed on 2-2 on 3 consecutive visits"
 #: every machine (tests/_flow_night.py, "NIGHT KEYS ANSWER THE SAME").
 NIGHT_ONE = "2026-09-01"
 #: When 2-2 is set aside for now (the end of pass 3), tried once more (its
-#: expiry, 45 minutes later), and set aside for the night (its third miss
-#: after the expiry, 300 s apart as a lone panel's deferrals are). Measured
-#: on this night.
-FOR_NOW, EXPIRY, FOR_THE_NIGHT = 180.0, 2880.0, 3480.0
+#: expiry, 45 minutes later), and set aside for the night. Measured on this
+#: night. FOR_THE_NIGHT is the expiry plus six D-03 held passes
+#: (``CENTRING_HOLD_RETRY_S`` = 600 s each, backlog ruling D-03,
+#: owner-approved 2026-09-30, #591): by the expiry 2-2 is the mosaic's only
+#: live panel, so its misses from here hold the group rather than striking
+#: its own three-strike floor a second time (a lone panel's own 300 s
+#: deferral, before D-03).
+FOR_NOW, EXPIRY, FOR_THE_NIGHT = 180.0, 2880.0, 2880.0 + 5 * 600.0
 #: A moment the run waits on 2-2's expiry, between the two set-asides, where
 #: the routes are read with no exposure in flight.
 WAITING = 1500.0
@@ -189,6 +193,25 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
 
     The CONTROL is the same check at every exposure: an empty set-aside
     list, nine times.
+
+    RE-PINNED AGAIN FOR WP-33 under backlog ruling D-03 (owner-approved
+    2026-09-30, #591). The first streak (three misses, set aside for now
+    at 180 s) is unaffected: 1-1, 1-2 and 2-1 are all still live then, so
+    the ordinary two-tried floor applies. But by 2-2's expiry (2880 s) the
+    other three have completed, so 2-2 is the mosaic's only live panel,
+    and D-03 widens ``centring_pass_verdict`` to call that case the sky's
+    too: from the expiry on, 2-2's misses HOLD the group
+    (``CENTRING_HOLD_RETRY_S`` = 600 s, not a lone panel's own 300 s
+    deferral) instead of striking its own three-strike floor a second
+    time, and D-03's escalation -- an alert at 3 consecutive held passes,
+    the group (2-2 alone) set aside at 6 -- decides it instead of the
+    panel's own count. So 2-2 is tried NINE times, not six (the first
+    streak's three, then six held passes, 600 s apart), the session's
+    second record is kind ``"group"`` and names 2-2 as the mosaic's last
+    live panel rather than carrying :data:`ASIDE`'s three-strike words,
+    and the "N of 3 consecutive" counted lines appear only twice, from the
+    first streak -- never a second time, since the three-strike path is
+    not reached again once 2-2 is alone.
     """
     rig: FlowRig = flow_rig
     fid = await rig.save_flow(FLOW)
@@ -223,10 +246,11 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
     night, end = await night_one(rig, fid, on_hold=on_hold, at=(WAITING,))
     at = end.at
     tried = [night.rel(t) for t, who in night.gotos if who == MISSES]
-    assert tried == [40.0, 60.0, 120.0, EXPIRY, EXPIRY + 300.0,
+    assert tried == [40.0, 60.0, 120.0, EXPIRY, EXPIRY + 600.0,
+                     EXPIRY + 1200.0, EXPIRY + 1800.0, EXPIRY + 2400.0,
                      FOR_THE_NIGHT], (
         f"{at}: 2-2 was tried at {tried} s, not three passes, its expiry and "
-        f"three more")
+        f"six D-03 held passes")
     assert night.visits() == [
         ("M31 1-1", ("L", "R")), ("M31 1-2", ("L", "R")), (MISSES, ()),
         ("M31 2-1", ("L", "R")),
@@ -234,7 +258,8 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
         ("M31 2-1", ("L", "R")),
         (MISSES, ()), ("M31 1-1", ("L", "R")), ("M31 1-2", ("L", "R")),
         ("M31 2-1", ("L", "R")),
-        (MISSES, ()), (MISSES, ()), (MISSES, ())], (
+        (MISSES, ()), (MISSES, ()), (MISSES, ()), (MISSES, ()), (MISSES, ()),
+        (MISSES, ())], (
         f"{at}: the visits were {night.visits()}")
     assert len(held) == 9, f"{at}: the held exposures: {held}"
     assert len(waiting) == 1 and waiting[0]["detail"] == (
@@ -248,15 +273,31 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
                  and ((e[2].get("group") or {}).get("set_aside")))
     assert named and first == FOR_NOW, (
         f"{at}: the group first named a set-aside panel at {first} s")
+    # D-03: these "N of 3 consecutive" lines come only from the FIRST streak,
+    # while 1-1, 1-2 and 2-1 are still live beside 2-2; once 2-2 is alone its
+    # misses hold the group instead of counting against its own floor, so
+    # the pattern never repeats a second time (it did, before D-03: a lone
+    # panel's second streak used to count the same way as its first).
     counted = night.said("consecutive)")
     assert [m.split("(")[-1] for m in counted] == [
-        "1 of 3 consecutive)", "2 of 3 consecutive)"] * 2, (
+        "1 of 3 consecutive)", "2 of 3 consecutive)"], (
         f"{at}: the counted lines were {counted}")
-    asides = [(night.rel(t), m) for t, lvl, m in night.lines
+    for_now = [(night.rel(t), m) for t, lvl, m in night.lines
               if lvl == "warning" and ASIDE in m]
-    assert [t for t, _m in asides] == [FOR_NOW, FOR_THE_NIGHT], asides
-    assert "set aside for now, not for the night" in asides[0][1], asides[0]
-    assert "a restart tonight does not retry it" in asides[1][1], asides[1]
+    assert [t for t, _m in for_now] == [FOR_NOW], for_now
+    assert "set aside for now, not for the night" in for_now[0][1], for_now[0]
+    # The D-03 held-pass escalation's own set-aside line, naming 2-2 as the
+    # mosaic's last live panel (D-03, #591): it carries none of ASIDE's
+    # three-strike words, since the three-strike path was never reached a
+    # second time.
+    held_aside = [(night.rel(t), m) for t, lvl, m in night.lines
+                 if lvl == "warning" and "set aside for tonight" in m]
+    assert [t for t, _m in held_aside] == [FOR_THE_NIGHT], held_aside
+    assert held_aside[0][1].startswith(
+        "M31: 2-2 (the mosaic's last live panel) has been held for 6 "
+        "passes in a row"), held_aside[0]
+    assert "a restart tonight does not retry it" in held_aside[0][1], held_aside[0]
+    assert night.said("held for 3 passes in a row"), f"{at}: no alert was said"
     assert night.said("M31: 2-2's set-aside has expired (45 minutes have "
                       "passed)"), f"{at}: no expiry was said"
 
@@ -280,12 +321,21 @@ async def test_a_panel_that_never_centres_is_set_aside_at_its_third_pass(
          "action": "skip"}], (
         f"{at}: the report records {report['safety_events']}")
     first_rec, second_rec = end.session.set_aside
-    for record, ts in ((first_rec, FOR_NOW), (second_rec, FOR_THE_NIGHT)):
-        assert (record["target_id"], record["step_id"], record["night"],
-                record["kind"], record["ts"]) == (
-            ids[("2-2", "L")][0], None, NIGHT_ONE, "centring", T0 + ts) and \
-            record["reason"].startswith(ASIDE), (
-                f"{at}: the session's set-aside record is {record}")
+    assert (first_rec["target_id"], first_rec["step_id"], first_rec["night"],
+            first_rec["kind"], first_rec["ts"]) == (
+        ids[("2-2", "L")][0], None, NIGHT_ONE, "centring", T0 + FOR_NOW
+    ) and first_rec["reason"].startswith(ASIDE), (
+        f"{at}: the session's first set-aside record is {first_rec}")
+    # D-03 (#591): the second record is the held-pass escalation on 2-2
+    # alone, kind "group", never a second "centring" one -- the
+    # three-strike path (ASIDE's words) is not reached again once 2-2 is
+    # the mosaic's only live panel.
+    assert (second_rec["target_id"], second_rec["step_id"],
+            second_rec["night"], second_rec["kind"], second_rec["ts"]) == (
+        ids[("2-2", "L")][0], None, NIGHT_ONE, "group", T0 + FOR_THE_NIGHT
+    ) and second_rec["reason"].startswith(
+        "2-2 (the mosaic's last live panel) has been held for 6 passes"), (
+        f"{at}: the session's second set-aside record is {second_rec}")
     assert (first_rec.get("expired"), second_rec.get("expired")) == (
         True, None), f"{at}: {end.session.set_aside}"
     assert (end.progress["session"]["status"],

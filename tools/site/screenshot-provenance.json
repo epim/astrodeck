@@ -1,0 +1,107 @@
+{
+  "schema_version": 2,
+  "description": "Each image retains its own capture source and scenario.",
+  "captures": [
+    {
+      "file": "site/assets/screenshots/flows-desktop-dark.png",
+      "route": "#/session/flows",
+      "viewport": [
+        1440,
+        1000
+      ],
+      "browser_color_scheme": "dark",
+      "app_mode": "red night",
+      "sha256": "7f772c122463d3aed3883df163c9bf8e82f8124a1a7db3b1b2736360d0581a87",
+      "provenance": {
+        "captured_utc": "2026-10-01T17:34:41.780752+00:00",
+        "source_commit": "bf3eadddcac9fb74bd802309b57ab6536c15ee36",
+        "config_dir": ".probe/site-sim-owned",
+        "port": 8877,
+        "launcher": "capture_sim.py owns server_ctl.py start --fresh and stop",
+        "ownership": "New config and captures; fresh probe process tree owns loopback listener; directories never reused.",
+        "source": "fresh local simulator; no rig or relay; default site untouched",
+        "survey": "No Atlas/Sky survey view captured; external browser requests blocked.",
+        "visual_review": "Complete: independent reviewer inspected all four final PNGs at original resolution, verified dimensions and SHA-256, and found no observing-site values, numerical mount altitude/azimuth, survey imagery or invented run state. See tooling-review.md."
+      }
+    },
+    {
+      "file": "site/assets/screenshots/equipment-phone-light.png",
+      "route": "#/rig/devices",
+      "viewport": [
+        390,
+        844
+      ],
+      "browser_color_scheme": "light",
+      "app_mode": "day",
+      "sha256": "b6baddad09840c2a9ed1a56eda61cfd967128963f3993b781d4b135af8e4095d",
+      "provenance": {
+        "captured_utc": "2026-10-01T17:34:41.780752+00:00",
+        "source_commit": "bf3eadddcac9fb74bd802309b57ab6536c15ee36",
+        "config_dir": ".probe/site-sim-owned",
+        "port": 8877,
+        "launcher": "capture_sim.py owns server_ctl.py start --fresh and stop",
+        "ownership": "New config and captures; fresh probe process tree owns loopback listener; directories never reused.",
+        "source": "fresh local simulator; no rig or relay; default site untouched",
+        "survey": "No Atlas/Sky survey view captured; external browser requests blocked.",
+        "visual_review": "Complete: independent reviewer inspected all four final PNGs at original resolution, verified dimensions and SHA-256, and found no observing-site values, numerical mount altitude/azimuth, survey imagery or invented run state. See tooling-review.md."
+      }
+    },
+    {
+      "file": "site/assets/screenshots/equipment-phone-night.png",
+      "route": "#/rig/devices",
+      "viewport": [
+        390,
+        844
+      ],
+      "browser_color_scheme": "dark",
+      "app_mode": "red night",
+      "sha256": "83535da759d31632eb7d8273586a4957c7555cee3acc76b17ab4c14c0a3ca2b7",
+      "provenance": {
+        "captured_utc": "2026-10-01T17:34:41.780752+00:00",
+        "source_commit": "bf3eadddcac9fb74bd802309b57ab6536c15ee36",
+        "config_dir": ".probe/site-sim-owned",
+        "port": 8877,
+        "launcher": "capture_sim.py owns server_ctl.py start --fresh and stop",
+        "ownership": "New config and captures; fresh probe process tree owns loopback listener; directories never reused.",
+        "source": "fresh local simulator; no rig or relay; default site untouched",
+        "survey": "No Atlas/Sky survey view captured; external browser requests blocked.",
+        "visual_review": "Complete: independent reviewer inspected all four final PNGs at original resolution, verified dimensions and SHA-256, and found no observing-site values, numerical mount altitude/azimuth, survey imagery or invented run state. See tooling-review.md."
+      }
+    },
+    {
+      "file": "site/assets/screenshots/monitor-desktop-light.png",
+      "route": "#/monitor/live",
+      "viewport": [
+        1440,
+        1000
+      ],
+      "browser_color_scheme": "light",
+      "app_mode": "day",
+      "sha256": "63fe4c1f024178caa42db9b89a8dfbb2ffc0de5f37e1452fe74f03e682519c19",
+      "provenance": {
+        "captured_utc": "2026-10-01T18:31:37.888982+00:00",
+        "source_commit": "94bdd461bfb6a83f9d20301ef9a6bbd9217ce54d",
+        "config_dir": ".probe/site-monitor-followup/sim-hanle",
+        "port": 8878,
+        "launcher": "capture_sim.py owns server_ctl.py start --fresh and stop",
+        "ownership": "New config and captures; fresh probe process tree owns loopback listener; directories never reused.",
+        "source": "Fresh local simulator; no rig or relay; scenario records the synthetic site.",
+        "scenario": {
+          "id": "public-hanle",
+          "site": {
+            "name": "Synthetic public Hanle Indian Astronomical Observatory",
+            "latitude": 32.78,
+            "longitude": 78.96,
+            "elevation_m": 0.0
+          },
+          "site_origin": "Fixed approximate public location used only in a fresh synthetic fixture.",
+          "mount": "Simulator slewed one hour east of the meridian at declination 20; settled above 30 degrees verified before capture.",
+          "exposure_s": 1.0,
+          "saved_frame": false
+        },
+        "survey": "No Atlas/Sky survey view captured; external browser requests blocked.",
+        "visual_review": "Implementer inspected original-resolution pixels: no site label, site coordinates, mount coordinates or survey imagery; no below-horizon warning or no-dark-tonight message. To Dawn reads 4h 49m, dark until 16:21 in browser time. Idle session, weather off and stale single frame are actual app state. Independent parent review complete: original pixels are clean, the 4h 49m countdown is sensible, no site/mount coordinates or warnings appear, and the idle state is authentic. See monitor-followup.md."
+      }
+    }
+  ]
+}

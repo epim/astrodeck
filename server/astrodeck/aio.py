@@ -15,11 +15,19 @@ async def reap(task: asyncio.Future) -> None:
     exception raised on its way out. A cancel aimed at the CALLER is not: it
     ends the caller with ``CancelledError``, once the task has finished.
 
-    THE SHAPE THIS REPLACES (#235)::
+    THE SHAPES THIS REPLACES (#235, widened to these two spellings by #252)::
 
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+        # or, written with BaseException (catches CancelledError too) or as
+        # a try/except instead of a suppress:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     A caller cancelled while it waits there passes the cancel on to ``task``
     (``Task.cancel`` cancels the future its task is waiting on), and the

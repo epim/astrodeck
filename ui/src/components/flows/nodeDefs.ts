@@ -83,6 +83,16 @@ export interface FieldDef {
    *  a stored block with a real PA must read "Rotate to PA", not a blank
    *  select or the first option. Read it through `fieldValue`. */
   derive?: (p: Record<string, string | number>) => string | number;
+  /** Hover/tap help for the field, read by whatever renders the row as an
+   *  info icon beside the label (#195: DUSK WINDOW's `repeat` is the first
+   *  to carry one, because "Single night" used to promise something the
+   *  compile did not keep). WORDED TO PROMISE ONLY WHAT THE CODE DOES - the
+   *  same discipline `desc` is held to below - never copied from a design
+   *  doc without checking it against the compile and the engine first.
+   *  Rendering the icon itself (the hover/tap/aria-describedby wiring) is a
+   *  separate change to the inspector component; this is only the field's
+   *  own copy. */
+  help?: string;
 }
 
 export interface NodeDef {
@@ -242,7 +252,8 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "stop", label: "Stop", control: "select", options: ["Dawn", "Clock time", "None"] },
       { key: "stopClock", label: "Stop clock time", control: "text" },
       { key: "minAlt", label: "Min target altitude", control: "text", unit: "°" },
-      { key: "repeat", label: "Repeat", control: "select", options: ["Single night", "Nightly until pool complete", "Nightly ×30"] },
+      { key: "repeat", label: "Repeat", control: "select", options: ["Single night", "Nightly until pool complete", "Nightly ×30"],
+        help: "Single night: if the window closes before every target has its quota, this session stays dormant and does not start itself again - CONTINUE it by hand. The other two choices come back at the next dusk and pick up the frame count where last night left off, until the pool is complete or 30 nights have run." },
     ],
     desc: "Autorun window from the scheduler: sun-altitude dusk/dawn events at the configured site, with a per-target altitude gate. 'Night ends' fires before dawn; with Repeat set, dawn is a scheduled hold - the capture cursor persists and the flow re-arms at the next dusk, mid-cycle.",
     // The "+" is printed only for a non-negative offset, so the default -30

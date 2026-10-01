@@ -38,7 +38,7 @@ import { useStore } from "../../store";
 import { NODE_DEFS } from "./nodeDefs";
 import { clampZoom, nodeW, type FlowTier, type PortDir } from "./geometry";
 import type { PortKind } from "./flowsTypes";
-import { flowLoopRefusal, type ProposedWire } from "./flowLoop";
+import { flowLoopRefusal, laneMismatchRefusal, type ProposedWire } from "./flowLoop";
 import FlowNodeCard from "./FlowNodeCard";
 import FlowWireLayer from "./FlowWireLayer";
 import FlowWireDelete from "./FlowWireDelete";
@@ -123,24 +123,22 @@ export function resolveWireDrop(
   const [nodeId, portId, dir] = portAttr.split("|");
   // Rule 2: only an INPUT accepts a drop. There is no reverse drag.
   if (dir !== "in" || !nodeId || !portId) return { ok: false, refusal: null };
-  // Rule 3: self-wiring is refused SILENTLY on drag. (Tap-to-wire toasts
-  // "Can't wire a stage to itself" — §C.15 — and the asymmetry is deliberate:
-  // a drag that ends where it started is usually a mis-grab, not an attempt.)
+  // Rule 3: self-wiring is refused SILENTLY on drag — a drag that ends where
+  // it started is usually a mis-grab, not an attempt. Tap-to-wire toasts
+  // "Can't wire a stage to itself" instead (#197, `flowLoop.SELF_WIRE_REFUSAL`),
+  // because tap has no resolver of its own and reaches `flowsConnect` directly,
+  // where that check and its toast now live; the asymmetry is deliberate.
   if (nodeId === wire.from) return { ok: false, refusal: null };
 
   // Rule 4: the lanes are the grammar. A flow port carries the single run
   // cursor, an event port fires any number of times, and nodes.py runs them
-  // through different machinery — so the mismatch is refused, with a sentence.
-  const kOut = kindOf(wire.from, wire.fromPort, "out");
-  const kIn = kindOf(nodeId, portId, "in");
-  if (kOut && kIn && kOut !== kIn) {
-    return {
-      ok: false,
-      refusal:
-        `${kOut === "flow" ? "Flow" : "Event"} output can't feed ` +
-        `${kIn === "flow" ? "a flow" : "an event"} input`,
-    };
-  }
+  // through different machinery — so the mismatch is refused, with a sentence
+  // `flowsConnect` shares (`flowLoop.laneMismatchRefusal`, #197): drag and tap
+  // cannot drift apart on what a mismatch says.
+  const refusal = laneMismatchRefusal(
+    kindOf(wire.from, wire.fromPort, "out"), kindOf(nodeId, portId, "in"),
+  );
+  if (refusal) return { ok: false, refusal };
   // No flow loops (#149). A flow wire whose destination already reaches its
   // source closes a circle the run cursor cannot travel: the compiler drops
   // every stage on it, and none of them shoots a frame. Refused here, out loud,
@@ -182,8 +180,12 @@ interface Pinch {
 export default function FlowCanvas({ tier }: FlowCanvasProps) {
   // ── subscriptions, all narrow (§B.3) ────────────────────────────────────
   // The canvas is the ONE subscriber to the node array and passes each node down
-  // as a prop; the cards are memo'd and read only their own status. That is what
-  // makes a `flow.node` tick re-render one card instead of the graph.
+  // as a prop; the cards are memo'd and read only their own status. That is the
+  // write discipline a `flow.node` status tick would ride on if the rig ever
+  // sent one -- nothing does (#464: no topic carries a stage's status, and the
+  // published sequence state never names one), so every card reads idle
+  // through a live run, and this subscription shape is what will let a status
+  // feed, once there is one, wake one card instead of the graph.
   const nodes = useStore((s) => s.flows.graph.nodes);
   const edges = useStore((s) => s.flows.graph.edges);
   const pan = useStore(useShallow((s) => s.flows.pan));

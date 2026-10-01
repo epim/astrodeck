@@ -126,6 +126,35 @@ test("the loop drop is refused with the server's sentence", () => {
     "the refusal must be the server's sentence, naming source then destination");
 });
 
+test("a lane mismatch drop is refused with flowLoop.ts's own sentence", () => {
+  // SHARED WITH THE STORE AND THE CLASSIC CANVAS (#197, backlog WP-36): this
+  // resolver's lane check used to carry its own copy of this sentence,
+  // spelt out inline; it now calls `flowLoop.ts`'s `laneMismatchRefusal`
+  // directly, the SAME function `flowsConnect` and the classic
+  // `FlowCanvas.tsx` resolver call (w4SelfWireAndLaneChecks.test.ts), so a
+  // wording change made once in `flowLoop.ts` reaches all three instead of
+  // needing a second, easily-missed edit here.
+  //
+  // DUSK WINDOW's "night ends" output is an EVENT port; TARGET's "arm"
+  // input is a FLOW one (the fixture's own e1 wires it from "window
+  // opens", a flow port) - so this drop is the lane mismatch, inside the
+  // same fixture graph the loop cases above already use.
+  //
+  // MUTANT "flowLoop.ts's sentence changes" (`laneMismatchRefusal`'s
+  // template edited to read "...into..." instead of "...feed..."), run
+  // in a private scratch copy of ui/ (byte-for-byte restored, sha256
+  // checked): RED here too, proving the resolver's answer comes from that
+  // function and not a private copy of its own. Observed:
+  //   x a lane mismatch drop is refused with flowLoop.ts's own sentence: the refusal must be the sentence flowLoop.ts's laneMismatchRefusal owns
+  //     expected "Event output can't feed a flow input"
+  //     got      "Event output can't feed into a flow input"
+  const res = resolveWireDrop({ from: "n1", fromPort: "nightend" }, "n2|arm|in", kindOf, loopOf);
+  eq(res.ok, false, "an event output cannot feed a flow input");
+  eq((res as { refusal: string | null }).refusal,
+    "Event output can't feed a flow input",
+    "the refusal must be the sentence flowLoop.ts's laneMismatchRefusal owns");
+});
+
 test("a forward drop is accepted", () => {
   // CONTROL. MUTANT "refuse every drop the check is asked about" (the check's
   // answer ignored, the drop refused whenever a check was passed; in

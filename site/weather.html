@@ -1,362 +1,263 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Weather Awareness</title>
-<meta name="description" content="Forecast, satellite cloud projected onto a hemisphere over your site, and the question that decides the night: is that cloud between the scope and the target?">
-<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
-<link rel="canonical" href="https://epim.github.io/astrodeck/weather.html">
-<meta property="og:type" content="website">
-<meta property="og:title" content="Weather Awareness | AstroDeck">
-<meta property="og:description" content="Satellite cloud projected onto a hemisphere over your site, answering the question that decides the night: is it between the scope and the target?">
-<meta property="og:url" content="https://epim.github.io/astrodeck/weather.html">
-<meta name="twitter:card" content="summary">
-<meta name="theme-color" content="#070A12">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/site.css">
-<script src="assets/theme.js"></script>
-</head>
-<body>
-
-<header class="topbar">
-  <div class="wrap topbar-in">
-    <a class="brand" href="index.html">Astro<span>Deck</span></a>
-    <nav class="navlinks">
-      <a href="index.html">Overview</a>
-      <a href="flows.html">Flows</a>
-      <a href="weather.html" aria-current="page">Weather</a>
-      <a href="hardware.html">Hardware</a>
-      <a href="features.html" class="opt">Features</a>
-      <a href="https://github.com/epim/astrodeck" class="opt">GitHub</a>
-      <button class="themetoggle" data-theme-toggle type="button">Auto</button>
-    </nav>
-  </div>
-</header>
-
-<section class="band">
-  <div class="wrap stack gap-3">
-    <p class="eyebrow">Weather awareness</p>
-    <h1 style="max-width:19ch">See which half of your sky is worth pointing at.</h1>
-    <p class="lead" style="max-width:58ch">
-      Forty per cent cloud tells you nothing about where the gap is. AstroDeck
-      shades your whole hemisphere with real satellite cloud, so you can look
-      once and know: <strong>the east is socked in, the west is open, and the
-      bank moving through will reach your target in about forty minutes.</strong>
-    </p>
-  </div>
-</section>
-
-<!-- =========================================================== the geometry -->
-<section class="band band-tint">
-  <div class="wrap stack gap-4">
-    <div class="band-head">
-      <p class="eyebrow">The geometry</p>
-      <h2>Why the cloud overhead does not matter.</h2>
-      <p>
-        Point at 40° with a deck at 3 km and the cloud that blocks you sits three
-        and a half kilometres downrange. Read the pixel above your observatory
-        and you have measured somebody else's sky.
-      </p>
-    </div>
-
-    <figure>
-      <div class="framed">
-        <svg viewBox="0 0 1000 340" role="img" aria-label="Side view. A telescope on the ground looks up at forty degrees toward a target. A cloud deck sits three kilometres up. The line of sight pierces the deck several kilometres downrange, not directly overhead, so the cloud that matters is the one at the pierce point.">
-          <defs>
-            <linearGradient id="deck" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="var(--dim)" stop-opacity="0.30"/>
-              <stop offset="1" stop-color="var(--dim)" stop-opacity="0.06"/>
-            </linearGradient>
-            <marker id="wa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-              <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"/>
-            </marker>
-            <marker id="wd" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-              <path d="M0 0 L10 5 L0 10 z" fill="var(--dimmer)"/>
-            </marker>
-          </defs>
-
-          <!-- cloud deck -->
-          <rect x="40" y="74" width="920" height="42" fill="url(#deck)"/>
-          <line x1="40" y1="74" x2="960" y2="74" stroke="var(--line)" stroke-dasharray="5 4"/>
-          <line x1="40" y1="116" x2="960" y2="116" stroke="var(--line)" stroke-dasharray="5 4"/>
-          <text x="48" y="66" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.2" fill="var(--dim)">CLOUD DECK: TOP HEIGHT FROM THE SATELLITE</text>
-
-          <!-- the bank sitting on the line of sight -->
-          <ellipse cx="470" cy="95" rx="132" ry="26" fill="var(--dim)" opacity="0.34"/>
-          <ellipse cx="180" cy="95" rx="74" ry="19" fill="var(--dim)" opacity="0.16"/>
-
-          <!-- ground -->
-          <line x1="40" y1="286" x2="960" y2="286" stroke="var(--line)" stroke-width="1.5"/>
-
-          <!-- scope -->
-          <g transform="translate(96,286)">
-            <line x1="0" y1="0" x2="0" y2="-16" stroke="var(--text)" stroke-width="2"/>
-            <line x1="-11" y1="0" x2="11" y2="0" stroke="var(--text)" stroke-width="2"/>
-            <line x1="0" y1="-16" x2="26" y2="-38" stroke="var(--text)" stroke-width="3.5" stroke-linecap="round"/>
-          </g>
-          <text x="40" y="308" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.1" fill="var(--dim)">YOUR SITE</text>
-
-          <!-- line of sight -->
-          <line x1="110" y1="266" x2="880" y2="56" stroke="var(--accent)" stroke-width="1.8" marker-end="url(#wa)"/>
-          <text x="800" y="44" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.1" fill="var(--accent)">TARGET</text>
-
-          <!-- elevation angle -->
-          <path d="M156 266 A 46 46 0 0 0 148 246" fill="none" stroke="var(--dim)" stroke-width="1"/>
-          <text x="162" y="258" font-family="JetBrains Mono, monospace" font-size="9.5" fill="var(--dim)">40°</text>
-
-          <!-- pierce point -->
-          <circle cx="470" cy="167" r="0" fill="none"/>
-          <g>
-            <circle cx="459" cy="171" r="5.5" fill="none" stroke="var(--amber)" stroke-width="1.8"/>
-            <line x1="459" y1="116" x2="459" y2="165" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="3 3"/>
-            <text x="474" y="176" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.1" fill="var(--amber)">PIERCE POINT</text>
-            <text x="474" y="191" font-family="Spectral, serif" font-size="11.5" fill="var(--dim)">the cloud that is in your way</text>
-          </g>
-
-          <!-- the wrong answer: straight up -->
-          <line x1="110" y1="266" x2="110" y2="120" stroke="var(--dimmer)" stroke-width="1" stroke-dasharray="4 4" marker-end="url(#wd)"/>
-          <text x="120" y="140" font-family="Spectral, serif" font-size="11.5" fill="var(--dimmer)">what a single-number</text>
-          <text x="120" y="155" font-family="Spectral, serif" font-size="11.5" fill="var(--dimmer)">forecast reports</text>
-
-          <!-- downrange -->
-          <line x1="110" y1="304" x2="459" y2="304" stroke="var(--dimmer)" stroke-width="1"/>
-          <line x1="110" y1="299" x2="110" y2="309" stroke="var(--dimmer)"/>
-          <line x1="459" y1="299" x2="459" y2="309" stroke="var(--dimmer)"/>
-          <text x="252" y="322" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.1" fill="var(--dimmer)">DOWNRANGE ≈ 3.6 km</text>
-
-          <!-- drift -->
-          <g opacity="0.85">
-            <line x1="620" y1="95" x2="700" y2="95" stroke="var(--dim)" stroke-width="1" marker-end="url(#wd)"/>
-            <text x="628" y="86" font-family="JetBrains Mono, monospace" font-size="9" letter-spacing="1" fill="var(--dim)">DRIFT</text>
-          </g>
-        </svg>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AstroDeck weather awareness</title>
+    <meta name="description" content="Compare forecasts, satellite cloud estimates and your own frames. Understand cloud holds, safety stops and the limits of satellite coverage.">
+    <link rel="canonical" href="https://epim.github.io/astrodeck/weather.html">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="AstroDeck weather awareness">
+    <meta property="og:description" content="Compare forecasts, satellite cloud estimates and your own frames. Understand cloud holds, safety stops and the limits of satellite coverage.">
+    <meta property="og:url" content="https://epim.github.io/astrodeck/weather.html">
+    <meta name="twitter:card" content="summary">
+    <meta name="theme-color" content="#132735">
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/site.css">
+    <script src="assets/theme.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="index.html" aria-label="AstroDeck home"><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="12"/><ellipse cx="18" cy="18" rx="17" ry="6" transform="rotate(-35 18 18)"/><circle cx="18" cy="18" r="2"/><path d="M18 2v5M18 29v5M2 18h5M29 18h5"/></svg>AstroDeck</a><button class="menu-toggle" data-menu-toggle type="button" aria-controls="site-nav" aria-expanded="false">Menu</button>
+        <nav class="nav" id="site-nav" aria-label="Primary">
+          <a href="index.html">Overview</a><a href="features.html">Features</a><a href="flows.html">Flows</a><a href="hardware.html">Hardware</a><a href="weather.html" aria-current="page">Weather</a><a href="getting-started.html" class="nav-start">Get started</a><button class="theme-toggle" data-theme-toggle type="button" hidden aria-label="Change color theme">Theme: System</button>
+        </nav>
       </div>
-      <figcaption>
-        Height counts twice. It sets how far downrange your line of sight
-        crosses the deck, and it corrects for the satellite's own viewing angle.
-        A deck reported in one place sits over another.
-      </figcaption>
-    </figure>
-  </div>
-</section>
-
-<!-- =============================================================== the dome -->
-<section class="band">
-  <div class="wrap stack gap-4">
-    <div class="band-head">
-      <p class="eyebrow">On the Monitor screen</p>
-      <h2>Pick a target that stays clear.</h2>
-      <p>
-        Horizon to zenith, shaded with the last satellite pass, your scope marked
-        where it points. Before you commit three hours to something you can see
-        whether it sits under the gap or under the bank.
-      </p>
-    </div>
-
-    <div class="grid grid-2" style="align-items:start">
-      <div class="card">
-        <span class="kicker">The dome</span>
-        <figure style="margin-top:.4rem">
-          <svg viewBox="0 0 420 300" role="img" aria-label="A sky dome: nested altitude rings from horizon to zenith, cardinal points, cloud shaded over the eastern half, and a crosshair marking where the telescope points.">
-            <defs>
-              <radialGradient id="cl" cx="0.5" cy="0.5" r="0.5">
-                <stop offset="0" stop-color="var(--dim)" stop-opacity="0.5"/>
-                <stop offset="1" stop-color="var(--dim)" stop-opacity="0"/>
-              </radialGradient>
-              <clipPath id="horizon"><circle cx="210" cy="158" r="118"/></clipPath>
-            </defs>
-            <circle cx="210" cy="158" r="118" fill="var(--ground)" stroke="var(--accent)" stroke-opacity="0.42"/>
-            <circle cx="210" cy="158" r="79"  fill="none" stroke="var(--accent)" stroke-opacity="0.2"/>
-            <circle cx="210" cy="158" r="40"  fill="none" stroke="var(--accent)" stroke-opacity="0.2"/>
-            <g stroke="var(--accent)" stroke-opacity="0.14">
-              <line x1="92"  y1="158" x2="328" y2="158"/>
-              <line x1="210" y1="40"  x2="210" y2="276"/>
-              <line x1="127" y1="75"  x2="293" y2="241"/>
-              <line x1="293" y1="75"  x2="127" y2="241"/>
-            </g>
-
-            <!-- cloud over the eastern half, and none past the horizon -->
-            <g clip-path="url(#horizon)">
-              <ellipse cx="272" cy="128" rx="74" ry="58" fill="url(#cl)"/>
-              <ellipse cx="300" cy="186" rx="52" ry="40" fill="url(#cl)"/>
-            </g>
-
-            <!-- the scope -->
-            <g stroke="var(--accent)" stroke-width="1.4" fill="none">
-              <circle cx="163" cy="120" r="8"/>
-              <line x1="147" y1="120" x2="153" y2="120"/>
-              <line x1="173" y1="120" x2="179" y2="120"/>
-              <line x1="163" y1="104" x2="163" y2="110"/>
-              <line x1="163" y1="130" x2="163" y2="136"/>
-            </g>
-
-            <g font-family="JetBrains Mono, monospace" font-size="9" letter-spacing="1.3" fill="var(--dim)">
-              <text x="203" y="32">N</text>
-              <text x="336" y="162">E</text>
-              <text x="203" y="292">S</text>
-              <text x="76"  y="162">W</text>
-              <text x="216" y="154" fill="var(--dimmer)" font-size="8">ZENITH</text>
-            </g>
-          </svg>
-          <figcaption>Cloud on the eastern half. The scope sits west of it and is clear for now.</figcaption>
-        </figure>
+    </header>
+    <main id="main" tabindex="-1">
+      <section class="page-hero">
+        <div class="wrap page-hero-grid">
+          <div data-claims="WEATHER CLOUD">
+            <p class="eyebrow">
+              Weather awareness
+            </p>
+            <h1>
+              Keep the sky in the plan.
+            </h1>
+            <p class="lede">
+              Use the forecast to plan ahead, satellite imagery to inspect nearby cloud and your own exposures to judge the view through the telescope.
+            </p>
+          </div>
+          <aside class="page-index" aria-label="On this page">
+            <p>
+              On this page
+            </p>
+            <ul>
+              <li>
+                <a href="#sources">Weather sources</a>
+              </li>
+              <li>
+                <a href="#coverage">Satellite coverage</a>
+              </li>
+              <li>
+                <a href="#holds">Cloud holds</a>
+              </li>
+              <li>
+                <a href="#safety">Safety</a>
+              </li>
+              <li>
+                <a href="#dusk">Dusk checks</a>
+              </li>
+            </ul>
+          </aside>
+        </div>
+      </section>
+      <section id="sources" class="section">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              01 / Weather sources
+            </p>
+            <h2>
+              Read each source for what it can tell you.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="editorial-grid weather-sources">
+              <article class="editorial-item" data-claims="WEATHER">
+                <h3>
+                  Forecast
+                </h3>
+                <p>
+                  Open-Meteo supplies forecast data. Astrospheric requires your own eligible account, API key and the in-app acknowledgement. Available forecast fields depend on the provider.
+                </p>
+              </article>
+              <article class="editorial-item" data-claims="CLOUD">
+                <h3>
+                  Satellite cloud estimates
+                </h3>
+                <p>
+                  GOES cloud-mask and cloud-top data are projected into a sky dome. Successive observations support short-term drift estimates, with the source time and availability shown.
+                </p>
+              </article>
+              <article class="editorial-item" data-claims="FRAME_CLOUD">
+                <h3>
+                  Your own frames
+                </h3>
+                <p>
+                  Bright-star counts and image contrast feed a cloud score. Exposure, focus and your rig&#x27;s thresholds affect the result, so the sequence uses a debounced reading.
+                </p>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="coverage" class="section tinted" data-claims="CLOUD CLOUD_COVERAGE">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              02 / Satellite coverage
+            </p>
+            <h2>
+              Check coverage before relying on the dome.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                The satellite layer uses GOES-18 and GOES-19 and is intended for sites within their footprint, principally the Americas. Outside coverage, or with missing or stale data, the service reports the limitation. Forecast and frame-based checks are separate from that satellite coverage.
+              </p>
+            </div>
+            <aside class="notice">
+              <p>
+                Satellite cloud mapping needs the optional cloudmap dependency, a configured observing site and network access to fetch observations.
+              </p>
+            </aside>
+          </div>
+        </div>
+      </section>
+      <section id="holds" class="section" data-claims="CLOUD_HOLD">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              03 / Cloud holds
+            </p>
+            <h2>
+              Let a passing cloud pause the sequence.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                With a cloud-hold rule configured, the sequence stops normal capture and probes for clearing. It can collect configured hold darks while waiting. Before resuming, it restores the filter and checks cooling, centring and guiding as required.
+              </p>
+            </div>
+            <aside class="notice">
+              <p>
+                Set the maximum hold and timeout action in the plan. These behaviors require the relevant connected equipment and providers.
+              </p>
+            </aside>
+          </div>
+        </div>
+      </section>
+      <section id="safety" class="section tinted" data-claims="SAFETY CLOUD_ADVISORY">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              04 / Safety
+            </p>
+            <h2>
+              Keep safety decisions separate.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                A connected safety monitor can end the sequence on an unsafe or stale reading. Parking and closure follow the configured shutdown behavior. Satellite estimates are advisory and do not operate the safety gate.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section id="dusk" class="section" data-claims="DUSK">
+        <div class="wrap section-layout">
+          <div class="section-aside">
+            <p class="eyebrow">
+              05 / Dusk checks
+            </p>
+            <h2>
+              Check the forecast again at dusk.
+            </h2>
+          </div>
+          <div class="section-content">
+            <div class="prose">
+              <p>
+                Automatic session re-arming can wait when the forecast predicts rain. Forecast cloud cover is shown for planning and does not veto the night. Review the weather settings and any override before leaving a repeating plan armed.
+              </p>
+            </div>
+            <div class="section-links">
+              <a class="text-link" href="flows.html">Add weather rules to a flow</a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer">
+      <div class="wrap">
+        <div class="footer-top">
+          <div class="footer-brand">
+            <a class="brand" href="index.html" aria-label="AstroDeck home"><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="12"/><ellipse cx="18" cy="18" rx="17" ry="6" transform="rotate(-35 18 18)"/><circle cx="18" cy="18" r="2"/><path d="M18 2v5M18 29v5M2 18h5M29 18h5"/></svg>AstroDeck</a>
+            <p>
+              Plan the night. Keep the rig in view.
+            </p>
+          </div>
+          <div class="footer-group">
+            <h2>
+              Explore
+            </h2>
+            <ul>
+              <li>
+                <a href="index.html">Overview</a>
+              </li>
+              <li>
+                <a href="features.html">Features</a>
+              </li>
+              <li>
+                <a href="flows.html">Flows</a>
+              </li>
+              <li>
+                <a href="hardware.html">Hardware</a>
+              </li>
+              <li>
+                <a href="weather.html">Weather</a>
+              </li>
+              <li>
+                <a href="getting-started.html">Get started</a>
+              </li>
+              <li>
+                <a href="releases.html">Releases</a>
+              </li>
+            </ul>
+          </div>
+          <div class="footer-group">
+            <h2>
+              Project
+            </h2>
+            <ul>
+              <li>
+                <a href="https://github.com/epim/astrodeck">Source code</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/blob/main/docs/guide/README.md">User guide</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/issues">Issues</a>
+              </li>
+              <li>
+                <a href="https://github.com/epim/astrodeck/blob/main/LICENSE">Apache-2.0</a>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer-bottom">
+          <p>
+            AstroDeck is open source under Apache-2.0. Device names identify compatibility; AstroDeck is not affiliated with their manufacturers. DSS2 imagery (c) AAO/STScI, served from CDS/ESA HiPS mirrors.
+          </p>
+          <a href="releases.html">Release notes</a>
+        </div>
       </div>
-
-      <div class="stack gap-3">
-        <ul class="ticks">
-          <li><strong>Ask about any patch of sky.</strong> Give it an altitude and azimuth and get a number back, with the reading it came from.</li>
-          <li><strong>And about ten minutes from now.</strong> Two satellite passes give the cloud field a speed and a bearing, so you can ask where it will be by the time you get there.</li>
-          <li><strong>It says when it does not know.</strong> A missing cloud-top height comes back as unknown. If no wind level matches the drift it measured, it tells you that too.</li>
-          <li><strong>It says when it cannot see you.</strong> Outside the satellite footprint you get told, rather than an empty blue dome that means nothing.</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============================================================ three inputs -->
-<section class="band band-tint">
-  <div class="wrap stack gap-4">
-    <div class="band-head">
-      <p class="eyebrow">Three sources</p>
-      <h2>Three sources, and they check each other.</h2>
-      <p>
-        They disagree sometimes, which is how you catch a forecast that has
-        already been overtaken by the sky outside.
-      </p>
-    </div>
-
-    <div class="grid grid-3">
-      <article class="card">
-        <span class="kicker">Hours ahead</span>
-        <h3>Forecast</h3>
-        <p>
-          Open-Meteo, or Astrospheric with your own key. Layered cloud, seeing,
-          transparency, dewpoint and wind. This is what decides whether tonight
-          is worth arming, and what stops an unattended rig unparking into
-          overcast.
-        </p>
-      </article>
-      <article class="card">
-        <span class="kicker">Minutes ahead</span>
-        <h3>Satellite</h3>
-        <p>
-          NOAA GOES-18 and GOES-19, straight from the public archive, refreshing
-          every five minutes. Cloud mask and cloud-top height, projected through
-          the real satellite geometry so the dome matches the sky you are
-          standing under.
-        </p>
-      </article>
-      <article class="card">
-        <span class="kicker">Right now</span>
-        <h3>Your own frames</h3>
-        <p>
-          AstroDeck measures bright-star count and contrast on every sub. This
-          one cannot be wrong about your sky, because it is a photograph of it,
-          and this is the one that stops a run.
-        </p>
-      </article>
-    </div>
-
-    <p class="note note-amber">
-      <strong>The satellite never closes your observatory.</strong> It shows you
-      where the cloud is; your own frames decide whether the sky is worth
-      exposing. A five-minute-old satellite pass does not get to shut down a rig
-      that can still see stars.
-    </p>
-  </div>
-</section>
-
-<!-- ============================================================== what it does -->
-<section class="band">
-  <div class="wrap stack gap-4">
-    <div class="band-head">
-      <p class="eyebrow">Reactions</p>
-      <h2>What it does when the sky turns.</h2>
-    </div>
-
-    <div class="tablewrap">
-      <table>
-        <thead>
-          <tr><th>When</th><th>What happens</th><th>How it comes back</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="mono">Cloud arrives</td>
-            <td>Capture holds. Tracking continues, the guider parks, and hold darks can be shot while waiting.</td>
-            <td>Releases itself once the sky clears for your set duration, then re-cools, re-centres with a solve and refocuses if HFR drifted.</td>
-          </tr>
-          <tr>
-            <td class="mono">Hold runs long</td>
-            <td>Your maximum hold expires.</td>
-            <td>Whatever you chose: keep waiting, or park and close.</td>
-          </tr>
-          <tr>
-            <td class="mono">Forecast is bad at dusk</td>
-            <td>Auto-resume vetoes the night rather than unparking into overcast.</td>
-            <td>Re-checks on its own cadence. "Ignore weather tonight" overrides it.</td>
-          </tr>
-          <tr>
-            <td class="mono">Safety monitor unsafe</td>
-            <td>Abort. Park, close, warm. A stale sensor reading counts as unsafe.</td>
-            <td>Manual. This one never releases itself.</td>
-          </tr>
-          <tr>
-            <td class="mono">Frames go bad</td>
-            <td>The quality gate rejects them and the ledger records why.</td>
-            <td>Rejected frames are re-shot. Nothing is silently lost from the count.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</section>
-
-<!-- ============================================================== coverage -->
-<section class="band band-tint">
-  <div class="wrap stack gap-3">
-    <div class="band-head">
-      <p class="eyebrow">Where it works</p>
-      <h2>The satellite half is the Americas.</h2>
-    </div>
-    <div class="prose">
-      <p class="dim">
-        GOES-18 and GOES-19 sit over the Americas. North and South America get
-        the dome, sharpest under the satellite and coarser toward the edge of its
-        view. Europe, Africa, Asia and Oceania fall outside it.
-      </p>
-      <p class="dim">
-        Set up a site there and AstroDeck tells you so. It does not draw an empty
-        sky you might read as clear, and it stops downloading, because the answer
-        will not change.
-      </p>
-      <p class="dim">
-        Everything else works anywhere: the forecast, the safety monitor, and the
-        cloud detection running on your own frames.
-      </p>
-    </div>
-  </div>
-</section>
-
-<footer>
-  <div class="wrap">
-    <hr class="footrule" style="margin-top:0">
-    <p>
-      Cloud data courtesy NOAA GOES on AWS. Forecast from Open-Meteo, or
-      Astrospheric with your own key.
-    </p>
-    <p style="margin-top:.8rem">
-      <a href="index.html">Overview</a> ·
-      <a href="flows.html">Flows</a> ·
-      <a href="hardware.html">Hardware</a> ·
-      <a href="features.html">Features</a> ·
-      <a href="https://github.com/epim/astrodeck">GitHub</a>
-    </p>
-  </div>
-</footer>
-
-</body>
+    </footer>
+  </body>
 </html>

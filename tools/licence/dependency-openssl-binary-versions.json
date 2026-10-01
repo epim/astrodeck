@@ -1,0 +1,31 @@
+{
+  "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+  "method": "Read CArchive entries as bytes; regex exact OpenSSL semantic-version strings and byte offsets. Does not execute DLLs. Versions identify embedded claims rather than reconstructing all native dependency sources.",
+  "files": [
+    {
+      "archive_path": "cryptography/hazmat/bindings/_rust.pyd",
+      "sha256": "1d4332a447cab13dec8e3a533ad579e0e562b79e40822c931f33769758fc7156",
+      "version_strings": [
+        {
+          "offset": 7489800,
+          "text": "OpenSSL 4.0.3 29 Sep 2026"
+        }
+      ]
+    },
+    {
+      "archive_path": "libcrypto-3.dll",
+      "sha256": "ccfffddcd3defb8d899026298af9af43bc186130f8483d77e97c93233d5f27d7",
+      "version_strings": [
+        {
+          "offset": 4026624,
+          "text": "OpenSSL 3.0.16 11 Feb 2025"
+        }
+      ]
+    },
+    {
+      "archive_path": "libssl-3.dll",
+      "sha256": "007142039f04d04e0ed607bda53de095e5bc6a8a10d26ecedde94ea7d2d7eefe",
+      "version_strings": []
+    }
+  ]
+}
