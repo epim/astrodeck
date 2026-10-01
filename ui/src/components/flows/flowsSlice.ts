@@ -15,13 +15,14 @@
 // A convenience writer that rebuilt the whole `flows` object would silently
 // re-render every subscriber and nothing would fail.
 import { apiErrorPayload } from "../../lib/apiError";
+import type { DisarmedSession } from "../../lib/disarmed";
 import { flowsApi } from "../../lib/flowsApi";
 import type {
   FlowCard, FlowFolder, FlowProgress, FlowRunFlags, FlowRunSession, FlowUnmapped,
 } from "../../lib/flowsApi";
 import { runIsLive } from "../../lib/lastSessionFrame";
 import type { SequenceState, ToastLevel } from "../../types";
-import { knownSessions } from "./flowRunState";
+import { isRunPhaseLive, knownSessions } from "./flowRunState";
 import { NODE_DEFS, createParams } from "./nodeDefs";
 import { fitView, type Rect } from "./geometry";
 import {
@@ -232,7 +233,7 @@ export const FLOWS_INIT: FlowsState = {
   pan: { x: 24, y: 12 }, zoom: 0.92,
   wire: null, tapWire: null,
   statuses: {},
-  run: { phase: "idle", etaS: null, curStage: "—", frames: 0,
+  run: { phase: "idle", startedAt: null, etaS: null, curStage: "—", frames: 0,
          frameGoal: null, acceptedUnmapped: [] },
   logs: [],
   compiled: null, compiling: false,
@@ -356,7 +357,16 @@ export interface FlowContinueQuestion {
  *  already accepted is lost on the way. */
 export type FlowRunAnswer =
   | { kind: "unmapped"; unmapped: FlowUnmapped[]; flags: FlowRunFlags }
-  | { kind: "continue"; question: FlowContinueQuestion; flags: FlowRunFlags };
+  | { kind: "continue"; question: FlowContinueQuestion; flags: FlowRunFlags }
+  /** Not a question - the run already started. Returned instead of `null`
+   *  only when the response named a non-empty `disarmed` list (#643, W5
+   *  integration): `flowsRun` used to discard that list on every successful
+   *  start, so `flowRunControls.tsx` had no way to show D-04's warning for
+   *  `POST /api/flows/{id}/run`, the one `disarmed`-carrying route
+   *  `NowEmpty.tsx`'s WP-65 fix could not reach (it does not own this
+   *  file). `runAnsweringQuestions` below returns this straight back out as
+   *  `RunOutcome.disarmed` rather than treating it as a question to answer. */
+  | { kind: "started"; disarmed: DisarmedSession[] };
 
 /** What the operator said yes to: RUN ANYWAY on the graph question, one of the
  *  CONTINUE questions, or START OVER (`fresh`). */
@@ -915,6 +925,25 @@ export function createFlowsActions(
     const was = liveSessionOf(prev);
     const now = liveSessionOf(next);
     const ended = was !== null && was !== now && openFlowOwns(was);
+    // #647: THE OPTIMISTIC `phase` IS CLEARED HERE, NOT LEFT TO EXPIRE.
+    // `flowsRun` sets `flows.run.phase` to a live value the instant its POST
+    // returns, before the engine's first publish - a guess
+    // `flowRunControls.tsx` bridges for only `RUN_PHASE_BRIDGE_MS`, but
+    // nothing ever wrote it back once that window had nothing to confirm or
+    // deny it, and besides `useFlowRunControls` three OTHER files read
+    // `flows.run.phase` directly (`FlowEditor.tsx`, `FlowWireLayer.tsx`,
+    // `FlowCanvasToolbar.tsx`/`FlowWires.tsx`'s own selectors) with no bridge
+    // of their own at all. Cleared unconditionally the moment the server
+    // reports the OPEN flow's run has ended, regardless of `dirty` or
+    // whether a progress re-read below is warranted: the stale STOP this
+    // fixes (label, action and confirm disagreeing on a flow's run that is
+    // actually over) is not a progress-chip concern, and must not wait on
+    // one. Guarded on `isRunPhaseLive` so an already-idle `phase` (the common
+    // case: this subscription fires on every sequence write, not just this
+    // flow's) is not rewritten on every unrelated tick.
+    if (ended && isRunPhaseLive(get().flows.run.phase)) {
+      set((s) => patch(s, { run: { ...s.flows.run, phase: "idle", startedAt: null } }));
+    }
     const wasFrames = framesOf(prev);
     const nowFrames = framesOf(next);
     const advanced = now !== null && now === was && openFlowOwns(now)
@@ -1561,7 +1590,11 @@ export function createFlowsActions(
       try {
         const res = await flowsApi.run(id, flags);
         set((s) => patch(s, {
-          run: { ...s.flows.run, phase: "running",
+          // `startedAt` stamps THIS optimistic belief (#647): read by
+          // `flowRunControls.tsx`'s `RUN_PHASE_BRIDGE_MS` window, so a label
+          // that leans on this guess stops doing so once the bridge has had
+          // long enough to hear from the engine either way.
+          run: { ...s.flows.run, phase: "running", startedAt: Date.now(),
                  frames: 0, frameGoal: res.frames,
                  acceptedUnmapped: flags.acceptUnmapped ? (res.unmapped ?? []) : [] },
           // The session this run went into is this flow's, known from this
@@ -1581,7 +1614,15 @@ export function createFlowsActions(
         // The run may have gone into a NEW session (START OVER, or the first
         // night), whose counts are not the ones the cards are showing.
         void fetchProgress();
-        return null;
+        // #643 (W5 integration): `disarmed`, present only when non-empty -
+        // the codebase's own convention (`below_horizon`) - names every
+        // session this start's SINGLETON (`SequenceEngine.start`) turned
+        // auto-resume off for (#595, D-04). `FlowRunResult` does not declare
+        // the field (it belongs to a route `NowEmpty.tsx`'s WP-65 fix does
+        // not call), so it is read off the parsed response exactly as that
+        // file's own two call sites do, not through a widened type.
+        const disarmed = (res as unknown as { disarmed?: DisarmedSession[] }).disarmed;
+        return disarmed && disarmed.length > 0 ? { kind: "started", disarmed } : null;
       } catch (e) {
         // A 409 carrying `unmapped` is not a failure - it is the server asking
         // whether the operator accepts running a flow that will not honour part

@@ -431,9 +431,10 @@ def _qualname_at(tree: ast.AST, lineno: int) -> str | None:
 #:   ``SequenceEngine._run``'s own wind-down loop at the UNSAFE teardown is
 #:   the same shape, for the same reason, and also not WP-35's file to edit.
 #: * ``weather.py``'s ``WeatherService.stop`` turned up widening this scan
-#:   for #252, is not in that issue's own list, and is not a WP-35 file
-#:   (``weather.py`` belongs to WP-37); reported as its own new defect
-#:   instead of fixed here.
+#:   for #252 and was reported as its own defect (#628); WP-37 (f) fixed it
+#:   by switching to ``aio.reap``, so its entry here is removed rather than
+#:   kept -- it no longer matches anything, and the stale-entry check below
+#:   would fail if it stayed.
 _ALLOWLIST: set[tuple[str, str]] = {
     ("hub.py", "_run_to_its_bound"),
     ("sequence/engine.py", "SequenceEngine.abort"),
@@ -443,7 +444,6 @@ _ALLOWLIST: set[tuple[str, str]] = {
     ("api/app.py", "_spawn.wrapped"),
     ("api/app.py", "_spawn_connect.wrapped"),
     ("sequence/resume_arm.py", "ResumeArm.stop"),
-    ("weather.py", "WeatherService.stop"),
 }
 
 

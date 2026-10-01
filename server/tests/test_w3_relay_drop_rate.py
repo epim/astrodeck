@@ -24,6 +24,7 @@ import asyncio
 import time
 
 import astrodeck.remote.relay_client as rc
+from _deadline import wait_until  # rootdir-relative
 from astrodeck.remote.relay_client import LinkProbes, RelayClient
 
 
@@ -60,12 +61,14 @@ async def test_recent_drop_count_counts_a_logged_link_check(monkeypatch):
     client = _client_with_a_pending_drop(probes=probes)
     rc._current_client = client
     client._after_drop(1)
-    for _ in range(300):
-        if client._link_check is not None and client._link_check.done():
-            break
-        await asyncio.sleep(0.01)
-    assert client._link_check is not None and client._link_check.done(), (
-        "premise: the link check finished")
+    # A wall-clock deadline (#610, WP-68 remainder): 300 x sleep(0.01) is
+    # 3.0 s on Linux but longer on Windows (sleep rounds up to the ~15.6 ms
+    # timer there), so a round count gives the two platforms different real
+    # patience.
+    ok = await wait_until(
+        lambda: client._link_check is not None and client._link_check.done(),
+        timeout_s=3.0, interval_s=0.01)
+    assert ok, "premise: the link check finished"
 
     assert rc.recent_drop_count(before) == 1
     assert rc.recent_drop_count(time.time() + 10.0) == 0, (

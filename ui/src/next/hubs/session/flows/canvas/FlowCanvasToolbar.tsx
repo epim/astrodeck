@@ -119,8 +119,17 @@ export const RUN_ARM_WORD = "CONFIRM";
  *
  *  RUN is the one control that starts the rig moving, so it is a two-tap arm.
  *  STOP is NOT, and gets no arm: emergency motion stops stay single-tap, the
- *  house rule for STOP / HALT / polar-STOP alike. `copy.verb` is STOP exactly
- *  while the run is live (`runCopy`), so the copy alone decides.
+ *  house rule for STOP / HALT / polar-STOP alike.
+ *
+ *  GATED ON `stopsOnPress`, NEVER ON `copy.verb` (#647). The copy's verb
+ *  reads from `running`, which bridges the client's own optimistic latch for
+ *  up to `RUN_PHASE_BRIDGE_MS` past a press (`flowRunControls.tsx`) - so a
+ *  label can read STOP for a press `act()` would actually START (`ours`
+ *  alone decides the action, #162). Skipping the confirm because the LABEL
+ *  said STOP let a stale button silently start a brand new run with no
+ *  CONFIRM RUN at all, which is #647. `stopsOnPress` is the same `ours` the
+ *  action itself is decided on, so the confirm and the action can never
+ *  disagree about which one this press is.
  *
  *  THE ARMED LABEL SAYS WHAT THE SECOND TAP DOES. `ActionButton` swaps the
  *  whole label for `arm.label` on the first tap, and this used to be a fixed
@@ -136,8 +145,8 @@ export const RUN_ARM_WORD = "CONFIRM";
  *  parenthetical is one more that pushes the night and the counts off a
  *  narrow button first. The flow's name is already on both surfaces, in the
  *  row's FLOW title and the sheet's title. */
-export function runArm(copy: RunCopy): { label: string } | undefined {
-  if (copy.verb === "STOP") return undefined;
+export function runArm(copy: RunCopy, stopsOnPress: boolean): { label: string } | undefined {
+  if (stopsOnPress) return undefined;
   return { label: [`${RUN_ARM_WORD} ${copy.verb}`, copy.detail].filter((p) => p !== "").join(" ") };
 }
 
@@ -229,7 +238,9 @@ export function FlowCanvasToolbar(): JSX.Element {
   // RUN/STOP is the shared hook, never transcribed: it owns the abort route
   // (`/api/sequence/abort`, not a flows route), the rule that a timed-out abort
   // is not a failed abort, and the 409 `unmapped` confirm.
-  const { running, reason: hookRunReason, explain, act, copy, startOver } = useFlowRunControls();
+  const {
+    running, reason: hookRunReason, explain, act, copy, startOver, stopsOnPress,
+  } = useFlowRunControls();
 
   // Order matters: the rig's own refusals (no capability, no camera, link down)
   // outrank ours, because a viewer who also has an unsaved edit is refused for
@@ -362,7 +373,7 @@ export function FlowCanvasToolbar(): JSX.Element {
         glyph={<NxIcon name={running ? "stop" : "play"} size={15} />}
         lockedReason={runReason}
         onExplain={explain}
-        arm={runArm(copy)}
+        arm={runArm(copy, stopsOnPress)}
         onPress={act}
       >
         <RunCopyWords copy={copy} />
