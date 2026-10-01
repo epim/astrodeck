@@ -130,8 +130,19 @@ testpaths = ["tests"]
 #
 # Proof (#622): two consecutive full runs leave at most one base directory,
 # under a stated size.
+#
+# POLICY IS BACK TO THE DEFAULT ("all") FOR NOW, and only `count = 1` stays.
+# "failed" deletes each passed test's tmp_path during that test's teardown,
+# inside the real-config guard's window (conftest.py, _watch_the_real_config).
+# On Linux, shutil.rmtree deletes through names relative to an open directory
+# fd, and the guard resolves every path against the CWD (server/). A test
+# whose tmp_path holds a `config` subdir (test_rig_precheck_says_whether_the_
+# rig_is_watched.py) then reads as "os.rmdir of ./ (the real config
+# directory)": five false failures on the CI runner (run 36937456993), none on
+# Windows, whose rmtree uses full paths. Restore "failed" once the guard
+# understands dir_fd-relative paths (#659); until then each run's base dir is
+# bounded only by `count`, which is why #622 stays open.
 
-tmp_path_retention_policy = "failed"
 tmp_path_retention_count = 1
 # Run in parallel by default (pytest-xdist). Full suite ~800s serial -> ~250s at
 # -n 12. Capped at 12 (NOT `-n auto`) on purpose: the heavy native-guiding timing

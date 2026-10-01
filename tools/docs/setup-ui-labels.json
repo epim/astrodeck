@@ -9,7 +9,7 @@
     "page": "README.md",
     "label": "Simulator",
     "source": "ui/src/views/EquipmentView.tsx",
-    "line": 1003
+    "line": 1018
   },
   {
     "page": "docs/auth-setup.md",
@@ -69,7 +69,7 @@
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Activate",
     "source": "ui/src/components/settings/ProfileList.tsx",
-    "line": 600
+    "line": 626
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
@@ -111,20 +111,20 @@
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Connect Rig",
     "source": "ui/src/views/EquipmentView.tsx",
-    "line": 999,
+    "line": 1014,
     "dynamic": "Exact fixed prefix; rendered label includes current capture settings or role count."
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Delete",
     "source": "ui/src/components/settings/ProfileList.tsx",
-    "line": 606
+    "line": 632
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Disconnect",
     "source": "ui/src/views/EquipmentView.tsx",
-    "line": 427
+    "line": 445
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
@@ -166,7 +166,7 @@
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Link Status",
     "source": "ui/src/views/EquipmentView.tsx",
-    "line": 1209
+    "line": 1224
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
@@ -208,7 +208,7 @@
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Profile name",
     "source": "ui/src/components/settings/ProfileList.tsx",
-    "line": 892
+    "line": 918
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
@@ -220,25 +220,25 @@
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Reconnect",
     "source": "ui/src/components/settings/ProfileList.tsx",
-    "line": 693
+    "line": 719
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Rig Actions",
     "source": "ui/src/views/EquipmentView.tsx",
-    "line": 997
+    "line": 1012
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Save Current Rig",
     "source": "ui/src/components/settings/ProfileList.tsx",
-    "line": 548
+    "line": 574
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Save Rig",
     "source": "ui/src/components/settings/ProfileList.tsx",
-    "line": 569
+    "line": 595
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
@@ -256,7 +256,7 @@
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Simulator",
     "source": "ui/src/views/EquipmentView.tsx",
-    "line": 1003
+    "line": 1018
   },
   {
     "page": "docs/guide/equipment-and-profiles.md",
@@ -286,7 +286,7 @@
     "page": "docs/guide/equipment-and-profiles.md",
     "label": "Update",
     "source": "ui/src/components/settings/ProfileList.tsx",
-    "line": 758
+    "line": 784
   },
   {
     "page": "docs/guide/getting-started.md",
@@ -503,7 +503,7 @@
     "page": "docs/guide/troubleshooting.md",
     "label": "Link Status",
     "source": "ui/src/views/EquipmentView.tsx",
-    "line": 1209
+    "line": 1224
   },
   {
     "page": "docs/guide/troubleshooting.md",
@@ -515,6 +515,6 @@
     "page": "docs/guide/troubleshooting.md",
     "label": "Simulator",
     "source": "ui/src/views/EquipmentView.tsx",
-    "line": 1003
+    "line": 1018
   }
 ]
