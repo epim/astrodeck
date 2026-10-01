@@ -13,6 +13,15 @@
 // `mine` (`wantId === "" || record?.id === wantId`), through `openFlowById`,
 // gates the fetch AND every render branch; while it is false the sheet shows
 // a waiting card instead.
+//
+// RE-PINNED IN BACKLOG WP-08 (#553, 2026-09-30): `mount()` now opens the
+// sheet with `?open=`, not `?id=`. The sheet read `params.id`, which no
+// caller in the running app ever sent - FlowStagesPhoneSheet's TONIGHT row
+// (and every other row out of that sheet) sends `?open=`, the same param
+// name FlowsCanvasHost, FlowsScreen and FlowFrameSheet all read - so every
+// case in this file passed against a route shape the deep link it was
+// written to catch never actually used. The cases themselves, and the
+// defect each guards, are unchanged.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -175,7 +184,12 @@ function seed(): void {
 async function mount(id: string): Promise<void> {
   await act(async () => { root.render(createElement("div")); });
   await act(async () => {
-    root.render(createElement(FlowTonightSheet as any, { params: { id }, depth: 0 }));
+    // `?open=`, not `?id=` (backlog WP-08, #553): the same route param every
+    // other sheet off this canvas carries, which is what FlowStagesPhoneSheet's
+    // TONIGHT row actually sends. The sheet used to read `params.id` here,
+    // which that row never sent, so the deep link this whole file tests never
+    // named a flow in production even while this suite, naming it `id`, passed.
+    root.render(createElement(FlowTonightSheet as any, { params: { open: id }, depth: 0 }));
   });
   await settle();
 }

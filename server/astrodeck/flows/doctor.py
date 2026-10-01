@@ -614,14 +614,21 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
     # M9. The `quota_unbounded` refusal, before Run rather than at it: in
     # accepted mode with both reject guards off, only a stop boundary ends a
     # step that never gets an accepted sub. The boundary is read from the
-    # compile's own schedule, the one to_plan hands the engine, so a DUSK stop
-    # the compile cannot map ("Clock time" today, #191) counts as none, as it
-    # does at Run. A graph compile_plan cannot compile raises here as it does
-    # in the route, which compiles first (#328).
+    # compile's own schedule, the one to_plan hands the engine, so a Stop of
+    # "None" counts as none, as it does at Run. A Stop of "Clock time" with
+    # the card left blank (backlog WP-09, #191) is unbounded the same way:
+    # a `stop_mode` of "time" with no `stop_time` is a boundary that never
+    # arrives, not a real one, the same gap a blank `startClock` used to
+    # leave silent on the Start side before #191 closed it there. A graph
+    # compile_plan cannot compile raises here as it does in the route, which
+    # compiles first (#328).
     if rig is not None and rig.reject_guards_off is True and askers:
         sched = compile_plan(graph).get("schedule", {})
-        if (sched.get("stop_mode", "none") == "none"
-                and not sched.get("max_run_min")):
+        stop_mode = sched.get("stop_mode", "none")
+        unbounded_stop = (stop_mode == "none"
+                          or (stop_mode == "time"
+                              and not sched.get("stop_time")))
+        if unbounded_stop and not sched.get("max_run_min"):
             out.append(Issue(
                 "▸ this plan counts accepted subs with no stop time and both "
                 "reject guards off, so Run will refuse it: a sub the grader "

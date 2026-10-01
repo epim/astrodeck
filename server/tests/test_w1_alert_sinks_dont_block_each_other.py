@@ -189,8 +189,18 @@ def test_a_congested_lane_counts_its_evictions_and_says_so_once(monkeypatch):
 
 async def test_control_a_single_healthy_sink_still_delivers_in_order():
     """CONTROL: with only one sink (its own single lane), fan-out changes
-    nothing observable -- alerts still arrive once, in the order published.
-    Guards against a fan-out bug that reorders or drops within one lane."""
+    nothing observable in the ORDER-PRESERVING sense the name promised when
+    this was written -- but the lane now drains by severity once a backlog
+    reaches it (WP-04 follow-up, #549, backlog W1), and one forms here: the
+    outbox drains all three alerts into this lane, one `_fan_out` call after
+    another with no await between them, before the lane's own task gets a
+    turn to send the first one (the same race `test_h4_alerts_survive_a_
+    hung_sink.py`'s six-alert control now documents). So `run_end` -- a
+    state change -- goes out ahead of the plain `warning` queued in front of
+    it, not in publish order. Re-pinned for that. Still guards against a
+    fan-out bug that drops or duplicates within one lane, and against a
+    regression to plain FIFO draining (which would restore the original
+    publish-order assertion this replaces)."""
     seen: list[str] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -215,4 +225,67 @@ async def test_control_a_single_healthy_sink_still_delivers_in_order():
         await _eventually(lambda: len(seen) >= 3, 5.0)
     finally:
         await _stop(disp, task)
-    assert seen == ["Run started: M31", "focuser slow", "Run ended: dawn"]
+    assert seen == ["Run started: M31", "Run ended: dawn", "focuser slow"]
+
+
+def test_a_backlogged_lane_drains_state_changes_before_a_queued_warning():
+    """WP-04 follow-up (#549, backlog W1): a lane's own queuing
+    (`_SinkLane.push`) is plain FIFO, unchanged, but its DRAINING
+    (`_SinkLane.pop`) is by severity once more than one alert is waiting --
+    a state change (run_start/run_end/safety incl. UNSAFE/reconnect) that
+    arrived BEHIND a plain warning still goes out AHEAD of it, so a burst of
+    queued warnings can never sit an UNSAFE edge behind them a second time,
+    now at the sink's own lane and not only at the shared outbox (which
+    already ordered this way in `_enqueue`). Two alerts of the same
+    severity keep the order they arrived in.
+
+    RED under "lane drains plain FIFO" (`_SinkLane.pop` reverted to a bare
+    `self.queue.popleft()`, the pre-fix shape). Observed:
+
+        E   AssertionError: assert ['w0', 'w1', 'UNSAFE: rain', 'w2'] == \
+['UNSAFE: rain', 'w0', 'w1', 'w2']
+    """
+    lane = alerting._SinkLane("s1")
+    lane.push(AlertEvent("warning", "warning", "w0"))
+    lane.push(AlertEvent("warning", "warning", "w1"))
+    lane.push(AlertEvent("safety", "error", UNSAFE))
+    lane.push(AlertEvent("warning", "warning", "w2"))
+    drained = []
+    while True:
+        alert = lane.pop()
+        if alert is None:
+            break
+        drained.append(alert.message)
+    assert drained == [UNSAFE, "w0", "w1", "w2"]
+
+
+def test_a_lane_full_of_state_changes_refuses_a_plain_alert_and_counts_it(
+        monkeypatch):
+    """The untested branch of `_SinkLane.push` (#549 follow-up, backlog W1):
+    a lane already at its bound and holding NOTHING but state changes has no
+    victim to evict for an incoming PLAIN alert (a warning) -- unlike a
+    lane full of warnings, which always has one -- so the plain alert is
+    refused outright. That refusal must still be counted and flagged the
+    same as every other eviction (`evicted` / `eviction_owed`), the same
+    fields `test_a_congested_lane_counts_its_evictions_and_says_so_once`
+    already covers for the warnings-evict-for-a-newer-warning and
+    warnings-evict-for-a-state-change branches above it in `push` -- this is
+    the third branch, and it was untested.
+
+    RED under "drop the counting in that branch" (the branch's body reduced
+    to a bare `return`, touching neither `self.evicted` nor
+    `self.eviction_owed`). Observed:
+
+        E   AssertionError: the refused alert must still be counted
+        E   assert 0 == 1
+    """
+    monkeypatch.setattr(alerting, "_OUTBOX_MAX", 3)
+    lane = alerting._SinkLane("s1")
+    for i in range(3):
+        lane.push(AlertEvent("safety", "error", f"UNSAFE: {i}"))
+    lane.push(AlertEvent("warning", "warning", "w0"))
+    assert [a.message for a in lane.queue] == [
+        "UNSAFE: 0", "UNSAFE: 1", "UNSAFE: 2"], (
+        "the incoming plain alert must be refused, not evict a state change")
+    assert lane.evicted == 1, "the refused alert must still be counted"
+    assert lane.eviction_owed is True

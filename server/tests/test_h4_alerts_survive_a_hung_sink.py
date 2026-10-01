@@ -396,12 +396,19 @@ def test_a_second_gap_names_only_what_it_missed(monkeypatch):
 
 
 def test_control_a_healthy_sink_gets_every_alert_once_in_order():
-    """CONTROL: with a sink that answers, every alert goes out once, in the
-    order its events came, and a repeated warning inside the dedupe window
-    is still sent once. Published with no turn in between, so the reader has
-    queued all six before the sender takes the first. The idle sender is
-    woken by the first enqueue, so the first alert is out within PROMPT_S,
-    not at the sender's next idle tick.
+    """CONTROL: with a sink that answers, every alert goes out once, and a
+    repeated warning inside the dedupe window is still sent once. Published
+    with no turn in between, so the reader has queued all six before the
+    sender takes the first, and (WP-04 follow-up, backlog W1) the sender
+    itself drains the whole outbox into the one lane before that lane's own
+    task gets a turn — a real backlog at the lane, not the "nothing queued"
+    case. So this is no longer publish order: the lane drains by severity
+    once it has a backlog (state changes, safety's UNSAFE included, ahead of
+    plain warning/error alerts), FIFO within each tier. Re-pinned for that;
+    it was publish order before the lane gained severity draining, verified
+    by reproducing the six-alert scenario against the old plain-FIFO
+    :meth:`_SinkLane.pop` (a bare ``popleft``), which gives back the order
+    still named in the RED case below.
 
     RED under "outbox sends newest first". Observed:
 
@@ -459,11 +466,11 @@ def test_control_a_healthy_sink_gets_every_alert_once_in_order():
         f"the first alert took {took:.2f} s to leave an idle sender")
     assert [(b["type"], b["message"]) for b in seen] == [
         ("run_start", "Run started: M31"),
-        ("warning", "focuser slow"),
         ("safety", "UNSAFE: cloud"),
-        ("error", "guider lost the star"),
         ("safety", "Conditions safe again"),
         ("run_end", "Run ended: dawn"),
+        ("warning", "focuser slow"),
+        ("error", "guider lost the star"),
     ]
     assert undelivered == 0
 

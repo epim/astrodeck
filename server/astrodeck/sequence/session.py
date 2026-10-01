@@ -287,16 +287,17 @@ class Session(BaseModel):
         is ever "": the record would be read by no night, and the set-aside
         would silently not survive the crash it is kept for.
 
-        ``kind`` and ``ts`` (#534, H4 orchestrator ruling 2): what set it
-        aside, in a word (``"centring"`` is the one kind that expires,
+        ``kind`` and ``ts`` (#534, H4 orchestrator ruling 2, amended by
+        backlog WP-07 #564 2026-09-30): what set it aside, in a word
+        (``"centring"`` is the one kind that expires,
         ``group_rules.set_aside_expiry``), and the clock time it was set
         aside at, which the expiry's 45 minutes run from. Written only when
         given, so the record keeps the spec's four keys for a caller that
         knows neither, and a reader treats a record without them as one that
         never expires, which is what every record written before them was.
-        NOTHING SITE-DERIVED IS STORED: the panel's altitude when it was set
-        aside, which the expiry's other half compares, is recomputed from
-        ``ts`` and the target's coordinates when the check runs (6.9)."""
+        NOTHING SITE-DERIVED IS STORED: the record holds only the clock time
+        it was set aside at, and the expiry it decides is time-only, so
+        nothing here is, or was ever, an altitude (6.9)."""
         if not night:
             raise ValueError(
                 f"a set-aside record needs the night it applies to "

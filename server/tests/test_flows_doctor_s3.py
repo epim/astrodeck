@@ -649,6 +649,32 @@ class TestM9Unbounded:
         up on a step after'.", level='warn')]``."""
         assert not _hits(check(_mosaic(), rig=self.OFF), M9)
 
+    def test_a_filled_clock_time_stop_bounds_it(self):
+        """Backlog WP-09 (#191, 2026-09-30): "Clock time" with a time ON the
+        card is a real boundary, unlike the blank card
+        ``test_accepted_with_no_stop_and_no_guards_is_warned`` covers -
+        M9 must not warn about a stop that is actually going to arrive.
+
+        RED under mutant "M9 always reads Clock time as unbounded" (the
+        blank check dropped, so a filled ``stopClock`` still warns),
+        observed:
+
+            AssertionError: ('this plan counts accepted subs', [Issue(...
+        """
+        g = FlowGraph(nodes=[_n("d", "dusk", 0, 0, stop="Clock time",
+                               stopClock="05:30"), _block(),
+                             _n("af", "autofocus", 400), _n("g", "guide", 600),
+                             _n("cy", "cycle", 800,
+                                plan="L 60, R 60, G 60, B 60"),
+                             _n("r", "report", 1000)],
+                     edges=[_e("d", "window", "t", "arm"),
+                            _e("t", "target", "af", "run"),
+                            _e("af", "focused", "g", "run"),
+                            _e("g", "guiding", "cy", "run"),
+                            _e("cy", "complete", "r", "session"),
+                            _e("cy", "pass", "t", "next", "loop")])
+        assert not _hits(check(g, rig=self.OFF), M9)
+
     def test_a_guard_bounds_it(self):
         """Mutant "M9 ignores the guards" turned this red: ``assert not
         [Issue(text="▸ this plan counts accepted subs with no stop time

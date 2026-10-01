@@ -187,10 +187,21 @@ HOLD_HONOURED: dict[tuple[str, str, str], str] = {
         "wire is not needed - it is kept in the graph and does no harm"),
 }
 
-#: The four ``schedule`` keys ``compile_plan`` emits are field-for-field
-#: identical to ``Schedule``'s. They are simply at the wrong NESTING LEVEL:
-#: ``SequencePlan`` has no schedule, ``Target`` does.
-SCHEDULE_KEYS = ("start_mode", "start_offset_min", "stop_mode", "min_altitude_deg")
+#: The ``schedule`` keys ``compile_plan`` emits are field-for-field identical
+#: to ``Schedule``'s. They are simply at the wrong NESTING LEVEL:
+#: ``SequencePlan`` has no schedule, ``Target`` does. ``start_time`` and
+#: ``stop_time`` (backlog WP-09, #191) are the Clock-time choices' own field,
+#: present in the compiled dict only when a DUSK WINDOW's Start or Stop is
+#: "Clock time" (`compile._dusk_schedule`); left out of this tuple, they were
+#: filtered out here before ever reaching the running Target, so a Clock
+#: time chosen on the card compiled a `start_mode`/`stop_mode` of "time"
+#: with no time to act on. ``twilight_deg`` (backlog WP-09, #191, the
+#: per-target Sun-altitude fix) is present only for a sun-based Start;
+#: left out of this tuple the same way, a DUSK WINDOW's Astro/Nautical/Civil
+#: choice would compile its own angle and then lose it here, resolving
+#: against the rig's one angle again regardless of what the card said.
+SCHEDULE_KEYS = ("start_mode", "start_offset_min", "start_time",
+                 "twilight_deg", "stop_mode", "min_altitude_deg", "stop_time")
 
 #: How a refusal names the card those keys come from (#483): its own label,
 #: read off the vocabulary so a renamed card is renamed here too.

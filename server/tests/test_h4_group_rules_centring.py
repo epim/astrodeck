@@ -7,8 +7,7 @@ three-strike rule set all six aside in 18 minutes, and the rest of the night
 was lost although the target transited three hours later. The ruling:
 
 * a CENTRING set-aside expires once per panel per night, 45 minutes after it
-  was made or once the panel centre has risen 10 degrees since, whichever
-  comes first (``set_aside_expiry``);
+  was made, TIME ONLY (``set_aside_expiry``);
 * a pass in which every panel tried (at least two) fails centring is the
   sky's or the geometry's: no panel is struck, and the group holds
   ``CENTRING_HOLD_RETRY_S`` and tries a new pass (``centring_pass_verdict``,
@@ -16,13 +15,24 @@ was lost although the target transited three hours later. The ruling:
 * a centring solve that could not run (``solve_transient``, #532) is a
   deferral that counts toward neither ``failed`` nor the centring pass rule.
 
+AMENDED BY BACKLOG WP-07 (#564, 2026-09-30). The ruling as first built also
+freed a panel early once its centre had risen ``SET_ASIDE_RISE_DEG`` since it
+was set aside, a SITE-DERIVED altitude comparison; even floored against an
+impossibly fast rise (a prior #564 fix, ``SET_ASIDE_RISE_FLOOR_S``), an early
+"rise" answer still told a viewer the site sat within about 28 degrees of the
+equator. WP-07 dropped that branch outright: ``set_aside_expiry`` now reads
+no altitude, ever, and this file's rise-half tests below are gone with it.
+``SET_ASIDE_RISE_DEG`` stays as a constant, unused by any rule here, only
+because the spec's Revision 11 and owner list record the ruling as it was
+first built.
+
 Each rule is pinned against a named mutation of
 ``astrodeck/sequence/group_rules.py``, run in a private copy of ``server/``
 (scratchpad ``H4-ENG-A-r2-mut``), never in the shared tree, the file restored
 from a byte backup and its sha256 checked after each. The observed failure is
 quoted in the test it turned red. The controls are the cases where nothing
-may change: a panel not yet due, a setting panel, a pass in which one panel
-centred, a lone attempted miss.
+may change: a panel not yet due, a pass in which one panel centred, a lone
+attempted miss.
 """
 from __future__ import annotations
 
@@ -38,7 +48,6 @@ from astrodeck.sequence.group_rules import (
     GUIDE_START,
     SET_ASIDE_EXPIRY_S,
     SET_ASIDE_RISE_DEG,
-    SET_ASIDE_RISE_FLOOR_S,
     SOLVE_TRANSIENT,
     GroupRun,
     PanelDeferred,
@@ -92,8 +101,11 @@ def _strike_out(run: GroupRun, panel: str, *, beside: str) -> None:
 
 def test_the_ruling_s_three_numbers_are_named_constants():
     """10 degrees, 45 minutes and 10 minutes, as H4 orchestrator ruling 2
-    gives them, each a named constant the engine imports rather than a
-    literal it repeats."""
+    gave them, each a named constant rather than a literal repeated. 10
+    degrees (``SET_ASIDE_RISE_DEG``) is historical only since backlog WP-07
+    (#564, 2026-09-30): no rule reads it any more, and it stays defined only
+    because the spec's Revision 11 and owner list record the ruling as it
+    was first built."""
     assert (SET_ASIDE_RISE_DEG, SET_ASIDE_EXPIRY_S, CENTRING_HOLD_RETRY_S) == (
         10, 2700, 600)
     assert CENTRING_HOLD_RETRY_S == 2 * DEFER_WAIT_S
@@ -102,8 +114,9 @@ def test_the_ruling_s_three_numbers_are_named_constants():
 # ------------------------------------------------------ the expiry verdict
 
 def test_a_centring_set_aside_expires_45_minutes_after_it_was_made():
-    """The time half: not a moment before ``SET_ASIDE_EXPIRY_S``, and from
-    that instant on. The CONTROL is the tenth of a second before it.
+    """TIME ONLY (amended by backlog WP-07, #564, 2026-09-30): not a moment
+    before ``SET_ASIDE_EXPIRY_S``, and from that instant on. The CONTROL is
+    the tenth of a second before it.
 
     RED under mutant "expiry never fires" (``set_aside_expiry`` answering
     None after its argument checks), observed:
@@ -115,67 +128,38 @@ def test_a_centring_set_aside_expires_45_minutes_after_it_was_made():
     assert set_aside_expiry(now=T + 4 * 3600.0, set_at=T) == "time"
 
 
-def test_a_panel_risen_10_degrees_expires_before_45_minutes():
-    """The rise half: the panel centre climbed ``SET_ASIDE_RISE_DEG`` since it
-    was set aside, past ``SET_ASIDE_RISE_FLOOR_S``, and it expires then; a
-    tenth of a degree short, it holds (the CONTROL).
+def test_set_aside_expiry_takes_no_altitude_any_more():
+    """Backlog WP-07 (#564, 2026-09-30) dropped the rise half outright: this
+    replaces ``test_a_panel_risen_10_degrees_expires_before_45_minutes``,
+    ``test_the_rise_half_never_fires_before_its_geometric_floor`` and
+    ``test_a_setting_panel_never_expires_by_the_rise``, which pinned that
+    half and are gone with it (the rise-branch tests read two altitude
+    keyword arguments ``set_aside_expiry`` no longer has, so calling them as
+    written is now a ``TypeError``, not a return value to assert on). Every
+    latitude a set-aside's panel could occupy behaves alike: a panel that
+    has risen well clear of what struck it, or sunk further into it, holds
+    exactly as long as one that has not moved at all.
 
-    RED under mutant "rise ignored" (the altitude comparison deleted from
-    ``set_aside_expiry``), observed:
+    RED under mutant "rise restored" (the rise branch pasted back into
+    ``set_aside_expiry``, reading two new keyword arguments this test does
+    not pass, so an early "risen" answer at ``T + 60`` — a fraction of a
+    second after the set-aside, far short of 45 minutes — would no longer
+    raise, and the assertion below would see something other than the
+    ``TypeError`` a caller of the old signature must still get):
 
-        AssertionError: assert None == 'rise'
+        E   TypeError: set_aside_expiry() got an unexpected keyword
+            argument 'alt_at_set'
     """
-    past_floor = T + SET_ASIDE_RISE_FLOOR_S + 100.0
-    assert set_aside_expiry(now=past_floor, set_at=T, alt_at_set=20.0,
-                            alt_now=30.0) == "rise"
-    assert set_aside_expiry(now=past_floor, set_at=T, alt_at_set=20.0,
-                            alt_now=29.9) is None
-
-
-def test_the_rise_half_never_fires_before_its_geometric_floor():
-    """No latitude rises ``SET_ASIDE_RISE_DEG`` this fast (#564): even a
-    huge, physically impossible rise argument does not free the panel before
-    ``SET_ASIDE_RISE_FLOOR_S`` have passed. At the floor the same rise DOES
-    free it (the CONTROL, showing the floor gates on time, not a second
-    altitude rule), so an early "rise" answer can never come from anywhere
-    but a caller handing in a bad altitude pair.
-
-    RED under mutant "floor dropped" (the
-    ``t >= t0 + SET_ASIDE_RISE_FLOOR_S`` gate deleted from the rise half of
-    ``set_aside_expiry``), observed:
-
-        AssertionError: assert 'rise' is None
-    """
-    assert set_aside_expiry(now=T + SET_ASIDE_RISE_FLOOR_S - 0.1, set_at=T,
-                            alt_at_set=0.0, alt_now=90.0) is None
-    assert set_aside_expiry(now=T + SET_ASIDE_RISE_FLOOR_S, set_at=T,
-                            alt_at_set=0.0, alt_now=90.0) == "rise"
-
-
-def test_a_setting_panel_never_expires_by_the_rise():
-    """CONTROL: a panel that has sunk since it was set aside has not left
-    what hid it by climbing; only the time half can free it."""
-    assert set_aside_expiry(now=T + 1800.0, set_at=T, alt_at_set=40.0,
-                            alt_now=25.0) is None
-    assert set_aside_expiry(now=T + SET_ASIDE_EXPIRY_S, set_at=T,
-                            alt_at_set=40.0, alt_now=25.0) == "time"
-
-
-def test_with_no_site_only_the_time_half_applies():
-    """No site saved means no altitude: the rule takes the time half alone,
-    and one altitude without the other is no altitude."""
-    assert set_aside_expiry(now=T + 1800.0, set_at=T) is None
-    assert set_aside_expiry(now=T + 1800.0, set_at=T, alt_at_set=20.0,
-                            alt_now=None) is None
-    assert set_aside_expiry(now=T + 1800.0, set_at=T, alt_at_set=None,
-                            alt_now=35.0) is None
+    assert set_aside_expiry(now=T + 60.0, set_at=T) is None
     assert set_aside_expiry(now=T + SET_ASIDE_EXPIRY_S, set_at=T) == "time"
+    with pytest.raises(TypeError):
+        set_aside_expiry(now=T + 60.0, set_at=T, alt_at_set=0.0, alt_now=90.0)
 
 
 def test_at_most_one_expiry_per_panel_per_night():
     """A panel whose set-aside expired once tonight is set aside for the rest
-    of the night the second time, by the clock and by the rise alike: it
-    failed again after the sky had its chance to change.
+    of the night the second time: it failed again after the sky had its
+    chance to change.
 
     RED under mutant "second expiry allowed" (the ``expiries >= 1`` check
     deleted), observed:
@@ -183,23 +167,14 @@ def test_at_most_one_expiry_per_panel_per_night():
         AssertionError: assert 'time' is None
     """
     assert set_aside_expiry(now=T + 5 * 3600.0, set_at=T, expiries=1) is None
-    assert set_aside_expiry(now=T + 600.0, set_at=T, alt_at_set=10.0,
-                            alt_now=60.0, expiries=1) is None
+    assert set_aside_expiry(now=T + 600.0, set_at=T, expiries=1) is None
     assert set_aside_expiry(now=T + SET_ASIDE_EXPIRY_S, set_at=T,
                             expiries=0) == "time"
-
-
-def test_the_time_half_wins_when_both_hold():
-    """Both halves true: the answer is the one that is not site-derived, so
-    a line saying why the set-aside expired says nothing about the site."""
-    assert set_aside_expiry(now=T + SET_ASIDE_EXPIRY_S, set_at=T,
-                            alt_at_set=10.0, alt_now=40.0) == "time"
 
 
 @pytest.mark.parametrize("kw", [
     {"now": math.nan, "set_at": T},
     {"now": T, "set_at": math.inf},
-    {"now": T, "set_at": T, "alt_at_set": 10.0, "alt_now": math.nan},
     {"now": T, "set_at": T, "expiries": -1},
     {"now": T, "set_at": T, "expiries": True},
 ])

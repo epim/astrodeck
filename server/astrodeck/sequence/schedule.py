@@ -448,6 +448,12 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
     when set, also caps the stop to ``start + max_run_min`` (whichever is sooner).
     A boundary that cannot be resolved (e.g. polar dusk) yields ``None`` there.
 
+    ``twilight_deg`` is the RIG's angle, the caller's fallback; ``sched.
+    twilight_deg`` (backlog WP-09, #191), when not None, is THIS TARGET's own
+    angle and wins over it, for both the dusk and the dawn boundary alike, so
+    a DUSK WINDOW card's Astro/Nautical/Civil dusk Start resolves to its own
+    Sun altitude rather than the rig's one setting.
+
     NB: boundaries anchor to *tonight* (backward + forward sun search / nearest
     clock occurrence). The engine resolves this ONCE at run start and freezes the
     ``(start, stop)`` pair, then compares live ``now`` against the frozen window —
@@ -471,10 +477,11 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
     # second.
     from ..site_gate import site_lat_lon
     latlon = site_lat_lon(site)
+    angle = twilight_deg if sched.twilight_deg is None else sched.twilight_deg
     start = _resolve_event_ts(sched.start_mode, sched.start_offset_min,
-                              sched.start_time, latlon, twilight_deg, now)
+                              sched.start_time, latlon, angle, now)
     stop = _resolve_event_ts(sched.stop_mode, sched.stop_offset_min,
-                             sched.stop_time, latlon, twilight_deg, now)
+                             sched.stop_time, latlon, angle, now)
     # max_run_min caps the window relative to the resolved start.
     if sched.max_run_min and start is not None:
         cap = start + sched.max_run_min * 60.0

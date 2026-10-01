@@ -196,8 +196,14 @@ class _Wheel:
 #: line of the door answers was written, so it is today's and not a rebuild.
 #: A deliberate change to what the three answers make (a node's Created-as
 #: column, the lane) moves it, and is re-pinned in the commit that makes it.
+#:
+#: RE-PINNED IN BACKLOG W1 (NODE_DEFS gained DUSK WINDOW's clock params,
+#: ``startClock``/``stopClock``, backlog WP-09 #191, 2026-09-30): every
+#: generated DUSK node now carries both at "", moving every one of the 768
+#: blobs by the same two new params and nothing else. Regenerated from the
+#: SAME code path against the fixed code.
 TODAYS_ANSWERS_SHA256 = \
-    "062cf3bcaf82a3ae0f8bb3097c9c3aacf454e99cb55312e268f4b4604bb22618"
+    "2a1d2378d35eaef5d2ef706e7172068ed20a095c6e2e5da0350a5bf508cb4fd1"
 
 #: The chip subsets the route is asked, one of each shape a new answer's
 #: default could move: none, the Guiding chip alone, every chip but it, and
@@ -952,6 +958,11 @@ class TestTheRecordedAnswer:
 
         and green with it, while "fixture hand-edited" stayed red with it
         (the control: the normalising does not blunt the grade).
+
+        RE-RECORDED IN BACKLOG W1 (``ASTRODECK_REWRITE_WIZARD_FIXTURE=1``,
+        NODE_DEFS gained DUSK WINDOW's clock params, backlog WP-09 #191,
+        2026-09-30): the recorded DUSK node gained ``startClock``/
+        ``stopClock`` at ``""``, nothing else moved.
         """
         text = _recording(client, monkeypatch)
         if REWRITE:

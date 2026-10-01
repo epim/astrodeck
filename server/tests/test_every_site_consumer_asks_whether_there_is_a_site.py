@@ -174,21 +174,11 @@ UNGUARDED: dict[str, str] = {
     # cloudmap refresh followed: test_the_display_consumers_need_a_site.
 
     # --- THE SCHEDULER JUDGES A TARGET. Visible only since the scan counts a
-    # call to `_lat_lon` as a read (EXTRACTORS, #527). `resolve_window`, which
-    # made that visible, is guarded and in GUARDED below. The first two are
-    # #540; the third is not reached at the placeholder.
-    "sequence/schedule.py:gating_status":
-        "reads `_lat_lon(site)` for the target's altitude, its peak across "
-        "the window and its rise estimate, so on a default site a start "
-        "altitude is judged at 0,0 and a target can wait hours for a rise "
-        "that is not the rig's (#540). Left for #540: what an altitude gate "
-        "should do with no site is a decision about the engine, not the "
-        "window (#527's schedule half, H4-SCHED).",
-    "sequence/schedule.py:constraint_gate":
-        "reads `_lat_lon(site)` for the hour angle and the Moon's altitude, "
-        "so on a default site an hour-angle limit can close a target's "
-        "window for the night at longitude 0 (#540). Left for #540 with "
-        "gating_status, whose gating it is part of.",
+    # call to `_lat_lon` as a read (EXTRACTORS, #527). `resolve_window`,
+    # `gating_status` and `constraint_gate` were here; all three are guarded
+    # now and in GUARDED below (backlog WP-09, #191 collateral, 2026-09-30:
+    # #540's altitude/hour-angle/Moon half closed alongside the DUSK window
+    # fix). The remaining one is not reached at the placeholder.
     "sequence/resume_arm.py:_floor_eta_note":
         "reads `schedule._lat_lon(self.hub.site)` for the start-floor hold's "
         "ETA, but is called only after `engine._frame_altitude` read an "
@@ -228,6 +218,22 @@ GUARDED: dict[str, str] = {
         "and auto-resume opened on 0,0's night. It now reads "
         "`site_gate.site_lat_lon` and answers None for a sun boundary "
         "(test_h4_dusk_window_needs_a_site).",
+    "sequence/schedule.py:gating_status":
+        "#540, closed by backlog WP-09 (#191 collateral, 2026-09-30): judged "
+        "a target's start altitude, its peak across the window and its rise "
+        "estimate at the 0,0 placeholder, so a target could wait hours for a "
+        "rise that was not the rig's. It now reads `site_gate.site_lat_lon` "
+        "and, with no site, treats the gate the way `_frame_altitude`'s None "
+        "is treated (#121): not a wait, and says \"no site\" in the reason "
+        "instead of a number (test_idle_park_hold.py's no-site cases).",
+    "sequence/schedule.py:constraint_gate":
+        "#540, closed with `gating_status`, whose gating it is part of: "
+        "judged the hour angle and the Moon's altitude at the 0,0 "
+        "placeholder, so an hour-angle limit could close a target's window "
+        "for the night at longitude 0. It now reads `site_gate.site_lat_lon` "
+        "and skips a check that needs coordinates when there is no site, "
+        "returning None (no constraint) exactly as it does when the "
+        "schedule sets no limit at all.",
 }
 
 

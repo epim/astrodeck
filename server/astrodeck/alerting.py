@@ -223,8 +223,18 @@ class _SinkLane:
     changes is refused outright. Unlike the outbox, an eviction here is
     COUNTED (``evicted``) and flagged (``eviction_owed``) so the dispatcher
     can say it once there is room, mirroring ``_say_gap`` (#444) for a sink
-    instead of the bus subscription. Draining is plain FIFO — a lane never
-    reorders what it holds, only decides what to drop when it is full."""
+    instead of the bus subscription.
+
+    Queuing (:meth:`push`) is plain FIFO — arrival order, unchanged. DRAINING
+    (:meth:`pop`, #549 follow-up) is by severity once a backlog has formed: a
+    state change (run_start/run_end/safety incl. UNSAFE/reconnect) jumps
+    ahead of whatever plain warnings are already waiting, so a burst of
+    queued warnings can never sit an UNSAFE edge behind them a second time —
+    once at the sink's own lane, not only at the shared outbox
+    (:meth:`AlertDispatcher._enqueue` already did this at the outbox). Two
+    state changes, or two plain alerts, keep the order they arrived in. With
+    nothing else queued a lane drains one at a time and simply returns
+    whatever just arrived, so a healthy sink still sees publish order."""
 
     __slots__ = ("sink_id", "queue", "ready", "evicted", "evicted_said",
                  "eviction_owed")
@@ -253,6 +263,21 @@ class _SinkLane:
             self.eviction_owed = True
         self.queue.append(alert)
         self.ready.set()
+
+    def pop(self) -> AlertEvent | None:
+        """The next alert this lane's own drain task should send: the
+        OLDEST state change still queued (run_start/run_end/safety incl.
+        UNSAFE/reconnect), ahead of any plain alert waiting in front of it;
+        with none queued, the oldest plain alert. Two alerts of the same
+        tier come off in the order :meth:`push` put them on. ``None`` if the
+        lane is empty."""
+        for alert in self.queue:
+            if alert.type in _NEVER_DEDUPE:
+                self.queue.remove(alert)
+                return alert
+        if self.queue:
+            return self.queue.popleft()
+        return None
 
 
 class AlertDispatcher:
@@ -459,11 +484,13 @@ class AlertDispatcher:
             lane.push(alert)
 
     async def _lane_loop(self, lane: "_SinkLane") -> None:
-        """One sink's own dedicated sender (#549). Drains ``lane`` strictly
-        FIFO, one send at a time, so alerts to THIS sink stay in the order
-        they arrived; a hung send here can delay only more of this same
-        lane, never a different sink's lane, which has its own task. Idle,
-        it says an owed eviction once there is room for the line (mirrors
+        """One sink's own dedicated sender (#549). Drains ``lane`` one send
+        at a time, by severity when it has a backlog (:meth:`_SinkLane.pop`)
+        — a state change never sits behind a plain warning queued ahead of
+        it, though two alerts of the same severity stay in the order they
+        arrived; a hung send here can delay only more of this same lane,
+        never a different sink's lane, which has its own task. Idle, it says
+        an owed eviction once there is room for the line (mirrors
         :meth:`_say_gap` for a sink instead of the bus subscription)."""
         try:
             while not self._stop.is_set():
@@ -476,7 +503,7 @@ class AlertDispatcher:
                     except asyncio.TimeoutError:
                         pass
                     continue
-                alert = lane.queue.popleft()
+                alert = lane.pop()
                 sink = next((s for s in getattr(self.get_config(), "alerts", [])
                             if s.id == lane.sink_id), None)
                 if sink is None:

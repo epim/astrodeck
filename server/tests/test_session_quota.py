@@ -228,6 +228,19 @@ def test_quota_unbounded_helper():
     bounded_dawn.targets[0].schedule.stop_mode = "dawn"
     assert _unbounded(bounded_dawn) is False
 
+    # backlog WP-09 (#191, 2026-09-30): a "time" stop with a blank stop_time
+    # never arrives, the same as "none" -- matching flows.doctor's M9, which
+    # the compile route runs beside this gate (#328) and must agree with.
+    blank_clock = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
+    blank_clock.targets[0].schedule.stop_mode = "time"
+    blank_clock.targets[0].schedule.stop_time = ""
+    assert _unbounded(blank_clock) is True
+
+    filled_clock = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
+    filled_clock.targets[0].schedule.stop_mode = "time"
+    filled_clock.targets[0].schedule.stop_time = "05:30"
+    assert _unbounded(filled_clock) is False
+
     # reviewer-specified semantics (fix round 2): ANY non-calibration target
     # lacking a stop boundary fires the gate — a mixed plan's boundary-less
     # target's step loop is just as unbounded on its own.

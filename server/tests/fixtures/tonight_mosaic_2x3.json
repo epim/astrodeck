@@ -4,12 +4,12 @@
   "ok": true,
   "reason": "",
   "now_unix": 1781553600.0,
-  "twilight_deg": -12.0,
+  "twilight_deg": -18.0,
   "night": {
-   "dusk_unix": 1781581509.7503662,
-   "dawn_unix": 1781604969.4198608,
-   "window_start_unix": 1781579709.7503662,
-   "window_stop_unix": 1781604969.4198608,
+   "dusk_unix": 1781584425.402832,
+   "dawn_unix": 1781602053.767395,
+   "window_start_unix": 1781582625.402832,
+   "window_stop_unix": 1781602053.767395,
    "dark_start_unix": 1781584500.0,
    "dark_end_unix": 1781601900.0,
    "darkness_kind": "astronomical"
@@ -39,22 +39,6 @@
      "mean_alt": 34.2
     },
     "curve": [
-     [
-      1781582100.0,
-      14.65
-     ],
-     [
-      1781582700.0,
-      16.25
-     ],
-     [
-      1781583300.0,
-      17.81
-     ],
-     [
-      1781583900.0,
-      19.33
-     ],
      [
       1781584500.0,
       20.81
@@ -174,26 +158,6 @@
      [
       1781601900.0,
       31.08
-     ],
-     [
-      1781602500.0,
-      30.09
-     ],
-     [
-      1781603100.0,
-      29.03
-     ],
-     [
-      1781603700.0,
-      27.9
-     ],
-     [
-      1781604300.0,
-      26.71
-     ],
-     [
-      1781604900.0,
-      25.46
      ]
     ],
     "transit_unix": 1781595900.0,
@@ -276,22 +240,6 @@
      "mean_alt": 34.9
     },
     "curve": [
-     [
-      1781582100.0,
-      -4.94
-     ],
-     [
-      1781582700.0,
-      -4.25
-     ],
-     [
-      1781583300.0,
-      -3.51
-     ],
-     [
-      1781583900.0,
-      -2.71
-     ],
      [
       1781584500.0,
       -1.87
@@ -411,26 +359,6 @@
      [
       1781601900.0,
       38.35
-     ],
-     [
-      1781602500.0,
-      40.08
-     ],
-     [
-      1781603100.0,
-      41.83
-     ],
-     [
-      1781603700.0,
-      43.59
-     ],
-     [
-      1781604300.0,
-      45.36
-     ],
-     [
-      1781604900.0,
-      47.14
      ]
     ],
     "transit_unix": 1781601900.0,
@@ -455,22 +383,6 @@
      "mean_alt": 72.6
     },
     "curve": [
-     [
-      1781582100.0,
-      64.37
-     ],
-     [
-      1781582700.0,
-      66.29
-     ],
-     [
-      1781583300.0,
-      68.21
-     ],
-     [
-      1781583900.0,
-      70.13
-     ],
      [
       1781584500.0,
       72.05
@@ -590,26 +502,6 @@
      [
       1781601900.0,
       50.87
-     ],
-     [
-      1781602500.0,
-      49.0
-     ],
-     [
-      1781603100.0,
-      47.12
-     ],
-     [
-      1781603700.0,
-      45.26
-     ],
-     [
-      1781604300.0,
-      43.41
-     ],
-     [
-      1781604900.0,
-      41.57
      ]
     ],
     "transit_unix": 1781589900.0,
@@ -634,22 +526,6 @@
      "mean_alt": 75.2
     },
     "curve": [
-     [
-      1781582100.0,
-      59.25
-     ],
-     [
-      1781582700.0,
-      61.06
-     ],
-     [
-      1781583300.0,
-      62.88
-     ],
-     [
-      1781583900.0,
-      64.7
-     ],
      [
       1781584500.0,
       66.53
@@ -769,26 +645,6 @@
      [
       1781601900.0,
       59.16
-     ],
-     [
-      1781602500.0,
-      57.36
-     ],
-     [
-      1781603100.0,
-      55.56
-     ],
-     [
-      1781603700.0,
-      53.76
-     ],
-     [
-      1781604300.0,
-      51.98
-     ],
-     [
-      1781604900.0,
-      50.2
      ]
     ],
     "transit_unix": 1781591700.0,
@@ -901,9 +757,9 @@
   "brief": "This flow arms at astronomical dusk (\u221230 min). It then arms M16. M16 is a 3x2 mosaic of 6 panels at 25% overlap, laid out at PA 30\u00b0 with the rotator turned to it at every panel. After 1 pass of its filters on a panel it moves on to the next (least complete first), and comes back until every panel has its subs. A hop between panels takes about 2 m 40 s, as measured on this rig. For M16 it captures Ha 300 s \u00d7 2 (gain 100, bin 1). It then arms M31. For M31 it captures L 60 s \u00d7 5 (gain 100, bin 1). It then selects the best of M13, M92 - above 30\u00b0, at least 40\u00b0 from the moon (if up), within 4 h of the meridian. For every member of the pool it captures L 60 s \u00d7 5 (gain 100, bin 1). If the active target sinks to the 30\u00b0 floor, it is set aside for tonight - a restart tonight does not retry it, the next night does - and the next best takes over.",
   "story": [
    {
-    "t_unix": 1781579709.7503662,
+    "t_unix": 1781582625.402832,
     "label": "",
-    "msg": "Autorun window opens (sun \u221212\u00b0, \u221230 min offset applied)",
+    "msg": "Autorun window opens (sun \u221218\u00b0, \u221230 min offset applied)",
     "tone": "text"
    },
    {
@@ -943,7 +799,7 @@
     "tone": "warn"
    },
    {
-    "t_unix": 1781604969.4198608,
+    "t_unix": 1781602053.767395,
     "label": "",
     "msg": "Dawn: loop ends, mount parks, camera warms",
     "tone": "text"

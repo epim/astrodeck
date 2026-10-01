@@ -779,6 +779,11 @@ class TestTheGolden2x2:
 
         ("the wizard reads the missing-key defaults", "SLEW left in the
         lane", "no loop wire" and "the card formatters" turn it red too).
+
+        RE-PINNED IN BACKLOG WP-09 (#191, 2026-09-30): each of the four
+        panels' ``schedule.twilight_deg`` is -18 (its DUSK WINDOW's own
+        "Astro dusk" Sun altitude, ``flows.compile._dusk_schedule``), a
+        field the golden predates. Regenerated from the same code path.
         """
         want = json.loads(GOLDEN.read_text(encoding="utf-8"))
         diffs = _same(want, _golden_now())

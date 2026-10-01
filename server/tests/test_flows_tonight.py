@@ -55,10 +55,21 @@ def _e(a, ap, b, bp):
 
 
 def _flow(target=None, *, exposure=180, count=20, goal=12, filt="Ha",
-          offset=-30, stop="Dawn", extra=(), edges=()):
-    """A one-target night: dusk window → target → slew → capture."""
+          offset=-30, stop="Dawn", start=None, extra=(), edges=()):
+    """A one-target night: dusk window → target → slew → capture.
+
+    ``start`` left at its default (None) omits the DUSK node's own "start"
+    param, which ``with_defaults()`` then fills with "Astro dusk"
+    (backlog WP-09, #191) — an explicit per-target twilight angle
+    (``Schedule.twilight_deg``), same as a flow that picked it on the card.
+    A caller that wants to test the RIG-WIDE ``twilight_deg`` fallback
+    instead (no per-target angle to override it) passes ``start="Clock
+    time"``, the one Start choice that compiles no angle at all."""
     t = dict(M16 if target is None else target)
-    nodes = [_n("d", "dusk", x=0, offset=offset, stop=stop, minAlt=30),
+    dusk_kw = {"x": 0, "offset": offset, "stop": stop, "minAlt": 30}
+    if start is not None:
+        dusk_kw["start"] = start
+    nodes = [_n("d", "dusk", **dusk_kw),
              _n("t", "target", x=100, **t),
              _n("s", "slew", x=200),
              _n("c", "capture", x=300, filter=filt, exposure=exposure,
@@ -96,12 +107,15 @@ class TestWhenThereIsNoNight:
         assert "site" in out["reason"].lower()
 
     def test_polar_day_says_so_rather_than_inventing_a_dusk(self):
-        """78°N in June: the sun never crosses −12°, so ``observing_night``
-        returns None and there is genuinely no dusk to draw."""
+        """78°N in June: the sun never crosses −18° (the default flow's DUSK
+        WINDOW picks "Astro dusk", backlog WP-09 #191's own angle, not the
+        rig's TWILIGHT of −12 this file otherwise passes), so
+        ``observing_night`` returns None and there is genuinely no dusk to
+        draw."""
         out = _tonight(site=POLAR_SITE)
         assert out["ok"] is False
         assert out["night"] is None
-        assert "−12" in out["reason"], out["reason"]
+        assert "−18" in out["reason"], out["reason"]
 
     def test_unreadable_coordinates_are_refused_not_rounded_to_zero(self):
         """``float("north")`` raising is the good case. The bad one is a site
@@ -155,12 +169,22 @@ class TestTheNight:
     def test_a_deeper_twilight_shortens_the_night(self):
         """The imaging twilight is the operator's setting, not a constant: a
         narrowband rig in a city and a Bortle 2 rig do not agree about when the
-        night starts, and the story quotes the angle it used."""
-        shallow = _tonight(twilight_deg=-6.0)["night"]
-        deep = _tonight(twilight_deg=-18.0)["night"]
+        night starts, and the story quotes the angle it used.
+
+        With NO per-target override — the DUSK WINDOW's Start is "Clock
+        time" (backlog WP-09, #191): the one Start choice that compiles no
+        ``Schedule.twilight_deg`` — the rig-wide parameter is what decides,
+        same as before that field existed."""
+        clock = _flow(start="Clock time")
+        shallow = _tonight(clock, twilight_deg=-6.0)["night"]
+        deep = _tonight(clock, twilight_deg=-18.0)["night"]
         assert (deep["dawn_unix"] - deep["dusk_unix"]) < \
                (shallow["dawn_unix"] - shallow["dusk_unix"])
-        assert "−18" in _tonight(twilight_deg=-18.0)["story"][0]["msg"]
+        # The DEFAULT flow's DUSK WINDOW picks "Astro dusk" instead, its own
+        # -18 (backlog WP-09, #191), which overrides whatever rig-wide
+        # twilight_deg is passed (-6 here) — and the story quotes the angle
+        # that actually drove the window, not the overridden parameter.
+        assert "−18" in _tonight(twilight_deg=-6.0)["story"][0]["msg"]
 
 
 class TestItDependsOnTheInstantItIsGiven:
