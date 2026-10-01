@@ -1118,6 +1118,115 @@ def _reset_hub_singleton_locks():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_active_auth_provider():
+    """Reset the auth package's process-wide active-provider slot before AND
+    after every test (#443, WP-27a).
+
+    ``astrodeck.auth.deps._active_provider`` is a module-level singleton that
+    ``create_app()`` installs into (via ``configure_provider_from_auth``), and
+    that a good many tests also set directly to exercise a denied/limited
+    caller. Nothing wound it back between tests, so whichever provider the
+    PREVIOUS test on this worker left active was still active for the next
+    one's fresh ``TestClient(create_app())`` -- that route then resolved
+    whatever principal the leftover provider produced, not the open admin a
+    test author building a plain app would expect. Order-dependent and
+    worker-dependent: which provider (if any) was left depends on which
+    tests xdist drew onto this worker and in what order, exactly the #227 /
+    #341 shape applied to this singleton.
+
+    Resetting at SETUP is what breaks the order dependency: every test now
+    starts from the same known state (the open ``none`` provider,
+    ``trust_loopback`` True, the session-secret interlock disarmed)
+    regardless of what ran before it on this worker. The TEARDOWN reset is
+    belt-and-suspenders, covering a test that sets a provider and then
+    errors before its own cleanup runs, and the last test of a run.
+
+    A test that wants a specific provider still calls ``set_active_provider``
+    itself, same as today (``test_wcs_config_route_requires_site_optics_cap``
+    and others already do, resetting in their own ``finally``) -- this
+    fixture only guarantees what the test did NOT ask for.
+
+    RED under mutant (this fixture deleted): see
+    test_wcs_stamp.py::test_b_wcs_config_route_round_trips_under_the_open_default,
+    which runs right after a sibling test that sets a provider and
+    deliberately never resets it.
+    """
+    from astrodeck.auth import reset_active_provider
+    reset_active_provider()
+    yield
+    reset_active_provider()
+
+
+@pytest.fixture(autouse=True)
+def _a_session_store_instance_dict_is_unshadowed():
+    """Strip, after every test, any entry ``vars(session_store)`` holds that
+    is merely a leftover of a ``monkeypatch.setattr(session_store, <name>,
+    ...)`` call undoing itself (#522, WP-27b).
+
+    ``monkeypatch.setattr`` reads the OLD value with ``getattr`` before it
+    patches, and its own undo writes that old value back with ``setattr``.
+    When nothing was set on the INSTANCE before -- the normal case, since
+    until patched a method name resolves through the CLASS -- the value
+    ``getattr`` read is the bound method the class descriptor handed out,
+    and the undo plants that bound method into ``vars(session_store)``,
+    where nothing was. Once there it stays for the rest of this worker
+    process: instance-``__dict__`` lookup wins over the class for a plain
+    (non-data-descriptor) attribute, so every LATER test that does
+    ``monkeypatch.setattr(SessionStore, <name>, ...)`` -- patching the
+    CLASS, the correct way to spy on or fault-inject a singleton -- patches
+    something the instance never looks at again. The result is a spy that
+    silently stops seeing calls, or a fault injection that silently stops
+    firing, depending on which test ran first on this worker.
+
+    Only entries that ARE one of ``SessionStore``'s own functions, bound to
+    THIS instance, are removed; anything else a test legitimately put on the
+    instance (plain data, not a shadowed method) is left alone.
+
+    THE NAME IS LOAD-BEARING (mirrors ``_a_test_leaves_the_config_as_it_
+    found_it`` above, same reason, quoted there in full): the shadow this
+    strips is exactly what the ``monkeypatch`` FIXTURE's own undo writes, at
+    ITS teardown, so this fixture's teardown must run AFTER that -- i.e.
+    this fixture must be set up BEFORE anything pulls ``monkeypatch`` in, and
+    pytest sets up one conftest's autouse fixtures in ``dir()`` order
+    (alphabetical) and tears down in reverse. Sorting ahead of
+    ``_captures_are_the_tests_own`` and ``_fast_sim_delays`` (both of which
+    take ``monkeypatch``) is not enough on its own -- a THIRD autouse fixture
+    added later, earlier alphabetically, that also takes ``monkeypatch``,
+    would pull it in sooner still -- so this is named ``_a_...`` to sort
+    ahead of every other autouse fixture in this file, not just today's two.
+    It asks for no fixture that could pull ``monkeypatch`` in first.
+
+    Measured: with this fixture named ``_unshadow_session_store_instance_
+    dict`` (sorting AFTER ``_fast_sim_delays``), a throwaway two-test probe
+    -- test 1 ``monkeypatch.setattr(session_store, "save", ...)`` and never
+    undoing it itself, test 2 asserting no shadow -- still failed:
+
+        AssertionError: leftover shadow present: {'save': <bound method
+        SessionStore.save of <astrodeck.sequence.session.SessionStore
+        object at 0x...>>}
+
+    because THIS fixture's teardown ran, found nothing yet (monkeypatch
+    had not undone its edit), and then monkeypatch's own teardown ran
+    afterward and planted the shadow -- too late for this fixture to see it
+    that test, and it was still there for the next one. Renamed to sort
+    first, the same probe passed.
+
+    RED under mutant (this fixture deleted): see
+    test_w3_session_store_unshadow.py.
+    """
+    yield
+    import types
+
+    from astrodeck.sequence.session import SessionStore, session_store
+    stale = [name for name, value in vars(session_store).items()
+             if isinstance(value, types.MethodType)
+             and value.__self__ is session_store
+             and getattr(SessionStore, name, None) is value.__func__]
+    for name in stale:
+        delattr(session_store, name)
+
+
 @pytest.fixture
 def bus_lines(monkeypatch):
     """Every ``bus.log`` line a test provokes, as ``(level, message, source)``.
