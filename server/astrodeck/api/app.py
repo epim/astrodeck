@@ -4339,27 +4339,42 @@ def create_app(*, bind_host: str | None = None,
 
     def _preflight_alt(ra_hours: float, dec_deg: float) -> dict:
         """Live altitude verdict for a target from the current site. Returns
-        ``unknown`` when the site is still the default (no trustworthy answer)."""
+        ``unknown`` when the site is still the default (no trustworthy answer).
+
+        THE FLOOR IS THE EFFECTIVE ONE (#132 a): ``schedule.effective_floor``
+        raises ``cfg.safety.min_alt_deg`` by the drawn obstruction-horizon
+        mask and any no-go wedge at the target's azimuth -- the same formula
+        ``hub._check_horizon`` now enforces and the engine's
+        ``_altitude_limit_verdict`` / ``_mount_floor_verdict`` already
+        enforced mid-run. Before this, "low" vs. "ok" turned on the flat
+        ``site.horizon_min_deg`` alone, so the UI's Horizon light could read
+        "ok" for a target a start or a slew would actually refuse. ``below``
+        is still the true, geometric horizon (``alt < 0``): no configured
+        floor can make a target that is not there read as merely "low"."""
         from ..catalog import altaz, round_az_deg
+        from ..sequence.schedule import effective_floor
         site = hub.site
         is_default = bool(site.get("is_default", True))
-        horizon_min = float(site.get("horizon_min_deg", 15.0))
+        safety = config_store.cfg().safety
         alt, az = altaz(ra_hours, dec_deg, site["latitude"], site["longitude"])
+        floor = effective_floor(safety.min_alt_deg, safety.horizon, az,
+                                safety.nogo_box)
         if is_default:
             verdict = "unknown"
         elif alt < 0:
             verdict = "below"
-        elif alt < horizon_min:
+        elif alt < floor:
             verdict = "low"
         else:
             verdict = "ok"
         return {"alt": round(alt, 1), "az": round_az_deg(az), "verdict": verdict,
-                "horizon_min_deg": horizon_min, "site_is_default": is_default}
+                "horizon_min_deg": round(floor, 1), "site_is_default": is_default}
 
     def _horizon_block(ra_hours: float, dec_deg: float) -> dict | None:
         """Return a 409 detail dict if a GOTO should be blocked (configured site
-        AND the target is below the true horizon), else None. Default site never
-        blocks — we don't trust an un-set location to refuse a slew."""
+        AND the target is below the true horizon OR the configured obstruction
+        floor -- #132 a, via ``hub._check_horizon``), else None. Default site
+        never blocks — we don't trust an un-set location to refuse a slew."""
         # Prefer the hub's own check if it exists (keeps one source of truth).
         check = getattr(hub, "_check_horizon", None)
         if callable(check):
@@ -4403,6 +4418,14 @@ def create_app(*, bind_host: str | None = None,
         the panels of a mosaic group that are below the horizon now and did
         not refuse the start, for the caller to name in its response and its
         log line (``_name_panels_below``) once the run has started.
+
+        A TARGET OUTSIDE A GROUP gets exactly the engine's own floor
+        verdict (#132 a): it refuses through ``_horizon_block`` ->
+        ``hub._check_horizon``, which now enforces the same effective floor
+        (``cfg.safety.min_alt_deg`` raised by the horizon mask and any no-go
+        wedge at the target's azimuth) the engine's ``_mount_floor_verdict``
+        enforces mid-run -- so a single-target start can no longer pass this
+        gate and then be refused by the engine's slew gate on the first slew.
 
         A MOSAIC GROUP IS REFUSED ONLY WHEN EVERY PANEL IS BLOCKED. A group's
         panels span the sky between them, so some can be below the horizon
