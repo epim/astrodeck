@@ -130,10 +130,32 @@ def _strip_meridian_derived(meridian: dict, container: dict | None = None) -> No
         meridian["status"] = _MERIDIAN_UNKNOWN
 
 
+def _strip_live_derived(live: dict, container: dict | None = None) -> None:
+    """Remove the site-derived meridian countdown from a sequence state's
+    ``live`` chip IN PLACE (#166 item 1).
+
+    ``live.meridian_eta_s`` is ``hours_to_flip * 3600`` off the hub's cached
+    meridian (`SequenceEngine._live_block`) -- the SAME value
+    ``_strip_meridian_derived`` nulls as ``meridian.hours_to_flip``,
+    republished here under a different name and at a different top-level
+    key, which is how it survived that fix: the sequence node was never in
+    ``_DERIVED_NODES``, so neither the GET route (`_redact_sequence_for`)
+    nor the WS ``sequence`` event stripped it, and a viewer polling either
+    read the flip countdown the status redaction exists to withhold.
+
+    REMOVED (absent), not nulled: ``_live_block`` itself never publishes the
+    key when it has nothing to say (no plan, flip disabled, or outside the
+    warn window), so a non-holder's chip looks exactly like a run with no
+    flip due, rather than a chip that pointedly says nothing. ``sensor_temp_c``
+    stays -- a cooling readout is not a function of the site."""
+    live.pop("meridian_eta_s", None)
+
+
 #: node key -> the in-place stripper for it. ONE table, so a third derived node
 #: is added in one place and both the REST seam and the WS seam get it.
 _DERIVED_NODES = (("mount", _strip_mount_derived),
-                  ("meridian", _strip_meridian_derived))
+                  ("meridian", _strip_meridian_derived),
+                  ("live", _strip_live_derived))
 
 # WHY SATELLITES ARE NOT IN THAT TABLE, and are gated whole instead (D-SKY-1).
 # Every entry above works by DEGRADING a node: mount.alt/az come off and RA/Dec
@@ -540,20 +562,31 @@ def _withhold_group_timing(state: dict) -> dict:
 def _redact_sequence_for(payload: dict, principal: Principal | None) -> dict:
     """A sequence state served to ``principal``: ``GET /api/sequence/state``
     and the monitor snapshot's ``sequence``. The WS ``sequence`` event takes
-    the same helper inside ``_redact_ws_event``, so the three seams cannot
+    the same helpers inside ``_redact_ws_event``, so the three seams cannot
     disagree (spec 5.10). A holder of ``view.site_derived`` gets ``payload``
-    itself; see ``_withhold_group_timing`` for what a non-holder loses.
+    itself; see ``_withhold_group_timing`` for ``group.panel``/``pass``, and
+    ``_strip_live_derived`` (through ``_DERIVED_NODES``) for
+    ``live.meridian_eta_s`` -- #166 item 1: the one GET that withholds the
+    panel across a meridian wait still served the countdown to its end
+    beside it, since the sequence node was never in that table.
 
     Never raises: on any error a non-holder gets the state without its
-    ``group`` rather than a 500."""
+    ``group`` and ``live`` rather than a 500."""
     if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
         return payload
     if not isinstance(payload, dict):
         return payload
     try:
-        return _withhold_group_timing(payload)
+        out = _withhold_group_timing(payload)
+        # ``payload`` is always a fresh per-call dict (`_sequence_envelope`'s
+        # ``engine.state | {...}``), so stripping ``out``'s top-level "live"
+        # key in place -- which `_scrub_derived_node` does, copying the node
+        # itself before it strips -- never touches the engine's own state,
+        # whether or not `_withhold_group_timing` handed back a new dict.
+        _scrub_derived_node(out)
+        return out
     except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
-        return {k: v for k, v in payload.items() if k != "group"}
+        return {k: v for k, v in payload.items() if k not in ("group", "live")}
 
 
 def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
