@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from .aio import reap
 from .config import config_store
 from .events import bus
 from .sequence import schedule
@@ -476,12 +477,15 @@ class WeatherService:
             self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
+        # #628 (the #252 shape): a plain `try: await self._task / except
+        # (CancelledError, Exception): pass` cannot tell the task's own
+        # cancellation from a cancel aimed at THIS caller, so a caller
+        # cancelled while it waits here ran on past its cancel instead of
+        # ending with it. `aio.reap` waits the task out and lets a cancel of
+        # the caller propagate once the task is actually done.
         if self._task is not None:
             self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await reap(self._task)
             self._task = None
 
     async def _run(self) -> None:
