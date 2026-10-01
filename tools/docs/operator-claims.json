@@ -695,7 +695,7 @@
     {
       "id": "OP-035",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "New target blocks count accepted subs. Existing saved targets can retain their older count mode. Review banked progress and [Sessions](sessions-multi-night.md) before changing framing or restarting a campaign.",
+      "claim": "New target blocks count accepted subs. Review banked progress and [Sessions](sessions-multi-night.md) before changing framing or restarting a campaign.",
       "sources": [
         {
           "path": "ui/src/components/flows/nodeDefs.ts",
@@ -1167,7 +1167,7 @@
     {
       "id": "OP-055",
       "page": "docs/guide/flows-and-mosaics.md",
-      "claim": "| **PARK + CLOSE** | Represents scheduled shutdown. Flow-derived plans already request park and warm, and wind-down closes the dust cover. Dome closure needs the configured policy. The card's Hold cold choice does not keep the camera cold indefinitely. |",
+      "claim": "| **PARK + CLOSE** | Represents scheduled shutdown. Flow-derived plans already request park and warm, and wind-down closes the dust cover. Dome closure needs the configured policy. The node's Hold cold setting is not honoured. After-shutdown darks come from a calibration step wired to `on_shutdown_complete`, not this setting ([#646](https://github.com/epim/astrodeck/issues/646)). |",
       "sources": [
         {
           "path": "ui/src/components/flows/nodeDefs.ts",
@@ -1184,6 +1184,18 @@
         {
           "path": "server/astrodeck/flows/to_plan.py",
           "line": 1173
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1047
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 178
+        },
+        {
+          "path": "server/astrodeck/flows/to_plan.py",
+          "line": 1226
         }
       ],
       "verified_by": "source-trace"
