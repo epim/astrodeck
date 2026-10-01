@@ -336,13 +336,39 @@ function profileConfig(): any {
     ]),
   };
 }
-// From first principles, not through the code under test: the bin-1 pixel
-// scale is 206.265 x pixel (um) / focal length (mm), config.py's one constant
-// (`ARCSEC_PER_RAD`), and the field is that scale times the sensor, as
-// config.py `fov_deg` computes it.
-const SCALE = (206.265 * 3.76) / 530;
-const FOV_X = (SCALE * 4144) / 3600;
-const FOV_Y = (SCALE * 2822) / 3600;
+// From first principles, not through the code under test: the linear
+// small-angle formula, sensor size (mm) over focal length (mm) times
+// 180/pi (#168, "ONE FOV FORMULA" -- `lib/framing.ts`'s `fovDegFromSensorMm`,
+// which `fovFromOptics` now calls for `fov_x_deg`/`fov_y_deg`).
+//
+// RE-PINNED (W3 integration, WP-29 collateral, #168). This used to compute
+// the field as the ROUNDED bin-1 pixel scale (206.265 x pixel-um /
+// focal-mm, `ARCSEC_PER_RAD`) times the sensor, divided by 3600 -- which is
+// what `fovFromOptics` computed before WP-29 and is still what its own
+// `pixel_scale_arcsec` field is for. WP-29 switched `fov_x_deg`/
+// `fov_y_deg` to the exact-trig `fovDegFromSensorMm` formula instead, so
+// the Atlas overlay and the Settings preview compute FOV the same way
+// (#168) -- but that formula does not derive from the rounded
+// `ARCSEC_PER_RAD` pixel scale at all, so the two no longer agree to this
+// test's original 1e-9 tolerance (measured gap: ~1.6e-6 deg, ~5.7 mas, at
+// this fixture's 530mm/3.76um/4144px rig -- utterly negligible for framing
+// a telescope, but enough to fail a bit-exact comparison).
+//
+// NOTED, NOT FIXED HERE: `config.py`'s `fov_deg()` (the server's own FOV
+// anchor, which WP-29's docstring there calls "the ONE FOV formula's server
+// anchor") still computes through the rounded `ARCSEC_PER_RAD` pixel scale,
+// the OLD formula -- not through an exact-trig equivalent of
+// `fovDegFromSensorMm`. So the claim that the UI and the server now
+// compute FOV identically is not quite true: the two UI mirrors agree with
+// EACH OTHER (that is what #168 asked for) but not bit-exactly with the
+// server. Reconciling the server's formula too is a wider change than this
+// integration pass's scope; flagged as a new defect for the backlog.
+const FOCAL_MM = 530;
+const PIXEL_UM = 3.76;
+const SENSOR_W_PX = 4144;
+const SENSOR_H_PX = 2822;
+const FOV_X = ((PIXEL_UM * SENSOR_W_PX) / 1000 / FOCAL_MM) * (180 / Math.PI);
+const FOV_Y = ((PIXEL_UM * SENSOR_H_PX) / 1000 / FOCAL_MM) * (180 / Math.PI);
 
 // MUTANT "field from the stale compile" (the sheet builds MATCH CAMERA's rig
 // with `liveRig(compiledRig(compiled), null, ...)`, so the compile's field,

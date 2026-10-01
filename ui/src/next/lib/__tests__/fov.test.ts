@@ -1,9 +1,15 @@
-// Pure-lib test for fov.ts. Sabotage check: swapping atan() for the linear
-// small-angle approximation (`sensor/fl` instead of `2*atan(sensor/2/fl)`)
-// turns the 23.5mm@530mm worked example red; swapping the >2 / <0.7
+// Pure-lib test for fov.ts. Sabotage check: swapping the >2 / <0.7
 // thresholds turns the sampling-verdict boundaries red; not rotating the
 // base order turns "panelOrder: 2x1 mosaic, pass 0 is row-major; pass 1
 // rotates the start" red.
+//
+// (No atan()-vs-linear claim here: `fovDeg` is a thin wrapper over
+// `lib/framing.ts`'s `fovDegFromSensorMm`, which has always been the linear
+// small-angle formula (`sensor/fl * (180/pi)`), not `2*atan(sensor/2/fl)` --
+// there is no atan() call in this path to swap out. Measured, the two
+// formulas agree to about 0.0005 deg at 23.5mm@530mm, well under this file's
+// 0.01 tolerance, so a claim that swapping them would turn that worked
+// example red was false.)
 //
 // That last case is this function's ONLY caller. It pins what `panelOrder`
 // computes, not what a night does: the engine shoots a Plan mosaic's panels
@@ -26,10 +32,19 @@ test("fovDeg: 23.5x15.7mm sensor at 530mm -> 2.54 x 1.70 deg", () => {
   near(f.hDeg, 1.70, 0.01, "hDeg");
 });
 
-test("fovDeg: a 0.5x reducer roughly doubles the field", () => {
+// Re-pinned for WP-29 (#168): this used to assert the pre-#168 bug, that a
+// 0.5x reducer multiplied into the effective focal length here and roughly
+// doubled the field. `fovDeg` is now a thin wrapper over `lib/framing.ts`'s
+// `fovDegFromSensorMm`, which never saw a reducer, and `config.py`'s
+// `Optics.reducer` is documented as recorded-but-never-applied -- so a
+// recorded reducer must leave `fovDeg`'s answer unchanged. See also
+// `w3FovOneFormula.test.ts`, which pins the same thing against `fovFromOptics`
+// directly.
+test("fovDeg: a recorded reducer is ignored, matching config.py's documented semantics", () => {
   const base = fovDeg({ sensorWmm: 23.5, sensorHmm: 15.7, flMm: 530, reducer: 1 });
   const reduced = fovDeg({ sensorWmm: 23.5, sensorHmm: 15.7, flMm: 530, reducer: 0.5 });
-  near(reduced.wDeg, base.wDeg * 2, 0.05, "reducer halves effective FL, ~doubles FoV");
+  near(reduced.wDeg, base.wDeg, 1e-9, "a recorded reducer must not change the computed field");
+  near(reduced.hDeg, base.hDeg, 1e-9, "a recorded reducer must not change the computed field");
 });
 
 test("fovDeg: zero focal length returns zero rather than Infinity/NaN", () => {

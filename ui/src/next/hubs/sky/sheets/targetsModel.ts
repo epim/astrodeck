@@ -44,7 +44,7 @@ import { rankTargets } from "../../../lib/reach";
 import type { HorizonPoint } from "../../../lib/horizonModel";
 import {
   D2R, SKY_KINDS, cloudPctAt, decorate, mergeRows, minutesAboveFloor, paletteFor,
-  skyPrefs, tilesFromDome, walkTrack, isObstructedAt,
+  raDecFromAltAz, skyPrefs, tilesFromDome, walkTrack, isObstructedAt,
   type CatalogRowLike, type LensPrefs, type SkyKind, type SkyTarget, type TrackContext,
   type WheelLike,
 } from "../finder";
@@ -292,20 +292,48 @@ export function useTargetsModel(): TargetsModel {
     };
   }, [wheelKey, wheelOpaqueKey, wheelNbKey]);
 
+  // THE DAWN SOURCE (#551 remainder, WP-24a / W3 integration). This used to
+  // hard-code `hoursToDawn: 8` here, on the reasoning that the window column
+  // only compares rows against each other and every row walks the same span
+  // -- but a fixed 8h still printed a window ("Nm") for a night nobody has
+  // asked the ephemeris about yet, which is exactly the #551 shape
+  // `finder/model.ts` already fixed with `dawnKnown` (see its own comments
+  // beside `hoursToDawn` there). `/api/visibility` needs A position, and
+  // `tonight.rows[0]` -- the catalog fetch, BEFORE ranking -- is used rather
+  // than `all[0]` (the ranked list) to avoid asking the ranked list to wait
+  // on a dawn that is itself waiting on a position only the ranked list
+  // would supply. A fixed point due south, halfway up (`finder/model.ts`'s
+  // own `fallbackAnchor`), answers the same question when tonight's catalog
+  // fetch has not landed yet, keyed on the SITE alone so it does not re-ask
+  // the server every time the clock ticks.
+  const fallbackAnchor = useMemo(
+    () => (haveCoords ? raDecFromAltAz(45, 180, lat, lon, Date.now() / 1000) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [siteKey, haveCoords],
+  );
+  const dawnAnchorRa = tonight.rows[0]?.ra_hours ?? fallbackAnchor?.ra_hours ?? null;
+  const dawnAnchorDec = tonight.rows[0]?.dec_deg ?? fallbackAnchor?.dec_deg ?? null;
+  const night = useVisibilityNight(dawnAnchorRa, dawnAnchorDec, horizonMinDeg);
+  // The one signal that tells "no dawn yet" apart from "dawn is hours off"
+  // (#551): `dark_end_unix` missing, not `hoursToDawn` reading 0, which a
+  // real night five minutes from dawn would also read.
+  const dawnKnown = typeof night?.dark_end_unix === "number";
+  const hoursToDawn = useMemo(() => {
+    const end = night?.dark_end_unix;
+    if (typeof end !== "number") return 0;
+    return Math.max(0, (end * 1000 - nowMs) / 3600_000);
+  }, [night, nowMs]);
+
   const trackCtx: TrackContext = useMemo(
     () => ({
       latDeg: lat,
-      // Eight hours when the ephemeris has not been asked for here: the window
-      // column is a comparison between rows, and every row is walked over the
-      // same span, so the ORDER is right even where the absolute number is a
-      // bound rather than tonight's exact dawn.
-      hoursToDawn: 8,
+      hoursToDawn,
       horizon: horizonPoints,
       horizonMinDeg,
       maskOn: true,
       holdAt: () => false,
     }),
-    [lat, horizonPoints, horizonMinDeg],
+    [lat, hoursToDawn, horizonPoints, horizonMinDeg],
   );
 
   const all: SkyTarget[] = useMemo(() => {
@@ -326,7 +354,15 @@ export function useTargetsModel(): TargetsModel {
       const dec = decorate(cloudPct, obstructed);
       // The walk needs the site's latitude and sidereal time: without them the
       // window is null, never one walked at the placeholder (#508).
-      const winMin = haveCoords
+      //
+      // AND WITHOUT A DAWN, EVERY WALK IS EMPTY (#551): `trackCtx.hoursToDawn`
+      // is 0 whenever `/api/visibility` has not yet answered (or there is no
+      // position to ask it about yet), and `walkTrack` with no hours to walk
+      // returns no samples -- which `minutesAboveFloor` reads as a real zero,
+      // not as "nobody walked this yet". Gate on `dawnKnown`, same shape as
+      // `finder/model.ts`'s `ranked` memo, so the row shows no number instead
+      // of a false "0m" until the night is known.
+      const winMin = haveCoords && dawnKnown
         ? minutesAboveFloor(walkTrack(m.dec_deg * D2R, (lst - m.ra_hours) * 15 * D2R, trackCtx))
         : null;
       const transitLabel = m.transitUnix == null
@@ -380,7 +416,7 @@ export function useTargetsModel(): TargetsModel {
       moonSepDeg: r.moonSepDeg,
       difficulty: r.difficulty,
     }));
-  }, [tonight.rows, bodies, nowMs, lat, lon, haveCoords, trackCtx, tiles, hourlyCloud, wheel]);
+  }, [tonight.rows, bodies, nowMs, lat, lon, haveCoords, dawnKnown, trackCtx, tiles, hourlyCloud, wheel]);
 
   const rows = useMemo(
     () => all.filter((t) => lens[t.kind] !== false && !(floorOnly && t.altNow < FLOOR_DEG)),
@@ -405,12 +441,11 @@ export function useTargetsModel(): TargetsModel {
   const clearPct = hourlyCloud == null ? null : Math.round(100 - hourlyCloud);
 
   // The dark window and the moon are properties of the SITE, not of a target,
-  // so one ephemeris call serves the whole header. It is anchored on the best
-  // ranked object because the route needs a position to answer for; nothing in
-  // the two lines below is a property of that object.
-  const anchor = all[0] ?? null;
-  const night = useVisibilityNight(anchor?.ra_hours ?? null, anchor?.dec_deg ?? null, horizonMinDeg);
-
+  // so one ephemeris call serves the whole header AND the ranking's dawn gate
+  // above (`night`/`dawnKnown`/`hoursToDawn`) -- the same fetch, not a second
+  // one. It is anchored on `tonight.rows[0]` (pre-ranking) because the route
+  // needs a position to answer for; nothing in the two lines below, or in the
+  // ranking's dawn gate, is a property of that object.
   const darkLine = useMemo(() => {
     const a = night?.dark_start_unix;
     const b = night?.dark_end_unix;

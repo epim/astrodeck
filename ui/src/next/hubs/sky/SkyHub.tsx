@@ -126,9 +126,16 @@ export const NO_GYRO_REASON = "No orientation sensor here - drag the sky to pan.
  * It used to fire whenever there was no LOCK, which meant survey imagery of an
  * uncatalogued patch was unreachable from the new UI (review #29) - the Atlas's
  * free-roam session, which `store.openFraming()` has always supported with no
- * argument, had no door. Now the reticle's own patch is enough, and the only
- * remaining refusal is a reticle aimed at ground: below the horizon there is no
- * RA and Dec to frame, so there is nothing to fetch imagery for.
+ * argument, had no door. Now the reticle's own patch is enough, and with
+ * coordinates to place it this is the only remaining refusal: a reticle aimed
+ * at ground, where below the horizon there is no RA and Dec to frame.
+ *
+ * WITH NO COORDINATES AT ALL this sentence is wrong (#568): a default site's
+ * placeholder, or a role the precise location is hidden from, still has a
+ * reticle that can read above the horizon, and the fix is not "aim up" but
+ * "save a site" (or nothing an operator can do, for the hidden-role case).
+ * `frameReason` below reaches for `model.placementNote` first, and only falls
+ * back to this sentence once there ARE coordinates to judge the aim against.
  */
 export const FRAME_NEEDS_AIM =
   "Aim above the horizon first - FRAME needs a target or a patch of sky to look at.";
@@ -1292,9 +1299,22 @@ export function SkyHub(): JSX.Element {
     ? "FRAME"
     : frame.on ? "DONE" : frame.set ? "ADJUST" : "FRAME";
   // A patch of sky is enough now: free-roam is what the third branch below is.
+  //
+  // TWO WAYS TO HAVE NOTHING TO FRAME, and they need different sentences
+  // (#568). `model.patch` is null both when the reticle is aimed at ground
+  // (`view.alt < 0`) and when there are no coordinates to place it with at all
+  // (`!haveCoords`, finder/model.ts) - a default site's placeholder, or a
+  // role this site's precise location is hidden from. Since H4-USKY (#503) the
+  // second case is the common one on a fresh config, and FRAME_NEEDS_AIM's
+  // "aim above the horizon" is false there: the reticle can be at alt 45 and
+  // FRAME is still refused. `model.placementNote` is the model's own sentence
+  // for that silence - the same one the patch card prints - and it already
+  // names the right fix (set the site, or nothing a locked-out role can do);
+  // FRAME_NEEDS_AIM is kept for when there ARE coordinates and the reticle is
+  // simply aimed at ground.
   const frameReason = model.mode === "atlas"
     ? atlasFrameReason
-    : frame.on || lock || model.patch ? null : FRAME_NEEDS_AIM;
+    : frame.on || lock || model.patch ? null : (model.placementNote ?? FRAME_NEEDS_AIM);
   const onFramePress = () => {
     if (model.mode === "atlas") { atlasFrame(); return; }
     if (frame.on) { void finishFrame(); return; }

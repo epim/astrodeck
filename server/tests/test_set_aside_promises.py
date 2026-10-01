@@ -16,8 +16,17 @@ tonight does not retry it; the next night does. The POOL's option VALUE,
 "Advance now; retry it next night", is stored in saved flows and is never
 reworded (compile.py matches only its verb); since S2 it is true.
 
+WP-25 (b), #290: a sixth surface said the same thing in a seventh word the
+scan never watched for. The rig Standards panel's `max_consecutive_rejects`
+hint said the step was "abandoned", which #208's PROMISE_WORDS does not
+contain, so this file carried it unflagged while SequenceView.tsx and
+automationModel.ts were reworded around it. standards.ts is added to FILES
+and PROMISES below, and "abandon" is deliberately NOT added to PROMISE_WORDS:
+the words already there ("does not retry", "next night") catch the reworded
+sentence, which is the same proof #208's other four rows use.
+
 This file is the claims table that holds the copy to that. It scans those
-five files for the words such a promise is made of, and every hit must fall
+six files for the words such a promise is made of, and every hit must fall
 inside a row:
 
 - ``PROMISES``: a set-aside promise, citing the T10 test that proves a
@@ -168,8 +177,13 @@ AUTOMATION = "ui/src/next/hubs/session/plan/automation/automationModel.ts"
 TONIGHT = "server/astrodeck/flows/tonight.py"
 NODES = "server/astrodeck/flows/nodes.py"
 NODE_DEFS = "ui/src/components/flows/nodeDefs.ts"
-#: The files whose set-aside copy #208 listed.
-FILES = (SEQUENCE_VIEW, AUTOMATION, TONIGHT, NODES, NODE_DEFS)
+#: The rig Standards panel's `max_consecutive_rejects` hint (#290), added to
+#: the scan by WP-25 (b): it makes the same per-step set-aside promise as
+#: SEQUENCE_VIEW and AUTOMATION, and was not one of #208's five files because
+#: S2 had not yet reworded the other three when this one was last touched.
+STANDARDS = "ui/src/lib/standards.ts"
+#: The files whose set-aside copy #208 listed, plus STANDARDS (#290).
+FILES = (SEQUENCE_VIEW, AUTOMATION, TONIGHT, NODES, NODE_DEFS, STANDARDS)
 
 #: The words a set-aside promise is made of. The first four are #208's
 #: list; "does not retry" is the same-night half in the words the copy now
@@ -267,6 +281,14 @@ PROMISES: tuple[Promise, ...] = (
             "that step is set aside for tonight and the run moves on. Its "
             "shortfall stays owed in the session ledger: a restart tonight "
             "does not retry it, the next night does.",
+            1, STEP_SAME_NIGHT, STEP_NEXT_NIGHT, (STEP_LINES,)),
+    # The same guard's hint on the rig Standards panel (#290): it used to say
+    # the step was "abandoned", a word PROMISE_WORDS does not scan for, which
+    # is how this surface went unnoticed when #208 reworded the other two.
+    Promise(STANDARDS,
+            "the step is set aside for tonight and the run moves on. Its "
+            "frames stay owed in the session ledger: a restart tonight does "
+            "not retry it, the next night does.",
             1, STEP_SAME_NIGHT, STEP_NEXT_NIGHT, (STEP_LINES,)),
     # The Tonight brief, for a POOL whose dial says Advance.
     Promise(TONIGHT,

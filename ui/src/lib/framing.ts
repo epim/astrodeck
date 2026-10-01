@@ -99,6 +99,31 @@ export interface GridPanel {
 
 // ----------------------------------------------------------------- FOV math
 /**
+ * THE ONE FOV FORMULA (#168). Linear small-angle: `(sensorMm / focalMm) *
+ * (180/pi)` degrees. Every reader of a sensor dimension + focal length in
+ * this tree goes through this — `fovFromOptics` below (which derives
+ * `sensorMm` from a pixel count * `pixel_size_um`), and `next/lib/fov.ts`'s
+ * `fovDeg` (the Settings Optics-sheet preview, which already has the sensor
+ * size in mm and calls this directly) — so the Atlas overlay, the Settings
+ * preview and the server's `config.fov_deg` (same formula, pixel-count
+ * inputs) can no longer compute three different fields for one rig.
+ *
+ * TAKES NO REDUCER, on purpose: `Optics.reducer` (`server/astrodeck/config.py`
+ * :97-111) is recorded, never multiplied — the same rule `f_ratio` documents
+ * there. If "USE THE REDUCED FOCAL LENGTH" was pressed, `focalMm` already
+ * carries it; if not, the rig genuinely frames at the explicit focal length,
+ * and that is what every FOV reader must show. A caller that folds the
+ * reducer in before calling this is wrong in exactly the way #168 was: the
+ * two UIs disagreeing over a reducer that never changed what the rig frames.
+ *
+ * Zero when either input is unusable, never NaN/Infinity.
+ */
+export function fovDegFromSensorMm(sensorMm: number, focalMm: number): number {
+  if (!(focalMm > 0) || !(sensorMm > 0)) return 0;
+  return (sensorMm / focalMm) * RAD;
+}
+
+/**
  * Field of view + pixel scale from optics, ALWAYS at bin 1 (spec §5). Binning
  * affects only the displayed pixel-scale readout; panel tiling uses bin-1 FOV.
  *
@@ -120,11 +145,12 @@ export function fovFromOptics(
 
   // pixel scale (arcsec/px) at bin 1: 206.265 * pixel_size_um / focal_length_mm
   const pixel_scale_arcsec = (ARCSEC_PER_RAD * px) / fl;
-  // FOV via the LINEAR small-angle form (pixel_scale·N/3600), matching config.py
-  // `fov_deg` and lib/optics.ts so Atlas shows the same frame size as Settings/
-  // Mount for one rig (the exact atan() form drifts a few % at wide fields).
-  const fov_x_deg = (pixel_scale_arcsec * w) / 3600;
-  const fov_y_deg = (pixel_scale_arcsec * h) / 3600;
+  // FOV via fovDegFromSensorMm — sensor size in mm is pixel count * pixel
+  // pitch (um -> mm is the /1000) — matching config.py `fov_deg` and
+  // lib/optics.ts so Atlas shows the same frame size as Settings/Mount for
+  // one rig, and matching `next/lib/fov.ts`'s `fovDeg` (#168: one formula).
+  const fov_x_deg = fovDegFromSensorMm((px * w) / 1000, fl);
+  const fov_y_deg = fovDegFromSensorMm((px * h) / 1000, fl);
   return { fov_x_deg, fov_y_deg, pixel_scale_arcsec };
 }
 
