@@ -1,0 +1,48 @@
+name: docs
+
+on:
+  push:
+    paths:
+      - 'README.md'
+      - 'docs/**'
+      - 'tools/docs/**'
+      - 'tools/privacy_scan.py'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'README.md'
+      - 'docs/**'
+      - 'tools/docs/**'
+      - 'tools/privacy_scan.py'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  documentation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Test documentation checks
+        run: python -B -m unittest discover -s tools/docs -p 'test_*.py'
+      - name: Prove documentation guards reject mutations
+        run: python -B tools/docs/mutation_check.py
+      - name: Check documentation and available privacy evidence
+        env:
+          ASTRODECK_PRIVACY_NEEDLES: ${{ secrets.ASTRODECK_PRIVACY_NEEDLES }}
+        shell: bash
+        run: |
+          if [ -n "$ASTRODECK_PRIVACY_NEEDLES" ]; then
+            python -B tools/docs/check_docs.py --require-privacy
+          else
+            echo 'Privacy secret unavailable; privacy scan skipped. Structural checks still run.'
+            python -B tools/docs/check_docs.py
+          fi
