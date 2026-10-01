@@ -796,6 +796,10 @@ async def _browser_ws(state: RelayState, ws: "WebSocket") -> None:
         state.release_ws(home_id)
 
 
+#: The liveness path. Named once so the route and the access-log filter
+#: below (#617) that withholds its line cannot drift apart.
+HEALTHZ_PATH = "/healthz"
+
 # What /healthz says when the image carries no build identity. An explicit
 # word, because the alternative is a guess: the package's own __version__ has
 # read 0.1.0 since the relay was written, so it cannot tell one build from
@@ -862,7 +866,7 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
         return await _healthz(request, build)
 
     routes = [
-        Route("/healthz", healthz_ep, methods=["GET"]),
+        Route(HEALTHZ_PATH, healthz_ep, methods=["GET"]),
         WebSocketRoute("/scope", scope_ep),
         WebSocketRoute("/h/{home_id}/ws", browser_ws_ep),
         Route("/h/{home_id}/{path:path}", browser_http_ep,
@@ -985,10 +989,58 @@ class PathOnlyDefaultFormatter(_DefaultFormatter):
         return super().format(_without_queries(record))
 
 
+# --------------------------------------------- the logs: no healthz line (#617)
+#
+# Fly's HTTP check (relay/fly.toml, ``path = "/healthz"``, ``interval =
+# "15s"``) polls every 15 s, and uvicorn's access logger wrote the same line
+# for a probe as for anything else: ``GET /healthz HTTP/1.1 200``. flyctl
+# `--no-tail` serves only its own 100-line buffer, so four probe lines a
+# minute filled it in about 25 minutes and could push the #521 tunnel-end
+# line -- the evidence a tunnel problem needs -- out of the only window
+# `--no-tail` can read before anyone happened to look (#617).
+#
+# This filter is attached to the "access" handler only, so it withholds
+# nothing else: the /scope WebSocket handshake ("tunnel connect", logged by
+# uvicorn's error logger through the "default" handler) and
+# ``tunnel_end_line`` ("tunnel end", logged by ``relay.server`` through that
+# same "default" handler) are a different handler entirely and keep
+# printing.
+
+
+def _is_healthz_access(args: object) -> bool:
+    """True when a uvicorn access-log record's args name a /healthz request.
+
+    Both of uvicorn's HTTP implementations (``h11_impl``, ``httptools_impl``)
+    log the access line the same way: ``logger.info('%s - "%s %s HTTP/%s"
+    %d', client_addr, method, path_with_query, http_version, status)`` -- a
+    fixed 5-tuple with the request target third. Anything that is not that
+    shape is answered False rather than guessed at, the same caution
+    ``_path_only`` takes with an argument that is not a path.
+
+    The method is not checked: the route accepts only GET (``Route(
+    HEALTHZ_PATH, ..., methods=["GET"])``), so there is no other verb a real
+    probe could arrive as, and a request to the path by some other verb is
+    not the line this rule exists to withhold."""
+    if not isinstance(args, tuple) or len(args) != 5:
+        return False
+    target = args[2]
+    return isinstance(target, str) and target.split("?", 1)[0] == HEALTHZ_PATH
+
+
+class _NoHealthzAccessFilter(logging.Filter):
+    """Attached to uvicorn's "access" handler: drops the line a /healthz
+    probe would otherwise write, and lets every other request's line
+    through unchanged."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _is_healthz_access(record.args)
+
+
 def uvicorn_log_config() -> dict:
     """uvicorn's own logging config with both formatters swapped for the
-    path-only ones. Copied, not edited: ``LOGGING_CONFIG`` is uvicorn's module
-    global, and uvicorn writes into the dict it is handed.
+    path-only ones and the healthz access filter wired on. Copied, not
+    edited: ``LOGGING_CONFIG`` is uvicorn's module global, and uvicorn writes
+    into the dict it is handed.
 
     It also gives the relay's own ``relay`` loggers a handler (#521, #556).
     uvicorn's config configures only uvicorn's loggers and leaves the root
@@ -1003,6 +1055,8 @@ def uvicorn_log_config() -> dict:
     cfg = copy.deepcopy(LOGGING_CONFIG)
     cfg["formatters"]["access"]["()"] = PathOnlyAccessFormatter
     cfg["formatters"]["default"]["()"] = PathOnlyDefaultFormatter
+    cfg["filters"] = {"no_healthz": {"()": _NoHealthzAccessFilter}}
+    cfg["handlers"]["access"]["filters"] = ["no_healthz"]
     cfg["loggers"]["relay"] = {
         "handlers": ["default"], "level": "INFO", "propagate": False}
     return cfg
