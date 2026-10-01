@@ -519,7 +519,7 @@ No issue was classified unclear. This one is listed because its named failure is
 
 | Issue | Check | Then |
 |---|---|---|
-| #657 | Read the engine's unsafe-trip path with a dome connected and a flow that has no DOME CONTROL node, and drive it once on the simulator with a sim dome. DomePolicy's TODO says that half ('backend item 7') is not built. | If the dome closes, close the issue with the trace. If it does not, file the build item for the engine lane and link it here. A rig with a dome is the only one at risk, so it is not a P0 for astrotown. |
+| #657 | Read the engine's unsafe-trip path with a dome connected and a flow that has no DOME CONTROL node, and drive it once on the simulator with a sim dome. DomePolicy's TODO says that half ('backend item 7') is not built. | If the dome closes, close the issue with the trace. If it does not, file the build item for the engine lane and link it here. A rig with a dome is the only one at risk, so it is not a P0 for astrotown. DONE 2026-10-01: graph-independent, config-gated; see the homes table. |
 | #289 | Run test_session_thumbs.py under -n 8 ten times. | If it is green, close it, and file the reap-by-poll wind-down latency (up to 0.25 s) as its own P3 issue if it is not already filed. |
 
 ## Rig-gated (the next step is rig or device work, not code)
@@ -546,6 +546,7 @@ Licence questions from codex's job 2 audit, asked of the owner on 2026-10-01. Ea
 - #636: Astrospheric's API terms against a public client.
 - #637: provenance of ui/public/bg_nebula.png.
 - #638: LGPL-3.0 WCSLIB and the GCC-exception runtime inside the onefile binaries.
+- #657 (b): should `close_dome_on_unsafe` default to True when a dome is connected? Recommended yes.
 
 ## Backlog features (ordered; they fill free slots in waves 8-13)
 
@@ -654,7 +655,7 @@ Still to file:
 | #654 | open | The binary smoke test kills every astrodeck.exe. Codex job 4 (ca9e8773). |
 | #655 | open | The container image lacks the native engine and an inventory gate. Release engineering follow-up after job 4 (codex). |
 | #656 | open | The #/next Dial ignores a tap on a stop. WP-77 in wave 6. |
-| #657 | open | Does an unsafe trip close a dome with no DOME CONTROL node? Verify first. |
+| #657 | open | Verified 2026-10-01 (comment on the issue): the unsafe close ignores the graph and follows `close_dome_on_unsafe`, which defaults to False. (a) A flow-level test and the stale TODO: the first engine slot after WP-53. (b) Whether the flag defaults to True with a dome connected, as D-16 did for the end-of-night close: an owner question (recommended yes). |
 | #658 | open | A cold ?open= link 404s. WP-80 in wave 7. |
 | #659 | open | The real-config guard misreads Linux rmtree's fd-relative paths. WP-72 (a) in wave 6. |
 | #660 | open | The docs gate pins labels to exact lines. Codex job 5. |
