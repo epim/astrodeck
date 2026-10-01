@@ -824,8 +824,12 @@ export interface SequenceState {
     state: "waiting" | "ready" | "window_closed" | "never_rises";
     reason: string;
     eta_s: number;
-    start_ts?: number; // unix seconds (resolved window open)
-    stop_ts?: number;  // unix seconds (resolved window close)
+    // null, not just absent (#552): a PRO-14 constraint wait (moon, hour
+    // angle) nulls start_ts on purpose (schedule.gating_status step 4b), and
+    // a window with no stop bound (resolve_window, stop_mode "none") nulls
+    // stop_ts; `_run_scheduled` republishes both unchanged.
+    start_ts?: number | null; // unix seconds (resolved window open)
+    stop_ts?: number | null;  // unix seconds (resolved window close)
   };
   // Live ETA chips (engine §1.9-E): meridian-flip ETA is SECONDS (ttf*3600); the
   // sensor temp / guide RMS are echoed for the run-time chips without a status poll.
@@ -2539,9 +2543,10 @@ export interface Session {
   auto_resume: boolean;
   // --- S2 (#189, #208; additive, SESSION_SCHEMA still 1). Optional because a
   //     server older than S2 does not send them.
-  /** Panels and steps set aside, each with the night it happened under. Only
-   *  the current night's records mean "not retried tonight"; the rest are
-   *  history, and those panels are retried. */
+  /** Panels and steps set aside, each with the night it happened under. A
+   *  current-night record means "not retried tonight" UNLESS it is
+   *  `expired` (#534, H4 orchestrator ruling 2): that one is history too,
+   *  and its panel is retried like any other night's. */
   set_aside?: SetAsideRecord[];
   /** Ruling 9's locked angles, by target id: the first solve's angle for an
    *  unframed TARGET, commanded from then on like a planned one. */
@@ -2557,6 +2562,22 @@ export interface SetAsideRecord {
   reason: string;
   /** The night key (`YYYY-MM-DD`, noon to noon) it was set aside under. */
   night: string;
+  /** What set it aside, one word: "centring" | "panel" | "floor" |
+   *  "rejects" (#534, H4 orchestrator ruling 2, amended by backlog WP-07
+   *  #564). Absent on a record written before H4; only "centring" can
+   *  expire. */
+  kind?: string;
+  /** Unix seconds, the clock time it was set aside, which a "centring"
+   *  kind's 45 minute expiry counts from. Absent on a record written
+   *  before H4. NOTHING SITE-DERIVED: this is a clock reading, never an
+   *  altitude (6.9). */
+  ts?: number;
+  /** Set once a "centring" set-aside's 45 minutes run out
+   *  (`Session.note_set_aside_expired`): the record stays, as history, and
+   *  `set_aside_on` no longer reads it, so the panel is tried again
+   *  tonight. Absent (never true) on every other kind, and on a record
+   *  that has not expired. */
+  expired?: boolean;
 }
 
 /** One `Session.locked_angles` value, as `Session.lock_angle` writes it. The
