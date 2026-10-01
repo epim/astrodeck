@@ -384,6 +384,17 @@ export default function MonitorView() {
   const state = seq.state;
   const running = state === "running";
   const paused = state === "paused";
+  // "holding" IS LIVE (#259, types.ts): sequence/engine.py `_set_state`
+  // promotes any routine `running` publish to "holding" while a cloud hold is
+  // up (and `_hold_for_clear` publishes it directly), so the rig keeps probing
+  // the sky on a timer and shooting hold darks for up to CLOUD_MAX_HOLD_MIN (45
+  // min default) with the engine saying "holding", not "running". Omitting it
+  // from `runActive` unmounted the controls row for the whole hold — Abort is
+  // the one way to stop a run over plain HTTP when the WS is down (A2), and it
+  // disappeared over a rig that was still live. `lib/lastSessionFrame.ts`'s
+  // `runIsLive` already names this file's `runActive` as the one predicate that
+  // still misses it.
+  const holding = state === "holding";
   // "aborting" IS LIVE (types.ts): the engine publishes it for the whole ~210 s
   // wind-down — the exposure is being aborted, the guider stopped, the flat
   // panel switched off — and only says "aborted" once the rig has stopped.
@@ -391,7 +402,7 @@ export default function MonitorView() {
   // button in it), the health strip's run context and the meridian chip over a
   // rig that was still moving. Same fold as PolarView's "pausing".
   const aborting = state === "aborting";
-  const runActive = running || paused || aborting;
+  const runActive = running || paused || holding || aborting;
   const finished = state === "complete";
   const failed = state === "aborted" || state === "error";
   const ninaNative = state === "nina_native";
@@ -905,7 +916,16 @@ export default function MonitorView() {
                 {!recoveryLine && (
                   <p className="text-ink leading-snug max-w-prose">
                     {resumeArm.hold
-                      ? <>Holding: <span className="text-warn">{resumeArm.hold.reason}</span>.
+                      ? <>Holding: <span className="text-warn">{resumeArm.hold.reason}</span>
+                         {/* site_detail carries the numbers behind a words-only
+                             reason (#258, #233) — the target's altitude, its
+                             floor, the wait until it rises, or the gate's
+                             azimuth. The server leaves the key out for a
+                             principal without view.site_derived, so its
+                             absence here is the normal case, not an error:
+                             nothing renders and no placeholder takes its
+                             place. */}
+                         {resumeArm.hold.site_detail && <> - {resumeArm.hold.site_detail}</>}.
                          It starts by itself when that clears.</>
                       : "It starts by itself when its window opens."}
                   </p>
