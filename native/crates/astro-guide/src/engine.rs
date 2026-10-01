@@ -264,6 +264,24 @@ pub struct GuideStatsSnapshot {
     /// Empty in single-star mode (`EngineConfig::max_stars <= 1`) or
     /// before the first multi-star acquisition of a session.
     pub secondaries: Vec<(f64, f64)>,
+    /// The engine's current lock position (camera-frame px): the offset
+    /// reference every correction in this session is measured against (see
+    /// the `lock` field doc on [`GuideEngine`]). `None` before a guiding
+    /// session's first star is found (`Phase::Idle`, `Phase::Calibrating`,
+    /// or a fresh [`GuideEngine::begin_guiding`] with no star found yet).
+    ///
+    /// #204: before this field existed, the host's different-star guard
+    /// (`guide/native.py`'s `_note_lock`) could only APPROXIMATE this —
+    /// brightest-first over its own full-frame star-find for a session's
+    /// first lock (wrong whenever [`select::select_primary`] skips a
+    /// saturated brightest star and locks something else), and nearest to
+    /// its own last-recorded estimate after a star loss, widening its
+    /// search radius by a dither's magnitude because it had no way to read
+    /// the real post-dither value (#219). Publishing the authoritative
+    /// value here lets the host read the one position the engine itself is
+    /// actually guiding against, instead of reconstructing an estimate of
+    /// it from the frame.
+    pub lock: Option<(f64, f64)>,
 }
 
 /// Fast-recenter-after-dither state (dossier §11.2; `guider.cpp:912-919`
@@ -1694,6 +1712,7 @@ impl GuideEngine {
             snr: self.last_snr,
             recent: self.recent.iter().copied().collect(),
             secondaries: self.secondaries.iter().map(|s| (s.x, s.y)).collect(),
+            lock: self.lock, // #204: the authoritative offset reference, verbatim
         }
     }
 
@@ -2311,5 +2330,54 @@ mod tests {
         assert_eq!(gp_clock_dt(e.last_gp_ts, 120.0, 5.0), 5.0);
         e.ingest(&meta(120.0), &[found_star()]);
         assert_eq!(e.last_gp_ts, Some(120.0));
+    }
+
+    /// #204 (WP-41): `stats().lock` is the live `GuideEngine::lock` field —
+    /// `None` before a star has been locked this session, `Some((x, y))`
+    /// once one has, and it tracks a dither's shift. Before this field
+    /// existed the host's different-star guard (`guide/native.py`'s
+    /// `_note_lock`) had to re-derive an APPROXIMATION of this from its own
+    /// full-frame star-find (brightest-first for the session's first lock,
+    /// nearest-to-last-estimate after a loss, widened by a dither's
+    /// magnitude since it could not read the real post-dither value, #219);
+    /// publishing the authoritative value removes the need to guess.
+    ///
+    /// Named mutant: hardcode `stats()`'s `lock` key to `None` (the
+    /// pre-fix shape, which carried no lock at all) -- this test's second
+    /// assertion, `stats().lock, Some((100.0, 100.0))`, fails with
+    /// `left: None, right: Some((100.0, 100.0))`.
+    #[test]
+    fn stats_publishes_the_live_lock_position() {
+        let mut e = GuideEngine::new(EngineConfig::default());
+        e.set_calibration(test_cal());
+        e.begin_guiding();
+
+        // No star found yet this session: nothing to publish.
+        assert_eq!(e.stats().lock, None, "no lock established yet");
+
+        // The lock-establishing frame (found_star() sits at (100, 100)).
+        e.ingest(
+            &FrameMeta {
+                timestamp_s: 0.0,
+                exposure_s: 1.0,
+            },
+            &[found_star()],
+        );
+        assert_eq!(
+            e.stats().lock,
+            Some((100.0, 100.0)),
+            "stats() must publish the just-established lock verbatim"
+        );
+
+        // A dither shifts the lock (engine.rs `dither`); stats() must track
+        // the field live, not a value cached from before the shift.
+        e.dither(3.0, 4.0);
+        let after = e.stats().lock.expect("dither requires an existing lock");
+        assert_ne!(after, (100.0, 100.0), "the dither must have moved the lock");
+        assert_eq!(
+            Some(after),
+            Some(e.lock.expect("engine retains its lock across a dither")),
+            "stats() must mirror the engine's own post-dither lock exactly"
+        );
     }
 }
