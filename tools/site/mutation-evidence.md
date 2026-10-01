@@ -28,5 +28,13 @@ Each source file was restored from its byte backup in a finally block.
   Test: `CaptureLifecycle.test_refuses_parent_pid_reuse`.
 - JS-EXIT: `AssertionError: 0 == 0`
   Test: `WorkflowChecks.test_javascript_syntax_failure_stops_step`.
+- MONITOR-ONLY-PLAN: `AssertionError: Lists differ: ['monitor-desktop-light.png'] != ['flows-desktop-dark.png', 'equipment-phone[65 chars]png']`
+  Test: `MonitorCapture.test_monitor_plan_excludes_other_images`.
+- CAPTURE-PROVENANCE: `AssertionError: 'old-source' != 'new-source'`
+  Test: `MonitorCapture.test_old_images_keep_old_provenance`.
+- ABOVE-HORIZON: `AssertionError: True is not false`
+  Test: `MonitorCapture.test_below_horizon_is_not_capture_ready`.
+- HANLE-DECLINATION: `AssertionError: 11.035007662661501 not greater than 60`
+  Test: `MonitorCapture.test_hanle_target_is_above_horizon`.
 
-Unmutated suite: 34 tests passed. No mutant source remains.
+Unmutated suite: 45 tests passed. No mutant source remains.

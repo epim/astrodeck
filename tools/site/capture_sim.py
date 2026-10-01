@@ -5,6 +5,9 @@ No real rig, relay, remote address, survey layer, or saved real site is used.
 """
 from __future__ import annotations
 import argparse
+import copy
+import math
+import runpy
 import os
 import socket
 import sys
@@ -18,6 +21,116 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+MONITOR_FILE = "monitor-desktop-light.png"
+PUBLIC_SITE = {"name": "Synthetic public Siding Spring", "latitude": -31.27,
+               "longitude": 149.06, "elevation_m": 0.0}
+PUBLIC_SCENARIOS = {
+    "siding-spring": (PUBLIC_SITE, -45.0),
+    "hanle": ({"name": "Synthetic public Hanle Indian Astronomical Observatory",
+               "latitude": 32.78, "longitude": 78.96, "elevation_m": 0.0}, 20.0),
+}
+CAPTURE_PLAN = [
+    ("flows-desktop-dark.png", "/session/flows", 1440, 1000, "dark"),
+    ("equipment-phone-light.png", "/rig/devices", 390, 844, "light"),
+    ("equipment-phone-night.png", "/rig/devices", 390, 844, "dark"),
+    (MONITOR_FILE, "/monitor/live", 1440, 1000, "light"),
+]
+
+
+def capture_plan(monitor_only: bool, synthetic_site: str | None):
+    if bool(synthetic_site) != monitor_only or synthetic_site not in {None, *PUBLIC_SCENARIOS}:
+        raise ValueError("Monitor-only capture requires a supported public synthetic scenario")
+    return [item for item in CAPTURE_PLAN if item[0] == MONITOR_FILE] if monitor_only else list(CAPTURE_PLAN)
+
+
+def require_simulator(status: dict):
+    # The legacy connect_sim path leaves Device.backend empty. These are
+    # consistency checks after fresh-process ownership, not authority on their own.
+    devices = status.get("connected", {})
+    expected = {"camera": "Sim Camera 533MM", "telescope": "Sim Mount EQ6-R"}
+    if (status.get("mode") != "sim"
+            or any(not devices.get(role, {}).get("connected")
+                   or devices.get(role, {}).get("name") != name for role, name in expected.items())
+            or any(item.get("connected") and (item.get("backend") not in {"", "sim"}
+                   or item.get("host") or item.get("port") not in {None, 0}) for item in devices.values())):
+        raise ValueError("Capture requires connected simulator devices only")
+    return status
+
+
+def simulator_status(request):
+    response = request.get("/api/status")
+    if not response.ok:
+        raise ValueError("Simulator status request failed")
+    return require_simulator(response.json())
+
+
+def synthetic_target(unix_time: float, synthetic_site: str = "siding-spring"):
+    site, declination = PUBLIC_SCENARIOS[synthetic_site]
+    # Load the repository's stdlib-only coordinate module, without app/config imports.
+    coords = runpy.run_path(str(ROOT / "server/astrodeck/catalog/coords.py"))
+    return {"ra_hours": (coords["lst_hours"](site["longitude"], unix_time) + 1.0) % 24,
+            "dec_deg": declination, "center": False, "force": False}
+
+
+def above_horizon_target(status: dict, target: dict):
+    mount = status.get("mount", {})
+    try:
+        altitude = float(mount["alt"])
+        ra_error = abs((float(mount["ra_hours"]) - target["ra_hours"] + 12) % 24 - 12)
+        dec_error = abs(float(mount["dec_deg"]) - target["dec_deg"])
+        # The unsynced simulator deliberately lands with 0.028 degree DEC error.
+        return (math.isfinite(altitude) and altitude > 30 and ra_error < 0.01 and dec_error < 0.1
+                and mount.get("slewing") is False and mount.get("parked") is False)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def seed_monitor_scenario(request, synthetic_site: str = "siding-spring"):
+    site_config, declination = PUBLIC_SCENARIOS[synthetic_site]
+    simulator_status(request)
+    response = request.put("/api/site", data={"site": site_config})
+    if not response.ok:
+        raise RuntimeError("Synthetic public site save refused")
+    status = simulator_status(request)
+    site = status.get("site", {})
+    if site.get("is_default") is not False or any(site.get(key) != value for key, value in site_config.items()):
+        raise RuntimeError("Synthetic public site was not saved")
+    target = synthetic_target(time.time(), synthetic_site)
+    response = request.post("/api/mount/goto", data=target)
+    if not response.ok:
+        raise RuntimeError("Simulator target slew refused")
+    deadline = time.monotonic() + 35
+    while time.monotonic() < deadline:
+        if above_horizon_target(simulator_status(request), target):
+            return {"id": "public-" + synthetic_site, "site": dict(site_config),
+                    "site_origin": "Fixed approximate public location used only in a fresh synthetic fixture.",
+                    "mount": f"Simulator slewed one hour east of the meridian at declination {declination:g}; settled above 30 degrees verified before capture.",
+                    "exposure_s": 1.0, "saved_frame": False}
+        time.sleep(0.25)
+    raise RuntimeError("Simulator did not settle on the above-horizon target")
+
+
+def merged_provenance(previous: dict, records: list, context: dict, monitor_only: bool):
+    # Older ledgers had global provenance. Preserve that source for untouched files.
+    inherited = {k: v for k, v in previous.items() if k not in {"captures", "schema_version", "description"}}
+    old = []
+    for item in previous.get("captures", []):
+        record = copy.deepcopy(item)
+        record.setdefault("provenance", copy.deepcopy(inherited))
+        old.append(record)
+    if monitor_only:
+        expected = {"site/assets/screenshots/" + item[0] for item in CAPTURE_PLAN}
+        if {r["file"] for r in old} != expected or len(old) != len(expected):
+            raise ValueError("Monitor-only capture requires a complete prior ledger")
+        if [r["file"] for r in records] != ["site/assets/screenshots/" + MONITOR_FILE]:
+            raise ValueError("Monitor-only capture may replace only the Monitor record")
+    fresh = {r["file"]: dict(r, provenance=copy.deepcopy(context)) for r in records}
+    combined = [fresh.pop(r["file"], r) for r in old] if monitor_only else []
+    combined.extend(fresh.values())
+    return {"schema_version": 2, "description": "Each image retains its own capture source and scenario.",
+            "captures": combined}
 
 
 def checked_config(config: Path, port: int):
@@ -122,7 +235,10 @@ def main():
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--ui-dir", type=Path, required=True)
     parser.add_argument("--venv-python", type=Path, required=True)
+    parser.add_argument("--monitor-only", action="store_true")
+    parser.add_argument("--synthetic-site", choices=list(PUBLIC_SCENARIOS))
     args = parser.parse_args()
+    capture_plan(args.monitor_only, args.synthetic_site)
     if os.name != "nt":
         raise ValueError("Capture process ownership check currently supports Windows only")
     config, captures_dir = fresh_paths(args.config_dir, args.port)
@@ -155,26 +271,27 @@ def capture(args, config):
     base = f"http://127.0.0.1:{args.port}"
     out = ROOT / (".probe/site-screenshots" if args.inspect else "site/assets/screenshots")
     out.mkdir(parents=True, exist_ok=True)
-    captures = [
-        ("flows-desktop-dark.png", "/session/flows", 1440, 1000, "dark"),
-        ("equipment-phone-light.png", "/rig/devices", 390, 844, "light"),
-        ("equipment-phone-night.png", "/rig/devices", 390, 844, "dark"),
-        ("monitor-desktop-light.png", "/monitor/live", 1440, 1000, "light"),
-    ]
+    captures = capture_plan(args.monitor_only, args.synthetic_site)
+    ledger_path = ROOT / "tools/site/screenshot-provenance.json"
+    previous = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {}
+    if args.monitor_only:
+        merged_provenance(previous, [{"file": "site/assets/screenshots/" + MONITOR_FILE}], {}, True)
+    scenario = {"id": "default-site", "site_origin": "Fresh simulator default site untouched."}
     records = []
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, ignore_default_args=["--hide-scrollbars"])
         request = pw.request.new_context(base_url=base)
-        response = request.get("/api/status")
-        if not response.ok or response.json().get("mode") != "sim":
-            raise ValueError("Server did not prove simulator mode")
-        # Use the repository's synthetic M31 mosaic fixture, only saved, never run.
-        spec = json.loads((ROOT / "tools/ui_probe/routes_s5_s6.json").read_text(encoding="utf-8"))
-        seed = next(item["save_flow"] for item in spec["seed"] if "save_flow" in item)
-        flow = {"id": "site-m31-mosaic", "name": "M31 mosaic", "folder": "My flows", "graph": seed["graph"]}
-        saved = request.post("/api/flows", data={"flow": flow})
-        if not saved.ok:
-            raise RuntimeError(f"Could not save synthetic example flow: HTTP {saved.status}")
+        simulator_status(request)
+        if args.monitor_only:
+            scenario = seed_monitor_scenario(request, args.synthetic_site)
+        else:
+            # Use the synthetic M31 mosaic fixture, only saved, never run.
+            spec = json.loads((ROOT / "tools/ui_probe/routes_s5_s6.json").read_text(encoding="utf-8"))
+            seed = next(item["save_flow"] for item in spec["seed"] if "save_flow" in item)
+            flow = {"id": "site-m31-mosaic", "name": "M31 mosaic", "folder": "My flows", "graph": seed["graph"]}
+            saved = request.post("/api/flows", data={"flow": flow})
+            if not saved.ok:
+                raise RuntimeError(f"Could not save synthetic example flow: HTTP {saved.status}")
         exposure = request.post("/api/capture", data={"exposure_s": 1.0, "save": False})
         if not exposure.ok:
             raise RuntimeError(f"Simulator exposure refused: HTTP {exposure.status}")
@@ -196,6 +313,12 @@ def capture(args, config):
                 page.wait_for_timeout(900)
                 page.get_by_role('button', name='FIT', exact=True).click()
                 page.wait_for_timeout(200)
+            if args.monitor_only:
+                visible = page.locator("body").inner_text().lower()
+                if "no dark tonight" in visible or "mount is pointing below the horizon" in visible:
+                    raise RuntimeError("Monitor still shows the invalid default-site scenario")
+                if any(str(scenario["site"][key]) in visible for key in ("latitude", "longitude")):
+                    raise RuntimeError("Synthetic site coordinates appeared in the capture view")
             if args.inspect:
                 print(f"Captured preview {name}")
             path = out / name
@@ -207,16 +330,17 @@ def capture(args, config):
             context.close()
         browser.close()
     if not args.inspect:
-        ledger = {"captured_utc": datetime.now(timezone.utc).isoformat(),
-                  "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-                  "config_dir": config.relative_to(ROOT).as_posix(), "port": args.port,
-                  "launcher": "capture_sim.py owns server_ctl.py start --fresh and stop",
-                  "ownership": "New config and captures; fresh probe process tree owns loopback listener; directories never reused.",
-                  "source": "fresh local simulator; no rig or relay; default site untouched",
-                  "survey": "No Atlas/Sky survey view captured; external browser requests blocked.",
-                  "visual_review": "Pending: inspect every image before committing.",
-                  "captures": records}
-        (ROOT / "tools/site/screenshot-provenance.json").write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+        context = {"captured_utc": datetime.now(timezone.utc).isoformat(),
+                   "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                   "config_dir": config.relative_to(ROOT).as_posix(), "port": args.port,
+                   "launcher": "capture_sim.py owns server_ctl.py start --fresh and stop",
+                   "ownership": "New config and captures; fresh probe process tree owns loopback listener; directories never reused.",
+                   "source": "Fresh local simulator; no rig or relay; scenario records the synthetic site.",
+                   "scenario": scenario,
+                   "survey": "No Atlas/Sky survey view captured; external browser requests blocked.",
+                   "visual_review": "Pending: inspect the new image before committing."}
+        ledger = merged_provenance(previous, records, context, args.monitor_only)
+        ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
     print(f"Captured {len(records)} simulator views in {out.relative_to(ROOT)}")
 
 
