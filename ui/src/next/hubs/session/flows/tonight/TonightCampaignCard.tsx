@@ -19,34 +19,45 @@
 //
 // CAMPAIGN survives a refusal: `_campaign` reads the GRAPH, not the ephemeris,
 // so "no site is set" does not stop it saying which members owe what.
+//
+// A NULL QUOTA IS NOT ZERO EITHER (#424). A POOL quota the server cannot count
+// against ("inf", 0, a negative) comes back null, with the reason in `note`.
+// The head then gives the member count alone and a bar announces no maximum,
+// where both used to say 0 right above the note saying there is no count.
 
 import type { JSX } from "react";
 
-import {
-  memberStatus,
-  type CampaignMember, type CampaignRead,
-} from "../../../../../components/flows/TonightCampaign";
+import { memberStatus } from "../../../../../components/flows/TonightCampaign";
 import { Card, Label, Mono } from "../../../../ui";
+import {
+  campaignHead,
+  type TonightCampaignMember, type TonightCampaignRead,
+} from "./tonightModel";
 
-function MemberRow({ m }: { m: CampaignMember }): JSX.Element {
+function MemberRow({ m }: { m: TonightCampaignMember }): JSX.Element {
   // Shape and word as well as colour: a DONE row already differs by its text,
   // and the fill token follows rather than leads.
   const tone = m.banked === null ? "faint" : m.done ? "good" : "accent";
   const fill = m.done ? "var(--good)" : "var(--accent)";
+  // The shared `memberStatus`, which since the S7 integration takes a null
+  // quota itself (no "of N" to print, #424) for this card and the classic
+  // panel alike.
+  const status = memberStatus(m);
   return (
     <div className="nx-tn-member" data-testid={`tonight-member-${m.name}`}>
       <div className="nx-tn-member-head">
         <span className="nx-tn-member-name">{m.name}</span>
-        <span className="nx-tn-member-status" data-tone={tone}>{memberStatus(m)}</span>
+        <span className="nx-tn-member-status" data-tone={tone}>{status}</span>
       </div>
       <div
         className="nx-tn-member-track"
         role="progressbar"
         aria-label={`${m.name} campaign progress`}
         aria-valuemin={0}
-        aria-valuemax={m.quota}
+        // No quota, no maximum: React writes no attribute for undefined.
+        aria-valuemax={m.quota ?? undefined}
         aria-valuenow={m.banked ?? undefined}
-        aria-valuetext={memberStatus(m)}
+        aria-valuetext={status}
       >
         {m.pct !== null && (
           <div
@@ -62,7 +73,7 @@ function MemberRow({ m }: { m: CampaignMember }): JSX.Element {
 /** The honesty line, and it says a different thing in each case rather than one
  *  hedge that covers all of them. A hedge that fits every state is one nobody
  *  reads. */
-function honestyLine(campaign: CampaignRead): string {
+function honestyLine(campaign: TonightCampaignRead): string {
   if (!campaign.has_pool) {
     return "Progress is per pool member, so a flow with a single TARGET has nothing to track here.";
   }
@@ -74,7 +85,7 @@ function honestyLine(campaign: CampaignRead): string {
 }
 
 export function TonightCampaignCard({ campaign }: {
-  campaign: CampaignRead | null;
+  campaign: TonightCampaignRead | null;
 }): JSX.Element {
   if (!campaign) {
     return (
@@ -88,11 +99,7 @@ export function TonightCampaignCard({ campaign }: {
     <Card tone="purple" className="nx-tn-camp" data-testid="tonight-campaign">
       <div className="nx-tn-camp-head">
         <Label size={10}>CAMPAIGN LEDGER</Label>
-        <Mono size={10} tone="dim">
-          {campaign.members.length === 0
-            ? "no pool members"
-            : `${campaign.members.length} pool members · ${campaign.quota} cycles each`}
-        </Mono>
+        <Mono size={10} tone="dim">{campaignHead(campaign)}</Mono>
       </div>
 
       {campaign.members.length > 0 && (

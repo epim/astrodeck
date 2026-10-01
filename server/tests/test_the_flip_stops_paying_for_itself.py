@@ -34,6 +34,8 @@ import time
 
 import pytest
 
+from _simhub import a_real_site
+
 import astrodeck.hub as hub_module
 import astrodeck.sequence.engine as engine_mod
 from astrodeck.devices.base import PierSide
@@ -44,11 +46,38 @@ from astrodeck.sequence.engine import (FRESH_FOCUS_S,
 from astrodeck.sequence.models import ExposureStep, Target
 
 
+@pytest.fixture(autouse=True)
+def _a_store_of_its_own(tmp_path, monkeypatch):
+    """Every test here gets its own config store, set up before `sim_hub`
+    patches the cache: the singleton repointed at a file under tmp_path with
+    its cache dropped, both through monkeypatch. The refocus cases save the
+    temperature and position they anchored at (`_anchor_temp_comp`), and
+    used to leave them on the process-wide config for every later test on
+    the worker (#227).
+
+    Without the two lines, the conftest guard errors at teardown
+    (4 in this file alone, observed): "test_the_swap_is_announced
+    left the process-wide config changed: focus.temp_comp.reference_position."
+
+    Here and not in `sim_hub`, which two other files import. One of them,
+    `test_the_mount_floor_needs_a_site.py`, is where #227's leak was, and it
+    keeps writing the shared store on purpose: its fix is graded by the
+    conftest guard catching that leak when it is put back."""
+    monkeypatch.setattr(hub_module.config_store, "_path",
+                        tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module.config_store, "_cfg", None)
+
+
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(hub_module.config_store.cfg().safety,
                         "solar_avoidance", False)
+    # A REAL SITE BEFORE THE HUB (#24). This fixture does not isolate
+    # the config store, so without it the hub comes up on the 0,0
+    # default and every meridian number below is computed for the Gulf
+    # of Guinea.
+    a_real_site(monkeypatch)
     h = Hub()
     await h.connect_sim()
     yield h
@@ -293,6 +322,89 @@ class TestAFlipThatDidNotFlipPaysForNothing:
             "nothing moved")
         assert e._flip_armed is True, "the crossing's one flip was spent anyway"
         assert any("says the opposite" in m for m in msgs), msgs
+
+
+# ------------------------------------------- 1b. where the one retry is spent
+
+class TestTheRetryIsSpentAtTheCrossing:
+    """ISSUE #25, and the reason it was never explained: the retry DID fire.
+
+    Two nights of the durable log say so, and they say the same thing twice.
+    On 2026-09-11 (captures/logs/2026-09-10.jsonl) the lead-time attempt ran at
+    00:12:59, was refused by a mount that had already stopped tracking, took
+    the park/unpark recovery, re-slewed at 00:17:10, came back still on pier
+    side west, and armed the latch at 00:17:35 with the lead dropped. One more
+    frame was exposed (0326, saved 00:21:16). The retry fired at 00:22:57, the
+    guider discarded its calibration at 00:24:25, and the flip completed west
+    to east at 00:31:13. On 2026-09-12: armed 00:10:39, retry 00:19:00,
+    complete 00:28:38. Neither night has a latch that produced nothing.
+
+    What makes that work is not the arming, which two cases above already pin.
+    It is WHERE the one retry is spent. With the lead dropped to zero the
+    engine holds the retry for the crossing itself, because that is the first
+    moment a GoTo unambiguously selects the far side; spend it any earlier and
+    it is a second no-op, and a second no-op does NOT re-arm (the key is
+    already in `_flip_no_op`, bounded at one retry per target). The latch would
+    then be gone with the mount still east, which is precisely the shape #25
+    describes - so the timing is the whole of the behaviour, and nothing
+    covered it.
+
+    MUTATIONS RUN, and what each printed:
+
+      M1, delete the `_flip_no_op` branch of `_flip_lead_s` so the retry keeps
+      the full 10 min lead. Both cases red. The first on its premise,
+      `assert 600.0 == 0.0`; the second on the load-bearing assertion, "the
+      retry waited for a lead point rather than for the meridian itself: []" -
+      the retry fired at once, 9 min early, with no hold.
+
+      M2, `self._flip_armed = True` -> `False` in the no-op branch, which is
+      the literal state #25 reports. Both cases red: "premise: the no-op armed
+      the retry" and the same empty hold list, because an unarmed engine
+      returns from the next check without doing anything at all.
+    """
+
+    async def test_the_retry_is_not_spent_before_the_crossing(self, sim_hub,
+                                                              monkeypatch):
+        """The frame after the no-op must EXPOSE, not re-slew. The crossing is
+        still ~9 min out and the frame is 180 s, so the flip point is beyond
+        this frame's window and the one retry is not owed yet."""
+        e, t, st = _flip_engine(sim_hub, monkeypatch, the_slew_flips=False)
+        await e._maybe_meridian_flip(t, next_exposure_s=180.0)
+        assert e._flip_armed is True, "premise: the no-op armed the retry"
+        assert e._flip_lead_s(t) == 0.0, "premise: the lead was dropped"
+        slews, holds = len(st["gotos"]), len(st["holds"])
+
+        await e._maybe_meridian_flip(t, next_exposure_s=180.0)
+
+        assert len(st["gotos"]) == slews, (
+            "the one retry was spent ~9 min before the meridian, where this "
+            "mount's GoTo cannot select the far side - it would be a second "
+            "no-op, and a second no-op does not re-arm, so the night would "
+            "carry on west with no flip owed and nothing saying so")
+        assert len(st["holds"]) == holds, "held on a frame it should have shot"
+        assert e._flip_armed is True, "the retry is still owed"
+
+    async def test_the_retry_holds_for_the_meridian_and_then_flips(
+            self, sim_hub, monkeypatch):
+        """And when the frame window does reach the crossing, the hold is for
+        the MERIDIAN (lead zero), not for the lead point that has already been
+        shown not to work on this mount. The flip that follows it is the real
+        one: 00:22:57 to 00:31:13 on the night above."""
+        e, t, st = _flip_engine(sim_hub, monkeypatch, the_slew_flips=False)
+        await e._maybe_meridian_flip(t, next_exposure_s=180.0)
+        assert st["holds"] == [], (
+            "premise: the lead-time attempt fired without holding")
+        slews = len(st["gotos"])
+        st["flips"] = True                    # this time the mount really swaps
+
+        await e._maybe_meridian_flip(t, next_exposure_s=1200.0)
+
+        assert st["holds"] == [0.0], (
+            f"the retry waited for a lead point rather than for the meridian "
+            f"itself: {st['holds']}")
+        assert len(st["gotos"]) == slews + 1, "the retry never re-slewed"
+        assert st["side"] == "east", "the retry did not change the pier side"
+        assert e._flip_armed is False, "the crossing's flip is spent"
 
 
 # ------------------------------------------------- 2. the sweep through L

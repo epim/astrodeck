@@ -118,10 +118,26 @@ let serverRows: any[] = [];
 let listFails = 0;
 /** `{status, body}` for the next activate POST, or null for success. */
 let activatePosts: ({ status: number; body: any } | null)[] = [];
-/** The id whose active pointer the server has agreed to move, and the earliest
- *  moment it will admit to it. A list before that reads the OLD rig, which is
- *  exactly what `_spawn_connect` does. */
-let pendingActive: { id: string; notBefore: number } | null = null;
+/** The id whose active pointer the server has agreed to move, and WHEN it will
+ *  admit to it. A list before that reads the OLD rig, which is exactly what
+ *  `_spawn_connect` does.
+ *
+ *  Two ways to say "not yet", and the choice matters (issue #115):
+ *
+ *  `notBefore` is a wall-clock instant, which is what the activate path sets
+ *  because that is what the real route does - a second of teardown, and the
+ *  test only cares that a re-list during it reads the previous rig.
+ *
+ *  `afterLists` is a COUNT: the pointer moves on the Nth list, whenever that
+ *  arrives. The drift check needs a known number of polls, and expressing it as
+ *  a clock margin made the machine's scheduler part of the assertion: the
+ *  fixture flipped 120 ms out while the helper polls every 100 ms, so a 20 ms
+ *  overshoot turned two polls into one and the suite failed under parallel load
+ *  while four isolated runs passed. */
+let pendingActive:
+  | { id: string; notBefore: number; afterLists?: undefined }
+  | { id: string; afterLists: number; notBefore?: undefined }
+  | null = null;
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
@@ -148,9 +164,14 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
 
   if (method === "GET" && /\/api\/profiles$/.test(u)) {
     if (listFails) { listFails -= 1; return fail(500, { detail: "the library is unreadable" }); }
-    if (pendingActive && Date.now() >= pendingActive.notBefore) {
-      for (const r of serverRows) r.active = r.id === pendingActive.id;
-      pendingActive = null;
+    if (pendingActive) {
+      const due = pendingActive.afterLists !== undefined
+        ? (pendingActive.afterLists -= 1) <= 0
+        : Date.now() >= pendingActive.notBefore;
+      if (due) {
+        for (const r of serverRows) r.active = r.id === pendingActive.id;
+        pendingActive = null;
+      }
     }
     return ok(clone(serverRows));
   }
@@ -621,9 +642,22 @@ await testAsync("no drift: next's waitForProfileActive agrees with the legacy or
   // Same server, same budget, same interval: both must poll, both must hand the
   // caller every set of rows they see, and both must resolve with the rows the
   // moment the pointer moves.
+  //
+  // The server holds the pointer for exactly one list and moves it on the
+  // second, by COUNT and not by clock (issue #115). It used to flip 120 ms out
+  // against a 100 ms interval, so a 20 ms scheduling overshoot under parallel
+  // load made the first poll succeed and the counts disagree - a drift detector
+  // crying wolf, which is how a drift detector gets muted.
+  //
+  // The count-driven fixture still catches real drift, checked both ways:
+  // MUTATION: `return rows` in place of the copy's `if (rows.some(...)) return
+  // rows`. Observed 15/17 - this case on "expected p-b, got p-a", and the
+  // body-comparison case beside it.
+  // MUTATION: replace the copy's `await new Promise(r => setTimeout(r,
+  // everyMs))` with a no-op. Observed 15/17 again, the same pair.
   const run = async (fn: typeof mine.waitForProfileActive) => {
     serverRows = [clone(ROW_A), clone(ROW_B)];
-    pendingActive = { id: "p-b", notBefore: Date.now() + 120 };
+    pendingActive = { id: "p-b", afterLists: 2 };
     const seen: number[] = [];
     const out = await fn("p-b", (rows) => seen.push(rows.length), 900, 100);
     return { seen, active: out?.find((r) => r.active)?.id ?? null };
@@ -632,6 +666,14 @@ await testAsync("no drift: next's waitForProfileActive agrees with the legacy or
   const b = await run(legacy.waitForProfileActive);
   eq(a.active, "p-b", "next's copy did not resolve with the rows once the pointer moved");
   eq(a.active, b.active, "the two copies disagree about which profile landed");
+  // EXACTLY two, on each copy, and not merely the same as each other. With a
+  // count-driven server both copies stop at the flip, so comparing them to one
+  // another is close to true by construction; what is worth asserting is that
+  // each one polled AGAIN after reading a pointer that had not moved. A copy
+  // that accepted the first, stale read would report one - and would also fail
+  // the `active` assertion above, which is the pair working together.
+  eq(a.seen.length, 2, "next's copy did not poll a second time after a stale read");
+  eq(b.seen.length, 2, "the legacy copy did not poll a second time after a stale read");
   eq(a.seen.length, b.seen.length, "the two copies polled a different number of times");
 
   // And the lapsed-budget answer, which is the one a failed connect takes.

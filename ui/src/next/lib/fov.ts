@@ -1,10 +1,22 @@
 // fov.ts - field-of-view, sampling and mosaic math for the Settings "Optics"
-// sheet and the Sky hub's framing card (README "11. Settings" -> Optics sheet;
-// "Formulas to lift" -> FoV + Mosaic):
+// sheet (README "11. Settings" -> Optics sheet; "Formulas to lift" -> FoV +
+// Mosaic):
 //
 //   fovW = 2*atan(sensorW / 2 / (fl*reducer)), fovH likewise
 //   sampling = 206.265 * px_um / fl_mm  ("/px; under-sampled > 2", over-sampled < 0.7"
-//   panel pitch = FoV*(1 - overlap); panels cycle every pass
+//   panel pitch = FoV*(1 - overlap)
+//
+// The Sky hub's framing card does not read this module: its panels come from
+// the server (`hubs/sky/frame/mosaic.ts`) with `lib/framing.ts` as the offline
+// mirror. The README's formula list also gave the panels a fixed rotation from
+// pass to pass, and no night takes that order - see `panelOrder` (#154).
+//
+// THE OVERLAP DEFAULT IS NOT THIS FILE'S. `mosaicPitch` defaults to
+// `lib/framing.ts`'s `DEFAULT_OVERLAP`, the one overlap every framing starts
+// from (spec 2026-09-23 flows mosaic, 2.4). It said 0.15, the README's number,
+// while the Atlas, the Target modal and the server said 0.25, so the Optics
+// preview priced a mosaic at a pitch no framing of it would be laid out at.
+// That one constant is the only thing imported from there.
 //
 // NOTE on reuse: `ui/src/lib/framing.ts` already has `fovFromOptics` and
 // `mosaicGrid`, but they solve a different problem (the live Atlas overlay: FOV
@@ -12,9 +24,11 @@
 // panels as real J2000 RA/Dec coordinates for plate-solved centering). This
 // module implements the README's own atan()-based, mm-input formula for the
 // Optics preview screen verbatim (worked example: 23.5mm sensor at 530mm,
-// reducer 1 -> 2.54 deg, matching the README), plus a simpler panel-INDEX
-// cycling order (`panelOrder`) for capture planning, not sky coordinates. The
-// two modules are deliberately not merged.
+// reducer 1 -> 2.54 deg, matching the README), plus a panel-INDEX order
+// (`panelOrder`), not sky coordinates, that only its test calls. The two
+// modules are deliberately not merged.
+
+import { DEFAULT_OVERLAP } from "../../lib/framing";
 
 const R2D = 180 / Math.PI;
 export const ARCSEC_PER_RAD = 206.265;
@@ -57,16 +71,27 @@ export function samplingVerdict(v: number): SamplingVerdict {
   return "well sampled";
 }
 
-/** Mosaic panel pitch in degrees: `fov * (1 - overlap)`. */
-export function mosaicPitch(fovDegValue: number, overlap = 0.15): number {
+/** Mosaic panel pitch in degrees: `fov * (1 - overlap)`, the overlap a
+ *  fraction, `DEFAULT_OVERLAP` when none is given. */
+export function mosaicPitch(fovDegValue: number, overlap = DEFAULT_OVERLAP): number {
   return fovDegValue * (1 - overlap);
 }
 
 /**
- * Row-major panel indices for a `cols` x `rows` mosaic, rotated so each `pass`
- * starts on a different panel (README: "the flow centres on each panel and
- * cycles panels every pass so a shortened night leaves every panel with
- * data"). `pass` 0 starts at panel 0; pass 1 starts at panel 1; etc, wrapping.
+ * Row-major panel indices for a `cols` x `rows` mosaic, rotated so pass `k`
+ * starts on panel `k` modulo the panel count: pass 0 starts at panel 0, pass 1
+ * at panel 1, and so on, wrapping.
+ *
+ * NOTHING SHOOTS IN THIS ORDER, and only its test calls it. It was written for
+ * the design README's rotating mosaic, and the Sky copy used to promise that
+ * rotation as if the night kept it (#154). Until S6 a Sky mosaic reached the
+ * classic Plan as targets sharing one `mosaic_group`, shot panel-first. Since
+ * S6 (#196) it reaches the night through Send to Flow Wizard as one TARGET
+ * block, and the engine picks each visit from what every panel has banked
+ * (the block's `order`, least complete first by default, spec D3), which no
+ * fixed rotation reproduces. The order a night takes is the engine's to
+ * decide; anything that wants to show it must read it from the server, never
+ * compute it here.
  */
 export function panelOrder(cols: number, rows: number, pass: number): { row: number; col: number }[] {
   const c = Math.max(1, Math.round(cols));

@@ -602,6 +602,15 @@ def test_ws_valid_principal_survives_recheck(tmp_path, monkeypatch):
 
 # ============================== site/sky geolocator strip + visibility gating
 
+
+def _save_a_site(store):
+    """The derived fields are computed from a SAVED site. Without one the route
+    withholds them (#24), and these cases ran at the 0,0 default until then -
+    asserting fields that were the Gulf of Guinea's sun."""
+    from astrodeck.config import Site
+    store.set_site(Site(name="Somewhere", latitude=40.0, longitude=-74.0,
+                        elevation_m=10.0), expected_version=None)
+
 def test_site_sky_strips_geolocators_for_viewer(tmp_path, monkeypatch):
     """A viewer gets NOTHING from /api/site/sky.
 
@@ -624,6 +633,7 @@ def test_site_sky_keeps_the_ephemeris_for_an_operator(tmp_path, monkeypatch):
     and cannot do either blind. Same line the owner already drew for the radar
     map: an operator may learn the site REGION, not the precise fix."""
     store, app = _make_client(tmp_path, monkeypatch)
+    _save_a_site(store)
     _install(principal_for_role("operator"))
     with TestClient(app) as c:
         r = c.get("/api/site/sky").json()
@@ -635,16 +645,24 @@ def test_site_sky_refuses_caller_named_coordinates_for_a_non_holder(tmp_path,
                                                                     monkeypatch):
     """The lat/lon overrides make this an oracle regardless of what the default
     path returns: a caller sweeps candidates and keeps whichever reproduces the
-    readings it already has."""
+    readings it already has.
+
+    RE-PINNED FOR #520, DELIBERATELY. The named coordinates used to ride the
+    query string (`GET /api/site/sky?lat=&lon=`), where every hop's access log
+    writes them down. They are a POST body now, and the rule this case holds is
+    unchanged: a caller without view.site_precise is refused. The GET form is
+    refused for everybody (test_h4_site_sky_preview_post)."""
     store, app = _make_client(tmp_path, monkeypatch)
     _install(principal_for_role("operator"))
     with TestClient(app) as c:
-        assert c.get("/api/site/sky?lat=40&lon=-74").status_code == 403
+        assert c.post("/api/site/sky",
+                      json={"lat": 40, "lon": -74}).status_code == 403
 
 
 def test_site_sky_full_for_admin(tmp_path, monkeypatch):
     """An admin holds view.site_precise -> all four fields present."""
     store, app = _make_client(tmp_path, monkeypatch)
+    _save_a_site(store)
     _install(principal_for_role("admin"))
     with TestClient(app) as c:
         r = c.get("/api/site/sky").json()
@@ -681,6 +699,7 @@ def test_visibility_is_closed_to_a_viewer(tmp_path, monkeypatch):
 def test_visibility_allows_an_operator(tmp_path, monkeypatch):
     """An operator holds view.site_derived and plans targets here."""
     store, app = _make_client(tmp_path, monkeypatch)
+    _save_a_site(store)
     _install(principal_for_role("operator"))
     with TestClient(app) as c:
         assert c.get("/api/visibility?ra=5&dec=10").status_code == 200
@@ -942,6 +961,7 @@ def test_mosaic_transit_alt_needs_a_principal(tmp_path, monkeypatch):
     """
     from astrodeck.auth import CAP_VIEW_SITE_DERIVED
     _store, app = _make_client(tmp_path, monkeypatch)
+    _save_a_site(_store)
     body = {"ra_hours": 5.0, "dec_deg": 10.0, "rows": 2, "cols": 2,
             "fov_x_deg": 1.0, "fov_y_deg": 1.0, "overlap": 0.1,
             "transit_alt": True}

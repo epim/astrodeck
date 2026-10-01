@@ -20,6 +20,7 @@
 
 import { accessPhrase } from "../../../../../lib/caps";
 import { fmtClock } from "../../../../../lib/eta";
+import { mosaicBand } from "../../../../../lib/flowsApi";
 import { fmtTime } from "../../../../../lib/visibility";
 import type { TonightTab } from "../../../../../components/flows/flowsTypes";
 import type {
@@ -98,34 +99,56 @@ export interface TonightRead {
   story: TonightStoryRow[];
   /** The graph read back as prose. "" when the server had no graph. */
   brief: string;
-  campaign: CampaignRead | null;
+  campaign: TonightCampaignRead | null;
 }
+
+/** A pool member as this sheet reads it: the shared `CampaignMember`, whose
+ *  quota may be null. `tonight._campaign` answers null for the quota, the
+ *  campaign's and every member's, when the stored POOL quota is a number but
+ *  no finite count above 0 ("inf", 0, a negative), and says why in its `note`
+ *  (#362 item 4). Read as 0 it headed the card "4 pool members · 0 cycles
+ *  each" above that very note, and gave every bar a maximum of 0 (#424).
+ *  S7-ULAYOUT widened it here, over the shared type; the S7 integration
+ *  widened the shared type itself for the classic panel, which read the same
+ *  0, so these are the shared types by their #/next names. */
+export type TonightCampaignMember = CampaignMember;
+export type TonightCampaignRead = CampaignRead;
 
 /** The campaign block, read totally.
  *
  *  `banked`/`pct` stay null unless the server sent a FINITE NUMBER: a missing
  *  figure and a zero are different answers ("0 of 45 banked" says the rig
  *  looked and found nothing; "not counted" says nobody looked), and only the
- *  first should make an operator re-plan a month. */
-export function readCampaign(raw: Record<string, unknown> | null): CampaignRead | null {
+ *  first should make an operator re-plan a month. `quota` is read the same way
+ *  and for the same reason: a refused quota is no count, not a count of 0. */
+export function readCampaign(raw: Record<string, unknown> | null): TonightCampaignRead | null {
   if (!raw) return null;
   return {
     is_campaign: raw.is_campaign === true,
     has_pool: raw.has_pool === true,
     has_ledger: raw.has_ledger === true,
-    quota: num(raw.quota) ?? 0,
+    quota: num(raw.quota),
     note: str(raw.note),
-    members: arr(raw.members).map((m): CampaignMember => {
+    members: arr(raw.members).map((m): TonightCampaignMember => {
       const r = rec(m);
       return {
         name: r ? str(r.name) : "",
         banked: r ? num(r.banked) : null,
-        quota: (r ? num(r.quota) : null) ?? 0,
+        quota: r ? num(r.quota) : null,
         done: r ? r.done === true : false,
         pct: r ? num(r.pct) : null,
       };
     }).filter((m) => m.name !== ""),
   };
+}
+
+/** The ledger's head: how many members, and how many cycles each owes when
+ *  there is a quota to say. With a refused quota it is the member count
+ *  alone; the `note` beside it is where the reason is given. */
+export function campaignHead(c: TonightCampaignRead): string {
+  const n = c.members.length;
+  if (n === 0) return "no pool members";
+  return c.quota === null ? `${n} pool members` : `${n} pool members · ${c.quota} cycles each`;
 }
 
 export function readTonight(payload: Record<string, unknown> | null): TonightRead | null {
@@ -161,7 +184,12 @@ export function readTonight(payload: Record<string, unknown> | null): TonightRea
       const w = rec(t.window);
       const start = w ? num(w.start_unix) : null;
       const end = w ? num(w.end_unix) : null;
+      // A mosaic block's band (#189 S3), through the one reader both
+      // timelines share. The key is added only when there IS a band, so a
+      // single target's row and a pool member's read exactly as they did.
+      const band = mosaicBand(t.mosaic);
       return {
+        ...(band ? { band } : {}),
         label: str(t.label) || str(t.name),
         window: start !== null && end !== null
           ? { start_unix: start, end_unix: end } : null,

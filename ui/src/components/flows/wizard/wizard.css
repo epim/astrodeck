@@ -1,0 +1,162 @@
+/* wizard.css - Send to Flow Wizard's stepped sheet (#196; spec 2026-09-23
+   flows mosaic, Revision 2 ruling 4, D13). Imported by SendToWizardSheet.tsx,
+   so it arrives with the sheet's lazy chunk and never in front of first paint.
+
+   PLAIN CLASSES, NOT UTILITIES, for the reason framing.css gives: this file is
+   unlayered, so it beats any Tailwind utility on the same element, and one
+   sheet that both UIs mount has to look the same under either UI's chrome.
+   Every colour is an app token (index.css), so the night palette and both
+   themes reach it without a rule here.
+
+   EVERY ROW AND BUTTON IS A 44 PX TOUCH TARGET: the wizard is a door from the
+   phone's Sky FRAME as much as from the desktop Atlas. */
+
+/* The Overlay body scrolls; the header, the step rail and the footer stay.
+   The compound selector outranks `.overlay-body` on specificity, so the load
+   order of the two stylesheets does not matter. */
+.overlay-body.swz-host {
+  display: flex;
+  flex-direction: column;
+}
+
+.swz {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.swz-head {
+  flex: none;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line);
+}
+.swz-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+}
+
+/* The step rail: five words in a row that wraps on a narrow phone rather than
+   scrolling sideways, so no step is ever off the screen. */
+.swz-steps {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 8px 12px;
+  list-style: none;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--text-dim);
+}
+.swz-step.swz-on { color: var(--accent); }
+.swz-rail-btn {
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.swz-body { display: flex; flex-direction: column; padding-bottom: 8px; }
+.swz-section-h {
+  margin: 0;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--text-dim);
+}
+
+.swz-row {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 12px;
+  min-width: 0;
+}
+.swz-chips { flex-wrap: wrap; }
+.swz-label {
+  flex: 0 0 30%;
+  min-width: 0;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+.swz-value { flex: 1 1 auto; min-width: 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.swz-tag {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+.swz-input { flex: 1 1 auto; min-width: 0; min-height: 40px; }
+.swz-exp { flex: 0 0 88px; }
+.swz-unit { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
+.swz-mono { font-family: var(--font-mono); font-size: 12px; }
+.swz-note {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.swz-banner { margin: 4px 12px; padding: 6px 10px; border-left: 3px solid var(--warn); color: var(--text); }
+.swz-loss { border-left-color: var(--bad); }
+.swz-missing { color: var(--warn); }
+.swz-block { padding-bottom: 4px; }
+
+.swz-btn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.swz-btn:hover,
+.swz-btn:focus-visible { border-color: var(--accent); color: var(--accent); }
+.swz-btn.swz-on { border-color: var(--accent); color: var(--accent); background: var(--accent-fill); }
+.swz-filter { flex: 0 0 96px; text-align: left; }
+.swz-primary { font-weight: 600; border-color: var(--accent); color: var(--accent); }
+
+.swz-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.swz-spacer { flex: 1 1 auto; }

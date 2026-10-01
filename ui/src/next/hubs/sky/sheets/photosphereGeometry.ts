@@ -152,6 +152,20 @@ export function targetCell(forward: V3): DomeCell | null {
 
 export interface OverlapCheck { result:'agree'|'conflict'|'unknown'; samples:number; correlation:number|null; featureCorrelation?:number|null }
 
+/** The two terms of an overlap CONFLICT: brightness correlation under this, or
+ *  edge correlation under the next. Named so the capture log can say which one
+ *  refused using the same numbers that decided it (issue #130). */
+export const OVERLAP_BRIGHTNESS_MIN = .35;
+export const OVERLAP_EDGE_MIN = .4;
+
+/** Which term of a conflict fired. Null for anything that is not a conflict. */
+export function overlapConflictTerm(check: OverlapCheck): 'brightness'|'edges'|'both'|null {
+  if (check.result !== 'conflict') return null;
+  const dim = check.correlation !== null && check.correlation < OVERLAP_BRIGHTNESS_MIN;
+  const edge = check.featureCorrelation != null && check.featureCorrelation < OVERLAP_EDGE_MIN;
+  return dim && edge ? 'both' : dim ? 'brightness' : edge ? 'edges' : null;
+}
+
 /** A bounded colour mosaic; frames are projected then discarded. No growing
  * collection of full-resolution phone photographs is retained. */
 export class SkyPanorama {
@@ -208,7 +222,7 @@ export class SkyPanorama {
     let ga=0,gb=0,gab=0;
     for(const [a,b] of gradients){ga+=a*a;gb+=b*b;gab+=a*b;}
     const featureCorrelation=gradients.length>=100&&ga/gradients.length>25&&gb/gradients.length>25?gab/Math.sqrt(ga*gb):null;
-    return {result:correlation<.35 || (featureCorrelation!==null && featureCorrelation<.4)?'conflict':'agree',samples,correlation,featureCorrelation};
+    return {result:correlation<OVERLAP_BRIGHTNESS_MIN || (featureCorrelation!==null && featureCorrelation<OVERLAP_EDGE_MIN)?'conflict':'agree',samples,correlation,featureCorrelation};
   }
   add(data: Uint8ClampedArray, width: number, height: number, basis: CameraBasis, lens=cameraLens(width,height)): void {
     if(data.length!==width*height*4) throw new Error('Camera image is incomplete');

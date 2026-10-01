@@ -92,9 +92,136 @@ const LOGIC_MODULES: Record<string, string> = {
     "2.1 - resolveWheel and the cycle-plan row maths, shared with the Sky hub's quick session.",
   "components/flows/autoLayout":
     "2.1 - the layout solver (flowOrder), used by the phone stage list and the Sky lane.",
+  // Since #189 S5 this module also hands the #/next toolbar and phone stage
+  // sheet the button's words: useFlowRunControls returns runCopy's RUN /
+  // CONTINUE / STOP copy and START OVER, and useFlowRunReadouts the monitor
+  // tiles. So components/flows/runCopy has NO entry of its own, deliberately
+  // (S5/S6 integration, S56-INTEG): no file under next/ imports it, and
+  // flowsDom.test.tsx's dynamic import of START_OVER_TITLE rides that file's
+  // DRIFT_TESTS entry. An entry nothing needs is one whose removal turns
+  // nothing red. The door stays shut instead, and the rule still polices it:
+  // mutant "the #/next toolbar imports runCopy" (FlowCanvasToolbar.tsx taking
+  // HOPS_NOT_COSTED from components/flows/runCopy), observed in the private
+  // copy scratchpad S56-INTEG-mut (7/8):
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   1 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowCanvasToolbar.tsx imports HOPS_NOT_COSTED
+  //   from components/flows/runCopy
   "components/flows/flowRunControls":
     "2.1 - useFlowRunControls, runBlockedReason, isRunPhaseLive: one place decides " +
-    "whether RUN is allowed and what the refusal says.",
+    "whether RUN is allowed and what the refusal says; since S5 #189 also what the button " +
+    "says (the copy, START OVER) and the monitor's readouts (useFlowRunReadouts).",
+  // Mutant "drop the flowLoop entry" went red, verbatim: "2 legacy import(s)
+  // outside the allow-lists: hubs/session/flows/canvas/FlowCanvasSurface.tsx
+  // imports flowLoopRefusal from components/flows/flowLoop; ... imports type
+  // ProposedWire from components/flows/flowLoop".
+  "components/flows/flowLoop":
+    "S0 #149 - flowLoopRefusal and FLOW_LOOP_REFUSAL: the flow-loop rule both drop resolvers " +
+    "and flowsConnect share, in the server sentence; a copy is how two editors drift apart.",
+  // Mutant "drop the flowProgress entry" went red, verbatim: "1 legacy
+  // import(s) outside the allow-lists: hubs/session/flows/canvas/FlowNode.tsx
+  // imports progressChip from components/flows/flowProgress".
+  "components/flows/flowProgress":
+    "S1 #189 - progressChip: the TARGET card's '212/315 subs' chip off the progress route. " +
+    "Both canvases draw it from this one pure formatter, so when a count may be shown (a " +
+    "session, a saved graph, a TARGET block) cannot drift between them.",
+  // The three below arrived with #189 S4 and were recorded by the S4
+  // integration (#400, #406): the #/next canvas, its phone stage list and its
+  // inspector read the mosaic lane, the loop arc and the counts line from the
+  // same pure modules the classic editor does. Each is a .ts file with no JSX
+  // and imports only nodeDefs, geometry, flowsTypes and each other.
+  // Mutant "drop the panelLane entry", observed in scratchpad/s4-integrate-q7m2:
+  //   x every legacy value or type import comes from an allow-listed module: 6
+  //   legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowNode.tsx imports withLoop from
+  //   components/flows/panelLane; ...
+  "components/flows/panelLane":
+    "S4 #189 - withLoop, loopSource, laneTail, panelLane, isMultiPanel, LaneGraph: the mirror " +
+    "of compile.py's lane rules; the #/next card's LOOP PANELS, the phone rail and the " +
+    "inspector read the lane from it, so none can offer or draw a loop the compile does not make.",
+  // Mutant "drop the targetSummary entry", same copy:
+  //   x every legacy value or type import comes from an allow-listed module: 9
+  //   legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowNode.tsx imports targetFooter from
+  //   components/flows/targetSummary; ...
+  "components/flows/targetSummary":
+    "S4 #189 - targetFooter, targetLoops, loopArcOf, loopChip, loopChipBox, LOOP_ARC_DASH, " +
+    "LOOP_CHIP_FONT_PX, LOOP_CHIP_WORDS: one pure module for the card footer, the loop arc, its " +
+    "chip and the phone rail's label, so the two canvases cannot word or draw a loop apart.",
+  // Mutant "drop the countsNotice entry", same copy:
+  //   x every legacy value or type import comes from an allow-listed module: 2
+  //   legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowCanvasToolbar.tsx imports countsNotice from
+  //   components/flows/countsNotice;
+  //   hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx imports countsNotice
+  //   from components/flows/countsNotice
+  "components/flows/countsNotice":
+    "S4 #189, S4 orchestrator ruling 8 - countsNotice: the counts line the #/next toolbar and " +
+    "phone stage list show, in the server's words; a copy would be a second reading of when " +
+    "saving switches a flow's counts.",
+  // #473, S7 orchestrator ruling 1 (S7-URUN): the replay line stands beside
+  // the counts line on the #/next toolbar and phone stage list, as it does in
+  // the classic editor. A .ts file with no JSX that imports only types
+  // (lib/flowsApi, flowsTypes).
+  // Mutant "drop the replayNotice entry", observed in the private copy
+  // scratchpad S7-URUN-mut (7/8):
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   2 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/canvas/FlowCanvasToolbar.tsx imports replayNotice
+  //   from components/flows/replayNotice;
+  //   hubs/session/flows/canvas/FlowStagesPhoneSheet.tsx imports replayNotice
+  //   from components/flows/replayNotice
+  "components/flows/replayNotice":
+    "S7 #473, S7 orchestrator ruling 1 - replayNotice: the line that an armed auto-resume will " +
+    "replay the version its session froze. The #/next toolbar and phone stage list and the classic " +
+    "editor read the one function, so the three cannot disagree on when dusk replays an old version.",
+  // The two below arrived with #189 S5 and #196 S6 and were recorded by the
+  // S5/S6 integration (S56-INTEG), each a DELIBERATE PIN CHANGE: both are .ts
+  // files with no JSX. flowRunState imports lib/lastSessionFrame and types
+  // only; wizardModel imports nodeDefs, framing/framingModel, framing/
+  // framingApi and lib/flowsApi's types, all of them pure.
+  // Mutant "drop the flowRunState entry", observed in the private copy
+  // scratchpad S56-INTEG-mut (7/8):
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   1 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/framing/FlowFrameSheet.tsx imports flowRunLive from
+  //   components/flows/flowRunState
+  // and the other half, mutant "FlowFrameSheet stops asking flowRunLive" (its
+  // import removed and its one reader answering false), observed (7/8):
+  //   x every allow-list entry carries a reason and is still used:
+  //   LOGIC_MODULES["components/flows/flowRunState"] is imported by nothing -
+  //   drop it
+  "components/flows/flowRunState":
+    "S5 #189, spec 2.6 - flowRunLive: whether a run is this flow's (by session id). The " +
+    "#/next flowFrame sheet decides run mode (viewOnly) with the reader the classic host asks, " +
+    "so the two doors cannot disagree on when a flow is running and its Target modal is frozen.",
+  // Mutant "drop the wizardModel entry", same copy (7/8):
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   4 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports prefillFromParams
+  //   from components/flows/wizard/wizardModel;
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports wizardParams from
+  //   components/flows/wizard/wizardModel;
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports
+  //   withoutWizardParams from components/flows/wizard/wizardModel;
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports type
+  //   WizardPrefill from components/flows/wizard/wizardModel
+  "components/flows/wizard/wizardModel":
+    "S6 #196, spec D13 - prefillFromParams, wizardParams, withoutWizardParams, WizardPrefill: " +
+    "the wizard prefill and its wz_* route params. The #/next flowWizard sheet carries the " +
+    "prefill in the route with the shared sheet's own reader, so a reload reopens the wizard " +
+    "the door opened and the two UIs cannot read a door's prefill apart.",
+  // #356, S7: the loop chip on both canvases withholds its count by the
+  // slice's own reader rather than by `dirty`. Recorded by the S7
+  // integration, a DELIBERATE PIN CHANGE. Without this entry (the tree S7
+  // left) the file is 7/8:
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   hubs/session/flows/canvas/FlowWires.tsx imports compiledIsCurrent
+  //   from components/flows/flowsSlice
+  "components/flows/flowsSlice":
+    "S7 #356 - compiledIsCurrent: whether the compile answer in hand is the graph on screen's. " +
+    "Both wire layers withhold the loop chip's count by it, so the two canvases cannot disagree " +
+    "on when a count is true. A slice is section 2.1's shared logic, and the store is built from it.",
   "components/sequence/sessionDates":
     "2.1 - night-boundary maths, shared by the gallery and the files sheet.",
   "components/sequence/stepDefaults":
@@ -321,6 +448,37 @@ const KEEP_AS_IS: Record<string, { names: string[]; why: string }> = {
     why: "app-level: there is ONE sign-in form in the product and NextApp mounts it. " +
       "Rebuilding it would mean two login screens that must never disagree.",
   },
+  // #189 S4, recorded by the S4 integration (#400). Mutant "drop the framing
+  // entry", observed in scratchpad/s4-integrate-q7m2:
+  //   x no legacy presentation component is mounted by the new UI: 1 legacy
+  //   component import(s) with no keep-as-is entry:
+  //   hubs/session/flows/framing/FlowFrameSheet.tsx imports
+  //   TargetFramingSheetLazy from components/flows/framing
+  "components/flows/framing": {
+    names: ["TargetFramingSheetLazy"],
+    why: "S4 #189, spec 2.1 - the Target modal is ONE shared component for both UIs, and " +
+      "the #/next flowFrame sheet mounts it through this lazy door rather than forking its " +
+      "presentation: a second copy would be a second implementation of the DONE lock, the " +
+      "re-frame question and the loop wire. The door keeps the modal out of the sheet's chunk.",
+  },
+  // #196 S6, recorded by the S5/S6 integration (S56-INTEG) as a DELIBERATE
+  // PIN CHANGE. Mutant "drop the wizard entry", observed in the private copy
+  // scratchpad S56-INTEG-mut, both rules red (6/8):
+  //   x no legacy presentation component is mounted by the new UI: 1 legacy
+  //   component import(s) with no keep-as-is entry:
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports
+  //   SendToWizardSheetLazy from components/flows/wizard
+  //   x every legacy value or type import comes from an allow-listed module:
+  //   1 legacy import(s) outside the allow-lists:
+  //   hubs/session/flows/wizard/FlowWizardSheet.tsx imports
+  //   SendToWizardSheetLazy from components/flows/wizard
+  "components/flows/wizard": {
+    names: ["SendToWizardSheetLazy"],
+    why: "S6 #196, spec D13 - Send to Flow Wizard is ONE shared sheet for both UIs, and the " +
+      "#/next flowWizard sheet mounts it through this lazy door rather than forking its " +
+      "presentation: a second copy would be a second implementation of the GENERATE request, " +
+      "the RUN lock and the door's prefill. The door keeps the sheet out of the adapter's chunk.",
+  },
 };
 
 /** Tests that import a legacy module on purpose to pin a COPY against it.
@@ -335,10 +493,18 @@ const DRIFT_TESTS: Record<string, string> = {
     "pins the palette's fallback drop point against components/flows/FlowPalette's.",
   "hubs/sky/__tests__/skyDomeCardDom.test.tsx":
     "mounts the kept SkyDomePanel to prove the card's overlay args reach it.",
+  // The two reasons below were widened by the S5/S6 integration (S56-INTEG)
+  // to name what each file reads: both said runBlockedReason only, while
+  // rule 5 lets a drift test import any module dynamically, so the reason is
+  // the only record of what it pins.
   "hubs/session/flows/__tests__/flowsDom.test.tsx":
-    "reads runBlockedReason, a logic module, through a dynamic import.",
+    "reads runBlockedReason, COUNTS_NOTE, FLOW_SETTINGS, COUNTS_SWITCHED_LINE and (S5 #189) " +
+    "runCopy's START_OVER_TITLE through dynamic imports, to grade the #/next screens in the " +
+    "legacy modules' own words.",
   "hubs/session/flows/canvas/__tests__/canvasDom.test.tsx":
-    "reads runBlockedReason, a logic module, through a dynamic import.",
+    "reads runBlockedReason and createParams through dynamic imports, and mounts the classic " +
+    "FlowPalette rail beside the #/next one to pin that a TARGET dropped from either palette " +
+    "is exactly createParams(\"target\").",
   "hubs/sky/sheets/__tests__/horizonDom.test.tsx":
     "mounts ConfirmHost so a confirm can be asserted.",
   "__tests__/shellDom.test.tsx":
@@ -405,7 +571,28 @@ const IMPORT_FROM_RE = new RegExp(`import\\s+([\\s\\S]*?)\\s+from\\s+(?:${QUOTED
 /** `import(<spec>)` - a dynamic import. */
 const IMPORT_DYN_RE = new RegExp(`import\\(\\s*(?:${QUOTED})\\s*\\)`, "g");
 
-const FILES = walk(NEXT.slice(0, -1)).filter((p) => /\.tsx?$/.test(p) && !p.endsWith(".d.ts"));
+/** A path under a `__tests__` directory, in native form. */
+const isTestFile = (p: string): boolean => p.includes(`${SEP}__tests__${SEP}`);
+
+// #85: test files are scanned only when DRIFT_TESTS names them.
+//
+// The walk used to take every .tsx? under next/, which included this file, and
+// the scan below is a regex over raw source with no concept of a string
+// boundary. A test that writes an illustrative `import X from "..."` as part
+// of its own logic -- not a comment, so comment-stripping does not help -- was
+// read as a real legacy import and failed two rules for a reason unrelated to
+// either. It happened while fixing #39 and was worked around by splitting the
+// keywords across a concatenation, which is memory, not a guarantee.
+//
+// Stripping string contents is not the fix: an import's specifier IS a string
+// literal, so blanking strings blinds the scanner to every path it exists to
+// read. Excluding tests is, because this rule's subject is the SHIPPED new UI
+// and a test file is not shipped. The deliberate exceptions are already
+// enumerated: DRIFT_TESTS is the list of tests that import a legacy module on
+// purpose to pin a copy against it, and those stay scanned.
+const FILES = walk(NEXT.slice(0, -1)).filter((p) =>
+  /\.tsx?$/.test(p) && !p.endsWith(".d.ts")
+  && (!isTestFile(p) || DRIFT_TESTS[p.slice(NEXT.length).replace(/\\/g, "/")] !== undefined));
 
 interface Record_ { file: string; module: string; name: string; typeOnly: boolean; dynamic: boolean }
 
@@ -500,6 +687,37 @@ test("the scan found the legacy imports it is supposed to police", () => {
   assert(cardRecords.length === 3,
     `CalibrationMatrixCard.tsx: expected 3 legacy import bindings, found ${cardRecords.length} - ` +
     "either its imports changed (update this number) or the scanner is missing some");
+});
+
+test("the scan reads test files only where DRIFT_TESTS names them", () => {
+  // #85. The scan is a regex over raw source with no concept of a string
+  // boundary, and it used to include every test file -- including this one.
+  // An illustrative `import X from "..."` written as part of a test's own
+  // logic (not a comment, so comment-stripping misses it) was recorded as a
+  // real legacy import and failed two unrelated rules. The workaround was to
+  // split the keywords across a concatenation, which relies on the next
+  // author remembering.
+  //
+  // MUTATION: drop the `!isTestFile(p) ||` clause from FILES. Observed under
+  // it: this file is scanned as production source again, and the first
+  // assertion below names it.
+  const scannedTests = FILES
+    .filter(isTestFile)
+    .map((p) => p.slice(NEXT.length).replace(/\\/g, "/"));
+  const unexpected = scannedTests.filter((p) => DRIFT_TESTS[p] === undefined);
+  assert(unexpected.length === 0,
+    "test files are being scanned as production source, so their illustrative "
+    + `strings can be read as real imports: ${unexpected.join(", ")}`);
+
+  // The exceptions are still scanned: they are the drift pins, and the whole
+  // reason the copies they guard are allowed to exist.
+  assert(scannedTests.length === Object.keys(DRIFT_TESTS).length,
+    `${scannedTests.length} drift tests scanned but DRIFT_TESTS names `
+    + `${Object.keys(DRIFT_TESTS).length} - a pin is being skipped, so the copy `
+    + "it guards is now unwatched");
+
+  // And the exclusion did not gut the corpus: production modules dominate.
+  assert(FILES.length >= 200, `only ${FILES.length} modules left after the filter`);
 });
 
 // =================================================== 1b. every quote style

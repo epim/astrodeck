@@ -36,6 +36,7 @@ POA_COOLER_POWER = 16     # 0..100 (int, read-only)
 POA_TARGET_TEMP = 17      # deg C (int)
 POA_COOLER = 18           # on/off (bool)
 POA_HEATER_POWER = 20     # dew heater 0..100 (int)
+POA_FAN_POWER = 21        # hot-side fan 0..100 (int); observed default 70 (#22)
 # POAImgFormat
 POA_RAW8 = 0
 POA_RAW16 = 1

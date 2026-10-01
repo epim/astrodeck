@@ -9,7 +9,7 @@
 // byte-identical files.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,8 +17,8 @@ import { deflateSync } from 'node:zlib';
 import { decodePng, encodePng, pngChunk, PNG_SIGNATURE } from '../__sim__/png';
 import { createHarness, resample } from '../__sim__/harness';
 import { mergeObservations, replayCase, type Observation } from '../__sim__/replay';
-import { DOME_CELLS } from '../photosphereGeometry';
-import { endsOverlapRun, LENS_DOUBT_AFTER, type CaptureOutcome } from '../photosphere';
+import { DOME_CELLS, OVERLAP_BRIGHTNESS_MIN, OVERLAP_EDGE_MIN, overlapConflictTerm } from '../photosphereGeometry';
+import { endsOverlapRun, extendsOverlapRun, LENS_DOUBT_AFTER, traceSkyCoverage, traceSweep, type CaptureOutcome } from '../photosphere';
 
 let passed = 0, failed = 0, skipped = 0;
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -290,6 +290,12 @@ const OUTCOME_ENDS_RUN: Record<CaptureOutcome, boolean> = {
   // at one and the lens cue is dead code; counting `no-target` as one delays
   // it on the wrong-lens recording from the 9th refusal to the 24th of 25.
   'overlap-wait': false,
+  // Issue #95 split the carried-correction refusal off `overlap-wait`. It is a
+  // refusal to match like the run itself, not a grab that ended before the
+  // test, so it EXTENDS a run: on an uncalibrated lens it is the refusal a
+  // wrong lens produces, and resetting on it would break the run at its
+  // strongest evidence.
+  'carry-too-large': false,
   'alignment-wait': false,
   'too-soon': false,
   'no-target': false,
@@ -532,7 +538,7 @@ const replayRecorded = (caseId: string) => replayFrom(join(CASES, caseId));
 function longestOverlapRun(captures: { outcome: CaptureOutcome }[]): number {
   let run = 0, longest = 0;
   for (const record of captures) {
-    if (record.outcome === 'overlap-wait') { run++; longest = Math.max(longest, run); }
+    if (extendsOverlapRun(record.outcome)) { run++; longest = Math.max(longest, run); }
     else if (endsOverlapRun(record.outcome)) run = 0;
   }
   return longest;
@@ -591,12 +597,95 @@ else await test(QUIET, () => {
   // Observed red.
 });
 
+const TERMS = 'replay: every overlap-wait says which term refused, on the numbers that decided it (#130)';
+if (!wrongLens) skip(TERMS, NO_RECORDING);
+else await test(TERMS, () => {
+  // `overlap-wait` was one name for a brightness conflict, an edge conflict
+  // and both, with none of the numbers - the gap `alignment-wait` had before
+  // #76 instrumented it. The wrong-lens scan is the one that refuses often
+  // enough to grade this on every record rather than on one.
+  // Mutation: drop `overlapTerm` from the overlap-wait recordCapture. Observed
+  // red: 'an overlap-wait record named no term'.
+  // Mutation: in overlapConflictTerm, swap the 'brightness' and 'edges'
+  // results. Observed red: 'the term does not match its own numbers', and the
+  // unit case below with it.
+  const waits = (wrongLens.captures as Array<Record<string, unknown>>)
+    .filter(record => record.outcome === 'overlap-wait');
+  assert.ok(waits.length > 0, 'the wrong-lens scan refused nothing, so this grades nothing');
+  for (const record of waits) {
+    assert.ok(['brightness', 'edges', 'both'].includes(record.overlap_term as string),
+      `an overlap-wait record named no term: ${JSON.stringify(record)}`);
+    const dim = typeof record.correlation === 'number' && record.correlation < OVERLAP_BRIGHTNESS_MIN;
+    const edge = typeof record.feature_correlation === 'number' && record.feature_correlation < OVERLAP_EDGE_MIN;
+    const expected = dim && edge ? 'both' : dim ? 'brightness' : 'edges';
+    assert.equal(record.overlap_term, expected, `the term does not match its own numbers: ${JSON.stringify(record)}`);
+    assert.equal(typeof record.samples, 'number');
+    assert.equal(typeof record.searched, 'boolean');
+  }
+});
+
+const DOUBT = 'replay: a scan whose lens was in doubt publishes no certain horizon, and a sound one is untouched (#129)';
+if (!wrongLens || !rightLens) skip(DOUBT, NO_RECORDING);
+else await test(DOUBT, () => {
+  // The wrong-lens scan painted the south roof into the top rows of most bins,
+  // the pooled sky seed became the roof, and the tracer published open sky over
+  // it, CERTAIN: false_open_sr 0.583 on the scorer. The sweep had already said
+  // the lens was wrong (the #52 run). Now that doubt reaches the trace.
+  // Mutation: delete the `lensDoubted = true` latch in recordCapture. Observed
+  // red: 'the wrong-lens scan still published 16 certain bins'.
+  // Mutation: latch on ANY overlap-wait (drop the LENS_DOUBT_AFTER test).
+  // Observed red: 'a scan with the lens the scanner assumes was marked in
+  // doubt' - arc075-60 refuses twice, never six in a row.
+  const bins = wrongLens.horizon.points.length;
+  assert.equal(wrongLens.horizon.uncertain_bins.length, bins,
+    `the wrong-lens scan still published ${bins - wrongLens.horizon.uncertain_bins.length} certain bins`);
+  assert.ok(rightLens.horizon.uncertain_bins.length < rightLens.horizon.points.length,
+    'a scan with the lens the scanner assumes was marked in doubt');
+});
+
+await test('traceSweep marks every bin uncertain in doubt, and is traceSkyCoverage otherwise (#129)', () => {
+  const column = { lum: Array.from({ length: 101 }, (_, r) => (r <= 60 ? 122 : 40)), blue: Array.from({ length: 101 }, () => 0) };
+  const columns = Array.from({ length: 30 }, () => [column]);
+  const sound = traceSweep({ columns: () => columns, lensDoubtedThisScan: false });
+  assert.deepEqual(sound, traceSkyCoverage(columns), 'a sound scan must trace exactly as before');
+  assert.ok(sound.points.some(p => p.alt < 90), 'premise: the sound trace found open sky');
+  const doubted = traceSweep({ columns: () => columns, lensDoubtedThisScan: true });
+  assert.equal(doubted.lensInDoubt, true);
+  assert.equal(doubted.uncertainBins.length, 30);
+  assert.ok(doubted.points.every(p => p.alt === 90), 'a doubted scan published open sky');
+  assert.deepEqual(doubted.points.map(p => p.az), sound.points.map(p => p.az), 'the azimuths moved');
+});
+
+const ACCEPTED_OVERLAP = 'replay: an accepted frame logs the overlap it passed on, so a refusal has something to be compared with (#130)';
+if (!rightLens) skip(ACCEPTED_OVERLAP, NO_RECORDING);
+else await test(ACCEPTED_OVERLAP, () => {
+  // Measured with this in place: hold 35 (cell 48, alt 70) passed at
+  // brightness 0.972 / edges 0.929 on the still route and 0.370 / 0.510 on the
+  // arc route - same attitude, only the camera's position differs - which is
+  // parallax dragging agreement to the bar, and past it at holds 36 and 39.
+  // Mutation: drop `...capturedOverlap` from the accepted recordCapture.
+  // Observed red: 'an accepted frame logged no overlap'.
+  const accepted = (rightLens.captures as Array<Record<string, unknown>>)
+    .filter(record => record.outcome === 'accepted' && record.adjusted !== undefined);
+  assert.ok(accepted.length > 0, 'premise: the scan accepted frames');
+  const registered = accepted.filter(record => typeof record.samples === 'number');
+  assert.ok(registered.length > 0, `an accepted frame logged no overlap: ${JSON.stringify(accepted[0])}`);
+});
+
+await test('overlapConflictTerm names the term and is null for anything but a conflict (#130)', () => {
+  assert.equal(overlapConflictTerm({ result: 'agree', samples: 9, correlation: .9, featureCorrelation: .9 }), null);
+  assert.equal(overlapConflictTerm({ result: 'unknown', samples: 0, correlation: null }), null);
+  assert.equal(overlapConflictTerm({ result: 'conflict', samples: 9, correlation: .2, featureCorrelation: .9 }), 'brightness');
+  assert.equal(overlapConflictTerm({ result: 'conflict', samples: 9, correlation: .9, featureCorrelation: .2 }), 'edges');
+  assert.equal(overlapConflictTerm({ result: 'conflict', samples: 9, correlation: .2, featureCorrelation: .2 }), 'both');
+});
+
 const RESET = 'replay: an outcome other than a refusal puts the ordinary cue back (#52)';
 if (!wrongLens) skip(RESET, NO_RECORDING);
 else await test(RESET, () => {
   let run = 0, reached: number | null = null, cleared: number | null = null;
   for (const record of wrongLens.captures) {
-    if (record.outcome === 'overlap-wait') {
+    if (extendsOverlapRun(record.outcome)) {
       run++;
       if (run >= LENS_DOUBT_AFTER && reached === null) reached = record.at;
     } else if (endsOverlapRun(record.outcome)) {
@@ -631,6 +720,28 @@ await test('capture outcomes: only the waits before the overlap test keep a refu
   // Mutation: drop `&& outcome !== 'too-soon'` from `endsOverlapRun`. Red here
   // on that key, and red on the two replay cases above, whose longest runs
   // both fall to 1. Observed red.
+  // Every outcome is exactly one of extends / ends / neutral, and the counting
+  // in `recordCapture` reads the first two in that order. An outcome that both
+  // extends and ends would be counted as extending and never reset, which is
+  // the run that can only grow; one that does neither is neutral, which is a
+  // real category (`alignment-wait` and the three below it) and not an error.
+  // Issue #95 added the second extending outcome, so this stops being a
+  // statement about one name.
+  const extending = (Object.keys(OUTCOME_ENDS_RUN) as CaptureOutcome[])
+    .filter(o => extendsOverlapRun(o));
+  assert.deepEqual(extending.sort(), ['carry-too-large', 'overlap-wait'],
+    'the outcomes that lengthen a refusal run are not the two refusals to match');
+  for (const outcome of extending)
+    assert.equal(OUTCOME_ENDS_RUN[outcome], false,
+      `${outcome} both lengthens a run and ends one, so the run it starts can never be reset`);
+  // Mutation: `extendsOverlapRun` returns true for `alignment-wait` as well.
+  // Observed red on three cases: this one (the list comes back with three
+  // names), "the same scan with the lens the scanner assumes never mentions
+  // the view angle", and "an outcome other than a refusal puts the ordinary
+  // cue back" - the two whose runs grow on a scan that should have none.
+  // Mutation: revert `endsOverlapRun` to test `outcome !== 'overlap-wait'`
+  // inline instead of delegating. `carry-too-large` then ends a run it also
+  // lengthens; observed red on the exhaustive loop at the top of this case.
 });
 
 // ------------------------------------------ issue #68: the committed fixture
@@ -648,6 +759,9 @@ await test('capture outcomes: only the waits before the overlap test keep a refu
 // exactly the scanner's own analysis canvas for a 3:4 frame, so the
 // resampler neither shrinks nor magnifies on this pair - the two `resample`
 // cases at the top of this file grade that path on their own.
+/** The repository root: somewhere that is emphatically NOT tmpdir, used by
+ *  the #88 guard case to prove the delete refuses a path it does not own. */
+const REPO_ROOT = fileURLToPath(new URL('../../../../../../../', import.meta.url));
 const FIXTURES = fileURLToPath(new URL('../../../../../../../tools/photosphere_sim/fixtures/', import.meta.url));
 const FIXTURE_RIGHT_LENS = 'chartyard-shortpan-60';
 const FIXTURE_WRONG_LENS = 'chartyard-shortpan-70';
@@ -752,6 +866,54 @@ await test('replay: on the fixture too, the lens the scanner assumes is never to
   // threshold LENS_DOUBT_AFTER = 1 does NOT redden it, because the control's
   // run is 0: the fixture's control never refuses at all.) Run and reverted;
   // see task-2-report.md.
+});
+
+await test('#88 the recursive delete refuses a path it does not own', () => {
+  // The guard exists because an edit to this file deleted two 42 MB
+  // recordings. Until now nothing executed it: every caller goes through
+  // withTempCase, so the guard was a comment that happened to compile, and a
+  // typo in its condition -- a dropped `sep`, an inverted test -- would have
+  // been found by the next accident rather than by the suite.
+  //
+  // The victim here is a throwaway directory this case makes OUTSIDE tmpdir,
+  // so the mutation below is safe to run. It is deliberately not a real case
+  // directory: a test that proves a delete guard by pointing it at 42 MB of
+  // irreplaceable recordings has misunderstood the problem.
+  //
+  // MUTATION: delete the `throw` from rmTemp. Observed: the probe directory
+  // and its file are gone and the "still there" assertion fails -- which is
+  // precisely what happened to chartyard-arc075-60 and -70.
+  const probe = join(REPO_ROOT, '.rmtemp-guard-probe');
+  const witness = join(probe, 'stand-in-for-a-recording.txt');
+  mkdirSync(probe, { recursive: true });
+  writeFileSync(witness, 'not a real recording, but it is not tmpdir either');
+  try {
+    let threw = '';
+    try { rmTemp(probe); } catch (e) { threw = String(e); }
+    assert(threw.includes('refusing a recursive delete'),
+      `rmTemp accepted a path outside tmpdir: ${threw || '(it did not throw)'}`);
+    assert(existsSync(witness),
+      'rmTemp deleted a directory outside tmpdir - this is issue #88 happening again');
+
+    // tmpdir() ITSELF is the other way to get this wrong: it starts with
+    // tmpdir(), so a guard written only as startsWith would sweep the whole
+    // temporary directory.
+    let threwRoot = '';
+    try { rmTemp(tmpdir()); } catch (e) { threwRoot = String(e); }
+    assert(threwRoot.includes('refusing a recursive delete'),
+      'rmTemp accepted tmpdir() itself');
+
+    // And it still does its job for a directory it does own.
+    const mine = mkdtempSync(join(tmpdir(), 'rmtemp-positive-'));
+    writeFileSync(join(mine, 'x'), 'x');
+    rmTemp(mine);
+    assert(!existsSync(mine), 'rmTemp did not delete a directory under tmpdir');
+  } finally {
+    // Non-recursive on purpose: this case is about not reaching for a
+    // recursive delete on a path outside tmpdir.
+    rmSync(witness, { force: true });
+    rmdirSync(probe);
+  }
 });
 
 console.log(`photosphereReplay.test: ${passed}/${passed + failed} passed`

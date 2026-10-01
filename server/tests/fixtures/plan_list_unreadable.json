@@ -1,0 +1,69 @@
+{
+ "about": "GET /api/plans for a library of three plan files: one good plan; one saved good and then hand-edited so that its first step's frame_type is 'Snapshot', which #334 refuses; and one that is not JSON at all (#478). Then GET /api/plans/{id} and /export for the Snapshot plan ('get', 'export') and for the file that is not JSON ('not_json'), each of which answers 422. The ids and the three files' mtimes are fixed. Recorded and graded byte for byte by server/tests/test_plan_library_unreadable.py (ASTRODECK_REWRITE_PLAN_LIST_FIXTURE=1 re-records it); read by S5-PLANS-UI (#378). Never edit it by hand.",
+ "list": [
+  {
+   "id": "6f1c0d2e4b5a49c8a1e2f3d4c5b6a7e8",
+   "name": "M42 LRGB",
+   "frames": 40,
+   "integration_min": 40.0,
+   "shutter_min": 40.0,
+   "targets": 1,
+   "mtime": 1790600000.0
+  },
+  {
+   "id": "0b9e8d7c6a5f4e3d2c1b0a9f8e7d6c5b",
+   "name": "NGC 7000 Ha",
+   "status": "unreadable",
+   "unreadable": "fails validation: targets.0.steps.0.frame_type: frame type 'Snapshot' is not one of Light, Dark, Bias, Flat (in any case)",
+   "mtime": 1790500000.0
+  },
+  {
+   "id": "3a9d7e5c1b0f4e2d8c6b4a2f0e8d6c4b",
+   "status": "unreadable",
+   "unreadable": "not valid JSON",
+   "mtime": 1790400000.0
+  }
+ ],
+ "get": {
+  "url": "/api/plans/0b9e8d7c6a5f4e3d2c1b0a9f8e7d6c5b",
+  "status": 422,
+  "body": {
+   "detail": {
+    "detail": "fails validation: targets.0.steps.0.frame_type: frame type 'Snapshot' is not one of Light, Dark, Bias, Flat (in any case)",
+    "code": "unreadable"
+   }
+  }
+ },
+ "export": {
+  "url": "/api/plans/0b9e8d7c6a5f4e3d2c1b0a9f8e7d6c5b/export",
+  "status": 422,
+  "body": {
+   "detail": {
+    "detail": "fails validation: targets.0.steps.0.frame_type: frame type 'Snapshot' is not one of Light, Dark, Bias, Flat (in any case)",
+    "code": "unreadable"
+   }
+  }
+ },
+ "not_json": {
+  "get": {
+   "url": "/api/plans/3a9d7e5c1b0f4e2d8c6b4a2f0e8d6c4b",
+   "status": 422,
+   "body": {
+    "detail": {
+     "detail": "not valid JSON",
+     "code": "unreadable"
+    }
+   }
+  },
+  "export": {
+   "url": "/api/plans/3a9d7e5c1b0f4e2d8c6b4a2f0e8d6c4b/export",
+   "status": 422,
+   "body": {
+    "detail": {
+     "detail": "not valid JSON",
+     "code": "unreadable"
+    }
+   }
+  }
+ }
+}

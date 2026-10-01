@@ -71,6 +71,24 @@ if (-not $SkipBuild) {
     Write-Step "Skipping build (-SkipBuild) -- probing whatever is in ui/dist"
 }
 
+# The probe's own regression tests, before anything is built or started
+# (issue #119). They need no server and no UI, they take about seven seconds,
+# and this is the only entry point in the repository that runs with the
+# interpreter they require - CI runs pytest from `server/`, which cannot see
+# this directory at all. A guard nobody runs is a guard nobody is holding, and
+# the one here covers issue #31, which was subtle enough to cost a diagnosis.
+Write-Step "Probe self-tests (python -m unittest discover)"
+Push-Location $ToolDir
+try {
+    & python -m unittest discover -p "test_*.py"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "probe self-tests FAILED (exit $LASTEXITCODE) -- not walking routes with a broken probe" -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+} finally {
+    Pop-Location
+}
+
 Write-Step "Starting isolated server on port $Port (config: $ConfigDir)"
 $startArgs = @(
     (Join-Path $ToolDir "server_ctl.py"), "start",

@@ -93,6 +93,25 @@ PROJECTION_STEP_S = 300.0
 PARK_TIMEOUT_S = 240.0
 MOUNT_QUERY_TIMEOUT_S = 30.0
 
+#: Escalation for the unreadable-mount hold (issue #137). The Sun does not
+#: stop closing on the tube because the position feed did, so that hold must
+#: not latch silent for the rest of an outage the way every OTHER ``_hold``
+#: reason is allowed to. Counted in TICKS: at the production ``CHECK_INTERVAL_S``
+#: of 60 s a tick and a minute are the same thing, so these numbers double as
+#: minutes. Same shape as ``dawn_park._fail`` -- quiet on the first tick (a
+#: single lost read must not page anybody), one warning once the outage has
+#: run long enough to matter, then a repeating error for as long as it lasts.
+BLIND_WARN_AFTER = 10
+BLIND_ERROR_AFTER = 30
+
+#: Repeat cadence once escalated to error, matching ``dawn_park.FAIL_LOG_EVERY``
+#: for the same reason: on 2026-08-09 a different net without this cap wrote
+#: 417 near-identical lines and flushed the 200-entry ring. An outage that
+#: outlives BLIND_ERROR_AFTER must keep saying so, not go quiet again -- that
+#: silence is exactly what #137 measured -- but it must say so on a cadence,
+#: not once per tick.
+BLIND_LOG_EVERY = 30
+
 #: Sidereal hours per solar hour. A mount with tracking OFF holds its HOUR
 #: ANGLE, and RA = LST - HA, so its RA advances with local sidereal time.
 SIDEREAL_HOURS_PER_SOLAR_HOUR = 1.0027379
@@ -192,6 +211,14 @@ class SunWatch:
         # The last "why nothing happened" said for this approach, so a held-off
         # net says it once instead of every minute.
         self._held: str | None = None
+        # Consecutive-tick bookkeeping for the unreadable-mount hold, mirroring
+        # dawn_park._fail_reason/_fail_count/_fail_since: unlike every other
+        # _hold reason, this one must not latch silent, because the hazard
+        # (the Sun) keeps closing for as long as the outage lasts. See
+        # _blind() and BLIND_WARN_AFTER/BLIND_ERROR_AFTER above.
+        self._blind_reason: str | None = None
+        self._blind_count = 0
+        self._blind_since = 0.0
 
     # ------------------------------------------------------------- lifecycle
 
@@ -267,9 +294,15 @@ class SunWatch:
         if pos is None:
             # A mount that cannot say where it is pointing cannot be judged, and
             # guessing would either park a working rig or bless a cooking one.
-            self._hold("the mount will not report its position, so this net "
-                       "cannot tell whether the Sun is closing on it", None)
+            # UNLIKE every other hold in this method, this one runs through
+            # _blind(), not _hold(): the Sun keeps closing on the tube for as
+            # long as the outage lasts, so the hold has to escalate on ITS OWN
+            # clock rather than latch silent on the mount's (issue #137 -- an
+            # 8h24m outage produced exactly one info line under the old _hold).
+            self._blind("the mount will not report its position, so this net "
+                        "cannot tell whether the Sun is closing on it")
             return
+        self._clear_blind()
         ra_hours, dec_deg = pos
         tracking = await self._tracking(tel)
         now = self._clock()
@@ -400,8 +433,14 @@ class SunWatch:
 
         None is NOT treated as safe and NOT treated as dangerous: it is treated
         as unknown, which is the only honest answer and the one the requirement
-        asks for. A mount that has been unreadable for a while is a separate
-        problem, and the telemetry-stale path already reports it."""
+        asks for. A mount that has been unreadable for a while is reported by
+        the caller's own escalation (see ``_blind``) -- NOT, as an earlier
+        version of this docstring claimed, by "the telemetry-stale path":
+        that path is the UI's ``ConnectionBanner``, which is UI-only (never
+        logged, never alerted) and fires on a WebSocket stall, which does not
+        happen when the status stream keeps arriving without a mount block.
+        Issue #137 measured exactly that gap: an 8h24m outage the banner never
+        saw, because the stream never stalled."""
         try:
             ra, dec = await asyncio.wait_for(tel.get_position(),
                                              MOUNT_QUERY_TIMEOUT_S)
@@ -453,3 +492,43 @@ class SunWatch:
         self._held = reason
         where = ": " if sep is None else f" (Sun {sep:.0f}° away): "
         bus.log(level, f"sun watch held off{where}{reason}", "safety")
+
+    def _blind(self, reason: str) -> None:
+        """One more tick with an unreadable position. Escalates by REPETITION
+        COUNT, exactly ``dawn_park._fail``'s shape: quiet on the first tick,
+        one warning at ``BLIND_WARN_AFTER``, then a repeating error every
+        ``BLIND_LOG_EVERY`` ticks from ``BLIND_ERROR_AFTER`` on.
+
+        Deliberately NOT routed through ``_hold``: ``_hold`` latches on the
+        reason string and stays silent for as long as that reason holds,
+        which is correct for "nobody needs telling twice that solar avoidance
+        is off" but wrong here, because the hazard (the Sun) keeps closing on
+        the tube for the whole outage (#137)."""
+        if reason != self._blind_reason:
+            self._blind_reason = reason
+            self._blind_count = 0
+            self._blind_since = self._clock()
+        self._blind_count += 1
+        n = self._blind_count
+        if n == 1:
+            level = "info"
+        elif n == BLIND_WARN_AFTER:
+            level = "warning"
+        elif n >= BLIND_ERROR_AFTER and (n - BLIND_ERROR_AFTER) % BLIND_LOG_EVERY == 0:
+            level = "error"
+        else:
+            return
+        mins = (self._clock() - self._blind_since) / 60.0
+        tail = "" if n == 1 else f" (blind for {mins:.0f} min, tick {n})"
+        bus.log(level, f"sun watch held off: {reason}{tail}", "safety")
+
+    def _clear_blind(self) -> None:
+        """Forget a blindness streak once the position is readable again, so
+        an unrelated outage later in the night starts its own count instead of
+        resuming mid-escalation."""
+        if self._blind_reason is not None and self._blind_count > 1:
+            mins = (self._clock() - self._blind_since) / 60.0
+            bus.log("info", f"sun watch: the mount is reporting its position "
+                            f"again after {mins:.0f} min blind", "safety")
+        self._blind_reason = None
+        self._blind_count = 0

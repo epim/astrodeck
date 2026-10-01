@@ -151,11 +151,19 @@ export type WireDropResult =
  *  whatever the pointerup landed on, or null for a miss.
  *
  *  The three fields are pipe-delimited and UNESCAPED, which is why
- *  `flowsSlice.nextNodeId()` mints ids that cannot contain a `|`. */
+ *  `flowsSlice.nextNodeId()` mints ids that cannot contain a `|`.
+ *
+ *  `loopOf` is the flow-loop check (#149), built by the surface from the live
+ *  graph with the shared `components/flows/flowLoop` rule. It is OPTIONAL so
+ *  every existing call shape still compiles, and it is typed here by shape
+ *  rather than imported, so this pure module takes on no new legacy import. A
+ *  caller that passes none keeps the old grammar; `flowsConnect` still refuses
+ *  the wire behind it, but only into the flow log, with no toast. */
 export function resolveWireDrop(
   wire: { from: string; fromPort: string },
   portAttr: string | null,
   kindOf: (nodeId: string, portId: string, dir: PortDir) => PortKind | null,
+  loopOf?: (w: Pick<FlowEdgeRec, "from" | "fromPort" | "to" | "toPort">) => string | null,
 ): WireDropResult {
   // Dropped on empty canvas. Clears the wire, no toast, no edge.
   if (!portAttr) return { ok: false, refusal: null };
@@ -181,8 +189,18 @@ export function resolveWireDrop(
         + `${kIn === "flow" ? "a flow" : "an event"} input`,
     };
   }
-  // Single-occupancy inputs and "no toast on success" are the store's:
-  // `flowsConnect` filters the incumbent out before it concats.
+  // No flow loops (#149). A flow wire whose destination already reaches its
+  // source closes a circle the run cursor cannot travel: the compiler drops
+  // every stage on it, and none of them shoots a frame. Refused here, out loud,
+  // with the server's own sentence - the one the 422 at save would give, but
+  // while the operator's finger is still on the wire. It never overlaps the
+  // lane rule: a loop is only ever a flow-to-flow wire, which the lane rule has
+  // just let through.
+  const loop = loopOf?.({ from: wire.from, fromPort: wire.fromPort, to: nodeId, toPort: portId });
+  if (loop) return { ok: false, refusal: loop };
+  // Single-occupancy FLOW inputs (an event input fans in, #152) and "no toast
+  // on success" are the store's: `flowsConnect` filters a flow input's
+  // incumbent out before it concats.
   return { ok: true, nodeId, portId };
 }
 
@@ -209,10 +227,16 @@ export function portAttr(nodeId: string, portId: string, dir: PortDir): string {
 
 // -------------------------------------------------------------------- status
 
-/** `flows.statuses` is a loose `Record<string, string>` because it is filled
- *  from a WS frame. Anything the vocabulary does not know reads as idle - an
- *  unknown word must not blank the status, which would look like "no stage
- *  here". */
+/** `flows.statuses` is a loose `Record<string, string>`, and NOTHING WRITES IT
+ *  (#464): no server topic carries a stage's status, and the published
+ *  sequence state names the running target, its index, its group and a line
+ *  of detail, never the stage - `to_plan` takes each compiled step's
+ *  `node_id` off before the engine sees the plan. So every stage reads idle,
+ *  a live run included, until the engine publishes the stage; #464 is
+ *  deferred for that field (S7 orchestrator ruling 10), and the phone stage
+ *  list shows no word for an unwritten stage while its flow runs. Anything
+ *  the vocabulary does not know reads as idle - an unknown word must not
+ *  blank the status, which would look like "no stage here". */
 export function asNodeStatus(raw: string | undefined): FlowNodeStatus {
   return raw === "busy" || raw === "ok" || raw === "warn" || raw === "bad" ? raw : "idle";
 }
@@ -315,7 +339,10 @@ export function tapWireHint(
  *  Minutes are unbounded (`73:05`): there is no specified hour form, so the
  *  least-committal rendering is the one that never truncates a real number.
  *  NEVER a client-side countdown from an assumed total - an ETA the client
- *  invented looks identical to one the rig computed. */
+ *  invented looks identical to one the rig computed. What it formats is the
+ *  rig's own `progress.eta_s` while the run is this flow's
+ *  (`useFlowRunReadouts`, #189 S5), and `run.etaS`, which nothing writes,
+ *  otherwise. */
 export function formatEta(secs: number | null | undefined): string {
   if (secs == null || !Number.isFinite(secs) || secs < 0) return "-";
   const s = Math.round(secs);
@@ -498,8 +525,11 @@ export function lossesWhy(losses: number): string {
   return `${n} not reach the run. The FLOW column lists them under NOT HONOURED BY A RUN.`;
 }
 
-/** `run.etaS` has no publisher, so a null is the rig's silence and the tooltip
- *  says so rather than letting a bare `-` read as zero. */
+/** The ETA's tooltip while it reads `-`. The ETA is the sequence state's
+ *  `progress.eta_s` while the rig's run is this flow's (#189 S5), and
+ *  `run.etaS`, which has no publisher, otherwise; either way a null is the
+ *  rig's silence, and the tooltip says so rather than letting a bare `-` read
+ *  as zero. */
 export const ETA_UNREPORTED = "The rig has not reported a time remaining for this run.";
 
 /** PLAN's tooltip: what the plan editor is still FOR, now that Flows expresses
@@ -515,10 +545,12 @@ export function tonightLockReason(phrase: string): string {
   return `Tonight is worked out from the observatory site, so it needs ${phrase}.`;
 }
 
-/** `flows.run.curStage` is initialised to a bare em-dash placeholder by the
- *  slice and written by nothing server-side. Rendered through here so the phone
- *  monitor prints the house dash for "the rig has not said" instead of a
- *  character the copy rules forbid. */
+/** The STAGE readout. While the rig's run is this flow's it is the sequence
+ *  state's (`useFlowRunReadouts`, #189 S5: the target, or `M31 2-3 · pass 2`
+ *  for a mosaic); otherwise it is `flows.run.curStage`, which the slice
+ *  initialises to a bare em-dash placeholder and nothing server-side writes.
+ *  Rendered through here so the phone monitor prints the house dash for "the
+ *  rig has not said" instead of a character the copy rules forbid. */
 export function stageWord(raw: string | null | undefined): string {
   const s = (raw ?? "").trim();
   if (!s || s === "—" || s === "–") return "-";

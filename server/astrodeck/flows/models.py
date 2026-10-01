@@ -17,6 +17,7 @@ in the same session.
 """
 from __future__ import annotations
 
+import math
 import re
 import time
 from uuid import uuid4
@@ -48,6 +49,130 @@ _FOLDER_RE = re.compile(r"^[\w][\w \-]{0,48}(/[\w][\w \-]{0,48}){0,3}$", re.UNIC
 
 EXAMPLES_FOLDER = "Examples"
 MY_FLOWS_FOLDER = "My flows"
+
+#: The refusal for a flow back-edge, filled with the two nodes' NODE_DEFS labels
+#: (#149). The editor's drop resolvers print the same sentence, so the literal
+#: is mirrored in the UI and a test pins the two together: an operator must read
+#: one rule, not two paraphrases of it.
+FLOW_LOOP_REFUSAL = ("this flow loops back on itself at {src} -> {dst}; "
+                     "a flow lane runs once")
+
+#: The params ``compile_plan`` takes ``int()`` of, by node type (#328): a
+#: FILTER CYCLE's two counts and a POOL's quota. AN EXCEPTION TO
+#: "permissive about params" (the module docstring; the other is
+#: ``WHOLE_MINUTE_PARAMS``, #483), and a narrow one: a value that is a
+#: number but not a finite one above 0 is refused at the door. An infinity
+#: or a NaN is a number ``int()`` raises on and JSON cannot carry, so a flow
+#: saved with one could never be compiled, previewed or run again, and
+#: nothing on screen said why; 0 or a negative is no number of anything.
+#: Text that is not a number at all is not judged here: the compile reads it
+#: as the default, as it reads every other param it cannot parse.
+COUNT_PARAMS: dict[str, tuple[str, ...]] = {
+    "cycle": ("cycles", "perCycle"),
+    "pool": ("quota",),
+}
+
+#: The refusal for one of those counts, filled with the card's label, the
+#: node id (two FILTER CYCLEs on one canvas share a label), the param and the
+#: value as stored.
+COUNT_REFUSAL = ("{label} {node!r}: {key!r} is {value!r}, and a count must be "
+                 "a finite number above 0")
+
+
+def _not_a_count(value) -> bool:
+    """True when ``value`` is a number and not a finite one above 0 (#328).
+
+    None, blank text and text that is not a number are False: the compile
+    reads each as its default, and the editor stores a blank field that way.
+    An integer past a float's range is True: ``float()`` of it overflows, so
+    it is no finite count either."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    except OverflowError:
+        return True
+    return not math.isfinite(number) or number <= 0
+
+
+#: The params the run reads as a WHOLE NUMBER OF MINUTES, by node type
+#: (#483): a DUSK WINDOW's offset from dusk, which the compile copies into
+#: ``schedule.start_offset_min`` and ``Schedule`` types as an ``int``. The
+#: second exception to "permissive about params", taken for #328's reason:
+#: a fraction here was read three ways downstream. The save stored -30.7,
+#: the compile emitted it and Tonight opened its window 30.7 min before
+#: dusk, the brief cut it to "(−30 min)", and only ``/run`` refused it, in
+#: words naming a TARGET. Refused at the door, it is never read at all.
+#:
+#: ONLY A FINITE FRACTION. An infinity, a NaN or an integer past a float's
+#: range is no number of minutes either, but #423 settled that a save
+#: stores one and the brief says it cannot be read, so none is applied;
+#: text that is not a number reads as no offset, as the compile reads it.
+WHOLE_MINUTE_PARAMS: dict[str, tuple[str, ...]] = {
+    "dusk": ("offset",),
+}
+
+#: The refusal for one of those, filled with the card's label, the node id,
+#: the param, the value as stored and the whole minutes either side of it.
+WHOLE_MINUTES_REFUSAL = ("{label} {node!r}: {key!r} is {value!r}, and the "
+                         "window opens a whole number of minutes from dusk: "
+                         "use {floor} or {ceil}")
+
+
+def _fraction(value) -> float | None:
+    """``value`` as a float when it is a FINITE number with a fractional part
+    (#483), else None: a whole number, an infinity, a NaN, an integer past a
+    float's range, None and text that is not a number are all None, each
+    for the reason ``WHOLE_MINUTE_PARAMS`` gives."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number.is_integer():
+        return None
+    return number
+
+#: Flow-level settings: one answer per FLOW, not per block (spec 1.6, Revision
+#: 2 ruling 1). ``{key: {"default": missing-key value, "options": [...]}}``.
+#:
+#: ONE TABLE, READ THROUGH ONE RESOLVER (:func:`resolve_setting`), for the
+#: same reason node params have one: a graph saved before a setting existed
+#: must read as what it meant then, and a default restated at each call site
+#: drifts. Stored as FLAT SCALARS in ``FlowGraph.settings`` (flowsTypes.ts
+#: types them so), and never written by a read: a flow saved without settings
+#: round-trips without them.
+#:
+#: `whenWaiting` decides what the run does while every live panel of a mosaic
+#: cannot be shot. The owner's default: "No sense in wasting time due to an
+#: obstruction", so later targets fill the gap and hand the cursor back when a
+#: panel is due. There is no older meaning to preserve: no graph had a
+#: multi-panel block before S3, and the setting does nothing without one.
+#:
+#: A JSON-shaped literal on purpose (double quotes, lists): the UI mirror in
+#: `flowsTypes.ts` is pinned against THIS text by flowSettingsParity.test.ts,
+#: which parses it rather than trusting a third copy.
+FLOW_SETTINGS: dict[str, dict] = {
+    "whenWaiting": {
+        "default": "Shoot later targets, then come back",
+        "options": ["Shoot later targets, then come back",
+                    "Wait for the mosaic"],
+    },
+}
+
+
+def resolve_setting(settings: dict | None, key: str):
+    """The value a flow's setting means: the stored one when it is one of the
+    declared options, otherwise the declared default.
+
+    A key nobody declared raises ``KeyError``: asking for it is a programming
+    error, not an operator's. A value this build does not know (a newer build's
+    third choice, a hand-written typo) reads as the default, because the engine
+    has only the declared behaviours to run; the stored value is left in place
+    so the build that wrote it reads it back.
+    """
+    spec = FLOW_SETTINGS[key]
+    value = (settings or {}).get(key)
+    return value if value in spec["options"] else spec["default"]
 
 
 class FlowNode(BaseModel):
@@ -101,6 +226,31 @@ class FlowEdge(BaseModel):
 class FlowGraph(BaseModel):
     nodes: list[FlowNode] = Field(default_factory=list, max_length=400)
     edges: list[FlowEdge] = Field(default_factory=list, max_length=800)
+    #: Flow-level settings, flat scalars keyed as in :data:`FLOW_SETTINGS`.
+    #: Empty by default and on every graph saved before S3; read them through
+    #: :meth:`setting`, never by indexing, so a missing key means the default.
+    #: Unknown keys are kept, not dropped, so a round trip through this build
+    #: does not erase what a newer one wrote.
+    settings: dict = Field(default_factory=dict, max_length=32)
+
+    @field_validator("settings")
+    @classmethod
+    def _flat_scalars(cls, v: dict) -> dict:
+        # FLAT, because the editor draws one control per setting and the TS
+        # mirror types a setting as a scalar; a nested value is a setting no
+        # control can show. Strict here, like edges and unlike params: it is a
+        # shape the graph cannot be drawn with, not a bad value for one knob.
+        # None is a scalar too (JSON null), and reads as the default.
+        for key, value in v.items():
+            if value is not None and not isinstance(value, (str, int, float)):
+                raise ValueError(
+                    f"flow setting {key!r} must be a flat scalar (text, a "
+                    f"number, true/false or null), not {type(value).__name__}")
+        return v
+
+    def setting(self, key: str):
+        """This flow's value for one setting, missing-key default applied."""
+        return resolve_setting(self.settings, key)
 
     def node(self, node_id: str) -> FlowNode | None:
         for n in self.nodes:
@@ -166,13 +316,127 @@ class FlowGraph(BaseModel):
                     out.append(f"input {dst.type}.{e.toPort} is wired twice")
                 seen_inputs.add(key)
 
+        # A FLOW LANE RUNS ONCE (#149). One wire per input does not stop a
+        # back-edge: the editor's replace-on-drop turns FILTER CYCLE `complete`
+        # -> TARGET `arm` into one by swapping out the TARGET's dusk wire. The
+        # compiler's topological walk then drops every node in the loop, so the
+        # save succeeded, the plan held no frames for the looped stages and the
+        # doctor -- which reasons along wires, all still present -- was clean.
+        for src, dst in self._flow_back_edges():
+            out.append(FLOW_LOOP_REFUSAL.format(
+                src=NODE_DEFS[src.type].label, dst=NODE_DEFS[dst.type].label))
+
+        # A COUNT THAT IS NO COUNT (#328): see COUNT_PARAMS. Refused here, so
+        # save and /run answer 422 with the sentence, and both compile routes
+        # list it under `structural` beside the plan they still compile.
+        for n in self.nodes:
+            for key in COUNT_PARAMS.get(n.type, ()):
+                value = (n.params or {}).get(key)
+                if _not_a_count(value):
+                    out.append(COUNT_REFUSAL.format(
+                        label=NODE_DEFS[n.type].label, node=n.id, key=key,
+                        value=value))
+
+        # AN OFFSET IS WHOLE MINUTES (#483): see WHOLE_MINUTE_PARAMS. Every
+        # DUSK WINDOW on the canvas, though the compile reads the first: a
+        # card holding a value no reader can use is not one to store.
+        for n in self.nodes:
+            for key in WHOLE_MINUTE_PARAMS.get(n.type, ()):
+                value = (n.params or {}).get(key)
+                number = _fraction(value)
+                if number is not None:
+                    out.append(WHOLE_MINUTES_REFUSAL.format(
+                        label=NODE_DEFS[n.type].label, node=n.id, key=key,
+                        value=value, floor=math.floor(number),
+                        ceil=math.ceil(number)))
+
         if len(known) != len(self.nodes):
             pass        # already reported as duplicates
         return out
 
+    def _flow_back_edges(self) -> list[tuple[FlowNode, FlowNode]]:
+        """Every back-edge a depth-first walk of the FLOW wires finds.
+
+        FLOW WIRES ONLY. An event wire means "whenever", so pointing backwards
+        closes no circle: SESSION REPORT `done` -> TARGET POOL `advance` spans
+        the whole lane and is how a campaign loops (README §"Node vocabulary").
+
+        DETERMINISTIC, by the same canvas tie-break ``compile.flow_order``
+        uses: roots (no incoming flow wire) in x, y order, then the leftmost
+        node still unvisited, which is how a loop with no way in gets entered;
+        each node's successors in x, y order too. Which wire gets named depends
+        on where the walk enters the loop, so an order taken from the node list
+        would name a different wire for the same drawing. Entering at the
+        leftmost stage names the wire that closes the circle back to it.
+
+        Only an edge into a node still on the walk's stack (grey) is a loop. An
+        edge into a finished node (black) is a second way to reach it, which
+        the fan-in rule above already refuses in its own words.
+        Iterative, so a 400-node graph cannot reach the recursion limit.
+        """
+        by_id: dict[str, FlowNode] = {}
+        for n in self.nodes:
+            by_id.setdefault(n.id, n)       # duplicates are reported above
+        succ: dict[str, list[str]] = {i: [] for i in by_id}
+        indeg: dict[str, int] = {i: 0 for i in by_id}
+        for e in self.edges:
+            src, dst = by_id.get(e.from_), by_id.get(e.to)
+            if src is None or dst is None:
+                continue
+            if (port_kind(src.type, e.fromPort, "out") != "flow"
+                    or port_kind(dst.type, e.toPort, "in") != "flow"):
+                continue
+            succ[src.id].append(dst.id)
+            indeg[dst.id] += 1
+
+        def pos(node_id: str) -> tuple[float, float]:
+            return (by_id[node_id].x, by_id[node_id].y)
+
+        for targets in succ.values():
+            targets.sort(key=pos)           # stable: wire order breaks ties
+        order = sorted(by_id, key=pos)
+
+        white, grey, black = 0, 1, 2
+        colour = {i: white for i in by_id}
+        found: list[tuple[FlowNode, FlowNode]] = []
+        reported: set[tuple[str, str]] = set()
+
+        def walk(start: str) -> None:
+            colour[start] = grey
+            stack = [(start, iter(succ[start]))]
+            while stack:
+                node_id, rest = stack[-1]
+                nxt = next(rest, None)
+                if nxt is None:
+                    colour[node_id] = black
+                    stack.pop()
+                elif colour[nxt] == grey:
+                    if (node_id, nxt) not in reported:
+                        reported.add((node_id, nxt))
+                        found.append((by_id[node_id], by_id[nxt]))
+                elif colour[nxt] == white:
+                    colour[nxt] = grey
+                    stack.append((nxt, iter(succ[nxt])))
+
+        for node_id in [i for i in order if indeg[i] == 0] + order:
+            if colour[node_id] == white:
+                walk(node_id)
+        return found
+
     def with_defaults(self) -> "FlowGraph":
         return self.model_copy(
             update={"nodes": [n.with_defaults() for n in self.nodes]})
+
+
+class MigrationNote(BaseModel):
+    """One thing a read changed in a stored flow, said to the operator on
+    every read of the file until they save it (only ``save()`` stamps
+    FLOW_SCHEMA, so an unsaved file reads its old version every time).
+
+    ``key`` names what moved (``rotation`` for FLOW_SCHEMA 3's 23.4 rewrite;
+    the mosaic slice adds ``counts``), ``note`` is the sentence to show."""
+    key: str
+    note: str
 
 
 class FlowRecord(BaseModel):
@@ -192,6 +456,17 @@ class FlowRecord(BaseModel):
     #: record rather than inferred from the folder name so that renaming a
     #: folder can never accidentally make a fixture writable.
     readonly: bool = False
+    #: What ``store._migrate`` rewrote on THIS read, for the editor to say.
+    #: NOT PERSISTED, and deliberately not ``Field(exclude=True)``: FastAPI
+    #: serialises a response with the same dump, so an excluded field would
+    #: never reach ``GET /api/flows/{id}`` and the note would be computed for
+    #: nobody. The store's writers strip it instead, and ``save`` drops one a
+    #: client sends, so the file never holds a note and a client cannot plant
+    #: one. Only a ``save`` makes the file current and retires the note. A
+    #: run's ``touch_run`` and the folder verbs edit the raw file and keep its
+    #: ``schema_version`` (carry-over 1), so until the operator saves, every
+    #: read says the note again, and ``run_flow`` logs it on every run.
+    migrated: list[MigrationNote] = Field(default_factory=list)
 
     @field_validator("folder")
     @classmethod

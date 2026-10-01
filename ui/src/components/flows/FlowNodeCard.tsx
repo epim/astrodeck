@@ -1,13 +1,17 @@
 // FlowNodeCard.tsx — one node on the graph.
 //
 // THIS IS THE COMPONENT THE RE-RENDER DISCIPLINE EXISTS FOR. The README's rule
-// is that a `flow.node` status tick re-renders ONE node, not the canvas, and
-// §B.3 spells out how that holds: the canvas is the only subscriber to the node
+// is that a write about one node re-renders ONE node, not the canvas, and §B.3
+// spells out how that holds: the canvas is the only subscriber to the node
 // ARRAY and passes each node down as a prop, while the card subscribes to its
 // own status and its own selected-ness with selectors that return a PRIMITIVE.
-// zustand compares the selector's result with Object.is, so a status write for
-// node B cannot wake node A. `memo` below then stops the canvas's own re-renders
-// from walking every card.
+// zustand compares the selector's result with Object.is, so selecting node B
+// cannot wake node A. The README states the rule for a `flow.node` status
+// tick, and nothing sends one: no topic carries a stage's status and nothing
+// writes `flows.statuses` (#464, `asStatus` below), so every LED reads idle.
+// The status selector is kept as narrow as the rest so that a status feed,
+// once there is one, still wakes one card. `memo` below then stops the
+// canvas's own re-renders from walking every card.
 //
 // Never reach for a `useFlowNode(id)` shape here (§B.3 marks it a trap): it
 // returns the node object, which is reference-equal only for as long as every
@@ -28,7 +32,55 @@ import { NODE_DEFS } from "./nodeDefs";
 import { nodeW, type PortDir } from "./geometry";
 import { nodeLossDetail, nodeLossLevel } from "./flowsTypes";
 import type { FlowNodeRec, FlowNodeStatus } from "./flowsTypes";
+import { progressChip } from "./flowProgress";
+import { withLoop, type LaneGraph } from "./panelLane";
+import { fittedFooter, monoChars, targetLoops } from "./targetSummary";
 import FlowPort from "./FlowPort";
+
+/** The footer line's room, in characters, from the classes that draw it:
+ *  the card's `border` (1 px a side), the footer's `px-2.5` (10 px a side)
+ *  and its `text-[9.5px]` mono. 188 - 2 - 20 = 166 px, 29 characters.
+ *
+ *  Tailwind only builds a class it finds written out, so the classes cannot
+ *  be spelled from these numbers; cardFooterDom.test.tsx computes the budget
+ *  from the MOUNTED card's classes instead and holds this constant to it, so
+ *  a card that grows its padding or its type and not this fails there rather
+ *  than cutting a TARGET line this file thinks fits (S7 orchestrator ruling
+ *  9, #357). */
+const CARD_BORDER_PX = 1;
+const FOOTER_PAD_PX = 10;
+const FOOTER_FONT_PX = 9.5;
+export const CLASSIC_FOOTER_CHARS =
+  monoChars(nodeW("desktop") - 2 * CARD_BORDER_PX - 2 * FOOTER_PAD_PX, FOOTER_FONT_PX);
+
+/** `withLoop` needs an id for a wire it would add; the offer only asks
+ *  WHETHER it would add one, so the wire is never kept. */
+const NO_ID = (): string => "";
+
+/** True when LOOP PANELS would change the block's loop wiring: exactly when
+ *  the press, `flowsApplyFraming(id, {}, true)`, would write anything (spec
+ *  1.4 "When the wire is added").
+ *
+ *  The #/next card and the phone stage list ask the same `withLoop` call
+ *  (canvas/FlowNode.tsx `offersLoopPanels`); #/next may not import this
+ *  presentation file, nor this file a #/next one, so the one line is written
+ *  twice and the RULE lives once, in panelLane.ts. `withLoop(true)` hands back
+ *  the SAME wires when it changes nothing, and it changes nothing unless the
+ *  block is a multi-panel TARGET that owns a lane with a single tail and the
+ *  tail has a "pass done" to give; then it adds the loop wire when none leaves
+ *  the tail yet, and MOVES a pass wire stranded mid-lane (M12) to the tail
+ *  rather than adding a second (#410). So the button is never on a mosaic
+ *  that rotates (`targetLoops`), and it IS on one whose tail wire stands
+ *  beside a stale mid-lane one, which the run refuses. */
+function offersLoopPanels(graph: LaneGraph, blockId: string): boolean {
+  return withLoop(graph, blockId, true, NO_ID) !== graph.edges;
+}
+
+/** What LOOP PANELS does, for its tooltip and accessible name: the #/next
+ *  card's `LOOP_PANELS_WHY`, word for word, and the wire doctor M3 names. */
+const LOOP_PANELS_WHY =
+  "Wire the panel lane's last stage 'pass done' to this TARGET's 'next panel', "
+  + "so every pass moves to the next panel";
 
 /** §C.5: `idle→"off"`, `busy→"busy"`, `ok→"on"`, `warn→"warn"`, `bad→"bad"`.
  *
@@ -41,9 +93,15 @@ const LED_BY_STATUS: Record<FlowNodeStatus, LedState> = {
   idle: "off", busy: "busy", ok: "on", warn: "warn", bad: "bad",
 };
 
-/** `flows.statuses` is a loose `Record<string, string>` because it is filled
- *  from a WS frame. Anything the vocabulary does not know reads as idle — an
- *  unknown word must not blank the LED, which would look like "no node here". */
+/** `flows.statuses` is a loose `Record<string, string>`, and NOTHING WRITES IT
+ *  (#464): no server topic carries a stage's status, and the published
+ *  sequence state names the running target, its index, its group and a line
+ *  of detail, never the stage - `to_plan` takes each compiled step's
+ *  `node_id` off before the engine sees the plan. So every LED here reads
+ *  idle, a live run included, until the engine publishes the stage; #464 is
+ *  deferred for that field (S7 orchestrator ruling 10). Anything the
+ *  vocabulary does not know reads as idle - an unknown word must not blank
+ *  the LED, which would look like "no node here". */
 function asStatus(raw: string | undefined): FlowNodeStatus {
   return raw === "busy" || raw === "ok" || raw === "warn" || raw === "bad"
     ? raw : "idle";
@@ -84,15 +142,38 @@ function FlowNodeCard({
   // does not wake this card. See flowsTypes.ts for why notes are excluded.
   const loss = useStore((s) => nodeLossLevel(s.flows.compiled?.unmapped, node.type));
   const lossWhy = useStore((s) => nodeLossDetail(s.flows.compiled?.unmapped, node.type));
+  // THE PROGRESS CHIP (#189 S1 item 9), under the same rule: `progressChip`
+  // returns a string or null, so a re-read that leaves this card's count alone,
+  // or moves another card's, does not wake this one. It decides everything -
+  // TARGET only, a session, a saved graph - so the #/next stage cannot answer
+  // differently.
+  const chip = useStore((s) => progressChip(s.flows.progress, node.id, s.flows.dirty));
+  // THE FOURTH, for a TARGET's footer (#189 S4 item 6, spec 1.2): whether its
+  // panels rotate, which is the loop wire in the GRAPH, not a param. A boolean,
+  // so a graph write that leaves this block's loop alone - a drag, another
+  // card's param - does not wake this card. `targetLoops` never calls `sum`,
+  // which the render counters in flowNodeDom.test.tsx count.
+  const loops = useStore((s) => node.type === "target" && targetLoops(node, s.flows.graph));
+  // THE FIFTH, LOOP PANELS (spec 1.4): offered only while a press would add
+  // the loop wire or move a stranded one to the tail (#410), and a boolean
+  // for the same reason as `loops`. It rides in
+  // the footer, so the phone card, which has none, asks nothing.
+  const offersLoop = useStore((s) =>
+    !phone && node.type === "target" && offersLoopPanels(s.flows.graph, node.id));
 
   // Actions are stable references on the store, so selecting them costs nothing.
   const select = useStore((s) => s.flowsSelect);
   const setEditNode = useStore((s) => s.flowsSetEditNode);
+  const applyFraming = useStore((s) => s.flowsApplyFraming);
 
   const def = NODE_DEFS[node.type];
   const w = nodeW(phone ? "phone" : "desktop");
   const px = x ?? node.x;
   const py = y ?? node.y;
+  // A TARGET's footer, fitted to the line (ruling 9). Only where there IS a
+  // footer, so the phone card, which has none, calls no `sum`.
+  const footer = !phone && def && node.type === "target"
+    ? fittedFooter(node, loops, CLASSIC_FOOTER_CHARS) : null;
 
   // SELECTION OUTRANKS STATUS (§C.5) — a selected busy node reads as selected.
   // Both are token-derived: the prototype's literal rgba(0,210,255,·) values are
@@ -239,10 +320,48 @@ function FlowNodeCard({
 
       {/* footer — the params in one line, hidden on phone in BOTH tabs. It is
           computed from the CURRENT params, so an edit shows on the card without
-          opening anything. */}
+          opening anything. The progress chip rides in it and is hidden on
+          phone with it: the 150px card has no footer line, and the
+          auto-graph's layout (autoLayout.ts, +8) budgets room for none. */}
       {!phone && (
-        <div className="px-2.5 pt-[3px] pb-2 font-mono text-[9.5px] text-faint truncate">
-          {def.sum(node.params)}
+        <div className="px-2.5 pt-[3px] pb-2 font-mono text-[9.5px] text-faint">
+          {/* A TARGET's line is the #/next card's `targetFooter` - "M31 ·
+              rotate · 3x2 · PA 30.0 · 25%" - FITTED to this one line's 29
+              characters (`fittedFooter`, S7 orchestrator ruling 9, #357):
+              the overlap goes first, then the name is shortened with an
+              ellipsis, and the loop word and the angle are never cut. The
+              whole line is the tooltip whenever anything was left out. It
+              takes the name from the same `def.sum`, once. `truncate` stays
+              behind it for a line nothing can fit. Every other type keeps
+              its `sum`. */}
+          <div data-flow-summary className="truncate"
+               title={footer && footer.line !== footer.full ? footer.full : undefined}>
+            {footer ? footer.line : def.sum(node.params)}
+          </div>
+          {chip && (
+            <div data-flow-progress className="truncate text-dim">{chip}</div>
+          )}
+          {/* THE ONE-TAP LOOP (spec 1.4). Amber because the block is doctor
+              M3's warning, panels shot one after another, and this answers
+              it. The press is the modal DONE's own write with an empty patch:
+              one graph write, one compile, and the wire leaves the lane's
+              TAIL by `withLoop`, never an earlier stage (M12). Under the
+              ports, so no wire anchor moves. */}
+          {offersLoop && (
+            <button
+              type="button"
+              data-flows-loop
+              title={LOOP_PANELS_WHY}
+              aria-label={`LOOP PANELS: ${LOOP_PANELS_WHY}`}
+              onClick={() => { void applyFraming(node.id, {}, true); }}
+              className="mt-1.5 w-full rounded-[6px] border border-dashed border-warn/70
+                         bg-transparent py-[3px] cursor-pointer
+                         font-display font-semibold text-[9.5px] tracking-[0.14em] text-warn
+                         hover:bg-warn/10"
+            >
+              LOOP PANELS
+            </button>
+          )}
         </div>
       )}
     </div>

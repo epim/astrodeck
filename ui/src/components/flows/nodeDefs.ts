@@ -1,5 +1,6 @@
-// nodeDefs.ts — the Flows node vocabulary. Nineteen node types, and every
-// other file on this surface reads them from here.
+// nodeDefs.ts — the Flows node vocabulary. Twenty-one node types, one of them
+// legacy (SLEW + CENTER loads but is no longer offered), and every other file
+// on this surface reads them from here.
 //
 // THIS IS A SECOND TRANSCRIPTION, AND THAT IS THE WHOLE RISK.
 // The server already owns the same table in server/astrodeck/flows/nodes.py,
@@ -14,6 +15,9 @@
 // WHERE EACH FIELD COMES FROM (sources ranked as in the handoff brief):
 //   type/label/cat/ins/outs/params  — nodes.py AND the prototype's DEFS, which
 //                                     agree codepoint-for-codepoint (§C.0).
+//   createdAs/legacy                — nodes.py `created_as` / `LEGACY_TYPES`
+//                                     (mosaic spec 3.1, 1.7); the prototype
+//                                     predates both.
 //   colorVar                        — README §"Design tokens" via §C.0's table.
 //   fields/desc/sum                 — the prototype's DEFS (lines 658-754) ONLY.
 //                                     nodes.py's NodeDef has no such fields;
@@ -26,6 +30,7 @@
 // not the number 1 — binning is a select over "1"/"2"/"4" and a numeric default
 // would silently rewrite the operator's choice. Changing a default's type here
 // changes the behaviour of an input control three files away.
+import { DEFAULT_OVERLAP } from "../../lib/framing";
 import type { FlowNodeType, PortKind } from "./flowsTypes";
 
 /** One port on a node.
@@ -40,10 +45,12 @@ export interface PortDef {
   kind: PortKind;
   /** May be left unwired without the doctor complaining.
    *
-   *  Only `calib.panel` today (nodes.py `optional_ins=frozenset({"panel"})`): a
-   *  calibration queue with no flat panel is a working queue that skips flats,
-   *  and doctor rule 7 says that in its own words rather than as an
-   *  "unwired input" complaint that would read like a mistake. */
+   *  Mirrors nodes.py `optional_ins` exactly (the parity test holds it). The
+   *  first was `calib.panel`: a calibration queue with no flat panel is a
+   *  working queue that skips flats, and doctor rule 7 says that in its own
+   *  words rather than as an "unwired input" complaint that would read like a
+   *  mistake. TARGET's `next` is the newest: only a mosaic's panel loop wires
+   *  it. */
   optional?: true;
 }
 
@@ -69,6 +76,13 @@ export interface FieldDef {
   options?: readonly string[];
   /** Suffix rendered after the control, e.g. `min`, `°`, `h (0 = none)`. */
   unit?: string;
+  /** The value to SHOW when the node carries no value of its own for this key
+   *  (absent or ""). Never written: the node keeps no key until the operator
+   *  picks one. Only TARGET's `angle` has one, because the server derives it
+   *  from `rotation` rather than defaulting it (nodes.py `target_angle`), so
+   *  a stored block with a real PA must read "Rotate to PA", not a blank
+   *  select or the first option. Read it through `fieldValue`. */
+  derive?: (p: Record<string, string | number>) => string | number;
 }
 
 export interface NodeDef {
@@ -90,9 +104,19 @@ export interface NodeDef {
   ins: readonly PortDef[];
   /** Output ports, in the order they are drawn. */
   outs: readonly PortDef[];
-  /** Starting parameters for a freshly dropped node. Types matter — see the
-   *  file header. */
+  /** The MISSING-KEY defaults (nodes.py `params`): what a loaded node is read
+   *  as when it lacks a key, so each must keep the meaning the key had before
+   *  it existed. Types matter — see the file header. A node being CREATED
+   *  takes `createParams(type)`, which overlays `createdAs`. */
   params: Readonly<Record<string, string | number>>;
+  /** The "Created as" column (nodes.py `created_as`, spec 3.1): overrides a
+   *  NEW node is written with and a loaded one never is. This is where a new
+   *  choice lives (accepted subs only, no angle nobody chose, blank
+   *  coordinates) so that it cannot re-mean a saved flow on load. */
+  createdAs?: Readonly<Record<string, string | number>>;
+  /** Still loads, no longer offered (nodes.py `LEGACY_TYPES`, spec 1.7). The
+   *  palette omits it; a saved graph that carries one keeps working. */
+  legacy?: true;
   /** Editable rows, in the order the inspector lists them (§C.8 item 4:
    *  "one FlowFieldRow per def.fields, in DEFS order"). */
   fields: readonly FieldDef[];
@@ -156,6 +180,40 @@ export function formatCyclePlan(slots: readonly CycleSlot[]): string {
   return slots.map((s) => `${s.filter} ${s.exposure_s}`).join(", ");
 }
 
+/** TARGET's `angle` choices, in the order the editor offers them. Mirrors
+ *  nodes.py `TARGET_ANGLES`, which the parity test parses. Stored verbatim in
+ *  saved flows, so never reworded. */
+export const TARGET_ANGLES = ["Any angle", "Rotate to PA", "Camera fixed at PA"] as const;
+
+/** TARGET's and POOL's `counts` values, old meaning first. Mirrors nodes.py
+ *  `COUNT_MODES`. Not offered as a control (Revision 2, ruling 2). */
+export const COUNT_MODES = ["Every sub taken", "Accepted subs"] as const;
+
+/** A decimal number, as Python's `float()` reads the values an operator
+ *  actually types. `Number()` alone would read "" and "  " as 0, which here
+ *  would be PA 0 (north up) instead of "no constraint". */
+const DECIMAL = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
+/** `rotation` as a number, with compile's reading of a bad value: unparseable,
+ *  empty or non-finite is -1, "no constraint", never PA 0. */
+function rotationDeg(v: string | number | undefined): number {
+  const n = typeof v === "number" ? v : DECIMAL.test(txt(v).trim()) ? Number(txt(v).trim()) : NaN;
+  return Number.isFinite(n) ? n : -1;
+}
+
+/** The angle a TARGET node means. Mirrors nodes.py `target_angle`.
+ *
+ *  DERIVED, NEVER DEFAULTED: a node saved before `angle` existed carries only
+ *  `rotation`, and a missing-key "Any angle" would turn one that commands the
+ *  rotator to PA 23.4 into one that commands nothing. A stored choice wins;
+ *  otherwise a negative rotation is "Any angle" and anything else, 0 included
+ *  (north up is a real PA, #150), is "Rotate to PA". */
+export function targetAngle(p: Record<string, string | number>): string {
+  const stored = p.angle;
+  if (stored !== undefined && stored !== null && stored !== "") return String(stored);
+  return rotationDeg(p.rotation) < 0 ? "Any angle" : "Rotate to PA";
+}
+
 /** The whole vocabulary. Grouped and ordered as nodes.py declares them
  *  (SOURCES → EQUIPMENT → RIG OPS → LOGIC → ACTIONS + SINKS); note this is a
  *  declaration order for reading, NOT the palette's item order, which is
@@ -170,11 +228,19 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     colorVar: "--accent",
     ins: [],
     outs: [_f("window", "window opens"), _e("nightend", "night ends")],
-    params: { start: "Astro dusk", offset: -30, stop: "Dawn", minAlt: 30, repeat: "Single night" },
+    // `startClock`/`stopClock` are "HH:MM" text, read only when `start` or
+    // `stop` is "Clock time" (#191) - nodes.py carries the same pair, in the
+    // same order, for the same reason (see its comment there).
+    params: {
+      start: "Astro dusk", offset: -30, startClock: "",
+      stop: "Dawn", stopClock: "", minAlt: 30, repeat: "Single night",
+    },
     fields: [
       { key: "start", label: "Start", control: "select", options: ["Astro dusk", "Nautical dusk", "Civil dusk", "Clock time"] },
       { key: "offset", label: "Offset", control: "text", unit: "min" },
+      { key: "startClock", label: "Start clock time", control: "text" },
       { key: "stop", label: "Stop", control: "select", options: ["Dawn", "Clock time", "None"] },
+      { key: "stopClock", label: "Stop clock time", control: "text" },
       { key: "minAlt", label: "Min target altitude", control: "text", unit: "°" },
       { key: "repeat", label: "Repeat", control: "select", options: ["Single night", "Nightly until pool complete", "Nightly ×30"] },
     ],
@@ -191,19 +257,63 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     label: "TARGET",
     cat: "SOURCE",
     colorVar: "--accent",
-    ins: [_f("arm", "arm")],
-    outs: [_f("target", "target")],
+    // `next` is the panel loop's socket (spec 1.2): the dashed "pass done" wire
+    // from the tail of this block's panel lane lands here. OPTIONAL — nodes.py
+    // `optional_ins=frozenset({"next"})` — because a single target, and a
+    // mosaic shot panel-first, never wire it.
+    ins: [_f("arm", "arm"), { id: "next", label: "next panel", kind: "event", optional: true }],
+    // The id stays `target`, so every saved wire survives; the label says the
+    // stages after it run once per panel.
+    outs: [_f("target", "each panel")],
     // RA/Dec are TEXT, in the sexagesimal forms the server's parser accepts —
     // including the typographic prime/double-prime and U+2212 minus that these
     // very defaults carry. (parse_dec could not read them until 136be93.)
-    params: { name: "M31 - Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: 23.4 },
+    // rotation -1 is "any angle" (#150). The old default, 23.4, was a real PA to
+    // the compiler, so every dropped TARGET commanded the rotator to an angle
+    // nobody chose. Still a number: edits are coerced by the default's type.
+    //
+    // THE MOSAIC KEYS (spec 3.1) default to what a TARGET saved before them
+    // meant — one panel, no camera field, the hub's centring, counting every
+    // sub — because these are the MISSING-KEY defaults. `angle` has none: it is
+    // derived from `rotation` (see `targetAngle`). A new block is written with
+    // `createdAs` instead: blank coordinates (#190), any angle, accepted subs.
+    // `overlap` is the one overlap every framing starts from, lib/framing's
+    // DEFAULT_OVERLAP in percent (#461): it was a fourth number, 25, that did
+    // not read the constant. nodes.py derives the same product from the
+    // server's constant (`target_overlap_pct`), so the parity test compares
+    // one number with one number.
+    params: {
+      name: "M31 - Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: -1,
+      rows: 1, cols: 1, overlap: DEFAULT_OVERLAP * 100, fovX: 0, fovY: 0, fovFrom: "", skip: "",
+      passes: 1, minVisit: 0, order: "Least complete first", centerTol: 1.2,
+      centerTries: 3, ifNotCentred: "Auto", counts: "Every sub taken", frameAnchor: "",
+    },
+    createdAs: { name: "", ra: "", dec: "", rotation: -1, angle: "Any angle", counts: "Accepted subs" },
+    // No row for `counts` (not offered, Revision 2 ruling 2) or `frameAnchor`
+    // (written by the server at save, ruling 3); see ROWLESS_PARAMS.
     fields: [
       { key: "name", label: "Name", control: "text" },
       { key: "ra", label: "RA", control: "text" },
       { key: "dec", label: "Dec", control: "text" },
-      { key: "rotation", label: "Camera angle", control: "text", unit: "°" },
+      { key: "rotation", label: "Position angle", control: "text", unit: "°" },
+      { key: "angle", label: "Camera angle", control: "select", options: TARGET_ANGLES, derive: targetAngle },
+      { key: "rows", label: "Rows", control: "text" },
+      { key: "cols", label: "Columns", control: "text" },
+      { key: "overlap", label: "Overlap", control: "text", unit: "%" },
+      // The zero sentinel is spelled at the control, as capture's goal does:
+      // 0 is "not framed yet", not a camera that images nothing.
+      { key: "fovX", label: "Field width at bin 1", control: "text", unit: "° (0 = not framed)" },
+      { key: "fovY", label: "Field height at bin 1", control: "text", unit: "° (0 = not framed)" },
+      { key: "fovFrom", label: "Field from", control: "text" },
+      { key: "skip", label: "Skip panels", control: "text" },
+      { key: "passes", label: "Passes per visit", control: "text" },
+      { key: "minVisit", label: "Minimum visit", control: "text", unit: "min" },
+      { key: "order", label: "Panel order", control: "select", options: ["Least complete first", "Setting first", "Grid order"] },
+      { key: "centerTol", label: "Centre within", control: "text", unit: "′" },
+      { key: "centerTries", label: "Centring tries", control: "text" },
+      { key: "ifNotCentred", label: "If a panel will not centre or reach its angle", control: "select", options: ["Auto", "Skip it this pass", "Shoot anyway"] },
     ],
-    desc: "A plan target from the Sky Atlas: coordinates, camera angle, and identity for the multi-night session ledger.",
+    desc: "One target, or a mosaic of panels at one camera angle: coordinates, grid, centring, and identity for the multi-night session ledger. The stages wired to 'each panel' run on every panel; wire the last stage's 'pass done' to 'next panel' to rotate panels every pass.",
     sum: (p) => txt(p.name),
   },
   safety: {
@@ -290,11 +400,14 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     sum: (p) => low(p.position) + " · " + txt(p.adu) + " ADU",
   },
   // ---------------------------------------------------------------- RIG OPS
+  // LEGACY (nodes.py `LEGACY_TYPES`, spec 1.7): centring is part of the TARGET
+  // block now. It stays so every saved graph loads, and the palette omits it.
   slew: {
     type: "slew",
     label: "SLEW + CENTER",
     cat: "RIG",
     colorVar: "--sky",
+    legacy: true,
     ins: [_f("run", "run")],
     outs: [_f("centered", "centered")],
     params: { tol: 0.5, retries: 3, solver: "ASTAP" },
@@ -303,7 +416,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "retries", label: "Max iterations", control: "text" },
       { key: "solver", label: "Solver", control: "select", options: ["ASTAP", "NINA (bridge)", "Simulator"] },
     ],
-    desc: "Slew to the target, then plate-solve and iterate until pointing is within tolerance (ASTAP).",
+    desc: "Legacy stage: centring is part of the TARGET block now. This stage's tolerance and tries never reached the run, which centred to 1.2 arcmin in up to 3 tries; set centring on the TARGET and delete this stage.",
     sum: (p) => "±" + txt(p.tol) + "′ · " + txt(p.solver),
   },
   autofocus: {
@@ -312,7 +425,12 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     cat: "RIG",
     colorVar: "--sky",
     ins: [_f("run", "run")],
-    outs: [_f("focused", "focused")],
+    // `pass` since S4 (#331), as on CAPTURE LOOP below and for the same
+    // reason: any lane node can be the last stage of a panel lane, and the
+    // loop wire must leave the last stage. Without it, appending an
+    // AUTOFOCUS after a looped FILTER CYCLE stranded the loop mid-lane (M12)
+    // with no port to carry it to. Appended last, so `focused` keeps its row.
+    outs: [_f("focused", "focused"), _e("pass", "pass done")],
     params: { method: "V-curve sweep", step: 12, samples: 9 },
     fields: [
       { key: "method", label: "Method", control: "select", options: ["V-curve sweep", "Native (delegate)"] },
@@ -328,7 +446,8 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     cat: "RIG",
     colorVar: "--sky",
     ins: [_f("run", "run")],
-    outs: [_f("guiding", "guiding")],
+    // `pass` since S4 (#331): see AUTOFOCUS above.
+    outs: [_f("guiding", "guiding"), _e("pass", "pass done")],
     params: { provider: "PHD2", settle: 1.5, dither: 3 },
     fields: [
       { key: "provider", label: "Provider", control: "select", options: ["PHD2", "NINA (bridge)", "Simulator"] },
@@ -344,10 +463,12 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     cat: "RIG",
     colorVar: "--sky",
     ins: [_f("run", "run")],
-    // The only node with one port of each kind on the same side: `complete`
-    // advances the run cursor once, `frame` fires per graded frame and is what
-    // a CONDITION listens to.
-    outs: [_f("complete", "complete"), _e("frame", "frame graded")],
+    // Ports of both kinds on the same side: `complete` advances the run cursor
+    // once ("all done": on a mosaic it fires when every panel owes nothing),
+    // `frame` fires per graded frame and is what a CONDITION listens to, and
+    // `pass` is structural — it means something only as the panel loop wire
+    // from the tail of a panel lane into its TARGET's `next` (spec 1.3).
+    outs: [_f("complete", "all done"), _e("frame", "frame graded"), _e("pass", "pass done")],
     // `bin` IS A STRING. See the file header — it is a select and a numeric
     // default would make flowsSetParam coerce the operator's choice away.
     params: { filter: "L", exposure: 120, gain: 100, bin: "1", count: 24, reject: 3.5, goal: 12 },
@@ -376,7 +497,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // acyclic, loops live inside stages". So the same port pair as `capture`,
     // and the interleaving is inside the stage where the graph cannot see it.
     ins: [_f("run", "run")],
-    outs: [_f("complete", "complete"), _e("frame", "frame graded")],
+    outs: [_f("complete", "all done"), _e("frame", "frame graded"), _e("pass", "pass done")],
     // `plan` is the slot table in the server's storage format: "<filter>
     // <seconds>", comma separated, wheel order. NOTHING TYPES IT — see the
     // cycleplan control below.
@@ -460,12 +581,19 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // WINDOW says the night comes back.
     ins: [_f("arm", "arm"), { id: "advance", label: "advance", kind: "event", optional: true }],
     outs: [_f("target", "best target"), _e("floor", "floor hit")],
+    // The `onFloor` option VALUES are stored in saved flows and compile.py
+    // matches only their verb, so they are never reworded (#208). The
+    // set-aside promise they and `desc` make is mapped to the engine tests
+    // that keep it in server/tests/test_set_aside_promises.py.
+    // `counts` gets TARGET's treatment (Revision 2, ruling 2): missing-key
+    // "Every sub taken", created "Accepted subs", and no row.
     params: {
       members: "M16, M17, M8, NGC 6946",
       strategy: "Best available (alt × moon)",
       quota: 45, minAlt: 30, onFloor: "Advance now; retry it next night",
-      moonSep: 40, maxHA: 4,
+      moonSep: 40, maxHA: 4, counts: "Every sub taken",
     },
+    createdAs: { counts: "Accepted subs" },
     fields: [
       { key: "members", label: "Candidates", control: "text" },
       { key: "strategy", label: "Strategy", control: "select", options: ["Best available (alt × moon)", "Priority order", "Round robin"] },
@@ -475,7 +603,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "moonSep", label: "Min moon separation", control: "text", unit: "°" },
       { key: "maxHA", label: "Max hour angle", control: "text", unit: "h" },
     ],
-    desc: "Holds candidates and hands the flow whichever scores best right now - altitude × moon separation × hour angle. 'Advance' marks the active target done and re-scores the REMAINING members; done targets are never re-selected. The scheduler watches the active target's altitude: at the floor it fires 'floor hit', suspends that target's cursor (NOT done - it retries next night), and hands out the next best.",
+    desc: "Holds candidates and hands the flow whichever scores best right now - altitude × moon separation × hour angle. 'Advance' marks the active target done and re-scores the REMAINING members; done targets are never re-selected. The scheduler watches the active target's altitude: at the floor it fires 'floor hit', sets that target aside for tonight (NOT done - a restart tonight does not retry it; the next night does), and hands out the next best.",
     // "Best available (alt × moon)" lowercased would print the "×" formula in
     // the footer and overflow a 188px card, so that one strategy gets a short
     // form and the other two are lowercased whole.
@@ -651,3 +779,43 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     sum: (p) => txt(p.dest),
   },
 };
+
+/** The params a node of this type is CREATED with: the missing-key defaults
+ *  overlaid with its `createdAs` column. Mirrors nodes.py `create_params`. A
+ *  palette drop, the wizard and a fixture take this; loading a saved node
+ *  never does, which is what keeps a new choice from re-meaning a saved flow.
+ *  A fresh object on every call, so an edit cannot reach the table. */
+export function createParams(type: FlowNodeType): Record<string, string | number> {
+  const def = NODE_DEFS[type];
+  return { ...def.params, ...(def.createdAs ?? {}) };
+}
+
+/** Types that still load but are no longer offered. Mirrors nodes.py
+ *  `LEGACY_TYPES`; the parity test holds this list, each def's `legacy` flag
+ *  and the server's set to one another. A literal union so `palette.ts` can
+ *  prove at compile time that it offers every type EXCEPT these. */
+export type LegacyNodeType = "slew";
+export const LEGACY_TYPES: readonly LegacyNodeType[] = ["slew"];
+
+/** Params that deliberately get NO inspector row, per type, and why. Any other
+ *  param without a row is a value the operator can never change, which the
+ *  parity test refuses. */
+export const ROWLESS_PARAMS: Partial<Record<FlowNodeType, readonly string[]>> = {
+  // `counts` is withdrawn from the editor (Revision 2, ruling 2): every new
+  // block counts accepted subs, and a save switches an old one. `frameAnchor`
+  // is written by the server at every save (ruling 3), never typed.
+  target: ["counts", "frameAnchor"],
+  pool: ["counts"],
+};
+
+/** The value an inspector row shows: the node's own param, or, when it has
+ *  none (absent or ""), the field's derived value. Only TARGET's `angle`
+ *  derives, from `rotation`, so a stored block with a real PA reads "Rotate
+ *  to PA" and not a blank select. Nothing is written: this is display. */
+export function fieldValue(
+  field: FieldDef, params: Record<string, string | number>,
+): string | number | undefined {
+  const own = params[field.key];
+  if ((own === undefined || own === "") && field.derive) return field.derive(params);
+  return own;
+}

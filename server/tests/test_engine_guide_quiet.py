@@ -95,6 +95,44 @@ async def test_guiding_and_finding_are_not_treated_as_mount_motion(sim_hub, monk
             engine._await_guider_quiet("test", timeout_s=0.2), timeout=1.0) is True
 
 
+def test_an_unguided_stretch_is_bounded_by_one_frame():
+    """WHAT BOUNDS THE DAMAGE (issue #27).
+
+    The report is 25 minutes of exposure with the guider at `phase=idle` and no
+    recovery attempted. Every case in this file drives `_maybe_recover_guiding`
+    DIRECTLY, so between them they prove the recovery does the right thing and
+    say nothing at all about how often it is asked - and "how often" is the
+    entire complaint. A recovery that works perfectly and is consulted once a
+    target is indistinguishable from the night in that report.
+
+    It is consulted at the frame boundary, before the exposure, so the worst
+    case is ONE frame of unguided sky. That is the ceiling the issue asks for,
+    and it is a property of where the call sits rather than of what it does.
+
+    Asserted on source order because that is what the claim is about. Driving a
+    run would prove the recovery fires, which the cases below already do; it
+    would not prove there is no path through the loop that skips it.
+
+    MUTATION: move the `_maybe_recover_guiding` call below `await self._capture`.
+    Observed: this fails - the guider is consulted after the frame it was
+    supposed to protect.
+    MUTATION: delete the call. Observed: this fails on the first assertion, and
+    every other case in this file stays green, because they all call the method
+    themselves.
+    """
+    import inspect
+    src = inspect.getsource(SequenceEngine._run_step)
+    recover = src.find("_maybe_recover_guiding")
+    capture = src.find("await self._capture")
+    assert recover != -1, (
+        "the frame loop no longer consults guiding recovery at all; an "
+        "unguided stretch is then bounded by nothing")
+    assert capture != -1, "this case can no longer find the exposure it guards"
+    assert recover < capture, (
+        "guiding recovery is consulted AFTER the exposure, so every frame is "
+        "taken on last frame's answer")
+
+
 async def test_recovery_recentres_BEFORE_it_resumes_guiding(sim_hub, monkeypatch):
     """Order is the point. Re-centring slews, so doing it after start_guiding
     would tear down the guiding we had just paid to re-establish."""
@@ -191,3 +229,135 @@ async def test_a_failed_recentre_still_resumes_guiding(sim_hub, monkeypatch):
     _phase(sim_hub, "idle")
     await engine._maybe_recover_guiding(_target())
     assert started == [True]
+
+
+# ------------------------------------------------------------------- #72
+# The recovery loop had no bound. On 2026-09-19 it ran 2.5 hours and 18
+# losses on NGC 7129; on 2026-09-20 it ran on NGC 7331 from a calibration 28
+# degrees out of square. Throughout, the sequence said `running` and one
+# trailed frame landed per cycle, so a supervisor watching state saw health
+# and a supervisor watching the frame COUNT saw progress.
+
+async def test_recovery_is_bounded_and_counts_attempts_not_failures(
+        sim_hub, monkeypatch):
+    """The bound counts ATTEMPTS since the last banked frame.
+
+    Counting failures would have read zero all night: on 2026-09-20 recovery
+    kept succeeding -- "native guider calibrated and guiding" -- and losing
+    the star again minutes later. start_guiding below therefore SUCCEEDS
+    every time, exactly as it did on the rig, and the guider goes down again
+    before the next pass.
+
+    MUTATION: delete the `if self._guiding_recoveries >=
+    _MAX_GUIDING_RECOVERIES:` block from _maybe_recover_guiding. Observed
+    under it: attempts keeps climbing past the bound (6 of 6 passes recover)
+    and the first assertion fails.
+    """
+    monkeypatch.setattr(engine_mod, "GUIDE_QUIET_POLL_S", 0.01)
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(guide=True, recover_guiding=True)
+    attempts: list[int] = []
+
+    async def fake_center(ra, dec, rotation_deg=None):
+        pass
+
+    async def fake_start():
+        attempts.append(1)
+        sim_hub.guider._guiding = True      # recovery SUCCEEDS, as it did
+
+    monkeypatch.setattr(sim_hub, "goto_and_center", fake_center)
+    monkeypatch.setattr(sim_hub.guider, "start_guiding", fake_start)
+
+    for _ in range(6):
+        sim_hub.guider._guiding = False     # ...and the star is lost again
+        _phase(sim_hub, "idle")
+        await engine._maybe_recover_guiding(_target())
+
+    assert len(attempts) == engine_mod._MAX_GUIDING_RECOVERIES, (
+        f"{len(attempts)} recovery attempts without a frame; the bound is "
+        f"{engine_mod._MAX_GUIDING_RECOVERIES}")
+    assert engine.state.get("detail") == "guiding lost; recovery stood down", (
+        f"the run does not say it stood down: {engine.state.get('detail')!r}")
+
+
+async def test_a_banked_frame_clears_the_recovery_bound(sim_hub, monkeypatch):
+    """Clearing the counter re-arms recovery, so the bound is per-drought and
+    not per-run. Without that, one bad patch of cloud early on would exhaust
+    the bound and leave the rest of a long night unguided.
+
+    SCOPE, stated because the test name could promise more than it delivers:
+    this drives the re-arm by setting the counter directly, the way the
+    frame-accept path does. It does NOT exercise that path, which lives deep
+    in the capture loop; deleting the reset line there would leave this test
+    green. What it does pin is the DESIGN choice of a clearable counter over a
+    one-way latch, which was the tempting simpler implementation.
+
+    MUTATION: make the stand-down unconditional (`if True:` in place of the
+    bound comparison), the degenerate a latch collapses to. Observed: the
+    second burst attempts nothing and the final assertion fails 2 != 4.
+    """
+    monkeypatch.setattr(engine_mod, "GUIDE_QUIET_POLL_S", 0.01)
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(guide=True, recover_guiding=True)
+    attempts: list[int] = []
+
+    async def fake_center(ra, dec, rotation_deg=None):
+        pass
+
+    async def fake_start():
+        attempts.append(1)
+        sim_hub.guider._guiding = True
+
+    monkeypatch.setattr(sim_hub, "goto_and_center", fake_center)
+    monkeypatch.setattr(sim_hub.guider, "start_guiding", fake_start)
+
+    for _ in range(4):
+        sim_hub.guider._guiding = False
+        _phase(sim_hub, "idle")
+        await engine._maybe_recover_guiding(_target())
+    assert len(attempts) == engine_mod._MAX_GUIDING_RECOVERIES
+
+    engine._guiding_recoveries = 0          # what banking a frame does
+
+    for _ in range(4):
+        sim_hub.guider._guiding = False
+        _phase(sim_hub, "idle")
+        await engine._maybe_recover_guiding(_target())
+    assert len(attempts) == 2 * engine_mod._MAX_GUIDING_RECOVERIES, (
+        "a banked frame did not re-arm recovery, so one bad patch of cloud "
+        "ends guiding for the rest of the night")
+
+
+# ------------------------------------------------------------------ #108
+async def test_a_starting_run_always_publishes_a_frame_counter(sim_hub, monkeypatch):
+    """A supervisor must be able to tell "no frames yet" from "no counter".
+
+    `start()` replaces the published state wholesale, and `_run` does not
+    publish a progress block until after the safety gates, the slew, the
+    autofocus and the plate solve. For those minutes GET /api/sequence/state
+    carried no progress.frames_done at all. My night supervisor read that
+    absence as a counter that had not moved, called it a stall, and aborted a
+    healthy NGC 7331 run on 2026-09-19.
+
+    MUTATION: restore `self.state = {"state": "idle"}` without the progress
+    key. Observed: KeyError 'progress' on the first assertion.
+    """
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(guide=False, recover_guiding=False)
+
+    # Never let the task run: this is about the window BEFORE its first turn,
+    # which is the window the supervisor polled into.
+    async def never(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(engine, "_run", never)
+    engine.start(SequencePlan(guide=False, recover_guiding=False))
+    try:
+        assert "progress" in engine.state, (
+            "a run that has been started publishes no progress block at all, "
+            "so a supervisor cannot distinguish 'no frames yet' from "
+            "'no counter'")
+        assert engine.state["progress"]["frames_done"] == 0
+    finally:
+        if engine._task:
+            engine._task.cancel()

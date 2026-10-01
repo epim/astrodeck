@@ -1,6 +1,6 @@
 // Camera capture retains a bounded colour panorama and an editable horizon
 // draft. Phone sensor pose and lens angles remain estimates for user review.
-import { DOME_CELLS, SkyPanorama, orientationBasis, pixelBlueness, pixelLuminance, skyAngles, cameraLens, targetCell, transferBasis, type CameraBasis } from './photosphereGeometry';
+import { DOME_CELLS, SkyPanorama, orientationBasis, pixelBlueness, pixelLuminance, skyAngles, cameraLens, targetCell, transferBasis, overlapConflictTerm, type CameraBasis } from './photosphereGeometry';
 import { CameraPoseHistory, MotionStability, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
 import { registerFrame, SEARCH_CEILING_DEG } from './photosphereRegistration';
 import { VisualStability, GRID_W, GRID_H, CELL_SAMPLES, STALE_FRAME_MS } from './photosphereStability';
@@ -28,6 +28,7 @@ export type CaptureOutcome =
   | 'no-image'
   | 'alignment-wait'
   | 'overlap-wait'
+  | 'carry-too-large'
   | 'no-target'
   | 'already-captured'
   | 'too-soon'
@@ -58,12 +59,63 @@ export type CaptureOutcome =
  *  window reading `featureless`, which is the gap issue #63 describes, reaching
  *  capture.
  *
- *  `separation` is therefore a branch no suite and no recording reaches: the
- *  two `forFrame` calls it compares are handed the same evidence at the same
- *  instant and differ only in a capture time, and every path that returns a
- *  pose for both returns poses already inside the 1.5 degrees. It is filed
- *  rather than dressed up with a fixture here. */
+ *  `separation` is therefore a branch no suite and no recording reaches, and
+ *  issue #104 is where that is filed. Re-measured at f17c036b, because the
+ *  mechanism there is now out of date - `rawBasis` is the FRAME's own basis
+ *  on the rVFC path, not a second timed `forFrame` call, so the two sides are
+ *  no longer the same call with different arguments:
+ *
+ *    photosphereStillnessDom   112 evaluations, max 0.000
+ *    photosphereReplay         214 evaluations, max 0.000
+ *    all three recordings        0 refusals
+ *
+ *  Not merely under the threshold - EXACTLY zero, every time, so on today's
+ *  rVFC path the frame's basis and the settled pose are the same reading.
+ *  The gate is kept rather than collapsed into the `unsettled` term above it,
+ *  and the reason is that number: it is not a threshold with margin, it is an
+ *  invariant holding exactly, and the source of one side changed once already.
+ *  A comparison costs nothing; discovering by a misplaced frame that the two
+ *  have drifted apart costs a scan.
+ *
+ *  THE BRANCH IS NOW TESTED, and the zeros above say why nothing had reached
+ *  it rather than that nothing can. The two sides are `forFrame` at the
+ *  frame's capture time and `forFrame` at now, and the strict path believes a
+ *  capture time up to STALE_FRAME_MS (1000 ms) old while its untimed settle
+ *  window is 500 ms. A frame stamped 900 ms back, arriving 500-800 ms after a
+ *  turn, therefore wears the heading from before the turn while the settle
+ *  test finds the one after it. photosphereStillnessDom's issue #104 case pins
+ *  that refusal; at 800 ms of lag the window is three frames and the 350 ms
+ *  grab cadence steps over it, which is how every recording missed it. */
+/** How many readback timings the diagnostics keep: a minute and more of
+ *  frames, which is enough for a p95 and small enough to never matter. */
+const READBACK_SAMPLES = 2048;
+
+/** count / p50 / p95 / max of the stillness readback, in ms. Null before the
+ *  first sample, so "never read" cannot be mistaken for "read in 0 ms". */
+export function readbackSummary(ms: readonly number[]):
+    {count:number;p50:number;p95:number;max:number}|null {
+  if (!ms.length) return null;
+  const sorted = [...ms].sort((a, b) => a - b);
+  const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+  return { count: sorted.length, p50: at(.5), p95: at(.95), max: sorted[sorted.length - 1] };
+}
+
 export type AlignmentWait = 'no-pose' | 'unsettled' | 'separation';
+
+/** `no-pose` only: which of the two sources was missing (issue #76).
+ *
+ *    `neither`         the sensor placed the frame nowhere - no settled pose
+ *                      AND no tilt. Nothing to work with.
+ *    `below-overhead`  a tilt WAS read, and was refused because this
+ *                      altitude is not in the overhead band. The tilt-only
+ *                      path exists for the zenith alone, so anywhere below
+ *                      85 degrees a tilt is not a licence to place a frame.
+ *
+ *  The distinction is the whole point: `neither` says the sensor stack had
+ *  nothing, and `below-overhead` says it had something the gate declined. A
+ *  log of `no-pose` alone cannot tell a dead stream from a working one being
+ *  turned away, and issue #76's seven missed holds needed exactly that. */
+export type PoseGap = 'neither' | 'below-overhead';
 
 export interface CaptureRecord {
   at: number;
@@ -74,6 +126,9 @@ export interface CaptureRecord {
   adjusted?: boolean;
   /** `alignment-wait` only: which term refused (issue #76). */
   wait?: AlignmentWait;
+  /** `alignment-wait` with `wait: 'no-pose'` only: which source was
+   *  missing. See `PoseGap`. */
+  gap?: PoseGap;
   /** `alignment-wait` with `wait: 'separation'` only: the max-axis degrees
    *  between the settled pose and the pose the frame was worn at - the number
    *  the 1.5 degree gate compared. Absent where nothing was measured. */
@@ -90,6 +145,17 @@ export interface CaptureRecord {
    *  refusal has to be read against (issue #76), and because it is the one
    *  quantity in the refusal that the previous frames set rather than this one. */
   anchor?: number;
+  /** `overlap-wait` only (issue #130): which term of the overlap conflict
+   *  refused - brightness correlation under OVERLAP_BRIGHTNESS_MIN, edge
+   *  correlation under OVERLAP_EDGE_MIN, or both - with the two numbers it
+   *  decided on, the sample count, and whether registration searched for a
+   *  better fit before giving up (false: it never searched, because the first
+   *  check was already 'unknown' or its edges already agreed). */
+  overlapTerm?: 'brightness'|'edges'|'both';
+  correlation?: number | null;
+  featureCorrelation?: number | null;
+  samples?: number;
+  searched?: boolean;
 }
 
 /** Does this outcome end a run of `overlap-wait` refusals (see
@@ -122,11 +188,33 @@ export interface CaptureRecord {
  *  having stayed silent through twenty-three refusals, which is the complaint
  *  issue #52 was filed about. With all four neutral it arrives on the ninth.
  *
+ *  `carry-too-large` is the sixth non-ending outcome and the only one that is
+ *  not a "before the test was reached" case: it IS a refusal to match, split
+ *  off from `overlap-wait` by issue #95 so the cue and the log can name what
+ *  was refused. It extends a run for the same reason `overlap-wait` does -
+ *  treating it as a reset would break the run at exactly the refusal that is
+ *  strongest evidence of a wrong lens, which is the path `carriedCorrectionMax`
+ *  documents and the #70 uncalibrated case grades.
+ *
  *  Exported so the replay test can count runs by this rule rather than keep a
  *  second copy of it that could quietly disagree with this one. */
 export function endsOverlapRun(outcome: CaptureOutcome): boolean {
-  return outcome !== 'overlap-wait' && outcome !== 'alignment-wait'
+  return !extendsOverlapRun(outcome) && outcome !== 'alignment-wait'
     && outcome !== 'too-soon' && outcome !== 'no-target' && outcome !== 'below-horizon';
+}
+
+/** The other half of the same rule: which outcomes LENGTHEN a run. Every
+ *  outcome is exactly one of extends / ends / neutral, and `recordCapture` is
+ *  the only place that needs all three.
+ *
+ *  It exists because issue #95 made the answer two names instead of one, and
+ *  `photosphereReplay.test.ts` counts runs off a recording's capture log. That
+ *  test held `outcome === 'overlap-wait'` inline, and a second name would have
+ *  left it counting a shorter run than the scanner did while still passing -
+ *  the same "second copy of the rule" `endsOverlapRun` is exported to avoid,
+ *  one predicate over. */
+export function extendsOverlapRun(outcome: CaptureOutcome): boolean {
+  return outcome === 'overlap-wait' || outcome === 'carry-too-large';
 }
 
 /** The log records; it decides nothing. Bounded so a long-running scan
@@ -260,6 +348,30 @@ export function projectSweepColumns(frames: SweepFrame[], bins: number,
 export interface SkyTrace {
   points: { az: number; alt: number }[];
   uncertainBins: number[];
+  /** Set by `traceSweep` alone: the scan reached the lens-doubt run on an
+   *  uncalibrated lens, so every bin is uncertain (issue #129). */
+  lensInDoubt?: boolean;
+}
+
+/** The horizon a finished SCAN may publish - `traceSkyCoverage` plus the one
+ *  thing only the sweep knows: whether its lens was in doubt (issue #129).
+ *
+ *  On a lens the scanner has argued against - LENS_DOUBT_AFTER overlap
+ *  refusals in a row, uncalibrated, the state the "camera view angle may be
+ *  set wrong" cue already reports - every frame was painted with the wrong
+ *  field of view. Measured on chartyard-arc075-70 (a 70-degree camera scanned
+ *  at 60): the high-band frames compress toward their centres, the zenith
+ *  frame paints the south roof into the top rows of 19 of 30 bins, the pooled
+ *  sky seed becomes the roof, and the tracer publishes open sky over it,
+ *  CERTAIN - false_open_sr 0.583. No tracer rule can see that from the columns.
+ *  The sweep can: it has already said the lens is wrong. So a scan in that
+ *  state publishes every bin uncertain - 90, blocked, until the view angle is
+ *  set and the sky rescanned. That can only err toward blocking. */
+export function traceSweep(sweep: { columns(): (number[] | SkyBin)[]; lensDoubtedThisScan: boolean }): SkyTrace {
+  const trace = traceSkyCoverage(sweep.columns());
+  if (!sweep.lensDoubtedThisScan) return trace;
+  return { points: trace.points.map(p => ({ ...p, alt: 90 })),
+    uncertainBins: trace.points.map((_, i) => i), lensInDoubt: true };
 }
 
 /** One sampled column of sky: per-row luminance, and the blueness of the same
@@ -294,6 +406,29 @@ export const BIN_SAMPLES = 5;
  *  of the column - the pooled top-rows statistics stand in, which is where
  *  they came from. */
 const SKY_WINDOW = 12, SKY_WINDOW_MIN = 4;
+/** THE ONE MEASURED FACT both tolerances below are spellings of (issue #107):
+ *  the largest re-exposure a MINORITY of the compass can show without being an
+ *  obstruction. The chart yard puts it at 30 per cent - a 30 per cent step
+ *  between two elevation bands is an ordinary re-expose, and nothing separates
+ *  a minority seam from a minority wall of the same depth, not the column and
+ *  not the mosaic.
+ *
+ *  `EXPOSURE_TOLERANCE` and `AZ_DEPARTURE` were derived independently, one from
+ *  the column rule and one from the azimuth rule, and ended a hundredth apart
+ *  with nothing saying they were the same measurement. Re-measure the fact and
+ *  only one of them would have moved, and the tracer's two halves would then
+ *  disagree about what an exposure step is. Both are expressed from here, so a
+ *  change moves both or neither.
+ *
+ *  Stated in HUNDREDTHS and divided, rather than added as decimals, so the
+ *  arithmetic is exact: 32/100 and 62/200 are the same doubles as the literals
+ *  .32 and .31 that used to stand here, checked rather than assumed. */
+export const RE_EXPOSURE_PCT = 30;
+/** How far ABOVE the fact the wide allowance sits, in the same hundredths.
+ *  This is the band issue #74 is about: a wall 30 to 32 per cent darker than
+ *  its own sky is what a single column cannot see. Two points wide, and the
+ *  mosaic's threshold below takes the middle of it. */
+export const RE_EXPOSURE_BAND_PCT = 2;
 /** How far a row may sit from the sky model and still be sky: this fraction of
  *  the model's own level, or three robust deviations of the model's spread,
  *  whichever is larger.
@@ -320,17 +455,27 @@ const SKY_WINDOW = 12, SKY_WINDOW_MIN = 4;
  *  8-bit sky (60 to 481, so it clips long before), but localised near the
  *  horizon it is - the sunward direction at low sun.
  *
- *  What that costs got WORSE with the mosaic, not better, and the figure this
- *  comment used to carry (12 to 16 degrees, measured before the azimuth pass
- *  existed) is stale. Measured now, with the gradient local to five bins of
- *  thirty: +25 per cent per 12 rows publishes 30 degrees where 2b964638
- *  published 0, and +32 and +40 per cent publish 30 against that commit's 12
- *  and 14. The narrow allowance finds the candidate and `AZ_DEPARTURE` does not
- *  refuse it, because a steep glow in a few bins IS a departure those bins have
- *  and their neighbours do not. It is the blocked direction, and it is issue
- *  #102, which names the discriminator as the departure's vertical shape - a
- *  gradient has no surface under it - rather than its extent in azimuth. */
-const EXPOSURE_TOLERANCE = .32, SKY_SIGMAS = 3;
+ *  What that costs got WORSE with the mosaic before issue #102 was fixed, and
+ *  worse again than the 12 to 16 degrees this comment carried from before the
+ *  azimuth pass existed: a gradient local to five bins of thirty published 30
+ *  degrees at +25, +32 and +40 per cent per 12 rows, where the column rule
+ *  alone published 0, 13 and 15. The narrow allowance found the candidate and
+ *  `AZ_DEPARTURE` did not refuse it, because a steep glow in a few bins IS a
+ *  departure those bins have and their neighbours do not.
+ *
+ *  `AZ_RAMP_SHARE` closes that, on the discriminator #102 names - the
+ *  departure's vertical shape, because a gradient has no surface under it,
+ *  rather than its extent in azimuth - and those three cases are back to 0, 13
+ *  and 15. What remains is the column rule's own cost at the two steeper
+ *  gradients, 13 and 15 degrees of sky called blocked that is not, which is
+ *  inside the range this comment always quoted and is what the allowance itself
+ *  buys. It is still the blocked direction, so it wastes sky rather than
+ *  trusting cloud, and `photosphereGradient.test.ts` holds the numbers.
+ *
+ *  Expressed from `RE_EXPOSURE_PCT` since issue #107: this is that fact plus
+ *  the whole of the #74 band. */
+export const EXPOSURE_TOLERANCE = (RE_EXPOSURE_PCT + RE_EXPOSURE_BAND_PCT) / 100,
+      SKY_SIGMAS = 3;
 /** The same for blueness, in 8-bit channel units, with a floor: chroma
  *  subsampling and sensor noise move it a few units on their own, and a grey
  *  sky's blueness has no spread to scale by. The exposure allowance applies
@@ -387,7 +532,9 @@ const LOCAL_TOLERANCE = .12;
  *  left.
  *
  *  0.31 is the middle of the band issue #74 names, and it is the same bracket
- *  `EXPOSURE_TOLERANCE` sits in, read from the other side. Above 0.30, because
+ *  `EXPOSURE_TOLERANCE` sits in, read from the other side - which is why it is
+ *  computed from `RE_EXPOSURE_PCT` and half the band rather than written out
+ *  (issue #107). Above 0.30, because
  *  a 30 per cent step between two elevation bands is an ordinary re-expose and
  *  NOTHING separates a minority seam from a minority wall of the same depth -
  *  the mosaic cannot help there, and the honest answer is the wide allowance's.
@@ -403,7 +550,7 @@ const LOCAL_TOLERANCE = .12;
  *  half by far - a wall of ANY depth whose edge is too soft for one column to
  *  notice it leaving the sky: exact to a 16-row edge, against 10 for a column
  *  on its own, and no longer the cliff to zero that #74 measured at 13. */
-const AZ_DEPARTURE = .31;
+export const AZ_DEPARTURE = (RE_EXPOSURE_PCT * 2 + RE_EXPOSURE_BAND_PCT) / 200;
 /** How many azimuth bins a mosaic must have before the neighbours are allowed
  *  an opinion. Below this there is no majority to outvote a structure: with two
  *  bins the median of the mosaic's row IS one of the two columns, so a wall
@@ -429,6 +576,23 @@ const AZ_SLOP_ROWS = 6;
  *  departure with sky underneath is a wire or a chart marking whatever its
  *  neighbours do. A departure that reaches the ground still needs no height. */
 const AZ_PERSIST_ROWS = 6;
+
+/** How much of a candidate's OWN drop the rows below it may go on repeating
+ *  before it reads as a sky still darkening rather than as a surface, and how
+ *  large that drop has to be for the question to mean anything at all.
+ *
+ *  Issue #102. The mosaic rule compares departures across azimuth, so a steep
+ *  glow confined to a few bins is a departure those bins have and their
+ *  neighbours do not, and it gets promoted. Extent in azimuth cannot separate
+ *  the two, because a wall is also confined to a few bins. Vertical shape can:
+ *  past a wall's edge the rows hold their own level, and a gradient has nothing
+ *  under it at all - it simply goes on falling at the rate that made it look
+ *  like a departure in the first place.
+ *
+ *  A ratio, so a per-column exposure cancels as it does in `departure`. Half is
+ *  where the two shapes are furthest apart rather than where a case sits: a
+ *  surface carries none of the drop and a gradient carries all of it. */
+const AZ_RAMP_SHARE = 0.5, AZ_RAMP_FLOOR = 0.02;
 
 /** The tracer's input, whatever shape it arrived in. A plain `number[]` is a
  *  luminance-only column with no sub-samples: the frame-fold fallback and the
@@ -474,6 +638,11 @@ interface ColumnRun {
    *  rows. The sky is what lies above `top` and the surface is what lies below
    *  `from`; in between is the transition itself, which is neither. */
   from: number;
+  /** The zenith rule fired on row 0 and row 1 is back at the sky: the whole
+   *  answer rests on ONE sample (issue #100's residual). The bin still
+   *  publishes 90 - relaxing that would risk open sky over a covered zenith -
+   *  but it is not a measurement anyone can call certain. */
+  zenithOnly?: boolean;
 }
 
 /** The altitude a boundary at row `top` publishes: the lowest row still open. */
@@ -593,7 +762,8 @@ function columnRuns(column: SkyColumn, seed: SkySeed, exposure: number): ColumnR
       // flagged certain (issue #73). A bright row 0 takes the ordinary path
       // below, where one row cannot persist.
       if (start === 0 && lum[0] < here.lum - here.lumTol) {
-        runs.push({ top: 0, end: last, from: 0, grounded: true, qualifies: true });
+        runs.push({ top: 0, end: last, from: 0, grounded: true, qualifies: true,
+          zenithOnly: last >= 1 && Number.isFinite(lum[1]) && !off(1, here) });
         return runs;
       }
       let end = start;
@@ -729,6 +899,84 @@ export function traceSkyCoverage(columns: readonly (number[] | SkyBin)[]): SkyTr
     lumSpread: robustSpread(lumPool),
     blueSpread: robustSpread(bluePool),
   };
+  // A BIN THAT DISAGREES WITH THE POOL WHOLESALE (issue #100). Every column is
+  // seeded from `seed`, the pooled median of the top 26 rows of the WHOLE
+  // mosaic, and keeps using it until it has accepted SKY_WINDOW_MIN rows of its
+  // own sky. A bin whose own sky sits further from that pooled level than
+  // EXPOSURE_TOLERANCE therefore never accepts a row: it reads as one departure
+  // from the top of the frame to the bottom, which reaches the bottom, which
+  // qualifies - and the bin publishes altitude 90, flagged CERTAIN, out of
+  // empty sky. Measured: an arc of five bins of thirty at -34 per cent or at
+  // +40 per cent publishes 90 in all five with `uncertainBins` empty.
+  //
+  // The reference is wrong, not the tolerance. The pooled seed is the right
+  // thing to fall back on when a column has nothing of its own yet, and the
+  // wrong thing to keep using when the column disagrees with it wholesale.
+  //
+  // What separates the two cases is the NEIGHBOURS, which is the same
+  // discriminator the azimuth work uses. An exposure disagreement spans the
+  // frames that were auto-exposed together, so it is an arc of adjacent bins at
+  // one level; a roof over a bin's top rows is local in azimuth and its
+  // neighbours' tops are sky.
+  //
+  // Deliberately confined to bins that are ALREADY BROKEN. A bin whose own top
+  // rows agree with the pool is untouched and seeds exactly as before, so this
+  // cannot move any answer the tracer gets right today - the three recorded
+  // cases score identically before and after. Only the bins that currently
+  // publish a fabricated 90 are decided differently, and they go one of two
+  // ways:
+  //   - its neighbours share its level: an exposure arc. Seed from its own top
+  //     rows and let the walk start from there, which publishes the real
+  //     boundary;
+  //   - they do not: nothing here can tell a lone odd exposure from a roof over
+  //     the zenith, so the bin is UNCERTAIN. That is the honest answer and it
+  //     is what the old behaviour should have been - 90 certain is a fabricated
+  //     measurement, and the cost of the wrong guess in the other direction is
+  //     open sky published over an obstruction.
+  const topOf = (column: SkyColumn): number => {
+    const rows: number[] = [];
+    for (let row = 0; row < 26 && row < column.lum.length; row++) {
+      if (Number.isFinite(column.lum[row])) rows.push(column.lum[row]);
+    }
+    return rows.length >= SKY_WINDOW_MIN ? percentile(rows, .5) : NaN;
+  };
+  const ownLevel = bins.map(bin => (bin.length ? topOf(bin[0]) : NaN));
+  /** Would a column at level `a` accept a sky model sitting at `b`? The same
+   *  sum `columnRuns` applies row by row - `max(exposure * level, SKY_SIGMAS *
+   *  spread)` - so "agrees with the pool" here means exactly "today's seeding
+   *  works for this bin", which is what confines the change below to the bins
+   *  that are already broken. */
+  const accepts = (a: number, b: number): boolean =>
+    Number.isFinite(a) && Number.isFinite(b)
+    && Math.abs(a - b) <= Math.max(EXPOSURE_TOLERANCE * Math.abs(b),
+                                   SKY_SIGMAS * seed.lumSpread);
+  /** Do two bins share a level? The same sum, based on the DIMMER of the two,
+   *  and that asymmetry is deliberate. Basing it on either one in turn lets a
+   *  bright outlier claim agreement it would not grant: at 171 against a
+   *  neighbour's 122, `0.32 * 171` is 55 and the gap is 49, so the outlier
+   *  "agrees" with a neighbour that does not agree with it. Measured - a lone
+   *  bin at +40 per cent seeded itself on that arithmetic and published 0 with
+   *  nothing vouching for it. The dimmer base is the strict reading and it is
+   *  the one that makes the relation symmetric. */
+  const shareLevel = (a: number, b: number): boolean =>
+    Number.isFinite(a) && Number.isFinite(b)
+    && Math.abs(a - b) <= Math.max(EXPOSURE_TOLERANCE * Math.min(Math.abs(a), Math.abs(b)),
+                                   SKY_SIGMAS * seed.lumSpread);
+  /** The seed this bin's columns walk from, and whether it can be trusted at
+   *  all. `null` means neither reference fits and the bin is unmeasurable. */
+  const seedFor = (index: number): SkySeed | null => {
+    const own = ownLevel[index];
+    if (!Number.isFinite(own) || accepts(own, seed.lum)) return seed;  // unchanged
+    const count = bins.length;
+    const sides = [(index + 1) % count, (index - 1 + count) % count];
+    if (!sides.some(at => shareLevel(ownLevel[at], own))) return null;
+    // Its own level, and the POOL's spreads: a bin's own top rows are far too
+    // few to estimate a robust spread from, and the spread is a property of the
+    // sensor and the scene rather than of the exposure this frame happened to
+    // pick. Taking it from the pool is what keeps this a change of REFERENCE
+    // and not a change of tolerance, which is what the issue asks for.
+    return { ...seed, lum: own };
+  };
   // Unchanged, and read off the bin's CENTRE column, which is the column this
   // rule has always been read off: a short column, a gap anywhere in the top 91
   // rows, or a sky too dark to have been measured at all.
@@ -743,15 +991,27 @@ export function traceSkyCoverage(columns: readonly (number[] | SkyBin)[]): SkyTr
   // would mark bins uncertain that the shipped rule calls measured.
   const measured = bins.map((bin, index) => {
     if (!bin.length || !complete(bin[0]) || sky < 40) { uncertainBins.push(index); return []; }
-    return bin.filter(complete).map(column => {
-      const alone = columnRuns(column, seed, EXPOSURE_TOLERANCE);
+    // Issue #100: a bin whose own sky matches neither the pool nor its
+    // neighbours has no reference to walk from, and 90-certain was the wrong
+    // way to say so.
+    const here = seedFor(index);
+    if (here === null) { uncertainBins.push(index); return []; }
+    const columns = bin.filter(complete);
+    // Issue #100's residual: row 0 alone dark, row 1 already sky, on the
+    // CENTRE column - the column the uncertainty rule has always read. The
+    // altitude stays 90 either way (an uncertain bin publishes 90), so this
+    // changes what the bin CLAIMS, never what it blocks.
+    const centre = columnRuns(bin[0], here, EXPOSURE_TOLERANCE);
+    if (centre.some(run => run.qualifies && run.zenithOnly)) uncertainBins.push(index);
+    return columns.map(column => {
+      const alone = columnRuns(column, here, EXPOSURE_TOLERANCE);
       const vouched = alone.find(run => run.qualifies);
       return {
         column, alt: vouched ? altOfTop(vouched.top) : 0,
         // Every departure either pass saw. The wide pass contributes the runs
         // it stepped over as too short (#71); the narrow one contributes the
         // soft edges and the shallow walls the wide pass cannot see (#74).
-        candidates: [...alone, ...columnRuns(column, seed, LOCAL_TOLERANCE)],
+        candidates: [...alone, ...columnRuns(column, here, LOCAL_TOLERANCE)],
       };
     });
   });
@@ -836,6 +1096,39 @@ function applyAzimuthSupport(
     if (!Number.isFinite(mine) || !Number.isFinite(mosaic)) return false;
     return (darkOnly ? mosaic - mine : Math.abs(mine - mosaic)) > AZ_DEPARTURE;
   };
+  /** Does this candidate have a SURFACE under it, or is it a sky that simply
+   *  goes on getting darker? Issue #102's discriminator, and the reason it is
+   *  vertical rather than azimuthal is in `AZ_RAMP_SHARE`.
+   *
+   *  `carry` is what the body does across one window - the second window under
+   *  `from` over the first - and `drop` is the departure that made this a
+   *  candidate. A surface carries none of its drop onward and reads near zero;
+   *  a gradient carries all of it, because the departure IS that same fall
+   *  measured one window earlier.
+   *
+   *  Dividing keeps the sign rather than taking the magnitude, so a body moving
+   *  the OTHER way from the departure that found it cannot be refused here. No
+   *  case pins that: a body that turns back up has left the run before the two
+   *  windows this needs, so it returns unmeasurable first, and `Math.abs` here
+   *  passes the whole suite. It is kept because it can only refuse FEWER
+   *  candidates than the magnitude would, and the wrong half to refuse is the
+   *  one that costs sky. See the note at the foot of `photosphereGradient`.
+   *
+   *  Unmeasurable is not ramping. A run without two full windows of its own
+   *  below `from` is left to `standsOut` alone: reading past `end` would read
+   *  the sky under a floating obstruction, and refusing everything short would
+   *  blind the rule to every wall whose surface runs off the bottom of the
+   *  frame. */
+  const keepsRamping = (column: SkyColumn, run: ColumnRun): boolean => {
+    if (run.from + 2 * SKY_WINDOW - 1 > run.end) return false;
+    const first = middle(column.lum.slice(run.from, run.from + SKY_WINDOW));
+    const second = middle(column.lum.slice(run.from + SKY_WINDOW,
+                                           run.from + 2 * SKY_WINDOW));
+    const drop = 1 - departure(column, run);
+    if (!(first > 0) || !Number.isFinite(second) || !Number.isFinite(drop)) return false;
+    if (Math.abs(drop) < AZ_RAMP_FLOOR) return false;
+    return (1 - second / first) / drop >= AZ_RAMP_SHARE;
+  };
   /** Does a departure at this row stand on its own ANYWHERE within a bin of
    *  here - reaching the ground, or `PERSIST_ROWS` tall? A structure does: a
    *  roof compressed to nine rows in one bin is twenty rows tall, or on the
@@ -871,6 +1164,7 @@ function applyAzimuthSupport(
       // a marking on the chart, and azimuth continuity says nothing about which
       // - the chart yard's own stripes run right around the compass.
       if (!run.grounded && run.end - run.top + 1 < AZ_PERSIST_ROWS) continue;
+      if (keepsRamping(c.column, run)) continue;
       if (!standsOut(c.column, run, !run.grounded) || !anchored(index, run)) continue;
       alts[index] = alt;
     }
@@ -1137,6 +1431,12 @@ export class PhotosphereSweep {
   private vouchSlopMs = CONTINUITY_SLOP_MS;
   private lumaCanvas: HTMLCanvasElement | null = null;
   private stillnessFailures = 0;
+  /** How long each stillness-sample readback took, in ms, newest last and
+   *  capped - the GPU stall issue #90 says cannot be measured off-device. The
+   *  JavaScript around it was timed in node; what a phone's pipeline does when
+   *  asked for its pixels back every frame was not, and this is where the next
+   *  device scan records it. */
+  private readbackMs: number[] = [];
   /** Interval-fallback ticks the media gate refused: the running total for this
    *  camera session, and the length of the run in progress. The gate is right
    *  to refuse a frame the camera never delivered, but it returns before
@@ -1155,6 +1455,10 @@ export class PhotosphereSweep {
    *  read only by `captureCue`; cleared with the rest of the session in
    *  `stop()`, and so by `start()`, which calls it. */
   private overlapWaitRun = 0;
+  /** Did THIS scan reach the lens-doubt run on an uncalibrated lens? Latched,
+   *  and cleared only by `begin()`: one matching frame ends the RUN, but it
+   *  does not un-paint the frames placed with the wrong lens before it. */
+  private lensDoubted = false;
   /** The media clock, in seconds, of the last reading the interval path took
    *  (see `newMediaFrame`, which consumes as it answers and advances this on
    *  every `true`). `null` until the first reading, taken in `start()` once
@@ -1194,6 +1498,11 @@ export class PhotosphereSweep {
   private trackEnded = false;
   private alignmentWait = false;
   private overlapWait = false;
+  /** The last grab was refused by `carriedCorrectionMax` and not by the
+   *  overlap test (issue #95). Set beside `overlapWait` rather than instead of
+   *  it, so an uncalibrated user keeps the aim line they have always had and
+   *  only the calibrated cue changes; cleared wherever `overlapWait` is. */
+  private carryTooLarge = false;
   private scanSamples:unknown[]=[];
   private lastDiagnosticAt=-Infinity;
   private lastSensorReading:unknown=null;
@@ -1503,12 +1812,16 @@ export class PhotosphereSweep {
    *  the uncalibrated 3.0 - which is the regime split doing its job rather than
    *  a coincidence, and is pinned by a case each.
    *
-   *  A refusal under either regime is the answer and not a loss. It records
-   *  `overlap-wait` like any other failure to match, so a correction too large
-   *  to absorb drives `overlapWaitRun` to `LENS_DOUBT_AFTER` and the user is
-   *  told which setting to look at - the conversation issue #52 started, reached
+   *  A refusal under either regime is the answer and not a loss, and it records
+   *  `carry-too-large` - its own outcome since issue #95, not `overlap-wait`,
+   *  because the two want different sentences and a log that cannot separate
+   *  them cannot say which bound fired. It still EXTENDS the refusal run
+   *  (`endsOverlapRun`), so under regime 1 a correction too large to absorb
+   *  still drives `overlapWaitRun` to `LENS_DOUBT_AFTER` and the user is told
+   *  which setting to look at - the conversation issue #52 started, reached
    *  from the other side - instead of the scan quietly wearing the error into
-   *  every later pose.
+   *  every later pose. Under regime 2 there is no setting to name, and the cue
+   *  says so: see the `carryTooLarge` arm of `captureCue`.
    *
    *  What neither regime bounds exactly: the separation is measured on the frame
    *  that SETS the anchor, and the same transfer applied to a later pose reads a
@@ -1523,6 +1836,7 @@ export class PhotosphereSweep {
   get aspectRatio(): number { return this.video?.videoWidth && this.video.videoHeight ? this.video.videoWidth/this.video.videoHeight : this.imageAspect; }
   get cameraViewAngle():number {return this.shortAxisFov;}
   get hasLensCalibration():boolean {return this.lensCalibrated;}
+  get lensDoubtedThisScan():boolean {return this.lensDoubted;}
   get lens() {return cameraLens(this.aspectRatio,1,this.shortAxisFov);}
   setCameraViewAngle(degrees:number):boolean {
     if(this.recording || !Number.isFinite(degrees) || degrees<35 || degrees>100)return false;
@@ -1650,16 +1964,9 @@ export class PhotosphereSweep {
     // lens the likelier story. And it does not repeat the aim instruction: two
     // remedies in one sentence is the user trying the wrong one first.
     // Once a view angle has been measured and saved, `hasLensCalibration` is
-    // true and the ordinary line comes back - against a lens the user has
-    // actually given us, a refusal means again what it used to mean.
-    // That assumption is weaker than when it was written, and the gap is issue
-    // #95: since `carriedCorrectionMax` a refusal can ALSO mean the fit would
-    // have taken the carried correction past the ceiling, which is about the
-    // pose and not about the aim, and a calibrated user meeting it is handed
-    // the aim line below. Telling the two apart needs a `CaptureOutcome` of its
-    // own - a change across files this pass does not own - so it is filed
-    // rather than patched here. It is rarer than it was: the bound this branch
-    // was written against applied to everyone at 3.0.
+    // true and this line is not the story - against a lens the user has
+    // actually given us, the refusal is about the pose instead, and the
+    // sentence for it is the next one down (issue #95).
     // It names the SETTING and quotes no control label. `setCameraViewAngle`
     // has no caller in any committed component at b8581949 - the field is in a
     // sibling session's unlanded rewrite of horizon.tsx - so a sentence
@@ -1685,6 +1992,24 @@ export class PhotosphereSweep {
     // present. With a target the scanner really is trying and really is failing.
     if(this.overlapWaitRun>=LENS_DOUBT_AFTER && !this.lensCalibrated && this.aimTargetAt(now))
       return 'I still can’t match this view. The camera view angle may be set wrong for this lens. End the scan, then set the camera view angle before you scan again.';
+    // The third sentence, and the one issue #95 is about. On a CALIBRATED lens
+    // the carried-correction bound is the fitter's own reach, so meeting it
+    // says the direction this phone reports has walked further from the picture
+    // than one fit may legitimately recover. That is about the pose, and the
+    // two sentences around it are about the other two things it is not: the aim
+    // (below) and the lens (above). Handing a calibrated user the aim line was
+    // the defect - the aim is fine, and following it changes nothing.
+    // Calibrated ONLY: while the lens is still the 60-degree guess, a
+    // correction this size is exactly what a wrong lens produces, the run above
+    // is the right destination, and until it gets there the ordinary aim line
+    // is the honest thing to say. `carriedCorrectionMax` derives both regimes.
+    // The remedy is one, not two, for the reason the lens line gives: returning
+    // to captured ground is where a fit in the OTHER direction can be made, and
+    // a fit in the other direction is the only thing in a live scan that brings
+    // the carry back down. Ending the scan would also clear it, and clears the
+    // captured patches with it (`begin`), so it is not offered here.
+    if(this.carryTooLarge && this.lensCalibrated)
+      return 'The direction this phone reports has drifted too far from the picture for me to correct. Return to a green patch and hold still there. Keep the camera lens in the same spot.';
     if(this.overlapWait)return 'I can’t match this view yet. Return to a green patch, hold still, then move slowly toward the next blue dot. Keep the camera lens in the same spot.';
     if(this.justCaptured)return 'Captured. Move to another blue dot.';
     const target=this.aimTargetAt(now);
@@ -1737,7 +2062,14 @@ export class PhotosphereSweep {
     // standing, a second `begin()` opens with "Hold the phone still for a
     // moment..." or "I can't match this view yet...", both about a scan that
     // has just ended.
-    this.overlapWaitRun = 0; this.overlapWait = false; this.alignmentWait = false;
+    this.overlapWaitRun = 0; this.overlapWait = false; this.carryTooLarge = false; this.alignmentWait = false;
+    this.lensDoubted = false;
+    // And the carried correction, which `begin()` did NOT clear (#94). It is
+    // cleared only in `start()`, so a second scan in one camera session
+    // inherited the first scan's anchor - including, on a wrong lens, an
+    // anchor the first scan's own refusals had already argued against. The
+    // mosaic it was derived against is replaced on the next line.
+    this.visualAnchor = null;
     this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
   }
 
@@ -1757,7 +2089,7 @@ export class PhotosphereSweep {
     // A new scan: the diagnostic log from any earlier session is no longer
     // about this camera session, so it starts over. `stop()` never does this.
     this.captureRecords = []; this.hasCapturedFrame = false;
-    this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
+    this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.carryTooLarge=false;this.lastSensorReading=null;
     this.stability.clear();this.motion.clear();this.trackEnded=false;
     this.lastMediaTime=null;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.imageGate=null;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
@@ -2032,7 +2364,10 @@ export class PhotosphereSweep {
       const ctx = this.lumaCanvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("no 2d context for the stillness sample");
       ctx.drawImage(video, 0, 0, LUMA_W, LUMA_H);
+      const readStart = performance.now();
       const { data } = ctx.getImageData(0, 0, LUMA_W, LUMA_H);
+      this.readbackMs.push(performance.now() - readStart);
+      if (this.readbackMs.length > READBACK_SAMPLES) this.readbackMs.shift();
       for (let p = 0; p < this.luma.length; p++) this.luma[p] = luminance(data[p*4], data[p*4+1], data[p*4+2]);
       this.stability.observe(at, this.luma, LUMA_W, LUMA_H);
       this.stillnessFailures = 0;
@@ -2074,7 +2409,8 @@ export class PhotosphereSweep {
   /** Append one outcome to the diagnostic log. This records; it never decides
    *  anything - every gate below still returns its own `false` on its own
    *  terms, this just names which one fired. */
-  private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean; wait?: AlignmentWait; separation?: number; anchor?: number }): void {
+  private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean; wait?: AlignmentWait; separation?: number; anchor?: number; gap?: PoseGap;
+    overlapTerm?: 'brightness'|'edges'|'both'; correlation?: number | null; featureCorrelation?: number | null; samples?: number; searched?: boolean }): void {
     // The exception to "records, never decides", and here deliberately: this is
     // the single point every outcome passes through, so the run of overlap
     // refusals the cue reads cannot miss one. Counting it at the two
@@ -2082,8 +2418,17 @@ export class PhotosphereSweep {
     // later, silently uncounted - and the reset would have to be repeated at
     // every other `return` in `grabFrame`. It still decides nothing about THIS
     // call: the gate below has already returned on its own terms.
-    if (outcome === 'overlap-wait') this.overlapWaitRun++;
+    // `carry-too-large` counts here too. It was `overlap-wait` until issue #95
+    // split it off, and on an UNCALIBRATED lens it is the refusal the lens cue
+    // exists for: a lens the user has not corrected produces a correction too
+    // large to absorb, over and over. Counting it as neutral would leave that
+    // path reaching LENS_DOUBT_AFTER only through the other refusals.
+    if (extendsOverlapRun(outcome)) this.overlapWaitRun++;
     else if (endsOverlapRun(outcome)) this.overlapWaitRun = 0;
+    // After the pair, never between them: an `if` here would capture the
+    // `else` above and a run would stop resetting (caught by the #52 replay
+    // case when this line was first written in the middle).
+    if (this.overlapWaitRun >= LENS_DOUBT_AFTER && !this.lensCalibrated) this.lensDoubted = true;
     this.captureRecords.push({ at: now, outcome, ...extra });
     if (this.captureRecords.length > CAPTURE_LOG_LIMIT) this.captureRecords.splice(0, this.captureRecords.length - CAPTURE_LOG_LIMIT);
   }
@@ -2221,7 +2566,13 @@ export class PhotosphereSweep {
     // the anchor itself rather than on the pose, so a refusal that never formed
     // a pose still says how large the anchor it was carrying was (issue #76).
     const anchor=this.visualAnchor?poseSeparation(this.visualAnchor.raw,this.visualAnchor.aligned):0;
-    if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait',{wait:'no-pose',anchor});return false;}
+    // WHICH SOURCE WAS MISSING, not just that placing the frame failed (#76).
+    // `no-pose` is two different states wearing one name: the sensor gave
+    // nothing at all, or it gave a tilt that this altitude is not entitled to
+    // use. They want different fixes, and the seven holds `chartyard-arc075-60`
+    // misses could not be told apart without this.
+    const gap:PoseGap=tilt?'below-overhead':'neither';
+    if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait',{wait:'no-pose',anchor,gap});return false;}
     // A timestamp does not make a frame taken during motion sharp or account
     // for an entire low-light exposure. Hold still even with frame timestamps.
     const stable=basis?this.poses.forFrame(now,undefined,evidence):this.tilts.forFrame(now,undefined,evidence);
@@ -2258,6 +2609,10 @@ export class PhotosphereSweep {
     let capturedBasis: CameraBasis | undefined;
     let capturedSensorBasis: CameraBasis | undefined;
     let capturedAdjusted: boolean | undefined;
+    // What the overlap check read for the frame that was ACCEPTED (issue #130):
+    // without it a refusal's numbers have nothing to be compared against, and
+    // "the still route agrees here and the arc does not" cannot be measured.
+    let capturedOverlap: { correlation: number | null; featureCorrelation: number | null; samples: number } | undefined;
     try {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -2279,8 +2634,9 @@ export class PhotosphereSweep {
           // its two derivations, for why neither is GATE_OVERLAY_MAX's number,
           // and for why a run of these refusals is the right way to tell the
           // user about a lens.
-          if(poseSeparation(rawBasis,registration.basis)>this.carriedCorrectionMax){this.overlapWait=true;this.recordCapture(now,'overlap-wait');return false;}
-          basis=registration.basis;this.visualAnchor={raw:rawBasis,aligned:basis};
+          const carried=poseSeparation(rawBasis,registration.basis);
+          if(carried>this.carriedCorrectionMax){this.overlapWait=true;this.carryTooLarge=true;this.recordCapture(now,'carry-too-large',{separation:carried});return false;}
+          basis=registration.basis;
           measured=skyAngles(basis.forward);
         }
         // Keep a small, local reproduction bundle. It is downloaded only when
@@ -2291,13 +2647,45 @@ export class PhotosphereSweep {
             sensor:this.lastSensorReading,stillnessReadFailures:this.stillnessFailures,overlap,image:canvas.toDataURL('image/jpeg',.8)});
           if(this.scanSamples.length>16)this.scanSamples.splice(1,1);
         }
-        if(overlap.result==='conflict'){this.overlapWait=true;this.recordCapture(now,'overlap-wait');return false;}
-        this.overlapWait=false;
+        // `carryTooLarge` is cleared on BOTH arms, not only the passing one:
+        // this frame reached the overlap test, so whatever the carried bound
+        // said about an earlier frame is no longer what refused.
+        if(overlap.result==='conflict'){this.overlapWait=true;this.carryTooLarge=false;
+          this.recordCapture(now,'overlap-wait',{overlapTerm:overlapConflictTerm(overlap)??undefined,correlation:overlap.correlation,
+            featureCorrelation:overlap.featureCorrelation??null,samples:overlap.samples,searched:registration.evaluations>1});return false;}
+        this.overlapWait=false;this.carryTooLarge=false;
         const target=targetCell(basis!.forward);
         if(!target){this.recordCapture(now,'no-target');return false;}
         if(this.coveredCells.has(target.id)){this.recordCapture(now,'already-captured');return false;}
         this.panorama.add(data,canvas.width,canvas.height,basis,lens);
+        // THE ANCHOR IS SET BY A FRAME THAT ENTERED THE MOSAIC, and not by any
+        // frame a registration happened to adjust on its way to being refused
+        // (issue #94). `visualAnchor` is a latest-wins transfer applied to
+        // EVERY later pose, so unlike the fit it is taken from, it outlives its
+        // own frame - which is why the evidence for it has to be stronger than
+        // the evidence for using a corrected pose once.
+        //
+        // The assignment used to sit up beside the bound check, above the
+        // `no-target` and `already-captured` returns. Measured on
+        // `chartyard-arc075-70`, the recorded wrong-lens scan: an anchor of
+        // 1.7412 degrees was worn for the whole scan, and every frame that
+        // actually entered the mosaic there records a correction of exactly
+        // 0.0000. The control recording - the same route with the lens the
+        // scanner assumes, and a byte-identical orientation stream - reads
+        // 0.1736. So the dome overlay and the aim dot sat ten times the
+        // control's error from the sky, taken from a fit no frame was kept on,
+        // inside GATE_OVERLAY_MAX so no gate saw it, and the user was told
+        // about the lens but not about the pose.
+        //
+        // Passing the overlap test is NOT the line, tempting as it is: the
+        // frame that set that 1.7412 anchor passed it. What separates the two
+        // is that a kept frame's pose is the one the mosaic is now built on,
+        // so a later fit against that mosaic is measured against the same
+        // choice. A refused frame's pose is a claim nothing else ever uses.
+        if(registration.adjusted && rawBasis)
+          this.visualAnchor={raw:rawBasis,aligned:registration.basis};
         capturedCell=target.id;capturedBasis=basis;capturedSensorBasis=rawBasis??undefined;capturedAdjusted=registration.adjusted;
+        capturedOverlap={correlation:overlap.correlation,featureCorrelation:overlap.featureCorrelation??null,samples:overlap.samples};
         // This frame was placed with a full basis, so if the cap is what it was
         // aimed at, the cap's pixels are as well oriented as any other cell's.
         if(target.alt>89)this.aimedZenith=true;
@@ -2347,7 +2735,7 @@ export class PhotosphereSweep {
     // artefact is one duplicate zenith the user asked for by pressing, and the
     // alternative is refusing a deliberate press for a reason it cannot see.
     this.lastCapturedFrameId = frameId;
-    this.recordCapture(now, 'accepted', { cell: capturedCell, basis: capturedBasis, sensorBasis: capturedSensorBasis, adjusted: capturedAdjusted });
+    this.recordCapture(now, 'accepted', { cell: capturedCell, basis: capturedBasis, sensorBasis: capturedSensorBasis, adjusted: capturedAdjusted, ...capturedOverlap });
     return true;
   }
 
@@ -2395,6 +2783,12 @@ export class PhotosphereSweep {
     return JSON.stringify({version:1,description:'Local camera samples for alignment debugging; contains photos of your surroundings.',
       browser:navigator.userAgent,stillnessReadFailures:this.stillnessFailures,
       mediaGateRefusals:this.mediaGateRefusals,mediaGateRefusalRun:this.mediaGateRefusalRun,
+      // Issue #90's device half, in the envelope so a session with no accepted
+      // sample still answers it. `preview` is what the browser GRANTED, which
+      // decides how much the #62 noise correction was worth; `readback` is the
+      // per-frame pixel readback that correction grew ninefold.
+      preview:this.video?.videoWidth?{width:this.video.videoWidth,height:this.video.videoHeight}:null,
+      readback:readbackSummary(this.readbackMs),
       samples:this.scanSamples},null,2);
   }
 

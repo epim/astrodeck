@@ -11,12 +11,21 @@ something the engine could actually be handed.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from astrodeck.devices.base import DEFAULT_SHUTTER_TIMEOUT_S
-from astrodeck.flows.compile import compile_plan, flow_order
+from astrodeck.flows.compile import (_trigger_for, compile_plan, flow_order,
+                                     is_multi_panel)
 from astrodeck.flows.examples import examples
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
+
+#: Every Example's compile, captured before the panel lane was written.
+LEGACY_EXAMPLES = json.loads(
+    (Path(__file__).parent / "fixtures" / "panel_lane_cases.json")
+    .read_text(encoding="utf-8"))["legacy_examples"]
 
 
 def _n(nid, ntype, x=0.0, y=0.0, **params):
@@ -25,6 +34,39 @@ def _n(nid, ntype, x=0.0, y=0.0, **params):
 
 def _e(a, ap, b, bp):
     return FlowEdge(**{"from": a, "fromPort": ap, "to": b, "toPort": bp})
+
+
+#: The keys S3's compile adds to an entry, by the node type that emits it.
+_S3_KEYS = {"target": ("angle", "mosaic", "loop", "centre", "count_mode",
+                       "frame_anchor", "follows"),
+            "pool": ("count_mode", "follows")}
+
+
+def _s3_keys(node: FlowNode) -> dict:
+    """What the S3 keys must hold for a node of a graph with NO mosaic: the
+    node's own angle and centring, no grid, no loop, no follower, and what
+    its `counts` asks for: accepted subs, for all seven Examples.
+
+    "attempts" until the integration of S3, which re-pinned it: S3-W made
+    every Example's TARGET and POOL count accepted subs (Revision 2 ruling 2,
+    a created block counts them). Typed here, not read from the node, so the
+    Examples and the compile are checked by a second hand.
+
+    RED under mutant "every block counts attempts" (in a private scratch copy
+    of compile.py, ``count_mode_of`` returning "attempts"), observed for all
+    seven, the first (example-campaign, whose entry n20 is a POOL member):
+
+        E   AssertionError: n20
+        E   assert {'count_mode': 'attempts'} == {'count_mode': 'accepted'}
+    """
+    p = node.params
+    if node.type == "pool":
+        return {"count_mode": "accepted"}
+    return {"angle": "any" if float(p["rotation"]) < 0 else "rotate",
+            "mosaic": None, "loop": False,
+            "centre": {"tol_arcmin": p["centerTol"],
+                       "attempts": p["centerTries"]},
+            "count_mode": "accepted", "frame_anchor": ""}
 
 
 class TestFlowOrder:
@@ -50,8 +92,10 @@ class TestFlowOrder:
         assert [n.id for n in flow_order(g)] == ["a", "b"]
 
     def test_a_cycle_does_not_hang(self):
-        """Not expressible in the editor, so a graph containing one came from
-        somewhere else; dropping the cycle is the fail-closed reading."""
+        """The editor CAN draw one (#149: replace-on-drop turns a back-edge
+        into a loop), and validation now refuses it at save and /run. The
+        compile routes still compile half-built graphs, so dropping the cycle
+        stays the fail-closed reading for whatever reaches here."""
         g = FlowGraph(nodes=[_n("a", "slew"), _n("b", "autofocus")],
                       edges=[_e("a", "centered", "b", "run"),
                              _e("b", "focused", "a", "run")])
@@ -68,8 +112,13 @@ class TestCompile:
         plan = compile_plan(g, "n")
         assert len(plan["targets"]) == 1
         step = plan["targets"][0]["steps"][0]
+        # `node_id` added DELIBERATELY in #189 S1 (item 7): the step names the
+        # stage that emitted it, because `to_plan` keys the step's
+        # deterministic id on that stage (spec 3.2, 3.3). The rest of the dict
+        # is unchanged.
         assert step == {"filter": "Ha", "exposure_s": 180, "gain": 100,
-                        "binning": 1, "count": 20, "frame_type": "Light"}
+                        "binning": 1, "count": 20, "frame_type": "Light",
+                        "node_id": "c"}
 
     def test_an_integration_goal_rides_along_only_when_set(self):
         """`goal` is hours of banked integration across nights, and 0 means "no
@@ -119,14 +168,64 @@ class TestCompile:
         assert plan["schedule"] == {"start_mode": "now"}
 
     def test_a_dusk_node_becomes_a_schedule(self):
+        """``twilight_deg`` is -18 (backlog WP-09, #191): with no "start"
+        param given, ``with_defaults()`` fills "Astro dusk", which
+        ``_dusk_schedule`` now compiles to its own Sun altitude."""
         g = FlowGraph(nodes=[_n("d", "dusk", offset=-30, stop="Dawn", minAlt=30)])
         assert compile_plan(g, "n")["schedule"] == {
             "start_mode": "dusk", "start_offset_min": -30,
-            "stop_mode": "dawn", "min_altitude_deg": 30}
+            "stop_mode": "dawn", "min_altitude_deg": 30,
+            "twilight_deg": -18.0}
 
     def test_stop_none_is_honoured(self):
         g = FlowGraph(nodes=[_n("d", "dusk", stop="None")])
         assert compile_plan(g, "n")["schedule"]["stop_mode"] == "none"
+
+
+class TestNodeIdsRideTheCompile:
+    """#189 S1 item 7 (spec 3.2): every TARGET entry, every POOL member and
+    every capture or cycle step names the node that emitted it. ``to_plan``
+    keys the deterministic ids on those names, so an entry that lost its node
+    id would quietly fall back to a random id and a flow could not continue
+    its ledger - nothing else in the compile would look wrong."""
+
+    def test_a_target_entry_names_its_node(self):
+        """Mutant "no node_id on the TARGET entry" failed:
+            KeyError: 'node_id'
+        """
+        g = FlowGraph(nodes=[_n("t7", "target", name="M31", ra="00h", dec="+41")])
+        assert compile_plan(g, "n")["targets"][0]["node_id"] == "t7"
+
+    def test_every_pool_member_names_the_pool(self):
+        """Mutant "no node_id on a POOL member" failed:
+            KeyError: 'node_id'
+        """
+        g = FlowGraph(nodes=[_n("p3", "pool", members="M16, M17, M8")])
+        assert [t["node_id"] for t in compile_plan(g, "n")["targets"]] == \
+            ["p3", "p3", "p3"]
+
+    def test_a_capture_step_names_its_stage_not_its_target(self):
+        """After a pool every member gets the capture's step; the step names
+        the CAPTURE node, which is what tells two stages apart on one target.
+
+        Mutant "no node_id on a capture step" failed:
+            KeyError: 'node_id'
+        """
+        g = FlowGraph(nodes=[_n("p", "pool", members="A, B"),
+                             _n("c9", "capture", x=100, count=5)],
+                      edges=[_e("p", "target", "c9", "run")])
+        steps = [t["steps"][0] for t in compile_plan(g, "n")["targets"]]
+        assert [s["node_id"] for s in steps] == ["c9", "c9"]
+
+    def test_a_cycle_step_names_its_stage(self):
+        """Mutant "no node_id on a cycle step" failed:
+            KeyError: 'node_id'
+        """
+        g = FlowGraph(nodes=[_n("t", "target"),
+                             _n("y4", "cycle", x=100, plan="L 60, R 60")],
+                      edges=[_e("t", "target", "y4", "run")])
+        step = compile_plan(g, "n")["targets"][0]["steps"][0]
+        assert step["strategy"] == "cycle" and step["node_id"] == "y4"
 
 
 class TestInstructions:
@@ -164,6 +263,67 @@ class TestInstructions:
         g = FlowGraph(nodes=[_n("d", "dusk"), _n("t", "target")],
                       edges=[_e("d", "window", "t", "arm")])
         assert compile_plan(g, "n")["instructions"] == []
+
+    @pytest.mark.parametrize("ntype", ["capture", "cycle"])
+    def test_a_pass_wire_names_its_own_trigger(self, ntype):
+        """Spec 1.3 item 1: a stage's ``pass`` output is structural. Before
+        the branch, capture and cycle answered ``on_frame_graded`` for ANY
+        port, so a pass wire would have compiled to a rule that fires on
+        every graded frame. ``<type>.pass`` is no engine trigger, which is the
+        point: ``to_plan`` reports a pass wire that is not the loop as "this
+        rule will not run".
+
+        CHANGED IN S3 (the compile task, spec 1.4 item 3): the LEGAL loop
+        wire (the tail of a multi-panel lane into its own block's ``next``)
+        is now consumed as the block's ``loop`` and never reaches the
+        instructions, so this case grades the trigger on a pass wire that is
+        NOT the loop: the same wire on a block of one panel, which has
+        nothing to rotate between (M4). Its original 3x2 graph now compiles
+        to no rule at all, which ``test_flows_compile_entry_s3.py`` grades.
+        The direct call then pins the branch itself, with the graded frame
+        as its control.
+
+        Mutant "no pass branch" failed (S3-LANE, on the 3x2 graph; the same
+        assertion, re-run on this graph in scratchpad s3-cp-mut):
+            AssertionError: assert ['on_frame_graded'] == ['capture.pass']
+            AssertionError: assert ['on_frame_graded'] == ['cycle.pass']
+
+        DELIBERATE PIN CHANGE (mosaic S4, S4 orchestrator ruling 3, #349;
+        re-pinned by the S4 integration, #389): the one-panel wire above is
+        now structure too. A pass wire into a ONE-PANEL block's ``next`` from
+        a stage of its own lane is consumed and emits no rule
+        (``compile.one_panel_pass_wires``, which
+        ``test_flows_one_panel_pass_wire.py`` grades), so that graph compiles
+        to no instruction and could no longer show which trigger a pass wire
+        names. This case now grades a pass wire that is STILL emitted as a
+        rule: the stage's ``pass`` into a NOTIFY's ``do``, which no rule of
+        the compile consumes and which ``to_plan`` reports as a rule that
+        will not run. The direct calls on ``_trigger_for`` are unchanged.
+
+        Re-observed on this graph in scratchpad/s4-integrate-q7m2. Mutant "no
+        pass branch" (the ``PASS_TYPES`` branch of ``_trigger_for`` made
+        ``if False:``):
+            E       AssertionError: assert ['on_frame_graded'] == ['capture.pass']
+            E       AssertionError: assert ['on_frame_graded'] == ['cycle.pass']
+
+        Mutant "a one-panel lane's pass wire is consumed wherever it goes"
+        (``one_panel_pass_wires`` without its ``NEXT_PORT`` and TARGET
+        checks, taking any pass wire whose source a one-panel block owns),
+        under which the wire into the NOTIFY vanishes with no loss reported:
+            E       AssertionError: assert [] == ['capture.pass']
+            E       AssertionError: assert [] == ['cycle.pass']
+        """
+        g = FlowGraph(
+            nodes=[_n("t", "target", rows=1, cols=1), _n("s", ntype, x=200),
+                   _n("n", "notify", x=400)],
+            edges=[_e("t", "target", "s", "run"), _e("s", "pass", "n", "do")])
+        instructions = compile_plan(g, "n")["instructions"]
+        assert [r["when"] for r in instructions] == [f"{ntype}.pass"]
+        assert [r["action"] for r in instructions] == ["notify"]
+        node = _n("s", ntype)
+        assert _trigger_for(node, "pass") == f"{ntype}.pass"
+        # Control: the graded-frame event keeps its engine trigger.
+        assert _trigger_for(node, "frame") == "on_frame_graded"
 
 
 class TestAutomation:
@@ -246,6 +406,104 @@ class TestTheExamplesCompile:
                 continue
             assert -90.0 <= parse_dec(t["dec"]) <= 90.0, t
             assert 0.0 <= parse_ra(t["ra"]) < 24.0, t
+
+    @pytest.mark.parametrize("ex_id", sorted(LEGACY_EXAMPLES))
+    def test_with_no_mosaic_every_example_compiles_byte_identically(self, ex_id):
+        """Spec 1.5: the canvas-order rule is kept byte for byte for any graph
+        with no multi-panel block, so every Example (and every saved flow)
+        compiles exactly as it did before the panel lane existed. Compared as
+        serialised text, so key order and int-versus-float count too.
+
+        An Example that later gains a mosaic fails the guard below rather than
+        being skipped: taking it out of the corpus has to be a decision.
+
+        All seven compile the same under the wire rule too (checked by forcing
+        it), so this control cannot see "the wire rule in every graph"; the
+        1x1 case in test_flows_panel_lane.py is what catches that one.
+
+        Mutant "an empty notes list on every compile" failed all seven:
+            AssertionError: example-campaign changed its compile
+            assert '{"name": "Ca... "notes": []}' == '{"name": "Ca...": "cursor"}}'
+              -  "cursor"}}
+              +  "cursor"}, "notes": []}
+
+        RE-PINNED ON PURPOSE IN S3 (the compile task; spec 3.2, #189, #170):
+        every TARGET entry gained ``angle``, ``mosaic``, ``loop``, ``centre``,
+        ``count_mode`` and, with no grid, ``frame_anchor``, and every POOL
+        entry ``count_mode``. BOUNDED FROM BOTH SIDES rather than regenerated:
+        the new keys must hold exactly what the Example's node means
+        (``_s3_keys``), and with them taken off the compile is the capture
+        byte for byte. The fixture belongs to S3-LANE and is not edited.
+
+        Mutant "one more key on every entry" (``_target_entry`` also writes
+        ``"panels": 1``), observed for the five Examples with a TARGET:
+            AssertionError: example-cycle changed its compile beyond the S3 keys
+            assert '{"name": "M3...shold": 40}]}' == '{"name": "M3...shold": 40}]}'
+
+        Mutant "a mosaic on every block" (``mosaic`` is ``{}`` for a 1x1),
+        observed for the same five:
+            AssertionError: n2
+            assert {'angle': 'an...hor': '', ...} == {'angle': 'an...hor': '', ...}
+              Omitting 5 identical items, use -vv to show
+              Differing items:
+              {'mosaic': {}} != {'mosaic': None}
+
+        BOUNDED THE SAME WAY, AGAIN, FOR BACKLOG WP-09's ``twilight_deg``
+        (#191, 2026-09-30): every Example with a DUSK WINDOW leaves its
+        Start unset, which ``with_defaults()`` reads as "Astro dusk", so
+        ``_dusk_schedule`` now writes ``schedule["twilight_deg"] = -18.0`` -
+        a key the fixture predates. Popped off and checked here, not folded
+        into the fixture: this file's own S3 keys were bounded rather than
+        regenerated for the same reason, and a fixture that could be
+        regenerated to match whatever the compile currently does would stop
+        being a control.
+
+        Mutant "the angle not bounded" (this pop deleted, the fixture left
+        alone), observed for the same six (every Example but example-eaa,
+        which has no DUSK node):
+            AssertionError: example-campaign changed its compile beyond the
+            S3 keys
+            assert '{"auto...ge": 30}}' == '{"auto...ge": 30}}'
+        """
+        ex = next((e for e in examples() if e.id == ex_id), None)
+        assert ex is not None, f"{ex_id} is no longer an Example"
+        assert not any(is_multi_panel(n) for n in ex.graph.nodes), (
+            f"{ex_id} now has a mosaic, so the wire rule compiles it; remove "
+            "it from legacy_examples in panel_lane_cases.json deliberately")
+        compiled = compile_plan(ex.graph, ex.name)
+        nodes = {n.id: n for n in ex.graph.with_defaults().nodes}
+        for entry in compiled["targets"]:
+            node = nodes[entry["node_id"]]
+            taken = {k: entry.pop(k) for k in _S3_KEYS[node.type]
+                     if k in entry}
+            assert taken == _s3_keys(node), entry["node_id"]
+        sched = compiled.get("schedule") or {}
+        dusk_nodes = [n for n in ex.graph.with_defaults().nodes
+                     if n.type == "dusk"]
+        if "twilight_deg" in sched:
+            angle = sched.pop("twilight_deg")
+            assert dusk_nodes and dusk_nodes[0].params.get("start") not in (
+                "Clock time",), (ex_id, dusk_nodes)
+            assert angle == -18.0, (
+                f"{ex_id}'s DUSK WINDOW defaults to Astro dusk (-18); "
+                f"got {angle}")
+        else:
+            assert not dusk_nodes or dusk_nodes[0].params.get(
+                "start") == "Clock time", (
+                f"{ex_id} has a sun-based DUSK WINDOW with no twilight_deg")
+        got = json.dumps(compiled, ensure_ascii=False)
+        want = json.dumps(LEGACY_EXAMPLES[ex_id], ensure_ascii=False)
+        assert got == want, f"{ex_id} changed its compile beyond the S3 keys"
+
+    def test_the_legacy_corpus_is_the_seven_examples(self):
+        """The control above is only as wide as its corpus; a capture that
+        missed an Example would grade six and say seven.
+
+        Mutant of the FIXTURE (a scratch copy) "drop example-eaa" failed:
+            AssertionError: assert 6 == 7
+        """
+        assert len(LEGACY_EXAMPLES) == 7
+        assert set(LEGACY_EXAMPLES) <= {e.id for e in examples()}
 
     def test_the_compile_is_deterministic(self):
         """The timeline is a rendering of THIS; two answers would let the

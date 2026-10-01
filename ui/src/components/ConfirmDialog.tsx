@@ -38,7 +38,8 @@ export interface ConfirmOpts {
  *
  * The store's ConfirmRequest.body is now `ReactNode` (F-D1) and ConfirmHost
  * renders `{req.body}` as-is, so rich bodies pass through unchanged — no longer
- * silently coerced/dropped at this boundary.
+ * silently coerced/dropped at this boundary. Block content (a list, a
+ * paragraph) is valid there too: only a string body is wrapped in a <p> (#213).
  */
 export function confirmDialog(opts: ConfirmOpts): Promise<boolean> {
   return useStore.getState().pushConfirm({
@@ -51,6 +52,9 @@ export function confirmDialog(opts: ConfirmOpts): Promise<boolean> {
     confirmPrimary: opts.confirmPrimary,
   });
 }
+
+/** The body's type, shared by both of its wrappers (see the render below). */
+const BODY_CLASS = "text-sm text-ink leading-relaxed break-words";
 
 /**
  * The singleton modal host. Reads the active confirm request and renders a
@@ -156,7 +160,16 @@ export function ConfirmHost() {
       }
     >
       <h2 className={`panel-title mb-2 ${danger ? "!text-bad" : ""}`}>{req.title}</h2>
-      {req.body && <p className="text-sm text-ink leading-relaxed break-words">{req.body}</p>}
+      {/* A <p> may hold phrasing content only, and `body` is a ReactNode that
+          callers fill with block content - the Flows RUN question passes a
+          <ul>. Wrapping that in a <p> was invalid HTML and a validateDOMNesting
+          warning on every such confirm (#213), so anything but a string gets a
+          <div> with the same classes, as ConfirmCard does. A string is a
+          sentence and stays the paragraph it always was, so the call sites
+          that pass one render exactly as before. */}
+      {req.body && (typeof req.body === "string"
+        ? <p className={BODY_CLASS}>{req.body}</p>
+        : <div className={BODY_CLASS}>{req.body}</div>)}
     </Overlay>
   );
 }

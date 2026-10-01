@@ -270,7 +270,9 @@ export default function QuickFlow() {
       variant="center"
       label="Quick flow"
       onClose={close}
-      surfaceStyle={{ "--ov-max-h": "90dvh" } as CSSProperties}
+      // 90dvh as a FRACTION, so the no-dvh fallback clamps it too (#417), with
+      // center's sm gap zeroed: the cap was a flat 90dvh, never less 2rem.
+      surfaceStyle={{ "--ov-max-h-frac": "0.9", "--ov-max-h-gap": "0px" } as CSSProperties}
       head={(
         <header
           data-flows-quick

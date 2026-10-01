@@ -44,7 +44,7 @@ import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
 
 import { cardMeta, cardStatus } from "../../../../components/flows/FlowLibraryCard";
 import { runBlockedReason, useFlowRunControls } from "../../../../components/flows/flowRunControls";
-import type { FlowCard } from "../../../../lib/flowsApi";
+import { unreadableReason, type FlowCard } from "../../../../lib/flowsApi";
 import { fmtClock } from "../../../../lib/eta";
 import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
@@ -302,15 +302,31 @@ export function FlowsScreen(): JSX.Element {
   }, [enqueueToast, listRunReason, runControls]);
 
   const rows = useMemo(() => visible.map((card) => {
-    const isCampaign = camp != null && camp.flowId === card.id;
-    const isLive = startedFlowId === card.id
-      || (seqLive && (isCampaign ? camp.live : seq.plan_name === card.name));
+    // A FILE THIS BUILD CANNOT OPEN (#153): a newer AstroDeck's flow, or one
+    // that does not parse or validate. Every route but the listing answers 404
+    // for its id, so its reason is the meta line - the one fact about this row
+    // worth reading - and `FlowRow` reads the card's own `unreadable` to lock
+    // the body and drop the verb. It is said there ONCE (S1-10 carry-over 6).
+    const unreadable = unreadableReason(card);
+    // NEVER LIVE, NEVER THE CAMPAIGN (S1-10 carry-over 7). All three matches
+    // are loose: LIVE by the running plan's NAME, which any plan can share; the
+    // started flow by `flows.record`, which outlives a library reload; and the
+    // campaign by an id resolved from a session or an armed resume, whose
+    // ledger `useCampaign` keeps for ten minutes. A row nothing can open or run
+    // is not the run, and saying so would put SESSION / NOW's state on a flow
+    // the operator cannot look inside.
+    const readable = unreadable === null;
+    const isCampaign = readable && camp != null && camp.flowId === card.id;
+    const isLive = readable && (startedFlowId === card.id
+      || (seqLive && (isCampaign ? camp.live : seq.plan_name === card.name)));
     const verb: FlowVerb = isLive
       ? "live"
       : (isCampaign && camp.parked && camp.sessionId) ? "resume" : "run";
 
     let meta: string;
-    if (isCampaign) {
+    if (unreadable) {
+      meta = unreadable;
+    } else if (isCampaign) {
       const head = `campaign · night ${camp.night} of ~${camp.totalNights}`;
       if (isLive) meta = `${head} · running now`;
       else if (camp.parked) {
@@ -384,9 +400,18 @@ export function FlowsScreen(): JSX.Element {
 
   // Which flow the list-level control opens. The one already loaded when it is
   // still in the visible list, else the first row: never `library`, which used
-  // to open a second copy of this screen.
-  const canvasTarget = visible.find((c) => c.id === openRecordId)?.id
-    ?? visible[0]?.id
+  // to open a second copy of this screen. Never an unreadable row either
+  // (#153): the canvas would ask for an id every route answers 404 for, and a
+  // filter that leaves only such rows showing leaves nothing here to open.
+  //
+  // BOTH branches read the readable rows (S1-10 carry-over 7). `flows.record`
+  // is whatever was loaded last and a library reload does not touch it, so a
+  // flow opened while it was readable, and since rewritten by a newer build,
+  // keeps its id in memory while its row says unreadable. S0 filtered only the
+  // fallback, and the open-record branch picked that row first.
+  const readableVisible = visible.filter((c) => unreadableReason(c) === null);
+  const canvasTarget = readableVisible.find((c) => c.id === openRecordId)?.id
+    ?? readableVisible[0]?.id
     ?? null;
   const canvasReason = phone
     ? CANVAS_PHONE_REASON
@@ -525,6 +550,14 @@ export function FlowsScreen(): JSX.Element {
               // `FlowRow` drops the reason for the LIVE row itself, whose verb
               // is LIVE and whose press is a navigation, so the one row that
               // can act still can.
+              //
+              // An unreadable row gets the SAME two props as every other row,
+              // deliberately. S0 passed its reason here as `openReason` and
+              // `runReason` too, which put it in a title, a toast and a locked
+              // RUN beside the meta line that already said it. `FlowRow` reads
+              // the card itself: no verb, and a body described by the meta line
+              // (S1-10 carry-over 6). So a viewer is still never sent to ask
+              // for access to run a flow nobody can run - there is no RUN.
               runReason={listRunReason}
               openReason={null}
               onRun={() => { void start(r.card.id); }}

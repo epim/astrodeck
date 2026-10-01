@@ -7,12 +7,15 @@ The hub is the single place that knows which physical device fills each role
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import json
+import math
 import os
 import shutil
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -20,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from . import cooling
+from .aio import reap
 from .config import (config_store, f_ratio, fov_deg, frames_payload,
                      image_scale_arcsec_px, redacted)
 from .persist import read_json_or, write_json_atomic
@@ -61,6 +65,7 @@ from .imaging.stackbackfill import plan_backfill, run_backfill
 from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles, resolve_optics
 from . import rotation as _rotation
+from . import sky_angle as _sky_angle
 
 if TYPE_CHECKING:  # annotations only -- the harness is imported lazily at runtime
     from .devices.backend import ConnSpec, RigSpec
@@ -269,11 +274,69 @@ CENTERING_STUCK_MIN_ERR_FACTOR = 5.0
 #: slow approach is not mistaken for divergence.
 ROTATE_MIN_GAIN_DEG = 0.5
 
+#: A rotate move whose solved sky change is under this fraction of the move
+#: commanded is logged as "the rotator moved but the camera did not" (#526,
+#: H4 orchestrator ruling 3). On 2026-09-28 a -5.7 degree correction after
+#: the flip turned the camera +0.5 degrees, and the loop said only that it was
+#: not converging; the line names the commanded and the solved numbers, so
+#: play or slip in the train is told apart from a sign or wrap error.
+ROTATE_FOLLOW_FRACTION = 0.5
+
+#: Where every plate-solve frame is written, under ``CAPTURE_DIR`` (#532).
+#: The gallery and the calibration library both skip it by name.
+SOLVE_DIRNAME = "_solve"
+
+#: How many times a plate-solve frame's write is tried when another process
+#: holds the file (#532), each try under a new name. On 2026-09-29 an agent
+#: copying the last ``_solve/solve.fits`` off the rig held it as the engine
+#: wrote the next one to the same fixed path, and the solve failed outright
+#: with WinError 32, a centring strike toward setting the panel aside. A
+#: fresh name per frame is the fix; this is the backstop for a scanner or an
+#: indexer that opens the new file as it is created.
+SOLVE_WRITE_ATTEMPTS = 4
+
+#: The first wait between those tries, doubled after each: 0.2, 0.4 and
+#: 0.8 s, 1.4 s in all, awaited with ``asyncio.sleep``, never on the loop.
+SOLVE_WRITE_BACKOFF_S = 0.2
+
+#: A solve frame's file older than this, of the kind about to be written,
+#: was left by a solve that never finished (a server killed mid-solve), and
+#: the next solve of that kind sweeps it. Ten minutes is past any solve that
+#: is still running: ASTAP's own bound is 60 s.
+SOLVE_LEFTOVER_AGE_S = 600.0
+
+#: The inspection copy of each kind's newest frame is ``latest-<kind>.fits``:
+#: the frame itself, renamed there after its solve, so an operator or agent
+#: can copy it off without holding any file a solve writes or reads (#532).
+SOLVE_LATEST_PREFIX = "latest-"
+
+#: Windows' ERROR_SHARING_VIOLATION: another process has the file open in a
+#: way that excludes this one. Python raises it as a ``PermissionError`` whose
+#: ``winerror`` is 32 (its ``errno`` is EACCES, which a real permission
+#: problem shares, so the Windows code is the one asked).
+_ERROR_SHARING_VIOLATION = 32
+
 #: Bound on the one pier-side read ``meridian_flip`` takes either side of its
 #: re-slew. The same 30 s the sequence engine gives every other mount query
 #: (``sequence.engine.MOUNT_QUERY_TIMEOUT_S``); a driver that never answers must
 #: degrade to "nobody can say" and leave the flip conservative, never hang it.
 PIER_SIDE_QUERY_TIMEOUT_S = 30.0
+
+#: How many plate solves' exposure starts `Hub.solve_exposures` keeps (#402).
+#: Its one reader, the recovery ladder, reads the solves of one step at a
+#: time: a blind solve, or a re-centre's attempts (three by default, a few
+#: more with a rotate loop). Sixteen covers that with room, and bounds what a
+#: night of centring leaves behind in memory.
+SOLVE_EXPOSURES_KEPT = 16
+
+#: Bound on each command a rig teardown's cleanup sends (#267): every device's
+#: disconnect, the guider's, the NINA client's and each session's close, and
+#: the polar session's stop. The cooler-off it owes a stopped warm ramp keeps
+#: the ramp's own ``cooling.WARM_CMD_TIMEOUT_S``. 30 s matches that and the
+#: Alpaca client's HTTP timeout, so a disconnect that is getting answers is not
+#: what it cuts: it cuts a driver that never answers, which used to hold the
+#: teardown, and the connect lock with it, for ever.
+TEARDOWN_STEP_TIMEOUT_S = 30.0
 
 #: how many full display frames the ring keeps (memory cap on the Pi), how many
 #: tiny thumbnails it keeps for the filmstrip, and how many linear arrays it
@@ -438,6 +501,9 @@ class _WcsJob:
     preview_id: int | None = None
     data_w: int = 0
     data_h: int = 0
+    #: the frame's ``CaptureSnapshot.angle``: what the solve's sky angle is
+    #: checked against before it may calibrate the rotator.
+    angle: Any = None
 
 
 @dataclass
@@ -553,6 +619,17 @@ class CaptureSnapshot:
     id_cards: list = field(default_factory=list)
     #: the sensor temperature the FILENAME token was built from
     sensor_temp_c: float | None = None
+    #: the rotator and pier side as the shutter closed (``sky_angle.
+    #: ExposureAngle``), read for a LIGHT only, so the background WCS solve of
+    #: this frame can calibrate the rotator -- or see that it must not, because
+    #: the rotator turned or the mount flipped before the solve landed.
+    angle: Any = None
+    #: a mosaic panel's provenance (#189 U-08): the MOSAIC card's group and the
+    #: PANEL card's 1-based ``row-col`` label, which ``$$PANEL$$`` renders. The
+    #: caller's to say, never read off the rig; frozen here so a promoted panel
+    #: frame is still a panel frame. Empty for every frame that is not one.
+    mosaic: str = ""
+    panel: str = ""
 
 
 @dataclass(frozen=True)
@@ -582,6 +659,175 @@ class PromoteRefused(RuntimeError):
         self.detail = detail
         self.code = code
         self.status = status
+
+
+async def _run_to_its_bound(make, timeout_s: float) -> BaseException | None:
+    """Run ``make()`` until it ends or ``timeout_s`` passes, whatever cancels
+    the caller meanwhile. Returns what it ended with: ``None`` when it
+    returned, ``TimeoutError`` when the bound cut it, or its own exception.
+
+    This is one step of a teardown's cleanup (#267), which must finish however
+    the teardown is ended. The call runs on its own task behind
+    ``asyncio.shield``, so a cancel of the caller does not reach it, and the
+    caller goes on waiting for it, so the next step never overlaps this one (a
+    camera disconnected while its cooler-off is still on the wire). The bound
+    is what keeps that wait finite.
+
+    A cancel of the caller that lands here is NOT eaten, although the loop
+    below catches it: it stays counted on the caller's task
+    (``Task.cancelling()``), and ``Hub._teardown`` raises it once its whole
+    cleanup is done (#235). Catching it per step is what lets the steps after
+    this one still run.
+    """
+    async def bounded():
+        # ``make()`` is called inside the step's task, so a driver that raises
+        # before its first await, or a double with no such method at all,
+        # ends the step and not the whole cleanup. That holds only if the
+        # caller's ``make`` does the method lookup too: pass
+        # ``lambda: dev.disconnect()``, never ``dev.disconnect``.
+        return await asyncio.wait_for(make(), timeout_s)
+
+    step = asyncio.ensure_future(bounded())
+    while not step.done():
+        try:
+            await asyncio.shield(step)
+        except asyncio.CancelledError:
+            # The caller's cancel (the step is still running) or the step's
+            # own (it is done): either way the loop reads ``step`` below.
+            pass
+        except Exception:       # noqa: BLE001 - the step's end, read below
+            pass
+    if step.cancelled():
+        return asyncio.CancelledError()
+    return step.exception()
+
+
+# ------------------------------------------------------------ solve frames
+#
+# EVERY PLATE-SOLVE FRAME GETS ITS OWN NAME (#532). The solve, rotate, rotator
+# sync and guide-offset paths each wrote one fixed file (``_solve/solve.fits``
+# and its siblings), so any other process holding the last one open (a copy
+# off the rig, an antivirus scan, a search indexer, a file-browser preview)
+# made the next solve fail outright on Windows, and on a mosaic that failure
+# was a centring strike against a panel that had done nothing wrong. Now each
+# frame is written to ``<kind>-<token>.fits``, handed to the solver, and
+# renamed to ``latest-<kind>.fits`` once the solver is done with it: the one
+# file an outside reader may hold is one no solve writes to or reads.
+
+
+class SolveFrameTransient(DeviceError):
+    """A plate-solve frame could not be written because another process held
+    the file, on every one of ``SOLVE_WRITE_ATTEMPTS`` tries (#532).
+
+    A ``DeviceError``, so every caller that already survives a failed solve
+    survives this. It is not the sky's or the panel's fault, and
+    ``goto_and_center`` says so in its result as ``solve_transient: True``
+    (H4 contract 1), which the engine does not count as a centring strike."""
+
+
+def _sharing_violation(e: BaseException) -> bool:
+    """True for a Windows sharing violation, the transient this retries."""
+    return (isinstance(e, PermissionError)
+            and getattr(e, "winerror", None) == _ERROR_SHARING_VIOLATION)
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Remove ``path`` if it can be removed. Never raises: tidying a solve's
+    files must never be what fails a solve."""
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
+
+
+def _sweep_solve_leftovers(folder: Path, kind: str) -> None:
+    """Remove the frames of ``kind`` a solve that never finished left behind:
+    a unique name older than ``SOLVE_LEFTOVER_AGE_S``, with any sidecars, and
+    the fixed name every version before #532 wrote (``<kind>.fits``), which
+    nothing writes any more. Blocking; never raises. A fresh name is left
+    alone, since it may be a solve running now."""
+    if not folder.is_dir():
+        return
+    cutoff = time.time() - SOLVE_LEFTOVER_AGE_S
+    doomed = [folder / f"{kind}.fits"]
+    with contextlib.suppress(OSError):
+        for p in folder.glob(f"{kind}-*"):
+            with contextlib.suppress(OSError):
+                if p.stat().st_mtime < cutoff:
+                    doomed.append(p)
+    for p in doomed:
+        _unlink_quietly(p)
+
+
+async def _write_solve_frame(frame: Any, kind: str, *,
+                             ra_hours: float | None, dec_deg: float | None,
+                             instrument: str) -> Path:
+    """Write ``frame`` to a new ``_solve/<kind>-<token>.fits`` for a solver,
+    and return the path (#532).
+
+    A SHARING VIOLATION IS TRIED AGAIN, under a new name, after an
+    ``asyncio.sleep`` backoff (``SOLVE_WRITE_BACKOFF_S``, doubling), up to
+    ``SOLVE_WRITE_ATTEMPTS`` tries in all; then ``SolveFrameTransient``. Any
+    other failure (a full disk, a missing drive, a real permission problem)
+    raises at once as it always did: retrying it would only delay the same
+    answer. Offloaded, as every solve write was, so the disk never freezes
+    the event loop."""
+    folder = CAPTURE_DIR / SOLVE_DIRNAME
+    await asyncio.to_thread(_sweep_solve_leftovers, folder, kind)
+    for attempt in range(1, SOLVE_WRITE_ATTEMPTS + 1):
+        path = folder / f"{kind}-{uuid.uuid4().hex[:12]}.fits"
+        try:
+            await asyncio.to_thread(save_fits, frame, path, ra_hours=ra_hours,
+                                    dec_deg=dec_deg, instrument=instrument)
+            return path
+        except PermissionError as e:
+            if not _sharing_violation(e):
+                raise
+            await asyncio.to_thread(_unlink_quietly, path)
+            if attempt >= SOLVE_WRITE_ATTEMPTS:
+                bus.log("warning", f"plate solve: another process held the "
+                                   f"{kind} frame's file on every try "
+                                   f"({e})", "solve")
+                # WORDS ONLY, like every failed solve's message: it can
+                # become a hold's reason, and the path in ``e`` is a new
+                # name on every try.
+                raise SolveFrameTransient(
+                    f"the {kind} frame could not be written: another process "
+                    f"held the file on every try, each under a new name (a "
+                    f"Windows sharing violation); a transient fault on this "
+                    f"computer, not the sky's") from e
+            wait = SOLVE_WRITE_BACKOFF_S * 2 ** (attempt - 1)
+            bus.log("info", f"plate solve: another process held the {kind} "
+                            f"frame's file ({e}); writing it again under a "
+                            f"new name in {wait:g} s", "solve")
+            await asyncio.sleep(wait)
+    raise AssertionError("unreachable")          # pragma: no cover
+
+
+def _retire_solve_frame_sync(path: Path, kind: str) -> None:
+    """Blocking half of ``_retire_solve_frame``. Never raises."""
+    for sidecar in (path.with_suffix(".ini"), path.with_suffix(".wcs")):
+        _unlink_quietly(sidecar)
+    try:
+        os.replace(path, path.with_name(f"{SOLVE_LATEST_PREFIX}{kind}.fits"))
+    except OSError:
+        # The inspection copy is held open (somebody is copying it off) or
+        # the rename failed some other way: the frame goes, the copy stays
+        # as it was, and the solve that is done with it is not told.
+        _unlink_quietly(path)
+
+
+async def _retire_solve_frame(path: Path, kind: str) -> None:
+    """Once the solver is done with ``path``: delete the solver's sidecars
+    (ASTAP's ``.ini`` and ``.wcs``, which it removes itself only when it
+    produced a result), and rename the frame to ``latest-<kind>.fits``, the
+    inspection copy, or delete it when that rename fails. After the solve,
+    so no solve ever reads or writes the copy. Never raises, but for a
+    cancel."""
+    try:
+        await asyncio.to_thread(_retire_solve_frame_sync, path, kind)
+    except asyncio.CancelledError:
+        raise
+    except Exception:                  # noqa: BLE001 - see the docstring
+        pass
 
 
 class Hub:
@@ -629,6 +875,11 @@ class Hub:
         #: `_note_pier_side` -- a serial read that times out must not turn a
         #: fact nobody disputes into "unknown".
         self._pier_side_seen: tuple[str, float] | None = None
+        #: The latest sky position angle a plate solve of an imaging-camera
+        #: frame measured, and whether it calibrated the rotator (and if not,
+        #: why). Written only by ``sky_angle.note_solved_rotation``; surfaced on
+        #: the status frame as ``sky_angle``.
+        self.last_sky_angle: dict | None = None
         #: ((ra, dec), taken_at_monotonic, (ra_j2000, dec_j2000)) - see
         #: ``from_mount_frame``. One entry, because a mount points at one place.
         self._precess_memo: tuple[tuple[float, float], float,
@@ -678,6 +929,23 @@ class Hub:
         self._pointing_verified: bool = False
         self._pointing_reason: str = "not plate solved since the last move"
         self._pointing_error_arcmin: float | None = None
+        #: ``time.time()`` at which the last GoTo `goto_and_center` commanded
+        #: came to rest, or None before its first: the moment ``tel.slew``
+        #: returned, which on Alpaca is when the mount stopped reporting
+        #: ``Slewing`` (#402). Stamped for `solve_exposures`, below.
+        self.goto_settled_at: float | None = None
+        #: Every plate solve's exposure start beside the GoTo settle it
+        #: followed, newest last, the last ``SOLVE_EXPOSURES_KEPT`` kept:
+        #: ``{"seq", "exposed_at", "settled_at"}``, where ``settled_at`` is
+        #: `goto_settled_at` as the shutter opened and ``seq`` counts from 1
+        #: (`solve_seq` is the last one's). The recovery ladder reads it to say
+        #: when each of its solves exposed (#402): on 2026-09-27 the centring
+        #: solve just after a good blind solve failed with no solution, once,
+        #: and nothing recorded whether the mount was still settling from its
+        #: GoTo when the shutter opened. Memory only, and a bounded one.
+        self.solve_exposures: collections.deque[dict] = collections.deque(
+            maxlen=SOLVE_EXPOSURES_KEPT)
+        self.solve_seq = 0
         # (rounded ra, rounded dec) -> the pointing-derived guess, so a 60-frame
         # loop on one target runs one cone query rather than sixty.
         self._pointing_field_cache: tuple[tuple[float, float], dict | None] | None = None
@@ -1322,7 +1590,18 @@ class Hub:
         ``disconnect_all`` or from inside a locked connect path) so it never races
         a concurrent connect. Defense-in-depth: skip ``asyncio.current_task()`` in
         the busy-cancel loop so a driver that runs teardown as its first step (the
-        legacy apply path) can never cancel itself."""
+        legacy apply path) can never cancel itself.
+
+        A CANCELLED TEARDOWN STILL CLEANS UP (#267). Everything after the warm
+        ramp's cancel is the teardown's cleanup, run in a ``finally``. A
+        cancel that landed while ``cancel_warm`` waited out the ramp's death
+        (its reap lets a caller's cancel through, #235) used to end the
+        teardown right there: no cooler-off, no polar stop, no device
+        disconnected, so the TEC stayed at the dead ramp's last setpoint on a
+        rig nothing was talking to. Now the cleanup sends the cooler-off
+        ``cancel_warm`` did not reach, stops and disconnects everything, and the
+        cancel is raised again once it is done. A cancel that lands DURING the
+        cleanup waits for it too, and is raised after it."""
         self.stop_loop()
         self.stop_wcs_worker()              # per-frame-wcs R1: never outlive the hub
         self.live_stacker = None            # NOV-1: release the accumulator on teardown
@@ -1347,75 +1626,138 @@ class Hub:
         # it early is the only defined end state available here. Best-effort and
         # bounded inside cancel_warm; a teardown must not be blockable by a
         # wedged cooler.
-        with contextlib.suppress(Exception):
-            await self.cancel_warm("the rig is disconnecting", finalize=True)
-        await self.polar.stop()
-        if self._status_task and not self._status_task.done():
-            self._status_task.cancel()
-        self._status_task = None
-        if self._safety_task and not self._safety_task.done():
-            self._safety_task.cancel()
-        self._safety_task = None
-        self._safety_reading = None
-        self._last_connect.clear()
-        if self._nina_ws_task and not self._nina_ws_task.done():
-            self._nina_ws_task.cancel()
-        self._nina_ws_task = None
-        if self._nina_hb_task and not self._nina_hb_task.done():
-            self._nina_hb_task.cancel()
-        self._nina_hb_task = None
-        if self._move_watchdog_task and not self._move_watchdog_task.done():
-            self._move_watchdog_task.cancel()
-        self._move_watchdog_task = None
-        self.last_move_ts = None
-        self._move_rates_seen = {"ra": 0.0, "dec": 0.0}
-        self._bridge_ready = False
-        current = asyncio.current_task()
-        for task in self._busy.values():
-            if task is not current:
-                task.cancel()
-        self._busy.clear()
-        for dev in self.devices.values():
+        #
+        # #267: WHETHER the cooler-off is owed is read before the cancel that
+        # stops the ramp. A cancel of this teardown that lands inside
+        # cancel_warm ends it before its cooler command, and by then the ramp
+        # it stopped is gone, so nothing afterwards could tell. Owed only when
+        # a ramp is running, as cancel_warm's own cooler-off is: a camera
+        # cooling for a run keeps its TEC through a teardown, as it always has.
+        ramp = self._warm_task
+        cooler_owed = ramp is not None and not ramp.done()
+        # The cancels this task already carries, so a new one is told apart.
+        me = asyncio.current_task()
+        asked = me.cancelling() if me is not None else 0
+        try:
             try:
-                await dev.disconnect()
-            except Exception:
+                await self.cancel_warm("the rig is disconnecting", finalize=True)
+            except Exception:       # noqa: BLE001 - best-effort, as it always was
                 pass
-        self.devices.clear()
-        self._mount_wants_jnow = None
-        if self.guider:
-            try:
-                await self.guider.disconnect()
-            except Exception:
-                pass
-            self.guider = None
-        if self.nina_client is not None:
-            try:
-                await self.nina_client.close()
-            except Exception:
-                pass
-            self.nina_client = None
-        # Close the native httpx clients we still hold, so a profile switch /
-        # repeated reconnect leaks no keep-alive socket pool (session-leak fix):
-        # the retained RigSpec-connect sessions AND the per-role legacy-Alpaca
-        # sessions. Best-effort — one failing aclose must not strand the others.
-        if self.last_connect_result is not None:
-            for session in self.last_connect_result.sessions.values():
-                try:
-                    await session.close()
-                except Exception:
-                    pass
-        for session in self._alpaca_sessions.values():
-            try:
-                await session.close()
-            except Exception:
-                pass
-        self._alpaca_sessions.clear()
-        self.sim_rig = None
-        self.mode = "none"
-        # a manual disconnect clears the boot-LED grid (no stale tri-state).
-        self.last_connect_result = None
-        self._last_rigspec = None
-        bus.log("info", "all equipment disconnected", "hub")
+            else:
+                # cancel_warm sent it, or said in a warning why it could not.
+                cooler_owed = False
+        finally:
+            # THE CLEANUP (#267): everything below runs however the
+            # teardown ends. Every await is one ``_run_to_its_bound`` step,
+            # on its own task behind ``asyncio.shield`` and cut at its own
+            # bound, so a cancel can neither cut the command on the wire
+            # nor skip the ones after it; the rest is synchronous, in the
+            # order the teardown always used.
+            if cooler_owed:
+                await self._teardown_cooler_off()
+            # Each step is handed a lambda, never a bound method: the lookup
+            # must run inside the step, where a failure is the step's. The old
+            # try/except around each await tolerated a guider or a NINA
+            # client with no disconnect/close, and the cleanup must too.
+            polar = self.polar
+            await self._teardown_step("the polar-alignment stop",
+                                      lambda: polar.stop())
+            if self._status_task and not self._status_task.done():
+                self._status_task.cancel()
+            self._status_task = None
+            if self._safety_task and not self._safety_task.done():
+                self._safety_task.cancel()
+            self._safety_task = None
+            self._safety_reading = None
+            self._last_connect.clear()
+            if self._nina_ws_task and not self._nina_ws_task.done():
+                self._nina_ws_task.cancel()
+            self._nina_ws_task = None
+            if self._nina_hb_task and not self._nina_hb_task.done():
+                self._nina_hb_task.cancel()
+            self._nina_hb_task = None
+            if self._move_watchdog_task and not self._move_watchdog_task.done():
+                self._move_watchdog_task.cancel()
+            self._move_watchdog_task = None
+            self.last_move_ts = None
+            self._move_rates_seen = {"ra": 0.0, "dec": 0.0}
+            self._bridge_ready = False
+            current = asyncio.current_task()
+            for task in self._busy.values():
+                if task is not current:
+                    task.cancel()
+            self._busy.clear()
+            # A snapshot: the loop awaits, and nothing may resize what it walks.
+            for role, dev in list(self.devices.items()):
+                await self._teardown_step(f"the {role}'s disconnect",
+                                          lambda dev=dev: dev.disconnect())
+            self.devices.clear()
+            self._mount_wants_jnow = None
+            if self.guider:
+                guider = self.guider
+                await self._teardown_step("the guider's disconnect",
+                                          lambda: guider.disconnect())
+                self.guider = None
+            if self.nina_client is not None:
+                client = self.nina_client
+                await self._teardown_step("the NINA client's close",
+                                          lambda: client.close())
+                self.nina_client = None
+            # Close the native httpx clients we still hold, so a profile switch /
+            # repeated reconnect leaks no keep-alive socket pool (session-leak fix):
+            # the retained RigSpec-connect sessions AND the per-role legacy-Alpaca
+            # sessions. Best-effort — one failing aclose must not strand the others.
+            if self.last_connect_result is not None:
+                for session in list(self.last_connect_result.sessions.values()):
+                    await self._teardown_step("a device session's close",
+                                              lambda s=session: s.close())
+            for session in list(self._alpaca_sessions.values()):
+                await self._teardown_step("an Alpaca session's close",
+                                          lambda s=session: s.close())
+            self._alpaca_sessions.clear()
+            self.sim_rig = None
+            self.mode = "none"
+            # a manual disconnect clears the boot-LED grid (no stale tri-state).
+            self.last_connect_result = None
+            self._last_rigspec = None
+            bus.log("info", "all equipment disconnected", "hub")
+        # Reached only when nothing cancelled the teardown before its cleanup.
+        # A cancel that landed DURING the cleanup let it finish (each step is
+        # shielded) and is raised now, never eaten (#235).
+        if me is not None and me.cancelling() > asked:
+            raise asyncio.CancelledError()
+
+    async def _teardown_step(self, what: str, make) -> None:
+        """One bounded, shielded command of the teardown's cleanup (#267). A
+        failure stays best-effort, as it always was, so one device that cannot
+        disconnect never strands the others; a command cut at its bound is
+        said, because until #267 it held the teardown for ever instead."""
+        bound = TEARDOWN_STEP_TIMEOUT_S
+        err = await _run_to_its_bound(make, bound)
+        if isinstance(err, TimeoutError):
+            bus.log("warning", f"{what} did not finish within {bound:g} s; "
+                               f"the teardown went on without it", "hub")
+
+    async def _teardown_cooler_off(self) -> None:
+        """The cooler-off a teardown owes a warm ramp whose stop did not finish
+        (#267): the one ``cancel_warm(finalize=True)`` sends on the way out of
+        its reap, which a cancel of the teardown ends first. Same guard, same
+        bound and same warning as that one; one more line when it lands, since
+        a teardown that reached it was cut short and the log is where anyone
+        will look for what it still did."""
+        cam = self.devices.get("camera")
+        if cam is None or not getattr(cam, "connected", False):
+            return
+        bound = cooling.WARM_CMD_TIMEOUT_S
+        err = await _run_to_its_bound(lambda: cam.set_cooler(False), bound)
+        if err is None:
+            bus.log("info", "the warm ramp's stop did not finish, so the teardown "
+                            "switched the cooler off itself", "camera")
+            return
+        why = (f"no answer within {bound:g} s" if isinstance(err, TimeoutError)
+               else (str(err) or type(err).__name__))
+        bus.log("warning", f"could not switch the cooler off after stopping the "
+                           f"warm ramp: {why}", "camera")
 
     def require(self, role: str):
         dev = self.devices.get(role)
@@ -1610,6 +1952,24 @@ class Hub:
         self._guide_preview_frame = (verified, now, src) if png else None
         return png, reason
 
+    async def _guider_is_guiding(self, g) -> bool:
+        """Is this guider actually running a loop right now? Never raises.
+
+        `connected` is a REMEMBERED flag and this is a MEASUREMENT, which is the
+        whole of issue #16: a liveness flag that cannot go false leaves every
+        recovery path hanging off it inert. Here it decides who owns the guide
+        sensor, and a guider that is guiding owns it whatever its connect flag
+        still says.
+
+        Asked only when `connected` is already false, so the ordinary path keeps
+        its short-circuit and a PHD2 guider does not take a socket round trip on
+        every 2.5 s panel poll.
+        """
+        try:
+            return bool(await g.is_active())
+        except Exception:  # noqa: BLE001 - a preview must not 500 the panel
+            return False
+
     def _guide_preview_source_name(self) -> str:
         """Which device ``_guide_preview_source`` would ask right now, by name.
 
@@ -1643,7 +2003,8 @@ class Hub:
         name (``preview_ok: False``, reachable only from the guider branch below)
         is exactly where they disagree."""
         g = self.guider
-        if g is not None and getattr(g, "connected", False):
+        if g is not None and (getattr(g, "connected", False)
+                              or await self._guider_is_guiding(g)):
             try:
                 png = await g.guide_frame()
             except Exception:  # noqa: BLE001 — a preview must not 500 the panel
@@ -1684,6 +2045,22 @@ class Hub:
         if cam is self.devices.get("camera"):
             return None, (f"{cam.name} is also the imaging camera — its frames "
                           "show in the capture preview, not here"), False, cam.name
+        # A LIVE GUIDE LOOP OWNS THIS SENSOR. The paragraph below used to end
+        # "the only contender for this sensor is another preview", and on
+        # 2026-09-12 that was wrong: a preview requested during a calibration
+        # walk left the ASI guide camera in VIDEO_MODE_ACTIVE for 11 minutes,
+        # the calibration was lost, and nothing short of a whole-rig profile
+        # activate cleared it (issue #15). A read-only-looking panel destroyed a
+        # live guiding session.
+        #
+        # The guider branch above is the one that serves a running loop, from
+        # the loop's own last frame, without touching the sensor. It is reached
+        # by `connected` OR by the loop being live, so the remembered flag going
+        # stale - issue #16, and the reason this was reachable at all - no
+        # longer routes a preview past the owner and onto the camera.
+        #
+        # What is left here is a guide camera with no guider claiming it, and
+        # for that the sentence below is true again.
         # NO busy_label gate here, deliberately. busy_label is a HUB-WIDE label
         # for the IMAGING train (goto/solve/autofocus/capture/looping), and this
         # line is only reached once we know the guide camera is a different
@@ -2017,6 +2394,24 @@ class Hub:
         if put is None:
             return
         s = self.site
+        # NOT AT A DEFAULT SITE (issue #24). This writes into the mount's own
+        # firmware, so 0,0 does not merely make the SERVER compute for the Gulf
+        # of Guinea - it makes the MOUNT do it too, independently, for its LST,
+        # its pier-side decision and its internal horizon limit. The user then
+        # sees GOTOs refused or slews to the wrong sky with nothing wrong on
+        # this side to explain it, and the wrong numbers outlive the session
+        # because they are persisted in the hardware.
+        #
+        # A mount that has never been told is in a better state than one that
+        # has been told a lie: it keeps whatever it had, which on a rig that has
+        # been set up by hand is the right answer.
+        from .site_gate import site_is_set
+        if not site_is_set(s):
+            bus.log("info",
+                    "not pushing the observing site to the mount: no site has "
+                    "been saved yet, and writing 0,0 into its firmware would "
+                    "give it a wrong LST and pier side of its own", "config")
+            return
         try:
             await put("sitelatitude", SiteLatitude=s["latitude"])
             await put("sitelongitude", SiteLongitude=s["longitude"])
@@ -2827,10 +3222,16 @@ class Hub:
                 pass
             if lat is not None and lon is not None:
                 try:
-                    alt, _az = coords.altaz(best_ra, best_dec, lat, lon,
-                                            frame.timestamp)
+                    alt, az = coords.altaz(best_ra, best_dec, lat, lon,
+                                           frame.timestamp)
                     if alt > 0:
                         meta.obj_alt_deg = alt
+                        # The azimuth was computed here and thrown away
+                        # (issue #23). Altitude says how high the field was;
+                        # azimuth says which way it faced, and that is what
+                        # separates a tree from a cloud bank when the star
+                        # count drops - both of them are "low".
+                        meta.obj_az_deg = az
                         meta.airmass = coords.airmass(alt)
                 except Exception:
                     pass
@@ -2904,7 +3305,17 @@ class Hub:
 
     async def capture(self, exposure_s: float, gain: int, offset: int,
                       binning: int = 1, save: bool = False, target: str = "",
-                      frame_type: str = "Light", request_id: str | None = None) -> dict:
+                      frame_type: str = "Light", request_id: str | None = None,
+                      mosaic: str | None = None,
+                      panel: str | None = None) -> dict:
+        """Expose one frame, publish it and, with ``save``, write it.
+
+        ``mosaic`` and ``panel`` say that the frame is a mosaic panel (#189
+        U-08): ``mosaic`` is ``naming.mosaic_label(group.name, group.id)`` and
+        ``panel`` is ``naming.panel_label(row, col)``. They become the FITS
+        ``MOSAIC`` and ``PANEL`` cards and the ``$$PANEL$$`` token. Unset (the
+        default, and every caller but a mosaic's), the frame's header and path
+        are exactly what they always were."""
         cam: Camera = self.require("camera")
         # Serialize the exposure against every other capture path (loop / single /
         # autofocus / sequence / solve) so two coroutines can't poll the shared
@@ -2971,7 +3382,8 @@ class Hub:
             snap = await self._capture_snapshot(
                 frame, target=target, frame_type=frame_type, gain=gain,
                 offset=offset, exposure_s=exposure_s, binning=binning,
-                filter_name=filt, note_pointing=save, wheel_slot=wheel_slot)
+                filter_name=filt, note_pointing=save, wheel_slot=wheel_slot,
+                mosaic=mosaic, panel=panel)
         if save and snap is not None:
             local_save_path = await self._save_captured_frame(frame, snap)
 
@@ -3121,7 +3533,9 @@ class Hub:
                                 gain: int, offset: int, exposure_s: float,
                                 binning: int, filter_name: str,
                                 note_pointing: bool = True,
-                                wheel_slot: int | None = ...) -> CaptureSnapshot:
+                                wheel_slot: int | None = ...,
+                                mosaic: str | None = None,
+                                panel: str | None = None) -> CaptureSnapshot:
         """Read the rig ONCE and freeze what the header depends on.
 
         Every device read the FITS header needs lives here and nowhere else,
@@ -3194,6 +3608,24 @@ class Hub:
         # alone (``snap.target``) and is never built from this - that ordering
         # is the invariant, not a coincidence.
         object_name, id_cards = self._object_cards(target, frame_type)
+        # THE ROTATOR AND PIER SIDE AS THE SHUTTER CLOSED, for a light only, and
+        # only while saved lights are being solved: the background WCS worker
+        # is the one consumer, and its solve's sky angle may calibrate the
+        # rotator only if neither has changed by the time it lands (see
+        # ``sky_angle``). Cached pier side, never a live mount read: this runs
+        # on every frame of the live loop. A rig without a rotator pays nothing.
+        # A frame promoted after the feature was switched on simply has no
+        # angle, and its solve is recorded without calibrating.
+        angle = None
+        try:
+            if (frame_type.upper() == "LIGHT"
+                    and getattr(config_store.cfg(), "solve_saved_lights", False)):
+                angle = await _sky_angle.exposure_context(self, cam,
+                                                          live_pier=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            angle = None
         return CaptureSnapshot(
             target=target, frame_type=frame_type, gain=gain, offset=offset,
             exposure_s=exposure_s, binning=binning, filter_name=filter_name,
@@ -3206,7 +3638,8 @@ class Hub:
             instrument=(getattr(cam, "name", "") or ""),
             dark_cards=list(dark_cards or []), beam_cards=list(beam_cards),
             object_name=object_name, id_cards=list(id_cards),
-            sensor_temp_c=getattr(frame, "temperature_c", None))
+            sensor_temp_c=getattr(frame, "temperature_c", None),
+            angle=angle, mosaic=mosaic or "", panel=panel or "")
 
     async def _save_captured_frame(self, frame, snap: CaptureSnapshot) -> Path:
         """Write ONE frame into the capture library from a frozen snapshot.
@@ -3219,7 +3652,7 @@ class Hub:
             # follows what they typed even when a solve identified the field.
             snap.target or "untargeted", snap.frame_type, snap.filter_name,
             gain=snap.gain, exposure_s=snap.exposure_s, binning=snap.binning,
-            sensor_temp_c=snap.sensor_temp_c)
+            sensor_temp_c=snap.sensor_temp_c, panel=snap.panel)
         # Offloaded so a 25-120 MB uint16 FITS write to the Pi's SD card never
         # freezes the event loop for seconds every frame (WS/preview stall,
         # queued guide events, delayed STOP) — same as solve_and_sync's write.
@@ -3233,7 +3666,10 @@ class Hub:
             dec_deg=snap.best_dec, telescope=snap.telescope_name,
             instrument=snap.instrument, meta=snap.meta,
             extra_cards=(list(snap.dark_cards) + list(snap.beam_cards)
-                         + list(snap.id_cards)))
+                         + list(snap.id_cards)),
+            # Written only when set (``save_fits``), so a frame that is not a
+            # panel keeps exactly the header it always had.
+            mosaic=snap.mosaic, panel=snap.panel)
         # carry the path on the frame so _publish_preview reports a correct
         # saved_path/saved_local in the very first event (no stale re-publish).
         frame.saved_path = str(path)
@@ -3289,7 +3725,8 @@ class Hub:
                 # when it lands, seconds after the picture is already on screen.
                 preview_id=i.get("id"),
                 data_w=int(i.get("data_width") or 0),
-                data_h=int(i.get("data_height") or 0))
+                data_h=int(i.get("data_height") or 0),
+                angle=getattr(snap, "angle", None))
 
     # ------------------------------------------------- per-frame WCS stamping
     # (per-frame-wcs spec §2; the mechanism — solvers, WcsSolution, write_wcs —
@@ -3298,7 +3735,8 @@ class Hub:
     def _enqueue_wcs_stamp(self, path: Path, ra: float | None, dec: float | None,
                            star_count: int | None, *,
                            preview_id: int | None = None,
-                           data_w: int = 0, data_h: int = 0) -> None:
+                           data_w: int = 0, data_h: int = 0,
+                           angle: Any = None) -> None:
         """Queue one saved light for background solve+stamp. Never blocks, never
         raises (the capture must survive any failure here), and never grows
         without bound.
@@ -3330,7 +3768,7 @@ class Hub:
                 fov_hint = None
             q.put_nowait(_WcsJob(path=path, ra=ra, dec=dec, fov_deg=fov_hint,
                                  star_count=star_count, preview_id=preview_id,
-                                 data_w=data_w, data_h=data_h))
+                                 data_w=data_w, data_h=data_h, angle=angle))
             if dropped and not self._wcs_drop_logged:
                 self._wcs_drop_logged = True
                 bus.log("warning",
@@ -3411,6 +3849,13 @@ class Hub:
         if res.success and res.wcs is not None:
             await asyncio.to_thread(write_wcs, job.path, res.wcs)
             bus.log("info", f"stamped WCS on {job.path.name}", "solve")
+            # The sky angle this light measured, recorded and (when the rotator
+            # has not turned and the mount has not flipped since the shutter
+            # closed) fed to the rotator. Inside this branch on purpose: a
+            # solution not trusted enough to stamp into the header is not
+            # trusted enough to calibrate a rotator either.
+            await _sky_angle.note_solved_rotation(
+                self, res, source="saved-frame WCS", context=job.angle)
             # ...and it stops being landlocked. The solution used to be written
             # into the file and dropped on the floor: nothing published it,
             # nothing stored it, and the browser had never seen one. This is the
@@ -4294,8 +4739,97 @@ class Hub:
             bus.log("warning", f"could not record the cooling setpoint "
                                f"({e}); it will not survive a restart", "camera")
 
-    async def restore_cooling(self) -> bool:
+    def _cooling_restore_allowed(self, now: float | None = None) -> tuple[bool, str]:
+        """Whether ``restore_cooling`` may turn the TEC on right now, and the
+        reason when it may not (#557; backlog ruling WP-10a, owner-approved
+        2026-09-30).
+
+        DARKNESS USES THE DAWN-WARM PATH'S OWN THRESHOLD
+        (``dawn_park.park_threshold_deg`` + ``catalog.coords.sun_altaz``), not
+        ``schedule.dark_enough``'s different, earlier one. This is the same
+        hardware question the dawn warm answers — should the TEC be running
+        right now — not a scheduling question, and the two are deliberately
+        allowed to disagree: ``park_threshold_deg`` is the LATER of the
+        operator's own twilight and civil twilight, so a rig that images down
+        to -18° is still treated as "night" here well past the point its own
+        schedule would call the night over.
+
+        AN UNSET SITE FAILS OPEN, unlike ``dawn_park`` itself (which goes
+        inert rather than guess, because a net that never fires just never
+        parks anything). This has to answer on every connect, and the
+        behaviour it replaces restored unconditionally — refusing here too
+        would newly break every sim/test rig that has never configured a site
+        (see test_cooling_restore.py::test_a_reconnect_puts_the_setpoint_back
+        and test_a_run_without_a_temperature_says_so.py::
+        test_the_camera_COMES_BACK_cooled, neither of which sets one up). "We
+        cannot tell" keeps the old behaviour rather than adding a new refusal.
+
+        OR A RUN IS ARMED OR DUE. Reuses ``resume_arm.resume_expected_tonight``
+        — the SAME predicate the engine's wind-down already asks before it
+        decides warming the camera would only cost the next run its first
+        frames (``SequenceEngine._wind_down_warm``). Two copies of "is this rig
+        about to image again" would drift, and the way they would drift is
+        silent.
+        """
+        t = time.time() if now is None else now
+        site = self.site
+        if site.get("is_default", True):
+            return True, ""
+        from .dawn_park import park_threshold_deg
+        from .catalog.coords import sun_altaz
+        alt, _az = sun_altaz(site["latitude"], site["longitude"], t)
+        if alt < park_threshold_deg(config_store.cfg()):
+            return True, ""
+        try:
+            from .sequence.resume_arm import resume_expected_tonight
+            session = resume_expected_tonight(self, t)
+        except Exception as e:      # noqa: BLE001 - never block a connect
+            bus.log("debug", f"could not tell whether a run is armed for "
+                             f"tonight ({e}) — judging by daylight alone",
+                    "camera")
+            session = None
+        if session is not None:
+            return True, ""
+        return False, "it is daylight and no run is armed or due"
+
+    async def _cooler_readback_confirms(self, cam: Any,
+                                        target_c: float) -> tuple[bool | None, str]:
+        """Ask the camera what it is actually doing, for ``restore_cooling``'s
+        claim (#143; backlog ruling WP-10b, owner-approved 2026-09-30).
+
+        Returns ``(True, "")`` when the readback agrees, ``(False, detail)``
+        when it disagrees, and ``(None, detail)`` when this backend cannot be
+        asked at all. The last one is NOT a disagreement — most sim/fake
+        cameras in tests implement only ``set_cooler`` — so ``restore_cooling``
+        keeps trusting the write it just made, exactly as before this fix.
+
+        0.1 °C clears float round-trip noise without accepting a materially
+        different setpoint as "the same" one — the same tolerance
+        ``DuskArm._check_cooling`` uses for the identical comparison."""
+        read_cooler = getattr(cam, "get_cooler", None)
+        if not callable(read_cooler):
+            return None, ""
+        try:
+            cooler = await asyncio.wait_for(read_cooler(), cooling.WARM_CMD_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:      # noqa: BLE001 - an unreadable cooler is not a NO
+            return None, f"the cooler could not be read back ({e})"
+        if cooler is None or cooler.get("on") is None:
+            return None, "the cooler state is unavailable"
+        if cooler.get("on") is False:
+            return False, "the camera reports the cooler OFF"
+        read_target = cooler.get("target_c")
+        if read_target is not None and abs(float(read_target) - target_c) > 0.1:
+            return False, (f"the camera reads back {read_target:g} °C, "
+                           f"not {target_c:g} °C")
+        return True, ""
+
+    async def restore_cooling(self, now: float | None = None) -> bool:
         """Re-apply the standing cooling request after a connect. True if it did.
+
+        ``now`` is a seam for tests (``_cooling_restore_allowed``'s clock);
+        every real caller connects with no argument and gets the real time.
 
         WHY THIS EXISTS. On 2026-08-09 a reconnect — issued to recover a dead
         mount link — took the camera from cooler-on/-10.0 °C to cooler-off with
@@ -4313,6 +4847,22 @@ class Hub:
         a restore that happens is worth a line, and a restore that FAILS is worth
         a louder one, because the alternative is a night of warm frames nobody
         was told about.
+
+        ONLY WHEN THE SKY OR THE SCHEDULE SAYS SO (#557). A daytime restart
+        used to re-cool the camera to its night setpoint regardless of the
+        clock: on 2026-09-29 a 10:11 deploy commanded a -10 °C target nine
+        hours before the next run and an operator had to switch the cooler off
+        by hand. A restart is not an operator's intent to image RIGHT NOW, so
+        this asks ``_cooling_restore_allowed`` first and, in daylight with
+        nothing due, leaves the cooler as found — the run's own cooling step
+        (``replan_cooling`` / ``SequenceEngine._enforce_cooling``) applies the
+        setpoint again once a run actually starts.
+
+        THE READBACK, NOT THE WRITE, IS THE CLAIM (#143). On 2026-09-23 a
+        reconnect logged "cooling restored to -10 °C" while ``/api/status``
+        read the cooler off minutes later — the log had described the call it
+        made, not what the camera did. ``_cooler_readback_confirms`` is asked
+        before this claims "restored".
         """
         cam = self.devices.get("camera")
         # RECORD THE CAPABILITY BEFORE THE EARLY RETURNS. `can_cool` exists only
@@ -4331,6 +4881,15 @@ class Hub:
             return False
         if not hasattr(cam, "set_cooler"):
             return False
+
+        allowed, why_not = self._cooling_restore_allowed(now)
+        if not allowed:
+            bus.log("info",
+                    f"cooling left off after connecting — {why_not}; the "
+                    f"standing setpoint ({target:g} °C) will be applied when "
+                    f"a run starts", "camera")
+            return False
+
         try:
             await asyncio.wait_for(cam.set_cooler(True, float(target)),
                                    cooling.WARM_CMD_TIMEOUT_S)
@@ -4341,6 +4900,14 @@ class Hub:
                     f"cooling was NOT restored to {target:g} °C after connecting "
                     f"({e}) — the camera is warm and any frames taken now will "
                     f"carry the wrong SET-TEMP", "camera")
+            return False
+
+        confirmed, detail = await self._cooler_readback_confirms(cam, float(target))
+        if confirmed is False:
+            bus.log("error",
+                    f"cooling to {target:g} °C was requested after connecting "
+                    f"but {detail} — NOT confirmed restored, and any frames "
+                    f"taken now may carry the wrong SET-TEMP", "camera")
             return False
         bus.log("info", f"cooling restored to {target:g} °C after connecting",
                 "camera")
@@ -4409,19 +4976,27 @@ class Hub:
         if task is None or task.done():
             return False
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
-        state = self._warm_state
-        if state is not None:
-            # Unconditionally, NOT gated on state["active"]: the task's own
-            # ``finally`` has already flipped that False on its way out and
-            # stamped its default "warm complete" note. Gating here left every
-            # cancelled ramp claiming, in the UI and the log, that it had
-            # finished — the one sentence a cancel must never produce.
-            state["active"] = False
-            state["note"] = f"stopped: {reason}"
-            state["_finished_monotonic"] = time.monotonic()
-        bus.log("info", f"camera warm ramp stopped — {reason}", "camera")
+        try:
+            # #235: ``reap``, not ``suppress(CancelledError)`` around ``await
+            # task``, which also ate a cancel of whoever called this, so the
+            # caller ran on (into ``cancel_warm``'s cooler command) past it.
+            await reap(task)
+        finally:
+            # On both paths: the ramp is dead either way (``reap`` raises the
+            # caller's cancel only once it is), and its own ``finally`` has
+            # stamped "warm complete" on the way out, so a cancelled cancel
+            # that skipped this would leave exactly that sentence standing.
+            state = self._warm_state
+            if state is not None:
+                # Unconditionally, NOT gated on state["active"]: the task's own
+                # ``finally`` has already flipped that False on its way out and
+                # stamped its default "warm complete" note. Gating here left
+                # every cancelled ramp claiming, in the UI and the log, that it
+                # had finished — the one sentence a cancel must never produce.
+                state["active"] = False
+                state["note"] = f"stopped: {reason}"
+                state["_finished_monotonic"] = time.monotonic()
+            bus.log("info", f"camera warm ramp stopped — {reason}", "camera")
         return True
 
     async def warm_camera(self, *, source: str = "user", ramp: bool = True) -> dict:
@@ -4629,6 +5204,8 @@ class Hub:
         planned_s = cooling.warm_duration_s(start_c, ambient_c, rate)
         budget_s = min(3600.0, max(600.0, planned_s * 3.0))
         started = time.monotonic()
+        stalled_cold = False
+        stall_best, stall_checks = -math.inf, 0
         try:
             while True:
                 await asyncio.sleep(cooling.WARM_STEP_S)
@@ -4659,6 +5236,42 @@ class Hub:
                 if temp is not None and (setpoint - temp) > cooling.WARM_MAX_LEAD_C:
                     lagging += 1
                     if lagging >= cooling.WARM_LEAD_CHECKS:
+                        # A SENSOR THIS FAR BELOW AMBIENT IS NOT AT AMBIENT
+                        # (issue #17). The reasoning above - it stopped rising,
+                        # so the TEC has run out of work - holds only when we
+                        # have climbed PAST the real ambient. A TEC that never
+                        # took control at all looks identical to it, and on
+                        # 2026-09-12 that is what happened: the ramp began at
+                        # −10.3 °C, and two minutes into a planned fifteen it
+                        # called −10.5 °C "already at ambient" and switched the
+                        # cooler off thirty degrees short. The plunge this
+                        # routine exists to prevent, performed by the routine
+                        # and logged as a success.
+                        if ambient_c - temp > cooling.WARM_NOT_AMBIENT_C:
+                            # HOLD, do not end - but only while the sensor is
+                            # still RISING. A slow TEC and a dead one both
+                            # arrive here and a verdict at this instant cannot
+                            # tell them apart; progress can. Holding keeps the
+                            # setpoint where it is, never opening the gap
+                            # wider, and a TEC that is merely behind rejoins
+                            # the schedule. One that has stopped moving for
+                            # `WARM_STALL_CHECKS` polls has stopped.
+                            if temp > stall_best + cooling.WARM_STALL_PROGRESS_C:
+                                stall_best = temp
+                                stall_checks = 0
+                            else:
+                                stall_checks += 1
+                                if stall_checks >= cooling.WARM_STALL_CHECKS:
+                                    stalled_cold = True
+                                    note = (
+                                        f"the ramp could not warm the sensor: "
+                                        f"{temp:.1f} °C and not rising, "
+                                        f"{ambient_c - temp:.0f} °C below the "
+                                        f"{ambient_c:.0f} °C it was being taken "
+                                        f"to")
+                                    break
+                            lagging = cooling.WARM_LEAD_CHECKS
+                            continue
                         note = (f"sensor stopped following the setpoint at "
                                 f"{temp:.1f} °C — already at ambient")
                         break
@@ -4711,9 +5324,35 @@ class Hub:
                     # it: keep polling — the lead check above ends this within
                     # two more steps, and the budget backstops that.
                 if elapsed > budget_s:
+                    # OUT OF TIME WITH THE SENSOR STILL COLD IS THE STALL
+                    # (issue #17). Switching off here is the plunge the routine
+                    # exists to prevent, so the two endings are told apart by
+                    # where the sensor actually is rather than by why we
+                    # stopped waiting for it.
+                    if temp is not None and ambient_c - temp > cooling.WARM_NOT_AMBIENT_C:
+                        stalled_cold = True
+                        note = (f"the ramp could not warm the sensor: "
+                                f"{temp:.1f} °C after {elapsed / 60.0:.0f} min, "
+                                f"{ambient_c - temp:.0f} °C below the "
+                                f"{ambient_c:.0f} °C it was being taken to")
+                        break
                     note = "warm ramp ran out of time — switching the cooler off"
                     bus.log("warning", note, "camera")
                     break
+            # AND IF IT NEVER FOLLOWED, DO NOT ADD THE PLUNGE (issue #17).
+            # Every exit below this point assumes the sensor is at ambient, so
+            # switching off is thermally free. When the ramp could not move the
+            # sensor at all that assumption is false, and switching off is the
+            # one action that turns a hardware fault into a wet sensor. The TEC
+            # is left engaged and the failure is raised as an ERROR rather than
+            # noted: a cooler that will not follow a ramp needs a person, and
+            # leaving it on silently would be the other half of issue #35.
+            if stalled_cold:
+                bus.log("error",
+                        f"warm ramp: {note} — leaving the cooler ENGAGED rather "
+                        f"than switching it off onto a cold sensor. Check the "
+                        f"camera's cooler before the next run", "camera")
+                return
             # Only NOW does the TEC actually stop. Everything above exists so
             # that this line is a no-op thermally instead of a 5 °C/min plunge
             # into the room.
@@ -5037,7 +5676,8 @@ class Hub:
     def _capture_path(self, target: str, frame_type: str, filter_name: str = "",
                       *, gain: int | None = None, exposure_s: float | None = None,
                       binning: int | None = None,
-                      sensor_temp_c: float | None = None) -> Path:
+                      sensor_temp_c: float | None = None,
+                      panel: str | None = None) -> Path:
         from .naming import capture_tokens, render_relative_path, sanitize_component
         # "untargeted" fallback keyed off the SANITIZED target (legacy parity,
         # hub.py old :1681); sanitize is idempotent so the engine re-sanitize is a
@@ -5062,6 +5702,9 @@ class Hub:
             # caller gets.
             **capture_tokens(gain=gain, exposure_s=exposure_s, binning=binning,
                              sensor_temp_c=sensor_temp_c),
+            # A mosaic panel's 1-based ``row-col`` (#189 U-08). Empty for any
+            # frame that is not a panel, so ``$$PANEL$$`` drops out.
+            "PANEL": panel or "",
         }
         template = config_store.cfg().naming.template
         return CAPTURE_DIR / render_relative_path(template, fields)
@@ -5077,8 +5720,9 @@ class Hub:
         old = self._loop_task
         self.stop_loop()
         if old is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await old
+            # #235: ``reap``, not ``suppress(CancelledError)``, which ate a
+            # cancel of this caller too and went on to spawn the new loop.
+            await reap(old)
 
         async def _loop() -> None:
             while True:
@@ -5140,8 +5784,10 @@ class Hub:
         old = self._loop_task
         self.stop_loop()
         if old is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await old
+            # #235: ``reap``, not ``suppress(CancelledError)``, which ate a
+            # cancel of this caller too, so a cancelled sequence start or
+            # capture went on to expose.
+            await reap(old)
 
     async def yield_camera_for(self, what: str) -> bool:
         """Take the camera off the live preview loop so ``what`` — a path that
@@ -5636,6 +6282,57 @@ class Hub:
                                f"{label} ({e}) — the next frame's filter move "
                                f"will correct it", "solve")
 
+    async def _narrowband_filter_loaded(self) -> str | None:
+        """The name of the filter a solve frame is about to be exposed
+        through, when that filter is marked narrowband; None for anything
+        else, a wheel that cannot be read included (#531).
+
+        Read AFTER ``_borrow_wheel_for_solve`` and before the shutter opens,
+        because by the time a solve fails the borrow has put the wheel back
+        on the run's filter: read then, a frame shot through L after an SII
+        frame would be blamed on SII. The light check names the filter
+        instead of calling a narrowband frame a capped optic. Never raises."""
+        fw = self.devices.get("filterwheel")
+        if fw is None or not getattr(fw, "connected", False):
+            return None
+        try:
+            slot = int(await fw.get_position())
+            names = list(getattr(fw, "filter_names", []) or [])
+            if 0 <= slot < len(names) and fw.is_narrowband(slot):
+                return str(names[slot])
+        except asyncio.CancelledError:
+            raise
+        except Exception:                # noqa: BLE001 - no name, no claim
+            return None
+        return None
+
+    async def _approach_rotator(self, rot, sky_deg: float, mech_now: float,
+                                rcfg) -> None:
+        """Move ``rot`` to the sky angle ``sky_deg``, arriving from the one
+        approach direction (#526, H4 orchestrator ruling 3).
+
+        ``rotation.one_sided_moves`` plans it from ``mech_now``, the
+        mechanical angle just read: one move when the travel already runs the
+        approach way, else ``ROTATOR_BACKLASH_DEG`` past the target and back,
+        or direct, said in the log, when that overshoot would cross the edge
+        of a limited mechanical range, or mechanical 0 on a full one.
+        Mechanical moves, through the same
+        offset ``Rotator.move_to`` applies, so the overshoot leg can be named
+        in the rotator's own terms."""
+        target = _rotation.mod360(sky_deg + float(rot.sync_offset_deg))
+        plan = _rotation.one_sided_moves(mech_now, target, rcfg.range_type,
+                                         rcfg.range_start_deg)
+        if plan.skipped:
+            bus.log("info", f"rotator: {plan.skipped}", "rotator")
+        elif len(plan.moves) > 1:
+            bus.log("info",
+                    f"rotator: the move to mechanical {target:.2f}° runs "
+                    f"against the approach direction, so it goes "
+                    f"{_rotation.ROTATOR_BACKLASH_DEG:g}° past, to "
+                    f"{plan.moves[0]:.2f}°, and comes back", "rotator")
+        for mech in plan.moves:
+            await rot.move_mechanical(mech)
+
     async def measure_guide_offset(self, *, exposure_s: float = 4.0,
                                    guide_exposure_s: float = 4.0) -> dict:
         """Plate-solve BOTH cameras where the mount is now, and diff the centres.
@@ -5712,23 +6409,56 @@ class Hub:
         if guide_fl and g_h and g_px:
             guide_fov = (g_h * g_px * 206.265 / guide_fl) / 3600.0
 
-        async def _solve(device, seconds, path_name, fov, binning):
-            async with self.exposure_guard("guide-scope offset"):
-                frame = await device.expose(seconds, 200, 30, binning=binning)
-            tmp = CAPTURE_DIR / "_solve" / path_name
-            await asyncio.to_thread(save_fits, frame, tmp, ra_hours=ra_hint,
-                                    dec_deg=dec_hint, instrument=device.name)
+        async def _expose(device, seconds, kind, fov, binning, *,
+                          borrow: bool):
+            # THE IMAGING FRAME BORROWS THE SOLVE FILTER (#531), as every
+            # solve of the imaging camera does: the measurement is taken
+            # between runs, often straight after a narrowband frame. The
+            # guide camera's frame does not, since the wheel is not in its
+            # light path.
+            borrowed_slot = (await self._borrow_wheel_for_solve()
+                             if borrow else None)
+            try:
+                async with self.exposure_guard("guide-scope offset"):
+                    frame = await device.expose(seconds, 200, 30,
+                                                binning=binning)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
+            tmp = await _write_solve_frame(frame, kind, ra_hours=ra_hint,
+                                           dec_deg=dec_hint,
+                                           instrument=device.name)
             bus.log("info", f"guide-offset: solving {device.name} "
                             f"(fov hint {fov or 'auto'})…", "solve")
-            return await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                      fov_deg_hint=fov)
+            return tmp
+
+        async def _solve_guide_frame(path):
+            # THE GUIDE CAMERA'S SOLVE, kept apart from the main one so the
+            # solve-site audit (test_every_solve_records_the_sky_angle) can
+            # list it by name: its position angle is the guide train's, which
+            # says nothing about the imaging camera the rotator turns.
+            return await solver.solve(path, ra_hint=ra_hint, dec_hint=dec_hint,
+                                      fov_deg_hint=guide_fov)
 
         # MAIN FIRST, and the order is not arbitrary: the imaging frame supplies
         # the position angle the offset is stored against, so a run that dies
         # after one solve has produced the more useful half.
-        main = await _solve(cam, exposure_s, "guide_offset_main.fits", main_fov, 2)
-        guide = await _solve(guide_cam, guide_exposure_s,
-                             "guide_offset_guide.fits", guide_fov, 1)
+        main_angle = await _sky_angle.exposure_context(self, cam)
+        main_path = await _expose(cam, exposure_s, "guide_offset_main",
+                                  main_fov, 2, borrow=True)
+        try:
+            main = await solver.solve(main_path, ra_hint=ra_hint,
+                                      dec_hint=dec_hint, fov_deg_hint=main_fov)
+        finally:
+            await _retire_solve_frame(main_path, "guide_offset_main")
+        await _sky_angle.note_solved_rotation(
+            self, main, source="guide-scope offset", context=main_angle)
+        guide_path = await _expose(guide_cam, guide_exposure_s,
+                                   "guide_offset_guide", guide_fov, 1,
+                                   borrow=False)
+        try:
+            guide = await _solve_guide_frame(guide_path)
+        finally:
+            await _retire_solve_frame(guide_path, "guide_offset_guide")
 
         out = {
             "main": {"ok": main.success, "ra_hours": main.ra_hours,
@@ -5838,7 +6568,18 @@ class Hub:
         borrowed_slot = await self._borrow_wheel_for_solve()
         try:
             try:
+                # What the rotator and the pier side were as the shutter
+                # opened, so the solve below may calibrate the rotator.
+                angle = await _sky_angle.exposure_context(self, cam)
+                # The filter the frame goes through, if it is still a
+                # narrowband one after the borrow (#531): the light check
+                # names it rather than calling the optic capped.
+                through = await self._narrowband_filter_loaded()
                 async with self.exposure_guard("plate solve"):
+                    # When the shutter opened, against when the last GoTo
+                    # came to rest (#402), inside the guard so a wait for
+                    # the camera is not counted as settling time.
+                    self._note_solve_exposure()
                     frame = await cam.expose(exposure_s, 200, 30, binning=2)
             finally:
                 await self._return_wheel_after_solve(borrowed_slot)
@@ -5847,12 +6588,11 @@ class Hub:
             # Save the captured frame to a temp FITS for the local solver. Works for
             # NINA too: NinaCamera populates ``frame.data`` (a decoded grayscale copy)
             # which is enough for ASTAP star detection, and save_fits writes the
-            # RA/Dec hints into the header. Offloaded so the disk write never freezes
-            # the event loop on the Windows target.
-            tmp = CAPTURE_DIR / "_solve" / "solve.fits"
-            await asyncio.to_thread(
-                save_fits, frame, tmp,
-                ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
+            # RA/Dec hints into the header. Under a name of its own (#532), so a
+            # reader holding an earlier frame cannot fail this one.
+            tmp = await _write_solve_frame(frame, "solve", ra_hours=ra_hint,
+                                           dec_deg=dec_hint,
+                                           instrument=cam.name)
             # FOV hint from the configured optics (bin-1, bin-independent — correct
             # even though the solve frame is binned 2×). None → ASTAP radius search,
             # preserving the old behavior when optics aren't known.
@@ -5864,12 +6604,26 @@ class Hub:
                     f"plate solving with {solver.name} (fov hint {fov_hint or 'auto'})…",
                     "solve")
             bus.publish("mount", action="solve_activity", activity="solving")
-            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                        fov_deg_hint=fov_hint)
+            try:
+                result = await solver.solve(tmp, ra_hint=ra_hint,
+                                            dec_hint=dec_hint,
+                                            fov_deg_hint=fov_hint)
+            finally:
+                await _retire_solve_frame(tmp, "solve")
         finally:
             bus.publish("mount", action="solve_activity", activity=None)
         if not result.success:
-            raise DeviceError(f"plate solve failed: {result.message}")
+            # SAY WHETHER LIGHT REACHED THE SENSOR (#251). ASTAP says "Not
+            # enough stars" under cloud and through a cap in the same words,
+            # and auto-resume retried a capped optic every ten minutes for a
+            # night on them. The frame tells the two apart; a no-light verdict
+            # raises ``NoLightError`` (a DeviceError), which the recovery
+            # ladder backs off on. Only a FAILED solve is judged: the median
+            # of a full frame is not worth paying on every centring attempt.
+            from .solve import light as _light
+            raise await _light.failed_solve_error(
+                frame, result, prefix="plate solve failed", hub=self,
+                narrowband_filter=through)
         # ASTAP returns J2000. Sync the mount in the frame IT expects (JNOW for a
         # real Alpaca mount, else unchanged) so a plate-solve sync does not corrupt
         # a JNOW mount's alignment model by ~20 arcmin. The returned dict stays
@@ -5904,6 +6658,12 @@ class Hub:
                 result.wcs, preview_id=solve_preview.get("id"),
                 data_w=int(solve_preview.get("data_width") or 0),
                 data_h=int(solve_preview.get("data_height") or 0))
+        # The same solve measured the camera's sky angle. Every goto centring
+        # attempt, the resume re-centre, a meridian flip's re-centre and the
+        # bare solve-and-sync route all land here, so this one line is what
+        # keeps the rotator's reported PA as fresh as the last centring.
+        await _sky_angle.note_solved_rotation(
+            self, result, source="plate solve + sync", context=angle)
         return {"ra_hours": result.ra_hours, "dec_deg": result.dec_deg,
                 "solver": solver.name, "pixel_scale": result.pixel_scale_arcsec}
 
@@ -5922,6 +6682,12 @@ class Hub:
         and the resulting offset. Raises DeviceError when there is no rotator,
         no camera, or the sky will not solve — never a silent no-op, because a
         rotator that quietly stays unsynced points every later framing wrong.
+
+        A THIN CALLER of ``sky_angle.note_solved_rotation``, which every solve
+        of the imaging camera now goes through. The difference here is only
+        that the calibration is the whole point, so a calibration that is
+        refused (the rotator moved during the exposure, the mount flipped)
+        raises with the reason instead of being a line in the log.
         """
         rot = self.require("rotator")
         cam: Camera = self.require("camera")
@@ -5939,28 +6705,48 @@ class Hub:
         bus.publish("mount", action="solve_activity", activity="exposing",
                     exposure_s=exposure_s)
         try:
-            async with self.exposure_guard("rotator sync"):
-                frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            # The solve filter is borrowed here too (#531), exactly as
+            # ``solve_and_sync`` borrows it: a sync is pressed between runs,
+            # and the wheel may still hold the last run's narrowband filter.
+            borrowed_slot = await self._borrow_wheel_for_solve()
+            try:
+                angle = await _sky_angle.exposure_context(self, cam)
+                through = await self._narrowband_filter_loaded()
+                async with self.exposure_guard("rotator sync"):
+                    frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
             self.last_frame = frame
             await self._publish_preview(frame)
-            tmp = CAPTURE_DIR / "_solve" / "rotsync.fits"
-            await asyncio.to_thread(save_fits, frame, tmp, ra_hours=ra_hint,
-                                    dec_deg=dec_hint, instrument=cam.name)
+            tmp = await _write_solve_frame(frame, "rotsync", ra_hours=ra_hint,
+                                           dec_deg=dec_hint,
+                                           instrument=cam.name)
             opt = self.effective_optics()
             bus.publish("mount", action="solve_activity", activity="solving")
-            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                        fov_deg_hint=opt["fov_h_deg"] or None)
+            try:
+                result = await solver.solve(
+                    tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                    fov_deg_hint=opt["fov_h_deg"] or None)
+            finally:
+                await _retire_solve_frame(tmp, "rotsync")
         finally:
             bus.publish("mount", action="solve_activity", activity=None)
         if not result.success:
-            raise DeviceError(f"rotator sync: plate solve failed: {result.message}")
-        orientation = _rotation.mod360(result.rotation_deg)
-        await rot.sync(orientation)
+            # Judged for light like every solve that exposes its own frame
+            # (#251, see ``solve_and_sync``).
+            from .solve import light as _light
+            raise await _light.failed_solve_error(
+                frame, result, prefix="rotator sync: plate solve failed",
+                hub=self, narrowband_filter=through)
+        rec = await _sky_angle.note_solved_rotation(
+            self, result, source="rotator sync", context=angle)
+        if rec is None:
+            raise DeviceError("rotator sync: the solve reported no usable "
+                              "position angle, so there is nothing to sync to")
+        if not rec["calibrated"]:
+            raise DeviceError(f"rotator sync: not synced: {rec['reason']}")
+        orientation = rec["pa_deg"]
         mech = await rot.get_mechanical_position()
-        bus.log("info",
-                f"rotator synced to the sky: PA {orientation:.1f}° at "
-                f"mechanical {mech:.1f}° (offset {rot.sync_offset_deg:.1f}°)",
-                "rotator")
         bus.publish("rotator", action="synced", pa_deg=orientation,
                     mechanical_deg=mech, offset_deg=rot.sync_offset_deg)
         return {"synced": True, "pa_deg": orientation, "mechanical_deg": mech,
@@ -6022,6 +6808,10 @@ class Hub:
         """The solve→move→solve attempts themselves. Split out only so
         ``rotate_to_pa`` can wrap them in the loop-resume ``finally`` above
         without indenting the whole body."""
+        # The last move this loop made, as (solved PA before it, mechanical
+        # angle before it, the sky move commanded), so the next solve can say
+        # whether the camera followed it (#526).
+        last_move: tuple[float, float, float] | None = None
         for attempt in range(1, max_attempts + 1):
             # This fence gates only the NEXT attempt's dispatch below; it does
             # NOT cancel an in-flight ``rot.move_to`` from a PRIOR attempt —
@@ -6042,22 +6832,75 @@ class Hub:
                             tel, ra_hint, dec_hint)
                 except Exception:
                     ra_hint = dec_hint = None
-            async with self.exposure_guard("rotate to PA"):
-                frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            # THE SOLVE FILTER IS BORROWED (#531), exactly as ``solve_and_sync``
+            # borrows it: a luminance-class slot around the exposure only, the
+            # wheel put back in the ``finally``, so the engine's focuser offset
+            # delta sees no change. On 2026-09-29 the first rig mosaic began
+            # straight after a run that ended on SII, and this loop, which
+            # borrowed nothing, shot every rotation's solve frame through the
+            # 3 nm filter: "no light, optic capped" at each panel, and each
+            # panel shot unrotated, while the centring solve 25 s later,
+            # through L, read the sky.
+            borrowed_slot = await self._borrow_wheel_for_solve()
+            try:
+                angle = await _sky_angle.exposure_context(self, cam)
+                through = await self._narrowband_filter_loaded()
+                async with self.exposure_guard("rotate to PA"):
+                    frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
             self.last_frame = frame
             await self._publish_preview(frame)
-            tmp = CAPTURE_DIR / "_solve" / "rotate.fits"
-            await asyncio.to_thread(
-                save_fits, frame, tmp,
-                ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
+            tmp = await _write_solve_frame(frame, "rotate", ra_hours=ra_hint,
+                                           dec_deg=dec_hint,
+                                           instrument=cam.name)
             opt = self.effective_optics()
-            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                        fov_deg_hint=opt["fov_h_deg"] or None)
+            try:
+                result = await solver.solve(
+                    tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                    fov_deg_hint=opt["fov_h_deg"] or None)
+            finally:
+                await _retire_solve_frame(tmp, "rotate")
             if not result.success:
-                raise DeviceError(f"rotate: plate solve failed: {result.message}")
-            orientation = _rotation.mod360(result.rotation_deg)
-            await rot.sync(orientation)
+                # Judged for light (#251, see ``solve_and_sync``).
+                from .solve import light as _light
+                raise await _light.failed_solve_error(
+                    frame, result, prefix="rotate: plate solve failed",
+                    hub=self, narrowband_filter=through)
+            # The loop's next move is computed through the rotator's offset, so
+            # an attempt whose solve could not calibrate it must stop here: a
+            # move commanded through a stale offset is a rotation to the wrong
+            # angle, and this loop has already turned a camera through a full
+            # revolution once (2026-08-08).
+            rec = await _sky_angle.note_solved_rotation(
+                self, result, source="rotate to PA", context=angle)
+            if rec is None:
+                raise DeviceError("rotate: the solve reported no usable "
+                                  "position angle")
+            if not rec["calibrated"]:
+                raise DeviceError(
+                    f"rotate: the solve could not calibrate the rotator: "
+                    f"{rec['reason']}")
+            orientation = rec["pa_deg"]
             mech = await rot.get_mechanical_position()
+            if last_move is not None:
+                # DID THE CAMERA FOLLOW THE LAST MOVE (#526)? Asked before the
+                # convergence test and the not-converging abort below, so the
+                # line that tells play or slip in the train apart from a sign
+                # error is in the log before the abort that ends the loop.
+                pa_before, mech_before, commanded = last_move
+                turned = ((orientation - pa_before + 180.0) % 360.0) - 180.0
+                if abs(turned) < ROTATE_FOLLOW_FRACTION * abs(commanded):
+                    reported = ((float(mech) - mech_before + 180.0)
+                                % 360.0) - 180.0
+                    bus.log("warning",
+                            f"rotator attempt {attempt}/{max_attempts}: the "
+                            f"rotator moved but the camera did not: commanded "
+                            f"{commanded:+.1f}°, the rotator reports "
+                            f"{reported:+.1f}°, and the solve saw the camera "
+                            f"turn {turned:+.1f}° (PA {pa_before:.1f}° -> "
+                            f"{orientation:.1f}°); play in the train or a "
+                            f"slipping camera would do this", "rotator")
             prev = target
             target = _rotation.map_sky_target(prev, mech, rot.sync_offset_deg,
                                               rcfg.range_type,
@@ -6121,13 +6964,100 @@ class Hub:
                     f"move. Attempts (attempt, solved PA, target, error, "
                     f"commanded): {trail}")
             prev_error = error
-            await rot.move_to(_rotation.mod360(orientation + distance))
+            # From one side, every time (#526): see ``_approach_rotator``.
+            await self._approach_rotator(
+                rot, _rotation.mod360(orientation + distance), float(mech),
+                rcfg)
+            last_move = (orientation, float(mech), distance)
             moved = True
         last_error = f"(last error {error:.1f}°)" if error is not None else "(no attempts ran)"
         raise DeviceError(
             f"rotator failed to converge after {max_attempts} attempts "
             f"{last_error}. Attempts (attempt, solved PA, target, error, "
             f"commanded): {trail}")
+
+    async def _rotation_already_set(self, rot, rotation_deg: float) -> dict | None:
+        """The rotate shortcut (#189 U-06, mosaic spec 5.6 step 3): a rotate
+        result without a rotate solve, when the rotator's own reading can be
+        trusted and already says the camera is at the angle. ``None`` means
+        "run the rotate loop", which is also the answer to anything this
+        cannot establish.
+
+        WHY IT EXISTS. The rotate loop always solves at least once, exposure
+        included, even when the camera is already there. On a rotating mosaic
+        that was one rotate solve on every hop of the night for an angle that
+        had not changed since the last panel: the centring solve that ends
+        every hop calibrates the rotator (``sky_angle.note_solved_rotation``),
+        and nothing turns it between panels.
+
+        ALL THREE MUST HOLD, and each is the reason the reading is evidence:
+
+        * CALIBRATED: the newest sky-angle record says so, and it is THIS
+          rotator's calibration. The record does not name the device, so the
+          device is tied to it through what the calibration wrote: the object
+          in the rig is ``synced`` (a reconnect builds a fresh, unsynced one)
+          and holds the offset the record wrote. The newest record decides,
+          even when an older one calibrated: a newer solve that refused to
+          calibrate (the rotator moved, the mount flipped mid-solve) is saying
+          the relation was not re-established, and that is not a shortcut.
+        * NOT MOVED since: its mechanical angle is within
+          ``sky_angle.MOVED_TOL_DEG`` of the one the calibration was exposed
+          at, and it does not report motion. The same line the calibration
+          itself draws between "at rest" and "turned".
+        * AT THE ANGLE: it reads the target within ``RotatorConfig.
+          tolerance_deg``, the rotate loop's own bound, MOD 180. A centred
+          rectangle turned half a turn covers the same sky (5.7). It is also
+          what makes the shortcut survive a meridian flip: the flip turns the
+          field 180 degrees under a rotator that never moved, so its reading
+          (calibrated on the other side) is exactly 180 off the camera's true
+          PA, and mod 180 that is no difference at all. The same reason the
+          calibration is never folded by pier side (``sky_angle``).
+
+        Reads only: nothing moves and nothing is exposed. Never raises
+        (cancellation aside): a rotator that cannot be read here is left to the
+        loop, which reads it again and says what went wrong."""
+        try:
+            rec = self.last_sky_angle
+            if not isinstance(rec, dict) or rec.get("calibrated") is not True:
+                return None
+            offset = float(rot.sync_offset_deg)
+            rec_offset = float(rec.get("offset_deg"))
+            rec_mech = float(rec.get("mechanical_deg"))
+            if not getattr(rot, "synced", False):
+                return None
+            # The record wrote ``float(rot.sync_offset_deg)`` straight after
+            # the sync, so the calibration this rotator holds matches it to
+            # the bit; the slack only forgives a wrap at 0/360. Every
+            # comparison here is written so that NaN FAILS it: ``nan > tol``
+            # is False, and a NaN read that way would pass as "unmoved".
+            if not _angle_apart_deg(offset, rec_offset) <= 1e-6:
+                return None
+            if await rot.is_moving():
+                return None
+            mech = _rotation.mod360(float(await rot.get_mechanical_position()))
+            moved = _angle_apart_deg(mech, rec_mech)
+            if not moved <= _sky_angle.MOVED_TOL_DEG:
+                return None
+            reads = _rotation.mod360(mech - offset)
+            tol = float(config_store.cfg().rotator.tolerance_deg)
+            if not _rotation.angle_equals_mod180(reads, rotation_deg, tol):
+                return None
+        except asyncio.CancelledError:
+            raise
+        except Exception:                # noqa: BLE001 - the loop will say why
+            return None
+        d = (reads - rotation_deg) % 180.0
+        error = min(d, 180.0 - d)
+        reason = (f"no rotate solve: the rotator reads PA {reads:.1f}°, "
+                  f"{error:.1f}° from the target PA {rotation_deg:.1f}° mod 180 "
+                  f"(tolerance {tol:.1f}°); it was calibrated by the "
+                  f"{rec.get('source') or 'last'} solve and has not moved since "
+                  f"(mechanical {mech:.2f}°, {moved:.2f}° from the calibration)")
+        bus.log("info", f"rotator: {reason}", "rotator")
+        bus.publish("rotator", action="rotated", pa_deg=round(reads, 2))
+        return {"rotated": True, "pa_deg": reads, "adjusted_to": None,
+                "attempts": 0, "error_deg": round(error, 2),
+                "shortcut": True, "reason": reason}
 
     def note_pointing_verified(self, ok: bool, *, error_arcmin: float | None = None,
                                reason: str = "") -> None:
@@ -6184,7 +7114,21 @@ class Hub:
         the same persisted setting the Align screen's dial edits. It was a
         frozen ``3.0`` that GotoStrip rendered read-only and nothing could
         change: a centring solve and a polar solve are the same frame off the
-        same camera, and there is no reason for the rig to hold two answers."""
+        same camera, and there is no reason for the rig to hold two answers.
+
+        With ``rotation_deg`` set, every return after the slew says what
+        became of the angle: ``rotation`` is the rotate loop's result (None
+        when it did not run), ``rotation_skipped`` means a connected rotator
+        tried and failed, and ``rotation_unavailable`` means there was no
+        connected rotator to ask. The last two keys appear only when true.
+
+        ``solve_transient: True`` (H4 contract 1, #532) means a solve frame,
+        the rotate's or a centring attempt's, could not be written because
+        another process held the file on every one of the bounded retries
+        (``SolveFrameTransient``). It appears only when true, beside the key
+        that says what the failure cost (``solve_failed`` or
+        ``rotation_skipped``), and says the failure was this computer's, not
+        the sky's or the target's."""
         if solve_exposure_s is None:
             solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
@@ -6240,29 +7184,69 @@ class Hub:
         # A rotate failure DEGRADES — never abort a slew that already happened.
         rotation_result: dict | None = None
         rotation_skipped = False
+        # A rotation asked for with no connected rotator to do it (I-15, #160).
+        # This used to be silent: the block below was skipped and the result
+        # read exactly like a goto that never asked for an angle, so a caller
+        # shooting a mosaic panel could not tell a rotated frame from one left
+        # at whatever angle the camera happened to sit. Kept apart from
+        # ``rotation_skipped`` (a connected rotator that tried and failed)
+        # because the remedies differ: that one may succeed on a retry, this
+        # one needs somebody to connect a device.
+        rotation_unavailable = False
+        # A solve frame another process would not let us write, on every
+        # bounded retry (#532, H4 contract 1): the rotate's or a centring
+        # attempt's. Not the sky's fault and not the panel's, so the engine
+        # does not count it as a centring strike; every return from here on
+        # carries it once it is true.
+        solve_transient = False
         rot = self.devices.get("rotator")
         if rotation_deg is not None and rot is not None and rot.connected:
-            async with self._motion_lock:
-                if not self._motion_committed_clean(epoch):
-                    bus.log("warning", "goto abandoned: aborted before rotation",
-                            "mount")
-                    self.note_pointing_verified(False, reason=str("centering did not converge"))
-                    return {"centered": False, "error_arcmin": None,
-                            "attempts": 0, "aborted": True, "rotation": None}
-                slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
-                await tel.slew(slew_ra, slew_dec)
-            try:
-                rotation_result = await self.rotate_to_pa(
-                    rotation_deg, exposure_s=solve_exposure_s)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                bus.log("warning",
-                        f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
-                        f"continuing without rotation", "rotator")
-                rotation_skipped = True
+            # THE ROTATE SHORTCUT (U-06, mosaic spec 5.6 step 3). Asked before
+            # the slew below, which exists only so the rotate loop solves the
+            # target's field: when the loop is not going to run, the centring
+            # attempts slew there anyway.
+            rotation_result = await self._rotation_already_set(rot, rotation_deg)
+            if rotation_result is None:
+                async with self._motion_lock:
+                    if not self._motion_committed_clean(epoch):
+                        bus.log("warning", "goto abandoned: aborted before rotation",
+                                "mount")
+                        self.note_pointing_verified(False, reason=str("centering did not converge"))
+                        return {"centered": False, "error_arcmin": None,
+                                "attempts": 0, "aborted": True, "rotation": None}
+                    slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
+                    await tel.slew(slew_ra, slew_dec)
+                    self.goto_settled_at = time.time()
+                try:
+                    rotation_result = await self.rotate_to_pa(
+                        rotation_deg, exposure_s=solve_exposure_s)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    bus.log("warning",
+                            f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
+                            f"continuing without rotation", "rotator")
+                    rotation_skipped = True
+                    solve_transient = isinstance(e, SolveFrameTransient)
+        elif rotation_deg is not None:
+            rotation_unavailable = True
+            # Logged here, once, not per attempt: the answer cannot change
+            # while the loop below runs, and a warning repeated three times
+            # reads like three problems.
+            why = ("no rotator is in the rig" if rot is None
+                   else "the rotator is not connected")
+            bus.log("warning",
+                    f"rotation to PA {rotation_deg:.0f}° was asked for but {why}; "
+                    f"centring without rotating, so the frame keeps whatever "
+                    f"angle the camera is at", "rotator")
+        # Carried by every return from here on (centred, not converged, solve
+        # failed, did not move, aborted after the slew): whichever way the
+        # centring ends, the frame's angle is the same unanswered question.
         _rot_keys = {"rotation": rotation_result,
-                     **({"rotation_skipped": True} if rotation_skipped else {})}
+                     **({"rotation_skipped": True} if rotation_skipped else {}),
+                     **({"rotation_unavailable": True}
+                        if rotation_unavailable else {}),
+                     **({"solve_transient": True} if solve_transient else {})}
         last_err = None
         for attempt in range(1, max_attempts + 1):
             bus.publish("mount", action="centering", attempt=attempt)
@@ -6285,6 +7269,11 @@ class Hub:
                 # no-op for sim/NINA. The centering error below stays in J2000.
                 slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
                 await tel.slew(slew_ra, slew_dec)
+                # THE GOTO CAME TO REST HERE, as far as anything can tell
+                # (#402): ``tel.slew`` returns once the mount stops
+                # reporting that it slews. The solve below stamps its own
+                # exposure start against this.
+                self.goto_settled_at = time.time()
             # A plate-solve failure or timeout must DEGRADE to a raw GoTo, not
             # hang or propagate (live bug): the mount has already slewed, so we
             # return the un-centered result with a warning rather than aborting.
@@ -6297,8 +7286,10 @@ class Hub:
                 bus.log("warning",
                         f"centering: plate solve failed ({e}); using raw GoTo", "solve")
                 self.note_pointing_verified(False, reason=str("centering did not converge"))
-                return {"centered": False, "error_arcmin": None,
-                        "attempts": attempt, "solve_failed": True} | _rot_keys
+                return ({"centered": False, "error_arcmin": None,
+                         "attempts": attempt, "solve_failed": True} | _rot_keys
+                        | ({"solve_transient": True}
+                           if isinstance(e, SolveFrameTransient) else {}))
             err = _ang_sep_deg(solved["ra_hours"], solved["dec_deg"], ra_hours, dec_deg)
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:
@@ -6338,6 +7329,19 @@ class Hub:
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
                 "attempts": max_attempts} | _rot_keys
 
+    def _note_solve_exposure(self) -> None:
+        """Record that a plate solve's shutter is opening now, beside the
+        last GoTo's settle (`solve_exposures`, #402). Never raises: it is on
+        the path to every solve's exposure, and a record it cannot keep is
+        not worth a solve."""
+        try:
+            self.solve_seq = int(getattr(self, "solve_seq", 0) or 0) + 1
+            self.solve_exposures.append({
+                "seq": self.solve_seq, "exposed_at": time.time(),
+                "settled_at": getattr(self, "goto_settled_at", None)})
+        except Exception:                # noqa: BLE001 - bookkeeping only
+            pass
+
     async def pier_side_now(self) -> str | None:
         """The mount's pier side as a lower-case string, or ``None``.
 
@@ -6363,10 +7367,20 @@ class Hub:
             return None
         return getattr(side, "value", None) or None
 
-    async def meridian_flip(self, ra_hours: float, dec_deg: float) -> dict:
+    async def meridian_flip(self, ra_hours: float, dec_deg: float,
+                            rotation_deg: float | None = None) -> dict:
         """Flip a German equatorial mount across the meridian: stop guiding,
         re-slew (the mount chooses the far side of the pier), plate-solve
         re-center, and restart guiding.
+
+        ``rotation_deg`` is the target's angle, carried to the re-centre
+        (#160; mosaic spec Revision 2, ruling 9: a set angle is commanded at
+        every acquisition, the flip re-centre included, and never assumed to
+        be where an earlier move left it). ``None`` makes exactly the
+        re-centre call this always made. A flip turns the field 180 degrees
+        under an unmoved rotator, which is the same footprint (5.7), so with a
+        calibrated rotator the re-centre's rotate shortcut leaves it alone and
+        says so in ``rotation``; nothing here turns it half a turn.
 
         THE RE-SLEW DOES NOT ALWAYS FLIP, and everything expensive here used to
         be spent as if it always did. The AM5 picks its pier side from the HOUR
@@ -6395,7 +7409,15 @@ class Hub:
             except Exception:
                 pass
         side_before = await self.pier_side_now()
-        result = await self.goto_and_center(ra_hours, dec_deg)
+        # Two spellings of one call on purpose: with no angle the re-centre is
+        # today's call keyword for keyword, not one carrying rotation_deg=None,
+        # so nothing that grades or wraps it can see a difference. ``is None``
+        # and never truthiness: PA 0 is north up, a real angle.
+        if rotation_deg is None:
+            result = await self.goto_and_center(ra_hours, dec_deg)
+        else:
+            result = await self.goto_and_center(ra_hours, dec_deg,
+                                                rotation_deg=rotation_deg)
         side_after = await self.pier_side_now()
         # Both reads have to have SUCCEEDED for "unchanged" to mean anything.
         flipped = not (side_before not in (None, "unknown")
@@ -6427,7 +7449,14 @@ class Hub:
                 await self.guider.start_guiding()
             except Exception as e:
                 bus.log("warning", f"meridian flip: guiding restart failed: {e}", "sequence")
-        bus.log("info", "meridian flip complete", "sequence")
+        # "COMPLETE" ONLY FOR A FLIP (#366). This said "meridian flip
+        # complete" after every re-slew, the ones that moved nothing too, two
+        # lines below the one saying nothing flipped: the night log then read
+        # as a flip made at the lead point and another at the crossing. A
+        # side that could not be read keeps the word, as it keeps the
+        # recalibration above: unreadable is not evidence that nothing moved.
+        bus.log("info", "meridian flip complete" if flipped else
+                "meridian flip attempt finished: nothing flipped", "sequence")
         return dict(result or {}, flipped=flipped,
                     pier_side_before=side_before, pier_side_after=side_after)
 
@@ -6584,6 +7613,19 @@ class Hub:
         every status poll, including with no engine, no run and no plan."""
         return bool(getattr(self.engine, "flip_owed", False))
 
+    def pier_side_cached(self) -> str | None:
+        """The last REAL pier-side answer the status poll recorded, if it is
+        younger than ``PIER_SIDE_STALE_S``; otherwise ``None``. No device I/O,
+        no side effects: for a caller on the capture path that must not buy a
+        serial round trip per frame (``sky_angle.exposure_context``)."""
+        seen = getattr(self, "_pier_side_seen", None)
+        if seen is None:
+            return None
+        side, t = seen
+        if time.time() - t > PIER_SIDE_STALE_S:
+            return None
+        return side
+
     def _note_pier_side(self, side: str) -> dict:
         """Fold this poll's pier-side reading into the cache, and say what the
         status block should report: ``pier_side``, ``pier_side_source`` and
@@ -6660,7 +7702,20 @@ class Hub:
         # flip countdown down with it -- the caching would then be visible in
         # one field and contradicted by two others.
         side = meridian["pier_side"]
-        if ttf is None and ra_hours is not None:
+        # NO SITE, NO COUNTDOWN (issue #24). Both numbers below are derived from
+        # the site, and at the 0,0 default both come out confident and wrong: a
+        # flip countdown off by the rig's true longitude, and an over-the-pole
+        # verdict for a latitude nobody observes from. The strip already has a
+        # word for not knowing - `ttf` of None falls through to
+        # `status: "unknown"` with `hours_to_flip` null - and "unknown" is the
+        # honest answer here, where "3.2 hours" is a promise about a meridian
+        # that is somewhere else.
+        #
+        # The DEVICE's own `time_to_meridian_flip` (NINA) is untouched: it knows
+        # its own site and this code does not have to.
+        from .site_gate import site_is_set
+        sited = site_is_set(self.site)
+        if ttf is None and ra_hours is not None and sited:
             # HA = LST − RA, wrapped to [−12, 12]; a GEM on the east side tracking
             # west flips when the target crosses the meridian (HA crosses 0).
             lst = lst_hours(self.site["longitude"])
@@ -6668,7 +7723,12 @@ class Hub:
             ttf = -ha
         from .sequence.schedule import flip_unnecessary_over_pole
         try:
-            over_pole = flip_unnecessary_over_pole(dec_deg, self.site["latitude"])
+            # False rather than unknown, and that is the safe way round: it means
+            # "nothing excuses this flip", so a GEM still counts down and still
+            # flips. Defaulting the other way would silence the flip on an
+            # unconfigured rig, which is the failure that wraps a cable.
+            over_pole = (flip_unnecessary_over_pole(dec_deg, self.site["latitude"])
+                         if sited else False)
         except Exception:
             over_pole = False
         # SAME RULE AS THE ENGINE, or the strip promises a flip the run will not
@@ -6751,6 +7811,12 @@ class Hub:
                        "is_default": s["is_default"],
                        "horizon_min_deg": s["horizon_min_deg"]}
         out["optics"] = self.effective_optics()        # in-process, no device I/O
+        # The latest sky angle an imaging-camera solve measured, where it came
+        # from, and whether it calibrated the rotator (see ``sky_angle``). The
+        # rotator block's ``sky_deg`` already reflects any calibration, because
+        # it is read through the offset that calibration sets; this says WHEN
+        # the sky last confirmed it, and why it did not when it did not.
+        out["sky_angle"] = getattr(self, "last_sky_angle", None)
         out["busy"] = self.busy_label                  # reliability: busy-aware stale
         # The SAME set busy_label collapses into one word, published unreduced.
         #
@@ -7082,6 +8148,7 @@ class Hub:
                     "temperature": temp,
                     "can_cool": cam.can_cool,
                     "has_dew_heater": getattr(cam, "has_dew_heater", False),
+                    "has_fan_control": getattr(cam, "has_fan_control", False),
                     "width": cam.sensor_width, "height": cam.sensor_height,
                     "max_gain": cam.max_gain,
                     "max_bin": getattr(cam, "max_bin", 4),
@@ -7185,6 +8252,16 @@ class Hub:
                     dew = await getd() if callable(getd) else None
                     if dew is not None:
                         out["camera"]["dew_heater"] = int(dew)
+                except Exception:
+                    pass
+                # Issue #22: the hot-side fan, read from the camera so a restart
+                # cannot make it look like whatever was last written. Absent
+                # when unknown, never 0.
+                try:
+                    getf = getattr(cam, "get_fan_power", None)
+                    fan = await getf() if callable(getf) else None
+                    if fan is not None:
+                        out["camera"]["fan_power"] = int(fan)
                 except Exception:
                     pass
                 # Monitor cooler readout — driven by the per-backend get_cooler()
@@ -7305,6 +8382,13 @@ def _ang_sep_deg(ra1_h: float, dec1: float, ra2_h: float, dec2: float) -> float:
     cos_sep = (math.sin(d1) * math.sin(d2)
                + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2))
     return math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
+
+
+def _angle_apart_deg(a: float, b: float) -> float:
+    """Unsigned distance between two angles, wrap-aware, in [0, 180]. The
+    measure ``sky_angle`` uses for "did the rotator move", so the rotate
+    shortcut draws that line exactly where the calibration drew it."""
+    return abs(((a - b + 180.0) % 360.0) - 180.0)
 
 
 hub = Hub()

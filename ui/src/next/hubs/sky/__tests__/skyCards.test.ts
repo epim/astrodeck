@@ -12,8 +12,11 @@
 //     whole safety argument of the lock card - cloud passes, a tree does not;
 //   * the panel geometry is what the user is looking at when they decide the
 //     framing is right, and it has to be the same grid the engine is asked for;
-//   * the 15% overlap appears in three places (the request, the meta line and
-//     the printed sentence) and they must not be able to drift apart.
+//   * the overlap appears in three places (the request, the meta line and
+//     the printed sentence) and they must not be able to drift apart. Since
+//     S6 (spec 2.4, "one server constant") all three read lib/framing.ts's
+//     DEFAULT_OVERLAP; the printed sentence is held to the session's overlap
+//     by mosaicCopyPanelFirst.test.ts.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -55,9 +58,10 @@ const { lensSeats, LENS_LEARN, LENS_STAGE_PX } = await import("../cards/lens");
 const { lockCta, ctaToast, isVideoTarget, obstructedReason } = await import("../cards/lockCta");
 const {
   MOSAIC_CHOICES, OVERLAP, ROTS,
-  framedStrip, frameText, framingMeta, panelRects, panelsToTargets,
+  framedStrip, frameText, framingMeta, panelRects,
 } = await import("../frame/mosaic");
 const { SKY_KINDS } = await import("../finder");
+const { DEFAULT_OVERLAP } = await import("../../../../lib/framing");
 
 let passed = 0;
 let failed = 0;
@@ -177,12 +181,26 @@ test("the rotation dial is 0-165 in 15 degree steps - twelve distinct framings",
   for (let i = 1; i < ROTS.length; i++) eq(ROTS[i] - ROTS[i - 1], 15, `step ${i}:`);
 });
 
-test("the overlap the request carries is the overlap the copy promises", () => {
-  eq(OVERLAP, 0.15, "README mosaic formula:");
-  // The sentence the framing card prints. If the constant moves, this is the
-  // assertion that catches the copy still saying 15%.
-  const note = "Panels overlap 15%";
-  assert(note.includes(`${Math.round(OVERLAP * 100)}%`), "the note and the constant disagree");
+// DELIBERATE PIN CHANGE (spec 2.4 "one server constant", S6-DOORS; re-pinned
+// by the S5/S6 integration, S56-INTEG). This case used to pin OVERLAP at the
+// README's 0.15 and a hand-typed "Panels overlap 15%": the Sky re-set every
+// FRAME session to 15% while the store seeded 25% and the server laid a
+// wizard's grid out at 25%. mosaic.ts's OVERLAP is now lib/framing.ts's
+// DEFAULT_OVERLAP re-exported (a binding, not a copy), whose number
+// server/tests/test_overlap_constant_one.py holds to the server's; the card's
+// sentence prints the session's overlap and mosaicCopyPanelFirst.test.ts
+// holds that. The old pin, run against this tree, observed "README mosaic
+// formula: expected 0.15, got 0.25". Mutant "the Sky keeps a 15% of its own"
+// (mosaic.ts's re-export replaced by `export const OVERLAP = 0.15;`),
+// observed in the private copy scratchpad S56-INTEG-mut (18/20):
+//   x the Sky's overlap is the one constant (spec 2.4), not a correction of
+//   its own: mosaic.ts's OVERLAP is not lib/framing.ts's DEFAULT_OVERLAP:
+//   expected 0.25, got 0.15
+//   x panels are pitched by 1 - overlap, so a 2x1 grid overlaps by the one
+//   overlap: pitch: expected ~34, got 30
+test("the Sky's overlap is the one constant (spec 2.4), not a correction of its own", () => {
+  eq(OVERLAP, DEFAULT_OVERLAP, "mosaic.ts's OVERLAP is not lib/framing.ts's DEFAULT_OVERLAP:");
+  eq(DEFAULT_OVERLAP, 0.25, "the one constant, as the server has it (test_overlap_constant_one.py):");
 });
 
 test("the framed strip says the shape and the angle, and drops the panel count", () => {
@@ -192,8 +210,19 @@ test("the framed strip says the shape and the angle, and drops the panel count",
 });
 
 test("the framing meta reports the TANGENT-PLANE extent, not raw degrees of RA", () => {
-  // (cols - (cols-1)*0.15) * fov_x = 1.85 * 1.68 = 3.108 -> "3.1"
-  eq(framingMeta(2, 1, 30, 1.68, 1.12), "2 panels · 3.1° × 1.1° · rot 30°");
+  // (cols - (cols-1)*0.25) * fov_x = 1.75 * 1.68 = 2.94 -> "2.9"
+  //
+  // DELIBERATE PIN CHANGE (spec 2.4, S6-DOORS; re-pinned by S56-INTEG): the
+  // meta's default overlap is DEFAULT_OVERLAP, 0.25, so the extent is 2.9, no
+  // longer 3.1 at 0.15. The old pin observed "expected 2 panels · 3.1° ×
+  // 1.1° · rot 30°, got 2 panels · 2.9° × 1.1° · rot 30°". Mutant "the meta
+  // defaults to 15%" (framingMeta's `overlap = DEFAULT_OVERLAP` written
+  // `overlap = 0.15`), observed in the private copy scratchpad S56-INTEG-mut
+  // (19/20):
+  //   x the framing meta reports the TANGENT-PLANE extent, not raw degrees of
+  //   RA:  expected 2 panels · 2.9° × 1.1° · rot 30°, got 2 panels · 3.1° ×
+  //   1.1° · rot 30°
+  eq(framingMeta(2, 1, 30, 1.68, 1.12), "2 panels · 2.9° × 1.1° · rot 30°");
   eq(framingMeta(1, 1, 0, 1.68, 1.12), "1.7° × 1.1° · rot 0°");
 });
 
@@ -203,7 +232,11 @@ test("with no optics the meta states the panels and stops - it invents no field"
   assert(!m.includes("°  ×"), "a zero field of view must not be printed as a size");
 });
 
-test("panels are pitched by 1 - overlap, so a 2x1 grid overlaps by 15 per cent", () => {
+// Retitled by the S5/S6 integration (S56-INTEG): this said "overlaps by 15
+// per cent" and went on passing at 25%, since it reads OVERLAP. Its
+// assertions are unchanged; it is the second case "the Sky keeps a 15% of its
+// own" turns red (see the one-constant case above).
+test("panels are pitched by 1 - overlap, so a 2x1 grid overlaps by the one overlap", () => {
   const rects = panelRects(100, 100, 2, 1, 40, 30);
   eq(rects.length, 2, "panel count:");
   const pitch = rects[1].x - rects[0].x;
@@ -220,27 +253,12 @@ test("row 0 is the TOP row on screen, which is the opposite sign from the sky pl
   assert((top as { y: number }).y < (bottom as { y: number }).y, "row 0 must be drawn above row 1");
 });
 
-test("panel targets name themselves row-column and share one mosaic group", () => {
-  const panels = [
-    { row: 0, col: 0, ra_hours: 0.7, dec_deg: 41, rotation_deg: 30 },
-    { row: 0, col: 1, ra_hours: 0.8, dec_deg: 41, rotation_deg: 30 },
-  ];
-  const targets = panelsToTargets(panels, "M31", "M31", 30);
-  eq(targets.length, 2);
-  eq(targets[0].name, "M31 1-1");
-  eq(targets[1].name, "M31 1-2");
-  eq(targets[0].mosaic_group, "M31", "panels must group so a re-frame REPLACES them:");
-  eq(targets[0].autofocus_first, true, "the first panel focuses:");
-  eq(targets[1].autofocus_first, false, "the rest do not:");
-  eq(targets[0].rotation_deg, 30, "the commanded angle travels with every panel:");
-  assert(targets[0].id !== targets[1].id, "two panels must not share an id");
-});
-
-test("a single panel is NOT grouped - grouping one target would delete it on re-frame", () => {
-  const t = panelsToTargets([{ row: 0, col: 0, ra_hours: 0.7, dec_deg: 41, rotation_deg: 0 }], "M31", "M31", 0);
-  eq(t[0].name, "M31", "a lone panel keeps the object's own name:");
-  eq(t[0].mosaic_group, undefined, "no group on a single frame:");
-});
+// DELIBERATE REMOVAL (#196 S6; the S5/S6 integration, #461): two cases here
+// graded `panelsToTargets`, the retired Plan door's panels-to-targets helper
+// (row-column names, one `mosaic_group`, the first panel focusing). S6 left it
+// with no production caller, since both framing doors open Send to Flow
+// Wizard, and the integration deleted it with its tests.
+// `src/__tests__/deletedDoorStrings.test.ts` holds the door's words gone.
 
 const total = passed + failed;
 console.log(`skyCards.test: ${passed}/${total} passed`);

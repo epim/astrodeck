@@ -50,7 +50,17 @@ export interface OrientationObservation {
   gamma: number;
   absolute: boolean;
 }
-export type Observation = FrameObservation | OrientationObservation;
+/** The second witness (issue #105). Emitted on every tick of its grid rather
+ *  than on change, which is the whole difference from `orientation`: a phone
+ *  holding still keeps producing these, and that is what lets a reading be
+ *  vouched for during a hold. */
+export interface MotionObservation {
+  kind: 'motion';
+  t_event_ms: number;
+  t_receive_ms: number;
+  rate: { alpha: number; beta: number; gamma: number };
+}
+export type Observation = FrameObservation | OrientationObservation | MotionObservation;
 
 const PANORAMA_W = 1080, PANORAMA_H = 300;
 /** Decoded frames held back from the garbage collector. Sequential delivery
@@ -89,7 +99,11 @@ function deliveredAt(item: Observation): number {
  *  recorded cases that changes the pose worn by two frames apiece. Equal kinds
  *  keep file order, so the merge is stable and a replay repeats exactly. */
 export function mergeObservations(observations: Observation[]): Observation[] {
-  const rank = (item: Observation) => (item.kind === 'orientation' ? 0 : 1);
+  // Readings before frames, and the two reading kinds keep file order
+  // between themselves. A browser drains its task queue - where both a
+  // `deviceorientationabsolute` and a `devicemotion` land - before the
+  // rendering steps, so both outrank a frame stamped at the same millisecond.
+  const rank = (item: Observation) => (item.kind === 'frame' ? 1 : 0);
   return observations
     .map((item, index) => ({ item, index }))
     .sort((a, b) => deliveredAt(a.item) - deliveredAt(b.item)
@@ -144,7 +158,7 @@ export async function replayCase(caseDir: string): Promise<Summary> {
   // replay that throws must not leave a frozen `Date.now` behind for the next
   // thing in the process to trip over.
   try {
-    const { PhotosphereSweep, traceSkyCoverage } = await import('../photosphere');
+    const { PhotosphereSweep, traceSweep } = await import('../photosphere');
     const sweep = new PhotosphereSweep();
     await sweep.start(harness.video, harness.canvas);
 
@@ -199,7 +213,10 @@ export async function replayCase(caseDir: string): Promise<Summary> {
       if (at > finishAt) break;
       elapsed = at;
       harness.setClock(at);
-      if (item.kind === 'orientation') {
+      if (item.kind === 'motion') {
+        eventsDelivered++;
+        harness.dispatchMotion({ timeStamp: item.t_event_ms, rate: item.rate });
+      } else if (item.kind === 'orientation') {
         eventsDelivered++;
         harness.dispatchOrientation({
           timeStamp: item.t_event_ms, alpha: item.alpha, beta: item.beta, gamma: item.gamma,
@@ -242,7 +259,9 @@ export async function replayCase(caseDir: string): Promise<Summary> {
     // read at that instant rather than at the last frame's.
     harness.setClock(Number.isFinite(finishAt) ? finishAt : elapsed);
     const columns = sweep.columns();
-    const trace = traceSkyCoverage(columns);
+    // The same entry the app saves through (issue #129): a scan whose lens was
+    // in doubt publishes nothing certain.
+    const trace = traceSweep({ columns: () => columns, lensDoubtedThisScan: sweep.lensDoubtedThisScan });
     const mosaic = sweep.panoramaPixels;
     const cells = sweep.cells;
     const captures = sweep.captureLog.map(record => ({
@@ -252,13 +271,23 @@ export async function replayCase(caseDir: string): Promise<Summary> {
       ...(record.basis === undefined ? {} : { basis: record.basis }),
       ...(record.sensorBasis === undefined ? {} : { sensor_basis: record.sensorBasis }),
       ...(record.adjusted === undefined ? {} : { adjusted: record.adjusted }),
-      // The three fields an `alignment-wait` carries (issue #76): which term
-      // refused, the separation that term measured, and the magnitude of the
+      // The four fields an `alignment-wait` carries (issue #76): which term
+      // refused, which source was missing when that term was `no-pose`, the
+      // separation the `separation` term measured, and the magnitude of the
       // carried visual anchor. Written only where the scanner set them, like
       // every field above, so a record that measured nothing claims nothing.
       ...(record.wait === undefined ? {} : { wait: record.wait }),
       ...(record.separation === undefined ? {} : { separation: record.separation }),
       ...(record.anchor === undefined ? {} : { anchor: record.anchor }),
+      ...(record.gap === undefined ? {} : { gap: record.gap }),
+      // What an `overlap-wait` decided on (issue #130): which term refused,
+      // the two correlations, the sample count, and whether registration
+      // searched before refusing.
+      ...(record.overlapTerm === undefined ? {} : { overlap_term: record.overlapTerm }),
+      ...(record.correlation === undefined ? {} : { correlation: record.correlation }),
+      ...(record.featureCorrelation === undefined ? {} : { feature_correlation: record.featureCorrelation }),
+      ...(record.samples === undefined ? {} : { samples: record.samples }),
+      ...(record.searched === undefined ? {} : { searched: record.searched }),
     }));
     const summary: Summary = {
       frames_delivered: framesDelivered,

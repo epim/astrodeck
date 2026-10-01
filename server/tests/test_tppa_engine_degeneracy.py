@@ -768,13 +768,13 @@ def test_a_non_finite_solve_field_propagates_as_nan_and_the_caller_refuses_it()\
             assert err["az_direction"], (field, bad, err)
             # ...and the caller refuses it rather than publishing it.
             with pytest.raises(DeviceError):
-                _reject_implausible_fit(err, SimpleNamespace(site={"latitude": _LAT}))
+                _reject_implausible_fit(err, SimpleNamespace(site={"latitude": _LAT, "longitude": -74.0}))
     assert checked == len(_SOLVE_FIELDS) * len(_NON_FINITE), checked
 
     # Control: the same gate PASSES a real fit, so the refusals above are not a
     # function that raises for everything.
     _reject_implausible_fit(_fit(_arc(step_deg=12.0))["error"],
-                            SimpleNamespace(site={"latitude": _LAT}))
+                            SimpleNamespace(site={"latitude": _LAT, "longitude": -74.0}))
 
     # A non-finite POSITION ANGLE is different in kind: it never reaches the
     # axis fit at all, so the answer stays exact and only the spread is lost.

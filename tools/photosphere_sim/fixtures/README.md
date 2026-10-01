@@ -40,9 +40,11 @@ Four choices, each one deliberate:
 
 The pair differs in exactly one field, the camera's short-axis field of view:
 70 degrees against the 60 the scanner assumes. That is issue #52's experiment.
-On this route the wrong lens earns a run of 9 consecutive `overlap-wait`
-refusals and the cue names the camera view angle; the right lens earns none
-and the cue never mentions the lens. `photosphereReplay.test.ts` grades both,
+On this route the wrong lens earns a run of 9 consecutive refusals to match
+and the cue names the camera view angle; the right lens earns none and the cue
+never mentions the lens. "Refusals to match" is two outcomes since issue #95,
+`overlap-wait` and `carry-too-large`, and the run is counted over both
+(`extendsOverlapRun`) exactly as the scanner counts it. `photosphereReplay.test.ts` grades both,
 and those cases do not skip.
 
 The three cases that replay the full-length recordings keep their loud skip:

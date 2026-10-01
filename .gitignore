@@ -40,3 +40,18 @@ ui/dist-lib/
 .probe/
 tools/photosphere_sim/cache/
 tools/photosphere_sim/node_modules/
+ui/tools/domeshot/bundle.js
+ui/tools/domeshot/dome.png
+
+# Agent scratch that lives in the working tree and CARRIES SITE NEEDLES (#128).
+# A sweep on 2026-09-21 found 20 untracked files holding one; no tracked file
+# did. `.superpowers/sdd/` has its own .gitignore, `.claude/workflows/` had
+# nothing, so a single `git add -A` would have committed a needle into history -
+# and the last time that happened it cost three filter-repo passes over 1203
+# revisions. The rule against a bare `git add` (CLAUDE.md) covers this by
+# accident; this covers it on purpose.
+.claude/workflows/
+.superpowers/
+
+# Agent mutation copies belong in the session scratch root, never here (#475).
+/scratchpad/

@@ -1,8 +1,9 @@
-// flowLogStrip.test.ts — the two rules the log strip cannot get wrong quietly.
+// flowLogStrip.test.ts — the rules the log strip cannot get wrong quietly.
 //   Run:  npx tsx src/components/flows/__tests__/flowLogStrip.test.ts   (from ui/)
 //
 // The strip itself is a render; there is nothing to test in a <button>. These
-// two derivations are different:
+// derivations are different (and the empty log's two sentences, #529, are
+// below with their mutants):
 //
 //   * NEWEST FIRST. `logs.slice(-60).reverse()` is what makes a 170px panel
 //     usable mid-run — the line you want is the one that just landed. Drop the
@@ -36,7 +37,7 @@
   },
 };
 
-const { logTail, logTime, LOG_TAIL, LOG_TONE_CLASS, IDLE_LOG_TEXT } =
+const { logTail, logTime, LOG_TAIL, LOG_TONE_CLASS, EMPTY_LOG_TEXT, RUN_EMPTY_LOG_TEXT, emptyLogText } =
   await import("../FlowLogStrip");
 const { LOG_RING } = await import("../flowsSlice");
 type FlowLogLine = import("../flowsTypes").FlowLogLine;
@@ -48,6 +49,9 @@ function test(name: string, fn: () => void): void {
   try { fn(); passed++; } catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
 }
 function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
+function eq(got: string, want: string, msg: string): void {
+  if (got !== want) throw new Error(msg);
+}
 
 const line = (id: number): FlowLogLine =>
   ({ id, ts: 0, msg: `line ${id}`, tone: "info" });
@@ -75,11 +79,54 @@ test("logTail does not mutate the store's array", () => {
   assert(logs[0].id === 1, "the caller's array survived the reverse()");
 });
 
-test("an empty ring yields nothing, and the bar says so in words", () => {
+test("an empty ring yields nothing", () => {
   assert(logTail([]).length === 0, "no lines, no rows");
-  assert(IDLE_LOG_TEXT === "Idle — no events yet",
-    "the idle sentence is the one the design specifies (and the only honest one "
-    + "while no flow.log event exists)");
+});
+
+// THE EMPTY LOG'S TWO SENTENCES (#529). Until H4 all four log surfaces said
+// "Idle — no events yet" through a live run of the flow, beside a STATE
+// readout reading RUNNING: "Idle" describes the run, and the run was not
+// idle. The empty log now says what is true of the LOG, from the readouts'
+// own rule for whether this flow's run is live (`fed`): during the run, that
+// the server publishes no log lines for a flow run (no `flow.log` topic
+// exists); outside it, "no events yet". The mounted half, all four surfaces
+// over the recorded run, is phoneReadouts.test.tsx case 8.
+//
+// Each mutant below was run in the private copy scratchpad H4-ULOG-mut, from
+// a byte backup of FlowLogStrip.tsx restored and SHA-256 compared.
+// MUTANT "Idle kept (the classic rule)" (FlowLogStrip.tsx `emptyLogText`
+// answering the old "Idle — no events yet" whatever the run). Observed,
+// "6 passed, 3 failed":
+//   x outside a run the empty log says there are no events yet, and nothing about the run: outside a run the empty log reads "Idle — no events yet"; it is about the log, not the run
+//   x during this flow's run the empty log says the server publishes none: during a live run of the flow the empty log reads "Idle — no events yet", beside a STATE readout that says what the run is doing
+//   x neither sentence says Idle, and neither carries an em-dash: "Idle — no events yet" says Idle, which is the STATE readout's word, and a live run is not idle
+// MUTANT "live copy shown outside a run (the classic rule)" (`emptyLogText`
+// answering the run sentence whatever it is handed). Observed,
+// "8 passed, 1 failed":
+//   x outside a run the empty log says there are no events yet, and nothing about the run: outside a run the empty log reads "no log lines: the server publishes none for a flow run"; it is about the log, not the run
+test("outside a run the empty log says there are no events yet, and nothing about the run", () => {
+  eq(emptyLogText(false), EMPTY_LOG_TEXT,
+    `outside a run the empty log reads "${emptyLogText(false)}"; it is about the log, not the run`);
+  eq(EMPTY_LOG_TEXT, "no events yet", "the sentence outside a run");
+});
+
+test("during this flow's run the empty log says the server publishes none", () => {
+  eq(emptyLogText(true), RUN_EMPTY_LOG_TEXT,
+    `during a live run of the flow the empty log reads "${emptyLogText(true)}", beside a `
+    + "STATE readout that says what the run is doing");
+  eq(RUN_EMPTY_LOG_TEXT, "no log lines: the server publishes none for a flow run",
+    "the sentence during a run (#529)");
+});
+
+test("neither sentence says Idle, and neither carries an em-dash", () => {
+  // The #/next surfaces print the same two sentences, and their copy rule is
+  // hyphens, never em-dashes (wave R7 defect 4).
+  for (const live of [false, true]) {
+    const said = emptyLogText(live);
+    assert(!/\bidle\b/i.test(said),
+      `"${said}" says Idle, which is the STATE readout's word, and a live run is not idle`);
+    assert(!said.includes("—"), `"${said}" carries an em-dash, which the #/next copy forbids`);
+  }
 });
 
 test("the log's default rung is dim, NOT the toast's accent", () => {

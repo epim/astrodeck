@@ -60,6 +60,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from ..catalog.coords import altaz
 from ..config import config_store
 from ..events import bus
 from ..weather import weather_service
@@ -483,7 +484,14 @@ class CloudmapService:
         because the satellite was late. Comparing the key costs nothing: the
         listing has already been made.
         """
-        geo = Site(site.latitude, site.longitude, site.elevation_m / 1000.0)
+        # The tick refuses a default site before calling this; asked again
+        # because at 0,0 a refresh fetches, caches and reasons about cloud over
+        # the Atlantic (#24).
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(site)
+        if latlon is None:
+            return
+        geo = Site(latlon[0], latlon[1], site.elevation_m / 1000.0)
         bucket = bucket_for(_resolved_platform(ccfg))
         when = datetime.fromtimestamp(now, tz=timezone.utc)
         stage = MASK_PRODUCT
@@ -904,7 +912,12 @@ class CloudmapService:
 
     def at_payload(self, *, alt_deg: float, az_deg: float, ahead_s: float,
                    now: float | None = None) -> dict:
-        """``GET /api/cloudmap/at``: one look direction, now or ahead.
+        """``POST /api/cloudmap/at``: one look direction, now or ahead.
+
+        The direction is one the CALLER picked, which is why it may travel in
+        a request body. The telescope's own pointing never reaches this
+        method from a client: :meth:`telescope_payload` reads the mount here
+        and calls it (#520).
 
         ``ahead_s`` of zero is answered by stage 4 and not by stage 5's
         forecast. They differ for a reason worth stating: the forecast refuses
@@ -926,37 +939,11 @@ class CloudmapService:
         _require_altitude(alt_deg, "alt")
         if not math.isfinite(az_deg):
             raise ValueError("az must be finite, got " + repr(az_deg))
-        # A LEAD TIME THAT IS NOT A LEAD TIME IS A CALLER ERROR, refused here
-        # rather than passed on. A negative one would silently fall to the
-        # present-time branch below and answer "now" to a question about the
-        # past, and a NaN one would reach the payload and serialise as the
-        # bare token NaN, which is not JSON and which every strict parser on
-        # the other end rejects as a syntax error nobody can trace back here.
-        if not (math.isfinite(ahead_s) and ahead_s >= 0.0):
-            raise ValueError(
-                "ahead_s must be a finite number of seconds at or after now, "
-                "got " + repr(ahead_s))
+        self._require_ahead(ahead_s)
         st = self.state(now)
-        out = {
-            "enabled": st.enabled,
-            "platform": st.platform,
-            "observed_at": _iso_z(st.observed_at),
-            "stale": st.stale,
-            "ahead_s": ahead_s,
-            "alt_deg": alt_deg,
-            "az_deg": az_deg,
-            "probability": None,
-            "basis": "no_data",
-            "crossing_km": None,
-            "pierce_lat_deg": None,
-            "pierce_lon_deg": None,
-            "downrange_km": None,
-            "beam_m": None,
-            "cell_km": None,
-            "quality": None,
-            "reason": "",
-            "credit": credit(st.platform),
-        }
+        out = self._at_skeleton(st, ahead_s)
+        out["alt_deg"] = alt_deg
+        out["az_deg"] = az_deg
         site = self.site()
         reason = self._no_sky(st)
         if reason is not None:
@@ -981,6 +968,139 @@ class CloudmapService:
             "reason": answer.reason,
         })
         return out
+
+    async def telescope_payload(self, telescope, *, ahead_s: float,
+                                now: float | None = None) -> dict:
+        """``GET /api/cloudmap/at``: the sky along the MOUNT's pointing.
+
+        THE CLIENT SENDS NO COORDINATES, and that is the whole reason this
+        exists (#520). The panels used to build the URL from the mount's
+        alt/az, so the Fly relay's access log held the live pointing several
+        times a minute. A pointing at a known time is a function of the
+        site's latitude and longitude, and at park the altitude IS the
+        latitude (#140). So the pointing is read here, from the mount the
+        hub holds, and never leaves the rig as a request parameter.
+
+        THE ANSWER DOES NOT ECHO IT EITHER. ``at_payload`` repeats the
+        direction it was asked about because the caller chose it; nobody
+        chose this one, and the ladder that reads the answer draws the
+        marker from its own status frame. ``alt_deg`` and ``az_deg`` are
+        dropped rather than nulled, so a reader that wants them fails loudly
+        instead of drawing a marker at zero.
+
+        TWO NO-ANSWER BASES, checked in this order. ``no_data`` when there is
+        no sky to read (switched off, no site, no granule yet), with
+        ``_no_sky``'s sentence, and the mount is NOT READ: a switched-off
+        feature must not cost the serial link a transaction, and without a
+        site there is no way from the mount's RA/Dec to an alt/az at all.
+        ``no_pointing`` when there is a sky but no direction to read it
+        along: no mount, a mount that will not say where it is, or a mount
+        below the horizon. Both are 200s, like every other state of the sky,
+        and neither is a 500: a missing mount is the normal daytime state of
+        this rig.
+
+        The lead time is still the caller's, and a bad one is still a
+        ``ValueError`` (a 400) at every hour, checked before anything else.
+        """
+        now = self._clock() if now is None else now
+        self._require_ahead(ahead_s)
+        st = self.state(now)
+        reason = self._no_sky(st)
+        basis = "no_data"
+        if reason is None:
+            pointing, reason = await self._mount_pointing(
+                telescope, self.site(), now)
+            if pointing is not None:
+                out = self.at_payload(alt_deg=pointing[0], az_deg=pointing[1],
+                                      ahead_s=ahead_s, now=now)
+                del out["alt_deg"], out["az_deg"]
+                return out
+            basis = "no_pointing"
+        out = self._at_skeleton(st, ahead_s)
+        out["basis"] = basis
+        out["reason"] = reason
+        return out
+
+    @staticmethod
+    async def _mount_pointing(telescope, site: Site, now: float
+                              ) -> tuple[tuple[float, float] | None, str | None]:
+        """``((alt, az), None)`` for the mount's pointing, or ``(None, why)``.
+
+        The same arithmetic as the status frame's ``mount.alt``/``az``, which
+        is what the panels used to send: the RAW position the mount reports
+        (of date, not the J2000 the status frame publishes), through
+        ``altaz`` at the configured site. At ``now`` rather than the wall
+        clock, so the answer and the sky it is read against share one
+        instant.
+
+        NO TIMEOUT OF ITS OWN. The status poll reads the same position every
+        two seconds with none, and cancelling a driver mid-transaction on a
+        shared serial link is how the next command reads the previous one's
+        reply. The driver's own timeout bounds it, as it bounds the poll.
+
+        The reasons never carry a coordinate: the position, the altitude and
+        the exception text all stay here. An exception is named by its type
+        through ``_safe_error``, whose docstring says why the text is not
+        safe to echo.
+        """
+        if telescope is None or not getattr(telescope, "connected", False):
+            return None, ("no mount is connected, so there is no pointing to "
+                          "read the sky along")
+        try:
+            ra, dec = await telescope.get_position()
+            ra, dec = float(ra), float(dec)
+        except Exception as exc:        # noqa: BLE001 - a read, never a 500
+            return None, ("the mount did not report where it is pointing: "
+                          + _safe_error(exc))
+        if not (math.isfinite(ra) and math.isfinite(dec)):
+            return None, "the mount reported a position that is not a number"
+        alt, az = altaz(ra, dec, site.lat_deg, site.lon_deg, now)
+        # Stage 4's domain is (0, 90]. Below it is not a direction anyone is
+        # imaging through cloud, and asking stage 4 about it would turn a
+        # mount parked low into a 400 the caller did nothing to earn.
+        if not alt > 0.0:
+            return None, "the mount is pointing below the horizon"
+        return (min(alt, 90.0), az % 360.0), None
+
+    @staticmethod
+    def _require_ahead(ahead_s: float) -> None:
+        """Refuse a lead time that is not one. Shared by both look routes.
+
+        A LEAD TIME THAT IS NOT A LEAD TIME IS A CALLER ERROR, refused here
+        rather than passed on. A negative one would silently fall to the
+        present-time branch and answer "now" to a question about the past,
+        and a NaN one would reach the payload and serialise as the bare token
+        NaN, which is not JSON and which every strict parser on the other end
+        rejects as a syntax error nobody can trace back here.
+        """
+        if not (math.isfinite(ahead_s) and ahead_s >= 0.0):
+            raise ValueError(
+                "ahead_s must be a finite number of seconds at or after now, "
+                "got " + repr(ahead_s))
+
+    @staticmethod
+    def _at_skeleton(st: CloudmapState, ahead_s: float) -> dict:
+        """The look answer with nothing answered yet: every field a reader
+        expects, at "no data". ``at_payload`` adds the direction it was asked
+        about; ``telescope_payload`` deliberately does not."""
+        return {
+            "enabled": st.enabled,
+            "platform": st.platform,
+            "observed_at": _iso_z(st.observed_at),
+            "stale": st.stale,
+            "ahead_s": ahead_s,
+            "probability": None,
+            "basis": "no_data",
+            "crossing_km": None,
+            "pierce_lat_deg": None,
+            "pierce_lon_deg": None,
+            "downrange_km": None,
+            "beam_m": None,
+            "cell_km": None,
+            "quality": None,
+            "reason": "",
+            "credit": credit(st.platform),
+        }
 
     def _cell_km(self, site: Site, mask: GranuleWindow) -> list[float] | None:
         """The mask cell's true ground size under the site, or None.

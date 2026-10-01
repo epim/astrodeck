@@ -65,6 +65,19 @@ class _Result:
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    # A store of the test's own, BEFORE anything below patches the cache: the
+    # singleton repointed at a file under tmp_path with its cache dropped,
+    # both through monkeypatch. A run that finds focus saves the temperature
+    # and position it anchored at (`_anchor_temp_comp`), and the sweeps here left
+    # them on the process-wide config for every later test on the worker
+    # (#227).
+    # Without these two lines, the conftest guard errors at teardown
+    # (1 in this file alone, observed): "test_a_narrowband_slot_gets_a_longer_exposure
+    # left the process-wide config changed: focus.temp_comp.reference_position,
+    # focus.temp_comp.reference_temp_c."
+    monkeypatch.setattr(hub_module.config_store, "_path",
+                        tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module.config_store, "_cfg", None)
     monkeypatch.setattr(hub_module.config_store.cfg().safety,
                         "solar_avoidance", False)
     h = Hub()

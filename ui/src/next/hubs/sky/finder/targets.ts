@@ -409,10 +409,120 @@ export interface SkyTarget {
   sizeArcmin?: number;
   /** "23:52" / "passed" / "-" - the bare value; callers prefix "transit ". */
   transitLabel: string;
-  windowMinutes: number;
+  /**
+   * Minutes above the floor between now and dawn, off the finder's own walk -
+   * or null when nobody walked it, which is NOT 0 (#508).
+   *
+   * 0 is an answer: the object never clears the floor tonight. It used to be
+   * the placeholder too - a lock held from the catalogue carried `0` because
+   * no ranking had walked it, and the card printed "window 0m", which reads as
+   * "no time above the floor tonight" whatever the truth was. Null is the
+   * absent state, and `windowLabel` prints it as "-", the way `transitLabel`
+   * already prints a transit nobody computed.
+   */
+  windowMinutes: number | null;
   score: number;
   moonSepDeg: number | null;
   difficulty?: DifficultyTier;
+}
+
+/**
+ * A catalogue object the lock card names that the finder could not PLACE on
+ * this sky (#503, #504).
+ *
+ * With no site saved, or for a role the site's coordinates are withheld from,
+ * there is no local sidereal time to turn an RA/Dec into an altitude, so a lock
+ * held from the catalogue has a name, a type and a position on the celestial
+ * sphere and nothing else. The fields a placement would fill are NULL rather
+ * than a number, because each of them is read as a measurement somewhere:
+ *
+ *   altNow / azNow  printed on the lock card and handed to the dome;
+ *   obstructed      the lock card's primary gates on it (`lockCardCta`), and a
+ *                   placeholder `false` offered IMAGE for an object whose
+ *                   altitude nobody knew (the #466 held card's second defect);
+ *   windowMinutes   null on `SkyTarget` already (see there).
+ *
+ * A separate type rather than nullable fields on `SkyTarget`, because every
+ * row the finder draws IS placed - the markers, the reach strip, the atlas
+ * pills and the dome all read `altNow` as a number, and none of them can be
+ * handed an unplaced lock. Only the lock card and the hub's lock handling can.
+ */
+export interface UnplacedTarget extends Omit<SkyTarget, "altNow" | "azNow" | "obstructed"> {
+  altNow: null;
+  azNow: null;
+  /** Unknown: no horizon was asked, because there is no altitude to ask it of. */
+  obstructed: null;
+}
+
+/** What the lock card can name: a placed target, or one held unplaced. */
+export type LockTarget = SkyTarget | UnplacedTarget;
+
+// ------------------------------------------------ the row a `?lock=` carries
+
+/**
+ * The hash keys a catalogue ROW travels in beside `lock=<id>` (#504).
+ *
+ * `#/sky?lock=<id>` aims the finder at an id in the merged ranking. With no
+ * tonight's list (a default site's 409, a role that is never ranked) the
+ * ranking cannot carry a searched object, and an id alone gave the hub nothing
+ * to hold: a targets-sheet search pick was refused while the atlas's LOCK IN
+ * FINDER, whose row the hub could read off the framing session, was held. So
+ * the search pick sends the row itself, and the hub holds it exactly as it
+ * holds the framed one. The hub consumes every one of these with `lock` and
+ * clears them together, so none can outlive the link that carried it.
+ *
+ * Separate keys rather than one JSON blob: the link is still one support can
+ * read out over the phone, and a key the hub does not know is ignored.
+ */
+export const LOCK_ROW_KEYS = ["lockName", "lockType", "lockKind", "lockRa", "lockDec", "lockSize"] as const;
+
+/** The whole `?lock=` parameter set for a catalogue row: the id and the row. */
+export function lockRowParams(row: CatalogRowLike): Record<string, string> {
+  const out: Record<string, string> = {
+    lock: row.id,
+    lockRa: String(row.ra_hours),
+    lockDec: String(row.dec_deg),
+  };
+  const name = (row.name ?? "").trim();
+  if (name !== "") out.lockName = name;
+  const type = (row.type ?? "").trim();
+  if (type !== "") out.lockType = type;
+  // The discriminator travels too: a solar-system body's `name` is a whole
+  // sentence and its `id` is the label (the second row-shape trap above), and
+  // only `kind` lets `displayName` tell the two apart at the other end.
+  const kind = (row.kind ?? "").trim();
+  if (kind !== "") out.lockKind = kind;
+  if (typeof row.size_arcmin === "number" && Number.isFinite(row.size_arcmin)) {
+    out.lockSize = String(row.size_arcmin);
+  }
+  return out;
+}
+
+/**
+ * The catalogue row a `?lock=` link carried, or null when it carried none (a
+ * bare `?lock=<id>`, which is what every link from inside the ranking sends)
+ * or carried one that is not a position on the sky.
+ */
+export function lockRowFromParams(params: Record<string, string | undefined>): CatalogRowLike | null {
+  const id = params.lock;
+  if (id == null || id === "" || params.lockRa == null || params.lockDec == null) return null;
+  const ra = Number(params.lockRa);
+  const dec = Number(params.lockDec);
+  // A hand-edited link is still a link: an RA outside [0, 24) or a Dec past a
+  // pole is refused as no row at all, and the hub's ordinary refusal says so.
+  if (!Number.isFinite(ra) || !Number.isFinite(dec) || ra < 0 || ra >= 24 || dec < -90 || dec > 90) {
+    return null;
+  }
+  const size = params.lockSize == null ? NaN : Number(params.lockSize);
+  return {
+    id,
+    name: params.lockName ?? null,
+    type: params.lockType ?? null,
+    kind: params.lockKind ?? null,
+    ra_hours: ra,
+    dec_deg: dec,
+    size_arcmin: Number.isFinite(size) ? size : null,
+  };
 }
 
 /** A projected target, ready to draw. */

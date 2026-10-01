@@ -15,6 +15,19 @@ from astrodeck.config import config_store
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module.hub_module, "CAPTURE_DIR", tmp_path)
+    # A store of the test's own: the singleton repointed at a file under
+    # tmp_path with its cache dropped, both through monkeypatch. The routes
+    # below write the process-wide config, and this file used to leave its
+    # thresholds and a warm rate on it for every later test on the worker
+    # (#227).
+    # Without these two lines, the conftest guard errors at teardown
+    # (2 in this file alone, observed): "test_the_standards_block_round_trips
+    # left the process-wide config changed: standards.max_consecutive_rejects,
+    # standards.max_consecutive_rejects_night, standards.max_eccentricity,
+    # standards.max_guide_rms, standards.min_stars,
+    # standards.refocus_on_temp_delta_c."
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
     with TestClient(app_module.create_app()) as c:
         yield c
 

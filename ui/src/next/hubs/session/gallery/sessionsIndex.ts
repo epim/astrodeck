@@ -26,8 +26,8 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 
 import { listReports } from "../../../../api/reports";
-import { listSessions } from "../../../../api/sessions";
-import type { SessionReportSummary, SessionRow } from "../../../../types";
+import { isUnreadableRow, listSessionRows } from "../../../../api/sessions";
+import type { SessionListRow, SessionReportSummary, SessionRow } from "../../../../types";
 
 // ------------------------------------------------------------- what a card is
 //
@@ -73,12 +73,40 @@ export function reportMatchesSession(row: SessionRow, r: SessionReportSummary): 
   return r.started_at >= row.created_ts - 3600 && r.started_at <= row.updated_ts + 12 * 3600;
 }
 
+/** A session file the store cannot read (#242), as the shelf draws it.
+ *
+ *  NOT A `SessionCardData`, on purpose. A session card has a sub count, dates,
+ *  a thumbnail and six verbs, and every one of them reads the file that is
+ *  broken; built as one, it would say "0 SUBS" about a ledger nobody can count
+ *  and offer RESUME on it. So it is its own type with its own card
+ *  (`UnreadableSessionCard`): the name the file carries, its id, the reason as
+ *  the server sent it, and DELETE. It is not folded with the reports either:
+ *  a name read out of a damaged file is not evidence enough to claim a night's
+ *  report belongs to it. */
+export interface UnreadableCardData {
+  key: string;
+  id: string;
+  /** The name inside the file when it has one, else the stem (the server's). */
+  name: string;
+  reason: string;
+}
+
+/** The unreadable rows, in the order the server listed them. */
+export function unreadableCards(rows: readonly SessionListRow[]): UnreadableCardData[] {
+  return rows.filter(isUnreadableRow).map((r) => ({
+    key: `unreadable:${r.id}`, id: r.id, name: r.name, reason: r.unreadable,
+  }));
+}
+
+/** The session cards. Unreadable rows are skipped here - they are
+ *  `unreadableCards`' - so nothing below ever reads a count off one. */
 export function buildCards(
-  rows: readonly SessionRow[],
+  rows: readonly SessionListRow[],
   reports: readonly SessionReportSummary[],
 ): SessionCardData[] {
   const used = new Set<string>();
-  const cards: SessionCardData[] = [...rows]
+  const cards: SessionCardData[] = rows
+    .filter((r): r is SessionRow => !isUnreadableRow(r))
     .sort((a, b) => b.updated_ts - a.updated_ts)
     .map((row) => {
       const hit = reports.find((r) => reportMatchesSession(row, r));
@@ -134,8 +162,9 @@ export const SESSIONS_INDEX_TTL_MS = 30_000;
 
 export interface SessionsIndex {
   /** null until `GET /api/sessions` has answered once. Not `[]`: an unread
-   *  shelf and an empty rig are different claims. */
-  rows: SessionRow[] | null;
+   *  shelf and an empty rig are different claims. Unreadable files included
+   *  (#242): `buildCards` and `unreadableCards` split them. */
+  rows: SessionListRow[] | null;
   /** null until `GET /api/reports` has answered once. */
   reports: SessionReportSummary[] | null;
   /** Only the session read produces one. A missing report index is not an error
@@ -180,7 +209,7 @@ export function loadSessionsIndex(force = false): Promise<void> {
     // In parallel: the two reads are independent, and doing them in sequence
     // would put a second round trip in front of the first card on a link where
     // the round trip is the cost.
-    const [rowsRes, reportsRes] = await Promise.allSettled([listSessions(), listReports()]);
+    const [rowsRes, reportsRes] = await Promise.allSettled([listSessionRows(), listReports()]);
     const rows = rowsRes.status === "fulfilled" ? rowsRes.value : [];
     const error = rowsRes.status === "fulfilled"
       ? null
@@ -227,11 +256,14 @@ export function useSessionsIndex(enabled: boolean): SessionsIndex & { refresh: (
  * empty in exactly the case where nothing has been checked.
  */
 export function galleryCountFrom(
-  rows: readonly SessionRow[] | null,
+  rows: readonly SessionListRow[] | null,
   reports: readonly SessionReportSummary[] | null,
 ): number | null {
   if (rows == null || reports == null) return null;
-  return buildCards(rows, reports).length;
+  // The grid draws an unreadable file's card after the session cards (#242),
+  // so the chip counts it: the two numbers are equal by construction or not
+  // at all.
+  return buildCards(rows, reports).length + unreadableCards(rows).length;
 }
 
 /** `galleryCountFrom` over the shared snapshot, memoised so the fold does not

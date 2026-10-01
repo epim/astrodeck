@@ -1,7 +1,8 @@
 // ============================================================================
 // MonitorView — the unified glanceable run dashboard (monitor spec §4 / §7).
 // Lane 2E. Reads ONLY store slices via the landed narrow hooks (no polling of
-// its own beyond one cold-load snapshot on mount, §8). Read-only for device
+// its own beyond the snapshot it reads on mount, on every reconnect and on each
+// saved frame, for the last frame's id, #399, §8). Read-only for device
 // controls; the only writes are Pause/Resume (non-destructive) and Abort
 // (hold-to-confirm, works over plain HTTP when the WS is down — A2).
 //
@@ -13,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { u } from "../lib/base";
+import { newestPreviewId, showingLivePreview } from "../lib/lastFrameId";
 import {
   useSeq,
   useGuideRecent,
@@ -36,7 +38,10 @@ import {
   useStore,
   useResumeArm,
   usePhotometry,
+  useSnapshotPreviewId,
 } from "../store";
+import { EMPTY_SEQUENCE } from "../lib/authGate";
+import { snapshotStamp } from "../ws";
 import { Led, Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
 import {
@@ -47,6 +52,8 @@ import { formatScheduleStatus } from "../lib/scheduleStatus";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
 import RadarMap from "../components/weather/RadarMap";
 import { getDomeState, type DomeState } from "../api/backends";
+import { resumeRecoveryLine } from "../api/sessions";
+import { useStopResumeRecovery } from "../lib/stopResumeRecovery";
 import { domeStatusLabel } from "../lib/dome";
 import { accessPhrase, useCanControlMount, useCanViewWeather } from "../lib/caps";
 import {
@@ -248,33 +255,69 @@ export default function MonitorView() {
   // snapshot already carries `preview_id`; hold it here and hand it to the tile
   // (as STALE, which is the truth: it is the last frame, not a live one) until
   // a real preview event lands.
-  const [coldPreviewId, setColdPreviewId] = useState<number | null>(null);
+  //
+  // AND NOT ONLY ON MOUNT (#399). 2026-09-27, NGC 7331 over the relay: the
+  // phone showed NO FRAME YET at 50/105 frames with "last frame 41s ago" on
+  // the same screen. The rig had the frame (snapshot preview_id 535, the JPEG
+  // 200) but this page had neither id: the one mount-time fetch had failed or
+  // raced, and the reconnect snapshot in ws.ts restores status and sequence
+  // but never the preview. So the snapshot is read again on every reconnect
+  // and every time frames_done advances, and the tile shows the NEWER of the
+  // two ids (lib/lastFrameId.ts): a preview event lost in transit can no
+  // longer leave the tile behind the rig. Only the first read seeds status and
+  // sequence; the later ones are for the frame alone.
+  //
+  // THE ID IS THE STORE'S, AND EVERY READ REPLACES IT (#437). It used to live
+  // here as a running MAXIMUM over every read, on the rule that preview ids
+  // only increase. They do, within one server process: `hub.preview_seq`
+  // starts at 0 on every start, so after a mid-run deploy the new process's
+  // snapshot said 2, the maximum kept 535, and the tile sat on a frame from
+  // before the restart (a 404 on the new process) for the rest of the night.
+  // A read is the server's answer at that moment, so it replaces, into the
+  // same `snapshotPreviewId` ws.ts writes on every connect, reconnect and relay
+  // gap. A newer live frame still wins through newestPreviewId below.
+  const snapshotPreviewId = useSnapshotPreviewId();
+  const seeded = useRef(false);
+  const framesDone = seq.progress?.frames_done ?? null;
   useEffect(() => {
+    if (!wsConnected && seeded.current) return; // a down socket: the next "up" re-reads
     let cancelled = false;
     (async () => {
       try {
         const signal =
           typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
-            ? (AbortSignal as unknown as { timeout(ms: number): AbortSignal }).timeout(4000)
+            ? (AbortSignal as unknown as { timeout(ms: number): AbortSignal }).timeout(8000)
             : undefined;
+        // Stamped as the request goes out (#476, S7 orchestrator ruling 3):
+        // a live event handled while this read is in flight is newer than its
+        // answer, and a seed written over a `complete` that overtook it would
+        // never be undone. ws.ts's snapshotStamp says why a count.
+        const stamp = snapshotStamp();
         const res = await fetch(u("/api/monitor/snapshot"), signal ? { signal } : undefined);
         if (!res.ok || cancelled) return;
         const snap = (await res.json()) as MonitorSnapshot;
         if (cancelled) return;
-        // Seed the store via handleEvent so the regular WS path stays the SSOT.
-        const h = useStore.getState().handleEvent;
-        const ts = Date.now() / 1000;
-        if (snap.status) h({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
-        if (snap.sequence) h({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
-        if (snap.preview_id != null) setColdPreviewId(snap.preview_id);
+        if (!seeded.current) {
+          seeded.current = true;
+          // Seed the store via handleEvent so the regular WS path stays the SSOT.
+          const h = useStore.getState().handleEvent;
+          const ts = Date.now() / 1000;
+          if (snap.status && stamp.fresh("status")) h({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
+          if (snap.sequence && stamp.fresh("sequence")) h({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+        }
+        // As the server said it, null included: a restarted server that has
+        // saved nothing yet names no frame.
+        useStore.getState().setSnapshotPreviewId(snap.preview_id ?? null);
       } catch {
-        /* WS catches up within ~2s — non-fatal */
+        /* non-fatal: the next frame or reconnect reads it again */
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [wsConnected, framesDone]);
+  const shownPreviewId = newestPreviewId(preview?.id, snapshotPreviewId);
+  const shownIsLive = showingLivePreview(shownPreviewId, preview?.id);
 
   // ----- observatory roof / dome (UX-2026-07-26 #27) -----
   // The roof state existed ONLY as a badge in Settings → Safety, so a run that
@@ -299,6 +342,24 @@ export default function MonitorView() {
   // frame-rate, and the alternative was a new WS event for one panel. Same
   // shape as the dome poll above.
   const resumeArm = useResumeArm();
+  // THE RIG MOVING ON ITS OWN WITH THE ENGINE IDLE (#246). After a restart
+  // ResumeArm's recovery ladder blind-solves and re-centres the mount for
+  // minutes before it starts the session, and this panel showed an idle rig
+  // the whole time. Read off the same poll, not gated on `idle`: a night that
+  // ended on a safety stop leaves the engine on its terminal word, and that is
+  // exactly the night auto-resume picks back up. Silent over a live run, which
+  // can only be the poll lagging the ladder's own start (`resumeRecoveryLine`).
+  const recoveryLine = resumeRecoveryLine(resumeArm, seq.state);
+  // AND THE STOP BESIDE IT (#246). With the engine idle neither Pause nor
+  // Abort is on screen, so the line carries the session's own disarm, which
+  // stops the ladder recovering it (`lib/stopResumeRecovery.ts`).
+  const stopRecovery = useStopResumeRecovery();
+  const recoveringId = recoveryLine ? resumeArm?.recovery?.session_id ?? null : null;
+  // WHY A CLOUDY SKY IS NOT HOLDING (#221, #244): the engine's own sentence,
+  // published while a scheduler wait meets a closed sky with no target to hold
+  // for. Shown as sent and only while non-null; the server clears it when the
+  // sky clears, a setup begins or the run ends.
+  const holdDeferred = seq.sky?.hold_deferred || null;
 
   // ----- derived liveness -----
   const frameAgeMs = liveness.frame != null ? now - liveness.frame : null;
@@ -338,9 +399,27 @@ export default function MonitorView() {
   const waitStatus = formatScheduleStatus(seq.schedule, seq.live, now / 1000);
 
   // ----- abort/error one-shot vibration (resolves H / §7) -----
-  const vibratedError = useRef(false);
+  // On ENTERING the state while this is mounted, never on mounting in it
+  // (#467, found on RunControls, which copied this). A ref that started false
+  // buzzed every open or reload of the dashboard for a run that ended hours
+  // ago, and a desktop logged a blocked-vibrate console error per page load.
+  // So the ref is seeded from the state at mount. And the store's cold value
+  // (EMPTY_SEQUENCE, before any snapshot or event) is not a state the rig was
+  // in: it reads "idle", so the page load's snapshot looked like idle ->
+  // aborted. `null` means nothing is known yet, and the first known state
+  // seeds the ref without buzzing.
+  const seqCold = seq === EMPTY_SEQUENCE;
+  const vibratedError = useRef<boolean | null>(seqCold ? null : failed);
   useEffect(() => {
-    if ((state === "error" || state === "aborted") && !vibratedError.current) {
+    if (seqCold) {
+      vibratedError.current = null;
+      return;
+    }
+    if (vibratedError.current === null) {
+      vibratedError.current = failed;
+      return;
+    }
+    if (failed && !vibratedError.current) {
       vibratedError.current = true;
       try {
         navigator.vibrate?.([60, 40, 60]);
@@ -349,7 +428,7 @@ export default function MonitorView() {
       }
     }
     if (state === "running" || state === "idle") vibratedError.current = false;
-  }, [state]);
+  }, [state, failed, seqCold]);
 
   // ----- when did THIS run start? (UX-2026-07-26 #23) -----
   // The failure card quotes the tail of the error/warning log, and unfiltered
@@ -745,16 +824,59 @@ export default function MonitorView() {
         {/* ================================================== PROGRESS */}
         {!ninaNative && (
           <Panel className="col-span-full lg:col-span-8" title="Progress">
+            {/* Above every branch, so neither line depends on which one the
+                engine's state picks. They never show together: the ladder
+                runs only while no run does, and the deferral only inside one.
+                The ladder's line sits directly over RUN ARMED, the session it
+                is recovering. */}
+            {recoveryLine && (
+              <p className="mb-2 flex items-start gap-2 text-sm text-warn leading-snug"
+                data-testid="monitor-resume-recovering" aria-live="polite">
+                <Icon name="refresh" size={16} className="shrink-0 mt-0.5" />
+                <span>{recoveryLine}</span>
+              </p>
+            )}
+            {recoveringId && (
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="btn min-h-[44px]"
+                  data-testid="monitor-resume-recovering-stop"
+                  disabled={!canRun || stopRecovery.pending}
+                  onClick={() => stopRecovery.stop(recoveringId)}
+                >
+                  {stopRecovery.pending ? "Stopping…" : "Stop auto-resume"}
+                </button>
+                {!canRun && (
+                  <span className="text-[11px] text-dim inline-flex items-center gap-1.5">
+                    <Icon name="lock" size={11} />
+                    View only - stopping it needs {accessPhrase("control.mount")}.
+                  </span>
+                )}
+                {stopRecovery.error && (
+                  <span className="text-[11px] text-bad" role="alert">{stopRecovery.error}</span>
+                )}
+              </div>
+            )}
+            {holdDeferred && (
+              <p className="mb-2 flex items-start gap-2 text-sm text-warn leading-snug"
+                data-testid="monitor-hold-deferred" aria-live="polite">
+                <Icon name="alert" size={16} className="shrink-0 mt-0.5" />
+                <span>{holdDeferred}</span>
+              </p>
+            )}
             {idle && resumeArm?.armed ? (
               /* ARMED AND WAITING IS NOT "NO RUN ACTIVE". On 2026-08-16 this
                  panel said "Plan a session to start capturing" over a session
                  that owed 58 frames and would have started itself the moment
                  the sky cleared - and planning a fresh one is precisely how you
                  strand it, because engine.start disarms every other session.
-                 The CTA is deliberately NOT "plan a session" here. */
+                 The CTA is deliberately NOT "plan a session" here. The LED is
+                 unlabelled: RUN ARMED beside it is its name, and a "Run armed
+                 and waiting" label said it twice to a screen reader (#231). */
               <div className="flex flex-col gap-3 py-2">
                 <div className="flex items-center gap-2">
-                  <Led state="warn" label="Run armed and waiting" />
+                  <Led state="warn" />
                   <span className="font-display tracking-wider text-warn text-sm">
                     RUN ARMED
                   </span>
@@ -773,12 +895,21 @@ export default function MonitorView() {
                     </span>
                   </div>
                 )}
-                <p className="text-ink leading-snug max-w-prose">
-                  {resumeArm.hold
-                    ? <>Holding: <span className="text-warn">{resumeArm.hold.reason}</span>.
-                       It starts by itself when that clears.</>
-                    : "It starts by itself when its window opens."}
-                </p>
+                {/* While the recovery ladder runs, `hold` is the PREVIOUS
+                    attempt's refusal: ResumeArm clears it only after its own
+                    start or a stop, so "Holding: ... when that clears" would
+                    claim a wait that is over (#246). "When its window opens"
+                    is over too: the window opened, which is why the ladder
+                    is running. So the paragraph goes, and the ladder's line
+                    above this card is the one that says what is happening. */}
+                {!recoveryLine && (
+                  <p className="text-ink leading-snug max-w-prose">
+                    {resumeArm.hold
+                      ? <>Holding: <span className="text-warn">{resumeArm.hold.reason}</span>.
+                         It starts by itself when that clears.</>
+                      : "It starts by itself when its window opens."}
+                  </p>
+                )}
                 <div className="flex gap-2">
                   <button className="btn min-h-[44px]" onClick={() => setView("sequence")}>
                     Review the session →
@@ -946,15 +1077,17 @@ export default function MonitorView() {
 
         {/* ================================================== THUMBNAIL */}
         <Panel className="col-span-full sm:col-span-2 lg:col-span-6" title="Last frame">
+          {/* The NEWER of the live event and the snapshot (#399); the live
+              event's badge and numbers only when they describe this frame. */}
           <PreviewTile
-            previewId={preview?.id ?? coldPreviewId}
-            live={live}
-            stale={!live && (preview != null || coldPreviewId != null)}
-            ageMs={frameAgeMs}
-            hfr={preview?.hfr}
-            stars={preview?.stars}
-            meta={previewMeta}
-            clip={previewClip}
+            previewId={shownPreviewId}
+            live={live && shownIsLive}
+            stale={shownPreviewId != null && !(live && shownIsLive)}
+            ageMs={shownIsLive ? frameAgeMs : null}
+            hfr={shownIsLive ? preview?.hfr : undefined}
+            stars={shownIsLive ? preview?.stars : undefined}
+            meta={shownIsLive ? previewMeta : undefined}
+            clip={shownIsLive ? previewClip : false}
             brightness={thumbBrightness}
             onBrightness={setBrightness}
             onOpen={openCapture}

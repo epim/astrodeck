@@ -5,6 +5,12 @@
 // via `npx tsx`. The server `reason` strings are terse (schedule.py gating_status:
 // "below start altitude (30 deg)"); novice copy is composed HERE off `state` +
 // the numeric fields, extracting the gate degrees from `reason` when present.
+//
+// That composition knows a CLOSED LIST of waits: an altitude gate and a window
+// that has not opened. A cause newer than the list must not be mapped onto an
+// older one (#488: a mosaic's meridian wait read as the window). So the
+// meridian wait has its own sentence, and any other reason prints the server's
+// own words; neither carries a time (spec 6.9).
 
 import type { SequenceState } from "../types";
 import { fmtTime } from "./visibility";
@@ -33,11 +39,31 @@ export function parseGateDeg(reason: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/** The line for a mosaic held on the meridian rule (spec 5.7, 5.10). No
+ *  countdown and no clock, ever: the crossing it waits for is set by the site,
+ *  and a time beside it would give a viewer the site's longitude (6.9). */
+export const MERIDIAN_WAIT_TEXT = "Waiting for the meridian, so the mosaic changes pier side once.";
+
+/** The engine's meridian wait (engine.py `_publish_group_wait`: "the mosaic
+ *  waits for the meridian, so it changes pier side once"). Read off the words,
+ *  because the schedule block is all this formatter is handed; no other wait
+ *  the engine publishes names the meridian. */
+function isMeridianWait(reason: string): boolean {
+  return /\bmeridian\b/i.test(reason);
+}
+
 function waitingText(
   schedule: NonNullable<SequenceState["schedule"]>,
   nowUnix: number,
 ): string {
   const { reason, eta_s, start_ts } = schedule;
+  // A MERIDIAN WAIT READS AS ONE (#488). It used to fall through to the window
+  // sentence below, so a mosaic held for the crossing said "Waiting for the
+  // observing window to open." with the window wide open, pointing the operator
+  // at the schedule rather than the flip rule. Asked first, before any time is
+  // worked out, so no number the block carries can reach the line.
+  if (isMeridianWait(reason)) return MERIDIAN_WAIT_TEXT;
+
   // Resolve the countdown + absolute clock. Clock case (window not open yet):
   // start_ts is in the future -> a LIVE remaining that ticks down. Altitude case
   // (engine.py case 4): start_ts already passed -> fall back to eta_s + now.
@@ -61,8 +87,19 @@ function waitingText(
     lead = gate != null
       ? `Waiting for your target to rise above ${gate}°`
       : `Waiting for your target to rise high enough`;
-  } else {
+  } else if (start_ts != null && start_ts > nowUnix) {
+    // Only a window that has NOT opened is worded as the window (#488).
     lead = `Waiting for the observing window to open`;
+  } else {
+    // ANY OTHER REASON IS THE SERVER'S OWN WORDS (#488): a limit, a panel set
+    // aside for now, a moon or hour-angle constraint. Mapping them onto the
+    // window sentence made the line false for every cause newer than it. And
+    // no time beside them: this formatter cannot tell whether an unknown
+    // wait's time is set by the site (the hour-angle one's is, by the
+    // longitude), and every wait the engine added since publishes none
+    // (`_publish_group_wait`: eta_s 0).
+    const words = reason.trim().replace(/[.\s]+$/, "");
+    return words ? `Waiting: ${words}.` : "Waiting.";
   }
 
   if (clockUnix != null) {

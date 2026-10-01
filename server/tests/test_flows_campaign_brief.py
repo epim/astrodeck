@@ -123,6 +123,308 @@ class TestTheBriefQuotesTheGraph:
         assert "None" not in b, f"an unset param reached the prose: {b}"
 
 
+def _n(nid, ntype, x=0.0, **params):
+    return FlowNode(id=nid, type=ntype, x=x, y=0.0, params=params)
+
+
+def _e(a, ap, b, bp):
+    return FlowEdge(**{"from": a, "fromPort": ap, "to": b, "toPort": bp})
+
+
+def _mosaic(*, loop=True, skip="3-1", passes=1, angle="Rotate to PA",
+            slew=False):
+    """dusk -> TARGET M31 3x2 -> [SLEW ->] CYCLE, with the pass wire from the
+    cycle into the block's `next` when ``loop``."""
+    nodes = [_n("d", "dusk"),
+             _n("t", "target", x=100, name="M31", ra="00h 42m 44s",
+                dec="+41 16 09", rows=3, cols=2, overlap=25, rotation=30,
+                angle=angle, fovX=2.0, fovY=1.33, skip=skip, passes=passes,
+                order="Setting first"),
+             _n("y", "cycle", x=300)]
+    edges = [_e("d", "window", "t", "arm")]
+    if slew:
+        nodes.append(_n("s", "slew", x=200, tol=0.5, solver="ASTAP"))
+        edges += [_e("t", "target", "s", "run"), _e("s", "centered", "y", "run")]
+    else:
+        edges.append(_e("t", "target", "y", "run"))
+    if loop:
+        edges.append(_e("y", "pass", "t", "next"))
+    return FlowGraph(nodes=nodes, edges=edges)
+
+
+class TestTheBriefReadsAMosaic:
+    """S3 item 5 and spec 1.7: a multi-panel TARGET gets its own sentences,
+    quoting its params, and the SLEW + CENTER sentence is gone."""
+
+    def test_no_slew_sentence(self):
+        """A legacy SLEW's tolerance and solver never reached the run, so the
+        brief no longer repeats them ("slews and plate-solves to within
+        0.5′ (ASTAP)"). The node is still on the canvas for the doctor.
+
+        Mutant "keep the SLEW clause" (the sentence restored) failed:
+            E   assert 'slews and plate-solves' not in 'This flow a...rows
+                evenly.'
+            E     'slews and plate-solves' is contained here:
+            E       target it slews and plate-solves to within 0.5\\u2032
+                (ASTAP). Capture interleaves one sub per filter per pass - ...
+        """
+        g = _mosaic(slew=True)
+        assert any(n.type == "slew" for n in g.nodes), \
+            "premise: the legacy SLEW is on the canvas"
+        b = brief(g)
+        assert "slews and plate-solves" not in b, b
+        assert "0.5′" not in b and "ASTAP" not in b, b
+
+    def test_the_mosaic_sentence_quotes_the_block(self):
+        """Grid, panels shot and skipped, overlap, angle, order, passes and
+        the hop, each from the node's own params.
+
+        Mutant "no mosaic sentence" (``brief`` never adds one) failed, and in
+        the three tests below that read the sentence:
+            E   AssertionError: 'M31 is a 3x2 mosaic shooting 5 of its 6
+                panels (3-1 skipped) at 25% overlap, laid out at PA 30\\xb0
+                with the rotator turned to it at every panel.' missing from:
+                This flow arms at astronomical dusk (\\u221230 min). It then
+
+        DELIBERATE PIN CHANGE (mosaic S4, S4 orchestrator ruling 1, #339;
+        re-pinned by the S4 integration, #398): S3 wrote the grid rows by
+        columns, "3x2" for this block of 3 rows and 2 columns, while the
+        Examples and the framing card write columns by rows. The brief now
+        writes the size columns first, and where a panel label shares the
+        sentence it says the size once in words and says the labels are
+        row-column, so "2x3" and "3-1" cannot be read into each other. The
+        failure quoted above is S3's; the sentences asserted below are S4's.
+
+        Re-observed on the S4 wording in scratchpad/s4-integrate-q7m2.
+        Mutant "no mosaic sentence" (the ``seg.extend(_mosaic_sentences(...))``
+        that adds them made to add nothing), 5 failed, this one first:
+            E           AssertionError: 'M31 is a mosaic of 2 columns by 3
+                rows shooting 5 of its 6 panels (panel 3-1 skipped, written
+                row-column) at 25% overlap, laid out at PA 30\\xb0 with the
+                rotator turned to it at every panel.' missing from: This flow
+                arms at astronomical dusk (\\u221230 min). It then arms M31.
+                Capture interleaves one sub per filter per pass - ...
+
+        Mutant "the size rows by columns, as S3 wrote it" (the no-skip
+        sentence's ``{cols}x{rows}`` made ``{rows}x{cols}``), which the
+        skipped-panel sentence cannot see, since it says the size in words;
+        only this test failed:
+            E       assert 'M31 is a 2x3 mosaic of 6 panels at 25% overlap' in
+                'This flow arms at astronomical dusk (\\u221230 min). It then
+                arms M31. M31 is a 3x2 mosaic of 6 panels at 25% overlap,
+                laid...
+        """
+        b = brief(_mosaic())
+        for part in ("M31 is a mosaic of 2 columns by 3 rows shooting 5 of "
+                     "its 6 panels (panel 3-1 skipped, written row-column) at "
+                     "25% overlap, laid out at PA 30° with the rotator turned "
+                     "to it at every panel.",
+                     "After 1 pass of its filters on a panel it moves on to "
+                     "the next (setting first), and comes back until every "
+                     "panel has its subs.",
+                     "The hop between panels has not been measured on this "
+                     "rig yet."):
+            assert part in b, f"{part!r} missing from: {b}"
+        two = brief(_mosaic(passes=2, skip=""))
+        assert "M31 is a 2x3 mosaic of 6 panels at 25% overlap" in two, two
+        assert "After 2 passes of its filters" in two, two
+
+    def test_the_loop_wire_decides_rotating_or_one_at_a_time(self):
+        """With the pass wire the panels rotate every pass; without it they
+        run one at a time (spec 1.4: deleting the wire changes only the
+        mode).
+
+        Mutant "loop wire ignored" (every mosaic read as rotating) failed:
+            E   assert 'It shoots one panel at a time, each finished before
+                the next (setting first).' in 'This flow arms at astronomical
+                dusk (\\u221230 min). It then arms M31. M31 is a 3x2 mosaic
+                shooting 5 of its 6 panels (3-1 ...
+        """
+        b = brief(_mosaic(loop=False))
+        assert "It shoots one panel at a time, each finished before the " \
+               "next (setting first)." in b, b
+        assert "moves on to the next" not in b, b
+
+    def test_a_measured_hop_is_quoted_and_a_seed_never_is(self):
+        """A measured 160 s hop reads "about 2 m 40 s"; no cost, or one that
+        is no measurement, reads "not measured yet", never the engine's
+        150 s seed.
+
+        Mutant "hop cost ignored" (the measured cost never quoted) failed:
+            E   AssertionError: assert 'A hop between panels takes about 2 m
+                40 s, as measured on this rig.' in 'This flow arms at
+                astronomical dusk (\\u221230 min). It then arms M31. M31 is a
+                3x2 mosaic shooting 5 of its 6 panels (3-1 ...
+        """
+        assert "A hop between panels takes about 2 m 40 s, as measured on " \
+               "this rig." in brief(_mosaic(), hop_cost_s=160.0)
+        assert "about 45 s" in brief(_mosaic(), hop_cost_s=45.2)
+        for cost in (None, 0, -1.0, float("nan")):
+            b = brief(_mosaic(), hop_cost_s=cost)
+            assert "has not been measured on this rig yet" in b, (cost, b)
+            assert "150" not in b and "2 m 30 s" not in b, (cost, b)
+
+    def test_a_fixed_camera_says_the_run_checks_the_angle(self):
+        b = brief(_mosaic(angle="Camera fixed at PA"))
+        assert "laid out at PA 30° with the camera fixed there by hand, and " \
+               "the run checks the angle at every panel." in b, b
+        assert "rotator" not in b, b
+
+    def test_a_block_at_no_angle_says_it_cannot_run(self):
+        """A grid at "Any angle" is laid out at no angle, so the brief says
+        its panels will not tile and the run refuses it (M2), rather than
+        naming an angle nobody set.
+
+        Mutant "no words for no angle" (the any-angle clause dropped) failed:
+            E   AssertionError: 'M31 is a 3x2 mosaic shooting 5 of its 6
+                panels (3-1 skipped) at 25% overlap, at no set angle, so its
+                panels will not tile and it cannot run.' missing from: This
+                flow arms at astronomical dusk (\\u221230 min). It then arms
+                M31. M31 is a 3x2 mosaic shooting 5 of its 6 panels (3-1
+                skipped) at 25% overlap. After 1 pass of its filters on a
+                panel it moves on to the next (setting first), ...
+
+        DELIBERATE PIN CHANGE (S4 orchestrator ruling 1, #339; re-pinned by
+        the S4 integration, #398): the sentence now writes the grid as
+        ``test_the_mosaic_sentence_quotes_the_block`` says. Re-observed on the
+        S4 wording in scratchpad/s4-integrate-q7m2, the same mutant, and
+        only this test failed:
+            E       AssertionError: 'M31 is a mosaic of 2 columns by 3 rows
+                shooting 5 of its 6 panels (panel 3-1 skipped, written
+                row-column) at 25% overlap, at no set angle, so its panels
+                will not tile and it cannot run.' missing from: This flow arms
+                at astronomical dusk (\\u221230 min). It then arms M31. M31 is
+                a mosaic of 2 columns by 3 rows shooting 5 of its 6 panels
+                (panel 3-1 skipped, written row-column) at 25% overlap. After
+                1 pass of its filters on a panel it moves on to the next
+                (setting first), ...
+        """
+        b = brief(_mosaic(angle="Any angle"))
+        part = ("M31 is a mosaic of 2 columns by 3 rows shooting 5 of its 6 "
+                "panels (panel 3-1 skipped, written row-column) at 25% "
+                "overlap, at no set angle, so its panels will not tile and it "
+                "cannot run.")
+        assert part in b, f"{part!r} missing from: {b}"
+        assert "laid out at PA" not in b, b
+
+    def test_control_a_single_target_brief_has_no_mosaic_sentence(self):
+        """A 1x1 block is today's single target: no mosaic words, and a hop
+        cost changes nothing about its brief."""
+        g = _ex("example-m16")
+        assert "mosaic" not in brief(g)
+        assert brief(g, hop_cost_s=160.0) == brief(g)
+
+    @pytest.mark.parametrize("kw", [dict(), dict(loop=False),
+                                    dict(angle="Camera fixed at PA"),
+                                    dict(skip="1-1, 3-2", passes=3)])
+    def test_every_mosaic_brief_is_whole_sentences(self, kw):
+        b = brief(_mosaic(**kw), hop_cost_s=95.0)
+        assert b[0].isupper() and b.endswith("."), b
+        assert "  " not in b and "None" not in b, b
+        assert "—" not in b and "–" not in b, b
+
+
+class TestTheBriefJoinsAListAsEnglish:
+    """#407: a list of two takes no comma, a list of three or more keeps the
+    Oxford comma. ``_join_and`` wrote ", and" before the last item whatever
+    the length, so a mosaic with exactly two skipped panels briefed as
+    "(panels 1-1, and 3-2 skipped, ...)". Its other caller, the cloud hold's
+    checklist, has the same shape: a hold whose cooler, re-centre and
+    refocus steps are all off has two steps.
+
+    Every length is pinned, through ``_join_and`` itself and through the two
+    sentences that call it, so a fix for two that broke three (or the
+    reverse) cannot pass.
+
+    Every mutant below was run in a private copy of ``server/`` (scratchpad
+    ``S5-TONIGHT-mut``, from byte backups), never in the shared tree.
+
+    RED under mutant "the old _join_and" (its two-item branch removed, so
+    every list of two or more ends ", and" as before #407), observed: the
+    two-panel test, the checklist test and the lengths test failed (3
+    failed, 55 passed), and the three-panel test stayed green:
+
+        E       AssertionError: This flow arms at astronomical dusk (−30
+            min). It then arms M31. M31 is a mosaic of 2 columns by 3 rows
+            shooting 4 of its 6 panels (panels 1-1, and 3-2 skipped, written
+            row-column) at 25% overlap, laid out at PA 30° with the rotator
+            turned to it at every panel. After 3 passes of its filters on a
+            panel it moves on to the next (setting first), and comes back
+            until every panel has its subs. The hop between panels has not
+            been measured on this rig yet. Capture interleaves one sub per
+            filter per pass - L 60 s × 45, R 60 s × 45, G 60 s × 45, B 60 s
+            × 45, Ha 180 s × 45, OIII 180 s × 45, SII 180 s × 45 - so every
+            channel grows evenly.
+        E       assert '(panels 1-1 and 3-2 skipped, written row-column)' in
+            'This flow arms at astronomical dusk (−30 min). It then arms
+            M31. M31 is a mosaic of 2 columns by 3 rows shooting 4 of...'
+
+        E       AssertionError: If cloud cover above 40% is detected,
+            imaging pauses at the frame boundary and the calibration queue
+            banks whatever the library lacks (darks → bias →
+            flats-if-panel); once the sky holds clear for 4 min it restores
+            the filter, and resumes at the same slot
+
+        E         Differing items:
+        E         {2: 'a, and b'} != {2: 'a and b'}
+
+    (and ``test_flows_brief_grid_and_visit``'s re-pinned two-panel line).
+
+    RED under mutant "no Oxford comma" (the list of three or more joined
+    ``", ".join(parts[:-1]) + " and " + parts[-1]``), observed: the
+    three-panel test, the checklist test (on its five-step control) and the
+    lengths test failed (3 failed, 55 passed), and the two-panel test stayed
+    green:
+
+        E       AssertionError: This flow arms at astronomical dusk (−30
+            min). It then arms M31. M31 is a mosaic of 2 columns by 3 rows
+            shooting 3 of its 6 panels (panels 1-1, 2-2 and 3-2 skipped,
+            written row-column) at 25% overlap, ...
+        E       assert ', and resumes at the same slot.' in 'This flow arms
+            at astronomical dusk (−30 min), opens the dome and binds it to
+            the mount. ...'
+        E         Differing items:
+        E         {3: 'a, b and c'} != {3: 'a, b, and c'}
+        E         {4: 'a, b, c and d'} != {4: 'a, b, c, and d'}
+    """
+
+    def test_two_skipped_panels_take_no_comma(self):
+        """The #407 graph: 3 rows of 2 with 1-1 and 3-2 skipped."""
+        b = brief(_mosaic(skip="1-1, 3-2", passes=3))
+        assert "(panels 1-1 and 3-2 skipped, written row-column)" in b, b
+        assert "1-1, and" not in b, b
+
+    def test_three_skipped_panels_keep_the_oxford_comma(self):
+        b = brief(_mosaic(skip="1-1, 2-2, 3-2"))
+        assert "(panels 1-1, 2-2, and 3-2 skipped, written row-column)" \
+            in b, b
+
+    def test_a_two_step_resume_checklist_takes_no_comma(self):
+        """The Campaign Example's hold with its cooler gate, re-centre and
+        refocus all off leaves two steps; with them on, five (control: the
+        Oxford comma stays)."""
+        g = _ex("example-campaign")
+        hold = next(n for n in g.nodes if n.type == "holdresume")
+        full = brief(g)
+        assert ("re-cools the sensor to setpoint and waits for it to "
+                "stabilize, restores the filter, re-centers, ") in full, full
+        assert ", and resumes at the same slot." in full, full
+        hold.params.update(cooler="Skip check", recenter="Stay put",
+                           refocus="Never")
+        two = brief(g)
+        sentence = next(s for s in two.split(". ")
+                        if s.startswith("If cloud cover"))
+        assert sentence.endswith(
+            "it restores the filter and resumes at the same slot"), sentence
+
+    def test_every_length_of_list(self):
+        from astrodeck.flows.tonight import _join_and
+        items = ["a", "b", "c", "d"]
+        got = {n: _join_and(items[:n]) for n in range(5)}
+        assert got == {0: "", 1: "a", 2: "a and b", 3: "a, b, and c",
+                       4: "a, b, c, and d"}
+
+
 # =========================================================== the campaign tab
 
 class TestWhatTheCampaignTabWillSay:

@@ -37,7 +37,6 @@ import type {
   SequenceState,
   SiteInfo,
   StretchParams,
-  Target,
   Toast,
   ToastLevel,
   TouchSettings,
@@ -82,6 +81,7 @@ import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
 import { ensurePlanIds } from "./lib/ids";
 import { isExposureValueInvalid } from "./lib/exposure";
+import { DEFAULT_OVERLAP } from "./lib/framing";
 import { api, ApiError } from "./api";
 import { getMe, getAuthMethods } from "./api/backends";
 
@@ -711,13 +711,11 @@ interface AppState extends FlowsActions {
   // The active framing session (null until openFraming). Optics are read from
   // `config.optics_computed`; site from `site` — NO separate settings slice.
   framing: FramingSession | null;
-  atlasHandoff: number; // bump flashes the "added to plan" banner in SequenceView
-  // One-shot Atlas→Plan hand-off banner. addTargetsToPlan sets it to the panel
-  // count of the latest Send; SequenceView renders "N panels added from Atlas"
-  // and clears it via dismissAtlasBanner. Store-held so it survives SequenceView's
-  // remount on navigation (App's single-slot <main key={view}>) — a useRef seed
-  // would miss the already-bumped signal.
-  atlasBannerPending: number | null;
+  // The Atlas→Plan hand-off banner's panel count was here, with its dismiss
+  // action and its hook. Nothing set it since S6 (#196): the Atlas's and the
+  // Sky's framing go to Send to Flow Wizard, which writes one TARGET block
+  // into a flow and not a target into the Plan. The S5/S6 integration removed
+  // the last reader, #/next's PlanEditor banner, and the slice with it (#461).
 
   // --- site (onboarding) ---
   site: SiteInfo | null;
@@ -782,6 +780,17 @@ interface AppState extends FlowsActions {
   // null whenever no run is in flight, so nothing can be overdue.
   lastCaptureAtMs: number | null;
   lastFramesDone: number | null; // previous frames_done, to spot the advance
+  // The newest frame the SERVER named, from /api/monitor/snapshot's
+  // `preview_id` (#399). ws.ts reads the snapshot on every connect, every
+  // reconnect and every relay gap and puts the id here, so a LAST FRAME tile
+  // on any page has the rig's own answer when the live `preview` event went
+  // missing on the way (a reconnect never restored it, and the relay's
+  // overflow could drop it). The tile shows the newer of this and `preview`
+  // (lib/lastFrameId.ts). MONITOR - LIVE reads it; the classic Monitor still
+  // keeps its own copy (views/MonitorView.tsx, #399's first half), and
+  // max-merges it (#437). Replaced here, never max-merged: it is what the
+  // server said at the last read, and a restarted server counts from 1 again.
+  snapshotPreviewId: number | null;
   lastGuideAtMs: number | null; // set on each guide event
   autoMonitor: boolean; // localStorage pref, default false (auto-SELECT only)
   runBanner: RunBanner; // persistent "Sequence running — open Live" banner
@@ -886,13 +895,16 @@ interface AppState extends FlowsActions {
   // --- actions: atlas / framing ---
   openFraming: (e?: CatalogEntry) => void; // view="atlas"; seed center+FOV from entry/optics
   setFraming: (patch: Partial<FramingSession>) => void;
-  addTargetsToPlan: (targets: Target[], group?: string) => void; // replace-by-group then append
-  dismissAtlasBanner: () => void; // clears the one-shot Atlas→Plan hand-off banner
 
   // --- actions: reliability ---
   setWsPhase: (p: WsPhase) => void;
   noteWsEvent: () => void;
   setTelemetryStale: (v: boolean) => void;
+  /** The ONE toast model. The flows slice reaches it BY THIS NAME through
+   *  `get()` (flowsSlice.ts `FlowsHost.enqueueToast`, optional there so a
+   *  miniature store can omit it), so a rename here silences the save's
+   *  re-anchor toast without a type error; flowsReanchorToast.test.ts's
+   *  app-store case is what notices. */
   enqueueToast: (input: EnqueueInput) => void;
   dismissToast: (id: number) => void;
   dismissExpired: () => void;
@@ -915,6 +927,8 @@ interface AppState extends FlowsActions {
   // --- actions: monitor ---
   setAutoMonitor: (v: boolean) => void;
   dismissRunBanner: () => void;
+  // Record the snapshot's `preview_id` (null: the server has no frame yet).
+  setSnapshotPreviewId: (id: number | null) => void;
 
   setResumeArm: (r: ResumeArmState | null) => void;
   dismissArmedBanner: () => void;
@@ -982,12 +996,17 @@ const PREVIEW_PERSISTED = loadPreviewPersisted();
 const TOUCH_INIT = loadTouch();
 haptics.enabled = TOUCH_INIT.hapticsEnabled;
 
-export const useStore = create<AppState>((set, get) => ({
+export const useStore = create<AppState>((set, get, storeApi) => ({
   // Flows. The actions come from the slice module and are spread flat, like
   // every other action here; `flows` is the one nested field, matching the
   // `sequence` / `polar` grouping convention.
+  //
+  // `storeApi` is how the slice watches `sequence` to keep the TARGET chip
+  // current while the open flow's run shoots (#214): a subscription rather
+  // than a public action, so the sign-out gate has no new store member to
+  // classify.
   flows: FLOWS_INIT,
-  ...createFlowsActions(set, get),
+  ...createFlowsActions(set, get, storeApi),
   // --- core ---
   view: "connect",
   helpTopic: null,
@@ -1025,8 +1044,6 @@ export const useStore = create<AppState>((set, get) => ({
 
   // --- atlas / framing ---
   framing: null,
-  atlasHandoff: 0,
-  atlasBannerPending: null,
 
   // --- site ---
   site: null,
@@ -1071,6 +1088,7 @@ export const useStore = create<AppState>((set, get) => ({
   lastFrameAtMs: null,
   lastCaptureAtMs: null,
   lastFramesDone: null,
+  snapshotPreviewId: null,
   lastGuideAtMs: null,
   autoMonitor: localStorage.getItem(AUTO_MONITOR_KEY) === "1",
   runBanner: null,
@@ -1279,15 +1297,19 @@ export const useStore = create<AppState>((set, get) => ({
   // Open the Atlas on `e` (or free-roam when no entry). Switches the view, seeds
   // the session center from the entry (or current mount/0,0 when free-roam), and
   // seeds the survey crop width from the persisted optics FOV (fallback ~1.5°).
-  // Defaults: 1×1 mosaic, 25% overlap, DSS2 color, linear stretch, empty panels.
+  // Defaults: 1×1 mosaic, `DEFAULT_OVERLAP` (lib/framing.ts, the one overlap
+  // every framing starts from, spec 2.4), DSS2 color, linear stretch, empty
+  // panels.
   openFraming: (e) => {
     const config = get().config;
     const center = e
       ? { ra_hours: e.ra_hours, dec_deg: e.dec_deg }
       : { ra_hours: get().status?.mount?.ra_hours ?? 0, dec_deg: get().status?.mount?.dec_deg ?? 0 };
-    // Free-roam sends have no catalog id to group panels by; synthesize a stable
-    // per-session group id from the rounded center so a multi-panel mosaic groups
-    // in the Plan and re-framing REPLACES (not duplicates) its panels (C1-C2).
+    // A free-roam session has no catalog id to be recognised by; synthesize a
+    // stable per-session id from the rounded center, which the Sky hub's quick
+    // sheet matches a patch's own framing by (`framingMatches`). It once also
+    // grouped a free-roam mosaic's Plan targets (C1-C2); since S6 (#196) no
+    // framing writes to the Plan.
     const freeroamId = e
       ? undefined
       : `Sky ${center.ra_hours.toFixed(2)}h ${center.dec_deg >= 0 ? "+" : ""}${center.dec_deg.toFixed(1)}°`;
@@ -1307,7 +1329,7 @@ export const useStore = create<AppState>((set, get) => ({
           : FRAMING_DEFAULT_SURVEY,
       stretch: "linear",
       fovZoomDeg: seedFovZoomDeg(config),
-      mosaic: { rows: 1, cols: 1, overlap: 0.25 },
+      mosaic: { rows: 1, cols: 1, overlap: DEFAULT_OVERLAP },
       panels: [],
       freeroamId,
     };
@@ -1317,29 +1339,12 @@ export const useStore = create<AppState>((set, get) => ({
   setFraming: (patch) =>
     set((s) => (s.framing ? { framing: { ...s.framing, ...patch } } : {})),
 
-  // Replace-by-group then append (resolves dedupe critique C1-C2). If any incoming
-  // target carries mosaic_group===group, every existing target with that group is
-  // removed first, so re-framing the same object REPLACES its panels instead of
-  // silently no-op'ing. Single (no group) frames append. Routes through setPlan so
-  // the existing persist-in-setter writes localStorage; then bumps atlasHandoff.
-  addTargetsToPlan: (targets, group) => {
-    const plan = get().plan;
-    const groupHit =
-      group != null && targets.some((t) => t.mosaic_group === group);
-    const kept = groupHit
-      ? plan.targets.filter((t) => t.mosaic_group !== group)
-      : plan.targets;
-    // Atlas hand-off targets carry no schedule — backfill each (default FIRST so an
-    // explicit schedule, if a future send ever attaches one, still wins) (C1-27).
-    const incoming = targets.map((t) => ({ schedule: defaultSchedule(), ...t }));
-    const nextPlan: SequencePlan = { ...plan, targets: [...kept, ...incoming] };
-    get().setPlan(nextPlan);
-    // Bump the hand-off signal AND record the panel count so SequenceView shows
-    // "N panels added from Atlas" exactly once, surviving its remount-on-nav.
-    set((s) => ({ atlasHandoff: s.atlasHandoff + 1, atlasBannerPending: targets.length }));
-  },
-
-  dismissAtlasBanner: () => set({ atlasBannerPending: null }),
+  // The Plan hand-off action was here: the Atlas's old Plan button and the Sky
+  // quick sheet's side channel wrote a framing into the Plan as targets
+  // sharing a `mosaic_group`, shot panel-first (#154). Both doors now open
+  // Send to Flow Wizard (#196, spec section 8 S6), which writes one TARGET
+  // block into a flow and leaves the Plan alone; the classic Plan page keeps
+  // its own target entry for hand-built plans.
 
   // ----------------------------------------------------------- reliability
   setWsPhase: (p) => {
@@ -1579,6 +1584,15 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   dismissRunBanner: () => set({ runBanner: null }),
+
+  // #117: like reconcileLogs, this is rig state that does NOT arrive through
+  // handleEvent (ws.ts awaits a snapshot GET and then writes it), so it states
+  // the intake rule itself. A sign-out landing inside that await would
+  // otherwise put a frame of tonight's target back behind the sign-in form.
+  setSnapshotPreviewId: (id) => {
+    if (intakeBlocked(get().authGate)) return;
+    set({ snapshotPreviewId: typeof id === "number" && Number.isFinite(id) ? id : null });
+  },
 
   setResumeArm: (r: ResumeArmState | null) => set({ resumeArm: r }),
   //: Dismissed PER SESSION, not globally: a new armed session is new news and
@@ -2041,6 +2055,8 @@ export const useStore = create<AppState>((set, get) => ({
                    && seq.state !== "aborting") {
           lastCaptureAtMs = null;          // no run: nothing can be overdue
         }
+        // The flows slice watches this write (createFlowsActions' subscription,
+        // #214): a frame landing on the OPEN flow's run re-reads its progress.
         set({ sequence: seq, runBanner, lastCaptureAtMs, lastFramesDone: doneNow,
              selectedPreviewId: pin });
 
@@ -2161,6 +2177,9 @@ export const useGuideRmsByKind = () =>
 export const useFocus = () => useStore((s) => s.focus);
 export const useLastAutofocusResult = () => useStore((s) => s.lastAutofocusResult);
 export const usePreview = () => useStore((s) => s.preview);
+/** The last snapshot's `preview_id` (#399): what a LAST FRAME tile shows when
+ *  the live `preview` is missing or older. */
+export const useSnapshotPreviewId = () => useStore((s) => s.snapshotPreviewId);
 export const usePhotometry = () => useStore((s) => s.photometry);
 export const usePolar = () => useStore((s) => s.polar);
 /** What the next frame of this PURPOSE will be shot at — server truth, shared
@@ -2266,8 +2285,6 @@ export const useProviders = (): ProvidersStatus | null =>
     ),
   );
 export const useFraming = () => useStore((s) => s.framing);
-export const useAtlasHandoff = () => useStore((s) => s.atlasHandoff);
-export const useAtlasBannerPending = () => useStore((s) => s.atlasBannerPending);
 export const useSite = () => useStore((s) => s.site);
 export const useEquipConnected = () => useStore((s) => s.equipConnected);
 export const useConfirm = () => useStore((s) => s.confirm);

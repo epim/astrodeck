@@ -6,7 +6,8 @@ This is the ONLY module that touches real sockets; everything it depends on
 WSS integration test exercises this shell end to end.
 
 Endpoints:
-  * ``GET  /healthz``                  liveness (no auth).
+  * ``GET  /healthz``                  liveness (no auth), with the build
+                                       identity baked into the image.
   * ``WS   /scope``                    the HOME dials here (device-token auth via
                                        the HELLO frame). One per home; generation
                                        fencing evicts a stale socket.
@@ -28,8 +29,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import hmac
 import logging
+import os
 import signal
 import time
 from typing import Optional
@@ -68,6 +71,12 @@ try:  # Starlette/uvicorn/websockets are optional at import time so the pure
     _HAVE_STARLETTE = True
 except Exception:  # noqa: BLE001 - server deps absent (pure-core/test env)
     _HAVE_STARLETTE = False
+
+try:  # uvicorn's own formatters, for the path-only access log below (#520).
+    from uvicorn.logging import AccessFormatter as _AccessFormatter
+    from uvicorn.logging import DefaultFormatter as _DefaultFormatter
+except Exception:  # noqa: BLE001 - uvicorn absent: nothing will run them
+    _AccessFormatter = _DefaultFormatter = logging.Formatter
 
 
 # --------------------------------------------------------------- shared state
@@ -233,6 +242,12 @@ class _StarletteScopeTunnel(ScopeTunnel):
         self._ws = ws
         self._send_timeout_s = send_timeout_s
         self._send_lock = asyncio.Lock()
+        #: The code of the FIRST close the relay itself sent on this socket,
+        #: or None while only the home (or the network) has ended it. Read by
+        #: the end line (#521): once the relay has hung up, the disconnect the
+        #: read loop sees next is the echo of that close, and reporting its
+        #: code alone would make the relay's decision read as the home's.
+        self.relay_close_code: Optional[int] = None
 
     async def _send(self, frame: Frame) -> None:
         async with self._send_lock:
@@ -244,6 +259,8 @@ class _StarletteScopeTunnel(ScopeTunnel):
     async def close_socket(self, code: int = 1012) -> None:
         """Physically close this generation's WSS, serialised with writes."""
         self.closed = True
+        if self.relay_close_code is None:
+            self.relay_close_code = code
         async with self._send_lock:
             with contextlib.suppress(Exception):
                 await self._ws.close(code)
@@ -263,6 +280,72 @@ class _StarletteBrowserWS(BrowserWS):
             await self._ws.close(code)
         except Exception:  # noqa: BLE001 - already closed
             pass
+
+
+# ------------------------------------------------ a tunnel's end, said (#521)
+#
+# The rig's tunnel dropped in clusters with "no close frame" on the rig's side,
+# and this log held the new generation's handshake and nothing about the old
+# one ending. A close the relay made, a close the home sent and a cut in the
+# network between them were indistinguishable, because none of them was
+# written down. So the end of every registered tunnel is one line, and the
+# next cluster classifies itself.
+#
+# What the line carries is chosen as the access log's query is withheld
+# (#520): the home id, which is the routing key already in every tunnelled
+# path, the generation, the lifetime and how it ended. Never the device token,
+# a cookie or the home's IP.
+
+#: The code a WebSocket stack reports for a connection that ended with no
+#: close frame at all (RFC 6455 7.1.5: reserved, never sent on the wire).
+#: uvicorn's websockets and wsproto protocols both report it for a dropped
+#: TCP connection.
+NO_CLOSE_FRAME_CODE = 1006
+
+#: The reserved codes that carry no status from the peer, so neither names a
+#: close the home chose. 1006 is the dropped connection above. 1005 ("no status
+#: received", RFC 6455 7.4.1, also never sent on the wire) is what the newest
+#: uvicorn/websockets stack reports for the SAME abrupt drop: the CI runner,
+#: installing the relay's unpinned requirements on 2026-09-30, logged
+#: "close=1005" where the Windows dev box logged "no close frame" (#597's
+#: library difference). Both read as "no close frame", the rig's own words.
+NO_STATUS_CODES = (1005, NO_CLOSE_FRAME_CODE)
+
+#: Why the relay sends each code it closes a LIVE tunnel with. One call site
+#: per code: the keepalive (``_ping_loop``), revocation (``evict_home``) and
+#: generation fencing, where a newer HELLO replaces this socket. The 1012 the
+#: handler's own ``finally`` sends comes after the line is written, so it
+#: never reaches here.
+_RELAY_CLOSE_WHY = {
+    1001: "no PONG within the keepalive deadline",
+    1008: "its device token was revoked",
+    1012: "a newer generation replaced it",
+}
+
+
+def tunnel_end_line(home_id: str, generation: int, lived_s: float, *,
+                    received_code: Optional[int] = None,
+                    relay_code: Optional[int] = None,
+                    error: str = "") -> str:
+    """The one line the relay writes when a home's registered tunnel ends.
+
+    ``relay_code`` is the relay's own first close on the socket, and wins:
+    the disconnect that follows it is only the echo. Otherwise
+    ``received_code`` is what the read loop's disconnect carried, which is
+    the home's close code, or the reserved 1006 for none at all, printed as
+    the words the rig's side of the same drop uses. ``error`` names a read
+    that ended some other way (a frame the relay could not decode)."""
+    head = (f"home tunnel ended: home={home_id} gen={int(generation)} "
+            f"lived={max(0.0, lived_s):.1f}s")
+    if relay_code is not None:
+        why = _RELAY_CLOSE_WHY.get(relay_code, "")
+        return (f"{head} close={relay_code} sent by the relay"
+                + (f": {why}" if why else ""))
+    if error:
+        return f"{head} close=none: {error}"
+    if received_code is None or received_code in NO_STATUS_CODES:
+        return f"{head} close=no close frame"
+    return f"{head} close={received_code}"
 
 
 # ----------------------------------------------------------------- handlers
@@ -384,6 +467,11 @@ async def _scope_endpoint(state: RelayState, ws: "WebSocket") -> None:
                     await close_socket(1012)
             with contextlib.suppress(Exception):
                 await prior.close()
+    # The tunnel is live from here: this is the moment its lifetime counts
+    # from, and every way out of the loop below reaches the end line.
+    live_since = time.monotonic()
+    received_code: Optional[int] = None
+    read_error = ""
     ping_task = asyncio.ensure_future(_ping_loop(state, conn, ws))
     try:
         while True:
@@ -392,14 +480,25 @@ async def _scope_endpoint(state: RelayState, ws: "WebSocket") -> None:
             reply = await conn.on_frame(frame)
             if reply is not None:
                 await tunnel.send_frame(reply)
-    except (WebSocketDisconnect, ProtocolError):
-        pass
-    except Exception:  # noqa: BLE001 - any read error tears the tunnel down
-        pass
+    except WebSocketDisconnect as exc:
+        received_code = exc.code
+    except ProtocolError:
+        read_error = "the home sent a frame the relay could not decode or route"
+    except Exception as exc:  # noqa: BLE001 - any read error tears the tunnel down
+        # The class only: an exception's text from a socket layer can carry
+        # a peer address, and the line must not.
+        read_error = f"the read failed ({type(exc).__name__})"
     finally:
         ping_task.cancel()
         with contextlib.suppress(BaseException):
             await ping_task
+        # Written before this handler's own 1012 below, so ``relay_code`` is
+        # only ever a close the relay decided on while the tunnel was live.
+        with contextlib.suppress(Exception):
+            log.info("%s", tunnel_end_line(
+                home_id, conn.reg.generation, time.monotonic() - live_since,
+                received_code=received_code,
+                relay_code=tunnel.relay_close_code, error=read_error))
         # Only clear the affinity entry if we are still the live connection
         # (a higher-generation redial may have replaced us).
         if state.connections.get(home_id) is conn:
@@ -697,10 +796,40 @@ async def _browser_ws(state: RelayState, ws: "WebSocket") -> None:
         state.release_ws(home_id)
 
 
-async def _healthz(request) -> "JSONResponse":
+# What /healthz says when the image carries no build identity. An explicit
+# word, because the alternative is a guess: the package's own __version__ has
+# read 0.1.0 since the relay was written, so it cannot tell one build from
+# another.
+BUILD_UNKNOWN = "unknown"
+
+
+def build_identity(environ=None) -> dict:
+    """The version and git commit baked into the image at build time (#462).
+
+    The Dockerfile declares both as build args and passes them to env, and
+    ``scripts/deploy_relay.ps1`` sets them and then waits for /healthz to
+    report its commit. That is how a deploy is verified, and drift noticed,
+    from outside with no Fly credential: the relay once ran July code for two
+    months and nothing said so. An image built without the args has each
+    variable set to "" (an ARG with no value expands to that), so empty and
+    blank read as unset."""
+    env = os.environ if environ is None else environ
+
+    def _read(name: str) -> str:
+        return (env.get(name) or "").strip() or BUILD_UNKNOWN
+
+    return {
+        "version": _read("RELAY_BUILD_VERSION"),
+        "commit": _read("RELAY_BUILD_COMMIT"),
+    }
+
+
+async def _healthz(request, build: dict) -> "JSONResponse":
     return JSONResponse({
         "ok": True,
         "ts": time.time(),
+        "version": build["version"],
+        "commit": build["commit"],
     })
 
 
@@ -725,8 +854,15 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
     async def browser_http_ep(request):  # noqa: ANN001
         return await _browser_http(state, request)
 
+    # Read once: the environment is fixed when the image is built, so the
+    # identity cannot change for the life of the process.
+    build = build_identity()
+
+    async def healthz_ep(request):  # noqa: ANN001
+        return await _healthz(request, build)
+
     routes = [
-        Route("/healthz", _healthz, methods=["GET"]),
+        Route("/healthz", healthz_ep, methods=["GET"]),
         WebSocketRoute("/scope", scope_ep),
         WebSocketRoute("/h/{home_id}/ws", browser_ws_ep),
         Route("/h/{home_id}/{path:path}", browser_http_ep,
@@ -784,6 +920,107 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
     return app
 
 
+# ------------------------------------------------ the logs: paths only (#520)
+#
+# THE RELAY LOGS WHERE A REQUEST WENT, NEVER WHAT IT ASKED. uvicorn's access
+# line is `GET /h/home-1/api/cloudmap/at?alt=..&az=.. HTTP/1.1` by default, and
+# on 2026-09-28 the Fly relay's log held the mount's live pointing exactly that
+# way, several times a minute. A pointing at a known time is a function of the
+# site, and this log belongs to a third party's pipeline.
+#
+# The UI no longer puts a coordinate in any URL, and the rig refuses one that
+# does; this is the third wall, and the only one that covers a route written
+# next year. Every query string is withheld, whatever it carries: a list of
+# the sensitive names would be one more thing to keep up to date, and the
+# path is what anyone reading a relay log is looking for.
+#
+# Two formatters because uvicorn writes a request target in two places: the
+# access log for HTTP, and its error logger for a WebSocket handshake
+# (`"WebSocket /h/home-1/ws?..." [accepted]`). relay/relay itself formats no
+# request path or URL into any log call; the two it has log counts and an
+# exception, and they are left as they are.
+
+#: What a withheld query string reads as. It still says one was there, which
+#: is the part a person diagnosing a tunnel can use. No space in it: the
+#: request line is split on spaces by anything that parses an access log.
+QUERY_WITHHELD = "?<withheld>"
+
+
+def _path_only(value: object) -> object:
+    """A request target with its query string replaced by a marker. Anything
+    that is not a path carrying a query comes back untouched, so the same rule
+    can be run over every argument of every uvicorn record."""
+    if isinstance(value, str) and value.startswith("/") and "?" in value:
+        return value.split("?", 1)[0] + QUERY_WITHHELD
+    return value
+
+
+def _without_queries(record: logging.LogRecord) -> logging.LogRecord:
+    """A copy of ``record`` whose request targets have lost their queries.
+
+    A COPY, because the record is shared: every handler on the logger and its
+    parents is handed the same object, and rewriting it in place would change
+    what they see as a side effect of which formatter happened to run first."""
+    args = record.args
+    if not isinstance(args, tuple) or not any(
+            _path_only(a) is not a for a in args):
+        return record
+    clone = copy.copy(record)
+    clone.args = tuple(_path_only(a) for a in args)
+    return clone
+
+
+class PathOnlyAccessFormatter(_AccessFormatter):
+    """uvicorn's access formatter, with the query string withheld."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return super().format(_without_queries(record))
+
+
+class PathOnlyDefaultFormatter(_DefaultFormatter):
+    """uvicorn's default formatter (its error logger, which is where the
+    WebSocket handshake lines go), with the query string withheld."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return super().format(_without_queries(record))
+
+
+def uvicorn_log_config() -> dict:
+    """uvicorn's own logging config with both formatters swapped for the
+    path-only ones. Copied, not edited: ``LOGGING_CONFIG`` is uvicorn's module
+    global, and uvicorn writes into the dict it is handed.
+
+    It also gives the relay's own ``relay`` loggers a handler (#521, #556).
+    uvicorn's config configures only uvicorn's loggers and leaves the root
+    bare, so an info line from ``relay.server`` fell through to Python's
+    last-resort handler, which prints warnings and above: the SIGHUP reload's
+    counts line and the tunnel end line were written by the code and never
+    printed. Through the default handler they share uvicorn's stream and the
+    path-only formatter; ``propagate`` is off as it is for uvicorn's own, so
+    a root handler added later cannot print them twice."""
+    from uvicorn.config import LOGGING_CONFIG
+
+    cfg = copy.deepcopy(LOGGING_CONFIG)
+    cfg["formatters"]["access"]["()"] = PathOnlyAccessFormatter
+    cfg["formatters"]["default"]["()"] = PathOnlyDefaultFormatter
+    cfg["loggers"]["relay"] = {
+        "handlers": ["default"], "level": "INFO", "propagate": False}
+    return cfg
+
+
+def uvicorn_options(cfg: RelayConfig) -> dict:
+    """Every keyword ``main`` hands ``uvicorn.run``, in one place so the test
+    of the access log runs the server exactly as production does."""
+    return dict(host=cfg.bind_host, port=cfg.bind_port,
+                proxy_headers=bool(cfg.forwarded_allow_ips),
+                forwarded_allow_ips=cfg.forwarded_allow_ips or "",
+                access_log=cfg.uvicorn_access_log,
+                log_config=uvicorn_log_config(),
+                ws_max_size=MAX_WIRE_SIZE, ws_max_queue=16,
+                limit_concurrency=256, backlog=128, timeout_keep_alive=5,
+                h11_max_incomplete_event_size=65536)
+
+
 def main() -> None:  # pragma: no cover - process entrypoint
     """``python -m relay`` entrypoint: run the relay under uvicorn."""
     from .runtime_security import require_unprivileged_runtime
@@ -796,10 +1033,4 @@ def main() -> None:  # pragma: no cover - process entrypoint
 
     cfg = RelayConfig.from_env()
     app = create_app(cfg)
-    uvicorn.run(app, host=cfg.bind_host, port=cfg.bind_port,
-                proxy_headers=bool(cfg.forwarded_allow_ips),
-                forwarded_allow_ips=cfg.forwarded_allow_ips or "",
-                access_log=cfg.uvicorn_access_log,
-                ws_max_size=MAX_WIRE_SIZE, ws_max_queue=16,
-                limit_concurrency=256, backlog=128, timeout_keep_alive=5,
-                h11_max_incomplete_event_size=65536)
+    uvicorn.run(app, **uvicorn_options(cfg))

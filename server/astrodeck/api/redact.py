@@ -20,7 +20,8 @@ other event's precise-site keys are gated on view.site_precise.
 
 These helpers were originally nested closures inside ``api.app.create_app``.
 They are extracted here -- module-level and IMPORT-LIGHT (only ``..auth`` for
-``Principal``/``CAP_VIEW_SITE_PRECISE``/``CAP_VIEW_WEATHER`` + stdlib) -- so
+``Principal``/``CAP_VIEW_SITE_PRECISE``/``CAP_VIEW_WEATHER``, ``..events`` for
+the one ``site_derived`` predicate (a stdlib-only module) + stdlib) -- so
 BOTH the on-LAN /ws handler (``api.app``) AND the relay-tunneled /ws handler
 (``remote.relay_client``) share ONE implementation. ``api.app`` already imports
 ``remote.relay_client``, so relay_client importing the helpers back out of
@@ -28,9 +29,13 @@ BOTH the on-LAN /ws handler (``api.app``) AND the relay-tunneled /ws handler
 """
 from __future__ import annotations
 
+import csv
+import io
+
 from ..auth.capabilities import (CAP_CONFIG_BACKEND, CAP_VIEW_SITE_DERIVED,
                                  CAP_VIEW_SITE_PRECISE, CAP_VIEW_WEATHER)
 from ..auth.principal import Principal
+from ..events import is_site_derived
 
 # How often the long-lived /ws socket RE-authenticates its principal (seconds).
 # Auth is otherwise only checked at accept, so a revoked jti (POST
@@ -454,6 +459,103 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
     return payload
 
 
+# ------------------------------------------- lines and state TIMED by the site
+# The other site-derived channel, and no stripper above can close it, because
+# it is not in any value. It is in WHEN something is said (spec 6.9, #166). A
+# line logged as a mosaic panel is acquired at its computed meridian crossing
+# timestamps the transit of a known RA. That is the local sidereal time, and
+# the LST at a known instant is the longitude: the arithmetic that made
+# ``hours_to_flip`` a longitude above, done by the reader with a clock instead
+# of a field. The words can be as clean as "1-3 waits for the meridian" and the
+# line still carries the site in its ``ts``.
+#
+# So such a line is FLAGGED where it is logged (``bus.log(...,
+# site_derived=True)``, which sets ``data.site_derived``), and every seam that
+# serves a line drops it whole for a principal without ``view.site_derived``:
+# the ring (``_redact_log_rows_for``), the night read and both exports (the
+# night reader's ``include_site_derived``), and both WS lanes
+# (``_redact_ws_event``). Dropped, not reworded: an edited line still arrives
+# at the same moment. The night log FILE keeps it; the file is not a serving
+# seam, and the morning-after record needs every line.
+
+
+def _redact_log_rows_for(rows: list, principal: Principal | None) -> list:
+    """Log rows (``Event.to_json()`` dicts from the ring) with every row
+    flagged ``site_derived`` removed for a principal lacking
+    ``view.site_derived``. A holder gets ``rows`` itself.
+
+    The caller applies ``level`` and ``limit`` AFTER this, never before. A
+    viewer polling ``?limit=1`` over a list sliced first would see the answer
+    go empty at the moment a flagged line lands, and that moment is the thing
+    withheld."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return rows
+    return [r for r in rows if not is_site_derived(r)]
+
+
+#: The two ``state.group`` fields that name WHICH panel and pass a mosaic group
+#: is on (spec 5.10). While the group waits on the meridian rule, both are
+#: timed by the crossing: the panel held for the meridian, and then the hop
+#: that ends the wait, change at the moment a known RA transits, and a viewer
+#: watching ``panel`` go from "1-3" to "2-1" has read that transit off the
+#: clock, which is the longitude again.
+_GROUP_TIMED_KEYS = ("panel", "pass")
+
+
+def _withhold_group_timing(state: dict) -> dict:
+    """``state`` with ``group.panel`` and ``group.pass`` ABSENT (not null)
+    while ``group.meridian_wait`` is true, for a principal lacking
+    ``view.site_derived``. The caller has already decided the principal.
+
+    Returns ``state`` ITSELF when nothing is withheld (no ``group`` key, a
+    null group, a group not waiting), so a state with no group is served byte
+    for byte as it was. Otherwise a NEW state around a NEW group: ``state`` is
+    the engine's own ``engine.state`` behind the GET route, and a WS event's
+    ``data`` is shared by every subscriber, so a pop through either would take
+    the panel from the next operator, and from the engine, too.
+
+    Every other group field stays (its id, name, progress and set-aside
+    panels): the sheet a viewer watches still shows the group, just not which
+    panel it is holding for the crossing. ``meridian_wait`` stays with them;
+    it says a wait is on, not when it ends.
+
+    A truthy ``meridian_wait`` counts, not only ``True``, and a group that is
+    not a dict cannot be key-stripped, so it goes whole: this module's rule for
+    a shape it does not recognise is to fail closed."""
+    if "group" not in state:
+        return state
+    group = state["group"]
+    if group is None:
+        return state
+    if not isinstance(group, dict):
+        return {k: v for k, v in state.items() if k != "group"}
+    if not group.get("meridian_wait"):
+        return state
+    if not any(k in group for k in _GROUP_TIMED_KEYS):
+        return state
+    return {**state, "group": {k: v for k, v in group.items()
+                               if k not in _GROUP_TIMED_KEYS}}
+
+
+def _redact_sequence_for(payload: dict, principal: Principal | None) -> dict:
+    """A sequence state served to ``principal``: ``GET /api/sequence/state``
+    and the monitor snapshot's ``sequence``. The WS ``sequence`` event takes
+    the same helper inside ``_redact_ws_event``, so the three seams cannot
+    disagree (spec 5.10). A holder of ``view.site_derived`` gets ``payload``
+    itself; see ``_withhold_group_timing`` for what a non-holder loses.
+
+    Never raises: on any error a non-holder gets the state without its
+    ``group`` rather than a 500."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    try:
+        return _withhold_group_timing(payload)
+    except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
+        return {k: v for k, v in payload.items() if k != "group"}
+
+
 def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     """Strip precise site keys in a broadcast WS event for a principal lacking
     ``view.site_precise``. The bus ``Event.data`` is SHARED across every
@@ -495,7 +597,19 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     framing, the sky panel — is gated on
     ``view.site_precise`` rather than redacted, because there is nothing left of
     it once the answer is removed. Adding a derived value to a viewer-visible
-    payload is a capability decision, not a formatting one."""
+    payload is a capability decision, not a formatting one.
+
+    AND THE MOMENT OF AN EVENT CAN BE THE SITE (spec 6.9, #166). An event
+    flagged ``site_derived`` is DROPPED (``None``) for a principal lacking
+    ``view.site_derived``, before anything else is decided: no stripping of
+    its fields could make it safe, because it would still arrive at the
+    moment the site set. Any event type, not only ``log``: the flag says
+    when-it-happened is the site, whatever the event is. A ``sequence``
+    event's ``group.panel``/``group.pass`` are withheld while the group waits
+    on the meridian rule (5.10), by the same helper as the GET route."""
+    if is_site_derived(ev_json) and not (
+            principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)):
+        return None
     if ev_json.get("type") == "weather":
         if principal is not None and principal.has(CAP_VIEW_WEATHER):
             return ev_json  # holder (operator or admin): verbatim, unstripped
@@ -555,6 +669,15 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
                 else:
                     new_data = new_data if new_data is not None else dict(data)
                     new_data.pop(key, None)   # unexpected shape -> fail CLOSED
+        # state.group's panel and pass while the group waits on the meridian
+        # rule (spec 5.10): the GET route's helper, so the two cannot
+        # disagree. It returns its argument untouched when nothing is
+        # withheld, and a new dict otherwise, so ``data`` is never written.
+        if not has_derived and ev_json.get("type") == "sequence":
+            base = new_data if new_data is not None else data
+            withheld = _withhold_group_timing(base)
+            if withheld is not base:
+                new_data = withheld
         cfg = data.get("config")
         if not has_precise and isinstance(cfg, dict) and "site" in cfg:
             base = new_data if new_data is not None else dict(data)
@@ -582,6 +705,8 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         if not has_derived:
             for key, _strip in _DERIVED_NODES:
                 safe.pop(key, None)
+            if ev_json.get("type") == "sequence":
+                safe.pop("group", None)
         if not has_weather:
             _panic_scrub_weather(safe)
         cfg = safe.get("config")
@@ -590,6 +715,61 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
             cfg.pop("site", None)
             safe["config"] = cfg
         return {**ev_json, "data": safe}
+
+
+# ------------------------------------------- the auto-resume hold's numbers
+#: The key of a ResumeArm hold that carries its site-derived sentence (#233).
+_RESUME_HOLD_SITE_KEY = "site_detail"
+
+
+def _redact_resume_arm_for(payload: dict, principal: Principal | None) -> dict:
+    """``GET /api/sequence/resume-arm``'s payload, with ``hold.site_detail``
+    removed (ABSENT, not nulled) for a principal lacking
+    ``view.site_derived`` (#233; H3 orchestrator ruling 1 (spec, Still
+    waiting on the owner, item 10)).
+
+    WHAT IT CARRIES. ResumeArm's recovery ladder refuses to re-centre on a
+    target below its plan's start floor, or one the slew-limit gate refuses,
+    and the sentence that says so is made of site-derived numbers: the
+    target's altitude now, its floor, how long until it reaches the floor,
+    and for the gate its azimuth as well. A known object's altitude at a
+    known time is a circle of places on the Earth, and the ETA is a second
+    one (#140). Until #233 that sentence WAS the hold's ``reason``, which
+    this route serves to a viewer, and the "auto-resume held: ..." warning,
+    which ``/api/logs`` serves to the same viewer. Now the reason is words
+    and the numbers ride ``site_detail`` alone, and this is the one place
+    that decides who reads them: an operator and an admin do (the owner's
+    role-visibility ruling of 2026-09-22), a viewer and a syncer do not.
+
+    Only ``site_detail`` goes. The reason, the session, ``since``,
+    ``retry_at`` and ``owed`` are about the plan and the service's own
+    clock, and a viewer needs them to see that a session is armed and
+    waiting (the failure the hold exists to prevent, see ``ResumeArm.hold``).
+
+    COPIES, never strips in place: ``payload["hold"]`` is
+    ``ResumeArm.hold``, the service's own live dict, and a pop through it
+    would take the detail from the next operator's read too. FAIL-CLOSED on
+    shape drift, this module's rule: a hold that is not a dict cannot be
+    key-stripped, so a non-holder gets ``None`` in its place, and any error
+    on the way does the same rather than 500 the route."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    hold = payload.get("hold")
+    if hold is None:
+        return payload
+    try:
+        if not isinstance(hold, dict):
+            new_hold = None             # unexpected shape -> fail CLOSED
+        elif _RESUME_HOLD_SITE_KEY not in hold:
+            return payload
+        else:
+            new_hold = {k: v for k, v in hold.items()
+                        if k != _RESUME_HOLD_SITE_KEY}
+    except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
+        new_hold = None
+    return {**payload, "hold": new_hold}
 
 
 # ------------------------------------------------------ driver-row redaction
@@ -750,23 +930,177 @@ def _redact_session_for(payload: dict, principal: Principal | None) -> dict:
     return _externalize_frame_paths(payload, "path")
 
 
+# ------------------------------------------- report frame / sky-angle redaction
+# THE #19/#166 CLASS AGAIN, in a THIRD surface: a session's finished REPORT
+# (#567). ``FrameRecord.altitude_deg`` is the target's altitude at capture
+# time, computed from the saved site the same way ``mount.alt`` is — at a
+# known instant, for a known RA/Dec (the frame's own ``target`` and ``ts``),
+# an altitude is a circle on the Earth, and a few frames from one night
+# collapse it to a point, exactly as the live status audit did. It is served
+# whole to any holder of ``view.status`` — a plain viewer — because the only
+# redaction the report route ran was the path externalizer above.
+#
+# ``sky_angles`` rows (H4-ENG-C, #526 part 3) carry no altitude or azimuth —
+# ``report.SKY_ANGLE_KEYS`` is an allow-list precisely to avoid repeating that
+# mistake — but their ``exposed_at`` is the #166 class instead: a flip
+# re-slew, AND a mosaic's meridian-wait hop (both are made AT a computed
+# transit), timestamp the transit of the row's own ``target`` — the local
+# sidereal time at a known instant, i.e. the site's longitude. Every row is
+# timed at a crossing this way, not only a flip's, so the rule below plays no
+# favorites among rows: it nulls every row's ``exposed_at``, unconditionally.
+_REPORT_ALTITUDE_KEY = "altitude_deg"
+_SKY_ANGLE_TIME_KEY = "exposed_at"
+
+
+def _withhold_report_site_derived(payload: dict) -> dict:
+    """``payload`` with every frame's ``altitude_deg`` ABSENT and every
+    ``sky_angles`` row's ``exposed_at`` NULLED (#567). Returns a NEW dict —
+    ``payload`` and the lists/rows inside it are never mutated — matching
+    ``_externalize_frame_paths``'s contract, since both run over the same
+    ``frames`` list in ``_redact_report_for``.
+
+    Fails closed on shape drift: a ``frames``/``sky_angles`` entry that is not
+    a dict is left exactly as it is (nothing to key-strip), and this never
+    raises out to its caller."""
+    out = dict(payload)
+    frames = payload.get("frames")
+    if isinstance(frames, list):
+        out["frames"] = [
+            {k: v for k, v in fr.items() if k != _REPORT_ALTITUDE_KEY}
+            if isinstance(fr, dict) else fr
+            for fr in frames]
+    angles = payload.get("sky_angles")
+    if isinstance(angles, list):
+        out["sky_angles"] = [
+            {**row, _SKY_ANGLE_TIME_KEY: None}
+            if isinstance(row, dict) and _SKY_ANGLE_TIME_KEY in row else row
+            for row in angles]
+    return out
+
+
 def _redact_report_for(payload: dict, principal: Principal | None) -> dict:
-    """Session REPORT frames: ``saved_path`` becomes capture-root-relative.
+    """Session REPORT frames: ``saved_path`` becomes capture-root-relative for
+    every caller, and for a principal lacking ``view.site_derived`` every
+    frame's ``altitude_deg`` and every ``sky_angles`` row's ``exposed_at``
+    are withheld too (#567; see :func:`_withhold_report_site_derived`).
 
     ``FrameRecord`` calls the field ``saved_path`` rather than ``path`` and
     carried the absolute on-disk location, so ``GET /api/reports/{id}`` handed
     the observatory's filesystem layout to any holder of ``view.status`` — a
     plain viewer — while the session endpoint serving the same frames stripped
-    it. One name, two answers. Now one answer, and it is relative."""
-    return _externalize_frame_paths(payload, "saved_path")
+    it. One name, two answers. Now one answer, and it is relative.
+
+    Used for BOTH the full report payload (``get_report``, which has a
+    top-level ``sky_angles``) and the bare ``{"frames": [...]}`` the CSV route
+    hands in (which has none) — ``_withhold_report_site_derived`` no-ops on a
+    missing key, so one function serves both shapes.
+
+    Never raises: on any error a non-holder gets the report without its
+    ``frames``/``sky_angles`` rather than a 500 — the same fail-CLOSED rule
+    every other stripper in this module follows."""
+    payload = _externalize_frame_paths(payload, "saved_path")
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return payload
+    try:
+        return _withhold_report_site_derived(payload)
+    except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
+        out = dict(payload)
+        out.pop("frames", None)
+        out.pop("sky_angles", None)
+        return out
 
 
 def report_csv_columns(cols: list[str], principal: Principal | None) -> list[str]:
     """Column list for the frames CSV. ``saved_path`` STAYS for every caller —
     the value written under it is relative (the route externalizes each row the
     same way the JSON route does), so the column is no longer a disclosure and
-    dropping it would only make the CSV less useful than the JSON."""
-    return list(cols)
+    dropping it would only make the CSV less useful than the JSON.
+
+    ``altitude_deg`` is DROPPED for a principal lacking ``view.site_derived``
+    (#567) — the same per-frame value ``_redact_report_for`` withholds from
+    the JSON route, so the CSV and the JSON view of one report can never
+    disagree about what a viewer is allowed to read."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return list(cols)
+    return [c for c in cols if c != _REPORT_ALTITUDE_KEY]
+
+
+# ------------------------------------------------- stacking-bundle redaction
+# THE FOURTH CARRIER of the same per-frame value (#567). ``build_bundle``
+# (sequence/bundle.py) copies ``FrameRecord.altitude_deg`` onto every
+# ``LightEntry`` UNCONDITIONALLY — not only when the caller opts into
+# ``weight_altitude``, which merely folds that same value into the
+# normalized ``weight`` as well. So ``manifest_json``'s per-light rows and
+# ``weights_csv``'s ``altitude_deg`` column carry the raw value to ANY holder
+# of ``view.status`` (every role) on the DEFAULT (``weight_altitude=False``)
+# request, not only an opt-in one — the bundle.zip route never took a
+# principal at all before this.
+#
+# ``bundle_summary`` (the slim JSON ``GET .../bundle`` preview) carries no
+# per-light rows, so it needs no stripper here: the route-level refusal of
+# ``weight_altitude`` (app.py) is enough to keep its ``kept_count`` from ever
+# being altitude-ordered for a non-holder.
+_BUNDLE_ALTITUDE_KEY = "altitude_deg"
+
+
+def redact_bundle_manifest_for(manifest: dict, principal: Principal | None) -> dict:
+    """``manifest_json(bundle)``'s dict with every light row's
+    ``altitude_deg`` ABSENT for a principal lacking ``view.site_derived``
+    (#567). A holder gets ``manifest`` itself.
+
+    Rebuilds only the ``groups``/``lights`` it changes — never mutates the
+    caller's dict — and fails closed on shape drift (an unrecognized group or
+    light row is left as-is on the happy path; any exception drops every
+    group's lights rather than risk shipping the column it was asked to
+    remove)."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return manifest
+    if not isinstance(manifest, dict):
+        return manifest
+    groups = manifest.get("groups")
+    if not isinstance(groups, list):
+        return manifest
+    try:
+        new_groups = []
+        for g in groups:
+            lights = g.get("lights") if isinstance(g, dict) else None
+            if not isinstance(lights, list):
+                new_groups.append(g)
+                continue
+            new_lights = [
+                {k: v for k, v in l.items() if k != _BUNDLE_ALTITUDE_KEY}
+                if isinstance(l, dict) else l
+                for l in lights]
+            new_groups.append({**g, "lights": new_lights})
+        return {**manifest, "groups": new_groups}
+    except Exception:  # noqa: BLE001 - never 500 the zip route: fail CLOSED
+        return {**manifest, "groups": []}
+
+
+def redact_bundle_csv_for(csv_text: str, principal: Principal | None) -> str:
+    """``weights_csv(bundle)``'s text with the ``altitude_deg`` column
+    removed for a principal lacking ``view.site_derived`` (#567). A holder
+    gets ``csv_text`` itself.
+
+    Reparses and rewrites rather than splicing a column out of the raw text,
+    so a value that happens to contain a comma or a quote is never
+    mishandled. Fails closed: a body that will not parse, or carries no
+    header naming the column, is returned EMPTY rather than risk shipping the
+    column it was asked to remove."""
+    if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
+        return csv_text
+    try:
+        rows = list(csv.reader(io.StringIO(csv_text)))
+    except csv.Error:
+        return ""
+    if not rows or _BUNDLE_ALTITUDE_KEY not in rows[0]:
+        return csv_text  # nothing to strip: no header row, or no such column
+    idx = rows[0].index(_BUNDLE_ALTITUDE_KEY)
+    out = io.StringIO()
+    w = csv.writer(out)
+    for row in rows:
+        w.writerow([c for i, c in enumerate(row) if i != idx])
+    return out.getvalue()
 
 
 __all__ = [
@@ -775,11 +1109,16 @@ __all__ = [
     "_redact_switch_ports_for",
     "_redact_site_for",
     "_redact_ws_event",
+    "_redact_log_rows_for",
+    "_redact_sequence_for",
+    "_redact_resume_arm_for",
     "_redact_drivers_for",
     "_redact_profile_for",
     "_redact_session_for",
     "_redact_report_for",
     "report_csv_columns",
+    "redact_bundle_manifest_for",
+    "redact_bundle_csv_for",
     "_strip_site",
     "_strip_dew",
     "_strip_camera_dew",

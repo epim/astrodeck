@@ -81,6 +81,17 @@ def client(tmp_path, monkeypatch):
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    # A store of the test's own, before the patch below lands on the cache:
+    # the singleton repointed at a file under tmp_path with its cache dropped,
+    # both through monkeypatch. A run with a `cool_to` saves it as the
+    # standing setpoint, and the -10 C case here used to leave it on the
+    # process-wide config for every later test on the worker (#227).
+    # Without these two lines, the conftest guard errors at teardown
+    # (1 in this file alone, observed): "test_a_run_that_HAS_a_temperature_does_not_warn
+    # left the process-wide config changed: cooling.setpoint_c."
+    monkeypatch.setattr(hub_module.config_store, "_path",
+                        tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module.config_store, "_cfg", None)
     monkeypatch.setattr(hub_module.config_store.cfg().safety, "solar_avoidance", False)
     monkeypatch.setenv("ASTRODECK_SIM_LEGACY_GUIDER", "1")
     h = Hub()

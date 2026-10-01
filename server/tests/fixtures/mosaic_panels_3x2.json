@@ -1,0 +1,64 @@
+{
+  "about": "POST /api/framing/mosaic answer computed by framing.compute_mosaic for the request beside it; test_framing_panels_fixture.py keeps it equal to the route's answer. Read, never copied, by the UI panel layer and Target modal tests (#189 S4).",
+  "request": {
+    "ra_hours": 0.7122,
+    "dec_deg": 41.0,
+    "rows": 2,
+    "cols": 3,
+    "overlap": 0.25,
+    "rotation_deg": 0.0,
+    "fov_x_deg": 2.0,
+    "fov_y_deg": 1.33
+  },
+  "response": {
+    "panels": [
+      {
+        "row": 0,
+        "col": 0,
+        "ra_hours": 0.578742751340055,
+        "dec_deg": 41.481379199474624,
+        "rotation_deg": 0.0
+      },
+      {
+        "row": 0,
+        "col": 1,
+        "ra_hours": 0.7122,
+        "dec_deg": 41.49873740313538,
+        "rotation_deg": 0.0
+      },
+      {
+        "row": 0,
+        "col": 2,
+        "ra_hours": 0.8456572486599452,
+        "dec_deg": 41.481379199474624,
+        "rotation_deg": 0.0
+      },
+      {
+        "row": 1,
+        "col": 2,
+        "ra_hours": 0.8436542715571209,
+        "dec_deg": 40.48450399184178,
+        "rotation_deg": 0.0
+      },
+      {
+        "row": 1,
+        "col": 1,
+        "ra_hours": 0.7122,
+        "dec_deg": 40.50126259686463,
+        "rotation_deg": 0.0
+      },
+      {
+        "row": 1,
+        "col": 0,
+        "ra_hours": 0.5807457284428794,
+        "dec_deg": 40.48450399184178,
+        "rotation_deg": 0.0
+      }
+    ],
+    "total_fov_x_deg": 5.0,
+    "total_fov_y_deg": 2.3275,
+    "frame_fov_x_deg": 2.0,
+    "frame_fov_y_deg": 1.33,
+    "pixel_scale_arcsec": 0.0
+  }
+}

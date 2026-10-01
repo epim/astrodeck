@@ -22,19 +22,38 @@
 // "a flow wire and an event wire between the same two points get byte-identical
 // paths".
 //
+// THE PANEL LOOP IS THE ONE EXCEPTION (#189 S4 item 6, spec 1.4). An event wire
+// into a TARGET's `next` runs backward from the tail of its lane, and
+// `edgePath` would sweep it across every card between the two ends. It is drawn
+// as `geometry.loopArc` instead (out, down under the cards, left, up), with its
+// own dash and a label chip - see `targetSummary.ts`, which #/next's layer
+// shares, for why the silhouette and the words, not the hue, tell it apart,
+// and for how the phone FLOW tab's column layout bends it (#360).
+//
 // RE-RENDER SHAPE. The layer subscribes to the node array, the edge array and
 // the run phase; each edge is its own memo'd child taking only PRIMITIVES, and
 // it reads its own source-node status and its own selectedness with narrow
-// selectors that return a string and a boolean. So a `flow.node` tick for one
-// stage re-renders that stage's outgoing wires and nothing else, and the pending
-// wire — which changes on every pointermove — is a separate component so
-// dragging one wire does not re-path the other twenty.
+// selectors that return a string and a boolean. So selecting a wire re-renders
+// the wire that was selected and the one that now is, and nothing else, and the
+// pending wire — which changes on every pointermove — is a separate component
+// so dragging one wire does not re-path the other twenty. Nothing writes a
+// stage's status today (`flows.statuses`, #464: no topic carries it, and the
+// published sequence state never names the stage), so every wire reads idle
+// and that selector wakes none; it is kept narrow so that a status feed, once
+// there is one, re-renders one stage's outgoing wires and not the layer.
 import { memo } from "react";
 import type { MouseEvent as RMouseEvent } from "react";
 import { useStore } from "../../store";
 import { NODE_DEFS } from "./nodeDefs";
-import { edgePath, portPos, type EdgeMode, type FlowTier, type Point } from "./geometry";
+import {
+  cardBox, edgePath, portPos, type CardBox, type EdgeMode, type FlowTier, type LoopArc,
+  type Point,
+} from "./geometry";
 import type { FlowEdgeRec, FlowNodeRec, FlowRunPhase, PortKind } from "./flowsTypes";
+import { compiledIsCurrent } from "./flowsSlice";
+import {
+  LOOP_ARC_DASH, LOOP_CHIP_FONT_PX, loopArcOf, loopChip, loopChipBox,
+} from "./targetSummary";
 
 // ------------------------------------------------------------------ constants
 /** Transparent hit band, in WORLD units (§D.4). At zoom 0.35 the canvas band is
@@ -63,6 +82,18 @@ function placed(
 ): FlowNodeRec {
   const p = positions?.[node.id];
   return p ? { ...node, x: p.x, y: p.y } : node;
+}
+
+/** Every card's formula box (`geometry.cardBox`) where this surface draws it:
+ *  at its auto-graph position on the phone FLOW tab, at its stored one
+ *  elsewhere. What the loop's remove control must stay off (#502), from the
+ *  same substitution the wires are anchored with. */
+export function placedCards(
+  nodes: readonly FlowNodeRec[],
+  tier: FlowTier,
+  positions?: Readonly<Record<string, Point>>,
+): CardBox[] {
+  return nodes.map((n) => cardBox(placed(n, positions), NODE_DEFS, tier));
 }
 
 /** Which lane a wire is in — decided by the SOURCE port's kind, never the
@@ -105,6 +136,25 @@ export function wireAnchors(
   return p1 && p2 ? { p1, p2 } : null;
 }
 
+/** The panel loop's arc for one wire as THIS surface draws it, or null for a
+ *  wire that is not a loop wire (targetSummary `loopArcOf`).
+ *
+ *  ONE RESOLVER FOR THE LAYER AND THE REMOVE CONTROL. The layer draws the arc
+ *  from it and FlowWireDelete puts its control on the same arc's `handle`
+ *  (#355), with the same positions and the same surface: on the phone FLOW
+ *  tab (`auto`) the arc keeps inside the column layout's container and clear
+ *  of every card it lays out (#360), and a control placed from the canvas's
+ *  arc would sit off the wire drawn there. */
+export function wireLoopArc(
+  edge: FlowEdgeRec,
+  graph: { nodes: readonly FlowNodeRec[]; edges: readonly FlowEdgeRec[] },
+  tier: FlowTier,
+  auto: boolean,
+  positions?: Readonly<Record<string, Point>>,
+): LoopArc | null {
+  return loopArcOf(edge, graph, tier, (n) => placed(n, positions), auto ? "phone-flow" : "canvas");
+}
+
 /** Where the wire's remove control goes: the straight-line midpoint of the two
  *  PORT ANCHORS — not of the path's bounding box, and not a sampled point.
  *
@@ -115,7 +165,11 @@ export function wireAnchors(
  *  sits on the curve" is an identity, not an approximation — which is why this
  *  lives beside `wireAnchors` rather than in the control: the two must never
  *  drift apart, and __tests__/flowWire.test.ts re-derives it from the emitted
- *  path string. */
+ *  path string.
+ *
+ *  NOT FOR THE PANEL LOOP. The loop arc is not a bezier (`wireLoopArc`), and
+ *  the midpoint of its anchors lands among the lane's cards at port height,
+ *  where no wire is drawn (#355); its control goes on the arc's `handle`. */
 export function wireMidpoint(p1: Point, p2: Point): Point {
   return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
 }
@@ -189,7 +243,8 @@ interface FlowWireProps {
 
 function FlowWire({ edgeId, fromNode, d, kind, running, hitW, select }: FlowWireProps) {
   // A string and a boolean. zustand compares the selector's RESULT with
-  // Object.is, so a status frame for another stage cannot reach this wire.
+  // Object.is, so selecting another wire cannot reach this one, nor could a
+  // status written for another stage (nothing writes one today, #464).
   const status = useStore((s) => s.flows.statuses[fromNode] ?? "idle");
   const selected = useStore(
     (s) => s.flows.sel?.kind === "edge" && s.flows.sel.id === edgeId);
@@ -237,6 +292,86 @@ function FlowWire({ edgeId, fromNode, d, kind, running, hitW, select }: FlowWire
 }
 
 const FlowWireMemo = memo(FlowWire);
+
+// ----------------------------------------------------------------- loop arc
+interface FlowLoopArcProps extends FlowWireProps {
+  /** The chip's words, or null for a wire into `next` the run does not loop on
+   *  (targetSummary `loopChip`). A string, so the memo still holds. */
+  chip: string | null;
+  chipX: number;
+  chipY: number;
+}
+
+/** The panel loop's back-arc: the same two paths as any wire, the same hit
+ *  band, stroke and width rules, and a dash and a chip of its own.
+ *
+ *  THE DASH NEVER CHANGES WITH THE RUN. A live wire elsewhere switches to
+ *  `7 6`; this one keeps `LOOP_ARC_DASH`, because the run is when the night
+ *  palette is up and every lane is the same red - the silhouette and the chip
+ *  are what still say "this is the loop". Live still shows, as the 2.5 px
+ *  width, the full-strength colour and the march. */
+function FlowLoopArc({
+  edgeId, fromNode, d, kind, running, hitW, select, chip, chipX, chipY,
+}: FlowLoopArcProps) {
+  const status = useStore((s) => s.flows.statuses[fromNode] ?? "idle");
+  const selected = useStore(
+    (s) => s.flows.sel?.kind === "edge" && s.flows.sel.id === edgeId);
+
+  const active = isWireActive(running, status);
+  const stroke = wireStroke(kind, active, selected);
+  const onSelect = (ev: RMouseEvent) => {
+    // As FlowWire: the canvas background would otherwise clear the selection.
+    ev.stopPropagation();
+    select({ kind: "edge", id: edgeId });
+  };
+  const box = chip ? loopChipBox(chip) : null;
+
+  return (
+    <g data-loop-arc data-edge-id={edgeId}>
+      <path
+        data-wire
+        data-edge-id={edgeId}
+        d={d}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={hitW}
+        style={{ pointerEvents: "stroke", cursor: "pointer" }}
+        onClick={onSelect}
+      />
+      <path
+        data-loop-arc-path
+        d={d}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={wireWidth(active, selected)}
+        strokeLinecap="round"
+        strokeDasharray={LOOP_ARC_DASH}
+        className={active ? "flow-wire-march" : undefined}
+      />
+      {chip && box && (
+        // On the run, centred. A label in the SVG rather than an HTML chip: it
+        // must pan and zoom with the wire it names, and the layer's box is
+        // already the world. Sized from the text (monospace), never measured.
+        <g data-loop-chip transform={`translate(${chipX},${chipY})`}>
+          <rect
+            x={-box.w / 2} y={-box.h / 2} width={box.w} height={box.h} rx={box.h / 2}
+            fill="var(--bg)" stroke={stroke} strokeWidth={1}
+          />
+          <text
+            textAnchor="middle"
+            dominantBaseline="central"
+            fill="var(--warn)"
+            style={{ fontFamily: "var(--font-mono)", fontSize: LOOP_CHIP_FONT_PX }}
+          >
+            {chip}
+          </text>
+        </g>
+      )}
+    </g>
+  );
+}
+
+const FlowLoopArcMemo = memo(FlowLoopArc);
 
 // ----------------------------------------------------------------- pending wire
 /** The wire following the pointer during a drag.
@@ -300,16 +435,30 @@ export default function FlowWireLayer({
 }: FlowWireLayerProps) {
   const nodes = useStore((s) => s.flows.graph.nodes);
   const edges = useStore((s) => s.flows.graph.edges);
-  // A string, so the layer re-renders once when a run starts or ends — not on
-  // the per-node status frames, which each wire reads for itself.
+  // A string, so the layer re-renders once when a run starts or ends. A
+  // stage's status is each wire's own read (`FlowWire`), never the layer's;
+  // nothing writes one today (#464).
   const phase = useStore((s) => s.flows.run.phase);
   // Read once and handed down: one subscription for the whole layer instead of
   // one per wire, and the action's identity is stable so `memo` still holds.
   const select = useStore((s) => s.flowsSelect);
+  // The loop chip's count comes from the last compile, and is withheld while
+  // that answer is not the graph on screen's (`loopChip`). The plan object
+  // changes only when a compile lands, so this costs one re-render per
+  // compile.
+  const plan = useStore((s) => s.flows.compiled?.plan ?? null);
+  // ASKED OF THE ANSWER, NOT OF THE SAVE (#356, S7): `compiledIsCurrent`
+  // compares the graph the compile sent with the graph on screen. `dirty`
+  // cleared a round trip before a save's compile landed, drawing the old
+  // count over a new skip, and withheld the count DONE's compile of the
+  // unsaved draft had just made. A boolean, so an edit re-renders the layer
+  // once, when the answer stops being current, as `dirty` did.
+  const current = useStore((s) => compiledIsCurrent(s.flows));
 
   const mode: EdgeMode = auto ? "phone-flow" : "canvas";
   const hitW = auto ? HIT_W_AUTO : HIT_W_CANVAS;
   const running = isRunning(phase);
+  const graph = { nodes, edges };
 
   return (
     <svg
@@ -330,6 +479,30 @@ export default function FlowWireLayer({
         // An edge naming a node or port that no longer exists. Skipped, not
         // drawn at a fallback anchor: see wireAnchors().
         if (!a) return null;
+        // The panel loop: a backward event wire into a TARGET's `next`, routed
+        // under the lane from the card formula. On the phone FLOW tab too, from
+        // the auto-layout's positions - a column layout crosses the lane with
+        // the stock curve just as surely - and inside its container, clear of
+        // every card it lays out (#360). The remove control (FlowWireDelete)
+        // asks the same `wireLoopArc` and sits on its `handle` (#355).
+        const loop = wireLoopArc(e, graph, tier, auto, positions);
+        if (loop) {
+          return (
+            <FlowLoopArcMemo
+              key={e.id}
+              edgeId={e.id}
+              fromNode={e.from}
+              d={loop.d}
+              kind={wireLane(e, nodes)}
+              running={running}
+              hitW={hitW}
+              select={select}
+              chip={loopChip(graph, e, plan, !current)}
+              chipX={loop.label.x}
+              chipY={loop.label.y}
+            />
+          );
+        }
         return (
           <FlowWireMemo
             key={e.id}

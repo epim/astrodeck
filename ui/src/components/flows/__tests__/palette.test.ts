@@ -11,12 +11,17 @@
 // the compile-time half of the same check (`PALETTE_COVERS_EVERY_NODE_TYPE`),
 // which `tsc -b` enforces and `tsx` cannot — hence both halves.
 //
+// LEGACY TYPES (mosaic S3, spec 1.7) are the one deliberate exception: they
+// still load and are no longer offered. So "every node type" below reads
+// "every NON-legacy node type", and a legacy type in the rail is a failure.
+//
 // Run directly:  npx tsx src/components/flows/__tests__/palette.test.ts
 import { readFileSync } from "node:fs";
 import {
   PALETTE_GROUPS, PALETTE_ITEM_ORDER_DISPUTED, PALETTE_ITEM_ORDER_SOURCES,
   PALETTE_TYPES,
 } from "../palette";
+import { LEGACY_TYPES } from "../nodeDefs";
 import type { FlowNodeType } from "../flowsTypes";
 
 let passed = 0, failed = 0; const failures: string[] = [];
@@ -27,7 +32,7 @@ function eqList(a: readonly string[], b: readonly string[], m = "") {
 }
 function ok(c: boolean, m: string) { if (!c) throw new Error(m); }
 
-/** The 19 members of `FlowNodeType`, parsed from the shared types file.
+/** The 21 members of `FlowNodeType`, parsed from the shared types file.
  *
  *  Throws rather than returning [] on a miss. A regex that quietly matches
  *  nothing would turn every assertion below into a comparison of two empty
@@ -42,6 +47,28 @@ function nodeTypeUnion(): FlowNodeType[] {
 }
 
 const UNION = nodeTypeUnion();
+const LEGACY = new Set<string>(LEGACY_TYPES);
+/** The types the palette must offer: the union less the legacy ones. */
+const OFFERED = UNION.filter((t) => !LEGACY.has(t));
+
+// ================================================== nodes.py PALETTE_GROUPS
+// Parsed, not retyped, for the same reason nodeDefs.test.ts parses NODE_DEFS:
+// the server's grouping is the other hand-maintained copy, and a test whose
+// expectations come from the same hand as the data only proves consistency.
+function serverPaletteGroups(): { label: string; types: string[] }[] {
+  const src = readFileSync(
+    new URL("../../../../../server/astrodeck/flows/nodes.py", import.meta.url), "utf8") as string;
+  const code = src.split("\n").map((l) => l.replace(/\s+#.*$/, "")).join("\n");
+  const at = code.indexOf("PALETTE_GROUPS:");
+  if (at < 0) throw new Error("PALETTE_GROUPS not found in nodes.py — the parser, not the palette, is broken");
+  const body = code.slice(code.indexOf("= (", at), code.indexOf("\n)", at));
+  const groups = [...body.matchAll(/\(\s*"([^"]+)"\s*,\s*\(([^)]*)\)\s*\)/g)].map((m) => ({
+    label: m[1], types: [...m[2].matchAll(/"([^"]+)"/g)].map((q) => q[1]),
+  }));
+  if (groups.length === 0) throw new Error("PALETTE_GROUPS parsed to zero groups — the parser, not the palette, is broken");
+  return groups;
+}
+const SERVER_GROUPS = serverPaletteGroups();
 
 // ------------------------------------------------ the extractor is trustworthy
 
@@ -55,21 +82,57 @@ test("FlowNodeType parses to exactly 21 members", () => {
   // between a capability and a capability the operator can reach.
   eq(UNION.length, 21, "FlowNodeType member count:");
   eq(new Set(UNION).size, 21, "the union itself lists a type twice:");
+  // DELIBERATE PIN CHANGE (mosaic S3, spec 1.7): still 21, and 1 is legacy.
+  eq([...LEGACY].join(","), "slew", "legacy types:");
+  eq(OFFERED.length, 20, "types the palette must offer:");
+});
+
+test("the server's PALETTE_GROUPS parse to the five groups", () => {
+  eq(SERVER_GROUPS.length, 5, "groups parsed out of nodes.py:");
 });
 
 // ------------------------------------------------------------- exhaustiveness
 
-test("every node type appears exactly once across all groups", () => {
+test("every non-legacy node type appears exactly once across all groups", () => {
   const seen = new Map<string, number>();
   for (const g of PALETTE_GROUPS) for (const t of g.types) seen.set(t, (seen.get(t) ?? 0) + 1);
 
-  const missing = UNION.filter((t) => !seen.has(t));
+  const missing = OFFERED.filter((t) => !seen.has(t));
   ok(missing.length === 0,
      `the palette omits ${missing.join(", ")} — those stages cannot be created from the rail or the add-stage sheet, ` +
      "yet a preset or the server can still put them on the canvas, so nothing errors");
 
   const twice = [...seen].filter(([, n]) => n > 1).map(([t, n]) => `${t}×${n}`);
   ok(twice.length === 0, `the palette lists ${twice.join(", ")} more than once`);
+});
+
+test("no legacy type is offered", () => {
+  // SLEW + CENTER is part of the TARGET block now (spec 1.7). Offering it again
+  // would let an operator draw the stage whose tolerance never reached the run.
+  //
+  // Mutant 'slew left in palette.ts' (RIG OPS restored to start with "slew"),
+  // observed here:
+  //   x no legacy type is offered: the palette offers legacy slew
+  // and in the parity test below:
+  //   x the palette is nodes.py's PALETTE_GROUPS, group for group and item for
+  //   item: RIG OPS items vs nodes.py: expected [autofocus, guide, capture,
+  //   cycle, duskflats, calib], got [slew, autofocus, guide, capture, cycle,
+  //   duskflats, calib]
+  // and by `tsc --noEmit` on palette.ts's compile-time proof:
+  //   src/components/flows/palette.ts(161,14): error TS2322: Type 'true' is
+  //   not assignable to type 'false'.
+  const offeredLegacy = PALETTE_TYPES.filter((t) => LEGACY.has(t));
+  ok(offeredLegacy.length === 0, `the palette offers legacy ${offeredLegacy.join(", ")}`);
+});
+
+test("the palette is nodes.py's PALETTE_GROUPS, group for group and item for item", () => {
+  // The two copies of the rail. A server that still offers SLEW while the UI
+  // hides it (or the reverse) is a vocabulary the two sides disagree about.
+  eqList(PALETTE_GROUPS.map((g) => g.label), SERVER_GROUPS.map((g) => g.label), "group labels:");
+  for (const g of SERVER_GROUPS) {
+    const mine = PALETTE_GROUPS.find((x) => x.label === g.label)!.types;
+    eqList(mine, g.types, `${g.label} items vs nodes.py:`);
+  }
 });
 
 test("the palette offers nothing that is not a node type", () => {
@@ -82,7 +145,7 @@ test("the palette offers nothing that is not a node type", () => {
 
 test("PALETTE_TYPES is the groups flattened, in rail order", () => {
   eqList(PALETTE_TYPES, PALETTE_GROUPS.flatMap((g) => [...g.types]));
-  eq(PALETTE_TYPES.length, UNION.length, "flattened palette length:");
+  eq(PALETTE_TYPES.length, OFFERED.length, "flattened palette length:");
 });
 
 // ------------------------------------------------- group names and group order
@@ -114,10 +177,14 @@ test("SOURCES, EQUIPMENT and RIG OPS are verbatim from the sources", () => {
   // where the 2026-08-14 prototype puts it and where it belongs: it is a capture
   // stage, not a loop construct. It sat in LOGIC while it was modelled as a
   // container, and that placement read as though the graph had a loop primitive.
+  //
+  // DELIBERATE PIN CHANGE (mosaic S3, spec 1.7): RIG OPS no longer starts with
+  // "slew". It is the prototype's array less the one legacy type, a ruled
+  // departure, not a reordering to taste.
   const by = (label: string) => PALETTE_GROUPS.find((g) => g.label === label)!.types;
   eqList(by("SOURCES"), ["dusk", "target", "safety", "cloudwatch"]);
   eqList(by("EQUIPMENT"), ["dome", "flatpanel"]);
-  eqList(by("RIG OPS"), ["slew", "autofocus", "guide", "capture", "cycle", "duskflats", "calib"]);
+  eqList(by("RIG OPS"), ["autofocus", "guide", "capture", "cycle", "duskflats", "calib"]);
 });
 
 // ------------------------------------------- item order: the §G-3 dispute

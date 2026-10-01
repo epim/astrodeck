@@ -12,15 +12,24 @@
 // "Fli…"/"To…"): each saved row is TWO lines — the name on its own full-width
 // line (wraps up to 2), metadata + actions on the line below — so a plan name is
 // never truncated to a few characters at the panel's ~300px column width.
+//
+// A FILE THAT NO LONGER READS AS A PLAN IS A ROW, READ-ONLY (#378). The server
+// used to skip it, so a damaged plan looked deleted; it lists it now with its
+// reason, and answers GET and export for it with 422. Its row is the name, the
+// word and that reason, with DELETE gated like any plan delete and nothing
+// else: LOAD and EXPORT would each fail with the reason the row already shows.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../../api";
+import { listPlans } from "../../api/plans";
 import { useStore } from "../../store";
 import { Panel, Stat } from "../ui";
 import { Icon } from "../icons";
 import { confirmDialog } from "../ConfirmDialog";
 import { BASE } from "../../lib/base";
 import { parsePlanFile, planExportFilename } from "../../lib/planFile";
-import { planRowSummary, planSavedCue } from "../../lib/planLibrary";
+import {
+  planRowSummary, planSavedCue, planUnreadableReason, unreadablePlanDeleteBody,
+} from "../../lib/planLibrary";
 import { useCanControlCapture } from "../../lib/caps";
 import type { PlanRow, SequencePlan } from "../../types";
 
@@ -69,7 +78,9 @@ export default function PlanLibraryPanel() {
 
   const refresh = useCallback(async () => {
     try {
-      setRows(await api.get<PlanRow[]>("/api/plans"));
+      // `listPlans`, not a bare GET: it names an unreadable row whose file
+      // gives no name by its id, so its line and its DELETE say what goes.
+      setRows(await listPlans());
       setLoadErr(null);
     } catch (e) {
       // client fetch failures bypass the log→toast path, so surface it here:
@@ -167,8 +178,14 @@ export default function PlanLibraryPanel() {
   };
 
   const del = async (row: PlanRow) => {
+    // An unreadable file's confirm names the FILE that goes, since there is no
+    // plan in it to name, and says why no copy was offered first.
+    const unreadable = planUnreadableReason(row) !== null;
     const ok = await confirmDialog({
-      title: `Delete saved plan '${row.name}'?`,
+      title: unreadable
+        ? `Delete unreadable plan '${row.name}'?`
+        : `Delete saved plan '${row.name}'?`,
+      body: unreadable ? unreadablePlanDeleteBody(row) : undefined,
       tone: "danger",
       mode: "confirm",
       confirmLabel: "Delete",
@@ -376,6 +393,45 @@ export default function PlanLibraryPanel() {
             ) : (
               <div className="mt-1.5 flex flex-col gap-1.5 max-h-72 overflow-y-auto">
                 {rows.map((r) => {
+                  const unreadable = planUnreadableReason(r);
+                  if (unreadable !== null) {
+                    // Read-only (#378): nothing on it is read off the plan,
+                    // because there is none to read - no numbers, no LOADED
+                    // badge. The reason wraps in full: it is the one thing
+                    // this row can say about what is wrong with the file.
+                    return (
+                      <div
+                        key={r.id}
+                        data-testid={`plan-unreadable-${r.id}`}
+                        className="flex flex-col gap-1 border border-bad/40 bg-bg/50 px-2 py-1.5"
+                      >
+                        <div className="flex items-start gap-2">
+                          <span className="text-ink text-xs leading-snug break-words line-clamp-2 flex-1 min-w-0">
+                            {r.name}
+                          </span>
+                          <span className="mono text-[9px] uppercase tracking-wider text-bad
+                            border border-bad/40 px-1 py-0.5 shrink-0 whitespace-nowrap">
+                            unreadable
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="mono text-[10px] text-dim break-words flex-1 min-w-0">
+                            {unreadable}
+                          </span>
+                          {canWrite && (
+                            <button
+                              className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center text-bad hover:bg-bad/10"
+                              aria-label={`Delete unreadable plan ${r.name}`}
+                              title={`Delete ${r.id}.json`}
+                              onClick={() => void del(r)}
+                            >
+                              <Icon name="trash" size={13} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
                   const active = r.id === loadedPlanId;
                   return (
                     <div

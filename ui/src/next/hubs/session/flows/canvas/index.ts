@@ -13,7 +13,7 @@
 // `ui/src/components/**` is edited.
 
 export { FlowCanvasSurface, ADD_STAGE_LABEL, type FlowCanvasSurfaceProps } from "./FlowCanvasSurface";
-export { FlowCanvasToolbar, RUN_ARM_LABEL, SAVE_LABEL } from "./FlowCanvasToolbar";
+export { FlowCanvasToolbar, RUN_ARM_WORD, SAVE_LABEL, runArm } from "./FlowCanvasToolbar";
 export {
   FlowStagesPhoneSheet, FLOW_STAGES_SHEET, FLOW_STAGES_UNTITLED, stageOrder,
 } from "./FlowStagesPhoneSheet";

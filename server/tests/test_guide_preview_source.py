@@ -92,8 +92,20 @@ class _Guider:
     name = "PHD2"
     connected = True
 
-    def __init__(self, png: bytes | None): self.png = png
+    def __init__(self, png: bytes | None, *, connected: bool = True,
+                 active: bool = False):
+        self.png = png
+        self.connected = connected
+        #: what `is_active()` answers. A guider that is GUIDING owns the sensor
+        #: whatever its remembered connect flag says (#15, #16).
+        self.active = active
+        self.asked_active = 0
+
     async def guide_frame(self): return self.png
+
+    async def is_active(self) -> bool:
+        self.asked_active += 1
+        return self.active
 
     def stats(self):
         # poll_status publishes the guider's own stats block; nothing in this
@@ -132,6 +144,104 @@ async def test_a_running_guider_wins_over_the_camera():
     png, _ = await hub.guide_preview_png()
     assert png == b"\x89PNG\r\n\x1a\nfrom-the-guider"
     assert cam.exposures == [], "must not touch a camera the guider is driving"
+
+
+async def test_a_guiding_loop_keeps_the_sensor_even_when_connected_has_gone_stale():
+    """Issue #15, and the reason it was reachable is issue #16.
+
+    2026-09-12: a guide preview requested during a calibration walk left the ASI
+    guide camera in VIDEO_MODE_ACTIVE for eleven minutes. The calibration was
+    lost and nothing short of a whole-rig profile activate cleared it. A
+    read-only-looking panel destroyed a live guiding session.
+
+    The source order already prefers the guider - but it asked `connected`, a
+    REMEMBERED flag, and when that flag is stale the preview walks past the
+    owner and exposes the camera underneath a running loop. `connected` going
+    stale while the device is broken is exactly #16's complaint, so the two
+    issues meet here: the flag that cannot go false routes a preview onto a
+    sensor somebody else is driving.
+
+    A guider that is guiding owns the sensor. Measured, not remembered.
+
+    MUTATION: drop the `or await self._guider_is_guiding(g)` term. Observed:
+    this case alone fails, 47 passed - the preview exposed the camera under the
+    loop, which is the incident.
+    """
+    hub = Hub()
+    cam = _FakeGuideCam()
+    hub.devices["guide_camera"] = cam
+    hub.guider = _Guider(b"\x89PNG\r\n\x1a\nfrom-the-loop",
+                         connected=False, active=True)
+
+    png, _ = await hub.guide_preview_png()
+    assert cam.exposures == [], (
+        "the preview exposed a camera a live guide loop was driving: "
+        f"{cam.exposures}")
+    assert png == b"\x89PNG\r\n\x1a\nfrom-the-loop", (
+        "the loop's own frame is the truth while it owns the sensor")
+
+
+async def test_an_idle_disconnected_guider_does_not_hold_the_camera_hostage():
+    """The other side, and the one a too-eager gate breaks: a guider that is
+    neither connected nor guiding has no claim, and the guide camera must still
+    serve the panel. That is the 2026-07-31 bug this file opens with.
+
+    MUTATION: `_guider_is_guiding` returns True unconditionally. Observed:
+    2 failed - this case, and the one below where the guider cannot answer at
+    all. Both fall to a guider that has nothing to give.
+    """
+    hub = Hub()
+    cam = _FakeGuideCam()
+    hub.devices["guide_camera"] = cam
+    hub.guider = _Guider(None, connected=False, active=False)
+
+    png, reason = await hub.guide_preview_png()
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n", reason
+    assert cam.exposures == [GUIDE_PREVIEW_EXPOSURE_S]
+
+
+async def test_a_connected_guider_is_not_asked_whether_it_is_guiding():
+    """`is_active()` is a round trip on a PHD2 guider and the panel polls every
+    2.5 s, so the ordinary path keeps its short-circuit: the measurement is
+    taken only when the remembered flag has already said no.
+
+    MUTATION: replace the `connected` term with the measurement, so it is the
+    only question asked. Observed: 5 failed - this case on `asked_active == 1`,
+    and four existing guider cases, because a connected-but-idle guider stops
+    being the owner. The pair is the point: the flag alone is not enough (the
+    case above) and the measurement alone is not either.
+    """
+    hub = Hub()
+    guider = _Guider(b"\x89PNG\r\n\x1a\nfrom-the-guider", connected=True)
+    hub.guider = guider
+    await hub.guide_preview_png()
+    assert guider.asked_active == 0, (
+        "a connected guider was asked whether it is guiding; the flag already "
+        "answered")
+
+
+async def test_a_guider_that_raises_on_is_active_is_not_the_owner():
+    """A preview must never 500 the panel, and a guider that cannot answer has
+    not established a claim. It falls through to the camera, which is the
+    behaviour a rig with no guider already has.
+
+    MUTATION: narrow the `except Exception` to `except ValueError`. Observed:
+    this case alone fails, 47 passed - the RuntimeError escapes into
+    `guide_preview_png`'s own handler and the panel gets a crash reason instead
+    of its picture.
+    """
+    class _Exploding(_Guider):
+        async def is_active(self):
+            raise RuntimeError("socket closed")
+
+    hub = Hub()
+    cam = _FakeGuideCam()
+    hub.devices["guide_camera"] = cam
+    hub.guider = _Exploding(None, connected=False)
+
+    png, reason = await hub.guide_preview_png()
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n", reason
+    assert cam.exposures == [GUIDE_PREVIEW_EXPOSURE_S]
 
 
 async def test_a_guider_with_no_image_says_which_guider():

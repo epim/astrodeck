@@ -11,19 +11,37 @@
 // The patch line prints the RA/Dec the button will send, because that is the one
 // fact a picture of empty sky cannot carry and the one the FITS header will be
 // filed under.
+//
+// A NULL PATCH HAS TWO CAUSES, AND THE CARD IS TOLD WHICH (#544, the #503
+// residual). `useSkyModel` answers no patch when the view is aimed below the
+// horizon, and also whenever it has no coordinates to place the sky with: no
+// saved site (a default site's placeholder 0,0) or a role the site's position is
+// withheld from. The card used to read every null patch as the first, so a
+// fresh rig's finder, aimed at 45 degrees, said "BELOW HORIZON", "0 of 0 targets
+// clear and in reach" and "aim above the horizon" about a sky nobody placed.
+// `placementNote` is the model's own answer to "why is nothing placed", and with
+// it set the card prints no status word and no count it did not compute, and the
+// button's reason is the one that applies: the no-site fix, or the role
+// sentence, since a viewer cannot set a site.
 
 import type { JSX } from "react";
 import { Card, honestPress, lockedAttrs, lockedClass } from "../../../ui";
 import { SkyGlyph } from "./glyphs";
-import type { PatchModel } from "../finder";
+import { NO_COORDS_NOTE, type PatchModel } from "../finder";
 
 const MONO = "'IBM Plex Mono', ui-monospace, monospace";
 const DISPLAY = "'Chakra Petch', system-ui, sans-serif";
 
 export interface PatchCardProps {
   patch: PatchModel | null;
-  reachCount: number;
+  /** In-reach count, or null when nothing was placed to count (#544): the
+   *  "N of M" line is then not printed. */
+  reachCount: number | null;
   targetCount: number;
+  /** The model's `placementNote`: null when the sky is placed, else why it is
+   *  not (`NO_SITE_NOTE` or `NO_COORDS_NOTE`). With it set a null patch is a
+   *  sky nobody placed, not one aimed below the horizon (#544). */
+  placementNote: string | null;
   onImagePatch: (patch: PatchModel) => void;
   /** FREE-ROAM: open FRAME mode on this patch, with no catalogued object.
    *  Survey imagery of an uncatalogued patch had no door in the new UI at all
@@ -43,10 +61,17 @@ export interface PatchCardProps {
 export const FRAME_HERE_NEEDS_PATCH =
   "No position under the reticle - set a site in Settings, or aim above the horizon.";
 
+/** Why IMAGE THIS PATCH has nothing to send, by why there is no patch (#544). */
+export const PATCH_NEEDS_SITE = "Set a site first - a patch of sky has no coordinates without one.";
+export const PATCH_HIDDEN_FOR_ROLE =
+  "The site's position is hidden for this role, so this patch has no coordinates to send.";
+export const PATCH_BELOW_HORIZON = "Aim above the horizon - a patch below it cannot be imaged.";
+
 export function PatchCard({
   patch,
   reachCount,
   targetCount,
+  placementNote,
   onImagePatch,
   onFramePatch,
   framed,
@@ -58,8 +83,17 @@ export function PatchCard({
 }: PatchCardProps): JSX.Element {
   // No longitude means no local sidereal time, so the reticle has no RA to
   // report and the button has nothing to send. Saying so beats a button that
-  // posts a position derived from a site nobody set.
-  const reason = patch == null ? "Set a site first - a patch of sky has no coordinates without one." : imageReason;
+  // posts a position derived from a site nobody set. WHICH sentence is the
+  // cause's (#544): "set a site" was said to a viewer, who cannot, and to a
+  // placed sky aimed below the horizon, which needs no site.
+  const unplaced = placementNote != null;
+  const noPatchReason = !unplaced
+    ? PATCH_BELOW_HORIZON
+    : placementNote === NO_COORDS_NOTE ? PATCH_HIDDEN_FOR_ROLE : PATCH_NEEDS_SITE;
+  const reason = patch == null ? noPatchReason : imageReason;
+  // A status word only for a patch that was judged, or for a placed sky aimed
+  // below the horizon, which is what the word says. None for an unplaced sky.
+  const status = patch?.statusTxt ?? (unplaced ? null : "BELOW HORIZON");
   // FRAME HERE needs a POSITION, not a camera: it fetches survey imagery and
   // commands nothing, so a viewer with no capture access can still use it and
   // the only thing that can stop it is a reticle with no coordinates at all.
@@ -73,13 +107,20 @@ export function PatchCard({
             <div style={{ fontFamily: DISPLAY, fontWeight: 600, fontSize: 11, letterSpacing: ".14em", color: "var(--text-dim)" }}>
               NO CATALOGUE TARGET HERE
             </div>
-            <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5 }}>
-              {reachCount} of {targetCount} targets clear and in reach · tap a label to jump
+            {reachCount != null && (
+              <div data-testid="sky-patch-count" style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5 }}>
+                {reachCount} of {targetCount} targets clear and in reach · tap a label to jump
+              </div>
+            )}
+          </div>
+          {status != null && (
+            <div
+              data-testid="sky-patch-status"
+              style={{ fontFamily: MONO, fontSize: 10, color: patch?.color ?? "var(--text-faint)", textAlign: "right", whiteSpace: "nowrap" }}
+            >
+              {status}
             </div>
-          </div>
-          <div style={{ fontFamily: MONO, fontSize: 10, color: patch?.color ?? "var(--text-faint)", textAlign: "right", whiteSpace: "nowrap" }}>
-            {patch?.statusTxt ?? "BELOW HORIZON"}
-          </div>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
@@ -101,7 +142,7 @@ export function PatchCard({
           >
             <span>IMAGE THIS PATCH</span>
             <span style={{ fontFamily: MONO, fontWeight: 400, fontSize: 10, letterSpacing: ".04em", opacity: 0.85 }}>
-              {patch ? `${patch.raStr} ${patch.decStr}` : "aim above the horizon"}
+              {patch ? `${patch.raStr} ${patch.decStr}` : unplaced ? "no position to send" : "aim above the horizon"}
             </span>
           </button>
         </div>

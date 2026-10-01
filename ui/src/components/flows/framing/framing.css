@@ -1,0 +1,369 @@
+/* framing.css - the Target modal's layout (#189 S4 item 4; spec 2026-09-23
+   flows mosaic, 2.2). Imported by TargetFramingSheet.tsx.
+
+   THE LAYOUT LIVES HERE, NOT IN UTILITY CLASSES, for the reason index.css
+   gives for the overlay: this file is unlayered, so it beats any Tailwind
+   utility, and a layout split between the two is a layout nobody can read in
+   one place. framingLayout.test.tsx parses this file and holds each number
+   below to spec 2.2.
+
+   THREE ARRANGEMENTS, CHOSEN BY THE SHEET'S OWN SHAPE. `.tfs` is a size
+   container, and the arrangement is a container query on its aspect and
+   height, never a width breakpoint: a phone in landscape is 667-932 px wide,
+   under `lg` (1024) and often under `md` (768), and a breakpoint would keep it
+   in the portrait stack with the sky filling the whole short screen
+   (astrodeck-phone-layout: PolarView's `lg:` grid stacked exactly when the
+   operator was crouched at the mount).
+     - phone portrait (the default): header, sky, strip, scroller, stacked;
+     - phone landscape (wider than tall, and short): the sky on the left at
+       55%, the strip and scroller on the right;
+     - tablet and desktop (wide enough, and tall): the sky flexes on the left
+       beside a 360 px control column.
+
+   THE SKY IS PINNED OUTSIDE THE SCROLLER, never inside it (the Atlas
+   scroll-trap lesson): a sky that scrolls away takes the grid the operator is
+   editing off the screen, and a canvas inside a scroller competes with it for
+   every drag. It is `flex: none`, because a flex-column child with `overflow:
+   hidden` may otherwise shrink to its borders (probe-visible-is-not-sized:
+   four dials shipped as 2 px lines that way). */
+
+/* The Overlay body holds the sheet whole, and only the sheet's scroller
+   scrolls. The compound selector outranks `.overlay-body` on specificity, so
+   the order the two stylesheets load in does not matter. */
+.overlay-body.tfs-host {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tfs {
+  container-type: size;
+  container-name: tfs;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* The header: CANCEL, FRAME <name>, DONE. 48 px, and sticky, so no layout
+   below can scroll it away. */
+.tfs-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  flex: none;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.tfs-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 12.5px;
+  letter-spacing: 0.12em;
+}
+.tfs-status {
+  flex: none;
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line);
+}
+.tfs-question {
+  flex: none;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-raise);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.tfs-question p { margin: 0 0 8px; }
+
+.tfs-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The sky: min(100vw, 52svh) on a phone held upright (390 px on the 390 x 844
+   reference), 40svh while a text field has focus so the field and the
+   keyboard both fit. Each vh line is the fallback for a browser without svh,
+   and they are written as plain declarations, NOT through a custom property:
+   a custom property accepts any value at parse time, so an svh value in one
+   would win over the fallback and then fail at computed-value time, leaving
+   the sky with no height at all (the same trap as #354). */
+.tfs-sky {
+  flex: none;
+  height: min(100vw, 52vh);
+  height: min(100vw, 52svh);
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  container-type: size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+.tfs[data-typing="true"] .tfs-sky {
+  height: 40vh;
+  height: 40svh;
+}
+/* The largest square the sky area holds. SkyCanvas is a width-driven square,
+   so without this a landscape sky would be as tall as it is wide and run off
+   the bottom of a short screen. It is that square's height too: SkyCanvas's
+   status lines share it with the canvas (below). */
+.tfs-sky-fit {
+  width: 100%;
+  width: min(100cqw, 100cqh);
+  height: min(100cqw, 100cqh);
+}
+/* THE CANVAS AND ITS LINES SHARE THE FIT BOX (#440, #465). SkyCanvas draws
+   its status lines UNDER its square, in its own column: the degraded banner,
+   the verdict, the pointing line. The square used to be as wide as the fit
+   box, so it filled the sky's whole height by itself, each line pushed the
+   column past `.tfs-sky`'s clip, and the centring cut the overflow off both
+   ends. The real-page probe measured it on the 390 x 844 phone with no sky
+   source: a 426 px column in a 390 px sky, the banner cut to its
+   descenders, 18 px off the canvas's top and bottom (#465); a hand copy of
+   these rules put the top 10 px of MOVE SKY under the clip with it (#440).
+   So the column fills the fit box, the square's slot (SkyCanvas's
+   `.sky-canvas-square`) takes whatever height the lines leave, and the
+   square is the largest one the slot holds, read off the slot as a size
+   container. With no line the slot is the whole fit box and the square is
+   the size it always was. Under @supports, because a flex basis of 0 in a
+   column of no definite height collapses the slot to nothing: a browser
+   without container queries keeps the old layout, since the fit box's own
+   container units above are just as invalid to it. */
+@supports (container-type: size) {
+  .tfs-sky-fit > .sky-canvas { height: 100%; }
+  .tfs-sky-fit .sky-canvas-square {
+    flex: 1 1 0;
+    min-height: 0;
+    container-type: size;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .tfs-sky-fit .sky-canvas-square > [role="application"] { width: min(100cqw, 100cqh); }
+}
+/* SkyCanvas gives its square a 320 px floor (`min-w-[min(320px,...)]`) so it
+   never collapses in a narrow column. Here the fit box above already sizes it
+   to the largest square the sky holds, and on a phone in landscape that is
+   under 320 px: measured with the app's built stylesheet, the floor made the
+   canvas 320 x 320 in a 312 px sky on an 844 x 390 screen and in a 297 px sky
+   on a 667 x 375 one, pushing its bottom edge, and the scale label drawn
+   there, under the sky's clip. This unlayered rule outranks the layered
+   utility, so the square is the fit box's. */
+.tfs-sky-fit [role="application"] { min-width: 0; }
+.tfs-sky-empty {
+  padding: 16px;
+  max-width: 320px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+/* MOVE SKY / MOVE GRID, stacked in the sky's TOP-RIGHT corner. Side by side
+   they are about 170 px wide, and in a 312 px landscape sky that reached the
+   compass's N at the top centre and covered it (seen in the live probe).
+   The top-left corner belongs to SkyCanvas's touch chip ("SWIPE SCROLLS
+   PAGE", drawn on any device with a touch point, at z-20 and last so nothing
+   covers it): in that corner the pair sat UNDER it, and on the 390 x 844
+   phone profile the point at MOVE SKY's centre was the chip's label, so a
+   finger could not reach MOVE SKY at all (tools/ui_probe
+   routes_s4_frame.json, 2026-09-26, #384). The right is also where SkyCanvas
+   expects `overlayControls` - it keeps object labels out of a column there -
+   and where the classic Atlas puts its own (classicSkyTools.css). */
+.tfs-move {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tfs-move .tfs-btn { background: color-mix(in srgb, var(--bg) 88%, transparent); }
+
+.tfs-controls {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The readout strip: 32 px of mono, one line of extent, panels and centre,
+   and the re-frame move line under it when the block has an anchor. */
+.tfs-strip {
+  flex: none;
+  min-height: 32px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.tfs-strip > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The scroller: the only thing on the sheet that scrolls. */
+.tfs-scroller {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.tfs-fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+
+.tfs-section { padding-bottom: 4px; }
+.tfs-section-h {
+  margin: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--text-dim);
+}
+
+/* Every row is a 44 px touch row. */
+.tfs-row {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  min-width: 0;
+}
+.tfs-label {
+  flex: 0 1 45%;
+  min-width: 0;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+.tfs-input { flex: 1 1 auto; min-width: 0; }
+.tfs-note { font-size: 11px; line-height: 1.45; color: var(--text-dim); }
+.tfs-row.tfs-note { padding-top: 4px; padding-bottom: 4px; }
+.tfs-mono { font-family: var(--font-mono); }
+.tfs-chips { flex-wrap: wrap; }
+.tfs-stepper { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.tfs-value { min-width: 48px; text-align: center; font-family: var(--font-mono); font-size: 12px; }
+
+.tfs-btn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.tfs-btn:hover,
+.tfs-btn:focus-visible { border-color: var(--accent); color: var(--accent); }
+.tfs-btn.tfs-on { border-color: var(--accent); color: var(--accent); }
+.tfs-done { font-weight: 600; }
+.tfs-banner { font-size: 11.5px; line-height: 1.45; border-left: 3px solid var(--warn); }
+.tfs-banner.tfs-loss { border-left-color: var(--bad); }
+
+/* PANELS: a table of 44 px rows. */
+.tfs-panel { gap: 6px; }
+.tfs-panel-head { color: var(--text-dim); font-size: 10px; letter-spacing: 0.14em; }
+.tfs-c-order { flex: 0 0 22px; text-align: right; }
+.tfs-c-label { flex: 0 0 36px; }
+.tfs-c-on { flex: 0 0 52px; }
+.tfs-c-bar { flex: 1 1 auto; min-width: 0; }
+/* 8ch: the longest thing the cell prints is "no peak" (7 characters, for a
+   panel whose peak the route could not compute, which is every panel on a rig
+   with no saved site), and the cell is monospace, so 7ch is exactly its width
+   and 1ch is the gap from the bar. At 44 px it wrapped onto two lines that ran
+   into the next row (tools/ui_probe, 2026-09-26, #384). The PEAK header shares the
+   class at a smaller font, so its 8ch is narrower, which moves nothing: it is
+   the last column and right-aligned, and the BANKED column's left edge is set
+   by the columns before it. */
+.tfs-c-alt { flex: 0 0 8ch; text-align: right; white-space: nowrap; }
+.tfs-panel.tfs-off .tfs-c-label { color: var(--text-dim); text-decoration: line-through; }
+.tfs-bar {
+  position: relative;
+  display: block;
+  height: 16px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.tfs-bar-fill { position: absolute; inset: 0 auto 0 0; background: var(--accent-fill); }
+/* A BLOCK, so its own 14 px line is the only line in the bar's 14 px inside.
+   Inline, it sat on the bar's inherited line (21 px at the row's 14 px font),
+   whose baseline put the 10 px text 6 px down a 16 px `overflow: hidden` bar
+   and cut 4 px off its bottom (tools/ui_probe, 2026-09-26, #384). */
+.tfs-bar-text { position: relative; display: block; padding-left: 4px; font-size: 10px; line-height: 14px; }
+
+/* The two side-by-side arrangements write the sky as `.tfs .tfs-body >
+   .tfs-sky`, three selectors deep, so they outrank the typing rule above
+   (also three) by coming after it: beside the controls the sky takes the full
+   height whether or not a field has focus. */
+
+/* ---------------------------------------------------- phone landscape */
+@container tfs (min-aspect-ratio: 1/1) and (max-height: 540px) {
+  .tfs .tfs-body { flex-direction: row; }
+  .tfs .tfs-body > .tfs-sky { width: 55%; height: auto; }
+  .tfs .tfs-body > .tfs-controls { flex: 1 1 45%; }
+}
+
+/* ------------------------------------------------- tablet and desktop */
+@container tfs (min-width: 720px) and (min-height: 541px) {
+  .tfs .tfs-body { flex-direction: row; }
+  .tfs .tfs-body > .tfs-sky { flex: 1 1 auto; width: auto; height: auto; }
+  .tfs .tfs-body > .tfs-controls { flex: none; width: 360px; border-left: 1px solid var(--line); }
+}
+
+/* A browser without container queries (Safari before 16) reads the same two
+   arrangements off the viewport, which the full-screen sheet fills. */
+@supports not (container-type: size) {
+  @media (min-aspect-ratio: 1/1) and (max-height: 540px) {
+    .tfs .tfs-body { flex-direction: row; }
+    .tfs .tfs-body > .tfs-sky { width: 55%; height: auto; }
+    .tfs .tfs-body > .tfs-controls { flex: 1 1 45%; }
+  }
+  @media (min-width: 720px) and (min-height: 541px) {
+    .tfs .tfs-body { flex-direction: row; }
+    .tfs .tfs-body > .tfs-sky { flex: 1 1 auto; width: auto; height: auto; }
+    .tfs .tfs-body > .tfs-controls { flex: none; width: 360px; border-left: 1px solid var(--line); }
+  }
+}

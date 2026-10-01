@@ -4,10 +4,11 @@
   "cloud_hold_darks": 0,
   "cool_timeout_s": null,
   "cool_to": null,
-  "count_mode": "attempts",
+  "count_mode": "accepted",
   "day_darks": 0,
   "dither_every": 3,
   "dither_pixels": null,
+  "groups": [],
   "guide": true,
   "hfr_reject_factor": null,
   "instructions": [
@@ -60,15 +61,21 @@
   "targets": [
     {
       "acquisition": "cycle",
+      "after_group": null,
       "autofocus_first": true,
+      "autofocus_skip_if_fresh": false,
       "calibration": false,
       "center": true,
+      "center_attempts": 3,
+      "center_tolerance_arcmin": 1.2,
       "dec_deg": 34.41555555555556,
       "id": "",
       "mosaic_group": null,
       "name": "NGC 7331",
+      "panel_col": null,
+      "panel_row": null,
       "ra_hours": 22.618055555555557,
-      "rotation_deg": 23.4,
+      "rotation_deg": null,
       "schedule": {
         "max_hour_angle_h": 0.0,
         "max_moon_illum_pct": 0.0,
@@ -82,7 +89,8 @@
         "start_time": null,
         "stop_mode": "dawn",
         "stop_offset_min": 0,
-        "stop_time": null
+        "stop_time": null,
+        "twilight_deg": -18.0
       },
       "steps": [
         {

@@ -340,6 +340,58 @@ await testAsync("a dismissed banner stays dismissed under its own id", async () 
 
 act(() => { root.unmount(); });
 
+// ================= 5b. a deferred cloud hold banners its reason, once (#244)
+//
+// A scheduler wait under a closed sky opens no hold and says why in
+// `sky.hold_deferred`. Off the Session hub this banner is the only place the
+// operator meets that card, so it has to carry the reason, and it must not say
+// the verdict twice. A fresh root, so the dismissal of section 5 (keyed on the
+// incident's kind, which this card shares) does not hide it.
+//
+// NAMED MUTANT B1 "the verdict back as ENGINE" (`next/lib/incidents.ts`, the
+// deferral card's `engine: deferred` and `next: sky?.text ?? ""` swapped back),
+// run from a byte copy and restored byte-identical (sha256 checked), observed:
+//   (9/10 passed)
+//   x a deferred cloud hold banners the engine's reason and says the verdict
+//   once: the banner does not carry the engine's reason:
+//   expected CLOUDY. the frames say the sky has closed in, with no target set
+//            up to judge it from, so no cloud hold is open; the next target's
+//            setup opens one if the sky is still closed
+//   got      CLOUDY. cloudy, from a reading 40s old - 1 bright stars, low
+//            contrast
+
+await testAsync("a deferred cloud hold banners the engine's reason and says the verdict once", async () => {
+  const DEFERRED =
+    "the frames say the sky has closed in, with no target set up to judge it "
+    + "from, so no cloud hold is open; the next target's setup opens one if the "
+    + "sky is still closed";
+  const SKY_TEXT = "cloudy, from a reading 40s old - 1 bright stars, low contrast";
+  act(() => {
+    useStore.setState({
+      sequence: {
+        state: "running", plan_name: "M31 LRGB", detail: "waiting for M31 to rise",
+        schedule: { state: "waiting", reason: "M31 is below its floor", eta_s: 1500 },
+        sky: {
+          cloudy: true, age_s: 40, score: 0.12, reason: SKY_TEXT, text: SKY_TEXT,
+          holding: false, hold_deferred: DEFERRED,
+        },
+      } as never,
+    } as never);
+  });
+  const root2 = createRoot(container);
+  act(() => { win.location.hash = "#/weather/conditions"; });
+  await act(async () => { root2.render(createElement(Probe)); });
+  await settle();
+  try {
+    const inc = seen.banners.find((b) => b.id.startsWith("inc-"));
+    assert(inc != null, "a deferred cloud hold is not announced off the Session hub");
+    eq(inc!.text, `CLOUDY. ${DEFERRED}`, "the banner does not carry the engine's reason:");
+    eq((inc!.text.match(/cloudy/gi) ?? []).length, 1, `the banner says the verdict twice: "${inc!.text}"`);
+  } finally {
+    act(() => { root2.unmount(); });
+  }
+});
+
 // ========================= 6. the headers describe the code that exists now
 
 await testAsync("no file in this area still claims it is NOT YET WIRED", async () => {

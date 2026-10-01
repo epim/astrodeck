@@ -22,6 +22,119 @@ ROOT = os.environ.get("ASTRODECK_INSTALL_ROOT", r"C:\Users\James\AstroDeck")
 BASE = "http://127.0.0.1:8800"
 
 
+def _site_line() -> str:
+    """Whether a real observing site is saved, WITHOUT printing any of it.
+
+    Issue #128, and it is a fix to a habit rather than to code. Nothing here
+    reported the site, so the way to check it was to read
+    `config/astrodeck.json` over ssh - and that file carries the label and the
+    coordinates in clear. Doing exactly that on 2026-09-21 put the site's label
+    (one of the three privacy needles) into an agent transcript, from a command
+    whose actual question was "is is_default false".
+
+    So the question gets an answer of its own. Nothing below can print a
+    latitude, a longitude or a name: the only facts that leave here are a
+    boolean and an elevation, and the elevation is not a needle.
+    """
+    try:
+        with open(os.path.join(ROOT, "config", "astrodeck.json"),
+                  encoding="utf-8") as fh:
+            site = (json.load(fh) or {}).get("site") or {}
+    except (OSError, ValueError) as exc:
+        return f"UNREADABLE ({type(exc).__name__}) - treat as not set"
+    if site.get("is_default", True):
+        return ("NOT SET - every altitude, meridian flip, dark window and "
+                "sun-avoidance decision is computed for latitude 0, longitude 0")
+    lat, lon = site.get("latitude"), site.get("longitude")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return "saved but its coordinates are not numbers - treat as not set"
+    try:
+        elevation = f"{float(site.get('elevation_m') or 0.0):.0f} m"
+    except (TypeError, ValueError):
+        elevation = "unknown elevation"
+    return f"configured ({elevation})"
+
+
+def _watch_line() -> str:
+    """Is anything outside this PC watching it? Counts and booleans only.
+
+    Issue #125: the rig went offline and nothing said so. The product already
+    has the watcher - `alerting.py`'s dead-man ping, sent every minute from a
+    wall-clock timer, whose ABSENCE is what pages - but on 2026-09-22 this rig
+    had no dead-man URL and no alert channel, so it could have been off for a
+    week and nothing would have noticed. This line puts that state in front of
+    every deploy instead of leaving it to be found by the next outage.
+
+    The dead-man URL carries a per-ping secret in its path, and a sink carries
+    a token or a webhook URL, so nothing here can print either: the facts that
+    leave are a boolean and two counts.
+    """
+    try:
+        with open(os.path.join(ROOT, "config", "astrodeck.json"),
+                  encoding="utf-8") as fh:
+            cfg = json.load(fh) or {}
+    except (OSError, ValueError) as exc:
+        return f"UNREADABLE ({type(exc).__name__}) - treat as unwatched"
+    deadman = bool(str(cfg.get("deadman_url") or "").strip())
+    sinks = [s for s in (cfg.get("alerts") or []) if isinstance(s, dict)]
+    live = [s for s in sinks if s.get("enabled", True)]
+    verified = sum(1 for s in live if s.get("verified"))
+    if not deadman and not live:
+        return ("UNWATCHED - no dead-man URL and no alert channel: if this PC "
+                "stops, nothing outside it will say so (issue #125)")
+    parts = ["dead-man configured" if deadman
+             else "NO dead-man URL - an alert channel cannot report its own PC dying"]
+    parts.append(f"{len(live)} alert channel(s), {verified} verified")
+    return "; ".join(parts)
+
+
+def _recovery_line() -> str:
+    """Will the engine try to reconnect a dropped or silent device? (#16)
+
+    The reconnect gate - including #16's rule that a camera claiming to be
+    connected while producing nothing is dropped - runs only when
+    `escalation.reconnect_resume` is on, and it is OFF by default. Checked on
+    2026-09-22 it was off on this rig, so that recovery existed and never ran.
+    Whether to turn it on is the operator's call; this makes sure it is a
+    decision somebody sees rather than a default nobody does.
+    """
+    try:
+        with open(os.path.join(ROOT, "config", "astrodeck.json"),
+                  encoding="utf-8") as fh:
+            esc = (json.load(fh) or {}).get("escalation") or {}
+    except (OSError, ValueError) as exc:
+        return f"UNREADABLE ({type(exc).__name__})"
+    if esc.get("reconnect_resume") is True:
+        return "reconnect-and-resume ON"
+    return ("reconnect-and-resume OFF - a dropped or silent device stops the "
+            "run instead of being reconnected (issue #16)")
+
+
+def _mount_line(mount: dict) -> str:
+    """The mount's state in booleans, a status word and ra/dec only. (#140)
+
+    `/api/status` also carries the mount's alt/az, rounded to a tenth of a
+    degree (`hub.py`). Ra/dec say where the telescope LOOKS, which is not a
+    geolocator; alt/az say where it STANDS, in the observer's frame - and at
+    the mount's home/park position the altitude equals the site latitude to
+    that same tenth of a degree. #133 put an AM5 into exactly that state (a
+    reset mount believing it is parked at home, on the pole), and #140 is an
+    agent printing its altitude there to check tracking.
+
+    `redact.py`'s `_MOUNT_DERIVED_KEYS` already strips alt/az from every
+    non-admin API response for this reason, but rig_precheck authenticates
+    with the admin token, so nothing upstream withholds them here. The
+    withholding has to happen in this function, by never reading those two
+    keys off ``mount`` - not by rounding or formatting them differently after
+    the fact, which is the #19 key-name-filter failure repeating: a value a
+    caller can compute for itself is not made safe by hiding it downstream of
+    where it was read.
+    """
+    dec = str(mount.get("dec_str")).replace(chr(176), " deg")
+    return (f"mount: slewing={mount.get('slewing')} tracking={mount.get('tracking')} "
+            f"parked={mount.get('parked')} ra={mount.get('ra_str')} dec={dec}")
+
+
 def _session_cookie() -> str:
     with open(os.path.join(ROOT, "config", "astrodeck.json"), encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -56,13 +169,14 @@ def main(argv: list[str]) -> int:
     mount = status.get("mount") or {}
     connected = {k: bool(v.get("connected")) for k, v in (status.get("connected") or {}).items()}
     print("connected:", ", ".join(f"{k}={'yes' if v else 'NO'}" for k, v in sorted(connected.items())))
-    print(f"mount: slewing={mount.get('slewing')} tracking={mount.get('tracking')} "
-          f"parked={mount.get('parked')} ra={mount.get('ra_str')} "
-          f"dec={str(mount.get('dec_str')).replace(chr(176), ' deg')}")
+    print(_mount_line(mount))
     print(f"polar: {polar.get('state')} running={polar.get('running')} ({polar.get('message')})")
     print(f"sequence: {sequence.get('state')} running={sequence.get('running')}")
     lanes = status.get("busy_lanes") or status.get("busy") or {}
     print(f"busy lanes: {lanes if lanes else 'none'}")
+    print("site: " + _site_line())
+    print("watched: " + _watch_line())
+    print("recovery: " + _recovery_line())
     for flag in ("looping", "bahtinov_active", "live_stack_active"):
         print(f"{flag}: {status.get(flag)}")
 

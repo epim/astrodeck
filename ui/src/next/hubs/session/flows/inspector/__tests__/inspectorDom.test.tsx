@@ -790,6 +790,75 @@ test("the rig's own value is read from the resolved provider, or not at all", ()
   eq(RIG_VALUE_PREFIX, "rig: ", "the label that says WHICH value this is went missing");
 });
 
+// ====== 10. a TARGET with no `angle` key shows the angle its rotation means
+
+/** The TARGET's params replaced wholesale, then the column mounted on it. */
+async function mountTarget(params: Record<string, string | number>): Promise<void> {
+  seed({ sel: "n-tgt" });
+  act(() => {
+    const s = useStore.getState();
+    useStore.setState({
+      flows: {
+        ...s.flows,
+        graph: {
+          ...s.flows.graph,
+          nodes: s.flows.graph.nodes.map((n) => (n.id === "n-tgt" ? { ...n, params } : n)),
+        },
+      },
+    } as never);
+  });
+  await mount(createElement(FlowInspectorColumn as any));
+}
+
+/** The option the angle row shows as chosen, or "" for none. */
+const shownAngle = (): string => {
+  const row = tid("flow-field-angle");
+  assert(row != null, "precondition: the TARGET's angle row did not render");
+  const on = row.querySelector('[aria-checked="true"]');
+  return on ? String(on.getAttribute("data-value")) : "";
+};
+
+// Mosaic S3, spec 3.1: `angle` has no missing-key default, because the server
+// derives it from `rotation` (nodes.py `target_angle`). A block saved before
+// S3 with a real PA therefore carries no `angle` key and commands "Rotate to
+// PA". Until the integration of S3 this editor passed the raw param, so the
+// row showed no choice at all for such a block (S3-V's verifier, item 4).
+//
+// RED under mutant "the phone editor passes the raw param" (in a private
+// scratch copy, FlowNodeEditor.tsx's `value={fieldValue(f, node.params)}` put
+// back to `value={node.params[f.key]}`), observed, with the next case red too:
+//
+//   x a stored PA and no angle key reads "Rotate to PA": the row shows "" for
+//     a block the run rotates to PA 23.4
+//     expected Rotate to PA
+//     got
+//   x no PA and no angle key reads "Any angle": a block with no PA must read
+//     as any angle
+await testAsync("a stored PA and no angle key reads \"Rotate to PA\"", async () => {
+  const stored = { ...NODE_DEFS.target.params, rotation: 23.4 };
+  assert(!("angle" in stored), "precondition: the fixture carries an angle key");
+  await mountTarget(stored);
+  eq(shownAngle(), "Rotate to PA",
+    `the row shows "${shownAngle()}" for a block the run rotates to PA 23.4`);
+  assert(!("angle" in paramsOf("n-tgt")),
+    "showing the derived angle wrote it into the node - it is display only");
+});
+
+// The derivation's other arm: with no PA the row reads "Any angle", not blank.
+await testAsync("no PA and no angle key reads \"Any angle\"", async () => {
+  await mountTarget({ ...NODE_DEFS.target.params, rotation: -1 });
+  eq(shownAngle(), "Any angle", "a block with no PA must read as any angle");
+});
+
+// CONTROL: a stored angle is shown as stored, with the raw param or without
+// (it stayed green under the mutant above).
+await testAsync("CONTROL: the node's own angle beats the derivation", async () => {
+  await mountTarget({ ...NODE_DEFS.target.params, rotation: 23.4,
+    angle: "Camera fixed at PA" });
+  eq(shownAngle(), "Camera fixed at PA",
+    "a chosen angle was overridden by the one its rotation would derive");
+});
+
 // ------------------------------------------------------------------ tally
 await act(async () => { root.unmount(); });
 

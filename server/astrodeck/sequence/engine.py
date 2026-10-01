@@ -28,23 +28,31 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 from pathlib import Path
 from statistics import median
-from typing import Any
+from typing import Any, Callable, NamedTuple
 
 from ..config import config_store, frames_payload
-from .. import capture_geometry
+from .. import capture_geometry, naming
 from ..devices.base import DeviceError, DomeShutterState, PierSide
-from ..events import bus
+from ..events import SITE_DERIVED_KEY, bus, night_key
 from ..focus import run_autofocus
 from ..focus.approach import approach, configured_overshoot
 from ..focus.autofocus import SWEEP_EXPOSURE_S, SWEEP_GAIN, TrackingLost
+from ..focus.native import SPARSE_FIELD_WARN
 from ..focus.filter_offsets import narrowband_sweep_settings, solve_filter_slot
 from ..focus.tempcomp import (
     TempCompConfig, decide as temp_comp_decide, status_node as temp_comp_node,
 )
 from ..guide.base import rms_total_arcsec
+# The native guider's ceiling on one correction, which bounds the longest
+# pulse any guider this engine drives can have in flight at the wind-down's
+# park (`WIND_DOWN_GUIDER_STOP_S`, #311). Private there, imported here so
+# there is one copy; the `guide` package, which `hub` imports, loads it
+# already, so this costs nothing at import.
+from ..guide.native import _ENGINE_MAX_DURATION_MS as _NATIVE_PULSE_CAP_MS
 from ..hub import Hub
 from ..imaging.processing import to_jpeg
 from . import schedule
@@ -52,7 +60,16 @@ from .cloudstate import CloudState, verdict_from_info
 from .instructions import (
     FireRecord, FiredAction, TriggerContext, evaluate_instructions,
 )
-from .models import ExposureStep, SequencePlan, Target
+from .angle_check import angle_verdict, fresh_sky_angle
+from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S, REACH_RECHECK_S,
+                          SET_ASIDE_EXPIRY_S, SOLAR_PER_SIDEREAL,
+                          SOLVE_TRANSIENT, TARGET_STOP, ExpiryCause, GroupRun,
+                          PanelDeferred, PanelMeridian, VisitBound,
+                          angle_decision, forward_clear_ts,
+                          meridian_eligibility, no_guider_defers,
+                          set_aside_expiry)
+from .models import ExposureStep, SequencePlan, Target, TargetGroup
+from .panel_order import OrderSnapshot, order_panels
 from .report import FrameRecord, SessionReporter
 from .policy import resolve_policy
 from .session import Session, SessionFrame, session_store
@@ -86,6 +103,16 @@ DEFAULT_OVERHEAD_S = 12.0   # seed overhead until real frames are measured
 DITHER_COST_S = 8.0         # seed event costs; replaced by measured averages
 AF_COST_S = 45.0
 FLIP_COST_S = 90.0
+#: One move between targets: stand the guider down, slew, centre, start
+#: guiding again. The seed is the spec's ASSUMED hop (A.3), not a measurement;
+#: nobody has timed one on this rig yet. Every completed `_setup_target`
+#: records the real figure, which replaces it from the first acquisition on.
+HOP_COST_S = 150.0
+#: How far ahead the ``setting_first`` panel order looks for each panel to
+#: reach its floor (`_time_to_floor_s`). A night's length: a panel that does
+#: not set within it does not set tonight, and orders after every one that
+#: does (#189 S2, spec 5.2).
+SETTING_SCAN_S = 12 * 3600.0
 
 # States the run has FINISHED in. "aborting" is deliberately not one: it names a
 # teardown that is still running, and every consumer that treats it as terminal
@@ -111,6 +138,25 @@ CLOUD_RESUME_CLEAR_PROBES = 2
 # Default cap on a hold, in minutes. The HOLD/RESUME node ships 45 with
 # "Abort + park" as its timeout action, and that is what this honours.
 CLOUD_MAX_HOLD_MIN = 45.0
+#: How often a cloud hold looks at the mount it has left tracking, in seconds
+#: (#203, #205): the floor, the zenith keep-out and the flip point. A hold
+#: keeps tracking by design, and the frame loop that watches those three is
+#: stopped while it runs, so without this the mount tracked for up to
+#: CLOUD_MAX_HOLD_MIN with nothing looking.
+#:
+#: SIZED AGAINST THE FLIP MARGIN, which is measured: on 2026-08-21 the whole
+#: gap between the plan's flip point and the AM5's own meridian limit was 2.4
+#: minutes (144 s; see the second flip gate in `_run_step`). Every look sees
+#: one interval AHEAD, as `_idle_flip_due` does, so while two looks are no
+#: more than one interval apart the watch acts before the flip point, never
+#: after it; the interval is what a look that runs late (a tracking confirm, a
+#: probe that downloads slowly) can eat, and 30 s leaves more than four of
+#: them inside that 144 s. An exposure is not a gap in the watch either: the
+#: look before one sees the whole exposure ahead (`_hold_exposure_ahead_s`).
+#: Cheap to keep this small: the floor and ceiling are arithmetic, and the
+#: mount is asked anything only while a flip is armed or due, the same two
+#: questions the frame loop asks it before every frame.
+HOLD_WATCH_S = 30.0
 SAFETY_SEED_WAIT_S = 1.0        # max wait for the own-cadence poller's first read
 SAFETY_SEED_STEP_S = 0.05       # poll-cache step while seeding
 SLEW_PROJECT_S = 180.0          # pre-slew floor projection margin (slew+solve)
@@ -169,6 +215,7 @@ RECENTRE_AFTER_UNGUIDED_S = 60.0
 FLIP_FRAME_MARGIN_S = 30.0
 FLIP_WAIT_STEP_S = 5.0          # cancel/pause-responsive hold step near the flip
 
+
 # --- device-I/O timeout bounds (P0-2) --------------------------------------
 # Every engine await on a device call is bounded so a wedged Alpaca/NINA/PHD2
 # transport can never hang the night on an unbounded await (review §8d: "the
@@ -181,6 +228,11 @@ FLIP_WAIT_STEP_S = 5.0          # cancel/pause-responsive hold step near the fli
 CAPTURE_MARGIN_S = 120.0        # added to the exposure for download/save/detect
 SLEW_TIMEOUT_S = 300.0          # plain slew (+settle)
 GOTO_TIMEOUT_S = 420.0          # slew + iterated solve→sync→re-slew centering
+#: What a goto that turns the rotator may take beyond one that does not: the
+#: rotate loop's slew, solves and moves, run before the centring. Every bound
+#: that wraps a goto commanding an angle adds it: a target's setup, and the
+#: meridian flip, whose re-centre commands the angle too (ruling 9).
+ROTATION_ALLOWANCE_S = 300.0
 PARK_TIMEOUT_S = 240.0          # park / unpark
 # (the meridian flip's bounds are below, because they are built out of the
 #  guide-start bounds that follow.)
@@ -210,6 +262,48 @@ GUIDE_START_TIMEOUT_S = 180.0
 #: recomputes it from the guider's own constant so the two cannot drift apart.
 GUIDE_CALIBRATE_TIMEOUT_S = 660.0
 GUIDE_OP_TIMEOUT_S = 120.0      # dither / stop-guiding / quick guider ops
+
+# --- the wind-down's guider stop before its park (#311) ----------------------
+#: How long the wind-down waits for the guider to stop before it parks (#311,
+#: S3 orchestrator ruling 3, spec "Still waiting on the owner" item 24). A
+#: guide pulse still on the wire when the park begins can undo the park: on
+#: the AM5 an east pulse is a tracking suspend (``:Td#`` ... ``:Te#``), so the
+#: park reads tracking off inside it and sends no stop of its own, the pulse's
+#: ``:Te#`` lands, and ``:hP#`` is then accepted and silently does nothing
+#: (zwo_am5 ``_park_now``), which that driver notices only after its own
+#: minute-long poll. So the park waits for the stop that ends the pulses, but
+#: only as long as one pulse can take to end, never the guider's whole
+#: ``GUIDE_OP_TIMEOUT_S``: a guider that has stopped answering must not hold
+#: the park and the roof close in the rain (#270). Past this the park goes
+#: ahead, and the stop is reaped after the close as before.
+#:
+#: DERIVED, NOT GUESSED. The longest pulse the native guider can have in
+#: flight on any mount is its own ceiling on one correction
+#: (`guide.native._ENGINE_MAX_DURATION_MS`, 2500 ms): it lowers that to a
+#: mount's published ``max_pulse_ms`` (the AM5 publishes 1000 ms), never
+#: raises it. The margin is what a driver takes to end a pulse the stop cut
+#: short: the AM5 waits up to its ``_PULSE_CANCEL_JOIN_S`` (2 s) for its pulse
+#: thread to stop the mount before the cancel comes back. Both are imported
+#: or pinned rather than copied: test_wind_down_guider_stop_before_park reads
+#: the AM5's cap and join from the driver and fails if the sum outgrows this.
+#: PHD2 pulses through its own mount connection, which nothing here orders
+#: against the park; the park's read-back is what catches a park lost that
+#: way (`_park_and_read_back`).
+WIND_DOWN_PULSE_MARGIN_S = 2.0
+WIND_DOWN_GUIDER_STOP_S = (_NATIVE_PULSE_CAP_MS / 1000.0
+                           + WIND_DOWN_PULSE_MARGIN_S)
+#: How often the park's read-back looks again while the mount is still on
+#: its way to park (item 9, the follow-up to S3 orchestrator ruling 3;
+#: `SequenceEngine._await_the_park`). An Alpaca ``park()`` is a bare PUT:
+#: the driver starts the slew and answers, and ``AtPark`` goes true only
+#: when the mount arrives, tens of seconds later. Read once, "not parked"
+#: was the answer about every such park, and the wind-down parked a second
+#: time into the slew and then stopped tracking in the middle of it. One
+#: second is the AM5 driver's own poll of its park (``PARK_POLL_S``) and
+#: the order of the Alpaca slew's; the first look is made at once, so a
+#: mount that reads neither parked nor slewing is still parked again at
+#: once, and the whole wait is bounded by the park's own ``PARK_TIMEOUT_S``.
+PARK_READ_BACK_POLL_S = 1.0
 
 # --- the meridian flip's bound ---------------------------------------------
 #: The flip's work BEFORE the guider restart: stop guiding, read the pier side,
@@ -302,6 +396,7 @@ TRACKING_RECOVERY_TIMEOUT_S = 2400.0
 MOUNT_RECONNECT_TIMEOUT_S = 30.0  # reopening a dropped link so a wind-down can park
 FILTER_MOVE_TIMEOUT_S = 90.0    # a filter-wheel slot change (incl. settle)
 FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can crawl)
+FOCUSER_QUERY_TIMEOUT_S = 30.0  # a single get_position read, not a move (#577)
 CALIBRATOR_CMD_TIMEOUT_S = 30.0  # flat panel on/off / cover move (PRO-5)
 FLAT_METER_MAX_S = 8            # trial metering captures cap (belt-and-braces)
 
@@ -322,6 +417,38 @@ DOME_QUERY_TIMEOUT_S = 30.0    # a single shutter_state query during reopen
 # finished target isn't tracked down into the pier/tripod for hours; the next
 # ready target's _setup_target restores tracking + re-slews (review §1.9).
 WAIT_TEARDOWN_S = 120.0
+#: How often an idle stop the mount did not confirm is asked again, at most
+#: (#189 A3). The retry runs on its OWN task and clock, never on the wait
+#: loop's tick (`SequenceEngine._idle_stop_retry`): on a dead link one ask is
+#: a ``set_tracking(False)`` and a read-back that each hang for
+#: ``MOUNT_QUERY_TIMEOUT_S``, and asked from the tick that put a minute
+#: between two looks at the weather for as long as the link stayed dead. A
+#: minute is short against what a retry is for, a link that comes back after
+#: an outage (the #133 class), and a mount that answers but will not stop
+#: is asked sixty times an hour rather than seven hundred. The warning
+#: promises "about once a minute" in words, so change the two together.
+IDLE_STOP_RETRY_S = 60.0
+#: How long the end of a run waits for the idle stop's FIRST ATTEMPT to
+#: finish before it asks the mount itself (#247; H3 orchestrator ruling 5,
+#: spec "Still waiting on the owner" item 14; `SequenceEngine._finish_idle_
+#: stop`). Composed from the bounds of what the attempt awaits, as the flip's
+#: bounds are, so the wait cannot cut a first attempt that is only slow:
+#: `_park_hold` stops the guider under ``GUIDE_OP_TIMEOUT_S`` and the mount
+#: under one ``MOUNT_QUERY_TIMEOUT_S``, and the read-back is one more
+#: ``MOUNT_QUERY_TIMEOUT_S``: 120 s + 2 x 30 s = 180 s. The read-back's
+#: confirm probes (``TRACKING_CONFIRM_PROBES`` x ``TRACKING_CONFIRM_S``, 4 x
+#: 1 s) run only after a read that answered False, never after one that hung
+#: for its bound. They are reads of their own, though, and each can hang for
+#: its bound too, so a mount that answers False at once and then goes silent
+#: can carry the first attempt past 180 s. The bound is the attempt's usual
+#: worst case, not every case: a first attempt cut there still gets the one
+#: more bounded stop and read-back that follow the wait.
+IDLE_STOP_FINISH_S = GUIDE_OP_TIMEOUT_S + 2 * MOUNT_QUERY_TIMEOUT_S
+#: How often that wait looks at the first attempt. A poll, not an await on
+#: the task, so a cancel of the run lands on the poll's sleep and never on the
+#: task making the stop (see `_finish_idle_stop`); a quarter second is the
+#: camera-lane wait's own cadence and nothing against a 180 s bound.
+IDLE_STOP_FINISH_POLL_S = 0.25
 
 # --- "if missed: skip" grace (Schedule.on_missed, C1-25) -------------------
 # How far a target's frozen start may already be in the past before "skip if
@@ -341,7 +468,58 @@ MISSED_GRACE_S = 300.0
 _MAX_PENDING_THUMBS = 4
 
 
-def _timeout_abort(what: str, timeout_s: float, note: str = "") -> SafetyAbort:
+#: How long run-start waits for a camera-owning operation that was already in
+#: flight when the run began (issue #44).
+#:
+#: Measured on the rig, captures/logs/2026-09-17.jsonl: a solve started at
+#: 03:17:56 at the park position, the next run started at 03:18:10, and that
+#: solve did not let go until its own exposure timeout at 03:19:17 - 81 seconds.
+#: 150 gives that a margin and still answers the operator inside three minutes.
+#:
+#: Waiting and not cancelling: the thing holding the lane is a real operation
+#: with its own bound, usually the previous run's teardown solve, and cancelling
+#: someone else's camera work from a starting run is a bigger claim than this
+#: needs to make. If it outlives the wait, the run refuses rather than pushing
+#: past it.
+_CAMERA_LANE_WAIT_S = 150.0
+#: How often that wait looks at the lane, and so how far ahead its idle look
+#: seeks the flip point (#236): the longest the wait goes between two looks
+#: at the mount, as `_wait_until`'s look sees one ``SCHEDULE_WAIT_STEP_S``
+#: ahead.
+_CAMERA_LANE_POLL_S = 0.25
+
+
+#: A camera that CLAIMS to be connected and has produced nothing for this many
+#: times the expected frame time is treated as dropped (issue #16).
+#:
+#: `connected` is a remembered flag. On 2026-09-12 an ASI guide camera stranded
+#: in VIDEO_MODE_ACTIVE went on reporting `connected: true`, so the reconnect
+#: gate saw a healthy device and never tried to heal it; the rig sat broken
+#: until a human ran a profile activate. A liveness flag that cannot go false is
+#: not a liveness flag, and every recovery hanging off it is inert.
+#:
+#: Three frame times, floored, so a legitimately slow frame is never mistaken
+#: for a dead one: the expected time already includes the exposure and the
+#: measured overhead, and a camera that has missed three of them in a row is not
+#: being slow.
+_CAMERA_SILENT_FACTOR = 3.0
+#: ...and never sooner than this, so a burst of sub-second calibration frames
+#: cannot make the bound a fraction of a second.
+_CAMERA_SILENT_FLOOR_S = 180.0
+
+
+#: What a bound's expiry says comes next when the caller is a RUN: the
+#: SafetyAbort tears it down through the shielded wind-down (`_timeout_abort`).
+TIMEOUT_ABORTING = " — aborting"
+#: What a pier-guard read past its bound says comes next inside
+#: `SequenceEngine.check_slew_limits`, the slew gate for a caller with no run
+#: in flight (auto-resume's limits step): there is no run to abort, and the
+#: slew it asked about is not made (#327).
+SLEW_CHECK_TIMEOUT_SUFFIX = " — not slewing"
+
+
+def _timeout_abort(what: str, timeout_s: float, note: str = "", *,
+                   suffix: str = TIMEOUT_ABORTING) -> SafetyAbort:
     """Log and BUILD (never raise) the abort a bound's expiry produces.
 
     One wording, one place. ``_bounded`` is not the only caller any more — the
@@ -349,15 +527,22 @@ def _timeout_abort(what: str, timeout_s: float, note: str = "") -> SafetyAbort:
     cannot go through ``wait_for`` once — and two hand-written copies of
     "``{what}`` timed out after ``{n}``s — aborting" would drift the day one of
     them was reworded, taking every test that greps the line with it.
+
+    ``suffix`` ends the log line with what the CALLER does next, and only the
+    log line: the abort's own message never carried it. A run's callers keep
+    the default. A caller that is not a run passes its own (#327): auto-resume's
+    limits step asks the slew gate with no run in flight, and its timeout said
+    "aborting" at error level about a run that did not exist.
     """
     tail = f" — {note}" if note else ""
     bus.log("error",
-            f"{what} timed out after {timeout_s:.0f}s{tail} — aborting",
+            f"{what} timed out after {timeout_s:.0f}s{tail}{suffix}",
             "sequence")
     return SafetyAbort(f"{what} timed out after {timeout_s:.0f}s{tail}")
 
 
-async def _bounded(awaitable, timeout_s: float, what: str, *, note: str = ""):
+async def _bounded(awaitable, timeout_s: float, what: str, *, note: str = "",
+                   suffix: str = TIMEOUT_ABORTING):
     """Await ``awaitable`` under ``asyncio.wait_for`` (P0-2). On timeout, raise a
     ``SafetyAbort`` so the run tears down through the existing shielded park/warm
     wind-down instead of hanging on an unbounded await. ``CancelledError`` (a real
@@ -368,11 +553,42 @@ async def _bounded(awaitable, timeout_s: float, what: str, *, note: str = ""):
     awaitable, so whatever it was half way through is now half done. "start
     guiding timed out after 180s" told the morning nothing about the fresh
     calibration walk it had just severed (2026-09-07 03:39). Callers whose
-    cancel leaves something behind say so."""
+    cancel leaves something behind say so.
+
+    ``suffix`` is `_timeout_abort`'s: a caller that is not a run says what it
+    does next instead of "aborting" (#327)."""
     try:
         return await asyncio.wait_for(awaitable, timeout_s)
     except asyncio.TimeoutError:
-        raise _timeout_abort(what, timeout_s, note)
+        raise _timeout_abort(what, timeout_s, note, suffix=suffix)
+
+
+def _reraise_swallowed_cancel() -> None:
+    """Raise ``CancelledError`` if the current task was cancelled and the call
+    it just came back from ate the cancel.
+
+    A coroutine that awaits a task of its own under
+    ``suppress(CancelledError)`` eats a cancel meant for its caller too: the
+    caller's cancel is passed on to the task it is waiting on, and the
+    CancelledError that comes back is suppressed with the task's own. The
+    caller then runs on as if nothing had been asked, while whoever
+    cancelled it waits for it to finish. ``Task.cancelling()`` still counts
+    the request, so asking it after such a call restores the cancel.
+
+    The native guider's ``stop_guiding`` did exactly that with its guide
+    loop until #235, which fixed it at the source: it now waits for the loop
+    with ``aio.reap``, which raises the caller's cancel once the loop is
+    dead, so the run task's own stops of the native guider hear their
+    cancel without this. It stays as the backstop it was. The idle-stop
+    task asks it after its first attempt, whose ``_park_hold`` stops
+    whichever guider the rig has, not only the native one, and the shape
+    #235 removed from the native guider survives in other awaits of a
+    cancelled task (#252). With the native guider's stop fixed, it finds
+    nothing to restore there; it costs one read of the task's own state.
+    """
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        raise asyncio.CancelledError()
 
 
 def _mint_report_id(plan_name: str, started_at: float, taken: list[str]) -> str:
@@ -397,12 +613,43 @@ def _frame_altitude(target, site: dict, when: float) -> float | None:
     (PRO-10 §1.6 Task B)."""
     try:
         from ..catalog import altaz
+        # AN UNSET SITE IS A GAP (issue #121). Both callers below document
+        # `None` as covering "an unset site" and it did not: `Site.latitude`
+        # and `Site.longitude` default to 0.0 with `is_default` True, so
+        # nothing raised and `altaz` returned a confident altitude for the Gulf
+        # of Guinea. The floor gate then set targets aside for the night, and
+        # the resume arm refused to slew, on a sky nobody observed - which is
+        # the outcome each of those comments was written to prevent.
+        if site.get("is_default"):
+            return None
         lat = site["latitude"]
         lon = site["longitude"]
+        # AND A BAD COORDINATE, which the docstring has always claimed and did
+        # not have either (found while fixing #121). `altaz` does not raise on
+        # NaN - it clamps, and a NaN ra/dec came back as 90.0, i.e. the zenith.
+        # For an altitude FLOOR that is the fail-open direction: a target with
+        # unusable coordinates reads as comfortably above any floor, so the gate
+        # that exists to set it aside never fires and the resume arm slews to it.
+        if not all(math.isfinite(float(v))
+                   for v in (lat, lon, target.ra_hours, target.dec_deg)):
+            return None
         alt, _ = altaz(target.ra_hours, target.dec_deg, lat, lon, when)
-        return round(float(alt), 2)
+        alt = float(alt)
+        if not math.isfinite(alt):
+            return None
+        return round(alt, 2)
     except Exception:
         return None
+
+
+#: How many guiding recoveries may be attempted without a frame landing (#72).
+#: Two, because the evidence says the third never helped: on 2026-09-19 the
+#: engine made 18 and none of them held, and each costs a re-centre plus a
+#: full calibration walk (123 to 125 south pulses of up to 1000 ms, about two
+#: minutes of unmonitored Dec motion). One attempt is too few -- a single lost
+#: star on a passing cloud recovers routinely and did so on NGC 7331 for six
+#: hours the same night.
+_MAX_GUIDING_RECOVERIES = 2
 
 
 class SafetyAbort(DeviceError):
@@ -412,10 +659,270 @@ class SafetyAbort(DeviceError):
     catches it FIRST, above ``except Exception``, to drive the unsafe path."""
 
 
+class SlewRefused(SafetyAbort):
+    """A slew the rig's own limits refuse: the altitude floor, the horizon, a
+    no-go wedge, the zenith keep-out, no saved site to check them against, the
+    pier guard with flips off (`_enforce_mount_floor`), or the Sun's exclusion
+    cone (a cloud hold's re-point, `_hold_repoint`). #240, H3 orchestrator
+    ruling 3.
+
+    STILL A SafetyAbort, so every caller that does not name it ends the run
+    exactly as before: a setup's slew, a flip, a pause's resume. Only a cloud
+    hold's re-point catches it by name (`_hold_repoint`), and stops tracking
+    and goes on holding, because inside a hold a refused slew is a slew not
+    made yet, not a reason to end the night.
+
+    TOLD APART BY TYPE, NEVER BY TEXT. The other SafetyAbort a re-point can
+    meet is a mount call past its bound (`_bounded`, P0-2), a dead link that
+    must still end the run; its sentence and a refusal's could come to share
+    words the day either is reworded, and a message match would then turn a
+    dead link into a hold that holds for its whole bound.
+
+    ``words`` is the refusal with no numbers in it, as the end of a sentence,
+    for a cloud hold's line and published detail (viewers read it, and a
+    target's altitude at a time is the site, #19, #140).
+
+    THE MESSAGE IS WORDS TOO (#233; H3 orchestrator ruling 1, spec "Still
+    waiting on the owner" item 10). A run this ends logs it ("sequence
+    stopped (unsafe): ...") and publishes it as the state's ``detail``, and a
+    viewer reads both. It used to be the gate's own sentence, "target M42
+    altitude 22° below safety floor 30° (az 238°)". Words at the source
+    rather than at each reader, because a reader that forgets is a leak and
+    a message with no number in it cannot become one.
+
+    ``site_detail`` is that numeric sentence, or None: carried for a surface
+    a site-derived capability gates, and rendered by none of the engine's
+    own. Nothing is logged or published from it here. Auto-resume files it
+    as its hold's ``site_detail``, which only such a surface serves
+    (``resume_arm.py``, ``api/redact.py``), and falls back to the message
+    for a refusal that has none.
+
+    ``kind`` is the verdict's kind, the key of `REACH_TAGS` (``"floor"``,
+    ``"ceiling"``, ``"no_site"``, ``"pier"``), ``"sun"`` for the Sun's cone,
+    or None for a refusal raised with none (#313, S3 orchestrator ruling 1).
+    It is what lets a group member's visit tell a limit that time clears
+    from one it does not WITHOUT READING THE TEXT (`_visit_panel`): a floor
+    or keep-out refusal at the member's own hop is a reach wait, and every
+    other kind, None included, still ends the run.
+    """
+
+    def __init__(self, message: str, *, words: str,
+                 site_detail: str | None = None, kind: str | None = None):
+        super().__init__(message)
+        self.words = words
+        self.site_detail = site_detail
+        self.kind = kind
+
+
+class RecoverySweep(NamedTuple):
+    """A successful autofocus made just before a run by someone else: the
+    recovery ladder's sweep after a restart (#402), which `start` takes as
+    ``focus_sweep``.
+
+    IN PROCESS MEMORY ONLY. ResumeArm keeps the record it hands over on its
+    own instance and this engine keeps it for one acquisition; neither
+    writes it anywhere. A sweep is a fact about tonight's focuser, which the
+    engine outlives by days on the rig, and a fact on disk is one a later
+    night finds and nobody can see (learned facts belong in process memory,
+    as `_learn_mount_flips_early` says of #127's trait).
+
+    ``position`` is where the sweep left the drawtube, ``temp_c`` the
+    focuser temperature read as it ended (None when none could be read),
+    ``binning`` the binning its frames were taken at, and ``age_s`` how long
+    before the hand-off it ended, in seconds: an age and not a time, so the
+    ladder's clock and this engine's never have to agree."""
+
+    position: int | None
+    temp_c: float | None
+    binning: int
+    age_s: float
+
+
+class LimitVerdict(NamedTuple):
+    """The altitude half of the slew gate, as an answer
+    (`SequenceEngine._altitude_limit_verdict`).
+
+    ``kind`` is ``"no_site"``, ``"floor"`` or ``"ceiling"``. ``sentence`` is
+    what the gate raises, in words (#233). ``site_detail`` is the same
+    refusal with the target's altitude, the limit and the azimuth in it, or
+    None; the gate carries it as `SlewRefused.site_detail` and nothing logs
+    or publishes it (see there).
+    """
+
+    kind: str
+    sentence: str
+    site_detail: str | None = None
+
+
+#: What waiting can do about each kind of slew-gate refusal (#189 S2, spec
+#: 5.1 item 1, D9). ``wait``: time changes it. The floor kind covers the
+#: altitude floor, the horizon and obstruction mask and the no-go wedges
+#: (`schedule.effective_floor` folds all three into one number), and the
+#: ceiling kind the zenith keep-out; a panel behind any of them rises out, or
+#: sinks out, of it. ``refuse``: waiting cannot fix it. No saved site stays
+#: unsaved all night, and a pier-side change with meridian flips off stays a
+#: pier-side change. The spec also lists "the pier limit" under wait; the
+#: gate's only pier refusal is the flips-off change, and with flips on the
+#: gate lets a side change through to the meridian rule (5.7), which waits
+#: for the crossing, so no pier kind is ever a wait here.
+REACH_TAGS = {"floor": "wait", "ceiling": "wait", "no_site": "refuse",
+              "pier": "refuse"}
+
+#: Seconds added to every wake the meridian rule computes (spec 5.7): a
+#: crossing, the end of the band past it (`MERIDIAN_SIDE_MARGIN_S`), the
+#: moment the last pre-flip panel runs out of room. A wake computed to the
+#: edge itself can land a float's width before it, where the panel is still
+#: held and is held again for a sliver: the do-while wait would then take a
+#: run of near-zero sleeps. One second is inside every margin the rule keeps.
+MERIDIAN_WAKE_PAD_S = 1.0
+
+#: Seconds past its crossing before a panel counts as past the meridian for
+#: the group's pier change (spec 5.7; `group_rules.meridian_eligibility`'s
+#: ``crossed_h``). A goto AT the crossing leaves the side to how the mount
+#: itself reckons the hour angle there: its clock, its longitude, its
+#: pointing model. The simulator's unsynced goto lands 7 s of RA east of the
+#: target (0.04 deg x 0.7), which at one second past the crossing put the
+#: tube back on the pre-flip side and cost the panel a deferral and a 300 s
+#: wait (seen in test_group_meridian's viewer case before this existed).
+#: Fifteen seconds clears that with room and costs a quarter of a minute of
+#: an idle that is minutes long; the hop's side check still defers a hop
+#: the mount resolved the other way. An estimate: the AM5's own boundary
+#: has not been measured (S7).
+MERIDIAN_SIDE_MARGIN_S = 15.0
+
+
+class FlipPoint(NamedTuple):
+    """Where one flip attempt is aimed, decided ONCE (#505,
+    `SequenceEngine._flip_point`): the flip gate's frame window, the hold
+    before the goto and the goto's own "before transit?" (#489) all read
+    this, so no two of them can measure from different zeros.
+
+    The times are on the engine's clock (``time.time()``), with the
+    countdown's seconds of hour angle read as clock seconds, as the engine
+    reads them everywhere (the gate always did, and so do the group's
+    meridian rule and the idle flip watch)."""
+
+    #: When the attempt is due, as the gate computed it: the zero, less the
+    #: lead, plus the band when the zero is the meridian itself.
+    at: float
+    #: When the target crosses its own meridian: transit, whatever the zero.
+    transit_at: float
+    #: What the countdown is measured from: ``"meridian"``, or ``"mount
+    #: limit"`` when the mount reported a limit nearer than the meridian.
+    zero: str
+    #: The lead taken off the zero, in seconds (never negative).
+    lead_s: float
+    #: The band added past the zero, in seconds: `_flip_retry_past_s` at the
+    #: meridian, and 0 past a limit the mount reported.
+    past_s: float
+
+
+class ReachVerdict(NamedTuple):
+    """The slew gate's whole answer for one destination, tagged by what time
+    can do about it (`SequenceEngine._mount_floor_verdict`, #189 S2, spec 5.1
+    item 1).
+
+    ``tag`` is ``"wait"`` or ``"refuse"`` (`REACH_TAGS`). ``kind`` is
+    ``"floor"``, ``"ceiling"``, ``"no_site"`` or ``"pier"``. ``sentence`` is
+    exactly what the gate raises, ``words`` the same refusal as the end of a
+    sentence (`SlewRefused.words`), ``site_detail`` its numbers or None, which
+    nothing logs or publishes (#233)."""
+
+    tag: str
+    kind: str
+    sentence: str
+    words: str
+    site_detail: str | None = None
+
+
+class _Eligibility(NamedTuple):
+    """Whether a group member the gating calls ready may be visited now (spec
+    5.1 selection, items 1 and 2), as `SequenceEngine._eligibility_now`
+    decides it.
+
+    ``eligible``: it may. ``wake_ts``: when a member that may not is worth
+    asking again, joining ``earliest`` like any waiter: ``REACH_RECHECK_S``
+    from now behind a limit, its crossing under the meridian rule.
+    ``deadline_ts``: the visit ends at a frame boundary before it (the
+    panel's flip point, 5.3), or None. ``held``: ``"reach"``,
+    ``"meridian"`` or ``"defer"`` (the group's deferral wait, #304, waking at
+    its end) for a member that waits. ``reason``: in words (6.9)."""
+
+    eligible: bool
+    wake_ts: float | None
+    deadline_ts: float | None
+    held: str | None
+    reason: str
+
+
+class _FollowerGate(NamedTuple):
+    """What a ready target that is no group's member may do while a group it
+    follows is still live (spec 1.6, D15; `SequenceEngine._follower_gate`),
+    and what a member's group may do while a group its gate names is (#330,
+    `SequenceEngine._group_gate`: "ready", "wait" or "skip" only).
+
+    ``kind``: ``"ready"`` runs its normal course, ``"bounded"`` runs one visit
+    that ends at ``deadline_ts`` (the group's ``group_ready_ts``), ``"wait"``
+    is not selected (``wake_ts`` when it is worth asking again, None when
+    only the group's own progress can change it), ``"skip"`` leaves the night
+    without being done. ``group`` is the group that decided it."""
+
+    kind: str
+    deadline_ts: float | None = None
+    wake_ts: float | None = None
+    reason: str = ""
+    group: "TargetGroup | None" = None
+
+
 class StopTarget(Exception):
     """Raised to advance the SCHEDULER to the next target (window closed / never
     rises / max-run hit). NEVER aborts the night — the engine catches it in the
     skip-ahead loop, marks the target skipped, and moves on (§1.9-C)."""
+
+
+class WindowClosed(StopTarget):
+    """The target's FROZEN stop boundary has passed: dawn, a stop time or
+    ``max_run_min`` (`_enforce_stop_boundary`). Every catcher of
+    :class:`StopTarget` still catches it, and the night goes on to its
+    all-closed path.
+
+    Told apart by type for the group driver alone (#316, S3 orchestrator
+    ruling 5): every other plain StopTarget in a member's visit defers the
+    panel to the next pass (`_visit_panel`), and this one must not, because
+    there is no next pass. Every panel shares the frozen window, so the
+    scheduler's all-closed path ends them all at the same frame boundary;
+    deferred, the panel would be promised a retry the night cannot give."""
+
+
+class FloorStop(StopTarget):
+    """The target sank below its OWN altitude floor (``on_floor = advance``,
+    `_enforce_altitude_floor`). Every catcher of :class:`StopTarget` still
+    catches it, and the night still goes on. The scheduler alone tells it
+    apart, because this one sets the target aside for TONIGHT, recorded in
+    ``Session.set_aside`` so a restart tonight does not take it up again
+    (#208, mosaic spec 3.4, 6.7), where a closed window or a guider skip
+    drops a target from this run only."""
+
+
+class GroupSetAside(StopTarget):
+    """A member's hop found that its WHOLE group cannot be shot tonight: a
+    fixed camera measured beyond the mosaic's angle tolerance, which no pass
+    can put right, because nothing turns the camera (#189 U-04, spec 5.6 step
+    4). The group driver (`_visit_panel`) catches it and sets every live
+    member aside for tonight, recorded and saved. The message is the alert's
+    reason, the angles included.
+
+    A :class:`StopTarget`, so a hold or a pause that re-ran the hop clears its
+    published hold on the way out as it does for any target set aside, and
+    any catcher that is not the group driver still ends only that target."""
+
+
+#: The StopTargets the group driver does NOT defer a member for
+#: (`_visit_panel`): its own floor sets the panel aside, a closed window
+#: ends every panel, and a group set aside takes them all. Every other
+#: StopTarget a member's visit raises defers the panel to the next pass
+#: (#316), which is what a gate's words must then say (#326).
+_STOPS_NOT_DEFERRED = (FloorStop, WindowClosed, GroupSetAside)
 
 
 class JumpTarget(Exception):
@@ -458,6 +965,12 @@ class SequenceEngine:
         self._frames_since_focus = 0
         #: consecutive dither SETTLE failures; the walking-field gate
         self._dither_settle_fails = 0
+        #: guiding recoveries attempted since the last frame was banked (#72).
+        #: Counts ATTEMPTS, not failures: on 2026-09-20 recovery kept
+        #: SUCCEEDING -- "native guider calibrated and guiding" -- and losing
+        #: the star again minutes later, so a counter keyed on the exception
+        #: path would have read zero through the entire loop.
+        self._guiding_recoveries = 0
         self._last_focus_temp: float | None = None
         #: The temperature-compensation reference (#D-RIG-2): ``(temp_c, pos)``
         #: or None for "not anchored yet".
@@ -487,6 +1000,40 @@ class SequenceEngine:
         #: find it. A run whose most recent sweep failed has no fresh focus to
         #: stand on whatever the clock says, and must focus again.
         self._last_focus_at: float | None = None
+        #: Where the last SUCCESSFUL sweep this run left the focuser, and
+        #: ``time.monotonic()`` then, or None: the "last good focus" a run
+        #: carrying on after two sparse-field failures names (#507).
+        self._last_good_focus: tuple[int, float] | None = None
+        #: A SWEEP OWED SINCE TWO SPARSE-FIELD FAILURES (#507, H4 orchestrator
+        #: ruling 4). Set when a sweep and its retry at twice the exposure both
+        #: failed on a sparse field under ``af_failure_action`` "warn", so the
+        #: run carries on at the focus it had. ``_sparse_resweep_due`` is set
+        #: by the first light frame after that whose star count reaches
+        #: ``SPARSE_FIELD_WARN``, and the frame loop sweeps at the next
+        #: boundary. Any sweep clears both: whatever ran has answered the
+        #: debt. The owed sweep's own failure owes nothing more, or a night
+        #: whose light frames always clear the line (they are longer and
+        #: finer-binned than a sweep's) would alternate one frame with two
+        #: failed sweeps until dawn.
+        self._sparse_resweep_owed = False
+        self._sparse_resweep_due = False
+        #: ``(session, frames seen, accepted map)`` for `_accepted_now`, or
+        #: None until it is first asked.
+        self._accepted_seen: tuple | None = None
+        #: The focus groups acquired this run (#189 U-05, spec 5.6 step 6),
+        #: keyed by `_focus_group_key`: a target's ``mosaic_group``, or its
+        #: own id when it has none. A group's first acquisition owes a sweep
+        #: in `_hop_focus_is_owed`; its later panels, and a target re-acquired
+        #: after a hold, reuse a focus that is still good. Per run, reset in
+        #: `start()`: a resume is a new run and focuses each group once more.
+        self._focus_groups_acquired: set[tuple[str, str]] = set()
+        #: The recovery ladder's sweep this run was started on (#402), until
+        #: the first acquisition that reaches its focus decision takes it:
+        #: that acquisition's initial autofocus is owed only under the hop
+        #: rule (`_hop_focus_is_owed`), with this sweep as the run's good
+        #: sweep and its group's first. None for every other start, and
+        #: after that acquisition. Never written anywhere (`RecoverySweep`).
+        self._recovery_sweep: RecoverySweep | None = None
         #: GN-08: the HFR of the first ACCEPTED frame since the last successful
         #: autofocus (or, absent any autofocus this run, the run's own first
         #: accepted frame). Read by a relative `hfr_above` rule; reset to None
@@ -508,6 +1055,153 @@ class SequenceEngine:
         self._rule_failures: dict[str, int] = {}
         self._rejected = 0
         self._night_rejects = 0   # per-night consecutive-reject counter (spec §3)
+        #: Consecutive rejects per STEP, keyed "<target.id>:<step.id>" (the
+        #: `_done` key), cleared when that step banks an accepted frame and at
+        #: run start (#147).
+        #:
+        #: ENGINE STATE, NOT A LOCAL, because a cycle visit is one attempt
+        #: deep. It used to restart at every `_run_step` call, which only
+        #: worked while an accepted-mode visit kept shooting its rejects
+        #: without counting them. Once a visit is bounded by attempts, a local
+        #: counter can never reach `max_consecutive_rejects` again and the
+        #: per-step guard silently stops working in cycle mode.
+        self._step_rejects: dict[str, int] = {}
+        #: Steps set aside for TONIGHT by the per-step reject guard, same key,
+        #: mapped to the sentence that was logged. Set aside is not done: the
+        #: ledger still owes the frames and the session ends dormant.
+        #:
+        #: PERSISTED FOR THE NIGHT (#189 S2, #147 part 2, #208; spec 3.4).
+        #: S0 kept this in engine memory only, so a restart or an auto-resume
+        #: the same night started a new run with it empty and shot the filter
+        #: that had just failed ten times in a row all over again. Each entry
+        #: is now also a ``Session.set_aside`` record carrying tonight's night
+        #: key, saved the moment it is made, and `start()` seeds this map
+        #: from the records whose night is tonight's. A later night's run
+        #: reads none of them, so the step is tried again then.
+        self._set_aside: dict[str, str] = {}
+        #: Whole targets set aside tonight, by target id, mapped to the reason
+        #: recorded for them: a panel the group driver gave up on, and any
+        #: target that sank below its own floor (`FloorStop`). Seeded by
+        #: `start()` from ``Session.set_aside`` exactly as ``_set_aside`` is,
+        #: and read once, by `_run_scheduled` as the run begins: a same-night
+        #: crash-resume does not go back to them (spec 3.4, 6.7).
+        self._set_aside_targets: dict[str, str] = {}
+        #: What set each whole target aside tonight and when, by target id:
+        #: ``(kind, ts)``, as its ``Session.set_aside`` record says (#534, H4
+        #: orchestrator ruling 2). Seeded by `start()` beside
+        #: ``_set_aside_targets`` and kept by `_persist_set_aside`. A
+        #: ``"centring"`` set-aside is the one that expires
+        #: (`group_rules.set_aside_expiry`), 45 minutes after ``ts`` or once
+        #: its panel has risen 10 degrees since; nothing site-derived is kept
+        #: here, the altitude at ``ts`` is recomputed when it is asked.
+        self._set_aside_meta: dict[str, tuple[str | None, float | None]] = {}
+        #: How many times each target's set-aside has expired tonight, by
+        #: target id: at most once a panel a night (#534). Seeded by `start()`
+        #: from the session's expired records, so a restart tonight does not
+        #: expire the second set-aside of a night again.
+        self._expiries_tonight: dict[str, int] = {}
+        # --- the mosaic group driver (#189 S2, spec 5.1 to 5.4, 5.10) --------
+        #: The plan's groups by id, re-derived with the plan (the `plan`
+        #: setter), so membership is always read through a group that exists:
+        #: a ``mosaic_group`` with no entry here is no group at all and keeps
+        #: today's panel-first order (spec 3.4).
+        self._groups: dict[str, TargetGroup] = {}
+        #: Each group's driver state for this run (`group_rules.GroupRun`),
+        #: by group id, built by `_start_groups` as the scheduler begins.
+        #: Never persisted: a resume recomputes it from the ledger, and only
+        #: the set-aside panels come back, through ``Session.set_aside``, and
+        #: tonight's pier change, through ``Session.group_pier`` (#312).
+        self._group_runs: dict[str, GroupRun] = {}
+        #: The group whose member the scheduler last chose (or waits for),
+        #: or None. ``state.group`` is published while this is set and only
+        #: then, so a run with no group never carries the key (spec 5.10).
+        self._group_active: str | None = None
+        #: The member being visited, or the one visited last, for the
+        #: published ``panel``. None before the group's first visit.
+        self._group_current: Target | None = None
+        #: The member whose visit is in progress, from its hop to the end of
+        #: its frames, or None. The finish clock does not price that visit's
+        #: hop again (`_visits_owed`).
+        self._visit_in_progress: str | None = None
+        #: When the current visit's frames began: after the hop, so the hop
+        #: never eats into ``visit_min_s`` (spec 5.3). None during a hop.
+        self._visit_started_at: float | None = None
+        #: The panel each group visited last, as a 0-based (row, col), for
+        #: the ``grid`` order (`panel_order.OrderSnapshot.last_visited`).
+        self._group_last_visited: dict[str, tuple[int, int]] = {}
+        #: When each member's last visit ended, by target id, this run. The
+        #: order's "least recently visited" reads the ledger's frame times
+        #: and this, because a deferred visit banks no frame.
+        self._last_visit_ts: dict[str, float] = {}
+        #: Groups whose rig-fault guide pass ended under ``guiding_action``
+        #: warn: their hops warn and shoot unguided, as a single target does,
+        #: until a guider start works again (spec 5.6 step 7).
+        self._group_unguided: set[str] = set()
+        #: The last guider start `_setup_target` made succeeded (a hold's
+        #: release re-runs the setup, so for a member it is the visit's last
+        #: start). The guide-start pass rule counts it as an attempt that
+        #: worked, and `_hop` reads it after a hop's own setup to give the
+        #: hop its own #72 recovery budget (#329).
+        self._hop_guide_started = False
+        #: Each group's meridian wait, by group id: ``"waiting"`` while no
+        #: member may be visited and the meridian rule holds one, ``"ending"``
+        #: from the choice of the member that ends it until that member's
+        #: first exposure (spec 5.10, 6.9; `_note_meridian_waits`). The
+        #: published ``meridian_wait`` and the ``site_derived`` flag on what
+        #: the run publishes in between both read it (`_site_timed`).
+        self._meridian_wait: dict[str, str] = {}
+        #: The pier side each group is on tonight, by group id, as its hops
+        #: MEASURED it: the first hop's side, then the side its one pier
+        #: change read (spec 5.6 step 5; `_group_pier_check`). A change read
+        #: as unreadable leaves NO side here: the one before it is the side
+        #: the group left, the wrong one past the meridian.
+        self._group_side: dict[str, str] = {}
+        #: The groups whose side past the meridian is VERIFIED: read on the
+        #: hop that changed it and found to differ from a side measured
+        #: before the meridian, or left by a flip the latch measured. Only a
+        #: hop that reads such a side may disarm the flip latch; a side
+        #: nothing compared with anything proves no pier change, and the
+        #: latch is the backstop for exactly that case (`_group_pier_check`).
+        self._group_side_verified: set[str] = set()
+        #: Tonight's pier record of each group, by group id, as `start` read
+        #: it back from ``Session.group_pier`` (#312, S3 orchestrator ruling
+        #: 4): what a run earlier tonight measured, which `_start_groups`
+        #: puts back into the group's run state.
+        self._group_pier_tonight: dict[str, dict] = {}
+        #: The pier state last written for each group this run, as
+        #: ``(flipped, side, verified)``, so `_persist_group_pier` saves the
+        #: session only when the state moved.
+        self._group_pier_saved: dict[str, tuple] = {}
+        #: Each group's last member's index in the plan, by group id: a
+        #: target after it in plan order is its follower (spec 1.6).
+        self._group_last_index: dict[str, int] = {}
+        #: ``after_group`` followers whose wait has been said this run.
+        self._after_group_said: set[str] = set()
+        #: The groups each group's members wait for (``after_group``), by
+        #: group id, in plan order: a member's gate holds its whole group
+        #: (#330, `_group_gate`). Built by `_start_groups`.
+        self._group_gates: dict[str, tuple[str, ...]] = {}
+        #: ``(group id, group waited for)`` pairs whose wait has been said.
+        self._group_gate_said: set[tuple[str, str]] = set()
+        #: The last `_run_visit` ended at its deadline (a flip point or a
+        #: follower's ``group_ready_ts``), not at a round or at completion.
+        self._visit_ended_by_deadline = False
+        #: The reading that verified each group's angle tonight, by group id:
+        #: ``(pa_deg, panel label)`` of the last ``ok`` verdict. A fixed
+        #: camera's later hop that measured nothing shoots on it and says what
+        #: it stands on (spec 5.6 step 4). Per run, like ``GroupRun``.
+        self._group_angle_read: dict[str, tuple[float, str]] = {}
+        #: An unframed target whose acquisition has measured no angle yet:
+        #: ``(target id, the acquisition's start)``. Its angle is locked at
+        #: the first frame boundary that finds a sky-angle record exposed
+        #: since then (ruling 9, `_take_pending_lock`). Each setup sets or
+        #: clears it, so it never outlives its acquisition.
+        self._angle_lock_pending: tuple[str, float] | None = None
+        #: Science exposures `_run_step` has taken this run, accepted or
+        #: rejected. `_frames_done` counts accepted frames only; this is what
+        #: the accepted-mode cycle anti-spin compares (#147), because a pass
+        #: of rejects is a rough pass, not a spin.
+        self._exposures_taken = 0
         # one-shot latch for the "guide RMS gate can't be judged in arcsec" notice
         self._rms_unit_warned = False
         # Meridian-flip arming latch. A GEM flip is owed only when a target is
@@ -520,17 +1214,58 @@ class SequenceEngine:
         self._flip_armed = False
         #: Targets whose early (lead-triggered) flip re-slewed without changing
         #: the pier side. They get ONE more attempt, with the lead dropped so it
-        #: waits for the meridian itself — see `_maybe_meridian_flip`.
+        #: waits until `MERIDIAN_SIDE_MARGIN_S` past the meridian itself
+        #: (`_flip_retry_past_s`, #366) — see `_maybe_meridian_flip`.
         self._flip_no_op: set[str] = set()
+        #: The number of the re-slew the flip-owed hold is making, while it
+        #: makes it, and 0 otherwise (#456): set by `_hold_for_owed_flip`
+        #: around each call to the flip gate, which then says a re-slew that
+        #: moved nothing in the hold's words, not the lead-time attempt's.
+        self._flip_owed_attempt = 0
+        #: The flip point the gate computed, while `_wait_for_flip_point`
+        #: holds for it, and None otherwise (#505): set by
+        #: `_maybe_meridian_flip` around that call alone, so the hold waits
+        #: for the gate's point and not one of its own. On the engine rather
+        #: than as an argument, so a double that stands in for the hold keeps
+        #: its ``(target, lead_s)`` signature (the `_flip_owed_attempt`
+        #: precedent).
+        self._flip_point_handed: FlipPoint | None = None
+        #: Whether a GoTo taken before the meridian flips this mount, by mount
+        #: NAME (#127). Learned from real attempts and held for the life of the
+        #: process, NOT cleared at run start the way `_flip_no_op` is - that
+        #: clearing is exactly what made every target re-buy the same lesson.
+        self._flips_early_by_mount: dict[str, bool] = {}
         #: Rate-limit for the "armed but the mount is offline" warning, so a
         #: dropped link says so once instead of once per frame.
         self._flip_offline_logged = False
-        #: The pier side this target was OBSERVED on while it was still east of
-        #: the meridian, i.e. before its flip was owed. The flip-owed invariant
-        #: (`_enforce_flip_owed`) compares against this rather than against a
-        #: convention, so it cannot be fooled by a mount whose east/west sense
-        #: is the opposite of ours. None until such a reading exists.
-        self._pre_flip_side: str | None = None
+        self._flip_no_site_logged = False
+        #: The pier side each target was OBSERVED on while it was still east of
+        #: the meridian, i.e. before its flip was owed, keyed by target id. The
+        #: flip-owed invariant (`_enforce_flip_owed`) compares against this
+        #: rather than against a convention, so it cannot be fooled by a mount
+        #: whose east/west sense is the opposite of ours. No entry until such a
+        #: reading exists; cleared at run start and nowhere else.
+        #:
+        #: PER TARGET, NOT ONE SLOT (I-19, extending #136). One engine-wide
+        #: value meant a run that alternates targets near the meridian - a
+        #: rotating mosaic always does - overwrote one target's record with
+        #: another's. That disarmed the backstop exactly where it is needed:
+        #: a target re-acquired past its meridian on its pre-flip side, which
+        #: is where the AM5 leaves a goto taken inside the flip-lead window,
+        #: because it picks its side from the hour angle.
+        #:
+        #: KEPT ALL RUN, a flip included (#237, H3 orchestrator ruling 2, spec
+        #: "Still waiting on the owner" item 11). The side a target occupies
+        #: before its flip is a fixed property of its east side, the side a
+        #: German mount tracks it on there counterweight-down, so the record
+        #: is as true after a flip as before. And it is still needed: a mount
+        #: that picks its side from the hour angle, as the AM5 does, lands a
+        #: later goto to the target east of its meridian on that side again,
+        #: and the record is the only thing that can then catch the target
+        #: carried past its meridian. H2 cleared it once the flip gate had
+        #: measured the flip, and wrote none again that run, which dropped the
+        #: guard for exactly that re-acquisition.
+        self._pre_flip_side: dict[str, str] = {}
         #: True while `_enforce_flip_owed` is refusing to open the shutter.
         #: Published in the status block as `meridian.flip_owed`.
         self._flip_owed = False
@@ -539,6 +1274,96 @@ class SequenceEngine:
         #: Keyed by target id, cleared only at run start — a recovery that can
         #: loop at 3 a.m. is worse than the bug it recovers from.
         self._tracking_recovered: set[str] = set()
+        # --- the idle-clock park-hold (#165) ----------------------------------
+        # The hazard is a mount TRACKING WITH NOTHING WATCHING IT, and it has
+        # its own clock: it starts when the frame loop stops looking (the last
+        # science exposure, or the end of a target's setup) and runs until the
+        # next target is set up. The teardown used to hang off the length of
+        # ONE computed wait instead, so an eta-0 wait and a constraint wait -
+        # both re-evaluated every 5 s - never park-held at all, and nothing
+        # checked the tracked target's floor or meridian in the meantime (those
+        # checks live in the frame loop). See `_idle_hold_tick`.
+        #: The target the mount was last pointed at and left tracking, by
+        #: `_setup_target`. None until something is acquired: a mount nobody
+        #: pointed is not ours to stop.
+        self._tracked_target: Target | None = None
+        #: Wall time the frame loop last looked at the mount. Read only while
+        #: ``_tracked_target`` is set, and always set with it.
+        self._idle_since = 0.0
+        #: The park-hold latch: open means the next idle park-hold may fire.
+        #: Closed by that park-hold, re-opened by the next `_setup_target`, so
+        #: one idle spell stops tracking ONCE rather than on every 5 s tick.
+        #: A stop the mount does not confirm leaves it CLOSED: the retry is
+        #: `_idle_stop_task`'s, not a second park-hold's (`_idle_park_hold`).
+        self._idle_hold_open = True
+        #: True once a stop this idle spell went unconfirmed, so the warning is
+        #: said once per spell; cleared with the latch by `_setup_target`.
+        self._idle_hold_retrying = False
+        #: The task that makes the idle stop, reads it back and asks again on
+        #: its own clock until the mount confirms it (`_idle_stop_retry`,
+        #: #189 A3, #216). None, or done, when nothing is owed. Every path
+        #: that ends the spell cancels AND awaits it before it goes on
+        #: (`_cancel_idle_stop_retry`), above all `_setup_target` before it
+        #: restores tracking. The end of a run that does not park completes
+        #: it instead (`_finish_idle_stop`, #247); one that parks hands it to
+        #: the park (`_hand_idle_stop_to_the_park`, #270).
+        self._idle_stop_task: asyncio.Task | None = None
+        #: True once ``_idle_stop_task``'s first attempt and its read-back
+        #: are over, so the task is in its retry loop or finished. Lowered
+        #: when the task is created. `_finish_idle_stop` waits on it: a run
+        #: that ends while the first attempt is in flight lets that attempt
+        #: finish, while one that ends during the retries' minute-long sleep
+        #: does not wait out the sleep.
+        self._idle_stop_first_made = False
+        #: The idle stop's own fence (#270, S2 orchestrator ruling 1), after
+        #: the hub's motion fence (W3.7). ``_idle_stop_task`` is handed it
+        #: when it is made, and sends no ``set_tracking(False)`` once it has
+        #: moved on. Advanced when a parking ending hands the stop to its
+        #: park (`_hand_idle_stop_to_the_park`): that task is cancelled, not
+        #: awaited, and a guider stop that eats the cancel (the #235 shape)
+        #: must not let it tell the mount anything after the park is asked.
+        self._idle_stop_epoch = 0
+        #: The idle-stop task a parking ending cancelled and did not await,
+        #: so the wind-down can reap it, bounded, after its park and its roof
+        #: close (`_wind_down`). None when nothing was handed over.
+        self._idle_stop_handed: asyncio.Task | None = None
+        #: Wall time of the first stop the engine made since the mount was
+        #: last pointed, or None while nothing has stopped it (#248, H3
+        #: orchestrator ruling 6). ``_tracked_target`` says which target the
+        #: mount was last POINTED at; this says whether it has been stopped
+        #: since, which that cannot: a mount stopped on X and left there is
+        #: not on X any more, because the sky moved on without it.
+        #:
+        #: SET by every stop the engine makes (`_note_mount_stopped`): the
+        #: idle park-hold's decided stop, the safety pause's `_park_hold`,
+        #: the roof close's park, `_hold_park`, and the recovery's park.
+        #: CLEARED only by a fresh pointing: a setup's slew, a hold's
+        #: re-point, a flip's goto, the tracking-refusal recovery's re-slew.
+        #: An in-place resume never clears it: it tracks on from where the
+        #: mount stopped, which is not where the target is. A cloud hold
+        #: reads it as "elsewhere" and re-points (`_hold_for_clear`).
+        self._mount_stopped_since: float | None = None
+        #: The target whose acquisition is waiting on the safety gate now
+        #: running, or None (#241, H3 orchestrator ruling 4). Set, and
+        #: cleared in a finally, around `_setup_target`'s pre-slew gate,
+        #: around the gate `_hold_repoint` asks, and around the gate a cloud
+        #: hold's own loop asks on every pass (#263). A cloud hold, a safety pause
+        #: or a roof reopen that such a gate opens returns to that
+        #: acquisition when it releases, instead of running a setup of its
+        #: own: the acquisition it interrupted is about to be made, and a
+        #: second one was a second slew, centring, focus sweep and guider
+        #: start for the one target. Outside those gates a release
+        #: re-acquires, as it always has.
+        self._acquisition_behind_gate: Target | None = None
+        #: The end of a wait that reads the safety monitor beside it (#452),
+        #: which `_on_unsafe` calls before it pauses or closes the roof, so
+        #: nothing of the wait (its probes, its published details, its idle
+        #: look) runs on while the pause holds the run. Set around the gate
+        #: such a wait asks (`_wait_beside_the_monitor`, `_await_camera_lane`)
+        #: and taken once by `_on_unsafe`; None everywhere else. An attribute
+        #: rather than an argument, so the gate doubles tests install keep
+        #: their signature (the `_flip_owed_attempt` precedent).
+        self._unsafe_ends_the_wait: Callable[[], None] | None = None
         self._done: dict[str, int] = {}   # "targetId:stepId" -> frames completed
         self._session: Session | None = None   # live ledger (sessions spec §2)
         # In-flight ~512px review-thumbnail renders (Task 6 review, Important
@@ -558,6 +1383,9 @@ class SequenceEngine:
         self._overhead_ema = DEFAULT_OVERHEAD_S
         self._overhead_samples = 0          # real per-frame overhead samples seen
         self._event_costs: dict[str, list[float]] = {}  # measured event durations
+        #: Plan index of the target the run last began acquiring, or None
+        #: before the first. `compute_eta` counts hops to the OTHER targets.
+        self._acquiring_ti: int | None = None
         # --- automation / safety collaborators (Batch 4b §1.9) ---------------
         self.reporter: SessionReporter | None = None
         self._report_finalized = False      # idempotency guard (P3-18)
@@ -595,6 +1423,27 @@ class SequenceEngine:
         # probe frames a hold takes while the science camera is otherwise idle.
         self._clouds = CloudState()
         self._holding_for_clear = False
+        # Why a cloud hold has stopped tracking, or None while the mount
+        # tracks the target it holds (#203): "ceiling" (the zenith keep-out),
+        # "flip" (a flip point it could not take), or "elsewhere" (the mount
+        # is not on the held target and may not be pointed there yet, #224).
+        # While it is set the hold judges no sky: a check frame on a stopped
+        # mount is a streak (#205). Set and cleared only inside
+        # `_hold_for_clear` and the methods it calls.
+        self._hold_parked: str | None = None
+        #: A re-point the mount refused has been said, this stopped spell of
+        #: the hold. Every later look asks again, and says nothing (#224).
+        self._hold_repoint_said = False
+        #: What ``sky.hold_deferred`` publishes while a cloudy sky meets no
+        #: target to hold for in a scheduler wait, or None (#221). It ends
+        #: with the scheduler (`_run`).
+        self._hold_deferred: str | None = None
+        #: That has been said, this wait spell. A target's setup ends it.
+        self._hold_deferred_said = False
+        #: Day darks are asking the safety gate (`_day_darks`). They run after
+        #: the run has ended, so a cloudy verdict there defers no hold and
+        #: publishes nothing (#221).
+        self._day_darks_gate = False
         # The step a cloud probe borrows its filter/gain/binning from. Set on
         # every frame so a hold entered mid-step probes the sky through the SAME
         # optics the science frames used - a probe through a different filter
@@ -615,6 +1464,24 @@ class SequenceEngine:
         # up, instead of unwinding the frame loop. A set => idempotent, so a rule
         # that re-fires every frame can never queue work or loop.
         self._pending_skips: set[str] = set()
+        # Target ids COMPLETED BY THE FRAME THAT FIRED A NO-OP JUMP (#373, S5
+        # orchestrator ruling 3). That frame is banked before the jump acts,
+        # so it can be the target's last owed frame; the no-op leaves the
+        # target to be taken up again, and the scheduler then finds it
+        # complete. Its ``on_target_complete`` rules are owed and run there,
+        # once, as they ran after the frame when it used to be reshot. AND
+        # BY THE FRAME THAT FIRED A CONSUMED JUMP (#481, S7 orchestrator
+        # ruling 2): the scheduler keeps such a target at the front of
+        # ``remaining`` for that one selection, where it was removed with
+        # its rules never run.
+        self._completion_owed: set[str] = set()
+        # Target ids whose ``on_target_complete`` rules have run this run.
+        # A jump one of THOSE rules fires also leaves a complete target to
+        # the scheduler, no-op or consumed, and it is not owed them again:
+        # owed, it ran them again, and each run fired the same jump, until
+        # ``MAX_JUMPS`` ran out and every jump after it was ignored for
+        # the night.
+        self._completion_fired: set[str] = set()
         self._dawn_cutoff = False           # scheduler ran out of open windows
         #: Resolved rig-standards-vs-plan policy (#239 stage A), replaced at
         #: start(). A bare default here so an engine built without start() -
@@ -663,16 +1530,45 @@ class SequenceEngine:
         """
         self._plan = value
         self._policy = resolve_policy(value or SequencePlan(), self._cfg)
+        # The groups ride with the plan for the same reason: a membership
+        # read against another plan's groups would hop the wrong targets.
+        # Read with getattr: tests hand the engine duck-typed plans, and a
+        # plan that carries no groups has none.
+        self._groups = {g.id: g for g in (getattr(value, "groups", None) or [])}
 
     def start(self, plan: SequencePlan, *, session: Session | None = None,
-              origin: str = "", origin_id: str = "") -> None:
+              origin: str = "", origin_id: str = "",
+              tracking: Target | None = None,
+              focus_sweep: RecoverySweep | None = None) -> None:
         """Start a run. EVERY start owns a Session (spec §2): a fresh one when
         ``session`` is None (ids were backfilled by pydantic during plan
         validation — the server-side backfill seam), or a re-opened dormant one
         on resume. Resume seeds ``_done`` from the ledger's id-keyed
         ``done_map()`` and appends a FRESH report to ``session.nights`` — one
         immutable report per night (spec §4); windows re-resolve naturally
-        because resume is a new run."""
+        because resume is a new run.
+
+        ``tracking`` IS A TARGET THE CALLER LEFT THE MOUNT TRACKING (#202).
+        The idle park-hold watches what the engine itself acquired, on the
+        premise that before the first `_setup_target` the mount is wherever
+        the operator left it. After an auto-resume that premise is false:
+        ResumeArm re-centred a target seconds before calling this, and if the
+        run then opens on short scheduler waits nothing looked at that mount's
+        idle clock, floor or flip point until some target was set up. Given,
+        it counts as an acquisition made just now: the idle watch starts on it
+        exactly as it would after a setup.
+
+        ``focus_sweep`` IS A SWEEP THE CALLER MADE JUST NOW (#402). The
+        recovery ladder autofocuses a focuser that lost its position across
+        a restart, and a run started with no record of that sweep paid for
+        another two minutes later at its first acquisition: 2026-09-27, a
+        bin-2 sweep to 11022 at 23:51, then the run's own bin-1 sweep around
+        11022 at 23:52. Given, and only on a resume, it is this run's good
+        sweep: ``_last_focus_at`` and the temperature baseline are its, and
+        the first acquisition's initial autofocus is owed only under the hop
+        rule (the sweep failed, a refocus is due, or the temperature moved
+        past the delta), whatever that target's ``autofocus_skip_if_fresh``
+        says. The ladder hands over only a sweep that succeeded."""
         if self.running:
             raise DeviceError("a sequence is already running")
         if getattr(getattr(self.hub, "dusk_arm", None), "connecting", False):
@@ -731,6 +1627,22 @@ class SequenceEngine:
         self._dither_settle_fails = 0
         self._last_focus_temp = None
         self._last_focus_at = None
+        self._last_good_focus = None
+        self._sparse_resweep_owed = False
+        self._sparse_resweep_due = False
+        self._accepted_seen = None
+        self._focus_groups_acquired = set()
+        # THE LADDER'S SWEEP IS THIS RUN'S GOOD SWEEP (#402), on a resume
+        # only: a fresh session is a new campaign whatever the focuser did
+        # a minute ago. Seeded here rather than at the decision, so every
+        # focus question the run asks before then (a post-flip sweep, the
+        # temperature trigger) stands on the same sweep.
+        self._recovery_sweep = None
+        if focus_sweep is not None and resume:
+            self._recovery_sweep = focus_sweep
+            self._last_focus_at = (time.monotonic()
+                                   - max(0.0, float(focus_sweep.age_s)))
+            self._last_focus_temp = focus_sweep.temp_c
         self._focus_baseline_hfr = None
         self._recent_hfr = []
         self._cooling_reasserted = False
@@ -739,13 +1651,113 @@ class SequenceEngine:
         self._rule_failures = {}
         self._rejected = 0
         self._night_rejects = 0
+        self._step_rejects = {}
+        # SET ASIDE TONIGHT STAYS SET ASIDE (#208, #147 part 2; spec 3.4,
+        # 6.7). A crash-resume, a restart or an auto-resume the same night is
+        # a new run on the same session, and the records it left say what
+        # tonight already gave up on: a step its reject guard set aside, a
+        # target that sank below its floor, a panel the group driver set
+        # aside. Tonight's records are read back; any other night's are
+        # history, so the next night tries everything again. A fresh session
+        # has none. The night is asked of this module's clock, the one every
+        # record was stamped with.
+        self._set_aside = {}
+        self._set_aside_targets = {}
+        self._set_aside_meta = {}
+        tonight = getattr(session, "set_aside_on", None)
+        night_now = night_key(time.time())
+        for rec in (tonight(night_now) if tonight else []):
+            tid, sid = rec.get("target_id"), rec.get("step_id")
+            if tid and sid:
+                self._set_aside[f"{tid}:{sid}"] = str(rec.get("reason", ""))
+            elif tid:
+                self._set_aside_targets[tid] = str(rec.get("reason", ""))
+                # WHAT SET IT ASIDE, AND WHEN (#534): a centring set-aside
+                # read back here still expires, 45 minutes after it was made,
+                # so a restart tonight neither retries it at once nor holds
+                # it all night. A later record for the same panel replaces
+                # an earlier one, as its reason does above.
+                ts = rec.get("ts")
+                ok = (not isinstance(ts, bool) and isinstance(ts, (int, float))
+                      and math.isfinite(ts))
+                self._set_aside_meta[tid] = (
+                    rec.get("kind") if isinstance(rec.get("kind"), str)
+                    else None, float(ts) if ok else None)
+        # AT MOST ONE EXPIRY A PANEL A NIGHT, ACROSS RESTARTS (#534): the
+        # records a set-aside that expired tonight left, counted.
+        expiries = getattr(session, "set_aside_expiries_on", None)
+        self._expiries_tonight = dict(expiries(night_now)) if expiries else {}
+        # A GROUP'S PIER CHANGE TONIGHT STAYS MADE (#312, S3 orchestrator
+        # ruling 4; spec 5.7, 3.4). The same restart, read the same way: a
+        # group that changed pier side earlier tonight is flipped from this
+        # run's start, on the side it measured, so a panel before the
+        # meridian waits for its crossing instead of taking the group back
+        # across the pier; one that had only measured its side keeps that
+        # side as the one its hops must read. Another night's record is
+        # history, and the group starts unflipped. A session double without
+        # the reader reads as having none.
+        self._group_pier_tonight = {}
+        self._group_pier_saved = {}
+        pier_on = getattr(session, "group_pier_on", None)
+        if pier_on is not None:
+            night = night_key(time.time())
+            for gid in self._groups:
+                rec = pier_on(gid, night)
+                if rec is not None:
+                    self._group_pier_tonight[gid] = rec
+        self._group_runs = {}
+        self._group_active = None
+        self._group_current = None
+        self._visit_in_progress = None
+        self._visit_started_at = None
+        self._group_last_visited = {}
+        self._last_visit_ts = {}
+        self._group_unguided = set()
+        self._hop_guide_started = False
+        self._meridian_wait = {}
+        self._group_side = {}
+        self._group_side_verified = set()
+        self._group_last_index = {}
+        self._after_group_said = set()
+        self._group_gates = {}
+        self._group_gate_said = set()
+        self._visit_ended_by_deadline = False
+        self._group_angle_read = {}
+        self._angle_lock_pending = None
+        self._exposures_taken = 0
         self._rms_unit_warned = False
         self._flip_armed = False
         self._flip_no_op = set()
         self._flip_offline_logged = False
-        self._pre_flip_side = None
+        self._flip_no_site_logged = False
+        self._pre_flip_side = {}
         self._flip_owed = False
         self._tracking_recovered = set()
+        self._tracked_target = None
+        self._idle_since = 0.0
+        self._idle_hold_open = True
+        self._idle_hold_retrying = False
+        # Nothing this run did has stopped the mount, and nothing has pointed
+        # it: with no tracked target, a hold is elsewhere whatever this says.
+        self._mount_stopped_since = None
+        self._acquisition_behind_gate = None
+        # `_idle_stop_task` is NOT reset here. A task still asking for an
+        # earlier spell's stop is not this run's, but `start` cannot await it:
+        # `_run` cancels and awaits it before its first line of work, and
+        # `abort` does if the run is cancelled before it begins. It IS
+        # cancelled here, because it may not have had its first turn yet: the
+        # stop's first attempt is the task's own first act (#216), and a task
+        # created before this run's task is scheduled before it, so it would
+        # make that attempt, on the mount this run is about to use, before
+        # `_run` reached its cancel. Cancelled now, a task that has not
+        # started never does, and one mid-ask stops at its current await.
+        if self._idle_stop_task is not None:
+            self._idle_stop_task.cancel()
+        if tracking is not None:
+            # After the reset above, so the reset cannot undo it (#202).
+            self._tracked_target = tracking
+            self._idle_since = time.time()
+            self._idle_hold_open = True
         self._paused.set()
         self._started_at = time.time()
         self._paused_accum_s = 0.0
@@ -758,6 +1770,7 @@ class SequenceEngine:
         self._overhead_ema = DEFAULT_OVERHEAD_S
         self._overhead_samples = 0
         self._event_costs = {}
+        self._acquiring_ti = None
         # --- automation / safety run state (snapshot config ONCE at run start) ---
         self._cfg = config_store.cfg()
         # RESOLVE THE RIG'S STANDARDS ONCE, HERE (#239 stage A). Twelve settings
@@ -788,13 +1801,33 @@ class SequenceEngine:
         self._fire_state = {}
         self._clouds = CloudState()
         self._holding_for_clear = False
+        self._hold_deferred = None
+        self._hold_deferred_said = False
         self._jumps_spent = 0
         self._pending_skips = set()
+        self._completion_owed = set()
+        self._completion_fired = set()
         self._dawn_cutoff = False
         self._window_closed = False
         # Drop the prior run synchronously: Stop can arrive before the task's
         # first turn. _run publishes running once execution actually begins.
-        self.state = {"state": "idle"}
+        #
+        # The frame counter survives the reset (#108). This is a wholesale
+        # REPLACE, so it used to drop `progress` entirely, and `_run` does not
+        # publish one until it reaches its first _set_state -- after the safety
+        # gates, the slew, the autofocus and the plate solve. For those minutes
+        # GET /api/sequence/state answered a supervisor with no
+        # progress.frames_done at all. Mine read that absence as a frame
+        # counter that had not moved, counted it as a stall, and aborted a
+        # healthy NGC 7331 run on 2026-09-19; the restart then raced the
+        # teardown and the rig sat idle for twenty minutes of clear sky.
+        #
+        # A supervisor cannot tell "no frames yet" from "no counter" unless the
+        # counter is always there, so it is always there. _frames_done is
+        # already seeded above (a resume carries its session's count), so this
+        # is the honest number and not a hopeful zero.
+        self.state = {"state": "idle",
+                      "progress": {"frames_done": self._frames_done}}
         self._task = asyncio.create_task(self._run())
 
     def pause(self) -> None:
@@ -851,10 +1884,33 @@ class SequenceEngine:
     def _event_cost(self, kind: str, default: float) -> float:
         """Measured rolling average for an event type, or the seed until one is
         observed (so a guessed flip cost is replaced by the real one — spec §5.2)."""
+        measured = self.measured_cost(kind)
+        return default if measured is None else measured[0]
+
+    def measured_cost(self, kind: str) -> tuple[float, int] | None:
+        """What this engine has MEASURED an event to cost: ``(mean_s,
+        samples)``, or None when it has measured none.
+
+        ``kind`` is an event cost's name, ``"hop"``, ``"dither"``,
+        ``"autofocus"`` or ``"flip"`` (`_record_event_cost`). ``mean_s`` is
+        the rolling mean the finish clock and the meridian rule use, and
+        ``samples`` how many measurements it is the mean of: the last ten,
+        so never more than ten. Kept from a run's first measurement until the
+        next run starts, so a caller between runs reads the last run's.
+
+        NEVER THE SEED. `_event_cost` falls back to an assumed figure
+        (``HOP_COST_S`` for a hop, 150 s from the spec's A.3, timed on no
+        rig) because a clock needs some number. A caller that reports a cost
+        to the operator must be able to tell a measurement from that guess:
+        the doctor's hop note (spec 1.8, M10) fires "only when a measured
+        cost is injected", and a seed handed back as a measurement would
+        have it advise on a number nobody timed. So an unmeasured kind is
+        None, and ``samples`` lets the caller decide how many measurements
+        it trusts."""
         seen = self._event_costs.get(kind)
-        if seen:
-            return sum(seen) / len(seen)
-        return default
+        if not seen:
+            return None
+        return (sum(seen) / len(seen), len(seen))
 
     def _record_event_cost(self, kind: str, seconds: float) -> None:
         if seconds <= 0:
@@ -888,11 +1944,102 @@ class SequenceEngine:
         """True for the single step whose frame is currently exposing."""
         return getattr(self, "_active_step", None) == (ti, si)
 
+    def _remaining_hops(self) -> int:
+        """Moves between targets this run still has to make (#189 U-07).
+
+        A hop is owed to every non-calibration target that still owes frames,
+        except the one being acquired now: the run is already there, or paying
+        for getting there. Calibration targets never slew. "Owes" is
+        `_step_complete`, the scheduler's own definition of done (#158), so
+        the ETA prices exactly the targets the scheduler will go back to.
+
+        BEFORE THE FIRST ACQUISITION the count is one less than the targets
+        owing frames. The run's opening slew is not a hop BETWEEN targets,
+        and no ETA has ever priced it, single target or many; counting it
+        would move every single-target finish clock for the moments before
+        its setup begins.
+
+        THE LEDGER IS WALKED ONCE PER CALL (#189 A9). In accepted mode each
+        `_step_complete` asks ``Session.accepted``, which walks every frame of
+        the session; asked per step, one ETA was targets x steps walks of a
+        ledger that grows all night, and `compute_eta` runs on every status
+        publish. The map is taken once here and every step is answered from
+        it, through the same `_step_complete`, so the definition of done stays
+        one definition. Attempts mode reads ``_done`` and takes no map.
+
+        A ROTATING GROUP'S MEMBER OWES A HOP PER VISIT (#189 S2, spec 5.10):
+        "the hops still to make become the visits still to make". Each visit
+        is a slew, a centring and a guider start, so a 2x2 owing three rounds
+        a panel at one pass a visit is twelve hops, where counting the panels
+        said four (`_visits_owed`). A member of a sequential group runs to
+        completion and owes one, as any target does. Every other target is
+        counted as it always was.
+        """
+        if not self.plan:
+            return 0
+        cur = self._acquiring_ti
+        accepted = (self._session.accepted_by_step()
+                    if self.plan.count_mode == "accepted"
+                    and self._session is not None else None)
+        owing = 0
+        for ti, target in enumerate(self.plan.targets):
+            if target.calibration:
+                continue
+            group = self._group_of(target)
+            if group is not None:
+                owing += self._visits_owed(target, group, accepted)
+                continue
+            if ti == cur:
+                continue
+            if any(not self._step_complete(target, s, accepted=accepted)
+                   for s in target.steps):
+                owing += 1
+        return max(0, owing - 1) if cur is None else owing
+
+    def _visits_owed(self, target: Target, group: TargetGroup,
+                     accepted: dict[str, int] | None) -> int:
+        """The visits a group member still owes tonight, each one a hop.
+
+        A round is one pass over the member's short steps, ``per_visit``
+        frames each, so a member owes as many rounds as its shortest-served
+        step needs, and a visit makes ``visit_passes`` of them. A sequential
+        group's member owes one visit while it owes anything. Nothing is
+        owed tonight by a member set aside tonight, nor by a step set aside
+        tonight. The visit in progress has paid its hop already.
+
+        ``visit_min_s`` can only lengthen a visit, so leaving it out prices
+        at most the hops a longer visit would save: an honest upper bound.
+        The count of a step is read as `_step_complete` reads it, from the
+        ledger's accepted map in accepted mode and from ``_done`` otherwise.
+        """
+        run = self._group_runs.get(group.id)
+        if target.id in self._set_aside_targets or (
+                run is not None and target.id in run.set_aside):
+            return 0
+        rounds = 0
+        for s in target.steps:
+            key = f"{target.id}:{s.id}"
+            if key in self._set_aside:
+                continue
+            got = (accepted.get(s.id, 0) if accepted is not None
+                   else self._done.get(key, 0))
+            short = max(0, s.count - got)
+            if short:
+                rounds = max(rounds, -(-short // max(1, int(s.per_visit or 1))))
+        if not rounds:
+            return 0
+        visits = (-(-rounds // group.visit_passes) if group.mode == "rotate"
+                  else 1)
+        if self._visit_in_progress == target.id:
+            visits -= 1
+        return max(0, visits)
+
     def compute_eta(self) -> dict:
         """Deterministic ETA assembly (spec §5.2/§5.3). Split into pure capture
         seconds + a low-α per-frame overhead EMA + analytically-counted event
-        costs (dither/AF/flip), each measured once observed. Returns the progress
-        sub-dict's ETA fields; never raises."""
+        costs (dither/AF/flip, and the hops between targets), each measured
+        once observed. Returns the progress sub-dict's ETA fields; never
+        raises."""
         if not self.plan:
             return {}
         total = self.plan.total_frames()
@@ -908,30 +2055,47 @@ class SequenceEngine:
         af_every = self.plan.autofocus_every or 0
         dithers_remaining = (frames_remaining // d_every) if d_every else 0
         refocus_remaining = (frames_remaining // af_every) if af_every else 0
+        # EVERY MOVE BETWEEN TARGETS IS TIME THE NIGHT SPENDS (#189 U-07). The
+        # finish clock priced the frames and the events inside a target and
+        # nothing for getting from one to the next, so a multi-target night
+        # finished late by one slew, centring and guide start per target. The
+        # seed is replaced by the measured hop once one setup has completed.
+        remaining_hops = self._remaining_hops()
+        hops_s = remaining_hops * self._event_cost("hop", HOP_COST_S)
         # only count a flip that actually falls inside the remaining run window
         # (a meridian hours away must not inflate a short run's ETA — spec §5.2).
+        # The hops are part of that window: the run is still going while it
+        # moves between targets.
         remaining_window_s = (remaining_capture_s + in_flight
                               + frames_remaining * self._overhead_ema
                               + dithers_remaining * self._event_cost("dither", DITHER_COST_S)
-                              + refocus_remaining * self._event_cost("autofocus", AF_COST_S))
+                              + refocus_remaining * self._event_cost("autofocus", AF_COST_S)
+                              + hops_s)
         flip_pending = 1 if self._flip_pending(remaining_window_s) else 0
         events_cost_s = (
             dithers_remaining * self._event_cost("dither", DITHER_COST_S)
             + refocus_remaining * self._event_cost("autofocus", AF_COST_S)
-            + flip_pending * self._event_cost("flip", FLIP_COST_S))
+            + flip_pending * self._event_cost("flip", FLIP_COST_S)
+            + hops_s)
 
         eta_s = (remaining_capture_s + in_flight
                  + frames_remaining * self._overhead_ema + events_cost_s)
 
+        # True when the hop term rests on a measurement, and when there is no
+        # hop term at all: a clock with nothing to cost has nothing unpriced,
+        # so a client can say "hops not yet costed" exactly when it is False.
+        hops_costed = not remaining_hops or "hop" in self._event_costs
         events_measured_ok = not (
             (dithers_remaining and "dither" not in self._event_costs)
             or (refocus_remaining and "autofocus" not in self._event_costs)
-            or (flip_pending and "flip" not in self._event_costs))
+            or (flip_pending and "flip" not in self._event_costs)
+            or not hops_costed)
         eta_confident = (self._overhead_samples >= ETA_MIN_FRAMES
                          and events_measured_ok)
         return {
             "eta_s": round(eta_s),
             "eta_confident": bool(eta_confident),
+            "hops_costed": bool(hops_costed),
             "server_now_ms": round(time.time() * 1000),
             "current_exposure_s": round(self._cur_exposure_s, 3),
             "frame_started_at_ms": round(self._frame_started_at * 1000)
@@ -1012,11 +2176,16 @@ class SequenceEngine:
                 # "aborting" would replace `aborted / end_reason=unsafe` with a
                 # detail that disclaims the very park that is in flight.
                 if self.state.get("state") not in _TERMINAL_STATES:
+                    # A CLOUD HOLD ENDS WITH THE RUN (#513), in this publish:
+                    # the cancellation below reaches the hold only after it,
+                    # and the wind-down must not read as a hold meanwhile
+                    # (`_hold_cleared`).
                     self._set_state(
                         state="aborting",
                         detail="stopping the run — ending the exposure and "
                                "the guider. A device that has stopped "
-                               "answering can hold this for a few minutes.")
+                               "answering can hold this for a few minutes.",
+                        **self._hold_cleared())
                 self._task.cancel()
                 try:
                     await self._task
@@ -1027,6 +2196,15 @@ class SequenceEngine:
             # review, Important #1: no orphaned renders / "destroyed but pending"
             # warnings at interpreter exit).
             await self._drain_thumb_tasks()
+            # The run's own end completed its idle-stop task; this covers one
+            # with no run behind it, and a run cancelled before its first
+            # turn, whose `_run` never reached its end. Completed, not
+            # cancelled (#247, H3 orchestrator ruling 5): an abort ends a run,
+            # and nothing turns tracking back on after it, so a stop the idle
+            # watch decided is made and read back here rather than dropped.
+            # On a dead link that adds up to ``IDLE_STOP_FINISH_S`` and three
+            # mount calls to the device I/O above, here or in the run's end.
+            await self._finish_idle_stop()
             # A STOPPED RUN IS NOT A PAUSED ONE. `pause()` clears this event
             # and `resume()` sets it; nothing here ever did, and both of them
             # early-return while `_aborting`, so a run aborted while paused
@@ -1135,6 +2313,12 @@ class SequenceEngine:
         published beside it precisely so a client can render the difference; a
         UI that showed a bare "clear" for a reading nobody had taken would be
         the same lie in a different place.
+
+        ``hold_deferred`` is the other half of ``holding``: a sentence while the
+        sky reads cloudy and there is no target to hold for, so no hold opens
+        (#221, `_note_hold_deferred`), and null otherwise. Without it a wait
+        under a closed sky would publish ``cloudy: true, holding: false`` and
+        leave the reader to guess why nothing is holding.
         """
         now = time.time()
         return {
@@ -1148,6 +2332,7 @@ class SequenceEngine:
                              "reason": self._clouds.last_reason},
             "text": self._clouds.describe(now),
             "holding": self._holding_for_clear,
+            "hold_deferred": self._hold_deferred,
         }
 
     def _set_state(self, **kw: Any) -> None:
@@ -1198,9 +2383,35 @@ class SequenceEngine:
             kw.setdefault("plan_name", self.plan.name)
             # live ETA chips sub-object (honest temps; meridian ETA in seconds —
             # ttf is HOURS, so * 3600, only when within the warn lead time).
+            #
+            # CLEARED WHEN THERE IS NOTHING IN IT (#422, S7-ENG-FLIP), with
+            # the explicit-clear discipline of ``group`` and ``schedule``
+            # below. This only added ``live`` when `_live_block` returned
+            # one, and the merge further down kept the old object when it
+            # did not: past the crossing the flip is behind the mount and
+            # the block has no chip, so the last countdown of the warn
+            # window rode every later publish to the end of the run, and the
+            # UI's heads-up (``scheduleStatus.ts``), which trusts the key to
+            # appear only inside the window, announced a flip already made.
+            # A camera that reports a sensor temperature masked it, because
+            # a block with a temperature replaces the whole object. A caller
+            # that names ``live`` itself keeps what it passed.
             live = self._live_block()
             if live:
                 kw.setdefault("live", live)
+            elif "live" not in kw:
+                self.state.pop("live", None)
+        # THE GROUP, ONLY WHILE ITS MEMBER IS THE ACTIVE TARGET (#189 S2,
+        # U-07, spec 5.10). Present while the scheduler is on a group, and
+        # removed the moment it is not, with the explicit-clear discipline of
+        # `schedule` below: a merge would otherwise carry the last panel into
+        # every later target's publish. A run with no group never sets
+        # `_group_active`, so its payloads never gain the key.
+        group = self._group_state(getattr(self, "_group_active", None))
+        if group is not None:
+            kw.setdefault("group", group)
+        elif "group" not in kw:
+            self.state.pop("group", None)
         # ``_first_running`` is a ONE-SHOT edge flag for the run_start alert — it
         # must NOT be persisted into self.state (else every later _set_state
         # re-publishes it and the dispatcher fires "Run started" on every frame).
@@ -1236,6 +2447,13 @@ class SequenceEngine:
         payload = dict(self.state)
         if first_running:
             payload["_first_running"] = True
+        if self._site_timed():
+            # ON THIS PUBLISH ONLY, never merged into ``self.state``: a key
+            # kept there would ride every later publish of the night (the
+            # ``_first_running`` discipline above). Its MOMENT is a meridian
+            # wait's (spec 6.9, 5.10), so the serving seams drop it whole for
+            # a principal without the site-derived view (`api.redact`).
+            payload[SITE_DERIVED_KEY] = True
         bus.publish("sequence", **payload)
 
     def _live_block(self) -> dict | None:
@@ -1366,9 +2584,118 @@ class SequenceEngine:
 
     # ------------------------------------------------------------------- run
 
+    async def _await_camera_lane(self) -> None:
+        """Do not start a run on top of somebody else's camera operation (#44).
+
+        2026-09-18, captures/logs/2026-09-17.jsonl. A plate solve began at
+        03:17:56 at the park position, after the previous run completed. The
+        next run started at 03:18:10, fourteen seconds later, and every
+        camera-owning step of it lost to that solve in turn:
+
+            03:18:48  centering: plate solve failed (camera is busy (plate
+                      solve); plate solve refused); using raw GoTo
+            03:18:49  initial autofocus error: camera is busy (plate solve);
+                      autofocus refused
+            03:18:52  sequence failed: camera is busy (plate solve); capture
+                      light refused
+
+        The centring degraded, the autofocus was skipped, and the THIRD refusal
+        crashed the night. Each of those three steps reported the busy lane
+        correctly; what nobody did was ask before starting.
+
+        Two starters racing is what produced it that night, and that is an
+        operator mistake recorded elsewhere. It is not the only way in: a UI
+        tap, an auto-resume, or a script starting a run while the previous
+        teardown's solve is still running reproduces it exactly.
+
+        So: wait for the lane, once, before the run touches a camera. A run that
+        waits ninety seconds and then works is strictly better than one that
+        starts on time and dies three steps in - and a run that cannot have the
+        camera at all refuses HERE, with the holder named, instead of reporting
+        "capture light refused" two minutes later.
+
+        THE MOUNT IS WATCHED WHILE IT WAITS (#236). `start(tracking=...)` hands
+        a run the target a caller left tracking (ResumeArm re-centres one
+        seconds before it starts the resumed run), and this wait is the very
+        first thing the run does: up to ``_CAMERA_LANE_WAIT_S`` with that
+        target tracked and, before this, nothing looking at it. Every poll
+        takes the idle look `_wait_until` and the cooling wait take
+        (`_idle_hold_tick`: the idle clock, the floor, the zenith keep-out, the
+        flip point), seeking the flip point one ``_CAMERA_LANE_POLL_S`` ahead,
+        the longest it goes between two looks. With nothing tracked the look
+        finds nothing to stop. A stop it decides is made on the idle-stop
+        task, and the run's end completes it (`_finish_idle_stop`).
+
+        THE WEATHER IS READ WHILE IT WAITS, AND ACTED ON (#452). The engine
+        has no safety task beside the run, and this wait comes before any
+        gate that reads the monitor. So while there is a monitor to read
+        (`_monitor_to_read`), the scheduler wait's gate (`_safety_gate`, as
+        `_wait_until` asks it) is asked every ``SAFETY_PAUSE_POLL_S`` from
+        the first poll, on the weather's cadence rather than the lane's,
+        and its unsafe verdict goes to `_on_unsafe`. Inline, not on a task
+        of its own as the cooling waits' are: nothing in a poll holds it
+        but the idle look, whose one mount read (the pier side, bounded by
+        ``MOUNT_QUERY_TIMEOUT_S``) comes once a spell, at the flip point it
+        then stops tracking for. Time spent in the gate, a pause included,
+        is added to the deadline: it was not time spent waiting for the
+        camera. After a pause or a roof close no idle look is taken: the
+        mount was stopped by it, and a look would call it still tracking
+        (the #236 rule for the safety pause's own gate).
+        """
+        lock = getattr(self.hub, "_capture_lock", None)
+        if lock is None or not lock.locked():
+            return
+        holder = getattr(self.hub, "_capture_busy", None) or "another exposure"
+        bus.log("warning",
+                f"the camera is busy ({holder}) as this run starts - waiting up "
+                f"to {_CAMERA_LANE_WAIT_S:.0f}s for it to finish before the "
+                f"first slew", "sequence")
+        self._set_state(detail=f"waiting for {holder}")
+        deadline = time.monotonic() + _CAMERA_LANE_WAIT_S
+        monitor = self._monitor_to_read()
+        next_read = time.time()
+        looked = True
+        while lock.locked():
+            if time.monotonic() >= deadline:
+                # The same wording `_timeout_abort` gives every other bound, and
+                # the same teardown: SafetyAbort parks and warms rather than
+                # leaving a half-started run behind.
+                raise _timeout_abort(
+                    f"waiting for the camera ({holder}) before starting",
+                    _CAMERA_LANE_WAIT_S,
+                    "the run refused to start rather than lose its centring, "
+                    "its focus and its first frame to it")
+            if monitor and time.time() >= next_read:
+                next_read = time.time() + SAFETY_PAUSE_POLL_S
+                ended: list[bool] = []
+                began = time.monotonic()
+                self._unsafe_ends_the_wait = lambda: ended.append(True)
+                try:
+                    await self._safety_gate(context="frame")
+                finally:
+                    self._unsafe_ends_the_wait = None
+                deadline += time.monotonic() - began
+                if ended:
+                    looked = False
+                    continue
+            # The mount a caller left tracking, looked at as `_wait_until`
+            # looks at it (see the docstring).
+            if looked:
+                await self._idle_hold_tick(ahead_s=_CAMERA_LANE_POLL_S)
+            await asyncio.sleep(_CAMERA_LANE_POLL_S)
+        waited = _CAMERA_LANE_WAIT_S - max(0.0, deadline - time.monotonic())
+        bus.log("info",
+                f"the camera is free after {waited:.0f}s - starting", "sequence")
+
     async def _run(self) -> None:
         plan = self.plan
         assert plan is not None
+        # AN IDLE-STOP TASK LEFT FROM BEFORE THIS RUN ENDS HERE. Every run
+        # completes its own at its end, so one alive now was started outside
+        # a run; `start` cancelled it but cannot await, so it is awaited here,
+        # before anything of this run can touch the mount: a stop already on
+        # the wire can still land on its way out.
+        await self._cancel_idle_stop_retry()
         try:
             self._set_state(state="running", detail=f"starting plan '{plan.name}'",
                             _first_running=True)
@@ -1376,39 +2703,114 @@ class SequenceEngine:
             # shutter time, not signal on the target.
             bus.log("info", f"sequence '{plan.name}' started: {plan.total_frames()} frames, "
                             f"{plan.light_seconds() / 60:.0f} min integration", "sequence")
-            self._warn_if_the_run_has_no_temperature(plan)
-            self._geometry_seen = set()
-            self._geometry_groups, geometry_note = await capture_geometry.inventory(timeout=3.0)
-            self._geometry_pending = geometry_note == capture_geometry.PENDING_NOTE
-            for warning in capture_geometry.plan_warnings(plan, self._geometry_groups):
-                bus.log("warning", warning, "sequence")
-            if geometry_note:
-                bus.log("warning", geometry_note, "sequence")
-            self._start_watchdog()
-
-            # WHY THIS IS ONE DECISION AND NOT TWO. "The cooler never reached
-            # the target" and "nothing ever asked it to" are the same fact from
-            # the operator's chair — the frames come out warm either way — so
-            # ``require_cooling``/``cooling_action`` has to cover both. It used
-            # to cover only the first, because this whole escalation block lived
-            # inside ``if plan.cool_to is not None``: a rig configured "this
-            # night must be cooled, ABORT if it is not" shot the full set of
-            # warm lights and reported success. That is the loudest thing an
-            # operator can say being ignored completely, and it is the same
-            # 2026-08-22 night the run-start warning above was written for —
-            # the warning made that night audible, this makes it stoppable.
             skip_detail: str | None = None
-            if plan.cool_to is not None:
-                cooled = await self._cool_and_wait(plan.cool_to, self._policy.cool_timeout_s)
-                # P1-7: require_cooling + cooling_action == "skip" → don't shoot
-                # warm lights. (abort raised SafetyAbort inside _cool_and_wait;
-                # warn/not-required returned and we proceed as before.)
-                cfg = self._cfg
-                if (not cooled and cfg and cfg.escalation.require_cooling
-                        and cfg.escalation.cooling_action == "skip"):
-                    skip_detail = "skipped: camera did not reach target temp"
-            elif self._no_setpoint_must_stop_the_run():
-                skip_detail = "skipped: this run has no target temperature"
+            # False while an exception may still be ending the spell; set as
+            # the try's last act, so the `finally` knows whether one is.
+            spell_ran_out = False
+            # The exception ending the spell, if one is: the `finally` asks
+            # it whether this ending parks (`_ending_parks`, #270).
+            ending: BaseException | None = None
+            try:
+                # Inside the spell's `finally` (#236): the camera-lane wait
+                # watches a target `start(tracking=...)` handed this run, so a
+                # stop it decides, and a lane that never comes free, end the
+                # same way the cooling wait's do.
+                await self._await_camera_lane()
+                self._warn_if_the_run_has_no_temperature(plan)
+                self._geometry_seen = set()
+                self._geometry_groups, geometry_note = await capture_geometry.inventory(timeout=3.0)
+                self._geometry_pending = geometry_note == capture_geometry.PENDING_NOTE
+                for warning in capture_geometry.plan_warnings(plan, self._geometry_groups):
+                    bus.log("warning", warning, "sequence")
+                if geometry_note:
+                    bus.log("warning", geometry_note, "sequence")
+                self._start_watchdog()
+
+                # WHY THIS IS ONE DECISION AND NOT TWO. "The cooler never
+                # reached the target" and "nothing ever asked it to" are the
+                # same fact from the operator's chair — the frames come out
+                # warm either way — so ``require_cooling``/``cooling_action``
+                # has to cover both. It used to cover only the first, because
+                # this whole escalation block lived inside ``if plan.cool_to is
+                # not None``: a rig configured "this night must be cooled,
+                # ABORT if it is not" shot the full set of warm lights and
+                # reported success. That is the loudest thing an operator can
+                # say being ignored completely, and it is the same 2026-08-22
+                # night the run-start warning above was written for — the
+                # warning made that night audible, this makes it stoppable.
+                if plan.cool_to is not None:
+                    # `watch=True`: a target `start(tracking=...)` handed this
+                    # run is looked at on every probe (#202). `monitor=True`:
+                    # the weather is read through the wait and acted on
+                    # (#452): nothing else reads it before the scheduler's
+                    # first gate, minutes away on a sensor walking down from
+                    # ambient after a restart.
+                    cooled = await self._cool_and_wait(
+                        plan.cool_to, self._policy.cool_timeout_s, watch=True,
+                        monitor=True)
+                    # P1-7: require_cooling + cooling_action == "skip" → don't
+                    # shoot warm lights. (abort raised SafetyAbort inside
+                    # _cool_and_wait; warn/not-required returned and we
+                    # proceed as before.)
+                    cfg = self._cfg
+                    if (not cooled and cfg and cfg.escalation.require_cooling
+                            and cfg.escalation.cooling_action == "skip"):
+                        skip_detail = "skipped: camera did not reach target temp"
+                elif self._no_setpoint_must_stop_the_run():
+                    skip_detail = "skipped: this run has no target temperature"
+                if skip_detail is None:
+                    await self._run_scheduled(plan)
+                spell_ran_out = True
+            except BaseException as exc:
+                ending = exc
+                raise
+            finally:
+                # THE WAIT'S NOTE ENDS WITH THE SCHEDULER TOO (#221). It says
+                # the next target's setup opens a hold, and after the scheduler
+                # there is no next target. A run that ended in a cloudy wait (a
+                # dawn cutoff, the last window closing) published its terminal
+                # state with the note still in it, and it stayed published
+                # until the next start. Every ending below publishes, so none
+                # of them carries it. First, and synchronous, so a cancel
+                # landing in the await below cannot skip it.
+                self._hold_deferred = None
+                # THE SPELL ENDS WITH THE CAMERA-LANE WAIT, THE COOLING WAIT OR
+                # THE SCHEDULER, however each ends: a natural end, a cooling
+                # skip, a safety abort (the lane's timeout and the cooling
+                # escalation's included), a quality stop, an operator abort.
+                # All three watch the mount (#202, #236), and a stop any of them
+                # decided is COMPLETED here, not cancelled (#247, H3
+                # orchestrator ruling 5, spec "Still waiting on the owner" item
+                # 14): nothing turns tracking back on after a run, so a cancel
+                # here abandoned the stop, and with `park_when_done` off the
+                # mount tracked on unwatched. A first attempt in flight is let
+                # finish, an unconfirmed stop is asked once more and read back,
+                # shielded from an Abort landing meanwhile, and the task is over
+                # before any teardown below talks to the mount
+                # (`_finish_idle_stop`). An Abort noted in that wait is not
+                # raised over an exception already ending the spell, a quality
+                # stop's or a failure's, whose own teardown ends the run.
+                #
+                # UNLESS THIS ENDING PARKS (#270, S2 orchestrator ruling 1,
+                # spec "Still waiting on the owner" item 19, which refines
+                # #247, H3 orchestrator ruling 5). Ruling 5 said
+                # "whether or not the wind-down parks", and on an unsafe ending
+                # that put up to IDLE_STOP_FINISH_S of a hung guider, and a
+                # mount call past it, ahead of the park and the roof close in
+                # the rain, with the published state still "running". A park
+                # stops the mount more surely than the idle stop does, so an
+                # ending that parks (every unsafe one, and any other whose plan
+                # parks when done) hands the stop to its park: the task is
+                # cancelled and fenced, never awaited here, and the wind-down
+                # reaps it after the park and the close. No await on this
+                # branch, so no cancel can land in it either.
+                parks = self._ending_parks(plan, ending)
+                ending = None           # no traceback cycle through this frame
+                if parks:
+                    self._hand_idle_stop_to_the_park()
+                else:
+                    await self._finish_idle_stop(
+                        already_ending=not spell_ran_out)
 
             if skip_detail is not None:
                 self._set_state(state="complete", detail=skip_detail,
@@ -1422,8 +2824,6 @@ class SequenceEngine:
                     close_dome=bool(self._cfg
                                     and self._cfg.safety.close_dome_when_done))
                 return
-
-            await self._run_scheduled(plan)
 
             # WHICH ENDING IS THIS? Two facts decide it, and they answer
             # different questions. `owed` says whether the PLAN is unfinished;
@@ -1467,6 +2867,12 @@ class SequenceEngine:
             # dawn - so the dead time before the warm ramp is free. The abort,
             # unsafe, quality-stop and cooling-skip wind-downs deliberately do
             # not, and neither does the give-up-after-crashes stow.
+            #
+            # Awaited directly, unlike the unsafe wind-down below, so an
+            # operator's Abort can land in it. Its park is shielded all the
+            # same, inside it (#305, `_wind_down_park_and_close`): a stop the
+            # idle watch decided was handed to that park, and nothing after
+            # the park runs once an Abort has landed.
             await self._wind_down(
                 plan.park_when_done, plan.warm_cooler_when_done,
                 close_dome=bool(self._cfg and self._cfg.safety.close_dome_when_done),
@@ -1748,7 +3154,44 @@ class SequenceEngine:
         # boundary at every frame boundary (not just at selection — the running
         # target used to shoot straight through dawn / past max_run_min).
         self._frozen = frozen
+        # THE GROUPS, AND WHAT TONIGHT ALREADY SET ASIDE (#189 S2, spec 5.1,
+        # 5.9, 3.4). Each group's members are gathered into one run of
+        # `remaining` in the group's order, the first pass ordered from the
+        # ledger, and anything a record says was set aside tonight leaves the
+        # rotation before it starts. A plan with no groups and no records
+        # comes out of both exactly as it went in.
+        self._start_groups(plan, remaining)
+        self._drop_complete(remaining, index_of)
+        self._skip_what_tonight_set_aside(remaining)
+        self._say_sun_windows_unresolved(plan, frozen, site)
+        try:
+            await self._schedule_loop(plan, remaining, frozen, index_of, site,
+                                      twilight)
+        finally:
+            # The run is off the group once the scheduler is done, however it
+            # ended, so the terminal publish carries no ``group`` (spec 5.10),
+            # and no meridian wait outlives it to flag the wind-down's lines.
+            self._group_active = None
+            self._group_current = None
+            self._visit_in_progress = None
+            self._meridian_wait = {}
 
+    async def _schedule_loop(self, plan: SequencePlan, remaining: list[Target],
+                             frozen: dict, index_of: dict, site,
+                             twilight: float) -> None:
+        """`_run_scheduled`'s selection loop: the first ready target in
+        ``remaining`` is shot, a waiter is waited for, and the night ends when
+        ``remaining`` is empty or every window has closed.
+
+        A GROUP MEMBER IS VISITED, NOT RUN (#189 S2, spec 5.1, D7). Its visit
+        is bounded (`_visit_panel`, `_run_steps` with a `VisitBound`), and its
+        outcome decides whether it leaves ``remaining`` (complete, or set
+        aside tonight) or is requeued behind the group's unvisited members:
+        the rotation is that list surgery and nothing else, inside this one
+        scheduler. When the first ready target is a member already visited
+        this pass, no unvisited member is eligible and the pass ends
+        (`_close_group_pass`). Every other target runs exactly as it always
+        has."""
         while remaining:
             await self._checkpoint()
             # Drain skips queued by a skip_target aimed at a FUTURE target (the
@@ -1760,32 +3203,208 @@ class SequenceEngine:
                     bus.log("info", f"{_t.name}: skipped by instruction", "sequence")
                     if self.reporter:
                         self.reporter.mark_skipped(_t)
+                    self._group_member_gone(_t, self._group_of(_t),
+                                            "skipped by instruction")
                     remaining.remove(_t)
                 self._pending_skips.clear()
                 if not remaining:
                     break
+            # A COMPLETE TARGET IS NOT A WAITER (#537), at every selection as
+            # at the run's start, before any gating is asked. Nothing below
+            # can make one leave but its own gating calling it ready.
+            self._drop_complete(remaining, index_of)
+            if not remaining:
+                break
             now = time.time()
             ready = None
-            earliest = None         # (start_ts, target) of the soonest waiter
+            # (wake_ts, target, gs, held) of the soonest waiter. ``held`` is
+            # None for a waiter the gating holds, as every waiter always was,
+            # and names the group rule for one it holds (spec 5.1).
+            earliest = None
             all_closed = True
+            # A GROUP MEMBER THE GATING CALLS READY MUST ALSO BE ELIGIBLE (#189
+            # S2, spec 5.1 selection items 1 and 2): reachable, and let by
+            # the meridian rule. Decided here, in the selection, so a member
+            # that may not be visited is a WAITER with a wake time and the
+            # do-while wait below sleeps; there is no path that tells a
+            # scheduler which believes a panel ready that it is blocked (the
+            # hot loop of spec 5.1, D9). A plan with no group asks nothing.
+            elig: dict[str, _Eligibility] = {}
+            gs_now: dict[int, dict] = {}
+            if self._group_runs:
+                elig, gs_now = await self._eligibility_now(
+                    remaining, frozen, site, twilight, now)
+                if not remaining:
+                    break
+            bound: VisitBound | None = None
+            follows: TargetGroup | None = None
+            leave_tonight: list[tuple[Target, str]] = []
             for target in remaining:
-                gs = schedule.gating_status(target, site, twilight, now,
-                                            window=frozen.get(id(target)))
+                # A COMPLETE TARGET OWED ITS COMPLETION RULES IS TAKEN UP
+                # WHATEVER ITS GATING SAYS (S7 review of #481, S7
+                # orchestrator ruling 2). Its selection shoots nothing: it
+                # runs the ``on_target_complete`` rules it is owed, once, and
+                # drops the target (below). The consumed jump's arm puts such
+                # a target at the front for exactly this, but a complete
+                # target is gated like any other, and one its own schedule
+                # had shut out during the frame that completed it (a window
+                # closing, a setting target below its start gate) sat the
+                # selection out: the closed-window sweep then wrote it
+                # skipped and ended the night a dawn cutoff, or the run
+                # waited for it to rise again with nothing owed, its rules
+                # never run. A no-op jump's owed target (#373) is taken the
+                # same way. Only an owed one: every other target, complete
+                # or not, is gated as it always was.
+                if (target.id in self._completion_owed
+                        and self._target_complete(index_of[id(target)],
+                                                  target)):
+                    ready = target
+                    all_closed = False
+                    break
+                gs = gs_now.get(id(target))
+                if gs is None:
+                    gs = schedule.gating_status(target, site, twilight, now,
+                                                window=frozen.get(id(target)))
                 state = gs["state"]
+                if state in ("window_closed", "never_rises"):
+                    continue        # this one will be skipped below
+                if state == "ready":
+                    e = elig.get(target.id)
+                    if e is not None and not e.eligible:
+                        all_closed = False
+                        if e.wake_ts is not None and (earliest is None
+                                                      or e.wake_ts < earliest[0]):
+                            earliest = (e.wake_ts, target, gs, e)
+                        continue
+                if self._group_runs:
+                    # A FOLLOWER while its group is live (spec 1.6, D15):
+                    # bounded by the group's next panel, held by an
+                    # ``after_group``, or skipped with its group.
+                    #
+                    # A MEMBER IS ASKED TOO (#330). A member's
+                    # ``after_group`` holds its whole group, the reading
+                    # spec 1.6 and `plan_identity_errors` give: the compile
+                    # writes the gate on every panel of a mosaic that follows
+                    # another under "Wait for the mosaic", and this call was
+                    # once made for targets in no group only, so the
+                    # downstream mosaic shot through the upstream one's waits
+                    # as though the flow had not asked it to wait. A member
+                    # whose group waits is a waiter with no wake time of its
+                    # own (the group it waits for supplies the scheduler's
+                    # wake), and one whose group is skipped leaves with its
+                    # whole group.
+                    #
+                    # AND A WAITER IS ASKED, FOR THE SKIP ALONE (#374). This
+                    # call was made on the ready path only, so a target
+                    # still waiting on its own window or altitude was
+                    # counted as a waiter at its opening even when the
+                    # mosaic it waits for was set aside tonight: the run
+                    # stayed alive, idle, until that opening (110 minutes on
+                    # the clocked simulator, the cooler running and the
+                    # wind-down held back), only to skip the target and end
+                    # then. Nothing it waits for can come tonight, so it
+                    # leaves now, a member with its whole group. The wait
+                    # and ready verdicts stay on the ready path: a waiter the
+                    # gate holds is still a waiter at its own wake, and no
+                    # "waits:" line is said before it is ready
+                    # (`_follower_gate`, ``waiting``).
+                    gate = self._follower_gate(target, remaining, elig,
+                                               gs_now, index_of, now,
+                                               waiting=state != "ready")
+                    if gate.kind == "skip":
+                        leave_tonight.append((target, gate.reason))
+                        continue
+                    if state == "ready":
+                        if gate.kind == "wait":
+                            all_closed = False
+                            if gate.wake_ts is not None and (
+                                    earliest is None
+                                    or gate.wake_ts < earliest[0]):
+                                earliest = (gate.wake_ts, target, gs, gate)
+                            continue
+                        if gate.kind == "bounded":
+                            bound = VisitBound(passes=None,
+                                               deadline_ts=gate.deadline_ts)
+                            follows = gate.group
                 if state == "ready":
                     ready = target
                     all_closed = False
                     break
-                if state in ("window_closed", "never_rises"):
-                    continue        # this one will be skipped below
                 # waiting (clock or altitude)
                 all_closed = False
                 start_ts = gs.get("start_ts")
-                if start_ts is not None and (earliest is None or start_ts < earliest[0]):
-                    earliest = (start_ts, target, gs)
+                if start_ts is not None:
+                    # THE EFFECTIVE WAKE, NOT THE ANCHOR (#380). ``start_ts``
+                    # is when the window OPENED, in the past for a target
+                    # below its altitude gate with its window open, and a
+                    # group rule's waiter joins with a real future wake (a
+                    # deferral wait's end, a reach recheck, a meridian
+                    # crossing). Compared as they were, the past opening
+                    # always sorted first, and the wait below slept until
+                    # that target's rise: a mosaic deferred for 300 s was
+                    # next visited 1860 s in, when another panel rose, and
+                    # the long-wait park-hold ran at once inside what was a
+                    # deferral wait. So a gating waiter joins at the time the
+                    # wait below would really wait until: its opening while
+                    # that is ahead, its estimated rise once it is past.
+                    wake = max(float(start_ts),
+                               now + float(gs.get("eta_s") or 0.0))
+                    if earliest is None or wake < earliest[0]:
+                        earliest = (wake, target, gs, None)
+
+            group_left = False
+            for target, why in leave_tonight:
+                member_of = self._group_of(target)
+                if member_of is not None:
+                    # A member's gate skips its WHOLE group (#330), once,
+                    # however many of its members met the gate this pass.
+                    self._skip_group_tonight(member_of, why, remaining)
+                    group_left = True
+                    continue
+                # SKIPPED FOR THE NIGHT, NOT DONE (spec 1.6): its group was set
+                # aside tonight, and it waits for that mosaic. The ledger
+                # still owes it, and the next night takes it up.
+                bus.log("info", f"{target.name}: skipped for tonight: {why}; "
+                                f"not done, so the next night takes it up",
+                        "sequence")
+                if self.reporter:
+                    self.reporter.mark_skipped(target)
+                self._drop_from(remaining, target)
+            if not remaining:
+                # Nothing left: the night ran its course. Not a dawn cutoff,
+                # which the all-closed branch below would call an empty list.
+                break
+            if group_left:
+                # ASKED AGAIN AFTER A GROUP LEAVES (#330). The group skip
+                # drops members the loop above never judged ready: a panel
+                # still waiting on its own window or altitude was counted as
+                # a waiter, perhaps the soonest, and kept ``all_closed``
+                # false. Acted on, that stale answer published "waiting for
+                # M33 1-1", a panel of the mosaic just skipped for the night,
+                # with that mosaic as the active group, and slept until the
+                # panel's window opened, 110 minutes on the clocked simulator
+                # with every other window closed, only to end the night then.
+                # Since #374 a waiting member meets the gate too and leaves
+                # with its group, so no panel of the skipped group can be
+                # that waiter now; the re-ask stays, because every answer
+                # above was worked out over a list that has since changed.
+                # Each group leaves at most once, so this re-asks a bounded
+                # number of times.
+                continue
+            if self._group_runs:
+                self._note_meridian_waits(ready, remaining, elig)
 
             if ready is not None:
                 ti = index_of[id(ready)]
+                group = self._group_of(ready)
+                if (group is not None and group.id in self._group_runs
+                        and ready.id in self._group_runs[group.id].visited):
+                    # THE PASS BOUNDARY (spec 5.1). Visited members sit behind
+                    # the unvisited ones, so the first ready member being a
+                    # visited one means no unvisited member is eligible now.
+                    await self._close_group_pass(group, remaining)
+                    continue
+                self._note_group_selected(group)
                 complete = self._target_complete(ti, ready)
                 # "if missed: skip" (Schedule.on_missed). The target is runnable
                 # NOW, but its own window opened long ago and the night moved on —
@@ -1799,50 +3418,67 @@ class SequenceEngine:
                                     f"skip)", "sequence")
                     if self.reporter:
                         self.reporter.mark_skipped(ready)
+                    self._group_member_gone(ready, group,
+                                            "its start window was missed")
                     remaining.remove(ready)
                     continue
                 try:
-                    if complete:
+                    if complete and ready.id in self._completion_owed:
+                        # COMPLETED BY THE FRAME THAT FIRED A NO-OP JUMP (#373,
+                        # S5 orchestrator ruling 3): banked before the jump
+                        # acted, so the target came back complete. Its
+                        # ``on_target_complete`` rules run now, once, inside
+                        # this try so a jump one of them fires is caught
+                        # below as any other; before the frame was banked it
+                        # was reshot, and they ran after the reshoot.
+                        self._completion_owed.discard(ready.id)
+                        await self._fire_target_complete(ready)
+                    elif complete:
                         bus.log("info", f"{ready.name}: already complete — skipping",
                                 "sequence")
                     elif ready.calibration:
                         await self._run_calibration(ti, ready)
+                    elif group is not None:
+                        # One bounded visit; True means it was requeued and
+                        # stays in `remaining` (spec 5.1's outcome table). A
+                        # panel before its flip point carries the flip point
+                        # as its visit's deadline (spec 5.7, 5.3).
+                        e = elig.get(ready.id)
+                        if await self._visit_panel(
+                                ti, ready, group, remaining,
+                                deadline_ts=e.deadline_ts if e else None):
+                            continue
+                    elif bound is not None:
+                        # A follower's visit, ended by its group's next panel
+                        # (spec 1.6); True means it keeps its progress and
+                        # its place behind the group.
+                        if await self._visit_follower(ti, ready, bound, follows):
+                            continue
                     else:
-                        await self._setup_target(ti, ready)
+                        await self._hop(ti, ready)
                         await self._run_steps(ti, ready)
-                        # PRO-3: on_target_complete eval for a finished
-                        # non-calibration target. Guarded (no-op when empty).
-                        if self.plan and self.plan.instructions:
-                            # THE SKY READINGS BELONG HERE TOO, and leaving them
-                            # off was not a neutral omission. A context built
-                            # without them says `cloudy=None` — "nobody can
-                            # say" — at the one boundary where `target_complete`
-                            # is ever True. The evaluator honours that: a
-                            # compound rule reading `all(target complete, sky
-                            # clear)` is indeterminate every time it is
-                            # evaluated, so it can never fire once, on any
-                            # night, for any sky. The engine knew the sky; it
-                            # simply was not asked.
-                            #
-                            # Filling them in costs one safety read at a target
-                            # boundary and keeps the tri-state honest in the
-                            # other direction as well: a rig with no monitor
-                            # still reports None here, so nothing fires on a
-                            # reading nobody took.
-                            _now = time.time()
-                            await self._run_instructions(
-                                TriggerContext(now_ts=_now,
-                                               target_complete=True,
-                                               active_target=ready.name,
-                                               cloudy=self._clouds.cloudy(_now),
-                                               unsafe=await self._unsafe_now(),
-                                               panel_ready=self._panel_ready_now()),
-                                ready, None)
+                        # PRO-3: on_target_complete, GATED ON REAL COMPLETION
+                        # (#157). `_run_steps` returns short too: a pass that
+                        # shot nothing, every owed step set aside by its
+                        # reject guard. The rule used to fire after every
+                        # return, so an accepted-mode target whose every frame
+                        # was rejected announced itself complete. Guarded (a
+                        # no-op when there are no instructions), and asked in
+                        # that order so a plan with none walks no ledger.
+                        if (self.plan and self.plan.instructions
+                                and self._target_complete(ti, ready)):
+                            await self._fire_target_complete(ready)
                 except StopTarget as e:
                     # scheduling-only stop: skip this target, keep the night going.
                     bus.log("info", f"{ready.name}: skipped — {e}", "sequence")
                     if self.reporter:
                         self.reporter.mark_skipped(ready)
+                    if isinstance(e, FloorStop):
+                        # Its own floor sets it aside for TONIGHT, recorded
+                        # so a restart tonight does not take it up (#208).
+                        # The line `_enforce_altitude_floor` logged says so.
+                        self._persist_set_aside(ready.id, str(e), kind="floor")
+                    self._group_member_gone(ready, group, str(e))
                 except JumpTarget as j:
                     # control-flow expansion: a fired run_target/skip_target
                     # instruction redirects the scheduler. Like StopTarget this
@@ -1852,8 +3488,67 @@ class SequenceEngine:
                     # it is NOT, so it stays in `remaining` and is re-selected
                     # (resuming from its persisted per-step counts) instead of
                     # being silently dropped by the removal below.
-                    if not self._apply_jump(plan, j, ready, remaining):
+                    #
+                    # A MEMBER'S JUMPED VISIT IS ALREADY COUNTED (#322):
+                    # `_visit_panel` handed its frames and guide start to the
+                    # group before the jump reached here. A NO-OP JUMP LEAVES
+                    # THE MEMBER UNVISITED, so it is taken up again at once, in
+                    # the same pass (see `_visit_panel`).
+                    #
+                    # THE FRAME THAT FIRED THE JUMP IS BANKED (#373, S5
+                    # orchestrator ruling 3), so it may have been the last one
+                    # the target owed. Taken up again after a no-op, such a
+                    # target is found complete and dropped, and its
+                    # ``on_target_complete`` rules are owed there
+                    # (``_completion_owed``), and since S7 after a consumed
+                    # jump too (below). Not one whose jump came out of its
+                    # ``on_target_complete`` rules themselves
+                    # (``_completion_fired``): they have run, and owed
+                    # again they fired the same no-op jump on every
+                    # selection until ``MAX_JUMPS`` ran out, 65 times on the
+                    # clocked simulator, leaving no jump for the rest of the
+                    # night.
+                    #
+                    # A CONSUMED JUMP ON THE LAST OWED FRAME LEAVES A COMPLETE
+                    # TARGET, NOT A SKIPPED ONE (#481, S7 orchestrator ruling
+                    # 2). Completion is read BEFORE the jump is applied, so
+                    # `_apply_jump` writes no "skipped" into the report for
+                    # it and does not call it abandoned; a member's group
+                    # was already told (`_visit_panel`, ``note_complete``).
+                    # Its ``on_target_complete`` rules are owed once, as
+                    # after a no-op, unless they are what fired this jump
+                    # (``_completion_fired``). Consumed, it was removed with
+                    # them never run. So it stays, at the FRONT of
+                    # ``remaining``, where the next selection finds it
+                    # complete and runs them before the jump's destination
+                    # is shot: it completed first, and its frame fired the
+                    # jump. Left where it stood, a ``run_target``'s
+                    # destination, put at the front, went first, and the
+                    # rules waited behind that whole target.
+                    complete_now = self._target_complete(ti, ready)
+                    consumed = self._apply_jump(plan, j, ready, remaining,
+                                                complete=complete_now)
+                    if complete_now and ready.id not in self._completion_fired:
+                        self._completion_owed.add(ready.id)
+                        if consumed:
+                            self._drop_from(remaining, ready)
+                            remaining.insert(0, ready)
                         continue
+                    if not consumed:
+                        continue
+                    # A MEMBER THE JUMP CONSUMED LEAVES ITS GROUP TOO (#288),
+                    # as a skip-drain's and a missed start's do: otherwise
+                    # the group still counted it live, the published
+                    # ``set_aside`` never named it, and the pass boundary
+                    # could not reach ``none_live``, so the last live panel's
+                    # set-aside was followed by a ``DEFER_WAIT_S`` for
+                    # nothing. A no-op for a target in no group, and for a
+                    # complete member whose rules fired this jump: its visit
+                    # told the group it is complete (#481), so it is not
+                    # live, and never "abandoned".
+                    self._group_member_gone(
+                        ready, group, "skipped by instruction"
+                        if j.kind == "skip" else "abandoned by an instruction")
                 remaining.remove(ready)
                 continue
 
@@ -1870,15 +3565,26 @@ class SequenceEngine:
 
             # at least one target is waiting on its window: announce + wait.
             if earliest is not None:
-                start_ts, wtarget, gs = earliest
+                start_ts, wtarget, gs, held = earliest
                 ti = index_of[id(wtarget)]
-                self._set_state(
-                    state="running", target=wtarget.name, target_index=ti,
-                    detail=f"waiting for {wtarget.name}",
-                    schedule={"state": "waiting", "reason": gs.get("reason", ""),
-                              "eta_s": round(gs.get("eta_s", 0.0)),
-                              "start_ts": gs.get("start_ts"),
-                              "stop_ts": gs.get("stop_ts")})
+                # The waiter is the active target now, so the published group
+                # is its group, or none (spec 5.10).
+                self._note_group_selected(self._group_of(wtarget))
+                if held is None:
+                    self._set_state(
+                        state="running", target=wtarget.name, target_index=ti,
+                        detail=f"waiting for {wtarget.name}",
+                        schedule={"state": "waiting",
+                                  "reason": gs.get("reason", ""),
+                                  "eta_s": round(gs.get("eta_s", 0.0)),
+                                  "start_ts": gs.get("start_ts"),
+                                  "stop_ts": gs.get("stop_ts")})
+                else:
+                    self._publish_group_wait(wtarget, ti, held)
+                # A group rule's wake is its own cadence or a crossing, never
+                # an opening already past, so it is the wait as it stands.
+                if held is not None:
+                    gs = {"eta_s": 0.0}
                 # Between-target teardown (review §1.9): a previous target left the
                 # mount TRACKING its coordinates. Before a long wait, stop tracking
                 # (park-hold) so we don't track a finished, setting target down into
@@ -1890,24 +3596,47 @@ class SequenceEngine:
                 # after that — its time window is open while it is still below
                 # its altitude gate. Waiting until an opening that has already
                 # happened is not a wait, so fall forward onto the scheduler's
-                # own estimate of when the target becomes usable.
+                # own estimate of when the target becomes usable. Since #380
+                # the selection joins a gating waiter at exactly this time, so
+                # its ``start_ts`` here is already the effective wake and the
+                # max is that wake; it stays as the floor under any wake.
                 wait_ts = max(start_ts, now + float(gs.get("eta_s") or 0.0))
                 # Teardown keys off the EFFECTIVE wait for the same reason: with
                 # the past anchor this test read "0 seconds from now" and never
                 # park-held, so the mount kept tracking a finished target while
                 # the scheduler span.
-                if wait_ts - now > WAIT_TEARDOWN_S:
-                    await self._park_hold()
+                #
+                # THIS IS NO LONGER THE ONLY TEARDOWN (#165). It is the early
+                # one: a wait known to be long stops tracking at once instead
+                # of after the idle clock runs out. An eta-0 wait (a setting
+                # target below its gate with no crossing ahead) reads 0 here on
+                # every 5 s re-evaluation, and a constraint wait never comes
+                # through this branch at all; `_wait_until`'s idle clock is
+                # what catches both. Through the same latch, so the two never
+                # stop tracking twice for one idle spell.
+                #
+                # A GROUP'S DEFERRAL WAIT IS LEFT TO THE IDLE CLOCK (#304), as
+                # it was when S2 slept it out inside the pass boundary, where
+                # this rule never saw it. It is five minutes before the same
+                # panels are tried again, and the idle clock stops the mount
+                # within ``WAIT_TEARDOWN_S`` of its last setup either way, so
+                # the night reads as it did before the wait moved here.
+                deferral = (isinstance(held, _Eligibility)
+                            and held.held == "defer")
+                if wait_ts - now > WAIT_TEARDOWN_S and not deferral:
+                    await self._idle_park_hold(
+                        "the next target is a long wait away")
                 await self._wait_until(wait_ts)
             else:
                 # waiting but no resolvable start_ts (e.g. below-alt with unknown
                 # ETA): a short bounded, cancel-responsive sleep then re-evaluate.
+                # No teardown of its own: the idle clock in `_wait_until` is it.
                 await self._wait_until(time.time() + SCHEDULE_WAIT_STEP_S)
 
         # loop exhausted naturally → all targets ran (or were skipped above).
 
     def _apply_jump(self, plan: SequencePlan, j: "JumpTarget", ready: Target,
-                    remaining: list[Target]) -> bool:
+                    remaining: list[Target], *, complete: bool = False) -> bool:
         """Apply a caught :class:`JumpTarget` to the scheduler's ``remaining``
         queue (control-flow expansion). Pure list surgery + logging — no device
         I/O, so it is safe in the scheduler's except arm.
@@ -1935,7 +3664,14 @@ class SequenceEngine:
         gone or unknown). ``run``: move the named target to the FRONT so it is
         the next one selected; a jump to the ACTIVE target is a deliberate no-op
         (the trivial self-loop). Names are matched by identity within
-        ``plan.targets`` so duplicate-valued targets can never be confused."""
+        ``plan.targets`` so duplicate-valued targets can never be confused.
+
+        ``complete`` says the ledger holds ``ready`` complete (#481, S7
+        orchestrator ruling 2): the frame that fired the jump was banked
+        first (#373) and was the last it owed. A complete target is never
+        written into the report as skipped, and never called abandoned: the
+        jump still acts (the destination still goes to the front), and the
+        caller owes the target its ``on_target_complete`` rules."""
         name = (j.name or "").strip()
         dest = next((t for t in plan.targets if t.name == name), None)
 
@@ -1951,6 +3687,13 @@ class SequenceEngine:
                     f"— ignored ({ready.name} continues)", "sequence")
             return False
         if j.kind == "skip":
+            if dest is ready and complete:
+                # NOTHING LEFT TO SKIP (#481). The frame that fired this was
+                # the last the target owed, and it is banked.
+                bus.log("info",
+                        f"instruction: skip_target {name!r}: it is already "
+                        f"complete, so nothing is skipped", "sequence")
+                return True
             bus.log("info", f"instruction: skipping target {name!r}", "sequence")
             if self.reporter:
                 self.reporter.mark_skipped(dest)
@@ -1966,27 +3709,2186 @@ class SequenceEngine:
             return False
         _drop(dest)
         remaining.insert(0, dest)
+        # A COMPLETE TARGET IS LEFT, NOT ABANDONED (#481): the jump is still
+        # recorded in the timeline, and no skip beside it.
+        left = (f"{ready.name} is complete" if complete
+                else f"abandoning {ready.name}")
         bus.log("info",
-                f"instruction: jumping to target {name!r} "
-                f"(abandoning {ready.name})", "sequence")
+                f"instruction: jumping to target {name!r} ({left})",
+                "sequence")
         if self.reporter:
             # the jump itself in the report timeline, next to the skip it causes
             self.reporter.record_safety(
-                f"instruction run_target {name!r} (abandoning {ready.name})",
-                "jump")
-            self.reporter.mark_skipped(ready)
+                f"instruction run_target {name!r} ({left})", "jump")
+            if not complete:
+                self.reporter.mark_skipped(ready)
         return True
+
+    # ------------------------------------------------ the mosaic group driver
+    #
+    # #189 S2 (U-01), mosaic spec 5.1 to 5.4, 5.9, 5.10, 6.4, 6.7. The pure
+    # decisions (what a visit's outcome does to its panel, the pass boundary,
+    # the visit bound) are `group_rules`', and the order is `panel_order`'s;
+    # what lives here is the wiring: which target is a member, where it sits
+    # in `remaining`, what each outcome writes down and says. Nothing here
+    # moves the mount: every hop is `_setup_target`, every frame `_run_step`
+    # with its whole gate stack (D7).
+
+    def _group_of(self, target) -> TargetGroup | None:
+        """The group ``target`` is a member of, or None.
+
+        A member is a target whose ``mosaic_group`` names a group the plan
+        CARRIES. A ``mosaic_group`` with no ``groups`` entry, which is every
+        mosaic the classic Plan made, is in no group and keeps today's
+        panel-first order (spec 3.4); a calibration target is never a member.
+        """
+        gid = getattr(target, "mosaic_group", None)
+        if gid is None or getattr(target, "calibration", False):
+            return None
+        return getattr(self, "_groups", {}).get(gid)
+
+    def _live_panels(self, group: TargetGroup,
+                     asking: Target | None = None) -> int:
+        """How many of ``group``'s members THIS PASS CAN VISIT, for the rule
+        that treats the last of them as a plain target (#315,
+        `group_rules.no_guider_defers`): the live members, neither complete
+        nor set aside, that the pass visited or one of its selections let
+        through (`GroupRun.visitable`), and ``asking``, the member whose hop
+        asks, which the selection that chose it let through.
+
+        NOT EVERY LIVE MEMBER (the #315 follow-up, S3 orchestrator ruling 6).
+        A member held all pass behind the mount's floor or another limit, by
+        the meridian rule, or by its own gating, is live and makes no guide
+        attempt in the pass, so the rig verdict's second attempt can never
+        come from it. Counted, it made the one panel the pass could visit
+        defer at every hop, with no guider and guiding optional, and set it
+        aside after three passes: #315 in another shape.
+
+        With no run state for the group (a setup driven on its own, before
+        `_start_groups`), every member the plan carries counts, which is
+        what a run starts from."""
+        run = self._group_runs.get(group.id)
+        if run is not None:
+            can = set(run.visitable())
+            if asking is not None and run.is_live(asking.id):
+                can.add(asking.id)
+            # At least the one asking, which a visit only ever makes of a
+            # live member; the floor keeps a count from ever raising here.
+            return max(1, len(can))
+        return max(1, sum(1 for t in (self.plan.targets if self.plan else [])
+                          if self._group_of(t) is group))
+
+    def _deferred_words(self, target) -> str | None:
+        """What happens next to ``target`` when a gate stops it with a plain
+        StopTarget and it is a group member: the rest of a sentence, "the
+        visit to 1-2 stops, and the panel is retried on the next pass (set
+        aside tonight only after 3 consecutive failed visits)". None for a
+        target in no group, or with no group run to visit it, whose gate
+        keeps its own sentence (#326).
+
+        WORDED BY WHO IS STOPPED (#326). Since #316 the group driver defers a
+        member for a plain StopTarget (`_visit_panel`, ``target_stop``), and
+        sets it aside only after ``max_failed_visits`` consecutive failed
+        visits; a single target is still dropped for the run. The gates that
+        raise it (the cloud hold's floor, the hold's published end, the #72
+        bound and the guide start under skip) still said the single target's
+        outcome for a panel: "setting it aside for the rest of this run", a
+        claim nothing keeps, followed at once by the driver's "retried on
+        the next pass". The parenthesis keeps the sentence true on the visit
+        that is the last of the streak, which the driver then sets aside."""
+        group = self._group_of(target)
+        run = self._group_runs.get(group.id) if group is not None else None
+        if run is None:
+            return None
+        label = run.members.get(target.id, self._panel_name(target))
+        return (f"the visit to {label} stops, and the panel is retried on "
+                f"the next pass (set aside tonight only after "
+                f"{run.max_failed_visits} consecutive failed visits)")
+
+    @staticmethod
+    def _panel_name(target) -> str:
+        """A member's label, "2-3" (1-based row-col, spec 2.3), or its name
+        when it carries no grid position."""
+        row, col = getattr(target, "panel_row", None), getattr(target, "panel_col", None)
+        if row is None or col is None or row < 0 or col < 0:
+            return target.name
+        return naming.panel_label(row, col)
+
+    def _group_state(self, gid: str | None) -> dict | None:
+        """``state.group`` (spec 5.10), or None when no group is active.
+
+        ``meridian_wait`` is true while the group waits on the meridian rule,
+        through the hop that ends the wait until its first exposure
+        (`_note_meridian_waits`, `_capture`): the flag the site-derived
+        withholding of ``panel`` and ``pass`` keys on (`api.redact`, 5.10).
+        Every reason is words: the site never appears in one (6.9)."""
+        if gid is None:
+            return None
+        g, run = self._groups.get(gid), self._group_runs.get(gid)
+        if g is None or run is None:
+            return None
+        cur = self._group_current
+        started = self._visit_started_at
+        elapsed = (round(max(0.0, time.time() - started))
+                   if cur is not None and started is not None
+                   and self._visit_in_progress == cur.id else 0)
+        return {
+            "id": g.id,
+            "name": g.name,
+            "mode": g.mode,
+            "pass": run.pass_no,
+            "panel": run.members.get(cur.id) if cur is not None else None,
+            "visit_elapsed_s": elapsed,
+            "panels_done": len(run.completed),
+            "panels_total": len(run.members),
+            "set_aside": [{"panel": run.members.get(p, p), "reason": r}
+                          for p, r in run.set_aside.items()],
+            "meridian_wait": gid in self._meridian_wait,
+        }
+
+    def _note_group_selected(self, group: TargetGroup | None) -> None:
+        """The scheduler is on ``group``'s member now, or on no member."""
+        gid = (group.id if group is not None and group.id in self._group_runs
+               else None)
+        if gid != self._group_active:
+            self._group_current = None
+        self._group_active = gid
+
+    # ---- eligibility at selection (#189 S2, spec 5.1 items 1-2, 5.7, 6.2) ---
+
+    def _site_timed(self) -> bool:
+        """Is what the run publishes now timed by a site computation (spec
+        6.9, 5.10, #166)? True while the group the scheduler is on waits on
+        the meridian rule, from the wait's start through the hop that ends it
+        until that hop's first exposure: the wait began when the last panel
+        before the meridian ran out of room before its flip point, and it
+        ends at a computed crossing, so a publish or a line in between
+        carries the crossing in its moment, whatever it says. Such a publish
+        and such a line carry ``site_derived``, and the serving seams drop
+        them for a principal without the site-derived view (`api.redact`)."""
+        gid = getattr(self, "_group_active", None)
+        return gid is not None and gid in getattr(self, "_meridian_wait", {})
+
+    def _group_flip_margin_s(self) -> float:
+        """The margin the group's meridian rule keeps before each panel's
+        flip point: the PLAN's lead, clamped as `_flip_lead_s` clamps it, and
+        NEVER the lead the mount has taught this process (spec 5.7).
+
+        `_flip_lead_s` is 0 for a target whose early flip changed nothing
+        (`_flip_no_op`) and for a mount shown not to flip early (#127). That
+        zero is right for WHEN TO ATTEMPT a flip, since the AM5 cannot flip
+        before transit, and wrong as a margin: the same mount stops tracking
+        4.7 to 7.6 min BEFORE transit, so a pre-flip visit measured against a
+        zero margin would run into the mount's own limit."""
+        return self._plan_flip_lead_s()
+
+    def _first_frame_s(self, target: Target) -> float:
+        """The time budget of ``target``'s next frame, as the flip gate draws
+        it (spec 5.3, 5.7 ``f_h``): the exposure of the first step it still
+        owes and has not set aside, the per-frame overhead EMA and
+        ``FLIP_FRAME_MARGIN_S``."""
+        exp = next((float(s.exposure_s) for s in target.steps
+                    if not self._step_complete(target, s)
+                    and f"{target.id}:{s.id}" not in self._set_aside), 0.0)
+        return (max(0.0, exp) + FLIP_FRAME_MARGIN_S
+                + max(0.0, float(getattr(self, "_overhead_ema", 0.0) or 0.0)))
+
+    async def _eligibility_now(self, remaining: list[Target], frozen: dict,
+                               site, twilight: float, now: float
+                               ) -> tuple[dict[str, _Eligibility], dict[int, dict]]:
+        """For every live member of every group in ``remaining``: its gating
+        status, and, for one the gating calls ready, whether it may be
+        visited now (spec 5.1 selection).
+
+        1. REACHABILITY, by the slew gate's own predicate
+           (`_mount_floor_verdict`). A ``wait`` verdict makes the member a
+           waiter asked again in ``REACH_RECHECK_S``. A ``refuse`` verdict is
+           acted on here: no saved site raises the gate's own `SlewRefused`
+           (every panel is refused, so the run ends as the slew gate would
+           have ended it), and a pier-side change with flips off sets that
+           panel aside tonight with the gate's sentence, while the panels the
+           mount can reach from its side go on. The pier guard's reads are
+           bounded, the mount's own side read once for the whole selection,
+           and a read past its bound ends the run as a dead link (#314, P0-2).
+        2. THE MERIDIAN RULE over the reachable ones (`_meridian_now`).
+        3. THE GROUP'S DEFERRAL WAIT (#304): while it lasts, a member the
+           first two would let visit waits for its end (``held`` "defer"),
+           the centring hold's included (#534).
+
+        Before any of them, a member set aside FOR NOW whose set-aside has
+        expired is live again, and one whose has not is a waiter until it
+        does (``held`` "expiry", `_expire_or_wait`, #534).
+
+        Returns the verdicts by target id and the gating statuses by
+        ``id(target)``, which the selection reuses rather than asking twice.
+        A panel set aside here has left ``remaining`` when this returns."""
+        elig: dict[str, _Eligibility] = {}
+        gs_now: dict[int, dict] = {}
+        refused: list[Target] = []
+        # THE MOUNT'S SIDE, READ ONCE FOR THE WHOLE SELECTION (#314, S3
+        # orchestrator ruling 2). Nothing moves the mount while this runs, so
+        # every member's pier guard asks the same question of it; asked per
+        # member, a 3x3 made nine reads of one answer at every selection,
+        # each a chance for a wedged link to stall it. Each member's
+        # destination side is its own and is still read for each, bounded.
+        pier_now: dict = {}
+        # EVERY GROUP'S GATING FIRST, then the verdicts (#330): a group's
+        # gate reads whether the group it waits for can still shoot tonight,
+        # which is that group's gating, and a group waited for may come later
+        # in the plan than the group that waits.
+        live: dict[str, list[Target]] = {}
+        for gid, run in self._group_runs.items():
+            group = self._groups.get(gid)
+            if group is None:
+                continue
+            # 0. A SET-ASIDE THAT HAS EXPIRED IS LIVE AGAIN, first (#534, H4
+            # orchestrator ruling 2), so this very selection may visit it;
+            # one that has not waits for its expiry as a waiter.
+            refused.extend(self._expire_or_wait(group, run, remaining, frozen,
+                                                site, twilight, now, gs_now,
+                                                elig))
+            live[gid] = [t for t in remaining
+                         if self._group_of(t) is group and run.is_live(t.id)]
+            for t in live[gid]:
+                gs_now[id(t)] = schedule.gating_status(
+                    t, site, twilight, now, window=frozen.get(id(t)))
+        for gid, members in live.items():
+            group, run = self._groups[gid], self._group_runs[gid]
+            if self._group_gate(group, remaining, gs_now).kind != "ready":
+                # A GROUP ITS GATE HOLDS IS ASKED NOTHING (#330). None of
+                # its members is visited before the gate opens (the
+                # selection holds or skips each at `_follower_gate`), so a
+                # verdict now answers a question nobody is asking: two pier
+                # reads a member on every selection of the wait, each a
+                # chance for a wedged link to stall it, a flips-off pier
+                # refusal that sets a panel aside for the night while its
+                # group could not have been shot anyway, and a meridian
+                # wait said for a mosaic that is waiting on another. Its
+                # members carry no verdict, and `_group_ready_ts` gives the
+                # group no time.
+                continue
+            candidates: list[Target] = []
+            for t in members:
+                if gs_now[id(t)]["state"] != "ready":
+                    continue
+                v = await self._mount_floor_verdict(t, projected=True,
+                                                    pier_now=pier_now)
+                if v is None:
+                    candidates.append(t)
+                elif v.tag == "wait":
+                    elig[t.id] = _Eligibility(
+                        False, now + REACH_RECHECK_S, None, "reach", v.words)
+                elif v.kind == "pier":
+                    self._set_panel_aside(group, t, v.sentence, decided=True,
+                                          kind="pier")
+                    refused.append(t)
+                else:
+                    # No saved site: every panel is refused alike, and waiting
+                    # cannot save one, so this ends the run exactly as the
+                    # slew gate would have at the first hop.
+                    raise SlewRefused(v.sentence, words=v.words,
+                                      site_detail=v.site_detail, kind=v.kind)
+            elig.update(await self._meridian_now(group, run, candidates, now))
+            if run.deferring(now):
+                # 3. THE DEFERRAL WAIT (#304, spec 5.1 pass boundary item 2).
+                # Asked last, over what the first two let through, so a
+                # refusal waiting cannot cure is still acted on at once and a
+                # member behind a limit or the meridian keeps that reason;
+                # every member they would let visit waits instead, and wakes
+                # at the wait's end like any waiter. The scheduler's own wait
+                # path then runs it, and a follower may fill it
+                # (`_group_ready_ts` counts its end).
+                for t in candidates:
+                    e = elig.get(t.id)
+                    if e is not None and e.eligible:
+                        elig[t.id] = _Eligibility(
+                            False, run.defer_until, None, "defer",
+                            self._defer_words(run))
+            # WHAT THIS PASS COULD VISIT (the #315 follow-up, S3 orchestrator
+            # ruling 6): the members this selection lets through, kept for
+            # the pass, so the no-guider rule counts the members the pass can
+            # visit and not every live one (`_live_panels`). A member behind
+            # a limit, the meridian rule or its gating at every selection of
+            # the pass is never let through, and makes no attempt in it.
+            run.note_let_through(t.id for t in candidates
+                                 if elig.get(t.id) is not None
+                                 and elig[t.id].eligible)
+        for t in refused:
+            self._drop_from(remaining, t)
+        return elig, gs_now
+
+    async def _meridian_now(self, group: TargetGroup, run: GroupRun,
+                            candidates: list[Target], now: float
+                            ) -> dict[str, _Eligibility]:
+        """The one-pier-change rule over the members that could be shot now
+        (spec 5.7; `group_rules.meridian_eligibility`).
+
+        ``h_p`` is each panel's countdown to its meridian crossing,
+        ``schedule.hours_to_meridian_flip`` at the engine's own ``now``; the
+        margin is the plan's lead (`_group_flip_margin_s`), the hop the hop
+        cost EMA, ``f_h`` the panel's next frame (`_first_frame_s`). An
+        eligible panel before its flip point carries the flip point as its
+        visit's deadline. A held one wakes at its crossing, or, held past
+        the meridian, when the last panel before it runs out of room; a
+        panel counts as past the meridian only ``MERIDIAN_SIDE_MARGIN_S``
+        after its crossing, where the side a goto lands on is not in doubt.
+        The rule is off, and every candidate eligible with no deadline, when
+        the plan has flips off or no site is saved to say where the meridian
+        is: the flip gate takes no flip then either. SITE-DERIVED and used
+        here only; every reason is words (6.9)."""
+        out: dict[str, _Eligibility] = {}
+        if not candidates:
+            return out
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if not (self.plan and self.plan.meridian_flip) or latlon is None:
+            for t in candidates:
+                out[t.id] = _Eligibility(True, None, None, None,
+                                         "the meridian rule is off")
+            return out
+        lat, lon = latlon
+        # One read of the side for `flip_can_be_skipped`, as the flip gate
+        # asks it; an unreadable side reads as a GEM there.
+        side = await self._pier_side_now() or "unknown"
+        facts = {t.id: PanelMeridian(
+            h_p=schedule.hours_to_meridian_flip(t.ra_hours, lon, now),
+            f_h=self._first_frame_s(t) / 3600.0,
+            flip_can_be_skipped=schedule.flip_can_be_skipped(
+                t.dec_deg, lat, side))
+            for t in candidates}
+        verdicts = meridian_eligibility(
+            facts, lead_h=self._group_flip_margin_s() / 3600.0,
+            hop_h=self._event_cost("hop", HOP_COST_S) / 3600.0,
+            flipped=run.flipped, meridian_flip=True,
+            crossed_h=MERIDIAN_SIDE_MARGIN_S / 3600.0)
+        for t in candidates:
+            mv = verdicts[t.id]
+            if mv.eligible:
+                # THE DEADLINE IN CLOCK SECONDS. ``deadline_h`` is hours of
+                # hour angle, which runs 0.27% fast, and the frame loop's flip
+                # gate re-reads that countdown at every frame. Taken as clock
+                # hours, the deadline drifts past the gate's line by 0.27% of
+                # the visit (10 s an hour): a long visit's last frame was let
+                # through, the gate then held for the flip point and re-slewed,
+                # and the frame opened past it (4 of 12 phases of a 60 min
+                # sequential visit, T18 verifier). Converted, the visit's time
+                # left is the gate's over 1.0027, so a frame the visit lets
+                # through never trips the gate.
+                out[t.id] = _Eligibility(
+                    True, None,
+                    None if mv.deadline_h is None
+                    else now + mv.deadline_h * 3600.0 * SOLAR_PER_SIDEREAL,
+                    None, mv.reason)
+            else:
+                out[t.id] = _Eligibility(
+                    False, now + max(0.0, mv.wake_h or 0.0) * 3600.0
+                    + MERIDIAN_WAKE_PAD_S, None, "meridian", mv.reason)
+        return out
+
+    def _note_meridian_waits(self, ready: Target | None,
+                             remaining: list[Target],
+                             elig: dict[str, _Eligibility]) -> None:
+        """Keep each group's meridian wait (spec 5.10, 6.9): it begins when no
+        live member may be visited and the meridian rule holds at least one,
+        and it ends when a member is chosen again. It stays in force through
+        that member's hop until its first exposure (`_capture`), because the
+        hop starts at the crossing: ``state.group.meridian_wait`` is true
+        across all of it, the panel and the pass are withheld from a viewer
+        throughout (`api.redact`), and every publish and line in it carries
+        ``site_derived`` (`_site_timed`).
+
+        Both edges are said once, in words and panel labels, and flagged:
+        the start is timed by a panel running out of room before its flip
+        point, and the end by a crossing."""
+        for gid, run in self._group_runs.items():
+            group = self._groups.get(gid)
+            if group is None:
+                continue
+            mosaic = group.name or group.id
+            live = [t for t in remaining
+                    if self._group_of(t) is group and run.is_live(t.id)]
+            if not live:
+                self._meridian_wait.pop(gid, None)
+                continue
+            state = self._meridian_wait.get(gid)
+            if ready is not None and self._group_of(ready) is group:
+                if state == "waiting":
+                    self._meridian_wait[gid] = "ending"
+                    label = run.members.get(ready.id, ready.name)
+                    bus.log("info", f"{mosaic}: the meridian wait is over; "
+                                    f"{label} is next", "sequence",
+                            site_derived=True)
+                continue
+            verdicts = [elig[t.id] for t in live if t.id in elig]
+            held = [run.members.get(t.id, t.name) for t in live
+                    if t.id in elig and elig[t.id].held == "meridian"]
+            if held and not any(v.eligible for v in verdicts) \
+                    and state != "waiting":
+                self._meridian_wait[gid] = "waiting"
+                verb = "waits" if len(held) == 1 else "wait"
+                bus.log("info", f"{mosaic}: {', '.join(held)} {verb} for the "
+                                f"meridian, so the mosaic changes pier side "
+                                f"once", "sequence", site_derived=True)
+
+    def _publish_group_wait(self, target: Target, ti: int, held) -> None:
+        """The published state while the scheduler waits on a group rule
+        rather than on a window (spec 5.1, 5.10).
+
+        A MERIDIAN WAIT NAMES THE MOSAIC, NOT THE PANEL. Which panel is held
+        for the crossing is what ``state.group.panel`` withholds from a
+        viewer through the wait (6.9), and naming it in ``target`` and
+        ``detail`` beside that would give it back; so the wait leaves the
+        target as it was and says the mosaic waits. No wait publishes a
+        countdown: the meridian's is the site's, and a limit's recheck is a
+        cadence, not an estimate (``eta_s`` 0, no ``start_ts``)."""
+        group = self._group_of(target)
+        if (isinstance(held, _Eligibility) and held.held == "defer"
+                and group is not None):
+            self._publish_defer_wait(group)
+            return
+        if (isinstance(held, _Eligibility) and held.held == "expiry"
+                and group is not None):
+            # A PANEL SET ASIDE FOR NOW (#534): named, since which panel
+            # waits for its set-aside to expire is no site fact; no countdown,
+            # since the expiry can be the panel's rise, which is.
+            run = self._group_runs.get(group.id)
+            label = run.members.get(target.id, target.name) if run else target.name
+            self._set_state(state="running",
+                            detail=f"{group.name or group.id}: {label} is set "
+                                   f"aside for now; waiting to try it once more",
+                            schedule={"state": "waiting",
+                                      "reason": held.reason, "eta_s": 0})
+            return
+        if (isinstance(held, _Eligibility) and held.held == "meridian"
+                and group is not None):
+            mosaic = group.name or group.id
+            self._set_state(state="running",
+                            detail=f"{mosaic}: waiting for the meridian",
+                            schedule={"state": "waiting",
+                                      "reason": "the mosaic waits for the "
+                                                "meridian, so it changes pier "
+                                                "side once",
+                                      "eta_s": 0})
+            return
+        self._set_state(state="running", target=target.name, target_index=ti,
+                        detail=f"waiting for {target.name}",
+                        schedule={"state": "waiting",
+                                  "reason": getattr(held, "reason", ""),
+                                  "eta_s": 0})
+
+    def _publish_defer_wait(self, group: TargetGroup) -> None:
+        """The published state through a group's deferral wait (#304, spec
+        5.1 pass boundary item 2): the publish the boundary made when S2
+        slept the wait out inside it, word for word, now made by the
+        boundary and again whenever the scheduler waits on the wait.
+
+        THE CENTRING HOLD IS THE SAME WAIT, IN ITS OWN WORDS (#534): a pass in
+        which every panel tried failed to centre holds the group through the
+        existing waiting path, with no new ``hold`` value, and the detail
+        names the hold."""
+        run = self._group_runs.get(group.id)
+        if run is not None and run.defer_why == "centring":
+            self._set_state(state="running",
+                            detail=f"{group.name or group.id}: centring failed "
+                                   f"on every panel tried; holding before the "
+                                   f"next pass")
+            return
+        self._set_state(state="running",
+                        detail=f"{group.name or group.id}: every panel was "
+                               f"deferred this pass; waiting before the next")
+
+    @staticmethod
+    def _defer_words(run: GroupRun) -> str:
+        """The reason a member held by the group's deferral wait carries, in
+        words: which wait it is (#304, #534)."""
+        if run.defer_why == "centring":
+            return ("centring failed on every panel tried on the last pass; "
+                    "holding before the next")
+        return "every panel was deferred on the last pass; waiting before the next"
+
+    # ---- followers (#189 S2, spec 1.6, D15, 6.4, 6.18) ------------------------
+
+    def _group_can_shoot_tonight(self, group: TargetGroup,
+                                 remaining: list[Target],
+                                 gs_now: dict[int, dict]) -> bool:
+        """Does ``group`` still have a live member whose window is not closed
+        for tonight? A group whose last live members' windows have closed
+        will shoot nothing more tonight, and a follower that waited on it
+        would wait for nothing. A member set aside FOR NOW counts (#534): its
+        set-aside expires tonight and it is tried again, so the group is
+        waiting, not done."""
+        run = self._group_runs.get(group.id)
+        if run is None:
+            return False
+        for t in remaining:
+            if self._group_of(t) is not group or not (
+                    run.is_live(t.id) or self._awaiting_expiry(run, t.id)):
+                continue
+            gs = gs_now.get(id(t))
+            if gs is None or gs.get("state") not in ("window_closed",
+                                                     "never_rises"):
+                return True
+        return False
+
+    def _reach_clear_ts(self, target: Target, now: float) -> float | None:
+        """When a panel behind a limit clears it: a forward scan in
+        ``REACH_RECHECK_S`` steps over the altitude half of the slew gate's
+        own predicate, projected as the gate projects it, to the panel's
+        frozen stop or ``SETTING_SCAN_S`` (spec 1.6, in the shape of
+        `schedule._time_to_gate`). None when it does not clear in that span:
+        such a panel does not bound a follower."""
+        stop = (self._frozen.get(id(target)) or (None, None))[1]
+        horizon = SETTING_SCAN_S if stop is None else max(
+            0.0, min(SETTING_SCAN_S, stop - now))
+        return forward_clear_ts(
+            lambda t: self._altitude_limit_verdict(
+                target, projected=True, cfg=self._cfg, at=t) is None,
+            now, horizon)
+
+    def _group_ready_ts(self, group: TargetGroup, remaining: list[Target],
+                        elig: dict[str, _Eligibility],
+                        gs_now: dict[int, dict], now: float) -> float | None:
+        """``group_ready_ts`` (spec 1.6): the earliest real time a live member
+        of ``group`` becomes eligible. Its meridian crossing for a panel the
+        meridian rule holds, the projected clearing of its limit for one
+        behind a limit (`_reach_clear_ts`), the opening its gating waits for
+        otherwise. A member with no such time tonight does not bound it;
+        None when none has one. The 60 s recheck is a cadence and never a
+        deadline, so it is not one of these times.
+
+        THE END OF A DEFERRAL WAIT JOINS THEM (#304). While the group waits
+        out an all-deferred pass (`GroupRun.defer_next_pass`), no member is
+        eligible before the wait ends, whatever else holds it: each one's
+        time is the later of its own and the wait's end, so the earliest is
+        the later of the earliest and the wait's end. A follower picked in
+        the wait hands the cursor back when the next pass may begin.
+
+        A GROUP ITS GATE HOLDS GIVES NONE (#330, `_group_gate`). It is let go
+        when every group it waits for is complete, which no clock here can
+        say, and its members, asked no reachability while it is held
+        (`_eligibility_now`), would each read as eligible now: a follower
+        after it was then left no room before "the next panel" at every
+        selection, and waited instead of filling the wait of the group that
+        really is due."""
+        if self._group_gate(group, remaining, gs_now).kind != "ready":
+            return None
+        run = self._group_runs.get(group.id)
+        times: list[float] = []
+        for t in remaining:
+            if run is None or self._group_of(t) is not group:
+                continue
+            # A MEMBER SET ASIDE FOR NOW (#534) is due when its set-aside
+            # expires, the wake `_expire_or_wait` gave it, and never before.
+            # Asked only of a member that is not live: a live one is set
+            # aside for nothing.
+            live = run.is_live(t.id)
+            awaiting = not live and self._awaiting_expiry(run, t.id)
+            if not (live or awaiting):
+                continue
+            gs = gs_now.get(id(t)) or {}
+            state = gs.get("state")
+            if state in ("window_closed", "never_rises"):
+                continue
+            ts: float | None
+            if awaiting and (t.id not in elig or elig[t.id].held != "expiry"):
+                continue
+            if state == "ready":
+                e = elig.get(t.id)
+                if e is None or e.eligible:
+                    ts = now
+                else:
+                    ts = (self._reach_clear_ts(t, now) if e.held == "reach"
+                          else e.wake_ts)
+            else:
+                start = gs.get("start_ts")
+                eta = float(gs.get("eta_s") or 0.0)
+                ts = (max(float(start), now + eta) if start is not None
+                      else (now + eta if eta > 0 else None))
+                if awaiting and ts is not None:
+                    # Held by its gating too: due at the later of the two.
+                    ts = max(ts, float(elig[t.id].wake_ts or ts))
+            if ts is not None:
+                times.append(ts)
+        if not times:
+            return None
+        ready_ts = min(times)
+        if run is not None and run.deferring(now):
+            ready_ts = max(ready_ts, run.defer_until)
+        return ready_ts
+
+    def _after_group_verdict(self, gid: str, remaining: list[Target],
+                             gs_now: dict[int, dict]) -> _FollowerGate:
+        """"Wait for the mosaic" (spec 1.6), for whatever waits for the group
+        ``gid``: a follower's own gate, or one of the gates that hold a whole
+        group (`_group_gate`). One reading, so the two cannot come to wait
+        differently.
+
+        It waits while the group can still shoot tonight, "after the M31
+        mosaic"; once the group is set aside tonight it is skipped for the
+        night, not done; once the group is complete it runs its normal
+        course. Pure: the caller says the wait, once."""
+        group = self._groups[gid]
+        run = self._group_runs[gid]
+        mosaic = group.name or group.id
+        if self._group_can_shoot_tonight(group, remaining, gs_now):
+            return _FollowerGate("wait", reason=f"after the {mosaic} mosaic",
+                                 group=group)
+        if len(run.completed) < len(run.members):
+            return _FollowerGate(
+                "skip", reason=f"the {mosaic} mosaic it waits for is set "
+                               f"aside tonight", group=group)
+        return _FollowerGate("ready", group=group)
+
+    def _group_gate(self, group: TargetGroup, remaining: list[Target],
+                    gs_now: dict[int, dict]) -> _FollowerGate:
+        """Whether ``group`` may be shot now, by its members' ``after_group``
+        gates (#330, spec 1.6, 3.5): ``"ready"``, ``"wait"`` or ``"skip"``,
+        with ``group`` the group waited for.
+
+        A MEMBER'S GATE HOLDS ITS WHOLE GROUP, the reading spec 1.6 and
+        `plan_identity_errors` give (its cycle refusal counts it so): the
+        group is done only when every panel is, and the gated panel is one of
+        them, so the others waiting for nothing would shoot the mosaic before
+        the one it follows all the same. The groups waited for are gathered
+        from every member at the start (`_start_groups`), a member's gate on
+        its own group left out (the start paths refuse it) and a gate on no
+        group of the plan ignored, as a follower's is.
+
+        One set aside tonight skips the group for the night: nothing can
+        complete it tonight, so the group could never be let go. Otherwise
+        one that can still shoot holds it, and it is ready once every group
+        it waits for is complete. With no gate it is ready, which is every
+        group the compile writes under the default ``whenWaiting``."""
+        verdict = _FollowerGate("ready")
+        for gid in self._group_gates.get(group.id, ()):
+            v = self._after_group_verdict(gid, remaining, gs_now)
+            if v.kind == "skip":
+                return v
+            if v.kind == "wait" and verdict.kind == "ready":
+                verdict = v
+        return verdict
+
+    def _skip_group_tonight(self, group: TargetGroup, why: str,
+                            remaining: list[Target]) -> None:
+        """Every member of ``group`` still in ``remaining`` leaves it for the
+        night, NOT DONE (#330, spec 1.6): a group it waits for was set aside
+        tonight, so it cannot be let go before the night ends. Said once, in
+        the words a follower's skip uses, and each member is marked skipped.
+
+        Gone for this run through `_group_member_gone`, so the published
+        ``set_aside`` names each with the reason, and NOT RECORDED for the
+        night: the records that set the group it waits for aside already
+        say it, and a restart tonight reads them and skips this one again.
+
+        Asked of a WAITING member too, as a follower's skip is (#374): once a
+        group it waits for is set aside, nothing can let it go tonight, so a
+        member still waiting on its own window takes the group out at once.
+        Asked only once a member was ready, a group whose window opened two
+        hours later kept the run alive and idle until then, only to be
+        skipped and end the night there."""
+        members = [t for t in remaining if self._group_of(t) is group]
+        if not members:
+            return
+        bus.log("info", f"{group.name or group.id}: skipped for tonight: "
+                        f"{why}; not done, so the next night takes it up",
+                "sequence")
+        for t in members:
+            if self.reporter:
+                self.reporter.mark_skipped(t)
+            self._group_member_gone(t, group, why)
+            self._drop_from(remaining, t)
+
+    def _follower_gate(self, target: Target, remaining: list[Target],
+                       elig: dict[str, _Eligibility], gs_now: dict[int, dict],
+                       index_of: dict, now: float, *,
+                       waiting: bool = False) -> _FollowerGate:
+        """What a ready target may do now while a group is live (spec 1.6,
+        D15, 6.18).
+
+        ``waiting``: the target is not ready yet, and the selection asks only
+        whether a gate SKIPS it (#374), so that a target waiting on its own
+        window leaves the night the moment the mosaic it waits for is set
+        aside, rather than at its opening. The gate is answered as for a
+        ready target and nothing is said: the "waits:" line belongs to the
+        moment a target could otherwise be shot. A target no gate holds is
+        "ready" here, since a follower's bound is a ready target's question.
+
+        A GROUP'S MEMBER is held, skipped or let go by its group's gate
+        (#330, `_group_gate`), and by nothing else here: a member is never a
+        follower. "M33: waits: after the M31 mosaic" is said once per pair.
+
+        ``after_group`` ("Wait for the mosaic", `_after_group_verdict`): it
+        waits while its group can still shoot tonight, "after the M31
+        mosaic"; once the group is set aside tonight it is skipped for the
+        night, not done; once the group is complete it runs its normal course.
+
+        Otherwise, a target after a group in plan order is that group's
+        FOLLOWER ("Shoot later targets, then come back", the default). It is
+        reached here only when every live panel waits, because members sort
+        before it, and it runs ONE visit that ends at ``group_ready_ts``:
+        without that bound a follower picked at any all-waiting moment, the
+        routine pre-flip idle or one 60 s recheck, runs to completion and
+        hands the rest of the night away. It is not picked when the group's
+        next panel is due before a hop and one frame of its own could fit,
+        which would be a hop for nothing, and on a fake clock a hot loop of
+        them. A group with no live panel that can still shoot tonight, or
+        none with a time, bounds nothing: the follower runs its course.
+
+        Lines here are flagged ``site_derived``: every one is said at a
+        moment when all the panels wait, and a meridian wait's edges are
+        crossings (6.9)."""
+        if target.calibration:
+            return _FollowerGate("ready")
+        member_of = self._group_of(target)
+        if member_of is not None:
+            gate = self._group_gate(member_of, remaining, gs_now)
+            if waiting:
+                return gate
+            if gate.kind == "wait" and gate.group is not None:
+                said = (member_of.id, gate.group.id)
+                if said not in self._group_gate_said:
+                    self._group_gate_said.add(said)
+                    bus.log("info", f"{member_of.name or member_of.id}: waits: "
+                                    f"{gate.reason}", "sequence",
+                            site_derived=True)
+            return gate
+        gid = getattr(target, "after_group", None)
+        if gid is not None and gid in self._group_runs:
+            gate = self._after_group_verdict(gid, remaining, gs_now)
+            if waiting:
+                return gate
+            if gate.kind == "wait" and target.id not in self._after_group_said:
+                self._after_group_said.add(target.id)
+                bus.log("info", f"{target.name}: waits: {gate.reason}",
+                        "sequence", site_derived=True)
+            return gate
+        if waiting:
+            # No gate holds it, so nothing can skip it; and its bound, a
+            # forward scan per live panel, is asked once it is ready.
+            return _FollowerGate("ready")
+        ti = index_of.get(id(target))
+        best: tuple[float, TargetGroup] | None = None
+        for fgid, last in self._group_last_index.items():
+            group = self._groups.get(fgid)
+            if group is None or ti is None or ti <= last:
+                continue
+            if not self._group_can_shoot_tonight(group, remaining, gs_now):
+                continue
+            ts = self._group_ready_ts(group, remaining, elig, gs_now, now)
+            if ts is not None and (best is None or ts < best[0]):
+                best = (ts, group)
+        if best is None:
+            return _FollowerGate("ready")
+        ts, group = best
+        mosaic = group.name or group.id
+        need = self._event_cost("hop", HOP_COST_S) + self._first_frame_s(target)
+        if ts - now < need:
+            return _FollowerGate(
+                "wait", wake_ts=ts, group=group,
+                reason=f"the {mosaic} mosaic's next panel is due before a "
+                       f"visit here could shoot a frame")
+        return _FollowerGate("bounded", deadline_ts=ts, group=group)
+
+    async def _visit_follower(self, ti: int, target: Target, bound: VisitBound,
+                              group: TargetGroup | None) -> bool:
+        """One bounded visit to a follower while its group waits (spec 1.6).
+        Returns True when it stays in ``remaining``: its visit ended at the
+        group's next panel, it keeps every frame it banked (the ledger and
+        ``_done`` count by step), and it is taken up again the next time
+        every panel waits, or runs its course once the group is done. False
+        when it ran its course: complete, or stopped the way any target's
+        steps stop (a pass that took nothing, every owed step set aside),
+        which today's removal after `_run_steps` has always meant.
+
+        The hop, the frames and every exception are a single target's: the
+        scheduler's own arms catch a StopTarget, a JumpTarget and a safety
+        abort exactly as for any target."""
+        mosaic = (group.name or group.id) if group is not None else "mosaic"
+        bus.log("info", f"{mosaic}: every panel waits; shooting {target.name} "
+                        f"until the next panel is due", "sequence",
+                site_derived=True)
+        self._visit_ended_by_deadline = False
+        await self._hop(ti, target)
+        await self._run_steps(ti, target, visit=bound)
+        if self._target_complete(ti, target):
+            if self.plan and self.plan.instructions:
+                await self._fire_target_complete(target)
+            return False
+        if self._visit_ended_by_deadline:
+            bus.log("info", f"{target.name}: back to the {mosaic} mosaic; its "
+                            f"frames are kept, and it goes on when the mosaic "
+                            f"next waits or is done", "sequence",
+                    site_derived=True)
+            return True
+        return False
+
+    # ---- the pier side a hop lands on (#189 S2, spec 5.6 step 5, 5.7) --------
+
+    async def _group_pier_check(self, target: Target, group: TargetGroup) -> bool:
+        """VERIFY, NEVER ASSUME, the pier side a member's hop landed on (spec
+        5.6 step 5, 5.7, D10). Raises `PanelDeferred` (``pier_side``) when it
+        contradicts the group's side; returns True when this hop measured
+        the side after the meridian, so the flip it would owe is done.
+
+        THE GROUP'S SIDE IS A MEASUREMENT, not a convention: the side its
+        first hop read tonight, and after the group's pier change the side
+        that change read. The flip-owed invariant keeps no convention for the
+        same reason (`_enforce_flip_owed`): a mount whose east and west read
+        the other way round must not be deferred on every hop.
+
+        - Before the meridian, not flipped: a hop must read the group's side.
+        - Past the meridian, not flipped: this hop IS the group's pier change.
+          A side that differs from the group's confirms it, and the group is
+          FLIPPED; the same side means the mount did not change sides, and
+          the panel is deferred rather than shot counterweight-up.
+        - Flipped: a hop past the meridian must read the side the group
+          changed to.
+
+        UNREADABLE IS NOT A VERDICT: nothing is deferred on it. A hop past the
+        meridian on an unreadable side still marks the group flipped, the
+        direction that keeps the one-change rule (no panel before the
+        meridian is visited again tonight), but it verifies nothing, so the
+        flip latch stays armed as the backstop. And it takes the pre-flip
+        side away (`_note_group_flipped`): kept, that side was the reference
+        every later hop past the meridian was held to, so a hop on the right
+        side was deferred until the panel was set aside, and one that had
+        stayed counterweight-up matched it and disarmed the latch.
+
+        ONLY A VERIFIED SIDE DISARMS THE LATCH. True is returned for a hop
+        whose side is the group's VERIFIED side past the meridian (the hop
+        that read it differ from a side measured before the meridian, a
+        later hop that reads it again, or the side a flip the latch measured
+        left). The first hop of a group already past the meridian, and the
+        first readable hop after an unreadable change, have nothing to be
+        compared with: a mount that kept its side past transit reads exactly
+        like one that changed it. Such a hop still marks the group flipped
+        and becomes the reference later hops are held to, but returns False,
+        so the latch `_arm_meridian_flip` set for a target acquired this
+        close past transit stays armed, as it does for a single target, and
+        `_enforce_flip_owed`, with no pre-flip sighting of the panel, has no
+        record to refuse on.
+
+        Off with the rule: flips off (the reachability verdict refuses a
+        side change then), no saved site, or a panel whose flip can be
+        skipped."""
+        if not (self.plan and self.plan.meridian_flip):
+            return False
+        run = self._group_runs.get(group.id)
+        if run is None:
+            return False
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            return False
+        lat, lon = latlon
+        h = schedule.hours_to_meridian_flip(target.ra_hours, lon, time.time())
+        side = await self._pier_side_now()
+        readable = side in ("east", "west")
+        if schedule.flip_can_be_skipped(target.dec_deg, lat,
+                                        side if readable else "unknown"):
+            return False
+        mosaic = group.name or group.id
+        label = run.members.get(target.id, target.name)
+        ref = self._group_side.get(group.id)
+        if h > 0.0:
+            if run.flipped or not readable:
+                return False
+            if ref is None:
+                # The group's first side read tonight, written at once, so a
+                # restart tonight holds its hops to it as well (#312).
+                self._group_side[group.id] = side
+                self._persist_group_pier(group)
+                return False
+            if side != ref:
+                raise PanelDeferred(
+                    "the mount chose the other pier side", kind="pier_side",
+                    last_error=f"it reads {side} after the goto, and the "
+                               f"{mosaic} mosaic is on the {ref} side")
+            return False
+        if run.flipped:
+            if not readable:
+                return False
+            if ref is not None and side != ref:
+                raise PanelDeferred(
+                    "the mount chose the other pier side", kind="pier_side",
+                    last_error=f"it reads {side} after the goto, and the "
+                               f"{mosaic} mosaic changed to the {ref} side")
+            self._group_side[group.id] = side
+            # Moves the record only when this is the first side read after
+            # a change that could not be read (#312).
+            self._persist_group_pier(group)
+            return group.id in self._group_side_verified
+        if readable and ref is not None and side == ref:
+            raise PanelDeferred(
+                "the mount stayed on its side past the meridian",
+                kind="pier_side",
+                last_error=f"it still reads {side} after the goto past the "
+                           f"meridian")
+        # VERIFIED only when a side measured before the meridian was there to
+        # differ from (see the docstring): readable, and a reference.
+        verified = readable and ref is not None
+        self._note_group_flipped(group, label, side if readable else None,
+                                 first=ref is None, verified=verified)
+        return verified
+
+    def _note_group_flipped(self, group: TargetGroup, label: str,
+                            side: str | None, *, first: bool = False,
+                            by_latch: bool = False,
+                            verified: bool = False) -> None:
+        """The group has made its one pier change tonight (spec 5.7): only
+        panels past the meridian are eligible from now on. Said once, in
+        words, FLAGGED: its moment is a crossing (6.9).
+
+        ``side`` is the side the change read, or None when it could not be
+        read. ``verified``: that side was compared with one measured before
+        the meridian and differs, or a flip the latch measured left it
+        (`_group_pier_check`). A verified side becomes the group's reference
+        even when the group was already marked flipped on a side nothing
+        verified: the measurement outranks the guess. An unreadable change
+        takes the old reference away, because the side before the meridian
+        is the one side the group is certainly not meant to be on after
+        it."""
+        run = self._group_runs.get(group.id)
+        if run is None:
+            return
+        readable = side in ("east", "west")
+        if verified and readable:
+            self._group_side[group.id] = side
+            self._group_side_verified.add(group.id)
+        if run.flipped:
+            # A side the latch verified on a group already flipped is still
+            # news to a restart tonight (#312).
+            self._persist_group_pier(group)
+            return
+        run.flipped = True
+        if readable:
+            self._group_side[group.id] = side
+        else:
+            self._group_side.pop(group.id, None)
+        # SAVED BEFORE IT IS SAID (#312): the change is what a crash in the
+        # next minute must not forget, and the line below is not a record.
+        self._persist_group_pier(group)
+        mosaic = group.name or group.id
+        if first:
+            what = (f"{label} is past the meridian, so the mosaic starts on "
+                    f"the side it takes after the meridian")
+        elif by_latch:
+            what = f"the flip of {label} changed the mosaic's pier side"
+        else:
+            what = f"the mosaic changed pier side at {label}"
+        bus.log("info", f"{mosaic}: {what}; from now on tonight only panels "
+                        f"past the meridian are shot, so it changes side once",
+                "sequence", site_derived=True)
+
+    def _persist_group_pier(self, group: TargetGroup) -> None:
+        """Record ``group``'s pier state in ``Session.group_pier`` with
+        tonight's night key, and save the session AT ONCE, when the state
+        has moved since it was last written (#312, S3 orchestrator ruling 4;
+        spec 5.7, 3.4). The set-aside record's pattern (`_persist_set_aside`),
+        for the same reason: a crash, a /recover or an auto-resume the same
+        night is a new run, and what this run measured lives only in its
+        memory until it is written. Called at the group's first side read
+        and at its pier change (`_group_pier_check`, `_note_group_flipped`),
+        and whenever either moves the side a later hop is held to.
+
+        A save that fails is said and never stops the night: the run goes on
+        with the state in memory, and only a restart tonight would miss it."""
+        if self._session is None:
+            return
+        run = self._group_runs.get(group.id)
+        if run is None:
+            return
+        side = self._group_side.get(group.id)
+        side = side if side in ("east", "west") else None
+        state = (bool(run.flipped), side,
+                 side is not None and group.id in self._group_side_verified)
+        if self._group_pier_saved.get(group.id) == state:
+            return
+        self._session.note_group_pier(group.id, night=night_key(time.time()),
+                                      flipped=state[0], side=state[1],
+                                      verified=state[2])
+        self._group_pier_saved[group.id] = state
+        try:
+            session_store.save_run_state(self._session)
+        except Exception as e:      # noqa: BLE001 - bookkeeping never ends a run
+            bus.log("warning", f"session save failed: {e}", "sequence")
+
+    def _restore_group_pier(self, group: TargetGroup, run: GroupRun) -> None:
+        """Put the pier record a run earlier tonight left for ``group`` back
+        into this run's state (#312, S3 orchestrator ruling 4; spec 5.7):
+        ``run.flipped``, the side its hops are held to, and whether that side
+        is verified, the one a hop may disarm its flip latch on.
+
+        WHY. Everything else about a group is recomputed from the ledger at a
+        restart, and a pier change cannot be: the ledger holds frames, not
+        sides. Recomputed, a restart after the change started the group
+        unflipped, and where a panel before the meridian had room again (one
+        whose window had opened, or that had cleared the mask, since the
+        change) the meridian rule let it through ahead of the panels past the
+        meridian: its hop took the group back across the pier, a second pier
+        change that night, and the next panel past the meridian made a
+        third. With the record, the group is on the side it measured, and a
+        panel before the meridian waits for its crossing, as it would have
+        in the run that changed side.
+
+        Said once when the group starts flipped, in words and flagged, as the
+        change itself was (6.9)."""
+        rec = self._group_pier_tonight.get(group.id)
+        if rec is None:
+            return
+        side = rec.get("side")
+        readable = side in ("east", "west")
+        run.flipped = bool(rec.get("flipped"))
+        if readable:
+            self._group_side[group.id] = side
+            if rec.get("verified"):
+                self._group_side_verified.add(group.id)
+        self._group_pier_saved[group.id] = (
+            run.flipped, side if readable else None,
+            readable and group.id in self._group_side_verified)
+        if run.flipped:
+            bus.log("info", f"{group.name or group.id}: it changed pier side "
+                            f"earlier tonight, so only panels past the "
+                            f"meridian are shot and it does not change side "
+                            f"again", "sequence", site_derived=True)
+
+    def _start_groups(self, plan: SequencePlan, remaining: list[Target]) -> None:
+        """Build each group's run state and gather its members in
+        ``remaining``, in order (spec 5.1, 5.2, 5.9).
+
+        A member set aside earlier tonight is set aside in its group from the
+        start, and one the ledger already holds complete is complete, so the
+        published counts and the pass rules see the group as it really is.
+        The first pass is ordered from the ledger (5.9): a resume has no
+        cursor to lose, because the half-visited panel is the least complete
+        one and comes first.
+
+        The pier state is the one thing the ledger cannot give back: a group
+        that changed pier side earlier tonight starts flipped, on the side it
+        measured, from the record `start` read (#312, `_restore_group_pier`).
+        """
+        self._group_runs = {}
+        self._group_side = {}
+        self._group_side_verified = set()
+        self._group_pier_saved = {}
+        self._meridian_wait = {}
+        self._group_last_index = {}
+        self._group_gates = {}
+        self._group_gate_said = set()
+        members: dict[str, list[tuple[int, Target]]] = {}
+        for ti, t in enumerate(plan.targets):
+            g = self._group_of(t)
+            if g is not None:
+                members.setdefault(g.id, []).append((ti, t))
+        # WHAT EACH GROUP WAITS FOR (#330): every member's ``after_group``,
+        # since one gated panel holds the whole group, in plan order. A gate
+        # on the member's own group, or on a group the plan does not carry,
+        # is no gate here: the start paths refuse both (`plan_identity_
+        # errors`), and a follower's gate on a missing group is ignored too.
+        for gid, mem in members.items():
+            waits = [t.after_group for _ti, t in mem
+                     if t.after_group is not None and t.after_group != gid
+                     and t.after_group in members]
+            if waits:
+                self._group_gates[gid] = tuple(dict.fromkeys(waits))
+        for gid, mem in members.items():
+            g = self._groups[gid]
+            run = GroupRun({t.id: self._panel_name(t) for _ti, t in mem},
+                           max_failed_visits=g.max_failed_visits)
+            for ti, t in mem:
+                if t.id in self._set_aside_targets:
+                    # With the kind its record carries (#534): a centring
+                    # set-aside read back may still expire tonight.
+                    kind = (self._set_aside_meta.get(t.id) or (None,))[0]
+                    run.set_aside_panel(t.id, self._set_aside_targets[t.id],
+                                        kind=kind or "panel")
+                elif self._target_complete(ti, t):
+                    run.completed.add(t.id)
+            self._group_runs[gid] = run
+            self._restore_group_pier(g, run)
+            self._group_last_index[gid] = max(ti for ti, _t in mem)
+            self._resort_group(g, remaining)
+            self._place_followers(g, remaining)
+
+    def _place_followers(self, group: TargetGroup,
+                         remaining: list[Target]) -> None:
+        """While a group has live members, its FOLLOWERS sort after every one
+        of them, whatever their window start (spec 1.6): the targets after
+        the group in plan order, moved behind its last member in
+        ``remaining`` in the order they already had. `schedule_order` sorts
+        by window start, so a follower whose window opens first would
+        otherwise sit ahead of the mosaic it follows.
+
+        The selection does not rest on this order: `_follower_gate` holds a
+        follower whenever a live panel is eligible, wherever it sits, so a
+        follower ahead of the group is still not chosen before it (run with
+        this call removed, the same night makes the same hops). The order
+        decides which of two waiters with the same wake time the wait
+        publishes: the first in ``remaining``."""
+        last = self._group_last_index.get(group.id)
+        if last is None:
+            return
+        at = max((k for k, t in enumerate(remaining)
+                  if self._group_of(t) is group), default=None)
+        if at is None:
+            return
+        index = {id(t): i for i, t in enumerate(self.plan.targets)} \
+            if self.plan else {}
+        ahead = [t for t in remaining[:at]
+                 if index.get(id(t), -1) > last and self._group_of(t) is not group]
+        if not ahead:
+            return
+        for t in ahead:
+            self._drop_from(remaining, t)
+        at = max(k for k, t in enumerate(remaining) if self._group_of(t) is group)
+        remaining[at + 1:at + 1] = ahead
+
+    def _skip_what_tonight_set_aside(self, remaining: list[Target]) -> None:
+        """Drop from the rotation what a record says was set aside tonight:
+        a whole target (a panel, or a target below its own floor), or a
+        target every one of whose owed steps is set aside, which would
+        otherwise be slewed to, centred and guided for no frame (spec 3.4,
+        6.7). Said once each, in words.
+
+        A CENTRING SET-ASIDE THAT MAY STILL EXPIRE STAYS (#534, H4
+        orchestrator ruling 2, amended by backlog WP-07 #564 2026-09-30):
+        its panel is tried once more tonight, 45 minutes after it was set
+        aside, time only, and a restart in between must neither retry it at
+        once nor forget it for the night. It stays in the rotation as a
+        waiter
+        (`_expire_or_wait`), and the line says so instead of "a restart
+        tonight does not retry it"."""
+        for t in list(remaining):
+            reason = self._set_aside_targets.get(t.id)
+            if reason is None and not t.calibration and \
+                    self._every_owed_step_set_aside(t):
+                reason = "every filter it still owes is set aside tonight"
+            if reason is None:
+                continue
+            g = self._group_of(t)
+            run = self._group_runs.get(g.id) if g is not None else None
+            if run is not None and run.is_live(t.id):
+                run.set_aside_panel(t.id, reason)
+            if run is not None and t.id in run.set_aside \
+                    and self._may_expire(t.id):
+                bus.log("info", f"{t.name}: set aside earlier tonight "
+                                f"({reason}); it is tried once more tonight "
+                                f"when its set-aside expires", "sequence")
+                continue
+            bus.log("info", f"{t.name}: set aside earlier tonight ({reason}); "
+                            f"a restart tonight does not retry it, the next "
+                            f"night does", "sequence")
+            if self.reporter:
+                self.reporter.mark_skipped(t)
+            self._drop_from(remaining, t)
+
+    def _every_owed_step_set_aside(self, target: Target) -> bool:
+        owed = [s for s in target.steps if not self._step_complete(target, s)]
+        return bool(owed) and all(f"{target.id}:{s.id}" in self._set_aside
+                                  for s in owed)
+
+    @staticmethod
+    def _drop_from(remaining: list[Target], target: Target) -> None:
+        """Remove ``target`` from ``remaining`` by identity, not equality."""
+        for k, cur in enumerate(remaining):
+            if cur is target:
+                del remaining[k]
+                return
+
+    def _drop_complete(self, remaining: list[Target], index_of: dict) -> None:
+        """Take every complete target out of ``remaining``, said once each,
+        in the words the selection always used (#537, the #374 class: a
+        run kept alive, idle, by a target that cannot contribute).
+
+        A resumed session (CONTINUE, auto-resume, a crash-resume) carries
+        its complete targets in ``remaining``, and the selection used to
+        drop one only once its gating called it ready. Until then it was a
+        waiter like any other: one before its window, or below its start
+        gate, kept the run alive after everything the session owed was
+        shot, only to be skipped as complete when it came up. On the
+        clocked simulator that was 19.5 idle minutes for a target 20
+        minutes before its hour-angle window, with the cooler running, the
+        mount stopped by the idle clock but not parked, and the wind-down
+        held back; a setting one held the run until it rose again.
+
+        So `_run_scheduled` asks this after `_start_groups` and every
+        selection asks it before any gating. A GROUP MEMBER is covered too:
+        `_start_groups` already counts a member the ledger holds complete
+        as complete in its group, and a live one found complete here is
+        told to its group (`GroupRun.note_complete`), so the pass rules
+        never count a panel that is not there.
+
+        THE EXCEPTION is a target owed its ``on_target_complete`` rules
+        (``_completion_owed``, #373, #481): the selection takes it up
+        whatever its gating says, and running those rules is its visit.
+
+        ASKED AT EVERY SELECTION, SO THE LEDGER IS NOT WALKED FOR IT: in
+        accepted mode a step's count walks every banked frame, and a
+        selection runs at every visit and every few seconds through a wait.
+        `_accepted_now` answers from the frames banked since it last did."""
+        acc = self._accepted_now() if remaining else None
+        for t in list(remaining):
+            if t.id in self._completion_owed:
+                continue
+            if not self._target_complete(index_of[id(t)], t, accepted=acc):
+                continue
+            bus.log("info", f"{t.name}: already complete — skipping",
+                    "sequence")
+            g = self._group_of(t)
+            run = self._group_runs.get(g.id) if g is not None else None
+            if run is not None and run.is_live(t.id):
+                run.note_complete(t.id)
+            self._drop_from(remaining, t)
+
+    def _accepted_now(self) -> dict[str, int] | None:
+        """The ledger's accepted frames per step, as
+        ``Session.accepted_by_step`` answers, in accepted mode; None in
+        attempts mode, where `_step_complete` reads ``_done`` and takes no
+        map.
+
+        KEPT UP TO DATE FROM THE TAIL (#537, the #516 budget). Within a run
+        the engine's session only grows: a frame is appended once with its
+        verdict (`_record_session_frame`), and a regrade is refused while
+        the session is active and works on the store's copy besides. So the
+        map taken once is extended by the frames banked since, and
+        `_drop_complete` asks it at every selection without a full walk of
+        the ledger each time (0.6 walks a banked frame on test_s7_ledger_
+        cost's 2000-frame night, over its budget). Walked afresh for a new
+        session object or a ledger that is somehow shorter than last seen."""
+        s, plan = self._session, self.plan
+        if s is None or plan is None or plan.count_mode != "accepted":
+            return None
+        frames = s.frames
+        seen = self._accepted_seen
+        if seen is None or seen[0] is not s or seen[1] > len(frames):
+            acc = s.accepted_by_step()
+        else:
+            acc = seen[2]
+            for f in frames[seen[1]:]:
+                if f.effective():
+                    acc[f.step_id] = acc.get(f.step_id, 0) + 1
+        self._accepted_seen = (s, len(frames), acc)
+        return acc
+
+    def _say_sun_windows_unresolved(self, plan: SequencePlan, frozen: dict,
+                                    site) -> None:
+        """Say once, at the run's start, which targets' DUSK windows were
+        not applied because no site is saved (#527), in words and with no
+        number: there is no site to take one from.
+
+        ``schedule.resolve_window`` answers None for a dusk or dawn
+        boundary with no saved site (H4-SCHED), where it used to answer the
+        Sun's crossing at the 0,0 placeholder: a DUSK flow on an unconfigured
+        rig waited almost twelve hours for dusk in the Gulf of Guinea, and
+        nothing said why. The gating reads a None start as not waiting on
+        the clock, so such a target starts now and, with a dawn stop that is
+        None too, has no dawn stop from its window (#559, open: nothing
+        else ends such a run at daylight); this line is the only place the
+        run says either. Frozen windows are read, not resolved
+        again, so it describes the windows the run is using."""
+        from ..site_gate import site_lat_lon
+        if site_lat_lon(site) is not None:
+            return
+        sun = ("dusk", "dawn")
+        hit = [t for t in plan.targets
+               if not t.calibration and t.schedule is not None
+               and (t.schedule.start_mode in sun
+                    or t.schedule.stop_mode in sun)
+               and id(t) in frozen]
+        if not hit:
+            return
+        names = [t.name for t in hit]
+        shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more"
+                                        if len(names) > 3 else "")
+        # Only what the run really does differently: a window that never
+        # had a dawn stop loses none, and one that starts now anyway has no
+        # dusk to miss.
+        does = []
+        if any(t.schedule.start_mode in sun for t in hit):
+            does.append("starts now rather than at dusk")
+        if any(t.schedule.stop_mode in sun for t in hit):
+            does.append("has no dawn stop from the window")
+        bus.log("warning",
+                f"no site is saved, so the DUSK window of {shown} was not "
+                f"applied: with no site there is no dusk or dawn to time it "
+                f"by, so the run {' and '.join(does)}. Save the site to have "
+                f"the window kept", "sequence")
+
+    def _group_cols(self, group: TargetGroup) -> int:
+        """The layout's column count (`panel_order`: the layout's, never one
+        counted from the live members): the geometry's, or failing that one
+        more than the largest column any member of the plan carries."""
+        widest = max((t.panel_col for t in (self.plan.targets if self.plan else [])
+                      if self._group_of(t) is group and t.panel_col is not None),
+                     default=-1) + 1
+        try:
+            cols = int((group.geometry or {}).get("cols") or 0)
+        except (TypeError, ValueError):
+            cols = 0
+        return max(cols, widest, 1)
+
+    def _order_snapshot(self, group: TargetGroup,
+                        members: list[Target]) -> OrderSnapshot:
+        """The pass's one snapshot for the order (spec 5.2): the fraction of
+        each member's frames banked, counted as `_step_complete` counts them,
+        and when each was last visited, from the ledger's frame times and
+        this run's visits. One ledger walk for the whole group."""
+        accepted = (self._session.accepted_by_step()
+                    if self.plan is not None and self.plan.count_mode == "accepted"
+                    and self._session is not None else None)
+        fraction: dict[str, float] = {}
+        for t in members:
+            total = sum(s.count for s in t.steps)
+            got = 0
+            for s in t.steps:
+                n = (accepted.get(s.id, 0) if accepted is not None
+                     else self._done.get(f"{t.id}:{s.id}", 0))
+                got += min(n, s.count)
+            fraction[t.id] = got / total if total > 0 else 1.0
+        ids = {t.id for t in members}
+        # Every member with a grid position, the complete ones included: the
+        # panel visited last may have completed on that visit, and a grid
+        # still goes on after its place (below).
+        placed = [t for t in (self.plan.targets if self.plan is not None else [])
+                  if self._group_of(t) is group
+                  and t.panel_row is not None and t.panel_col is not None]
+        wanted = ids | {t.id for t in placed}
+        ledger_last: dict[str, float] = {}
+        if self._session is not None:
+            for f in self._session.frames:
+                if (f.target_id in wanted
+                        and f.ts > ledger_last.get(f.target_id, -math.inf)):
+                    ledger_last[f.target_id] = f.ts
+        last = {tid: ts for tid, ts in ledger_last.items() if tid in ids}
+        for tid, ts in self._last_visit_ts.items():
+            if tid in ids:
+                last[tid] = max(last.get(tid, ts), ts)
+        # THE PANEL VISITED LAST, for ``grid``: this run's last visit, or,
+        # before this run has made one, the ledger's newest frame, read as
+        # ResumeArm reads it (`resume_arm._group_order`). ``_group_last_visited``
+        # starts empty on every run, so without the ledger a resumed grid
+        # began again at the top of the snake while the recovery had just
+        # re-centred on the panel after the one visited last: the two callers
+        # of the one order function disagreed (S2 review).
+        last_visited = self._group_last_visited.get(group.id)
+        if last_visited is None:
+            seen = [t for t in placed if t.id in ledger_last]
+            if seen:
+                newest = max(seen, key=lambda t: ledger_last[t.id])
+                last_visited = (newest.panel_row, newest.panel_col)
+        # Only ``setting_first`` reads when each panel sets, and it is a scan
+        # of the sky, so only it pays for one.
+        now = time.time()
+        setting = ({t.id: self._time_to_floor_s(t, now) for t in members}
+                   if group.order == "setting_first" else {})
+        return OrderSnapshot(fraction_banked=fraction, last_visit_ts=last,
+                             time_to_floor_s=setting,
+                             last_visited=last_visited)
+
+    def _time_to_floor_s(self, target: Target, now: float) -> float | None:
+        """Seconds until ``target`` sinks below the mount's altitude floor, its
+        horizon mask or a no-go wedge (`_altitude_limit_verdict`), or below
+        its own ``on_floor = advance`` floor, whichever comes first; None when
+        it does not within the scan, or within its frozen window, or when no
+        site is saved to say. For the ``setting_first`` order (spec 5.2): the
+        western panels set first, so they go first.
+
+        A forward scan in ``REACH_RECHECK_S`` steps (`group_rules
+        .forward_clear_ts`), at most ``SETTING_SCAN_S`` ahead. SITE-DERIVED
+        and used here only: the order it decides is logged in panel labels,
+        never with the times (6.9)."""
+        own = self._own_floor(target)
+        site = self.hub.site
+        stop = (self._frozen.get(id(target)) or (None, None))[1]
+        horizon = SETTING_SCAN_S if stop is None else max(
+            0.0, min(SETTING_SCAN_S, stop - now))
+
+        def sets(t: float) -> bool:
+            verdict = self._altitude_limit_verdict(target, projected=False,
+                                                   cfg=self._cfg, at=t)
+            if verdict is not None and verdict.kind == "floor":
+                return True
+            if own is not None:
+                alt = _frame_altitude(target, site, t)
+                return alt is not None and alt < own
+            return False
+
+        ts = forward_clear_ts(sets, now, horizon)
+        return None if ts is None else ts - now
+
+    def _resort_group(self, group: TargetGroup, remaining: list[Target]) -> None:
+        """Put ``group``'s members still in ``remaining`` together, at the
+        first one's place, in the group's order. Called as the run begins and
+        at every pass boundary (spec 5.1 item 3)."""
+        pos = [i for i, t in enumerate(remaining) if self._group_of(t) is group]
+        if not pos:
+            return
+        members = [remaining[i] for i in pos]
+        ordered = list(members)
+        if all(t.panel_row is not None and t.panel_col is not None
+               for t in members):
+            try:
+                ordered = order_panels(members, cols=self._group_cols(group),
+                                       policy=group.order,
+                                       snapshot=self._order_snapshot(group, members))
+            except ValueError as e:
+                bus.log("warning",
+                        f"{group.name or group.id}: the panels could not be put "
+                        f"in order ({e}); keeping the plan's order", "sequence")
+        for i in reversed(pos):
+            del remaining[i]
+        remaining[pos[0]:pos[0]] = ordered
+
+    def _requeue(self, group: TargetGroup, target: Target,
+                 remaining: list[Target]) -> None:
+        """THE REQUEUE (spec 5.1): move ``target`` behind every other member
+        of its group in ``remaining``, so the unvisited ones come first and
+        the pass goes on to them. The last live member stays where it was."""
+        at = next((k for k, t in enumerate(remaining) if t is target), None)
+        if at is None:
+            return
+        del remaining[at]
+        last = max((k for k, t in enumerate(remaining)
+                    if self._group_of(t) is group), default=None)
+        remaining.insert(at if last is None else last + 1, target)
+
+    def _persist_set_aside(self, target_id: str, reason: str, *,
+                           step_id: str | None = None,
+                           kind: str | None = None) -> None:
+        """Record a set-aside in ``Session.set_aside`` with tonight's night
+        key, and save the session AT ONCE (#208, spec 3.4): the record is
+        what a crash in the next minute leaves behind, and a restart tonight
+        reads it and does not retry. A save that fails is said and never
+        stops the night.
+
+        ``kind`` is what set it aside, in a word, and the record carries it
+        with the clock time (#534): a ``"centring"`` set-aside of a whole
+        panel is the one that expires, and its 45 minutes run from that
+        time. The run keeps both too (``_set_aside_meta``), so a run with no
+        session expires its set-asides as one with a session does."""
+        now = time.time()
+        if step_id is None:
+            self._set_aside_meta[target_id] = (kind, now)
+        if self._session is None:
+            return
+        self._session.note_set_aside(target_id, reason,
+                                     night=night_key(now),
+                                     step_id=step_id, kind=kind, ts=now)
+        try:
+            session_store.save_run_state(self._session)
+        except Exception as e:      # noqa: BLE001 - bookkeeping never ends a run
+            bus.log("warning", f"session save failed: {e}", "sequence")
+
+    def _set_panel_aside(self, group: TargetGroup, target: Target, reason: str,
+                         *, decided: bool = False, say: bool = True,
+                         kind: str = "panel") -> bool:
+        """A member is set aside for TONIGHT: recorded, saved, said with a
+        WARNING (an alert: it names the panel and the reason) and marked
+        skipped in the report. It is not done: the ledger still owes its
+        frames, and the next night takes it up (spec 6.7). ``decided``: the
+        engine decided it (its floor, every owed step set aside), so the
+        group's run state learns it here, with ``kind``; otherwise
+        `GroupRun` decided it, and its ``set_aside_kind`` says the kind.
+
+        Returns True when the set-aside MAY STILL EXPIRE (#534, H4
+        orchestrator ruling 2, amended by backlog WP-07 #564 2026-09-30): a
+        streak of centring failures, the panel's first set-aside of that
+        kind tonight. Such a panel is set aside FOR NOW, not for the night:
+        it stays in the rotation as a waiter, and is tried once more after
+        ``SET_ASIDE_EXPIRY_S``, time only (`_expire_or_wait`), so the caller
+        keeps it in ``remaining``. Its line says that, in words, and never
+        "a restart tonight does not retry it", which for it is not true.
+        Every other set-aside answers False and leaves as before."""
+        run = self._group_runs.get(group.id)
+        if decided and run is not None and run.is_live(target.id):
+            run.set_aside_panel(target.id, reason, kind=kind)
+        elif run is not None:
+            kind = run.set_aside_kind.get(target.id, kind)
+        self._persist_set_aside(target.id, reason, kind=kind)
+        expires = self._may_expire(target.id)
+        if say and expires:
+            bus.log("warning", f"{group.name or group.id}: {reason}; set aside "
+                               f"for now, not for the night: it is tried once "
+                               f"more tonight after "
+                               f"{SET_ASIDE_EXPIRY_S / 60:.0f} minutes",
+                    "sequence")
+        elif say:
+            bus.log("warning", f"{group.name or group.id}: {reason}; set aside "
+                               f"for tonight: a restart tonight does not retry "
+                               f"it, the next night does", "sequence")
+        # SKIPPED IS FOR THE NIGHT. A panel set aside for now may still be
+        # shot tonight, so the report marks it skipped only once it is set
+        # aside for the night: its second set-aside, the whole group's, or
+        # its window closing while it waited (`_expire_or_wait`,
+        # `_end_pending_expiries`), and once however it goes.
+        if self.reporter and not expires:
+            self.reporter.mark_skipped(target)
+        return expires
+
+    def _may_expire(self, target_id: str) -> bool:
+        """Can ``target_id``'s set-aside still expire tonight (#534)? A whole
+        panel's CENTRING set-aside with the time it was made, and no expiry
+        of that panel's set-aside yet tonight: at most one a night
+        (`group_rules.set_aside_expiry`)."""
+        kind, ts = self._set_aside_meta.get(target_id) or (None, None)
+        return (kind == CENTRING and ts is not None
+                and self._expiries_tonight.get(target_id, 0) == 0)
+
+    def _awaiting_expiry(self, run: GroupRun, target_id: str) -> bool:
+        """A member set aside FOR NOW (#534): set aside in ``run``, by a
+        set-aside that may still expire tonight. It is no live member, and
+        it is a waiter: the group is not done with it tonight."""
+        return target_id in run.set_aside and self._may_expire(target_id)
+
+    def _end_pending_expiries(self, group: TargetGroup,
+                              remaining: list[Target], reason: str, *,
+                              kind: str = "group") -> None:
+        """The whole group has been set aside for the night (a fixed camera
+        beyond tolerance, a guider that started on no panel under skip, a
+        pass that took nothing): a member whose centring set-aside was
+        waiting to expire (#534) is set aside for the night with it and
+        leaves the rotation, because what set the group aside is not what
+        its expiry waits out.
+
+        RECORDED WITH THE GROUP'S REASON AND KIND, like every other member,
+        so that "a restart tonight does not retry it", which the group's
+        line says, is true of this panel too: a restart reads a panel's
+        latest record (`start`), and the centring one alone would still
+        expire and take one panel of a mosaic set aside for the night up
+        again, alone. The centring record stays as history."""
+        run = self._group_runs.get(group.id)
+        if run is None:
+            return
+        for t in [t for t in remaining if self._group_of(t) is group]:
+            if not self._awaiting_expiry(run, t.id):
+                continue
+            self._persist_set_aside(t.id, reason, kind=kind)
+            if self.reporter:
+                self.reporter.mark_skipped(t)
+            self._drop_from(remaining, t)
+
+    def _expire_or_wait(self, group: TargetGroup, run: GroupRun,
+                        remaining: list[Target], frozen: dict, site,
+                        twilight: float, now: float,
+                        gs_now: dict[int, dict],
+                        elig: dict[str, _Eligibility]) -> list[Target]:
+        """Each of ``group``'s members set aside FOR NOW (#534, H4 orchestrator
+        ruling 2, amended by backlog WP-07 #564 2026-09-30), at this
+        selection: expired, and live again; or a waiter that wakes when it
+        expires; or, once its window has closed, set aside for the rest of
+        the night. Returns the last kind, for the caller to take out of
+        ``remaining``.
+
+        THE EXPIRY (`group_rules.set_aside_expiry`): ``SET_ASIDE_EXPIRY_S``
+        after it was set aside, TIME ONLY. The ruling as first built also
+        freed a panel early once the panel centre had risen a site-derived
+        altitude since, which even floored (#564) still told a viewer
+        whenever it fired that the site sat within about 28 degrees of the
+        equator; WP-07 dropped that branch outright (#564), so no altitude
+        is read or computed here any more, and this selection's line, like
+        the expiry's own, says nothing about the site at any latitude
+        (6.9). The first night of the mosaic on the rig lost every panel of
+        a 3x2 to one early hour behind an obstruction, although the target
+        transited three hours later.
+
+        A WAITER WITH AN ETA, NOT A SPIN (#534, the #374 class). The wake is
+        the sooner of the time half and the panel's frozen stop, so a group
+        whose only work is such a panel is waited on the scheduler's own
+        path: the long-wait park-hold and the idle clock apply, the run does
+        not end while the panel may still be tried, and nothing re-asks it
+        in between. A wake that is not ahead can only mean no expiry is
+        coming, and the panel is then set aside for the rest of the night
+        rather than asked again at once."""
+        gone: list[Target] = []
+        mosaic = group.name or group.id
+        for t in list(remaining):
+            if self._group_of(t) is not group \
+                    or not self._awaiting_expiry(run, t.id):
+                continue
+            _kind, ts = self._set_aside_meta[t.id]
+            label = run.members.get(t.id, t.name)
+            gs = schedule.gating_status(t, site, twilight, now,
+                                        window=frozen.get(id(t)))
+            gs_now[id(t)] = gs
+            if gs["state"] in ("window_closed", "never_rises"):
+                bus.log("info", f"{mosaic}: {label} stays set aside for the "
+                                f"rest of the night: its window closed before "
+                                f"its set-aside expired", "sequence")
+                gone.append(t)
+                continue
+            cause = set_aside_expiry(now=now, set_at=ts)
+            if cause is not None:
+                self._expire_set_aside(group, run, t, cause, remaining, now)
+                continue
+            wake = ts + SET_ASIDE_EXPIRY_S
+            stop = (frozen.get(id(t)) or (None, None))[1]
+            if stop is not None:
+                wake = min(wake, float(stop))
+            if wake <= now:
+                bus.log("info", f"{mosaic}: {label} stays set aside for the "
+                                f"rest of the night", "sequence")
+                gone.append(t)
+                continue
+            elig[t.id] = _Eligibility(
+                False, wake, None, "expiry",
+                f"{label} is set aside for now, and is tried once more when "
+                f"its set-aside expires")
+        for t in gone:
+            _kind, ts = self._set_aside_meta.get(t.id) or (None, None)
+            self._set_aside_meta[t.id] = ("final", ts)
+            if self.reporter:
+                self.reporter.mark_skipped(t)
+        return gone
+
+    def _expire_set_aside(self, group: TargetGroup, run: GroupRun,
+                          target: Target, cause: ExpiryCause,
+                          remaining: list[Target], now: float) -> None:
+        """``target``'s centring set-aside has expired (#534): it is live
+        again, with a clean slate (`GroupRun.expire_set_aside`), counted as
+        tonight's one expiry for it, its record marked expired in the
+        session and saved at once, so a restart tonight takes it up and
+        never expires it again, and said once, in words.
+
+        ``cause`` is always ``"time"`` (amended by backlog WP-07, #564,
+        2026-09-30): the ruling as first built could also expire a set-aside
+        by a site-derived altitude crossing, which needed the line
+        ``site_derived`` (as a meridian wait's end timestamps a transit); WP-
+        07 dropped that branch outright, so this line never carries it, and
+        `ExpiryCause` names no other value. The moment is the set-aside's
+        clock time plus a constant, which the site does not decide.
+
+        It goes to the front of the group's unvisited members, so the pass
+        in progress takes it up rather than closing on a visited panel
+        first; a pass boundary re-sorts the group anyway."""
+        run.expire_set_aside(target.id)
+        self._expiries_tonight[target.id] = (
+            self._expiries_tonight.get(target.id, 0) + 1)
+        self._set_aside_targets.pop(target.id, None)
+        self._set_aside_meta.pop(target.id, None)
+        mark = getattr(self._session, "note_set_aside_expired", None)
+        if mark is not None:
+            mark(target.id, night=night_key(now))
+            try:
+                session_store.save_run_state(self._session)
+            except Exception as e:  # noqa: BLE001 - bookkeeping never ends a run
+                bus.log("warning", f"session save failed: {e}", "sequence")
+        label = run.members.get(target.id, target.name)
+        why = f"{SET_ASIDE_EXPIRY_S / 60:.0f} minutes have passed"
+        bus.log("info", f"{group.name or group.id}: {label}'s set-aside has "
+                        f"expired ({why}); it is tried once more tonight, and "
+                        f"set aside for the rest of the night if it fails as "
+                        f"often again", "sequence")
+        at = next((k for k, t in enumerate(remaining) if t is target), None)
+        first_visited = next(
+            (k for k, t in enumerate(remaining)
+             if t is not target and self._group_of(t) is group
+             and t.id in run.visited), None)
+        if at is not None and first_visited is not None and first_visited < at:
+            del remaining[at]
+            remaining.insert(first_visited, target)
+
+    def _set_group_aside(self, group: TargetGroup, target: Target, reason: str,
+                         remaining: list[Target]) -> None:
+        """Every live member of ``group`` is set aside for TONIGHT, from
+        ``target``'s visit (`GroupSetAside`: a fixed camera beyond the angle
+        tolerance, spec 5.6 step 4). Each is recorded and saved as any panel
+        set aside is, and one warning alert says why, carrying the angles
+        ``reason`` names. The others leave ``remaining`` here; ``target``
+        leaves it through the scheduler, which drops the member a visit
+        returns False for.
+
+        The published state leaves any hold or pause the hop came out of, for
+        the reason the deferral path gives (#285)."""
+        run = self._group_runs[group.id]
+        mosaic = group.name or group.id
+        by_id = {t.id: t for t in (self.plan.targets if self.plan else [])}
+        for pid in run.set_aside_all(reason, kind="angle"):
+            t = by_id.get(pid)
+            if t is None:
+                continue
+            self._set_panel_aside(group, t, reason, say=False)
+            if t is not target:
+                self._drop_from(remaining, t)
+        self._end_pending_expiries(group, remaining, reason, kind="angle")
+        bus.log("warning", f"{mosaic}: {reason}; the mosaic is set aside for "
+                           f"tonight: a restart tonight does not retry it, the "
+                           f"next night does", "sequence")
+        self._set_state(state="running", hold=None,
+                        detail=f"{mosaic}: set aside for tonight")
+
+    def _group_member_gone(self, target: Target, group: TargetGroup | None,
+                           reason: str) -> None:
+        """A member left ``remaining`` by a route that is not a visit's
+        outcome: its frozen window closed (`WindowClosed`), a skip-drain, a
+        missed start, or a jump that consumed it (#288). Gone for this run,
+        and so no longer live in its group, but not recorded for the night,
+        since those causes never were. A plain ``StopTarget`` from a
+        member's visit no longer comes here: it defers the panel to the next
+        pass (#316, `_visit_panel`), because one failure must not drop a
+        panel for the rest of the night."""
+        if group is None:
+            return
+        run = self._group_runs.get(group.id)
+        if run is not None and run.is_live(target.id):
+            run.set_aside_panel(target.id, reason)
+
+    def _accepted_since(self, ledger_mark: int, target: Target) -> int:
+        """Frames of ``target`` the ledger has accepted since ``ledger_mark``
+        (its length before the visit): the visit's accepted frames, by the
+        grader's verdict in either count mode."""
+        if self._session is None:
+            return 0
+        return sum(1 for f in self._session.frames[ledger_mark:]
+                   if f.target_id == target.id and f.effective())
+
+    async def _fire_target_complete(self, target: Target) -> None:
+        """PRO-3: the ``on_target_complete`` rules, for a target that IS
+        complete (#157). Guarded: a no-op when there are no instructions.
+
+        THE SKY READINGS BELONG HERE TOO, and leaving them off was not a
+        neutral omission. A context built without them says `cloudy=None` —
+        "nobody can say" — at the one boundary where `target_complete` is ever
+        True. The evaluator honours that: a compound rule reading `all(target
+        complete, sky clear)` is indeterminate every time it is evaluated, so
+        it can never fire once, on any night, for any sky. The engine knew
+        the sky; it simply was not asked.
+
+        Filling them in costs one safety read at a target boundary and keeps
+        the tri-state honest in the other direction as well: a rig with no
+        monitor still reports None here, so nothing fires on a reading nobody
+        took."""
+        if not (self.plan and self.plan.instructions):
+            return
+        # Marked before the rules run, so the scheduler's JumpTarget arm
+        # knows a jump one of them fires came from here and owes nothing
+        # (``_completion_owed``, ``_completion_fired``).
+        self._completion_fired.add(target.id)
+        _now = time.time()
+        await self._run_instructions(
+            TriggerContext(now_ts=_now,
+                           target_complete=True,
+                           active_target=target.name,
+                           cloudy=self._clouds.cloudy(_now),
+                           unsafe=await self._unsafe_now(),
+                           panel_ready=self._panel_ready_now()),
+            target, None)
+
+    async def _visit_panel(self, ti: int, target: Target, group: TargetGroup,
+                           remaining: list[Target], *,
+                           deadline_ts: float | None = None) -> bool:
+        """One visit to a member, and what its outcome does (spec 5.1's
+        table). Returns True when the member was requeued and stays in
+        ``remaining``, False when it leaves it (complete, or set aside).
+
+        The hop is `_setup_target`, the frames `_run_steps` with the group's
+        `VisitBound` in rotate mode, or with none in sequential mode, where
+        the panel runs to completion on the same machinery. A deferral the
+        hop raises (`PanelDeferred`: centring, rotation, a guider that would
+        not start) is caught here, before anything broader can make it an
+        error, and a floor advance sets this panel aside and no other, its
+        frames counted first (#288).
+
+        A PLAIN StopTarget DEFERS THE PANEL (#316, S3 orchestrator ruling 5).
+        Raised anywhere in the visit, at the hop or in the frame loop (an
+        autofocus that failed under skip, a mount that will not track again,
+        a flip owed past its hold), it would drop a single target for the
+        run; a panel is deferred to the next pass instead, with the stop's
+        own sentence as the last error (`group_rules.TARGET_STOP`), and set
+        aside tonight only after ``max_failed_visits`` consecutive passes.
+        The frozen window closing (`WindowClosed`) goes on up: every panel
+        shares it, and the all-closed path ends them all.
+
+        A FLOOR OR KEEP-OUT REFUSAL AT THE MEMBER'S OWN HOP WAITS (#313, S3
+        orchestrator ruling 1): see `_hop_refused_by_a_limit`. Every other
+        `SlewRefused` (no site, the pier guard, the Sun), and any refusal
+        from the frame loop, is a SafetyAbort that goes on up, as do
+        NightQualityStop, a JumpTarget and a cancel, exactly as they would
+        for any target: a mosaic never downgrades a safety abort to a panel
+        skip.
+
+        A JUMPED VISIT IS COUNTED BEFORE THE JUMP GOES ON UP (#322): its
+        frames and its guide start reach the pass rules through
+        `GroupRun.note_visit`, and the panel is left unvisited, so a no-op
+        jump has the scheduler take it up again at once in the same pass
+        (the arm below says why).
+
+        ``on_target_complete`` fires once per panel, when it completes (#157).
+
+        ``deadline_ts`` is the panel's flip point when the meridian rule let
+        it through before the meridian (spec 5.7, 5.3): the visit ends at the
+        frame boundary before it, in either mode. It rides the bound only
+        when there is one, so a visit with none makes exactly the call it
+        always made. A visit the deadline ended before its first frame (the
+        hop outran the hop estimate) is NOT A VISIT to the pass rules: it is
+        requeued unvisited and counts toward nothing, because a pass whose
+        only visit shot nothing would otherwise read as a pass of no
+        exposures and set the whole mosaic aside for the night.
+        """
+        run = self._group_runs[group.id]
+        label = run.members.get(target.id, target.name)
+        self._group_current = target
+        self._visit_in_progress = target.id
+        self._visit_started_at = None
+        self._hop_guide_started = False
+        self._visit_ended_by_deadline = False
+        exposures_before = self._exposures_taken
+        ledger_mark = len(self._session.frames) if self._session is not None else 0
+        deferred: PanelDeferred | None = None
+        # Set once the hop returns. A limit refusal is a reach wait only when
+        # it came out of THIS hop (#313); from the frame loop (a flip's slew
+        # gate, the tracking recovery's) it ends the run as it always has.
+        hopped = False
+        refused: SlewRefused | None = None
+        try:
+            await self._hop(ti, target)
+            hopped = True
+            self._visit_started_at = time.time()
+            if group.mode == "rotate":
+                bound_kw: dict = {"passes": group.visit_passes,
+                                  "min_s": group.visit_min_s}
+                if deadline_ts is not None:
+                    bound_kw["deadline_ts"] = deadline_ts
+                await self._run_steps(ti, target, visit=VisitBound(**bound_kw))
+            elif deadline_ts is not None:
+                # SEQUENTIAL STILL STOPS AT ITS FLIP POINT (spec 5.1: "the
+                # order policy, set-aside, deferral and meridian rules still
+                # apply"): the panel runs to completion or to the deadline.
+                await self._run_steps(ti, target, visit=VisitBound(
+                    passes=None, deadline_ts=deadline_ts))
+            else:
+                await self._run_steps(ti, target)
+        except PanelDeferred as d:
+            deferred = d
+        except SlewRefused as e:
+            # BY KIND, NEVER BY TEXT (`SlewRefused.kind`): only the kinds time
+            # clears (`REACH_TAGS` "wait": the floor, the mask, a wedge, the
+            # zenith keep-out). No site stays unsaved and a flips-off pier
+            # change stays one, so both still end the run, as a kind-less
+            # refusal does.
+            if hopped or REACH_TAGS.get(e.kind) != "wait":
+                raise
+            refused = e
+        except GroupSetAside as e:
+            self._set_group_aside(group, target, str(e), remaining)
+            return False
+        except FloorStop:
+            # THE VISIT'S FRAMES STILL COUNT (#288). A panel that sinks below
+            # its own floor mid-visit has shot this pass all the same; left
+            # out, a pass whose only exposures were these read as a pass of
+            # none, and waited ``DEFER_WAIT_S`` or set the mosaic aside.
+            run.note_visit(target.id,
+                           exposures=self._exposures_taken - exposures_before,
+                           accepted=self._accepted_since(ledger_mark, target),
+                           guide_started=self._hop_guide_started)
+            self._set_panel_aside(group, target,
+                                  f"{label} sank below its own altitude floor",
+                                  decided=True, kind="floor")
+            return False
+        except JumpTarget:
+            # A JUMPED VISIT IS STILL A VISIT (#322), as a floor stop's is
+            # (#288): its exposures toward the pass boundary, its accepted
+            # frames into the reject rule's record, a guider start that
+            # worked toward the guide-start pass rule. Let through bare, a
+            # pass whose only frame came from it read as a pass of none and
+            # waited ``DEFER_WAIT_S`` for nothing, and a pass whose one good
+            # guider start was on it could read as the guider's fault.
+            # Counted, never decided (`GroupRun.note_visit`): the scheduler
+            # decides, by the jump. A consumed member leaves its group
+            # (`_group_member_gone`); a NO-OP JUMP (an unknown name, a run to
+            # the member itself) leaves it live AND UNVISITED, so the
+            # scheduler takes it up again at once, in the same pass, as a
+            # single target resumes from its counts. Marked visited, it
+            # would sit ahead of the unvisited members without the requeue a
+            # visit's outcome makes, and the next selection would close the
+            # pass on it with those members still unvisited.
+            run.note_visit(target.id,
+                           exposures=self._exposures_taken - exposures_before,
+                           accepted=self._accepted_since(ledger_mark, target),
+                           guide_started=self._hop_guide_started)
+            if self._target_complete(ti, target):
+                # A JUMPED VISIT CAN COMPLETE ITS PANEL (#373, S5
+                # orchestrator ruling 3). The frame that fired the jump is
+                # banked before the jump acts, so it can be the last one the
+                # panel owed. The group is told here, as a visit's outcome
+                # tells it: left live, the complete panel the scheduler then
+                # drops as "already complete" kept the group from ever
+                # being complete, the pass rules counted a panel with
+                # nothing to shoot, and a follower waiting for the mosaic
+                # read it as set aside and was skipped for the night. Its
+                # ``on_target_complete`` rules cannot run from this arm (a
+                # jump one fires would replace this one); the scheduler owes
+                # them (``_completion_owed``), after a no-op and, since S7,
+                # after a jump that consumed the panel too (#481, S7
+                # orchestrator ruling 2): complete is complete, whichever
+                # way the jump went.
+                run.note_complete(target.id)
+                n = len(target.steps)
+                bus.log("info", f"{group.name or group.id}: panel {label} "
+                                f"complete: {n} of {n} filters", "sequence")
+            raise
+        except WindowClosed:
+            # The frozen window, which every panel shares: no next pass to
+            # defer to, so it goes on up to the all-closed path (#316).
+            raise
+        except StopTarget as e:
+            # ONE FAILURE DOES NOT DROP A PANEL FOR THE RUN (#316, S3
+            # orchestrator ruling 5). Let through, the scheduler dropped it
+            # (`_group_member_gone`) for the rest of the night, unrecorded and
+            # never retried, over one failed sweep, while its neighbours shot
+            # on. Deferred, it is retried on the next pass, and the stop's own
+            # sentence is the last error the set-aside alert carries.
+            deferred = PanelDeferred("the visit stopped", kind=TARGET_STOP,
+                                     last_error=str(e))
+        finally:
+            self._visit_in_progress = None
+            # A REFUSED HOP IS NOT A VISIT TO THE ORDER EITHER (#326). The
+            # gate refused it before any slew, and `_hop_refused_by_a_limit`
+            # counts it as no visit; recorded here, the ``grid`` order went on
+            # from a panel the mount never reached, and ``least_complete``
+            # read a panel that was never shot as the one visited last.
+            if refused is None:
+                self._last_visit_ts[target.id] = time.time()
+                if (target.panel_row is not None
+                        and target.panel_col is not None):
+                    self._group_last_visited[group.id] = (target.panel_row,
+                                                          target.panel_col)
+        if refused is not None:
+            return self._hop_refused_by_a_limit(group, target, refused,
+                                                remaining)
+        if deferred is not None:
+            # A DEFERRAL ENDS THE HOLD OR PAUSE IT CAME OUT OF, in what the
+            # run publishes as well. The setup a cloud hold's release, a
+            # safety pause's resume or a roof reopen re-runs makes this
+            # panel's hop checks and guider start, and a deferral there
+            # raises out of the hold or the pause past the publish that would
+            # have ended it. `_set_state` merges, so the published ``hold:
+            # "clouds"`` then rode every later publish of the night, and a
+            # pause's ``state: "paused"`` the next hop (#285); the StopTarget
+            # arm of `_hold_for_clear` clears the hold for the same reason.
+            # The run goes on to the next panel.
+            self._set_state(state="running", hold=None,
+                            detail=f"{group.name or group.id}: {label} "
+                                   f"deferred to the next pass")
+        exposures = self._exposures_taken - exposures_before
+        accepted = self._accepted_since(ledger_mark, target)
+        complete = self._target_complete(ti, target)
+        if (deferred is None and not complete and exposures == 0
+                and self._visit_ended_by_deadline):
+            bus.log("info", f"{group.name or group.id}: {label} reached its "
+                            f"flip point before a frame could fit; not "
+                            f"counted as a visit", "sequence",
+                    site_derived=True)
+            self._requeue(group, target, remaining)
+            return True
+        act = run.visit_outcome(target.id, complete=complete,
+                                exposures=exposures, accepted=accepted,
+                                deferred=deferred,
+                                guide_started=self._hop_guide_started)
+        mosaic = group.name or group.id
+        if act.action == "remove":
+            n = len(target.steps)
+            bus.log("info", f"{mosaic}: panel {label} complete: {n} of {n} "
+                            f"filters", "sequence")
+            await self._fire_target_complete(target)
+            return False
+        if act.action == "set_aside":
+            # Kept in ``remaining`` only when the set-aside may still expire
+            # (#534): the panel is then a waiter until it does.
+            return self._set_panel_aside(group, target, act.reason)
+        if deferred is None and self._every_owed_step_set_aside(target):
+            # "A panel whose remaining steps are all set aside is set aside"
+            # (spec 5.3): its visits would shoot nothing tonight.
+            self._set_panel_aside(group, target,
+                                  f"every filter {label} still owes is set "
+                                  f"aside", decided=True, kind="steps")
+            return False
+        if deferred is not None or (exposures and not accepted):
+            # The visits worth a line: a deferral, and a visit whose every
+            # frame was rejected. A visit that banked frames says nothing
+            # beyond its hop's own "target" line.
+            bus.log("info", f"{mosaic}: {act.reason}", "sequence")
+        self._requeue(group, target, remaining)
+        return True
+
+    def _hop_refused_by_a_limit(self, group: TargetGroup, target: Target,
+                                refusal: SlewRefused,
+                                remaining: list[Target]) -> bool:
+        """A member's own hop was refused by a limit that time clears: its
+        pre-slew gate, after a hold that gate opened included, found it below
+        the floor, behind the mask, in a wedge or in the zenith keep-out
+        (#313, S3 orchestrator ruling 1). `_visit_panel`'s answer: True when
+        the panel stays in ``remaining``.
+
+        THE SAME VERDICT SELECTION CALLS A WAIT. The scheduler asks the gate's
+        own predicate before it picks a member (`_eligibility_now`) and waits
+        on a floor or keep-out verdict; the hop asks the gate again, and time
+        passes between the two: a cloud hold the gate's monitor half opens
+        can last up to its bound. Before this, the second answer was a
+        `SlewRefused`, a SafetyAbort, and a panel that had sunk into the mask
+        during a hold parked the rig and closed the roof on a night whose
+        other panels could still be shot.
+
+        So the panel is requeued as a REACH WAIT: behind the group's other
+        members, NOT VISITED and NOT A FAILURE (no `GroupRun.visit_outcome`),
+        because no frame was shot and nothing about the panel failed: the
+        limit is the sky's, and time clears it.
+        The next selection asks the verdict again and holds it as a waiter
+        on the ``REACH_RECHECK_S`` cadence until the limit clears, while the
+        run goes on with the other panels. It is set aside tonight only when
+        its window has closed, since then nothing it waits for can come: in
+        words, from the refusal's own words (`SlewRefused.words`), which
+        carry no altitude or azimuth (#19, #140)."""
+        run = self._group_runs[group.id]
+        label = run.members.get(target.id, target.name)
+        mosaic = group.name or group.id
+        stop_ts = (self._frozen.get(id(target)) or (None, None))[1]
+        if stop_ts is not None and time.time() >= stop_ts:
+            self._set_panel_aside(group, target,
+                                  f"{label} could not be reached before its "
+                                  f"window closed: {refusal.words}",
+                                  decided=True, kind="reach")
+            self._set_state(state="running", hold=None,
+                            detail=f"{mosaic}: {label} set aside for tonight")
+            return False
+        bus.log("info", f"{mosaic}: {label} cannot be slewed to now: "
+                        f"{refusal.words}; it waits for the limit to clear, "
+                        f"and the refused hop is not counted as a visit",
+                "sequence")
+        # The refusal can come out of a hold or a pause the gate opened; the
+        # published state leaves it, as a deferral's does (#285).
+        self._set_state(state="running", hold=None,
+                        detail=f"{mosaic}: {label} waits for the mount's "
+                               f"limits")
+        self._requeue(group, target, remaining)
+        return True
+
+    async def _close_group_pass(self, group: TargetGroup,
+                                remaining: list[Target]) -> None:
+        """The pass boundary (spec 5.1, 5.6 step 7), as `GroupRun.close_pass`
+        decides it: the guide-start pass rule first, then the failures it
+        held, then the group anti-spin.
+
+        - ``guiding_action``: every attempted panel (two at least) failed to
+          start guiding, so the guider is to blame, no panel's count moved,
+          and the rig's ``guiding_action`` decides as it does for a single
+          target: abort ends the run, skip sets the group aside tonight, and
+          anything else carries on with the panels unguided.
+        - ``set_aside_all``: a full pass took no exposures (the group
+          anti-spin, counting exposures, so a clouded pass of rejects does not
+          end a mosaic): every live member is set aside tonight.
+        - ``defer_wait``: a pass of deferrals and no exposures holds every
+          live member ``DEFER_WAIT_S`` (`GroupRun.defer_next_pass`), then the
+          next pass, re-sorted, begins behind that wait.
+        - ``next_pass`` starts the next pass, re-sorted. ``none_live``: every
+          member is complete or set aside; nothing is left to start.
+
+        NOTHING HERE WAITS (#304). S2 awaited the deferral wait right here,
+        so for its five minutes the scheduler could choose nothing, and a
+        ready follower that could have filled it waited it out with the
+        group. Now the wait is the group's state: `_eligibility_now` holds
+        each member as a waiter until it ends, and the scheduler's own wait
+        path waits on it, with the safety gate and the idle watch on every
+        tick, as it waits on any other waiter; under the default
+        ``whenWaiting`` a ready follower fills it in a visit that
+        `_group_ready_ts` bounds by its end (spec 1.6).
+        """
+        run = self._group_runs[group.id]
+        mosaic = group.name or group.id
+        end = run.close_pass()
+        by_id = {t.id: t for t in (self.plan.targets if self.plan else [])}
+        quiet = end.boundary == "set_aside_all"
+        # THE CENTRING MISSES THIS BOUNDARY COUNTED (#534): held since their
+        # visits, whose own lines said they would be counted here, and said
+        # here with the count, "(1 of 3 consecutive)", as a visit's line said
+        # it before they were held.
+        for _pid, reason in end.counted:
+            bus.log("info", f"{mosaic}: {reason}", "sequence")
+        for pid, reason in end.set_aside:
+            t = by_id.get(pid)
+            if t is None:
+                continue
+            # A centring set-aside that may still expire keeps its place: the
+            # panel waits for the expiry as a waiter (`_expire_or_wait`).
+            if not self._set_panel_aside(group, t, reason, say=not quiet):
+                self._drop_from(remaining, t)
+        if end.boundary == "set_aside_all":
+            self._end_pending_expiries(group, remaining, end.reason)
+            bus.log("warning", f"{mosaic}: {end.reason}: a restart tonight does "
+                               f"not retry it, the next night does", "sequence")
+            return
+        if end.boundary == "none_live":
+            return
+        if end.boundary == "guiding_action":
+            bus.log("warning", f"{mosaic}: {end.reason}", "sequence")
+            cfg = self._cfg
+            require_guiding = bool(cfg and cfg.escalation.require_guiding)
+            action = cfg.escalation.guiding_action if cfg else "warn"
+            if require_guiding and action == "abort":
+                why = (f"guiding required but it did not start on any panel of "
+                       f"{mosaic}")
+                bus.log("error", why, "sequence")
+                raise SafetyAbort(why)
+            if require_guiding and action == "skip":
+                reason = f"guiding did not start on any panel of {mosaic}"
+                for pid in run.set_aside_all(reason):
+                    t = by_id.get(pid)
+                    if t is not None:
+                        self._set_panel_aside(group, t, reason, say=False)
+                        self._drop_from(remaining, t)
+                self._end_pending_expiries(group, remaining, reason)
+                bus.log("warning", f"{mosaic}: {reason}; the mosaic is set "
+                                   f"aside for tonight: a restart tonight does "
+                                   f"not retry it, the next night does",
+                        "sequence")
+                return
+            self._group_unguided.add(group.id)
+            bus.log("warning", f"{mosaic}: continuing the panels unguided, as "
+                               f"this rig's guiding action says", "sequence")
+        elif end.boundary == "defer_wait":
+            bus.log("info", f"{mosaic}: {end.reason}", "sequence")
+            run.defer_next_pass(time.time())
+            self._publish_defer_wait(group)
+        elif end.boundary == "centring_hold":
+            # THE SKY OR THE GEOMETRY, NOT THE PANELS (#534, H4 orchestrator
+            # ruling 2): every panel tried failed to centre, so none is
+            # struck, and the group holds ``CENTRING_HOLD_RETRY_S`` through
+            # the deferral wait's own path (a waiter the scheduler waits on,
+            # the safety gate and the idle clock on every tick, a follower
+            # free to fill it), in its own words, and tries a new pass.
+            bus.log("info", f"{mosaic}: {end.reason}", "sequence")
+            run.defer_next_pass(time.time(), wait_s=CENTRING_HOLD_RETRY_S,
+                                why="centring")
+            self._publish_defer_wait(group)
+        run.start_pass()
+        self._resort_group(group, remaining)
 
     async def _wait_until(self, deadline_ts: float) -> None:
         """Bounded, cancel- and pause-responsive wait until ``deadline_ts`` (or a
         re-evaluation tick).
 
-        The caller stops tracking (park-hold) before a long wait, so the mount is
-        idle here rather than tracking a finished target into the pier. We also run
-        the safety gate every tick — a wait used to be a safety blind spot (the gate
-        only ran per frame/slew), so rain during a multi-hour inter-target wait
-        produced no reaction. No frames flow while waiting, so clear the watchdog's
-        progress-expected flag (else it pages a false 'no progress' UNSAFE).
+        THE MOUNT IS WATCHED HERE TOO (#165). Nothing else looks at it while the
+        scheduler waits: the floor and meridian checks run per frame, the safety
+        gate below has no target, and sun_watch stands down while a sequence
+        runs. The caller used to stop tracking only before a wait it had
+        computed to be long, which an eta-0 wait and a constraint wait never
+        are - each is re-evaluated every 5 s - so the last target was tracked
+        with nothing watching until its window closed. Every tick now asks
+        `_idle_hold_tick` whether the target the mount was left tracking should
+        be let go: after ``WAIT_TEARDOWN_S`` of idle, at once if it has sunk
+        below the mount's floor or risen into its zenith keep-out, or at once
+        if it reaches its flip point before the next tick. It stops tracking
+        ONCE per idle spell (a latch the next `_setup_target` re-opens). The
+        stop is only DECIDED here: the stop itself, its read-back and any
+        retry are made by `_idle_stop_retry` on its own task and clock, never
+        from this loop, so a dead mount link or a wedged guider cannot stretch
+        the tick below (#189 A3, #216); the next target's setup re-slews and
+        restores tracking, as it always has after a long wait.
+
+        We also run the safety gate every tick — a wait used to be a safety
+        blind spot (the gate only ran per frame/slew), so rain during a
+        multi-hour inter-target wait produced no reaction. No frames flow while
+        waiting, so clear the watchdog's progress-expected flag (else it pages a
+        false 'no progress' UNSAFE).
 
         AT LEAST ONE PASS, ALWAYS — a do-while, not a while. This used to test
         the deadline first, so a deadline already in the PAST returned instantly
@@ -2009,8 +5911,16 @@ class SequenceEngine:
             await self._checkpoint()
             # weather still matters while idle between targets — pause/abort on a
             # sustained unsafe reading at the poll cadence (target=None: no floor
-            # check, nothing to re-acquire yet).
+            # check, nothing to re-acquire yet). A cloudy sky here opens NO hold
+            # (#221): with no target, a hold has nothing to watch and nothing to
+            # point at, and on a stopped mount every check it took was a streak
+            # read as cloud, so it could only end at its bound. It is said and
+            # published instead (`_note_hold_deferred`), this loop goes on with
+            # the idle park-hold below, and the next target's pre-slew gate opens
+            # a hold for that target if the sky is still shut.
             await self._safety_gate(context="frame")
+            # ...and the mount, which the gate above cannot see (#165).
+            await self._idle_hold_tick()
             # A FLOOR ON THE SLEEP, not an early return. Returning here on a
             # non-positive remainder is what let a past deadline spin: the
             # caller's next re-evaluation lands on the same anchor immediately.
@@ -2023,15 +5933,577 @@ class SequenceEngine:
             if remaining <= 0:
                 return
 
-    def _target_complete(self, ti: int, target: Target) -> bool:
+    async def _idle_hold_tick(self, *,
+                              ahead_s: float = SCHEDULE_WAIT_STEP_S) -> None:
+        """One idle-clock look at the mount (#165), taken on every
+        `_wait_until` tick: stop tracking the target the mount was left on when
+        `_idle_hold_reason` has a reason, once per idle spell.
+
+        ``ahead_s`` is how long the caller goes before its next look, which
+        is how far ahead the flip point is looked for: one
+        ``SCHEDULE_WAIT_STEP_S`` from `_wait_until`, one
+        ``COOLER_PROBE_EVERY_S`` from the run-start cooling wait and the
+        cooler gate after a cloud hold (`_cool_and_wait`, #202, #236), one
+        ``_CAMERA_LANE_POLL_S`` from the camera-lane wait at run start
+        (`_await_camera_lane`, #236).
+
+        NOTHING ACQUIRED, NOTHING TO STOP. Before the first `_setup_target` the
+        mount is wherever the operator left it (or wherever `start`'s
+        ``tracking`` says a caller left it), and the scheduler's planned-wait
+        rule still covers a long first wait exactly as it always has.
+
+        NO STOP IS MADE FROM HERE, not the first and not a retry (#189 A3,
+        #216). On a dead link the first attempt is a guider stop bounded by
+        ``GUIDE_OP_TIMEOUT_S``, then a ``set_tracking(False)`` and a read-back
+        that each hang for ``MOUNT_QUERY_TIMEOUT_S``, and every retry is the
+        last two again. Made from this tick, they held the safety gate above
+        it for three minutes once per spell and for a minute at every retry
+        after that, instead of letting it run every ``SCHEDULE_WAIT_STEP_S``:
+        weather unwatched on exactly the night something is already wrong.
+        `_idle_park_hold` decides the stop and closes the latch; the stop
+        itself is `_idle_stop_retry`'s, on its own task and its own clock, and
+        this tick never awaits it.
+        """
+        target = self._tracked_target
+        if target is None or not self._idle_hold_open:
+            return
+        why = await self._idle_hold_reason(target, ahead_s=ahead_s)
+        if why:
+            await self._idle_park_hold(why)
+
+    async def _idle_hold_reason(self, target: Target, *,
+                                ahead_s: float = SCHEDULE_WAIT_STEP_S
+                                ) -> str | None:
+        """Why the mount should stop tracking ``target`` now, in words, or None.
+
+        Three checks, each driven by the HAZARD rather than by the wait the
+        scheduler happens to be in ("safety rides value paths"):
+
+        1. The idle clock: ``WAIT_TEARDOWN_S`` since the frame loop last looked
+           (the last science exposure, or the end of the target's setup).
+        2. The floor and the ceiling: the target's LIVE altitude, not a
+           projection, is below the mount's effective floor (min_alt, horizon
+           profile, no-go wedge) or above its zenith keep-out (max_alt, where a
+           mount can reach its own tripod, #101). Asked of
+           `_altitude_limit_verdict`, the predicate the slew gate raises on, so
+           the two cannot disagree about where either end is. Both ends,
+           because the predicate has both: a target rising into the keep-out
+           while the mount tracks it unwatched is the floor's hazard upside
+           down, and acting on "floor" alone left it to the idle clock.
+        3. The flip point, reached before the caller's next look, ``ahead_s``
+           from now (`_idle_flip_due`).
+
+        With no saved site, 2 and 3 cannot be answered and do nothing; 1 needs
+        no sky, so it still bounds the idle spell.
+
+        WORDS ONLY in the answer, no altitude and no minutes. Nothing about the
+        decision depends on the number, and a number in a log line at 3 a.m. is
+        one more thing to misread as a measurement of something else.
+        """
+        now = time.time()
+        if now - self._idle_since >= WAIT_TEARDOWN_S:
+            return (f"{target.name}: nothing has been shot for a while and the "
+                    f"mount is still tracking it")
+        verdict = self._altitude_limit_verdict(target, projected=False,
+                                               cfg=self._cfg)
+        kind = verdict[0] if verdict is not None else None
+        if kind == "floor":
+            return f"{target.name} has sunk below the mount's altitude floor"
+        if kind == "ceiling":
+            return f"{target.name} has risen into the mount's zenith keep-out"
+        if await self._idle_flip_due(target, now, ahead_s=ahead_s):
+            return f"{target.name} has reached its meridian flip point"
+        return None
+
+    async def _idle_flip_due(self, target: Target, now: float, *,
+                             ahead_s: float = SCHEDULE_WAIT_STEP_S) -> bool:
+        """Does ``target`` reach the plan's flip point before the next tick?
+
+        The flip point is the PLAN's lead before transit (`_plan_flip_lead_s`).
+        Idle, nothing takes the flip, and a GEM tracking on past it runs into
+        its own limit and then counterweight-up toward the pier. NOT
+        `_flip_lead_s`: that one drops to zero once a mount has shown it cannot
+        flip early (#127) or a target's early flip changed nothing, which is
+        right for when to ATTEMPT a flip and wrong here - the AM5 that taught
+        it stops tracking minutes before transit, and letting an idle mount go
+        costs nothing. "Before the next tick" is one ``SCHEDULE_WAIT_STEP_S``
+        ahead, the longest `_wait_until` sleeps between two looks. A cloud
+        hold asks the same question with its own ``ahead_s`` (#203): one
+        ``HOLD_WATCH_S`` between two looks, or a whole exposure before one.
+        So do the run-start cooling wait and the cooler gate after a hold:
+        one ``COOLER_PROBE_EVERY_S`` (#202, #236, `_cool_and_wait`); and the
+        camera-lane wait: one ``_CAMERA_LANE_POLL_S`` (#236).
+
+        A target more than the lead plus the arm margin past transit was
+        acquired on the far side and owes nothing: `schedule.flip_should_arm`,
+        the boundary the flip latch itself arms on. The one exemption is
+        `schedule.flip_can_be_skipped`, asked as `_maybe_meridian_flip` asks it.
+        An unreadable pier side reads as a GEM, so a mount that cannot say
+        stops tracking; for an idle mount that costs nothing.
+
+        No saved site: False. Hour angle at the 0,0 default is the Gulf of
+        Guinea's, and the idle clock bounds this mount without it.
+        """
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            return False
+        lat, lon = latlon
+        try:
+            ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon, now)
+        except Exception:                # noqa: BLE001 - cannot say is not due
+            return False
+        lead_s = self._plan_flip_lead_s()
+        if not schedule.flip_should_arm(ttf_h, lead_s / 60.0):
+            return False
+        if ttf_h * 3600.0 - lead_s > ahead_s:
+            return False
+        side = "unknown"
+        tel = self.hub.devices.get("telescope")
+        if tel is not None:
+            try:
+                side = (await asyncio.wait_for(tel.pier_side(),
+                                               MOUNT_QUERY_TIMEOUT_S)).value
+            except asyncio.CancelledError:
+                raise
+            except Exception:            # noqa: BLE001 - unreadable reads as a GEM
+                side = "unknown"
+        return not schedule.flip_can_be_skipped(target.dec_deg, lat, side)
+
+    async def _idle_park_hold(self, why: str) -> None:
+        """Decide to stop tracking the idle mount, once per idle spell, and
+        hand the stop to its own task.
+
+        The latch closes here and `_setup_target` re-opens it, so the idle
+        clock, the floor, the ceiling, the flip point and the scheduler's
+        planned-wait rule all spend the same single park-hold. ``why`` leads
+        the log line.
+
+        NOTHING HERE TALKS TO A DEVICE (#216). The stop, its read-back and
+        every retry are `_idle_stop_retry`'s, on a task of its own, and this
+        returns as soon as that task exists. The first attempt used to be
+        made inline, on the caller's tick or in the scheduler: a guider stop
+        bounded by ``GUIDE_OP_TIMEOUT_S`` and two mount calls bounded by
+        ``MOUNT_QUERY_TIMEOUT_S``, so on a dead link the wait loop's safety
+        gate was not called for three minutes, once per spell, while the rig
+        sat idle and tracking. Measured on the clocked simulator before this
+        change: 185 s between two looks from the wait tick, 180 s from the
+        planned-wait rule (test_idle_stop_retry_clock). Both callers come
+        through here, so both are covered.
+
+        Whichever rule decided the stop, and whether or not anything was
+        acquired: the planned-wait rule stops a mount on a run's first wait
+        too, and the task asks for that stop as it asks for any other.
+
+        SAID ONCE PER IDLE SPELL: this line here, and the task's warning if
+        the stop goes unconfirmed. The retries log nothing. The /api/logs ring
+        holds 200 lines, and a line per retry would roll it over in a few
+        hours of a dead link.
+
+        A task still alive when a stop is decided is left to ask for it. Every
+        path that re-opens the latch cancels the task first, so none is alive
+        here in practice; were one alive, it is already asking for this same
+        stop, and a second task would only ask twice.
+        """
+        if not self._idle_hold_open:
+            return
+        self._idle_hold_open = False
+        # STOPPED AS OF THE DECISION (#248), not when the task's first
+        # attempt lands: the task may not have had its first turn when the
+        # next target's pre-slew gate opens a cloud hold, and that hold must
+        # already read the mount as elsewhere.
+        self._note_mount_stopped()
+        bus.log("info", f"{why} — stopping tracking until the next target "
+                        f"is set up", "sequence")
+        if self._idle_stop_task is None or self._idle_stop_task.done():
+            self._idle_stop_first_made = False
+            self._idle_stop_task = asyncio.create_task(
+                self._idle_stop_retry(self._idle_stop_epoch),
+                name="idle-stop-retry")
+
+    async def _idle_stop_retry(self, fence: int) -> None:
+        """Stop the idle mount, read the stop back, and ask again on this
+        task's own clock until a read-back confirms it or the spell ends.
+
+        THE FIRST ATTEMPT IS THIS TASK'S FIRST ACT (#216), made the moment
+        `_idle_park_hold` decides the stop: `_park_hold`, which stops the
+        guider and then the mount. On a dead link that costs up to
+        ``GUIDE_OP_TIMEOUT_S`` plus two ``MOUNT_QUERY_TIMEOUT_S``, and all of
+        it is this task's time: `_wait_until` goes on running the safety gate
+        every ``SCHEDULE_WAIT_STEP_S`` beside it.
+
+        A STOP IS READ BACK, NOT ASSUMED. `_park_hold` swallows every failure,
+        and must, because the safety pause relies on it never raising; so a
+        ``set_tracking(False)`` that timed out used to close the latch on a
+        stop that never happened, and the mount tracked on, unwatched, for the
+        rest of the wait. Tracking is read back through `_tracking_now`, and
+        anything but a confirmed False is asked again: True, the mount says it
+        is still tracking; None, nobody can say - a dead serial link, the #133
+        class, which is exactly the link whose stop cannot be taken on trust.
+        The warning that promises the retry is said once per spell
+        (``_idle_hold_retrying``). No telescope at all, nothing to read back:
+        a camera-only run still passes through the planned-wait rule, and
+        "cannot confirm" would be noise about a mount that is not there.
+
+        AT MOST ONCE PER ``IDLE_STOP_RETRY_S`` after that, and never from the
+        wait loop (#189 A3). The sleep comes before each ask, so the gap
+        between two asks is the constant plus however long the last one hung,
+        never less.
+
+        ONLY THE STOP, NEVER THE GUIDER, ON A RETRY (#210). The first attempt
+        stopped the guider. A second stop on an idle native guider used to
+        re-stamp its saved PPEC window as if it had just been fed, so a retry
+        through `_park_hold` would have mis-phased the model the next target
+        restores, once a minute for as long as the link stayed dead. The
+        native guider now persists the window only on the stop that ends a
+        live session (#210), and the retry still stops nothing but the mount:
+        a guider that keeps no such rule, or loses it, is not asked sixty
+        times an hour.
+
+        NOTHING RE-DECIDED. The stop was decided when it was first asked for;
+        this does not consult `_idle_hold_reason` or the tracked target, so a
+        stop the scheduler's planned-wait rule decided a moment after the last
+        exposure, or on a run's first wait with nothing acquired, is asked
+        again a minute later, not when the idle clock would have found a
+        reason of its own.
+
+        CANCELLED, AND AWAITED, by everything that ends the spell by turning
+        tracking back on (`_cancel_idle_stop_retry`): `_setup_target` before
+        it restores tracking, and the three other things that do, because a
+        cloud hold opened by a setup's pre-slew gate reaches them before that
+        setup's own cancel: the hold's re-point (`_hold_repoint`), a resume
+        (`_enforce_tracking`), and a flip (`_maybe_meridian_flip`). And by the
+        next `start`, whose run is about to use the mount.
+
+        COMPLETED, NOT CANCELLED, by the end of a run that does not park and
+        by `abort` (`_finish_idle_stop`, #247): nothing turns tracking back
+        on after them, so a stop cancelled there was a stop abandoned. A
+        first attempt in flight is let finish, and a stop still unconfirmed
+        is asked once more and read back; the retries themselves end there.
+        An ending that parks cancels it without waiting, fenced, because the
+        park is the stop (`_hand_idle_stop_to_the_park`, #270).
+
+        A CANCEL CAN LAND IN THE GUIDER'S STOP. The native guider's stop
+        used to swallow it: it awaited its own loop task under
+        ``suppress(CancelledError)``, which also ate a cancel of whoever was
+        awaiting it (#235, since fixed at the source: it raises the caller's
+        cancel once its loop is dead). Swallowed there, this task ran on into
+        the retry loop, and the canceller, which awaits it, waited for as
+        long as the mount refused the stop. So the first attempt is still
+        followed by `_reraise_swallowed_cancel`, for a guider whose stop keeps
+        that shape (#252). Only there: the mount calls go through
+        drivers that let a cancel through (the serial link joins an exchange
+        on the wire and re-raises), and the guider's stop is the one call this
+        task makes that has been known to eat one.
+
+        FENCED BY A PARK (#270, S2 orchestrator ruling 1). An ending that
+        parks cancels this task and does not wait for it
+        (`_hand_idle_stop_to_the_park`); the cancel can be eaten in the
+        guider's stop as above, and the `_park_hold` that stop returns into
+        would then send ``set_tracking(False)`` to a mount already parking.
+        ``fence`` is ``_idle_stop_epoch`` as it stood when the task was
+        made, and it holds every stop this task makes: after the hand-over
+        none is sent.
+        """
+        await self._park_hold(fence=fence)
+        _reraise_swallowed_cancel()
+        if "telescope" not in self.hub.devices:
+            return
+        tracking = await self._tracking_now()
+        # The first attempt is over: a run ending from here on need not wait
+        # for this task, only end its retries (`_finish_idle_stop`).
+        self._idle_stop_first_made = True
+        if tracking is False:
+            return
+        if not self._idle_hold_retrying:
+            self._idle_hold_retrying = True
+            detail = ("it still reports tracking" if tracking
+                      else "its tracking state cannot be read")
+            bus.log("warning",
+                    f"the mount did not confirm the stop ({detail}) — "
+                    f"asking again about once a minute until it does",
+                    "sequence")
+        await self._idle_stop_asks_again(fence)
+
+    async def _idle_stop_asks_again(self, fence: int) -> None:
+        """The idle stop's retries: sleep ``IDLE_STOP_RETRY_S``, ask the
+        mount to stop tracking, read it back, until a read-back confirms it.
+        The tail of `_idle_stop_retry`, and all of the task a refused or cut
+        roof close re-arms (`_rearm_idle_stop`, #345, #393), which has no
+        first attempt to make: the close made its own stop. Only the mount is
+        asked, never the guider (#210), and every ask is held by
+        ``fence``."""
+        while True:
+            await asyncio.sleep(IDLE_STOP_RETRY_S)
+            await self._stop_tracking_quietly(fence=fence)
+            if await self._tracking_now() is False:
+                return
+
+    def _rearm_idle_stop(self) -> None:
+        """Start the idle stop's retries again after an auto-reopen roof
+        close that ended them was refused (#345), or was cut short by an
+        Abort or any other exception (#393, `_close_for_reopen`).
+
+        The close ends the idle stop's task before it parks (#306,
+        `_close_for_reopen`), so that no retry can write into its park. When
+        the close is then refused, which on the flaky link that left the
+        stop unconfirmed is the likely outcome, it falls back to the
+        open-sky pause, and nothing asked for the stop again: the retry rode
+        the task's lifetime, which the close had ended, while the hazard it
+        was asking about, a mount perhaps still tracking with nothing
+        watching it, went on for the whole pause. The plain pause path never
+        ends the task, so the two roads into the same pause differed.
+
+        So the retries are started again at once, before the pause, on a
+        task of their own as before, on a FRESH EPOCH: no ask of the task
+        the close ended can pass the new fence, and a later parking ending
+        fences the new task as it would have fenced the old
+        (`_hand_idle_stop_to_the_park`). It makes no first attempt of its
+        own (``_idle_stop_first_made`` is set, so a run's end does not wait
+        for one, `_finish_idle_stop`): its first ask comes
+        ``IDLE_STOP_RETRY_S`` from now, after the pause's own stop, and
+        like every retry it asks the mount alone. Nothing is said: the
+        spell's warning was said when the stop first went unconfirmed.
+        Everything that ends a spell ends this task as it ended the first
+        (`_cancel_idle_stop_retry`, `_finish_idle_stop`). With no telescope
+        there is nothing to ask or read back, as `_idle_stop_retry` finds,
+        and nothing is started: its loop would ask a missing mount for ever."""
+        if "telescope" not in self.hub.devices:
+            return
+        self._idle_stop_epoch += 1
+        self._idle_stop_first_made = True
+        self._idle_stop_task = asyncio.create_task(
+            self._idle_stop_asks_again(self._idle_stop_epoch),
+            name="idle-stop-retry")
+
+    async def _cancel_idle_stop_retry(self) -> bool:
+        """Stop `_idle_stop_retry`, if one is running, and wait until it has.
+        Returns whether one was still running, so a caller that may give the
+        mount back without stopping it can start the retries again
+        (`_close_for_reopen`, #345).
+
+        Cancel alone is not enough: the caller is about to talk to the mount,
+        and "cancelled" only means the retry stops at its next await. Awaited
+        through ``gather(return_exceptions=True)`` so the retry's own
+        CancelledError is collected, not mistaken for the caller being
+        cancelled, while a cancel of the caller still propagates. Never
+        raises otherwise."""
+        task, self._idle_stop_task = self._idle_stop_task, None
+        if task is None:
+            return False
+        alive = not task.done()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return alive
+
+    @staticmethod
+    def _ending_parks(plan: SequencePlan, ending: BaseException | None) -> bool:
+        """Does the teardown that follows this ending of the spell park the
+        mount? Asked by `_run` (#270, S2 orchestrator ruling 1), before the
+        handler that tears down has run, so it mirrors `_run`'s handlers:
+
+        * no exception (every target done, a dawn cutoff, a cooling skip) and
+          a quality stop: the plan's ``park_when_done``;
+        * a SafetyAbort, `SlewRefused` included: always, the §1.9-G park;
+        * an operator's Abort (a cancel) or a failure: never, `_safe_stop`
+          touches no mount.
+        """
+        if ending is None or isinstance(ending, NightQualityStop):
+            return bool(plan.park_when_done)
+        return isinstance(ending, SafetyAbort)
+
+    def _hand_idle_stop_to_the_park(self) -> None:
+        """Hand the stop the idle watch decided to the park an ending is
+        about to make (#270, S2 orchestrator ruling 1, spec "Still waiting
+        on the owner" item 19, which refines #247, H3 orchestrator ruling 5).
+
+        The park fulfils the stop: a parked mount does not track. So the
+        stop's task is not waited for. It is cancelled and not awaited, so a
+        guider stop that hangs cannot hold the park and the roof close
+        behind it. Its fence is moved on first (``_idle_stop_epoch``), so if
+        that guider stop eats the cancel (the #235 shape) and returns once
+        the park has begun, the ``set_tracking(False)`` it goes on to make is
+        never sent: a stop command interleaved with a park is a second
+        writer to a mount that has one owner at a time. The wind-down reaps
+        the task, bounded, after the park and the close
+        (``_idle_stop_handed``). A park that fails is a wind-down that did
+        not park, and the wind-down asks the mount to stop itself then. An
+        Abort that lands in the park does not cut it, since nothing else will
+        make this stop now (#305, `_wind_down_park_and_close`).
+
+        Synchronous: nothing here awaits, so nothing here delays the park;
+        the wind-down's one wait before it is its short one for the guider
+        to stop (#311).
+        """
+        task, self._idle_stop_task = self._idle_stop_task, None
+        if task is None or task.done():
+            return
+        self._idle_stop_epoch += 1
+        task.cancel()
+        self._idle_stop_handed = task
+
+    async def _finish_idle_stop(self, *, already_ending: bool = False) -> None:
+        """Complete the stop the idle watch decided, as a run ends (#247; H3
+        orchestrator ruling 5, spec "Still waiting on the owner" item 14).
+
+        A RUN'S END NEVER ABANDONS A DECIDED STOP. The end of the run used to
+        cancel the idle-stop task, as `_setup_target` does. But a setup
+        cancels because it is about to turn tracking on itself; nothing does
+        after a run. A first attempt still stopping the guider when the run
+        ended never reached ``set_tracking(False)``, and with
+        ``park_when_done`` off, or a wind-down that does not park, the mount
+        was left tracking a target nobody watches, the hazard the stop was
+        decided for. So, for every ending that does not park (#270, S2
+        orchestrator ruling 1, refining #247, H3 orchestrator ruling 5's
+        "whether or not the wind-down parks": an ending that parks hands the
+        stop to its park and waits for none of this,
+        `_hand_idle_stop_to_the_park`), and for `abort`:
+
+        1. A first attempt in flight is let finish: up to
+           ``IDLE_STOP_FINISH_S``, the sum of the bounds it awaits. A task
+           that confirms the stop in that time is done, and nothing more is
+           asked.
+        2. What is left is ended: the retry loop, asleep between two asks, or
+           a first attempt wedged past the bound. Waited for up to one
+           ``MOUNT_QUERY_TIMEOUT_S``, the longest a mount call already on the
+           wire takes to land before the link lets the cancel through. A
+           guider stop that eats cancels (the #235 shape) is not waited on
+           for ever; if it does return later, its `_park_hold` may still send
+           the mount the same stop, and `_reraise_swallowed_cancel` then ends
+           the task before it reads back or asks again.
+        3. The mount is asked once more, bounded (`_stop_tracking_quietly`),
+           and read back (`_tracking_now`). A stop still unconfirmed, or a
+           first attempt that had not finished, is said once, in words; nothing
+           asks after the run.
+
+        SHIELDED FROM THE CANCEL. An operator's Abort cancels the run task,
+        and that cancel can land here, in the run's own end, while the first
+        attempt is still stopping the guider. The attempt is never awaited
+        directly, only polled, so a cancel reaches the poll's sleep and never
+        the task making the stop; it is noted, the work goes on, and it is
+        raised again when the stop is done, as the unsafe wind-down does with
+        the park. Polled rather than awaited for a second reason: each poll is
+        a sleep the clocked simulator can advance.
+
+        NEVER RAISED OVER AN ENDING ALREADY UNDER WAY (``already_ending``).
+        `_run` calls this from a ``finally``, so it can be completing the stop
+        while an exception is already ending the run: a quality stop whose
+        plan does not park, or a failure. (A SafetyAbort parks, so it no
+        longer comes here at all, #270.) A CancelledError raised here would
+        replace that exception, and the run would take the Abort's teardown
+        (`_safe_stop`) in its place, with the report saying "aborted" about
+        a night that ended for another reason. So the noted cancel is dropped
+        then, and the exception already under way ends the run with its own
+        teardown; the Abort asked for the run to stop, and it is stopping.
+        A cancel that is itself the ending is under way already, and an
+        `abort` never cancels twice.
+
+        NOTHING OUTLIVES IT. However this returns or raises, the task is
+        cancelled if it is still alive and ``_idle_stop_task`` is cleared, so
+        no ask interleaves with the wind-down's park.
+        """
+        task = self._idle_stop_task
+        if task is None or task.done():
+            self._idle_stop_task = None
+            return
+        cancelled = False
+        try:
+            cancelled = await self._complete_idle_stop(task)
+        finally:
+            if not task.done():
+                task.cancel()
+            if self._idle_stop_task is task:
+                self._idle_stop_task = None
+        if cancelled and not already_ending:
+            raise asyncio.CancelledError()
+
+    async def _complete_idle_stop(self, task: asyncio.Task) -> bool:
+        """The work of `_finish_idle_stop`, steps 1 to 3. Returns whether a
+        cancel landed on it, which the caller raises again once it is done,
+        unless an exception is already ending the run."""
+        cancelled = False
+
+        async def _poll_until(done, bound_s: float) -> bool:
+            # True once ``done()``, False at the bound. A cancel is noted and
+            # the poll goes on: this is the shield.
+            nonlocal cancelled
+            deadline = time.time() + bound_s
+            while not done():
+                if time.time() >= deadline:
+                    return False
+                try:
+                    await asyncio.sleep(IDLE_STOP_FINISH_POLL_S)
+                except asyncio.CancelledError:
+                    cancelled = True
+            return True
+
+        finished = await _poll_until(
+            lambda: task.done() or self._idle_stop_first_made,
+            IDLE_STOP_FINISH_S)
+        if task.done() and not task.cancelled() and task.exception() is None:
+            # It returned: the read-back confirmed the stop, or there is no
+            # mount to confirm it on.
+            return cancelled
+        task.cancel()
+        await _poll_until(task.done, MOUNT_QUERY_TIMEOUT_S)
+        if "telescope" not in self.hub.devices:
+            return cancelled
+        try:
+            await self._stop_tracking_quietly()
+        except asyncio.CancelledError:
+            cancelled = True
+        tracking: bool | None = None
+        try:
+            tracking = await self._tracking_now()
+        except asyncio.CancelledError:
+            cancelled = True
+        if tracking is False and finished:
+            return cancelled
+        said = ("the idle stop had not finished its first attempt when the "
+                "run ended, so the mount was asked to stop once more"
+                if not finished else
+                "the run is ending and the mount had not confirmed the idle "
+                "stop, so it was asked once more")
+        if tracking is False:
+            said += ", and it has stopped tracking"
+        else:
+            detail = ("it still reports tracking" if tracking
+                      else "its tracking state cannot be read")
+            said += (f", and it has still not confirmed it ({detail}); "
+                     f"nothing will ask it again, so it may still be tracking")
+        bus.log("warning", said, "sequence")
+        return cancelled
+
+    def _target_complete(self, ti: int, target: Target, *,
+                         accepted: dict[str, int] | None = None) -> bool:
+        """Has this target got everything it asked for? ONE definition of done
+        (#158): every step answers `_step_complete`, the question the cycle
+        driver asks.
+
+        This used to compare the SUM of `_done` with the sum of the counts,
+        while `_step_complete` asks the ledger in accepted mode. The two
+        agreed only by construction (a regrade is refused during a run and
+        `_done` is re-seeded at start), and the sum let one step over its
+        count hide another step under it. Either way the scheduler skipped,
+        as "already complete", a target the session still owed.
+
+        ``total > 0`` STAYS. A target with no steps, or only zero-count steps,
+        has never been "already complete", and ``all()`` over nothing is True.
+
+        ``accepted`` is `_step_complete`'s: the ledger's accepted map taken
+        once by a caller that asks about many targets (`_drop_complete`, at
+        every selection), so the ledger is not walked again for every step.
+        """
         total = sum(s.count for s in target.steps)
-        done = sum(self._done.get(f"{target.id}:{s.id}", 0) for s in target.steps)
-        return total > 0 and done >= total
+        return total > 0 and all(self._step_complete(target, s,
+                                                     accepted=accepted)
+                                 for s in target.steps)
 
     def _enforce_stop_boundary(self, target: Target) -> None:
-        """Raise :class:`StopTarget` when the target's FROZEN stop boundary has
-        passed (§1.6). ``resolve_window`` folds ``stop_mode`` (dawn/time) AND
-        ``max_run_min`` into a single frozen ``stop_ts`` at run start; the scheduler
+        """Raise :class:`WindowClosed`, a :class:`StopTarget`, when the
+        target's FROZEN stop boundary has passed (§1.6). ``resolve_window``
+        folds ``stop_mode`` (dawn/time) AND ``max_run_min`` into a single
+        frozen ``stop_ts`` at run start; the scheduler
         only consulted it when SELECTING a target, so once a target was running the
         stop boundary was dead — the engine shot every remaining frame straight
         through dawn into daylight. Re-checking it here, at each frame boundary,
@@ -2048,7 +6520,7 @@ class SequenceEngine:
             # what stopped this target. Without this the last target's cut is
             # indistinguishable from a target that simply finished.
             self._window_closed = True
-            raise StopTarget("observing window closed (stop time / max run / dawn)")
+            raise WindowClosed("observing window closed (stop time / max run / dawn)")
 
     async def _enforce_altitude_floor(self, target: Target) -> None:
         """Set the target aside when it sinks back below its own altitude floor.
@@ -2062,14 +6534,21 @@ class SequenceEngine:
         offered a dial to choose it. The sentence and the dial were the whole
         implementation.
 
-        SUSPENDED, NOT DONE, and that distinction is the feature. ``StopTarget``
-        is caught by the scheduler, which logs a skip, calls
-        ``reporter.mark_skipped`` and drops the target from TONIGHT's rotation -
-        while writing nothing to the frame ledger. So tomorrow's resume seeds
-        ``_done`` from the frames that actually exist, finds this target short,
-        and shoots the remainder. A target marked complete would never come
-        back; a target left in rotation would be re-selected and re-refused by
-        its own start gate, forever.
+        SUSPENDED, NOT DONE, and that distinction is the feature. The
+        ``FloorStop`` is caught by the scheduler, which logs a skip, calls
+        ``reporter.mark_skipped`` and drops the target from the rotation -
+        while writing nothing to the frame ledger. It also records the
+        set-aside in ``Session.set_aside`` with tonight's night key (#208,
+        #189 S2, spec 3.4, 6.7), so a restart or an auto-resume later TONIGHT
+        reads the record and does not take the target up again, and the next
+        night's run, reading no record for its night, seeds ``_done`` from the
+        frames that exist, finds the target short and shoots the remainder
+        once it is back above its floor. Until S2 the drop lived in the
+        scheduler's list alone, a same-night restart took the target straight
+        back, and this line said "the rest of this run" for that reason. A
+        target marked complete would never come back; a target left in
+        rotation would be re-selected and re-refused by its own start gate,
+        forever.
 
         Gated on ``on_floor == "advance"`` because "keep" is what every saved
         plan has always done, and dropping a target mid-run is not a change to
@@ -2078,14 +6557,21 @@ class SequenceEngine:
         Fires ``on_altitude_floor`` BEFORE raising, so a wired NOTIFY reaches
         the operator with the run still on this target - the alert names the
         target that sank, not the one that replaced it.
+
+        WORDS ONLY, in the line and in the reason (#233; H3 orchestrator
+        ruling 1, spec "Still waiting on the owner" item 10). Both reach a
+        viewer: the line through ``/api/logs``, the reason as the scheduler's
+        "skipped" line. They used to say "sank to 12.4°, below its 30°
+        floor", and a named target's altitude at a logged time is a circle of
+        latitudes on the Earth (#140, the #19 class). Nothing here depends on
+        the number, and no surface a site-derived capability gates carries
+        this line, so the altitude is dropped rather than moved; the floor
+        goes with it, because a threshold next to a crossing is the same
+        altitude read the other way. WHEN the line is logged is still the
+        crossing, and that channel is #166's, whatever the words.
         """
-        sched = getattr(target, "schedule", None)
-        if sched is None or getattr(sched, "on_floor", "keep") != "advance":
-            return
-        floor = float(getattr(sched, "min_altitude_deg", 0.0) or 0.0)
-        if floor <= 0 or target.calibration:
-            # A floor of 0 is "no gate" everywhere else in this model, and a
-            # calibration target has no sky position to sink.
+        floor = self._own_floor(target)
+        if floor is None:
             return
         now = time.time()
         alt = _frame_altitude(target, self.hub.site, now)
@@ -2096,9 +6582,11 @@ class SequenceEngine:
             # blind cloud probe release a hold.
             return
         bus.log("warn",
-                f"{target.name}: sank to {alt:.1f}°, below its {floor:.0f}° "
-                f"floor — setting it aside for tonight (its frames stay in the "
-                f"ledger, so it resumes tomorrow)", "sequence")
+                f"{target.name}: sank below its own altitude floor — setting "
+                f"it aside for the rest of this run and the rest of tonight "
+                f"(its frames stay owed in the ledger; a restart tonight does "
+                f"not retry it; the next night does, once it is back above its "
+                f"floor)", "sequence")
         if self.plan and self.plan.instructions:
             await self._run_instructions(
                 TriggerContext(now_ts=now,
@@ -2108,8 +6596,28 @@ class SequenceEngine:
                                unsafe=await self._unsafe_now(),
                                panel_ready=self._panel_ready_now()),
                 target, None)
-        raise StopTarget(
-            f"sank to {alt:.1f}°, below its {floor:.0f}° altitude floor")
+        raise FloorStop("sank below its own altitude floor")
+
+    @staticmethod
+    def _own_floor(target: Target) -> float | None:
+        """The altitude below which ``target``'s own schedule sets it aside,
+        or None when it sets nothing aside. One reading of the rule, for the
+        frame loop's set-aside (`_enforce_altitude_floor`) and for a cloud
+        hold deciding whether a slew there is worth making
+        (`_hold_repoint_refusal`), so the two cannot disagree about it.
+
+        Gated on ``on_floor == "advance"``: "keep" shoots on down through the
+        floor, as every saved plan always has. A floor of 0 is "no gate"
+        everywhere else in this model, and a calibration target has no sky
+        position to sink.
+        """
+        sched = getattr(target, "schedule", None)
+        if sched is None or getattr(sched, "on_floor", "keep") != "advance":
+            return None
+        floor = float(getattr(sched, "min_altitude_deg", 0.0) or 0.0)
+        if floor <= 0 or target.calibration:
+            return None
+        return floor
 
     def _missed_start(self, target: Target, now: float, site: dict,
                       twilight_deg: float) -> bool:
@@ -2158,18 +6666,559 @@ class SequenceEngine:
             return False
         return was_open
 
+    @staticmethod
+    def _centring_kwargs(target) -> dict:
+        """The target's own centring settings as `goto_and_center` keywords,
+        each ONLY WHEN IT IS SET (#170).
+
+        The hub has always taken ``tolerance_deg`` and ``max_attempts``, and
+        the engine never passed either, so every target centred to the hub's
+        1.2 arcmin and 3 attempts whatever its SLEW card said. Unset, this is
+        empty and the call is exactly the one every saved plan has always
+        made. One helper, for EVERY centring of a target: its setup, the
+        tracking-refusal recovery's re-centre, the re-centre after an
+        unguided initial sweep, and the two guiding re-centres (a lost star,
+        a walking field). Two copies of the conversion are two places for a
+        unit to go wrong. The Target stores arcminutes because that is what
+        people type; the hub works in degrees.
+
+        ALL FIVE, NOT JUST SETUP. The re-centre after the initial sweep runs
+        on any target whose sweep outlasted ``RECENTRE_AFTER_UNGUIDED_S``
+        (60 s; a sweep on this rig takes minutes), and it is the LAST
+        centring before the first frame. Left on the hub's defaults it
+        overrode the setup's centring with 1.2 arcmin and 3 attempts, so the
+        tolerance a SLEW card set was honoured by a centring whose result
+        nothing kept, and #170 stayed broken for every autofocus-first target.
+
+        ``getattr``: the recoveries are reachable with duck-typed targets, and
+        a target that has no such field has not set it.
+        """
+        kw: dict = {}
+        tol = getattr(target, "center_tolerance_arcmin", None)
+        if tol is not None:
+            kw["tolerance_deg"] = tol / 60.0
+        tries = getattr(target, "center_attempts", None)
+        if tries is not None:
+            kw["max_attempts"] = tries
+        return kw
+
+    @staticmethod
+    def _group_hop_checks(target: Target, group: TargetGroup, result: dict,
+                          miss: str | None, *, angle_ok: bool = False) -> None:
+        """A member's hop is checked against what its centring measured, and
+        raises `PanelDeferred` when the panel cannot be laid now but may be on
+        the next pass (#189 S2, spec 5.6 step 4):
+
+        - it did not centre, and the group requires it (``require_centred``,
+          the default): a panel shot off its tile leaves a hole;
+        - with ``rotate`` set, the hub's ``rotation_skipped`` (a connected
+          rotator tried and failed) or ``rotation_unavailable`` (no rotator
+          answered, I-15): the frame would be at whatever angle the camera
+          sits, and a mosaic's panels must share one.
+
+        EXCEPT a stopped-short rotation whose hop measured the camera within
+        the group's angle tolerance (``angle_ok``, `_hop_angle_within`): the
+        panels share the angle the tolerance allows, which is all the mosaic
+        needs, and ``_group_angle_check`` then verifies it. The rotator on
+        astrotown moved -5.7 deg with the camera not following (2026-09-28,
+        #526), and each such visit was a strike toward setting the panel
+        aside (#534).
+
+        Each deferral says why in words, with what the call reported, which
+        the set-aside alert repeats after ``max_failed_visits`` of them.
+
+        A SOLVE THAT COULD NOT RUN IS NO CENTRING FAILURE (#532, contract 1 of
+        the H4 orchestrator): the centring result carries ``solve_transient``
+        when the hub's solve failed for a reason that clears by itself (the
+        solve frame's file held open by another process, WinError 32), and
+        the deferral is then kind ``solve_transient``, which counts toward
+        neither the panel's failures nor the centring pass rule
+        (`GroupRun.visit_outcome`). On the rig a copy taken off the machine
+        at the wrong moment struck a panel toward its set-aside. The hub
+        sets the key beside whichever failure the held file cost, a centring
+        solve's (``centered`` false) or the rotate loop's
+        (``rotation_skipped``, the rotate's own solve frame), and either way
+        the failure was this computer's, so either way the deferral is the
+        one that does not count. The key cannot say which solve it was, so a
+        rotate that could not solve beside a centring that failed for the
+        sky reads as transient too: the side to err on, since a transient
+        is only waited out, never counted."""
+        transient = bool(result.get("solve_transient"))
+        if miss is not None and group.require_centred:
+            if transient:
+                raise PanelDeferred("the centring solve could not run",
+                                    kind=SOLVE_TRANSIENT, last_error=miss)
+            raise PanelDeferred("centring failed", kind=CENTRING,
+                                last_error=miss)
+        if group.rotate and target.rotation_deg is not None:
+            if result.get("rotation_skipped") and transient:
+                raise PanelDeferred("the rotator's solve could not run, so "
+                                    "the camera was not turned to the "
+                                    "mosaic's angle", kind=SOLVE_TRANSIENT)
+            if result.get("rotation_skipped") and not angle_ok:
+                raise PanelDeferred("the rotator did not turn the camera to "
+                                    "the mosaic's angle", kind="rotation")
+            if result.get("rotation_unavailable"):
+                raise PanelDeferred("no rotator was there to turn the camera "
+                                    "to the mosaic's angle", kind="rotation")
+
+    @staticmethod
+    def _hop_angle_within(group: TargetGroup, rec: dict | None,
+                          since: float) -> bool:
+        """True when this hop measured the camera within the group's angle
+        tolerance of its layout angle, mod 180: a record exposed at or after
+        ``since`` (the hop start), judged by `angle_check.angle_verdict`, the
+        rule ``_group_angle_check`` applies. A group with no finite angle or
+        tolerance has nothing to judge by, and a missing, stale or unreadable
+        record is no evidence: each answers False, so the deferral stands."""
+        pa, tol = group.pa_deg, group.angle_tolerance_deg
+        if (pa is None or tol is None or not math.isfinite(pa)
+                or not math.isfinite(tol) or tol < 0):
+            return False
+        try:
+            return angle_verdict(rec, planned_pa_deg=pa, since_ts=since,
+                                 tolerance_deg=tol).kind == "ok"
+        except ValueError:
+            return False
+
+    # ---- the angle: the check on every hop (U-04) and ruling 9's lock ------
+    #
+    # A mosaic's panels share the group's layout angle, and every hop checks
+    # the angle its centring measured against it (spec 5.6 step 4, 6.12). A
+    # target with no angle of its own locks the angle of its first shot and
+    # is then commanded to it, or checked against it, like a planned one
+    # (Revision 2, ruling 9). Both read the one measurement there is,
+    # ``hub.last_sky_angle``, through `angle_check`'s freshness rule: exposed
+    # at or after the acquisition began.
+
+    def _sky_angle_now(self) -> dict | None:
+        """A copy of the hub's newest sky-angle record, or None. A copy, so
+        a later solve replacing the hub's cannot change what a caller holds."""
+        rec = getattr(self.hub, "last_sky_angle", None)
+        return dict(rec) if isinstance(rec, dict) else None
+
+    @staticmethod
+    def _rotator_untouched(commanded: float | None,
+                           result: dict | None) -> bool:
+        """Whether a slew left the rotator where it was (#526 part 3), from
+        the angle it commanded and the goto's answer.
+
+        UNTOUCHED: no angle was commanded, so nothing asked the rotator
+        anything; or one was, and there was no connected rotator to turn
+        (``rotation_unavailable``); or the rotate shortcut answered it
+        (U-06, ``rotation["shortcut"]``), which reads the rotator at the
+        angle, unmoved since its calibration, and moves nothing. That last is
+        the 2026-09-28 23:03 re-slew, whose angle came back 2.7 degrees off
+        with the rotator at the same mechanical angle. TOUCHED: the rotate
+        loop ran, which moves it, or tried and failed
+        (``rotation_skipped``), which may have; or an angle was commanded and
+        the answer does not say what became of it, which is not evidence it
+        stayed put. A touched slew's angle is the loop's, not the train's."""
+        if commanded is None:
+            return True
+        if not isinstance(result, dict) or result.get("rotation_skipped"):
+            return False
+        if result.get("rotation_unavailable"):
+            return True
+        rotation = result.get("rotation")
+        return isinstance(rotation, dict) and rotation.get("shortcut") is True
+
+    def _record_sky_angle(self, target, *, since: float,
+                          commanded: float | None, result: dict | None,
+                          rec: dict | None) -> None:
+        """Record in the session report the sky angle a slew's own solve
+        measured, when the slew left the rotator untouched (#526 part 3, H4
+        orchestrator ruling 3).
+
+        WHY. At a fixed rotator position the camera's angle moved several
+        degrees with pointing and pier side on 2026-09-28, 2.7 degrees over
+        one plain re-slew, and a commanded -5.7 degree turn moved it +0.5:
+        slip in the train or play in the rotator. The night log's lines were
+        the only record. A row per untouched slew measures that slip
+        against pier side on later nights, and gives #145, which gates S8's
+        convergence correction, the sign of the angle on both sides.
+
+        WHICH SLEWS: every target setup (every hop is one) and the flip
+        gate's re-slew, a re-slew that flipped nothing included; untouched
+        as `_rotator_untouched` reads it. WHICH RECORD: ``rec``, the hub's
+        newest sky angle read as the slew returned, only when it is FRESH
+        for the slew, exposed at or after ``since``
+        (`angle_check.fresh_sky_angle`): a slew whose solve failed, or that
+        solved nothing (an uncentred slew), leaves the last record standing,
+        and that one measured an earlier slew. WHAT: the six keys of
+        `report.SKY_ANGLE_KEYS`, through `SessionReporter.record_sky_angle`,
+        field by field. No altitude or azimuth (#140), and nothing else of
+        the hub's record. A flip re-slew's ``exposed_at`` is still the time
+        of a computed meridian event, the #166 class: the report route hands
+        it to a viewer until it withholds it (#567, filed with this).
+
+        Best-effort: bookkeeping never stops a slew, so a report that cannot
+        take the row loses the row and nothing else."""
+        if self.reporter is None or not self._rotator_untouched(commanded,
+                                                                result):
+            return
+        try:
+            fresh = fresh_sky_angle(rec, since)
+        except ValueError:              # a ``since`` that is not a number
+            return
+        if fresh is None:
+            return
+        try:
+            exposed = float(fresh["exposed_at"])
+            mech = fresh.get("mechanical_deg")
+            self.reporter.record_sky_angle(
+                target=getattr(target, "name", str(target)),
+                exposed_at=exposed, pier_side=fresh.get("pier_side"),
+                mechanical_deg=None if mech is None else float(mech),
+                pa_deg=float(fresh["pa_deg"]),
+                source=str(fresh.get("source") or "plate solve"))
+        except Exception:               # noqa: BLE001 - bookkeeping never ends a slew
+            pass
+
+    def _rotator_connected(self) -> bool:
+        rot = self.hub.devices.get("rotator")
+        return rot is not None and bool(getattr(rot, "connected", False))
+
+    def _may_lock(self, target) -> bool:
+        """Whether ``target`` takes ruling 9's lock: an UNFRAMED target, one
+        with no ``rotation_deg`` of its own, in a run with a session to hold
+        the lock. A framed target carries its angle, a group member has its
+        group's layout angle, and a calibration target never solves the sky.
+        ``getattr``: the recoveries reach here with duck-typed targets."""
+        return (self._session is not None
+                and getattr(target, "rotation_deg", None) is None
+                and not getattr(target, "calibration", False)
+                and self._group_of(target) is None)
+
+    def _lock_in_force(self, target) -> dict | None:
+        """``target``'s locked angle, or None. KEYED BY THE TARGET'S ID, never
+        its name: only re-framing clears a lock (ruling 9), and re-framing
+        re-anchors the block with a new id, so a re-framed target of the same
+        name starts unlocked. A lock whose angle is not a finite number (a
+        hand-edited file) is no lock."""
+        if not self._may_lock(target):
+            return None
+        lock = self._session.locked_angle(getattr(target, "id", ""))
+        if not isinstance(lock, dict):
+            return None
+        try:
+            pa = float(lock.get("pa_deg"))
+        except (TypeError, ValueError):
+            return None
+        return lock if math.isfinite(pa) else None
+
+    def _commanded_rotation(self, target) -> float | None:
+        """The angle an acquisition of ``target`` commands the rotator to:
+        its planned ``rotation_deg``, or else the angle it locked on its first
+        shot (ruling 9), or None.
+
+        A lock is commanded only to a CONNECTED rotator. With none there is
+        nothing to turn, so the lock is checked against what the camera
+        measures instead (`_settle_locked_angle`); commanding it would have
+        the hub warn on every acquisition that a rotation was asked for,
+        about a target nobody asked to rotate. A planned angle is commanded
+        whatever the rig, as it always was: the hub says when no rotator
+        answered, and that is the operator's own request going unmet."""
+        planned = getattr(target, "rotation_deg", None)
+        if planned is not None:
+            return planned
+        lock = self._lock_in_force(target)
+        if lock is None or not self._rotator_connected():
+            return None
+        return float(lock["pa_deg"])
+
+    def _settle_locked_angle(self, target, hop_angle: dict | None,
+                             since: float) -> None:
+        """The end of ``target``'s setup, for ruling 9 (spec Revision 2).
+
+        UNLOCKED: lock the angle of the first fresh measurement of this
+        acquisition, the centring's (``hop_angle``), or failing that whatever
+        solve landed since, the re-centre after a focus sweep's; with none,
+        leave the lock to the first frame boundary that finds one
+        (`_take_pending_lock`).
+
+        LOCKED, with no rotator to command: the angle measured now is checked
+        against the lock, and beyond ``RotatorConfig.tolerance_deg`` it
+        warns. It never defers and never sets the target aside: a single
+        target has no neighbour to leave a hole beside, and frames at another
+        angle still stack after a rotation in processing. With a rotator the
+        goto commanded the lock, and the hub said if it could not."""
+        if not self._may_lock(target):
+            return
+        fresh = (fresh_sky_angle(hop_angle, since)
+                 or fresh_sky_angle(self._sky_angle_now(), since))
+        lock = self._lock_in_force(target)
+        if lock is None:
+            if fresh is None:
+                self._angle_lock_pending = (target.id, since)
+                return
+            self._lock_angle_from(target, fresh)
+            return
+        if fresh is None or self._rotator_connected():
+            return
+        cfg = self._cfg
+        tol = float(cfg.rotator.tolerance_deg) if cfg is not None else 1.0
+        verdict = angle_verdict(fresh, planned_pa_deg=float(lock["pa_deg"]),
+                                since_ts=since, tolerance_deg=tol)
+        if verdict.kind != "off":
+            return
+        bus.log("warning",
+                f"{target.name}: the camera reads PA {verdict.measured_deg:.1f} "
+                f"and its angle was locked at PA {float(lock['pa_deg']):.1f} "
+                f"by its first plate solve: {verdict.error_deg:.1f} deg apart, "
+                f"beyond the {tol:.1f} deg rotator tolerance. There is no "
+                f"rotator to turn it back, so these frames will not stack "
+                f"with the earlier ones without a rotation: turn the camera "
+                f"back to the locked angle", "sequence")
+
+    def _lock_angle_from(self, target, rec) -> None:
+        """Lock ``target``'s angle to the PA ``rec`` measured, with the solve
+        and exposure times and the path that solved it, through
+        ``Session.lock_angle``, and SAVE the session at once: the lock is
+        what every later acquisition, a crash-resume and the next night
+        command, so a crash in the next minute must not lose it. A save that
+        fails is said and never stops the night."""
+        pa = float(rec["pa_deg"])
+        solved = rec.get("solved_at")
+        exposed = rec.get("exposed_at")
+        source = str(rec.get("source") or "plate solve")
+        try:
+            self._session.lock_angle(
+                target.id, pa,
+                solved_at=float(solved) if solved is not None else time.time(),
+                exposed_at=float(exposed) if exposed is not None else None,
+                source=source)
+        except ValueError:
+            return
+        try:
+            session_store.save_run_state(self._session)
+        except Exception as e:      # noqa: BLE001 - bookkeeping never ends a run
+            bus.log("warning", f"session save failed: {e}", "sequence")
+        bus.log("info",
+                f"{target.name}: its angle is locked at PA {pa:.1f}, as the "
+                f"{source} solve measured it on its first shot; every later "
+                f"acquisition, tonight and on later nights, commands a "
+                f"rotator to it, or checks a fixed camera against it, until "
+                f"the target is re-framed", "sequence")
+
+    def _take_pending_lock(self, target) -> None:
+        """A frame boundary of ``target``'s acquisition: if its setup measured
+        no angle, lock the first sky angle exposed since the acquisition
+        began, which is a saved light frame's WCS solve (ruling 9). Cheap,
+        and silent until it locks."""
+        pending = self._angle_lock_pending
+        if pending is None or pending[0] != getattr(target, "id", None):
+            return
+        if not self._may_lock(target) or self._lock_in_force(target) is not None:
+            self._angle_lock_pending = None
+            return
+        fresh = fresh_sky_angle(self._sky_angle_now(), pending[1])
+        if fresh is None:
+            return
+        self._angle_lock_pending = None
+        self._lock_angle_from(target, fresh)
+
+    async def _rotator_evidence(self, pa_deg: float,
+                                centring: dict | None) -> float | None:
+        """What the rotator itself says when a rotating mosaic's hop measured
+        no angle: its reading when it is evidence the camera is at
+        ``pa_deg``, else None (spec 5.6 step 4, "a calibrated rotator that
+        reports its target position and no ``rotation_skipped``").
+
+        Evidence is a connected rotator that is CALIBRATED (synced, so its
+        reading is a sky angle and not a bare mechanical one), is not moving,
+        and reads ``pa_deg`` within ``RotatorConfig.tolerance_deg`` mod 180,
+        on a hop whose goto did not report the rotation skipped or
+        unavailable. A read that fails or hangs is no evidence; it never
+        raises (cancellation aside)."""
+        if centring and (centring.get("rotation_skipped")
+                         or centring.get("rotation_unavailable")):
+            return None
+        rot = self.hub.devices.get("rotator")
+        if (rot is None or not getattr(rot, "connected", False)
+                or not getattr(rot, "synced", False)):
+            return None
+        try:
+            if await asyncio.wait_for(rot.is_moving(), MOUNT_QUERY_TIMEOUT_S):
+                return None
+            reads = float(await asyncio.wait_for(rot.get_position(),
+                                                 MOUNT_QUERY_TIMEOUT_S))
+        except asyncio.CancelledError:
+            raise
+        except Exception:               # noqa: BLE001 - no read, no evidence
+            return None
+        cfg = self._cfg
+        tol = float(cfg.rotator.tolerance_deg) if cfg is not None else 1.0
+        d = (reads - pa_deg) % 180.0
+        # Written so that a NaN reading FAILS it: ``nan <= tol`` is False.
+        return reads if min(d, 180.0 - d) <= tol else None
+
+    async def _group_angle_check(self, target: Target, group: TargetGroup,
+                                 centring: dict | None, rec: dict | None,
+                                 since: float) -> None:
+        """Every hop of a member of a group that carries ``pa_deg`` and
+        ``angle_tolerance_deg`` checks the angle this hop measured against the
+        layout angle, mod 180, WHATEVER THE ROTATOR STATE (#189 U-04, spec
+        5.6 step 4, 6.12, D11). ``rec`` is the sky angle as the goto left it;
+        it counts only when exposed at or after ``since``, the hop's start.
+
+        `angle_check.angle_verdict` says ok, off or no measurement, and
+        `group_rules.angle_decision` says what that means here: shoot; shoot
+        and say the angle was not re-measured (a fixed camera verified
+        earlier tonight); warn and shoot; raise `PanelDeferred` (kind
+        "angle"); or raise `GroupSetAside` (a fixed camera beyond tolerance,
+        which no pass can put right). Only an ``ok`` verdict marks the angle
+        verified. "Shoot anyway" (``require_centred`` off) and a single-panel
+        block turn every refusal into a warning.
+
+        A group whose angle or tolerance is not a finite number (the
+        tolerance negative included) has no check: None disables it (spec
+        3.4), and `angle_verdict` refuses the others as a caller's bug.
+        Every line is words and the camera's own angles; none carries a
+        number the site sets (6.9)."""
+        pa, tol = group.pa_deg, group.angle_tolerance_deg
+        if (pa is None or tol is None or not math.isfinite(pa)
+                or not math.isfinite(tol) or tol < 0):
+            return
+        run = self._group_runs.get(group.id)
+        label = (run.members.get(target.id) if run is not None
+                 else None) or self._panel_name(target)
+        mosaic = group.name or group.id
+        verdict = angle_verdict(rec, planned_pa_deg=pa, since_ts=since,
+                                tolerance_deg=tol)
+        if verdict.kind == "ok":
+            # ONLY AN OK VERDICT VERIFIES. A deferral or a warning is not a
+            # measurement at the angle, and a fixed camera later shoots
+            # unmeasured on the strength of this.
+            if run is not None:
+                run.angle_verified = True
+            self._group_angle_read[group.id] = (verdict.measured_deg, label)
+        reads = None
+        if group.rotate and verdict.kind == "no_measurement":
+            reads = await self._rotator_evidence(pa, centring)
+        # The layout's panels: the members the plan carries, and the ones the
+        # operator skipped, which are still tiles of the same layout.
+        panels = len(group.skipped_ids) + sum(
+            1 for t in (self.plan.targets if self.plan else [])
+            if self._group_of(t) is group)
+        decision = angle_decision(
+            verdict.kind, rotate=group.rotate,
+            angle_verified=bool(run is not None and run.angle_verified),
+            rotator_evidence=reads is not None,
+            shoot_anyway=not group.require_centred,
+            single_panel=panels == 1)
+        act = decision.action
+        if act == "shoot":
+            return
+        if act == "shoot_logged":
+            seen = self._group_angle_read.get(group.id)
+            where = (f" (it read PA {seen[0]:.1f} at {seen[1]})"
+                     if seen is not None else "")
+            bus.log("info", f"{mosaic}: {label}: {decision.why}{where}",
+                    "sequence")
+            return
+        if act == "warn":
+            if reads is not None:
+                bus.log("warning", f"{mosaic}: {label}: {decision.why} (it "
+                                   f"reads PA {reads:.1f}); {verdict.reason}",
+                        "sequence")
+            else:
+                bus.log("warning", f"{mosaic}: {label}: {verdict.reason}; "
+                                   f"{decision.why}", "sequence")
+            return
+        if act == "set_group_aside":
+            raise GroupSetAside(f"{verdict.reason}; {decision.why}")
+        if verdict.kind == "no_measurement":
+            raise PanelDeferred("angle not measured", kind="angle",
+                                last_error=f"{verdict.reason}; {decision.why}")
+        raise PanelDeferred("the rotator did not bring the camera to the "
+                            "mosaic's angle", kind="angle",
+                            last_error=verdict.reason)
+
+    async def _hop(self, ti: int, target: Target) -> None:
+        """A HOP: the scheduler's acquisition of ``target`` for its visit or
+        its run, `_setup_target` made as a member's visit, a follower's
+        visit or a single target's run begins. Never a re-acquisition: the
+        setup a cloud hold's release, a safety pause's resume or a roof
+        reopen re-runs inside the visit calls `_setup_target` itself.
+
+        THE #72 RECOVERY BUDGET IS THE HOP'S (#329). Once the hop's own
+        guider start has worked, ``_guiding_recoveries`` starts again from
+        0, so the bound's "N recovery attempts" are attempts made at this
+        pointing. It was one count for the whole engine, cleared only by a
+        banked frame and by a guide-lost deferral: a visit that ended by its
+        own bound, its attempts spent and no frame banked, handed them to
+        the next hop, and in a mosaic that panel was deferred as
+        ``guide_lost`` on its first loss, under a sentence claiming attempts
+        another panel made. The engine outlives the run, so the count also
+        crossed from one run into the next.
+
+        Only here, and not at the start inside `_setup_target`: a cloud
+        hold's release re-runs the setup and its start works, and a reset
+        there would re-arm the bound on every cycle of a hold that the
+        trailed frames of a lost star keep opening, which is the loop the
+        bound exists to end. Only on a start that WORKED: a hop whose start
+        failed shoots on unguided under warn, and has shown the guider
+        nothing a fresh budget would buy, so it keeps the count it came
+        with.
+
+        WITH #134. The banked-frame reset in `_record_frame` stays, inside
+        the hop, so the count is the attempts since the later of this hop's
+        own start and its last banked frame. #134 (open) is that a trailed
+        frame banks and clears it, so in attempts mode the bound is still
+        never reached; a fix there replaces the banked-frame reset and
+        leaves this one as it is.
+        """
+        self._hop_guide_started = False
+        await self._setup_target(ti, target)
+        if self._hop_guide_started:
+            self._guiding_recoveries = 0
+
     async def _setup_target(self, ti: int, target: Target) -> None:
         # A slew + plate-solve + initial autofocus legitimately produces no frames
         # for minutes; keep the no-progress watchdog quiet until capture begins.
         self._progress_expected = False
+        # THE WAIT SPELL ENDS HERE (#221). A cloudy sky met from now on has a
+        # target, and the pre-slew gate below opens a hold for it; the wait's
+        # "no target to hold for" must not be published over that hold, and
+        # the next wait under a closed sky says it again. Before the publish
+        # below, so the first state of this setup already carries it.
+        self._hold_deferred = None
+        self._hold_deferred_said = False
+        # The finish clock counts hops to the targets OTHER than this one
+        # (`_remaining_hops`), from the moment its acquisition begins.
+        self._acquiring_ti = ti
         # this target is now actually starting — clear any stale waiting sub-state
         # a prior gated wait published (wave-3 §2).
         self._set_state(target=target.name, target_index=ti, detail=f"slewing to {target.name}",
                         schedule=None)
-        bus.log("info", f"target {ti + 1}/{len(self.plan.targets)}: {target.name}", "sequence")
+        if self._site_timed() and self._group_of(target) is not None:
+            # THE HOP THAT ENDS A MERIDIAN WAIT starts at the crossing, so its
+            # line names the panel at the moment a known RA transits (spec
+            # 5.10, 6.9): flagged, for a holder of the site-derived view only.
+            bus.log("info", f"target {ti + 1}/{len(self.plan.targets)}: "
+                            f"{target.name}", "sequence", site_derived=True)
+        else:
+            bus.log("info", f"target {ti + 1}/{len(self.plan.targets)}: {target.name}", "sequence")
         # pre-slew safety + mount-floor gate (mount-alt floor is enforced even
         # with no safety device configured — §1.9-A).
-        await self._safety_gate(context="slew", target=target)
+        #
+        # THIS SETUP IS THE ACQUISITION BEHIND THE GATE (#241, H3 orchestrator
+        # ruling 4). The gate can open a cloud hold, a safety pause or a roof
+        # reopen, and each of them used to run this method for the target
+        # when it released, and then hand back here, where the slew, the
+        # centring, the focus sweep and the guider start below ran a second
+        # time. Marked for the length of the gate, so a release it opens
+        # returns here instead and this one setup acquires the target. In a
+        # finally: a gate that raises must not leave a later release anywhere
+        # believing a setup still waits behind it. Put back as it was, not
+        # cleared, for the day this runs inside another such gate.
+        behind = self._acquisition_behind_gate
+        self._acquisition_behind_gate = target
+        try:
+            await self._safety_gate(context="slew", target=target)
+        finally:
+            self._acquisition_behind_gate = behind
 
         # Sun-exclusion cone (W1.10) at the engine MOTION boundary. The centered
         # branch re-checks inside goto_and_center, but the NON-centered slew below
@@ -2188,7 +7237,63 @@ class SequenceEngine:
             except DeviceError as e:
                 raise SafetyAbort(f"slew blocked by sun-exclusion cone: {e}") from e
 
+        # THE HOP'S CLOCK STARTS HERE, after the gates (#189 U-07). The safety
+        # gate can hold for weather, and a rain hold charged to the hop would
+        # price every later hop at the length of a shower. The initial sweep
+        # is taken off at the end, because it records itself as "autofocus".
+        hop_t0 = time.monotonic()
+        # ...and on the wall clock, which is the one a sky-angle record's
+        # ``exposed_at`` is stamped on: only a solve exposed from here on
+        # measured THIS acquisition's angle (the angle check below, and
+        # ruling 9's lock).
+        hop_wall0 = time.time()
+        sweep_s = 0.0
+        # What this hop's centring said, for a group member's checks below.
+        hop_centring: dict | None = None
+        hop_miss: str | None = None
+        # The sky angle as it stood when the goto returned (ruling 9, spec
+        # 5.6 step 4), or None.
+        hop_angle: dict | None = None
+        # THE ANGLE THIS ACQUISITION COMMANDS: the planned one, or the one an
+        # unframed target locked on its first shot (ruling 9). None when
+        # there is neither, which is exactly the call every earlier plan made.
+        rotation = self._commanded_rotation(target)
+        # A new acquisition: whatever the last one was still waiting to lock
+        # belongs to it, not to this one.
+        self._angle_lock_pending = None
+
         if "telescope" in self.hub.devices:
+            # THE LAST SPELL'S STOP RETRY ENDS HERE, BEFORE TRACKING COMES BACK.
+            # The retry runs on its own task (`_idle_stop_retry`), so it can be
+            # half way through a ``set_tracking(False)`` when this target
+            # becomes ready. Left running, it lands that stop after the
+            # ``set_tracking(True)`` below, and the target is shot on a mount
+            # that is not tracking. Cancelled and AWAITED, so nothing of it is
+            # still in flight when the mount moves.
+            await self._cancel_idle_stop_retry()
+            # STAND THE GUIDER DOWN BEFORE THE MOUNT MOVES (#148, spec 5.6
+            # step 2). Nothing between two targets stopped the last target's
+            # guide loop, so the slew ran with it still pulsing, and the next
+            # target's guide start found the loop alive and returned at once:
+            # the native guider's "already active" guard. No star selection,
+            # no calibration check and no `_maybe_flip_for_pier`, so on the
+            # far pier side the old side's calibration drove the new side's
+            # corrections, which is the runaway GN-01 exists to prevent.
+            # Shown on the simulator with the real native guider before this
+            # line existed (test_guider_stand_down_before_slew.py). One call
+            # covers both branches below. Only when the plan guides: then the
+            # engine started the guider and it is the engine's to stop; with
+            # guiding off, a guider running is the operator's. Bounded and
+            # never raises (`_stand_down_guider`). It does not ask `is_active`
+            # first: that answers whether the guider is guiding, and what
+            # blocks the next start is the loop, which stays alive through a
+            # star lost in the slew for as long as it keeps re-acquiring. The
+            # stop is therefore often a second one (after a hold, or on the
+            # first target of a run). A second stop used to re-stamp the native
+            # guider's saved PPEC window as if it had just been fed; the guider
+            # now persists it only on the stop that ends a live session (#210).
+            if self.plan.guide:
+                await self._stand_down_guider()
             if target.center:
                 # GOTO+center is the slew + iterated solve→sync→re-slew loop —
                 # bounded so a hung solve/slew can't stall the night (P0-2).
@@ -2203,9 +7308,10 @@ class SequenceEngine:
                     result = await _bounded(
                         self.hub.goto_and_center(
                             target.ra_hours, target.dec_deg,
-                            rotation_deg=target.rotation_deg),
-                        GOTO_TIMEOUT_S
-                        + (300 if target.rotation_deg is not None else 0),
+                            rotation_deg=rotation,
+                            **self._centring_kwargs(target)),
+                        GOTO_TIMEOUT_S + (ROTATION_ALLOWANCE_S
+                                          if rotation is not None else 0),
                         f"goto+center {target.name}")
                 except SafetyAbort:
                     raise
@@ -2215,9 +7321,21 @@ class SequenceEngine:
                     bus.log("warning",
                             f"{target.name}: the mount refused to track on the "
                             f"way to the target ({e})", "sequence")
-                    if not await self._recover_from_tracking_refusal(target):
+                    # THE RECOVERY'S OWN CENTRING, NOT A CLAIM ABOUT IT (#171).
+                    # The recovery ends in a `goto_and_center` of its own, and
+                    # this used to replace that answer with a fabricated
+                    # ``{"centered": True}`` - so a re-centre that never
+                    # converged, which the recovery had just logged, reached
+                    # everything below as a centred target. The measurement
+                    # comes back through ``centring``, and the recovery leaves
+                    # the report of a miss to the line below, so it is said
+                    # once rather than twice.
+                    centring: dict = {}
+                    if not await self._recover_from_tracking_refusal(
+                            target, centring=centring):
                         raise
-                    result = {"centered": True, "error_arcmin": None}
+                    result = centring
+                hop_centring = result
                 if not result["centered"]:
                     # error_arcmin is None on the solve-failure and motion-fence
                     # abort paths (hub.goto_and_center degrades to a raw GoTo) —
@@ -2226,8 +7344,15 @@ class SequenceEngine:
                     err = result.get("error_arcmin")
                     detail = (f"converged to {err:.1f}'" if err is not None
                               else "plate solve failed — used raw GoTo")
-                    bus.log("warning", f"{target.name}: centering {detail} — "
-                                       "continuing", "sequence")
+                    member = self._group_of(target)
+                    if member is not None and member.require_centred:
+                        # Not "continuing": a panel that does not centre is
+                        # deferred (`_group_hop_checks`), never shot off its
+                        # tile (spec 5.6 step 4).
+                        hop_miss = detail
+                    else:
+                        bus.log("warning", f"{target.name}: centering {detail} — "
+                                           "continuing", "sequence")
             else:
                 tel = self.hub.require("telescope")
                 if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
@@ -2251,6 +7376,22 @@ class SequenceEngine:
                 # writer was carrying (GN-07); the centering that follows
                 # records a fresh one. Guarded: test hubs are bare doubles.
                 getattr(self.hub, "note_pointing_moved", lambda: None)()
+                if rotation is not None:
+                    # SAID, NOT DROPPED (#160). Only `goto_and_center` turns
+                    # the rotator, and this branch never calls it, so a
+                    # planned angle on a target with centring off vanished
+                    # without a word and the frame kept whatever angle the
+                    # camera happened to be at. The centred branch leaves the
+                    # saying to the hub (`rotation_unavailable`), which knows
+                    # whether a rotator answered. A locked angle is commanded
+                    # like a planned one (ruling 9), so it is said the same.
+                    bus.log("warning",
+                            f"{target.name}: rotation to PA "
+                            f"{rotation:g} was asked for, but only "
+                            f"a centred slew turns the rotator and this target "
+                            f"is not centred; slewing without rotating, so the "
+                            f"frame keeps whatever angle the camera is at",
+                            "sequence")
                 await _bounded(tel.slew(target.ra_hours, target.dec_deg),
                                SLEW_TIMEOUT_S, f"slew to {target.name}")
                 try:
@@ -2272,8 +7413,76 @@ class SequenceEngine:
                             raise
                     else:
                         raise
+            # THE MOUNT IS NOW TRACKING THIS TARGET, and whatever happens next
+            # in this setup - a focus sweep, a guider that will not start and a
+            # StopTarget that skips the target - it is left tracking it. So
+            # this is where the idle clock learns what to watch (#165), not the
+            # end of the method: a setup that raises after the slew must not
+            # leave the park-hold watching the previous target, or nothing.
+            self._tracked_target = target
+            self._idle_since = time.time()
+            self._idle_hold_open = True
+            self._idle_hold_retrying = False
+            # A FRESH POINTING, so nothing the engine stopped before it is
+            # still standing (#248): the mount is on this target now.
+            self._mount_stopped_since = None
+            # THE SKY ANGLE THIS POINTING MEASURED, read with no await since
+            # the goto returned. ``last_sky_angle`` is the newest SOLVE, not
+            # the newest exposure: a saved-frame WCS solve of the last
+            # target's frame can finish later and replace the centring's
+            # record with an older, staler one (#292). Read here, the record
+            # is the centring's whenever the centring measured one, save for
+            # the loop turn in which the goto's own task hands back.
+            hop_angle = self._sky_angle_now()
+            # ...AND RECORDED, when this slew left the rotator untouched (#526
+            # part 3): a row in the session report for every setup, every hop
+            # included. An uncentred slew never asks the rotator, whatever
+            # angle the target carries, and solves nothing, so its record is
+            # the last slew's and adds no row.
+            self._record_sky_angle(target, since=hop_wall0,
+                                   commanded=rotation if target.center else None,
+                                   result=hop_centring, rec=hop_angle)
 
-        if target.autofocus_first and "focuser" in self.hub.devices:
+        # [group] THE HOP'S OWN CHECKS (#189 S2, spec 5.6 step 4). After the
+        # idle watch has learned the mount is on this panel, so a deferral
+        # leaves it watched, and before the focus sweep and the guider start,
+        # which a panel about to be retried on the next pass need not pay.
+        member = self._group_of(target)
+        if member is not None and hop_centring is not None:
+            self._group_hop_checks(
+                target, member, hop_centring, hop_miss,
+                angle_ok=self._hop_angle_within(member, hop_angle, hop_wall0))
+        if member is not None and "telescope" in self.hub.devices:
+            await self._group_angle_check(target, member, hop_centring,
+                                          hop_angle, hop_wall0)
+        # [group] THE SIDE THE HOP LANDED ON (spec 5.6 step 5, 5.7): read,
+        # never assumed. True when this hop measured the side after the
+        # meridian, which is the flip done (see below).
+        hop_flip_verified = False
+        if member is not None and "telescope" in self.hub.devices:
+            hop_flip_verified = await self._group_pier_check(target, member)
+
+        # A HOP DOES NOT MOVE THE FOCUSER (#189 U-05, spec 5.6 step 6). A
+        # target with `autofocus_skip_if_fresh` (every mosaic panel) sweeps
+        # only when `_hop_focus_is_owed` says the focus is untrustworthy or
+        # the frame loop would have refocused anyway; every other target
+        # sweeps at every setup, as it always has. The re-centre below stays
+        # inside the sweep: it answers the drift of an unguided sweep, and a
+        # reused focus spent no time unguided.
+        #
+        # THE RECOVERY LADDER'S SWEEP COUNTS FOR THE FIRST ACQUISITION
+        # (#402). A run started on one (`start`'s ``focus_sweep``) asks the
+        # hop rule here whatever the target's `autofocus_skip_if_fresh`,
+        # with that sweep as the good sweep and its group's first, so it
+        # sweeps again only if a refocus is due or the temperature moved
+        # past the delta. Taken by the first setup that gets this far,
+        # whether or not it focuses: the sweep was the focus for the target
+        # the run opened on, and any later acquisition keeps its own rule.
+        recovery, self._recovery_sweep = self._recovery_sweep, None
+        if target.autofocus_first and "focuser" in self.hub.devices and (
+                (recovery is None
+                 and not getattr(target, "autofocus_skip_if_fresh", False))
+                or await self._hop_focus_is_owed(target, recovery=recovery)):
             # THE CENTRING IS SPENT BY THE TIME GUIDING STARTS. Measured
             # 2026-09-07: centred to 0.08' at 22:12, first light frame 2.0' off
             # at 22:21 — the sweep runs UNGUIDED between the two, and this rig
@@ -2282,6 +7491,7 @@ class SequenceEngine:
             _af_t0 = time.monotonic()
             await self._autofocus("initial autofocus", target=target)
             af_s = time.monotonic() - _af_t0
+            sweep_s = af_s
             guided_through = guided_before and await self._guiding_active_now()
             await self._recentre_after_unguided_focus(
                 target, af_s, guided=bool(guided_through))
@@ -2299,16 +7509,59 @@ class SequenceEngine:
             require_guiding = bool(cfg and cfg.escalation.require_guiding)
             action = (cfg.escalation.guiding_action if cfg else "warn")
             guider = self.hub.guider
+            # [group] A PANEL WHOSE GUIDER WILL NOT START IS DEFERRED, WHATEVER
+            # ``guiding_action`` SAYS (owner ruling 5, #142; spec 5.6 step 7):
+            # "try again after the next go around through the other panels.
+            # No point in leaving a hole in the mosaic if we don't have to."
+            # Each of today's escalations leaves a hole: warn shoots the panel
+            # unguided, skip sets it aside at once, abort ends the night over
+            # one panel's guide star. So a member raises `PanelDeferred`, is
+            # retried on the next pass, and is set aside after
+            # ``max_failed_visits`` consecutive failed passes. Only a pass in
+            # which EVERY attempted panel failed is the guider's fault, and
+            # then ``guiding_action`` decides for the group
+            # (`_close_group_pass`); after a warn there, the group's hops go
+            # back to today's escalation until a start works again. A single
+            # target keeps today's escalations, and so does a group's last
+            # live panel when no guider is connected and guiding is optional
+            # (#315, below). A loss mid-visit defers too (#303,
+            # `_maybe_recover_guiding`).
+            defers = member is not None and member.id not in self._group_unguided
+            # The pass rule reads the LAST start of the visit: a hold's release
+            # re-runs this setup, and a start that failed there must not stand
+            # beside one that worked at the hop.
+            self._hop_guide_started = False
             if guider is None or not getattr(guider, "connected", False):
                 why = ("no guider is connected" if guider is None else
                        f"the guider ({getattr(guider, 'name', 'guider')}) "
                        "is not connected")
+                # [group] THE LAST LIVE PANEL, WITH GUIDING OPTIONAL, IS A
+                # PLAIN TARGET HERE (#315, S3 orchestrator ruling 6). Only a
+                # pass in which two or more panels all failed can blame the
+                # rig, and one live panel never makes two attempts, so it
+                # deferred on every hop and was set aside after three passes
+                # where the same target outside a group shoots unguided. It
+                # falls through to that rule below. So does the last panel
+                # the pass can VISIT (the #315 follow-up): the others live but
+                # held all pass make no attempt either (`_live_panels`).
+                if defers and not no_guider_defers(
+                        live=self._live_panels(member, target),
+                        require_guiding=require_guiding):
+                    defers = False
+                if defers:
+                    raise PanelDeferred("guiding did not start", kind="guide_start",
+                                        last_error=why)
                 if require_guiding and action == "abort":
                     bus.log("error", f"guiding required but {why}", "sequence")
                     raise SafetyAbort(f"guiding required but {why}")
                 if require_guiding and action == "skip":
+                    # BY WHO IS STOPPED (#326): a member reaches here only in
+                    # a group the pass rule sent on unguided, and its
+                    # StopTarget is deferred (`_visit_panel`, #316).
+                    then = self._deferred_words(target)
                     bus.log("warning", f"guiding required but {why} — skipping "
-                                       f"{target.name}", "sequence")
+                                       f"{target.name}" if then is None else
+                            f"guiding required but {why} — {then}", "sequence")
                     raise StopTarget(f"guiding required but {why}")
                 # Falls through to the meridian-flip arming below: the target
                 # still runs (unguided), and a GEM crossing the meridian still
@@ -2334,18 +7587,84 @@ class SequenceEngine:
                 except SafetyAbort:
                     raise
                 except Exception as e:
+                    if defers:
+                        raise PanelDeferred("guiding did not start",
+                                            kind="guide_start",
+                                            last_error=str(e)) from e
                     if require_guiding and action == "abort":
                         bus.log("error", f"guiding required but failed to start: {e}",
                                 "sequence")
                         raise SafetyAbort(
                             f"guiding required but failed to start: {e}")
                     if require_guiding and action == "skip":
+                        # By who is stopped (#326), as with no guider above.
+                        then = self._deferred_words(target)
                         bus.log("warning", f"guiding required but failed to start: "
-                                           f"{e} — skipping {target.name}", "sequence")
+                                           f"{e} — skipping {target.name}"
+                                if then is None else
+                                f"guiding required but failed to start: {e} — "
+                                f"{then}", "sequence")
                         raise StopTarget("guiding required but could not start")
                     bus.log("warning", f"guiding failed to start: {e} — continuing "
                                        "unguided", "sequence")
+                else:
+                    # A start that worked: for a member, an attempt that
+                    # worked, for the guide-start pass rule; for any target,
+                    # what `_hop` reads to give the hop its own #72 budget
+                    # (#329). Set for the LAST start this setup made, which
+                    # a hold's release re-runs, and read by `_hop` only after
+                    # the hop's own setup.
+                    self._hop_guide_started = True
+                    if member is not None:
+                        # A guider that starts is not dead, so a group that
+                        # went unguided defers failures again.
+                        self._group_unguided.discard(member.id)
 
+        # AN UNFRAMED TARGET'S ANGLE (ruling 9): locked on the first fresh
+        # measurement, or, once locked, checked against it on a fixed camera.
+        # At the end of the setup, as the ruling places it.
+        self._settle_locked_angle(target, hop_angle, hop_wall0)
+
+        self._arm_meridian_flip(target)
+        if hop_flip_verified:
+            # A HOP THAT MEASURED THE SIDE AFTER THE MERIDIAN OWES NO FLIP.
+            # The latch arms for anything acquired within the lead and its
+            # margin past transit, which is the backstop for a mount that
+            # kept its side; this hop was read on the far side, so there is
+            # nothing to back up. Left armed, it re-slews at the first frame,
+            # finds nothing flipped, retries at the meridian, and writes the
+            # lesson "this mount cannot flip early" (#127) from an attempt
+            # made past the meridian, which taught nothing of the kind.
+            self._flip_armed = False
+
+        # A FRESH ACQUISITION IS A NEW POINTING (#163, spec 5.6 step 9), so
+        # its first frame owes no dither. The counter used to span targets: B
+        # inherited A's frames since A's last dither, so B dithered after one
+        # frame of its own, or before its first when A ended on a full
+        # cadence. Here, with the setup done, and not at the slew: a setup
+        # that raises shoots nothing, and the next one resets it anyway.
+        self._frames_since_dither = 0
+
+        # THE HOP'S WALL TIME (#189 U-07, spec 5.6 step 10), for the finish
+        # clock's hop term. The initial sweep comes off: `_autofocus` already
+        # records it as "autofocus", and whether a hop sweeps at all is a
+        # decision of its own (a mosaic panel reuses a fresh focus, spec 5.6
+        # step 6), so folded in here a 7-9 minute sweep would be priced into
+        # every hop, swept or not. A setup that raised never gets here, so
+        # only a completed hop is a sample.
+        self._record_event_cost("hop", time.monotonic() - hop_t0 - sweep_s)
+
+        # setup complete — capture is about to begin. Arm the no-progress watchdog
+        # and anchor its clock to NOW so a slow slew/solve/AF that just finished
+        # doesn't instantly read as a stall against the last target's frame stamp.
+        self._last_frame_at = time.time()
+        # ...and the idle clock the same way (#165): a slow focus sweep and
+        # guider start are not idle time to charge against the frame loop.
+        self._idle_since = time.time()
+        self._progress_expected = True
+
+    def _arm_meridian_flip(self, target: Target) -> None:
+        """Set the flip latch for the target just acquired (see below)."""
         # Arm the meridian flip for THIS target, so a GEM tracking east→west
         # across the meridian flips exactly once when it crosses. A target
         # acquired hours west is on the correct pier side and stays disarmed —
@@ -2359,9 +7678,28 @@ class SequenceEngine:
         # the log at all. `schedule.flip_should_arm` owns the boundary and the
         # reasoning for it.
         self._flip_armed = False
-        if self.plan.meridian_flip and "telescope" in self.hub.devices:
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if (self.plan.meridian_flip and "telescope" in self.hub.devices
+                and latlon is None):
+            # NO SITE, NOTHING TO ARM (#24). The latch is hour angle, and hour
+            # angle at the 0,0 default is the Gulf of Guinea's: armed on that,
+            # the flip gate would decline it anyway, but the latch is also what
+            # `_enforce_flip_owed` believes. Said here, once per run on the same
+            # flag the flip gate uses, because a latch that is never armed never
+            # reaches the gate's own warning.
+            if not self._flip_no_site_logged:
+                self._flip_no_site_logged = True
+                bus.log("warning",
+                        f"{target.name}: a meridian flip is planned but this "
+                        f"rig has no configured site, so nothing here can work "
+                        f"out where the meridian is — no flip will be taken. "
+                        f"Save the site's location in settings, or switch the "
+                        f"flip off to stop this run expecting one",
+                        "sequence")
+        elif self.plan.meridian_flip and "telescope" in self.hub.devices:
             try:
-                lon = self.hub.site["longitude"]
+                lon = latlon[1]
                 self._flip_armed = schedule.flip_should_arm(
                     schedule.hours_to_meridian_flip(target.ra_hours, lon),
                     self._flip_lead_s(target) / 60.0)
@@ -2378,12 +7716,6 @@ class SequenceEngine:
                         f"target, so nothing will move it off its limit",
                         "sequence")
 
-        # setup complete — capture is about to begin. Arm the no-progress watchdog
-        # and anchor its clock to NOW so a slow slew/solve/AF that just finished
-        # doesn't instantly read as a stall against the last target's frame stamp.
-        self._last_frame_at = time.time()
-        self._progress_expected = True
-
     async def _capture(self, step, target: Target | None, *, exposure_s=None,
                        save: bool = True) -> dict:
         """Bounded ``hub.capture`` (P0-2). The timeout is exposure-relative: the
@@ -2392,13 +7724,38 @@ class SequenceEngine:
         escalates through the abort+park path like any other stuck device I/O.
 
         ``exposure_s`` overrides ``step.exposure_s`` (PRO-5: a solved flat
-        exposure); None keeps the step's fixed exposure (every existing path)."""
+        exposure); None keeps the step's fixed exposure (every existing path).
+
+        A GROUP MEMBER'S LIGHT FRAME SAYS WHICH MOSAIC AND WHICH PANEL (#189
+        U-08): ``mosaic`` and ``panel`` ride to ``hub.capture``, which writes
+        them as the FITS ``MOSAIC`` and ``PANEL`` cards and the ``$$PANEL$$``
+        token. Any other frame, a non-member's or a dark a hold shoots on a
+        panel, makes exactly the call it always made, with neither keyword."""
         exp = float(exposure_s if exposure_s is not None else step.exposure_s)
         budget = exp + CAPTURE_MARGIN_S
+        if (target is not None
+                and str(getattr(step, "frame_type", "")).lower() == "light"):
+            # A FRAME BOUNDARY, for ruling 9: an unframed target whose setup
+            # measured no angle locks the first one a light frame's solve
+            # measured since. Here rather than in `_run_step`, whose gate
+            # stack the group driver leaves untouched (spec D7).
+            self._take_pending_lock(target)
+        panel_kw: dict = {}
+        group = self._group_of(target) if target is not None else None
+        if group is not None and str(step.frame_type).lower() == "light":
+            panel_kw = {"mosaic": naming.mosaic_label(group.name, group.id),
+                        "panel": naming.panel_label(target.panel_row,
+                                                    target.panel_col)}
+            # A MERIDIAN WAIT ENDS WITH THE FIRST EXPOSURE AFTER IT, not at
+            # the crossing (spec 5.10, 6.9): from here the panel and the pass
+            # go back to every viewer, at crossing plus hop plus exposure,
+            # which the hop's own variation makes coarse. Cleared at the
+            # crossing, they would come back at the crossing itself.
+            self._meridian_wait.pop(group.id, None)
         info = await _bounded(
             self.hub.capture(exp, step.gain, step.offset, step.binning,
                              save=save, target=target.name if target else "",
-                             frame_type=step.frame_type),
+                             frame_type=step.frame_type, **panel_kw),
             budget, f"capture {exp:g}s")
         if not save or target is None:
             return info
@@ -2543,6 +7900,19 @@ class SequenceEngine:
                     # motion, so the mount-limit half stays inert (it is reached
                     # only under context == "slew") while the monitor half runs.
                     await self._safety_gate(context="frame", target=target)
+                    # THE MOUNT APPLIES TO CALIBRATION TOO (#199). A target run
+                    # before this one leaves the mount tracking it — this loop
+                    # never slews, never centres and never stops tracking on
+                    # its own — and nothing else watches that target while the
+                    # block runs: the idle clock, the floor and the flip point
+                    # are checked per light-frame and by `_wait_until`, and
+                    # this frame loop is neither. Ahead by one exposure, since
+                    # that is how far off this loop's next look is; a dark or
+                    # bias set can run for hours, and without this the hazard
+                    # went unwatched for the whole block instead of the first
+                    # WAIT_TEARDOWN_S past the last light frame ("safety rides
+                    # value paths" — see `_idle_hold_tick`).
+                    await self._idle_hold_tick(ahead_s=step.exposure_s)
                     # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
                     await self._frame_alerts_tick()
                     # heal a dropped device before the exposure that needs it
@@ -2583,22 +7953,36 @@ class SequenceEngine:
                 if panel_lit:
                     await self._panel_off_safe()
 
-    def _step_complete(self, target: Target, step) -> bool:
+    def _step_complete(self, target: Target, step, *,
+                       accepted: dict[str, int] | None = None) -> bool:
         """Has this step got everything it asked for?
 
         The two count modes disagree about what "everything" means, and the
         cycle driver must not have to know which is in force: ``accepted``
         counts the ledger's accepted frames, ``attempts`` counts frames taken.
         Asking the wrong one is how a night either stops early or never stops.
+
+        ``accepted`` is the session's ``accepted_by_step()`` map, taken once by
+        a caller that asks about many steps (`_remaining_hops`), so the ledger
+        is not walked again for every step. It changes where the accepted
+        count is read from, never which count is read: attempts mode and a
+        calibration target ignore it.
         """
         plan = self.plan
         if plan is not None and plan.count_mode == "accepted" \
                 and not target.calibration and self._session is not None:
-            return self._session.accepted(step.id) >= step.count
+            got = (accepted.get(step.id, 0) if accepted is not None
+                   else self._session.accepted(step.id))
+            return got >= step.count
         return self._done.get(f"{target.id}:{step.id}", 0) >= step.count
 
-    async def _run_steps(self, ti: int, target: Target) -> None:
+    async def _run_steps(self, ti: int, target: Target,
+                         visit: VisitBound | None = None) -> None:
         """Drive a target's steps, in blocks or round-robin.
+
+        ``visit`` BOUNDS ONE VISIT to a group member (#189 S2, spec 5.3), and
+        is None for every other target, which then runs exactly as below.
+        See `_run_visit`.
 
         BLOCKS is what this engine has always done and stays the default:
         each step runs to completion, then the next.
@@ -2621,30 +8005,188 @@ class SequenceEngine:
         that can never complete — a filter the wheel does not have, a quota the
         night cannot reach — would spin this loop forever between frames,
         which is the one failure a driver like this must not have.
+
+        WHICH COUNTER BOUNDS WHAT (#147). A VISIT is ``per_visit`` attempts,
+        counted by ``_run_step`` and rejects included. A PASS is judged by a
+        counter that depends on the count mode:
+
+        * accepted mode compares ``_exposures_taken``, accepted plus rejected.
+          A pass of rejects is a rough pass, not a spin; the per-step reject
+          guard (a step set aside) and the night guard bound a step that keeps
+          rejecting. Comparing accepted frames here would take the target off
+          the night after one reject per step.
+        * attempts mode compares ``_frames_done``. A discarded frame
+          (``hfr_reject_action`` discard) never advances ``_done`` and no reject
+          guard runs in that branch, so nothing else can see a pass that banks
+          nothing. Comparing exposures there would spin on discards forever.
+
+        A step SET ASIDE by the per-step reject guard is left out of the
+        pending list in both modes (and ``_run_step`` returns at once for it).
+        It is still owed in the ledger. When every step still owed is set
+        aside, the target's visit loop ends.
         """
+        if visit is not None:
+            await self._run_visit(ti, target, visit)
+            return
         steps = list(enumerate(target.steps))
         if target.acquisition != "cycle":
             for si, step in steps:
+                if f"{target.id}:{step.id}" in self._set_aside:
+                    continue
                 await self._run_step(ti, si, target, step)
             return
 
+        quota = self.plan is not None and self.plan.count_mode == "accepted" \
+            and not target.calibration
+
+        def _pass_counter() -> int:
+            return self._exposures_taken if quota else self._frames_done
+
         rounds = 0
         while True:
-            pending = [(si, s) for si, s in steps
-                       if not self._step_complete(target, s)]
+            owed = [(si, s) for si, s in steps
+                    if not self._step_complete(target, s)]
+            pending = [(si, s) for si, s in owed
+                       if f"{target.id}:{s.id}" not in self._set_aside]
             if not pending:
+                if owed:
+                    self._say_every_owed_step_set_aside(target, owed)
                 return
             rounds += 1
-            before = self._frames_done
+            before = _pass_counter()
             for si, step in pending:
                 await self._run_step(ti, si, target, step,
                                      max_frames=max(1, int(step.per_visit or 1)))
-            if self._frames_done == before:
+            if _pass_counter() == before:
                 names = ", ".join(s.filter or "no filter" for _, s in pending)
                 bus.log("warning",
                         f"{target.name}: a full pass took no frames with "
                         f"{len(pending)} step(s) still short ({names}) — "
                         f"stopping the cycle rather than spinning", "sequence")
+                return
+
+    def _say_every_owed_step_set_aside(self, target: Target, owed) -> None:
+        """The visit loop's last word when every step a target still owes is
+        set aside by its reject guard. SET ASIDE FOR TONIGHT, which is what is
+        true since S2 persists it (#147 part 2, #208): the ledger keeps the
+        frames owed, a restart tonight does not retry the steps, and the next
+        night does. Until S2 it said "the rest of this run", and a restart
+        tonight did take them up again."""
+        names = ", ".join(s.filter or "no filter" for _, s in owed)
+        bus.log("warning",
+                f"{target.name}: every step still owed is set aside for tonight "
+                f"({names}) — moving on; the ledger keeps them owed; a restart "
+                f"tonight does not retry them; the next night does", "sequence")
+
+    async def _run_visit(self, ti: int, target: Target, visit: VisitBound) -> None:
+        """ONE VISIT to a group member (#189 S2, spec 5.3), in rounds of the
+        member's cycle: each round is ``per_visit`` frames of every step still
+        short and not set aside, in plan order, whatever the acquisition.
+
+        - After each round the visit ends when the panel is complete, or when
+          it has made ``visit.passes`` rounds AND run ``visit.min_s``, timed
+          from the visit's first round, after the hop (`VisitBound.ends_at_round`).
+        - With a ``deadline_ts`` (a flip point, a follower's bound), each frame
+          is asked for alone and the visit ends at the first frame boundary
+          that cannot fit the next frame: its exposure, the overhead EMA and
+          ``FLIP_FRAME_MARGIN_S``, the budget `_maybe_meridian_flip` draws its
+          frame window with (`VisitBound.next_frame_fits`).
+        - A round that takes nothing ends the visit, by the same counter the
+          cycle driver's anti-spin reads (exposures in accepted mode, banked
+          frames in attempts mode).
+
+        Every check sits at a step boundary here and never inside `_run_step`,
+        so an exposure is never cut short, and every frame still passes the
+        whole gate stack (D7).
+        """
+        steps = list(enumerate(target.steps))
+        quota = self.plan is not None and self.plan.count_mode == "accepted" \
+            and not target.calibration
+
+        def _pass_counter() -> int:
+            return self._exposures_taken if quota else self._frames_done
+
+        def _left(step) -> bool:
+            return not self._step_complete(target, step) and \
+                f"{target.id}:{step.id}" not in self._set_aside
+
+        def _past_deadline(step) -> bool:
+            # EVERY DEADLINE HERE IS A SITE COMPUTATION: a panel's flip point,
+            # or a follower's ``group_ready_ts``, a crossing or a limit's
+            # clearing. The moment this line is said is that computation, to
+            # within a frame, so it is flagged (spec 6.9, #166).
+            if visit.next_frame_fits(now=time.time(),
+                                     exposure_s=step.exposure_s,
+                                     overhead_s=self._overhead_ema,
+                                     margin_s=FLIP_FRAME_MARGIN_S):
+                return False
+            bus.log("info",
+                    f"{target.name}: the visit ends here; its next "
+                    f"frame would not finish before the visit's "
+                    f"deadline", "sequence", site_derived=True)
+            self._visit_ended_by_deadline = True
+            return True
+
+        self._visit_ended_by_deadline = False
+        self._visit_started_at = started = time.time()
+        if (visit.passes is None and visit.deadline_ts is not None
+                and target.acquisition != "cycle"):
+            # BLOCKS UNDER A DEADLINE (a follower, spec 1.6; a sequential
+            # panel before its flip point, 5.1): each step to its count in
+            # turn, one frame per `_run_step`, the deadline asked between
+            # frames. The order is the target's own block order, which a
+            # round of every step would have turned into a cycle.
+            for si, step in steps:
+                while _left(step):
+                    if _past_deadline(step):
+                        return
+                    before = _pass_counter()
+                    await self._run_step(ti, si, target, step, max_frames=1)
+                    if _pass_counter() == before:
+                        # Took nothing (a discarded frame in attempts mode,
+                        # or the step's guard set it aside): the next step,
+                        # as block acquisition would go on to it.
+                        break
+            owed = [(si, s) for si, s in steps
+                    if not self._step_complete(target, s)]
+            if owed and all(f"{target.id}:{s.id}" in self._set_aside
+                            for _si, s in owed):
+                self._say_every_owed_step_set_aside(target, owed)
+            return
+        rounds = 0
+        while True:
+            owed = [(si, s) for si, s in steps
+                    if not self._step_complete(target, s)]
+            pending = [(si, s) for si, s in owed
+                       if f"{target.id}:{s.id}" not in self._set_aside]
+            if not pending:
+                if owed:
+                    self._say_every_owed_step_set_aside(target, owed)
+                return
+            before = _pass_counter()
+            for si, step in pending:
+                per = max(1, int(step.per_visit or 1))
+                if visit.deadline_ts is None:
+                    await self._run_step(ti, si, target, step, max_frames=per)
+                    continue
+                for _ in range(per):
+                    if not _left(step):
+                        break
+                    if _past_deadline(step):
+                        return
+                    await self._run_step(ti, si, target, step, max_frames=1)
+            rounds += 1
+            if _pass_counter() == before:
+                names = ", ".join(s.filter or "no filter" for _, s in pending)
+                bus.log("warning",
+                        f"{target.name}: a full pass took no frames with "
+                        f"{len(pending)} step(s) still short ({names}) — "
+                        f"ending the visit rather than spinning", "sequence")
+                return
+            complete = all(self._step_complete(target, s) for _, s in steps)
+            if visit.ends_at_round(rounds=rounds,
+                                   elapsed_s=time.time() - started,
+                                   complete=complete):
                 return
 
     async def _run_step(self, ti: int, si: int, target: Target, step,
@@ -2659,10 +8201,31 @@ class SequenceEngine:
 
         ``None`` means run to completion, which is what block acquisition does
         and what every existing caller gets.
+
+        WHICH COUNTER BOUNDS WHAT (#147):
+
+        * ``taken_this_visit`` bounds the VISIT, and counts ATTEMPTS, accepted
+          or rejected, in both count modes. The accepted-mode reject branch
+          used not to count, so one rejecting filter held the whole cycle for
+          up to ``max_consecutive_rejects`` subs a round.
+        * ``_step_rejects[key]`` bounds the STEP across visits: consecutive
+          rejects in accepted mode, cleared when this step banks an accepted
+          frame. At ``max_consecutive_rejects`` the step is set aside for the
+          run and this method returns at once for it from then on.
+        * ``_night_rejects`` bounds the NIGHT: consecutive rejects across
+          every step and target, ending it with ``NightQualityStop``.
+        * ``_exposures_taken`` goes up once per exposure this loop opens, for
+          the accepted-mode pass test in ``_run_steps``. An attempts-mode
+          retake, taken inside ``_handle_reject``, is not counted; attempts
+          mode never reads this counter.
         """
         plan = self.plan
         assert plan is not None
         key = f"{target.id}:{step.id}"
+        if key in self._set_aside:
+            # Set aside by its reject guard earlier this run. Whoever calls,
+            # it gets no filter move and no exposure; the ledger keeps it owed.
+            return
         taken_this_visit = 0
         # accepted-frame quota mode (spec §3): the predicate is the LEDGER's
         # effective-accepted count, not the attempt index. Attempts are
@@ -2680,7 +8243,6 @@ class SequenceEngine:
             return
         await self._apply_filter(step)
 
-        step_rejects = 0                 # per-step consecutive guard (spec §3)
         i = self._done.get(key, 0)
 
         def _visit_done() -> bool:
@@ -2743,7 +8305,17 @@ class SequenceEngine:
             # only the linear part of the drift and the trigger is what catches
             # the rest. See focus/tempcomp.py for the whole argument.
             await self._apply_temp_comp()
-            if await self._refocus_due():
+            if self._sparse_resweep_due:
+                # THE SWEEP OWED SINCE TWO SPARSE-FIELD FAILURES (#507, H4
+                # orchestrator ruling 4), due since a frame found the sky
+                # rich enough again (`_note_sparse_resweep`). Here, where
+                # the plan's own refocus runs, so it inherits that one's
+                # place between the flip gates; and in its stead, since one
+                # sweep answers both.
+                await self._autofocus("sparse-field re-sweep", step=step,
+                                      target=target, resweep=True)
+                self._frame_had_event = True
+            elif await self._refocus_due():
                 await self._autofocus("refocus", step=step, target=target)
                 self._frame_had_event = True
 
@@ -2785,11 +8357,24 @@ class SequenceEngine:
                                    f"{step.exposure_s:g}s  [{shown}/{step.count}]")
             self._hold_step = step
             info = await self._capture(step, target)
+            # Read right as the shutter closes (#134): whichever branch below
+            # banks this frame hands it to `_record_frame`, which clears the
+            # #72 recovery bound only on this evidence.
+            guided = await self._frame_was_guided()
+            # The frame loop's last look at the mount (#165). Accepted or
+            # rejected, the exposure is what the idle clock runs from.
+            self._idle_since = time.time()
+            self._exposures_taken += 1
             self._frames_since_dither += 1
             self._frames_since_focus += 1
             # quality-before-record (§1.9-D, C2-8): decide accept BEFORE _done
             # advances. EVERY frame goes in the report.
             accepted = self._check_quality(info)
+            # A sweep owed since two sparse-field failures falls due at the
+            # first light frame that counts enough stars (#507), accepted or
+            # not: the question is whether the sky can be focused on, not
+            # whether this frame is a keeper.
+            self._note_sparse_resweep(info, step, target)
             self._reporter_record(target, step, info, accepted=accepted)
             # SESSION STACK (monitor colour composite): ACCEPTED frames only.
             # A rejected sub is still written to disk, but it is not part of the
@@ -2809,7 +8394,11 @@ class SequenceEngine:
             self._observe_clouds(info)
             # PRO-3: per-frame instruction eval (accepted + info["hfr"] known).
             # Guarded so an empty instruction list makes this path dead —
-            # byte-identical to the pre-PRO-3 loop.
+            # byte-identical to the pre-PRO-3 loop. The context is read HERE,
+            # from the frame as the camera and the grader left it and before
+            # the banking below: a rule sees what it always saw, the relative
+            # watchdog's baseline as it stood before this frame could seed it.
+            ctx: TriggerContext | None = None
             if plan.instructions:
                 _now = time.time()
                 ctx = TriggerContext(
@@ -2826,9 +8415,32 @@ class SequenceEngine:
                     cloudy=self._clouds.cloudy(_now),
                     unsafe=await self._unsafe_now(),
                     panel_ready=self._panel_ready_now())
-                await self._run_instructions(ctx, target, step)
+            # THE FRAME IS BANKED BEFORE ANY INSTRUCTION ACTS ON IT (#373, S5
+            # orchestrator ruling 3). A fired ``run_target`` or
+            # ``skip_target`` raises `JumpTarget` out of the instructions, and
+            # when they ran first the jump unwound past the banking: the frame
+            # was on disk and in the report, and ``Session.frames`` and
+            # ``_done`` never counted it. A no-op jump reshot it at once (a
+            # two-frame target took three exposures), and a target a jump
+            # abandoned lost it to the ledger for good. So each verdict banks
+            # here, before the rules act: an accepted frame, an accepted-mode
+            # reject AS A REJECT, and an attempts-mode reject by its
+            # escalation. A RETAKE ALONE WAITS for the instructions: it is a
+            # fresh exposure, taken outside the gate stack above, and an
+            # ``abort`` or a jump a rule fires on the reject must not wait a
+            # whole exposure behind it, as it never did. A jumped visit can
+            # now complete its target (`_visit_panel`, ``_completion_owed``).
+            #
+            # THE BASELINE, TOO (GN-08). Banked after the instructions, the
+            # frame that fired a triggered refocus re-seeded the baseline the
+            # sweep had just cleared, so every relative rule after the sweep
+            # measured against the soft frame that fired it. Seeded here,
+            # before the sweep, the sweep clears it and the next accepted
+            # frame seeds it, as `_autofocus` says.
+            retake = False
             if accepted:
-                step_rejects = 0
+                # THIS step's run of rejects is over; other steps keep theirs.
+                self._step_rejects.pop(key, None)
                 self._night_rejects = 0            # resets on ANY accepted frame
                 # GN-08: seed the relative-watchdog baseline from the first
                 # accepted frame after a (re)focus. A flow with no autofocus at
@@ -2844,11 +8456,10 @@ class SequenceEngine:
                                 f"focus baseline HFR {self._focus_baseline_hfr:.2f} px "
                                 f"(relative watchdogs measure against this)",
                                 "sequence")
-                self._record_frame(key, i, target, step, info)
+                self._record_frame(key, i, target, step, info, guided=guided)
                 i += 1
                 taken_this_visit += 1
-                continue
-            if quota:
+            elif quota:
                 # accepted mode (spec §3): rejects are ALWAYS kept on disk and
                 # ledger-recorded (regrading needs the file) — escalation's
                 # hfr_reject_action applies to attempts mode ONLY. _done does
@@ -2857,25 +8468,78 @@ class SequenceEngine:
                 self._record_session_frame(target, step, info,
                                            auto_accepted=False)
                 self._end_discarded_frame()
-                step_rejects += 1
+                # A REJECT IS AN ATTEMPT (#147). The visit is bounded by
+                # attempts, as `_visit_done` says; without this a rejecting
+                # filter kept the visit, and every other filter waiting,
+                # until the step or night guard tripped.
+                taken_this_visit += 1
+                step_rejects = self._step_rejects.get(key, 0) + 1
+                self._step_rejects[key] = step_rejects
                 self._night_rejects += 1
+            elif self._reject_action() == "retake":
+                retake = True
+            else:
+                # attempts mode: legacy escalation path (warn / discard).
+                if not await self._handle_reject(info, key, i, target, step):
+                    self._record_frame(key, i, target, step, info,
+                                       accepted=False, guided=guided)
+                i += 1
+                taken_this_visit += 1
+            if ctx is not None:
+                await self._run_instructions(ctx, target, step)
+            if accepted:
+                continue
+            if quota:
+                # The reject guards act after the rules, as they always did, so
+                # a rule on the reject that trips a guard still runs first.
                 if self._policy.max_consecutive_rejects_night \
                         and self._night_rejects >= self._policy.max_consecutive_rejects_night:
                     raise NightQualityStop(
                         f"{self._night_rejects} consecutive rejects across targets")
                 if self._policy.max_consecutive_rejects \
                         and step_rejects >= self._policy.max_consecutive_rejects:
-                    bus.log("warning",
-                            f"{target.name}: {step_rejects} consecutive rejects — "
-                            "skipping to the next step (shortfall stays in the "
-                            "ledger for another night)", "sequence")
+                    self._set_step_aside(target, step, key, step_rejects)
                     return
                 continue
-            # attempts mode: legacy escalation path (warn / discard / retake).
-            if not await self._handle_reject(info, key, i, target, step):
-                self._record_frame(key, i, target, step, info, accepted=False)
-            i += 1
-            taken_this_visit += 1
+            if retake:
+                # attempts mode, retake: unlink and re-expose, after the rules.
+                if not await self._handle_reject(info, key, i, target, step):
+                    self._record_frame(key, i, target, step, info,
+                                       accepted=False, guided=guided)
+                i += 1
+                taken_this_visit += 1
+
+    def _set_step_aside(self, target: Target, step, key: str, rejects: int) -> None:
+        """The per-step reject guard tripped: set this step aside for TONIGHT
+        (#147) and say so in words.
+
+        Set aside is NOT done. The ledger still owes every frame the step has
+        not banked, so the session ends dormant. From now on ``_run_steps``
+        leaves the step out of its pending list and ``_run_step`` returns at
+        once for it. Before the counter carried across visits the guard only
+        ended the visit, and the next round walked straight back into the
+        same filter.
+
+        RECORDED FOR THE NIGHT AND SAVED AT ONCE (#147 part 2, #208, #189 S2;
+        spec 3.4). S0 kept the set-aside in engine memory, so a restart or an
+        auto-resume the same night tried the step again, and this sentence
+        promised no more than "the rest of this run". The record in
+        ``Session.set_aside`` carries tonight's night key, `start()` reads
+        tonight's records back, and the sentence says what is now true: a
+        restart tonight does not retry the step, the next night does. (Before
+        S0 it said "for another night", which was false the other way.)
+        """
+        owed = step.count
+        if self._session is not None:
+            owed = max(0, step.count - self._session.accepted(step.id))
+        line = (f"{target.name}: {step.filter or 'no filter'} set aside for "
+                f"tonight after {rejects} consecutive rejects — its {owed} "
+                f"frame(s) stay owed in the ledger; a restart tonight does not "
+                f"retry it; the next night does")
+        self._set_aside[key] = line
+        self._persist_set_aside(target.id, line, step_id=step.id,
+                                kind="rejects")
+        bus.log("warning", line, "sequence")
 
     @staticmethod
     def _effective_filter(step, info: dict) -> str | None:
@@ -2925,6 +8589,14 @@ class SequenceEngine:
         except Exception as e:
             bus.log("warning", f"report record failed: {e}", "sequence")
 
+    def _reject_action(self) -> str:
+        """The rig's ``escalation.hfr_reject_action`` for an attempts-mode
+        reject: "warn" (keep it), "discard" or "retake". One reading for
+        `_handle_reject` and for `_run_step`, which banks every disposition
+        but a retake before the plan's instructions act (#373)."""
+        cfg = self._cfg
+        return cfg.escalation.hfr_reject_action if cfg else "warn"
+
     async def _handle_reject(self, info: dict, key: str, i: int, target: Target,
                              step) -> bool:
         """Act on a quality-rejected frame per ``cfg.escalation.hfr_reject_action``
@@ -2944,7 +8616,7 @@ class SequenceEngine:
           cap is hit, fall back to discard.
         """
         cfg = self._cfg
-        action = cfg.escalation.hfr_reject_action if cfg else "warn"
+        action = self._reject_action()
         ti = self._index_of_target(target)
 
         if action == "warn":
@@ -2983,7 +8655,10 @@ class SequenceEngine:
             accepted = self._check_quality(new_info)
             self._reporter_record(target, step, new_info, accepted=accepted)
             if accepted:
-                self._record_frame(key, i, target, step, new_info)
+                # This retake's OWN exposure (#134): the guider may have come
+                # back, or gone down, since the frame that was rejected.
+                self._record_frame(key, i, target, step, new_info,
+                                   guided=await self._frame_was_guided())
                 return True
             # retaken frame still bad → discard and stop retaking this one.
             self._unlink_saved(new_info)
@@ -3128,6 +8803,43 @@ class SequenceEngine:
         if context == "slew" and target is not None:
             await self._enforce_mount_floor(projected=True, target=target)
 
+    def _camera_is_silent(self) -> bool:
+        """Has the camera stopped producing frames while the run expects them?
+
+        The other half of issue #16, and the half this layer can answer. The
+        issue's first ask - that `connected` be backed by something the device
+        must actually answer - is a change in every camera backend and cannot be
+        validated without the hardware; this one needs nothing but the clock the
+        no-progress watchdog already keeps.
+
+        Distinct from that watchdog, which ABORTS: it exists to end a night that
+        is not going anywhere, its threshold is tens of minutes, and by the time
+        it fires the sky is gone. This fires early enough to RECOVER, and hands
+        the role to the same reconnect the gate performs for a device that had
+        the decency to report itself gone.
+
+        `_progress_expected` gates it for the same reason it gates the watchdog:
+        the engine sits at state `running` with no frames during a scheduled
+        wait, a slew, a centre, an autofocus and the cooling ramp, and a camera
+        is not silent during those - nobody asked it for anything.
+        """
+        if not self._progress_expected:
+            return False
+        expected = max(0.0, float(self._cur_exposure_s)) + float(self._overhead_ema)
+        bound = max(_CAMERA_SILENT_FLOOR_S, _CAMERA_SILENT_FACTOR * expected)
+        idle = time.time() - self._last_frame_at
+        if idle <= bound:
+            return False
+        bus.log("warning",
+                f"the camera reports connected and has produced no frame in "
+                f"{idle / 60:.1f} min, against {bound / 60:.1f} expected - "
+                f"treating it as dropped and reconnecting", "sequence")
+        # Re-stamp, so the reconnect gets a full window to produce a frame
+        # before this fires again. Without it every later frame boundary sees
+        # the same stale clock and reconnects on each one.
+        self._last_frame_at = time.time()
+        return True
+
     async def _reconnect_gate(self) -> None:
         """Heal a device that has dropped out, before the next exposure needs it.
 
@@ -3165,7 +8877,12 @@ class SequenceEngine:
                 needed.append("telescope")
         for role in needed:
             dev = self.hub.devices.get(role)
-            if dev is None or getattr(dev, "connected", False):
+            if dev is None:
+                continue
+            # A camera that claims to be connected and is producing nothing is
+            # the case `connected` cannot express (issue #16).
+            if getattr(dev, "connected", False) and not (
+                    role == "camera" and self._camera_is_silent()):
                 continue
             tries = max(1, cfg.escalation.reconnect_retries)
             bus.log("warning", f"{role} has dropped out — reconnecting "
@@ -3336,10 +9053,37 @@ class SequenceEngine:
                             "safety is armed with no monitor assigned, so the "
                             "sky verdict from the frames is standing in for one "
                             f"— {self._clouds.describe(time.time())}", "safety")
+                # A HOLD NEEDS A TARGET (#221, H2 orchestrator ruling 2, spec
+                # "Still waiting on the owner" item 5). With none - a
+                # scheduler wait, or day darks after the park - it had nothing
+                # to watch and nothing to point at, and on a stopped mount
+                # every check it took was a streak read as cloud: observed on
+                # the clocked simulator, a hold entered from a wait ran on
+                # under a sky that had cleared until its 45 minute bound
+                # parked the rig and ended the run. So no hold opens: it is
+                # said once for the spell and published, whatever called the
+                # gate goes on (a wait with its idle park-hold on the mount,
+                # day darks with their frames, which need no sky), and the
+                # next target's pre-slew gate opens a hold with a target.
+                if target is None:
+                    # DAY DARKS ARE NOT A WAIT. They run after the run has
+                    # ended, with the mount parked, so there is no next
+                    # target's setup to open the hold the note promises, and
+                    # nothing would end it. A dark needs no sky: nothing is
+                    # said or published there.
+                    if not self._day_darks_gate:
+                        self._note_hold_deferred()
+                    return
                 await self._hold_for_clear(
                     "no safety monitor is assigned and the frames say the sky "
                     "has closed in", target)
                 return
+            if target is None and self._hold_deferred is not None:
+                # The sky no longer reads cloudy, so the wait's note is over.
+                # Published now: a constraint wait publishes nothing of its
+                # own between ticks, and the note would outlive the cloud.
+                self._hold_deferred = None
+                self._set_state()
         if self._warned_no_safety_source:
             return
         self._warned_no_safety_source = True
@@ -3361,6 +9105,42 @@ class SequenceEngine:
                     "the weather for this run. Assign a safety monitor, or turn safety "
                     "off so the run does not claim a guard it does not have.",
                     "safety")
+
+    #: What ``sky.hold_deferred`` says while a cloudy sky has no target to hold
+    #: for (`_note_hold_deferred`). Words only: it is published.
+    _HOLD_DEFERRED = ("the frames say the sky has closed in, with no target "
+                      "set up to judge it from, so no cloud hold is open; the "
+                      "next target's setup opens one if the sky is still closed")
+
+    def _note_hold_deferred(self) -> None:
+        """A cloudy sky with no target to hold for (#221): say so, once per
+        wait spell, and publish it, and open no hold.
+
+        ONCE PER SPELL, because a wait asks the gate every
+        ``SCHEDULE_WAIT_STEP_S``, and a line a tick would roll the 200-line
+        ring over in a quarter of an hour of cloud. The spell ends at the next
+        target's setup (`_setup_target`), so a later wait under a closed sky
+        says it again.
+
+        PUBLISHED IN ``sky.hold_deferred`` for as long as it is true: from the
+        first cloudy gate until the sky no longer reads cloudy, a setup
+        begins, or the scheduler ends (`_run`), since after the scheduler no
+        setup is coming. Published at once when it starts, since nothing else
+        in a constraint wait publishes between ticks. Day darks, which ask the
+        gate after the run has ended, never note it.
+        """
+        started = self._hold_deferred is None
+        self._hold_deferred = self._HOLD_DEFERRED
+        if not self._hold_deferred_said:
+            self._hold_deferred_said = True
+            bus.log("warning",
+                    "the frames say the sky has closed in, with no target set "
+                    "up to judge it from - no cloud hold opens without one. "
+                    "The run goes on as it was (a wait keeps its idle "
+                    "park-hold on the mount), and the next target's setup "
+                    "opens the hold if the sky is still closed", "sequence")
+        if started:
+            self._set_state()
 
     async def _read_safety(self):
         """The cached SafetyReading from the hub's own-cadence poller. When the
@@ -3431,6 +9211,13 @@ class SequenceEngine:
         """
         cfg = self._cfg
         act = action or (cfg.safety.on_unsafe if cfg else "pause")
+        # A WAIT THAT READ THIS VERDICT BESIDE IT ENDS BEFORE THE PAUSE OR THE
+        # CLOSE (#452, `_unsafe_ends_the_wait`), and not before a warning,
+        # which ends nothing, or a raise, whose way out cancels the wait.
+        # Taken once, here, so a gate inside what follows (the pause's
+        # re-acquire, the reopen's setup) finds none to end.
+        ends_the_wait, self._unsafe_ends_the_wait = (
+            self._unsafe_ends_the_wait, None)
         # PRO-4: a CLOSEABLE roof must CLOSE over the gear, not pause-hold under
         # open sky. When close_dome_on_unsafe is set and a dome is connected we do
         # NOT fall through to the warn/pause/abort branches below.
@@ -3460,6 +9247,8 @@ class SequenceEngine:
             # Reopen ENABLED (PRO-4 D3): instead of ending the run, CLOSE the roof
             # over the parked gear (park-first, never-crush via close_observatory),
             # wait for safe-again (debounced), REOPEN, re-acquire, and RESUME.
+            if ends_the_wait is not None:
+                ends_the_wait()
             if await self._close_for_reopen(dome, reason):
                 # UX #8: the roof MOVING is its own event in the report timeline —
                 # the artefact used to say "we paused for cloud" and never mention
@@ -3472,6 +9261,8 @@ class SequenceEngine:
             # parked mount). Do NOT enter the wait-reopen loop over a still-open roof
             # — FALL BACK to the existing open-sky park-hold pause so the gear is
             # never left in a bad state (the roof was never actuated → still OPEN).
+            # An idle stop the close ended is asking again already (#345,
+            # `_rearm_idle_stop`), and the pause reads its own stop back.
             bus.log("warning", "auto-reopen: roof close refused/failed — holding "
                                "under open sky (park-hold pause)", "safety")
             self._record_safety("roof close refused/failed — gear still under "
@@ -3485,6 +9276,8 @@ class SequenceEngine:
             raise SafetyAbort(reason)
 
         # act == "pause": stop tracking / park-hold and wait for safe-again.
+        if ends_the_wait is not None:
+            ends_the_wait()
         await self._park_hold_pause(reason, target)
 
     @staticmethod
@@ -3521,7 +9314,71 @@ class SequenceEngine:
         the mount floor+pier and RESUME (re-acquire the target), or ``max_pause_min``
         elapses → SafetyAbort. Extracted verbatim from the old inline pause path so
         it can also serve as the close-refused fallback for the auto-reopen feature
-        (INVARIANT 2). Behavior is unchanged for the plain pause caller."""
+        (INVARIANT 2). Behavior is unchanged for the plain pause caller.
+
+        THE STOP IS READ BACK, AND ASKED AGAIN (#345). `_park_hold` swallows
+        every failure, so its ``set_tracking(False)`` is a request, not a
+        fact, the rule the idle stop has kept since #189 A3 ("A STOP IS READ
+        BACK, NOT ASSUMED", `_idle_stop_retry`). The pause read nothing back,
+        so on a flaky link a stop the mount never took left it tracking,
+        unwatched, for as long as the pause lasted, which with
+        ``max_pause_min`` 0 is until the weather clears. Now the stop is read
+        back once the pause is published, and while the mount has not
+        confirmed it, it is asked again at most once per
+        ``IDLE_STOP_RETRY_S``, from the pause's own poll loop, said once. An
+        idle stop still asking on its own task (a plain pause does not end
+        it, and a refused roof close re-arms it, `_rearm_idle_stop`) is
+        already asking for the same stop on the same clock, so the pause
+        leaves the asking to it while it is alive: one ask a minute, not two.
+        On the pause's own loop rather than a task of its own, unlike the
+        idle stop (#216): that rule keeps a dead link from stretching the
+        cadence at which a waiting run looks for rain, and this loop looks
+        only for the weather to clear. A dead link costs it up to two
+        ``MOUNT_QUERY_TIMEOUT_S`` a minute, so it resumes, or ends the run at
+        ``max_pause_min``, up to that much later, with the stop still being
+        asked for all the while.
+
+        THE ASKS KEEP THEIR CLOCK WHILE THE COOLER GATE WAITS (#453). They
+        were made at the top of this loop's pass, and the gate below holds
+        the pass for up to ``cool_timeout_s`` and ``COOLER_SETTLE_MAX_S``
+        more: 25 minutes at the defaults in which a stop the flaky link had
+        dropped was asked for by nobody, the mount perhaps still tracking,
+        the #345 hazard by another road. So the asking is one function
+        (``ask_if_due``) that this loop calls on each pass and the gate's
+        weather watch calls on each of its turns (`_cooler_gate`'s
+        ``asks``), on the pause's own task either way, so its due time is
+        kept whichever of the two is waiting.
+
+        NO ASK ON AN ANSWER SOMEONE ELSE MAY HAVE CHANGED (#471, #394's
+        second half). While an idle stop asks on its own task the pause
+        leaves the asking to it, and ``unconfirmed`` is then an answer read
+        before that task confirmed its stop and ended. At the next due time
+        the pause asked once more, of a mount already stopped. So once the
+        pause has leaned on an idle stop (it was alive when the stop was
+        read back, or at a due time), the first due time after it ends
+        reads the stop back first, and asks only if it is still not
+        confirmed. A pause that never leaned on one asks as before, with no
+        read in front: the mount traffic of a plain pause is unchanged.
+
+        THE CLOSE-OUT BEFORE THE FLOOR RE-CHECK (item 11). The re-check can
+        refuse, and since S3 a floor or keep-out refusal at a panel's own
+        hop is a reach wait the run goes on from (`_hop_refused_by_a_limit`,
+        S3 orchestrator ruling 1), not the end of the night. The close-out
+        used to come after the re-check, so a pause opened by a panel's own
+        pre-slew gate that ended in that refusal never closed: no line, no
+        resume in the report, UNSAFE still published for the rest of the
+        night, the unsafe streak left standing, and no cooler gate before
+        the next panel's frames. The pause is over when the weather says so,
+        whatever the re-check then says about the target.
+
+        THE COOLER GATE BEFORE "SAFE AGAIN" (#448, S4 review item 9). The
+        close-out runs the gate first, and the gate reads the monitor on its
+        own clock while it waits (`_cooler_gate`'s ``weather``); only once it
+        has passed does the pause say "conditions safe again", record the
+        resume, publish the safe verdict and reset the unsafe streak. A read
+        that is not safe inside the gate ends its wait, and the pause goes
+        on, still paused, as it did before the streak, having published
+        nothing it would have to take back."""
         cfg = self._cfg
         await self._park_hold()
         self._set_state(state="paused", detail=f"paused (unsafe): {reason}")
@@ -3529,26 +9386,112 @@ class SequenceEngine:
         max_pause_s = (cfg.safety.max_pause_min * 60.0) if cfg else 0.0
         pause_started = time.time()
         self._safe_streak = 0
+        unconfirmed = await self._pause_stop_unconfirmed(said=False)
+        next_ask = time.time() + IDLE_STOP_RETRY_S
+        # Whether an idle stop asking on its own task may have answered the
+        # stop since ``unconfirmed`` was read (#471, the docstring).
+        idle = self._idle_stop_task
+        leaned = idle is not None and not idle.done()
+
+        async def ask_if_due() -> None:
+            """Ask the unconfirmed stop again if its minute is up (#345),
+            from this loop or from the cooler gate's watch (#453)."""
+            nonlocal unconfirmed, next_ask, leaned
+            if not unconfirmed or time.time() < next_ask:
+                return
+            idle = self._idle_stop_task
+            if idle is not None and not idle.done():
+                leaned = True
+            else:
+                if leaned:
+                    leaned = False
+                    unconfirmed = await self._pause_stop_unconfirmed(said=True)
+                if unconfirmed:
+                    await self._stop_tracking_quietly()
+                    unconfirmed = await self._pause_stop_unconfirmed(said=True)
+            next_ask = time.time() + IDLE_STOP_RETRY_S
+
         while True:
             await self._checkpoint()
             await asyncio.sleep(SAFETY_PAUSE_POLL_S)
+            await ask_if_due()
             reading = await self._read_safety()
             if reading is not None and not reading.stale and reading.is_safe:
                 self._safe_streak += 1
+                # THE COOLER FIRST, same rule as the cloud hold. A safety
+                # pause is exactly as long as the weather says, and every
+                # reason one lasts is a reason the sensor may have drifted.
+                # Unwatched, unlike the cloud hold's (#236): the pause
+                # stopped tracking itself above, so nothing is tracked.
+                # Part of the close-out (item 11), so a re-check below that
+                # refuses the target does not leave the next target's
+                # frames to a sensor nobody looked at.
+                #
+                # AND BEFORE "SAFE AGAIN" (#448, S4 review item 9). S4 said
+                # it, recorded it, published it and reset the streak ahead
+                # of this wait, which reads no safety for up to
+                # ``cool_timeout_s`` + ``COOLER_SETTLE_MAX_S``: rain that
+                # came back while the sensor settled found every screen
+                # told the weather was safe and the pause over. Now the
+                # gate reads the monitor on its own clock (``weather``), and
+                # the pause closes out only once the gate has passed; a read
+                # that is not safe inside it ends the wait, and the pause
+                # goes on as it did before the streak, publishing nothing.
+                gated = False
                 if self._safe_streak >= resume_n:
-                    # safe-again: re-check the mount-alt floor + pier BEFORE resuming
-                    # (§1.9-A "on resume re-check horizon+pier"). During a long pause
-                    # the pointed target can drift below the floor / toward a pier
-                    # limit — an unsafe destination escalates to SafetyAbort/park
-                    # rather than resuming exposures into the tree.
-                    if target is not None:
-                        await self._enforce_mount_floor(projected=True, target=target)
+                    # ``is not False``: a gate that returns nothing (a test's
+                    # stand-in) passed, as every gate did before #448.
+                    # ``asks``: the unconfirmed stop is still asked on its
+                    # minute while the gate waits (#453).
+                    gated = await self._cooler_gate(
+                        "resumed after a safety pause",
+                        weather=True, asks=ask_if_due) is not False
+                    if not gated:
+                        bus.log("info", "the weather turned while the sensor "
+                                        "settled — still paused, the mount "
+                                        "still stopped", "safety")
+                        self._safe_streak = 0
+                        self._set_state(state="paused",
+                                        detail=f"paused (unsafe): {reason}")
+                if gated:
                     bus.log("info", "conditions safe again — resuming", "safety")
                     self._record_safety("conditions safe again", "resume")
                     self.hub.publish_safety({"is_safe": True,
                                              "reason": "safe again",
                                              "action": "resume", "stale": False})
                     self._unsafe_streak = 0
+                    # THE PAUSE CLOSES THE IDLE LATCH ITS STOP SATISFIED
+                    # (#530), when, and only when, the stop was read back as
+                    # confirmed. The latch is what says "this idle spell's
+                    # stop has been made", and this pause made it. Left
+                    # open, a pause that re-acquires nothing (the scheduler
+                    # wait's, the run-start cooling wait's, the camera
+                    # lane's, all target=None, or one whose re-check below
+                    # refuses its target) handed the wait's next idle look a
+                    # mount it counted as still tracking the target it was
+                    # left on: once WAIT_TEARDOWN_S had passed it said
+                    # "nothing has been shot for a while and the mount is
+                    # still tracking it" about a mount this pause had
+                    # stopped and read back as stopped, and stopped it
+                    # again. #236's rule for this pause's own cooler gate,
+                    # kept by the waits #452 made read the weather, and now
+                    # by `_wait_until`. A stop still UNCONFIRMED leaves the
+                    # latch open on purpose: the idle look asking again is
+                    # then a backstop for a stop nobody saw taken. A setup
+                    # that re-acquires a target re-opens the latch, as it
+                    # always has, so a pause that goes on to one loses
+                    # nothing by closing it here first.
+                    if not unconfirmed:
+                        self._idle_hold_open = False
+                    # safe-again: re-check the mount-alt floor + pier BEFORE resuming
+                    # (§1.9-A "on resume re-check horizon+pier"). During a long pause
+                    # the pointed target can drift below the floor / toward a pier
+                    # limit — an unsafe destination escalates to SafetyAbort/park
+                    # rather than resuming exposures into the tree. AFTER the
+                    # close-out above (item 11): a panel's refusal here is a
+                    # reach wait, and the run goes on.
+                    if target is not None:
+                        await self._enforce_mount_floor(projected=True, target=target)
                     # CRITICAL: _park_hold turned TRACKING OFF (and stopped
                     # guiding) when we paused, and the sky kept moving while the
                     # mount sat fixed — the target has drifted out of frame. Just
@@ -3559,12 +9502,17 @@ class SequenceEngine:
                     # (goto_and_center) or re-slew, and restart guiding per plan —
                     # exactly as if we were acquiring the target fresh. For a
                     # calibration target (no mount) there is nothing to restore.
-                    #
-                    # THE COOLER FIRST, same rule as the cloud hold. A safety
-                    # pause is exactly as long as the weather says, and every
-                    # reason one lasts is a reason the sensor may have drifted.
-                    await self._cooler_gate("resumed after a safety pause")
-                    if target is not None and not target.calibration:
+                    if (target is not None and not target.calibration
+                            and self._acquisition_behind_gate is target):
+                        # A SETUP WAITS BEHIND THE GATE THAT PAUSED (#241, H3
+                        # orchestrator ruling 4): `_setup_target`'s pre-slew
+                        # gate, or a cloud hold's re-point. It makes the
+                        # acquisition when this returns to it; running a setup
+                        # here as well was a second one for the same target.
+                        bus.log("info", f"re-acquiring {target.name} after "
+                                        f"pause, through the acquisition the "
+                                        f"pause interrupted", "sequence")
+                    elif target is not None and not target.calibration:
                         ti = self._index_of_target(target)
                         bus.log("info", f"re-acquiring {target.name} after pause "
                                         "(tracking on, re-center, restart guiding)",
@@ -3578,6 +9526,27 @@ class SequenceEngine:
                 bus.log("error", "max pause elapsed while unsafe — parking", "safety")
                 raise SafetyAbort(f"unsafe for over {cfg.safety.max_pause_min} min: {reason}")
 
+    async def _pause_stop_unconfirmed(self, *, said: bool) -> bool:
+        """Read back the safety pause's stop of tracking (#345): True while
+        the mount has not confirmed it, False once it reports not tracking,
+        or when there is no mount to ask. ``said`` is whether the pause has
+        already said so: the first unconfirmed read-back of a pause says it,
+        once, in words, and the asks after it say nothing, as the idle
+        stop's retries say nothing (the /api/logs ring holds 200 lines)."""
+        if "telescope" not in self.hub.devices:
+            return False
+        tracking = await self._tracking_now()
+        if tracking is False:
+            return False
+        if not said:
+            detail = ("it still reports tracking" if tracking
+                      else "its tracking state cannot be read")
+            bus.log("warning",
+                    f"the mount did not confirm the safety pause's stop of "
+                    f"tracking ({detail}) — asking again about once a minute "
+                    f"while the pause lasts", "sequence")
+        return True
+
     async def _close_for_reopen(self, dome, reason: str) -> bool:
         """Auto-reopen (PRO-4 D3) — CLOSE step. Park the mount clear (fenced, like
         the wind-down) then close the roof over it via the never-crush
@@ -3586,43 +9555,137 @@ class SequenceEngine:
         we never command ``close_shutter`` directly. On any refusal/failure returns
         ``False`` (INVARIANT 2: the caller falls back to an open-sky park-hold
         pause) — ``close_observatory`` never touches the shutter when it refuses,
-        so the roof stays OPEN and nothing is ever crushed."""
+        so the roof stays OPEN and nothing is ever crushed.
+
+        THE WIND-DOWN'S SHAPE (#343, the #270 class). This close stopped the
+        guider through `_park_hold`, which awaits the stop under the guider's
+        own ``GUIDE_OP_TIMEOUT_S``: a guider that had stopped answering (PHD2
+        hung, a USB glitch that took it out) held the park, and the roof,
+        open for up to 120 s, plus the stop of tracking's 30 s, in the
+        weather that closed it, the delay #270 took out of the wind-down. Now,
+        as the wind-down does (`_wind_down`): the guider stop is asked on a
+        task of its own; the park waits for it for ``WIND_DOWN_GUIDER_STOP_S``
+        and no longer (`_wait_for_the_guider_before_the_park`), so a guide
+        pulse in flight has ended before the park begins (#311) and a hung
+        guider holds the park for that cap; then tracking is stopped, the
+        mount parked and the park read back (`_fenced_park`,
+        `_park_and_read_back`), the roof closed, and the guider stop reaped
+        after the close, bounded by ``GUIDE_OP_TIMEOUT_S`` from when it was
+        asked. A cancel that lands in the guider wait is noted, tracking is
+        still stopped, and the cancel is raised before the park: an Abort
+        starts no motion, and the idle stop's task, which would have stopped
+        the mount, has already been ended here.
+
+        A REFUSED CLOSE RE-ARMS THE IDLE STOP (#345). When this ended an idle
+        stop that was still asking and the close is then refused or fails,
+        the retries are started again on a fresh epoch before the caller
+        falls back to the open-sky pause (`_rearm_idle_stop`).
+
+        SO DOES A CLOSE THAT AN ABORT CUTS (#393). An operator's Abort that
+        lands anywhere in the close, its guider wait, its park, the park's
+        read-back or the roof close, went straight out of here with the
+        stop it had ended re-armed by no one, so the Abort's
+        `_finish_idle_stop` (from `_run`'s end, or `abort` itself) found no
+        task and asked the mount nothing: a stop the idle watch decided,
+        abandoned by a run's end (owner list item 14). Now the exception path
+        re-arms it before the exception goes on, whatever the exception:
+        the hazard is the same whichever way the close ended, and every
+        ending deals with the re-armed task, `_finish_idle_stop` completing
+        it (an Abort, a failure) or `_hand_idle_stop_to_the_park` handing it
+        to a park (item 19). The re-armed task has made its first attempt
+        (``_idle_stop_first_made``), so the Abort does not wait for one; it
+        ends the retries, asks the mount once more and reads it back."""
         bus.log("info", f"auto-reopen: closing roof over parked gear — {reason}",
                 "safety")
-        # Stop guiding + tracking, then PARK (so close_observatory can confirm
-        # parked before the roof travels through the mount's volume).
-        await self._park_hold()
-        await self._fenced_park()
-        from .roof import close_observatory
-        tel = self.hub.devices.get("telescope")
-        return await close_observatory(dome, tel, log=bus.log)
+        # THE IDLE STOP'S TASK ENDS FIRST (#306), as it does before every
+        # other path that moves the mount (`_setup_target`, `_hold_repoint`,
+        # a resume, a flip). A stop the mount did not confirm is asked again
+        # on that task every IDLE_STOP_RETRY_S, and one still alive here
+        # could send ``set_tracking(False)`` while the park below runs: two
+        # writers to a mount that has one owner at a time, and what an AM5
+        # does with a stop mid-park has not been measured (at worst a park it
+        # abandons, and a roof `close_observatory` then leaves open in the
+        # weather that closed it). Cancelled and awaited, so nothing of the
+        # task's is in flight when the stop of tracking below talks to the
+        # mount; the stop it was making is made there, and the park after it
+        # stops the mount more surely still. The reopen's setup re-opens the
+        # latch.
+        #
+        # Inside the ``try`` below (#393): an Abort can land while this waits
+        # for that task to end, which is long only when its guider stop eats
+        # the cancel (the #235 shape), and the stop is ended then as surely
+        # as after. So whether one was alive is taken before the await, as
+        # the await would answer it, and the handler re-arms on that.
+        idle = self._idle_stop_task
+        ended = idle is not None and not idle.done()
+        guider_stop = None
+        try:
+            ended = await self._cancel_idle_stop_retry()
+            reap_by = time.time() + GUIDE_OP_TIMEOUT_S
+            if self.hub.guider and self.hub.guider.connected:
+                guider_stop = asyncio.ensure_future(
+                    self._stop_guiding_quietly())
+            cancelled = await self._wait_for_the_guider_before_the_park(
+                guider_stop)
+            # Stop tracking, then PARK (so close_observatory can confirm
+            # parked before the roof travels through the mount's volume).
+            await self._stop_tracking_quietly()
+            if cancelled:
+                raise asyncio.CancelledError()
+            await self._fenced_park()
+            from .roof import close_observatory
+            tel = self.hub.devices.get("telescope")
+            closed = await close_observatory(dome, tel, log=bus.log)
+            if not closed and ended:
+                self._rearm_idle_stop()
+        except BaseException:
+            # A cancel: nothing waits for the guider stop now, and it may
+            # not outlive the run's teardown asking the guider.
+            if guider_stop is not None and not guider_stop.done():
+                guider_stop.cancel()
+            # THE STOP THIS CLOSE ENDED IS ASKED FOR AGAIN (#393), before
+            # the cancel goes on, so the ending that follows finds a task to
+            # complete (`_finish_idle_stop`) or to hand to its park. Nothing
+            # here awaits, so a second cancel cannot skip it.
+            if ended:
+                self._rearm_idle_stop()
+            raise
+        await self._reap_by(guider_stop, reap_by)
+        return closed
 
-    async def _fenced_park(self) -> None:
-        """Park the mount under the hub motion fence+lock (best-effort; never
-        raises), mirroring the wind-down park so ``close_observatory`` can confirm
-        parked before moving the roof. A park failure/timeout is swallowed here —
-        ``close_observatory`` then RE-CONFIRMS ``is_parked`` and REFUSES to move the
-        shutter (fail-safe), so a failed park never crushes the mount."""
+    async def _fenced_park(self) -> bool:
+        """Park the mount under the hub motion fence+lock and read the park
+        back (best-effort; never raises), mirroring the wind-down park so
+        ``close_observatory`` can confirm parked before moving the roof.
+        Returns whether the mount parked. A park failure/timeout is swallowed
+        here — ``close_observatory`` then RE-CONFIRMS ``is_parked`` and REFUSES
+        to move the shutter (fail-safe), so a failed park never crushes the
+        mount.
+
+        READ BACK, AS THE WIND-DOWN'S IS (#343). The park went out once and
+        was taken at its word, so a lost park (the AM5's ``:hP#`` inside a
+        guide pulse, #311) or an asynchronous one still slewing (item 9) was
+        caught only by `close_observatory`'s refusal, and the night fell back
+        to the open-sky pause with the roof open. `_park_and_read_back` waits
+        for a park on its way, parks once more at once when the mount reads
+        neither parked nor slewing, and leaves a park that raised or timed
+        out alone."""
         tel = self.hub.devices.get("telescope")
         if not (tel and getattr(tel, "connected", False)):
-            return
+            return False
+        # The roof close's park is a stop the engine made (#248): after the
+        # reopen, the mount is wherever home is, not on any target.
+        self._note_mount_stopped()
         bus.log("info", "parking mount", "sequence")
         bump = getattr(self.hub, "bump_motion_epoch", None)
         if callable(bump):
             bump()
-        try:
-            lock = getattr(self.hub, "_motion_lock", None)
-            if lock is not None:
-                async with lock:
-                    await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
-            else:
-                await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            bus.log("warning", f"park timed out after {PARK_TIMEOUT_S:.0f}s during "
-                               "auto-reopen close — continuing", "sequence")
-        except Exception as e:
-            bus.log("warning", f"park failed during auto-reopen close: {e}",
-                    "sequence")
+        lock = getattr(self.hub, "_motion_lock", None)
+        if lock is not None:
+            async with lock:
+                return await self._park_and_read_back(
+                    tel, during="auto-reopen close")
+        return await self._park_and_read_back(tel, during="auto-reopen close")
 
     async def _await_safe_and_reopen(self, dome, reason: str, *,
                                      target: Target | None) -> None:
@@ -3652,6 +9715,52 @@ class SequenceEngine:
             if reading is not None and not reading.stale and reading.is_safe:
                 self._safe_streak += 1
                 if self._safe_streak >= resume_n:
+                    # THE COOLER, as the pause's release checks it, and part of
+                    # the same close-out (item 11): the roof was shut for as
+                    # long as the weather said, and every reason a closure
+                    # lasts is a reason the sensor may have drifted. The
+                    # reopen never ran it, so the first frames after a long
+                    # closure were shot at whatever the sensor read. Unwatched:
+                    # the mount is parked, so nothing is tracked. Before the
+                    # floor re-check below, whose refusal of a panel is a reach
+                    # wait the run goes on from (S3 orchestrator ruling 1).
+                    #
+                    # UNDER THE CLOSED ROOF, BEFORE IT OPENS. The gate reads
+                    # the sensor and nothing else: no safety read, for up to
+                    # ``cool_timeout_s`` to reach the band and
+                    # ``COOLER_SETTLE_MAX_S`` more to settle in it, 25 minutes
+                    # at the defaults. S4 first ran it just after the roof
+                    # opened, so rain that came back while a drifted sensor
+                    # settled fell on an open roof and a parked rig for all of
+                    # that time, the one wait in this loop the weather was not
+                    # watched through (the hazard's clock, not the work's).
+                    # Shut, the wait costs nothing it guards, and the weather
+                    # is read again when it ends: a verdict the gate outlived
+                    # is not the one the roof opens on.
+                    #
+                    # AND READ THROUGH IT (#448, S4 review item 9). One read
+                    # after a wait of up to 25 minutes kept INVARIANT 4 only
+                    # by the reads before it: rain that came back and passed
+                    # inside the wait was never seen, and the roof opened on
+                    # the one safe read after it. The gate now reads the
+                    # monitor on its own clock (``weather``), and a read that
+                    # is not safe ends its wait and starts the streak again.
+                    # ``is False``: a gate that returns nothing (a test's
+                    # stand-in) passed, as every gate did before #448.
+                    turned = await self._cooler_gate(
+                        "resumed after a roof reopen", weather=True) is False
+                    again = None if turned else await self._read_safety()
+                    if turned or not self._reads_safe(again):
+                        bus.log("info", "the weather turned while the sensor "
+                                        "settled under the closed roof — the "
+                                        "roof stays closed", "safety")
+                        self._safe_streak = 0
+                        # The gate's own details ("waiting on cooler") are
+                        # not what the roof is waiting on now.
+                        self._set_state(
+                            state="paused",
+                            detail=f"roof closed (unsafe): {reason}")
+                        continue
                     self._unsafe_streak = 0
                     bus.log("info", "conditions safe again — reopening roof",
                             "safety")
@@ -3683,7 +9792,16 @@ class SequenceEngine:
                     # mount) have nothing to restore.
                     if target is not None:
                         await self._enforce_mount_floor(projected=True, target=target)
-                    if target is not None and not target.calibration:
+                    if (target is not None and not target.calibration
+                            and self._acquisition_behind_gate is target):
+                        # THE SAME RULE AS THE PAUSE (#241, H3 orchestrator
+                        # ruling 4): the setup whose gate closed the roof
+                        # unparks and acquires the target when this returns
+                        # to it, so no second setup runs here.
+                        bus.log("info", f"re-acquiring {target.name} after roof "
+                                        f"reopen, through the acquisition the "
+                                        f"roof close interrupted", "sequence")
+                    elif target is not None and not target.calibration:
                         ti = self._index_of_target(target)
                         bus.log("info", f"re-acquiring {target.name} after roof "
                                         "reopen (unpark, re-center, restart guiding)",
@@ -3788,6 +9906,76 @@ class SequenceEngine:
         none would age its last reading out to "unknown" and then hold forever
         on no evidence at all.
 
+        IT WATCHES THE MOUNT ON ITS OWN CLOCK (#203, #205). "Keep tracking"
+        used to mean tracking with nothing looking: the floor, the flip point
+        and the tracking check all hang off the frame loop, and this loop
+        stops the frame loop for up to ``CLOUD_MAX_HOLD_MIN`` while the sky
+        goes on moving. So the wait between probes is ``HOLD_WATCH_S`` ticks,
+        and each tick is a look (`_hold_watch`): the floor sets the target
+        aside with tracking stopped, the zenith keep-out stops tracking, and
+        the flip point takes the owed flip the frame loop's way or stops
+        tracking there. The look before a dark or a probe sees that whole
+        exposure ahead, so no exposure is opened that a crossing falls inside.
+        ONE TASK, deliberately, and not a watcher beside this one: everything
+        a look can do moves the mount or ends the target, and none of it may
+        happen under an exposure this loop has open.
+
+        A CHECK FRAME ON A STOPPED MOUNT IS A STREAK (#205). The mount is asked
+        whether it is tracking before every probe. One that is not gives no
+        verdict at all; the owed flip runs if the flip point has come. A
+        mount the engine itself stopped is then re-pointed, as at the open
+        (#248, below); one that stopped on its own takes the frame loop's
+        resume-then-recover path, and says so. Before this a mount that
+        stopped at its own limit read every later probe as cloud, and the
+        hold ran to its bound under a sky that may well have cleared,
+        publishing "held for cloud" throughout.
+
+        THE MOUNT IS THE HELD TARGET'S BEFORE ANY SKY IS JUDGED (#224, #225,
+        H2 orchestrator ruling 2, spec "Still waiting on the owner" item 5).
+        A hold opened by a target's pre-slew
+        safety gate holds a target the mount was never pointed at: it is
+        still tracking the last target, or stopped where that one was left,
+        or parked with nothing acquired. The looks watch the held target, so
+        a mount left on the last one was tracked with nothing watching it
+        (observed on the clocked simulator: the last target sank through the
+        mount's floor 200 s into such a hold, tracked all the way). So the
+        hold points the mount at its target when it opens, through
+        `_hold_repoint` (the slew gate, the Sun check, an unpark), after the
+        projection the slew gate raises on and the target's own floor
+        (`_hold_repoint_refusal`) say it may. When they do not, the slew
+        gate or the Sun cone refuses the slew itself, or the slew fails, it
+        stops the mount once (`_hold_park`), says why in words, and every
+        later look asks again; a refusal never ends the run (#240, H3
+        orchestrator ruling 3), a mount call past its bound still does
+        (P0-2). The last target's flip latch is not this one's: it is
+        disarmed while the mount is elsewhere, and the re-point arms the
+        held target's own. So a hold opened before a slew makes that slew
+        itself, under cloud. A calibration target has no place on the sky,
+        and its hold asks the mount nothing.
+
+        A MOUNT THE ENGINE STOPPED IS ELSEWHERE TOO (#248, H3 orchestrator
+        ruling 6). ``_tracked_target`` is the target the mount was last
+        pointed at, not the one it is on: the idle park-hold, a safety pause,
+        a roof close and this hold's own stops all leave it standing while
+        the sky moves on from the stopped mount. So a stop the engine made
+        since the last pointing (``_mount_stopped_since``) counts as
+        elsewhere, at the open and in the stopped-tracking branch, and the
+        hold re-points behind the gates instead of resuming tracking from
+        wherever the mount was left, which for a target near the keep-out is
+        a patch of sky still crossing it.
+
+        ONE ACQUISITION, NOT TWO (#241, H3 orchestrator ruling 4). A hold
+        opened by a setup's pre-slew gate returns to that setup when it
+        releases (``_acquisition_behind_gate`` is the held target), and the
+        setup acquires the target once: its own slew, centring, focus sweep
+        and guider start. The release keeps what comes before an
+        acquisition, the cooler gate and the filter restore. It used to run
+        a setup of its own as well, so the interrupted one then acquired the
+        target a second time. A hold opened from the frame loop has no setup
+        behind it, and its release re-acquires the target itself. A safety
+        pause or a roof reopen opened by this loop's own gate returns to the
+        hold, which acquires the target once, when the sky clears (#263).
+
         NOT RE-ENTRANT, AND IT SAYS SO. The loop above calls ``_safety_gate``
         on every pass, and on a rig with no monitor that gate reads the same
         cloudy verdict this hold is already waiting out. Before the guard
@@ -3808,22 +9996,78 @@ class SequenceEngine:
         started = time.time()
         clear_streak = 0
         self._holding_for_clear = True
+        self._hold_parked = None
+        self._hold_repoint_said = False
         self._hold_darks_want = None
         self._hold_darks_taken = 0
+        detail = (f"held for cloud - {reason}. Checking at the science "
+                  f"exposure, with up to {CLOUD_PROBE_EVERY_S / 60:.0f} min "
+                  f"between checks; parks after {max_hold_s / 60:.0f} min")
+        # NOT ON THIS TARGET: tracking the last one, stopped where it was left,
+        # or nothing acquired yet (#224). Or stopped by the engine since it
+        # was last pointed, on this target as much as on another (#248, H3
+        # orchestrator ruling 6): the idle park-hold that stopped this very
+        # target during a wait left ``_tracked_target`` saying it, and a
+        # resume from where the mount stopped tracks a patch of sky this
+        # target's looks do not describe. A calibration target, or a run with
+        # no mount, has nothing to point.
+        elsewhere = (target is not None and not target.calibration
+                     and "telescope" in self.hub.devices
+                     and (self._tracked_target is not target
+                          or self._mount_stopped_since is not None))
         try:
             await self._stand_down_guider()
             bus.log("warning", f"holding for clear sky: {reason}", "sequence")
             self._set_state(
                 state="holding", hold="clouds",
-                detail=(f"held for cloud - {reason}. Checking at the science "
-                        f"exposure, with up to {CLOUD_PROBE_EVERY_S / 60:.0f} min "
-                        f"between checks; parks after "
-                        f"{max_hold_s / 60:.0f} min"))
+                detail=(f"held for cloud - {reason}. The mount is not on "
+                        f"{target.name} yet: pointing it there before the sky "
+                        f"is judged" if elsewhere else detail))
+            if elsewhere:
+                # THE LAST TARGET'S FLIP LATCH IS NOT THIS ONE'S. Read by the
+                # looks' flip gate, it would flip this target on the last
+                # one's hour angle. Disarmed while the mount is elsewhere; the
+                # re-point arms this target's own (`_arm_meridian_flip`).
+                self._flip_armed = False
+                why = self._hold_repoint_refusal(target)
+                if why is None:
+                    why = await self._hold_repoint(target, elsewhere=True)
+                if why is None:
+                    # THE OPENING DETAIL ONLY NOW, and only because tracking
+                    # on this target is what the re-point just achieved: a
+                    # detail that says the sky is being checked, published
+                    # over a stopped mount that judges none, is #228. Asked
+                    # of the re-point's own answer, not of
+                    # ``_tracked_target``: a mount stopped on this very
+                    # target (#248) is tracked as this target's already, and
+                    # a refused re-point leaves it so.
+                    self._set_state(detail=detail)
+                else:
+                    await self._hold_park(
+                        "elsewhere", f"the mount is not on {target.name}, and "
+                                     f"{why}")
             while True:
                 # THE THREE THINGS A PAUSE WOULD HAVE DISARMED, kept armed.
                 await self._checkpoint()             # a manual pause still works
                 self._enforce_stop_boundary(target)  # dawn still ends the night
-                await self._safety_gate(context="frame", target=target)
+                # AN ACQUISITION WAITS BEHIND THIS GATE TOO (#263, the #241
+                # class, H3 orchestrator ruling 4): this hold's own release,
+                # or the setup whose gate opened it. A safety pause or a roof
+                # reopen this gate opens returns here when it releases, and
+                # runs no setup of its own. It used to run one, under the
+                # cloud this hold is still waiting out (a slew, a centring
+                # solve, a focus sweep and a guider start, all against a sky
+                # the hold reads as shut), and the hold's release then ran
+                # another. The mount the pause or the roof stopped is
+                # re-pointed by the stopped-tracking branch below (#248).
+                # Saved and put back, not cleared: a hold opened by a setup's
+                # gate is already inside that setup's flag.
+                gated = self._acquisition_behind_gate
+                self._acquisition_behind_gate = target
+                try:
+                    await self._safety_gate(context="frame", target=target)
+                finally:
+                    self._acquisition_behind_gate = gated
                 await self._frame_alerts_tick()      # the deadman still gets fed
 
                 if max_hold_s > 0 and (time.time() - started) >= max_hold_s:
@@ -3871,7 +10115,87 @@ class SequenceEngine:
                 await self._restore_beam("cloud-hold dark")
 
                 if not took_dark:
-                    await asyncio.sleep(CLOUD_PROBE_EVERY_S)
+                    # The same CLOUD_PROBE_EVERY_S as ever, now spent in
+                    # looks at the mount rather than in one blind sleep.
+                    await self._hold_watch_ticks(target, CLOUD_PROBE_EVERY_S)
+                probe = self._probe_step()
+                await self._hold_watch(
+                    target, ahead_s=self._hold_exposure_ahead_s(
+                        probe.exposure_s if probe is not None else 0.0))
+                if self._hold_parked is not None:
+                    # The hold stopped tracking (the keep-out, a flip it could
+                    # not take, or a mount it may not yet point at this
+                    # target), and said so when it did. A check frame now
+                    # would be a streak read as cloud, so none is taken until
+                    # a look puts the mount back on the target.
+                    clear_streak = 0
+                    continue
+                if (target is not None and not target.calibration
+                        and await self._tracking_now() is False):
+                    # A MOUNT THAT IS NOT TRACKING (#205): no verdict from
+                    # this frame, so none is taken. The owed flip has already
+                    # had its turn: the look just above ran it if its point
+                    # had come, and stopped the hold there if it could not be
+                    # taken.
+                    clear_streak = 0
+                    if self._mount_stopped_since is not None:
+                        # THE ENGINE STOPPED IT, SO IT IS ELSEWHERE (#248, H3
+                        # orchestrator ruling 6): a safety pause this hold's
+                        # gate opened and released with a setup still waiting
+                        # behind it, or an idle stop that landed late. It
+                        # stopped where the target was then, and a resume in
+                        # place tracks that patch of sky, not the target. So
+                        # it is re-pointed behind the gates, as at the open;
+                        # when it may not be, it stays stopped, says why once,
+                        # and the looks ask again.
+                        bus.log("warning",
+                                f"{target.name}: the mount was stopped by this "
+                                f"run and has not been pointed since - "
+                                f"pointing it back at the target before the "
+                                f"sky is judged", "sequence")
+                        self._set_state(
+                            detail="held for cloud - the mount was stopped and "
+                                   "has not been pointed since, so the sky is "
+                                   "not being judged; pointing it back at the "
+                                   "target first")
+                        why = self._hold_repoint_refusal(target)
+                        if why is None:
+                            why = await self._hold_repoint(target,
+                                                           elsewhere=True)
+                        if why is not None:
+                            await self._hold_park(
+                                "elsewhere", f"the mount is not on "
+                                             f"{target.name}, and {why}")
+                        continue
+                    # A MOUNT THAT STOPPED ON ITS OWN: the frame loop's own
+                    # resume-then-recover, IN PLACE, which sets the target
+                    # aside if the mount will not track again. In place
+                    # because nothing the engine did moved it off this
+                    # target: a hold whose mount was elsewhere pointed it
+                    # here, or is stopped (``_hold_parked``, above) until a
+                    # look may (#224), and one the engine stopped since was
+                    # taken just above (#248).
+                    bus.log("warning",
+                            f"{target.name}: the mount has stopped tracking "
+                            f"during the cloud hold - not judging the sky from "
+                            f"a check frame that would be a streak", "sequence")
+                    self._set_state(
+                        detail="held for cloud - the mount stopped tracking, "
+                               "so the sky is not being judged; restoring "
+                               "tracking first")
+                    # NO STEP PASSED (#248): the next frame is a check of the
+                    # sky whatever step the hold borrowed its settings from,
+                    # and `_enforce_tracking` returns at once for a dark or a
+                    # bias, which are shot untracked on purpose. The hold's
+                    # step is the last one the engine shot, and it can be one.
+                    await self._enforce_tracking(None, target)
+                    # RESTORED, OR THIS LINE IS NOT REACHED (#228):
+                    # `_enforce_tracking` returns once tracking is back (or
+                    # nobody can say, which is no verdict of a stop here any
+                    # more than in the frame loop), and raises StopTarget when
+                    # it will not come back.
+                    self._set_state(detail=detail)
+                    continue
                 verdict = await self._cloud_probe(target)
                 if verdict is None or verdict:
                     clear_streak = 0            # unknown is not clear
@@ -3881,15 +10205,45 @@ class SequenceEngine:
                     continue
 
                 held_min = (time.time() - started) / 60.0
+                # A SETUP WAITS BEHIND THE GATE THAT OPENED THIS HOLD (#241, H3
+                # orchestrator ruling 4): this target's own setup, whose
+                # pre-slew gate it was. The release then returns to it, and it
+                # makes the one acquisition; this hold's re-point was only
+                # ever for judging the sky.
+                behind = (target is not None and not target.calibration
+                          and self._acquisition_behind_gate is target)
                 bus.log("info", f"sky cleared after {held_min:.0f} min - "
-                                "re-acquiring the target", "sequence")
+                                + ("returning to the setup the hold "
+                                   "interrupted, which acquires the target"
+                                   if behind else "re-acquiring the target"),
+                        "sequence")
                 # THE COOLER FIRST, before the mount moves. The handoff's resume
                 # checklist is ordered, and this is its head: a hold long enough
                 # to matter is long enough for the sensor to have drifted, and
                 # re-centring a warm camera just points it accurately at frames
-                # no dark will match.
-                await self._cooler_gate(f"resumed after {held_min:.0f} min of cloud")
-                if target is not None and not target.calibration:
+                # no dark will match. Kept when a setup waits behind the hold:
+                # that setup has no cooler gate of its own.
+                #
+                # WATCHED (#236). The held target is still tracked, and a
+                # drifted sensor holds this gate for up to ``cool_timeout_s``
+                # with no hold loop and no frame loop looking at the mount. The
+                # idle look runs on every probe; the hold has usually spent the
+                # idle clock, so the first look stops tracking, and the setup
+                # restores it, the one below or the one the hold interrupted
+                # (`_cool_and_wait`).
+                #
+                # AND THE WEATHER IS READ THROUGH IT, AND ACTED ON (#452).
+                # The hold's own loop, which read the monitor on every pass,
+                # has ended, and the frame loop has not begun: rain that
+                # starts inside this wait was seen by nobody until it ended.
+                # A pause it opens re-checks the floor and leaves the
+                # acquisition to this release, or to the setup behind it
+                # (`for_target`, #241).
+                await self._cooler_gate(
+                    f"resumed after {held_min:.0f} min of cloud", watch=True,
+                    monitor=True, for_target=target)
+                if (target is not None and not target.calibration
+                        and not behind):
                     # The same restore the safety hold uses, for the same
                     # reason: the sky moved while we sat. _setup_target
                     # re-centres by plate solve and restarts guiding per plan.
@@ -3922,12 +10276,72 @@ class SequenceEngine:
                 #
                 # The subs sit exactly on the dark floor. The header was honest;
                 # the wheel really was on slot 7.
+                #
+                # Kept when a setup waits behind the hold (#241): its solve
+                # puts back what it finds, which is then this filter, and the
+                # target's first step sets its own at the top of `_run_step`.
                 await self._restore_beam(f"{held_min:.0f} min cloud hold")
                 self._set_state(state="running", hold=None,
                                 detail=f"resumed after {held_min:.0f} min of cloud")
                 return
+        except StopTarget as e:
+            # A TARGET SET ASIDE TAKES ITS HOLD WITH IT. `_set_state` merges,
+            # so a hold that ended any way but the release above left
+            # ``hold: "clouds"`` in the published state for as long as the
+            # scheduler went on to wait or shoot something else. The floor
+            # (#203) makes that a mid-night exit, not only the dawn one.
+            #
+            # The reason is not repeated here: the scheduler logs it with the
+            # skip. Every reason a hold can end on is words now (#233), but
+            # this detail does not depend on that staying true.
+            #
+            # BY WHO IS STOPPED (#326): a group member's plain StopTarget is
+            # a deferral (`_visit_panel`, #316), so its visit stopped and the
+            # panel comes back on the next pass; its own floor, a closed
+            # window and a group set aside do set it aside.
+            name = target.name if target is not None else "the target"
+            then = (self._deferred_words(target)
+                    if target is not None
+                    and not isinstance(e, _STOPS_NOT_DEFERRED) else None)
+            ended = (f"cloud hold ended: {name} was set aside" if then is None
+                     else f"cloud hold ended: {then}")
+            self._set_state(state="running", hold=None, detail=ended)
+            raise
         finally:
             self._holding_for_clear = False
+            self._hold_parked = None
+            # EVERY OTHER EXIT TAKES ITS HOLD WITH IT TOO (#513, the class of
+            # #285 and #422: a merge carries a field past its fact). The
+            # release and the StopTarget arm above say so themselves; a
+            # SafetyAbort (the bound above, an unsafe verdict or a limit a
+            # look hit) and a cancellation leave through here, and
+            # `_set_state` would merge ``hold: "clouds"`` into every state
+            # after, the terminal one included, which GET
+            # /api/sequence/state then served until the next start. An
+            # Abort has usually taken it off already, in the "aborting"
+            # publish (`abort`), and then nothing is published here.
+            cleared = self._hold_cleared()
+            if cleared:
+                self._set_state(**cleared)
+
+    def _hold_cleared(self) -> dict:
+        """The keys that take a cloud hold off the published state (#513):
+        ``{"hold": None}`` while the state still names one, and nothing
+        when it does not. Lowers ``_holding_for_clear`` first, so the same
+        publish's ``sky.holding`` says the hold is over as well.
+
+        TWO CALLERS, ONE RULE. `_hold_for_clear`'s ``finally``, for every
+        exit that did not release, and `abort`'s "aborting" publish, which
+        runs BEFORE its cancellation reaches the hold: said there, the wind
+        -down never reads "holding for cloud" over a run that is stopping,
+        for as long as the cancellation takes to land (an exposure's abort
+        on a real camera can take seconds). Lowering the flag early there
+        is safe: nothing of the hold runs again but its own teardown, which
+        lowers it too."""
+        self._holding_for_clear = False
+        if self.state.get("hold") is None:
+            return {}
+        return {"hold": None}
 
     async def _restore_beam(self, why: str) -> None:
         """Put the interrupted step's filter back in the light path.
@@ -4043,6 +10457,15 @@ class SequenceEngine:
 
         if self._hold_darks_taken >= (self._hold_darks_want or 0):
             return False
+        # THE MOUNT, OVER THE WHOLE DARK (#203). A dark needs no tracking, but
+        # the hold keeps tracking under it, and it is as long as the science
+        # exposure (300 s on this rig): with the probe, the longest the hold
+        # goes between two looks. So the look before it sees all of it: a
+        # floor, a keep-out or a flip point that falls inside is acted on now,
+        # not a dark's length late. Outside the try below on purpose: a target
+        # set aside, or a SafetyAbort, is not a calibration hiccup.
+        await self._hold_watch(
+            target, ahead_s=self._hold_exposure_ahead_s(step.exposure_s))
         try:
             dark = Target(
                 name=f"cloud-hold darks {step.exposure_s:g}s g{step.gain}",
@@ -4144,7 +10567,14 @@ class SequenceEngine:
                     # still a reason to stop, and SafetyAbort must propagate to
                     # the caller's teardown rather than be swallowed as a
                     # "calibration hiccup".
-                    await self._safety_gate(context="frame", target=None)
+                    # Flagged, so a cloudy verdict from the night's last frames
+                    # is not noted as a wait's deferred hold (#221): there is
+                    # no next target to defer it to.
+                    self._day_darks_gate = True
+                    try:
+                        await self._safety_gate(context="frame", target=None)
+                    finally:
+                        self._day_darks_gate = False
                     dark = Target(
                         name=f"day darks {step.exposure_s:g}s g{step.gain}",
                         ra_hours=0.0, dec_deg=0.0,
@@ -4216,19 +10646,492 @@ class SequenceEngine:
         """
         return self._hold_step
 
-    async def _park_hold(self) -> None:
+    # ------------------------------------------- the cloud hold's watch (#203)
+
+    @staticmethod
+    def _hold_exposure_ahead_s(exposure_s: float) -> float:
+        """How far ahead the look before a hold exposure sees, in seconds.
+
+        The exposure itself, its download (``FLIP_FRAME_MARGIN_S``, the slop
+        the frame loop's flip gate allows for the same question) and one
+        ``HOLD_WATCH_S``, the gap to the first look after it. A crossing
+        inside that span is acted on before the shutter opens, which is what
+        makes an exposure no gap in the watch.
+        """
+        try:
+            exp = max(0.0, float(exposure_s))
+        except (TypeError, ValueError):
+            exp = 0.0
+        return exp + FLIP_FRAME_MARGIN_S + HOLD_WATCH_S
+
+    async def _hold_watch_ticks(self, target: Target | None,
+                                span_s: float) -> None:
+        """Spend ``span_s`` looking at the mount at least every HOLD_WATCH_S.
+
+        The first look is at once and each later one follows a sleep of at
+        most one interval. The last sleep ends at ``span_s`` and the probe's
+        own look follows it, so the probe comes exactly when the old single
+        sleep let it: the hold's cadence is unchanged, only watched.
+        """
+        until = time.time() + max(0.0, float(span_s))
+        while True:
+            await self._hold_watch(target, ahead_s=HOLD_WATCH_S)
+            left = until - time.time()
+            if left <= 1e-6:
+                return
+            await asyncio.sleep(min(HOLD_WATCH_S, left))
+            if until - time.time() <= 1e-6:
+                return
+
+    async def _hold_watch(self, target: Target | None, *,
+                          ahead_s: float) -> None:
+        """One look at the mount a cloud hold has left tracking (#203).
+
+        First, a hold whose mount is not on the held target (#224) points it
+        there if the slew may now be made (`_hold_repoint_refusal`,
+        `_hold_repoint`); the rest of the look is then a look at a mount on
+        its target. Then, seeing ``ahead_s`` ahead, in this order: the
+        mount's altitude floor sets the target aside; the target's own
+        on_floor rule does what it does in the frame loop
+        (`_enforce_altitude_floor`); the zenith keep-out stops tracking
+        (`_hold_park`), and a hold stopped for it points back at the target
+        once the slew gate would let it (`_hold_repoint`); otherwise the flip
+        point (`_hold_flip_watch`), but not while the mount is still
+        elsewhere: the flip point it would read is this target's and the
+        pier side the last target's, and `_enforce_flip_owed` would file the
+        one under the other. No flip is attempted while the target is in the
+        keep-out, or about to be: the flip is a slew, and the slew gate would
+        refuse it with a SafetyAbort that ends the run.
+
+        ANY TARGET SET ASIDE FROM HERE LEAVES THE MOUNT STOPPED, whichever
+        check raised: the floor, the on_floor rule, or a flip owed past its
+        hold. `StopTarget` hands the night on, and the next thing to look at
+        this mount may be a wait that watches a different target.
+
+        A calibration target, or a run with no mount, has nothing tracking.
+        """
+        if (target is None or target.calibration or self.plan is None
+                or "telescope" not in self.hub.devices):
+            return
+        try:
+            if (self._hold_parked == "elsewhere"
+                    and self._hold_repoint_refusal(target) is None):
+                await self._hold_repoint(target, elsewhere=True)
+            limit = self._hold_limit_ahead(target, ahead_s)
+            kind = limit[0] if limit is not None else None
+            if kind == "floor":
+                # BY WHO IS STOPPED (#326): a single target leaves the run,
+                # and a group member's visit ends and its panel is retried on
+                # the next pass, the plain StopTarget below being deferred
+                # (`_visit_panel`, #316).
+                then = self._deferred_words(target)
+                bus.log("warning",
+                        f"{target.name} reaches the mount's altitude floor "
+                        f"during the cloud hold - stopping tracking"
+                        + (" and setting it aside for the rest of this run"
+                           if then is None else f"; {then}"), "sequence")
+                # WORDS ONLY, and never the verdict's ``site_detail``: that
+                # carries the target's altitude and azimuth, and this reason
+                # reaches the log and the published detail, which viewers
+                # read. A pointing plus a time is the site (#19, #140), and
+                # nothing here depends on the number, as `_idle_hold_reason`
+                # says.
+                raise StopTarget(f"{target.name} reached the mount's altitude "
+                                 f"floor during a cloud hold")
+            await self._enforce_altitude_floor(target)
+            if kind == "ceiling":
+                await self._hold_park(
+                    "ceiling",
+                    f"{target.name} is rising into the mount's zenith keep-out")
+            elif self._hold_parked == "ceiling":
+                if self._altitude_limit_verdict(target, projected=True,
+                                                cfg=self._cfg) is None:
+                    await self._hold_repoint(target)
+            elif self._hold_parked != "elsewhere":
+                await self._hold_flip_watch(target, ahead_s)
+        except StopTarget:
+            await self._stop_tracking_quietly()
+            raise
+
+    def _hold_repoint_refusal(self, target: Target) -> str | None:
+        """Why a hold may not slew the mount to ``target`` now, as the end of
+        a sentence, or None when it may (#224).
+
+        The slew gate's altitude half, projected across a slew exactly as the
+        gate projects it (`_altitude_limit_verdict` with ``projected=True``),
+        because the gate raises a SafetyAbort on that answer and a SafetyAbort
+        ends the run. And the target's own floor as the frame loop enforces
+        it (`_own_floor`, ``on_floor = advance``), over the same span: a slew
+        to a target that is about to be set aside is a slew for nothing.
+
+        WORDS ONLY, as `_idle_hold_reason`'s are: this reaches the log and the
+        published detail, and the gate's refusal carries an altitude and an
+        azimuth in its ``site_detail``, which with a time is the site (#19,
+        #140). Its words are `_limit_words`, the end of a sentence, as
+        `SlewRefused.words` are.
+        """
+        verdict = self._altitude_limit_verdict(target, projected=True,
+                                               cfg=self._cfg)
+        kind = verdict[0] if verdict is not None else None
+        if kind is not None:
+            return self._limit_words(target, kind)
+        floor = self._own_floor(target)
+        if floor is not None:
+            now = time.time()
+            for when in (now, now + SLEW_PROJECT_S):
+                alt = _frame_altitude(target, self.hub.site, when)
+                if alt is not None and alt < floor:
+                    return (f"{target.name} is sinking below its own altitude "
+                            f"floor")
+        return None
+
+    @staticmethod
+    def _limit_words(target: Target, kind: str) -> str:
+        """The words for a refusal by the slew gate's altitude half, by the
+        verdict's kind (`_altitude_limit_verdict`), as the end of a sentence.
+
+        ONE WORDING, TWO ASKERS: the hold's pre-ask (`_hold_repoint_refusal`)
+        and the gate itself, which carries these as `SlewRefused.words`
+        and builds its own sentence from them (`_enforce_mount_floor`,
+        `_altitude_limit_verdict`), so a re-point the gate refuses after the
+        pre-ask allowed it (seconds apart, the target crossing a limit
+        between them) says the same thing (#240). WORDS ONLY: the refusal's
+        altitude and azimuth, with a time, are the site (#19, #140), and
+        they ride `SlewRefused.site_detail` alone (#233).
+        """
+        if kind == "floor":
+            return (f"{target.name} would be below the mount's altitude floor "
+                    f"by the end of a slew there")
+        if kind == "ceiling":
+            return (f"{target.name} would be in the mount's zenith keep-out by "
+                    f"the end of a slew there")
+        return ("no observing site is saved, so no slew can be checked "
+                "against the mount's limits")
+
+    def _hold_limit_ahead(self, target: Target,
+                          ahead_s: float) -> LimitVerdict | None:
+        """The first floor or keep-out verdict for ``target`` from now to
+        ``ahead_s`` ahead, asked every HOLD_WATCH_S and at both ends.
+
+        The slew gate's own predicate (`_altitude_limit_verdict`) at each
+        sample, so a hold and a slew cannot disagree about where either end
+        is. Samples rather than the two ends alone, because the keep-out's
+        worst moment is the culmination, which can fall between them. A
+        "no_site" verdict is acted on here no more than the idle park-hold
+        acts on it: with no site nothing can say where the target is.
+        """
+        cfg = self._cfg
+        now = time.time()
+        span = max(0.0, float(ahead_s))
+        steps = max(1, int(math.ceil(span / HOLD_WATCH_S)))
+        for i in range(steps + 1):
+            verdict = self._altitude_limit_verdict(
+                target, projected=False, cfg=cfg,
+                at=now + min(span, i * HOLD_WATCH_S))
+            if verdict is None:
+                continue
+            return verdict if verdict[0] in ("floor", "ceiling") else None
+        return None
+
+    async def _hold_flip_watch(self, target: Target, ahead_s: float) -> None:
+        """The flip point, for one look of a cloud hold (#203).
+
+        THE FRAME LOOP'S TWO CALLS, in its order. `_maybe_meridian_flip` takes
+        the flip when the latch is armed and its point falls inside
+        ``ahead_s`` (waiting for the point first, as it does before a frame);
+        `_enforce_flip_owed` then refuses to carry on past the crossing on the
+        side the mount was on before it.
+
+        Between them, the one thing the frame loop never had to decide. At
+        the plan's flip point (`_idle_flip_due`, the idle clock's predicate,
+        seeing ``ahead_s`` ahead) a flip that is owed and was not taken stops
+        tracking: a mount that cannot be reached, or the AM5's lead attempt
+        that moved nothing and now waits for the meridian itself. Never
+        tracking past it. The mount stays stopped, and the sky unjudged,
+        until the latch is spent by a flip, when the flip's own goto has put
+        tracking back on.
+
+        FLIPS SWITCHED OFF, NO ACTION AT THE FLIP POINT AT ALL (H2
+        orchestrator ruling 1, spec "Still waiting on the owner" item 6;
+        #189). This used to stop tracking there too, and with flips off
+        nothing ever spends a latch, so the stop could never be lifted: the
+        hold judged no sky from the flip point to its 45 minute bound. A
+        flips-off plan takes the frame loop's answer instead, the same as
+        between frames: a mount that stops at its own limit is found by the
+        tracking read before the next check, which runs the frame loop's
+        resume-then-recover (`_hold_for_clear`, #205).
+
+        The mount is asked nothing unless the latch is armed or the point is
+        due: the same two questions `_maybe_meridian_flip` asks before every
+        frame, and a pier side inside the flip window.
+        """
+        plan = self.plan
+        if plan.meridian_flip and self._flip_armed:
+            await self._maybe_meridian_flip(
+                target, max(0.0, ahead_s - FLIP_FRAME_MARGIN_S))
+        due = await self._idle_flip_due(target, time.time(), ahead_s=ahead_s)
+        if due and self._flip_armed:
+            await self._hold_park(
+                "flip", f"{target.name} has reached its meridian flip point "
+                        f"and the flip cannot be taken now")
+        if due:
+            await self._enforce_flip_owed(target)
+        if (self._hold_parked == "flip" and plan.meridian_flip
+                and not self._flip_armed):
+            self._hold_parked = None
+            bus.log("info",
+                    f"{target.name}: the meridian flip has been taken - the "
+                    f"cloud hold is judging the sky again", "sequence")
+            self._set_state(detail="held for cloud - the meridian flip has "
+                                   "been taken; checking the sky again")
+
+    async def _hold_park(self, why_kind: str, why: str) -> None:
+        """Stop tracking, once, and say why (#203).
+
+        The mount half of `_park_hold` only: the hold stood the guider down
+        when it began, and there is nothing left to stop (a second stop used
+        to re-stamp an idle native guider's saved PPEC window, #210).
+        Best-effort, as `_park_hold` is, and safe to be: a parked hold takes
+        no check frame whether or not the mount obeyed, so a stop that did not
+        take costs the hold its sky, never a streak read as cloud. ``why``
+        leads the log line and the published detail, which from here says the
+        mount is stopped rather than "held for cloud" alone.
+
+        ONCE PER STOPPED SPELL, whichever reason comes second. A mount stopped
+        because it is not on the held target (``"elsewhere"``, #224) is
+        refused again by every look, and a target rising into the keep-out
+        while the mount is elsewhere asks for a stop of its own: the first
+        stop stands, with its reason, and neither a second
+        ``set_tracking(False)`` nor a second line is sent. The spell ends when
+        a re-point, or a flip, puts tracking back on.
+        """
+        if self._hold_parked is not None:
+            return
+        self._hold_parked = why_kind
+        bus.log("warning",
+                f"{why} - stopping tracking; the cloud hold goes on but judges "
+                f"no sky until the mount can track the target again",
+                "sequence")
+        await self._stop_tracking_quietly()
+        self._set_state(detail=f"held for cloud - the mount is stopped: {why}. "
+                               f"The sky is not judged until it tracks again")
+
+    async def _hold_repoint(self, target: Target, *,
+                            elsewhere: bool = False) -> str | None:
+        """Point the mount at the held target and track it: back at it once it
+        is out of the keep-out (#203), or at it for the first time when the
+        mount was elsewhere (#224). None when the mount is now on the target
+        and tracking; otherwise why not, in words, as the end of a sentence.
+
+        A RE-SLEW, NOT A RESUME. The mount stopped where the target entered
+        the keep-out, and tracking again from there would follow that patch of
+        sky up through its culmination, which is the keep-out itself. So it
+        slews to where the target is now, behind the slew gate (floor,
+        keep-out, pier) and the Sun check that guard every slew, as
+        `_setup_target`'s uncentred branch does. No centring and no guiding:
+        the hold needs only sky to judge, and whatever acquires the target
+        after it (its release, or the setup it interrupted) re-centres and
+        restarts guiding anyway.
+
+        ``elsewhere``: the mount is not on this target (#224, #225, #248). A
+        hold opened by `_setup_target`'s pre-slew gate finds it tracking the
+        last target, stopped where that one was left, or parked with nothing
+        acquired; and a mount the engine stopped since it was last pointed,
+        on this target too, is wherever the sky left it. The same slew behind
+        the same gates is the only safe way to track this one; the caller
+        asks `_hold_repoint_refusal` first. It is a new acquisition, as a
+        setup's slew is, and is booked as one: the idle clock starts at it,
+        the idle latch re-opens and the last spell's unconfirmed-stop warning
+        is lowered with it, so a hold that re-pointed and then ends (the stop
+        boundary, which is no look and stops nothing) leaves this target to
+        the next wait's idle clock, whose own unconfirmed stop is said again;
+        and this target's own flip latch is armed (`_arm_meridian_flip`),
+        never the last one's.
+
+        EVERY SUCCESSFUL RE-POINT MAKES THE MOUNT THIS TARGET'S, keep-out or
+        elsewhere: `_tracked_target` says so, and the stopped state
+        (``_mount_stopped_since``) is cleared, because this is a fresh
+        pointing. They are what the next hold's open asks to decide whether
+        its mount is elsewhere, and what the next idle spell watches.
+
+        THE WHOLE SLEW GATE, MONITOR HALF INCLUDED (H3 orchestrator ruling 3
+        left it to decide). The hold's own loop asks the monitor every pass,
+        but a look can come a whole probe interval and an exposure after it,
+        and a slew under cloud is allowed only because rain and wind are the
+        monitor's, whose verdict gates every slew. A pause that verdict opens
+        here returns to this re-point when it releases (the flag below, as
+        around a setup's gate, #241, H3 orchestrator ruling 4): the re-point
+        then makes its slew, and whatever acquires the target after the hold
+        makes the one acquisition.
+
+        A REFUSAL KEEPS HOLDING (#240, H3 orchestrator ruling 3). The slew
+        gate's limits (the altitude floor, the horizon, a wedge, the zenith
+        keep-out, no saved site, the pier guard with flips off) and the Sun's
+        cone raise `SlewRefused`. Caught here, by type: the hold stops
+        tracking once (`_hold_park`), says why in words, and every later look
+        asks again. It never ends the run: a slew not made yet is no reason
+        to end the night. The altitude half is asked first by the caller
+        (`_hold_repoint_refusal`); the pier guard and the cone are asked only
+        here, because only the gate knows the pier side and the Sun.
+
+        A MOUNT CALL PAST ITS BOUND STILL ENDS THE RUN (P0-2). A `_bounded`
+        expiry on the is_parked query, the unpark, the slew or the tracking
+        command raises a plain SafetyAbort, never a `SlewRefused`, and is
+        re-raised: a dead mount link (the #133 class) ends the run from the
+        hold's re-point as it does from any other slew, through the shielded
+        park and warm wind-down. So does any other SafetyAbort the gate
+        raises (a monitor's abort, a pause past its bound).
+
+        A PARKED MOUNT IS UNPARKED FIRST, bounded, as `_setup_target`'s
+        uncentred branch does: a slew to a parked mount is refused, and the
+        hold would otherwise ask it again on every look until its bound.
+
+        A slew, an unpark or a tracking command the mount refuses (an
+        exception that is not a bound's expiry) leaves the hold stopped and
+        says so, ONCE for the stopped spell; the next look asks again, and
+        says nothing, so a mount that keeps refusing costs one line, not one
+        every ``HOLD_WATCH_S``.
+        """
+        tel = self.hub.devices.get("telescope")
+        if tel is None or not getattr(tel, "connected", False):
+            return "the mount is not connected"
+        behind = self._acquisition_behind_gate
+        self._acquisition_behind_gate = target
+        try:
+            await self._safety_gate(context="slew", target=target)
+            try:
+                self.hub._check_solar(target.ra_hours, target.dec_deg)
+            except DeviceError as e:
+                # THE SUN'S CONE IS A LIMIT REFUSAL TOO (#240): the same
+                # sentence a setup's cone check ends the run with, as the
+                # message, and words for the hold to say.
+                raise SlewRefused(
+                    f"slew blocked by sun-exclusion cone: {e}",
+                    words=f"{target.name} is inside the Sun's exclusion cone",
+                    kind="sun"
+                ) from e
+        except SlewRefused as e:
+            # WORDS ONLY (#19, #140): ``e.words``, the end of a sentence,
+            # never the message. The gate's message is words too since #233,
+            # but the Sun cone's still carries a separation.
+            if self._hold_parked is None:
+                await self._hold_park(
+                    "elsewhere" if elsewhere else "ceiling",
+                    f"the mount is not on {target.name}, and {e.words}"
+                    if elsewhere else e.words)
+            elif not self._hold_repoint_said:
+                bus.log("warning",
+                        f"{target.name}: {e.words} - the mount stays stopped; "
+                        f"each look asks again, and this is said once",
+                        "sequence")
+            self._hold_repoint_said = True
+            return e.words
+        finally:
+            self._acquisition_behind_gate = behind
+        # THE LAST IDLE SPELL'S STOP RETRY ENDS HERE, as it does at the top of
+        # `_setup_target`, and for the same reason. A hold opened by a setup's
+        # pre-slew gate runs BEFORE that setup's own cancel, so the retry of
+        # the idle park-hold's unconfirmed stop can still be alive, and left
+        # running it lands a ``set_tracking(False)`` after the slew below, or
+        # in the middle of it: the hold then has the mount stopped on a target
+        # it has just said it is tracking. Cancelled and awaited before the
+        # mount moves.
+        await self._cancel_idle_stop_retry()
+        getattr(self.hub, "note_pointing_moved", lambda: None)()
+        try:
+            if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
+                              "mount is_parked query"):
+                await _bounded(tel.unpark(), PARK_TIMEOUT_S, "mount unpark")
+            await _bounded(tel.slew(target.ra_hours, target.dec_deg),
+                           SLEW_TIMEOUT_S, f"slew to {target.name}")
+            await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
+                           "mount set_tracking")
+        except SafetyAbort:
+            # A BOUND'S EXPIRY, a dead link (P0-2): the run ends, as above.
+            raise
+        except Exception as e:           # noqa: BLE001 - the next look asks again
+            if not self._hold_repoint_said:
+                self._hold_repoint_said = True
+                bus.log("warning",
+                        f"{target.name}: could not point the mount "
+                        + ("at the target" if elsewhere
+                           else "back at the target after the keep-out")
+                        + f" ({e}) - still stopped; each look asks again, "
+                          f"and this is said once", "sequence")
+            return f"pointing it at {target.name} failed"
+        was = self._tracked_target
+        self._hold_parked = None
+        self._hold_repoint_said = False
+        self._tracked_target = target
+        self._mount_stopped_since = None
+        if elsewhere:
+            self._idle_since = time.time()
+            self._idle_hold_open = True
+            self._idle_hold_retrying = False
+            self._arm_meridian_flip(target)
+            bus.log("info",
+                    f"{target.name}: the mount "
+                    + ("had been stopped and no longer pointed at this target"
+                       if was is target else "was not on this target")
+                    + " - it is now pointed at this one and tracking; the "
+                      "cloud hold judges the sky from here", "sequence")
+            self._set_state(detail="held for cloud - the mount is on the "
+                                   "target and tracking; checking the sky again")
+            return None
+        bus.log("info",
+                f"{target.name} is out of the zenith keep-out - the mount is "
+                f"pointed back at it and tracking; the cloud hold is judging "
+                f"the sky again", "sequence")
+        self._set_state(detail="held for cloud - back on the target after the "
+                               "zenith keep-out; checking the sky again")
+        return None
+
+    async def _park_hold(self, *, fence: int | None = None) -> None:
         """Stop tracking (park-hold) when pausing for safety so the mount isn't
         left tracking a target into the pier (C2-6). Best-effort; never raises.
         Both calls are bounded (P0-2) so a wedged guider/mount can't hang the
-        safety-pause hold; a timeout here is swallowed like any other failure."""
+        safety-pause hold; a timeout here is swallowed like any other failure.
+        ``fence`` is the idle-stop task's (`_stop_tracking_quietly`)."""
         try:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
         except (asyncio.TimeoutError, Exception):
             pass
+        await self._stop_tracking_quietly(fence=fence)
+
+    def _note_mount_stopped(self) -> None:
+        """Record that the engine has stopped the mount (#248, H3 orchestrator
+        ruling 6; ``_mount_stopped_since``). The first stop since the last
+        pointing keeps its time; a later one changes nothing.
+
+        Recorded whether or not the stop took. A stop that did not take
+        leaves a mount tracking from where it was, which is still no reason
+        to believe it is on its target, and the cost of reading it as
+        elsewhere is one re-point behind the slew gate."""
+        if self._mount_stopped_since is None:
+            self._mount_stopped_since = time.time()
+
+    async def _stop_tracking_quietly(self, *, fence: int | None = None) -> None:
+        """The mount half of `_park_hold`: ``set_tracking(False)``, bounded,
+        every failure swallowed. Its own method because the idle-stop retry
+        (`_idle_stop_retry`) must ask the mount again WITHOUT stopping the
+        guider again (#210).
+
+        THE ONE STOP PRIMITIVE, so it is also where the stopped state is
+        recorded (`_note_mount_stopped`): the safety pause and the roof close
+        (both through `_park_hold`), a cloud hold's `_hold_park`, and the
+        idle stop's task all stop the mount through here.
+
+        ``fence`` is the idle-stop task's reading of ``_idle_stop_epoch``
+        (#270, S2 orchestrator ruling 1). Once a parking ending has moved it
+        on, nothing is sent. Checked with no await between it and the call,
+        so a stop is either asked before the park is or not at all."""
+        self._note_mount_stopped()
         try:
             tel = self.hub.devices.get("telescope")
+            if fence is not None and fence != self._idle_stop_epoch:
+                return
             if tel and tel.connected:
                 await asyncio.wait_for(tel.set_tracking(False), MOUNT_QUERY_TIMEOUT_S)
         except (asyncio.TimeoutError, Exception):
@@ -4243,7 +11146,9 @@ class SequenceEngine:
         return await self._read_safety()
 
     async def check_slew_limits(self, target: Target, *, cfg=None, plan=None,
-                                projected: bool = True) -> None:
+                                projected: bool = True,
+                                timeout_suffix: str = SLEW_CHECK_TIMEOUT_SUFFIX
+                                ) -> None:
         """Raise ``SafetyAbort`` if slewing to ``target`` breaks the altitude
         floor, horizon, no-go wedges, pier limits or the zenith keep-out.
 
@@ -4257,12 +11162,24 @@ class SequenceEngine:
         ``plan.meridian_flip``, so with ``self.plan`` still None in a fresh
         post-reboot process the pier half of this gate silently did nothing
         while the altitude half ran — a partial guard that looks like a whole
-        one. ResumeArm has the plan in hand and passes it."""
+        one. ResumeArm has the plan in hand and passes it.
+
+        WHAT IT RAISES, told apart by type (#327): a `SlewRefused` is a
+        limit's refusal; a plain SafetyAbort is a pier-guard read past its
+        bound, a mount that did not answer. ``timeout_suffix`` ends that
+        timeout's log line (`_timeout_abort`). Its default is this seam's own,
+        ``SLEW_CHECK_TIMEOUT_SUFFIX``, never the run's "aborting": no run's
+        path comes through here (a run gates its slews through
+        `_enforce_mount_floor`), so the SafetyAbort reaches a caller with no
+        run in flight, and all it stops is the slew it asked about."""
         await self._enforce_mount_floor(projected=projected, target=target,
-                                        cfg=cfg, plan=plan)
+                                        cfg=cfg, plan=plan,
+                                        timeout_suffix=timeout_suffix)
 
     async def _enforce_mount_floor(self, *, projected: bool, target: Target,
-                                   cfg=None, plan=None) -> None:
+                                   cfg=None, plan=None,
+                                   timeout_suffix: str = TIMEOUT_ABORTING
+                                   ) -> None:
         """Mount-altitude floor + pier guard before a slew (§1.9-A/E).
 
         Evaluates the slew DESTINATION (``target.ra_hours``/``dec_deg``) → alt/az
@@ -4278,34 +11195,98 @@ class SequenceEngine:
         horizon-pointing (alt ~0). Guarding the destination fixes both.
 
         ``cfg`` and ``plan`` override the run's snapshots for callers that gate
-        a slew with no run in flight (see :meth:`check_slew_limits`)."""
+        a slew with no run in flight (see :meth:`check_slew_limits`).
+
+        Every refusal here is a `SlewRefused` (#240, H3 orchestrator ruling
+        3): a SafetyAbort, so a caller that does not name it ends the run as
+        it always has, carrying words-only ``words`` for the one caller that
+        does, a cloud hold's re-point (`_hold_repoint`). Its message is words
+        as well, and the altitude, limit and azimuth ride ``site_detail``
+        alone (#233; see `SlewRefused`).
+
+        ONE PREDICATE, TWO ASKERS (#189 S2, spec 5.1 item 1): this raises on
+        exactly the verdicts `_mount_floor_verdict` returns, and on nothing
+        else, so the scheduler's reachability check and the slew gate cannot
+        disagree about what the mount may reach."""
+        verdict = await self._mount_floor_verdict(
+            target, projected, cfg=cfg, plan=plan,
+            timeout_suffix=timeout_suffix)
+        if verdict is not None:
+            raise SlewRefused(verdict.sentence, words=verdict.words,
+                              site_detail=verdict.site_detail,
+                              kind=verdict.kind)
+
+    async def _mount_floor_verdict(self, target: Target, projected: bool = True,
+                                   *, cfg=None, plan=None,
+                                   pier_now: dict | None = None,
+                                   timeout_suffix: str = TIMEOUT_ABORTING
+                                   ) -> ReachVerdict | None:
+        """`_enforce_mount_floor` as an answer rather than a raise: None when
+        the slew gate would let a slew to ``target`` through, otherwise the
+        refusal, TAGGED by what time can do about it (#189 S2, spec 5.1 item
+        1, D9; `REACH_TAGS`).
+
+        The group driver asks it at selection, so a panel behind the horizon,
+        below the floor, in a wedge or in the zenith keep-out is WAITING, with
+        a re-evaluation cadence, and the scheduler's do-while wait path runs
+        with the safety gate and the idle watch armed. Before it, a design
+        that asked after selection returned "blocked" to a scheduler that
+        still thought the panel ready, which re-selected it at once: a hot
+        loop with no sleep in it. A refusal waiting cannot fix is not a wait:
+        no saved site refuses every panel, and a pier-side change with flips
+        off refuses the one panel that needs it.
+
+        Reads the pier sides from the mount when the pier guard is armed,
+        exactly as the gate always has, in the same order: the pier half
+        first, then the altitude half.
+
+        EVERY PIER READ IS BOUNDED (#314, S3 orchestrator ruling 2), by
+        ``MOUNT_QUERY_TIMEOUT_S`` through `_bounded`. A read that fails reads
+        UNKNOWN, which the guard lets through, as it always has. A read past
+        its bound is a dead link, and raises the engine's dead-link
+        SafetyAbort (P0-2), the one exception this ever raises: never a
+        `SlewRefused`, so a cloud hold's re-point does not take a dead link
+        for a limit. These reads used to be the engine's only unbounded mount
+        awaits, and S2 moved them onto the scheduler's selection, once per
+        live member at every selection (`_eligibility_now`), where a wedged
+        link hung the selection, and with it the safety gate and the idle
+        watch that only `_wait_until` runs.
+
+        ``pier_now``: a dict one selection shares across its members. The
+        side the mount is on now is read into it once and reused, since it
+        is the same answer for every member; the destination side is the
+        member's own and is read for each. None (every slew's own gate)
+        reads both, every time.
+
+        ``timeout_suffix`` ends a timed-out read's log line (`_timeout_abort`,
+        #327): what the caller does next, "aborting" for a run."""
         cfg = cfg if cfg is not None else self._cfg
         plan = plan if plan is not None else self.plan
         if cfg is None:
-            return
-        floor_base = float(cfg.safety.min_alt_deg or 0.0)
-        horizon = cfg.safety.horizon
-        nogo = cfg.safety.nogo_box
+            return None
         pier = cfg.safety.enforce_pier_limits
 
         tel = self.hub.devices.get("telescope")
         if tel is None or not getattr(tel, "connected", False):
-            return
+            return None
 
         # pier-collision guard: a mount that reports a definite unsafe destination
         # side blocks the slew (only when enabled + the mount supports it).
         if pier and getattr(tel, "reports_destination_pier_side", False):
-            try:
-                side = await tel.destination_pier_side(target.ra_hours, target.dec_deg)
-            except Exception:
-                side = PierSide.UNKNOWN
+            side = await self._pier_guard_read(
+                lambda: tel.destination_pier_side(target.ra_hours,
+                                                  target.dec_deg),
+                "the mount's destination pier side", suffix=timeout_suffix)
             # the "unsafe" side is the one the mount cannot reach without a flip;
             # we only hard-stop on a *definite* east/west report (UNKNOWN passes).
-            cur = PierSide.UNKNOWN
-            try:
-                cur = await tel.pier_side()
-            except Exception:
-                cur = PierSide.UNKNOWN
+            if pier_now is not None and "side" in pier_now:
+                cur = pier_now["side"]
+            else:
+                cur = await self._pier_guard_read(tel.pier_side,
+                                                  "the mount's pier side",
+                                                  suffix=timeout_suffix)
+                if pier_now is not None:
+                    pier_now["side"] = cur
             if (side in (PierSide.EAST, PierSide.WEST)
                     and cur in (PierSide.EAST, PierSide.WEST)
                     # `plan is not None`, NOT truthiness: a plan object that
@@ -4315,9 +11296,94 @@ class SequenceEngine:
                     and side != cur
                     and plan is not None and not plan.meridian_flip):
                 # a pier-side change with flips disabled is a collision risk.
-                raise SafetyAbort(
+                # A LIMIT REFUSAL, by type (#240, H3 orchestrator ruling 3):
+                # a cloud hold's re-point stops tracking on it and holds;
+                # every other caller ends the run, as it always did. A group
+                # member refused this way at selection is set aside tonight
+                # with this sentence, and the panels reachable from the side
+                # the mount is on go on (spec 5.1 item 1).
+                return ReachVerdict(
+                    REACH_TAGS["pier"], "pier",
                     f"slew to {target.name} would require a pier flip but meridian "
-                    "flip is disabled")
+                    "flip is disabled",
+                    f"a slew to {target.name} would need a pier flip, "
+                    f"and this plan has meridian flips switched off")
+
+        # The altitude half - floor, horizon, no-go wedges, zenith keep-out and
+        # the no-site refusal - is ONE predicate with two askers: this gate,
+        # which raises on its answer, and the idle-clock park-hold, which acts
+        # on a floor or ceiling verdict for the target the mount was left
+        # tracking (#165).
+        # A second copy of the floor formula is how the two would come to
+        # disagree about where the floor is.
+        verdict = self._altitude_limit_verdict(target, projected=projected,
+                                               cfg=cfg)
+        if verdict is not None:
+            return ReachVerdict(REACH_TAGS[verdict.kind], verdict.kind,
+                                verdict.sentence,
+                                self._limit_words(target, verdict.kind),
+                                verdict.site_detail)
+        return None
+
+    @staticmethod
+    async def _pier_guard_read(read, what: str, *,
+                               suffix: str = TIMEOUT_ABORTING) -> PierSide:
+        """One pier read for the slew gate's pier guard (#314): ``read()``
+        under ``MOUNT_QUERY_TIMEOUT_S``.
+
+        A driver that raises, or answers with anything but a side, reads
+        UNKNOWN, which the guard lets through, as an unreadable side always
+        has. A read past its bound is not an unknown side: it is a dead
+        link, and `_bounded` raises the dead-link SafetyAbort (P0-2), which
+        ends the run through the shielded wind-down. Taking it for UNKNOWN,
+        as the issue offered, would let the selection loop on over a mount
+        that answers nothing, a 30 s stall per member per selection, with
+        the idle park-hold's own stop about to ask the same dead link.
+
+        ``read`` is called inside the guard, so a driver that raises before
+        it hands back an awaitable reads UNKNOWN too, as it did before the
+        bound. ``suffix`` ends a timeout's log line (`_timeout_abort`, #327).
+        """
+        try:
+            side = await _bounded(read(), MOUNT_QUERY_TIMEOUT_S, what,
+                                  suffix=suffix)
+        except SafetyAbort:
+            raise
+        except Exception:                # noqa: BLE001 - unreadable, not unsafe
+            return PierSide.UNKNOWN
+        return side if isinstance(side, PierSide) else PierSide.UNKNOWN
+
+    def _altitude_limit_verdict(self, target: Target, *, projected: bool,
+                                cfg, at: float | None = None
+                                ) -> LimitVerdict | None:
+        """The altitude half of `_enforce_mount_floor`, as an answer rather than
+        a raise.
+
+        ``None`` when ``target`` is inside every configured altitude limit, or
+        none is configured (and for a ``cfg`` of None, which configures none).
+        Otherwise a `LimitVerdict`: ``kind`` is ``"no_site"``, ``"floor"`` or
+        ``"ceiling"``, ``sentence`` is exactly what the slew gate raises, and
+        ``site_detail`` the same refusal with its numbers.
+        ``projected`` also judges the target ``SLEW_PROJECT_S`` ahead, for a
+        slew; the idle park-hold asks about the LIVE sky and passes False.
+        ``at`` judges the sky at that time instead of now: a cloud hold asks
+        it across the exposure it is about to open (`_hold_limit_ahead`).
+
+        THE SENTENCE IS WORDS (#233; H3 orchestrator ruling 1, spec "Still
+        waiting on the owner" item 10): it ends a run, and a run's end is
+        logged and published to viewers. The altitude and the azimuth are
+        the site re-encoded (#140), and so is the floor, which a horizon
+        profile or a no-go wedge takes from the azimuth; all three ride
+        ``site_detail``, which nothing here logs or publishes. The no-site
+        sentence names latitude 0 and longitude 0, which are not this site.
+
+        Never raises and touches no device, so it is safe on every wait tick.
+        """
+        if cfg is None:
+            return None
+        floor_base = float(cfg.safety.min_alt_deg or 0.0)
+        horizon = cfg.safety.horizon
+        nogo = cfg.safety.nogo_box
 
         # The CEILING is read here, alongside the floor, because the early return
         # below used to sit between the two: a rig with no floor configured
@@ -4330,16 +11396,44 @@ class SequenceEngine:
         has_floor = floor_base > 0.0 or bool(horizon) or bool(nogo)
         has_ceiling = ceiling < schedule.NO_CEILING_DEG
         if not has_floor and not has_ceiling:
-            return      # neither end configured → nothing to enforce
+            return None     # neither end configured → nothing to enforce
 
         # DESTINATION alt/az now (and projected forward across the slew+solve), so
         # the guard blocks a slew TO a low target and never trips on where the
         # mount happens to point right now (e.g. a horizon-pointing park position).
         from ..catalog import altaz
-        lat = self.hub.site["latitude"]
-        lon = self.hub.site["longitude"]
+        from ..site_gate import site_lat_lon
+        # NO SITE, NO ALTITUDE, AND THEREFORE NO SLEW (#24). Reaching here means
+        # the operator configured a floor, a horizon, a no-go box or a ceiling -
+        # the early return above already let a rig with no limits through - so
+        # there IS something to enforce and this is the code that enforces it.
+        #
+        # At the 0,0 default every alt/az below is computed for the Gulf of
+        # Guinea, and the failure is not a wrong number, it is a guard that
+        # answers confidently in both directions: a target genuinely below the
+        # floor can read as high and be PERMITTED, which is the mount driving
+        # into whatever the floor was drawn around, and one safely high can read
+        # as low and abort the night. A limit evaluated against the wrong
+        # hemisphere is not a weaker limit, it is a different one.
+        #
+        # So this fails CLOSED, unlike `schedule.dark_enough`, which fails open
+        # at a default site on purpose. The two are not in tension: that gate
+        # stops daylight imaging and refusing it would stop an unconfigured rig
+        # from ever taking a frame, while this one stops the mount from hitting
+        # something, and there is no version of "we do not know where we are"
+        # that makes a pier collision acceptable.
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            return LimitVerdict(
+                "no_site",
+                f"cannot check {target.name} against the altitude limits: "
+                f"no observing site is saved, so every altitude here would "
+                f"be computed for latitude 0, longitude 0. Save the site "
+                f"in Settings, or clear the floor, horizon, no-go and "
+                f"ceiling limits if this mount genuinely has none.")
+        lat, lon = latlon
         ra, dec = target.ra_hours, target.dec_deg
-        now = time.time()
+        now = time.time() if at is None else float(at)
         alt_now, az_now = altaz(ra, dec, lat, lon, now)
         worst_alt, worst_az = alt_now, az_now
         if projected:
@@ -4348,9 +11442,13 @@ class SequenceEngine:
                 worst_alt, worst_az = alt_p, az_p
         floor = schedule.effective_floor(floor_base, horizon, worst_az, nogo)
         if worst_alt < floor:
-            raise SafetyAbort(
-                f"target {target.name} altitude {worst_alt:.0f}° below safety floor "
-                f"{floor:.0f}° (az {worst_az:.0f}°)")
+            return LimitVerdict(
+                "floor",
+                (f"slew refused: {self._limit_words(target, 'floor')}"
+                 if projected else
+                 f"{target.name} is below the mount's altitude floor"),
+                f"target {target.name} altitude {worst_alt:.0f}° below "
+                f"safety floor {floor:.0f}° (az {worst_az:.0f}°)")
         # And the CEILING. A mount can foul its own tripod at HIGH altitude with
         # the optics still on open sky; every other limit here is a minimum, so
         # nothing had an opinion about it (#101, observed on the AM5N). Checked
@@ -4363,10 +11461,16 @@ class SequenceEngine:
             if alt_p > best_alt:
                 best_alt, best_az = alt_p, az_p
         if best_alt > ceiling:
-            raise SafetyAbort(
+            return LimitVerdict(
+                "ceiling",
+                (f"slew refused: {self._limit_words(target, 'ceiling')}"
+                 if projected else
+                 f"{target.name} is in the mount's zenith keep-out")
+                + ", where the mount can reach its own tripod",
                 f"target {target.name} altitude {best_alt:.0f}° above the "
-                f"zenith keep-out {ceiling:.0f}° (az {best_az:.0f}°) — the mount "
-                "can reach its own tripod up there")
+                f"zenith keep-out {ceiling:.0f}° (az {best_az:.0f}°) — the "
+                "mount can reach its own tripod up there")
+        return None
 
     # ----------------------------------------------------------- watchdog (§1.9-F)
 
@@ -4463,7 +11567,7 @@ class SequenceEngine:
         self._frame_started_at = time.time()
 
     def _record_frame(self, key: str, i: int, target: Target, step, info: dict,
-                      *, accepted: bool = True) -> None:
+                      *, accepted: bool = True, guided: bool = True) -> None:
         now = time.time()
         # Per-frame overhead EMA: cadence minus exposure, EXCLUDING any frame that
         # carried a dither/AF/flip (those are accounted analytically, so folding
@@ -4486,6 +11590,17 @@ class SequenceEngine:
         self._frame_started_at = 0.0   # frame complete — no longer in flight
         self._done[key] = i + 1
         self._frames_done += 1
+        # A banked frame is evidence that recovery actually worked ONLY WHEN
+        # IT IS EVIDENCE GUIDING HELD (#134): every recorded frame used to
+        # clear the bound, rejected-but-kept ones included, so a trailed
+        # frame shot unguided cleared the very attempt that produced it —
+        # see `_frame_was_guided`. ``guided`` defaults True for callers with
+        # nothing to confirm (a calibration frame, which never guides).
+        # Clearing it when start_guiding merely RETURNED, rather than on
+        # this evidence, would have re-armed the loop on every cycle of the
+        # night that produced the #72 issue this bound exists for.
+        if guided:
+            self._guiding_recoveries = 0
         # ledger append + atomic session save replaces the retired resume-file
         # _persist (same per-frame write cost — sessions spec §3).
         self._record_session_frame(target, step, info, auto_accepted=accepted)
@@ -4568,8 +11683,23 @@ class SequenceEngine:
     async def _render_thumb(self, session: Session, sf: SessionFrame,
                             data) -> None:
         """Encode + write the thumb off-thread, then stamp the relative path
-        onto the ledger frame and re-save the session (event-loop-serialized
-        with the capture loop's own saves, so writes never interleave)."""
+        onto the ledger frame (event-loop-serialized with the capture loop's
+        own saves, so writes never interleave).
+
+        ONE LEDGER WRITE PER FRAME (#515, #189 risk 8). This re-saved the
+        whole session after every render: a full dump and atomic write of
+        every frame the project holds, to record one relative path, so a
+        camera frame with pixels cost two ledger writes. The stamp is made
+        on the run's own session object, so while that run is live the next
+        write carries it: the next frame's, a pier record's, or the final
+        one `_finalize_report` makes on every ending. Only a render that
+        lands after the run's final write saves, once, as it always did.
+        Not when a CONTINUE of the same session has started since: that run
+        loaded its own copy, and saving this older one would roll its ledger
+        back until its next frame; the thumb is still served, since
+        `_thumb_ids` asks the disk, not the stamp. A crash between a render
+        and the next write loses the stamp the same way, and nothing else.
+        """
         try:
             jpeg, _w, _h = await asyncio.to_thread(
                 to_jpeg, data, max_width=512)  # auto-stretch, ~512px long edge
@@ -4578,18 +11708,85 @@ class SequenceEngine:
             path = tdir / f"{sf.id}.jpg"
             await asyncio.to_thread(path.write_bytes, jpeg)
             sf.thumb = f"thumbs/{sf.id}.jpg"
-            session_store.save_run_state(session)
+            live = self._session
+            if live is None or live.id != session.id:
+                session_store.save_run_state(session)
         except Exception as e:
             bus.log("warning", f"thumb render failed: {e}", "sequence")
 
     # ----------------------------------------------------------- sub-routines
 
-    async def _cool_and_wait(self, target_c: float, timeout_s: int) -> bool:
+    async def _cool_and_wait(self, target_c: float, timeout_s: int, *,
+                             watch: bool = False,
+                             state: str = "running",
+                             monitor: bool = False,
+                             for_target: Target | None = None) -> bool:
         """Cool the camera to ``target_c`` and wait for it to stabilize.
 
         Returns ``True`` when the cooler reached the band (or there is no
         coolable camera — nothing to wait on), ``False`` on a cool-timeout / a
         failed cooler command.
+
+        ``watch``: THE RUN-START WAIT WATCHES THE MOUNT (#202).
+        `start(tracking=...)` hands a run a target the caller left the mount
+        tracking (ResumeArm re-centres one seconds before it starts the
+        resumed run), and the idle watch starts on it at once. But this wait
+        is the first thing the run does, and after a restart it is minutes of
+        a sensor walking down from ambient, during which only `_wait_until`
+        used to take the idle look, and `_wait_until` had not started. So
+        every probe of this loop takes the same look (`_idle_hold_tick`: the
+        idle clock, the floor, the zenith keep-out, the flip point), one
+        ``COOLER_PROBE_EVERY_S`` ahead for the flip point: the longest this
+        loop sleeps between two looks, as `_wait_until` looks one
+        ``SCHEDULE_WAIT_STEP_S`` ahead. A temperature read that hangs adds up
+        to ``COOLER_CMD_TIMEOUT_S`` to one gap; the plan's flip point is
+        minutes before any mount's own limit, so that lateness is spent
+        inside the lead, not past it. With nothing tracked, the look finds
+        nothing to stop, as it does in `_wait_until`.
+
+        `_run`'s call passes it, and so does `_cooler_gate` when a CLOUD HOLD
+        releases (#236). A hold keeps its target tracked by design, and once
+        the sky clears this wait is the only thing between the release and
+        `_setup_target`: none when the sensor never left its band, up to
+        ``cool_timeout_s`` when it did, with the held target tracked through
+        its floor, its keep-out or its flip point and nothing looking. The
+        hold has usually spent the idle clock by then (it was last reset by
+        the last frame, or by the hold's re-point, and a hold lasts minutes),
+        so the first look stops tracking at once, whatever the sensor reads.
+        That costs nothing: the release goes on to `_setup_target`, which
+        re-slews and restores tracking, as it would have anyway.
+
+        The SAFETY PAUSE's gate does not watch. The pause stopped tracking
+        itself (`_park_hold_pause`), so there is nothing tracked to watch,
+        and a look would say the mount is "still tracking" when it is not.
+        A sensor already in its band adds no wait either way: the first look
+        is taken before the first probe, and that probe returns.
+
+        ``state`` is the state published while it waits: "running" for the
+        run's start and a cloud hold's release, "paused" for a safety
+        release, which is not over until this wait has passed (#448,
+        `_cooler_gate`'s ``weather``): a "running" published from inside it
+        told every screen the pause was over before the weather had been
+        judged safe for good.
+
+        ``monitor``: THE WEATHER IS READ THROUGH THE WAIT AND ACTED ON (#452).
+        Nothing else reads the safety monitor while this wait runs: the
+        engine has no safety task beside the run, and the gates that read it
+        are the frame loop's, the scheduler wait's and the setups'. The
+        run-start wait is minutes after a restart or an auto-resume, and a
+        cloud hold's release gate up to ``cool_timeout_s`` and
+        ``COOLER_SETTLE_MAX_S`` more, 25 minutes at the defaults, in which
+        rain was acted on by nobody: a closeable roof stayed open and a
+        pause or park waited for the wait. So `_run` and the hold's release
+        ask for it, and while there is a monitor to read
+        (`_monitor_to_read`) the wait runs on a task of its own beside the
+        safety gate on this one, every ``SAFETY_PAUSE_POLL_S``
+        (`_wait_beside_the_monitor`), whose unsafe verdict goes to
+        `_on_unsafe` as `_wait_until`'s does. ``for_target`` is the target
+        whose acquisition waits behind this wait: the hold's, for its
+        release. The safety releases do not ask for it: the weather is what
+        they wait on, and their gate ends on it (`_cooler_gate`'s
+        ``weather``).
 
         P1-7 escalation (``cfg.escalation.require_cooling`` + ``cooling_action``):
         the default ``cooling_action == "warn"`` keeps the historical fail-open
@@ -4598,6 +11795,11 @@ class SequenceEngine:
         ``abort`` → ``SafetyAbort`` (tear the night down through the wind-down);
         ``skip`` → return ``False`` so the caller skips the light run. All cooler
         device calls are bounded (P0-2)."""
+        if monitor and self._monitor_to_read():
+            return await self._wait_beside_the_monitor(
+                lambda looked: self._cool_and_wait(
+                    target_c, timeout_s, watch=watch and looked, state=state),
+                target=for_target)
         cfg = self._cfg
         require = bool(cfg and cfg.escalation.require_cooling)
         action = (cfg.escalation.cooling_action if cfg else "warn")
@@ -4636,7 +11838,7 @@ class SequenceEngine:
                             f"though the plan asked for {target_c:g}°C",
                     "sequence")
             return True
-        self._set_state(state="running", detail=f"cooling to {target_c:g}°C")
+        self._set_state(state=state, detail=f"cooling to {target_c:g}°C")
         bus.log("info", f"cooling camera to {target_c:g}°C", "sequence")
         try:
             # Through the hub, not straight at the device: a warm-down ramp from
@@ -4687,6 +11889,11 @@ class SequenceEngine:
                 return self._cooling_failed(require, action,
                                             "cooler reached its band but never settled")
             await self._checkpoint()
+            if watch:
+                # The mount a caller left tracking, looked at as `_wait_until`
+                # looks at it (see the docstring). Before the probe, so the
+                # first look is taken the moment the wait begins.
+                await self._idle_hold_tick(ahead_s=COOLER_PROBE_EVERY_S)
             try:
                 t = await asyncio.wait_for(cam.get_temperature(), COOLER_CMD_TIMEOUT_S)
             except (asyncio.TimeoutError, Exception):
@@ -4721,7 +11928,11 @@ class SequenceEngine:
                             if t is not None else "waiting on cooler"))
             await asyncio.sleep(COOLER_PROBE_EVERY_S)
 
-    async def _cooler_gate(self, why: str) -> None:
+    async def _cooler_gate(self, why: str, *, watch: bool = False,
+                           weather: bool = False,
+                           asks: Callable[[], Any] | None = None,
+                           monitor: bool = False,
+                           for_target: Target | None = None) -> bool:
         """Block until the sensor is back at setpoint and stable. THE gate.
 
         The handoff's HOLD / RESUME checklist leads with this, and the order is
@@ -4743,19 +11954,238 @@ class SequenceEngine:
         stop uncooled rigs dead. `_cool_and_wait` owns every other decision,
         including the escalation policy, so this cannot disagree with the
         start-of-run gate about what "cool enough" means.
+
+        ``watch`` is passed on to `_cool_and_wait`: the cloud hold's release
+        watches the mount through this wait, the safety pause's does not
+        (#236; `_cool_and_wait` says why each).
+
+        ``weather``: THE SAFETY RELEASES WATCH THE MONITOR THROUGH IT (#448,
+        S4 review item 9). The open-sky pause and the roof reopen run this
+        gate once the weather has read safe long enough, and the wait reads
+        the sensor and nothing else, for up to ``cool_timeout_s`` and
+        ``COOLER_SETTLE_MAX_S`` more: 25 minutes at the defaults in which
+        rain that came back was seen by nobody. So for them the monitor is
+        read on a clock of its own, every ``SAFETY_PAUSE_POLL_S``, while the
+        sensor is waited for on a task of its own
+        (`_cool_watching_the_weather`), and the first read that is not safe
+        ends the wait. Returns False then, and True otherwise, including
+        when there is no temperature to wait for; the caller publishes
+        "safe again" only on True. ``asks`` goes with it: the safety pause's
+        re-asks of an unconfirmed stop, made on their own minute through
+        the wait (#453, `_park_hold_pause`).
+
+        ``monitor``: A CLOUD HOLD'S RELEASE ACTS ON THE MONITOR THROUGH IT
+        (#452). The release's wait is not a safety release: nothing waits
+        for the weather after it, and rain that starts inside it is the
+        run's to act on, now. So the monitor is read on its own clock
+        through the wait, as `_wait_until` reads it, and an unsafe verdict
+        goes to `_on_unsafe` (`_cool_and_wait`'s ``monitor``). A pause it
+        opens does not acquire ``for_target``, the held target: the hold's
+        release does that once the gate returns, or the setup whose gate
+        opened the hold (#241).
         """
         target = getattr(self.plan, "cool_to", None) if self.plan else None
         if target is None:
-            return
+            return True
         bus.log("info", f"cooler gate ({why}): checking the sensor before capture",
                 "sequence")
+        if weather:
+            return await self._cool_watching_the_weather(target, watch=watch,
+                                                         asks=asks)
         # THE RESOLVED POLICY, not a getattr default (#239 stage A). This read
         # was `getattr(self.plan, "cool_timeout_s", 900)`, whose default fires
         # only when the ATTRIBUTE IS ABSENT - and the field is now present and
         # None on every flow-built plan, so it returned None and this line
         # raised TypeError on the first cooled resume. A defaulting read that
         # stops defaulting is the whole hazard of making a field optional.
-        await self._cool_and_wait(target, self._policy.cool_timeout_s)
+        await self._cool_and_wait(target, self._policy.cool_timeout_s,
+                                  watch=watch, monitor=monitor,
+                                  for_target=for_target)
+        return True
+
+    @staticmethod
+    def _reads_safe(reading) -> bool:
+        """A reading the safety releases count as safe: there is one, it is
+        fresh, and it says safe. Anything else, a missing or stale reading
+        included, is not safe, as the releases' own loops count it."""
+        return reading is not None and not reading.stale and reading.is_safe
+
+    async def _cool_watching_the_weather(
+            self, target_c: float, *, watch: bool = False,
+            asks: Callable[[], Any] | None = None) -> bool:
+        """The cooler gate's wait for a safety release, with the weather
+        read through it (#448). Returns True when the wait is over and every
+        read in it was safe, False at the first read that was not.
+
+        TWO CLOCKS. The sensor is waited for on a task of its own
+        (`_cool_and_wait`, publishing "paused": the release is not over),
+        and this task reads the monitor every ``SAFETY_PAUSE_POLL_S`` from
+        the moment the gate began, as the release's own loop reads it. The
+        sensor's wait is not the weather's clock: a temperature read that
+        hangs holds a probe for up to ``COOLER_CMD_TIMEOUT_S``, and a read
+        taken between probes would come that late. The first read is one
+        cadence in, since the release has just read safe; the last read may
+        be up to one cadence old when the sensor settles, the age of any
+        verdict the release's own loop acts on.
+
+        POLLED, NOT AWAITED, as `_reap_by` polls: each look is a sleep the
+        clocked simulator can advance, and the first is one turn of the loop,
+        so a sensor already in its band costs the release nothing.
+
+        A READ THAT IS NOT SAFE ends the sensor's wait: cancelled, and waited
+        for up to ``COOLER_CMD_TIMEOUT_S`` (a cooler call in flight lets the
+        cancel through when it lands), so nothing of it publishes after the
+        release has gone back to waiting. Whatever the sensor's wait raises
+        (``cooling_action`` abort's SafetyAbort) is raised here. A cancel of
+        this task (an Abort) cancels the wait and does not wait for it: the
+        Abort's teardown is not held behind a camera call.
+
+        ``asks``, THE PAUSE'S RE-ASKS, ON EACH TURN (#453): called before
+        each look, on this task, so an unconfirmed stop is asked again on
+        its own minute through the wait, as the pause's loop asks it
+        outside the wait. An ask is mount calls, and on a dead link each
+        can hang for ``MOUNT_QUERY_TIMEOUT_S``: the reads wait behind it,
+        as the pause's own reads do, so rain is seen up to that much later.
+        But never missed: the read an ask held is overdue when the ask
+        returns, and is taken before the loop looks at the sensor's wait
+        again, so a wait that settled during the ask still ends on a read
+        taken after it."""
+        cooling = asyncio.ensure_future(self._cool_and_wait(
+            target_c, self._policy.cool_timeout_s, watch=watch,
+            state="paused"))
+        try:
+            turned = False
+            next_read = time.time() + SAFETY_PAUSE_POLL_S
+            step = 0.0
+            while not cooling.done():
+                if asks is not None:
+                    await asks()
+                now = time.time()
+                if now >= next_read:
+                    next_read = now + SAFETY_PAUSE_POLL_S
+                    if not self._reads_safe(await self._read_safety()):
+                        turned = True
+                        break
+                    continue
+                await asyncio.sleep(min(step, next_read - now))
+                step = IDLE_STOP_FINISH_POLL_S
+        except BaseException:
+            if not cooling.done():
+                cooling.cancel()
+            raise
+        if turned:
+            cooling.cancel()
+            await self._reap_by(cooling, time.time() + COOLER_CMD_TIMEOUT_S)
+            # One that ended on its own meanwhile still says what it raised.
+            if (cooling.done() and not cooling.cancelled()
+                    and cooling.exception() is not None):
+                raise cooling.exception()
+            return False
+        cooling.result()
+        return True
+
+    def _monitor_to_read(self) -> bool:
+        """Whether a wait has a safety monitor to read beside it (#452): the
+        monitor gate is armed, as `_safety_gate` arms it (``safety.enabled``
+        and the plan's ``safety_check``), and a monitor is assigned or its
+        absence is itself an unsafe verdict (``require_safety_monitor``).
+        Without either, the gate has only the frames' sky verdict to stand
+        in for one (`_no_safety_source`), and a wait takes no frames, so
+        there is nothing on the weather's clock to read."""
+        cfg = self._cfg
+        plan = self.plan
+        if cfg is None or plan is None or not (cfg.safety.enabled
+                                               and plan.safety_check):
+            return False
+        return (self.hub.devices.get("safety") is not None
+                or bool(cfg.escalation.require_safety_monitor))
+
+    async def _wait_beside_the_monitor(self, begin, *,
+                                       target: Target | None = None):
+        """Run a wait on a task of its own and the safety gate on this one,
+        every ``SAFETY_PAUSE_POLL_S``, for as long as the wait lasts (#452).
+        Returns what the wait returns and raises what it raises.
+        ``begin(looked)`` makes the wait; ``looked`` is False once an unsafe
+        verdict has stopped the mount (below).
+
+        THE WEATHER'S CLOCK, NOT THE WAIT'S. A cooling wait's temperature
+        read can hang for ``COOLER_CMD_TIMEOUT_S``, and a read of the monitor
+        taken between two probes would come that late: the #448 shape, in
+        the wait nobody watched. So the wait is polled, as `_reap_by` polls,
+        and the gate is asked on its own cadence from the moment the wait
+        begins, the first time at once: the run's start and a hold's release
+        read nothing of the weather in the moments before. Each look is a
+        sleep the clocked simulator can advance, and the first is one turn
+        of the loop, so a sensor already in its band costs nothing.
+
+        THE GATE IS THE SCHEDULER WAIT'S (`_wait_until`): `_safety_gate`,
+        with its debounce, its fail-closed reads of a stale or disconnected
+        monitor and its ``on_unsafe``. A warning ends nothing, and the wait
+        goes on. A park or an abort raises out of the gate, and the wait is
+        cancelled on the way out, not waited for: the wind-down's park and
+        roof close are not held behind a camera call. Before a pause or a
+        roof close `_on_unsafe` ends the wait (``_unsafe_ends_the_wait``),
+        so nothing of it runs on beside the pause; when the pause or the
+        reopen returns, the wait begins again from the start, its deadlines
+        with it, since the time the weather took is not time the wait
+        spent. A wait that failed on its own before it was ended still
+        raises what it raised, as the release's gate does
+        (`_cool_watching_the_weather`).
+
+        BEGUN AGAIN WITH NO IDLE LOOK. The pause and the roof close stopped
+        the mount, and a look at it would call it "still tracking" and stop
+        it again: the rule the safety pause's own gate keeps (#236).
+
+        A TARGET'S ACQUISITION WAITS BEHIND THE GATE (#241, H3 orchestrator
+        ruling 4): ``target``, when given, is marked as the acquisition
+        behind it, as a cloud hold marks its own gate's (#263), so a pause
+        or a reopen the gate opens re-checks the target's floor and does
+        not acquire it: whatever waited acquires it once the wait returns.
+        """
+        looked = True
+        while True:
+            wait = asyncio.ensure_future(begin(looked))
+            ended = False
+
+            def end_the_wait(wait=wait) -> None:
+                nonlocal ended
+                ended = True
+                if not wait.done():
+                    wait.cancel()
+
+            try:
+                next_read = time.time()
+                step = 0.0
+                while not wait.done():
+                    now = time.time()
+                    if now >= next_read:
+                        next_read = now + SAFETY_PAUSE_POLL_S
+                        gated = self._acquisition_behind_gate
+                        if target is not None:
+                            self._acquisition_behind_gate = target
+                        self._unsafe_ends_the_wait = end_the_wait
+                        try:
+                            await self._safety_gate(context="frame",
+                                                    target=target)
+                        finally:
+                            self._unsafe_ends_the_wait = None
+                            self._acquisition_behind_gate = gated
+                        if ended:
+                            break
+                        continue
+                    await asyncio.sleep(min(step, next_read - now))
+                    step = IDLE_STOP_FINISH_POLL_S
+            except BaseException:
+                if not wait.done():
+                    wait.cancel()
+                raise
+            if not ended:
+                return wait.result()
+            await self._reap_by(wait, time.time() + COOLER_CMD_TIMEOUT_S)
+            if (wait.done() and not wait.cancelled()
+                    and wait.exception() is not None):
+                raise wait.exception()
+            looked = False
 
     def _cooling_failed(self, require: bool, action: str, reason: str) -> bool:
         """Apply ``cfg.escalation.cooling_action`` on a cooling failure (P1-7).
@@ -4910,14 +12340,41 @@ class SequenceEngine:
                         "sequence")
             return
         self._flip_offline_logged = False
-        # authoritative countdown = server HA math (the device value alone never
-        # goes negative, so it can't detect the crossing — the live bug).
-        try:
-            lon = self.hub.site["longitude"]
-            ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
-        except Exception:
+        # NO SITE, NO MERIDIAN, AND SAY SO (issue #24). The flip is hour angle
+        # and hour angle is longitude, so at the 0,0 default this used to
+        # compute a crossing over the Gulf of Guinea and take it - an
+        # unannounced flip at an arbitrary time, with the field rotating 180
+        # degrees in the middle of the stack for no reason anybody could see.
+        #
+        # Not flipping is the better of the two, because a flip at the wrong
+        # time is itself the hazard, but it is only better if it is AUDIBLE:
+        # this used to fall into the `except: return` below and the run went on
+        # in silence. Rate-limited on the same flag as the offline case, and for
+        # the same reason - the condition holds for the whole run and one line
+        # is the news.
+        #
+        # This is NOT a refusal to run. A run-start refusal was written first
+        # and reverted: `meridian_flip` defaults to True on every plan, so it
+        # stopped calibration runs that never point at the sky, and 27 tests
+        # said so.
+        from ..site_gate import site_is_set
+        if not site_is_set(self.hub.site):
+            if not self._flip_no_site_logged:
+                self._flip_no_site_logged = True
+                bus.log("warning",
+                        f"{target.name}: a meridian flip is armed but this rig "
+                        f"has no configured site, so nothing here can work out "
+                        f"where the meridian is — no flip will be taken. Save "
+                        f"the site's location in settings, or switch the flip "
+                        f"off to stop this run expecting one",
+                        "sequence")
             return
-        # A FLIP THIS TARGET DOES NOT NEED IS PURE COST. The countdown above is
+        # The authoritative countdown is the server's hour-angle math (the
+        # device value alone never goes negative, so it cannot detect the
+        # crossing, the live bug). It is computed once, below, with the
+        # mount's own figure and the band, by `_flip_point` (#505).
+        #
+        # A FLIP THIS TARGET DOES NOT NEED IS PURE COST. The countdown is
         # hour-angle only and has no idea WHERE on the sky the crossing happens.
         # For a target whose lower culmination clears the horizon the tube never
         # points down anywhere in the mount's rotation, so there is nothing for
@@ -4968,29 +12425,36 @@ class SequenceEngine:
         # The branch stays because it is the ONLY place a declined flip is
         # announced, and a declined flip that leaves no trace is how four nights
         # ended with no evidence at all.
+        #
+        # WORDS ONLY, both lines below (#233; H3 orchestrator ruling 1, spec
+        # "Still waiting on the owner" item 10). The decline used to give the
+        # target's lower culmination beside its declination, "at dec +66.1
+        # from this site the target's lowest point is 13°", and that height
+        # is ``asin(-cos(lat + dec))``: the latitude by subtraction, from one
+        # line, with no clock needed at all. The mount's own limit was given
+        # in minutes, a countdown to a crossing the mount computes from where
+        # it stands. Neither number changes what is done, and no surface a
+        # site-derived capability gates carries either line, so both are
+        # dropped. The decline itself is still a verdict about the latitude,
+        # as the meridian block's ``n_a_over_pole`` status is (``redact.py``),
+        # and it is unreachable today: `schedule.flip_can_be_skipped` answers
+        # False for every mount.
         if schedule.flip_can_be_skipped(target.dec_deg, lat, side) and not forced:
             if self._flip_armed:
                 self._flip_armed = False
                 bus.log("info",
-                        f"{target.name}: no meridian flip needed — at dec "
-                        f"{target.dec_deg:+.1f} from this site the target's "
-                        f"lowest point is "
-                        f"{schedule.lower_culmination_deg(target.dec_deg, lat):.0f}"
-                        f"° above the horizon, so the tube never swings down "
-                        f"toward the pier and the mount tracks straight "
-                        f"through the meridian", "sequence")
+                        f"{target.name}: no meridian flip needed — the "
+                        f"target's lowest point stays above the horizon, so "
+                        f"the tube never swings down toward the pier and the "
+                        f"mount tracks straight through the meridian",
+                        "sequence")
             return
         if forced and schedule.flip_unnecessary_over_pole(target.dec_deg, lat):
             bus.log("warning",
                     f"{target.name}: the tube would clear the pier, but the "
-                    f"mount reports its own meridian limit in "
-                    f"{float(dev) * 60:.0f} min — flipping anyway, because it "
-                    f"stops tracking at that limit whatever the geometry says",
-                    "sequence")
-        if dev is not None and dev > 0 and dev < ttf_h:
-            ttf_h = dev
-
-        ttf_s = ttf_h * 3600.0
+                    f"mount reports that its own meridian limit is close — "
+                    f"flipping anyway, because it stops tracking at that "
+                    f"limit whatever the geometry says", "sequence")
         # THE LEAD, AND IT IS THE WHOLE FIX. This mount stops tracking BEFORE
         # the meridian — measured at 7.6 min (NGC 7129) and 4.7 min (NGC 6946)
         # east of transit, both answering :Te# with 0 — so a flip scheduled for
@@ -4999,7 +12463,19 @@ class SequenceEngine:
         # meridian. See `schedule.MERIDIAN_FLIP_LEAD_MIN`.
         key = getattr(target, "id", None) or target.name
         lead_s = self._flip_lead_s(target)
-        remaining_s = ttf_s - lead_s
+        # THE FLIP POINT, COMPUTED ONCE (#505): the mount's own limit when it
+        # reports one nearer than the meridian, less the lead, plus the band
+        # past the crossing for a zero-lead attempt aimed at the meridian
+        # itself (#366, #455), all in `_flip_point`. The window below, the
+        # hold before the goto and the goto's "before transit?" (#489) read
+        # this one answer. The window used the mount's limit while the hold
+        # measured from the true meridian, and since #455 the band was added
+        # past the mount's limit too.
+        now = time.time()
+        point = self._flip_point(target, lead_s, dev, now=now)
+        if point is None:
+            return
+        remaining_s = point.at - now
         # frame-window gate: a flip comfortably beyond the next exposure (+ slack)
         # is not our concern this frame — expose normally.
         #
@@ -5021,11 +12497,26 @@ class SequenceEngine:
         # it. With a zero lead this is the original NINA PassMeridian hold — do
         # not swing a GEM counterweight-up while it is still east. With a lead
         # it is the same hold, taken earlier.
+        #
+        # THE HOLD WAITS FOR THIS POINT (#505), handed over on the engine
+        # around the call alone, as the flip-owed hold tells this gate whose
+        # attempt it is (#456): a double standing in for the hold keeps its
+        # signature, and the real one no longer computes a flip point of its
+        # own from the meridian.
         if remaining_s > 0:
-            await self._wait_for_flip_point(target, lead_s)
+            self._flip_point_handed = point
+            try:
+                await self._wait_for_flip_point(target, lead_s)
+            finally:
+                self._flip_point_handed = None
 
         # pre-flip safety + mount-floor gate (the flip is a slew — §1.9-B).
         await self._safety_gate(context="slew", target=target)
+        # The flip's goto turns tracking on, so nothing may still be asking
+        # for an idle stop (`_idle_stop_retry`): a cloud hold looks for the
+        # flip point before any setup has cancelled that retry. A no-op in the
+        # frame loop, where none is ever alive.
+        await self._cancel_idle_stop_retry()
         self._set_state(detail="meridian flip")
         _t0 = time.time()
         # READ THE SIDE BEFORE AND AFTER, BECAUSE NOTHING EVER DID. `hub.
@@ -5045,9 +12536,36 @@ class SequenceEngine:
         # is a FRESH CALIBRATION whenever the side changed, and one flat number
         # for both cases cut one at 420 s on 2026-09-09 and killed the run.
         flip_result: dict | None = None
+        # THE FLIP RE-CENTRE COMMANDS THE ANGLE (#160; ruling 9: "every later
+        # acquisition, resume, flip re-centre and night commands it"): the
+        # planned angle, or the one an unframed target locked. With neither,
+        # the call is today's, two arguments and no keyword. A flip turns the
+        # field half a turn under a rotator that never moved, which is the
+        # same footprint (5.7), so the hub's rotate shortcut leaves the
+        # rotator alone; nothing here turns it 180 degrees.
+        flip_angle = self._commanded_rotation(target)
+        # HOW FAR BEFORE TRANSIT THIS ATTEMPT IS MADE, read as its goto is
+        # asked for, from the gate's own countdown (#489). Not at the gate:
+        # the hold above, a safety pause in the gate just run, can each carry
+        # an attempt the gate saw coming before transit to past it. And not
+        # from ``lead_s``, the lead the attempt was ENTITLED to, which an
+        # attempt past the meridian still carries whenever the trait is
+        # unlearned: the flip-owed hold's re-slews, the frame after a refused
+        # flip the recovery re-acquired, a target acquired just past its
+        # crossing. What that teaches is read below.
+        before_transit_s = point.transit_at - time.time()
         try:
+            # A re-centre that commands an angle may run the rotate loop, as
+            # a setup's may, so its bound gets the setup's allowance: the
+            # flip's bounds were sized from a goto with no rotation in it,
+            # and an outer bound smaller than the inner one is a guillotine.
             flip_result = await self._flip_bounded(
-                self.hub.meridian_flip(target.ra_hours, target.dec_deg))
+                self.hub.meridian_flip(target.ra_hours, target.dec_deg)
+                if flip_angle is None else
+                self.hub.meridian_flip(target.ra_hours, target.dec_deg,
+                                       rotation_deg=flip_angle),
+                extra_s=(ROTATION_ALLOWANCE_S if flip_angle is not None
+                         else 0.0))
         except SafetyAbort:
             raise
         except Exception as e:           # noqa: BLE001
@@ -5079,6 +12597,17 @@ class SequenceEngine:
             self._record_event_cost("flip", time.time() - _t0)
             self._frame_had_event = True
             return
+        # THE FLIP'S GOTO IS A FRESH POINTING (#248, H3 orchestrator ruling
+        # 6), whichever side it landed on: the mount is on this target and
+        # tracking, so no stop the engine made before it still stands.
+        self._mount_stopped_since = None
+        # THE SKY ANGLE THE RE-SLEW'S SOLVE MEASURED (#526 part 3), flipped
+        # or not: the no-op re-slew is the one that moved the camera's angle
+        # 2.7 degrees on 2026-09-28 with the rotator left where it was. Read
+        # before the side read's await, so a later solve has had the least
+        # chance to replace the flip's own record.
+        self._record_sky_angle(target, since=_t0, commanded=flip_angle,
+                               result=flip_result, rec=self._sky_angle_now())
         side_after = await self._pier_side_now()
         unchanged = (side_before not in (None, "unknown")
                      and side_after == side_before)
@@ -5103,28 +12632,135 @@ class SequenceEngine:
         # the direction that hurts (an unreadable side reads as FLIPPED in both,
         # which keeps the conservative behaviour).
         nothing_flipped = unchanged or hub_flipped is False
+        # WHAT THIS ATTEMPT DEMONSTRATED ABOUT THE MOUNT (#127). Only an
+        # attempt MADE BEFORE TRANSIT is evidence about flipping EARLY, and
+        # by more than `MERIDIAN_SIDE_MARGIN_S`: inside that band a goto's
+        # side is the mount's own reckoning of the hour angle, the reason the
+        # band exists past the crossing, and a flip there teaches nothing
+        # about ten minutes before it. Read from ``before_transit_s``, taken
+        # at the goto (#489). It was ``lead_s > 0``, the lead the attempt was
+        # ENTITLED to, and an attempt past the meridian carries the plan's
+        # lead whenever the trait is unlearned: the flip-owed hold's
+        # re-slews, on a night whose lead-time attempt could not read the
+        # side, taught "flips early" from gotos past the meridian, which on a
+        # mount that picks its side from the hour angle do flip. A zero-lead
+        # attempt at a limit the mount reported before the meridian (#505)
+        # is made before transit, and teaches. And only a readable pair of
+        # sides is evidence at all: an unreadable side reads as FLIPPED
+        # above, which is the right conservative answer for this crossing
+        # and exactly the wrong thing to write down as a permanent fact
+        # about the hardware.
+        if (before_transit_s > MERIDIAN_SIDE_MARGIN_S
+                and side_before not in (None, "unknown")
+                and side_after not in (None, "unknown")):
+            self._learn_mount_flips_early(not nothing_flipped)
+        # THE PRE-FLIP RECORD IS LEFT AS IT IS, measured flip or not (#237, H3
+        # orchestrator ruling 2, spec "Still waiting on the owner" item 11).
+        # The side this target occupied before its flip is a fixed property
+        # of its east side, so it is still true now. A later goto to it east
+        # of its meridian on a mount that picks its side from the hour angle,
+        # as the AM5 does - a mosaic hopping back to a panel it flipped early,
+        # inside the lead - lands on that side again, and if that
+        # re-acquisition's own flip then does not fire, `_enforce_flip_owed`
+        # needs the record to refuse the frame past the meridian. H2 cleared
+        # the record here and marked the target so none was written again
+        # (#222), which let that case through. #222 itself needs no clear:
+        # the record is written once, at the first sighting east of the
+        # meridian, and is never refreshed.
+        #
+        # WHAT THE MARK DID COVER is recorded here instead. In the frame loop
+        # this gate runs before `_enforce_flip_owed`, so a target whose first
+        # frame comes inside its lead, on a mount that can flip early, is
+        # flipped before anything has seen its side, and the first sighting
+        # after this flip, still east of the meridian, would be the side the
+        # mount flipped TO: the #222 defect by the other door. A flip this gate
+        # MEASURED (both sides readable and different, the hub not saying
+        # otherwise) left ``side_before``, which is by definition this
+        # target's pre-flip side, so it is recorded with setdefault: over no
+        # earlier sighting, and never over one. An unmeasured flip records
+        # nothing; an unreadable side says nothing about which side is which.
+        if (side_before in ("east", "west") and side_after in ("east", "west")
+                and not nothing_flipped):
+            self._pre_flip_side.setdefault(key, side_before)
+            # [group] A MEMBER THE LATCH FLIPPED MID-VISIT FLIPPED ITS GROUP
+            # (spec 5.7): a prediction was wrong, and the backstop made the
+            # group's one pier change. Measured flips only, as above.
+            member = self._group_of(target)
+            if member is not None:
+                run = self._group_runs.get(member.id)
+                self._note_group_flipped(
+                    member, run.members.get(target.id, target.name)
+                    if run is not None else target.name,
+                    side_after, by_latch=True, verified=True)
         # one flip per meridian crossing: the target now tracks counterweight-down
         # on the far side and the server countdown stays negative for hours, so
         # disarm until the next target re-arms in _setup_target.
         self._flip_armed = False
-        if nothing_flipped and key not in self._flip_no_op:
+        owed_attempt = int(getattr(self, "_flip_owed_attempt", 0) or 0)
+        if nothing_flipped and owed_attempt:
+            # A RE-SLEW THE FLIP-OWED HOLD MADE, IN THE HOLD'S WORDS (#456).
+            # `_hold_for_owed_flip` clears this target from `_flip_no_op`
+            # before each of its polls, so every one of its re-slews that
+            # moved nothing fell into the branch below, written for the
+            # lead-time attempt, and promised at warning "the retry waits
+            # until 15 s past the meridian itself": a retry the hold makes
+            # on its own clock, 30 s later, and never the one promised. On a
+            # mount no re-slew flips that was 40 warnings in the hold's 20
+            # minutes, each reaching a default alert sink. The hold's own
+            # error line at its start and its StopTarget at its end are the
+            # news; this is one line per mount motion, at info. The latch is
+            # left as the branch below leaves it, armed with the target in
+            # `_flip_no_op`, so only the words change.
+            self._flip_no_op.add(key)
+            self._flip_armed = True
+            bus.log("info",
+                    f"{target.name}: the flip-owed hold's re-slew "
+                    f"{owed_attempt} changed nothing — the mount still reports "
+                    f"pier side {side_after}; still holding, and nothing is "
+                    f"exposed while it stays on that side", "sequence")
+        elif nothing_flipped and key not in self._flip_no_op:
             # A FLIP THAT DID NOT FLIP IS NOT A FLIP, and spending the
             # crossing's one latch on it is how the mount reaches its limit
             # with the engine believing it is safely on the far side. Keep the
             # latch armed for ONE more attempt and drop the lead for it, so the
             # retry is gated on the actual meridian crossing (the original NINA
-            # PassMeridian point, where a GoTo unambiguously selects the far
-            # side) rather than firing again immediately. Bounded to a single
-            # retry per target: a mount that reports a constant side — a fork
-            # with a chatty driver — costs two flips per crossing and no more.
+            # PassMeridian point) rather than firing again immediately, and
+            # `MERIDIAN_SIDE_MARGIN_S` past it, where a GoTo selects the far
+            # side unambiguously (#366). Bounded to a single retry per target:
+            # a mount that reports a constant side — a fork with a chatty
+            # driver — costs two flips per crossing and no more.
+            #
+            # THE LEAD NAMED IS THE ONE THIS ATTEMPT USED (#367), read into
+            # ``lead_s`` before anything below changed it. Read here it was
+            # zero whatever the plan said: the key just added to
+            # `_flip_no_op`, and the lesson just learned (#127), each zero
+            # `_flip_lead_s`, and the line said "dropping the 0 min lead" of
+            # an attempt made ten minutes early. An attempt that had no lead
+            # to drop (a mount already known not to flip early) says so
+            # rather than naming a zero.
             self._flip_no_op.add(key)
             self._flip_armed = True
+            drop = (f"dropping the {lead_s / 60:.0f} min lead, so the retry "
+                    f"waits until" if lead_s > 0 else "the retry waits until")
             bus.log("warning",
                     f"{target.name}: the meridian flip re-slewed but the mount "
                     f"still reports pier side {side_after} — nothing flipped. "
-                    f"Holding the flip armed and dropping the "
-                    f"{self._flip_lead_s() / 60:.0f} min lead, so the retry "
-                    f"waits for the meridian itself", "sequence")
+                    f"Holding the flip armed and {drop} "
+                    f"{MERIDIAN_SIDE_MARGIN_S:.0f} s past the meridian itself",
+                    "sequence")
+        elif nothing_flipped:
+            # THE RETRY FLIPPED NOTHING EITHER, AND THAT IS NOT A COMPLETED
+            # FLIP (#366). This fell into the line below and logged
+            # "meridian flip complete (pier side west -> west)" at info, over
+            # a latch it had just spent: the night log told whoever read it
+            # afterwards that the mount had flipped. The one retry is spent,
+            # so what stands between the next frame and the pier now is the
+            # flip-owed invariant, and the line says whether it does.
+            bus.log("warning",
+                    f"{target.name}: the meridian flip retry past the meridian "
+                    f"re-slewed but the mount still reports pier side "
+                    f"{side_after} — nothing flipped this time either. "
+                    f"{self._flip_owed_words(key, side_after)}", "sequence")
         else:
             bus.log("info",
                     f"{target.name}: meridian flip complete (pier side "
@@ -5151,6 +12787,48 @@ class SequenceEngine:
             elif await self._post_flip_focus_is_owed():
                 await self._autofocus("post-flip autofocus", target=target)
 
+    def _mount_name(self) -> str | None:
+        """The connected mount's own name, which is what a learned trait is
+        keyed on. None when there is no mount to name, in which case nothing
+        is learned and nothing is recalled."""
+        try:
+            tel = self.hub.devices.get("telescope")
+            name = getattr(tel, "name", None)
+            return str(name) if name else None
+        except Exception:  # pragma: no cover - defensive
+            return None
+
+    def _mount_flips_early(self) -> bool | None:
+        """Whether a GoTo before the meridian changes THIS mount's pier side.
+
+        True/False once an attempt has demonstrated it, None while nothing has
+        (#127). None is not False: an unknown mount keeps its lead and pays for
+        the lesson once, which is the only honest way to learn it.
+
+        Keyed on the mount's NAME, so swapping the mount - or activating a
+        profile with a different one - re-learns rather than inheriting a fact
+        about different hardware.
+        """
+        name = self._mount_name()
+        return self._flips_early_by_mount.get(name) if name else None
+
+    def _learn_mount_flips_early(self, flips: bool) -> None:
+        """Record what an attempt demonstrated, for the life of this process.
+
+        DELIBERATELY NOT PERSISTED. The first version of this wrote a learned
+        trait to a JSON store under CONFIG_DIR, which is wrong twice over: the
+        engine is a module-level singleton living as long as the server (days
+        on this rig, restarted far more often than the mount changes), so the
+        disk buys almost nothing; and a behaviour that changes because of an
+        invisible file written by a previous night is one nobody can explain
+        from the code in front of them. It also cost 27 test failures
+        immediately, because the store is global and the first test to learn
+        the trait taught every test that ran after it.
+        """
+        name = self._mount_name()
+        if name:
+            self._flips_early_by_mount[name] = bool(flips)
+
     def _flip_lead_s(self, target: Target | None = None) -> float:
         """Seconds before transit at which this plan wants its GEM flip.
 
@@ -5162,11 +12840,147 @@ class SequenceEngine:
         side (`_flip_no_op`). The lead is an optimisation — get ahead of a
         mount that stops before the meridian — and an optimisation that has
         just been shown not to work on this mount should not also cost the
-        retry. That retry waits for the crossing itself.
+        retry. That retry waits for the crossing itself, and a margin past it
+        (`_flip_retry_past_s`, #366), as every attempt this answers zero for
+        does (#455).
+
+        ZERO ALSO for a mount that has been shown this before, on any target
+        and on any night (#127). `_flip_no_op` is cleared at run start and
+        keyed per target, so without the persisted trait every target re-buys
+        the same lesson: a stop-guiding, a re-slew and a re-centre that arrive
+        back on the side they started on. Two nights of the durable log put the
+        whole crossing at 18 to 20 minutes and five or six frames.
         """
         if target is not None and (
                 getattr(target, "id", None) or target.name) in self._flip_no_op:
             return 0.0
+        if self._mount_flips_early() is False:
+            return 0.0
+        return self._plan_flip_lead_s()
+
+    def _flip_retry_past_s(self, target: Target) -> float:
+        """Seconds PAST the meridian at which ``target``'s flip point sits:
+        `MERIDIAN_SIDE_MARGIN_S` for every attempt whose effective lead
+        (`_flip_lead_s`) is zero, and 0 for an attempt made with a lead
+        (#366, S5 orchestrator ruling 2; #455, S7-ENG-FLIP).
+
+        A zero-lead attempt is aimed at the crossing, and at the crossing
+        itself the side a GoTo picks is still the mount's own reckoning of
+        where the meridian is: its clock, its longitude, its pointing model,
+        and a goto error of a few seconds of RA. The simulator's unsynced
+        goto lands 7 s of RA east, so an attempt made at the crossing landed
+        on the pre-flip side, flipped nothing and spent the latch. The group
+        rule counts a panel past the meridian only this far past its
+        crossing for the same reason (`group_rules.meridian_eligibility`'s
+        ``crossed_h``), so the one number serves both: the AM5's own
+        boundary is not measured (S7).
+
+        EVERY ZERO LEAD, NOT ONLY THE RETRY (#455). #366 gave the band to
+        the one retry a target in `_flip_no_op` is owed, the attempt it was
+        found on. `_flip_lead_s` answers zero in two more cases, and both
+        aimed their FIRST attempt at the crossing: a mount already shown not
+        to flip early (#127), which is every target after the first crossing
+        of the process on the AM5, and a plan whose lead is 0. Each such
+        attempt flipped nothing, spent the retry, and the retry waited the
+        band to flip: a re-slew, a guider stop and a restart for nothing, on
+        every crossing. Keyed on the effective lead, the retry is still
+        covered, since `_flip_lead_s` answers zero for a key in
+        `_flip_no_op`.
+
+        THE NAME STAYS (Revision 9 row 16 and owner list item 41 cite it),
+        though it is no longer only a retry's.
+
+        ASKED BY `_flip_point` ALONE, and only when the flip point's zero is
+        the meridian itself (#505): the gate's window and its hold read the
+        one point that computes, so they cannot disagree about where it is.
+        A limit the mount reports before the meridian is not the crossing,
+        and no band is added past it. Not a lead: `_flip_lead_s` still
+        answers zero for these attempts, which is what the flip-owed hold
+        reads; #127's learning reads when the attempt was made (#489)."""
+        return MERIDIAN_SIDE_MARGIN_S if self._flip_lead_s(target) <= 0 else 0.0
+
+    def _flip_point(self, target: Target, lead_s: float,
+                    device_h: float | None = None, *,
+                    now: float | None = None) -> FlipPoint | None:
+        """Where ``target``'s flip attempt is aimed, as a `FlipPoint`, or
+        None with no saved site or no hour angle to be had.
+
+        ONE PLACE FOR THE THREE DECISIONS (#505):
+
+        1. THE ZERO. The target's own meridian (`schedule.
+           hours_to_meridian_flip`, the server's hour-angle math, the one
+           authoritative countdown), unless the mount reports a limit
+           nearer than that (``device_h``, its ``time_to_meridian_flip`` in
+           hours: positive, and less than the countdown to the meridian),
+           which it enforces whatever our geometry says. Today only NINA
+           reports one; the AM5 and Alpaca paths answer None.
+        2. THE LEAD, ``lead_s`` before the zero (`_flip_lead_s`, the
+           caller's), never negative.
+        3. THE BAND, `_flip_retry_past_s` past the zero for a zero-lead
+           attempt, ONLY WHEN THE ZERO IS THE MERIDIAN ITSELF. The band is
+           there because at the crossing a goto's side is the mount's own
+           reckoning of the hour angle (#366, #455); a limit the mount
+           states before the meridian is not the crossing, and 15 s past it
+           is 15 s past a limit the mount has said it stops at.
+
+        The gate built its window from the mount's limit and the band,
+        while its hold measured from the true meridian, so a mount that
+        reported its limit a few minutes early had the gate stop exposing
+        at the limit and the hold wait for the meridian: the whole gap with
+        no frames and no flip. Now the gate computes this once and hands it
+        to the hold (`_flip_point_handed`), and the goto reads its
+        ``transit_at`` for #127's learning (#489).
+
+        LEFT OPEN, a GEM whose tracking limit sits AT the meridian and does
+        not report it (#505's E item, filed as #566): with nothing reported
+        the zero is the meridian and the band applies, so a zero-lead
+        attempt comes 15 s after such a mount has stopped, and the flip's
+        goto meets a mount that is not tracking (the refusal recovery, which
+        re-acquires past the meridian). No mount measured so far behaves so:
+        the AM5 stops 4.7 to 7.6 min before transit, well before the band.
+
+        ``now`` is the engine clock's reading to measure from (the caller's
+        own, when it has one); the times answered are on that clock. The
+        device figure is the mount's count of hours from when it was read,
+        which the caller did a moment before."""
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            return None
+        now = time.time() if now is None else float(now)
+        try:
+            transit_h = float(schedule.hours_to_meridian_flip(
+                target.ra_hours, latlon[1], now))
+        except Exception:               # noqa: BLE001 - no hour angle, no point
+            return None
+        try:
+            dev = None if device_h is None else float(device_h)
+        except (TypeError, ValueError):
+            dev = None
+        lead = max(0.0, float(lead_s))
+        zero_h, zero, past_s = transit_h, "meridian", 0.0
+        # ``0.0 < dev``: the device's count never goes negative, and a zero or
+        # a NaN (every comparison with it False) says nothing about a limit.
+        if dev is not None and 0.0 < dev < transit_h:
+            zero_h, zero = dev, "mount limit"
+        else:
+            past_s = self._flip_retry_past_s(target)
+        return FlipPoint(at=now + zero_h * 3600.0 - lead + past_s,
+                         transit_at=now + transit_h * 3600.0, zero=zero,
+                         lead_s=lead, past_s=past_s)
+
+    def _plan_flip_lead_s(self) -> float:
+        """The PLAN's flip lead in seconds, clamped the way `_flip_lead_s`
+        clamps it, and never zeroed by what the mount has taught this process.
+
+        A MARGIN, NOT A MOMENT. `_flip_lead_s` answers "when is a flip attempt
+        worth making", and a learned zero is right for that: the AM5 cannot
+        flip before transit, so an early attempt only costs a re-slew. It is
+        wrong as the edge of safe tracking, because the same mount stops
+        tracking 4.7 to 7.6 min BEFORE transit (`MERIDIAN_FLIP_LEAD_MIN`). The
+        idle-clock park-hold (#165, spec 5.1 check 3) asks this one, and so
+        will the group's meridian margin (spec 5.7).
+        """
         lead = getattr(self.plan, "meridian_flip_lead_min", None)
         if lead is None:
             lead = schedule.MERIDIAN_FLIP_LEAD_MIN
@@ -5181,25 +12995,76 @@ class SequenceEngine:
     async def _wait_for_flip_point(self, target: Target,
                                    lead_s: float = 0.0) -> None:
         """Hold (cancel/pause-responsive) until the target reaches the flip
-        point — ``lead_s`` seconds before the meridian, or the meridian itself
-        when the lead is zero.
+        point.
+
+        THE GATE'S FLIP POINT, NOT ONE OF ITS OWN (#505). `_maybe_meridian_
+        flip` computes the point once (`_flip_point`: the mount's own limit
+        when it reports one nearer than the meridian, less the lead, plus
+        the band only at the meridian itself) and hands it over on the
+        engine (`_flip_point_handed`) around this call. This hold used to
+        compute its own countdown from the TRUE meridian, so on a mount that
+        reported its limit early the gate stopped exposing at the limit and
+        this waited for the meridian, the band past it included. With
+        nothing handed (a caller other than the gate) the point is
+        `_flip_point`'s for ``lead_s`` and the meridian: ``lead_s`` seconds
+        before it, or, when the lead is zero, `_flip_retry_past_s` seconds
+        past it (#366, #455).
 
         Entered only when the flip point falls inside the upcoming frame window
         but has not arrived yet, so we never START an exposure that would
         straddle it. Bounded by construction: the caller only waits when the
-        remaining time is ≤ one frame window."""
-        try:
-            lon = self.hub.site["longitude"]
-        except Exception:
-            return
+        remaining time is ≤ one frame window.
+
+        Reached only past `_maybe_meridian_flip`'s site gate, and asks again
+        anyway when it computes a point itself: `_flip_point` answers None
+        with no saved site, since a hold computed from the 0,0 default waits
+        for a meridian hours away, and the next caller may not come through
+        that gate.
+
+        THE DETAIL IS WORDS (#233; H3 orchestrator ruling 1, spec "Still
+        waiting on the owner" item 10). It said "(4.2 min)", a countdown to
+        the target's computed crossing, which with the target's RA is the
+        sidereal time and so the longitude (the ``hours_to_flip`` that
+        ``redact.py`` strips from the meridian block, re-published here to
+        every viewer). The meridian block already gives a holder of the
+        site-derived capability that countdown, so the minutes are dropped,
+        not moved. When the wait ENDS is the crossing itself, and that
+        channel is #166's.
+        """
+        handed = getattr(self, "_flip_point_handed", None)
+        lon = None
+        if handed is not None and handed.zero == "meridian":
+            from ..site_gate import site_lat_lon
+            latlon = site_lat_lon(self.hub.site)
+            if latlon is None:
+                return
+            lon = latlon[1]
         while True:
             await self._checkpoint()            # honor a concurrent pause
-            ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
-            remaining_s = ttf_h * 3600.0 - max(0.0, lead_s)
+            if handed is None:
+                # A caller other than the gate: the meridian's point for
+                # ``lead_s``, read on each tick. `_flip_point` asks for a
+                # site itself (#24).
+                point = self._flip_point(target, lead_s)
+                if point is None:
+                    return
+                remaining_s = point.at - time.time()
+            elif lon is not None:
+                # The meridian's countdown, read again on every tick as it
+                # always was, from the lead and band the gate decided: the
+                # hold ends when the hour angle gets there, which a time
+                # extrapolated from the gate would miss by 0.27 % of the
+                # wait, the hour angle running on sidereal time.
+                ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
+                remaining_s = ttf_h * 3600.0 - handed.lead_s + handed.past_s
+            else:
+                # The mount's own limit, as the gate read it: a count on the
+                # mount's clock, so the gate's time for it is the one to
+                # wait for.
+                remaining_s = handed.at - time.time()
             if remaining_s <= 0:
                 return
-            self._set_state(detail=f"holding for the meridian flip point "
-                                   f"({remaining_s / 60.0:.1f} min)")
+            self._set_state(detail="holding for the meridian flip point")
             # sleep the smaller of the step and the remaining time, with a small
             # floor so we don't busy-spin as the countdown approaches zero.
             await asyncio.sleep(max(0.2, min(FLIP_WAIT_STEP_S, remaining_s)))
@@ -5325,8 +13190,11 @@ class SequenceEngine:
                 f"nothing holding the field", "sequence")
         try:
             self._set_state(detail="re-centring after the unguided sweep")
+            # The target's own tolerance and attempts: this is the centring
+            # the first frame is shot at (`_centring_kwargs`, #170).
             await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                           rotation_deg=target.rotation_deg)
+                                           rotation_deg=target.rotation_deg,
+                                           **self._centring_kwargs(target))
         except Exception as e:          # noqa: BLE001
             # Non-fatal by design (same as the recovery and re-lock re-centres):
             # a failed re-centre leaves the mount where it already was.
@@ -5346,7 +13214,85 @@ class SequenceEngine:
                 return
         except Exception:
             return
-        bus.log("warning", "guiding lost — attempting recovery", "sequence")
+        # BOUNDED (#72). Unbounded, this re-centred and recalibrated once per
+        # frame loop for as long as the star stayed lost: on 2026-09-19 that
+        # was 2.5 hours, 18 losses and 4 calibration timeouts, and on
+        # 2026-09-20 it ran from a post-flip calibration that was 28 degrees
+        # out of square. Throughout, the sequence reported `running` and the
+        # engine shot one trailed frame per cycle, so a supervisor keyed on
+        # state saw a healthy run and a supervisor keyed on frame COUNT saw
+        # progress. Both are why it survived two nights.
+        #
+        # The bound counts attempts since the later of the hop's own working
+        # guider start (`_hop`, #329) and the last banked frame (#134 is that
+        # a trailed frame banks too), and it takes the action the operator
+        # ALREADY chose for "guiding is unavailable" rather than inventing a
+        # second policy for the same situation: a guider that cannot be kept
+        # is a guider that is unavailable.
+        if self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES:
+            cfg = self._cfg
+            require_guiding = bool(cfg and cfg.escalation.require_guiding)
+            action = (cfg.escalation.guiding_action if cfg else "warn")
+            why = (f"guiding could not be kept after "
+                   f"{self._guiding_recoveries} recovery attempts without a "
+                   f"frame")
+            # [group] A PANEL WHOSE GUIDING IS LOST DEFERS, WHATEVER
+            # ``guiding_action`` SAYS (#303, S3 orchestrator ruling 6; spec
+            # 5.6 step 7), as one whose guider will not start does. Each
+            # escalation below leaves a hole in a mosaic: abort ends the
+            # night over one panel's guide star, skip drops the panel, and
+            # warn tiles it with frames shot unguided, which #142 lets
+            # through the RMS gate. The next hop restarts guiding anyway, so
+            # the panel goes to the back of the rotation and is set aside
+            # only after ``max_failed_visits`` consecutive passes. Asked
+            # BEFORE the escalation, so none of the three is reached. A group
+            # the pass rule already sent on unguided (`_close_group_pass`)
+            # keeps the escalation, as its failed starts do.
+            #
+            # THE BOUND IS SPENT BY THIS VISIT, and the count starts again
+            # for the next: that visit is a new hop and a fresh guider
+            # start. Left at the bound, the next panel to lose its star
+            # before banking a frame would be deferred on its first loss,
+            # under a sentence claiming recovery attempts it never made.
+            # Since #329 the next hop's own working start resets it anyway
+            # (`_hop`), which also covers a visit that ends by its own bound
+            # with its attempts spent and no frame banked; this reset is
+            # kept so the count a deferral leaves behind is never a spent
+            # one, whatever the next setup's start does.
+            member = self._group_of(target) if target is not None else None
+            if member is not None and member.id not in self._group_unguided:
+                self._guiding_recoveries = 0
+                # The kind spelt out, as the guide-start deferral's is: the
+                # spec-claims test finds a built kind by its literal.
+                raise PanelDeferred("guiding was lost and did not recover",
+                                    kind="guide_lost", last_error=why)
+            if require_guiding and action == "abort":
+                bus.log("error", why, "sequence")
+                raise SafetyAbort(why)
+            if require_guiding and action == "skip":
+                # BY WHO IS STOPPED (#326): a member here is in a group the
+                # pass rule sent on unguided, and its StopTarget is deferred
+                # (`_visit_panel`, #316), so only its visit is skipped.
+                then = (self._deferred_words(target)
+                        if target is not None else None)
+                bus.log("warning", f"{why} — skipping "
+                        f"{getattr(target, 'name', 'this target')}"
+                        if then is None else f"{why} — {then}", "sequence")
+                raise StopTarget(why)
+            # Neither: stand down from recovery rather than cycling the mount
+            # to no purpose. The run continues unguided, which is what it would
+            # have done had the guider never come up at all, and the detail
+            # says so instead of claiming to be recovering.
+            bus.log("warning", f"{why}; standing down from recovery and "
+                    f"continuing unguided", "sequence")
+            self._set_state(detail="guiding lost; recovery stood down")
+            return
+
+        self._guiding_recoveries += 1
+        bus.log("warning",
+                f"guiding lost — attempting recovery "
+                f"({self._guiding_recoveries}/{_MAX_GUIDING_RECOVERIES})",
+                "sequence")
         self._set_state(detail="recovering guiding")
 
         # RE-CENTRE BEFORE RESUMING, not after. While guiding was down the field
@@ -5365,7 +13311,8 @@ class SequenceEngine:
             try:
                 self._set_state(detail="re-centring after guiding loss")
                 await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=target.rotation_deg)
+                                               rotation_deg=target.rotation_deg,
+                                               **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design: a failed re-centre leaves the mount where
                 # it was, which is exactly where it would have been without this
@@ -5381,6 +13328,37 @@ class SequenceEngine:
             return
         # ...and do not hand control back until the guider has stopped pulsing.
         await self._await_guider_quiet("the next frame")
+
+    async def _frame_was_guided(self) -> bool:
+        """Is the frame that just closed its shutter evidence guiding held
+        (#134)?
+
+        `_record_frame` clears the #72 recovery bound on a banked frame, and
+        used to clear it on ANY banked frame — rejected ones kept under
+        ``hfr_reject_action = "warn"`` included. On a night the mount's own
+        link was dead (#133), every cycle re-centred, failed to restart the
+        guider, shot one trailed frame anyway, and that frame's own banking
+        reset the count the failed attempt had just spent: 62 "(1/2)"
+        attempts, 0 "(2/2)"s, and the stand-down never reached. A banked
+        frame is evidence an exposure finished, not evidence recovery
+        worked — only THIS answers that.
+
+        True when guiding is not this plan's business at all (no plan, the
+        plan does not guide, or no guider is connected), since nothing here
+        is recovery's to bound. Otherwise the guider's own ``is_active()``
+        (#165-style: asked of the device, not a locally-cached flag) —
+        cheap and unbounded like every other per-frame call of it
+        (`_maybe_recover_guiding`, `_maybe_hold_for_relocks`), and unable to
+        raise (the ABC's default reads an in-memory stats snapshot)."""
+        if not (self.plan and self.plan.guide):
+            return True
+        g = self.hub.guider
+        if g is None or not getattr(g, "connected", False):
+            return True
+        try:
+            return bool(await g.is_active())
+        except Exception:            # noqa: BLE001 - unreadable is not confirmed
+            return False
 
     async def _maybe_hold_for_relocks(self, target=None) -> None:
         """GN-03: treat a guider that keeps RE-LOCKING as a guiding failure.
@@ -5488,7 +13466,8 @@ class SequenceEngine:
             try:
                 self._set_state(detail="re-centring: the guided field walked")
                 await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                               rotation_deg=target.rotation_deg)
+                                               rotation_deg=target.rotation_deg,
+                                               **self._centring_kwargs(target))
             except Exception as e:
                 # Non-fatal by design (same as recovery): a failed re-centre
                 # leaves the mount where it already was.
@@ -5998,31 +13977,72 @@ class SequenceEngine:
         UNREADABLE IS NOT A VERDICT, in both directions: no mount, a dropped
         link or a driver that raises yields None from ``_pier_side_now``, and
         this then neither records a pre-flip side nor trips on one.
+
+        ONE RECORD PER TARGET (I-19, extending #136). The pre-flip side is
+        read and written under ``target``'s own key, so another target shot
+        near its meridian in between cannot overwrite it, and a target seen
+        only west of its meridian is never compared against someone else's.
+
+        ONE RECORD PER TARGET PER RUN (#222, #237). Written at the first
+        sighting east of the meridian (or by the flip gate, as the side a
+        flip it measured left, when that flip came before any sighting),
+        never refreshed, and never cleared within the run, not even after a
+        flip the flip gate measured (H3 orchestrator ruling 2, spec "Still
+        waiting on the owner" item 11). The side a target occupies before its
+        flip is a fixed property of its east side, so the record is as true
+        after the flip as at the first sighting; and a mount that picks its
+        side from the hour angle, as the AM5 does, lands a target re-acquired
+        east of its meridian on that side again, after another target or
+        after its own flip. Kept, the record lets this refuse such a target
+        carried past the meridian on that side when the re-acquisition's own
+        flip did not fire; H2 cleared it after a measured flip and let that
+        target through.
         """
         if not (self.plan and self.plan.meridian_flip):
             return                      # nobody asked for a flip; nothing is owed
-        cfg = self._cfg or config_store.cfg()
-        hold_min = float(getattr(getattr(cfg, "safety", None),
-                                 "flip_owed_hold_min", 0.0) or 0.0)
+        hold_min = self._flip_owed_hold_min()
         if hold_min <= 0:
             self._flip_owed = False
             return                      # 0 is off, as everywhere else here
+        # NO SITE, NO CROSSING TO GUARD (#24). At the 0,0 default the countdown
+        # below crosses zero at the Gulf of Guinea's meridian, hours from the
+        # rig's own. The mount has not flipped because nothing asked it to, so
+        # the side is unchanged, and this used to hold a perfectly good target
+        # for `flip_owed_hold_min` and then skip it - at an arbitrary hour,
+        # with an error saying a flip was owed. Unknown geometry guards
+        # nothing, which is what the `except` below already said.
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            self._flip_owed = False
+            return
+        lat, lon = latlon
         try:
-            lon = self.hub.site["longitude"]
             ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
         except Exception:               # noqa: BLE001 - unknown geometry guards nothing
             return
         side = await self._pier_side_now()
         if side not in ("east", "west"):
             return                      # nobody can say; do not record, do not trip
+        key = getattr(target, "id", None) or target.name
         if ttf_h > 0:
-            # Still east of the meridian: this IS the pre-flip side, by
-            # definition. Recorded every frame rather than once, so a target
-            # re-acquired mid-run (a recovery, a resume) refreshes it.
-            self._pre_flip_side = side
+            # Still east of the meridian: the side the mount reports is the
+            # pre-flip side, until the flip. ONCE PER RUN (#222, #237): the
+            # first sighting is kept, not refreshed on every frame. The flip
+            # gate fires at the plan's lead, before the meridian, so on a
+            # mount that can flip early the flip lands while this branch is
+            # still being taken, and a refresh recorded the side the mount had
+            # flipped TO: past the meridian the side then "had not changed",
+            # and a target that flipped correctly was held and set aside.
+            # Nothing clears the record afterwards either (#237), so a
+            # sighting writes it only when there is none: the first one, or
+            # none at all when the flip gate already recorded the side a flip
+            # it measured left (`_maybe_meridian_flip`).
+            self._pre_flip_side.setdefault(key, side)
             self._flip_owed = False
             return
-        if self._pre_flip_side is None or side != self._pre_flip_side:
+        pre = self._pre_flip_side.get(key)
+        if pre is None or side != pre:
             # Either nobody saw the side before the crossing, or it has changed
             # since -- and a changed side is what a flip looks like from here.
             self._flip_owed = False
@@ -6031,13 +14051,52 @@ class SequenceEngine:
         # flip. Same predicate the flip gate itself uses, so the two cannot
         # disagree about which targets are exempt.
         try:
-            if schedule.flip_can_be_skipped(target.dec_deg,
-                                            self.hub.site["latitude"], side):
+            if schedule.flip_can_be_skipped(target.dec_deg, lat, side):
                 self._flip_owed = False
                 return
         except Exception:               # noqa: BLE001 - not skippable is the safe read
             pass
         await self._hold_for_owed_flip(target, side, hold_min)
+
+    def _flip_owed_hold_min(self) -> float:
+        """Minutes `_enforce_flip_owed` holds a frame for an owed flip, from
+        ``safety.flip_owed_hold_min``; 0 is off, as everywhere else here."""
+        cfg = self._cfg or config_store.cfg()
+        return float(getattr(getattr(cfg, "safety", None),
+                             "flip_owed_hold_min", 0.0) or 0.0)
+
+    def _flip_owed_words(self, key: str, side: str | None) -> str:
+        """What stands between the next frame and the pier once a target's
+        one flip retry has flipped nothing (#366), as a sentence for that
+        warning.
+
+        WHAT `_enforce_flip_owed` WILL DO, NOT WHAT IT IS FOR. The invariant
+        holds a frame only while it is on (``flip_owed_hold_min`` above 0),
+        only on a side it can read, and only against a side it saw before
+        the meridian: a line that said
+        "the invariant holds the frame" over an invariant switched off, or
+        with nothing to compare against, would be the claim nothing keeps
+        this line was written to stop making."""
+        hold_min = self._flip_owed_hold_min()
+        pre = self._pre_flip_side.get(key)
+        if hold_min <= 0:
+            return ("The flip-owed hold is off (safety.flip_owed_hold_min is "
+                    "0), so nothing stops the next frame being exposed on "
+                    "this side past the meridian")
+        if side not in ("east", "west"):
+            return ("The mount's side cannot be read, so the flip-owed "
+                    "invariant cannot hold the frame")
+        if pre is None:
+            return ("No pier side was seen for this target before the "
+                    "meridian, so the flip-owed invariant has nothing to "
+                    "compare against and will not hold the frame")
+        if side != pre:
+            return (f"The mount is not on the {pre} side it was seen on "
+                    f"before the meridian, so the flip-owed invariant lets "
+                    f"the frame through")
+        return (f"The flip-owed invariant now holds the frame: nothing is "
+                f"exposed past the meridian while the mount stays on the "
+                f"{side} side, for up to {hold_min:.0f} min")
 
     async def _hold_for_owed_flip(self, target: Target, side: str,
                                   hold_min: float) -> None:
@@ -6064,6 +14123,7 @@ class SequenceEngine:
         self._flip_owed = True
         self._set_state(detail="holding: a meridian flip is owed and the "
                                "mount has not flipped")
+        attempt = 0
         try:
             while time.time() < deadline:
                 # Give the flip gate a real second chance: clear the no-op
@@ -6072,6 +14132,13 @@ class SequenceEngine:
                 self._flip_no_op.discard(
                     getattr(target, "id", None) or target.name)
                 self._flip_armed = True
+                # THE GATE IS TOLD WHOSE ATTEMPT THIS IS (#456), so a re-slew
+                # that moves nothing is said in this hold's words and not in
+                # the lead-time attempt's. Set around the call alone, and on
+                # the engine rather than as an argument, so a double that
+                # stands in for the gate keeps its signature.
+                attempt += 1
+                self._flip_owed_attempt = attempt
                 try:
                     await self._maybe_meridian_flip(target, 0.0)
                 except (SafetyAbort, StopTarget):
@@ -6080,13 +14147,25 @@ class SequenceEngine:
                     bus.log("warning",
                             f"{target.name}: the flip retry failed ({e}); "
                             f"still holding", "sequence")
+                finally:
+                    self._flip_owed_attempt = 0
                 now_side = await self._pier_side_now()
                 if now_side in ("east", "west") and now_side != side:
                     bus.log("info",
                             f"{target.name}: the mount is on the {now_side} "
                             f"side now -- the flip happened, resuming",
                             "sequence")
-                    self._pre_flip_side = now_side
+                    # THE RECORD STAYS THE PRE-FLIP SIDE (#136). This used to
+                    # store ``now_side`` here, the side the mount flipped TO.
+                    # The next frame then read that same side back, past the
+                    # meridian, and tripped again: a second hold waiting for
+                    # the mount to leave a side a goto past the meridian always
+                    # lands on. On 2026-09-22 that cost 26 minutes, 16 re-slews
+                    # and a set-aside target seven minutes after a good flip.
+                    # Left alone, ``side`` is still this target's record,
+                    # whether or not the flip gate above measured this flip
+                    # (nothing clears it within the run, #237), so the next
+                    # frame sees a changed side and goes through.
                     return
                 await self._checkpoint()
                 await asyncio.sleep(FLIP_OWED_POLL_S)
@@ -6217,6 +14296,13 @@ class SequenceEngine:
             return                       # tracking, or nobody can say
         bus.log("warning", "the mount is not tracking — trying to resume before "
                            "the next light frame", "sequence")
+        # NOTHING MAY STILL BE ASKING FOR A STOP when tracking is turned back on
+        # (`_idle_stop_retry`). The frame loop never has one alive - its setup
+        # cancelled it - but a cloud hold opened by a setup's pre-slew gate
+        # resumes through here before that setup's own cancel, and a retry left
+        # running would stop the mount again under the hold's next check frame.
+        # A no-op when none is alive.
+        await self._cancel_idle_stop_retry()
         try:
             await tel.set_tracking(True)
             # THE READBACK GOES THROUGH THE CONFIRMED PROBE TOO. A raw single
@@ -6242,7 +14328,9 @@ class SequenceEngine:
             "the mount is not tracking and will not resume — every light frame "
             "from here would be a streak")
 
-    async def _recover_from_tracking_refusal(self, target: Target | None) -> bool:
+    async def _recover_from_tracking_refusal(
+            self, target: Target | None, *,
+            centring: dict | None = None) -> bool:
         """Park, unpark, re-assert tracking, re-slew, re-centre, resume guiding.
 
         THE INTERVENTION A HUMAN PERFORMED TWICE. On both 2026-08-21 and
@@ -6263,6 +14351,14 @@ class SequenceEngine:
           set-aside-and-park path unchanged.
 
         Returns True only when the mount is measurably tracking again.
+
+        ``centring`` IS FOR THE CALLER THAT HAS TO ACT ON WHERE THE TELESCOPE
+        ENDED UP (#171). Target setup passes an empty dict; on a True return it
+        holds the recovery's own re-centre result - ``goto_and_center``'s
+        answer, with ``centered`` always present - and the recovery leaves the
+        report of a re-centre that missed to that caller, so it is said once.
+        Still a bool, and still True exactly when it always was: the other
+        callers pass nothing and see no change at all.
         """
         if target is None:
             return False
@@ -6334,8 +14430,9 @@ class SequenceEngine:
         self._set_state(detail="recovering the mount from its limit")
         _t0 = time.time()
         try:
-            ok = await asyncio.wait_for(
-                self._do_tracking_recovery(tel, target),
+            found = await asyncio.wait_for(
+                self._do_tracking_recovery(
+                    tel, target, report_centring=centring is None),
                 TRACKING_RECOVERY_TIMEOUT_S)
         except asyncio.CancelledError:
             raise
@@ -6352,8 +14449,11 @@ class SequenceEngine:
                     f"{target.name}: the park/unpark recovery failed ({e}) — "
                     f"setting the target aside", "sequence")
             return False
-        if not ok:
+        if found is None:
             return False
+        if centring is not None:
+            centring.clear()
+            centring.update(found)
         self._frame_had_event = True
         # The wall clock goes in the LOG, not into `_event_costs`. Nothing reads
         # a "tracking recovery" key — `compute_eta` accounts only dither,
@@ -6367,9 +14467,16 @@ class SequenceEngine:
                 "sequence")
         return True
 
-    async def _do_tracking_recovery(self, tel, target: Target) -> bool:
+    async def _do_tracking_recovery(self, tel, target: Target, *,
+                                    report_centring: bool) -> dict | None:
         """The recovery sequence itself; see `_recover_from_tracking_refusal`
-        for the bounds. Split out only so the timeout can wrap it whole."""
+        for the bounds. Split out only so the timeout can wrap it whole.
+
+        Returns the re-centre's own ``goto_and_center`` result when the mount is
+        measurably tracking at the end, ``centered`` always present, and None
+        when it is not (#171). ``report_centring`` says whether this logs a
+        re-centre that missed; False when the caller reports it itself. No
+        default, so no caller can inherit a choice it did not make."""
         # Stop guiding first: the guider must not be pulsing a mount that is
         # about to park. Remembered so it can be put back afterwards — a
         # recovered mount that is no longer guided just fails more quietly.
@@ -6386,6 +14493,9 @@ class SequenceEngine:
         # The park retires the solved centre (GN-07); the re-centre below
         # records a fresh one or clears the verdict.
         getattr(self.hub, "note_pointing_moved", lambda: None)()
+        # A STOP THE ENGINE MAKES (#248): until the re-slew below lands, the
+        # mount is parked, or stopped wherever a failure left it.
+        self._note_mount_stopped()
         await _bounded(tel.park(), PARK_TIMEOUT_S, "park for limit recovery")
         await _bounded(tel.unpark(), PARK_TIMEOUT_S, "unpark for limit recovery")
         await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
@@ -6395,16 +14505,38 @@ class SequenceEngine:
             bus.log("warning",
                     f"{target.name}: the mount still will not track after a "
                     f"park/unpark cycle", "sequence")
-            return False
+            return None
         # A park slewed the tube to the home position, so the target has to be
         # re-acquired properly — solve and re-centre, not a bare GoTo. This is
-        # the step that put both nights back 0.5 arcmin from target.
+        # the step that put both nights back 0.5 arcmin from target. It is a
+        # centring of this target, so it takes the target's own tolerance and
+        # attempts, through the same helper target setup uses (#170).
+        #
+        # AND THE ANGLE SETUP WOULD HAVE COMMANDED, a lock included (ruling
+        # 9). When target setup lands here, its own goto died on the hub's
+        # `set_tracking(True)`, which runs BEFORE the rotate loop, so nothing
+        # turned the rotator on this acquisition. Passing only the planned
+        # ``rotation_deg`` left a locked target at whatever angle the last
+        # target left the rotator, with nothing checking it, because the lock
+        # is checked only on a rig with no rotator (`_settle_locked_angle`).
+        rotation = self._commanded_rotation(target)
         result = await _bounded(
             self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                     rotation_deg=target.rotation_deg),
-            GOTO_TIMEOUT_S + (300 if target.rotation_deg is not None else 0),
+                                     rotation_deg=rotation,
+                                     **self._centring_kwargs(target)),
+            GOTO_TIMEOUT_S + (ROTATION_ALLOWANCE_S
+                              if rotation is not None else 0),
             f"re-centre {target.name} after limit recovery")
-        if not result.get("centered"):
+        # THE RE-SLEW IS A FRESH POINTING (#248), centred or not: the goto
+        # has put the mount on this target and tracking.
+        self._mount_stopped_since = None
+        # KEPT, AS MEASURED, for the caller that has to act on it (#171). A
+        # copy, so nothing downstream can edit the hub's own answer, and
+        # `centered` made explicit: target setup indexes it.
+        centred = bool(result.get("centered"))
+        centring = dict(result)
+        centring["centered"] = centred
+        if not centred and report_centring:
             err = result.get("error_arcmin")
             bus.log("warning",
                     f"{target.name}: re-centring after the recovery "
@@ -6457,8 +14589,10 @@ class SequenceEngine:
                         f"{target.name}: guiding did not restart after the "
                         f"recovery ({e}) — continuing unguided", "sequence")
         # The last word is the mount's, not ours.
-        return bool(await _bounded(tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
-                                   "tracking readback after re-centring"))
+        if not bool(await _bounded(tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
+                                   "tracking readback after re-centring")):
+            return None
+        return centring
 
     async def _guide_start_bound(self) -> tuple[float, str, str]:
         """``(timeout_s, label, note)`` for the NEXT ``start_guiding``.
@@ -6533,7 +14667,7 @@ class SequenceEngine:
                 f"{FLIP_SLEW_TIMEOUT_S:.0f}s for the re-slew and solves plus "
                 f"{guide_s:.0f}s for the calibration")
 
-    async def _flip_bounded(self, coro):
+    async def _flip_bounded(self, coro, *, extra_s: float = 0.0):
         """Await ``hub.meridian_flip`` under a bound that GROWS ONLY WHEN THE
         FLIP HAS EARNED IT: ``FLIP_TIMEOUT_S`` first, and
         ``FLIP_CALIBRATE_TIMEOUT_S`` in all once the guider confirms a fresh
@@ -6571,24 +14705,30 @@ class SequenceEngine:
         ``FLIP_TIMEOUT_S`` (nothing has been discarded, so nothing is owed a
         walk), and the ``SafetyAbort``, the park and the ``flipped`` handling
         downstream are all unchanged.
+
+        ``extra_s`` is added to both stages: ``ROTATION_ALLOWANCE_S`` when the
+        re-centre commands an angle, whose rotate loop runs before the
+        centring, as a setup's goto gets it (ruling 9). Zero keeps both
+        bounds exactly as they were.
         """
         task = asyncio.ensure_future(coro)
         started = time.monotonic()
-        total_s, what, note = FLIP_TIMEOUT_S, "meridian flip", ""
+        first_s = FLIP_TIMEOUT_S + extra_s
+        total_s, what, note = first_s, "meridian flip", ""
         try:
             try:
                 # SHIELDED so a first expiry does not cancel the flip: that is
                 # the whole point — `wait_for` cancelling the awaitable is what
                 # severed the calibration at 00:37:48.
-                return await asyncio.wait_for(asyncio.shield(task),
-                                              FLIP_TIMEOUT_S)
+                return await asyncio.wait_for(asyncio.shield(task), first_s)
             except asyncio.TimeoutError:
                 pass
             grown_s, what, note = await self._flip_bound()
+            grown_s += extra_s
             if grown_s > total_s:
                 total_s = grown_s
                 bus.log("warning",
-                        f"the meridian flip has run past {FLIP_TIMEOUT_S:.0f}s "
+                        f"the meridian flip has run past {first_s:.0f}s "
                         f"and the guider says it is walking a fresh "
                         f"calibration — allowing it {total_s:.0f}s in all "
                         f"rather than cutting the walk", "sequence")
@@ -6951,8 +15091,111 @@ class SequenceEngine:
                 f"move the focuser", "sequence")
         return False
 
+    @staticmethod
+    def _focus_group_key(target) -> tuple[str, str]:
+        """The key `_hop_focus_is_owed` records a first acquisition under.
+
+        A mosaic's panels share their ``mosaic_group``, so the mosaic focuses
+        once on arrival and not once per panel. A target with no group is its
+        own group, keyed by its id. Namespaced, so a group name can never
+        collide with a target id.
+        """
+        group = getattr(target, "mosaic_group", None)
+        if group:
+            return ("group", str(group))
+        return ("target", str(getattr(target, "id", None) or target.name))
+
+    async def _hop_focus_is_owed(self, target: Target, *,
+                                 recovery: RecoverySweep | None = None
+                                 ) -> bool:
+        """Whether a hop to ``target`` owes the initial sweep (#189 U-05, spec
+        5.6 step 6). Asked for a target with `autofocus_skip_if_fresh`, and
+        for the first acquisition of a run started on the recovery ladder's
+        sweep (``recovery``, #402), once per acquisition: it RECORDS the
+        acquisition as it answers.
+
+        A hop does not move the focuser and does not change the tube's
+        temperature, and the frame loop already owns drift through
+        `_refocus_due` at every frame boundary inside a visit. So a hop owes a
+        sweep only when nothing trustworthy exists or the frame loop would
+        have refocused anyway:
+
+        * no sweep has succeeded this run, or the last one failed
+          (``_last_focus_at`` cleared);
+        * this is the group's first acquisition this run
+          (`_focus_group_key`);
+        * `_refocus_due()` is true now: ``autofocus_every`` reached, or the
+          temperature delta, when armed, exceeded.
+
+        THERE IS NO AGE RULE, and that is the difference from
+        `_post_flip_focus_is_owed`, which sweeps whenever the last sweep is
+        ``FRESH_FOCUS_S`` old before it looks at the temperature. On a
+        rotating mosaic one visit plus its hop is about 16.7 min, so that rule
+        would put a 7-9 minute sweep on about every second hop: computed,
+        19.4% of the night for an 8-minute sweep (spec A.3). The cost of
+        leaving it out is written down as spec risk 15: a rig with neither
+        ``autofocus_every`` nor a temperature delta armed focuses once per run
+        on a mosaic, which is what one long single target does there today.
+
+        An unreadable temperature decides nothing here, unlike the post-flip
+        gate: it decides nothing in `_refocus_due` either, and a hop owes a
+        sweep only when the frame loop would have taken one.
+
+        THE RECOVERY SWEEP IS THE GROUP'S FIRST (#402). With ``recovery``
+        given, the sweep the ladder made before the run is the one this
+        acquisition would have made, so being the group's first owes
+        nothing more: the answer is the other two conditions, asked of that
+        sweep (`start` seeded ``_last_focus_at`` and the temperature
+        baseline from it). The line that reuses it names it, with the
+        binning and the temperature it was made at, because a bin-2 sweep
+        standing in for the run's bin-1 one is worth being able to see.
+        """
+        key = self._focus_group_key(target)
+        first = key not in self._focus_groups_acquired
+        self._focus_groups_acquired.add(key)
+        if self._last_focus_at is None:
+            return True
+        if first and recovery is None:
+            return True
+        # THE BASELINE IS TAKEN BEFORE `_refocus_due` IS ASKED, because that
+        # call seeds a missing one from the reading it makes now. A sweep whose
+        # temperature read failed (the Alpaca focuser returns None on a
+        # DeviceError) left none, and compared after the seed the log said
+        # "0.0 C since" about a change nobody measured.
+        baseline = self._last_focus_temp
+        if await self._refocus_due():
+            return True
+        age_s = time.monotonic() - self._last_focus_at
+        try:
+            t = await self.hub.require("focuser").get_temperature()
+        except Exception:       # noqa: BLE001
+            t = None
+        if baseline is None:
+            since = "no focuser temperature was read at that sweep"
+        elif t is None:
+            since = "the focuser temperature could not be read"
+        else:
+            since = f"{abs(float(t) - float(baseline)):.1f} C since"
+        if recovery is not None:
+            made = (f"at bin {recovery.binning}, "
+                    + (f"{float(recovery.temp_c):.1f} C"
+                       if recovery.temp_c is not None
+                       else "no focuser temperature read")
+                    + (f", left at {recovery.position}"
+                       if recovery.position is not None else ""))
+            bus.log("info",
+                    f"{target.name}: focus reused: the recovery ladder's sweep "
+                    f"after the restart ({made}), {age_s / 60:.0f} min ago, "
+                    f"{since}", "sequence")
+            return False
+        bus.log("info",
+                f"{target.name}: focus reused: swept {age_s / 60:.0f} min ago, "
+                f"{since}", "sequence")
+        return False
+
     async def _autofocus(self, label: str, *, step=None,
-                         target: Target | None = None) -> bool:
+                         target: Target | None = None,
+                         resweep: bool = False) -> bool:
         """Run one autofocus. Returns True if it found focus.
 
         The return exists for the instruction dispatcher: an edge-triggered rule
@@ -6964,10 +15207,36 @@ class SequenceEngine:
         it needs a mount that is following it — except on a calibration target
         or a dark/bias/flat step, which are shot parked on purpose and get the
         same exemption `_enforce_tracking` already makes.
+
+        A SPARSE FIELD GETS ONE MORE TRY, AT TWICE THE EXPOSURE (#507, H4
+        orchestrator ruling 4). A sweep that failed with fewer than
+        ``SPARSE_FIELD_WARN`` stars at its start position
+        (``AutofocusResult.sparse_field``) is run once more at double the
+        exposure before ``af_failure_action`` is asked: the sweep's own
+        warning names that remedy ("try a longer exposure"), and on
+        2026-09-28 a moonlit, hazy field failed two initial sweeps at 6 s
+        with 5 to 19 stars a point and the run carried on at the old
+        position with neither remedy tried. Any other failure is not retried:
+        a longer exposure answers a starved field and nothing else.
+
+        When the retry fails too, the escalation applies as it always did.
+        Under "warn" the run carries on at the focus it had, says where in
+        words, and owes a sweep at the first light frame whose star count
+        reaches the sparse line (``_sparse_resweep_owed``): the sky that
+        starved the sweep passed within the hour that night, and nothing
+        swept again until a trigger fired. ``resweep`` marks that owed sweep
+        itself, whose failure owes nothing more (see the field).
         """
         self._set_state(detail=label)
         _t0 = time.time()
         failed_reason: str | None = None
+        # WHATEVER RUNS NOW ANSWERS A SWEEP OWED SINCE THE SPARSE-FIELD
+        # FAILURES (#507): the debt was for a sweep, not for this label.
+        self._sparse_resweep_owed = False
+        self._sparse_resweep_due = False
+        #: The failed retry's result, when a sparse-field failure was retried
+        #: and failed again; None otherwise.
+        sparse_retry: Any = None
         # A SWEEP IS TEN EXPOSURES OVER FIVE MINUTES AND USED TO ASK NOBODY.
         # On 2026-08-21 one ran to completion on a mount that had stopped four
         # minutes earlier, consumed the drift as data, returned HFR 8.40 px
@@ -6985,13 +15254,37 @@ class SequenceEngine:
             restore_filter = await self._sweep_through_luminance(label)
             exposure_s, gain = await self._sweep_settings_for_current_filter(label)
             _e, _g, binning = self._focus_scope_frame()
-            # `expose_guard` was missing here alone of the three callers:
-            # it is what stops a sweep frame and a sequence frame
-            # interleaving their imageready polls on one camera.
-            result = await run_autofocus(
-                cam, foc, hub=self.hub, exposure_s=exposure_s, gain=gain,
-                binning=binning, expose_guard=self.hub.exposure_guard,
-                tracking_check=self._tracking_now if needs_tracking else None)
+
+            async def _sweep(seconds: float):
+                # `expose_guard` was missing here alone of the three callers:
+                # it is what stops a sweep frame and a sequence frame
+                # interleaving their imageready polls on one camera.
+                return await run_autofocus(
+                    cam, foc, hub=self.hub, exposure_s=seconds, gain=gain,
+                    binning=binning, expose_guard=self.hub.exposure_guard,
+                    tracking_check=self._tracking_now if needs_tracking
+                    else None)
+
+            result = await _sweep(exposure_s)
+            # Read with a default: a provider's result that predates the
+            # field (or a stand-in for one) is simply not a sparse failure.
+            if not result.success and getattr(result, "sparse_field", False):
+                # ONE RETRY, AT TWICE THE EXPOSURE, ON THE SAME FILTER, GAIN
+                # AND BINNING (#507): the one lever the warning names that
+                # this run can pull by itself. Binning is the operator's
+                # focus scope, and a filter change would move the focus the
+                # offsets were measured for.
+                n0 = getattr(result, "start_stars", None)
+                stars = f"{n0} stars" if n0 is not None else "too few stars"
+                bus.log("warning",
+                        f"{label} failed on a sparse field ({stars} at the "
+                        f"start position, under {SPARSE_FIELD_WARN}): "
+                        f"{result.message}. Trying once more at "
+                        f"{2 * exposure_s:g}s, twice the exposure",
+                        "sequence")
+                result = await _sweep(2 * exposure_s)
+                if not result.success:
+                    sparse_retry = result
             if not result.success:
                 bus.log("warning", f"{label} failed: {result.message}", "sequence")
                 failed_reason = result.message or "autofocus failed"
@@ -7006,6 +15299,13 @@ class SequenceEngine:
                 # stale one from before the sweep.
                 self._focus_baseline_hfr = None
                 self._last_focus_at = time.monotonic()
+                # Bookkeeping for a later line (#507), so it must never turn
+                # a sweep that worked into one that raised: a result with no
+                # usable position leaves no "last good focus" to name.
+                pos = getattr(result, "best_position", None)
+                self._last_good_focus = (
+                    (int(pos), time.monotonic())
+                    if isinstance(pos, (int, float)) else None)
             self._frames_since_focus = 0
             self._record_event_cost("autofocus", time.time() - _t0)
             await self._capture_focus_temp()
@@ -7055,7 +15355,113 @@ class SequenceEngine:
                 raise SafetyAbort(f"autofocus failed: {failed_reason}")
             if action == "skip":
                 raise StopTarget(f"autofocus failed: {failed_reason}")
+            if sparse_retry is not None:
+                await self._carry_on_after_sparse_failures(
+                    label, sparse_retry, resweep=resweep,
+                    restored=restore_filter)
         return failed_reason is None
+
+    async def _carry_on_after_sparse_failures(self, label: str, result, *,
+                                              resweep: bool,
+                                              restored: str | None = None
+                                              ) -> None:
+        """Under ``af_failure_action`` "warn", after a sweep and its retry at
+        twice the exposure both failed on a sparse field (#507, H4
+        orchestrator ruling 4): say where the run carries on, in words, and
+        owe a sweep at the first light frame whose star count reaches
+        ``SPARSE_FIELD_WARN`` (`_note_sparse_resweep`).
+
+        WHERE IT CARRIES ON is where the sweeps started, which is where each
+        put the focuser back on failing (the native sweep never leaves it at
+        a sweep point), so the failed result's ``best_position`` names it with
+        no device read. The last sweep that found focus is named beside it
+        when this run has one, since offsets and temperature compensation may
+        have moved the focuser since; the night's log then says both numbers
+        the morning needs.
+
+        SAVE AFTER A SWEEP THROUGH LUMINANCE (``restored``, the filter
+        `_sweep_through_luminance` put back): the move to luminance applied
+        its offset before the sweeps started, and putting ``restored`` back
+        undid it, so where the sweeps started is not where the run carries on
+        (120 steps apart for Ha on the simulator's wheel). The position is
+        then read, bounded, after the filter is back; a read that fails names
+        no number rather than the wrong one.
+
+        The owed sweep's own failure owes nothing more: it says so instead."""
+        pos = getattr(result, "best_position", None)
+        started = "where the sweeps started"
+        if restored is not None:
+            try:
+                foc = self.hub.devices.get("focuser")
+                # asyncio.wait_for, not `_bounded` (#577): `_bounded` turns a
+                # timeout into a SafetyAbort for a caller that means the abort
+                # to end the run, and this read is taken only to fill in a
+                # log number. A read that fails, timeout included, names no
+                # number instead (the promise the docstring above makes) —
+                # the shape `_rotator_evidence`'s read already uses. Bounded
+                # by a QUERY budget, not FOCUSER_MOVE_TIMEOUT_S: this is one
+                # get_position, never a move.
+                pos = int(await asyncio.wait_for(foc.get_position(),
+                                                 FOCUSER_QUERY_TIMEOUT_S))
+            except asyncio.CancelledError:
+                raise
+            except Exception:   # noqa: BLE001 - a log line never ends a run,
+                               # a timeout included
+                pos = None
+            started = (f"the focus it had before the sweeps, since putting "
+                       f"{restored!r} back after they ran through luminance "
+                       f"undid the filter offset")
+        where = (f"focuser position {int(pos)}"
+                 if isinstance(pos, (int, float)) else "the focuser position")
+        good = self._last_good_focus
+        if good is None:
+            since = "no sweep has found focus yet this run"
+        else:
+            since = (f"the last sweep that found focus left it at {good[0]}, "
+                     f"{(time.monotonic() - good[1]) / 60:.0f} min ago")
+        if resweep:
+            bus.log("warning",
+                    f"{label} failed on a sparse field again, at both "
+                    f"exposures: the run carries on at {where}, {started} "
+                    f"({since}). No further "
+                    f"sweep is owed for the sparse field; the next is the "
+                    f"plan's own (autofocus_every, the temperature trigger or "
+                    f"the next target)", "sequence")
+            return
+        self._sparse_resweep_owed = True
+        bus.log("warning",
+                f"{label} failed on a sparse field at both exposures: the "
+                f"run carries on at {where}, {started} ({since}), and "
+                f"sweeps again at the first frame "
+                f"that finds at least {SPARSE_FIELD_WARN} stars", "sequence")
+
+    def _note_sparse_resweep(self, info, step, target: Target) -> None:
+        """A light frame's star count against a sweep owed since two
+        sparse-field failures (#507): the first one to reach
+        ``SPARSE_FIELD_WARN`` makes the sweep due at the next frame
+        boundary, where the frame loop runs it. Said once, in words, with
+        the count that decided it. A dark, a flat or a calibration target
+        measures no sky, and a frame that reported no count decides
+        nothing.
+
+        THE LINE IS THE PROBE'S, THE COUNT A LIGHT FRAME'S, as the ruling
+        words it. A light frame is longer and usually finer-binned than the
+        sweep's probe, so it clears the line far more easily and the owed
+        sweep comes due at about the first light frame (#558, open). The
+        owed sweep's own failure owing nothing more is what bounds that."""
+        if not self._sparse_resweep_owed or self._sparse_resweep_due:
+            return
+        if not self._is_light(step) or getattr(target, "calibration", False):
+            return
+        stars = info.get("stars") if isinstance(info, dict) else None
+        if stars is None or int(stars) < SPARSE_FIELD_WARN:
+            return
+        self._sparse_resweep_due = True
+        bus.log("info",
+                f"{target.name}: this frame found {int(stars)} stars, at or "
+                f"over the sparse-field line of {SPARSE_FIELD_WARN}: the "
+                f"autofocus owed since the sparse-field failures sweeps at "
+                f"the next frame boundary", "sequence")
 
     async def _panel_off_safe(self) -> None:
         """Best-effort flat-panel-off (PRO-5): an aborted/failed run must NEVER
@@ -7140,12 +15546,425 @@ class SequenceEngine:
         # warming (or orphan the shielded teardown with an unretrieved exception).
         # PRO-5: never leave the flat panel lit through a normal/abort wind-down.
         await self._panel_off_safe()
+        # THE GUIDER STOP IS STARTED FIRST AND REAPED LAST (#270, S2
+        # orchestrator ruling 1). It used to be awaited here, ahead of the
+        # park and the roof close, under its own GUIDE_OP_TIMEOUT_S: a guider
+        # that has stopped answering (PHD2 hung, a USB glitch that took the
+        # monitor and the guider together) held the park and the roof close
+        # for two minutes in the very rain that ended the run. So the stop is
+        # asked first, on a task of its own, and reaped, bounded by its own
+        # GUIDE_OP_TIMEOUT_S from now, after the park and the close.
+        #
+        # BUT THE PARK WAITS FOR IT, BRIEFLY (#311, S3 orchestrator ruling 3,
+        # which refines ruling 1). #270's premise was that the park moves the
+        # mount whatever the guider is doing, and on the AM5 it does not: a
+        # park that begins inside an east guide pulse is silently lost
+        # (`WIND_DOWN_GUIDER_STOP_S`). So before a park the wind-down waits
+        # for the stop as long as one pulse can take to end and no longer,
+        # and then parks whatever the guider has said. The roof close still
+        # waits for nothing but the park.
+        guider_stop = None
+        handed, self._idle_stop_handed = self._idle_stop_handed, None
+        reap_by = time.time() + GUIDE_OP_TIMEOUT_S
+        try:
+            if self.hub.guider and self.hub.guider.connected:
+                guider_stop = asyncio.ensure_future(
+                    self._stop_guiding_quietly())
+            await self._wind_down_park_and_close(park, close_dome,
+                                                 guider_stop=guider_stop)
+        except BaseException:
+            # A cancel of a wind-down that is awaited directly (an Abort
+            # after a natural end): nothing waits for the two tasks now, and
+            # neither may outlive the run's teardown asking a device.
+            for task in (guider_stop, handed):
+                if task is not None and not task.done():
+                    task.cancel()
+            raise
+        await self._reap_by(guider_stop, reap_by)
+        await self._reap_by(handed, reap_by)
+        # BETWEEN THE PARK AND THE WARM, which is the only window this can
+        # occupy. Above it the mount is stowed and the cover is shut; below it
+        # `warm_camera` starts a background ramp that runs on regardless, and a
+        # dark taken on a warming sensor is indexed to a temperature it will
+        # never be asked for again. The design called this "hold cold for day
+        # darks"; holding cold is not a separate setting, it is simply where in
+        # the wind-down the frames are taken.
+        if day_darks:
+            await self._day_darks()
+        await self._wind_down_warm(warm)
+
+    async def _stop_guiding_quietly(self) -> None:
+        """The wind-down's guider stop, and the auto-reopen roof close's
+        (#343), bounded by ``GUIDE_OP_TIMEOUT_S``, every failure swallowed:
+        run on a task of its own so that the park and the roof close are
+        held behind it for no longer than ``WIND_DOWN_GUIDER_STOP_S`` (#270,
+        #311)."""
         try:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),
                                        GUIDE_OP_TIMEOUT_S)
         except (asyncio.TimeoutError, Exception):
             pass
+
+    async def _reap_by(self, task: asyncio.Task | None,
+                       deadline: float) -> None:
+        """Wait for ``task`` until the wall time ``deadline``, and cancel it
+        there. Polled, not awaited, as `_complete_idle_stop` polls: each look
+        is a sleep the clocked simulator can advance, and a task past its
+        bound (a guider stop that eats its cancel) is left cancelled rather
+        than waited for. Never raises but for a cancel of the caller, which
+        cancels the task too."""
+        if task is None:
+            return
+        try:
+            while not task.done():
+                if time.time() >= deadline:
+                    break
+                await asyncio.sleep(IDLE_STOP_FINISH_POLL_S)
+        finally:
+            if not task.done():
+                task.cancel()
+
+    async def _stop_after_a_failed_park(self) -> None:
+        """A park that failed or timed out is a wind-down that did not park
+        (#270, S2 orchestrator ruling 1). An ending that parks no longer
+        waits for the idle stop, because the park fulfils it; without the
+        park, the mount would track on unwatched after the run, the hazard
+        the stop was decided for and the one every parking ending means to
+        end. So, after the roof-close attempt: ask the mount once, bounded,
+        to stop tracking, read it back, and say what came of it, in words.
+        Nothing asks after the run. When an Abort landed in the park, this
+        comes at once after it instead, before the cancel goes on, and there
+        is no roof-close attempt (#305, `_wind_down_park_and_close`)."""
+        await self._stop_tracking_quietly()
+        tracking = await self._tracking_now()
+        said = ("the park did not complete, so the mount was asked to stop "
+                "tracking instead")
+        if tracking is False:
+            bus.log("warning", said + ", and it has stopped tracking",
+                    "sequence")
+            return
+        detail = ("it still reports tracking" if tracking
+                  else "its tracking state cannot be read")
+        bus.log("error", said + f", and it has not confirmed it ({detail}); "
+                                f"nothing will ask it again, so it may still "
+                                f"be tracking", "sequence")
+
+    async def _wait_for_the_guider_before_the_park(
+            self, guider_stop: asyncio.Future | None) -> bool:
+        """Wait for the wind-down's guider stop before its park, for
+        ``WIND_DOWN_GUIDER_STOP_S`` and no longer (#311, S3 orchestrator
+        ruling 3), and the auto-reopen roof close's the same way (#343,
+        `_close_for_reopen`). Returns whether a cancel landed meanwhile. The
+        bound runs from the moment the stop was asked: `_wind_down` and
+        `_close_for_reopen` ask it and come straight here, with nothing
+        awaited between.
+
+        POLLED, NOT AWAITED, as `_reap_by` polls: a cancel lands on the
+        poll's sleep and never on the guider stop, and each sleep is one the
+        clocked simulator can advance. The first look is one turn of the
+        loop, so a stop that answers at once costs the park nothing, and the
+        last sleep is cut to the bound, so a guider that does not answer
+        holds the park for the bound exactly.
+
+        A CANCEL IS NOTED AND THE WAIT GOES ON (#305): the park after it is
+        the one the handed idle stop depends on, and
+        `_wind_down_park_and_close` raises the cancel once that park is over.
+        The roof close raises it once it has stopped tracking, before its
+        park. Past the bound the park goes ahead, said once; the stop is left
+        running, and reaped after the roof close."""
+        if guider_stop is None:
+            return False
+        quiet_by = time.time() + WIND_DOWN_GUIDER_STOP_S
+        cancelled = False
+        step = 0.0
+        while not guider_stop.done():
+            left = quiet_by - time.time()
+            if left <= 0:
+                bus.log("warning", f"the guider had not stopped "
+                                   f"{WIND_DOWN_GUIDER_STOP_S:g} s after it "
+                                   f"was asked; parking the mount anyway",
+                        "sequence")
+                break
+            try:
+                await asyncio.sleep(min(step, left))
+            except asyncio.CancelledError:
+                cancelled = True
+            step = IDLE_STOP_FINISH_POLL_S
+        return cancelled
+
+    async def _parked_state(self, tel) -> bool | None:
+        """Does the mount report parked? True, False, or None when it cannot
+        say: the query raised or timed out, or the driver has none. Bounded
+        by ``MOUNT_QUERY_TIMEOUT_S``; never raises but for a cancel."""
+        try:
+            return bool(await asyncio.wait_for(tel.is_parked(),
+                                               MOUNT_QUERY_TIMEOUT_S))
+        except (asyncio.TimeoutError, Exception):
+            return None
+
+    async def _slewing_state(self, tel) -> bool | None:
+        """Does the mount report slewing? True, False, or None when it cannot
+        say: the driver has no slewing state, or the query raised or timed
+        out. Bounded by ``MOUNT_QUERY_TIMEOUT_S``; never raises but for a
+        cancel. `_parked_state`'s twin, for the park's read-back (item 9)."""
+        ask = getattr(tel, "is_slewing", None)
+        if not callable(ask):
+            return None
+        try:
+            return bool(await asyncio.wait_for(ask(), MOUNT_QUERY_TIMEOUT_S))
+        except (asyncio.TimeoutError, Exception):
+            return None
+
+    async def _await_the_park(self, tel, deadline: float) -> str:
+        """Wait for a park the driver has accepted to arrive, and say how it
+        ended (item 9, the follow-up to S3 orchestrator ruling 3):
+
+        * ``"parked"``: the mount reports parked;
+        * ``"unreadable"``: its park state cannot be read, and no poll has
+          seen the park on its way, which is no evidence the park was lost
+          (`_park_and_read_back`);
+        * ``"unconfirmed"``: at ``deadline`` its park state still cannot be
+          read, and a poll before saw the mount slewing (#447, #525, below);
+        * ``"lost"``: it reports neither parked nor slewing, so the park did
+          nothing and nothing is on its way;
+        * ``"late"``: at ``deadline`` it still reports slewing, or, on a
+          driver with no slewing state, still not parked.
+
+        WHY A WAIT AND NOT ONE READ. An Alpaca ``park()`` is a bare PUT that
+        returns as the slew begins, and ``AtPark`` goes true only when the
+        mount arrives. The read-back used to read it once, straight after
+        the PUT, so it called every such park lost: it parked a second time
+        into the slew, read that back unparked too, and the wind-down then
+        stopped tracking in the middle of the park slew
+        (`_stop_after_a_failed_park`). A mount that says it is slewing is on
+        its way, and is looked at again every ``PARK_READ_BACK_POLL_S``.
+
+        THE FIRST LOOK IS AT ONCE, and so is the answer for a mount that
+        reads neither parked nor slewing: that is the AM5's lost ``:hP#``
+        and this simulator's lost park, which S3 orchestrator ruling 3 parks
+        again at once, not on the next poll.
+
+        A DRIVER WITH NO SLEWING STATE (the query raised, timed out, or does
+        not exist) cannot tell a slew from a lost park, so it is polled on
+        ``AtPark`` alone, until ``deadline``; its slewing query is asked once,
+        and not again, since a query that hangs for its bound would put
+        ``MOUNT_QUERY_TIMEOUT_S`` into every poll.
+
+        BOUNDED BY THE PARK'S OWN WAIT. ``deadline`` is the moment the park
+        was asked plus ``PARK_TIMEOUT_S``: the read-back spends what is left
+        of the time a park is allowed, never more, and the last sleep is cut
+        to it. Never raises but for a cancel.
+
+        AN UNREADABLE POLL AFTER A SLEW IS NOT A PARK (#447, S4 review item
+        7). S3's rule, that a park state nobody can read leaves the driver's
+        park standing, was made for one read straight after the park, where
+        it is no evidence either way. Inside this wait it also answered for
+        a mount already seen "not parked, slewing", whose park was known to
+        be in flight and never seen to arrive: a link that failed in the
+        middle of a park slew, the one park that cannot be taken on trust,
+        was reported parked, and the wind-down sent no stop of tracking. So
+        once a poll has seen the mount slewing, an unreadable poll does not
+        answer "unreadable", and the caller treats a park that ends
+        ``"unconfirmed"`` as not taken, without asking it again. An
+        unreadable first poll keeps S3's rule.
+
+        AND IT KEEPS WAITING, TO THE PARK'S DEADLINE (#525, S7 orchestrator
+        ruling 4). S5 answered "unconfirmed" at the first unreadable poll,
+        and the wind-down then stopped tracking a few seconds into a park
+        still in flight, the S4 defect this wait was built to remove, on
+        the strength of one read a flaky link had dropped: a park that went
+        on to arrive was recorded as one that did not. Now an unreadable
+        poll after a slewing read sleeps and polls again. A later poll that
+        reads parked answers ``"parked"``; one that reads not parked goes
+        back to the slewing rule; only ``deadline`` answers
+        ``"unconfirmed"``. An unreadable poll asks no slewing state: a
+        "not slewing" beside a park state nobody can read may be a park
+        that arrived, and "lost" would park a second time into it. The
+        cost, chosen: a link that dies for good mid-park leaves the mount
+        unstopped until the deadline, the time any park is allowed and
+        the wait a park still reading slewing already gets."""
+        slewing_known = True
+        slewing_seen = False
+        while True:
+            state = await self._parked_state(tel)
+            if state:
+                return "parked"
+            if state is None and not slewing_seen:
+                return "unreadable"
+            if state is False and slewing_known:
+                slewing = await self._slewing_state(tel)
+                if slewing is False:
+                    return "lost"
+                slewing_known = slewing is not None
+                slewing_seen = slewing_seen or slewing is True
+            left = deadline - time.time()
+            if left <= 0:
+                return "unconfirmed" if state is None else "late"
+            await asyncio.sleep(min(PARK_READ_BACK_POLL_S, left))
+
+    async def _park_and_read_back(self, tel, *,
+                                  during: str = "wind-down") -> bool:
+        """Park, read the park back, and park ONCE more AT ONCE if the mount
+        reports neither parked nor on its way (#311, S3 orchestrator ruling
+        3). Returns whether the mount is parked. ``during`` names the path in
+        the lines: the wind-down's park, or the auto-reopen roof close's
+        (`_fenced_park`, #343), which parks the same way.
+
+        A park() that returns is the driver's claim, and on the AM5 a claim
+        with a known hole: ``:hP#`` sent while tracking is on (a guide
+        pulse's ``:Te#`` can land between the driver's tracking check and the
+        park) is accepted and does nothing. So the park is read back, and a
+        mount that says it is not parked is asked again at once, not on the
+        next tick or the idle stop's minute: the roof close is waiting on it.
+        Once: a second park that does not take either is a mount with a real
+        problem, and the wind-down stops its tracking instead
+        (`_stop_after_a_failed_park`). The AM5's own park() does not return
+        after a lost ``:hP#``, it polls ``PARK_WAIT_S`` and retries by itself
+        (#342), so there the pre-park guider wait is what keeps the pulse and
+        the park apart.
+
+        A PARK ON ITS WAY IS WAITED FOR (item 9). A park() that returns as
+        its slew begins, as an Alpaca driver's does, is not "not parked":
+        the read-back waits while the mount says it is slewing, bounded by
+        what is left of the park's ``PARK_TIMEOUT_S`` (`_await_the_park`),
+        and only a mount that reads neither parked nor slewing is parked
+        again. One still on its way at that bound has had all the time a
+        park that timed out has, and is treated as one: not asked again.
+
+        ONLY A DEFINITE "NOT PARKED" ASKS AGAIN. A read-back that cannot
+        answer is no evidence the park was lost, so the driver's park stands,
+        as it did before this read-back, and the line names the read-back's
+        failure; `close_observatory` still refuses to close the roof over a
+        mount it cannot confirm parked. A park that raised or timed out is not
+        asked again either: it has had its driver's own retries and its whole
+        ``PARK_TIMEOUT_S``, and the wind-down stops the mount instead.
+
+        BUT A PARK SEEN ON ITS WAY AND THEN UNREADABLE DOES NOT STAND (#447):
+        the wait saw it in flight and nothing saw it arrive, so it is not
+        parked, and not asked again either; the wind-down stops the mount
+        (`_await_the_park`'s ``"unconfirmed"``). Only at the park's
+        deadline, not at the first read the link dropped (#525, S7
+        orchestrator ruling 4): until then a poll that reads parked still
+        answers parked."""
+        for attempt in (1, 2):
+            # a park failure/timeout must NOT abort the wind-down (else the
+            # cooler would never warm and, on an orphaned shielded teardown,
+            # this would surface as an 'exception never retrieved') — log +
+            # continue.
+            asked = time.time()
+            try:
+                await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                bus.log("warning", f"park timed out after {PARK_TIMEOUT_S:.0f}s "
+                                   f"during {during} — continuing", "sequence")
+                return False
+            except Exception as e:
+                bus.log("warning", f"park failed during {during}: {e}",
+                        "sequence")
+                return False
+            got = await self._await_the_park(tel, asked + PARK_TIMEOUT_S)
+            if got in ("parked", "unreadable"):
+                # AFTER the read-back, so the line means "parked" rather than
+                # "asked to". /api/mount/park documents this rule at length
+                # ("PARK IS THE ONE EVENT AN UNATTENDED NIGHT MUST BE ABLE TO
+                # PROVE") and the wind-down — the park that actually runs at
+                # the end of every unattended night — was not following it:
+                # "parking mount" is written BEFORE the command, so on its own
+                # it proves only intent.
+                bus.log("info", "mount parked" if got == "parked" else
+                        "mount parked (its park state could not be read back)",
+                        "sequence")
+                return True
+            if got == "late":
+                bus.log("warning", f"the park had not arrived "
+                                   f"{PARK_TIMEOUT_S:.0f}s after it was asked "
+                                   f"during {during}: the mount does not "
+                                   f"report parked — continuing", "sequence")
+                return False
+            if got == "unconfirmed":
+                # SEEN ON ITS WAY, THEN UNREADABLE TO THE DEADLINE (#447,
+                # #525): not parked, since nothing saw it arrive, and not
+                # asked again, since a park may still be in flight and a
+                # second one into it is what the waited park exists to stop.
+                # Not parked, the wind-down stops the mount's tracking
+                # instead, read back.
+                bus.log("warning", f"the mount was slewing to park and then "
+                                   f"its park state could not be read up to "
+                                   f"the park's deadline during {during}: "
+                                   f"the park is not confirmed", "sequence")
+                return False
+            bus.log("warning",
+                    "the mount reports neither parked nor slewing after the "
+                    "park; parking once more" if attempt == 1 else
+                    "the mount still reports neither parked nor slewing after "
+                    "a second park", "sequence")
+        return False
+
+    async def _wind_down_park(self, tel) -> bool:
+        """The wind-down's park, run on a task of its own so that a cancel of
+        the wind-down cannot cut it (#305, `_wind_down_park_and_close`):
+        reopen a dropped link, fence and lock the motion, then park and read
+        it back (`_park_and_read_back`). Returns whether the mount parked.
+        Never raises for a park that failed or timed out: that is logged, and
+        the caller stops the mount instead."""
+        if not getattr(tel, "connected", False):
+            # A telescope OBJECT that reports not-connected is a link
+            # that died under us, and since ``connected`` became a
+            # measurement rather than a memory (#208) this branch is
+            # REACHABLE for the first time — before that the stale flag
+            # sent us into the park below, where the failure at least
+            # got logged. Skipping quietly here would have turned that
+            # fix into a regression: on 2026-08-09 the mount's link died
+            # at 02:38 and the wind-down is the last thing that runs
+            # before hours of unattended tracking.
+            await self._reopen_mount_for_park(tel)
+        bus.log("info", "parking mount", "sequence")
+        # Motion fence (W3.7): the wind-down park is an abort -- BUMP the
+        # hub motion epoch FIRST so any in-flight (or just-accepted) slew is
+        # fenced out and cannot drive the mount AFTER we begin parking. Then
+        # park under the hub motion lock so the park itself is serialized
+        # with every other device-touching motion path, its read-back and
+        # its second attempt included. Best-effort: a missing bump primitive
+        # (older hub) degrades to the raw park.
+        bump = getattr(self.hub, "bump_motion_epoch", None)
+        if callable(bump):
+            bump()
+        lock = getattr(self.hub, "_motion_lock", None)
+        if lock is not None:
+            async with lock:
+                return await self._park_and_read_back(tel)
+        return await self._park_and_read_back(tel)
+
+    async def _wind_down_park_and_close(
+            self, park: bool, close_dome: bool, *,
+            guider_stop: asyncio.Future | None = None) -> None:
+        """The wind-down's park and roof close, with nothing between them but
+        what the never-crush rule asks for (#270). Split out of `_wind_down`
+        so that its guider stop can be reaped after it, however it ends.
+        Before the park, that stop (``guider_stop``) is waited for, briefly
+        (#311, `_wait_for_the_guider_before_the_park`).
+
+        THE PARK IS SHIELDED (#305). An ending that parks has handed the idle
+        stop to this park (`_hand_idle_stop_to_the_park`, #270), so the park
+        is the one thing left that will stop the mount. The unsafe ending's
+        wind-down is shielded whole by `_run` (§1.9-G); a natural end, a
+        cooling skip and a quality stop await theirs directly, and an
+        operator's Abort that landed in their park used to cut it: the handed
+        stop went with it, `abort` found no idle-stop task to complete,
+        `_safe_stop` touches no mount, and the mount tracked on unwatched. So
+        the park runs on a task of its own that this waits for however many
+        cancels land (`_wind_down_park`), and the guider wait before it notes
+        a cancel and goes on; a park that then did not park is followed at
+        once by the failed park's stop of tracking, read back; and only then
+        is the cancel raised. The Abort still ends the run: nothing after the
+        park runs, not even the roof close, which would be a motion the
+        operator has just asked the rig not to start. Every step is bounded
+        on its own: the wait by ``WIND_DOWN_GUIDER_STOP_S``, each park by
+        ``PARK_TIMEOUT_S``, the read-back and the stop by
+        ``MOUNT_QUERY_TIMEOUT_S``. Awaited through `asyncio.wait`, which
+        leaves the park running when the waiter is cancelled."""
+        parked: bool | None = None   # None: no park asked, or no mount to park
         if park:
             tel = self.hub.devices.get("telescope")
             if tel is None:
@@ -7157,52 +15976,19 @@ class SequenceEngine:
                                  "mount is powered it is still tracking",
                         "sequence")
             else:
-                if not getattr(tel, "connected", False):
-                    # A telescope OBJECT that reports not-connected is a link
-                    # that died under us, and since ``connected`` became a
-                    # measurement rather than a memory (#208) this branch is
-                    # REACHABLE for the first time — before that the stale flag
-                    # sent us into the park below, where the failure at least
-                    # got logged. Skipping quietly here would have turned that
-                    # fix into a regression: on 2026-08-09 the mount's link died
-                    # at 02:38 and the wind-down is the last thing that runs
-                    # before hours of unattended tracking.
-                    await self._reopen_mount_for_park(tel)
-                bus.log("info", "parking mount", "sequence")
-                # Motion fence (W3.7): the wind-down park is an abort -- BUMP the
-                # hub motion epoch FIRST so any in-flight (or just-accepted) slew is
-                # fenced out and cannot drive the mount AFTER we begin parking. Then
-                # park under the hub motion lock so the park itself is serialized
-                # with every other device-touching motion path. Best-effort: a
-                # missing bump primitive (older hub) degrades to the raw park.
-                bump = getattr(self.hub, "bump_motion_epoch", None)
-                if callable(bump):
-                    bump()
-                # a park failure/timeout must NOT abort the wind-down (else the
-                # cooler would never warm and, on an orphaned shielded teardown,
-                # this would surface as an 'exception never retrieved') — log +
-                # continue.
-                try:
-                    lock = getattr(self.hub, "_motion_lock", None)
-                    if lock is not None:
-                        async with lock:
-                            await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
-                    else:
-                        await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
-                except asyncio.TimeoutError:
-                    bus.log("warning", f"park timed out after {PARK_TIMEOUT_S:.0f}s "
-                                       "during wind-down — continuing", "sequence")
-                except Exception as e:
-                    bus.log("warning", f"park failed during wind-down: {e}", "sequence")
-                else:
-                    # AFTER the await, so the line means "parked" rather than
-                    # "asked to". /api/mount/park documents this rule at length
-                    # ("PARK IS THE ONE EVENT AN UNATTENDED NIGHT MUST BE ABLE
-                    # TO PROVE") and the wind-down — the park that actually runs
-                    # at the end of every unattended night — was not following
-                    # it: "parking mount" above is written BEFORE the command,
-                    # so on its own it proves only intent.
-                    bus.log("info", "mount parked", "sequence")
+                cancelled = await self._wait_for_the_guider_before_the_park(
+                    guider_stop)
+                parking = asyncio.ensure_future(self._wind_down_park(tel))
+                while not parking.done():
+                    try:
+                        await asyncio.wait({parking})
+                    except asyncio.CancelledError:
+                        cancelled = True
+                parked = parking.result()
+                if cancelled:
+                    if not parked:
+                        await self._stop_after_a_failed_park()
+                    raise asyncio.CancelledError()
         elif self._frames_done:
             # A run that deliberately leaves the mount live must SAY so. On
             # 2026-08-09 a 150-frame unattended run ended "complete: 150 frames"
@@ -7252,16 +16038,14 @@ class SequenceEngine:
                     # reaches the user without a bespoke dispatcher call.
                     bus.log("error", "AUTOMATED ROOF CLOSE FAILED — gear may be "
                                      "exposed", "safety")
-        # BETWEEN THE PARK AND THE WARM, which is the only window this can
-        # occupy. Above it the mount is stowed and the cover is shut; below it
-        # `warm_camera` starts a background ramp that runs on regardless, and a
-        # dark taken on a warming sensor is indexed to a temperature it will
-        # never be asked for again. The design called this "hold cold for day
-        # darks"; holding cold is not a separate setting, it is simply where in
-        # the wind-down the frames are taken.
-        if day_darks:
-            await self._day_darks()
+        # AFTER THE ROOF-CLOSE ATTEMPT, which `close_observatory` refused over
+        # an unparked mount anyway: a wind-down that did not park stops the
+        # mount instead (#270, S2 orchestrator ruling 1).
+        if parked is False:
+            await self._stop_after_a_failed_park()
 
+    async def _wind_down_warm(self, warm: bool) -> None:
+        """The wind-down's last step, the cooler (see the comments below)."""
         # DO NOT WARM WHAT IS ABOUT TO SHOOT AGAIN.
         #
         # On 2026-09-08 the NGC 7331 run ended at 04:18 and warmed the camera

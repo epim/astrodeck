@@ -2,15 +2,49 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (BaseModel, BeforeValidator, Field,
+                      SerializerFunctionWrapHandler, model_serializer,
+                      model_validator)
 
 from .schedule import MERIDIAN_FLIP_LEAD_MAX_MIN, MERIDIAN_FLIP_LEAD_MIN
 
 if TYPE_CHECKING:                       # pragma: no cover - typing only
     from .policy import RunPolicy
+
+
+def _frame_type(value):
+    """A frame type as one of ``fitsio.FRAME_TYPES``, or a ValueError that
+    names the value and the four (#334). Anything that is not a string is
+    handed on unchanged, so pydantic's own string check words that refusal as
+    it always has."""
+    # Lazy: the four and their reading live with the writer of IMAGETYP, and
+    # this module is imported by the ``sequence`` package before anything
+    # under ``imaging`` needs to be.
+    from ..imaging.fitsio import FRAME_TYPES, frame_type_name
+    if not isinstance(value, str):
+        return value
+    name = frame_type_name(value)
+    if name is None:
+        raise ValueError(f"frame type {value!r} is not one of "
+                         f"{', '.join(FRAME_TYPES)} (in any case)")
+    return name
+
+
+#: A capture's frame type, checked where it comes in (#334): a plan step here,
+#: and ``POST /api/capture``'s body in ``api/app.py``. NORMALISED, not a
+#: ``Literal``: 'light', 'LIGHT' and ' Light ' are all Light, and a blank is
+#: Light (``fitsio.frame_type_name``), because a hand-edited plan or a script
+#: means the frame type whatever its case, and a ``Literal`` would refuse to
+#: load a stored plan over a capital letter. The value that comes OUT is
+#: always one of the four spellings, which is what the engine's ``!= "Light"``
+#: and the UI's ``=== "Light"`` compare against. Anything else refuses: a step
+#: with one non-ASCII character in its frame type failed every save of the
+#: night (the #277 class), and an ASCII value that is no frame type was
+#: written as an IMAGETYP no calibration reader expects.
+FrameType = Annotated[str, BeforeValidator(_frame_type)]
 
 
 class ExposureStep(BaseModel):
@@ -23,7 +57,7 @@ class ExposureStep(BaseModel):
     offset: int = 30
     binning: int = 1
     count: int = Field(gt=0, le=10000)
-    frame_type: str = "Light"          # Light | Dark | Bias | Flat
+    frame_type: FrameType = "Light"    # Light | Dark | Bias | Flat (#334)
     # --- PRO-5 flat auto-exposure (additive; 0/None = off => back-compat) ---
     adu_target: int = Field(0, ge=0, le=65535)     # >0 + Flat ⇒ solve exposure to this ADU
     panel_brightness: int | None = Field(None, ge=0)  # flat-panel level while shooting; None = don't touch
@@ -48,6 +82,19 @@ class Schedule(BaseModel):
     start_mode: str = "now"            # now | dusk | dawn | time
     start_offset_min: int = 0          # ± minutes relative to dusk/dawn
     start_time: str | None = None      # "HH:MM" when start_mode == "time"
+    # The Sun altitude, in degrees, a "dusk"/"dawn" boundary crosses (backlog
+    # WP-09, #191). None (the default) means the rig's OWN
+    # ``SafetyConfig.twilight_deg`` — so a plan or a saved flow from before
+    # this field existed resolves exactly as it always did. Set, it is THIS
+    # TARGET's own choice, and no other target's or the rig's: a DUSK WINDOW
+    # card's Astro/Nautical/Civil dusk Start compiles to -18/-12/-6 here
+    # (``flows.compile._dusk_schedule``), so the three choices finally
+    # resolve to different instants instead of all collapsing onto the rig's
+    # one setting. ``schedule.resolve_window`` reads this in place of the
+    # rig's angle whenever it is not None, for both the dusk and the dawn
+    # boundary of the SAME target, since a target's own definition of night
+    # does not flip angle between the two ends of it.
+    twilight_deg: float | None = None
     min_altitude_deg: float = 0.0      # per-target START gate (target-alt). 0 = none
     # What to do when a RUNNING target sinks back below `min_altitude_deg`.
     #
@@ -101,8 +148,120 @@ class Target(BaseModel):
     # --- atlas (additive; both nullable — existing plans deserialize unchanged) ---
     rotation_deg: float | None = None  # target camera angle (PA) — enforced when a rotator is connected; guidance otherwise
     mosaic_group: str | None = None    # groups mosaic panels in the Plan UI
+    # --- centring (#170; additive — None = exactly today's call) -----------
+    #
+    # The engine has never passed a tolerance or an attempt count to
+    # `hub.goto_and_center`, so every target so far has centred to the hub's
+    # own defaults, 0.02 deg (1.2 arcmin) and 3 attempts, whatever a SLEW card
+    # said. The contract for `_setup_target` (S1) is to pass each one ONLY
+    # WHEN IT IS SET, which is why the default is None and not the hub's
+    # number: a default of 3 would put the kwarg on every plan ever saved, and
+    # no plan could ask for "whatever the rig does" again.
+    #
+    # The bounds are the centring loop's own failure modes. It succeeds on
+    # `err <= tolerance` and calls the mount stuck when the residual sits above
+    # five tolerances and moved under 0.5 arcmin, so a 0 tolerance can never be
+    # met and then reads a CONVERGED mount as one refusing its slews. The 30
+    # arcmin ceiling is 25 times the default: past it "centred" stops meaning
+    # the object is where the frame was planned.
+    center_tolerance_arcmin: float | None = Field(None, gt=0, le=30)
+    # Zero attempts never enters the loop and returns error_arcmin 0: a zero
+    # residual from a centring that took no frame. The ceiling answers to the
+    # engine's GOTO_TIMEOUT_S (420 s for the slew and every attempt, so 42 s
+    # each at 10): a count the timeout would cut short promises attempts it
+    # cannot make.
+    center_attempts: int | None = Field(None, ge=1, le=10)
+    # --- focus at a hop (#189 U-05; additive — False = today's sweep) ------
+    #
+    # Today every target with `autofocus_first` sweeps at every setup, 7-9
+    # minutes on this rig, and a mosaic hops between panels all night. A hop
+    # does not move the focuser or change the tube's temperature, and the
+    # frame loop already refocuses on drift (`autofocus_every`, the
+    # temperature delta), so a hop owes a sweep only when nothing trustworthy
+    # exists or the frame loop would have refocused anyway (spec 5.6 step 6).
+    # True asks for that rule (`_hop_focus_is_owed`, S1), and the mosaic
+    # compile is to set it on every panel (spec 3.3). False keeps the sweep at
+    # every target start that every saved plan has always had.
+    autofocus_skip_if_fresh: bool = False
+    # --- mosaic panels (#189 S2, spec 3.4; additive — None = not a panel) ---
+    #
+    # The panel's place in its block's grid, 0-based: row 0 col 0 is panel
+    # "1-1". The compile names the panel "<name> <row+1>-<col+1>" as well,
+    # and these keep the grid position where nothing has to parse a name to
+    # find it: the order policy, the FITS PANEL keyword, the published
+    # ``state.group.panel`` and the report all read it here. None on every
+    # target that is not a TARGET block's panel, which is every target saved
+    # before S2.
+    #
+    # No ``ge=0`` bound, although a negative index cannot run (#287: the
+    # member's first light frame raises in ``naming.panel_label``). A bound
+    # is a validator, and a stored session that fails validation vanishes
+    # from the store without a word; ``plan_identity_errors`` refuses it at
+    # the start instead, and the session stays listed and fixable.
+    panel_row: int | None = None
+    panel_col: int | None = None
+    # "Wait for the mosaic" (spec 1.6): the id of a TargetGroup this target
+    # follows. While that group has live members the target waits; once the
+    # group is set aside tonight it is skipped (not done); once the group is
+    # complete it is ready. None is today's scheduling: no target waits for
+    # another. ``plan_identity_errors`` refuses an id that names no group,
+    # because a gate on nothing would never open, and for the same reason a
+    # member's gate on its own group and a cycle of gates between groups.
+    after_group: str | None = None
     # --- autorun scheduling (Batch 4b; additive — default = run-now) ---
     schedule: Schedule = Field(default_factory=Schedule)
+
+
+class TargetGroup(BaseModel):
+    """One TARGET block with a grid, as the engine runs it (#189 U-01, spec
+    3.4). Its MEMBERS are the targets whose ``mosaic_group`` equals ``id``;
+    the group holds what the panel loop needs that no single panel does.
+
+    Everything is additive. A plan with ``groups == []`` runs exactly as it
+    did, and a ``mosaic_group`` with no entry here (a Plan-UI mosaic) keeps
+    today's panel-first behaviour, so membership is only ever read through a
+    group that exists.
+
+    ``id`` has no default, unlike every other model's here: it is the key the
+    members repeat, and a group whose id were minted fresh would name no
+    member at all. For the same reason it must be the plan's only group with
+    that id (``plan_identity_errors``): every lookup by id would answer for
+    whichever entry it met first."""
+    id: str
+    name: str = ""                           # the block's name, for the log
+    kind: Literal["mosaic"] = "mosaic"
+    # "rotate" visits each panel in turn for ``visit_passes`` filter passes
+    # and comes back (the loop wire); "sequential" runs the chosen panel to
+    # completion before the next (no loop wire, spec 5.1).
+    mode: Literal["rotate", "sequential"] = "rotate"
+    # The visit bound (spec 5.3): full filter passes per visit, and a floor
+    # on the visit's length checked at round boundaries. The ceilings are
+    # the TARGET block's own (``passes`` 1 to 20, ``minVisit`` 0 to 180 min).
+    visit_passes: int = Field(1, ge=1, le=20)
+    visit_min_s: float = Field(0.0, ge=0, le=10800)
+    order: Literal["least_complete", "setting_first", "grid"] = \
+        "least_complete"
+    # True: a panel that does not centre is deferred, never shot off its
+    # tile (spec 5.6 step 3). For a mosaic, the block's "If not centred:
+    # Auto" means this (spec Appendix B).
+    require_centred: bool = True
+    # Consecutive failed visits (a deferral, or a visit that accepts nothing
+    # while the others accept) before a panel is set aside for tonight
+    # (spec 5.1, 6.8). Bounded, so a star-poor panel is never a spin.
+    max_failed_visits: int = Field(3, ge=1, le=20)
+    pa_deg: float | None = None              # layout angle, CROTA2 convention (#145)
+    rotate: bool = False                     # members carry rotation_deg = pa_deg
+    # Computed in ``to_plan`` from the geometry, after convergence has taken
+    # its share of the overlap (spec Appendix A.2). None disables the angle
+    # check.
+    angle_tolerance_deg: float | None = None
+    # Target ids of the panels the operator skipped. They are not members
+    # (the compile drops them), and CONTINUE reads this to tell a skipped
+    # panel from a dropped one (spec 5.9). A target that is both is refused
+    # at the start (``plan_identity_errors``).
+    skipped_ids: list[str] = []
+    # Provenance only (rows, cols, overlap, fov, key): nothing steers by it.
+    geometry: dict = {}
 
 
 _HHMM_RE = re.compile(r"^(\d{2}):(\d{2})$")
@@ -348,6 +507,34 @@ class SequencePlan(BaseModel):
     # targets×steps plan. Empty by default so existing plans deserialize
     # unchanged and the engine's eval path is a guarded no-op.
     instructions: list[Instruction] = []
+    # --- mosaic groups (#189 S2, spec 3.4; ADDITIVE — [] => byte-identical
+    # run). One entry per TARGET block with a grid; see ``TargetGroup``.
+    # Whether a plan's groups are coherent (members, calibration, the
+    # ``after_group`` gates) is ``plan_identity_errors``'s question, asked at
+    # the start paths, and never a validator's: see there.
+    groups: list[TargetGroup] = []
+    # --- the skip of a block the plan leaves out (#335; ADDITIVE, and ABSENT
+    # from the dump while empty, so every plan without one dumps byte for
+    # byte as before, stored sessions and the plan goldens included). A
+    # TARGET block whose every panel is skipped shoots nothing, and the
+    # compile leaves it out whole rather than emit a group of no members
+    # (which ``plan_identity_errors`` refuses). Its panels' target ids go
+    # here instead of into a ``TargetGroup.skipped_ids``, so CONTINUE can
+    # still tell a skipped panel from a dropped one (spec 5.9): read through
+    # ``flows.continuation.plan_skipped_ids``, never alone. Nothing in the
+    # engine reads it, because nothing in the plan is shot for it; a target
+    # the plan does shoot must not be listed (``plan_identity_errors``).
+    skipped_ids: list[str] = []
+
+    @model_serializer(mode="wrap")
+    def _omit_an_empty_skip(self, handler: SerializerFunctionWrapHandler):
+        """The dump without ``skipped_ids`` when it is empty, whatever the
+        mode, and nested in a ``Session`` too. A wrap serializer, so every
+        other field, and the JSON schema, are pydantic's own."""
+        out = handler(self)
+        if isinstance(out, dict) and not out.get("skipped_ids"):
+            out.pop("skipped_ids", None)
+        return out
 
     def total_frames(self) -> int:
         return sum(s.count for t in self.targets for s in t.steps)
@@ -426,10 +613,304 @@ def quota_unbounded(plan: SequencePlan, policy: "RunPolicy") -> bool:
     Calibration targets never enter the quota loop (``quota = count_mode ==
     "accepted" and not target.calibration`` in ``_run_step``), so they're
     excluded here; a plan with no non-calibration targets is never unbounded
-    by this rule."""
+    by this rule.
+
+    A "time" stop with a BLANK ``stop_time`` is unbounded too (backlog
+    WP-09, #191: a Clock-time stop left empty on the card never arrives,
+    the same as no stop at all), matching ``flows.doctor``'s M9, which
+    this plan's compile route runs beside this check (#328); the two must
+    agree, or a doctor warning that promises "Run will refuse it" would be
+    a plan Run actually accepts, or the reverse."""
     if plan.count_mode != "accepted":
         return False
     if policy.max_consecutive_rejects or policy.max_consecutive_rejects_night:
         return False
-    return any(t.schedule.stop_mode == "none" and not t.schedule.max_run_min
-               for t in plan.targets if not t.calibration)
+    def unbounded(sched) -> bool:
+        return ((sched.stop_mode == "none"
+                or (sched.stop_mode == "time" and not sched.stop_time))
+                and not sched.max_run_min)
+    return any(unbounded(t.schedule) for t in plan.targets if not t.calibration)
+
+
+def _names_rules_resolve(plan: SequencePlan) -> set[str]:
+    """Every target name an ENABLED instruction looks up, spelled the way the
+    engine compares it.
+
+    Two lookups, two spellings, because the engine has two. ``only_target`` is
+    compared exactly as written (``instructions.evaluate_instructions``); a
+    ``run_target``/``skip_target`` destination is stripped before it is looked
+    up (``engine._apply_jump``, ``engine._dispatch_actions``), so " M42 " lands
+    on the first M42. A disabled rule is skipped before either lookup, so it
+    names nothing."""
+    names: set[str] = set()
+    for rule in plan.instructions:
+        if not rule.enabled:
+            continue
+        if rule.only_target is not None:
+            names.add(rule.only_target)
+        if rule.action in ("run_target", "skip_target"):
+            names.add((rule.target_arg or "").strip())
+    return names
+
+
+def _repeats(keys: list[str]) -> dict[str, list[int]]:
+    """Each key seen more than once -> the positions it was seen at, in order
+    of first appearance, so the answer reads in plan order."""
+    seen: dict[str, list[int]] = {}
+    for i, key in enumerate(keys):
+        seen.setdefault(key, []).append(i)
+    return {key: at for key, at in seen.items() if len(at) > 1}
+
+
+def _gate_cycles(plan: SequencePlan) -> list[tuple[list[str], list[str]]]:
+    """Each cycle of ``after_group`` gates between groups, as ``(groups,
+    path)``: the groups caught in it in plan order, and one way round it from
+    the first of them, ``[a, b, a]``. [] when the gates run one way.
+
+    A member's gate holds its WHOLE group, not just the member: the group is
+    done only when every panel is (spec 1.6), and the gated panel is one of
+    them. So the edge runs from the member's own group to the group it waits
+    for, and two groups whose members wait on each other are a cycle although
+    no single target waits on itself. A follower in no group is no edge:
+    nothing waits for it. This is the plan as written, which is what a start
+    check grades: the engine does not read a member's gate yet (#330), and
+    the compile writes one on every panel of a mosaic that waits for another.
+
+    A member's gate on its own group is left out. It is a cycle of one, and
+    ``plan_identity_errors`` gives it a sentence of its own that names the
+    target; counting it here would refuse the same gate twice.
+
+    Groups that reach each other form one entry, however many ways round
+    them there are, so a plan is refused once per knot and not once per
+    group in it. A plan holds a handful of groups, so reachability from each
+    one is cheap, and it reads more plainly than an SCC algorithm would."""
+    order = list(dict.fromkeys(g.id for g in plan.groups))
+    edges: dict[str, dict[str, None]] = {gid: {} for gid in order}
+    for t in plan.targets:
+        if (t.mosaic_group in edges and t.after_group in edges
+                and t.after_group != t.mosaic_group):
+            edges[t.mosaic_group][t.after_group] = None
+
+    def reached_from(start: str) -> set[str]:
+        seen: set[str] = set()
+        todo = list(edges[start])
+        while todo:
+            gid = todo.pop()
+            if gid not in seen:
+                seen.add(gid)
+                todo.extend(edges[gid])
+        return seen
+
+    reach = {gid: reached_from(gid) for gid in order}
+    cycles: list[tuple[list[str], list[str]]] = []
+    placed: set[str] = set()
+    for gid in order:
+        # On a cycle exactly when its gates lead back to it.
+        if gid in placed or gid not in reach[gid]:
+            continue
+        knot = [h for h in order if h in reach[gid] and gid in reach[h]]
+        placed.update(knot)
+        cycles.append((knot, _shortest_way_round(gid, edges)))
+    return cycles
+
+
+def _shortest_way_round(start: str, edges: dict[str, dict[str, None]]
+                        ) -> list[str]:
+    """The fewest gates from ``start`` back to itself, ``[start, ..., start]``,
+    breadth first in plan order so the sentence is the same every time.
+    Called only for a group on a cycle, so the way round exists."""
+    came_from: dict[str, str] = {}
+    frontier = [start]
+    while frontier:
+        following: list[str] = []
+        for gid in frontier:
+            for to in edges[gid]:
+                if to == start:
+                    back = [gid]
+                    while back[-1] != start:
+                        back.append(came_from[back[-1]])
+                    return back[::-1] + [start]
+                if to not in came_from:
+                    came_from[to] = gid
+                    following.append(to)
+        frontier = following
+    return [start, start]                   # pragma: no cover - see above
+
+
+def _and_list(items: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    return items[0] if len(items) == 1 else \
+        f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def plan_identity_errors(plan: SequencePlan) -> list[str]:
+    """Why ``plan`` must not start, one sentence per problem, or [] (#156,
+    spec 3.5). Pure: every problem at once, so a plan is fixed in one pass
+    rather than one refusal per round trip.
+
+    Refused:
+
+    * a repeated TARGET id;
+    * a repeated STEP id anywhere in the plan. The session ledger counts frames
+      by step id alone (``Session.accepted_by_step``), so one step's frames
+      would count for every copy, and in accepted mode copies 2 to N read
+      complete the moment the first finishes;
+    * a repeated GROUP ID (#307). Members, ``after_group`` gates, the group
+      runs and the set-aside records all find a group by its id, and would
+      answer for whichever entry they met first;
+    * a GROUP WITH NO MEMBERS: no target's ``mosaic_group`` equals its id.
+      Every panel skipped, or a hand edit; the group driver would run a mosaic
+      of nothing;
+    * a MEMBER LISTED IN ITS OWN GROUP'S ``skipped_ids`` (#307). A skipped
+      panel is dropped by the compile and is no member (spec 5.9), so the
+      engine and CONTINUE would disagree about whether it is shot. Another
+      group's list says nothing about it;
+    * a TARGET LISTED IN THE PLAN'S OWN ``skipped_ids`` (#335), the list of
+      panels of blocks the compile left out whole, for the same reason;
+    * a CALIBRATION TARGET IN A GROUP. Darks, bias and flats skip the slew,
+      the centring, the focus and the guider, and a member is hopped to,
+      centred and angle-checked, so the two cannot both hold. A calibration
+      target whose ``mosaic_group`` names no group is in no group;
+    * an ``after_group`` THAT NAMES NO GROUP: a gate on nothing never opens;
+    * a MEMBER WHOSE ``after_group`` IS ITS OWN GROUP (#307): it waits while
+      its group has live members, and it is one of them;
+    * a CYCLE OF ``after_group`` GATES between groups (#307), a mutual pair
+      included: the same gate that never opens, reached round a loop rather
+      than through a missing id (``_gate_cycles``);
+    * a NEGATIVE ``panel_row`` OR ``panel_col`` (#287). The member's first
+      light frame names its panel with ``naming.panel_label``, which raises
+      for it, and the run ends in ``error`` there. Checked on every target,
+      member or not: the grid position is 0-based wherever it is set;
+    * a repeated target NAME that an enabled instruction names. A jump resolves
+      the first target with the name and an ``only_target`` gate fires on every
+      one, so the rule cannot say which it meant;
+    * EVERY repeated target name in a plan that carries groups. The log, the
+      published state and the set-aside report speak in panel labels and
+      target names (spec 6.9), and a panel's label is its block's name, so two
+      targets with one name leave no sentence that says which.
+
+    A repeated name is otherwise NOT refused: the classic Plan appends the same
+    object twice routinely (``store.ts`` ``addTargetsToPlan``), each copy has
+    its own ids and counts on its own, and refusing it would strand dormant
+    sessions. ``duplicate_name_warning`` says it instead. "Carries groups"
+    means ``plan.groups``, not any ``mosaic_group``: a Plan-UI mosaic sets
+    ``mosaic_group`` with no group entry and keeps today's behaviour, and its
+    stored sessions must keep resuming.
+
+    CALLED ON EVERY ``engine.start`` PATH, NEVER A MODEL VALIDATOR, and never
+    a ``Field`` bound either, which is a validator by another name.
+    ``SessionStore.load_all`` and ``active`` skip a file that fails validation
+    without a word, so a validator would make every stored session holding
+    such a plan vanish on upgrade - out of the list, out of ``recoverable``
+    and ``armed`` - where a refused start keeps it listed and says why."""
+    targets = plan.targets
+    errors: list[str] = []
+    for tid, at in _repeats([t.id for t in targets]).items():
+        errors.append(f"target id {tid!r} is used by {len(at)} targets "
+                      f"({', '.join(repr(targets[i].name) for i in at)})")
+    steps = [(t.name, n, s.id)
+             for t in targets for n, s in enumerate(t.steps, start=1)]
+    for sid, at in _repeats([sid for _name, _n, sid in steps]).items():
+        where = ", ".join(f"{steps[i][0]!r} step {steps[i][1]}" for i in at)
+        errors.append(f"step id {sid!r} is used by {len(at)} steps ({where}), "
+                      f"and frames are counted by step id alone")
+    groups = plan.groups
+    for gid, at in _repeats([g.id for g in groups]).items():
+        names = ", ".join(repr(groups[i].name) if groups[i].name else "unnamed"
+                          for i in at)
+        errors.append(f"group id {gid!r} is used by {len(at)} groups "
+                      f"({names}), and members, gates and set-aside records "
+                      f"find a group by its id alone")
+    group_ids = {g.id for g in groups}
+    members = {t.mosaic_group for t in targets}
+    for g in groups:
+        if g.id not in members:
+            label = f"group {g.id!r}" + (f" ({g.name!r})" if g.name else "")
+            errors.append(f"{label} has no members: no target's mosaic_group "
+                          f"names it, so it is not a mosaic")
+    # Keyed by group id, so a target is read against its OWN group's list
+    # only, and against every entry of a repeated id (refused above anyway).
+    skipped: dict[str, set[str]] = {}
+    for g in groups:
+        skipped.setdefault(g.id, set()).update(g.skipped_ids)
+    for t in targets:
+        if t.id in skipped.get(t.mosaic_group, ()):
+            errors.append(f"target {t.name!r} is in group {t.mosaic_group!r} "
+                          f"and in its skipped_ids; a skipped panel is not "
+                          f"shot, and a member is")
+    # The plan's own list (#335) names the panels of blocks the compile left
+    # out whole, which are in no group and shoot nothing. A target the plan
+    # shoots listed there is #307's disagreement one level up: the engine
+    # would shoot it while CONTINUE read its frames as a skipped panel's.
+    left_out = set(plan.skipped_ids)
+    for t in targets:
+        if t.id in left_out:
+            errors.append(f"target {t.name!r} is in the plan's skipped_ids; "
+                          f"a skipped panel is not shot, and a target is")
+    for t in targets:
+        if t.calibration and t.mosaic_group in group_ids:
+            errors.append(f"calibration target {t.name!r} is in group "
+                          f"{t.mosaic_group!r}; darks, bias and flats are shot "
+                          f"where the mount is, and a group member is a "
+                          f"mosaic panel")
+    for t in targets:
+        if t.after_group is None:
+            continue
+        if t.after_group not in group_ids:
+            errors.append(f"target {t.name!r} waits for group "
+                          f"{t.after_group!r}, and the plan has no such group")
+        elif t.after_group == t.mosaic_group:
+            errors.append(f"target {t.name!r} is in group {t.mosaic_group!r} "
+                          f"and waits for it: it waits for itself, so the "
+                          f"gate never opens")
+    names_of: dict[str, str] = {}
+    for g in groups:
+        names_of.setdefault(g.id, g.name)
+    for knot, way_round in _gate_cycles(plan):
+        listed = _and_list([f"{gid!r}" + (f" ({names_of[gid]!r})"
+                                          if names_of[gid] else "")
+                            for gid in knot])
+        errors.append(f"groups {listed} wait for each other "
+                      f"({' -> '.join(repr(gid) for gid in way_round)}): a "
+                      f"member's after_group holds its whole group, so none "
+                      f"of their gates ever opens")
+    for t in targets:
+        below = [f"{axis} {at}"
+                 for axis, at in (("row", t.panel_row), ("col", t.panel_col))
+                 if at is not None and at < 0]
+        if below:
+            errors.append(f"target {t.name!r} has panel "
+                          f"{' and '.join(below)}; panel rows and columns "
+                          f"are 0-based")
+    named = _names_rules_resolve(plan)
+    for name, at in _repeats([t.name for t in targets]).items():
+        # One sentence per name. A rule naming it is the sharper reason.
+        if name in named:
+            errors.append(f"target name {name!r} is used by {len(at)} targets "
+                          f"and an instruction names it, so the rule cannot "
+                          f"tell them apart")
+        elif plan.groups:
+            errors.append(f"target name {name!r} is used by {len(at)} targets "
+                          f"and the plan carries groups, so a panel label "
+                          f"cannot tell them apart")
+    return errors
+
+
+def duplicate_name_warning(plan: SequencePlan) -> str | None:
+    """The warning for every repeated target name ``plan_identity_errors`` does
+    not refuse, or None. The start goes ahead; this says what the operator may
+    not have meant, and what would break if they later added a rule by name.
+
+    A plan that carries groups has no such name: every repeat in it is
+    refused, and a refused name is not offered as a warning as well."""
+    if plan.groups:
+        return None
+    named = _names_rules_resolve(plan)
+    repeats = [(name, len(at))
+               for name, at in _repeats([t.name for t in plan.targets]).items()
+               if name not in named]
+    if not repeats:
+        return None
+    listed = ", ".join(f"{name!r} x{n}" for name, n in repeats)
+    return (f"targets share a name ({listed}); they run and count separately, "
+            f"but an instruction could not name just one of them")

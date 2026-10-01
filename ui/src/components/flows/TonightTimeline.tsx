@@ -15,15 +15,19 @@
 // to catch it: SVG text measures fine in a DOM dump and paints nothing. Every
 // label lives in an absolutely-positioned HTML layer over the drawing.
 
-import type { JSX } from "react";
+import { useId, useMemo, type JSX } from "react";
 import { fmtTime } from "../../lib/visibility";
+import { mosaicBand, type TonightMosaicBand } from "../../lib/flowsApi";
+import { useStore } from "../../store";
 
 // ─────────────────────────────────────────────────────────── payload shapes
 // The normalised slice of GET /api/flows/{id}/tonight that this tab consumes,
 // per contract §E.5. TonightPanel owns the reading; these are the shapes it
-// produces. Everything nullable is nullable BECAUSE the server can answer null
-// there (an unparseable flats window, a moon that never crosses the horizon
-// inside the search span, a target with no coordinates).
+// produces, all but a mosaic's band, which its reader does not carry and this
+// file reads itself (`withMosaicBands`). Everything nullable is nullable
+// BECAUSE the server can answer null there (an unparseable flats window, a
+// moon that never crosses the horizon inside the search span, a target with
+// no coordinates).
 
 export interface TonightWindow {
   start_unix: number;
@@ -54,6 +58,11 @@ export interface TonightTarget {
   /** `[t_unix, altitude_deg]` samples, dusk→dawn, from `targets[].curve`. */
   curve: [number, number][];
   meridian_flip_unix: number | null;
+  /** A mosaic block's peak-altitude spread, its worst and best panel
+   *  (`targets[].mosaic.band`, read by `flowsApi.mosaicBand`). Absent on a
+   *  single target's row and a pool member's, which is what keeps their
+   *  drawing byte for byte what it was before mosaics (#189 S3). */
+  band?: TonightMosaicBand | null;
 }
 
 export interface TonightTimelineProps {
@@ -85,6 +94,11 @@ const OP_TWILIGHT = 0.08;
 const OP_FLATS = 0.4;
 const OP_MOON = 0.25;
 const OP_TARGET = 0.16;
+/** The mosaic band's hatch. Its lines are the block's own tone at near full
+ *  strength: the band is told apart from the block by its SHAPE (hatched and
+ *  outlined, against a flat fill), because under the night palette every
+ *  token collapses toward one red (spec 2.3). */
+const OP_BAND = 0.85;
 
 /** Altitude → y across the band. 0°→bottom, 90°→top, matching the plot in
  *  `lib/visibility.ts` (ALT_MAX = 90) so the two altitude charts in this app
@@ -117,6 +131,9 @@ export interface TlRect {
   x: number; y: number; w: number; h: number;
   tone: TlTone;
   opacity: number;
+  /** "hatch" for a mosaic's band: diagonal hatch plus an outline, in the same
+   *  tone as its block. Absent for every other rect, which is a flat fill. */
+  shape?: "hatch";
 }
 export interface TlDash { key: string; x: number; tone: TlTone }
 export interface TlPath { key: string; d: string }
@@ -126,6 +143,10 @@ export interface TlLabel {
   topPct: number;
   text: string;
   tone: TlTone;
+  /** "end": the label's right edge sits on `leftPct`, so it reads inside the
+   *  block it names (a band's label, on the band's right end). Absent: centred
+   *  on the point, as every other label is. */
+  anchor?: "end";
 }
 
 export interface TlGeometry {
@@ -142,6 +163,60 @@ export interface TlGeometry {
 
 const isNum = (v: number | null | undefined): v is number =>
   typeof v === "number" && Number.isFinite(v);
+
+/** Altitude in degrees -> y inside the band, 0 at its foot and 90 at its head,
+ *  clamped: the one mapping the altitude arc and the mosaic band share, so a
+ *  panel peaking at the centre's transit altitude lands on the arc's crest. */
+const altY = (alt: number): number =>
+  BAND_Y + (1 - Math.max(0, Math.min(ALT_MAX, alt)) / ALT_MAX) * BAND_H;
+
+/** The words on a mosaic band: which panel peaks lowest and which highest,
+ *  in the Plan's own "r-c" names, so the operator knows which edge of the grid
+ *  to pull in. One name when the two are the same panel (a grid whose answered
+ *  panels all peak alike, or only one answered). */
+export function bandText(band: TonightMosaicBand): string {
+  return band.worst.panel === band.best.panel
+    ? band.worst.panel
+    : `${band.worst.panel} low, ${band.best.panel} high`;
+}
+
+/** The classic panel's targets with each mosaic row's band filled in from the
+ *  Tonight answer in the store.
+ *
+ *  WHY THIS EXISTS. `TonightPanel.tsx` reads the answer with a module-private
+ *  reader that builds each target from four fields and drops the rest, so the
+ *  `mosaic` key S3 added never reaches this component through its props. The
+ *  band is read here instead, off the SAME payload that reader walked
+ *  (`flows.tonight`), with the one shared reader (`flowsApi.mosaicBand`). The
+ *  rows are matched by place AND by label, because that reader maps the
+ *  answer's targets one to one: a list of another length, or a row whose label
+ *  is not the target's, is not the answer these props came from, and nothing
+ *  is filled. A target that already carries `band` (a reader that learnt the
+ *  key) is left as it is, so this becomes a no-op rather than a second opinion
+ *  once the panel's reader carries the band itself.
+ *
+ *  Returns the SAME array when nothing was filled, so a night with no mosaic
+ *  draws from exactly the objects it was handed. */
+export function withMosaicBands(
+  targets: TonightTarget[], rawTargets: unknown,
+): TonightTarget[] {
+  if (!Array.isArray(rawTargets) || rawTargets.length !== targets.length) return targets;
+  let filled = false;
+  const out = targets.map((t, i) => {
+    if (t.band !== undefined) return t;
+    const raw = rawTargets[i];
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return t;
+    const r = raw as Record<string, unknown>;
+    const label = (typeof r.label === "string" && r.label)
+      || (typeof r.name === "string" ? r.name : "");
+    if (label !== t.label) return t;
+    const band = mosaicBand(r.mosaic);
+    if (!band) return t;
+    filled = true;
+    return { ...t, band };
+  });
+  return filled ? out : targets;
+}
 
 /** The whole timeline as data, so the rule that places each element can be
  *  tested without a DOM. Returns null when the server gave no usable
@@ -268,12 +343,41 @@ export function timelineGeometry(p: TonightTimelineProps): TlGeometry | null {
     if (!isNum(s) || !isNum(e)) return;
     block(`tgt-${i}`, s, e, BAND_Y, BAND_H, "accent", OP_TARGET, t.label);
 
+    // ── a mosaic's band (#189 S3 item 5): a strip across the block's own
+    //    window, from its best panel's peak altitude down to its worst's. The
+    //    centre's one curve cannot show that one edge of a grid peaks lower
+    //    than another; this can. It is drawn from two numbers the server
+    //    returned and nothing else: NOT two copies of the centre's curve
+    //    shifted by each panel's offset, which would draw altitudes at every
+    //    instant that nobody computed (a panel east of the centre also
+    //    transits earlier). Same tone as the block, told apart by shape.
+    if (t.band) {
+      const x = clampX(X(s));
+      const w = clampX(X(e)) - x;
+      if (w > 0) {
+        const top = altY(t.band.best.transit_alt);
+        const foot = altY(t.band.worst.transit_alt);
+        rects.push({
+          key: `band-${i}`, x, y: top, w, h: foot - top,
+          tone: "accent", opacity: OP_BAND, shape: "hatch",
+        });
+        labels.push({
+          key: `band-${i}-label`,
+          leftPct: ((x + w) / TL_W) * 100,
+          topPct: (((top + foot) / 2) / TL_H) * 100,
+          text: bandText(t.band),
+          tone: "ink",
+          anchor: "end",
+        });
+      }
+    }
+
     // The altitude arc, from the real curve clipped to the window the block
     // draws — the legend ties the two together as one thing.
     const pts = t.curve
       .filter(([ts]) => ts >= s && ts <= e)
       .map(([ts, alt]) => {
-        const y = BAND_Y + (1 - Math.max(0, Math.min(ALT_MAX, alt)) / ALT_MAX) * BAND_H;
+        const y = altY(alt);
         return `${clampX(X(ts)).toFixed(1)} ${y.toFixed(1)}`;
       });
     if (pts.length >= 2) paths.push({ key: `arc-${i}`, d: `M${pts.join("L")}` });
@@ -319,8 +423,33 @@ function LegendSwatch({ glyph, tone }: { glyph: string; tone: TlTone }) {
   return <span style={{ color: TONE_VAR[tone] }}>{glyph}</span>;
 }
 
+/** The hatch a band is filled with: one diagonal line per tile, in user
+ *  units. A RENDERING decision, like every other number below the axis. */
+const HATCH_GAP = 5;
+const HATCH_W = 1.4;
+
+/** The tones the hatched rects use, in first-seen order: one `<pattern>` each,
+ *  because a pattern's stroke is resolved where the pattern is defined, not
+ *  where it is used, so a hatch cannot inherit its rect's tone. */
+function hatchTones(rects: TlRect[]): TlTone[] {
+  const tones: TlTone[] = [];
+  for (const r of rects) if (r.shape === "hatch" && !tones.includes(r.tone)) tones.push(r.tone);
+  return tones;
+}
+
 export function TonightTimeline(props: TonightTimelineProps): JSX.Element {
-  const g = timelineGeometry(props);
+  // The band's pattern ids must be unique in the document, and a colon is not
+  // safe inside `url(#...)`, so React's id is reduced to its word characters.
+  const hatchId = `tl-hatch-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
+  // The mosaic band, off the answer the panel read (see `withMosaicBands`).
+  const rawTargets = useStore((s) => s.flows.tonight?.targets);
+  const targets = useMemo(
+    () => withMosaicBands(props.targets, rawTargets),
+    [props.targets, rawTargets],
+  );
+  const g = timelineGeometry(
+    targets === props.targets ? props : { ...props, targets },
+  );
 
   if (!g) {
     // A degraded state the design does not cover (§G-18(d)). Saying which two
@@ -334,6 +463,7 @@ export function TonightTimeline(props: TonightTimelineProps): JSX.Element {
   }
 
   const pct = moonPercent(props.moon);
+  const hatched = hatchTones(g.rects);
 
   return (
     <>
@@ -348,6 +478,26 @@ export function TonightTimeline(props: TonightTimelineProps): JSX.Element {
           aria-hidden
           focusable="false"
         >
+          {/* The mosaic band's hatch, defined only when a band is drawn, so a
+              night with no mosaic renders exactly the markup it always did. */}
+          {hatched.length > 0 && (
+            <defs>
+              {hatched.map((tone) => (
+                <pattern
+                  key={tone}
+                  id={`${hatchId}-${tone}`}
+                  patternUnits="userSpaceOnUse"
+                  width={HATCH_GAP} height={HATCH_GAP}
+                  patternTransform="rotate(45)"
+                >
+                  <line
+                    x1={0} y1={0} x2={0} y2={HATCH_GAP}
+                    stroke={TONE_VAR[tone]} strokeWidth={HATCH_W}
+                  />
+                </pattern>
+              ))}
+            </defs>
+          )}
           {/* Draw order is the contract's: axis, hour ticks, blocks, arcs,
               dashed verticals. */}
           <line
@@ -361,13 +511,25 @@ export function TonightTimeline(props: TonightTimelineProps): JSX.Element {
               stroke="var(--line-bright)" strokeWidth={1}
             />
           ))}
-          {g.rects.map((r) => (
+          {g.rects.map((r) => (r.shape === "hatch" ? (
+            // A mosaic's band: hatched and outlined, in its block's tone. The
+            // outline keeps a band a couple of degrees deep visible at all;
+            // non-scaling, so the stretched viewBox cannot thicken it.
+            <rect
+              key={r.key}
+              data-shape="hatch"
+              x={r.x} y={r.y} width={r.w} height={r.h}
+              fill={`url(#${hatchId}-${r.tone})`}
+              stroke={TONE_VAR[r.tone]} strokeWidth={1}
+              vectorEffect="non-scaling-stroke" opacity={r.opacity}
+            />
+          ) : (
             <rect
               key={r.key}
               x={r.x} y={r.y} width={r.w} height={r.h} rx={RECT_R}
               fill={TONE_VAR[r.tone]} opacity={r.opacity}
             />
-          ))}
+          )))}
           {g.paths.map((p) => (
             <path
               key={p.key}
@@ -394,7 +556,8 @@ export function TonightTimeline(props: TonightTimelineProps): JSX.Element {
               style={{
                 left: `${l.leftPct}%`,
                 top: `${l.topPct}%`,
-                transform: "translate(-50%,-50%)",
+                transform: l.anchor === "end"
+                  ? "translate(-100%,-50%)" : "translate(-50%,-50%)",
                 color: TONE_VAR[l.tone],
               }}
             >
@@ -406,6 +569,13 @@ export function TonightTimeline(props: TonightTimelineProps): JSX.Element {
 
       <div className="mt-2.5 flex gap-3.5 flex-wrap font-mono text-[9.5px] text-faint">
         <span><LegendSwatch glyph="■" tone="accent" /> imaging window + altitude arc</span>
+        {hatched.length > 0 && (
+          // Only on a night that draws a band: a legend entry for a mark the
+          // picture does not have would send the reader looking for it.
+          <span data-legend="mosaic-band">
+            <LegendSwatch glyph="▨" tone="accent" /> mosaic panels&apos; peaks, lowest to highest
+          </span>
+        )}
         <span><LegendSwatch glyph="■" tone="sky" /> twilight / flats</span>
         <span><LegendSwatch glyph="┆" tone="warn" /> meridian flip</span>
         <span>

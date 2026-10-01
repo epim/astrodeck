@@ -55,8 +55,8 @@ import {
 import type { FlowGraphRec, FlowRecordRec } from "../../../../components/flows/flowsTypes";
 import type { QuickPrefs } from "../finder";
 import {
-  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON,
-  floorLegend, mosaicPlanNote, oscFooter,
+  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON, SEND_TO_WIZARD,
+  floorLegend, framingCentreNote, mosaicPlanNote, oscFooter,
 } from "./quickCopy";
 import {
   NO_DARK_SPAN_H, OSC_LABEL, channelLabel, filterColor, finishLabel, hourStops, hoursLabel,
@@ -67,11 +67,23 @@ import {
   NightArc, curveFromNight, hoursToDawn, type ArcCurve, type ArcHold,
 } from "./quickNightArc";
 import { withDarksAfter, withDuskFlats, withRotation, withTargetPool } from "./flowGraphExtras";
-import {
-  commandedPa, framingMatches, mosaicBaseName, mosaicGroupId, panelsToTargets,
-} from "../frame/mosaic";
+import { commandedPa, framingMatches, framingPrefill } from "../frame/mosaic";
+import { openFlowWizard } from "../../session/flows/wizard";
+import { effectiveOptics } from "../../../../lib/effective";
+import { fovFromOptics } from "../../../../lib/framing";
+import { angularSepDeg } from "../../../../lib/atlasFov";
 import { useCatalogTarget, useCatalogTargets, type SearchRow } from "./targetsCatalog";
 import { useVisibilityNight } from "./quickVisibility";
+// The deep module, as `quickPayload` above: it imports nothing but the store.
+import {
+  FLOW_OPEN_FAILED, flowOpenFailure, libraryErrorNow, openFlowById,
+} from "../../session/flows/openFlow";
+
+/** The second half of GENERATE FLOW's toast when the flow it saved did not
+ *  open (#499): the quick route stored it, so nothing is lost, and GENERATE
+ *  pressed again would store a second one. */
+export const QUICK_SAVED_NOT_OPENED =
+  "The new flow is saved in My flows; open it from Session - Flows.";
 
 /** The six automation chips, in the design's own order (proto logic.js:198). */
 const AUTOMATION: { key: string; label: string }[] = [
@@ -129,7 +141,6 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
   const frame = useFrameSettings("capture");
   const weather = useWeather();
   const enqueueToast = useStore((s) => s.enqueueToast);
-  const flowsOpen = useStore((s) => s.flowsOpen);
 
   const poolIds = useMemo(
     () => (params.pool ?? "").split(",").map((s) => s.trim()).filter(Boolean),
@@ -375,11 +386,66 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
   const framing = useFraming();
   const framingId = isPool ? null : (params.target ?? params.name ?? null);
   const mine = framingMatches(framing, framingId);
-  const panels = mine ? (framing?.panels ?? []) : [];
+  const keptPanels = mine ? (framing?.panels.length ?? 0) : 0;
   const mosaicCols = mine ? (framing?.mosaic.cols ?? 1) : 1;
   const mosaicRows = mine ? (framing?.mosaic.rows ?? 1) : 1;
-  const isMosaic = panels.length > 1;
-  const addTargetsToPlan = useStore((s) => s.addTargetsToPlan);
+  const isMosaic = keptPanels > 1;
+
+  /**
+   * IS THE KEPT FRAMING CENTRED WHERE GENERATE FLOW IMAGES? (#459)
+   *
+   * GENERATE FLOW posts `target` - the catalogue row's position, or the one
+   * the sheet was opened with - and takes only the framing's angle. A framing
+   * dragged off that position is therefore not what the button images, and
+   * the sheet says so (`framingCentreNote`) with SEND TO FLOW WIZARD beside
+   * it, which is the door that carries the framing's centre.
+   *
+   * KEPT means FRAME's DONE kept it (`panels` holds the engine's centres, one
+   * for a single frame): that is the framing the old copy made its promise
+   * about. A session merely open on this target - the atlas panned around M31
+   * - has kept nothing, and a line about it would be noise on every visit.
+   *
+   * "Differs" is judged in the payload's own spelling: the line shows exactly
+   * when the framing's centre would post different coordinates from the ones
+   * GENERATE FLOW posts, so a centre that rounds to the same second is the
+   * same target and says nothing.
+   */
+  const offCentreDeg = ((): number | null => {
+    if (!mine || keptPanels < 1 || framing == null || target == null) return null;
+    const c = framing.center;
+    if (raHms(c.ra_hours) === target.ra && decDms(c.dec_deg) === target.dec) return null;
+    if (raForVis == null || decForVis == null) return null;
+    return angularSepDeg(c, { ra_hours: raForVis, dec_deg: decForVis });
+  })();
+  // The catalogue's position, or the one this sheet was opened with - the
+  // same branch `targetFromParams` takes.
+  const openedWithCoords = Number.isFinite(Number(params.ra)) && Number.isFinite(Number(params.dec));
+
+  /**
+   * A KEPT MOSAIC GOES FORWARD THROUGH THE WIZARD (#196, spec section 8 S6).
+   *
+   * GENERATE FLOW here builds ONE target: `FlowQuickBody.target` is a single
+   * `{name, ra, dec}`. The panels of a kept mosaic used to ride beside it as
+   * classic Plan targets sharing a `mosaic_group` (the side channel), shot
+   * panel-first; that channel is gone. Send to Flow Wizard is the door that
+   * plans the whole grid, as one TARGET block, so a kept mosaic is offered it
+   * here, pre-filled from the same framing the FRAME card would send. So is a
+   * single framing dragged off the target (#459): the line above the button
+   * says GENERATE FLOW images the target's own position, and this is the door
+   * that carries the framing's centre instead.
+   *
+   * The field is read when the button is pressed, through the resolver the
+   * Sky hub draws the reticle with, so this sheet does not re-render on every
+   * status frame for a number only the press needs.
+   */
+  const sendToWizard = (): void => {
+    if (!framing || !mine) return;
+    const st = useStore.getState();
+    const optics = effectiveOptics(
+      st.config, st.config?.optics ?? null, st.status?.optics ?? st.config?.optics_computed ?? null,
+    );
+    openFlowWizard(framingPrefill(framing, fovFromOptics(optics)));
+  };
 
   const label = planLine({
     oneChannel: wheel.oneChannel,
@@ -388,7 +454,9 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     oscCount: oscSubs,
     hoursLabel: hoursLabel(hours, dawnH),
     poolCount: poolIds.length,
-    panels: panels.length,
+    // One: the flow GENERATE FLOW saves shoots one target, whatever the
+    // framing holds (a kept mosaic goes through SEND TO FLOW WIZARD below).
+    panels: 1,
   });
 
   // ------------------------------------------------------------ generate
@@ -422,48 +490,49 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       const before = graph;
       if (prefs.extras.flats) graph = withDuskFlats(graph);
       if (prefs.extras.darks) graph = withDarksAfter(graph);
-      // THE CAMERA ANGLE, which nothing sent before. `wizard.quick` leaves the
-      // node vocabulary's shipped `rotation: 23.4` on the TARGET node and only
-      // replaces name/ra/dec, and `to_plan` reads that as a real position angle
-      // - so every quick flow was quietly asking a connected rotator for PA
-      // 23.4 while the framing card promised something else. -1 is `to_plan`'s
-      // own "no angle constraint" sentinel (0 is a REAL position angle there).
+      // THE CAMERA ANGLE, which nothing sent before. `wizard.quick` replaces
+      // only name/ra/dec on the TARGET node, so the node vocabulary's default
+      // IS the angle. Until #150 that default was `rotation: 23.4`, which
+      // `to_plan` read as a real position angle - so every quick flow was
+      // quietly asking a connected rotator for PA 23.4 while the framing card
+      // promised something else. The default is now -1, `to_plan`'s own "no
+      // angle constraint" sentinel (0 is a REAL position angle there), and this
+      // still writes the angle explicitly: a rig on an older server still
+      // ships 23.4.
       graph = withRotation(graph, commandedPa(mine ? (framing?.rotation_deg ?? 0) : 0));
       if (isPool) {
         graph = withTargetPool(graph, poolRows.rows.map((r) => (r.kind === "solar_system" ? r.id : r.name || r.id)));
       }
       if (graph !== before) await flowsApi.save(id, { ...record, graph });
 
-      /**
-       * THE MOSAIC PANELS REACH THE NIGHT (review #3, plan H.6).
-       *
-       * FRAME mode drew them, kept them on `framing.panels` and toasted that
-       * they went into the flow - and nothing read them. `panelsToTargets` was
-       * called by one test and nothing else.
-       *
-       * They cannot ride in the quick PAYLOAD: `FlowQuickBody.target` is ONE
-       * `{name, ra, dec}` and `wizard.quick` builds a one-target night, so
-       * there is no field to put N pointings in. The engine's mosaic mechanism
-       * is not a stage either - `nodeDefs` has 21 node types and none is
-       * `mosaic`. It is N plan targets sharing a `mosaic_group`, which is
-       * exactly what `AtlasView.sendToPlan` produced and what
-       * `store.addTargetsToPlan` replaces-by-group so a re-frame updates its
-       * panels instead of doubling them. So the plan path is the one taken, and
-       * the flow card says so on the synthetic MOSAIC row.
-       */
-      if (isMosaic && framing) {
-        addTargetsToPlan(
-          panelsToTargets(panels, mosaicBaseName(framing), mosaicGroupId(framing), framing.rotation_deg),
-          mosaicGroupId(framing),
-        );
+      // NOTHING ELSE LEAVES THIS SHEET. A kept mosaic's panels used to be
+      // queued here as classic Plan targets beside the flow (the Plan side
+      // channel), and the flow card was told the grid in its hash so it could
+      // draw a synthetic MOSAIC row. Both went with S6 (#196): the flow this
+      // sheet saved is the whole night it asked for, one target, and a mosaic
+      // is planned through SEND TO FLOW WIZARD (`sendToWizard` above).
+      //
+      // THE CARD OPENS ONLY ON THE FLOW THIS SHEET SAVED (#499). `flowsOpen`
+      // leaves the record that was open before in place when its read fails,
+      // and since #450 refuses to replace a flow whose unsaved edits its save
+      // did not keep; this navigated whatever it did, onto a card for the new
+      // flow over another flow's record. `openFlowById` says what landed, and
+      // on false the sheet stays, with the flow it made named as saved: GENERATE
+      // again would make a second one. On the #450 refusal the store has
+      // already said why under this same title, and this toast coalesces onto
+      // it (the store's x2 rule), so the operator reads that reason once, and
+      // not this toast's line that the flow is saved: the refusal sends them
+      // to the flow open in Session - Flows, where the new one is listed too.
+      const errorBefore = libraryErrorNow();
+      if (!(await openFlowById(id))) {
+        enqueueToast({
+          level: "error",
+          title: FLOW_OPEN_FAILED,
+          detail: `${flowOpenFailure(errorBefore)} ${QUICK_SAVED_NOT_OPENED}`,
+        });
+        return;
       }
-
-      await flowsOpen(id);
-      // The mosaic travels in the HASH, not read back off the global framing
-      // slice: the card must describe what this generate actually queued, so a
-      // framing changed afterwards (or one belonging to another target) cannot
-      // put a MOSAIC row on a flow that has none.
-      nav.sheet("flow", isMosaic ? { id, mosaic: `${mosaicCols}x${mosaicRows}` } : { id });
+      nav.sheet("flow", { id });
     } catch (e) {
       // THE SAVE AND THE RUN ARE TWO OUTCOMES OF ONE REQUEST, and the answer is
       // read off the decoded BODY, never off the message string - FastAPI nests
@@ -750,14 +819,34 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
           </div>
         </section>
 
-        {/* ------------------------------------------------------ the mosaic */}
-        {isMosaic && (
-          <p
-            data-testid="quick-mosaic-note"
-            style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)" }}
-          >
-            {mosaicPlanNote(panels.length, mosaicCols, mosaicRows)}
-          </p>
+        {/* ----------------------------- the mosaic, and where the flow images */}
+        {(isMosaic || offCentreDeg != null) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {isMosaic && (
+              <p
+                data-testid="quick-mosaic-note"
+                style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)", margin: 0 }}
+              >
+                {mosaicPlanNote(keptPanels, mosaicCols, mosaicRows)}
+              </p>
+            )}
+            {offCentreDeg != null && (
+              <p
+                data-testid="quick-framing-centre"
+                style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)", margin: 0 }}
+              >
+                {framingCentreNote(offCentreDeg, target?.name ?? "the target", !openedWithCoords)}
+              </p>
+            )}
+            <ActionButton
+              kind="secondary"
+              full
+              data-testid="quick-send-to-wizard"
+              onPress={sendToWizard}
+            >
+              {SEND_TO_WIZARD}
+            </ActionButton>
+          </div>
         )}
 
         {/* -------------------------------------------------- what it cannot */}

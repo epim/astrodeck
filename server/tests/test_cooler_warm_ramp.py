@@ -90,7 +90,8 @@ class FakeCamera(Camera):
     was "the cooler goes off FIRST"."""
 
     def __init__(self, temp_c: float = -10.0, *, ambient_c: float | None = None,
-                 reports_temp: bool = True, follows: bool = True):
+                 reports_temp: bool = True, follows: bool = True,
+                 follow_fraction: float | None = None):
         super().__init__("Fake Cooled Cam")
         self.connected = True
         self.can_cool = True
@@ -101,6 +102,18 @@ class FakeCamera(Camera):
         # follows=False models a sensor that does NOT track the setpoint (a TEC
         # at its limit, or a setpoint already above the real ambient).
         self._follows = follows
+        # THE MIDDLE OF THE RANGE, which neither of the two settings above can
+        # express (issue #17). `follows=True` is a TEC that reaches every
+        # setpoint the instant it is commanded and `follows=False` is one that
+        # has stopped responding entirely; real hardware is in between, and the
+        # lead check exists precisely to tell those two apart. Without a model
+        # that lags PARTIALLY, no test in this file could say whether ordinary
+        # thermal inertia trips it.
+        #
+        # `follow_fraction` is how much of the remaining gap the sensor closes
+        # per step: 1.0 is the obedient TEC above, 0.0 is the dead one, 0.5
+        # halves the distance each time.
+        self._follow_fraction = follow_fraction
         self.refuse_setpoint = False
 
     async def expose(self, seconds, gain, offset, binning=1, light=True,
@@ -121,13 +134,36 @@ class FakeCamera(Camera):
             raise DeviceError("driver rejected the setpoint")
         self.calls.append((on, target_c))
         if on and target_c is not None and self._follows:
-            self._temp = target_c        # a perfectly obedient TEC
+            if self._follow_fraction is None:
+                self._temp = target_c    # a perfectly obedient TEC
+            else:
+                self._temp += (target_c - self._temp) * self._follow_fraction
 
     async def get_temperature(self) -> float | None:
         return self._temp if self._reports else None
 
     async def get_ambient_temperature(self) -> float | None:
         return self._ambient
+
+
+@pytest.fixture(autouse=True)
+def _a_store_of_its_own(monkeypatch, tmp_path):
+    """Every test here gets its own config store: the singleton repointed at a
+    file under tmp_path with its cache dropped, both through monkeypatch.
+
+    A cool saves the standing setpoint (`Hub._remember_cooling`), and three
+    tests here cool a camera, so the file used to leave -10 or -12 C on the
+    process-wide config for every later test on the worker (#227). Autouse
+    rather than on those three, so the next test written here that cools is
+    covered without anyone remembering this.
+
+    Without the two lines, the conftest guard errors at teardown
+    (2 in this file alone, observed): "test_cool_during_a_warm_wins_cleanly
+    left the process-wide config changed: cooling.setpoint_c."
+    """
+    from astrodeck.config import config_store
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
 
 
 @pytest.fixture
@@ -191,20 +227,144 @@ async def test_warm_ramps_the_setpoint_and_switches_off_only_at_the_end(
     assert any("warming camera" in m for _l, m, _s in bus_lines)
 
 
+async def test_a_lagging_tec_started_from_setpoint_still_walks_all_the_way_up(
+        hub_with_camera):
+    """Issue #17: the ramp is reported to exit almost immediately when the
+    camera is ALREADY AT SETPOINT as it begins, leaving the sensor cold.
+
+    At-AMBIENT is a different case and is already handled - `warm_is_pointless`
+    ends the ramp before it starts and says so. At-SETPOINT means the TEC is
+    working hard with a real gradient still to climb, and the mechanism that
+    could plausibly end the ramp early is the lead check: when the setpoint
+    steps up, the sensor lags while the TEC unwinds, and two consecutive
+    breaches of `WARM_MAX_LEAD_C` finish the ramp.
+
+    Neither existing camera model can ask that question. `follows=True` reaches
+    every setpoint instantly, so the lead is always zero; `follows=False` never
+    moves, so the lead grows without bound. The lead check has therefore never
+    been graded against anything in between, which is the only regime real
+    hardware is in.
+
+    With the sensor closing HALF the remaining gap per step - far laggier than
+    the 1.72 C/min this rig was measured at against a 0.5 C step - the lead
+    settles at half a step, 0.25 C, against a 3.0 C tolerance. The ramp
+    completes. So ordinary inertia from an at-setpoint start does not trip it,
+    and #17's mechanism is not this.
+
+    MUTATION: `WARM_MAX_LEAD_C = 0.2`. Observed: the ramp stops after a couple
+    of steps and this fails on the step count - which is what the reported
+    behaviour would look like, and is how this case would have caught it.
+    """
+    hub, cam = hub_with_camera
+    cam._follow_fraction = 0.5
+    cam._temp = -10.0               # AT the setpoint the run was holding
+    await hub.warm_camera()
+    await _drain(hub)
+    setpoints = [c[1] for c in cam.calls if c[0]]
+    assert len(setpoints) >= 55, (
+        f"a lagging TEC started from its setpoint climbed only {len(setpoints)} "
+        f"steps before the ramp ended: {setpoints[:5]}...{setpoints[-3:]}")
+    assert setpoints[-1] > cooling.WARM_FALLBACK_AMBIENT_C, (
+        f"the ramp stopped at {setpoints[-1]} C, short of ambient")
+    assert "already at ambient" not in (hub._warm_state or {}).get("note", ""), (
+        "the lead check ended a ramp whose sensor was still following")
+
+
+async def test_the_lead_check_still_fires_on_a_tec_that_has_actually_stopped(
+        hub_with_camera):
+    """The other side of the same model, and the reason the one above is not
+    just a looser tolerance: a sensor that closes only a TENTH of the gap per
+    step falls behind faster than the schedule and the ramp must still end.
+
+    Between this and the case above, the lead check is graded on both sides of
+    its boundary with the same camera, rather than only at the two impossible
+    extremes.
+
+    STARTED WARM, and that is the change issue #17 made to this case. It used to
+    start at -10 °C, where a sensor that stops rising is not at ambient at all -
+    it is a TEC that never took control, and ending the ramp there switched the
+    cooler off onto a sensor thirty degrees below the room. This case is about
+    the lead check doing its legitimate job, which is finding the REAL ambient
+    under an assumed one, so it starts where that is what is actually happening:
+    13.5 °C under an assumed 20 °C, which is the 2026-09-12 log's own good case.
+
+    MUTATION: `WARM_MAX_LEAD_C = 30.0`. Observed: this ramp runs to the safety
+    ceiling instead of stopping, and the note never says "already at ambient".
+    """
+    hub, cam = hub_with_camera
+    cam._follow_fraction = 0.1
+    cam._temp = 13.5
+    await hub.warm_camera()
+    await _drain(hub)
+    setpoints = [c[1] for c in cam.calls if c[0]]
+    assert setpoints[-1] < cooling.WARM_FALLBACK_AMBIENT_C, (
+        f"a sensor closing a tenth of the gap per step reached {setpoints[-1]} C; "
+        f"the lead check never fired")
+    assert cam.calls[-1] == (False, None), "the cooler was left on"
+    assert "already at ambient" in (hub._warm_state or {}).get("note", "")
+
+
 async def test_ramp_finishes_when_the_sensor_stops_following(hub_with_camera):
     """A sensor that stops rising with the setpoint means the TEC has nothing
     left to do — i.e. we are AT the real ambient, which the assumed 20 °C ceiling
-    would otherwise sail past. Switching off there is thermally a no-op."""
+    would otherwise sail past. Switching off there is thermally a no-op.
+
+    PINNED AT 13.5 °C, not at -10. This case used to pin the sensor at -10 and
+    assert that the ramp called that "already at ambient" and switched the
+    cooler off - which is issue #17's defect, asserted as correct behaviour.
+    That is why the bug shipped and why the 2026-09-12 log shows it happening
+    for real: a test was holding it in place. The inference in the docstring is
+    sound only when the sensor is somewhere a room could be, and this case now
+    tests it there.
+    """
     hub, cam = hub_with_camera
-    cam._follows = False            # sensor pinned at -10 whatever we command
+    cam._follows = False            # sensor pinned wherever it starts
+    cam._temp = 13.5                # a plausible room, under the assumed 20
     await hub.warm_camera()
     await _drain(hub)
     setpoints = [c[1] for c in cam.calls if c[0]]
     # WARM_MAX_LEAD_C is 3.0 and we require two consecutive breaches, so the ramp
     # stops a little past a 3 °C lead — nowhere near the 20 °C ceiling.
-    assert setpoints[-1] < -5.0, setpoints
+    assert setpoints[-1] < cooling.WARM_FALLBACK_AMBIENT_C, setpoints
     assert cam.calls[-1] == (False, None)
     assert "already at ambient" in (hub._warm_state or {}).get("note", "")
+
+
+async def test_a_tec_that_never_warms_the_sensor_is_not_at_ambient(
+        hub_with_camera, bus_lines):
+    """ISSUE #17, from the 2026-09-12 night log:
+
+        11:49:46  ramping the setpoint -10.3 -> 20.0 C at 2 C/min, about 15 min
+        11:51:49  warm finished - sensor stopped following the setpoint at
+                  -10.5 C - already at ambient; cooler off
+
+    Two minutes into a planned fifteen, with the sensor thirty degrees below the
+    target, the ramp declared ambient and switched the TEC off. That is the
+    5 °C/min plunge this whole routine exists to prevent, performed by the
+    routine and logged as a success.
+
+    The sensor is pinned, so it never rises: a dead TEC, which is what the log
+    shows. The ramp must not claim ambient and must not switch the cooler off.
+
+    MUTATION: drop the `ambient_c - temp > cooling.WARM_NOT_AMBIENT_C` test.
+    Observed: the note reads "already at ambient" and the last cooler call is
+    `(False, None)` - the exact log line above, reproduced.
+    """
+    hub, cam = hub_with_camera
+    cam._follows = False
+    cam._temp = -10.3               # the log's own starting temperature
+    await hub.warm_camera()
+    await _drain(hub)
+    note = (hub._warm_state or {}).get("note", "")
+    assert "already at ambient" not in note, (
+        f"a sensor at {cam._temp} C was called ambient: {note!r}")
+    assert "could not warm the sensor" in note, note
+    assert cam.calls[-1][0] is True, (
+        f"the cooler was switched off onto a sensor at {cam._temp} C: "
+        f"{cam.calls[-3:]}")
+    assert any("leaving the cooler ENGAGED" in m for _l, m, _s in bus_lines), (
+        "a TEC that will not follow a ramp is a hardware fault and has to be "
+        f"loud: {[(l, m[:60]) for l, m, _ in bus_lines if 'warm' in m.lower()][-3:]}")
 
 
 async def test_measured_ambient_is_used_and_labelled(monkeypatch):
@@ -444,11 +604,26 @@ async def test_nina_camera_no_longer_sends_minutes_zero(monkeypatch):
 
 # ------------------------------------------------------- the safety wind-down
 
-async def test_wind_down_starts_the_ramp_and_does_not_wait_for_it(monkeypatch):
+async def test_wind_down_starts_the_ramp_and_does_not_wait_for_it(
+        monkeypatch, tmp_path):
     """``abort_park_warm`` is the path this whole change exists for: it runs
     unattended, and it used to cut the TEC dead. It must now start a ramp — and
     must NOT block on it, because the park and the roof close are the urgent
-    parts of a wind-down."""
+    parts of a wind-down.
+
+    THE CAPTURE ROOT IS THE TEST'S OWN. The wind-down's warm asks
+    ``resume_expected_tonight``, which reads every stored session, and this
+    case used to read the developer's real ``captures/sessions``: 620 files
+    on 2026-09-25, most of them left there by other tests, so the wind-down
+    took 0.5 s on its own and 1.09 s under a parallel run, and failed the
+    1.0 s bound below with no change to the code it grades. RED under
+    mutant "the wind-down waits a second and a half" (``await
+    asyncio.sleep(1.5)`` at the top of ``_wind_down_warm``), observed:
+
+        AssertionError: wind-down blocked for 1.52s
+    """
+    import astrodeck.hub as hub_module
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(cooling, "WARM_STEP_S", 0.05)
     from astrodeck.sequence.engine import SequenceEngine
 

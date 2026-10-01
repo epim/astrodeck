@@ -154,6 +154,15 @@ test("withTargetPool arms from dusk, feeds the target, and advances on report", 
   const pool = g.nodes.find((n) => n.type === "pool");
   assert(pool != null, "no TARGET POOL node was added");
   eq(pool!.params.members, "M31, M33, NGC 869", "the pool's own comma list, in queue order");
+  // A pool this sheet ADDS is created, so it counts accepted subs (mosaic S3,
+  // Revision 2 ruling 2), before any save switches it. RED under mutant "the
+  // sheet adds a pool from the missing-key defaults" (in a private scratch
+  // copy of ui/src, flowGraphExtras.ts's `return createParams(type);` put
+  // back to `return { ...NODE_DEFS[type].params };`), observed:
+  //   x withTargetPool arms from dusk, feeds the target, and advances on
+  //     report: a created pool counts accepted subs expected Accepted subs,
+  //     got Every sub taken
+  eq(pool!.params.counts, "Accepted subs", "a created pool counts accepted subs");
 
   const fromDusk = g.edges.filter((e) => e.from === "n1" && e.fromPort === "window");
   eq(fromDusk.length, 1, "the window still drives one wire");

@@ -93,6 +93,20 @@ FAIL_LOG_EVERY = 30
 #: reopen that takes longer than this is not going to save this tick.
 RECONNECT_TIMEOUT_S = 30.0
 
+#: Consecutive PARK failures, with the telescope still claiming ``connected``,
+#: before this net forces a reopen anyway (#133). Until this existed the
+#: reopen written for the 2026-08-09 outage could only run when ``connected``
+#: was already False -- a guard that RIDES the very value the fault is
+#: supposed to change. On 2026-09-23 a USB re-enumeration left ``connected``
+#: True for more than eight hours (the transport exception was not being
+#: turned into a dropped link at all -- see serial_link.SerialLink._mark_dead
+#: for that half of the fix) and this net called the identical failing
+#: ``tel.park()`` more than 180 times without ever trying the one command
+#: that would have fixed it. Small on purpose: parking a parked mount and
+#: reopening an already-good link both cost nothing, so there is no reason to
+#: keep trusting a flag that a second failure has already contradicted.
+PARK_FAILURES_BEFORE_FORCED_REOPEN = 2
+
 #: Operator off-switch (mirrors ``ASTRODECK_NO_AUTOCONNECT``). Setting it is
 #: announced at boot: a disabled safety net that says nothing is indistinguishable
 #: from a working one.
@@ -178,6 +192,16 @@ class DawnPark:
         # Same latch for the park-state read, which was the second of the three
         # lines per tick.
         self._read_warned: str | None = None
+        # Has the belt-and-suspenders reopen (#133, see PARK_FAILURES_BEFORE_
+        # FORCED_REOPEN) already been tried for THIS failure streak? Reset
+        # wherever _fail_count/_fail_reason are, so a new streak gets its own
+        # one attempt. One per streak, not one per tick: the corrective action
+        # matters, but it must not cost this net a fourth log line on top of
+        # the three test_a_failing_net_stays_legible_instead_of_flooding_the_log
+        # already bounds it to (#210) -- a mount that is genuinely gone keeps
+        # failing afterwards regardless, and the existing heartbeat already
+        # says so.
+        self._forced_reopen_tried = False
 
     # ------------------------------------------------------------- lifecycle
 
@@ -260,6 +284,7 @@ class DawnPark:
             # saying "recovered" here would be a lie a night later.
             self._fail_reason, self._fail_count = None, 0
             self._read_warned = None
+            self._forced_reopen_tried = False
             return
         if self._settled:
             return
@@ -278,10 +303,30 @@ class DawnPark:
             self._hold("no telescope is connected, so if the mount is powered "
                        "and tracking, nothing here can stop it", alt)
             return
-        if not getattr(tel, "connected", False) and not await self._reopen(tel, alt):
-            return
+        if not getattr(tel, "connected", False):
+            if not await self._reopen(tel, alt):
+                return
+        elif self._fail_count >= PARK_FAILURES_BEFORE_FORCED_REOPEN \
+                and not self._forced_reopen_tried:
+            # RIDE THE FAILURE, NOT ONLY THE FLAG (#133). The branch above is
+            # the ordinary case -- a telescope object honestly reporting it is
+            # not connected. This one is the 2026-09-23 case: the mount kept
+            # claiming ``connected`` for more than eight hours while every
+            # park failed the same way, and the reopen written for the
+            # 2026-08-09 outage could only run through the branch above, so it
+            # never ran. Force the same reopen here too, once per failure
+            # streak (see ``_forced_reopen_tried``) and SILENTLY: unlike the
+            # branch above, this is a defensive guess, not a diagnosis, so it
+            # must not spend one of the three lines
+            # ``test_a_failing_net_stays_legible_instead_of_flooding_the_log``
+            # bounds this net to (#210) -- the ordinary DAWN PARK FAILED
+            # heartbeat below already says the net is still failing, whether
+            # or not this helped.
+            self._forced_reopen_tried = True
+            await self._force_reopen_quietly(tel)
 
-        if await self._is_parked(tel):
+        parked = await self._is_parked(tel)
+        if parked:
             self._settled = True
             self._clear_failure()
             bus.log("info", f"dawn: the Sun has reached {alt:+.1f}° and the "
@@ -304,10 +349,26 @@ class DawnPark:
             # Only on the first attempt of a streak. This line announces an
             # INTENT, and repeating an intent the previous 138 attempts already
             # announced is what turned the log into wallpaper.
-            bus.log("info", f"dawn park: the Sun is at {alt:+.1f}° (parking "
-                            f"above {threshold:+.0f}°), no run is in progress "
-                            f"and the mount is unparked — parking it now",
-                    "safety")
+            #
+            # "UNPARKED" IS A CLAIM, NOT A DEFAULT (#138). ``_is_parked``
+            # answers None, not False, when the read itself failed — so this
+            # line must not say "unparked" on that tick. Saying so anyway is
+            # exactly what happened at 06:31:04.900-04:902 on 2026-09-23: the
+            # same tick logged "could not read the mount's park state" and
+            # then, two milliseconds later, "the mount is unparked", stating
+            # as fact a read that had just failed. Only a real ``False`` earns
+            # that word; a ``None`` gets the honest "could not be read".
+            if parked is None:
+                bus.log("info", f"dawn park: the Sun is at {alt:+.1f}° "
+                                f"(parking above {threshold:+.0f}°), no run "
+                                f"is in progress and the mount's park state "
+                                f"could not be read ({self._read_warned}) — "
+                                f"parking anyway", "safety")
+            else:
+                bus.log("info", f"dawn park: the Sun is at {alt:+.1f}° "
+                                f"(parking above {threshold:+.0f}°), no run "
+                                f"is in progress and the mount is unparked "
+                                f"— parking it now", "safety")
         try:
             # The same discipline as every other park path: bump the motion
             # fence so anything that slipped in behind the checks above is
@@ -593,6 +654,29 @@ class DawnPark:
                            f"{alt:+.1f}°", "safety")
         return True
 
+    async def _force_reopen_quietly(self, tel) -> None:
+        """The belt for ``_reopen``'s suspenders (#133): attempt the exact
+        same recovery — reopen the link — for a telescope that has failed to
+        park ``PARK_FAILURES_BEFORE_FORCED_REOPEN`` times in a row while still
+        claiming ``connected``.
+
+        NEVER RAISES AND NEVER REPORTS. This is a guess, not a measurement:
+        unlike ``_reopen`` it has no evidence the link actually dropped, only
+        that parking keeps failing, so it must not claim a recovery it cannot
+        see (a success here says nothing about why the NEXT park attempt,
+        made by the caller right after this returns, does or does not work)
+        and must not cost this net a log line the ordinary DAWN PARK FAILED
+        heartbeat already covers. If the mount answers ``connect()`` with a
+        real handshake, a link that only LOOKED healthy gets exactly the fix
+        ``_reopen`` gives an honestly-reported one; if the link genuinely
+        never dropped, this is a harmless no-op — every real ``Telescope``'s
+        ``connect()`` returns at once when it already reports ``connected``.
+        """
+        try:
+            await asyncio.wait_for(tel.connect(), RECONNECT_TIMEOUT_S)
+        except Exception:      # noqa: BLE001 — see the docstring: best-effort
+            pass
+
     def _fail(self, why: str) -> None:
         """One failed park attempt. Loud once, then a heartbeat.
 
@@ -606,6 +690,9 @@ class DawnPark:
             self._fail_reason = why
             self._fail_count = 0
             self._fail_since = self._clock()
+            # A newly-distinct failure is a new problem: let it earn its own
+            # one attempt at the quiet forced reopen above.
+            self._forced_reopen_tried = False
         self._fail_count += 1
         n = self._fail_count
         if n != 1 and n % FAIL_LOG_EVERY:
@@ -625,14 +712,22 @@ class DawnPark:
         self._fail_reason = None
         self._fail_count = 0
         self._read_warned = None
+        self._forced_reopen_tried = False
 
-    async def _is_parked(self, tel) -> bool:
-        """Is the mount parked? A query failure answers NO, deliberately.
+    async def _is_parked(self, tel) -> bool | None:
+        """Is the mount parked? A query failure answers None -- "unknown", not
+        a claimed "no" (#138).
 
-        Parking a parked mount is a no-op at every backend, so a wrong "no"
-        costs one redundant command while a wrong "yes" costs the whole point of
-        this module. That asymmetry is the entire reason the check is allowed to
-        be this cheap.
+        A wrong "no" and a wrong "unknown" cost the same one redundant park;
+        the difference is only what the caller is allowed to SAY. Folding a
+        failed read into a bare False let ``tick``'s intent line report "the
+        mount is unparked" on the same tick this method had just logged that
+        it could not read the mount's park state at all — a measurement
+        stated as fact when the net never took it, and the read failure
+        (2026-09-23's first direct evidence of the dead link this WP fixes)
+        thrown away in the same breath. Parking a parked mount is a no-op at
+        every backend, so the caller still parks on None exactly as it does
+        on a real False; only the wording differs.
         """
         try:
             return bool(await asyncio.wait_for(tel.is_parked(),
@@ -647,7 +742,7 @@ class DawnPark:
                                    f"state ({e}) — parking anyway, since "
                                    f"parking a parked mount does nothing",
                         "safety")
-            return False
+            return None
 
     def _hold(self, reason: str, alt: float) -> None:
         """Say why nothing happened — once per dawn, per reason.

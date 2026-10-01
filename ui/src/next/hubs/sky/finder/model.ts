@@ -46,7 +46,7 @@ import type {
   VisibilityNight,
 } from "../../../../types";
 import type { NxIconName } from "../../../icons";
-import { rankTargets, windowLabel } from "../../../lib/reach";
+import { rankTargets, windowLabel as reachWindowLabel } from "../../../lib/reach";
 import { horizonAltAt, type HorizonPoint } from "../../../lib/horizonModel";
 import type { CloudTile } from "../../../lib/cloudTiles";
 import { fmtClock } from "../../../lib/format";
@@ -112,7 +112,21 @@ import { startGyro, type GyroHandle } from "./gyro";
 
 export type { SkyKind, SkyTarget, Marker } from "./targets";
 export type { LayerPrefs, LensPrefs, SkyMode } from "./prefs";
-export { windowLabel };
+
+/**
+ * The window label every Sky card prints: "2h 40m", "45m", "0m" - and "-" for
+ * a window nobody computed (#508).
+ *
+ * `lib/reach.ts`'s formatter takes a number, and `SkyTarget.windowMinutes` is
+ * null where no walk was made (an unplaced lock, a row this role or a default
+ * site cannot place). Folding null into it would print "0m", which is a
+ * statement - "it never clears the floor tonight" - about an object nobody
+ * asked. So the absent state is decided HERE, once, for the lock card, the
+ * reach strip and the targets sheet, which all import this name.
+ */
+export function windowLabel(minutes: number | null): string {
+  return minutes == null ? "-" : reachWindowLabel(minutes);
+}
 
 /** The dome's own accessors, re-exported from the pure module they live in.
  *
@@ -181,6 +195,19 @@ export const RANK_NEEDS_SITE = "Ranking tonight needs site access; search still 
 export const NO_COORDS_NOTE =
   "Precise location is hidden for this role, so the finder can only place what the rig placed for it.";
 
+/**
+ * The same silence for the other reason there are no coordinates (#503): no
+ * site is saved. A fresh config's site is `is_default: true` with placeholder
+ * coordinates (0 N, 0 E), and those are numbers, so the finder used to place
+ * the whole sky for the Gulf of Guinea and count, rank and colour it as the
+ * operator's. `NO_COORDS_NOTE` would blame a role for it, which is false for an
+ * admin on a fresh rig; this names the fix. The server withholds its own
+ * alt/az from a default site too (`/api/catalog`, #24), so there is nothing
+ * the rig placed either.
+ */
+export const NO_SITE_NOTE =
+  "No site is saved, so the finder cannot place anything on this sky - set one under the site pill.";
+
 /** How far ahead the passes list looks. The route's own default is 24 h and its
  *  ceiling is 72 (`ephemeris/routes.py:81-84`); a day is what "tonight" means
  *  here and every hour past it costs another sweep of SGP4. */
@@ -245,6 +272,18 @@ export interface DomeModel {
   /** Brightest first, capped at `MAX_DOME_TRACKS`. Empty when this role cannot
    *  place the sky (no site coordinates) or the night is already over. */
   tracks: DomeTrack[];
+}
+
+/** One object placed on this sky by `SkyModel.place`. Every field is the
+ *  model's own answer for a row at the same RA/Dec: none is a placeholder. */
+export interface Placement {
+  altDeg: number;
+  azDeg: number;
+  /** Behind the horizon by the finder's live rule (`trackCtx`). */
+  obstructed: boolean;
+  /** Minutes above the floor to dawn, off the same walk the rows use - or
+   *  null while no night is known to walk to (see `place`). */
+  windowMinutes: number | null;
 }
 
 export interface SkyModel {
@@ -358,9 +397,24 @@ export interface SkyModel {
   cloudReason: string | null;
   /** Why the ranked list is empty, when it is. */
   rankingError: string | null;
-  /** Set when this role cannot see the site coordinates, so most of the sky
-   *  cannot be placed at all (see NO_COORDS_NOTE). */
+  /** Set when there are no coordinates to place the sky with - this role
+   *  cannot see them (NO_COORDS_NOTE) or no site is saved (NO_SITE_NOTE) - so
+   *  most of the sky cannot be placed at all. */
   placementNote: string | null;
+  /**
+   * Place ONE object on this sky the way every row the finder draws is placed,
+   * or null when there are no coordinates to place it with.
+   *
+   * For whatever the hub has to put on screen that the merged list does not
+   * carry - a lock held from the catalogue, the aim of a tap on the atlas - so
+   * that it lands exactly where a row with the same RA/Dec would: the same
+   * site, the same clock, the same horizon rule (`trackCtx`) and the same walk
+   * to dawn for its window. The hub used to keep a second pair of coordinates
+   * for this and replicate the horizon context itself; one copy of either is
+   * the kind of thing that disagrees with the other the first time a rule
+   * changes (#503).
+   */
+  place(raHours: number, decDeg: number): Placement | null;
   visibility: VisibilityNight | null;
   /** The AR stream, for SkyView to attach to its `<video>`. */
   cameraStream: MediaStream | null;
@@ -809,8 +863,20 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
   // Absent, not zero: `view.site_precise` strips these two keys rather than
   // nulling them, so `?? 0` above is a placeholder that must never be used as
   // an observing site.
+  //
+  // AND A DEFAULT SITE IS NO COORDINATES (#503, the class of #24, #121 and
+  // #466: a consumer of the site that ignores `is_default`). A fresh config's
+  // site carries numeric placeholder coordinates, 0 N 0 E, so the type test
+  // alone passed and every row was placed, ranked and counted for a point in
+  // the Gulf of Guinea - the reach count, the strip, every altitude tag, the
+  // lock card's verdict, the auto-aim's first pick and the dome's arcs - while
+  // the only word on screen about it was the site pill's "Set a site". The
+  // server already refuses to rank or window that sky (409 `no_site`) and
+  // withholds its own alt/az from it; now the finder places nothing there
+  // either, and `placementNote` says why.
   const haveCoords =
-    typeof site?.latitude === "number" && typeof site?.longitude === "number";
+    typeof site?.latitude === "number" && typeof site?.longitude === "number"
+    && site.is_default !== true;
 
   const tonight = useTonight(horizonMinDeg, rankingAllowed && haveSite, siteKey);
   const solarRows = useSolarSystem(rankingAllowed);
@@ -1016,9 +1082,13 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
       const cloudPct = domePct ?? hourlyCloud;
       cloudById.set(m.id, cloudPct);
       const dec = decorate(cloudPct, obstructed);
-      const winMin = minutesAboveFloor(
-        walkTrack(m.dec_deg * D2R, (lst - m.ra_hours) * 15 * D2R, trackCtx),
-      );
+      // The walk needs the site's latitude and sidereal time, so without
+      // coordinates there is no window to report - the rows left are the
+      // server's own placements, and walking them at the placeholder's 0,0
+      // would print a window for somewhere else (#508). Null, never 0.
+      const winMin = haveCoords
+        ? minutesAboveFloor(walkTrack(m.dec_deg * D2R, (lst - m.ra_hours) * 15 * D2R, trackCtx))
+        : null;
       const transitLabel =
         m.transitUnix == null
           ? "-"
@@ -1050,7 +1120,9 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
         // which is the size of a star, not the absence of a measurement.
         sizeArcmin: m.sizeArcmin ?? undefined,
         // --- ReachInput, for rankTargets -----------------------------------
-        minutesAboveFloorToDawn: winMin,
+        // An unwalked window scores as none; every row without coordinates is
+        // unwalked alike, so the order between them is untouched by it.
+        minutesAboveFloorToDawn: winMin ?? 0,
         // An absent reading does not score against a target: penalising an
         // unknown cloud or an unknown moon separation would rank an object down
         // for a measurement nobody took.
@@ -1085,6 +1157,39 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
     tonight.rows, region.rows, solarRows, placeableEphemeris, nowMs, lat, lon,
     haveCoords, trackCtx, tiles, hourlyCloud, wheel,
   ]);
+
+  // ---- one object, placed as a row would be (`SkyModel.place`) -------------
+  //
+  // The same three steps as the `ranked` memo above, for an RA/Dec the merged
+  // list does not carry: `altAzOf` at this site and this clock, the horizon by
+  // `trackCtx`, and the window off `walkTrack`. No server alt/az hint, because
+  // an object the list does not carry arrived with none.
+  //
+  // THE WALK NEEDS A DAWN (#508). It runs from now to `dark_end_unix`, and
+  // with no night from the server - `/api/visibility` not yet answered, or
+  // failed, which is likely on exactly the outage that failed tonight's list
+  // and so caused the hold - `hoursToDawn` is 0, `walkTrack` returns nothing
+  // and the window would read "0m" for an object that rises. That is the
+  // placeholder #508 retired, arriving by another road, so the window is null
+  // until a night is known.
+  const dawnKnown = typeof visibility?.dark_end_unix === "number";
+  const place = useCallback(
+    (raHours: number, decDeg: number): Placement | null => {
+      if (!haveCoords) return null;
+      const nowSec = nowMs / 1000;
+      const here = altAzOf(raHours, decDeg, lat, lon, nowSec);
+      const lst = lstHours(lon, nowSec);
+      return {
+        altDeg: here.altDeg,
+        azDeg: here.azDeg,
+        obstructed: isObstructedAt(here.altDeg, here.azDeg, trackCtx),
+        windowMinutes: dawnKnown
+          ? minutesAboveFloor(walkTrack(decDeg * D2R, (lst - raHours) * 15 * D2R, trackCtx))
+          : null,
+      };
+    },
+    [haveCoords, nowMs, lat, lon, trackCtx, dawnKnown],
+  );
 
   // The lens and the floor chip HIDE, they do not re-rank: a hidden kind's count
   // still has to be shown on its lens button so the user knows what turning it
@@ -1544,7 +1649,11 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
     satelliteNotes: ephemeris.satelliteNotes,
     cloudReason,
     rankingError,
-    placementNote: haveCoords ? null : NO_COORDS_NOTE,
+    // Which silence: a saved site whose coordinates this role does not see, or
+    // no saved site at all. The two have different fixes, and only one of
+    // them is the operator's to make.
+    placementNote: haveCoords ? null : site?.is_default === true ? NO_SITE_NOTE : NO_COORDS_NOTE,
+    place,
     visibility,
     cameraStream,
     cameraSupported: camSupport.ok,

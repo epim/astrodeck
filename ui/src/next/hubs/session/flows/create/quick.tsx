@@ -62,6 +62,21 @@ export const NO_FILTER_REASON = "Tick at least one filter.";
 export const SUBS_REASON = "Set how many subs of each filter to take (at least 1).";
 export const BUSY_REASON = "Already creating the flow. One moment.";
 
+/** doctor.py `UNGUIDED_SUB_LINE_S`, seconds: where the doctor's rule 2 warns
+ *  that stars trail with no GUIDE stage, and so where `wizard.quick` refuses
+ *  an unguided sub, 422 `invalid_quick_flow` naming the filter (#518, H4
+ *  ruling 5). A MIRROR, so the limit is on screen before SAVE rather than
+ *  learned from the refusal; quickUnguidedLimit.test.tsx reads the server's
+ *  source and holds this to it. */
+export const UNGUIDED_SUB_LINE_S = 120;
+
+/** The Guide switch's note while Guide is off. It said "the subs are limited
+ *  by the mount" while nothing limited them (#518); now the server refuses a
+ *  sub at the line, and this says where the line is. */
+export const UNGUIDED_NOTE =
+  `no GUIDE stage: every sub must be under ${UNGUIDED_SUB_LINE_S} s, where `
+  + "unguided stars start to trail. A longer one is refused.";
+
 export function FlowQuickSheet(): JSX.Element {
   const setUi = useStore((s) => s.flowsSetUi);
   const loadLibrary = useStore((s) => s.flowsLoadLibrary);
@@ -390,7 +405,7 @@ export function FlowQuickSheet(): JSX.Element {
             label="Guide"
             note={guided
               ? "a GUIDE stage rides along, so the subs can be longer than the mount tracks"
-              : "no GUIDE stage: the run is unguided and the subs are limited by the mount"}
+              : UNGUIDED_NOTE}
           />
         </section>
 

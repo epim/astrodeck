@@ -24,13 +24,17 @@ def store(tmp_path, monkeypatch):
 
 
 class TestTheShippedExamples:
-    def test_there_are_seven(self):
+    def test_there_are_eight(self):
         """Pinned, not counted loosely. The seed library IS the acceptance
         corpus: an example that quietly disappears takes its coverage with it,
-        and one that quietly appears has never been looked at by a human."""
+        and one that quietly appears has never been looked at by a human.
+
+        Seven until S3: S3-W added the eighth, example-m31-mosaic, the 3x2
+        rotating mosaic the slice was built around (spec 8, S3 item 4), and
+        the integration of S3 re-pinned the list, and the name, for it."""
         assert [e.id for e in examples()] == [
             "example-campaign", "example-m31", "example-m16", "example-cycle",
-            "example-pool", "example-nb", "example-eaa"]
+            "example-pool", "example-nb", "example-eaa", "example-m31-mosaic"]
 
     @pytest.mark.parametrize("ex", examples(), ids=lambda e: e.id)
     def test_each_one_is_structurally_valid(self, ex):
@@ -245,8 +249,12 @@ class TestRotationZeroMeantAnyAngle:
             "the rotator to PA 0")
 
     def test_a_v1_flow_with_a_real_angle_is_left_alone(self, store):
-        self._write(store, 1, 23.4)
-        assert self._rotation_of(store) == 23.4
+        # 30, not 23.4. 23.4 was the TARGET palette default under v1 as well,
+        # so FLOW_SCHEMA 3 rewrites a v1 23.4 to "any angle" (#150,
+        # test_flows_schema_v3) and it no longer stands for "a real angle".
+        # RED under mutant "migration keyed on != 23.4": assert -1 == 30
+        self._write(store, 1, 30)
+        assert self._rotation_of(store) == 30
 
     def test_a_v2_flow_that_says_zero_means_zero(self, store):
         self._write(store, 2, 0)

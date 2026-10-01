@@ -87,8 +87,11 @@ export function FlowPaletteSheet({ onPick }: FlowPaletteSheetProps = {}): JSX.El
       // prototype's palette sheet is `max-height:72dvh` (line 494). It goes
       // through the CSS var because `.overlay-surface`'s authored max-height is
       // UNLAYERED and beats any Tailwind class on the same element; Overlay.tsx
-      // records the 788px-on-an-820px-tablet measurement that proved it.
-      surfaceStyle={{ "--ov-max-h": "72dvh" } as CSSProperties}
+      // records the 788px-on-an-820px-tablet measurement that proved it. And
+      // as a FRACTION of the viewport, which index.css multiplies by 100dvh or,
+      // without dvh, by 100vh: `72dvh` in --ov-max-h left the fallback invalid
+      // and the sheet unclamped in a browser without dvh (#417).
+      surfaceStyle={{ "--ov-max-h-frac": "0.72" } as CSSProperties}
       // Left/right/top only. `padding-bottom` is contested: `.overlay-safe-b`
       // is unlayered authored CSS and would beat a `pb-[…]` utility here, so
       // the safe-area inset comes from the primitive and the design's 20px

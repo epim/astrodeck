@@ -312,6 +312,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
   const frameLooping = useLock({ cap: "control.capture", needsRole: "camera", busyLane: "looping", extra: ownExtra });
   const egainLane = useLock({ cap: "control.capture", needsRole: "camera", busyLane: "egain", extra: ownExtra });
   const dewLock = useLock({ cap: "control.capture", needsRole: "camera" });
+  const fanLock = useLock({ cap: "control.capture", needsRole: "camera" });
   const rampLock = useLock({ cap: "config.safety" });
 
   const frameReason = frameCapture.lockedReason ?? frameLooping.lockedReason;
@@ -379,6 +380,12 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
   const dewReported = cam?.dew_heater ?? null;
   const [dewSent, setDewSent] = useState<number | null>(null);
   const dewLevel = dewReported ?? dewSent ?? 0;
+  // Issue #22. No `?? 0` here, unlike the heater: an unread fan drawn at 0
+  // reads as a fan that is OFF, which is the one wrong answer during the cooler
+  // failure this control exists to diagnose. No level, no stepper.
+  const fanReported = cam?.fan_power ?? null;
+  const [fanSent, setFanSent] = useState<number | null>(null);
+  const fanLevel = fanReported ?? fanSent;
 
   // ---- the dew LOOP (D-RIG-3), which is a different thing from the heater
   // register above: the register is what the window is at, the loop is what is
@@ -706,6 +713,30 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
             <div data-testid="ramp-off-warning"><Mono size={10.5} tone="warn">{RAMP_OFF_WARNING}</Mono></div>
           )}
         </div>
+
+        {cam?.has_fan_control && (
+          <div style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 10,
+            flexWrap: "wrap", borderTop: "1px solid var(--line)" }} data-testid="fan-row">
+            <Label>COOLER FAN</Label>
+            {fanLevel != null ? (
+              <Stepper2
+                value={fanLevel}
+                onChange={(power) => { setFanSent(power); void post("/api/camera/fan", { power }); }}
+                step={10} min={0} max={100}
+                format={(v) => `${v}%`}
+                label="Cooler fan power"
+                lockedReason={fanLock.lockedReason}
+                onExplain={fanLock.onExplain}
+                data-testid="fan-power"
+              />
+            ) : null}
+            <Mono size={10} tone="dim">
+              {fanReported != null ? "read back from the camera"
+                : fanSent != null ? "the level this browser last sent - the camera did not report one back"
+                  : "the camera has not reported its fan level"}
+            </Mono>
+          </div>
+        )}
 
         {cam?.has_dew_heater && (
           <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6,

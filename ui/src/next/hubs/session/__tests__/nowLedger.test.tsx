@@ -236,7 +236,73 @@ await testAsync("the quota rows are read-only and say what each rule MEANS", asy
 
 await act(async () => { mounted.root.unmount(); });
 
-// ------------------------------------------------------------- 3. the viewer
+// ------------------------------------------- 3. a FILTER CYCLE sets no goal
+// Since #189 S4 (S4 orchestrator ruling 5, #338) the tonight route sends a row
+// per FILTER CYCLE as well, with `goal_h: null`: a cycle sets no integration
+// goal. The card read that null through `num` as a goal of 0, so every flow
+// with a cycle - the M33 cycle Example, the campaign Example, the eighth
+// Example - drew a campaign ledger reading "goal 0 hours" and "0.0 of 0 h".
+// Fixed by the S4 integration: a row with no goal is not a row of the goal
+// ledger, and a flow with no goal row is no campaign, as before S4.
+//
+// Mutant "the card reads every row" (`useCampaign`'s `.filter(hasGoal)`
+// removed, the code as S4 left it), observed in scratchpad/s4-integrate-q7m2:
+//   nowLedger.test: 6/8 passed
+//     x a flow whose only budget row is a FILTER CYCLE draws no campaign
+//     ledger: a flow with no integration goal drew a campaign ledger (a cycle
+//     row's null goal read as 0): expected null, got [object HTMLDivElement]
+//     x beside a goal row, a cycle row is left out of the ledger and its
+//     total: the cycle row, which sets no goal, was drawn as a goal row:
+//     expected null, got [object HTMLDivElement]
+// The goal row beside it is the control: it is drawn under the fix and under
+// the mutant alike.
+const CYCLE_ROW = {
+  filter: "L, R, G, B", goal_h: null, banked_h: null, tonight_h: 16,
+  has_ledger: false, strategy: "cycle", cycles: 20,
+};
+
+tonightBudget = [CYCLE_ROW];
+resetCampaignForTests();
+resetSessionDataForTests();
+seed();
+let tonightAsks = asks.filter((a) => a.includes("/tonight")).length;
+mounted = await mount();
+
+await testAsync("a flow whose only budget row is a FILTER CYCLE draws no campaign ledger", async () => {
+  assert(asks.filter((a) => a.includes("/tonight")).length > tonightAsks,
+    "premise: the card asked the tonight route, so no ledger is the rule's doing, not a missing fetch");
+  eq(byId("now-campaign-ledger"), null,
+    "a flow with no integration goal drew a campaign ledger (a cycle row's null goal read as 0):");
+});
+
+await act(async () => { mounted.root.unmount(); });
+
+tonightBudget = [
+  { filter: "L", goal_h: 6, banked_h: 1.5, tonight_h: 1, has_ledger: true },
+  CYCLE_ROW,
+];
+resetCampaignForTests();
+resetSessionDataForTests();
+seed();
+tonightAsks = asks.filter((a) => a.includes("/tonight")).length;
+mounted = await mount();
+
+await testAsync("beside a goal row, a cycle row is left out of the ledger and its total", async () => {
+  assert(asks.filter((a) => a.includes("/tonight")).length > tonightAsks,
+    "premise: the card asked the tonight route");
+  assert(byId("ledger-row-L") != null,
+    "control: the capture row that carries a goal is drawn");
+  eq(byId("ledger-row-L, R, G, B"), null, "the cycle row, which sets no goal, was drawn as a goal row:");
+  const rows = container.querySelectorAll('[data-testid^="ledger-row-"]').length;
+  eq(rows, 1, "goal rows drawn:");
+  const card = byId("now-campaign-ledger").textContent as string;
+  assert(/of 6 h/.test(card), `the header's goal is not the goal row's 6 h: "${card.slice(0, 200)}"`);
+  assert(!/\/ 0 h/.test(card), `a row reads a goal of 0: "${card.slice(0, 400)}"`);
+});
+
+await act(async () => { mounted.root.unmount(); });
+
+// ------------------------------------------------------------- 4. the viewer
 resetCampaignForTests();
 resetSessionDataForTests();
 seed(VIEWER);

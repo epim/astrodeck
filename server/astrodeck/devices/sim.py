@@ -42,13 +42,15 @@ def _sim_delay(seconds: float) -> float:
     Under the test fast-path (env ``ASTRODECK_FAST_TEST=1``, read LIVE on every
     call so a conftest fixture / ``monkeypatch`` takes effect without a reimport)
     this collapses to ``0.0`` so the sim's hard-coded connect-latency, exposure
-    dwell, and guide-pulse dwell sleeps disappear under the test suite. It is a
-    PACING knob ONLY: every simulated VALUE (RA/Dec offsets, rendered star/frame
-    pixels, calibration geometry, guiding corrections) is derived from the
-    logical/virtual clock + the REQUESTED ``exposure_s`` / commanded pulse ``ms``,
-    never from elapsed wall-clock dwell, so zeroing the wait leaves results
-    bit-identical. Production (flag unset) returns ``seconds`` unchanged, so the
-    sim paces exactly as it does today."""
+    dwell, guide-pulse dwell, mount-slew and rotator-move sleeps disappear under
+    the test suite. It is a PACING knob ONLY: every simulated VALUE (RA/Dec
+    offsets, rendered star/frame pixels, calibration geometry, guiding
+    corrections) is derived from the logical/virtual clock + the REQUESTED
+    ``exposure_s`` / commanded pulse ``ms``, and every slew or rotator position
+    from the step index, never from elapsed wall-clock dwell, so zeroing the
+    wait leaves results bit-identical (tests/test_sim_pacing.py compares a
+    goto and a rotator move step by step, both ways). Production (flag unset)
+    returns ``seconds`` unchanged, so the sim paces exactly as it does today."""
     return 0.0 if os.environ.get("ASTRODECK_FAST_TEST") == "1" else seconds
 
 
@@ -299,6 +301,19 @@ class SimRig:
         # 0.0 by default so every existing sim solve/TPPA test is byte-identical
         # (the polar_misalignment opt-in precedent); rotate-loop tests set it.
         self.rotator_pa_offset_deg = 0.0
+        #: Play in the rotator's train, in degrees (#526): how far the motor
+        #: turns on a reversal before the camera turns with it. 0.0 by
+        #: default, the same opt-in idiom, so the camera follows the motor
+        #: exactly and every existing rotate test is byte-identical.
+        #: ``rotator_mech_deg`` stays the CAMERA's mechanical angle, the one
+        #: ``SimSolver`` measures, and ``SimRotator`` reports the MOTOR's,
+        #: ``rotator_mech_deg + rotator_slack_deg``, as a real rotator reports
+        #: its step count and cannot see the play.
+        self.rotator_backlash_deg = 0.0
+        #: Where the motor sits in the play, motor minus camera, held within
+        #: +/- half of ``rotator_backlash_deg``: +half after a move of
+        #: increasing angle, -half after a move of decreasing angle.
+        self.rotator_slack_deg = 0.0
         self.pointing_error_deg = 0.04  # goto lands slightly off until synced
         self.sensor_temp = -9.8
         # --- native-TPPA test hook: injected polar-axis misalignment ----------
@@ -943,6 +958,10 @@ class SimTelescope(Telescope):
         self._move_rates = {"ra": 0.0, "dec": 0.0}
         self._move_task: asyncio.Task | None = None
         self._tracking_rate = "sidereal"
+        #: The pier side the last slew (the park's and the home's included)
+        #: left the mount on (#298), or None before the first of them. A sync
+        #: and an unpark leave it as it is (#392). See `pier_side`.
+        self._latched_side: PierSide | None = None
 
     async def connect(self) -> None:
         await asyncio.sleep(_sim_delay(0.1))
@@ -1019,10 +1038,12 @@ class SimTelescope(Telescope):
                 self.rig._polar_phase_deg += ph_err
                 self.rig._polar_dec_axis_deg = dec_err
                 self.rig._apply_polar_pointing()
+                self._latch_pier_side()
             finally:
                 self._slewing = False
             return
         self._slewing = True
+        moved = False
         try:
             # Land near the target with a small pointing error (until synced).
             err = self.rig.pointing_error_deg
@@ -1033,7 +1054,15 @@ class SimTelescope(Telescope):
             steps = max(2, int(duration / 0.2))
             ra0, dec0 = self.rig.ra_hours, self.rig.dec_deg
             for i in range(1, steps + 1):
-                await asyncio.sleep(duration / steps)
+                # Pacing only, so it goes through _sim_delay (#207): the
+                # position below is a function of the step fraction alone,
+                # never of time spent, so zeroing the dwell leaves every value
+                # bit-identical. Under the test fast path this is still a
+                # zero sleep, one per step, so the loop keeps yielding and an
+                # abort or cancel racing a slew in flight can still land
+                # mid-slew. Before this, every sim-hub goto test paid the
+                # dwell in real time (4.4 s for the goto tests' 17 degrees).
+                await asyncio.sleep(_sim_delay(duration / steps))
                 f = i / steps
                 # F-sim: keep ra_hours wrapped into [0, 24) so the sim's RA never
                 # accumulates an out-of-range value (sim-fidelity only — altaz and
@@ -1041,13 +1070,30 @@ class SimTelescope(Telescope):
                 # sane). The Target model also requires 0 <= ra_hours < 24.
                 self.rig.ra_hours = (ra0 + (tgt_ra - ra0) * f) % 24.0
                 self.rig.dec_deg = dec0 + (tgt_dec - dec0) * f
+                moved = True
         finally:
             self._slewing = False
+            # THE SIDE IS THE GOTO'S (#298): latched where the slew stopped,
+            # from the hour angle of the landed RA at that moment, pointing
+            # error included, so a goto at the crossing lands 7 s of RA east
+            # and keeps the pre-flip side (what the engine's
+            # MERIDIAN_SIDE_MARGIN_S allows for). A slew cancelled part way
+            # latches where it stopped; one cancelled before it moved leaves
+            # the side as it was, since the tube went nowhere.
+            if moved:
+                self._latch_pier_side()
 
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
         self.rig.ra_hours = ra_hours
         self.rig.dec_deg = dec_deg
         self.rig.pointing_error_deg = 0.003  # synced: pointing is now tight
+        # THE SIDE IS KEPT (#392). A sync tells the mount where it points and
+        # moves no axis, so the tube stays on the side its last goto chose.
+        # It used to latch from the synced position's hour angle, so a
+        # plate-solve sync that landed past the meridian, while the mount
+        # tracked there on the pre-flip side, reported a flip no slew made:
+        # #298's defect entered by the sync instead of by tracking, and in
+        # the state the flip-owed invariant exists for.
 
     async def set_tracking(self, on: bool) -> None:
         self.rig.tracking = on
@@ -1074,18 +1120,25 @@ class SimTelescope(Telescope):
         self.rig.parked = False
 
     async def park(self) -> None:
+        # The slew latches the side of the park position (#298), and nothing
+        # moves the mount after it, so the park keeps that side, and the
+        # unpark after it keeps it too (#392). A home latches the same way.
         await self.slew(0.0, 89.5)
         self.rig.parked = True
         self.rig.tracking = False
 
     async def unpark(self) -> None:
+        # The side the park's slew latched is kept (#392): an unpark lets the
+        # mount take commands again and moves nothing. It used to latch from
+        # the park position's hour angle at the moment of the unpark, a side
+        # that changes with the clock while the mount stands still.
         self.rig.parked = False
 
     async def is_parked(self) -> bool:
         return self.rig.parked
 
     async def pier_side(self) -> PierSide:
-        """The side implied by where this mount is actually pointing.
+        """The side the last slew, park or home left this mount on.
 
         Returned a constant ``WEST`` until 2026-08-06, which is the
         ``SimSolver``-doesn't-solve shape: a device answering a question about
@@ -1097,13 +1150,57 @@ class SimTelescope(Telescope):
 
         Standard ASCOM convention, matching what the AM5N was measured to report
         (2026-08-06, both sides): a target EAST of the meridian is observed with
-        the tube on the WEST side, and vice versa."""
-        return self._side_for_ra(self.rig.ra_hours)
+        the tube on the WEST side, and vice versa.
+
+        LATCHED, NOT RECOMPUTED (#298). From 2026-08-06 until the latch this
+        answered from the hour angle of wherever the mount pointed NOW, so a
+        target it was merely tracking crossed the meridian and the mount
+        reported the far side with no slew. A German mount keeps the side its
+        goto chose while it tracks (the counterweight rises past the meridian)
+        and changes it only through a slew, which is the whole point of a
+        meridian flip. A mount that flipped itself made every meridian test in
+        the simulator grade the wrong machine: the flip-owed invariant, a
+        missed flip and a mount tracking past the meridian on the pre-flip side
+        could not be staged at all, and a test that needed a mount keeping its
+        side had to script one. So each slew latches the side from the hour
+        angle at that moment (`_latch_pier_side`), the park's and the home's
+        slews included, and guiding, a jog and a single-axis turn keep it, as
+        they keep a real mount's.
+
+        A SYNC AND AN UNPARK KEEP IT TOO (#392): neither moves an axis. #298
+        had them latch as well, so a plate-solve sync past the meridian, of
+        a mount tracking there on the pre-flip side, reported a flip no slew
+        made. What the AM5N itself reports after either is not measured yet
+        (#392); a German mount's side is whether its declination axis is past
+        the pole, which neither touches.
+
+        Before the first slew there is no goto whose side to keep, and the
+        side a goto to where the mount points would pick is the only answer
+        the simulator has; a mount nothing has moved still answers that way,
+        a sync or an unpark included, since neither is a move."""
+        if self._latched_side is None:
+            return self._side_for_ra(self.rig.ra_hours)
+        return self._latched_side
+
+    def _latch_pier_side(self) -> None:
+        """Keep the side for where the mount points, at this moment's hour
+        angle, until the next slew (#298). Called only where an axis moved:
+        a slew's end, and so the park's and the home's; never a sync or an
+        unpark (#392)."""
+        self._latched_side = self._side_for_ra(self.rig.ra_hours)
 
     def _side_for_ra(self, ra_hours: float) -> PierSide:
         """ASCOM convention: a target EAST of the meridian is observed with the
         tube on the WEST side. Shared by both pier-side oracles so they cannot
-        drift apart.
+        drift apart: the destination oracle asks it of the destination, and
+        the latch asks it of where a move left the mount.
+
+        THE CLOCK IS ``catalog.coords``' OWN (#320). The hour angle is read
+        with no time of its own: the wall clock in a running server, and
+        whatever clock a test puts ``catalog.coords`` on, which the clocked
+        group harness does for every night it runs. A mount that read the wall
+        clock under a fake night took its side from the hour of day the suite
+        happened to run at.
 
         The RULE ITSELF now lives in `coords.pier_side_for_hour_angle`, read by
         the engine's flip-owed invariant and the AM5's destination prediction
@@ -1122,7 +1219,11 @@ class SimTelescope(Telescope):
         return PierSide(pier_side_for_hour_angle(ha))
 
     async def destination_pier_side(self, ra_hours: float, dec_deg: float) -> PierSide:
-        """What ``pier_side`` will report once we are pointing there.
+        """What ``pier_side`` will report once a goto there lands: the
+        hour-angle rule for the destination, NOT the latch (#298). While the
+        mount tracks a target past the meridian the two differ, the mount
+        still on the side its goto chose and this the side the next goto would
+        take, and that difference is the flip the pre-slew guard asks about.
 
         SAME GEOMETRY AS ``pier_side``, applied to the destination RA. It used
         to be ``(ra_hours % 24) < 12 -> EAST``, a rule on RA alone that ignores
@@ -1326,6 +1427,9 @@ class SimRotator(Rotator):
         self.rig = rig
         self._halt = asyncio.Event()
         self._moving = False
+        #: Every mechanical angle ``move_mechanical`` was asked for, in order
+        #: (#526): what a test reads to see the one-side approach's legs.
+        self.moves: list[float] = []
 
     async def connect(self) -> None:
         await asyncio.sleep(_sim_delay(0.05))
@@ -1335,7 +1439,9 @@ class SimRotator(Rotator):
         self.connected = False
 
     async def get_mechanical_position(self) -> float:
-        return self.rig.rotator_mech_deg % 360.0
+        # The MOTOR's angle (see ``SimRig.rotator_backlash_deg``): the camera's
+        # plus the slack, which stays 0.0 while the rig has no play.
+        return (self.rig.rotator_mech_deg + self.rig.rotator_slack_deg) % 360.0
 
     async def is_moving(self) -> bool:
         return self._moving
@@ -1343,8 +1449,31 @@ class SimRotator(Rotator):
     async def halt(self) -> None:
         self._halt.set()
 
+    def _turn(self, step: float) -> None:
+        """Turn the motor by ``step`` and carry the camera through the play.
+
+        The motor runs inside the play without moving the camera until it
+        meets the far side, and then drives it: slack is motor minus camera,
+        held within +/- half the play. With no play the slack stays 0.0 and
+        the camera turns by exactly ``step``, today's arithmetic bit for bit
+        (test_sim_pacing.py compares the rig's angle as float bits)."""
+        rig = self.rig
+        half = rig.rotator_backlash_deg / 2.0
+        if half <= 0.0:
+            rig.rotator_mech_deg = (rig.rotator_mech_deg + step) % 360.0
+            return
+        slack = rig.rotator_slack_deg + step
+        driven = 0.0
+        if slack > half:
+            driven, slack = slack - half, half
+        elif slack < -half:
+            driven, slack = slack + half, -half
+        rig.rotator_slack_deg = slack
+        rig.rotator_mech_deg = (rig.rotator_mech_deg + driven) % 360.0
+
     async def move_mechanical(self, mech_deg: float) -> None:
         target = mech_deg % 360.0
+        self.moves.append(target)
         self._halt.clear()
         self._moving = True
         try:
@@ -1354,16 +1483,30 @@ class SimRotator(Rotator):
             # resolves the exact-180° tie to -180 (Python's % returns [0, 360),
             # so 360 % 360 == 0 → 0 - 180 == -180), sending the rotator the "long"
             # way round for an exact opposite target. This form ties to +180.
-            raw = (target - self.rig.rotator_mech_deg) % 360.0
+            # Measured from the MOTOR, which is what the target is in; with no
+            # slack that is the camera's angle, read exactly as it always was.
+            slack = self.rig.rotator_slack_deg
+            motor = (self.rig.rotator_mech_deg + slack if slack
+                     else self.rig.rotator_mech_deg)
+            raw = (target - motor) % 360.0
             delta = raw if raw <= 180.0 else raw - 360.0
             steps = max(1, int(abs(delta) / 2.0))
             step = delta / steps
             for _ in range(steps):
                 if self._halt.is_set():
                     return
-                self.rig.rotator_mech_deg = (self.rig.rotator_mech_deg + step) % 360.0
-                await asyncio.sleep(abs(step) / self.MOVE_RATE)
-            self.rig.rotator_mech_deg = target
+                self._turn(step)
+                # Pacing only, through _sim_delay like the mount's slew
+                # (#207): the angle advances by a step fixed by the travel
+                # alone, so the dwell never reaches a value. Still one (zero)
+                # sleep per step under the fast path, so a halt can land
+                # mid-move.
+                await asyncio.sleep(_sim_delay(abs(step) / self.MOVE_RATE))
+            # The motor lands on the target exactly; the camera sits the
+            # slack behind it, which is the target itself with no play.
+            slack = self.rig.rotator_slack_deg
+            self.rig.rotator_mech_deg = ((target - slack) % 360.0 if slack
+                                         else target)
         finally:
             self._moving = False
 

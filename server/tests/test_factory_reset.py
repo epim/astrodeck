@@ -24,21 +24,18 @@ from astrodeck.factory_reset import PRESERVED_CAPTURE_ENTRIES, factory_reset
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
+def env(isolated_config, monkeypatch):
+    """conftest's ``isolated_config`` (#341), whose ``config/`` and
+    ``captures/`` are the two directories a reset works on. It was a store
+    patched into three modules, which left the profile library on the
+    developer's real ``profiles/`` while ``_dirty`` names an active profile
+    ("abc123") that the hub looks up there."""
     monkeypatch.setenv(app_module.NO_AUTOCONNECT_ENV_VAR, "1")
-    cfg_dir = tmp_path / "config"
-    cfg_dir.mkdir()
-    cap = tmp_path / "captures"
-    cap.mkdir()
-    store = ConfigStore(path=cfg_dir / "astrodeck.json")
-    monkeypatch.setattr(config_mod, "config_store", store)
-    monkeypatch.setattr(config_mod, "CONFIG_DIR", cfg_dir)
-    monkeypatch.setattr(hub_mod, "config_store", store)
-    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", cap)
-    monkeypatch.setattr(app_module, "config_store", store)
     app = app_module.create_app()
+    isolated_config.sweep()
     with TestClient(app) as c:
-        yield c, store, cfg_dir, cap
+        yield (c, isolated_config.store, isolated_config.dir,
+               isolated_config.captures)
 
 
 def _dirty(store: ConfigStore, cfg_dir, cap):
@@ -74,10 +71,64 @@ def _dirty(store: ConfigStore, cfg_dir, cap):
     (cap / "sessions" / "s1.json").write_text('{"id":"s1"}')
     (cap / "reports").mkdir()
     (cap / "reports" / "r1.json").write_text('{"id":"r1"}')
-    # NOT data, NOT setup: install assets/caches that must survive both modes
+    # NOT data, NOT setup: install assets/caches that must survive both modes.
+    # exist_ok (#201): ``logs`` is the night log's own folder, and since S3's
+    # capture-root isolation (conftest ``_point_the_capture_root_at``) every
+    # test has a fresh ``NightLogWriter`` whose first line creates ``logs/``
+    # under whatever root is current. A client's lifespan log line can reach
+    # this test's root before this line runs: measured on this file alone,
+    # -n0, a bare ``mkdir()`` failed 6 of 11 runs with FileExistsError
+    # [WinError 183] on ...\captures\logs, and 0 of 8 with ``exist_ok``
+    # (S3-X's verifier); measured again in the integration of S3, in a
+    # private copy: 5 of 8 runs red bare, and 0 of 5 with ``exist_ok``.
     for name in PRESERVED_CAPTURE_ENTRIES:
-        (cap / name).mkdir()
+        (cap / name).mkdir(exist_ok=True)
         (cap / name / "keepme").write_text("x")
+
+
+def test_dirty_runs_after_the_night_log_made_logs(env, monkeypatch):
+    """#201 with the race taken out: the night-log writer creates
+    ``captures/logs`` FIRST, every time, and ``_dirty`` runs after it.
+
+    The rates quoted in ``_dirty`` prove little on their own, because the
+    race is intermittent: a green run may simply have lost it. This forces
+    the losing order. A fresh ``NightLogWriter`` (the one conftest installs
+    for every capture root) rolls the night on its first line and makes
+    ``logs/`` under the root current then, which is this test's ``cap``; the
+    line is published through ``bus.log``, the path a lifespan's boot line
+    takes. A writer of the test's own, so the premise holds even where the
+    run turned persistence off (``ASTRODECK_LOG_PERSIST=0``).
+
+    RED under mutant "bare mkdir in _dirty" (``(cap / name).mkdir()`` for
+    the preserved entries, the code before 812fcf9e), run in a private
+    copy of ``server/`` (scratchpad s4-testhyg-mut2), 5 runs of 5, never
+    the coin toss the unforced race is, observed verbatim (the pytest
+    temporary root elided):
+
+        tests\\test_factory_reset.py:129:
+        tests\\test_factory_reset.py:85: in _dirty
+            (cap / name).mkdir()
+        ...
+        E           FileExistsError: [WinError 183] Cannot create a file when
+        that file already exists: '...\\\\test_dirty_runs_after_the_nigh0
+        \\\\captures\\\\logs'
+        FAILED tests/test_factory_reset.py::
+        test_dirty_runs_after_the_night_log_made_logs
+
+    Green on the fix: the file's 22 tests, 3 runs of 3 (``-p no:randomly
+    -n0``).
+    """
+    _c, store, cfg_dir, cap = env
+    from astrodeck import events
+    monkeypatch.setattr(events.bus, "night_log", events.NightLogWriter())
+    events.bus.log("info", "test_factory_reset: a line before _dirty (#201)",
+                   "test")
+    assert (cap / "logs").is_dir(), (
+        "premise: the night log made logs/ under this test's captures root "
+        "before _dirty ran")
+    _dirty(store, cfg_dir, cap)
+    for name in PRESERVED_CAPTURE_ENTRIES:
+        assert (cap / name / "keepme").read_text() == "x", name
 
 
 # ------------------------------------------------------------------ core reset

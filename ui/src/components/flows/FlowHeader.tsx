@@ -12,16 +12,26 @@
 // is marked `[DROPPED pending §G-5]` at the point it would have gone, so the
 // diff is one line each if the user rules the other way.
 //
-// WHAT THE HEADER IS NOT ALLOWED TO INVENT. Two numbers on this row have no
-// server behind them and it matters which:
-//   * ETA — `run.etaS` has NO source (§G-1: there is no `flow.node` / `flow.log`
-//     publisher and no run-state GET). FlowRunState's own comment forbids a
-//     client-side countdown from an assumed total, because "an ETA the client
-//     invented looks identical to one the rig computed." So a null reads `—`.
+// WHAT THE HEADER IS NOT ALLOWED TO INVENT. Two numbers on this row could be
+// printed with no server behind them, and it matters which:
+//   * ETA — the rig's own `progress.eta_s`, from the sequence state, while the
+//     run the rig is on is this flow's (#189 S5, `useFlowRunReadouts`), with
+//     "hops not yet costed" beside it while that clock prices hops it has not
+//     measured. Before S5 it read `run.etaS`, which nothing writes (§G-1:
+//     there is no `flow.node` / `flow.log` publisher and no run-state GET),
+//     and it still does for a run the sequence state does not tie to this
+//     flow. FlowRunState's own comment forbids a client-side countdown from an
+//     assumed total, because "an ETA the client invented looks identical to
+//     one the rig computed." So a null reads `—`.
 //   * The validation chip — `GRAPH VALID` is only printed once the compiler has
 //     actually answered. A chip that went green before the first compile
 //     returned would be the exact green-while-wrong defect this project keeps
 //     paying for.
+//
+// RUN SAYS WHAT IT WILL DO (#189 S5, spec 5.9). With a dormant session the
+// button reads `CONTINUE M31 MOSAIC (night 3, 412/1890 subs)`, the one copy
+// every RUN surface prints (`useFlowRunControls().copy`), and START OVER sits
+// beside it behind a confirm.
 import type { JSX } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -31,7 +41,9 @@ import { accessPhrase, useCapability } from "../../lib/caps";
 import { backendBadge, backendBadgeIsSim } from "../../lib/equipment";
 import type { FlowIssue } from "../../lib/flowsApi";
 import type { FlowTier } from "./geometry";
-import { useFlowRunControls } from "./flowRunControls";
+import {
+  START_OVER_LABEL, useFlowRunControls, useFlowRunReadouts, type RunCopy,
+} from "./flowRunControls";
 
 // RUN's honest-disabled sentence moved to `flowRunControls.tsx` when the phone
 // MONITOR tab needed the same button. Re-exported from here because that is
@@ -94,6 +106,59 @@ export function providerPill(
     : { label, variant: "prov-ext" };
 }
 
+// ─────────────────────────────────────────────────────────── the RUN words
+
+/** The RUN button's words, in the classic chrome: the one copy
+ *  (`runCopy`), drawn so that a narrow button cuts the flow's NAME with an
+ *  ellipsis and never the parenthetical, which carries the night and the
+ *  counts being continued. The verb and the parenthetical are `shrink-0`
+ *  and never wrap; the name is the only part that can give up width.
+ *
+ *  RUN and STOP are drawn exactly as they always were (`▶ RUN`, `■ STOP`).
+ *
+ *  `compact` is the phone header's form, where README §5 fits `◷ / RUN / i`
+ *  between `‹ LIBRARY` and a truncating title at 390 px and a 23-character
+ *  parenthetical cannot fit beside them: the verb alone is shown, and the
+ *  whole line is still the button's accessible text. The MONITOR tab's
+ *  full-width button, one tap away, prints it in full.
+ *
+ *  Shared by the header and the phone MONITOR tab. The #/next surfaces draw
+ *  the same parts in their own chrome. */
+export function RunWords({ copy, compact = false }: { copy: RunCopy; compact?: boolean }): JSX.Element {
+  if (copy.verb !== "CONTINUE") {
+    return (
+      <>
+        <span aria-hidden="true">{copy.verb === "STOP" ? "■" : "▶"}</span>
+        {` ${copy.verb}`}
+      </>
+    );
+  }
+  if (compact) {
+    return (
+      <>
+        <span aria-hidden="true">▶ {copy.verb}</span>
+        <span className="sr-only" data-testid="run-copy-text">{copy.text}</span>
+      </>
+    );
+  }
+  // The " " between the parts is text, so the button's text and its
+  // accessible name read as words; a white-space-only run between flex items
+  // is not rendered, so it moves nothing on screen.
+  return (
+    <span className="flex items-baseline gap-[0.5em] min-w-0" data-testid="run-copy">
+      <span aria-hidden="true" className="shrink-0">▶</span>
+      {" "}
+      <span className="shrink-0 whitespace-nowrap" data-testid="run-copy-verb">{copy.verb}</span>
+      {copy.name !== "" && (
+        <>{" "}<span className="min-w-0 truncate" data-testid="run-copy-name">{copy.name}</span></>
+      )}
+      {copy.detail !== "" && (
+        <>{" "}<span className="shrink-0 whitespace-nowrap" data-testid="run-copy-detail">{copy.detail}</span></>
+      )}
+    </span>
+  );
+}
+
 // ──────────────────────────────────────────────────────────────── selectors
 // Every one returns a primitive, so zustand's Object.is comparison is exact and
 // a pan, a node-status tick or a log line re-renders none of this row. The one
@@ -102,8 +167,8 @@ const useScreen = () => useStore((s) => s.flows.ui.screen);
 const useFlowName = () => useStore((s) => s.flows.record?.name ?? "");
 const useCardCount = () => useStore((s) => s.flows.cards.length);
 // (the run phase is read by useFlowRunControls, which owns RUN/STOP for both
-//  this row and the phone MONITOR tab — one subscription, not two)
-const useEtaS = () => useStore((s) => s.flows.run.etaS);
+//  this row and the phone MONITOR tab — one subscription, not two; the ETA is
+//  useFlowRunReadouts', which the MONITOR tab reads too)
 const useCompiled = () => useStore((s) => s.flows.compiled !== null);
 const useIssues = () =>
   useStore(useShallow((s) => s.flows.compiled?.issues ?? EMPTY_ISSUES));
@@ -116,7 +181,7 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
 
   const name = useFlowName();
   const cardCount = useCardCount();
-  const etaS = useEtaS();
+  const { etaS, etaNote } = useFlowRunReadouts();
   const checked = useCompiled();
   const issues = useIssues();
   const mode = useBackendMode();
@@ -126,7 +191,10 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
   // "aborting" the moment teardown starts and only says stopped once the rig
   // has, so a header that flipped back to ▶ RUN here would offer to start over
   // a moving mount.
-  const { running, reason: runReason, explain, act: runAct } = useFlowRunControls();
+  const {
+    running, reason: runReason, explain, act: runAct, copy, startOver,
+  } = useFlowRunControls();
+  const continues = copy.verb === "CONTINUE";
 
   // Tonight is gated on view.site_derived, NOT view.status: an audit of this
   // codebase recovered the observatory to 2.9 km from three viewer-legal
@@ -266,17 +334,25 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
       {running && (
         <span
           className="font-mono text-[11px] tabular-nums shrink-0"
-          // TODO(flows-handoff): `run.etaS` has no publisher — see §G-1. Under
-          // settlement (b) the candidate source is the existing sequence event's
-          // `progress.eta_s` (+ `eta_confident`), which a flow run really does
-          // emit because it runs on the same engine. Do not wire it here without
-          // the ruling: it changes what capture 07 shows.
+          data-testid="flow-header-eta"
+          // The sequence event's `progress.eta_s`, which a flow run really
+          // does emit because it runs on the same engine, read only while
+          // that run is this flow's. The source is the U-07 plan (spec
+          // section 9, row U-07, built in #189 S5): the flow's readouts come
+          // from the sequence state and no flow topic was added. §G-1 was
+          // never ruled; U-07 is what was built (#510, B17).
+          // The note rides in the tooltip on a phone: the row there is
+          // README §5's `‹ LIBRARY` / title / `◷ RUN i` at 390 px, with no
+          // room for four more words, and the MONITOR tab's ETA prints them.
           title={etaS == null
             ? "The rig has not reported a time remaining for this run."
-            : undefined}
+            : phone && etaNote ? `ETA ${formatEta(etaS)}, ${etaNote}` : undefined}
         >
           <span className="text-dim">ETA </span>
           <span className="text-ink">{formatEta(etaS)}</span>
+          {etaNote && !phone && (
+            <span className="text-dim" data-testid="flow-header-eta-note">{` · ${etaNote}`}</span>
+          )}
         </span>
       )}
 
@@ -307,17 +383,33 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
           ■ STOP stays a plain single-tap — ui.tsx's own header: "Emergency
           motion stops (STOP/HALT/polar-STOP) stay single-tap — do NOT route
           them through HoldButton." */}
+      {/* CONTINUE is the one label on this row that can be long, so it is
+          the one that may shrink: `min-w-0` lets the row take width from it,
+          and `RunWords` gives that width up from the flow's name only. */}
       {editor && (
         <HonestButton
-          className={`btn shrink-0 ${running
+          className={`btn ${continues && !phone ? "min-w-0" : "shrink-0"} ${running
             ? "!border-bad !text-bad !bg-[color-mix(in_srgb,var(--bad)_12%,transparent)]"
             : "!border-accent2 !bg-accent-fill !text-accent"}`}
           reason={runReason}
           onExplain={explain}
           onClick={runAct}
         >
-          <span aria-hidden="true">{running ? "■" : "▶"}</span>
-          {running ? " STOP" : " RUN"}
+          <RunWords copy={copy} compact={phone} />
+        </HonestButton>
+      )}
+
+      {/* 11b — START OVER, beside CONTINUE and only beside it (spec 5.9),
+          behind the confirm `startOver` asks. Left off the phone header for
+          the room README §5 does not have; the MONITOR tab carries it. */}
+      {editor && continues && !phone && (
+        <HonestButton
+          className="btn shrink-0 !text-[11px] !tracking-[0.12em] !px-2.5 !py-[7px]"
+          reason={runReason}
+          onExplain={explain}
+          onClick={startOver}
+        >
+          <span data-testid="flow-start-over">{START_OVER_LABEL}</span>
         </HonestButton>
       )}
 

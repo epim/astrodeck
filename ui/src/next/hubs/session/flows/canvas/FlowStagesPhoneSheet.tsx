@@ -40,35 +40,82 @@
 // share it and the stage editor opens on a flow nobody named. Both navigations
 // pass `{ open, node }` / `{ open }`.
 //
-// WHAT IT MAY NOT INVENT. `run.phase`, `run.etaS`, `run.curStage` and
-// `run.frames` are written by nothing server-side: there is no `flow.node`
-// topic, no `flow.log` topic and no run-state GET. This renders the store's
-// values honestly and they will read IDLE / - / - / 0 during a real run. A
-// client-side countdown from an assumed total, or a stage name inferred from the
-// graph, would look identical to one the rig computed.
+// WHERE THE READOUTS COME FROM (#189 S5, U-07). While the run the rig is on is
+// this flow's (`flowRunLive`: the session the sequence state writes is the one
+// the progress route counts), the four readouts and the header's live line are
+// the sequence state's (`useFlowRunReadouts`): STATE the engine's own state,
+// ETA its `progress.eta_s` with "hops not yet costed" under it while that
+// clock prices hops it has not measured, STAGE the target, or for a mosaic the
+// panel and pass (`M31 2-3 · pass 2`; `M31 · waiting for the meridian` across
+// a meridian wait, with nothing site-derived), FRAMES its `frames_done /
+// frames_total`. For any other run, or none, they are the store's own
+// `run.phase`, `run.etaS`, `run.curStage` and `run.frames`, which nothing
+// server-side writes (there is no `flow.node` topic, no `flow.log` topic and
+// no run-state GET), so they read IDLE / - / - / 0: another flow's clock on
+// this flow's monitor would describe the wrong ledger. WHAT IT MAY NOT INVENT
+// is unchanged: a client-side countdown from an assumed total, or a stage name
+// inferred from the graph, would look identical to one the rig computed.
+//
+// RUN SAYS WHAT IT WILL DO (#189 S5, spec 5.9): `CONTINUE M31 MOSAIC (night 3,
+// 412/1890 subs)` over a dormant session, the one copy every RUN surface
+// prints, with the flow's name the only part a 390 px footer may cut, and
+// START OVER under it behind a confirm.
+//
+// THE PANEL LOOP, WHICH THE PHONE CANNOT DRAW AS A WIRE (#189 S4 item 6, spec
+// 1.4 "How it is drawn"). On a tablet a mosaic's loop is the dashed back-arc
+// from its lane's tail to the TARGET's "next panel". Here it is a dashed amber
+// rail from the TARGET's row to the TAIL's row, the lane's rows indented
+// inside it, labelled EVERY PASS: NEXT PANEL; with the wire absent, a LOOP
+// PANELS button takes its place. Both read the graph through panelLane.ts, the
+// mirror of the compile's own lane rules, so the rail is drawn exactly when
+// the run rotates panels and around exactly the stages it shoots per panel.
+//
+// THE COUNTS LINE (Revision 2 ruling 2, S4 orchestrator ruling 8). A flow saved
+// before new blocks counted accepted subs still counts every sub taken until
+// it is next saved, and the phone says so in one persistent line, read from
+// the graph on every render (`countsNotice`), so the save that switches the
+// counts takes it down without a reopen.
+//
+// THE REPLAY LINE (#473, S7 orchestrator ruling 1). While the session
+// CONTINUE would carry on is armed and the flow was saved after the version
+// it froze, a line under the counts line says dusk will replay that version
+// (`replayNotice`), and RUN's first tap arms it as `CONFIRM CONTINUE (night
+// n, banked/total subs)` (`runArm`, #474), the toolbar's own arm.
 
-import { useCallback, useEffect, useMemo, type JSX } from "react";
+import {
+  useCallback, useEffect, useMemo, useState, type JSX,
+} from "react";
 
 import { flowOrder } from "../../../../../components/flows/autoLayout";
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
 import type { FlowEdgeRec, FlowNodeRec } from "../../../../../components/flows/flowsTypes";
-import { useFlowRunControls } from "../../../../../components/flows/flowRunControls";
+import {
+  START_OVER_LABEL, useFlowRunControls, useFlowRunReadouts,
+} from "../../../../../components/flows/flowRunControls";
+import { countsNotice } from "../../../../../components/flows/countsNotice";
+import { replayNotice } from "../../../../../components/flows/replayNotice";
+import { laneTail, loopSource, panelLane } from "../../../../../components/flows/panelLane";
+import { LOOP_CHIP_WORDS, targetLoops } from "../../../../../components/flows/targetSummary";
 import { accessPhrase, useCapability } from "../../../../../lib/caps";
 import { useStore } from "../../../../../store";
 import { nav } from "../../../../router";
 import { useBreakpoint } from "../../../../breakpoint";
 import { NxIcon } from "../../../../icons";
 import {
-  ActionButton, Card, EmptyCard, Label, ListRow, LockNote, Mono, Pill,
+  ActionButton, BannerCard, Card, EmptyCard, Label, ListRow, LockNote, Mono, Pill,
   ReadoutGrid, ReadoutTile, Sheet, StatusPill,
 } from "../../../../ui";
 import type { SheetProps } from "../../../sheets";
 import { PLAN_EDITOR_PHONE_REASON } from "../../sheets/planEditor";
-import { leaveFlowEditor } from "../openFlow";
-import { FlowPortRow } from "./FlowNode";
+import {
+  FLOW_OPEN_FAILED, flowOpenFailure, leaveFlowEditor, libraryErrorNow, openFlowById,
+} from "../openFlow";
+import { FlowPortRow, LOOP_PANELS_LABEL, offersLoopPanels } from "./FlowNode";
+import { RunCopyWords, runArm } from "./FlowCanvasToolbar";
+import { emptyLogText } from "./FlowLogStrip";
 import { FlowTapWireBar } from "./FlowTapWireBar";
 import {
-  ADD_STAGE_LABEL, IDLE_LOG_TEXT, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD,
+  ADD_STAGE_LABEL, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD,
   NO_WIRES_TEXT, RIG_VALUE_PREFIX, asNodeStatus, formatEta, framesWord, logTail,
   logTime, markTone, markWord, nodeMarkDetail, nodeMarkLevel, rigValueFor,
   saveLockReason, saveStateTone, saveStateWord, stageWord,
@@ -82,6 +129,33 @@ export const FLOW_STAGES_SHEET = "flowStages";
 /** Shown while no flow is open yet - the record arrives one tick after the
  *  sheet, and a blank title reads as a broken screen. */
 export const FLOW_STAGES_UNTITLED = "FLOW";
+
+/** The waiting card while the open this sheet asked for (`?open=`) is still
+ *  out, or landed on some other flow (#553). The open record is another
+ *  flow's, or none, so nothing of it - not its stages, its readouts or its
+ *  RUN - may be drawn: the defect this closes is exactly a phone tap on flow
+ *  B's row starting flow A because a failed read of B left A's stage list
+ *  and RUN live under B's route. Mirrors the pattern already built twice,
+ *  `FlowFrameSheet.tsx` (`FRAME_FLOW_LOADING`/`FRAME_OTHER_FLOW`, #384) and
+ *  the Sky flow card (`sky/sheets/flow.tsx`, #499). */
+export const FLOW_STAGES_LOADING =
+  "This flow's stages show once it has loaded.";
+
+/** The waiting card's reason for a route with no `?open=` at all: nothing was
+ *  asked for, so whatever is open in the store belongs to some other visit
+ *  and must not be shown or run here either. */
+export const FLOW_STAGES_NO_ID =
+  "This link names no flow, so there is nothing here to show or run.";
+
+/** RUN's and SAVE's locked reason once the open has answered and it was not
+ *  this flow, or while nothing was asked for. One sentence for both controls:
+ *  a sheet that has not loaded this flow has nothing of it to run OR to
+ *  save - the graph on screen, if any, is another flow's. */
+export const FLOW_STAGES_NOT_OPENED_REASON =
+  "That flow did not open, so there is nothing here to run or save.";
+
+/** RUN's and SAVE's locked reason while the open is still out. */
+const FLOW_STAGES_LOADING_REASON = "Loading this flow…";
 
 /** The stage list's reading order.
  *
@@ -101,9 +175,115 @@ export function stageOrder(
   return [...ordered, ...nodes.filter((n) => !seen.has(n.id))];
 }
 
+/** The rail's label (spec 1.4): the canvas chip's words, in the list's
+ *  capitals, so the two views of one wire say the same thing. */
+export const LOOP_RAIL_LABEL = LOOP_CHIP_WORDS.toUpperCase();
+
+/** One entry of the drawn list: a plain row; a looped mosaic's TARGET with its
+ *  lane on the rail, ending at `tail`; or the LOOP PANELS button under a
+ *  mosaic's row, with the stage its wire would leave. */
+export type StageBlock =
+  | { kind: "row"; node: FlowNodeRec }
+  | { kind: "rail"; target: FlowNodeRec; lane: FlowNodeRec[]; tail: FlowNodeRec }
+  | { kind: "offer"; target: FlowNodeRec; tail: FlowNodeRec };
+
+/** `stageOrder`, with each looped mosaic's lane gathered onto its rail.
+ *
+ *  A RAIL IS DRAWN for a TARGET whose panels rotate (`targetLoops`: more than
+ *  one panel and a loop wire from its lane's tail), and it holds that block's
+ *  panel lane (`panelLane`) and nothing else, ending at the lane's TAIL
+ *  (`laneTail`), the stage the loop wire leaves. The lane is moved up under
+ *  its TARGET rather than drawn where `stageOrder` put it: that order is
+ *  breadth-first, so a stage fed by the TARGET's own parent (a DOME opened by
+ *  the same DUSK) can sit between the TARGET and its lane, and a rail drawn
+ *  down the list would claim that stage is shot per panel. Every other row
+ *  keeps its place. A block with a loop wire has a single tail, so its lane is
+ *  one chain and `panelLane` lists it nearest first, the tail last.
+ *
+ *  THE BUTTON IS OFFERED where the rail would start, under the TARGET's row,
+ *  exactly when a press would add the wire (`offersLoopPanels`); its `tail` is
+ *  the stage that wire would leave (`loopSource`), which the button names.
+ *
+ *  With no multi-panel TARGET this is `stageOrder`, row for row. */
+export function stageBlocks(
+  nodes: readonly FlowNodeRec[],
+  edges: readonly FlowEdgeRec[],
+): StageBlock[] {
+  const g = { nodes, edges };
+  const order = stageOrder(nodes, edges);
+  const rails = new Map<string, { lane: FlowNodeRec[]; tail: FlowNodeRec }>();
+  const railed = new Set<string>();
+  for (const n of order) {
+    if (!targetLoops(n, g)) continue;
+    const tail = laneTail(g, n.id);
+    if (!tail) continue;
+    const lane = panelLane(g, n.id);
+    rails.set(n.id, { lane, tail });
+    for (const m of lane) railed.add(m.id);
+  }
+  const out: StageBlock[] = [];
+  for (const n of order) {
+    if (railed.has(n.id)) continue;
+    const rail = rails.get(n.id);
+    if (rail) {
+      out.push({ kind: "rail", target: n, ...rail });
+      continue;
+    }
+    out.push({ kind: "row", node: n });
+    const tail = n.type === "target" && offersLoopPanels(g, n.id) ? loopSource(g, n.id) : null;
+    if (tail) out.push({ kind: "offer", target: n, tail });
+  }
+  return out;
+}
+
+/** The rail: a dashed amber line down the left of the lane, from under the
+ *  TARGET's row to the bottom of the TAIL's row, with the lane's rows indented
+ *  inside it. Inline, like every other one-off in this sheet's rows, because
+ *  canvas.css is the canvas's stylesheet; `--warn` is the amber token, and a
+ *  DASH, not the hue, is what the night palette leaves telling it apart. */
+const RAIL_BODY_STYLE = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  marginLeft: 14,
+  paddingLeft: 12,
+  borderLeft: "2px dashed var(--warn)",
+} as const;
+
+/** The TARGET's row and the rail under it, spaced as the list spaces its
+ *  rows (`.nx-flow-stages`, 8 px). */
+const RAIL_STYLE = { display: "flex", flexDirection: "column", gap: 8 } as const;
+
+/** The LOOP PANELS button sits where the rail would start: under the
+ *  TARGET's row, at the rail's inset. */
+const OFFER_STYLE = { marginLeft: 14 } as const;
+
+/** THE FOOTER'S COLUMN FILLS THE FOOTER (#189 S5, found by the real-page
+ *  probe, routes_s5_s6.json). `.nx-sheet-foot` is a flex ROW, and this column
+ *  is its one child; with no `flex` it took its content's width, so every
+ *  `full` button under it was only as wide as the widest label: RUN and SAVE
+ *  92 px of the 358 the footer holds, and with CONTINUE's copy the whole
+ *  column as wide as that one line, off the right edge of the screen for a
+ *  long flow name, cutting the parenthetical the copy promises never to cut
+ *  (runCopy.ts). `min-width: 0` lets it be narrower than that line, so the
+ *  name, the one part that may give up width, is what gives it up. */
+const FOOT_STYLE = { flex: "1 1 auto", minWidth: 0 } as const;
+
+/** NOTHING UNDER THE LIST SHRINKS (#189 S5, the same probe).
+ *  `.nx-sheet-body` is a flex column that scrolls, and a flex item there
+ *  shrinks, when the column overflows, down to its automatic minimum: under a
+ *  long stage list + ADD STAGE, a 52 px button whose minimum is its label's
+ *  line, was drawn 20 px tall, and the LOG, a scroller whose minimum is 0
+ *  (overflow is not visible), 17 px, its lines cut in half. The list scrolls
+ *  instead, which is what the column is for. The LOG takes `flex-shrink: 0`;
+ *  ADD STAGE sits in a plain block, which is then the flex item, and whose
+ *  minimum is its content, the whole button. The same trap the Dial met on
+ *  the mount sheet (next.css `.nx-dial`). */
+const NO_SHRINK = { flexShrink: 0 } as const;
+
 // -------------------------------------------------------------- a stage row
 
-function StageRow({ node, nodes, edges, openId }: {
+function StageRow({ node, nodes, edges, openId, runLive }: {
   node: FlowNodeRec;
   /** The whole graph, from the sheet's two subscriptions. Passed rather than
    *  read here so a wire added anywhere re-renders one list, not sixteen - and
@@ -112,8 +292,21 @@ function StageRow({ node, nodes, edges, openId }: {
   edges: readonly FlowEdgeRec[];
   /** The flow id the route names, carried into every sheet this row opens. */
   openId: string;
+  /** This flow's run is live on the rig (`useFlowRunReadouts().fed`), read
+   *  once by the sheet and handed down, as the graph is. */
+  runLive: boolean;
 }): JSX.Element {
   const status = useStore((s) => asNodeStatus(s.flows.statuses[node.id]));
+  // WHAT THE STAGE'S PILL MAY SAY (#189 S5, found by the real-page probe,
+  // routes_s5_s6.json). Nothing writes `flows.statuses`: no topic carries a
+  // stage's status (see the header on `flow.node`), so every stage reads the
+  // default, IDLE, and through a live run of THIS flow that is false. The
+  // probe saw TARGET, FILTER CYCLE and SESSION REPORT all IDLE while the rig
+  // shot panel 1-1. So while this flow runs, a stage with no status of its
+  // own shows none, and the readouts above say what the run is doing; IDLE
+  // stays whenever nothing of this flow runs, where it is true.
+  const written = useStore((s) => s.flows.statuses[node.id] !== undefined);
+  const showStatus = written || !runLive;
   // The same three primitives the canvas card subscribes to, and the same
   // words: a stage that reads FROM THE RIG on a tablet must not read something
   // else in the list a phone opens.
@@ -177,7 +370,9 @@ function StageRow({ node, nodes, edges, openId }: {
         icon={<NxIcon name="flows" size={16} />}
         title={def.label}
         sub={def.sum(node.params)}
-        right={<StatusPill text={word} tone={NODE_STATUS_TONE[status]} pulse={status === "busy"} />}
+        right={showStatus
+          ? <StatusPill text={word} tone={NODE_STATUS_TONE[status]} pulse={status === "busy"} />
+          : undefined}
         chevron
         onPress={open}
       />
@@ -266,31 +461,87 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   const record = useStore((s) => s.flows.record);
   const nodes = useStore((s) => s.flows.graph.nodes);
   const edges = useStore((s) => s.flows.graph.edges);
-  const phase = useStore((s) => s.flows.run.phase);
-  const etaS = useStore((s) => s.flows.run.etaS);
-  const curStage = useStore((s) => s.flows.run.curStage);
-  const frames = useStore((s) => s.flows.run.frames);
-  const frameGoal = useStore((s) => s.flows.run.frameGoal);
+  // The four readouts, from the sequence state while the rig's run is this
+  // flow's and from `flows.run` otherwise: one shallow-compared record of
+  // primitives, so a publish that moves none of them re-renders nothing.
+  const readouts = useFlowRunReadouts();
   const logs = useStore((s) => s.flows.logs);
   const dirty = useStore((s) => s.flows.dirty);
   const readonly = useStore((s) => s.flows.record?.readonly ?? false);
-  const flowsOpen = useStore((s) => s.flowsOpen);
   const save = useStore((s) => s.flowsSave);
+  const applyFraming = useStore((s) => s.flowsApplyFraming);
+  // THE COUNTS LINE, read from the graph on every store write: a string or
+  // null, so this subscription is exact under Object.is. Not captured when the
+  // sheet opens: the save that switches the counts writes the switch into this
+  // graph (`acceptCounts`) and does not reopen the flow, so a line read once
+  // would go on promising a switch the save already made.
+  const countsLine = useStore((s) => countsNotice(s.flows.graph, s.flows.countsNote));
+  // THE REPLAY LINE (#473, S7 orchestrator ruling 1), from the one function
+  // the toolbar and the classic editor read, as a string or null.
+  const replayLine = useStore((s) => replayNotice(s.flows.progress, s.flows.record));
 
   const canViewSiteDerived = useCapability("view.site_derived");
   const phone = useBreakpoint() === "phone";
-  const { running, reason: hookRunReason, explain, act } = useFlowRunControls();
+  const {
+    running, reason: hookRunReason, explain, act, copy, startOver,
+  } = useFlowRunControls();
 
   const openId = record?.id ?? null;
+
+  /** The last open this sheet asked for that did not land: which flow, the
+   *  record that was open when it was asked (the attempt's identity - a new
+   *  attempt starts exactly when `want` or `openId` changes, so a failure
+   *  recorded under an earlier one no longer matches), and the reason. */
+  const [failure, setFailure] = useState<
+    { id: string; from: string | null; reason: string } | null
+  >(null);
+
+  // THROUGH `openFlowById`, NOT A BARE `flowsOpen` (#553). `flowsOpen`
+  // swallows its own failure and leaves the record that was open before in
+  // place, so a phone tap on flow B's row while flow A is what the store
+  // still holds used to draw A's stage list, with RUN live, under a route
+  // that named B - a press on B's row starting A on the rig. `openFlowById`
+  // says whether `want` actually landed, and `mine` below is the one gate
+  // every read of `record`, `nodes` and `edges` goes through: while it is
+  // false the sheet shows a waiting card instead (`waiting`), never a stage
+  // of whatever the store happens to hold. A late answer to an earlier
+  // attempt (another id, or the record changed under it) is dropped.
   useEffect(() => {
     // Idempotent: re-opening the flow already loaded would discard an unsaved
     // edit and re-run the compile for nothing.
     if (!want || openId === want) return;
-    void flowsOpen(want);
-  }, [want, openId, flowsOpen]);
+    let current = true;
+    const before = libraryErrorNow();
+    void openFlowById(want).then((landed) => {
+      if (current && !landed) setFailure({ id: want, from: openId, reason: flowOpenFailure(before) });
+    });
+    return () => { current = false; };
+  }, [want, openId]);
 
-  const rows = useMemo(() => stageOrder(nodes, edges), [nodes, edges]);
-  const lines = useMemo(() => logTail(logs), [logs]);
+  // THE ONE TEST every read of the open record below is gated on. A route
+  // with no `?open=` at all names no flow, so it is never "mine" whatever the
+  // store happens to hold - showing it would be the same defect under a
+  // different cause (nothing asked for, rather than an open that failed).
+  const mine = want !== "" && openId === want;
+  const failed = failure !== null && failure.id === want && failure.from === openId
+    ? failure.reason : null;
+  /** What the sheet shows INSTEAD of the open record, and RUN/SAVE's locked
+   *  reason, while that record is not the flow this sheet names; null once it
+   *  is. Three things to say: the route names no flow, the open answered and
+   *  it was not this flow (with the reason the store wrote, or the mismatch
+   *  sentence), or the open is still out. */
+  const waiting: { title: string; hint: string } | null = mine ? null
+    : want === ""
+      ? { title: "NO FLOW", hint: FLOW_STAGES_NO_ID }
+      : failed !== null
+        ? { title: FLOW_OPEN_FAILED.toUpperCase(), hint: failed }
+        : { title: "OPENING THIS FLOW", hint: FLOW_STAGES_LOADING };
+
+  // The lane, the log and every readout below are the open record's and
+  // nothing else: while `waiting` is up they would be another flow's (or
+  // none), so they are computed from empty inputs rather than read at all.
+  const blocks = useMemo(() => (mine ? stageBlocks(nodes, edges) : []), [mine, nodes, edges]);
+  const lines = useMemo(() => (mine ? logTail(logs) : []), [mine, logs]);
 
   const tonightReason = canViewSiteDerived
     ? null
@@ -299,9 +550,14 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
 
   // Same three decisions as the canvas toolbar, from the same pure helpers, so
   // the phone and the tablet cannot end up disagreeing about whether a flow is
-  // safe to start. The rig's own refusal outranks the unsaved one.
-  const runReason = hookRunReason ?? (running ? null : unsavedRunReason(dirty, readonly));
-  const saveReason = saveLockReason(dirty, readonly);
+  // safe to start. The rig's own refusal outranks the unsaved one, and both
+  // outrank a wait: a flow that has not loaded has nothing on screen to run
+  // or save, whatever `dirty` says about the flow left over from before.
+  const waitingReason = waiting === null ? null
+    : failed !== null ? FLOW_STAGES_NOT_OPENED_REASON : FLOW_STAGES_LOADING_REASON;
+  const runReason = waitingReason
+    ?? hookRunReason ?? (running ? null : unsavedRunReason(dirty, readonly));
+  const saveReason = waitingReason ?? saveLockReason(dirty, readonly);
   const stateWord = saveStateWord(dirty, readonly);
 
   /** BACK saves, exactly as the legacy `< LIBRARY` button did.
@@ -326,10 +582,14 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   return (
     <Sheet
       data-testid="session-flow-stages"
-      title={record?.name ?? FLOW_STAGES_UNTITLED}
-      sub={`${nodes.length} stages · ${edges.length} wires`}
+      title={mine ? record?.name ?? FLOW_STAGES_UNTITLED : FLOW_STAGES_UNTITLED}
+      sub={mine ? `${nodes.length} stages · ${edges.length} wires` : undefined}
       icon={<NxIcon name="flows" size={18} />}
-      live={<Mono size={10.5} tone="dim">{`${phase.toUpperCase()} · ETA ${formatEta(etaS)}`}</Mono>}
+      // While waiting the store's readouts, if any, are another flow's run -
+      // not this route's - so the live line is blank rather than borrowed.
+      live={mine
+        ? <Mono size={10.5} tone="dim">{`${readouts.state} · ETA ${formatEta(readouts.etaS)}`}</Mono>
+        : undefined}
       right={(
         <span data-testid="flow-stages-save-state">
           <Pill tone={saveStateTone(dirty, readonly)} ariaLabel={`This flow: ${stateWord}`}>
@@ -339,7 +599,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
       )}
       onBack={back}
       footer={(
-        <div className="nx-flow-stages-foot">
+        <div className="nx-flow-stages-foot" style={FOOT_STYLE}>
           <FlowTapWireBar />
           {/* SAVE above RUN, because RUN is refused until it has been pressed.
               A full-width pair would put the two most consequential buttons on
@@ -365,13 +625,30 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
             glyph={<NxIcon name={running ? "stop" : "play"} size={16} />}
             lockedReason={runReason}
             onExplain={explain}
-            // STOP is a plain single tap: emergency motion stops are never
-            // armed, held or confirmed.
-            arm={running ? undefined : { label: "CONFIRM RUN" }}
+            // The toolbar's own arm (#474): CONFIRM and the copy's verb with
+            // its night and counts, and none for STOP, a plain single tap,
+            // since emergency motion stops are never armed, held or
+            // confirmed.
+            arm={runArm(copy)}
             onPress={act}
           >
-            {running ? "STOP" : "RUN"}
+            <RunCopyWords copy={copy} />
           </ActionButton>
+          {/* START OVER, under CONTINUE and only under it (spec 5.9): the
+              secondary weight and size, so it is not RUN's twin under the
+              same thumb, and the confirm `startOver` asks is its guard. */}
+          {copy.verb === "CONTINUE" && (
+            <ActionButton
+              kind="secondary"
+              full
+              data-testid="flow-stages-start-over"
+              lockedReason={runReason}
+              onExplain={explain}
+              onPress={startOver}
+            >
+              {START_OVER_LABEL}
+            </ActionButton>
+          )}
           {/* `LockNote` prints "Read-only - <reason>", which is the right frame
               for a capability or a missing camera and the WRONG one for an
               unsaved edit: this flow is not read-only, it is ahead of the rig.
@@ -385,62 +662,150 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
         </div>
       )}
     >
-      <ReadoutGrid cols={4} data-testid="flow-stages-monitor">
-        <ReadoutTile label="STATE" value={phase.toUpperCase()} />
-        <ReadoutTile label="ETA" value={formatEta(etaS)} />
-        <ReadoutTile label="STAGE" value={stageWord(curStage)} />
-        <ReadoutTile label="FRAMES" value={framesWord(frames, frameGoal)} />
-      </ReadoutGrid>
-
-      <Label size={10}>STAGES</Label>
-      {rows.length === 0 ? (
-        <EmptyCard
-          data-testid="flow-stages-empty"
-          title="THIS FLOW HAS NO STAGES"
-          hint="Nothing will happen when this flow runs. Add the first stage below."
-        />
+      {waiting !== null ? (
+        // NOTHING OF THE OPEN RECORD: not its readouts, stages, log or ADD
+        // STAGE, every one of which is another flow's (or none) while this is
+        // up (#553).
+        <EmptyCard data-testid="flow-stages-waiting" title={waiting.title} hint={waiting.hint} />
       ) : (
-        <div className="nx-flow-stages">
-          {rows.map((n) => (
-            <StageRow key={n.id} node={n} nodes={nodes} edges={edges} openId={want} />
-          ))}
-        </div>
-      )}
+        <>
+          <ReadoutGrid cols={4} data-testid="flow-stages-monitor">
+            <ReadoutTile label="STATE" value={readouts.state} data-testid="flow-stages-state" />
+            <ReadoutTile
+              label="ETA"
+              value={formatEta(readouts.etaS)}
+              sub={readouts.etaNote ?? undefined}
+              data-testid="flow-stages-eta"
+            />
+            <ReadoutTile label="STAGE" value={stageWord(readouts.stage)} data-testid="flow-stages-stage" />
+            <ReadoutTile
+              label="FRAMES"
+              value={framesWord(readouts.frames, readouts.frameGoal)}
+              data-testid="flow-stages-frames"
+            />
+          </ReadoutGrid>
 
-      {/* PINNED AT THE END OF THE LIST, and rendered at zero stages too - which
-          is the state that most needs it. The legacy phone graph put the same
-          control in the same place (`FlowPhoneGraph.tsx:92-102`) and wave 1
-          dropped it, leaving a screen that could open a flow, wire it and run it
-          but never add anything to it. */}
-      <ActionButton
-        kind="purple"
-        size="lg"
-        full
-        data-testid="flow-stages-add"
-        onPress={addStage}
-      >
-        {ADD_STAGE_LABEL}
-      </ActionButton>
+          {/* Ruling 2's line, for as long as the graph counts every sub taken.
+              No dismiss: it is a standing fact about the flow, and saving is what
+              ends it. */}
+          {countsLine && (
+            <BannerCard tone="info" text={countsLine} data-testid="flow-stages-counts" />
+          )}
+          {/* The replay line: dusk will replay the version the armed session
+              froze unless CONTINUE applies the saved edits. A warning, so it
+              takes the warn tone; no dismiss, since it stays true until
+              CONTINUE applies the edits or the session is disarmed. */}
+          {replayLine && (
+            <BannerCard tone="warn" text={replayLine} data-testid="flow-stages-replay" />
+          )}
 
-      <Label size={10}>LOG</Label>
-      <div role="log" className="nx-flow-log-body" data-testid="flow-stages-log">
-        {lines.length === 0 ? (
-          <Mono size={10.5} tone="dim">{IDLE_LOG_TEXT}</Mono>
-        ) : (
-          lines.map((l) => (
-            <div key={l.id} className="nx-flow-log-line">
-              <Mono size={10} tone="dim">{logTime(l.ts)}</Mono>
-              <Mono size={10.5} tone={LOG_TONE[l.tone]}>{l.msg}</Mono>
+          <Label size={10}>STAGES</Label>
+          {blocks.length === 0 ? (
+            <EmptyCard
+              data-testid="flow-stages-empty"
+              title="THIS FLOW HAS NO STAGES"
+              hint="Nothing will happen when this flow runs. Add the first stage below."
+            />
+          ) : (
+            <div className="nx-flow-stages">
+              {blocks.map((b) => {
+                if (b.kind === "row") {
+                  return <StageRow key={b.node.id} node={b.node} nodes={nodes} edges={edges} openId={want} runLive={readouts.fed} />;
+                }
+                if (b.kind === "rail") {
+                  return (
+                    <div
+                      key={`rail-${b.target.id}`}
+                      style={RAIL_STYLE}
+                      data-testid="flow-stage-rail"
+                      data-rail-from={b.target.id}
+                      data-rail-to={b.tail.id}
+                    >
+                      <StageRow node={b.target} nodes={nodes} edges={edges} openId={want} runLive={readouts.fed} />
+                      <div
+                        role="group"
+                        aria-label={`${LOOP_RAIL_LABEL}: the stages shot on each panel`}
+                        data-testid="flow-stage-rail-body"
+                        style={RAIL_BODY_STYLE}
+                      >
+                        <span data-testid="flow-stage-rail-label">
+                          <Mono size={10} tone="warn">{LOOP_RAIL_LABEL}</Mono>
+                        </span>
+                        {b.lane.map((n) => (
+                          <StageRow key={n.id} node={n} nodes={nodes} edges={edges} openId={want} runLive={readouts.fed} />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                }
+                // THE WIRE IS ABSENT, so the button stands where the rail would.
+                // The press is the modal DONE's own write with an empty patch: one
+                // graph write, one compile, and `withLoop` takes the wire from the
+                // lane's TAIL, never an earlier stage (M12).
+                const from = NODE_DEFS[b.tail.type]?.label ?? b.tail.type;
+                return (
+                  <div key={`loop-${b.target.id}`} style={OFFER_STYLE}>
+                    <ActionButton
+                      kind="warn"
+                      full
+                      data-testid={`flow-stage-loop-${b.target.id}`}
+                      ariaLabel={`${LOOP_PANELS_LABEL}: wire ${from} 'pass done' to this TARGET's 'next panel', so every pass moves to the next panel`}
+                      onPress={() => { void applyFraming(b.target.id, {}, true); }}
+                    >
+                      {LOOP_PANELS_LABEL}
+                    </ActionButton>
+                  </div>
+                );
+              })}
             </div>
-          ))
-        )}
-      </div>
+          )}
+
+          {/* PINNED AT THE END OF THE LIST, and rendered at zero stages too - which
+              is the state that most needs it. The legacy phone graph put the same
+              control in the same place (`FlowPhoneGraph.tsx:92-102`) and wave 1
+              dropped it, leaving a screen that could open a flow, wire it and run it
+              but never add anything to it. The block around it is what keeps it
+              52 px tall under a long list (see NO_SHRINK). */}
+          <div>
+            <ActionButton
+              kind="purple"
+              size="lg"
+              full
+              data-testid="flow-stages-add"
+              onPress={addStage}
+            >
+              {ADD_STAGE_LABEL}
+            </ActionButton>
+          </div>
+
+          <Label size={10}>LOG</Label>
+          {/* An empty log says why it is empty, never "Idle" (#529): the STATE
+              tile says what the run is doing, and under a live run of this flow
+              (`readouts.fed`, the tiles' own rule) "Idle" contradicted it. */}
+          <div role="log" className="nx-flow-log-body" data-testid="flow-stages-log" style={NO_SHRINK}>
+            {lines.length === 0 ? (
+              <Mono size={10.5} tone="dim">{emptyLogText(readouts.fed)}</Mono>
+            ) : (
+              lines.map((l) => (
+                <div key={l.id} className="nx-flow-log-line">
+                  <Mono size={10} tone="dim">{logTime(l.ts)}</Mono>
+                  <Mono size={10.5} tone={LOG_TONE[l.tone]}>{l.msg}</Mono>
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
 
       <ListRow
         data-testid="flow-stages-tonight"
         icon={<NxIcon name="clock" size={16} />}
         title="TONIGHT"
-        sub="timeline, brief, compiled plan and campaign ledger"
+        // The sheet's four tabs, in 40 characters: `.nx-row-sub` is one line
+        // with an ellipsis, and "timeline, brief, compiled plan and campaign
+        // ledger" ran 32 px past it at 390 px, ending "campaign..." (#189 S5,
+        // the real-page probe).
+        sub="timeline, brief, compiled plan, campaign"
         chevron
         lockedReason={tonightReason}
         onExplain={explain}

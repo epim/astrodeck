@@ -219,27 +219,111 @@ export const UNMAPPED_TITLE = "Parts of this flow do not survive the compile";
 export const UNMAPPED_CONFIRM = "RUN ANYWAY";
 export const UNMAPPED_CANCEL = "CANCEL";
 
-/** H.6: `nodeDefs` has no `mosaic` node, and the engine's mosaic mechanism is N
- *  plan targets sharing a group. The lane card is honest about being drawn, not
- *  compiled. */
-export const MOSAIC_FOOTNOTE = "the panels are plan targets, not a flow stage";
+/** The Sky's door into Send to Flow Wizard, on the FRAME card and on the quick
+ *  sheet of a kept mosaic: the wizard's own title
+ *  (`SendToWizardSheet.WIZARD_TITLE`), which `src/__tests__/doorsConverge.test.tsx`
+ *  holds this equal to. Not imported from there: that module IS the lazily
+ *  loaded sheet, and a door that imported it would load the wizard to label a
+ *  button. */
+export const SEND_TO_WIZARD = "SEND TO FLOW WIZARD";
+
+// THE PLAN DOOR'S COPY IS GONE (#196, spec section 8 S6). The synthetic MOSAIC
+// lane card's footnote lived here, and so did the quick sheet's "split" note:
+// GENERATE FLOW saved a flow for the framing centre and queued the panels as
+// classic Plan targets sharing a `mosaic_group`, shot panel-first (#154). Both
+// described a side channel S6 retired: a Sky framing now goes forward through
+// Send to Flow Wizard, which writes one TARGET block into a flow. The two
+// functions below say that, and `mosaicCopyPanelFirst.test.ts` holds them to
+// it: they name the wizard, and neither names the Plan or promises an order,
+// which is the engine's to decide and which neither sentence describes.
 
 /**
- * What GENERATE FLOW will do with a framing that has more than one panel, said
- * before it is pressed rather than in a toast afterwards.
+ * What the quick sheet says over a KEPT mosaic, beside its SEND TO FLOW
+ * WIZARD button: that GENERATE FLOW here plans one target, and that the grid
+ * goes through the wizard. Said before either is pressed.
  *
- * It names the SPLIT because the split is surprising: the flow is saved for the
- * framing centre, and the panels are queued as plan targets sharing a mosaic
- * group. That is the engine's own mosaic mechanism (there is no mosaic node),
- * and it is the difference between "my mosaic is in the flow" and finding six
- * targets in the plan.
+ * The name is the one the Plan door's split note had, kept because a test this
+ * task may not edit imports it (`frame/__tests__/frameModel.test.ts`); "plan"
+ * is the verb now. The count and the grid are the framing's, written columns
+ * by rows as the picker labels them.
  */
 export function mosaicPlanNote(panels: number, cols: number, rows: number): string {
-  return `Framed as a ${cols}×${rows} mosaic. GENERATE FLOW saves the flow for the framing `
-    + `centre and queues all ${panels} panels as plan targets in one mosaic group, each `
-    + "carrying the camera angle above. The engine shoots a pass at each panel in turn, so "
-    + "a clouded-out night still leaves every panel with data. Re-framing replaces them "
-    + "rather than adding a second set.";
+  return `Framed as a ${cols}×${rows} mosaic of ${panels} panels. GENERATE FLOW plans one `
+    + `target with the camera angle above; ${SEND_TO_WIZARD} plans all ${panels} panels `
+    + "as one mosaic block in a flow, from this framing's centre, angle, grid and overlap.";
+}
+
+/**
+ * How far a kept framing's centre sits from where GENERATE FLOW will image:
+ * arcseconds under a minute of arc, minutes under a degree, then degrees. The
+ * line it goes in shows when the two would post different coordinates, and
+ * the payload rounds to whole seconds, so two positions a hair apart either
+ * side of a rounding edge still post differently: the floor is 1″, never a
+ * "0″" that would contradict the line it sits in. Each unit hands over where
+ * its own rounding would reach 60 (59.5), so no "60″" or "60′" is printed.
+ */
+export function offsetLabel(deg: number): string {
+  const sec = deg * 3600;
+  if (sec < 59.5) return `${Math.max(1, Math.round(sec))}″`;
+  const min = deg * 60;
+  if (min < 59.5) return `${Math.round(min)}′`;
+  return `${deg.toFixed(1)}°`;
+}
+
+/**
+ * WHERE GENERATE FLOW IMAGES, when a kept framing is centred somewhere else
+ * (#459, the issue's second shape, which changes no behaviour).
+ *
+ * The quick flow is placed at the target's own coordinates - the catalogue
+ * row's, or the position the sheet was opened with for a patch - and takes
+ * only the framing's ANGLE (`quick.tsx`'s `generate`). The FRAME card's note
+ * and the "Framing kept" toast used to say its centre went into the flow too,
+ * and nothing ever carried it there; S6 corrected them. This line is the
+ * sheet saying so at the moment it matters: a framing dragged off the object,
+ * about to be generated from. The way forward that DOES carry the centre is
+ * SEND TO FLOW WIZARD (`framingPrefill`), shown beside it.
+ *
+ * Whether GENERATE FLOW should take the framing's centre instead is the
+ * issue's first shape and waits on an owner ruling (recorded on #459).
+ */
+export function framingCentreNote(offsetDeg: number, name: string, fromCatalogue: boolean): string {
+  const from = fromCatalogue ? `${name}'s catalogue position` : "the position this sheet opened with";
+  const images = fromCatalogue ? "the catalogue position" : "that position";
+  return `This framing is centred ${offsetLabel(offsetDeg)} from ${from}. GENERATE FLOW images `
+    + `${images}, at the framing's angle; ${SEND_TO_WIZARD} carries the framing's centre.`;
+}
+
+/**
+ * The toast when FRAME's framing is cleared (`SkyHub.tsx`'s `clearFrame`).
+ *
+ * IT SAYS WHAT CLEARING CHANGES. It read "the flow centres on the catalogue
+ * position", as if a kept framing had moved the quick flow's centre; the
+ * quick flow is always placed at the target's own coordinates and takes only
+ * the framing's angle (#459), so what clearing takes away is that angle.
+ */
+export const FRAMING_REMOVED =
+  "Framing removed - GENERATE FLOW now plans the target at no set camera angle.";
+
+/**
+ * The "Framing kept" toast's detail, when FRAME's DONE keeps a framing
+ * (`SkyHub.tsx`'s `finishFrame`).
+ *
+ * IT NAMES THE WAY FORWARD THAT EXISTS. It used to end "as plan targets, one
+ * pass each" (#275) and then, corrected, name the Plan targets GENERATE FLOW
+ * queued panel-first; both described the side channel S6 retired (#196). The
+ * framing now goes forward through SEND TO FLOW WIZARD, on the framing card
+ * (ADJUST brings it back) and, for a mosaic, on the quick sheet.
+ *
+ * A single frame's sentence no longer says GENERATE FLOW centres the night on
+ * the framing: the quick flow is placed at the target's own coordinates and
+ * takes only the framing's angle, so that sentence was never true of it. The
+ * wizard is the door that carries the framing's centre.
+ */
+export function framingKeptDetail(panels: number): string {
+  return panels > 1
+    ? `ADJUST, then ${SEND_TO_WIZARD}, plans all ${panels} panels as one mosaic block `
+      + "in a flow, at this centre and angle."
+    : `ADJUST, then ${SEND_TO_WIZARD}, plans a flow at this centre and angle.`;
 }
 
 /** A.10's footer, verbatim from the design prototype. */

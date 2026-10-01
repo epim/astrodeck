@@ -34,6 +34,15 @@
 //   * THE LIST IS THE WHOLE LIBRARY, capped at twelve with a door to Flows,
 //     rather than a top three that silently hid the rest.
 //
+// A PLAN FILE THAT NO LONGER READS AS A PLAN STAYS ON THE LIST, WITH NO VERB
+// (#378). The server lists it with its reason, because a damaged plan that
+// vanished looked deleted, and answers its GET with 422 - so RUN, whose first
+// step is that GET, would fail on every press. The row keeps its place, drops
+// RUN, and its sub-line is the reason in place of numbers and a tonight line.
+// An unreadable FLOW is left off instead (`runnableList.ts`, #153): the Flows
+// hub one tap away lists it. A plan's library is the plan editor, which is
+// honest-disabled at phone width, so on a phone this row is where it is seen.
+//
 // WHAT THIS FILE DOES NOT DO. It does not re-implement running a flow
 // (`useFlowRunControls` owns the 409-unmapped question, the abort route and the
 // timed-out-abort trap), it does not re-implement the pre-flight
@@ -47,8 +56,10 @@ import { api } from "../../../../api";
 import { fmtIntegration } from "../../../../api/sessionStack";
 import { getPlan, listPlans, type PlanRow } from "../../../../api/plans";
 import { listReports } from "../../../../api/reports";
-import { resumeSession } from "../../../../api/sessions";
+import { resumeRecoveryLine, resumeSession } from "../../../../api/sessions";
 import { endReasonMeta } from "../../../../lib/reportChart";
+import { planUnreadableReason } from "../../../../lib/planLibrary";
+import { useStopResumeRecovery } from "../../../../lib/stopResumeRecovery";
 import { flowsApi } from "../../../../lib/flowsApi";
 import { buildPreflight } from "../../../../lib/preflight";
 import {
@@ -67,6 +78,9 @@ import type {
 import { ActionButton, Card, EmptyCard, Label, ListRow, Mono } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { explainLock } from "../../../shell/explain";
+import {
+  FLOW_OPEN_FAILED, flowOpenFailure, libraryErrorNow, openFlowById,
+} from "../flows/openFlow";
 import { nav } from "../../../router";
 import { useCampaignFlowId } from "./useCampaign";
 import { useFlowLibrary } from "./sessionData";
@@ -283,7 +297,6 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
   const { cards } = useFlowLibrary();
   const { id: campaignFlowId } = useCampaignFlowId();
   const flowControls = useFlowRunControls();
-  const flowsOpen = useStore((s) => s.flowsOpen);
   const enqueueToast = useStore((s) => s.enqueueToast);
   const pushConfirm = useStore((s) => s.pushConfirm);
   const setPlan = useStore((s) => s.setPlan);
@@ -302,6 +315,18 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
 
   const armed = resumeArm?.armed ?? null;
   const hold = resumeArm?.hold ?? null;
+  // WHILE THE RECOVERY LADDER RUNS, `hold` IS THE PREVIOUS ATTEMPT'S (#246).
+  // ResumeArm clears it only after its own start or a stop, so beside
+  // `recovering` it is the refusal of the attempt before this one, and
+  // "Holding: ... It starts by itself when that clears" would claim a wait
+  // that is already over. The ladder's own line is NowBanners', above this card.
+  const recovering = resumeRecoveryLine(resumeArm, seq.state) != null;
+  // THE STOP FOR THAT LADDER, ON THIS CARD (#246). NowBanners says the mount is
+  // moving on its own; with the engine idle no run control is on screen, and
+  // the switch that stops the ladder (the session's auto-resume) lives in the
+  // gallery. So this card carries the same disarm for the session it names.
+  const stopRecovery = useStopResumeRecovery();
+  const recoveringId = recovering ? resumeArm?.recovery?.session_id ?? null : null;
   const last = state.kind === "ready" ? state.rows[0] ?? null : null;
 
   // THE REFUSAL NAMES WHAT THE ROW IS (T-R7-21a item 11). The gate is one gate
@@ -320,6 +345,21 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
   // every other hub and must not spend a request per mount on rows it does not
   // draw.
   const plans = usePlanLibrary(!compact);
+
+  // Why each unreadable plan file cannot run, by id (#378). `buildRunnables`
+  // lists every plan row as RUN, so the row is found again here by its id and
+  // drawn without the verb; the reason is `planUnreadableReason`'s, the one
+  // reading the classic library shares, so the two cannot disagree on which
+  // rows are plans.
+  const unreadablePlans = useMemo(() => {
+    const out = new Map<string, string>();
+    for (const row of plans.rows) {
+      if (!row || typeof row !== "object" || typeof row.id !== "string") continue;
+      const why = planUnreadableReason(row);
+      if (why !== null) out.set(row.id, why);
+    }
+    return out;
+  }, [plans.rows]);
 
   const runnables = useMemo(() => buildRunnables({
     cards: Array.isArray(cards) ? cards : [],
@@ -346,8 +386,10 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
   const verdicts = useTonightVerdicts(flowIds, wantVerdicts);
 
   const title = armed ? "RUN ARMED" : "NO SESSION RUNNING";
+  // No wait sentence while the ladder runs: the window has opened, which is why
+  // it is running, and the banner above says what it is doing instead (#246).
   const hint = armed
-    ? "It starts by itself when its window opens."
+    ? (recovering ? null : "It starts by itself when its window opens.")
     : "Pick a target in Sky, or run a saved flow.";
 
   /** Shared by both verbs: A LIST ROW NEVER STOPS A RUN.
@@ -405,7 +447,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
     // `flowControls.act` captures `running` at render time, so the object this
     // handler was created with would still toggle to STOP even after the line
     // above corrected the flag. React flushes the state write at the end of this
-    // event handler, long before `flowsOpen`'s request comes back, so by then
+    // event handler, long before the open's request comes back, so by then
     // the ref holds an `act` that starts.
     
     // The SHARED run control, not a second copy of it: `useFlowRunControls`
@@ -416,8 +458,27 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
     // NO ARM TWO-TAP, matching `FlowsScreen`: RUN starts a run, it does not end
     // one, and the two-tap arm in this app guards the controls that STOP an
     // unattended night (`now-stop`). Arming a start would train the arm away.
+    //
+    // AND ONLY WHEN THE FLOW PRESSED IS THE ONE THAT OPENED (#499). `flowsOpen`
+    // swallows its failure and leaves the record that was open before, and
+    // since #450 it also REFUSES over a flow whose unsaved edits its save did
+    // not keep. `act()` posts against whatever record is open, so a press on
+    // row B while flow A held a failed save started flow A: one dropped PUT on
+    // a phone, and the wrong night runs. `openFlowById` says whether `id`
+    // landed, and on false nothing is posted, as FlowsScreen's RUN does.
     startedAt.current = Date.now();
-    void flowsOpen(id).then(() => actRef.current());
+    const before = libraryErrorNow();
+    void openFlowById(id).then((landed) => {
+      if (!landed) {
+        enqueueToast({
+          level: "error",
+          title: FLOW_OPEN_FAILED,
+          detail: `${flowOpenFailure(before)} Nothing was started.`,
+        });
+        return;
+      }
+      actRef.current();
+    });
   };
 
   /** RESUME picks the ARMED session back up; it does not start a fresh run.
@@ -558,16 +619,19 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
         title={title}
         hint={
           <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span>{hint}</span>
+            {hint && <span>{hint}</span>}
             {armed && (
               <Mono size={10} tone="dim">
                 {armed.name} - {armed.owed} frames owed ({armed.accepted}/{armed.total})
               </Mono>
             )}
-            {armed && hold && (
+            {armed && hold && !recovering && (
               <Mono size={10} tone="warn">
                 Holding: {hold.reason}. It starts by itself when that clears.
               </Mono>
+            )}
+            {recovering && stopRecovery.error && (
+              <Mono size={10} tone="bad" data-testid="now-stop-recovery-error">{stopRecovery.error}</Mono>
             )}
             {state.kind === "loading" && <Mono size={10} tone="dim">reading the report archive...</Mono>}
             {state.kind === "error" && (
@@ -596,6 +660,19 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
             >
               FIND A TARGET
             </ActionButton>
+            {recoveringId && (
+              <ActionButton
+                kind="secondary"
+                onPress={() => stopRecovery.stop(recoveringId)}
+                lockedReason={canControl ? null
+                  : `View only - stopping auto-resume needs ${accessPhrase("control.mount")}.`}
+                onExplain={explainLock}
+                busy={stopRecovery.pending}
+                data-testid="now-stop-recovery"
+              >
+                {stopRecovery.pending ? "STOPPING..." : "STOP AUTO-RESUME"}
+              </ActionButton>
+            )}
             {state.kind === "error" && (
               <ActionButton kind="secondary" onPress={retry} data-testid="now-reports-retry">
                 RETRY
@@ -634,7 +711,11 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
             style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 6 }}
           >
             {shown.map((r) => {
-              const verdict = verdictFor(r);
+              // An unreadable plan file (#378): no verb, and its reason is the
+              // sub-line. No tonight line either - a verdict about a plan
+              // nobody can read would sit above the one sentence that matters.
+              const unreadable = r.kind === "plan" ? unreadablePlans.get(r.id) ?? null : null;
+              const verdict = unreadable === null ? verdictFor(r) : null;
               const live = r.verb === "LIVE";
               return (
                 <div key={`${r.kind}:${r.id}`} data-runnable={r.kind} data-runnable-id={r.id}>
@@ -649,7 +730,16 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
                     // says what to go and fix.
                     sub={
                       <span className="nx-runnable-sub">
-                        <span className="nx-runnable-meta">{r.meta}</span>
+                        {unreadable !== null ? (
+                          // The verdict's class: the reason wraps in full, as
+                          // a refusal does, because it is what to go and fix.
+                          <Mono size={10} tone="bad" className="nx-runnable-verdict"
+                            data-testid={`plan-unreadable-${r.id}`}>
+                            {`unreadable: ${unreadable}`}
+                          </Mono>
+                        ) : (
+                          <span className="nx-runnable-meta">{r.meta}</span>
+                        )}
                         {verdict && (
                           <Mono size={10} tone={verdict.tone} className="nx-runnable-verdict">
                             {verdict.line}
@@ -657,7 +747,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
                         )}
                       </span>
                     }
-                    right={
+                    right={unreadable !== null ? undefined : (
                       <ActionButton
                         kind={live ? "ghost" : "secondary"}
                         onPress={
@@ -673,7 +763,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
                       >
                         {r.verb}
                       </ActionButton>
-                    }
+                    )}
                   />
                 </div>
               );
