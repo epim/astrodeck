@@ -44,6 +44,8 @@ import json
 from astrodeck.auth import principal_for_role, set_active_provider
 from astrodeck.remote.protocol import DEFAULT_MAX_PAYLOAD, FrameType, decode_frame
 from astrodeck.remote.relay_client import _WsSendGuard
+
+from _deadline import wait_until
 from test_remote_relay import (FakeChannel, _FixedPrincipalProvider,
                                _make_client, _make_relay_client,
                                _wait_for_frame)
@@ -197,11 +199,13 @@ def test_an_oversize_hello_is_owed_to_the_first_event(tmp_path, monkeypatch,
         before = set(bus._subscribers)
         task = asyncio.create_task(client._serve_once(client._config()))
         try:
-            # No hello goes out to wait for, so wait for the subscription.
-            for _ in range(500):
-                if set(bus._subscribers) - before:
-                    break
-                await asyncio.sleep(0.01)
+            # No hello goes out to wait for, so wait for the subscription,
+            # on a wall-clock deadline (#610): 500 x sleep(0.01) is 5 s on
+            # Linux but 7.8 s on Windows (sleep rounds up to the 15.6 ms
+            # timer there), so a round count gives the two platforms
+            # different real patience.
+            await wait_until(lambda: set(bus._subscribers) - before,
+                             timeout_s=10.0, interval_s=0.01)
             assert set(bus._subscribers) - before, "the viewer never subscribed"
             await asyncio.sleep(0.05)   # let the hello's send run and drop
             bus.publish("status", marker="FIRST")
