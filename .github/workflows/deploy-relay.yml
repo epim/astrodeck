@@ -1,17 +1,19 @@
 name: deploy-relay
 
-# Auto-deploy the relay to Fly.io on any change under relay/. One-time bootstrap
-# (fly launch, volume, mounted secret files) stays manual -- see
-# docs/relay-deploy.md and docs/infrastructure/. Requires the FLY_API_TOKEN repo
-# secret (GitHub Actions secrets are write-only: rotate, don't read).
+# Deploy the relay to Fly.io BY HAND only. One-time bootstrap (fly launch,
+# volume, mounted secret files) stays manual -- see docs/relay-deploy.md and
+# docs/infrastructure/. Requires the FLY_API_TOKEN repo secret (GitHub Actions
+# secrets are write-only: rotate, don't read).
+#
+# The push trigger (any change under relay/ on main) is OFF since 2026-09-30.
+# This job deploys without the build-identity args scripts/deploy_relay.ps1
+# passes and never checks /healthz's identity afterwards (#486), so a merge to
+# main would put an unidentified relay on Fly. The operator's path is
+# scripts/deploy_relay.ps1 (backlog plan WP-13 decides whether this job gets
+# the identity args back or stays manual).
 
 on:
   workflow_dispatch: {}   # manual deploy (e.g. after rotating FLY_API_TOKEN)
-  push:
-    branches: [main]
-    paths:
-      - 'relay/**'
-      - '.github/workflows/deploy-relay.yml'
 
 concurrency: deploy-relay
 
