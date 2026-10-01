@@ -2,7 +2,7 @@
  "generator": "tools/gen_credits.py",
  "project": {
   "name": "AstroDeck",
-  "version": "0.3.32",
+  "version": "0.3.38",
   "spdx": "Apache-2.0"
  },
  "scope": "Every component whose bytes ship inside an AstroDeck release or are compiled into one, plus every external program and network service AstroDeck depends on at runtime. Build-time-only tooling (vite, tailwindcss, typescript, pytest) is not listed: none of it places its own licensed code in a shipped artifact.",
@@ -923,7 +923,7 @@
     },
     {
      "name": "fastapi",
-     "version": "0.141.1",
+     "version": "0.142.2",
      "spdx": "MIT",
      "tier": "redistributed",
      "requires": [
@@ -1169,6 +1169,27 @@
       }
      ],
      "url": "https://numpy.org"
+    },
+    {
+     "name": "opentelemetry-api",
+     "version": "1.45.0",
+     "spdx": "Apache-2.0",
+     "tier": "redistributed",
+     "requires": [
+      "license",
+      "notice-file",
+      "state-changes"
+     ],
+     "summaries": [
+      "Ship the full Apache-2.0 text, carry forward any upstream NOTICE file, and state prominently if we changed the files. No source-code obligation."
+     ],
+     "texts": [
+      {
+       "title": "LICENSE",
+       "hash": "283ea6cc2997a1a7"
+      }
+     ],
+     "url": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api"
     },
     {
      "name": "packaging",
