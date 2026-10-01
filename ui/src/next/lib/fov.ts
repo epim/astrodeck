@@ -2,7 +2,7 @@
 // sheet (README "11. Settings" -> Optics sheet; "Formulas to lift" -> FoV +
 // Mosaic):
 //
-//   fovW = 2*atan(sensorW / 2 / (fl*reducer)), fovH likewise
+//   fovW = (sensorW / fl) * (180/pi), fovH likewise
 //   sampling = 206.265 * px_um / fl_mm  ("/px; under-sampled > 2", over-sampled < 0.7"
 //   panel pitch = FoV*(1 - overlap)
 //
@@ -16,28 +16,36 @@
 // from (spec 2026-09-23 flows mosaic, 2.4). It said 0.15, the README's number,
 // while the Atlas, the Target modal and the server said 0.25, so the Optics
 // preview priced a mosaic at a pitch no framing of it would be laid out at.
-// That one constant is the only thing imported from there.
 //
-// NOTE on reuse: `ui/src/lib/framing.ts` already has `fovFromOptics` and
-// `mosaicGrid`, but they solve a different problem (the live Atlas overlay: FOV
-// from pixel counts via the server's linear small-angle approximation, and
-// panels as real J2000 RA/Dec coordinates for plate-solved centering). This
-// module implements the README's own atan()-based, mm-input formula for the
-// Optics preview screen verbatim (worked example: 23.5mm sensor at 530mm,
-// reducer 1 -> 2.54 deg, matching the README), plus a panel-INDEX order
-// (`panelOrder`), not sky coordinates, that only its test calls. The two
-// modules are deliberately not merged.
+// FOV ITSELF IS NOW THE SAME IMPORT (#168). `fovDeg` used to carry its own
+// atan()-based formula AND multiply in a focal reducer that `lib/framing.ts`'s
+// `fovFromOptics` and the server's `config.fov_deg` both ignore -- so a
+// recorded-but-never-applied reducer (`server/astrodeck/config.py`:97-111,
+// `Optics.reducer`) made this module's Settings-sheet preview and the Atlas
+// overlay disagree about the field for the SAME rig, for every reducer other
+// than 1. `fovDeg` now calls `lib/framing.ts`'s `fovDegFromSensorMm` directly
+// -- the one FOV formula every reader in the tree uses -- so it can't drift
+// from `fovFromOptics` again. `panelOrder`, below, is still this module's
+// own: a panel-INDEX order, not sky coordinates, that only its test calls.
+// The two modules stay separate files for that (and `mosaicPitch`/sampling,
+// which `lib/framing.ts` has no use for), not for a second FOV formula.
 
-import { DEFAULT_OVERLAP } from "../../lib/framing";
+import { DEFAULT_OVERLAP, fovDegFromSensorMm } from "../../lib/framing";
 
-const R2D = 180 / Math.PI;
 export const ARCSEC_PER_RAD = 206.265;
 
 export interface OpticsMm {
   sensorWmm: number;
   sensorHmm: number;
   flMm: number;
-  /** Focal reducer/extender multiplier; 1 = none. */
+  /** Focal reducer/extender multiplier; 1 = none. ACCEPTED, NEVER APPLIED
+   *  (#168): `server/astrodeck/config.py`'s `Optics.reducer` (config.py:97-
+   *  111) and its `f_ratio` doc are explicit that this field never silently
+   *  changes what the rig frames, so `fovDeg` ignores it too -- the same way
+   *  `fovFromOptics` (`ui/src/lib/framing.ts`) and the server's `fov_deg` do.
+   *  This field stays on the type only so existing callers (`opticsModel.ts`'s
+   *  `draftFov`) keep compiling; pass the ALREADY-reduced `flMm` (what "USE
+   *  THE REDUCED FOCAL LENGTH" writes) if the reducer should be reflected. */
   reducer?: number;
 }
 
@@ -46,15 +54,17 @@ export interface FovDeg {
   hDeg: number;
 }
 
-/** `2*atan(sensor/2/(fl*reducer))` in degrees, both axes. Zero when the optics
- *  are unusable (fl/reducer <= 0) rather than NaN/Infinity. */
+/** `(sensor / fl) * (180/pi)` in degrees, both axes, via `lib/framing.ts`'s
+ *  `fovDegFromSensorMm` -- the SAME formula the Atlas overlay's `fovFromOptics`
+ *  uses, so this Settings-sheet preview can never compute a different field
+ *  from the same optics (#168). `o.reducer` is accepted for call-site
+ *  compatibility and is NEVER multiplied in -- see the field's own doc above.
+ *  Zero when the optics are unusable (`flMm` <= 0) rather than NaN/Infinity. */
 export function fovDeg(o: OpticsMm): FovDeg {
-  const reducer = o.reducer != null && o.reducer > 0 ? o.reducer : 1;
-  const eff = o.flMm * reducer;
-  if (!(eff > 0)) return { wDeg: 0, hDeg: 0 };
-  const wDeg = 2 * Math.atan(o.sensorWmm / 2 / eff) * R2D;
-  const hDeg = 2 * Math.atan(o.sensorHmm / 2 / eff) * R2D;
-  return { wDeg, hDeg };
+  return {
+    wDeg: fovDegFromSensorMm(o.sensorWmm, o.flMm),
+    hDeg: fovDegFromSensorMm(o.sensorHmm, o.flMm),
+  };
 }
 
 /** Pixel scale in arcsec/px: `206.265 * px_um / fl_mm`. */

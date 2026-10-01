@@ -230,9 +230,13 @@ async def note_solved_rotation(hub: Any, result: Any, *, source: str,
     """Record the sky angle an imaging-camera solve measured, and calibrate the
     rotator from it when that is provably right. See the module docstring.
 
-    Returns the record (also stored on ``hub.last_sky_angle``), or ``None``
-    when the solve is not one this function takes: failed, no finite rotation,
-    no context, or a frame from anything but the hub's imaging camera.
+    Returns the record, or ``None`` when the solve is not one this function
+    takes: failed, no finite rotation, no context, or a frame from anything
+    but the hub's imaging camera. The record is also stored on
+    ``hub.last_sky_angle``, but only when its ``exposed_at`` is at or after
+    the one already held there (#292): two solves can finish out of order, and
+    the held slot tracks the newest EXPOSURE, not whichever solve happened to
+    finish last.
 
     Never raises into the solve path that called it (cancellation aside): a
     solve that cannot calibrate a rotator is still a perfectly good solve for
@@ -291,7 +295,20 @@ async def note_solved_rotation(hub: Any, result: Any, *, source: str,
             reason = f"the rotator refused the calibration ({e})"
     rec["reason"] = reason
     try:
-        hub.last_sky_angle = rec
+        # #292: this solve's record wins the held slot only when it is of an
+        # EXPOSURE at or after the one already held, not merely because it is
+        # the solve that happened to FINISH last. The per-frame WCS stamp
+        # solves a saved light in the background, seconds behind the shutter,
+        # so its record can land after a later centring solve already wrote
+        # the newer one -- and without this guard it would overwrite it with
+        # a stale angle. The solve is still published and logged either way;
+        # only the bookkeeping `hub` exposes as "the current angle" is held
+        # back. ">=", not ">": a second solve of the SAME exposure (the same
+        # context handed to more than one path) must still be able to update it.
+        held = getattr(hub, "last_sky_angle", None)
+        held_at = held.get("exposed_at") if isinstance(held, dict) else None
+        if held_at is None or rec["exposed_at"] >= held_at:
+            hub.last_sky_angle = rec
     except Exception:                    # noqa: BLE001 - a frozen stand-in hub
         pass
     bus.publish("sky_angle", **rec)

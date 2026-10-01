@@ -496,10 +496,20 @@ class TestArgumentsThatWouldPassEverything:
 
 async def test_reads_the_record_note_solved_rotation_writes():
     """The helper against the real producer, not a hand-built dict: a stand-in
-    hub with an imaging camera and no rotator, and records written by
-    ``sky_angle.note_solved_rotation`` itself. The stale record's solve lands
-    after the hop start (``solved_at`` is the time of the call), so only
-    ``exposed_at`` tells the two records apart, which is the point.
+    hub with an imaging camera and no rotator, and a record written by
+    ``sky_angle.note_solved_rotation`` itself.
+
+    Re-pinned for WP-30a (#292): ``note_solved_rotation`` now keeps the
+    record with the newest ``exposed_at`` on ``hub.last_sky_angle``, so a
+    second call with an older ``context`` no longer overwrites a newer held
+    record (that guard has its own tests in test_h4_solve_frame_unique_names
+    and test_polar_solve_settings). Calling it a second time here with a
+    stale context would therefore leave ``hub.last_sky_angle`` unchanged
+    (still "fresh") and never reach the ``no_measurement`` branch this test
+    means to exercise. Build the stale record directly instead, in the same
+    shape ``note_solved_rotation`` writes, and assign it to
+    ``hub.last_sky_angle`` by hand -- this test's job is ``angle_verdict``'s
+    reading of that shape, not the overwrite guard.
 
     MUTATION "freshness from solved_at". Observed:
         AssertionError: assert 'ok' == 'no_measurement'
@@ -525,14 +535,17 @@ async def test_reads_the_record_note_solved_rotation_writes():
     assert v.measured_deg == pytest.approx(210.4)
     assert v.error_deg == pytest.approx(0.4, abs=0.01)
 
-    stale = sky_angle.ExposureAngle(at=hop_start - 30.0, camera=cam,
-                                    rotator=None, mech_deg=None, moving=None,
-                                    pier_side=None)
-    await sky_angle.note_solved_rotation(hub, solve, source="goto",
-                                         context=stale)
-    # Precondition: the solve of the stale frame really did finish after the
-    # hop started, so a solved_at reader would take it.
-    assert hub.last_sky_angle["solved_at"] >= hop_start
-    v = angle_verdict(hub.last_sky_angle, planned_pa_deg=30.0,
+    # A record in the same shape note_solved_rotation writes, but for an
+    # exposure that predates the hop -- built directly rather than via a
+    # second call, which the newest-exposed_at guard would correctly refuse
+    # to let overwrite the fresh record above.
+    stale_rec = dict(rec)
+    stale_rec.update(pa_deg=sky_angle.mod360(solve.rotation_deg),
+                      exposed_at=hop_start - 30.0,
+                      solved_at=time.time())
+    # Precondition: the stale frame's solve really does land after the hop
+    # started, so a solved_at reader would take it.
+    assert stale_rec["solved_at"] >= hop_start
+    v = angle_verdict(stale_rec, planned_pa_deg=30.0,
                       since_ts=hop_start, tolerance_deg=6.0)
     assert v.kind == "no_measurement"

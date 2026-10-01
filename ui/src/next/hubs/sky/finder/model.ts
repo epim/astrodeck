@@ -119,10 +119,11 @@ export type { LayerPrefs, LensPrefs, SkyMode } from "./prefs";
  *
  * `lib/reach.ts`'s formatter takes a number, and `SkyTarget.windowMinutes` is
  * null where no walk was made (an unplaced lock, a row this role or a default
- * site cannot place). Folding null into it would print "0m", which is a
- * statement - "it never clears the floor tonight" - about an object nobody
- * asked. So the absent state is decided HERE, once, for the lock card, the
- * reach strip and the targets sheet, which all import this name.
+ * site cannot place, or dawn itself is not known yet, #551). Folding null into
+ * it would print "0m", which is a statement - "it never clears the floor
+ * tonight" - about an object nobody asked. So the absent state is decided
+ * HERE, once, for the lock card, the reach strip and the targets sheet, which
+ * all import this name.
  */
 export function windowLabel(minutes: number | null): string {
   return minutes == null ? "-" : reachWindowLabel(minutes);
@@ -1006,6 +1007,12 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
     rankingAllowed && haveSite,
   );
 
+  // Moved ahead of `hoursToDawn` and `ranked` (#551): both need to tell "no
+  // dawn yet" apart from "dawn is five hours off", and `dark_end_unix`
+  // missing is the one signal that does. Computed here, once, rather than
+  // inlined at each use, so the two readers cannot drift apart.
+  const dawnKnown = typeof visibility?.dark_end_unix === "number";
+
   const hoursToDawn = useMemo(() => {
     const end = visibility?.dark_end_unix;
     if (typeof end !== "number") return 0;
@@ -1086,7 +1093,18 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
       // coordinates there is no window to report - the rows left are the
       // server's own placements, and walking them at the placeholder's 0,0
       // would print a window for somewhere else (#508). Null, never 0.
-      const winMin = haveCoords
+      //
+      // AND WITHOUT A DAWN, EVERY WALK IS EMPTY (#551): `trackCtx.hoursToDawn`
+      // is 0 whenever `/api/visibility` has not yet answered or failed, and
+      // `walkTrack` with no hours to walk returns no samples - which
+      // `minutesAboveFloor` reads as a real zero, "clears the floor for no
+      // minutes tonight", not as "nobody walked this yet". `place` (above)
+      // already tells the two apart with `dawnKnown`; this is the same
+      // silence arriving at the reach strip instead of the held lock card.
+      // (`sheets/targetsModel.ts` keeps its own copy of this walk for the
+      // targets sheet's rows, outside this file - it carries the same defect
+      // and is not fixed here; see this WP's return.)
+      const winMin = haveCoords && dawnKnown
         ? minutesAboveFloor(walkTrack(m.dec_deg * D2R, (lst - m.ra_hours) * 15 * D2R, trackCtx))
         : null;
       const transitLabel =
@@ -1155,7 +1173,7 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
     }));
   }, [
     tonight.rows, region.rows, solarRows, placeableEphemeris, nowMs, lat, lon,
-    haveCoords, trackCtx, tiles, hourlyCloud, wheel,
+    haveCoords, dawnKnown, trackCtx, tiles, hourlyCloud, wheel,
   ]);
 
   // ---- one object, placed as a row would be (`SkyModel.place`) -------------
@@ -1171,8 +1189,8 @@ export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = 
   // and so caused the hold - `hoursToDawn` is 0, `walkTrack` returns nothing
   // and the window would read "0m" for an object that rises. That is the
   // placeholder #508 retired, arriving by another road, so the window is null
-  // until a night is known.
-  const dawnKnown = typeof visibility?.dark_end_unix === "number";
+  // until a night is known. (`dawnKnown` itself is computed above, beside
+  // `hoursToDawn`: the `ranked` memo needs it too, for the same reason.)
   const place = useCallback(
     (raHours: number, decDeg: number): Placement | null => {
       if (!haveCoords) return null;

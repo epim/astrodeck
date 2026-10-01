@@ -17,7 +17,8 @@
 
 import { ApiError } from "../../../../api";
 import {
-  deleteSession, getSession, patchSession, resumeSession,
+  deleteSession, getSession, isUnreadableRow, listSessionRows, patchSession, resumeSession,
+  unreadableDeleteBody, type DeleteSessionResult,
 } from "../../../../api/sessions";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import { accessPhrase } from "../../../../lib/caps";
@@ -153,18 +154,55 @@ export async function runAbandon(id: string, name: string, after: () => void): P
   }
 }
 
+/** The DELETE confirm's body for `id`, looked up fresh (#279).
+ *
+ *  `runDelete` is the SAME route a session card and an unreadable file's card
+ *  both call (`UnreadableSessionCard`'s own comment says so on purpose), so it
+ *  picks its own sentence rather than take one on faith from the caller: a
+ *  stale card could otherwise confirm a backup the file no longer has, or the
+ *  reverse. `CONFIRM_DELETE` is right for a readable session and for an
+ *  unreadable file with no backup; `unreadableDeleteBody` is the one that
+ *  names the backup when the row reports one (#266) - `DELETE` on an
+ *  unreadable file otherwise keeps that backup and the thumbnails, so
+ *  `CONFIRM_DELETE`'s "removes the session ledger and thumbnails" is false for
+ *  it. A lookup that fails, or a row that has vanished, falls back to
+ *  `CONFIRM_DELETE`: the confirm must still say something, and that sentence
+ *  is the safe direction (it names MORE as gone than an unreadable file with a
+ *  backup actually loses), never the reverse. */
+async function deleteConfirmBody(id: string): Promise<string> {
+  try {
+    const rows = await listSessionRows();
+    const row = rows.find((r) => r.id === id);
+    if (row && isUnreadableRow(row)) return unreadableDeleteBody(row);
+  } catch {
+    // A failed lookup is not the delete failing; fall through to the session
+    // sentence rather than block the confirm on it.
+  }
+  return CONFIRM_DELETE;
+}
+
+/** The success toast's detail for a DELETE (#279). `backup_kept`/`detail`
+ *  come from the server only when the deleted file was unreadable and a
+ *  `.bak` survived it (#266); that `detail` already names the backup and says
+ *  it remains, so it replaces the generic FITS sentence rather than sitting
+ *  beside it unread. Every other delete keeps the FITS line, which is the
+ *  answer to the question every delete raises. */
+function deleteToastDetail(r: DeleteSessionResult): string {
+  return r.backup_kept && r.detail ? r.detail : "The saved FITS frames are untouched.";
+}
+
 export async function runDelete(id: string, name: string, after: () => void): Promise<void> {
   const go = await confirmDialog({
     title: `Delete "${name}"?`,
-    body: CONFIRM_DELETE,
+    body: await deleteConfirmBody(id),
     tone: "danger",
     mode: "confirm",
     confirmLabel: "Delete",
   });
   if (!go) return;
   try {
-    await deleteSession(id);
-    toast("success", "Session deleted", "The saved FITS frames are untouched.");
+    const r = await deleteSession(id);
+    toast("success", "Session deleted", deleteToastDetail(r));
     after();
   } catch (e) {
     toast("error", "Could not delete this session", say(e));

@@ -761,7 +761,17 @@ def _door_rows(kind: str, cycle_plan, cycles, wheel
             raise ValueError(f"cycle_plan row {token!r} is not '<filter> "
                              f"<seconds>': a filter the wheel names and a "
                              f"whole number of seconds")
-        secs = int(m.group(2))
+        try:
+            secs = int(m.group(2))
+        except ValueError:
+            # ``_ROW_RE`` already proved this is all digits (``\d+``), so the
+            # only way ``int()`` still raises is CPython's own integer
+            # string-conversion limit (4300 digits by default): a row this
+            # reader refuses, same as any other, in its own words rather
+            # than the interpreter's (#501, the #441 class).
+            raise ValueError(f"cycle_plan row {token!r} is not a whole "
+                             f"number of seconds this server can "
+                             f"read") from None
         if secs <= 0:
             raise ValueError(f"cycle_plan row {token!r} is {secs} seconds, "
                              f"which shoots nothing")
@@ -1295,6 +1305,13 @@ def cycle_plan_for(filters: Iterable[str],
             continue
         try:
             secs = int(round(float(exp[f])))
+        except OverflowError:
+            # An infinity (``round()`` raises) or an integer past a float's
+            # range (``float()`` raises): a huge exposure, not a missing or
+            # malformed one, so unlike the fallback below this is refused
+            # rather than silently replaced (#546, the #362 class).
+            raise ValueError(f"cycle_plan exposure for {f!r} is not a "
+                             f"number this server can read") from None
         except (KeyError, TypeError, ValueError):
             secs = default_exposure_s(f)
         if secs <= 0:
@@ -1342,6 +1359,14 @@ def _one_channel_exposure_s(exposures_s: dict[str, float] | None) -> int:
     if len(values) == 1:
         try:
             secs = int(round(float(values[0])))
+        except OverflowError:
+            # An infinity or an integer past a float's range: refused in
+            # this reader's own words, not fallen back to the default the
+            # way a merely missing or malformed value is (#546, the #362
+            # class). Named by the label, never a filter: there is no slot.
+            raise ValueError(f"{_one_channel_label(exposures_s)} exposure "
+                             f"is not a number this server can "
+                             f"read") from None
         except (TypeError, ValueError):
             secs = 0
         if secs > 0:

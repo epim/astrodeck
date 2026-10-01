@@ -53,8 +53,17 @@ export const STANDARDS_NUMBER_FIELDS: StandardsNumberField[] = [
         + "last one. 0 turns it off." },
   { key: "max_consecutive_rejects", label: "Give up on a step after",
     unit: "rejects",
-    hint: "Consecutive rejects before the step is abandoned and the night "
-        + "moves on. 0 turns it off." },
+    // #290: a tripped step is not dropped - it sets aside for the rest of
+    // the current session's night and picks back up once the engine starts
+    // on a fresh calendar date (SequenceEngine._set_step_aside,
+    // server/astrodeck/sequence/engine.py; proved by
+    // test_group_set_aside_persisted.py). Worded to match the same guard's
+    // two other surfaces, SequenceView.tsx's tooltip and the new UI's
+    // automationModel.ts hint; scanned by test_set_aside_promises.py.
+    hint: "Consecutive rejects before the step is set aside for tonight and "
+        + "the run moves on. Its frames stay owed in the session ledger: a "
+        + "restart tonight does not retry it, the next night does. 0 turns "
+        + "it off." },
   { key: "max_consecutive_rejects_night", label: "End the night after",
     unit: "rejects",
     hint: "Consecutive rejects across all targets before the night is called "

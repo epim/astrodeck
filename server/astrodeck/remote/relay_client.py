@@ -40,6 +40,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit
@@ -125,6 +126,14 @@ _LINK_PROBE_THREADS_MAX = 8
 # Windows: keep the ping and route children from opening a console window
 # when the server runs detached. 0 (no flags) everywhere else.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+# How many drop timestamps (#521 fix 3) a client remembers for
+# ``recent_drop_count``, which the session report's drops-per-hour figure
+# reads. A generous bound: even a link bad enough to drop every few seconds
+# all night falls well short of it, and a report only ever asks about its
+# own (much shorter) span -- this is memory hygiene for a process that can
+# run across many nights, not a cap the report would ever feel.
+_DROP_HISTORY_MAX = 500
 
 
 @dataclass(frozen=True)
@@ -552,6 +561,12 @@ class RelayClient:
         self._link_probes = link_probes
         self._link_check: asyncio.Task | None = None
         self._probe_threads = 0
+        # Wall-clock timestamps of each drop that logged a "relay link check"
+        # line (#521 fix 3), read by recent_drop_count() below for the
+        # session report's drops-per-hour figure. Wall clock, not monotonic:
+        # the report keys its own window on time.time() (started_at/
+        # ended_at), and the two clocks are not comparable.
+        self._drop_log_times: deque[float] = deque(maxlen=_DROP_HISTORY_MAX)
         # Per session, reset at each dial: the host the dial resolves (None
         # until the config validated, so a config error runs no check), when
         # the relay last sent a frame, and when the session's read ended.
@@ -677,6 +692,15 @@ class RelayClient:
 
     # -- the link check after a drop (#521) ------------------------------------
 
+    def _note_drop(self) -> None:
+        """Record this moment as a drop that logged a "relay link check"
+        line (#521 fix 3): the one signal :func:`recent_drop_count` reads.
+        Called from exactly the two places that write that line (the
+        "skipped" line in :meth:`_after_drop` and the completed check in
+        :meth:`_check_link`), so the count can never drift from what the log
+        itself says happened."""
+        self._drop_log_times.append(time.time())
+
     def _after_drop(self, gen: int) -> None:
         """Start the link check for the drop that ended ``gen`` and return at
         once. Never raises and never awaits: it sits on the supervisor's path
@@ -697,6 +721,7 @@ class RelayClient:
                        else time.monotonic())
                 frame_age = max(0.0, end - self._last_frame_at)
             if self._link_check is not None and not self._link_check.done():
+                self._note_drop()
                 bus.log("info",
                         f"relay link check gen={gen}: skipped, the previous "
                         f"drop's check is still waiting on its probes; "
@@ -728,6 +753,7 @@ class RelayClient:
             # raises is never left on a future no one reads.
             for fut in (gateway, dns):
                 fut.cancel()      # a no-op on an answered one
+        self._note_drop()
         bus.log("info", f"relay link check gen={gen}: " + "; ".join(words),
                 "remote")
 
@@ -1396,6 +1422,25 @@ def relay_status() -> dict:
         return dict(_NO_CLIENT_STATUS)
 
 
+def recent_drop_count(since: float) -> int:
+    """How many relay-tunnel drops have logged a "relay link check" line at
+    or after wall-clock ``since`` (#521 fix 3). The session report's
+    drops-per-hour figure reads this, keyed on its own ``started_at``, so a
+    bad-network night is visible without log forensics.
+
+    0 when no client is running, or none of its drops logged a check since
+    ``since`` (no drop at all, or every one too early -- the client was not
+    yet the live one, or a dial failed before resolving a host). Never
+    raises: a reporting figure must never cost the report that reads it."""
+    client = _current_client
+    if client is None:
+        return 0
+    try:
+        return sum(1 for ts in client._drop_log_times if ts >= since)
+    except Exception:  # noqa: BLE001 - a reporting figure must never raise
+        return 0
+
+
 async def run_relay_client(
     app: Callable[..., Awaitable[None]],
     config_provider: Callable[[], RemoteConfig],
@@ -1425,4 +1470,5 @@ async def run_relay_client(
 __all__ = [
     "RelayClient", "run_relay_client", "scope_is_remote",
     "REMOTE_SCOPE_KEY", "current_client", "relay_status",
+    "recent_drop_count",
 ]

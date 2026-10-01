@@ -67,9 +67,16 @@ import {
 } from "../../session/flows/openFlow";
 
 /** The waiting card while the open this card asked for is still out. The open
- *  record is some other flow's, or none, so nothing of it is shown. */
+ *  record is some other flow's, or none, so nothing of it is shown.
+ *
+ *  #592: the title already says OPENING THIS FLOW, so a hint that only said
+ *  the stages show once loaded told the reader nothing the title had not -
+ *  the same defect the other two waiting reasons below do not have, because
+ *  each of them names a CAUSE ("this link names no flow", "that flow did not
+ *  open"). This one now does too: the open is a request this card made, and
+ *  it has not come back yet. */
 export const FLOW_CARD_LOADING =
-  "This flow's stages show once it has loaded.";
+  "The open this card asked for has not answered yet, so there is nothing here to show.";
 
 /** The waiting card's reason for a link with no `?id=`: there is no flow to
  *  open, and the one open in the store is not this link's to show. */
@@ -80,8 +87,14 @@ export const FLOW_CARD_NO_ID =
 export const FLOW_CARD_RUN_NOT_OPENED =
   "That flow did not open, so there is nothing here to run.";
 
-/** RUN's locked reason while the open is still out. */
-const FLOW_CARD_RUN_LOADING = "Loading this flow…";
+/** RUN's locked reason while the open is still out.
+ *
+ *  #592: this used to be "Loading this flow…", which repeated the waiting
+ *  card's own title and said nothing about why RUN is locked. In the shape
+ *  of {@link FLOW_CARD_RUN_NOT_OPENED} and {@link FLOW_CARD_NO_ID}, it now
+ *  names what RUN is missing. */
+const FLOW_CARD_RUN_LOADING =
+  "This flow has not loaded yet, so there is nothing here to run.";
 
 export function FlowCardSheet({ params }: SheetProps): JSX.Element {
   const id = params.id ?? "";
