@@ -1,0 +1,18 @@
+{
+  "baseline": "bf3eadddcac9fb74bd802309b57ab6536c15ee36",
+  "generator": "unmodified baseline generator/registry/policy with current installed runtime closure",
+  "project_before": {
+    "name": "AstroDeck",
+    "version": "0.3.38",
+    "spdx": "Apache-2.0"
+  },
+  "project_regenerated": {
+    "name": "AstroDeck",
+    "version": "0.3.39",
+    "spdx": "Apache-2.0"
+  },
+  "changed_entries": [],
+  "texts_before": 103,
+  "texts_regenerated": 103,
+  "limitation": "Python is range-resolved, so this records the current local environment rather than a historical release build."
+}

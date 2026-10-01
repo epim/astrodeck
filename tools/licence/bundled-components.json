@@ -1,0 +1,742 @@
+[
+  {
+    "name": "WCSLIB (inside Astropy)",
+    "version": "8.6 in Astropy 8.0.1",
+    "spdx": "LGPL-3.0-or-later",
+    "tier": "bundled-runtime",
+    "url": "https://www.atnf.csiro.au/computing/software/wcs/",
+    "notes": "The current Windows probe contains Astropy _wcs.pyd and WCSLIB 8.6 headers. The header grants LGPL version 3 or later; Astropy metadata naming BSD-3-Clause does not replace the embedded library terms. Retain the WCSLIB copyright notice, LGPL and incorporated GPL text. Corresponding-source and combined-work/relinking compliance need review for the delivered form. A complete notice alone does not discharge those duties.",
+    "texts": [
+      {
+        "title": "bundled-wcslib-8.6-notice.txt",
+        "licence_text": "tools/licence_texts/bundled-wcslib-8.6-notice.txt",
+        "sha256": "c1772baee2d401205aaa8b53497646694ccccab6ec20503dab7cf0842a86e619",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/astropy/wcs/include/wcslib/wcs.h:1-22 (copyright and licence header)"
+      },
+      {
+        "title": "bundled-wcslib-lgpl-3.0.txt",
+        "licence_text": "tools/licence_texts/bundled-wcslib-lgpl-3.0.txt",
+        "sha256": "9ccf26cfe845e0eb8bb58053e47366e7ab6b697ae010f7650978d4b71b7d1fc1",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/astropy-8.0.1.dist-info/licenses/licenses/WCSLIB_LICENSE.rst"
+      },
+      {
+        "title": "bundled-gpl-3.0.txt",
+        "licence_text": "tools/licence_texts/bundled-gpl-3.0.txt",
+        "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+        "source": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-15/COPYING3"
+      }
+    ],
+    "requires": [
+      "notice",
+      "license",
+      "source",
+      "state-changes"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [
+      {
+        "path": "astropy/wcs/_wcs.pyd",
+        "sha256": "d4fd275aaf79e6d4e96770fc8048e177a1c3dba7bebfe5884414a245e526d074",
+        "bytes": 1540096
+      }
+    ],
+    "source_refs": [
+      "tools/licence/dependency-python-windows-inventory.json",
+      ".probe/licence-deps/build-venv/Lib/site-packages/astropy/wcs/include/wcslib/wcs.h:1"
+    ],
+    "flag": "Owner decision #638: the inspected Windows artifact contains LGPL-3.0-or-later WCSLIB. This contradicts a no-LGPL claim. Decide whether to satisfy the applicable source/relinking obligations or remove/rebuild this dependency; no policy exception is granted here."
+  },
+  {
+    "name": "OpenBLAS (inside NumPy)",
+    "version": "0.3.34.106.0 in NumPy 2.5.3",
+    "spdx": "BSD-3-Clause",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/OpenMathLib/OpenBLAS/",
+    "notes": "NumPy links to the included scipy OpenBLAS DLL. Its installed build configuration identifies OpenBLAS 0.3.34.106.0. Preserve the full copyright, conditions and disclaimer supplied in the NumPy wheel. LAPACK and GCC runtime terms for the same DLL are recorded separately; the OpenBLAS BSD label does not cover them.",
+    "texts": [
+      {
+        "title": "bundled-numpy-2.5.3-notices.txt",
+        "licence_text": "tools/licence_texts/bundled-numpy-2.5.3-notices.txt",
+        "sha256": "dc97d59562c75c04557f1e9a68f3eae326699eb119d569cd4ed6a4eafe5f9abb",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/numpy-2.5.3.dist-info/licenses/LICENSE.txt"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [
+      {
+        "path": "numpy.libs/libscipy_openblas64_-ed4f167a5330424524f45258e7ca2c8d.dll",
+        "sha256": "ed4f167a5330424524f45258e7ca2c8d7f03c0cba1f30ee4985553ac1f88ecf8",
+        "bytes": 20589056
+      }
+    ],
+    "source_refs": [
+      ".probe/licence-deps/build-venv/Lib/site-packages/numpy/__config__.py",
+      "tools/licence/dependency-python-windows-inventory.json"
+    ]
+  },
+  {
+    "name": "LAPACK (inside NumPy OpenBLAS)",
+    "version": "Bundled with OpenBLAS 0.3.34.106.0 / NumPy 2.5.3; separate LAPACK revision not established",
+    "spdx": "BSD-3-Clause-Open-MPI",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/OpenMathLib/OpenBLAS/",
+    "notes": "The NumPy wheel identifies LAPACK code inside the OpenBLAS DLL and supplies its BSD-3-Clause-Open-MPI notice. Preserve that complete notice, including the additional intellectual-property disclaimer. This record does not invent an independently established LAPACK revision.",
+    "texts": [
+      {
+        "title": "bundled-numpy-2.5.3-notices.txt",
+        "licence_text": "tools/licence_texts/bundled-numpy-2.5.3-notices.txt",
+        "sha256": "dc97d59562c75c04557f1e9a68f3eae326699eb119d569cd4ed6a4eafe5f9abb",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/numpy-2.5.3.dist-info/licenses/LICENSE.txt"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [
+      {
+        "path": "numpy.libs/libscipy_openblas64_-ed4f167a5330424524f45258e7ca2c8d.dll",
+        "sha256": "ed4f167a5330424524f45258e7ca2c8d7f03c0cba1f30ee4985553ac1f88ecf8",
+        "bytes": 20589056
+      }
+    ],
+    "source_refs": [
+      ".probe/licence-deps/build-venv/Lib/site-packages/numpy-2.5.3.dist-info/licenses/LICENSE.txt"
+    ]
+  },
+  {
+    "name": "GCC runtime library (inside NumPy OpenBLAS)",
+    "version": "Bundled with NumPy 2.5.3; separate GCC runtime revision not established",
+    "spdx": "GPL-3.0-or-later WITH GCC-exception-3.1",
+    "tier": "bundled-runtime",
+    "url": "https://gcc.gnu.org/onlinedocs/libstdc++/manual/license.html",
+    "notes": "The NumPy wheel identifies statically linked GCC runtime code in its OpenBLAS DLL under GPL version 3 or later with GCC Runtime Library Exception 3.1. The full wheel notice reproduces both texts. The exception conditionally permits combinations with independent modules produced by eligible compilation processes; it is not evidence that no GPL code is present. Confirm the wheel build and exception conditions before treating the distributed combination as cleared.",
+    "texts": [
+      {
+        "title": "bundled-numpy-2.5.3-notices.txt",
+        "licence_text": "tools/licence_texts/bundled-numpy-2.5.3-notices.txt",
+        "sha256": "dc97d59562c75c04557f1e9a68f3eae326699eb119d569cd4ed6a4eafe5f9abb",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/numpy-2.5.3.dist-info/licenses/LICENSE.txt"
+      }
+    ],
+    "requires": [
+      "notice",
+      "license"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [
+      {
+        "path": "numpy.libs/libscipy_openblas64_-ed4f167a5330424524f45258e7ca2c8d.dll",
+        "sha256": "ed4f167a5330424524f45258e7ca2c8d7f03c0cba1f30ee4985553ac1f88ecf8",
+        "bytes": 20589056
+      }
+    ],
+    "source_refs": [
+      ".probe/licence-deps/build-venv/Lib/site-packages/numpy-2.5.3.dist-info/licenses/LICENSE.txt",
+      "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-15/COPYING.RUNTIME"
+    ],
+    "flag": "Owner decision #638: GPL-3.0-or-later WITH GCC-exception-3.1 code is present in the inspected Windows dependency DLL. Review and record the exception conditions for this delivered artifact or remove/rebuild it. This entry does not silently accept GPL into project policy."
+  },
+  {
+    "name": "CPython bundled interpreter",
+    "version": "3.12.10",
+    "spdx": "PSF-2.0",
+    "tier": "bundled-runtime",
+    "url": "https://docs.python.org/3.12/license.html",
+    "notes": "The executable bundles python312.dll from CPython 3.12.10 and portions of its standard library. This entry uses the PSF-2.0 identifier stated by the current Python licence page for the Python core. The complete installed LICENSE.txt is retained, including historical Python notices and third-party terms supplied by this Windows distribution. Those embedded notices do not imply every component mentioned in the full interpreter distribution is included in this executable. Separate OpenSSL and other retained runtime components require their own artifact records. Preserve notices and state any changes to covered Python code; no interpreter modification was established by this audit.",
+    "texts": [
+      {
+        "title": "bundled-cpython-3.12.10.txt",
+        "licence_text": "tools/licence_texts/bundled-cpython-3.12.10.txt",
+        "sha256": "a4771d2216653fca4e3472566a762ba8ce5358f6f6599455fe7cfaceb60d14b3",
+        "source": "Installed CPython 3.12.10 distribution LICENSE.txt (same Python used by the local probe)"
+      }
+    ],
+    "requires": [
+      "notice",
+      "license",
+      "state-changes"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [
+      {
+        "path": "python312.dll",
+        "sha256": "9a0e3435aaa680d868150f87ab3e388ad2eebc22f87e036155c7b4eda8cd2120",
+        "bytes": 6945272
+      }
+    ],
+    "source_refs": [
+      "tools/licence/dependency-current-windows-archive.json",
+      "https://docs.python.org/3.12/license.html"
+    ]
+  },
+  {
+    "name": "OpenSSL (CPython runtime libraries)",
+    "version": "3.0.16",
+    "spdx": "Apache-2.0",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/openssl/openssl/tree/openssl-3.0.16",
+    "notes": "CPython supplies libcrypto-3.dll and libssl-3.dll in the inspected Windows executable. The exact OpenSSL 3.0.16 tagged LICENSE.txt is retained. Preserve applicable notices and mark changes if made; the checked upstream tag has no root NOTICE file.",
+    "texts": [
+      {
+        "title": "bundled-openssl-3.0.16.txt",
+        "licence_text": "tools/licence_texts/bundled-openssl-3.0.16.txt",
+        "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+        "source": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.0.16/LICENSE.txt"
+      }
+    ],
+    "requires": [
+      "license",
+      "notice-file",
+      "state-changes"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [
+      {
+        "path": "libcrypto-3.dll",
+        "sha256": "ccfffddcd3defb8d899026298af9af43bc186130f8483d77e97c93233d5f27d7",
+        "bytes": 5231472
+      },
+      {
+        "path": "libssl-3.dll",
+        "sha256": "007142039f04d04e0ed607bda53de095e5bc6a8a10d26ecedde94ea7d2d7eefe",
+        "bytes": 794992
+      }
+    ],
+    "source_refs": [
+      "tools/licence/dependency-openssl-binary-versions.json",
+      "tools/licence/dependency-openssl-sources.json"
+    ]
+  },
+  {
+    "name": "OpenSSL (inside cryptography)",
+    "version": "4.0.3 in cryptography 50.0.2",
+    "spdx": "Apache-2.0",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/openssl/openssl/tree/openssl-4.0.3",
+    "notes": "The cryptography wheel embeds OpenSSL in its _rust.pyd extension in the inspected Windows executable. The exact OpenSSL 4.0.3 tagged LICENSE.txt is retained. Preserve applicable notices and mark changes if made; the checked upstream tag has no root NOTICE file. This is a separate OpenSSL build from CPython runtime DLLs.",
+    "texts": [
+      {
+        "title": "bundled-openssl-4.0.3.txt",
+        "licence_text": "tools/licence_texts/bundled-openssl-4.0.3.txt",
+        "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+        "source": "https://raw.githubusercontent.com/openssl/openssl/openssl-4.0.3/LICENSE.txt"
+      }
+    ],
+    "requires": [
+      "license",
+      "notice-file",
+      "state-changes"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [
+      {
+        "path": "cryptography/hazmat/bindings/_rust.pyd",
+        "sha256": "1d4332a447cab13dec8e3a533ad579e0e562b79e40822c931f33769758fc7156",
+        "bytes": 9897472
+      }
+    ],
+    "source_refs": [
+      "tools/licence/dependency-openssl-binary-versions.json",
+      "tools/licence/dependency-openssl-sources.json",
+      "tools/licence/dependency-python-windows-inventory.json"
+    ]
+  },
+  {
+    "name": "setuptools (retained in frozen runtime)",
+    "version": "84.0.0",
+    "spdx": "MIT",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/pypa/setuptools/",
+    "notes": "Setuptools is installed as build tooling, but its modules are retained in the inspected executable PYZ. The build-tool label therefore does not remove the MIT notice obligation for these delivered modules. The eight retained vendored distributions are listed separately. Autocommand, importlib_metadata, platformdirs and zipp had no retained modules in the recorded vendor comparison; their installed presence is not evidence that they ship.",
+    "texts": [
+      {
+        "title": "bundled-setuptools-84.0.0.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-84.0.0.txt",
+        "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools-84.0.0.dist-info/licenses/LICENSE"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [],
+    "source_refs": [
+      "tools/licence/dependency-setuptools-vendors.json",
+      "tools/licence/dependency-current-windows-archive.json"
+    ],
+    "artifact_modules": [
+      "setuptools",
+      "setuptools._core_metadata",
+      "setuptools._discovery",
+      "setuptools._distutils",
+      "setuptools._distutils._dataclass",
+      "setuptools._distutils._log",
+      "setuptools._distutils._modified",
+      "setuptools._distutils._msvccompiler",
+      "setuptools._distutils.archive_util",
+      "setuptools._distutils.ccompiler",
+      "setuptools._distutils.cmd",
+      "setuptools._distutils.command",
+      "setuptools._distutils.command.bdist",
+      "setuptools._distutils.command.build",
+      "setuptools._distutils.command.build_ext",
+      "setuptools._distutils.command.sdist",
+      "setuptools._distutils.compat",
+      "setuptools._distutils.compat.numpy",
+      "setuptools._distutils.compat.py310",
+      "setuptools._distutils.compilers",
+      "setuptools._distutils.compilers.C",
+      "setuptools._distutils.compilers.C.base",
+      "setuptools._distutils.compilers.C.cygwin",
+      "setuptools._distutils.compilers.C.errors",
+      "setuptools._distutils.compilers.C.msvc",
+      "setuptools._distutils.compilers.C.unix",
+      "setuptools._distutils.compilers.C.zos",
+      "setuptools._distutils.compilers._modified",
+      "setuptools._distutils.compilers._util",
+      "setuptools._distutils.compilers.errors",
+      "setuptools._distutils.compilers.logging",
+      "setuptools._distutils.compilers.platform",
+      "setuptools._distutils.compilers.platform.detect",
+      "setuptools._distutils.compilers.platform.macos",
+      "setuptools._distutils.core",
+      "setuptools._distutils.debug",
+      "setuptools._distutils.dir_util",
+      "setuptools._distutils.dist",
+      "setuptools._distutils.errors",
+      "setuptools._distutils.extension",
+      "setuptools._distutils.fancy_getopt",
+      "setuptools._distutils.file_util",
+      "setuptools._distutils.filelist",
+      "setuptools._distutils.log",
+      "setuptools._distutils.spawn",
+      "setuptools._distutils.sysconfig",
+      "setuptools._distutils.text_file",
+      "setuptools._distutils.util",
+      "setuptools._distutils.version",
+      "setuptools._distutils.versionpredicate",
+      "setuptools._entry_points",
+      "setuptools._imp",
+      "setuptools._importlib",
+      "setuptools._itertools",
+      "setuptools._normalization",
+      "setuptools._path",
+      "setuptools._reqs",
+      "setuptools._shutil",
+      "setuptools._static",
+      "setuptools._vendor",
+      "setuptools.archive_util",
+      "setuptools.command",
+      "setuptools.command._requirestxt",
+      "setuptools.command.bdist_egg",
+      "setuptools.command.bdist_wheel",
+      "setuptools.command.build",
+      "setuptools.command.egg_info",
+      "setuptools.command.sdist",
+      "setuptools.command.setopt",
+      "setuptools.compat",
+      "setuptools.compat.py310",
+      "setuptools.compat.py311",
+      "setuptools.compat.py39",
+      "setuptools.config",
+      "setuptools.config._apply_pyprojecttoml",
+      "setuptools.config._validate_pyproject",
+      "setuptools.config._validate_pyproject.error_reporting",
+      "setuptools.config._validate_pyproject.extra_validations",
+      "setuptools.config._validate_pyproject.fastjsonschema_exceptions",
+      "setuptools.config._validate_pyproject.fastjsonschema_validations",
+      "setuptools.config._validate_pyproject.formats",
+      "setuptools.config.expand",
+      "setuptools.config.pyprojecttoml",
+      "setuptools.config.setupcfg",
+      "setuptools.depends",
+      "setuptools.discovery",
+      "setuptools.dist",
+      "setuptools.errors",
+      "setuptools.extension",
+      "setuptools.glob",
+      "setuptools.installer",
+      "setuptools.logging",
+      "setuptools.monkey",
+      "setuptools.msvc",
+      "setuptools.unicode_utils",
+      "setuptools.version",
+      "setuptools.warnings",
+      "setuptools.wheel",
+      "setuptools.windows_support"
+    ]
+  },
+  {
+    "name": "setuptools vendor: backports.tarfile",
+    "version": "1.2.0",
+    "spdx": "MIT",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/jaraco/backports.tarfile",
+    "notes": "Vendored by setuptools 84.0.0 and actually retained in the inspected Windows executable. The module list is based on the private PyInstaller TOC source paths compared with the vendored distribution RECORD, not name matching alone. Preserve the supplied copyright and licence notice with those delivered modules. The retained tarfile implementation also carries Lars Gustaebel’s copyright and complete MIT header, reproduced separately from the generic distribution licence.",
+    "texts": [
+      {
+        "title": "bundled-setuptools-backports-tarfile-1.2.0-license.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-backports-tarfile-1.2.0-license.txt",
+        "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/backports.tarfile-1.2.0.dist-info/LICENSE"
+      },
+      {
+        "title": "bundled-setuptools-backports-tarfile-1.2.0-lars-notice.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-backports-tarfile-1.2.0-lars-notice.txt",
+        "sha256": "13d8bece0ca98d87a405d27f47fa4844fc657d473fa79b35d86ea423456df967",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/backports/tarfile/__init__.py:1-27 (complete MIT copyright header)"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [],
+    "source_refs": [
+      "tools/licence/dependency-setuptools-vendors.json"
+    ],
+    "artifact_modules": [
+      "setuptools._vendor.backports",
+      "setuptools._vendor.backports.tarfile",
+      "setuptools._vendor.backports.tarfile.compat",
+      "setuptools._vendor.backports.tarfile.compat.py38"
+    ]
+  },
+  {
+    "name": "setuptools vendor: jaraco.context",
+    "version": "6.1.0",
+    "spdx": "MIT",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/jaraco/jaraco.context",
+    "notes": "Vendored by setuptools 84.0.0 and actually retained in the inspected Windows executable. The module list is based on the private PyInstaller TOC source paths compared with the vendored distribution RECORD, not name matching alone. Preserve the supplied copyright and licence notice with those delivered modules.",
+    "texts": [
+      {
+        "title": "bundled-setuptools-jaraco-context-6.1.0-license.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-jaraco-context-6.1.0-license.txt",
+        "sha256": "9755a18519666e5f0f4cae3daad3d7012bcae48a600b31237d75e9fe134e6683",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/jaraco_context-6.1.0.dist-info/licenses/LICENSE"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [],
+    "source_refs": [
+      "tools/licence/dependency-setuptools-vendors.json"
+    ],
+    "artifact_modules": [
+      "setuptools._vendor.jaraco.context"
+    ]
+  },
+  {
+    "name": "setuptools vendor: jaraco.functools",
+    "version": "4.4.0",
+    "spdx": "MIT",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/jaraco/jaraco.functools",
+    "notes": "Vendored by setuptools 84.0.0 and actually retained in the inspected Windows executable. The module list is based on the private PyInstaller TOC source paths compared with the vendored distribution RECORD, not name matching alone. Preserve the supplied copyright and licence notice with those delivered modules.",
+    "texts": [
+      {
+        "title": "bundled-setuptools-jaraco-functools-4.4.0-license.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-jaraco-functools-4.4.0-license.txt",
+        "sha256": "5a57cb4db85e2a2dd88c290628908add57e3451449e0a9a71fdfb38776fd759d",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/jaraco_functools-4.4.0.dist-info/licenses/LICENSE"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [],
+    "source_refs": [
+      "tools/licence/dependency-setuptools-vendors.json"
+    ],
+    "artifact_modules": [
+      "setuptools._vendor.jaraco.functools"
+    ]
+  },
+  {
+    "name": "setuptools vendor: jaraco.text",
+    "version": "4.0.0",
+    "spdx": "MIT",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/jaraco/jaraco.text",
+    "notes": "Vendored by setuptools 84.0.0 and actually retained in the inspected Windows executable. The module list is based on the private PyInstaller TOC source paths compared with the vendored distribution RECORD, not name matching alone. Preserve the supplied copyright and licence notice with those delivered modules.",
+    "texts": [
+      {
+        "title": "bundled-setuptools-jaraco-text-4.0.0-license.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-jaraco-text-4.0.0-license.txt",
+        "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/jaraco.text-4.0.0.dist-info/LICENSE"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [],
+    "source_refs": [
+      "tools/licence/dependency-setuptools-vendors.json"
+    ],
+    "artifact_modules": [
+      "setuptools._vendor.jaraco.text"
+    ]
+  },
+  {
+    "name": "setuptools vendor: more-itertools",
+    "version": "10.8.0",
+    "spdx": "MIT",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/more-itertools/more-itertools",
+    "notes": "Vendored by setuptools 84.0.0 and actually retained in the inspected Windows executable. The module list is based on the private PyInstaller TOC source paths compared with the vendored distribution RECORD, not name matching alone. Preserve the supplied copyright and licence notice with those delivered modules.",
+    "texts": [
+      {
+        "title": "bundled-setuptools-more-itertools-10.8.0-license.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-more-itertools-10.8.0-license.txt",
+        "sha256": "09f1c8c9e941af3e584d59641ea9b87d83c0cb0fd007eb5ef391a7e2643c1a46",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/more_itertools-10.8.0.dist-info/licenses/LICENSE"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [],
+    "source_refs": [
+      "tools/licence/dependency-setuptools-vendors.json"
+    ],
+    "artifact_modules": [
+      "setuptools._vendor.more_itertools",
+      "setuptools._vendor.more_itertools.more",
+      "setuptools._vendor.more_itertools.recipes"
+    ]
+  },
+  {
+    "name": "setuptools vendor: packaging",
+    "version": "26.0",
+    "spdx": "Apache-2.0 OR BSD-2-Clause",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/pypa/packaging",
+    "notes": "Vendored by setuptools 84.0.0 and actually retained in the inspected Windows executable. The module list is based on the private PyInstaller TOC source paths compared with the vendored distribution RECORD, not name matching alone. Preserve the supplied copyright and licence notice with those delivered modules. Upstream offers Apache-2.0 OR BSD-2-Clause. Both supplied legal bodies and the licence-choice notice are retained. The requirement list takes the BSD-2-Clause notice option; no change to upstream dual licensing is implied. The packaging.licenses parser modules listed among installed files were not in the retained module comparison.",
+    "texts": [
+      {
+        "title": "bundled-setuptools-packaging-26.0-license.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-packaging-26.0-license.txt",
+        "sha256": "cad1ef5bd340d73e074ba614d26f7deaca5c7940c3d8c34852e65c4909686c48",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE"
+      },
+      {
+        "title": "bundled-setuptools-packaging-26.0-license-apache.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-packaging-26.0-license-apache.txt",
+        "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE.APACHE"
+      },
+      {
+        "title": "bundled-setuptools-packaging-26.0-license-bsd.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-packaging-26.0-license-bsd.txt",
+        "sha256": "b70e7e9b742f1cc6f948b34c16aa39ffece94196364bc88ff0d2180f0028fac5",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE.BSD"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [],
+    "source_refs": [
+      "tools/licence/dependency-setuptools-vendors.json"
+    ],
+    "artifact_modules": [
+      "setuptools._vendor.packaging",
+      "setuptools._vendor.packaging._elffile",
+      "setuptools._vendor.packaging._manylinux",
+      "setuptools._vendor.packaging._musllinux",
+      "setuptools._vendor.packaging._parser",
+      "setuptools._vendor.packaging._structures",
+      "setuptools._vendor.packaging._tokenizer",
+      "setuptools._vendor.packaging.markers",
+      "setuptools._vendor.packaging.requirements",
+      "setuptools._vendor.packaging.specifiers",
+      "setuptools._vendor.packaging.tags",
+      "setuptools._vendor.packaging.utils",
+      "setuptools._vendor.packaging.version"
+    ]
+  },
+  {
+    "name": "setuptools vendor: tomli",
+    "version": "2.4.0",
+    "spdx": "MIT",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/hukkin/tomli",
+    "notes": "Vendored by setuptools 84.0.0 and actually retained in the inspected Windows executable. The module list is based on the private PyInstaller TOC source paths compared with the vendored distribution RECORD, not name matching alone. Preserve the supplied copyright and licence notice with those delivered modules.",
+    "texts": [
+      {
+        "title": "bundled-setuptools-tomli-2.4.0-license.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-tomli-2.4.0-license.txt",
+        "sha256": "b80816b0d530b8accb4c2211783790984a6e3b61922c2b5ee92f3372ab2742fe",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/tomli-2.4.0.dist-info/licenses/LICENSE"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [],
+    "source_refs": [
+      "tools/licence/dependency-setuptools-vendors.json"
+    ],
+    "artifact_modules": [
+      "setuptools._vendor.tomli",
+      "setuptools._vendor.tomli._parser",
+      "setuptools._vendor.tomli._re",
+      "setuptools._vendor.tomli._types"
+    ]
+  },
+  {
+    "name": "setuptools vendor: wheel",
+    "version": "0.46.3",
+    "spdx": "MIT",
+    "tier": "bundled-runtime",
+    "url": "https://github.com/pypa/wheel",
+    "notes": "Vendored by setuptools 84.0.0 and actually retained in the inspected Windows executable. The module list is based on the private PyInstaller TOC source paths compared with the vendored distribution RECORD, not name matching alone. Preserve the supplied copyright and licence notice with those delivered modules.",
+    "texts": [
+      {
+        "title": "bundled-setuptools-wheel-0.46.3-license-txt.txt",
+        "licence_text": "tools/licence_texts/bundled-setuptools-wheel-0.46.3-license-txt.txt",
+        "sha256": "30c23618679108f3e8ea1d2a658c7ca417bdfc891c98ef1a89fa4ff0c9828654",
+        "source": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/wheel-0.46.3.dist-info/licenses/LICENSE.txt"
+      }
+    ],
+    "requires": [
+      "notice"
+    ],
+    "artifact_scope": {
+      "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+      "artifact_evidence": "tools/licence/dependency-current-windows-archive.json",
+      "build_kind": "fresh local Windows x86_64 clean private venv, current source; not a published release certificate",
+      "source_base": "bf3eaddd",
+      "platform": "Windows x86_64 / CPython 3.12.10",
+      "limit": "This inspected local executable only; not a published-release certificate or clearance for Linux, macOS, Orange Pi, Docker or a native wheel."
+    },
+    "artifact_members": [],
+    "source_refs": [
+      "tools/licence/dependency-setuptools-vendors.json"
+    ],
+    "artifact_modules": [
+      "setuptools._vendor.wheel",
+      "setuptools._vendor.wheel.macosx_libfile",
+      "setuptools._vendor.wheel.wheelfile"
+    ]
+  }
+]

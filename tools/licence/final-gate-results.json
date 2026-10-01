@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-01",
+  "source_baseline": "bf3eadddcac9fb74bd802309b57ab6536c15ee36",
+  "scope": "Local artifact audit, not release clearance",
+  "tarball": {
+    "artifact_sha256": "225c28398d10f0ef833345954f18263598d3c4ac2630cd0a2d79d3e539e94563",
+    "member_count": 478,
+    "findings": [
+      "server/astrodeck/catalog/brightstars.py: licence is outside the allowed policy",
+      "ui/dist/bg_nebula.png: asset licence is outside the allowed policy",
+      "ui/dist/bg_nebula.png: registered asset requires an owner decision"
+    ],
+    "cleared": false,
+    "scope": "Only this local tarball. ASTAP, dependency wheels, native wheels, other executables and containers require separate evidence."
+  },
+  "windows_executable": {
+    "artifact_sha256": "f68acf1fbcce3f3787d1c18b9fc3a127dfcde74d5391863482d7091228f47525",
+    "member_count": 887,
+    "findings": [
+      "Microsoft runtime redistribution basis and complete native subcomponent coverage remain unverified",
+      "No release clearance: baseline evidence documents open findings rather than approved distribution",
+      "Reviewed baseline credits predate the resolved Python build environment; regenerate inside each release environment",
+      "Reviewed baseline omits the native engine (#630); audit its final linked wheel when packaging is corrected",
+      "astrodeck/vendor/playerone/PlayerOneCamera.dll: Player One redistribution needs owner confirmation (#632)",
+      "astrodeck/vendor/playerone/linux-arm32/libPlayerOneCamera.so.3.10.0: Player One redistribution needs owner confirmation (#632)",
+      "astrodeck/vendor/playerone/linux-arm64/libPlayerOneCamera.so.3.10.0: Player One redistribution needs owner confirmation (#632)",
+      "astrodeck/vendor/playerone/linux-x86/libPlayerOneCamera.so.3.10.0: Player One redistribution needs owner confirmation (#632)",
+      "astrodeck/vendor/playerone/linux-x86_64/libPlayerOneCamera.so.3.10.0: Player One redistribution needs owner confirmation (#632)",
+      "astrodeck/vendor/playerone/macos/libPlayerOneCamera.dylib: Player One redistribution needs owner confirmation (#632)",
+      "astrodeck/webui/bg_nebula.png: artwork provenance needs owner confirmation (#637)",
+      "astropy/wcs/_wcs.pyd: WCSLIB LGPL source/relinking disposition remains open (#638)",
+      "numpy.libs/libscipy_openblas64_-ed4f167a5330424524f45258e7ca2c8d.dll: OpenBLAS/GCC runtime exception disposition remains open (#638)"
+    ],
+    "cleared": false,
+    "scope": "Exact local Windows executable; never run."
+  },
+  "dependency_metadata": {
+    "package_count": 269,
+    "inputs": {
+      "ui/package-lock.json": "fed5603aa8fe0e27de63d74370dcd57ba74fe135e009dadb8513c9e229971687",
+      "native/Cargo.lock": "4671c019f2436bc2f769f2d46d9a5daff44e29d8f704efd09384ce21b3b633f4"
+    },
+    "policy_pass": true,
+    "findings": [],
+    "scope": "SPDX policy on resolved graphs; not binary, notice or service clearance"
+  },
+  "not_inspected": [
+    "Linux x86_64 executable",
+    "Linux arm64 executable",
+    "macOS arm64 executable",
+    "root/relay final OCI images",
+    "Orange Pi rootfs/appliance image",
+    "ASTAP binary and star database in a complete release"
+  ]
+}

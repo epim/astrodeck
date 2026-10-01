@@ -1,0 +1,160 @@
+{
+  "basis": "Parse archived JS as syntax only with TypeScript, decode embedded JSON data strings; no application execution; compare whole normalized licence text, not substring",
+  "credits_input_sha256": "ad5c495a9ce962ee9bf4690b8b56d2bdfa1c6d4aea4aadbcb97f1ee0488cfd75",
+  "results": [
+    {
+      "name": "astropy-iers-data",
+      "version": "0.2026.6.8.17.49.5",
+      "notice_title": "LICENSE.rst",
+      "notice_sha256": "e044f71f779c4fd4df0dc048f7257c93145fafcf6d87a549117ea912a5e7f74e",
+      "entire_notice_found": true
+    },
+    {
+      "name": "certifi",
+      "version": "2026.5.20",
+      "notice_title": "LICENSE",
+      "notice_sha256": "b5ca961ec84fc51985a066eca8200d6717145311fecfcd9fe4a4e73fb7c4eb02",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "LICENSE.txt",
+      "notice_sha256": "9120d7091cd3cce3ad9cea1f1b90a8fdbfdedecf3d46f3e43ddb7109b1102393",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/_core/include/numpy/libdivide/LICENSE.txt",
+      "notice_sha256": "6cb5d166693b521ddefc8b405ff1f81f66ba80f4458d28370085cc7db1232835",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/_core/src/common/pythoncapi-compat/COPYING",
+      "notice_sha256": "77da5699114f301c212a178a1be505d5a38809f6a8f04b6c6458bdfd3a1e867c",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/_core/src/highway/LICENSE",
+      "notice_sha256": "e340270d4f64384569a91d546acb5b094d69ce47f0c015db77abb74dc6f815af",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+      "notice_sha256": "eb69249e31598fb6fc6a9401670676d423076afb57730c7e1d5476b5288bf3f3",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/_core/src/umath/svml/LICENSE",
+      "notice_sha256": "a646829968cf88f9597ba02682571a060f3a8dd2e2dcc45290e67b088663c392",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/fft/pocketfft/LICENSE.md",
+      "notice_sha256": "1ddacf662e1c462a709c9e6623d37e46c2d5111e16a1a0ac8b7b6138c8485a7d",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/linalg/lapack_lite/LICENSE.txt",
+      "notice_sha256": "d44b3a69c83be87d012fd33208676688b7150f728689162fc937089ab49df0db",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/ma/LICENSE",
+      "notice_sha256": "05f3b88351988ecfad10abe92c0c50e5875c6452d5009a0084cc291551ffcca6",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/random/LICENSE.md",
+      "notice_sha256": "e9fe34ee16e7ea9e4f5c9f12f17c61ead931dda48c8fb69ec2f983bc4e682d2b",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/random/src/distributions/LICENSE.md",
+      "notice_sha256": "469778be8f33d54e1bcaab28c281cc472916d2d273f835e55bc487d30503face",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/random/src/mt19937/LICENSE.md",
+      "notice_sha256": "0e111337b25494a773106695f0e799f642b8567aaacca4f116a74a8177179156",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/random/src/pcg64/LICENSE.md",
+      "notice_sha256": "ca0b1a204ec948cee248ad7bcd59588ca7b89b6b1230cbf6caac850a39633761",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/random/src/philox/LICENSE.md",
+      "notice_sha256": "edc1d4988fb0481dac5e8280701a081cb71279fc3306c5f4ff94b128a30cc354",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/random/src/sfc64/LICENSE.md",
+      "notice_sha256": "da48c5d4b1ae92c5b44f096b499f28eab7145aed0d30d3bf808166191388d950",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.6",
+      "notice_title": "numpy/random/src/splitmix64/LICENSE.md",
+      "notice_sha256": "268b0ca06759d31ea3ca68dd35f20e877916e927b1c2a835e4592a3c4354b1f9",
+      "entire_notice_found": true
+    },
+    {
+      "name": "pillow",
+      "version": "12.3.0",
+      "notice_title": "LICENSE",
+      "notice_sha256": "66a727764c606896baa1d854fea9937aacf382548f1502c7aea897d0573fc859",
+      "entire_notice_found": true
+    },
+    {
+      "name": "pyerfa",
+      "version": "2.0.1.5",
+      "notice_title": "LICENSE.rst",
+      "notice_sha256": "270f330a6f4043e2350ce9db724469c009fd879ee23a23c5d7c64201dc516e0a",
+      "entire_notice_found": true
+    },
+    {
+      "name": "pyserial",
+      "version": "3.5",
+      "notice_title": "LICENSE.txt (from the pySerial source tree)",
+      "notice_sha256": "e12fc87360a3b4b4078dc6bfac48a61d84ec330ef840e7b0e1885f2ab8a75411",
+      "entire_notice_found": true
+    },
+    {
+      "name": "numpy",
+      "version": "0.29.0",
+      "notice_title": "LICENSE",
+      "notice_sha256": "508e74eb9aec1182299af398ca735fb2f5bd73d7810a85f6b78f654f89cd63f9",
+      "entire_notice_found": true
+    }
+  ]
+}

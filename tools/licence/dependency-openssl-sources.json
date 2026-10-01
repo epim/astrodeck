@@ -1,0 +1,34 @@
+[
+  {
+    "version": "3.0.16",
+    "upstream_tag": "openssl-3.0.16",
+    "source_url": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.0.16/LICENSE.txt",
+    "evidence_path": "tools/licence/dependency-openssl-3.0.16-LICENSE.txt",
+    "bytes": 10175,
+    "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+  },
+  {
+    "version": "3.0.16",
+    "root_listing_url": "https://api.github.com/repos/openssl/openssl/contents/?ref=openssl-3.0.16",
+    "root_notice_files": [],
+    "root_license_files": [
+      "LICENSE.txt"
+    ]
+  },
+  {
+    "version": "4.0.3",
+    "upstream_tag": "openssl-4.0.3",
+    "source_url": "https://raw.githubusercontent.com/openssl/openssl/openssl-4.0.3/LICENSE.txt",
+    "evidence_path": "tools/licence/dependency-openssl-4.0.3-LICENSE.txt",
+    "bytes": 10175,
+    "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+  },
+  {
+    "version": "4.0.3",
+    "root_listing_url": "https://api.github.com/repos/openssl/openssl/contents/?ref=openssl-4.0.3",
+    "root_notice_files": [],
+    "root_license_files": [
+      "LICENSE.txt"
+    ]
+  }
+]

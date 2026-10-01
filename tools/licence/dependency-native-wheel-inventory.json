@@ -1,0 +1,1509 @@
+{
+  "schema_version": 1,
+  "artifact": ".probe/licence-deps/native-wheels/astrodeck_native-0.1.0-cp311-abi3-win_amd64.whl",
+  "artifact_bytes": 423803,
+  "artifact_sha256": "e17a748cfd32a3c9dd56f612c7d63a1ee44dc8849aa6d897e447aa50b1cdd73c",
+  "build_command": "python -m maturin build --release --locked --offline --manifest-path native/crates/astrodeck-native/Cargo.toml --out <private output> --interpreter <private Python3.12>",
+  "build_tool": "maturin1.14.1; cargo1.94.0; isolated CARGO_TARGET_DIR",
+  "source_inputs": [
+    {
+      "path": "native/Cargo.lock",
+      "sha256": "4671c019f2436bc2f769f2d46d9a5daff44e29d8f704efd09384ce21b3b633f4"
+    },
+    {
+      "path": "native/Cargo.toml",
+      "sha256": "1a3c6731354c7bbdbcf4ec0f3eac4f08e030aa988277107d4bbf0258963e6767"
+    },
+    {
+      "path": "native/crates/astrodeck-native/Cargo.toml",
+      "sha256": "e6e3a33ad08b9c60dd11e0a41bc1e26512feed21df56400aa62b2d761508e78f"
+    },
+    {
+      "path": "native/crates/astrodeck-native/pyproject.toml",
+      "sha256": "1d037795dc8b6fad5f6a73c640c28eba5d4f819f0193c398cab31b651136e0c0"
+    }
+  ],
+  "files": [
+    {
+      "path": "astrodeck_native/__init__.py",
+      "bytes": 147,
+      "sha256": "29bfa7d4c4e2a9646316088feb1517eded633b5995d493b465759969934509e6"
+    },
+    {
+      "path": "astrodeck_native/astrodeck_native.pyd",
+      "bytes": 997888,
+      "sha256": "a88fa631eddb87c4093552e0b684fb5cf1e13a2320ea8481e5a265dd7c0a8c7e",
+      "pe_imports": [
+        "KERNEL32.dll",
+        "VCRUNTIME140.dll",
+        "api-ms-win-core-synch-l1-2-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "bcryptprimitives.dll",
+        "ntdll.dll",
+        "python3.dll"
+      ]
+    },
+    {
+      "path": "astrodeck_native-0.1.0.dist-info/METADATA",
+      "bytes": 213,
+      "sha256": "1bf0fed165a6f39e37c927649f7ea99fbce8448819518ce6242dd3d9b93fdbe8"
+    },
+    {
+      "path": "astrodeck_native-0.1.0.dist-info/WHEEL",
+      "bytes": 96,
+      "sha256": "9efe56059dbb731c438c822ac4132a2b670e174db90f09059aa246a8bdd2a575"
+    },
+    {
+      "path": "astrodeck_native-0.1.0.dist-info/sboms/astrodeck-native.cyclonedx.json",
+      "bytes": 45483,
+      "sha256": "db1872a9f13b17b73f673e08f5e8614f7383d0b49cfa6f2970f052808061daeb"
+    },
+    {
+      "path": "astrodeck_native-0.1.0.dist-info/RECORD",
+      "bytes": 540,
+      "sha256": "aa2614055fd2bf31ce519d96f5a9f8651def72bf61502c159adec9a0f50c1731"
+    }
+  ],
+  "embedded_sbom": {
+    "bomFormat": "CycloneDX",
+    "specVersion": "1.5",
+    "version": 1,
+    "serialNumber": "urn:uuid:d3a2d6e8-6d70-4d20-8ffb-86f9a8cbe771",
+    "metadata": {
+      "timestamp": "2026-10-01T17:52:02.006027600Z",
+      "tools": [
+        {
+          "vendor": "CycloneDX",
+          "name": "cargo-cyclonedx",
+          "version": "0.5.9"
+        }
+      ],
+      "component": {
+        "type": "library",
+        "bom-ref": "workspace:native/crates/astrodeck-native#0.1.0",
+        "name": "astrodeck-native",
+        "version": "0.1.0",
+        "scope": "required",
+        "licenses": [
+          {
+            "expression": "MPL-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/astrodeck-native@0.1.0?download_url=file://.",
+        "components": [
+          {
+            "type": "library",
+            "bom-ref": "workspace:native/crates/astrodeck-native#0.1.0 bin-target-0",
+            "name": "astrodeck_native",
+            "version": "0.1.0",
+            "purl": "pkg:cargo/astrodeck-native@0.1.0?download_url=file://.#src/lib.rs"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "cdx:rustc:sbom:target:all_targets",
+          "value": "true"
+        }
+      ]
+    },
+    "components": [
+      {
+        "type": "library",
+        "bom-ref": "workspace:native/crates/astro-focus#0.1.0",
+        "name": "astro-focus",
+        "version": "0.1.0",
+        "scope": "required",
+        "licenses": [
+          {
+            "expression": "MPL-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/astro-focus@0.1.0?download_url=file://..\\astro-focus"
+      },
+      {
+        "type": "library",
+        "bom-ref": "workspace:native/crates/astro-guide#0.1.0",
+        "name": "astro-guide",
+        "version": "0.1.0",
+        "scope": "required",
+        "licenses": [
+          {
+            "expression": "Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/astro-guide@0.1.0?download_url=file://..\\astro-guide"
+      },
+      {
+        "type": "library",
+        "bom-ref": "workspace:native/crates/astro-star#0.1.0",
+        "name": "astro-star",
+        "version": "0.1.0",
+        "scope": "required",
+        "licenses": [
+          {
+            "expression": "MPL-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/astro-star@0.1.0?download_url=file://..\\astro-star"
+      },
+      {
+        "type": "library",
+        "bom-ref": "workspace:native/crates/astro-tppa#0.1.0",
+        "name": "astro-tppa",
+        "version": "0.1.0",
+        "scope": "required",
+        "licenses": [
+          {
+            "expression": "MPL-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/astro-tppa@0.1.0?download_url=file://..\\astro-tppa"
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#approx@0.5.1",
+        "author": "Brendan Zabarauskas <bjzaba@yahoo.com.au>",
+        "name": "approx",
+        "version": "0.5.1",
+        "description": "Approximate floating point equality comparisons and assertions.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/approx@0.5.1",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/approx"
+          },
+          {
+            "type": "website",
+            "url": "https://github.com/brendanzab/approx"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/brendanzab/approx"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.5.1",
+        "author": "Josh Stone <cuviper@gmail.com>",
+        "name": "autocfg",
+        "version": "1.5.1",
+        "description": "Automatic cfg for Rust compiler features",
+        "scope": "excluded",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Apache-2.0 OR MIT"
+          }
+        ],
+        "purl": "pkg:cargo/autocfg@1.5.1",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/autocfg/"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/cuviper/autocfg"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#bytemuck@1.25.1",
+        "author": "Lokathor <zefria@gmail.com>",
+        "name": "bytemuck",
+        "version": "1.25.1",
+        "description": "A crate for mucking around with piles of bytes.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "d6aedf8ae72766347502cf3cb4f41cf5e9cc37d28bee90f1fdaaae15f9cf9424"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Zlib OR Apache-2.0 OR MIT"
+          }
+        ],
+        "purl": "pkg:cargo/bytemuck@1.25.1",
+        "externalReferences": [
+          {
+            "type": "vcs",
+            "url": "https://github.com/Lokathor/bytemuck"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0",
+        "name": "heck",
+        "version": "0.5.0",
+        "description": "heck is a case conversion library.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/heck@0.5.0",
+        "externalReferences": [
+          {
+            "type": "vcs",
+            "url": "https://github.com/withoutboats/heck"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186",
+        "author": "The Rust Project Developers",
+        "name": "libc",
+        "version": "0.2.186",
+        "description": "Raw FFI bindings to platform libraries like libc.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/libc@0.2.186",
+        "externalReferences": [
+          {
+            "type": "vcs",
+            "url": "https://github.com/rust-lang/libc"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#matrixmultiply@0.3.10",
+        "author": "bluss, R. Janis Goldschmidt",
+        "name": "matrixmultiply",
+        "version": "0.3.10",
+        "description": "General matrix multiplication for f32 and f64 matrices. Operates on matrices with general layout (they can use arbitrary row and column stride). Detects and uses AVX or SSE2 on x86 platforms transparently for higher performance. Uses a microkernel strategy, so that the implementation is easy to parallelize and optimize.  Supports multithreading.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "a06de3016e9fae57a36fd14dba131fccf49f74b40b7fbdb472f96e361ec71a08"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/matrixmultiply@0.3.10",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/matrixmultiply/"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/bluss/matrixmultiply/"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#nalgebra-macros@0.2.2",
+        "author": "Andreas Longva, S\u00c3\u00a9bastien Crozet <developer@crozet.re>",
+        "name": "nalgebra-macros",
+        "version": "0.2.2",
+        "description": "Procedural macros for nalgebra",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "254a5372af8fc138e36684761d3c0cdb758a4410e938babcff1c860ce14ddbfc"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/nalgebra-macros@0.2.2",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://www.nalgebra.org/docs"
+          },
+          {
+            "type": "website",
+            "url": "https://nalgebra.org"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/dimforge/nalgebra"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#nalgebra@0.33.3",
+        "author": "S\u00c3\u00a9bastien Crozet <developer@crozet.re>",
+        "name": "nalgebra",
+        "version": "0.33.3",
+        "description": "General-purpose linear algebra library with transformations and statically-sized or dynamically-sized matrices.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "9d43ddcacf343185dfd6de2ee786d9e8b1c2301622afab66b6c73baf9882abfd"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/nalgebra@0.33.3",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://www.nalgebra.org/docs"
+          },
+          {
+            "type": "website",
+            "url": "https://nalgebra.org"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/dimforge/nalgebra"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#ndarray@0.16.1",
+        "author": "Ulrik Sverdrup \"bluss\", Jim Turner",
+        "name": "ndarray",
+        "version": "0.16.1",
+        "description": "An n-dimensional array for general elements and for numerics. Lightweight array views and slicing; views support chunking and splitting.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "882ed72dce9365842bf196bdeedf5055305f11fc8c03dee7bb0194a6cad34841"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/ndarray@0.16.1",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/ndarray/"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/rust-ndarray/ndarray"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#num-bigint@0.4.8",
+        "author": "The Rust Project Developers",
+        "name": "num-bigint",
+        "version": "0.4.8",
+        "description": "Big integer implementation for Rust",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/num-bigint@0.4.8",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/num-bigint"
+          },
+          {
+            "type": "website",
+            "url": "https://github.com/rust-num/num-bigint"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/rust-num/num-bigint"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#num-complex@0.4.6",
+        "author": "The Rust Project Developers",
+        "name": "num-complex",
+        "version": "0.4.6",
+        "description": "Complex numbers implementation for Rust",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/num-complex@0.4.6",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/num-complex"
+          },
+          {
+            "type": "website",
+            "url": "https://github.com/rust-num/num-complex"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/rust-num/num-complex"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.46",
+        "author": "The Rust Project Developers",
+        "name": "num-integer",
+        "version": "0.1.46",
+        "description": "Integer traits and functions",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/num-integer@0.1.46",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/num-integer"
+          },
+          {
+            "type": "website",
+            "url": "https://github.com/rust-num/num-integer"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/rust-num/num-integer"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#num-rational@0.4.2",
+        "author": "The Rust Project Developers",
+        "name": "num-rational",
+        "version": "0.4.2",
+        "description": "Rational numbers implementation for Rust",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/num-rational@0.4.2",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/num-rational"
+          },
+          {
+            "type": "website",
+            "url": "https://github.com/rust-num/num-rational"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/rust-num/num-rational"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+        "author": "The Rust Project Developers",
+        "name": "num-traits",
+        "version": "0.2.19",
+        "description": "Numeric traits for generic mathematics",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/num-traits@0.2.19",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/num-traits"
+          },
+          {
+            "type": "website",
+            "url": "https://github.com/rust-num/num-traits"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/rust-num/num-traits"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#numpy@0.29.0",
+        "author": "The rust-numpy Project Developers, PyO3 Project and Contributors <https://github.com/PyO3>",
+        "name": "numpy",
+        "version": "0.29.0",
+        "description": "PyO3-based Rust bindings of the NumPy C-API",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "6a5b15d63a5ff39e378daed0e1340d3a5964703ea9712eb09a0dc66fade996f4"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "BSD-2-Clause"
+          }
+        ],
+        "purl": "pkg:cargo/numpy@0.29.0",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/numpy"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/PyO3/rust-numpy"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
+        "author": "Aleksey Kladov <aleksey.kladov@gmail.com>",
+        "name": "once_cell",
+        "version": "1.21.4",
+        "description": "Single assignment cells and lazy values.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/once_cell@1.21.4",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/once_cell"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/matklad/once_cell"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#paste@1.0.15",
+        "author": "David Tolnay <dtolnay@gmail.com>",
+        "name": "paste",
+        "version": "1.0.15",
+        "description": "Macros for all your token pasting needs",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/paste@1.0.15",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/paste"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/dtolnay/paste"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#portable-atomic-util@0.2.7",
+        "name": "portable-atomic-util",
+        "version": "0.2.7",
+        "description": "Synchronization primitives built with portable-atomic. ",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Apache-2.0 OR MIT"
+          }
+        ],
+        "purl": "pkg:cargo/portable-atomic-util@0.2.7",
+        "externalReferences": [
+          {
+            "type": "vcs",
+            "url": "https://github.com/taiki-e/portable-atomic-util"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#portable-atomic@1.13.1",
+        "name": "portable-atomic",
+        "version": "1.13.1",
+        "description": "Portable atomic types including support for 128-bit atomics, atomic float, etc. ",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Apache-2.0 OR MIT"
+          }
+        ],
+        "purl": "pkg:cargo/portable-atomic@1.13.1",
+        "externalReferences": [
+          {
+            "type": "vcs",
+            "url": "https://github.com/taiki-e/portable-atomic"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.106",
+        "author": "David Tolnay <dtolnay@gmail.com>, Alex Crichton <alex@alexcrichton.com>",
+        "name": "proc-macro2",
+        "version": "1.0.106",
+        "description": "A substitute implementation of the compiler's `proc_macro` API to decouple token-based libraries from the procedural macro use case.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/proc-macro2@1.0.106",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/proc-macro2"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/dtolnay/proc-macro2"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.29.2",
+        "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+        "name": "pyo3-build-config",
+        "version": "0.29.2",
+        "description": "Build configuration for the PyO3 ecosystem",
+        "scope": "excluded",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "f41027e41b4bd03f6e60f9f417fe24a6341a6bb744edd62b6f709f2a52ea30e9"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/pyo3-build-config@0.29.2",
+        "externalReferences": [
+          {
+            "type": "website",
+            "url": "https://github.com/pyo3/pyo3"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/pyo3/pyo3"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-ffi@0.29.2",
+        "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+        "name": "pyo3-ffi",
+        "version": "0.29.2",
+        "description": "Python-API bindings for the PyO3 ecosystem",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "e591a95526fead067432c3b3a33fc74770b87b1e04e73671090d9c2055a2b327"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/pyo3-ffi@0.29.2",
+        "externalReferences": [
+          {
+            "type": "website",
+            "url": "https://github.com/pyo3/pyo3"
+          },
+          {
+            "type": "other",
+            "url": "python"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/pyo3/pyo3"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros-backend@0.29.2",
+        "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+        "name": "pyo3-macros-backend",
+        "version": "0.29.2",
+        "description": "Code generation for PyO3 package",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "571575aa3749fa6216757dd47d2a3e7ef360f329a40f0666a9fbd14889024952"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/pyo3-macros-backend@0.29.2",
+        "externalReferences": [
+          {
+            "type": "website",
+            "url": "https://github.com/pyo3/pyo3"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/pyo3/pyo3"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros@0.29.2",
+        "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+        "name": "pyo3-macros",
+        "version": "0.29.2",
+        "description": "Proc macros for PyO3 package",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "73225868fc1cd84eef2c3c230ddb91273bf1de46aeb8a4248da76d32a0924a1c"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/pyo3-macros@0.29.2",
+        "externalReferences": [
+          {
+            "type": "website",
+            "url": "https://github.com/pyo3/pyo3"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/pyo3/pyo3"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3@0.29.2",
+        "author": "PyO3 Project and Contributors <https://github.com/PyO3>",
+        "name": "pyo3",
+        "version": "0.29.2",
+        "description": "Bindings to Python interpreter",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "4688ddedf473e32662b9b067670129a8afb8c18e351482c70d62ba4a88171e8b"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/pyo3@0.29.2",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/crate/pyo3/"
+          },
+          {
+            "type": "website",
+            "url": "https://github.com/pyo3/pyo3"
+          },
+          {
+            "type": "other",
+            "url": "pyo3-python"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/pyo3/pyo3"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.46",
+        "author": "David Tolnay <dtolnay@gmail.com>",
+        "name": "quote",
+        "version": "1.0.46",
+        "description": "Quasi-quoting macro quote!(...)",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "dfbc457d0c7a0759a614551b11a6409e5951f6c7537be1f1b7682b9ae9230368"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/quote@1.0.46",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/quote/"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/dtolnay/quote"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#rawpointer@0.2.1",
+        "author": "bluss",
+        "name": "rawpointer",
+        "version": "0.2.1",
+        "description": "Extra methods for raw pointers and `NonNull<T>`.  For example `.post_inc()` and `.pre_dec()` (c.f. `ptr++` and `--ptr`), `offset` and `add` for `NonNull<T>`, and the function `ptrdistance`. ",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/rawpointer@0.2.1",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/rawpointer/"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/bluss/rawpointer/"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#rustc-hash@2.1.3",
+        "author": "The Rust Project Developers",
+        "name": "rustc-hash",
+        "version": "2.1.3",
+        "description": "A speedy, non-cryptographic hashing algorithm used by rustc",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Apache-2.0 OR MIT"
+          }
+        ],
+        "purl": "pkg:cargo/rustc-hash@2.1.3",
+        "externalReferences": [
+          {
+            "type": "vcs",
+            "url": "https://github.com/rust-lang/rustc-hash"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#safe_arch@0.7.4",
+        "author": "Lokathor <zefria@gmail.com>",
+        "name": "safe_arch",
+        "version": "0.7.4",
+        "description": "Crate that exposes `core::arch` safely via `#[cfg()]`.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Zlib OR Apache-2.0 OR MIT"
+          }
+        ],
+        "purl": "pkg:cargo/safe_arch@0.7.4",
+        "externalReferences": [
+          {
+            "type": "vcs",
+            "url": "https://github.com/Lokathor/safe_arch"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#simba@0.9.1",
+        "author": "sebcrozet <developer@crozet.re>",
+        "name": "simba",
+        "version": "0.9.1",
+        "description": "SIMD algebra for Rust",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "c99284beb21666094ba2b75bbceda012e610f5479dfcc2d6e2426f53197ffd95"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/simba@0.9.1",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/simba"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/dimforge/simba"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.118",
+        "author": "David Tolnay <dtolnay@gmail.com>",
+        "name": "syn",
+        "version": "2.0.118",
+        "description": "Parser for Rust source code",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/syn@2.0.118",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/syn"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/dtolnay/syn"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#target-lexicon@0.13.5",
+        "author": "Dan Gohman <sunfish@mozilla.com>",
+        "name": "target-lexicon",
+        "version": "0.13.5",
+        "description": "LLVM target triple types",
+        "scope": "excluded",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Apache-2.0 WITH LLVM-exception"
+          }
+        ],
+        "purl": "pkg:cargo/target-lexicon@0.13.5",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/target-lexicon/"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/bytecodealliance/target-lexicon"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#typenum@1.20.1",
+        "name": "typenum",
+        "version": "1.20.1",
+        "description": "Typenum is a Rust library for type-level numbers evaluated at     compile time. It currently supports bits, unsigned integers, and signed     integers. It also provides a type-level array of type-level numbers, but its     implementation is incomplete.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "MIT OR Apache-2.0"
+          }
+        ],
+        "purl": "pkg:cargo/typenum@1.20.1",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/typenum"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/paholg/typenum"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.24",
+        "author": "David Tolnay <dtolnay@gmail.com>",
+        "name": "unicode-ident",
+        "version": "1.0.24",
+        "description": "Determine whether characters have the XID_Start or XID_Continue properties according to Unicode Standard Annex #31",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "(MIT OR Apache-2.0) AND Unicode-3.0"
+          }
+        ],
+        "purl": "pkg:cargo/unicode-ident@1.0.24",
+        "externalReferences": [
+          {
+            "type": "documentation",
+            "url": "https://docs.rs/unicode-ident"
+          },
+          {
+            "type": "vcs",
+            "url": "https://github.com/dtolnay/unicode-ident"
+          }
+        ]
+      },
+      {
+        "type": "library",
+        "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#wide@0.7.33",
+        "author": "Lokathor <zefria@gmail.com>",
+        "name": "wide",
+        "version": "0.7.33",
+        "description": "A crate to help you go wide.",
+        "scope": "required",
+        "hashes": [
+          {
+            "alg": "SHA-256",
+            "content": "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+          }
+        ],
+        "licenses": [
+          {
+            "expression": "Zlib OR Apache-2.0 OR MIT"
+          }
+        ],
+        "purl": "pkg:cargo/wide@0.7.33",
+        "externalReferences": [
+          {
+            "type": "vcs",
+            "url": "https://github.com/Lokathor/wide"
+          }
+        ]
+      }
+    ],
+    "dependencies": [
+      {
+        "ref": "workspace:native/crates/astro-focus#0.1.0"
+      },
+      {
+        "ref": "workspace:native/crates/astro-guide#0.1.0",
+        "dependsOn": [
+          "workspace:native/crates/astro-star#0.1.0",
+          "registry+https://github.com/rust-lang/crates.io-index#nalgebra@0.33.3"
+        ]
+      },
+      {
+        "ref": "workspace:native/crates/astro-star#0.1.0"
+      },
+      {
+        "ref": "workspace:native/crates/astro-tppa#0.1.0"
+      },
+      {
+        "ref": "workspace:native/crates/astrodeck-native#0.1.0",
+        "dependsOn": [
+          "workspace:native/crates/astro-focus#0.1.0",
+          "workspace:native/crates/astro-guide#0.1.0",
+          "workspace:native/crates/astro-star#0.1.0",
+          "workspace:native/crates/astro-tppa#0.1.0",
+          "registry+https://github.com/rust-lang/crates.io-index#numpy@0.29.0",
+          "registry+https://github.com/rust-lang/crates.io-index#pyo3@0.29.2"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#approx@0.5.1",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.5.1"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#bytemuck@1.25.1"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#matrixmultiply@0.3.10",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.5.1",
+          "registry+https://github.com/rust-lang/crates.io-index#rawpointer@0.2.1"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#nalgebra-macros@0.2.2",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.106",
+          "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.46",
+          "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.118"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#nalgebra@0.33.3",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#approx@0.5.1",
+          "registry+https://github.com/rust-lang/crates.io-index#matrixmultiply@0.3.10",
+          "registry+https://github.com/rust-lang/crates.io-index#nalgebra-macros@0.2.2",
+          "registry+https://github.com/rust-lang/crates.io-index#num-complex@0.4.6",
+          "registry+https://github.com/rust-lang/crates.io-index#num-rational@0.4.2",
+          "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+          "registry+https://github.com/rust-lang/crates.io-index#simba@0.9.1",
+          "registry+https://github.com/rust-lang/crates.io-index#typenum@1.20.1"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#ndarray@0.16.1",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#matrixmultiply@0.3.10",
+          "registry+https://github.com/rust-lang/crates.io-index#num-complex@0.4.6",
+          "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.46",
+          "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+          "registry+https://github.com/rust-lang/crates.io-index#portable-atomic@1.13.1",
+          "registry+https://github.com/rust-lang/crates.io-index#portable-atomic-util@0.2.7",
+          "registry+https://github.com/rust-lang/crates.io-index#rawpointer@0.2.1"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#num-bigint@0.4.8",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.46",
+          "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#num-complex@0.4.6",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.46",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#num-rational@0.4.2",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#num-bigint@0.4.8",
+          "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.46",
+          "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.5.1"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#numpy@0.29.0",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186",
+          "registry+https://github.com/rust-lang/crates.io-index#ndarray@0.16.1",
+          "registry+https://github.com/rust-lang/crates.io-index#num-complex@0.4.6",
+          "registry+https://github.com/rust-lang/crates.io-index#num-integer@0.1.46",
+          "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+          "registry+https://github.com/rust-lang/crates.io-index#pyo3@0.29.2",
+          "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.29.2",
+          "registry+https://github.com/rust-lang/crates.io-index#rustc-hash@2.1.3"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#paste@1.0.15"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#portable-atomic-util@0.2.7",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#portable-atomic@1.13.1"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#portable-atomic@1.13.1"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.106",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.24"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.29.2",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#target-lexicon@0.13.5"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-ffi@0.29.2",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186",
+          "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.29.2"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros-backend@0.29.2",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#heck@0.5.0",
+          "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.106",
+          "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.46",
+          "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.118"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros@0.29.2",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.106",
+          "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros-backend@0.29.2",
+          "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.46",
+          "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.118"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#pyo3@0.29.2",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186",
+          "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
+          "registry+https://github.com/rust-lang/crates.io-index#portable-atomic@1.13.1",
+          "registry+https://github.com/rust-lang/crates.io-index#pyo3-build-config@0.29.2",
+          "registry+https://github.com/rust-lang/crates.io-index#pyo3-ffi@0.29.2",
+          "registry+https://github.com/rust-lang/crates.io-index#pyo3-macros@0.29.2"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.46",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.106"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#rawpointer@0.2.1"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#rustc-hash@2.1.3"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#safe_arch@0.7.4",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#bytemuck@1.25.1"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#simba@0.9.1",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#approx@0.5.1",
+          "registry+https://github.com/rust-lang/crates.io-index#num-complex@0.4.6",
+          "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19",
+          "registry+https://github.com/rust-lang/crates.io-index#paste@1.0.15",
+          "registry+https://github.com/rust-lang/crates.io-index#wide@0.7.33"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#syn@2.0.118",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.106",
+          "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.46",
+          "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.24"
+        ]
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#target-lexicon@0.13.5"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#typenum@1.20.1"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.24"
+      },
+      {
+        "ref": "registry+https://github.com/rust-lang/crates.io-index#wide@0.7.33",
+        "dependsOn": [
+          "registry+https://github.com/rust-lang/crates.io-index#bytemuck@1.25.1",
+          "registry+https://github.com/rust-lang/crates.io-index#safe_arch@0.7.4"
+        ]
+      }
+    ]
+  },
+  "sbom_normalization": "Workspace absolute file references replaced by workspace: relative references; original embedded SBOM hash remains in files."
+}

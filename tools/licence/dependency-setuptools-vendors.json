@@ -1,0 +1,215 @@
+{
+  "basis": "Compare current PyInstaller PYZ-00.toc source paths with each installed vendored distribution RECORD, not module names alone",
+  "packages": [
+    {
+      "name": "autocommand",
+      "version": "2.2.2",
+      "license_expression": null,
+      "legacy_license": "LGPLv3",
+      "embedded_modules": [],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/autocommand-2.2.2.dist-info/LICENSE",
+          "sha256": "ade78d04982d69972d444a8e14a94f87a2334dd3855cc80348ea8e240aa0df2d"
+        }
+      ]
+    },
+    {
+      "name": "backports.tarfile",
+      "version": "1.2.0",
+      "license_expression": null,
+      "legacy_license": null,
+      "embedded_modules": [
+        "setuptools._vendor.backports",
+        "setuptools._vendor.backports.tarfile",
+        "setuptools._vendor.backports.tarfile.compat",
+        "setuptools._vendor.backports.tarfile.compat.py38"
+      ],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/backports.tarfile-1.2.0.dist-info/LICENSE",
+          "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741"
+        }
+      ]
+    },
+    {
+      "name": "importlib_metadata",
+      "version": "8.7.1",
+      "license_expression": "Apache-2.0",
+      "legacy_license": null,
+      "embedded_modules": [],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/licenses/LICENSE",
+          "sha256": "458502e12d97bbf64438606a20044aa85eb05fb0a8a807bb35dbec253fd1fc04"
+        }
+      ]
+    },
+    {
+      "name": "jaraco.context",
+      "version": "6.1.0",
+      "license_expression": "MIT",
+      "legacy_license": null,
+      "embedded_modules": [
+        "setuptools._vendor.jaraco.context"
+      ],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/jaraco_context-6.1.0.dist-info/licenses/LICENSE",
+          "sha256": "9755a18519666e5f0f4cae3daad3d7012bcae48a600b31237d75e9fe134e6683"
+        }
+      ]
+    },
+    {
+      "name": "jaraco.functools",
+      "version": "4.4.0",
+      "license_expression": "MIT",
+      "legacy_license": null,
+      "embedded_modules": [
+        "setuptools._vendor.jaraco.functools"
+      ],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/jaraco_functools-4.4.0.dist-info/licenses/LICENSE",
+          "sha256": "5a57cb4db85e2a2dd88c290628908add57e3451449e0a9a71fdfb38776fd759d"
+        }
+      ]
+    },
+    {
+      "name": "jaraco.text",
+      "version": "4.0.0",
+      "license_expression": null,
+      "legacy_license": null,
+      "embedded_modules": [
+        "setuptools._vendor.jaraco.text"
+      ],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/jaraco.text-4.0.0.dist-info/LICENSE",
+          "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741"
+        }
+      ]
+    },
+    {
+      "name": "more-itertools",
+      "version": "10.8.0",
+      "license_expression": "MIT",
+      "legacy_license": null,
+      "embedded_modules": [
+        "setuptools._vendor.more_itertools",
+        "setuptools._vendor.more_itertools.more",
+        "setuptools._vendor.more_itertools.recipes"
+      ],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/more_itertools-10.8.0.dist-info/licenses/LICENSE",
+          "sha256": "09f1c8c9e941af3e584d59641ea9b87d83c0cb0fd007eb5ef391a7e2643c1a46"
+        }
+      ]
+    },
+    {
+      "name": "packaging",
+      "version": "26.0",
+      "license_expression": "Apache-2.0 OR BSD-2-Clause",
+      "legacy_license": null,
+      "embedded_modules": [
+        "setuptools._vendor.packaging",
+        "setuptools._vendor.packaging._elffile",
+        "setuptools._vendor.packaging._manylinux",
+        "setuptools._vendor.packaging._musllinux",
+        "setuptools._vendor.packaging._parser",
+        "setuptools._vendor.packaging._structures",
+        "setuptools._vendor.packaging._tokenizer",
+        "setuptools._vendor.packaging.markers",
+        "setuptools._vendor.packaging.requirements",
+        "setuptools._vendor.packaging.specifiers",
+        "setuptools._vendor.packaging.tags",
+        "setuptools._vendor.packaging.utils",
+        "setuptools._vendor.packaging.version"
+      ],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE",
+          "sha256": "cad1ef5bd340d73e074ba614d26f7deaca5c7940c3d8c34852e65c4909686c48"
+        },
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE.APACHE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/packaging-26.0.dist-info/licenses/LICENSE.BSD",
+          "sha256": "b70e7e9b742f1cc6f948b34c16aa39ffece94196364bc88ff0d2180f0028fac5"
+        },
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/packaging/licenses/__init__.py",
+          "sha256": "4f05cb1d9097c1281d17044b3f15bad364fa99289eba74851cce9fa7ca605bbf"
+        },
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/packaging/licenses/_spdx.py",
+          "sha256": "596ec35e2ca0ebcba9fd8343ff0a51625af548786257815f24b41f7e08613314"
+        }
+      ]
+    },
+    {
+      "name": "platformdirs",
+      "version": "4.4.0",
+      "license_expression": "MIT",
+      "legacy_license": null,
+      "embedded_modules": [],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/platformdirs-4.4.0.dist-info/licenses/LICENSE",
+          "sha256": "29e0fd62e929850e86eb28c3fdccf0cefdf4fa94879011cffb3d0d4bed6d4db6"
+        }
+      ]
+    },
+    {
+      "name": "tomli",
+      "version": "2.4.0",
+      "license_expression": "MIT",
+      "legacy_license": null,
+      "embedded_modules": [
+        "setuptools._vendor.tomli",
+        "setuptools._vendor.tomli._parser",
+        "setuptools._vendor.tomli._re",
+        "setuptools._vendor.tomli._types"
+      ],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/tomli-2.4.0.dist-info/licenses/LICENSE",
+          "sha256": "b80816b0d530b8accb4c2211783790984a6e3b61922c2b5ee92f3372ab2742fe"
+        }
+      ]
+    },
+    {
+      "name": "wheel",
+      "version": "0.46.3",
+      "license_expression": "MIT",
+      "legacy_license": null,
+      "embedded_modules": [
+        "setuptools._vendor.wheel",
+        "setuptools._vendor.wheel.macosx_libfile",
+        "setuptools._vendor.wheel.wheelfile"
+      ],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/wheel-0.46.3.dist-info/licenses/LICENSE.txt",
+          "sha256": "30c23618679108f3e8ea1d2a658c7ca417bdfc891c98ef1a89fa4ff0c9828654"
+        }
+      ]
+    },
+    {
+      "name": "zipp",
+      "version": "3.23.0",
+      "license_expression": "MIT",
+      "legacy_license": null,
+      "embedded_modules": [],
+      "notice_sources": [
+        {
+          "path": ".probe/licence-deps/build-venv/Lib/site-packages/setuptools/_vendor/zipp-3.23.0.dist-info/licenses/LICENSE",
+          "sha256": "5a57cb4db85e2a2dd88c290628908add57e3451449e0a9a71fdfb38776fd759d"
+        }
+      ]
+    }
+  ]
+}
