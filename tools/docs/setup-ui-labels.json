@@ -1,0 +1,520 @@
+[
+  {
+    "page": "README.md",
+    "label": "Equipment",
+    "source": "ui/src/App.tsx",
+    "line": 55
+  },
+  {
+    "page": "README.md",
+    "label": "Simulator",
+    "source": "ui/src/views/EquipmentView.tsx",
+    "line": 1003
+  },
+  {
+    "page": "docs/auth-setup.md",
+    "label": "Auth",
+    "source": "ui/src/components/settings/SettingsView.tsx",
+    "line": 189
+  },
+  {
+    "page": "docs/auth-setup.md",
+    "label": "Enable Google sign-in",
+    "source": "ui/src/components/settings/AuthMethodPanel.tsx",
+    "line": 407
+  },
+  {
+    "page": "docs/auth-setup.md",
+    "label": "Enable local accounts",
+    "source": "ui/src/components/settings/AuthMethodPanel.tsx",
+    "line": 381
+  },
+  {
+    "page": "docs/auth-setup.md",
+    "label": "Save methods",
+    "source": "ui/src/components/settings/AuthMethodPanel.tsx",
+    "line": 604
+  },
+  {
+    "page": "docs/auth-setup.md",
+    "label": "Settings",
+    "source": "ui/src/App.tsx",
+    "line": 100
+  },
+  {
+    "page": "docs/auth-setup.md",
+    "label": "Sign in with Google",
+    "source": "ui/src/views/Login.tsx",
+    "line": 363
+  },
+  {
+    "page": "docs/auth-setup.md",
+    "label": "Sign-in methods",
+    "source": "ui/src/components/settings/AuthMethodPanel.tsx",
+    "line": 358
+  },
+  {
+    "page": "docs/auth-setup.md",
+    "label": "Trust loopback as admin",
+    "source": "ui/src/components/settings/AuthMethodPanel.tsx",
+    "line": 555
+  },
+  {
+    "page": "docs/auth-setup.md",
+    "label": "Users",
+    "source": "ui/src/components/settings/SettingsView.tsx",
+    "line": 188
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Activate",
+    "source": "ui/src/components/settings/ProfileList.tsx",
+    "line": 600
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Add",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 113
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Add driver",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 280
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Alpaca server",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 291
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Autofocus",
+    "source": "ui/src/lib/equipment.ts",
+    "line": 87
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Backend Drivers",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 234
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Connect",
+    "source": "ui/src/components/settings/SettingsView.tsx",
+    "line": 164
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Connect Rig",
+    "source": "ui/src/views/EquipmentView.tsx",
+    "line": 999,
+    "dynamic": "Exact fixed prefix; rendered label includes current capture settings or role count."
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Delete",
+    "source": "ui/src/components/settings/ProfileList.tsx",
+    "line": 606
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Disconnect",
+    "source": "ui/src/views/EquipmentView.tsx",
+    "line": 427
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Equipment",
+    "source": "ui/src/App.tsx",
+    "line": 55
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Focal length (mm)",
+    "source": "ui/src/components/settings/OpticsPanel.tsx",
+    "line": 255
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Guide scope focal length (mm)",
+    "source": "ui/src/components/settings/OpticsPanel.tsx",
+    "line": 388
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Host",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 298
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Imaging train",
+    "source": "ui/src/components/settings/OpticsPanel.tsx",
+    "line": 169
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Label (optional)",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 314
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Link Status",
+    "source": "ui/src/views/EquipmentView.tsx",
+    "line": 1209
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "NINA",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 290
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "PHD2",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 292
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Plate solve",
+    "source": "ui/src/lib/equipment.ts",
+    "line": 89
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Polar align",
+    "source": "ui/src/lib/equipment.ts",
+    "line": 88
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Port",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 306
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Probe",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 511
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Profile name",
+    "source": "ui/src/components/settings/ProfileList.tsx",
+    "line": 892
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Profiles",
+    "source": "ui/src/components/settings/SettingsView.tsx",
+    "line": 391
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Reconnect",
+    "source": "ui/src/components/settings/ProfileList.tsx",
+    "line": 693
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Rig Actions",
+    "source": "ui/src/views/EquipmentView.tsx",
+    "line": 997
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Save Current Rig",
+    "source": "ui/src/components/settings/ProfileList.tsx",
+    "line": 548
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Save Rig",
+    "source": "ui/src/components/settings/ProfileList.tsx",
+    "line": 569
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Scan for USB/serial hardware",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 390
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Settings",
+    "source": "ui/src/App.tsx",
+    "line": 100
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Simulator",
+    "source": "ui/src/views/EquipmentView.tsx",
+    "line": 1003
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Take sensor details from the camera",
+    "source": "ui/src/components/settings/OpticsPanel.tsx",
+    "line": 326
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Tasks",
+    "source": "ui/src/components/equipment/TasksPanel.tsx",
+    "line": 165
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Telescope name",
+    "source": "ui/src/components/settings/OpticsPanel.tsx",
+    "line": 278
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Type",
+    "source": "ui/src/components/settings/DriversPanel.tsx",
+    "line": 282
+  },
+  {
+    "page": "docs/guide/equipment-and-profiles.md",
+    "label": "Update",
+    "source": "ui/src/components/settings/ProfileList.tsx",
+    "line": 758
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "+ NEW SITE HERE",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 336
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "CAPTURE",
+    "source": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+    "line": 86,
+    "dynamic": "Exact fixed prefix; rendered label includes current capture settings or role count."
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "COUNT",
+    "source": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+    "line": 336
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "EXPOSURE",
+    "source": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+    "line": 300
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "Elevation (m)",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 453
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "Latitude",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 412
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "Longitude",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 421
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "Name",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 397
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "RUN THE SIMULATOR",
+    "source": "ui/src/next/hubs/rig/devices/ConnectOnceCard.tsx",
+    "line": 116
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "SAVE FITS TO LIBRARY",
+    "source": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+    "line": 591
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "SAVE SITE",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 477
+  },
+  {
+    "page": "docs/guide/getting-started.md",
+    "label": "SITES",
+    "source": "ui/src/next/hubs/settings/general/GeneralScreen.tsx",
+    "line": 250
+  },
+  {
+    "page": "docs/guide/remote-access-and-roles.md",
+    "label": "Auth",
+    "source": "ui/src/components/settings/SettingsView.tsx",
+    "line": 189
+  },
+  {
+    "page": "docs/guide/remote-access-and-roles.md",
+    "label": "Save methods",
+    "source": "ui/src/components/settings/AuthMethodPanel.tsx",
+    "line": 604
+  },
+  {
+    "page": "docs/guide/remote-access-and-roles.md",
+    "label": "Settings",
+    "source": "ui/src/App.tsx",
+    "line": 100
+  },
+  {
+    "page": "docs/guide/remote-access-and-roles.md",
+    "label": "Sign in",
+    "source": "ui/src/views/Login.tsx",
+    "line": 153
+  },
+  {
+    "page": "docs/guide/remote-access-and-roles.md",
+    "label": "Trust loopback as admin",
+    "source": "ui/src/components/settings/AuthMethodPanel.tsx",
+    "line": 555
+  },
+  {
+    "page": "docs/guide/remote-access-and-roles.md",
+    "label": "Users",
+    "source": "ui/src/components/settings/SettingsView.tsx",
+    "line": 188
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "+ NEW SITE HERE",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 336
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Connect",
+    "source": "ui/src/components/settings/SettingsView.tsx",
+    "line": 164
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Elevation (m)",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 453
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Latitude",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 412
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Load selected preset",
+    "source": "ui/src/components/settings/SitePanel.tsx",
+    "line": 784
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Longitude",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 421
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Name",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 397
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Observing Site",
+    "source": "ui/src/components/settings/SitePanel.tsx",
+    "line": 546
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "SAVE SITE",
+    "source": "ui/src/next/hubs/sky/sheets/sites.tsx",
+    "line": 477
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "SITES",
+    "source": "ui/src/next/hubs/settings/general/GeneralScreen.tsx",
+    "line": 250
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Save as location preset\u2026",
+    "source": "ui/src/components/settings/SitePanel.tsx",
+    "line": 792
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Saved locations",
+    "source": "ui/src/components/settings/SitePanel.tsx",
+    "line": 759
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Set site",
+    "source": "ui/src/components/settings/SitePanel.tsx",
+    "line": 810
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Site name",
+    "source": "ui/src/components/settings/SitePanel.tsx",
+    "line": 604
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Use mount GPS",
+    "source": "ui/src/components/settings/SitePanel.tsx",
+    "line": 587
+  },
+  {
+    "page": "docs/guide/site-and-locations.md",
+    "label": "Use my location",
+    "source": "ui/src/components/settings/SitePanel.tsx",
+    "line": 571
+  },
+  {
+    "page": "docs/guide/troubleshooting.md",
+    "label": "Equipment",
+    "source": "ui/src/App.tsx",
+    "line": 55
+  },
+  {
+    "page": "docs/guide/troubleshooting.md",
+    "label": "Link Status",
+    "source": "ui/src/views/EquipmentView.tsx",
+    "line": 1209
+  },
+  {
+    "page": "docs/guide/troubleshooting.md",
+    "label": "RUN THE SIMULATOR",
+    "source": "ui/src/next/hubs/rig/devices/ConnectOnceCard.tsx",
+    "line": 116
+  },
+  {
+    "page": "docs/guide/troubleshooting.md",
+    "label": "Simulator",
+    "source": "ui/src/views/EquipmentView.tsx",
+    "line": 1003
+  }
+]

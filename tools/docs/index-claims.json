@@ -1,0 +1,72 @@
+{
+  "claims": [
+    {
+      "id": "guide-navigation",
+      "page": "docs/guide/README.md",
+      "claim": "Task index links to the preserved guides and new Flow, unattended, appliance, Windows and alternative-interface pages.",
+      "sources": [
+        {
+          "path": "tools/docs/stable-anchors.json",
+          "line": 1
+        },
+        {
+          "path": "tools/docs/check_docs.py",
+          "line": 20
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "guide-backends",
+      "page": "docs/guide/README.md",
+      "claim": "Standalone, NINA and ASIAIR planning are distinct supported paths bounded by backend capabilities.",
+      "sources": [
+        {
+          "path": "server/astrodeck/devices/backends/nina_backend.py",
+          "line": 1
+        },
+        {
+          "path": "server/astrodeck/devices/backends/asiair_backend.py",
+          "line": 191
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "guide-native-runtime",
+      "page": "docs/guide/README.md",
+      "claim": "Native autofocus/guiding require the optional native engine; the release packaging gap is tracked separately.",
+      "sources": [
+        {
+          "path": "server/astrodeck/focus/native.py",
+          "line": 305
+        },
+        {
+          "path": "server/astrodeck/providers.py",
+          "line": 54
+        },
+        {
+          "path": "tools/licence/dependency-artifact-audit.md",
+          "line": 38
+        }
+      ],
+      "verified_by": "source-trace"
+    },
+    {
+      "id": "guide-astap",
+      "page": "docs/guide/README.md",
+      "claim": "Standalone ASTAP requires a separately available executable and star database.",
+      "sources": [
+        {
+          "path": "server/astrodeck/solve/astap.py",
+          "line": 179
+        },
+        {
+          "path": "server/astrodeck/solve/astap.py",
+          "line": 44
+        }
+      ],
+      "verified_by": "source-trace"
+    }
+  ]
+}
