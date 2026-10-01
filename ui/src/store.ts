@@ -5,7 +5,9 @@ import { useShallow } from "zustand/react/shallow";
 // Flows lives in its own slice module: store.ts is shared by every surface and
 // a 300-line domain addition here is 300 lines of merge surface for anyone else
 // working in ui/. See components/flows/flowsSlice.ts for the write discipline
-// that makes a node-status tick re-render one node instead of the canvas.
+// that would let a node-status tick re-render one node instead of the canvas
+// if the rig ever sent one -- nothing does (#464: no topic carries a stage's
+// status), so every node reads idle through a live run.
 import {
   createFlowsActions, FLOWS_INIT,
   type FlowsActions, type FlowsState,

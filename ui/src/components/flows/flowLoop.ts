@@ -31,10 +31,43 @@
 // the #/next `canvasModel`) take the check as an optional argument that their
 // surface builds from the live graph, and `flowsConnect` asks it itself,
 // because tap-to-wire reaches the store without passing through any resolver.
+//
+// THE SAME IS TRUE OF THE LANE CHECK AND THE SELF-WIRE REFUSAL (#197). A drag
+// refuses both BEFORE `flowsConnect` is ever called (`resolveWireDrop`'s own
+// rules 3 and 4, copied in canvasModel.ts for the #/next canvas), so neither
+// case reaches the store from a drag. Tap-to-wire (`flowsTapPort`) has no
+// resolver of its own and calls `flowsConnect` directly, so without a second
+// gate THERE a flow output tapped onto an event input would wire, and a stage
+// tapped into itself would too — the defect #197 found. `flowsConnect` now
+// runs `laneMismatchRefusal` and a bare `from === to` test itself, so every
+// gesture gets the same answer whether or not it passed through a resolver
+// first; `laneMismatchRefusal` is exported here so the classic resolver can
+// share its sentence with the store instead of spelling it twice.
 
 import { NODE_DEFS } from "./nodeDefs";
 import type { PortDir } from "./geometry";
 import type { FlowEdgeRec, FlowNodeRec, PortKind } from "./flowsTypes";
+
+/** The toast tap-to-wire shows for a self-wire (#197, `flowsConnect`). A drag
+ *  refuses the same case SILENTLY (`resolveWireDrop` rule 3, and its
+ *  canvasModel.ts copy), run before `flowsConnect` is ever called, so this
+ *  sentence is only ever seen from a tap: an operator who taps a second port
+ *  on the stage they just armed meant it, unlike a drag that ends where it
+ *  started, and the asymmetry is deliberate. */
+export const SELF_WIRE_REFUSAL = "Can't wire a stage to itself";
+
+/** The sentence for a lane mismatch — a flow port wired to an event port, or
+ *  the reverse — the same words `resolveWireDrop` toasts on a drag (rule 4;
+ *  canvasModel.ts's copy). Null when `kOut` and `kIn` agree, or when either
+ *  is unknown: a port a saved graph names that the vocabulary has since
+ *  dropped is the caller's own refusal to make, never this one's. */
+export function laneMismatchRefusal(
+  kOut: PortKind | null, kIn: PortKind | null,
+): string | null {
+  if (!kOut || !kIn || kOut === kIn) return null;
+  return `${kOut === "flow" ? "Flow" : "Event"} output can't feed `
+    + `${kIn === "flow" ? "a flow" : "an event"} input`;
+}
 
 /** The refusal, as a template. IDENTICAL to the server's constant (S0 task T1,
  *  `flows/models.py`), placeholders included, so the canvas toast and the 422
