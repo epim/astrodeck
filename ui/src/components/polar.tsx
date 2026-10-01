@@ -334,13 +334,29 @@ function useEasedScale(target: number, animate: boolean): [number, number] {
     const tick = (now: number) => {
       const raw = Math.min(1, (now - t0) / dur);
       const e = 1 - Math.pow(1 - raw, 3); // easeOutCubic, same feel as the point
+      // #269: a test clock that disagrees with `performance.now()` about where
+      // "now" is (jsdom's rAF timestamp against Node's performance.now(), the
+      // two different clocks `t0` and `now` are drawn from) can hand the FIRST
+      // frame an elapsed time that is negative or not a number at all. That
+      // reaches `e` as NaN, and from there `Math.pow(target/from, e)` is NaN
+      // too — and because the result is written into `cur.current`, a single
+      // bad frame keeps contaminating `from` on every frame after it, not just
+      // the one that computed it. `safeFrom` refuses to build on a `from` that
+      // is already <= 0 or non-finite (self-healing from a previous bad
+      // write), and the result is re-checked before it becomes the next
+      // `from` or an on-screen `strokeOpacity`: a non-finite glide is replaced
+      // by snapping to `target`, which is always a positive, finite rung
+      // (`boundaryArcmin` only ever returns one), never by holding a NaN that
+      // would be silently exported into every ring's stroke opacity below.
+      const safeFrom = from > 0 && Number.isFinite(from) ? from : target;
       // Land on the rung EXACTLY. `from * (target/from)` is not bit-identical to
       // `target` for rungs like 3→5, and the caller decides the step is over by
       // comparing the two — a half-ulp of drift would leave the reticle
       // permanently mid-step, holding a stale set of retired rings.
-      const v = raw >= 1 ? target : from * Math.pow(target / from, e);
+      const v0 = raw >= 1 ? target : safeFrom * Math.pow(target / safeFrom, e);
+      const v = Number.isFinite(v0) && v0 > 0 ? v0 : target;
       cur.current = v;
-      setSt([v, e]);
+      setSt([v, Number.isFinite(e) ? e : 1]);
       if (raw < 1) raf.current = requestAnimationFrame(tick);
     };
     raf.current = requestAnimationFrame(tick);

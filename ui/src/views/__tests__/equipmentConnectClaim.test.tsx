@@ -208,14 +208,32 @@ function connectButton(): any {
   return buttons.find((b: any) => /connect rig|rig connected|reconnect rig/i.test(b.textContent || ""));
 }
 function label(): string { return (connectButton()?.textContent || "").trim(); }
-/** The Link Status rows for `role` printed as `word` (BackendLinkGrid). Found by
- *  what they print: the grid's LEDs are unlabelled (#231), because the role and
- *  the state word beside each one are its name. */
-const linkRows = (role: string, word: string): any[] =>
-  [...container.querySelectorAll(".led")]
+/** The "Link Status" panel (BackendLinkGrid) alone. The per-role equipment
+ *  row just above it (the driver-assignment card) ALSO carries a `.led` next
+ *  to a `.label` reading the bare role name ("Camera") - a second, entirely
+ *  legitimate LED+label pair that a role-wide, container-wide search would
+ *  wrongly count as a second Link Status row. Scoping to this panel is what
+ *  makes "every row for a role" mean every ROW IN THE GRID, not every LED on
+ *  the page that happens to sit beside that word. */
+function linkStatusPanel(): any {
+  const h2 = [...container.querySelectorAll("h2")].find(
+    (el: any) => (el.textContent || "").trim() === "Link Status");
+  return h2?.closest("section") ?? container;
+}
+/** EVERY Link Status row for `role`, whatever word it prints beside it
+ *  (BackendLinkGrid). Found by what the row prints: the grid's LEDs are
+ *  unlabelled (#231), so the role is the `.label` span's text, and this reads
+ *  only that, never the state word next to it - the whole point of #255's
+ *  fix is a count that cannot be satisfied by matching a DIFFERENT row that
+ *  happens to carry the word under test. */
+const roleRows = (role: string): any[] =>
+  [...linkStatusPanel().querySelectorAll(".led")]
     .map((led: any) => led.parentElement)
-    .filter((row: any) => row?.querySelector(".label")?.textContent?.trim() === role
-      && [...row.querySelectorAll("span")].some((s: any) => s.textContent?.trim() === word));
+    .filter((row: any) => row?.querySelector(".label")?.textContent?.trim() === role);
+/** The Link Status rows for `role` that print `word` beside it. */
+const linkRows = (role: string, word: string): any[] =>
+  roleRows(role).filter((row: any) =>
+    [...row.querySelectorAll("span")].some((s: any) => s.textContent?.trim() === word));
 /** The per-role driver dropdowns only — the Tasks panel below renders its own
  *  <select>s, and counting those in would make a row assertion meaningless. */
 function driverSelects(): any[] {
@@ -520,8 +538,22 @@ act(() => {
 });
 test("attempt errors and engine-only roles survive the device fallback", () => {
   assert(container.textContent.includes("Camera unplugged"), "connection error was lost");
+  // #255: count every Link Status row for the role, whatever word it prints -
+  // not the count of rows that happen to say "FAILED". A dedupe regression
+  // that draws Camera twice (once from the attempt report as FAILED, once
+  // from device telemetry as DISCONNECTED/CONNECTED) must be caught here even
+  // though only one of the two rows says FAILED.
+  //
+  // Named mutant "duplicate device rows" (BackendLinkGrid.tsx):
+  //   const deviceOnly = Object.entries(connected).filter(([role]) => !linkedRoles.has(role));
+  //   -> const deviceOnly = Object.entries(connected);
+  // Observed red: "device fallback must not duplicate a role with an attempt
+  // report (found 2 Camera row(s))".
+  const cameraRows = roleRows("Camera");
+  assert(cameraRows.length === 1,
+    `device fallback must not duplicate a role with an attempt report (found ${cameraRows.length} Camera row(s))`);
   assert(linkRows("Camera", "FAILED").length === 1,
-    "device fallback must not duplicate a role with an attempt report");
+    "the one Camera row must print the attempt report's FAILED, not the device telemetry's word");
   assert(linkRows("Guiding", "CONNECTED").length > 0,
     "guider engine has no device record but still needs a status row");
 });
