@@ -244,6 +244,101 @@ class CaptureLifecycle(unittest.TestCase):
                          456: {"pid":456,"parent":456,"created":11}}, 456, False)
 
 
+class MonitorCapture(unittest.TestCase):
+    def previous(self):
+        return {"captured_utc": "old-date", "source_commit": "old-source", "source": "default site untouched",
+                "captures": [{"file": "site/assets/screenshots/" + item[0], "sha256": "original-" + item[0]}
+                             for item in capture_sim.CAPTURE_PLAN]}
+
+    def test_monitor_plan_excludes_other_images(self):
+        plan = capture_sim.capture_plan(True, "siding-spring")
+        self.assertEqual(["monitor-desktop-light.png"], [item[0] for item in plan])
+
+    def test_hanle_target_is_above_horizon(self):
+        coords = capture_sim.runpy.run_path(str(capture_sim.ROOT / "server/astrodeck/catalog/coords.py"))
+        site, _ = capture_sim.PUBLIC_SCENARIOS["hanle"]
+        for timestamp in [1770000000, 1790870000]:
+            target = capture_sim.synthetic_target(timestamp, "hanle")
+            alt, _ = coords["altaz"](target["ra_hours"], target["dec_deg"],
+                                     site["latitude"], site["longitude"], timestamp)
+            self.assertGreater(alt, 60)
+            self.assertFalse(target["center"])
+            self.assertFalse(target["force"])
+        self.assertEqual([capture_sim.MONITOR_FILE], [item[0] for item in capture_sim.capture_plan(True, "hanle")])
+
+    def test_public_scenario_requires_monitor_only(self):
+        with self.assertRaises(ValueError):
+            capture_sim.capture_plan(False, "siding-spring")
+        with self.assertRaises(ValueError):
+            capture_sim.capture_plan(True, None)
+
+    def test_old_images_keep_old_provenance(self):
+        previous = self.previous()
+        original = json.loads(json.dumps(previous))
+        monitor = {"file": "site/assets/screenshots/monitor-desktop-light.png", "sha256": "new-image"}
+        context = {"captured_utc": "new-date", "source_commit": "new-source", "scenario": "synthetic"}
+        result = capture_sim.merged_provenance(previous, [monitor], context, True)
+        self.assertEqual(original, previous)
+        self.assertNotIn("source_commit", result)
+        for old, new in zip(previous["captures"], result["captures"]):
+            if old["file"] == monitor["file"]:
+                self.assertEqual("new-image", new["sha256"])
+                self.assertEqual(context, new["provenance"])
+            else:
+                self.assertEqual(old["sha256"], new["sha256"])
+                self.assertEqual("old-source", new["provenance"]["source_commit"])
+                self.assertEqual("default site untouched", new["provenance"]["source"])
+
+    def test_monitor_cannot_replace_equipment_record(self):
+        other = {"file": "site/assets/screenshots/equipment-phone-light.png"}
+        with self.assertRaises(ValueError):
+            capture_sim.merged_provenance(self.previous(), [other], {}, True)
+
+    def test_monitor_refuses_incomplete_previous_ledger(self):
+        with self.assertRaises(ValueError):
+            capture_sim.merged_provenance({}, [{"file": "site/assets/screenshots/monitor-desktop-light.png"}], {}, True)
+
+    def test_mixed_backend_is_not_simulator_proof(self):
+        status = {"mode": "sim", "connected": {"camera": {"name": "Sim Camera 533MM", "connected": True, "backend": "sim"},
+                  "telescope": {"name": "Sim Mount EQ6-R", "connected": True, "backend": "alpaca"}}}
+        with self.assertRaisesRegex(ValueError, "simulator devices"):
+            capture_sim.require_simulator(status)
+
+    def test_legacy_sim_descriptions_have_empty_backend(self):
+        status = {"mode": "sim", "connected": {"camera": {"name": "Sim Camera 533MM", "connected": True, "backend": "", "host": "", "port": 0},
+                  "telescope": {"name": "Sim Mount EQ6-R", "connected": True, "backend": "", "host": "", "port": 0}}}
+        self.assertIs(status, capture_sim.require_simulator(status))
+        status["connected"]["camera"]["host"] = "example.invalid"
+        with self.assertRaises(ValueError):
+            capture_sim.require_simulator(status)
+
+    def test_below_horizon_is_not_capture_ready(self):
+        target = {"ra_hours": 4, "dec_deg": -45}
+        status = {"mount": {"ra_hours": 4, "dec_deg": -45, "alt": -5,
+                             "slewing": False, "parked": False}}
+        self.assertFalse(capture_sim.above_horizon_target(status, target))
+        status["mount"]["alt"] = float("nan")
+        self.assertFalse(capture_sim.above_horizon_target(status, target))
+
+    def test_unsynced_sim_pointing_error_is_capture_ready(self):
+        target = {"ra_hours": 4, "dec_deg": -45}
+        status = {"mount": {"ra_hours": 4.002, "dec_deg": -44.972, "alt": 70,
+                             "slewing": False, "parked": False}}
+        self.assertTrue(capture_sim.above_horizon_target(status, target))
+        status["mount"]["slewing"] = True
+        self.assertFalse(capture_sim.above_horizon_target(status, target))
+
+    def test_target_is_above_horizon_at_different_times(self):
+        coords = capture_sim.runpy.run_path(str(capture_sim.ROOT / "server/astrodeck/catalog/coords.py"))
+        for timestamp in [1770000000, 1790870000]:
+            target = capture_sim.synthetic_target(timestamp)
+            alt, _ = coords["altaz"](target["ra_hours"], target["dec_deg"],
+                                     capture_sim.PUBLIC_SITE["latitude"], capture_sim.PUBLIC_SITE["longitude"], timestamp)
+            self.assertGreater(alt, 60)
+            self.assertFalse(target["center"])
+            self.assertFalse(target["force"])
+
+
 class WorkflowChecks(unittest.TestCase):
     def test_javascript_syntax_failure_stops_step(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/pages.yml").read_text(encoding="utf-8")
