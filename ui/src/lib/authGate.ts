@@ -254,6 +254,10 @@ export interface ClearedRigState {
   // the sign-in form that something is imaging.
   lastCaptureAtMs: null;
   lastFramesDone: null;
+  // The newest frame the rig's snapshot named (#399). An id is a picture: the
+  // LAST FRAME tile turns it straight into /api/preview/<id>, a frame of
+  // tonight's target. It goes with `preview` and `previews`.
+  snapshotPreviewId: null;
   focus: null;
   lastAutofocusResult: null;
   guide: null;
@@ -308,7 +312,6 @@ export interface ClearedRigState {
   toasts: Toast[];
   unseenError: number;
   framing: null;
-  atlasBannerPending: null;
 }
 
 /**
@@ -331,7 +334,8 @@ export interface ClearedRigState {
  * unmounts behind the login screen, so its panels re-fetch on mount when the
  * gate lifts, and the post-sign-in reconnect (Login.refreshSession ->
  * reconnectWs -> ws.onopen) re-hydrates config, principal, update, the log
- * history and the status/sequence snapshot before anything is rendered.
+ * history and the snapshot's status, sequence and newest frame id before
+ * anything is rendered.
  *
  * `weather` is the ONE exception and it is App's job, not this module's:
  * ws.onopen does not fetch it and the server republishes only every 15 minutes
@@ -359,6 +363,7 @@ export function clearedRigState(): ClearedRigState {
     lastFrameAtMs: null,
     lastCaptureAtMs: null,
     lastFramesDone: null,
+    snapshotPreviewId: null,
     focus: null,
     lastAutofocusResult: null,
     guide: null,
@@ -389,7 +394,6 @@ export function clearedRigState(): ClearedRigState {
     toasts: [],
     unseenError: 0,
     framing: null,
-    atlasBannerPending: null,
   };
 }
 

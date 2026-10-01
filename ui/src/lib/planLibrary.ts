@@ -4,13 +4,57 @@
 // logic worth a test, keeping the component a thin render.
 import type { PlanRow } from "../types";
 
+/** What an unreadable row says when the server marked it with no usable
+ *  reason. The MARK is the server saying "this is a file, not a plan"; a
+ *  blank sentence beside it is a broken reason, never a readable plan. */
+export const PLAN_UNREADABLE_FALLBACK = "this AstroDeck cannot read this plan";
+
+/** Why this saved-plan row cannot be loaded, run or exported, or null for a
+ *  plan (#378).
+ *
+ *  THE ONE READING EVERY SURFACE SHARES - the classic Plan panel, the #/next
+ *  plan library's summary and SESSION / NOW's tonight list - so no surface
+ *  decides on its own that a row with no numbers is a plan with none. Read as
+ *  a plan, the row printed "undefinedt · undefinedf · NaNm" beside a LOAD and
+ *  an EXPORT that the server answers 422, and on the phone a RUN that fails
+ *  the same way.
+ *
+ *  EITHER KEY MARKS IT. The server sends `status: "unreadable"` and the reason
+ *  together, and a plan row carries neither, so a row with one of them is a
+ *  file the server could not read, whatever the other says. Reading a damaged
+ *  file as a plan offers verbs that all fail; the reverse cannot happen here,
+ *  because no plan row has either key. */
+export function planUnreadableReason(row: Pick<PlanRow, "status" | "unreadable">): string | null {
+  const status = row.status as unknown;
+  const reason = row.unreadable as unknown;
+  if (status !== "unreadable" && (reason === undefined || reason === null)) return null;
+  return typeof reason === "string" && reason.trim() !== "" ? reason : PLAN_UNREADABLE_FALLBACK;
+}
+
 /** The compact metadata chip for a saved-plan row: "6t · 300f · 480m".
  *  Integration minutes are rounded to whole minutes to match the server's list
- *  summary intent (plans.py::_summarize rounds to 0.1; the row shows whole). */
+ *  summary intent (plans.py::_summarize rounds to 0.1; the row shows whole).
+ *
+ *  An unreadable row has no numbers to show, so its chip is its reason
+ *  ("unreadable: fails validation: ..."), the words the server's 422 would
+ *  say to a LOAD. */
 export function planRowSummary(
-  row: Pick<PlanRow, "targets" | "frames" | "integration_min">,
+  row: Pick<PlanRow, "targets" | "frames" | "integration_min" | "status" | "unreadable">,
 ): string {
+  const why = planUnreadableReason(row);
+  if (why !== null) return `unreadable: ${why}`;
   return `${row.targets}t · ${row.frames}f · ${Math.round(row.integration_min)}m`;
+}
+
+/** The delete confirm's body for an unreadable row.
+ *
+ *  A readable plan's delete asks with its title alone. This one names the FILE,
+ *  because that is what goes (there is no plan in it to name), and says why
+ *  nothing was offered to save a copy first: the export answers 422 for a file
+ *  that does not read as a plan. The id is a uuid stem, never a path. */
+export function unreadablePlanDeleteBody(row: Pick<PlanRow, "id">): string {
+  return `Removes the file ${row.id}.json from the rig's plan library. It does not read as a plan, `
+    + "so it cannot be loaded or exported first. This cannot be undone.";
 }
 
 export type PlanCueTone = "warn" | "dim";

@@ -174,9 +174,11 @@ def _expected_disc_areas(scene: dict, c_ref: np.ndarray) -> dict:
     landmark only where the hit face's normal is within ``acos(_NORMAL_DOT)``
     of the declared one, so on a host of radius ``R`` only a band
     ``R sin(acos(_NORMAL_DOT))`` wide survives. Where that band is narrower
-    than the disc, the expected area is scaled by the ratio of the two widths:
-    a lower bound on the clipped area, which is the safe direction for a
-    filter that must never discard a landmark. Without it the chart yard's
+    than the disc, the expected area is scaled by the ratio of the two widths.
+    That was written as "a lower bound on the clipped area"; measured against
+    the paint (tests/test_sphere_disc_truth.py) it runs 0.4 to 1.2 per cent
+    OVER, because the disc is measured along the curved surface. A 40 per cent
+    filter does not feel that, but the model is close, not a bound. Without it the chart yard's
     ``T1``, a 0.08 m disc on a 0.25 m trunk, is measured against an unclipped
     model it can only ever fill 44 per cent of.
 
@@ -378,6 +380,19 @@ def _longest_run_deg(under: np.ndarray, step: float) -> float:
     return float(best) * step
 
 
+#: THE NARROWEST OBSTRUCTION THE PLANNER IS REQUIRED TO HONOUR, in degrees of
+#: azimuth (issue #53). The owner's ruling, 2026-09-23: "the distance one could
+#: reasonably put two of the dots on the horizon editor" - an obstruction
+#: narrower than a person can draw is one no horizon can carry, scanned or not.
+#: Derived from the editor's finest setting, the photo review at full zoom:
+#: the strip is 1040 px x zoom wide for 360 degrees, zoom tops out at 4, and a
+#: tap within 18 px of a dot grabs it rather than adding one (the editor's
+#: REVIEW_* constants). 18 / (1040 * 4 / 360) = 1.5577 degrees. The UI suite's
+#: horizonEditorFloor test reads this line against those constants - that
+#: direction, because this package must never read production code.
+EDITOR_MIN_WIDTH_DEG = 18.0 / (1040.0 * 4.0 / 360.0)
+
+
 def _score_obstacles(reference: dict, truth_bins: int, step: float,
                      alt: np.ndarray, resolved: np.ndarray,
                      product_bins: int) -> list:
@@ -480,6 +495,11 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
 
         declared = obstacle.get("min_width_deg")
         declared_val = float(declared) if declared is not None else None
+        # Issue #53: the declared label is floored at what the editor can
+        # represent. A label under it (the chart yard's pole-far, 0.25) asks
+        # the scan for something no horizon can carry.
+        if declared_val is not None:
+            declared_val = max(declared_val, EDITOR_MIN_WIDTH_DEG)
         has_min_width = declared_val is not None and declared_val > 0.0
 
         if bin_width_deg is not None:

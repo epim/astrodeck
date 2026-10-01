@@ -55,10 +55,21 @@ def _e(a, ap, b, bp):
 
 
 def _flow(target=None, *, exposure=180, count=20, goal=12, filt="Ha",
-          offset=-30, stop="Dawn", extra=(), edges=()):
-    """A one-target night: dusk window → target → slew → capture."""
+          offset=-30, stop="Dawn", start=None, extra=(), edges=()):
+    """A one-target night: dusk window → target → slew → capture.
+
+    ``start`` left at its default (None) omits the DUSK node's own "start"
+    param, which ``with_defaults()`` then fills with "Astro dusk"
+    (backlog WP-09, #191) — an explicit per-target twilight angle
+    (``Schedule.twilight_deg``), same as a flow that picked it on the card.
+    A caller that wants to test the RIG-WIDE ``twilight_deg`` fallback
+    instead (no per-target angle to override it) passes ``start="Clock
+    time"``, the one Start choice that compiles no angle at all."""
     t = dict(M16 if target is None else target)
-    nodes = [_n("d", "dusk", x=0, offset=offset, stop=stop, minAlt=30),
+    dusk_kw = {"x": 0, "offset": offset, "stop": stop, "minAlt": 30}
+    if start is not None:
+        dusk_kw["start"] = start
+    nodes = [_n("d", "dusk", **dusk_kw),
              _n("t", "target", x=100, **t),
              _n("s", "slew", x=200),
              _n("c", "capture", x=300, filter=filt, exposure=exposure,
@@ -96,12 +107,15 @@ class TestWhenThereIsNoNight:
         assert "site" in out["reason"].lower()
 
     def test_polar_day_says_so_rather_than_inventing_a_dusk(self):
-        """78°N in June: the sun never crosses −12°, so ``observing_night``
-        returns None and there is genuinely no dusk to draw."""
+        """78°N in June: the sun never crosses −18° (the default flow's DUSK
+        WINDOW picks "Astro dusk", backlog WP-09 #191's own angle, not the
+        rig's TWILIGHT of −12 this file otherwise passes), so
+        ``observing_night`` returns None and there is genuinely no dusk to
+        draw."""
         out = _tonight(site=POLAR_SITE)
         assert out["ok"] is False
         assert out["night"] is None
-        assert "−12" in out["reason"], out["reason"]
+        assert "−18" in out["reason"], out["reason"]
 
     def test_unreadable_coordinates_are_refused_not_rounded_to_zero(self):
         """``float("north")`` raising is the good case. The bad one is a site
@@ -155,12 +169,22 @@ class TestTheNight:
     def test_a_deeper_twilight_shortens_the_night(self):
         """The imaging twilight is the operator's setting, not a constant: a
         narrowband rig in a city and a Bortle 2 rig do not agree about when the
-        night starts, and the story quotes the angle it used."""
-        shallow = _tonight(twilight_deg=-6.0)["night"]
-        deep = _tonight(twilight_deg=-18.0)["night"]
+        night starts, and the story quotes the angle it used.
+
+        With NO per-target override — the DUSK WINDOW's Start is "Clock
+        time" (backlog WP-09, #191): the one Start choice that compiles no
+        ``Schedule.twilight_deg`` — the rig-wide parameter is what decides,
+        same as before that field existed."""
+        clock = _flow(start="Clock time")
+        shallow = _tonight(clock, twilight_deg=-6.0)["night"]
+        deep = _tonight(clock, twilight_deg=-18.0)["night"]
         assert (deep["dawn_unix"] - deep["dusk_unix"]) < \
                (shallow["dawn_unix"] - shallow["dusk_unix"])
-        assert "−18" in _tonight(twilight_deg=-18.0)["story"][0]["msg"]
+        # The DEFAULT flow's DUSK WINDOW picks "Astro dusk" instead, its own
+        # -18 (backlog WP-09, #191), which overrides whatever rig-wide
+        # twilight_deg is passed (-6 here) — and the story quotes the angle
+        # that actually drove the window, not the overridden parameter.
+        assert "−18" in _tonight(twilight_deg=-6.0)["story"][0]["msg"]
 
 
 class TestItDependsOnTheInstantItIsGiven:
@@ -333,11 +357,30 @@ class TestTheIntegrationLedger:
         assert "No session ledger" in msg
 
     def test_an_injected_ledger_reaches_the_row_and_the_sentence(self):
+        """DELIBERATE PIN CHANGE (#536, H4 orchestrator ruling 6). The banked
+        figure now says whose hours it holds, since the route folds only
+        this flow's targets' reports: "4.2 h banked for these targets / 12 h
+        goal". The pin read "4.2 h banked / 12 h goal", and against the
+        change it observed:
+
+            AssertionError: assert '4.2 h banked / 12 h goal' in 'Ha: 4.2 h
+            banked for these targets / 12 h goal \\u2014 tonight adds
+            \\u22481 h; the session ledger resumes the remainder next clear
+            night'
+
+        RED under mutant "the words dropped" (``_FOR_THESE`` left out of
+        the sentence in ``_story``), run in the private copy scratchpad
+        ``H4-ROUTES-A-mut`` from a byte backup, observed:
+
+            AssertionError: assert '4.2 h banked for these targets / 12 h
+            goal' in 'Ha: 4.2 h banked / 12 h goal — tonight adds ≈1 h; the
+            session ledger resumes the remainder next clear night'
+        """
         out = _tonight(banked=lambda: {"Ha": 4.2})
         row = out["budget"][0]
         assert row["has_ledger"] is True and row["banked_h"] == 4.2
         msg = next(s["msg"] for s in out["story"] if s["label"] == "BUDGET")
-        assert "4.2 h banked / 12 h goal" in msg
+        assert "4.2 h banked for these targets / 12 h goal" in msg
 
     def test_a_ledger_that_cannot_be_read_degrades_to_no_ledger(self):
         """``captures/reports`` living on the same SD card as everything else,
@@ -392,10 +435,12 @@ class TestBankedHoursFromReports:
         assert banked_hours_from_reports([]) == {}
 
     def test_naming_targets_counts_only_their_hours(self):
-        """TODO(flows-handoff) in the source: the default counts every Ha hour
-        in the archive whatever it was pointed at, which fills M31's bar with
-        M16's frames for anyone running two narrowband projects. This is the
-        other reading, available for when the endpoint picks one."""
+        """The default counts every Ha hour in the archive whatever it was
+        pointed at, which fills M31's bar with M16's frames for anyone
+        running two narrowband projects. This is the per-target reading, the
+        one the route has used since #536 (H4 orchestrator ruling 6), with
+        the flow's own names (test_h4_budget_for_these_targets.py grades the
+        route)."""
         archive = [{"by_filter": [{"filter": "Ha", "integration_s": 7200}],
                     "targets": [
                         {"name": "M16", "by_filter": [

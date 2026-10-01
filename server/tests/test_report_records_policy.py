@@ -48,9 +48,16 @@ def _plan(**kw) -> SequencePlan:
         **kw)
 
 
-async def test_the_report_records_every_resolved_value_and_who_said_so(sim_hub):
+async def test_the_report_records_every_resolved_value_and_who_said_so(
+        sim_hub, monkeypatch):
     cfg = hub_module.config_store.cfg()
-    cfg.standards.min_stars = 40
+    # Through monkeypatch: this is the process-wide config, and a plain write
+    # left min_stars 40 on it for every later test on the worker (#227).
+    # With the plain write put back, the conftest guard errors at teardown
+    # (observed):
+    # "test_the_report_records_every_resolved_value_and_who_said_so left
+    # the process-wide config changed: standards.min_stars."
+    monkeypatch.setattr(cfg.standards, "min_stars", 40)
     eng = SequenceEngine(sim_hub)
     # one override, everything else inherited
     eng.start(_plan(max_eccentricity=0.7))

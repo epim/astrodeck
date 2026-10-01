@@ -14,8 +14,11 @@
 // SIZE RIDES THE CSS VARS, NEVER A TAILWIND CLASS. `index.css` is unlayered, so
 // `.overlay-surface { max-width: … }` beats any `sm:max-w-*` on the same element
 // no matter the order — measured the hard way when the preflight rendered 788px
-// wide on an 820px tablet. The sheet default is 85dvh; the design's 76dvh has to
-// be passed as `--ov-max-h`.
+// wide on an 820px tablet. The sheet default is 0.85 of the viewport; the
+// design's 76dvh has to be passed in the var, and as the FRACTION 0.76 in
+// `--ov-max-h-frac`, never as `76dvh` in `--ov-max-h`: index.css multiplies the
+// fraction by 100dvh, or by 100vh where dvh is unknown, while a dvh value in
+// the var left that fallback invalid and the sheet with no height clamp (#417).
 import type { CSSProperties } from "react";
 import { useStore } from "../../store";
 import { Overlay } from "../ui";
@@ -44,7 +47,7 @@ export default function FlowEditSheet() {
       variant="sheet"
       label="Edit stage"
       onClose={close}
-      surfaceStyle={{ "--ov-max-h": "76dvh" } as CSSProperties}
+      surfaceStyle={{ "--ov-max-h-frac": "0.76" } as CSSProperties}
       // `!pb-…`: `.overlay-safe-b` (authored, unlayered) already sets
       // padding-bottom to the safe-area inset on a footer-less sheet and would
       // beat this utility outright, dropping the design's 20px. Same value the

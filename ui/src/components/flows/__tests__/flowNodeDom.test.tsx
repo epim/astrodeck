@@ -77,9 +77,25 @@ const FlowNodeCard = (await import("../FlowNodeCard")).default;
 type FlowNodeRec = import("../flowsTypes").FlowNodeRec;
 
 // ------------------------------------------------------------------- fixture
-// TARGET has one input + one output; CAPTURE has one input and TWO outputs, one
-// of each kind — the only node in the vocabulary that mixes lanes on one side,
-// so it is what proves the lane colour is read per port and not per node.
+// TARGET has two inputs + one output; CAPTURE has one input and THREE outputs,
+// of both kinds — a node that mixes lanes on one side, so it is what proves
+// the lane colour is read per port and not per node.
+//
+// RE-PINNED IN THE INTEGRATION OF MOSAIC S3 (#189, spec 1.2): TARGET gained
+// the optional event input `next` (after `arm`), and CAPTURE LOOP the event
+// output `pass` (after `frame`). Until then these tests reached a port by its
+// index, so `target`'s output moved from ports[1] to ports[2] under them. The
+// wiring tests now find a port by its `data-port` (`portOf`), and the two
+// ORDER tests pin the new lists in full. Each RED under its port dropped from
+// nodeDefs.ts in a private scratch copy, observed:
+//   "capture pass port missing":
+//     x inputs render before outputs, never interleaved: n2|run|in,
+//       n2|complete|out,n2|frame|out
+//   "target next port missing":
+//     x every port announces its node, its id and its direction: target has 2
+//       in + 1 out, got 2
+//     x an armed output takes the ring: no [data-port="n1|next|in"] on the
+//       target card
 const N1: FlowNodeRec = {
   id: "n1", type: "target", x: 10, y: 20, params: { ...NODE_DEFS.target.params },
 };
@@ -136,6 +152,14 @@ function render(props: Record<string, unknown> = {}): void {
 const card = (type: string): any =>
   container.querySelector(`[data-node-type="${type}"]`);
 
+/** A port by its `data-port` string, e.g. "n1|target|out": found by what it
+ *  is, so a port added to the card does not move the one a test means. */
+const portOf = (type: string, key: string): any => {
+  const p = card(type).querySelector(`[data-port="${key}"]`);
+  assert.ok(p, `no [data-port="${key}"] on the ${type} card`);
+  return p;
+};
+
 /** jsdom has no PointerEvent; React reads the fields off the native event, so a
  *  plain bubbling Event carrying them is what a finger looks like. */
 function pointerDown(node: any): void {
@@ -178,24 +202,64 @@ test("the ✎ carries data-flows-edit — it is the edit sheet's only opener", (
 test("every port announces its node, its id and its direction", () => {
   render();
   const ports = [...card("target").querySelectorAll("[data-port]")] as any[];
-  assert.equal(ports.length, 2, `target has 1 in + 1 out, got ${ports.length}`);
+  assert.equal(ports.length, 3, `target has 2 in + 1 out, got ${ports.length}`);
   assert.equal(ports[0].getAttribute("data-port"), "n1|arm|in",
     "the drop resolver splits this string on '|' — a different shape silently "
     + "wires nothing");
   assert.equal(ports[0].getAttribute("data-port-dir"), "in");
-  assert.equal(ports[1].getAttribute("data-port"), "n1|target|out");
-  assert.equal(ports[1].getAttribute("data-port-dir"), "out",
+  assert.equal(ports[1].getAttribute("data-port"), "n1|next|in",
+    "S3's optional `next` input renders after `arm`");
+  assert.equal(ports[1].getAttribute("data-port-dir"), "in");
+  assert.equal(ports[2].getAttribute("data-port"), "n1|target|out");
+  assert.equal(ports[2].getAttribute("data-port-dir"), "out",
     "arm-wire selects [data-port][data-port-dir='out']");
 });
 
 test("inputs render before outputs, never interleaved", () => {
   render();
-  // CAPTURE: in `run`, then outs `complete` (flow) and `frame` (event). The wire
-  // anchors in geometry.portPos() place an output at row `ins.length + idx`, so
-  // an interleaved list would detach every wire on the card from its dot.
+  // CAPTURE: in `run`, then outs `complete` (flow), `frame` and `pass` (both
+  // event; `pass` since S3). The wire anchors in geometry.portPos() place an
+  // output at row `ins.length + idx`, so an interleaved list would detach
+  // every wire on the card from its dot.
   const dirs = [...card("capture").querySelectorAll("[data-port]")]
     .map((p: any) => p.getAttribute("data-port"));
-  assert.equal(dirs.join(","), "n2|run|in,n2|complete|out,n2|frame|out", dirs.join(","));
+  assert.equal(dirs.join(","),
+    "n2|run|in,n2|complete|out,n2|frame|out,n2|pass|out", dirs.join(","));
+});
+
+test("an AUTOFOCUS card renders `focused` and then its `pass` event port (S4, #331)", () => {
+  // DELIBERATE PIN, NEW IN S4: AUTOFOCUS gained the event output `pass`, last,
+  // so the loop wire can leave it when it ends a panel lane. The dot a drop
+  // resolver or a tap lands on is `n3|pass|out`, on the row below `focused`
+  // (geometry.portPos: row ins.length + 1), in the event lane's colour.
+  //
+  // MUTANT "AUTOFOCUS has no pass" (in a private scratch copy, the port
+  // dropped from nodeDefs.ts). Observed:
+  //   x an AUTOFOCUS card renders `focused` and then its `pass` event port
+  //     (S4, #331): n3|run|in,n3|focused|out !==
+  //     n3|run|in,n3|focused|out,n3|pass|out
+  //   and under MUTANT "pass first" (AUTOFOCUS's outs reordered to pass,
+  //   focused):
+  //   x an AUTOFOCUS card renders `focused` and then its `pass` event port
+  //     (S4, #331): n3|run|in,n3|pass|out,n3|focused|out !==
+  //     n3|run|in,n3|focused|out,n3|pass|out
+  //   (flowNodeDom.test: 20/21 passed, each)
+  const n3: FlowNodeRec = {
+    id: "n3", type: "autofocus", x: 600, y: 20, params: { ...NODE_DEFS.autofocus.params },
+  };
+  act(() => root.render(null));
+  act(() => {
+    useStore.setState({
+      flows: { ...FLOWS_INIT, graph: { nodes: [n3], edges: [] } },
+    } as any);
+  });
+  act(() => root.render(React.createElement(FlowNodeCard, { node: n3 })));
+  const ports = [...card("autofocus").querySelectorAll("[data-port]")] as any[];
+  assert.equal(ports.map((p) => p.getAttribute("data-port")).join(","),
+    "n3|run|in,n3|focused|out,n3|pass|out");
+  const dot = (p: any) => p.firstElementChild.getAttribute("style");
+  assert.match(dot(ports[1]), /border:\s*1\.5px solid var\(--accent\)/, "`focused` is a flow port");
+  assert.match(dot(ports[2]), /border:\s*1\.5px solid var\(--warn\)/, "`pass` is an event port");
 });
 
 // ──────────────────────────────────────────────────── the re-render discipline
@@ -252,11 +316,10 @@ test("idle draws from the tokens, never a literal", () => {
 
 test("a wired port is filled, an unwired one is hollow", () => {
   render();
-  const ports = [...card("target").querySelectorAll("[data-port]")] as any[];
   const dot = (p: any) => p.firstElementChild.getAttribute("style");
-  assert.match(dot(ports[0]), /background:\s*var\(--bg\)/,
+  assert.match(dot(portOf("target", "n1|arm|in")), /background:\s*var\(--bg\)/,
     "`arm` has no wire — a filled dot would claim a connection that is not there");
-  assert.match(dot(ports[1]), /background:\s*var\(--accent\)/,
+  assert.match(dot(portOf("target", "n1|target|out")), /background:\s*var\(--accent\)/,
     "`target` carries e1; fill is a SHAPE change, so it survives the night palette");
 });
 
@@ -310,13 +373,11 @@ test("phone narrows the card and drops the footer, in BOTH tabs", () => {
 test("a canvas wires by DRAG, from outputs only", () => {
   const grabs: string[] = [];
   render({ onStartWire: (_n: string, p: string) => grabs.push(p) });
-  const ports = [...card("target").querySelectorAll("[data-port]")] as any[];
-
-  pointerDown(ports[0]);
+  pointerDown(portOf("target", "n1|arm|in"));
   assert.equal(grabs.length, 0,
     "there is no reverse drag (§D.4 rule 2) — an input that grabbed would leave "
     + "the operator holding a wire with no source");
-  pointerDown(ports[1]);
+  pointerDown(portOf("target", "n1|target|out"));
   assert.equal(grabs.join(), "target");
 });
 
@@ -326,28 +387,30 @@ test("the auto-graph wires by TAP, from either end", () => {
     phone: true, auto: true,
     onTapPort: (n: string, p: string, d: string) => taps.push(`${n}|${p}|${d}`),
   });
-  const ports = [...card("target").querySelectorAll("[data-port]")] as any[];
-  click(ports[1]);
-  click(ports[0]);
+  const arm = portOf("target", "n1|arm|in");
+  click(portOf("target", "n1|target|out"));
+  click(arm);
   assert.equal(taps.join(" "), "n1|target|out n1|arm|in",
     "an output arms and an input completes; a tap surface that only listened to "
     + "outputs could never finish a wire");
-  assert.match(ports[0].getAttribute("style"), /width:\s*26px/,
+  assert.match(arm.getAttribute("style"), /width:\s*26px/,
     "the FLOW tab's port hits grow to 26px (README §5)");
 });
 
 test("an armed output takes the ring", () => {
   render({ phone: true, auto: true });
   setFlows({ tapWire: { from: "n1", fromPort: "target" } });
-  const ports = [...card("target").querySelectorAll("[data-port]")] as any[];
   const dot = (p: any) => p.firstElementChild.getAttribute("style");
-  assert.match(dot(ports[1]), /box-shadow:\s*0 0 0 3px/,
+  const armed = portOf("target", "n1|target|out");
+  assert.match(dot(armed), /box-shadow:\s*0 0 0 3px/,
     "nothing marks which port is armed, so the hint bar is the only clue and "
     + "the graph itself says nothing");
-  assert.match(dot(ports[1]), /background:\s*var\(--accent\)/,
+  assert.match(dot(armed), /background:\s*var\(--accent\)/,
     "armed fills the dot the same way wired does");
-  assert.ok(!/box-shadow:\s*0 0 0 3px/.test(dot(ports[0])),
-    "the ring is on the armed OUTPUT only");
+  for (const key of ["n1|arm|in", "n1|next|in"]) {
+    assert.ok(!/box-shadow:\s*0 0 0 3px/.test(dot(portOf("target", key))),
+      `the ring is on the armed OUTPUT only, not on ${key}`);
+  }
 });
 
 // ------------------------------------- NOT HONOURED BY A RUN, on the canvas

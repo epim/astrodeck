@@ -26,6 +26,16 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     RELAY_BIND_HOST=0.0.0.0 \
     RELAY_BIND_PORT=8080
+# Build identity (#462): /healthz answers these, so a deploy can be verified,
+# and drift noticed, from outside with no Fly credential. scripts/deploy_relay.ps1
+# passes both (--build-arg) and then waits for /healthz to report its commit.
+# Declared in THIS stage because an ARG does not cross a FROM. Built without
+# them, each is "" and /healthz answers "unknown". After the venv and COPY
+# layers, so a new commit rebuilds neither.
+ARG RELAY_BUILD_VERSION
+ARG RELAY_BUILD_COMMIT
+ENV RELAY_BUILD_VERSION=$RELAY_BUILD_VERSION \
+    RELAY_BUILD_COMMIT=$RELAY_BUILD_COMMIT
 USER 10001:10001
 EXPOSE 8080
 STOPSIGNAL SIGTERM

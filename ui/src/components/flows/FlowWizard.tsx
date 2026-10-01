@@ -22,7 +22,7 @@ import { accessPhrase, useCanControlCapture } from "../../lib/caps";
 import { handleRadioKeyDown, rovingTabIndex } from "../../lib/radiogroup";
 import { flowsApi } from "../../lib/flowsApi";
 import { useStore } from "../../store";
-import { NODE_DEFS } from "./nodeDefs";
+import { createParams } from "./nodeDefs";
 import type { FlowNodeRec } from "./flowsTypes";
 
 /** Question 1. Order and labels from §C.14; `Deep-sky target` is the default. */
@@ -45,14 +45,22 @@ const TARGET_PLACEHOLDER = "M16    ·    or: M16, M17, M8, NGC 6946";
  *  any test asserting on it cannot drift apart. */
 export const GENERATE_FAILED = "Could not generate the flow";
 
-// The blank flow the prototype's `loadPipe("new")` produces (line 891): a TARGET
-// and a SLEW, unwired, at these coordinates. Two nodes rather than none because
-// an empty canvas gives the operator nothing to drag a wire from.
+// The blank flow: a TARGET and a CAPTURE LOOP, unwired, at these coordinates.
+// Two nodes rather than none because an empty canvas gives the operator
+// nothing to drag a wire from.
+//
+// The prototype's `loadPipe("new")` (line 891) drew a TARGET and a SLEW. Since
+// mosaic S3 SLEW + CENTER is part of the TARGET block, a legacy type the
+// palette no longer offers (spec 1.7), so a blank flow that drew one opened
+// with L1's note telling the operator to delete it (#340). The CAPTURE LOOP is
+// the stage a TARGET's "each panel" feeds in the smallest flow that shoots.
+// Both nodes are CREATED, so they take `createParams`: a TARGET with no name
+// and no coordinates, not M31's (#190), counting accepted subs (ruling 2).
 const BLANK_NAME = "Untitled flow";
 const BLANK_TAGLINE = "Started blank";
-const BLANK_NODES: ReadonlyArray<{ type: "target" | "slew"; x: number; y: number }> = [
+export const BLANK_NODES: ReadonlyArray<{ type: "target" | "capture"; x: number; y: number }> = [
   { type: "target", x: 60, y: 120 },
-  { type: "slew", x: 320, y: 120 },
+  { type: "capture", x: 320, y: 120 },
 ];
 
 // Node ids are minted client-side and are only local handles. Prefixed for the
@@ -61,13 +69,13 @@ const BLANK_NODES: ReadonlyArray<{ type: "target" | "slew"; x: number; y: number
 // unlikely. Not shared with the slice's counter — these ids never coexist with
 // slice-minted ones in the same graph, they ARE the graph.
 let blankSeq = 0;
-const blankNodes = (): FlowNodeRec[] =>
+export const blankNodes = (): FlowNodeRec[] =>
   BLANK_NODES.map((n) => ({
     id: `w${++blankSeq}_${Date.now().toString(36)}`,
     type: n.type,
     x: n.x,
     y: n.y,
-    params: { ...NODE_DEFS[n.type].params },
+    params: createParams(n.type),
   }));
 
 export default function FlowWizard() {
@@ -159,8 +167,11 @@ export default function FlowWizard() {
       label="New flow — guided"
       onClose={close}
       // `center`'s sm geometry already supplies --ov-max-w: 560px; only the
-      // height is the design's own number (§C.14).
-      surfaceStyle={{ "--ov-max-h": "90dvh" } as CSSProperties}
+      // height is the design's own number (§C.14), 90dvh, given as a FRACTION
+      // so the no-dvh fallback can clamp it too (#417). The gap is zeroed
+      // because center's sm geometry takes 2rem off the fraction, and the
+      // design's 90dvh never had it.
+      surfaceStyle={{ "--ov-max-h-frac": "0.9", "--ov-max-h-gap": "0px" } as CSSProperties}
       head={(
         <header
           data-flows-wizard

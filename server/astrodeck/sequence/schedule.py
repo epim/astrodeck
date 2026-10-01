@@ -48,10 +48,28 @@ _REFINE_PASSES = 16
 
 # Coarse step for the target peak-altitude scan across a window.
 _PEAK_STEP_S = 600.0
+# How close the altitude gate's rise estimate comes to the rise (#434).
+# `_time_to_gate` bisects the ``_PEAK_STEP_S`` step the crossing falls in until
+# its bracket is this narrow, and answers the bracket's upper end: at most this
+# long after the rise, and never before it. 5 s is the scheduler's own tick
+# (``engine.SCHEDULE_WAIT_STEP_S``, the cadence a wait re-reads the gating at
+# when it knows nothing better), so a wake at the estimate is no later than
+# asking again every tick would have found the gate open. Seven halvings of
+# 600 s reach it (4.7 s). The issue floated 10 s: six halvings, 9.4 s, and on
+# its own night the panel was then first visited 1805.6 s in, more than one
+# tick past the 1800 s it rose at (tests/test_s7_time_to_gate_refined.py).
+_GATE_RISE_TOL_S = 5.0
 
 
 def _lat_lon(site: dict[str, Any]) -> tuple[float, float]:
-    """Extract (latitude, longitude) from a hub-style site dict."""
+    """Extract (latitude, longitude) from a hub-style site dict.
+
+    It does not ask whether a site is saved, and for one nobody has saved it
+    hands back the placeholder's 0,0. A caller has to ask first:
+    test_every_site_consumer_asks_whether_there_is_a_site counts a call to it
+    as a read of the site, so a caller that does not ask fails there unless it
+    is listed with its reason (`gating_status` and `constraint_gate` are, for
+    #540). `resolve_window` reads `site_gate.site_lat_lon` instead (#527)."""
     return float(site["latitude"]), float(site["longitude"])
 
 
@@ -169,15 +187,15 @@ def observing_night(site: "dict | Any", twilight_deg: float | None = None,
     from ..config import config_store
     # hub.site is a dict, cfg.site is a pydantic Site. Both callers exist and
     # neither should have to convert, so read either shape here — once.
-    get = site.get if isinstance(site, dict) else (
-        lambda k, d=None: getattr(site, k, d))
-    if get("is_default", False):
+    from ..site_gate import site_lat_lon
+    # The shape shim and the is_default test both live in `site_gate` now
+    # (issue #24): five call sites had written their own and the accessor was
+    # copy-pasted at four of them, which is how a thirty-seventh unguarded
+    # consumer gets written. The RETURN shape stays this function's own.
+    latlon = site_lat_lon(site)
+    if latlon is None:
         return None
-    try:
-        lat = float(get("latitude", 0.0) or 0.0)
-        lon = float(get("longitude", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        return None
+    lat, lon = latlon
     if twilight_deg is None:
         cfg = config_store.cfg()
         twilight_deg = cfg.safety.twilight_deg if cfg else -12.0
@@ -213,18 +231,19 @@ def dark_enough(site: "dict | Any", twilight_deg: float | None = None,
     Fail-open here, fail-closed in the gates that actually move hardware.
     """
     from ..config import config_store
-    get = site.get if isinstance(site, dict) else (
-        lambda k, d=None: getattr(site, k, d))
-    if get("is_default", False):
+    from ..site_gate import site_lat_lon
+    # THE ONE DELIBERATE FAIL-OPEN, and `site_gate`'s module docstring names it
+    # as such: no site means True, because this gate's job is to stop DAYLIGHT
+    # imaging rather than to enforce configuration, and refusing to call it dark
+    # would stop an unconfigured rig taking any frame at all. Every other
+    # consumer of the same question refuses instead (issue #24).
+    latlon = site_lat_lon(site)
+    if latlon is None:
         return True
+    lat, lon = latlon
     if twilight_deg is None:
         cfg = config_store.cfg()
         twilight_deg = cfg.safety.twilight_deg if cfg else -12.0
-    try:
-        lat = float(get("latitude", 0.0) or 0.0)
-        lon = float(get("longitude", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        return True
     t_now = time.time() if now is None else now
     return sun_altitude(lat, lon, t_now) < twilight_deg
 
@@ -366,7 +385,7 @@ def effective_floor(min_alt_deg: float, horizon: list[tuple[float, float]] | Non
 # --------------------------------------------------------------------- windows
 
 def _resolve_event_ts(mode: str, offset_min: int, time_str: str | None,
-                      lat: float, lon: float, twilight_deg: float,
+                      latlon: tuple[float, float] | None, twilight_deg: float,
                       now: float) -> float | None:
     """Resolve one schedule boundary (dusk/dawn/time) to a unix ts *for tonight*.
 
@@ -375,16 +394,22 @@ def _resolve_event_ts(mode: str, offset_min: int, time_str: str | None,
     forward so a dusk that already passed still opens the window (fixes the
     ~23h-in-the-future re-resolution). ``time`` resolves ``"HH:MM"`` to the
     occurrence nearest ``now`` (within ±12h), so an evening start already past
-    stays tonight instead of rolling to tomorrow."""
+    stays tonight instead of rolling to tomorrow.
+
+    ``latlon`` is None when no site is saved, and dusk/dawn are then None too
+    (#527), as a polar dusk already is: there is no Sun to cross a twilight
+    angle for a site nobody has named. ``now`` and ``time`` need no site."""
     if mode == "now":
         return now
     if mode == "none":
         return None
+    if mode in ("dusk", "dawn") and latlon is None:
+        return None
     if mode == "dusk":
-        base = _night_dusk(lat, lon, twilight_deg, now)
+        base = _night_dusk(latlon[0], latlon[1], twilight_deg, now)
         return None if base is None else base + offset_min * 60.0
     if mode == "dawn":
-        base = _night_dawn(lat, lon, twilight_deg, now)
+        base = _night_dawn(latlon[0], latlon[1], twilight_deg, now)
         return None if base is None else base + offset_min * 60.0
     if mode == "time":
         return _clock_time_near_now(time_str, now)
@@ -423,17 +448,40 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
     when set, also caps the stop to ``start + max_run_min`` (whichever is sooner).
     A boundary that cannot be resolved (e.g. polar dusk) yields ``None`` there.
 
+    ``twilight_deg`` is the RIG's angle, the caller's fallback; ``sched.
+    twilight_deg`` (backlog WP-09, #191), when not None, is THIS TARGET's own
+    angle and wins over it, for both the dusk and the dawn boundary alike, so
+    a DUSK WINDOW card's Astro/Nautical/Civil dusk Start resolves to its own
+    Sun altitude rather than the rig's one setting.
+
     NB: boundaries anchor to *tonight* (backward + forward sun search / nearest
     clock occurrence). The engine resolves this ONCE at run start and freezes the
     ``(start, stop)`` pair, then compares live ``now`` against the frozen window —
     so a dawn that passes mid-run closes the window instead of re-resolving into
     tomorrow (§1.6 / gating_status ``window=`` param).
+
+    NO SITE, NO SUN BOUNDARY (#527). With no site saved a dusk or dawn
+    boundary is ``None``: unresolvable, as a polar dusk is. It used to be the
+    Sun's crossing at the 0,0 placeholder, so a DUSK flow on a fresh rig
+    waited twelve hours for dusk in the Gulf of Guinea and said nothing, and
+    ``resume_arm.window_open`` opened an armed DUSK session on 0,0's night.
+    ``now`` and ``time`` boundaries need no site and are unchanged. What
+    follows from the ``None`` is each reader's own rule: the engine's gating
+    reads a ``None`` start as not waiting on the clock, so the run starts,
+    and ``window_open``'s ``start is not None`` keeps auto-resume off, the
+    conservative direction.
     """
-    lat, lon = _lat_lon(site)
+    # `site_lat_lon` asks `site_is_set`, and answers None for the placeholder
+    # and for a half-saved site with no numbers yet. The `_lat_lon` this read
+    # before asked nothing: it answered 0,0 for the first and raised for the
+    # second.
+    from ..site_gate import site_lat_lon
+    latlon = site_lat_lon(site)
+    angle = twilight_deg if sched.twilight_deg is None else sched.twilight_deg
     start = _resolve_event_ts(sched.start_mode, sched.start_offset_min,
-                              sched.start_time, lat, lon, twilight_deg, now)
+                              sched.start_time, latlon, angle, now)
     stop = _resolve_event_ts(sched.stop_mode, sched.stop_offset_min,
-                             sched.stop_time, lat, lon, twilight_deg, now)
+                             sched.stop_time, latlon, angle, now)
     # max_run_min caps the window relative to the resolved start.
     if sched.max_run_min and start is not None:
         cap = start + sched.max_run_min * 60.0
@@ -631,13 +679,28 @@ def constraint_gate(target: "Target", site: dict[str, Any],
     Moon-sep / illumination are IMAGE-QUALITY gates: they only bite while the Moon
     is UP (mirrors ``visibility._moon_factor``'s moon-up rule); a Moon below the
     horizon imposes no gate. This is the scheduler path only — unlike the Sun, the
-    Moon is not a motion-boundary safety constraint."""
-    sched = target.schedule
-    lat, lon = _lat_lon(site)
+    Moon is not a motion-boundary safety constraint.
 
-    # --- hour angle (altitude-independent; predictable) ---
+    NO SITE, NO CONSTRAINT (#540). An hour-angle limit needs the site's
+    longitude (for local sidereal time) and a Moon constraint needs its
+    lat/lon too; asked through `_lat_lon` (the old reading here) both got
+    the 0,0 placeholder's, so an hour-angle limit could close a target's
+    window for the night at longitude 0. With no site saved, either check
+    that needs coordinates is skipped rather than judged there, so this
+    returns ``None`` (nothing constrains the target) exactly as it does when
+    the schedule sets no limit at all - the same "not a wait" answer
+    `gating_status` gives its own callers for the same reason. `gating_status`
+    itself never reaches this with no site (it answers before calling in);
+    this guard is for `constraint_gate`'s other caller, direct callers in
+    tests included."""
+    sched = target.schedule
+    from ..site_gate import site_lat_lon
+    latlon = site_lat_lon(site)
+
+    # --- hour angle (longitude only; predictable) ---
     lim = float(getattr(sched, "max_hour_angle_h", 0.0) or 0.0)
-    if lim > 0.0:
+    if lim > 0.0 and latlon is not None:
+        lon = latlon[1]
         ha = hour_angle_h(target.ra_hours, lon, now)
         if ha > lim:
             return ("window_closed", f"past hour-angle limit (+{lim:g}h)", 0.0)
@@ -648,7 +711,8 @@ def constraint_gate(target: "Target", site: dict[str, Any],
     # --- moon (only while the Moon is up — moon-up gates the constraint) ---
     sep_min = float(getattr(sched, "min_moon_sep_deg", 0.0) or 0.0)
     illum_max = float(getattr(sched, "max_moon_illum_pct", 0.0) or 0.0)
-    if sep_min > 0.0 or illum_max > 0.0:
+    if (sep_min > 0.0 or illum_max > 0.0) and latlon is not None:
+        lat, lon = latlon
         m_ra, m_dec = moon_radec(now)
         m_alt, _ = altaz(m_ra, m_dec, lat, lon, now)
         if m_alt > 0.0:
@@ -724,15 +788,12 @@ def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
     tomorrow every scheduler tick — the §1.6 window-freeze bug). When ``None``
     (pre-flight / one-shot callers) it resolves the window at ``now`` as before.
     """
-    lat, lon = _lat_lon(site)
     sched = target.schedule
     if window is not None:
         start_ts, stop_ts = window
     else:
         start_ts, stop_ts = resolve_window(sched, site, twilight_deg, now)
     gate = float(sched.min_altitude_deg or 0.0)
-    if target_alt is None:
-        target_alt = target_altitude(target.ra_hours, target.dec_deg, lat, lon, now)
 
     def out(state: str, reason: str, eta_s: float) -> dict[str, Any]:
         return {"state": state, "reason": reason, "eta_s": max(0.0, eta_s),
@@ -741,6 +802,28 @@ def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
     # 1. window already closed?
     if stop_ts is not None and now >= stop_ts:
         return out("window_closed", "observing window has closed", 0.0)
+
+    # NO SITE (#540). An altitude gate, an hour-angle limit and a Moon
+    # constraint all need real coordinates; asked through `_lat_lon` (its old
+    # reading here) they got the 0,0 placeholder's instead and judged the
+    # Gulf of Guinea's sky - a start altitude judged there, and a target set
+    # aside for the night on an hour angle at longitude 0, neither of which
+    # is an answer about the rig's sky (#540's observation). Treated the way
+    # `_frame_altitude`'s None is treated (#121): not a wait, so a run is
+    # never held on a gate that cannot be evaluated, and said in the reason
+    # ("no site") instead of a number, so a caller can tell an unjudged gate
+    # from a genuinely open one. The clock-only checks above and below (the
+    # window's own stop/start) still apply: no site does not mean no
+    # schedule, only that altitude, hour-angle and Moon cannot be judged.
+    from ..site_gate import site_lat_lon
+    latlon = site_lat_lon(site)
+    if latlon is None:
+        if start_ts is not None and now < start_ts:
+            return out("waiting", "waiting for start time", start_ts - now)
+        return out("ready", "no site", 0.0)
+    lat, lon = latlon
+    if target_alt is None:
+        target_alt = target_altitude(target.ra_hours, target.dec_deg, lat, lon, now)
 
     # 2. never clears the start gate across the window? (pre-flight warning)
     if gate > 0.0:
@@ -779,14 +862,62 @@ def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
 
 def _time_to_gate(target: "Target", lat: float, lon: float, gate: float,
                   now: float, stop_ts: float | None) -> float | None:
-    """Best-effort seconds until the target first reaches ``gate`` after ``now``
-    (within the window / one sidereal day). ``None`` if it never does."""
+    """Seconds until the target first reaches ``gate`` after ``now`` (within
+    the window / one sidereal day): 0 when it is there already, ``None`` if
+    it never does.
+
+    THE RISE, NOT THE NEXT STEP (#434). The scan steps in ``_PEAK_STEP_S``
+    (600 s) and used to answer the first step at or above the gate: the rise
+    rounded up to the next 600 s from the moment of asking. The scheduler
+    sleeps on this answer in one wait that does not ask the gating again
+    before its deadline, so the overshoot was slept in full: a mosaic panel
+    that cleared its gate 1800 s into the night, asked at 390 s, was waited
+    for until 2190 s, and the published ``eta_s`` read 390 s long. The step
+    the crossing falls in is now bisected to ``_GATE_RISE_TOL_S``; the
+    altitude is smooth across one step, so seven more evaluations buy it.
+    The answer is the bracket's upper end, the first instant seen at or above
+    the gate, so a wake there finds the gate open, never a few seconds short
+    of it with a second wait to make.
+
+    ``now`` IS ASKED FIRST. The bisection needs its low end below the gate,
+    and the first step's low end is ``now``; a target already at its gate
+    has no wait. `gating_status` asks only for a target below its gate, and
+    `ResumeArm._floor_eta_note` only after reading one below its floor.
+
+    THE SCAN COVERS THE WINDOW, NO MORE AND NO LESS (#498). It used to take
+    ``max(1, int(span / _PEAK_STEP_S))`` whole steps from ``now``, which is
+    not the window in either direction: the partial last step was never
+    scanned, so a target rising between the last whole step and ``stop_ts``
+    answered ``None`` (and `gating_status` published ``eta_s`` 0 for a wait
+    of minutes), and a window shorter than one step was scanned a whole step
+    past its close. Each step is now clamped to the horizon, with a last,
+    shorter step ending on it when the span is not a whole number of steps,
+    so the bisection above refines a crossing in that part step as it does
+    in any other, and a crossing after the close is never answered. A
+    crossing inside no step still answers ``None``."""
+    def alt(t: float) -> float:
+        return target_altitude(target.ra_hours, target.dec_deg, lat, lon, t)
+
+    if alt(now) >= gate:
+        return 0.0
     horizon = stop_ts if stop_ts is not None else now + _SIDEREAL_DAY_S
-    steps = max(1, int((horizon - now) / _PEAK_STEP_S))
+    # Rounded UP, so a part step at the end is a step of its own. Nothing to
+    # scan once the horizon is not after ``now``.
+    steps = max(0, math.ceil((horizon - now) / _PEAK_STEP_S))
+    below = now
     for i in range(1, steps + 1):
-        t = now + i * _PEAK_STEP_S
-        if target_altitude(target.ra_hours, target.dec_deg, lat, lon, t) >= gate:
+        t = min(now + i * _PEAK_STEP_S, horizon)
+        if alt(t) >= gate:
+            # [below, t] brackets the crossing: below the gate at its low
+            # end, at or above it at its high end. Halve it, keeping both.
+            while t - below > _GATE_RISE_TOL_S:
+                mid = (below + t) / 2.0
+                if alt(mid) >= gate:
+                    t = mid
+                else:
+                    below = mid
             return t - now
+        below = t
     return None
 
 

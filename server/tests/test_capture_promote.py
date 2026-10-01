@@ -82,6 +82,22 @@ async def test_a_promoted_frame_and_a_saved_one_carry_the_same_cards(
     Sabotage: resolve the filter name only when saving (the pre-D-SES-4
     condition), so the promoted file loses its FILTER card."""
     hub = sim_hub
+    # POINT THE MOUNT SOMEWHERE CIRCUMPOLAR, because this case asserts the sky
+    # cards are present and `Hub` writes them only `if alt > 0` - and the
+    # altitude is the MOUNT's, not the target name's. The sim mount sits where
+    # the fixture leaves it, so from the fixture's 40 N that altitude follows
+    # the time of day: measured at alt -8.2 at 11:30 local on the day this was
+    # written, which is how the assertion was found failing.
+    #
+    # Declination +85 is 35 degrees up at its lowest from here and never sets,
+    # so the header carries AIRMASS, CENTALT, CENTAZ, OBJCTALT and OBJCTAZ at
+    # every hour.
+    #
+    # The first version of this assertion had no such guard and passed for most
+    # of the day, which is the whole trouble with a clock in a test: it is not
+    # flaky, it is wrong for a few hours out of every twenty-four.
+    tel = hub.devices["telescope"]
+    tel.rig.dec_deg = 85.0
     await hub.capture(0.2, 100, 30, 1, save=False, target="M 31")
     await hub.promote_last_frame()
     await hub.capture(0.2, 100, 30, 1, save=True, target="M 31")
@@ -92,11 +108,31 @@ async def test_a_promoted_frame_and_a_saved_one_carry_the_same_cards(
         ha, hb = a[0].header, b[0].header
     # DATE-OBS/DATE-LOC are the two cards that MUST differ: they are the only
     # record of which exposure this is.
+    #
+    # AIRMASS, CENTALT and CENTAZ move with them, because the sky does. Until
+    # the sim_hub fixture was given a real observing site (#24) this test never
+    # saw them at all - at the 0,0 default they are not written, the key SETS
+    # matched, and the loop below graded a header with the whole of its sky
+    # geometry missing. They are compared to a tolerance rather than excused,
+    # because "present and agreeing to five decimal places two seconds apart" is
+    # the claim worth holding; dropping them into `varying` would restore the
+    # hole in a tidier form.
     varying = {"DATE-OBS", "DATE-LOC"}
+    drifting = {"AIRMASS": 1e-3, "CENTALT": 1e-2, "CENTAZ": 1e-2,
+                "OBJCTALT": 1e-2, "OBJCTAZ": 1e-2}
     assert set(ha.keys()) == set(hb.keys())
-    for key in set(ha.keys()) - varying:
+    for key in set(ha.keys()) - varying - set(drifting):
         assert ha[key] == hb[key], key
+    for key, tol in drifting.items():
+        if key not in ha:
+            continue
+        assert abs(float(ha[key]) - float(hb[key])) < tol, (
+            f"{key} moved by more than the sky does in one exposure: "
+            f"{ha[key]} against {hb[key]}")
     assert "FILTER" in ha
+    assert "AIRMASS" in ha, (
+        "no AIRMASS card, so this test is back to grading a header with no sky "
+        "geometry in it - check the fixture still configures a site")
 
 
 async def test_a_solved_pointing_survives_into_a_promoted_frame(sim_hub, tmp_path):

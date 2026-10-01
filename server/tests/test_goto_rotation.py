@@ -18,11 +18,16 @@ def _real_solve_dwell(monkeypatch):
     collapsed-pacing runs are never the only evidence.
 
     Deliberately NARROWER than the ``_real_dwell`` idiom used elsewhere (which
-    deletes ``ASTRODECK_FAST_TEST`` wholesale): un-faking the sim MOUNT's slew
-    dwell too costs ~8 s here and anchors nothing this change touched — Phase 1
-    already keeps its own real-dwell device anchor in
-    ``test_native_guider_e2e.py``. This fixture anchors exactly the pacing this
-    phase faked, and nothing else."""
+    deletes ``ASTRODECK_FAST_TEST`` wholesale). Since #207 the fast path fakes
+    the sim MOUNT's slew dwell and the rotator's move dwell as well (before it,
+    this paragraph claimed so while every goto here paid the slew in real
+    time). Un-faking everything costs this test about 5.7 s more (9.0-9.5 s
+    against 3.3-3.7 s, measured 2026-09-24), 4.9 s of it the slew: the goto
+    from the sim's default pointing plus one re-slew after the sync. It would
+    anchor nothing this fixture is about: the slew and rotator dwell keep
+    their own real-dwell anchor in ``test_sim_pacing.py``, as the guide
+    camera's does in ``test_native_guider_e2e.py``. This fixture anchors
+    exactly the solver's pacing, and nothing else."""
     from astrodeck.solve import simsolver
     monkeypatch.setattr(simsolver, "_sim_delay", lambda seconds: seconds)
     yield
@@ -61,10 +66,15 @@ async def test_rotation_failure_degrades_not_aborts(sim_hub, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_rotator_means_advisory_only(sim_hub):
+    """With no rotator the angle is still advisory: the centring runs and
+    nothing turns. It is no longer SILENT (#160, mosaic S1): the result now
+    carries ``rotation_unavailable`` and one warning is logged. That half is
+    pinned, with its mutants, in test_rotation_unavailable.py; this test keeps
+    only the part that did not change."""
     sim_hub.devices.pop("rotator", None)
     result = await sim_hub.goto_and_center(5.0, 10.0, rotation_deg=90.0)
     assert result["centered"] is True
-    assert result.get("rotation") is None      # silently advisory, as today
+    assert result.get("rotation") is None      # advisory: nothing turned
 
 
 @pytest.mark.asyncio
@@ -101,8 +111,41 @@ def test_goto_body_rejects_nan_rotation():
 
 
 def test_sequence_passes_rotation():
-    """_setup_target's centered branch forwards target.rotation_deg."""
+    """_setup_target's centered branch forwards the angle the acquisition
+    commands, which is ``target.rotation_deg`` whenever one is planned.
+
+    UPDATED FOR S2 (owner ruling 9, spec 5.6), which changed the spelling on
+    purpose: the goto used to pass ``rotation_deg=target.rotation_deg`` and
+    now passes ``_commanded_rotation(target)``, the planned angle or else the
+    angle an unframed target locked on its first shot. So the pin reads the
+    new spelling, and the planned half is graded on the method itself; the
+    planned, locked and unlocked acquisitions on the simulator are graded by
+    test_locked_angle.py. Before the update the old pin failed on the new
+    spelling:
+        AssertionError: assert 'rotation_deg=target.rotation_deg' in ...
+
+    MUTATION "the goto forgets the angle" (``rotation_deg=rotation,`` in
+    _setup_target's goto_and_center call made ``rotation_deg=None,``).
+    Observed:
+        AssertionError: _setup_target's goto_and_center no longer passes the
+        commanded angle
+    MUTATION "the lock outranks the plan" (``_commanded_rotation``'s
+    ``if planned is not None: return planned`` removed, so a planned angle
+    is commanded only through a lock). Observed:
+        AssertionError: assert None == 45.0
+         +  where None = _commanded_rotation(namespace(rotation_deg=45.0))
+    """
     import inspect
+    import re
+    from types import SimpleNamespace
     from astrodeck.sequence import engine
     src = inspect.getsource(engine.SequenceEngine._setup_target)
-    assert "rotation_deg=target.rotation_deg" in src
+    assert "rotation = self._commanded_rotation(target)" in src
+    assert re.search(r"goto_and_center\(\s*target\.ra_hours,\s*"
+                     r"target\.dec_deg,\s*rotation_deg=rotation,", src), (
+        "_setup_target's goto_and_center no longer passes the commanded angle")
+    eng = engine.SequenceEngine.__new__(engine.SequenceEngine)
+    eng._lock_in_force = lambda target: None
+    eng._rotator_connected = lambda: False
+    assert eng._commanded_rotation(SimpleNamespace(rotation_deg=45.0)) == 45.0
+    assert eng._commanded_rotation(SimpleNamespace(rotation_deg=0.0)) == 0.0

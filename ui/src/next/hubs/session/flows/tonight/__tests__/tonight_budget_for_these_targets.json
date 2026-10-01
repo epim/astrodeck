@@ -1,0 +1,39 @@
+{
+ "about": "The sky-free parts (ok, brief, budget, the BUDGET story rows) of flows/tonight.py resolve_tonight's answer for the flow and ledger server/tests/test_h4_budget_for_these_targets.py builds, which keeps this file equal to that answer. Read by tonightPanelDom.test.tsx and budgetForTheseTargets.test.tsx (#536). Never hand-edit it.",
+ "response": {
+  "ok": true,
+  "brief": "This flow arms M31. It captures Ha 900 s \u00d7 8 (gain 100, bin 1). It then interleaves one sub per filter per pass - L 60 s \u00d7 10, R 60 s \u00d7 10 - so every channel grows evenly.",
+  "budget": [
+   {
+    "filter": "Ha",
+    "goal_h": 2.0,
+    "banked_h": 1.0,
+    "tonight_h": 2.0,
+    "has_ledger": true
+   },
+   {
+    "filter": "L, R",
+    "goal_h": null,
+    "banked_h": 0.2,
+    "tonight_h": 0.33,
+    "has_ledger": true,
+    "strategy": "cycle",
+    "cycles": 10
+   }
+  ],
+  "story": [
+   {
+    "t_unix": null,
+    "label": "BUDGET",
+    "msg": "Ha: 1 h banked for these targets / 2 h goal \u2014 tonight adds \u22482 h; the session ledger resumes the remainder next clear night",
+    "tone": "good"
+   },
+   {
+    "t_unix": null,
+    "label": "BUDGET",
+    "msg": "L, R cycle: no integration goal (a FILTER CYCLE sets none), 0.2 h banked in its filters for these targets \u2014 its 10 cycles owe \u22480.33 h of shutter; the session ledger resumes the remainder next clear night",
+    "tone": "good"
+   }
+  ]
+ }
+}

@@ -38,6 +38,7 @@ import { confirmDialog } from "../ConfirmDialog";
 import { Segmented } from "../Segmented";
 import { Field, Panel } from "../ui";
 import { Icon } from "../icons";
+import { ClassicSkyTools } from "../sky/ClassicSkyTools";
 
 // Number("") is 0, which is Number.isFinite and would silently pass the lib
 // validators as coordinate 0 — a blank field must never be read as "0", it
@@ -51,6 +52,9 @@ export default function SitePanel(): JSX.Element {
   const showToast = useStore((s) => s.showToast);
   const loadConfig = useStore((s) => s.loadConfig);
   const canEdit = useCan("config.site_optics");
+  // Issue #131: the horizon editor had no way in from here, where the owner
+  // looked for it and where the Safety panel's own copy sends people.
+  const [horizonOpen, setHorizonOpen] = useState(false);
   const canSafety = useCan("config.safety");
   const canSeePrecise = useCanViewSitePrecise();
 
@@ -177,7 +181,7 @@ export default function SitePanel(): JSX.Element {
 
   // --------------------------------------------- "…which is where?" read-back
   // UX review #12 (the S4 pattern: the system knows and shows something else).
-  // GET /api/site/sky already computes the ONE string that catches a flipped
+  // /api/site/sky already computes the ONE string that catches a flipped
   // sign in half a second — place_hint, e.g. "N hemisphere · W longitude ·
   // ~N. America" — and nothing rendered it. This reads it for the values
   // CURRENTLY IN THE FORM, not for the saved site: a US longitude typed as
@@ -212,9 +216,12 @@ export default function SitePanel(): JSX.Element {
     // debounced: this would otherwise fire once per keystroke while typing a
     // coordinate. 350ms still lands well inside "half a second".
     const timer = setTimeout(() => {
+      // A POST BODY, NOT A QUERY STRING (#520): these are the coordinates
+      // being typed in, and a URL is written down by every hop it crosses,
+      // the remote relay's access log included.
       api
-        .get<{ place_hint?: string; sun_alt_deg?: number }>(
-          `/api/site/sky?lat=${latSigned}&lon=${lonSigned}`,
+        .post<{ place_hint?: string; sun_alt_deg?: number }>(
+          "/api/site/sky", { lat: latSigned, lon: lonSigned },
         )
         .then((s) => {
           if (dead) return;
@@ -728,6 +735,23 @@ export default function SitePanel(): JSX.Element {
             </button>
           </div>
         )}
+
+        {canEdit && (
+          <section aria-label="Horizon line" className="border-t border-line pt-3 flex flex-col gap-2">
+            <h3 className="text-sm font-medium text-ink">Horizon line</h3>
+            <p className="text-xs text-dim leading-relaxed">
+              The trees, roofs and walls the telescope cannot see past. A
+              running sequence will not slew below this line.
+            </p>
+            <div>
+              <button type="button" className="btn" data-testid="site-edit-horizon"
+                onClick={() => setHorizonOpen(true)}>
+                Edit horizon line
+              </button>
+            </div>
+          </section>
+        )}
+        {horizonOpen && <ClassicSkyTools initialTool="horizon" onClose={() => setHorizonOpen(false)} />}
 
         {/* --------------------------------------------- saved locations row */}
         {canEdit && (

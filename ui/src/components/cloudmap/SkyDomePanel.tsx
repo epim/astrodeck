@@ -181,10 +181,14 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
       const d = await getCloudmapDome(6, 10);
       if (!alive.current) return;
       setDome(d);
+      // The pointing decides WHETHER to ask, never WHAT: the server reads the
+      // mount itself and the request carries only the lead time (#520). The
+      // prop still draws the marker and still keeps a parked-below-horizon
+      // or disconnected mount from costing three requests a minute.
       const p = pointingRef.current;
       if (p && p.alt >= 0) {
         const rungs = await Promise.all(
-          LOOK_AHEAD_S.map((s) => getCloudmapAt(p.alt, p.az, s).catch(() => null)));
+          LOOK_AHEAD_S.map((s) => getCloudmapAt(s).catch(() => null)));
         if (!alive.current) return;
         setLadder(rungs);
       } else {

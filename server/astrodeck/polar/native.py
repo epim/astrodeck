@@ -38,9 +38,11 @@ import asyncio
 import math
 from typing import Any
 
+from .. import sky_angle as _sky_angle
 from ..devices.base import DeviceError
 from ..events import bus
 from ..sequence.schedule import hour_angle_h
+from ..site_gate import site_lat_lon
 from .session import wait_if_paused
 
 # --- guarded native import -------------------------------------------------
@@ -269,11 +271,17 @@ async def run_native(session: Any, hub: Any) -> None:
 # ------------------------------------------------------------------- internals
 
 async def _drive(session: Any, hub: Any) -> None:
+    # THE SITE IS READ FIRST, before any device is even resolved (#24). It used
+    # to be read after the telescope, the camera and the solver, which meant a
+    # rig with no location was told it had no camera before it was told it had
+    # no site - and on a rig that HAS a camera, the refusal arrived with the
+    # capture path already engaged. Nothing here needs a device to know the
+    # answer, so nothing should be touched to find it out.
+    site = _site_dict(hub)
     tel = hub.require("telescope")
     hub.require("camera")  # fail fast with a clear error if no camera
     from .. import providers as _providers
     solver = _providers.pick_solver(hub)
-    site = _site_dict(hub)
 
     # Refuse BEFORE any slew when the scope is parked at / near a pole. Checked
     # against the mount's own claim, which is cheap and catches the common case;
@@ -680,8 +688,8 @@ async def _refuse_if_no_longer_measurable(hub: Any, what: str) -> None:
     import time as _time
 
     from ..catalog.coords import altaz
-    alt, _az = altaz(float(ra), float(dec), float(hub.site["latitude"]),
-                     float(hub.site["longitude"]), _time.time())
+    lat, lon = _site_coords(hub)
+    alt, _az = altaz(float(ra), float(dec), lat, lon, _time.time())
     if alt < MIN_MEASUREMENT_ALT_DEG:
         raise DeviceError(
             f"native TPPA {what}: while waiting for a solve, the field has set "
@@ -801,6 +809,12 @@ async def _capture_and_solve(hub: Any, solver: Any, session: Any = None):
     try:
         await _apply_solve_filter(hub, cfg.get("filter"))
         _publish_activity(session, "exposing")
+        # The rotator and pier side as the shutter opens: a polar solve is a
+        # solve of the IMAGING camera, so it records the sky angle and may
+        # calibrate the rotator like every other (``sky_angle``). The arc's RA
+        # turns do not change the camera's position angle on a German
+        # equatorial; a flip would, and the calibration refuses across one.
+        angle = await _sky_angle.exposure_context(hub, cam)
         async with hub.exposure_guard("polar solve"):
             frame = await cam.expose(float(cfg["exposure_s"]), int(cfg["gain"]),
                                      int(cfg["offset"]),
@@ -825,7 +839,15 @@ async def _capture_and_solve(hub: Any, solver: Any, session: Any = None):
         # would be the exact lie this field exists to remove.
         _publish_activity(session, None)
     if not result.success:
-        raise DeviceError(f"polar plate solve failed: {result.message}")
+        # Judged for light (#251): a capped optic says "not enough stars" in
+        # the words a cloud does, and ``_solve_until_it_works`` would tell the
+        # operator to wait for the sky. The verdict is still a DeviceError, so
+        # that retry loop is unchanged; its line now says which it is.
+        from ..solve import light as _light
+        raise await _light.failed_solve_error(
+            frame, result, prefix="polar plate solve failed", hub=hub)
+    await _sky_angle.note_solved_rotation(hub, result, source="polar alignment",
+                                          context=angle)
 
     h, w = frame.data.shape
     scale = (result.pixel_scale_arcsec or opt.get("image_scale_arcsec_px") or 1.55)
@@ -966,7 +988,7 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None,
     means to — but a safety rule whose edge cannot be pinned is a rule nobody
     can check.
     """
-    ha = hour_angle_h(cur_ra_hours, hub.site["longitude"], now)
+    ha = hour_angle_h(cur_ra_hours, _site_coords(hub)[1], now)
     # HA > 0 => west of the meridian, so step further west, which is RA DOWN.
     # HA <= 0 => east (or exactly on it), so step further east, which is RA UP.
     ha_step = -_RA_STEP_HOURS if ha > 0.0 else _RA_STEP_HOURS
@@ -1191,9 +1213,45 @@ def _check_alive(hub: Any, epoch: int) -> None:
 
 
 def _site_dict(hub: Any) -> dict:
-    s = hub.site
-    return {"latitude_deg": s["latitude"], "longitude_deg": s["longitude"],
-            "elevation_m": s.get("elevation_m", 0.0)}
+    """The site the whole polar routine computes from, or a refusal (#24).
+
+    This is the one gate for every latitude and longitude the native TPPA path
+    reads. `_drive` calls it before the first slew, and `run_native` turns a
+    DeviceError into a terminal `polar{state:"error"}` carrying this message, so
+    an unconfigured rig is told what is wrong instead of being walked through a
+    twenty-four degree rotation for nothing.
+
+    Polar alignment is the worst place in this tree for the 0,0 default. Its
+    whole output is an instruction to a human at the mount - turn the azimuth
+    knob this way, this far - and the operator has no way to tell an answer
+    about their own sky from one about the Gulf of Guinea. Every other
+    site-reading function on this path (`_refuse_low_arc`, `_ra_step_hours`,
+    `_reject_implausible_fit`, `_refuse_if_no_longer_measurable`,
+    `_log_measurement`) is reachable only through `_drive`, which is why they
+    are guarded here rather than five more times.
+    """
+    lat, lon = _site_coords(hub)
+    return {"latitude_deg": lat, "longitude_deg": lon,
+            "elevation_m": hub.site.get("elevation_m", 0.0)}
+
+
+def _site_coords(hub: Any) -> tuple[float, float]:
+    """``(latitude, longitude)`` for the polar path, or the same refusal as
+    :func:`_site_dict`.
+
+    Every site read on this path goes through here, not only the first. The
+    five helpers below `_drive` were once exempted as "reachable only through
+    `_drive`", which was true and was also a claim nothing checked: the AM5
+    driver's site push carried the same exemption on #24 and turned out to be
+    reached on every reconnect. One helper costs nothing and makes the claim
+    unnecessary.
+    """
+    latlon = site_lat_lon(hub.site)
+    if latlon is None:
+        raise DeviceError(
+            "no observing site is set, so polar alignment cannot be computed: "
+            "save the site's location in settings first")
+    return latlon
 
 
 def _options(hub: Any, geom: tuple) -> dict:
@@ -1662,8 +1720,7 @@ def _refuse_low_arc(hub: Any, result: Any, step_hours: float) -> None:
     import time as _time
 
     from ..catalog.coords import altaz
-    lat = float(hub.site["latitude"])
-    lon = float(hub.site["longitude"])
+    lat, lon = _site_coords(hub)
     now = _time.time()
     # Each point is projected at the time it will actually be REACHED, not at
     # "now" — see _ARC_LEG_SECONDS.
@@ -1725,7 +1782,7 @@ async def _log_measurement(hub: Any, tel: Any, index: int, result: Any,
     except Exception:  # noqa: BLE001 — see above
         claimed = "the mount would not say where it is"
     try:
-        ha = hour_angle_h(result.ra_hours, hub.site["longitude"], frame.timestamp)
+        ha = hour_angle_h(result.ra_hours, _site_coords(hub)[1], frame.timestamp)
         bus.log("info",
                 f"native TPPA point {index + 1}/3: solved RA "
                 f"{result.ra_hours:.4f}h Dec {result.dec_deg:+.3f}° "
@@ -1752,7 +1809,7 @@ def _reject_implausible_fit(err: dict, hub: Any) -> None:
     the operator judge" is not an option here: the number is not large-but-real,
     it is the output of a fit that silently lost conditioning.
     """
-    lat = float(hub.site["latitude"])
+    lat = _site_coords(hub)[0]
     alt_err_deg = err["alt_arcmin"] / 60.0
     total_deg = err["total_arcmin"] / 60.0
     # error_det.calculate_mount_axis_error: northern alt_err = axis_alt - pole;

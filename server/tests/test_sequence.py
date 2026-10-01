@@ -17,6 +17,22 @@ async def sim_hub(tmp_path, monkeypatch):
     # these sequence-MECHANICS tests flaky a few weeks a year. The cone itself is
     # covered by test_sun_guard.py; here we disarm it so the mechanics are tested
     # date-independently. monkeypatch restores the field after the test.
+    #
+    # ON A STORE OF THE TEST'S OWN, set up first so the patch below lands on
+    # it: the singleton repointed at a file under tmp_path with its cache
+    # dropped, both through monkeypatch. A run saves what it learns - a
+    # plan's cooling setpoint, the focus temperature it anchored at - and
+    # these tests used to leave both on the process-wide config for every
+    # later test on the worker (#227).
+    # Without these two lines, the conftest guard errors at teardown (2 in
+    # this file alone, observed): "test_cooling_before_lights left the
+    # process-wide config changed: cooling.setpoint_c." and
+    # "test_failed_autofocus_still_records_the_temperature left the
+    # process-wide config changed: focus.temp_comp.reference_position,
+    # focus.temp_comp.reference_temp_c."
+    monkeypatch.setattr(hub_module.config_store, "_path",
+                        tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module.config_store, "_cfg", None)
     _safety = hub_module.config_store.cfg().safety
     monkeypatch.setattr(_safety, "solar_avoidance", False)
     # Force the legacy fast deterministic SimGuider (P2-T3 flip escape hatch):

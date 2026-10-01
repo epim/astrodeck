@@ -71,6 +71,11 @@ import {
 // `materializeDisabledReason` - is normalised for the new UI. Writing a second
 // copy of a punctuation rule is how two screens drift.
 import { hyphenateOrNull } from "../report/reportModel";
+// The count and its noun, shared with the Now screen and the desktop column so
+// "1 sub" is spelled once (#468). A static import of the Now side costs
+// nothing: that module is on the first paint, and this sheet is the one loaded
+// on demand.
+import { subsPhrase } from "../now/LiveStack";
 import type { SheetProps } from "../../sheets";
 import {
   buildSelection, fetchSessionFiles, filterLabel, foldRows, indexFromSession,
@@ -399,7 +404,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
   const headerSub = manual
     ? "every light frame on the rig - the library index does not record which were shot by hand"
     : totals.subs > 0
-      ? `${totals.subs} subs · ${fmtIntegration(totals.integrationS)} · ${fmtBytes(totals.bytes)} on the rig`
+      ? `${subsPhrase(totals.subs)} · ${fmtIntegration(totals.integrationS)} · ${fmtBytes(totals.bytes)} on the rig`
       : live
         ? `${phaseWord(seq)} · nothing banked yet`
         : "nothing on the rig for this target";
@@ -439,7 +444,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
         : "NO SUBS YET";
     }
     if (cost.count === 0) return "PICK AT LEAST ONE FILTER";
-    return `DOWNLOAD ${fmtCount(cost.count)} SUBS · ${fmtBytes(cost.bytes)}`;
+    return `DOWNLOAD ${subsPhrase(cost.count).toUpperCase()} · ${fmtBytes(cost.bytes)}`;
   })();
 
   // THE JPEG SENTENCE COMES FIRST, and it has to, because `pref` is FORCED to
@@ -592,7 +597,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
                   <span className="nx-row-text">
                     <span className="nx-row-title">{s.name}</span>
                     <span className="nx-row-sub">
-                      {sessionDates(s.created_ts, s.updated_ts)} · {s.accepted} subs · {s.status}
+                      {sessionDates(s.created_ts, s.updated_ts)} · {subsPhrase(s.accepted)} · {s.status}
                     </span>
                   </span>
                 </button>
@@ -649,7 +654,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
             }}
           >
             <Mono size={10}>
-              AUTO-STACK · {stackFrames} subs · {fmtIntegration(stackIntegration)}
+              AUTO-STACK · {subsPhrase(stackFrames)} · {fmtIntegration(stackIntegration)}
             </Mono>
           </span>
         </div>

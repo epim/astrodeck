@@ -88,6 +88,9 @@ win.Element.prototype.scrollIntoView = function (this: any, opts: any) {
 
 // ------------------------------------------------------------- fetch double
 const asked: string[] = [];
+/** The body each request carried, keyed like `asked` (#520: a picked look
+ *  direction travels in a POST body, and the test has to be able to see it). */
+const bodies: Array<{ ask: string; body: unknown }> = [];
 const NOW = Date.UTC(2026, 8, 10, 5, 0, 0);
 
 function ok(data: unknown) {
@@ -137,6 +140,11 @@ const g = globalThis as any;
 g.fetch = async (url: any, init?: any) => {
   const u = String(url);
   asked.push(`${init?.method ?? "GET"} ${u}`);
+  if (init?.body) {
+    let body: unknown = init.body;
+    try { body = JSON.parse(String(init.body)); } catch { /* keep the raw text */ }
+    bodies.push({ ask: `${init?.method ?? "GET"} ${u}`, body });
+  }
   if (u.includes("/api/cloudmap/dome")) return ok(domePayload);
   if (u.includes("/api/cloudmap/at")) {
     return ok({ probability: 0.05, basis: "granule", beam_m: 90 });
@@ -195,7 +203,7 @@ const { useStore } = await import("../../../../store");
 const { SkyHub } = await import("../SkyHub");
 const { SkyDomePanel } = await import("../../../../components/cloudmap/SkyDomePanel");
 const { DOME_CARD_ID, DOME_NEEDS_WEATHER } = await import("../cards/DomeCard");
-const { DOME_TTL_MS, getCloudmapDome, resetCloudmapDomeCache } =
+const { DOME_TTL_MS, getCloudmapDome, getCloudmapAtPoint, resetCloudmapDomeCache } =
   await import("../../../../api/cloudmap");
 
 // ------------------------------------------------------------------ harness
@@ -379,6 +387,50 @@ await testAsync("and a fresh grid is fetched once the TTL is behind us", async (
   assert(DOME_TTL_MS < 60_000,
     `DOME_TTL_MS is ${DOME_TTL_MS} ms, at or above the consumers' own 60 s poll`);
   clockMs = NOW;
+});
+
+// RE-PINNED FOR #520, DELIBERATELY. The look-ahead ladder used to ask
+// `/api/cloudmap/at?alt=57.000&az=64.000&ahead_s=..` with the mount's alt/az,
+// and the remote relay's access log wrote the pointing down several times a
+// minute. The server reads the mount now; the URL carries the lead time and
+// nothing else, and a PICKED direction goes in a POST body.
+//
+// Both mutants run 2026-09-29 in a private scratch copy of ui/
+// (scratchpad/H4-PRIV-mut) from byte backups restored with their sha256
+// checked. Output verbatim.
+//
+// MUTANT "restore the old ladder" (api/cloudmap.ts's getCloudmapAt back to
+// `(alt, az, aheadS)` and the alt/az template, and SkyDomePanel's call back to
+// `getCloudmapAt(p.alt, p.az, s)`). Observed ("skyDomeCardDom.test: 18/19
+// passed"):
+//   x the look-ahead ladder asks the telescope route with the lead time and nothing else: a ladder request is not "GET /api/cloudmap/at?ahead_s=N": "GET /api/cloudmap/at?alt=57.000&az=64.000&ahead_s=0"
+//
+// MUTANT "the picked point rides the URL" (getCloudmapAtPoint posting to
+// `/api/cloudmap/at?alt=${alt}&az=${az}`). Observed ("18/19 passed"):
+//   x a picked direction is a POST body, not a query string: the picked-point request: expected ["POST /api/cloudmap/at"], got ["POST /api/cloudmap/at?alt=30&az=90"]
+test("the look-ahead ladder asks the telescope route with the lead time and nothing else", () => {
+  const looks = asked.filter((a) => a.includes("/api/cloudmap/at"));
+  assert(looks.length >= 3,
+    `the ladder asked ${looks.length} times, so the card's pointing never reached it: ${JSON.stringify(looks)}`);
+  const rungs = new Set<number>();
+  for (const a of looks) {
+    const m = /^GET \S*\/api\/cloudmap\/at\?ahead_s=(\d+)$/.exec(a);
+    assert(m != null, `a ladder request is not "GET /api/cloudmap/at?ahead_s=N": "${a}"`);
+    rungs.add(Number(m![1]));
+  }
+  eq(JSON.stringify([...rungs].sort((x, y) => x - y)), JSON.stringify([0, 900, 1800]),
+    "the ladder's rungs:");
+});
+
+await testAsync("a picked direction is a POST body, not a query string", async () => {
+  const before = asked.length;
+  await getCloudmapAtPoint(30, 90, 900);
+  const mine = asked.slice(before);
+  eq(JSON.stringify(mine.map((a) => a.replace(/^(\S+) \S*(\/api\/.*)$/, "$1 $2"))),
+    JSON.stringify(["POST /api/cloudmap/at"]), "the picked-point request:");
+  const sent = bodies.filter((b) => b.ask === mine[0]).pop();
+  eq(JSON.stringify(sent?.body), JSON.stringify({ alt: 30, az: 90, ahead_s: 900 }),
+    "the picked point's body:");
 });
 
 test("the new Card is the only frame: no legacy Panel chrome inside it", () => {
@@ -707,6 +759,54 @@ await testAsync("with no chrome prop the panel still draws its own Panel", async
   assert(el.querySelector("section.panel") != null, "no panel section in the classic mount");
   assert(el.querySelector("[data-dome-bare]") == null, "the default rendered the bare wrapper");
   act(() => { classicRoot.unmount(); });
+});
+
+// THE POINTING DECIDES WHETHER TO ASK, NEVER WHAT (#520). Since the look
+// route reads the mount server-side, the panel's `p && p.alt >= 0` is the only
+// thing that keeps a disconnected or parked-low mount from costing three
+// requests a minute. Before #520 it could not be dropped unnoticed, because the
+// call needed `p.alt` and `p.az` and a null pointing threw; now the call takes
+// no coordinates and dropping the check changes nothing a reader sees, so this
+// case is what holds it. The dome request is the precondition: it is made just
+// before the ladder's decision, so a panel that never got that far cannot pass
+// for one that decided not to ask.
+//
+// MUTANT "the pointing no longer decides whether to ask" (SkyDomePanel's
+// `if (p && p.alt >= 0) {` made `if (true) {`), run 2026-09-29 in a private
+// scratch copy of ui/ (scratchpad/H4-PRIV-verify-mut) from a byte backup
+// restored with its sha256 checked. Before this case it survived this file and
+// every other dome test (classicSkyToolsDom, focusPrep, domeClockDom).
+// Observed ("skyDomeCardDom.test: 19/20 passed"):
+//   x no pointing, or one below the horizon, asks the look route nothing: the panel asked /api/cloudmap/at with pointing null: expected 0, got 3
+// MUTANT "a pointing below the horizon still asks" (the same line made
+// `if (p) {`). Observed ("19/20 passed"):
+//   x no pointing, or one below the horizon, asks the look route nothing: the panel asked /api/cloudmap/at with pointing {"alt":-12,"az":30}: expected 0, got 3
+await testAsync("no pointing, or one below the horizon, asks the look route nothing", async () => {
+  const el = win.document.getElementById("classic") as any;
+  const lookAsks = (): string[] => asked.filter((a) => a.includes("/api/cloudmap/at"));
+  const mountPanel = async (pointing: { alt: number; az: number } | null): Promise<string[]> => {
+    resetCloudmapDomeCache();
+    const domesBefore = domeAsks().length;
+    const looksBefore = lookAsks().length;
+    const r = createRoot(el);
+    await act(async () => { r.render(createElement(SkyDomePanel, { pointing })); });
+    await settle();
+    act(() => { r.unmount(); });
+    assert(domeAsks().length > domesBefore,
+      `precondition: the panel with pointing ${JSON.stringify(pointing)} never asked for the dome, `
+      + "so it never reached the ladder's decision either");
+    return lookAsks().slice(looksBefore);
+  };
+  for (const pointing of [null, { alt: -12, az: 30 }]) {
+    eq((await mountPanel(pointing)).length, 0,
+      `the panel asked /api/cloudmap/at with pointing ${JSON.stringify(pointing)}:`);
+  }
+  // The control: the same mount with a pointing above the horizon asks all
+  // three rungs, and by lead time alone.
+  const mine = await mountPanel({ alt: 57, az: 64 });
+  eq(mine.length, 3, `a pointing above the horizon asked ${JSON.stringify(mine)}:`);
+  assert(mine.every((a) => /^GET \S*\/api\/cloudmap\/at\?ahead_s=\d+$/.test(a)),
+    `a rung is not "GET /api/cloudmap/at?ahead_s=N": ${JSON.stringify(mine)}`);
 });
 
 Date.now = realNow;

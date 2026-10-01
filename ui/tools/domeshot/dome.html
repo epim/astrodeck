@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>dome scope</title>
+<style>
+  body { margin: 0; background: #0b0f16; font: 12px ui-monospace, monospace; color: #7c8798; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; }
+  figure { margin: 0; }
+  figcaption { padding: 2px 4px; }
+  canvas { display: block; background: #0b0f16; }
+</style>
+</head>
+<body>
+<div class="row" id="row"></div>
+<script src="./bundle.js"></script>
+<script>
+const { drawDomeScope, DOME_TILT_DEG, projectAltAz, domeExtent } = window.AD;
+
+// The same framing SkyDome uses: a horizon ellipse, a couple of altitude
+// rings, the cardinal ticks, then the model, then the pointing cross on top.
+function panel(w, h, alt, az, yaw, label) {
+  const fig = document.createElement('figure');
+  const cap = document.createElement('figcaption');
+  cap.textContent = label;
+  const c = document.createElement('canvas');
+  const dpr = 2;
+  c.width = w * dpr; c.height = h * dpr;
+  c.style.width = w + 'px'; c.style.height = h + 'px';
+  const ctx = c.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const ext = domeExtent(DOME_TILT_DEG);
+  const r = Math.min(w / 2, h / (ext.top + ext.bottom)) * 0.92;
+  const cx = w / 2, cy = h * (ext.top / (ext.top + ext.bottom));
+
+  // horizon + altitude rings
+  ctx.strokeStyle = 'rgba(120,140,170,0.35)';
+  ctx.lineWidth = 1;
+  for (const a of [0, 30, 60]) {
+    ctx.beginPath();
+    for (let az2 = 0; az2 <= 360; az2 += 3) {
+      const p = projectAltAz(a, az2, cx, cy, r, DOME_TILT_DEG, yaw);
+      az2 === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath(); ctx.stroke();
+  }
+  // meridians
+  ctx.strokeStyle = 'rgba(120,140,170,0.18)';
+  for (let az2 = 0; az2 < 360; az2 += 45) {
+    ctx.beginPath();
+    for (let a = 0; a <= 90; a += 3) {
+      const p = projectAltAz(a, az2, cx, cy, r, DOME_TILT_DEG, yaw);
+      a === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+  }
+  // cardinals
+  ctx.fillStyle = 'rgba(160,178,200,0.9)';
+  ctx.font = '600 11px ui-monospace, monospace';
+  for (const [name, az2] of [['N',0],['E',90],['S',180],['W',270]]) {
+    const p = projectAltAz(0, az2, cx, cy, r, DOME_TILT_DEG, yaw);
+    ctx.fillText(name, p.x - 3, p.y - 4);
+  }
+
+  drawDomeScope(ctx, alt, az, cx, cy, r, DOME_TILT_DEG, yaw);
+
+  // the existing pointing cross, copied from SkyDome
+  const p = projectAltAz(alt, az, cx, cy, r, DOME_TILT_DEG, yaw);
+  const cross = () => {
+    ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p.x-11,p.y); ctx.lineTo(p.x-3,p.y);
+    ctx.moveTo(p.x+3,p.y);  ctx.lineTo(p.x+11,p.y);
+    ctx.moveTo(p.x,p.y-11); ctx.lineTo(p.x,p.y-3);
+    ctx.moveTo(p.x,p.y+3);  ctx.lineTo(p.x,p.y+11);
+    ctx.stroke();
+  };
+  ctx.strokeStyle = 'rgba(8,10,16,0.8)'; ctx.lineWidth = 4; cross();
+  ctx.strokeStyle = 'rgba(242,215,161,0.98)'; ctx.lineWidth = 1.6; cross();
+
+  fig.appendChild(c); fig.appendChild(cap);
+  document.getElementById('row').appendChild(fig);
+}
+
+// phone width first, then desktop, then a yaw sweep.
+panel(360, 300, 45, 120, 0,  'phone 360  alt45 az120  yaw0');
+panel(360, 300, 12, 200, 0,  'phone 360  alt12 az200 (low S)');
+panel(360, 300, 85, 40,  0,  'phone 360  alt85 az40 (near zenith)');
+panel(520, 420, 45, 120, 0,  'desktop 520  alt45 az120  yaw0');
+panel(520, 420, 45, 120, 90, 'desktop 520  same target, yaw 90');
+panel(520, 420, 30, 0,   0,  'desktop 520  alt30 due N');
+document.title = 'ready';
+</script>
+</body>
+</html>

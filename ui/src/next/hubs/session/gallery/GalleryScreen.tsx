@@ -28,6 +28,7 @@ import { explainLock } from "../../../shell/explain";
 import { readDownloaded, type DlEntry } from "../sheets/filesData";
 import { ARCHIVE_PHONE_REASON } from "../sheets/archive";
 import { SessionCard } from "./SessionCard";
+import { UnreadableSessionCard } from "./UnreadableSessionCard";
 import { useSessionCards } from "./useSessionCards";
 
 /** The proto's footer, minus its last clause: the phone now has DELETE on the
@@ -50,7 +51,7 @@ export function GalleryScreen(): JSX.Element {
   const safety = useSafety();
   const bp = useBreakpoint();
   const canControl = useCanControlMount();
-  const { cards, loading, error, thumbs, refresh } = useSessionCards();
+  const { cards, unreadable, loading, error, thumbs, refresh } = useSessionCards();
 
   const [nights, setNights] = useState<GalleryNightsResponse | null>(null);
   const [stackUrl, setStackUrl] = useState<string | null>(null);
@@ -73,11 +74,14 @@ export function GalleryScreen(): JSX.Element {
     return () => { alive = false; };
   }, [seq.state, seq.session?.id]);
 
+  // THE COUNT IS THE GRID'S: an unreadable file's card is on the shelf (#242),
+  // so it is counted, the same fold as the GALLERY chip (`galleryCountFrom`).
+  const shelf = cards.length + unreadable.length;
   const summary = useMemo(() => {
     const bytes = (nights?.nights ?? []).reduce((a, n) => a + n.bytes, 0);
     const partial = nights?.truncated ? " (partial)" : "";
-    return `${cards.length} session${cards.length === 1 ? "" : "s"} · ${fmtBytes(bytes)} on the rig${partial}`;
-  }, [cards.length, nights]);
+    return `${shelf} session${shelf === 1 ? "" : "s"} · ${fmtBytes(bytes)} on the rig${partial}`;
+  }, [shelf, nights]);
 
   const liveId = seq.session?.id ?? null;
 
@@ -92,9 +96,9 @@ export function GalleryScreen(): JSX.Element {
 
       {error && <Mono size={10.5} tone="bad">{error}</Mono>}
 
-      {loading && cards.length === 0 ? (
+      {loading && shelf === 0 ? (
         <Mono size={10.5} tone="dim">Reading the rig&apos;s sessions…</Mono>
-      ) : cards.length === 0 ? (
+      ) : shelf === 0 ? (
         <EmptyCard
           title="NOTHING ON THE RIG YET"
           hint="A session appears here as soon as a run writes its first frame."
@@ -113,6 +117,16 @@ export function GalleryScreen(): JSX.Element {
               monitorConnected={!!safety?.connected}
               plan={plan}
               onChanged={() => { refresh(); setDl(readDownloaded()); }}
+            />
+          ))}
+          {/* After the sessions, as the flow library lists its unreadable
+              files after its cards (#153): read-only, with DELETE. */}
+          {unreadable.map((u) => (
+            <UnreadableSessionCard
+              key={u.key}
+              card={u}
+              canControl={canControl}
+              onChanged={refresh}
             />
           ))}
         </div>

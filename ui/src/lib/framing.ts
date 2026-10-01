@@ -1,7 +1,9 @@
 // Framing math — the client mirror of `server/astrodeck/catalog/framing.py`.
 // Pure functions, NO React. Used for the zero-latency live FOV/mosaic overlay
-// while the user drags; "Send to Plan" always re-runs the server so the slew
-// targets are byte-identical to the preview (design spec §1, §5).
+// while the user drags. Nothing here is ever slewed to: a mosaic reaches a
+// night as one TARGET block through Send to Flow Wizard (#196), and the
+// server lays its panels out with framing.py at every compile, so this mirror
+// only draws (design spec §1, §5).
 //
 // ── J2000 INVARIANT (spec §9, critique C2-#7) ──────────────────────────────
 // Every coordinate here is J2000 / ICRS. The curated catalog is J2000, the
@@ -23,6 +25,22 @@ const RAD = 180 / Math.PI;
  *  the inverse projection returns (ra0,dec0) verbatim — never divides by ρ and
  *  never ships NaN to the mount on the common "open on target, hit Send" path. */
 export const RHO_EPS = 1e-12;
+
+/** THE overlap a new framing starts from, as a fraction: server
+ *  `framing.DEFAULT_OVERLAP`, mirrored (spec 2026-09-23 flows mosaic, 2.4:
+ *  "one server constant"). There were three: `store.openFraming` seeded 0.25,
+ *  the Sky's FRAME mode re-set every session to 0.15 so that its copy
+ *  ("Panels overlap 15%") and its pitch agreed, and the Target modal read a
+ *  missing overlap as 25%. A Sky framing sent to the wizard then arrived at
+ *  15% while the same object framed in the Atlas arrived at 25%, and nothing
+ *  said which one the engine would be asked for. Every reader imports this
+ *  one: the store's seed, the Sky hub's resets and its panel pitch
+ *  (`next/hubs/sky/frame/mosaic.ts`), the Settings mosaic pitch
+ *  (`next/lib/fov.ts`) and the modal's missing-key reading
+ *  (`framingModel.layoutOf`). `server/tests/test_overlap_constant_one.py`
+ *  reads THIS line and holds it to the server's constant, so the line keeps
+ *  its shape: `export const DEFAULT_OVERLAP = <number>;`. */
+export const DEFAULT_OVERLAP = 0.25;
 
 export interface FovFromOptics {
   fov_x_deg: number;

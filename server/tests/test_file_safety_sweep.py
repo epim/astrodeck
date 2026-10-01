@@ -11,6 +11,8 @@ whether a failure here is a regression or a deliberate change.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -23,7 +25,75 @@ from astrodeck.auth.capabilities import CAP_CONFIG_BACKEND, CAP_VIEW_STATUS
 from astrodeck.calibration.keys import CalKey, key_index_id
 from astrodeck.auth import reset_active_provider
 from astrodeck.config import AuthConfig, ConfigStore
-from astrodeck.persist import safe_id_path
+from astrodeck.persist import path_key, safe_id_path
+
+
+def test_the_two_windows_spellings_of_one_directory_are_the_same_directory(tmp_path):
+    r"""THE CAUSE of #113, reproduced as a unit.
+
+    `ntpath.realpath` gets its answer from `_getfinalpathname`, which always
+    returns the extended-length `\\?\` form, and strips that prefix only if
+    re-resolving the stripped path yields the same final path. When that
+    verification call fails - a concurrent create, delete or share-lock on the
+    directory will do it, and twelve xdist workers on one temporary tree
+    provide - the prefix is kept. `safe_id_path` then compared
+
+        C:\...\sessions          the file's parent, resolved non-strictly
+        \\?\C:\...\sessions      the base, resolved through _getfinalpathname
+
+    and refused a clean hex id, crashing whatever run was starting. Roughly one
+    full-suite run in seven.
+
+    MUTATION: `path_key` returns `os.path.normcase(os.fspath(p))`, i.e. keeps
+    the prefix. Observed: the two keys differ and this fails - which is the
+    comparison the shipped code used to make.
+    """
+    plain = tmp_path / "sessions"
+    plain.mkdir()
+    extended = Path("\\\\?\\" + str(plain))
+    assert path_key(extended) == path_key(plain), (
+        f"the same directory spelled two ways is not one key: "
+        f"{path_key(extended)} vs {path_key(plain)}")
+    # And case, the other way two resolutions of one directory can differ on a
+    # filesystem that does not care about it. Windows only: on a POSIX runner
+    # /TMP and /tmp are two different directories, and path_key rightly keeps
+    # them apart (the CI run of 2026-10-01 failed on exactly this line).
+    if os.name == "nt":
+        assert path_key(Path(str(plain).upper())) == path_key(plain)
+
+
+def test_the_seam_survives_resolve_returning_the_two_spellings(tmp_path, monkeypatch):
+    r"""#113 at the seam that broke, induced rather than waited for.
+
+    Passing an extended-form base does NOT reproduce it - `resolve()`
+    normalises the prefix away on both sides, so the two agree with or without
+    `path_key`, and a case written that way passes against the broken code.
+    (It was, and it did; that is why this one patches instead.)
+
+    The real condition is `resolve()` ITSELF returning different spellings for
+    the two calls, which is transient and is what made this one run in seven.
+    The asymmetry is which call had an existing path: the directory goes
+    through `_getfinalpathname` and can keep the prefix, the not-yet-existing
+    file takes realpath's non-strict fallback and comes back stripped. So:
+    patch `Path.resolve` to add the prefix for a directory and leave a
+    non-directory alone, which is exactly the pair the rig printed.
+
+    MUTATION: compare `resolved.parent != parent` directly, without
+    `path_key`. Observed: KeyError on a plain hex id - the reported bug, on
+    demand rather than one full-suite run in seven.
+    """
+    base = tmp_path / "sessions"
+    base.mkdir()
+    real_resolve = Path.resolve
+
+    def resolve_directories_the_long_way(self, *args, **kwargs):
+        out = real_resolve(self, *args, **kwargs)
+        return Path("\\\\?\\" + str(out)) if out.is_dir() else out
+
+    monkeypatch.setattr(Path, "resolve", resolve_directories_the_long_way)
+    ident = "9101b65822a941a68d3cf302e4868f7a"
+    out = safe_id_path(base, ident)
+    assert out.name == f"{ident}.json"
 
 
 # ------------------------------------------------- the write primitive (blocker)
@@ -40,6 +110,73 @@ HOSTILE_FILTERS = [
     "a/b",
     "..",
 ]
+
+
+def test_the_containment_backstop_says_what_it_compared(tmp_path, bus_lines):
+    """`safe_id_path`'s LAST check refused with a bare KeyError (issue #113).
+
+    Everything before it is a string test on the id, so a refusal there needs no
+    explanation - the id names the problem. The final check is different: it
+    compares two RESOLVED paths, and it is reached only by an id that already
+    looked like a plain filename. When it fires, the interesting facts are the
+    two paths, and neither was recorded anywhere.
+
+    That cost a real diagnosis. `test_calibration_frames_are_weather_gated`
+    failed once in seven full-suite runs with `KeyError` on a clean 32-character
+    hex session id, raised out of `engine.start()`; it was read as a weather-gate
+    defect and took a six-run hunt to place. What it actually is, is this branch.
+
+    The escape here is a real one, which is what the branch is for: a junction
+    inside the store pointing outside it. `mklink /J` needs no privilege, unlike
+    a file symlink, so this runs as an ordinary user.
+
+    MUTATION: delete the `bus.log` call. Observed: the KeyError is still raised
+    and every other assertion here still passes, which is exactly the state this
+    case is about - the refusal happens and says nothing.
+    """
+    if os.name != "nt":
+        pytest.skip("the junction trick is Windows; the branch itself is not")
+    base = tmp_path / "store"
+    outside = tmp_path / "elsewhere"
+    base.mkdir()
+    outside.mkdir()
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(base / "link"), str(outside)],
+                   check=True, capture_output=True, text=True)
+
+    # A plain filename - no separator, no drive, no dot-ref - so every check
+    # ahead of the backstop passes it through.
+    with pytest.raises(KeyError) as excinfo:
+        safe_id_path(base, "link", suffix="")
+
+    assert excinfo.value.args == ("link",), (
+        "the exception's argument stopped being the id; routes put that in a "
+        "404 body, and a filesystem path does not belong there")
+    warnings = [m for level, m, _ in bus_lines if level == "warning"
+                and "safe_id_path" in m]
+    assert warnings, (
+        f"the containment backstop refused and logged nothing: {bus_lines}")
+    said = warnings[0]
+    assert str(outside.resolve()) in said and str(base.resolve()) in said, (
+        f"the log does not name both paths it compared: {said}")
+    assert "not on the id" in said, (
+        "the log does not say the id was fine, which is the thing a reader of "
+        f"a bare KeyError gets wrong: {said}")
+
+    # AND on the exception, as a PEP 678 note. The bus log reaches the run log;
+    # a pytest traceback shows neither that nor the frame's locals, so the first
+    # reproduction WITH the log in place still printed only `KeyError: <hex>`
+    # and told the next reader nothing. Notes are printed by the traceback
+    # formatter and are not part of `args`.
+    #
+    # MUTATION: delete the `add_note` call. Observed: the bus assertions above
+    # still pass and this one fails, which is the gap that reproduction found.
+    notes = getattr(excinfo.value, "__notes__", [])
+    assert notes, (
+        "the refusal carries no note, so a traceback shows only the id - the "
+        "one thing that was not the problem")
+    note = "; ".join(notes)
+    assert str(outside.resolve()) in note and str(base.resolve()) in note, (
+        f"the note does not name both paths it compared: {note}")
 
 
 @pytest.mark.parametrize("hostile", HOSTILE_FILTERS)

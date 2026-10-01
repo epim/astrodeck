@@ -48,11 +48,11 @@ import {
 } from "../../../../lib/photometry";
 import { formatScheduleStatus } from "../../../../lib/scheduleStatus";
 import {
-  defaultSchedule, useAtlasBannerPending, usePhotometry, usePreview, useSeq, useSite, useStore,
+  defaultSchedule, usePhotometry, usePreview, useSeq, useSite, useStore,
 } from "../../../../store";
 import type { Schedule, SequencePlan, Target } from "../../../../types";
 import { explainLock } from "../../../shell/explain";
-import { ActionButton, BannerCard, LockNote, Mono } from "../../../ui";
+import { ActionButton, LockNote, Mono } from "../../../ui";
 
 // ---------------------------------------------------------------------------
 // COMPOSITION BLOCK - the three sections T-R7-6 owns. This task never creates a
@@ -146,8 +146,6 @@ export function PlanEditorBody(): JSX.Element {
   const setPlan = useStore((s) => s.setPlan);
   const seq = useSeq();
   const site = useSite();
-  const atlasBannerPending = useAtlasBannerPending();
-  const dismissAtlasBanner = useStore((s) => s.dismissAtlasBanner);
   const photometry = usePhotometry();
   const livePreview = usePreview();
 
@@ -212,17 +210,9 @@ export function PlanEditorBody(): JSX.Element {
 
   return (
     <div className="nx-plan" data-testid="plan-editor-body">
-      {/* One-shot hand-off banner: N panels arrived from the Sky hub. */}
-      {atlasBannerPending != null && (
-        <BannerCard
-          tone="good"
-          text={`${atlasBannerPending} ${atlasBannerPending === 1 ? "target" : "panels"} `
-            + "added from the Sky hub"}
-          onDismiss={dismissAtlasBanner}
-          data-testid="plan-atlas-banner"
-        />
-      )}
-
+      {/* The Sky hub's hand-off banner ("N panels added from the Sky hub")
+          was here. Nothing has queued panels into the Plan since S6 (#196):
+          both framing doors open Send to Flow Wizard. */}
       <PlanRunHeader
         plan={plan}
         recoverable={rec}

@@ -128,6 +128,15 @@ export function useTargetsModel(): TargetsModel {
   const lon = site?.longitude ?? 0;
   const horizonMinDeg = site?.horizon_min_deg ?? 0;
   const siteKey = `${site?.name ?? ""}:${lat}:${lon}`;
+  // WHERE THE SKY CAN BE PLACED - the finder's own rule (`finder/model.ts`
+  // `haveCoords`, #503). `?? 0` above is a placeholder, and so are a DEFAULT
+  // site's coordinates: numbers, 0 N 0 E, that belong to nobody. The server
+  // withholds its alt/az from a default site, so the planets arrived unplaced
+  // and this sheet placed them at the placeholder itself - and counted the ones
+  // that happened to be up there in its "N SUGGESTED TARGETS" title, which is
+  // the number the status row's pill opens this sheet with.
+  const haveCoords = typeof site?.latitude === "number" && typeof site?.longitude === "number"
+    && site.is_default !== true;
 
   const [attempt, setAttempt] = useState(0);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -304,7 +313,10 @@ export function useTargetsModel(): TargetsModel {
     const nowSec = nowMs / 1000;
     const lst = lstHours(lon, nowSec);
     const cloudById = new Map<string, number | null>();
-    const scored = merged.map((m) => {
+    // With no coordinates, only the rows the SERVER placed (its own alt/az)
+    // can be drawn and counted, exactly as on the finder.
+    const placeable = haveCoords ? merged : merged.filter((m) => m.altHint != null && m.azHint != null);
+    const scored = placeable.map((m) => {
       const here = m.altHint != null && m.azHint != null
         ? { altDeg: m.altHint, azDeg: m.azHint }
         : altAzOf(m.ra_hours, m.dec_deg, lat, lon, nowSec);
@@ -312,9 +324,11 @@ export function useTargetsModel(): TargetsModel {
       const cloudPct = cloudPctAt(tiles, here.altDeg, here.azDeg) ?? hourlyCloud;
       cloudById.set(m.id, cloudPct);
       const dec = decorate(cloudPct, obstructed);
-      const winMin = minutesAboveFloor(
-        walkTrack(m.dec_deg * D2R, (lst - m.ra_hours) * 15 * D2R, trackCtx),
-      );
+      // The walk needs the site's latitude and sidereal time: without them the
+      // window is null, never one walked at the placeholder (#508).
+      const winMin = haveCoords
+        ? minutesAboveFloor(walkTrack(m.dec_deg * D2R, (lst - m.ra_hours) * 15 * D2R, trackCtx))
+        : null;
       const transitLabel = m.transitUnix == null
         ? "-"
         : m.transitUnix * 1000 < nowMs
@@ -340,7 +354,7 @@ export function useTargetsModel(): TargetsModel {
         // ReachInput. An ABSENT reading must not score against a target:
         // penalising an unknown cloud would rank an object down for a
         // measurement nobody took.
-        minutesAboveFloorToDawn: winMin,
+        minutesAboveFloorToDawn: winMin ?? 0,
         cloudPct: cloudPct ?? 0,
         moonSepDeg: m.moonSepDeg ?? 90,
       };
@@ -366,7 +380,7 @@ export function useTargetsModel(): TargetsModel {
       moonSepDeg: r.moonSepDeg,
       difficulty: r.difficulty,
     }));
-  }, [tonight.rows, bodies, nowMs, lat, lon, trackCtx, tiles, hourlyCloud, wheel]);
+  }, [tonight.rows, bodies, nowMs, lat, lon, haveCoords, trackCtx, tiles, hourlyCloud, wheel]);
 
   const rows = useMemo(
     () => all.filter((t) => lens[t.kind] !== false && !(floorOnly && t.altNow < FLOOR_DEG)),

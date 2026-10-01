@@ -30,7 +30,7 @@ import type { JSX } from "react";
 import { NxIcon } from "../icons";
 import { useStore } from "../../store";
 import { nav, type HubId, type Route } from "../router";
-import { HUB_META, HUB_ORDER } from "../hubs";
+import { HUB_META, useVisibleHubs } from "../hubs";
 import { useSessionDot } from "../hubs/session/crossHub";
 import { rememberedWeatherSub } from "./subContext";
 
@@ -55,10 +55,14 @@ export function TabBar({ route, nowMs }: { route: Route; nowMs: number }): JSX.E
   // Session hub itself: the tab you are looking at does not need to be told.
   const dot = useSessionDot(nowMs);
   const unseenError = useStore((s) => s.unseenError);
+  // No `view.weather`, no WEATHER tab (owner's ruling, 2026-09-22). The radar
+  // and satellite tiles are centred on the site, so a panel that exists and
+  // explains its own emptiness still says there is a place to look at.
+  const hubs = useVisibleHubs();
 
   return (
     <nav className="nx-tabbar" aria-label="Hubs" data-testid="tabbar">
-      {HUB_ORDER.map((id: HubId) => {
+      {hubs.map((id: HubId) => {
         const meta = HUB_META[id];
         const active = route.hub === id;
         const alert = id === "session" && dot != null;

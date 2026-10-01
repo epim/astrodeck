@@ -35,7 +35,7 @@
 //
 // Every function is PURE: graph in, new graph out, nothing mutated, no fetch.
 
-import { NODE_DEFS } from "../../../../components/flows/nodeDefs";
+import { NODE_DEFS, createParams } from "../../../../components/flows/nodeDefs";
 import type {
   FlowEdgeRec, FlowGraphRec, FlowNodeRec, FlowNodeType,
 } from "../../../../components/flows/flowsTypes";
@@ -58,11 +58,15 @@ function mintEdgeId(g: FlowGraphRec, tag: string): string {
   return id;
 }
 
-/** The node vocabulary's own defaults for a type, copied so the caller's edits
- *  cannot reach back into `NODE_DEFS`. This is where the U+2212 window string
- *  comes from (trap 3). */
+/** The params a node this sheet ADDS is created with (`createParams`: the
+ *  vocabulary's defaults with its "Created as" column over them), a fresh copy
+ *  so the caller's edits cannot reach back into `NODE_DEFS`. This is where the
+ *  U+2212 window string comes from (trap 3). A created POOL counts accepted
+ *  subs (mosaic S3, Revision 2 ruling 2); until the integration of S3 this
+ *  read the MISSING-KEY defaults, which count every sub taken, and only the
+ *  save's switch made the pool it adds count accepted subs. */
 function defaultParams(type: FlowNodeType): Record<string, string | number> {
-  return { ...NODE_DEFS[type].params };
+  return createParams(type);
 }
 
 function firstFlowOut(type: FlowNodeType): string | null {
@@ -175,12 +179,14 @@ export function withDarksAfter(g: FlowGraphRec): FlowGraphRec {
  * the flow it generated commanded a different one.
  *
  * A DIFFERENT one, not none. `wizard.quick` leaves the TARGET node's SHIPPED
- * default in place (`nodes.py:117` `"rotation": 23.4`) and only replaces `name`,
- * `ra` and `dec`; `compile.py:185` then reads that 23.4 as a real angle and
- * `to_plan.py:815-820` passes it through as `rotation_deg`, which is the ONE
- * trigger for `hub.goto_and_center`'s `rotate_to_pa`. Every quick flow was
- * therefore asking a connected rotator for PA 23.4 - a fixture value, on the
- * sky, with nothing on any screen saying so.
+ * default in place and only replaces `name`, `ra` and `dec`, and until #150 that
+ * default was `"rotation": 23.4` (`nodes.py`'s TARGET entry). `compile.py:185`
+ * then read that 23.4 as a real angle and `to_plan.py:815-820` passed it through
+ * as `rotation_deg`, which is the ONE trigger for `hub.goto_and_center`'s
+ * `rotate_to_pa`. Every quick flow was therefore asking a connected rotator for
+ * PA 23.4 - a fixture value, on the sky, with nothing on any screen saying so.
+ * The shipped default is -1 now; this edit still writes the angle explicitly,
+ * because a rig on an older server still ships 23.4.
  *
  * `deg === null` writes -1, which `to_plan` reads as "no angle constraint"
  * (its own comment says so, and it is explicit that 0 is a REAL position angle

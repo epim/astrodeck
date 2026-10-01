@@ -51,6 +51,46 @@ def client(tmp_path, monkeypatch):
                 pass
 
 
+@pytest.fixture
+def paced_slews(monkeypatch):
+    """Real sim pacing for a test that needs a slew or a roof close IN FLIGHT.
+
+    The roof and slew tests below measure a lane while its operation runs, so
+    the operation must last longer than the next request. A goto's sim slew
+    and the close's park (itself a slew) were the operations that lasted:
+    every sim slew takes at least 0.5 s. #207 (mosaic slice H1, task T10)
+    routed the sim slew's and the rotator's dwell through ``_sim_delay``, which
+    conftest's ``ASTRODECK_FAST_TEST`` collapses to zero suite-wide, so a slew
+    now finishes before the next request reads the lane, and a close lasts
+    only its 20 ms of shutter travel. The precondition then fails, or the
+    assertion after it passes or fails by scheduling. Restored here exactly as
+    the polar tests above restore it; the values the sim computes are the same
+    either way, only the waiting differs (tests/test_sim_pacing.py).
+
+    Without this fixture, on the #207 sim, observed verbatim (-n0):
+
+        test_close_still_supersedes_an_inflight_slew
+        E       AssertionError: precondition: a slew is in flight
+        E       assert 'goto' in []
+
+        test_same_lane_409_carries_a_code
+        E       AssertionError: {"started":"goto"}
+        E       assert 200 == 409
+
+        test_a_closing_roof_blocks_a_restart_exactly_as_a_slew_does
+        E       AssertionError: assert None == 'slewing'
+
+        test_a_slew_is_refused_while_the_roof_is_closing, 2 runs in 5
+        E       AssertionError: assert 200 == 409
+        E        +    where <Response [200 OK]> = post('/api/mount/park')
+
+    ``test_close_runs_in_the_dome_lane_not_the_mount_s`` passed 5 runs in 5
+    alone, but its precondition then rests on those 20 ms, so it takes the
+    fixture as well.
+    """
+    monkeypatch.delenv("ASTRODECK_FAST_TEST", raising=False)
+
+
 def _lanes(c) -> list[str]:
     return c.get("/api/status").json().get("busy_lanes", [])
 
@@ -101,7 +141,7 @@ def test_polar_second_start_409s_with_a_code(client, monkeypatch):
 
 # -------------------------------------------------------------------- dome
 
-def test_close_runs_in_the_dome_lane_not_the_mount_s(client):
+def test_close_runs_in_the_dome_lane_not_the_mount_s(client, paced_slews):
     assert client.post("/api/connect/sim").status_code == 200
     r = client.post("/api/dome/close")
     assert r.status_code == 200, r.text
@@ -119,7 +159,8 @@ def test_close_runs_in_the_dome_lane_not_the_mount_s(client):
                  == "closed", client), client.get("/api/dome/state").json()
 
 
-def test_a_closing_roof_blocks_a_restart_exactly_as_a_slew_does(client):
+def test_a_closing_roof_blocks_a_restart_exactly_as_a_slew_does(client,
+                                                               paced_slews):
     """The half the lane split DID drop, measured on a sim rig by the reviewer.
 
     ``goto`` was buying the roof two things, and only the mutual exclusion was
@@ -362,7 +403,8 @@ async def test_motion_with_no_lane_still_blocks_a_restart():
     assert h.restart_blocker is None, "and the block lifts with the lock"
 
 
-def test_a_slew_is_refused_while_the_roof_is_closing(client, bus_lines):
+def test_a_slew_is_refused_while_the_roof_is_closing(client, bus_lines,
+                                                     paced_slews):
     """The half a plain rename would have silently dropped."""
     assert client.post("/api/connect/sim").status_code == 200
     assert client.post("/api/dome/close").status_code == 200
@@ -419,7 +461,8 @@ def test_a_slew_is_refused_while_the_roof_is_closing(client, bus_lines):
                  == "closed", client), client.get("/api/dome/state").json()
 
 
-def test_close_still_supersedes_an_inflight_slew(client, bus_lines):
+def test_close_still_supersedes_an_inflight_slew(client, bus_lines,
+                                                 paced_slews):
     """The other half: a roof close is a safety action and must beat a slew.
 
     Asserted on the CANCELLATION, not on the lane going quiet: the route bumps
@@ -457,7 +500,7 @@ def test_second_close_supersedes_the_first(client):
 
 # ------------------------------------------------------------ 409 structure
 
-def test_same_lane_409_carries_a_code(client):
+def test_same_lane_409_carries_a_code(client, paced_slews):
     assert client.post("/api/connect/sim").status_code == 200
     g = client.post("/api/mount/goto",
                     json={"ra_hours": 2.0, "dec_deg": 80.0, "center": False})

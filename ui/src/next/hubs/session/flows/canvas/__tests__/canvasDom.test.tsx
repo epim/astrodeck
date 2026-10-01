@@ -123,8 +123,12 @@ const { FlowCanvasSurface } = await import("../FlowCanvasSurface");
 const { FlowCanvasToolbar } = await import("../FlowCanvasToolbar");
 const { FlowStagesPhoneSheet } = await import("../FlowStagesPhoneSheet");
 const { flowCanvasSheets } = await import("../sheets");
+// The empty log's two sentences, as the #/next strip states them (#529);
+// canvasModel's own IDLE_LOG_TEXT is no longer drawn. phoneReadouts.test.tsx
+// case 8 holds them to the classic strip's words.
+const { EMPTY_LOG_TEXT, RUN_EMPTY_LOG_TEXT } = await import("../FlowLogStrip");
 const {
-  ADD_STAGE_LABEL, CHECKS_DRAFT_PREFIX, IDLE_LOG_TEXT, RUN_UNSAVED_REASON,
+  ADD_STAGE_LABEL, CHECKS_DRAFT_PREFIX, RUN_UNSAVED_REASON,
   SAVE_CLEAN_REASON, SAVE_READONLY_REASON, SAVE_STATE_CLEAN, SAVE_STATE_DIRTY,
   SAVE_STATE_READONLY, resolveWireDrop,
   MARK_LOST, MARK_PARTIAL, MARK_RIG, RIG_VALUE_PREFIX,
@@ -132,6 +136,9 @@ const {
 const { clearMountedFlowCanvas, flowCanvasDropPoint, setMountedFlowCanvas } =
   await import("../canvasMount");
 const { resetRouterCacheForTests } = await import("../../../../../router");
+const { FlowPaletteRail } = await import("../../inspector/FlowPaletteRail");
+const { FlowPalette } = await import("../../../../../../components/flows/FlowPalette");
+const { createParams } = await import("../../../../../../components/flows/nodeDefs");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -159,6 +166,11 @@ const settle = async (): Promise<void> => {
 };
 const tid = (t: string): any => container.querySelector(`[data-testid="${t}"]`);
 const all = (sel: string): any[] => [...container.querySelectorAll(sel)];
+/** The log strip's collapsed message, never the whole bar: the bar reads
+ *  "LOG" and the message with no space between, where `\bIdle\b` finds no
+ *  word boundary (#529). */
+const logBar = (): string =>
+  String(container.querySelector('[data-testid="flow-log-toggle"] .nx-flow-log-last')?.textContent ?? "");
 const click = (el: any): void => {
   act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
 };
@@ -225,6 +237,9 @@ function seed(role: string, caps: string[], flows: Record<string, unknown> = {})
         dirty: false,
         sel: null, editNode: null, wire: null, tapWire: null,
         statuses: {}, logs: [], compiled: null,
+        // No session unless a case gives one, so the dormant-session arm
+        // case (section 5) cannot leave CONTINUE on a later case's RUN.
+        progress: null, sessionIds: [],
         pan: { x: 20, y: 10 }, zoom: 0.5,
         run: { ...s.flows.run, phase: "idle", etaS: null },
         ui: { ...s.flows.ui, notesOpen: false, logOpen: false },
@@ -252,12 +267,40 @@ test("precondition: the canvas rendered the seeded graph, stages and wires", () 
   assert(/DUSK WINDOW/.test(container.textContent), "the stage card carries the vocabulary's own label");
   assert(tid("flow-zoom") != null, "the zoom cluster is missing");
   assert(tid("flow-log") != null, "the log strip is missing");
-  assert(container.textContent.includes(IDLE_LOG_TEXT),
-    `an empty ring must say so with a hyphen, got "${String(container.textContent).slice(0, 200)}"`);
+  // No run of this flow is live here, so the empty ring says there are no
+  // events yet (the live sentence is phoneReadouts.test.tsx case 8's).
+  eq(logBar(), EMPTY_LOG_TEXT, "an empty ring outside a run");
+  assert(!logBar().includes(RUN_EMPTY_LOG_TEXT), "the live sentence outside a run");
 });
 
-test("the log's idle sentence carries a hyphen, not an em-dash (defect 4)", () => {
-  assert(!/Idle\s*—/.test(container.textContent), "the em-dash came back into IDLE_LOG_TEXT");
+// Each mutant below was run in the private copy scratchpad H4-ULOG-mut, from
+// a byte backup of the mutated file restored and SHA-256 compared.
+// MUTANT "Idle kept, em-dash and all" (canvas/FlowLogStrip.tsx's bar
+// printing the legacy "Idle — no events yet" in place of
+// `emptyLogText(live)`). Observed, canvasDom.test 34/36:
+//   x precondition: the canvas rendered the seeded graph, stages and wires: an empty ring outside a run
+//   expected no events yet
+//   got      Idle — no events yet
+//   x the log's empty sentence carries no em-dash (defect 4) and no Idle (#529): the em-dash came back into the empty log: "Idle — no events yet"
+// MUTANT "Idle kept on the #/next strip" (canvas/FlowLogStrip.tsx printing
+// "Idle - no events yet" in place of `emptyLogText(live)`, the hyphen the
+// #/next copy rule asks for, so only the Idle check below can see it; the
+// mutant "Idle kept (the #/next rule)", on `emptyLogText` itself, fails the
+// same two lines). Observed, canvasDom.test 34/36:
+//   x precondition: the canvas rendered the seeded graph, stages and wires: an empty ring outside a run
+//   expected no events yet
+//   got      Idle - no events yet
+//   x the log's empty sentence carries no em-dash (defect 4) and no Idle (#529): the empty log says Idle, the STATE readout's word: "Idle - no events yet"
+// MUTANT "live copy shown outside a run (the #/next rule)"
+// (canvas/FlowLogStrip.tsx `emptyLogText` answering the run sentence
+// whatever it is handed). Observed, canvasDom.test 35/36:
+//   x precondition: the canvas rendered the seeded graph, stages and wires: an empty ring outside a run
+//   expected no events yet
+//   got      no log lines: the server publishes none for a flow run
+test("the log's empty sentence carries no em-dash (defect 4) and no Idle (#529)", () => {
+  const bar = logBar();
+  assert(!bar.includes("—"), `the em-dash came back into the empty log: "${bar}"`);
+  assert(!/\bIdle\b/i.test(bar), `the empty log says Idle, the STATE readout's word: "${bar}"`);
 });
 
 test("every wire anchor came from the shared geometry, so a wire ends on its dot", () => {
@@ -317,8 +360,9 @@ test("an EVENT output dropped on a flow input is refused, with the sentence and 
   hitTarget = null;
 
   const after = useStore.getState().flows.graph.edges;
-  // The count alone is not enough: inputs are single-occupancy, so a wrongly
-  // accepted drop would REPLACE the incumbent edge and leave the total the same.
+  // The count alone is not enough: a FLOW input is single-occupancy (an event
+  // input fans in, #152), and n3.run is a flow input that e2 already feeds, so
+  // a wrongly accepted drop would REPLACE e2 and leave the total the same.
   assert(!after.some((e: any) => e.from === "n1" && e.fromPort === "nightend"),
     "the event output was wired into a flow input");
   eq(after.length, before, "a refused drop must leave the graph exactly as it was");
@@ -440,6 +484,12 @@ test("the validation pill says NOT CHECKED before the checker has answered", () 
 
 // ================================== 5. RUN is armed, STOP is a single tap
 
+// Since #474 both #/next RUN buttons take their arm from one helper,
+// `runArm`, which gives STOP none.
+// MUTANT "STOP armed" (S7, scratchpad S7-URUN-mut; FlowCanvasToolbar.tsx
+// `runArm`'s `if (copy.verb === "STOP") return undefined;` removed).
+// Observed, canvasDom.test 35/36:
+//   x RUN arms before it starts, and STOP never arms: STOP is armed - an emergency motion stop must never need a second tap
 await testAsync("RUN arms before it starts, and STOP never arms", async () => {
   seed("admin", ADMIN_CAPS);
   await mount(createElement(FlowCanvasToolbar as any));
@@ -469,6 +519,45 @@ await testAsync("RUN arms before it starts, and STOP never arms", async () => {
   eq(sent.length, posts + 1, "one tap on STOP must issue exactly one request");
   eq(sent[sent.length - 1].url, "/api/sequence/abort",
     "STOP is not a flows route - a flow run IS a sequence run");
+});
+
+// OVER A DORMANT SESSION THE ARM SAYS CONTINUE (#474). The label above reads
+// CONFIRM RUN because this flow has no session. With the progress route's
+// recorded answer (a dormant session of two observing nights, 194 of 480
+// subs; server/tests/fixtures/flow_progress_continue.json, read, never
+// copied) the button reads CONTINUE, and its arm must too, with the night and
+// the counts: the rule this section states, that the armed label says what a
+// second tap does, holds for the continue as well.
+//
+// MUTANT "fixed CONFIRM RUN" (S7, scratchpad S7-URUN-mut; FlowCanvasToolbar
+// .tsx `runArm` answering `{ label: "CONFIRM RUN" }` for every verb but STOP).
+// Observed, canvasDom.test 35/36:
+//   x over a dormant session RUN arms as CONFIRM CONTINUE, with the night and the counts: the armed label keeps the verb, the night and the counts
+//     expected CONFIRM CONTINUE (night 3, 194/480 subs)
+//     got      CONFIRM RUN
+// (phoneReadouts.test.tsx goes red under the same mutant, on both #/next
+// buttons.)
+await testAsync("over a dormant session RUN arms as CONFIRM CONTINUE, with the night and the counts", async () => {
+  const { readFileSync } = await import("node:fs");
+  const rel = "../../../../../../../../server/tests/fixtures/flow_progress_continue.json";
+  let progress: any;
+  try {
+    progress = JSON.parse(readFileSync(new URL(rel, import.meta.url), "utf8") as string).response;
+  } catch (e) {
+    throw new Error(`cannot read ${rel}, the recorded answer this case is graded against: ${(e as Error).message}`);
+  }
+  seed("admin", ADMIN_CAPS, { progress });
+  await mount(createElement(FlowCanvasToolbar as any));
+
+  const run = tid("flow-run");
+  assert(/^CONTINUE /.test(String(run.textContent)), `premise: RUN reads CONTINUE, got "${run.textContent}"`);
+  const before = asked.filter((a) => a.method === "POST").length;
+  click(run);
+  await settle();
+  eq(tid("flow-run").getAttribute("data-armed"), "true", "the first tap must arm, not continue");
+  eq(String(tid("flow-run").querySelector(".nx-btn-label")?.textContent),
+    "CONFIRM CONTINUE (night 3, 194/480 subs)", "the armed label keeps the verb, the night and the counts");
+  eq(asked.filter((a) => a.method === "POST").length, before, "the first tap on CONTINUE posted a run");
 });
 
 // ============================================== 6. the dead control is gone
@@ -1014,6 +1103,63 @@ await testAsync("the phone stage list uses the same words as the canvas", async 
   const rig = all('[data-testid="flow-stage-rig"]').map((el: any) => String(el.textContent));
   assert(rig.includes(`${RIG_VALUE_PREFIX}AstroDeck native`),
     `the phone row never names the rig's own guider, got ${JSON.stringify(rig)}`);
+});
+
+// ================================ a palette drop CREATES a node (spec 3.1)
+//
+// A TARGET dropped from a palette is a new block, written with the type's
+// "Created as" column (`createParams`): accepted subs only (Revision 2, ruling
+// 2), any angle, and no name or coordinates - never M31's, which is what the
+// missing-key defaults carry (#190's defect, by the palette's door). Both
+// editors' palettes are pressed: the #/next rail beside this canvas, and the
+// classic `components/flows/FlowPalette`, the rail the classic FlowEditor
+// docks. (The editor itself may not be imported under next/, by the R7 parity
+// rule; the palette's own add and the editor's `onPick` both call
+// `flowsAddNode` with nothing but a drop point.) A palette that grew its own
+// node builder would be caught here.
+//
+// MUTANT "params from def.params" (flowsSlice.ts flowsAddNode:
+// `createParams(type)` -> `{ ...NODE_DEFS[type].params }`). Observed
+// ("canvasDom.test: 34/35 passed"), the #/next rail first:
+//   x a TARGET dropped from either editor's palette is a created block, not M31: the #/next palette rail: counts "Every sub taken", angle undefined, name "M31 - Andromeda", ra "00h 42m 44s", dec "+41° 16′ 09″"
+// The first door's failure ends the case, so the same mutant was also run on
+// a scratch copy of this file with the two doors swapped. Observed:
+//   x a TARGET dropped from either editor's palette is a created block, not M31: the classic editor's palette: counts "Every sub taken", angle undefined, name "M31 - Andromeda", ra "00h 42m 44s", dec "+41° 16′ 09″"
+await testAsync("a TARGET dropped from either editor's palette is a created block, not M31", async () => {
+  const doors: [string, () => any, string][] = [
+    ["the #/next palette rail",
+     () => createElement(FlowPaletteRail as any, { variant: "rail" }),
+     '[data-testid="palette-type-target"]'],
+    ["the classic editor's palette",
+     () => createElement(FlowPalette as any, { variant: "rail" }),
+     '[data-palette-type="target"]'],
+  ];
+  // Desktop, where both editors dock their palette as a rail.
+  viewportW = 1440;
+  try {
+    for (const [door, render, sel] of doors) {
+      seed("admin", ADMIN_CAPS);
+      await mount(render());
+      const press = container.querySelector(sel);
+      assert(press != null, `${door}: no TARGET item to press - the fixture is wrong, not the drop`);
+      const before = new Set(useStore.getState().flows.graph.nodes.map((n: any) => n.id));
+      click(press);
+      await settle();
+      const added = useStore.getState().flows.graph.nodes.filter((n: any) => !before.has(n.id));
+      eq(added.length, 1, `${door}: one press must add exactly one stage`);
+      const p = added[0].params;
+      const want: Record<string, string | number> = {
+        counts: "Accepted subs", angle: "Any angle", rotation: -1, name: "", ra: "", dec: "",
+      };
+      const off = Object.keys(want).filter((k) => p[k] !== want[k]);
+      assert(off.length === 0,
+        `${door}: ${off.map((k) => `${k} ${JSON.stringify(p[k])}`).join(", ")}`);
+      eq(JSON.stringify(p), JSON.stringify(createParams("target")),
+        `${door}: the new block is not exactly createParams("target")`);
+    }
+  } finally {
+    viewportW = 820;
+  }
 });
 
 act(() => { root.unmount(); });

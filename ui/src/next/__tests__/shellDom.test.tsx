@@ -680,6 +680,95 @@ await testAsync("the high-cloud dialog says what the engine actually does with a
   await settle();
 });
 
+// ------------------------------------------- weather is hidden from a viewer
+// OWNER'S RULING, 2026-09-22: "it's ok for the admin to see things like the
+// site lat/long, or even operator. But not viewer roles... Similarly the radar
+// and other weather data may need to be obstructed from their view. If
+// necessary then make it so they cant see those panels at all, rather than
+// having the panels exist but empty."
+//
+// Before this the WEATHER tab rendered for every role. Tapping it as a viewer
+// gave a weather-shaped screen: the hub header, a WEATHER SETTINGS button the
+// role could not use, and a card explaining the emptiness. That is exactly the
+// "panels exist but empty" shape the ruling rejects.
+//
+// MUTATIONS RUN, and what each killed:
+//
+//   M1, `HUB_CAP = {}` so weather is visible to everyone again - the defect
+//   itself. The viewer-tab case and the deep-link case.
+//
+//   M2, `visibleHubs` returns nothing. Ten cases, including "an operator
+//   still gets it" and half the shell suite - a gate that hides everything
+//   passes the viewer case and is a far worse bug, which is why that control
+//   is here.
+//
+//   M3, drop the route guard and hide only the tab. ONLY the deep-link case,
+//   which is the case written for exactly that half.
+
+const VIEWER_CAPS = ["view.status", "view.preview"];
+
+async function asRole(role: string, caps: string[]): Promise<void> {
+  await act(async () => {
+    useStore.setState({
+      authMethods: { methods: [], first_run: false } as any,
+      principal: { role, email: null, caps } as any,
+      authGate: "open",
+    } as never);
+  });
+  await settle();
+}
+
+await testAsync("a viewer gets no WEATHER tab at all", async () => {
+  await asRole("viewer", VIEWER_CAPS);
+  assert(byId("tabbar") != null, "premise: the shell is up and not behind a gate");
+  eq(byId("tab-weather"), null,
+     "a viewer was offered the WEATHER tab; the radar tiles are centred on the "
+     + "site, so even an empty panel says there is a place to look at.");
+  // ...and the rest of the navigation is untouched. A gate that hid everything
+  // would pass the line above and be a far worse bug.
+  for (const id of ["sky", "session", "rig", "monitor", "settings"]) {
+    assert(byId(`tab-${id}`) != null, `the ${id} tab went with it`);
+  }
+});
+
+await testAsync("an operator still gets it", async () => {
+  await asRole("operator", [...VIEWER_CAPS, "view.weather", "view.site_derived",
+                            "control.capture", "control.guide", "control.mount"]);
+  assert(byId("tab-weather") != null,
+         "the WEATHER tab is gone for an operator, who the owner's ruling says "
+         + "may see it");
+});
+
+await testAsync("a viewer deep-linked to #/weather is moved off it", async () => {
+  // The hash is how this is actually reached: `rememberedWeatherSub()` sends a
+  // returning visitor straight back to the section they left, so a role that
+  // was demoted lands here without typing anything.
+  await asRole("operator", [...VIEWER_CAPS, "view.weather"]);
+  await act(async () => { win.location.hash = "#/weather/radar"; });
+  await settle();
+  assert(byId("hub-weather") != null, "premise: an operator reaches the hub");
+
+  await asRole("viewer", VIEWER_CAPS);
+  eq(byId("hub-weather"), null,
+     "a viewer stayed on the weather hub by hash. Hiding the tab while leaving "
+     + "the route working makes the deep link the only way in, which reads as a "
+     + "bug rather than a decision.");
+  assert(!/^#\/weather/.test(String(win.location.hash)),
+         `the hash still names the weather hub: ${String(win.location.hash)}`);
+  // Moved to a real hub, not to a blank screen.
+  assert(byId("tabbar") != null, "the shell went with it");
+});
+
+await testAsync("no weather request is issued for a viewer", async () => {
+  await asRole("viewer", VIEWER_CAPS);
+  asked.length = 0;
+  await act(async () => { win.location.hash = "#/weather"; });
+  await settle();
+  const weatherCalls = asked.filter((a) => /\/api\/weather/.test(a));
+  eq(weatherCalls.length, 0,
+     `a viewer's shell asked for weather anyway: ${weatherCalls.join(", ")}`);
+});
+
 // ---------------------------------------------------------------- the gate
 
 await testAsync("the login gate renders views/Login inside the new chrome", async () => {

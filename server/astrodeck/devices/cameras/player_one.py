@@ -17,7 +17,7 @@ from . import registry
 from .player_one_sdk import (
     PoaProperty, make_player_one, POA_EXPOSURE, POA_GAIN, POA_OFFSET,
     POA_TARGET_TEMP, POA_COOLER, POA_COOLER_POWER, POA_TEMPERATURE,
-    POA_HEATER_POWER, POA_RAW16,
+    POA_HEATER_POWER, POA_FAN_POWER, POA_RAW16,
 )
 
 __all__ = ["PlayerOneAdapter", "PoaProperty"]
@@ -60,6 +60,9 @@ class PlayerOneAdapter(CameraAdapter):
             bayer_pattern=p.bayer, gain_range=(0, self._gain_max),
             offset_range=(0, self._offset_max), bin_modes=tuple(range(1, p.max_bin + 1)),
             roi_supported=True, has_cooler=p.is_cooled, has_dew_heater=True,
+            # The fan cools the TEC's hot side, so a body with a cooler has one
+            # (config 21 on the Poseidon-M PRO, #22); an uncooled body does not.
+            has_fan_control=p.is_cooled,
             max_adu=65535, read_modes=self._modes,
             hcg_threshold_gain=HCG_THRESHOLD_GAIN,
             extra={"egain": self._egain} if self._egain else {})
@@ -203,6 +206,17 @@ class PlayerOneAdapter(CameraAdapter):
     def get_cooler_on(self) -> bool | None:
         try:
             return bool(self._sdk.get_config(self._cam_id, POA_COOLER))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def set_fan_power(self, power: int) -> None:
+        self._sdk.set_config(self._cam_id, POA_FAN_POWER, int(power))
+
+    def get_fan_power(self) -> int | None:
+        # Issue #22. Same c_long read-back as the heater, so the CAMERA is the
+        # source of truth; a refused read is unknown, not 0.
+        try:
+            return int(self._sdk.get_config(self._cam_id, POA_FAN_POWER))
         except Exception:  # noqa: BLE001
             return None
 

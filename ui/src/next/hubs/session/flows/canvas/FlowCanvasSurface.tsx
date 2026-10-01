@@ -36,6 +36,10 @@ import { useShallow } from "zustand/react/shallow";
 
 import { clampZoom, type FlowTier, type PortDir } from "../../../../../components/flows/geometry";
 import type { PortKind } from "../../../../../components/flows/flowsTypes";
+// A LOGIC module, like geometry above: the flow-loop rule both editors and
+// flowsConnect share, in the server's sentence. Re-deriving it here is how two
+// copies of a rule drift apart.
+import { flowLoopRefusal, type ProposedWire } from "../../../../../components/flows/flowLoop";
 import { useStore } from "../../../../../store";
 import { useBreakpoint } from "../../../../breakpoint";
 import { nav, parseHash } from "../../../../router";
@@ -163,6 +167,15 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
       portKind(useStore.getState().flows.graph.nodes, nodeId, portId, dir),
     [],
   );
+
+  /** The flow-loop check the drop resolver is handed (#149), read off the LIVE
+   *  graph at drop time, the way `kindOf` is. Closing over this render's
+   *  `nodes` and `edges` would put the graph in the window listeners'
+   *  dependency list and re-attach all five of them on every edit. */
+  const loopOf = useCallback((w: ProposedWire): string | null => {
+    const { nodes: ns, edges: es } = useStore.getState().flows.graph;
+    return flowLoopRefusal(ns, es, w);
+  }, []);
 
   // ------------------------------------------------- the one gesture exit
 
@@ -331,7 +344,7 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
       const wire = useStore.getState().flows.wire;
       if (!wire) return;
       const host = document.elementFromPoint?.(e.clientX, e.clientY)?.closest?.("[data-port]");
-      const res = resolveWireDrop(wire, host?.getAttribute("data-port") ?? null, kindOf);
+      const res = resolveWireDrop(wire, host?.getAttribute("data-port") ?? null, kindOf, loopOf);
       if (!res.ok && res.refusal) enqueueToast({ level: "warning", title: res.refusal });
       // One call either way: `flowsEndWire` clears the pending wire and connects
       // only when handed a target, so a refusal cannot leave a wire on screen.
@@ -358,7 +371,7 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
       window.removeEventListener("blur", onWinBlur);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [endGesture, endWire, enqueueToast, kindOf, moveNode, moveWire, setPan, setZoom, toWorld]);
+  }, [endGesture, endWire, enqueueToast, kindOf, loopOf, moveNode, moveWire, setPan, setZoom, toWorld]);
 
   // ------------------------------------------ wheel zoom, under the cursor
   // A REAL `{ passive: false }` listener. React registers `onWheel` as passive,

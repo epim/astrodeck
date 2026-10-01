@@ -19,6 +19,8 @@ Three things here are worth more than the coverage:
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -40,6 +42,17 @@ def client(tmp_path, monkeypatch):
     # and a carried-over singleton makes one test pass for the previous test's
     # reasons.
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
+    # CAPTURE_DIR too (#114). The doctor's capture-geometry check scans it LIVE,
+    # so unpinned these twelve compile calls walk the DEVELOPER'S real capture
+    # library. Measured here: 7.9 s pinned against 28 s unpinned on a checkout
+    # holding 5310 frames.
+    #
+    # No test in this file asserts on the warning that scan can raise, so this
+    # is hygiene rather than a fix -- unpinned it was slow, not red. That is
+    # worth stating plainly: the sibling pin in test_flows_quick.py DOES hold a
+    # failure shut, and conflating the two would leave the next reader thinking
+    # this file had been broken.
+    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(app_module, "flow_store", FlowStore(tmp_path / "flows"))
 
     app = app_module.create_app()
@@ -184,9 +197,10 @@ class TestFolders:
 
     @pytest.mark.parametrize("bad", ["../../../etc", "a/b/c/d/e/f", "", "x" * 300])
     def test_a_path_shaped_folder_name_is_refused(self, client, bad):
-        """``rename_folder`` uses ``model_copy``, which runs NO validators — so
-        the record's own folder rule never sees this and the string would be
-        persisted into every moved flow."""
+        """``rename_folder`` writes the name straight into each moved file's
+        raw JSON, which runs NO validators — so the record's own folder rule
+        never sees this and the string would be persisted into every moved
+        flow."""
         r = client.post("/api/flows/folders",
                         json={"name": "My flows", "new_name": bad})
         assert r.status_code == 422, r.text
@@ -207,9 +221,34 @@ class TestFolders:
 
 class TestCompile:
     def test_a_stored_flow_compiles_to_four_lists(self, client):
+        """The plan, the three lists of what is wrong, and since S4 the two
+        objects the Target modal's RUN section prints (``_compile_payload``'s
+        docstring, "SIX KEYS").
+
+        DELIBERATE PIN CHANGE (mosaic S4, #189, re-pinned by the S4
+        integration, #406): the answer gained ``readouts`` (spec 2.4 RUN, S4
+        item 1) and ``rig`` (the live field, the rotator and the measured
+        hop). The set is still pinned rather than read as a subset, so a key
+        that arrives or leaves without a decision goes red here.
+
+        Mutant "add an answer key without the docstring" (``"extra": 1``
+        added to the answer), observed in scratchpad/s4-integrate-q7m2:
+
+            E       AssertionError: assert {'extra', 'is...uctural', ...} == {'issues', 'p...', 'unmapped'}
+            E         Extra items in the left set:
+            E         'extra'
+
+        Mutant "the answer drops rig" (the ``"rig"`` key removed), in the
+        same copy:
+
+            E       AssertionError: assert {'issues', 'p...', 'unmapped'} == {'issues', 'p...', 'unmapped'}
+            E         Extra items in the right set:
+            E         'rig'
+        """
         fid = client.post("/api/flows", json={"flow": _flow()}).json()["id"]
         out = client.post(f"/api/flows/{fid}/compile").json()
-        assert set(out) == {"plan", "structural", "issues", "unmapped"}
+        assert set(out) == {"plan", "structural", "issues", "unmapped",
+                            "readouts", "rig"}
         assert out["plan"]["targets"][0]["name"] == "M31"
         assert out["structural"] == []
 
@@ -518,3 +557,181 @@ class TestRun:
                      if getattr(r, "path", "") == "/api/flows/{flow_id}/run")
         assert "SequenceEngine.start" in getattr(route.endpoint, REACHES_ATTR, set())
         assert CAP_CONTROL_MOUNT in getattr(route.endpoint, CAP_ATTR, set())
+
+
+def _mosaic_graph(**target) -> dict:
+    """GRAPH's lane as a 2x2 mosaic: a framed block at Rotate to PA 30 whose
+    FILTER CYCLE rotates the panels (the loop wire)."""
+    params = {"name": "M31", "ra": "00h 42m 44s", "dec": "+41 16 09",
+              "rotation": 30, "angle": "Rotate to PA", "rows": 2, "cols": 2,
+              "fovX": 2.0, "fovY": 1.33, **target}
+    return {
+        "nodes": [GRAPH["nodes"][0],
+                  {"id": "t", "type": "target", "x": 260, "y": 60,
+                   "params": params},
+                  {"id": "c", "type": "cycle", "x": 490, "y": 60,
+                   "params": {"plan": "L 60, R 60", "cycles": 2}}],
+        "edges": [GRAPH["edges"][0],
+                  {"from": "t", "fromPort": "target", "to": "c",
+                   "toPort": "run"},
+                  {"from": "c", "fromPort": "pass", "to": "t",
+                   "toPort": "next"}]}
+
+
+class TestAMosaicThroughTheRoutes:
+    """S3's compile path (spec 3.2, 3.3, 1.8) as the editor and Run meet it.
+    The unit cases are in test_flows_compile_entry_s3.py and
+    test_flows_to_plan_mosaic.py; these hold the two routes to them."""
+
+    def test_the_plan_tab_shows_one_block_and_no_loop_rule(self, client):
+        """One entry per block, with its grid, and the loop wire consumed:
+        no rule, and so no "will not run" loss for the one wire that works.
+
+        Mutant "emit it" (``compile.py`` no longer skips the loop wire),
+        observed:
+
+            AssertionError: assert [{'action': '...'cycle.pass'}] == []
+              Left contains one more item: {'action': 'target', 'to_port': 'next', 'when': 'cycle.pass'}
+        """
+        out = client.post("/api/flows/compile",
+                          json={"graph": _mosaic_graph(), "name": "m"}).json()
+        (entry,) = out["plan"]["targets"]
+        assert entry["mosaic"]["rows"] == 2 and entry["loop"] is True
+        assert out["plan"]["instructions"] == []
+        assert not [u for u in out["unmapped"]
+                    if "will not run" in u["detail"]]
+
+    def test_an_unframed_mosaic_is_named_in_the_editor(self, client):
+        """A half-built graph is the normal state of an editor, so M1 comes
+        back as the plan's danger row, not as an error response.
+
+        Mutant "drop the M1 refusal", observed: the route catches only the
+        refusal, so the projection's own error escapes it:
+
+            pydantic_core._pydantic_core.ValidationError: 1 validation error for MosaicSpecIn
+            fov_x_deg
+              Input should be greater than 0 [type=greater_than, input_value=0.0, input_type=float]
+        """
+        out = client.post("/api/flows/compile",
+                          json={"graph": _mosaic_graph(fovX=0)})
+        assert out.status_code == 200
+        (row,) = out.json()["unmapped"]
+        assert row["key"] == "plan" and row["level"] == "danger"
+        assert "frame this block" in row["detail"], row
+
+    def test_run_refuses_an_unframed_mosaic_with_a_422(self, client):
+        """Mutant "drop the M1 refusal" (``to_plan._mosaic_refusals`` skips
+        the field check), observed: the projection's own ValidationError
+        escapes the route instead of a 422 naming the block:
+
+            pydantic_core._pydantic_core.ValidationError: 1 validation error for MosaicSpecIn
+            fov_x_deg
+              Input should be greater than 0 [type=greater_than, input_value=0.0, input_type=float]
+        """
+        fid = client.post("/api/flows", json={"flow": _flow(
+            graph=_mosaic_graph(fovX=0))}).json()["id"]
+        r = client.post(f"/api/flows/{fid}/run", json={"accept_unmapped": True})
+        assert r.status_code == 422, r.text
+        assert "frame this block" in r.json()["detail"]["detail"]
+
+
+class _SpyTonight:
+    """Stands in for ``resolve_tonight`` in ``api/app.py`` and records what
+    the route handed it. It answers the refusal shape, so nothing of the
+    night is computed and no site is read."""
+
+    def __init__(self):
+        self.args: tuple = ()
+        self.kwargs: dict = {}
+
+    def __call__(self, *args, **kwargs):
+        self.args, self.kwargs = args, kwargs
+        return {"ok": False, "reason": "spied"}
+
+
+class TestTonightIsHandedProgressAndTheHop:
+    """S3 (#189 spec 8 S3 item 5, task S3-A): the CAMPAIGN tab's per-panel
+    rows come from the progress answer and a mosaic's budget adds its hops,
+    so ``GET /api/flows/{id}/tonight`` passes ``resolve_tonight`` the
+    flow's progress (lazily, as a callable) and the MEASURED hop cost.
+    ``resolve_tonight`` is spied, so these tests read what the route passes
+    and never compute a night."""
+
+    def test_it_receives_the_flows_progress(self, client, monkeypatch):
+        """The callable answers exactly what ``GET /api/flows/{id}/progress``
+        answers: the same compile, keyed on the flow's own id.
+
+        RED under mutant "progress not passed" (the ``progress=`` keyword
+        removed from the route's call), observed:
+
+            KeyError: 'progress'
+        """
+        spy = _SpyTonight()
+        monkeypatch.setattr(app_module, "resolve_tonight", spy)
+        fid = client.post("/api/flows", json={"flow": _flow(
+            graph=_mosaic_graph())}).json()["id"]
+        assert client.get(f"/api/flows/{fid}/tonight").json() == {
+            "ok": False, "reason": "spied"}
+        progress = spy.kwargs["progress"]
+        got = progress() if callable(progress) else progress
+        want = client.get(f"/api/flows/{fid}/progress").json()
+        assert json.loads(json.dumps(got)) == want
+        assert [len(b["panels"]) for b in want["blocks"]] == [4], (
+            "premise: the 2x2 is one block of four panels")
+
+    def test_it_receives_the_measured_hop_and_never_the_seed(self, client,
+                                                             monkeypatch):
+        """``engine.measured_cost("hop")``'s mean once hops are measured;
+        None before, never the engine's 150 s seed (the brief then says "not
+        measured yet").
+
+        RED under mutant "tonight's seed" (the route passes
+        ``engine._event_cost("hop", 150.0)``), observed at the unmeasured
+        read:
+
+            assert 150.0 is None
+
+        and the same under test_flows_rig_facts_route's "the seed", since
+        the route reads the hop through its rig facts.
+        """
+        spy = _SpyTonight()
+        monkeypatch.setattr(app_module, "resolve_tonight", spy)
+        monkeypatch.setattr(app_module.engine, "_event_costs", {})
+        fid = client.post("/api/flows", json={"flow": _flow(
+            graph=_mosaic_graph())}).json()["id"]
+        client.get(f"/api/flows/{fid}/tonight")
+        assert spy.kwargs["hop_cost_s"] is None
+        monkeypatch.setattr(app_module.engine, "_event_costs",
+                            {"hop": [100.0, 140.0]})
+        client.get(f"/api/flows/{fid}/tonight")
+        assert spy.kwargs["hop_cost_s"] == 120.0
+
+    def test_control_a_viewer_still_cannot_read_tonight(self, client,
+                                                         monkeypatch):
+        """The route stays ``CAP_VIEW_SITE_DERIVED``: every value on it is
+        f(latitude, longitude). A viewer is refused tonight and still reads
+        progress, which carries no site data (spec 6.9). A control: green on
+        the code and under both mutants above."""
+        from astrodeck.auth import (principal_for_role, reset_active_provider,
+                                    set_active_provider)
+
+        class _Fixed:
+            name = "fake"
+
+            def __init__(self, principal):
+                self._principal = principal
+
+            async def resolve(self, request):
+                return self._principal
+
+        fid = client.post("/api/flows", json={"flow": _flow(
+            graph=_mosaic_graph())}).json()["id"]
+        monkeypatch.delenv(app_module.AUTH_ENV_VAR, raising=False)
+        set_active_provider(_Fixed(principal_for_role("viewer")))
+        try:
+            assert client.get(
+                f"/api/flows/{fid}/tonight").status_code == 403
+            assert client.get(
+                f"/api/flows/{fid}/progress").status_code == 200
+        finally:
+            reset_active_provider()

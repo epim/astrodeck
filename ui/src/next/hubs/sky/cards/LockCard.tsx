@@ -29,17 +29,65 @@ import type { JSX } from "react";
 import { Card, Mono, honestPress, lockedAttrs, lockedClass } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { SkyGlyph } from "./glyphs";
-import { KIND_ICON, windowLabel, type SkyTarget } from "../finder";
-import { lockCta, type LockCta } from "./lockCta";
+import { KIND_ICON, windowLabel } from "../finder";
+import type { LockTarget } from "../finder/targets";
+import { lockCta, type LockCta, type LockCtaKind } from "./lockCta";
 
 const MONO = "'IBM Plex Mono', ui-monospace, monospace";
 const DISPLAY = "'Chakra Petch', system-ui, sans-serif";
 
-/** Border / fill / text for the five CTA cases. `danger` is the obstructed
- *  outline, `secondary` covers both CONNECT and CLOUDED - the primitives library
- *  has no warn kind, and the amber is not what carries the meaning: the label
- *  "CLOUDED NOW · IMAGE ANYWAY" is. */
-function ctaSkin(cta: LockCta): { border: string; bg: string; color: string; glow?: string } {
+/** The primary for a lock nobody could place because no site is saved (#503).
+ *  It is the fix, like CONNECT THE RIG FIRST: pressing it opens the site
+ *  sheet, the same one the status row's site pill opens. */
+export const SITE_CTA_LABEL = "SET A SITE FIRST";
+
+/** The primary for a lock this ROLE cannot place: a site is saved and its
+ *  coordinates are withheld from this principal. Nothing here can fix that, so
+ *  the hub locks it with the reason (`unplacedReason`) rather than offering a
+ *  site sheet the reader has no business in. */
+export const UNPLACED_CTA_LABEL = "POSITION HIDDEN FOR THIS ROLE";
+
+/**
+ * The card's primary: `lockCta`'s five cases, plus the two for a lock whose
+ * obstruction is UNKNOWN (an unplaced lock, `obstructed: null`).
+ *
+ * WHY THE UNKNOWN IS DECIDED HERE AND NOT IN `lockCta`. `lockCta` takes a
+ * boolean, and the only boolean an unknown can be squeezed into is a guess:
+ * `false` was the guess the #466 held card made, and with it the primary read
+ * IMAGE M31 for an object whose altitude nobody knew. So an unknown never
+ * reaches that question. What `lockCta` answers BEFORE it asks about the
+ * horizon - a satellite's passes, a rig to connect - still comes from it,
+ * because neither claims the object is up; it is handed `obstructed: true`
+ * there only so that if its order ever changes, an unknown reads as behind
+ * the horizon rather than as clear.
+ */
+export type LockCardCtaKind = LockCtaKind | "site" | "unplaced";
+
+export interface LockCardCta {
+  kind: LockCardCtaKind;
+  label: string;
+  button: LockCta["button"];
+}
+
+export function lockCardCta(
+  lock: LockTarget & { passCount?: number | null },
+  equipConnected: boolean,
+  siteSaved: boolean,
+): LockCardCta {
+  if (lock.obstructed !== null) return lockCta({ ...lock, obstructed: lock.obstructed }, equipConnected);
+  if (lock.kind === "satellite" || !equipConnected) {
+    return lockCta({ ...lock, obstructed: true }, equipConnected);
+  }
+  return siteSaved
+    ? { kind: "unplaced", label: UNPLACED_CTA_LABEL, button: "secondary" }
+    : { kind: "site", label: SITE_CTA_LABEL, button: "secondary" };
+}
+
+/** Border / fill / text for the CTA cases. `danger` is the obstructed
+ *  outline, `secondary` covers CONNECT, CLOUDED and the two unknown-placement
+ *  cases - the primitives library has no warn kind, and the amber is not what
+ *  carries the meaning: the label "CLOUDED NOW · IMAGE ANYWAY" is. */
+function ctaSkin(cta: LockCardCta): { border: string; bg: string; color: string; glow?: string } {
   if (cta.button === "danger") return { border: "var(--bad)", bg: "transparent", color: "var(--bad)" };
   if (cta.kind === "clouded") {
     return {
@@ -60,15 +108,20 @@ function ctaSkin(cta: LockCta): { border: string; bg: string; color: string; glo
 }
 
 export interface LockCardProps {
-  lock: SkyTarget;
+  /** A placed target, or a catalogue object held with no placement (#503,
+   *  #504) - see `UnplacedTarget` for what the card prints for each. */
+  lock: LockTarget;
   equipConnected: boolean;
+  /** Is a site saved? Only read for an unplaced lock, to tell SET A SITE
+   *  FIRST (the operator's fix) from a role that cannot see the site. */
+  siteSaved?: boolean;
   /** "2h · 4 filters · finishes 00:14" - what IMAGE would queue. */
   planSummary: string;
   /** Kept framing for THIS target, or null. */
   framed: string | null;
   onAdjustFrame: () => void;
   onClearFrame: () => void;
-  onPrimary: (cta: LockCta) => void;
+  onPrimary: (cta: LockCardCta) => void;
   onInfo: () => void;
   onSingleFrame: () => void;
   onPlan: () => void;
@@ -90,6 +143,7 @@ export interface LockCardProps {
 export function LockCard({
   lock,
   equipConnected,
+  siteSaved = true,
   planSummary,
   framed,
   onAdjustFrame,
@@ -107,7 +161,7 @@ export function LockCard({
   onExplain,
   passCount = null,
 }: LockCardProps): JSX.Element {
-  const cta = lockCta({ ...lock, passCount }, equipConnected);
+  const cta = lockCardCta({ ...lock, passCount }, equipConnected, siteSaved);
   const skin = ctaSkin(cta);
 
   /**
@@ -242,9 +296,12 @@ export function LockCard({
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontFamily: MONO, fontSize: 10.5, color: "var(--text-dim)" }}>
-          <span>alt <span style={{ color: "var(--text)" }}>{Math.round(lock.altNow)}°</span></span>
-          <span>window <span style={{ color: "var(--text)" }}>{windowLabel(lock.windowMinutes)}</span></span>
+        {/* Each reading prints "-" where nobody computed it, as the transit
+            always has: an unplaced lock has no altitude (#503, #504) and a
+            window nobody walked is not "0m" (#508). */}
+        <div data-testid="sky-lock-readings" style={{ display: "flex", gap: 14, flexWrap: "wrap", fontFamily: MONO, fontSize: 10.5, color: "var(--text-dim)" }}>
+          <span>alt <span data-testid="sky-lock-alt" style={{ color: "var(--text)" }}>{lock.altNow == null ? "-" : `${Math.round(lock.altNow)}°`}</span></span>
+          <span>window <span data-testid="sky-lock-window" style={{ color: "var(--text)" }}>{windowLabel(lock.windowMinutes)}</span></span>
           <span>transit <span style={{ color: "var(--text)" }}>{lock.transitLabel}</span></span>
           <Mono size={10.5}>{lock.palette}</Mono>
         </div>

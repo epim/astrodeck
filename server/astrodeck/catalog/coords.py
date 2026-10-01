@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import re
 import time
+import unicodedata
 
 #: Typographic characters that mean the same thing as an ASCII one, mapped to
 #: it before any parsing happens.
@@ -17,8 +18,11 @@ import time
 #: is the worst kind of error message to be handed at 2am.
 #:
 #: NOT a general Unicode fold: only characters whose ASCII meaning is
-#: unambiguous. A digit that merely looks like a digit (fullwidth, Devanagari)
-#: is left alone to fail loudly, because silently reading it would be guessing.
+#: unambiguous. A digit that merely looks like a digit (fullwidth,
+#: Arabic-Indic, Devanagari) is not folded, and it is REFUSED, by name: see
+#: ``_RA_HMS`` and ``_decimal`` (#359). Until #359 this comment said so and
+#: the code read every one of them, because Python's ``\d`` and ``float()``
+#: are both Unicode-wide.
 _TYPOGRAPHIC = str.maketrans({
     "′": "'",    # ′ prime — arcminutes
     "″": '"',    # ″ double prime — arcseconds
@@ -33,38 +37,94 @@ _TYPOGRAPHIC = str.maketrans({
 })
 
 
-def parse_ra(text: str) -> float:
-    """Parse RA to hours. Accepts '5h 35m 17s', '05:35:17', '5.5883' (hours)."""
-    text = text.translate(_TYPOGRAPHIC).strip()
-    m = re.match(r"^(\d+)[h:\s]+(\d+)[m:\s]+([\d.]+)s?$", text)
-    if m:
-        h, mn, s = float(m[1]), float(m[2]), float(m[3])
-        return h + mn / 60 + s / 3600
-    m = re.match(r"^(\d+)[h:\s]+([\d.]+)m?$", text)
-    if m:
-        return float(m[1]) + float(m[2]) / 60
+#: Every space Python's ``str.isspace()`` knows, as a separator for the
+#: patterns below. They are compiled with ``re.ASCII`` for their digits, and
+#: that flag narrows ``\s`` to the six ASCII spaces as well; ``(?u:...)``
+#: puts the rest back, so a thin space, a narrow no-break space or an
+#: ideographic space between two fields reads as it did before #359. The UI
+#: mirror (``framingModel.ts``, ``WS``) is this set too.
+_SP = r"(?u:\s)"
+
+#: The sexagesimal forms, in the digits 0-9 ONLY (#359). Without
+#: ``re.ASCII`` these read a fullwidth or Devanagari coordinate as the number
+#: it spells, while the modal's preview mirror (``parseRaHours`` /
+#: ``parseDecDeg``) reads 0-9 only: the preview dropped a coordinate the run
+#: then shot. A coordinate is where the mount goes, and the preview is the
+#: operator's one look at where that is, so the two read one set of digits.
+#: 0-9 is the set every catalogue, planetarium and mount writes; a coordinate
+#: in any other came through an input method or a converter, and the refusal
+#: names the character so it can be retyped rather than hunted for.
+#:
+#: ``compile.parse_skip`` keeps reading Unicode digits, deliberately. A panel
+#: label is not a coordinate: it names a panel of the grid the modal draws,
+#: its mirror reads ``\p{Nd}`` as it does, and one table
+#: (``tests/fixtures/skip_cases.json``) holds the two readings together, so
+#: a fullwidth "3-1" skips the panel the operator sees skipped. Refusing it
+#: would refuse a panel the operator can see they meant.
+_RA_HMS = re.compile(
+    rf"^(\d+)(?:[h:]|{_SP})+(\d+)(?:[m:]|{_SP})+([\d.]+)s?$", re.ASCII)
+_RA_HM = re.compile(rf"^(\d+)(?:[h:]|{_SP})+([\d.]+)m?$", re.ASCII)
+_DEC_DMS = re.compile(
+    rf"^(\d+)(?::|{_SP})+(\d+)(?::|{_SP})+([\d.]+)$", re.ASCII)
+_DEC_DM = re.compile(rf"^(\d+)(?::|{_SP})+([\d.]+)$", re.ASCII)
+
+
+def _decimal(text: str, given: str) -> float:
+    """``float(text)``, for the forms no pattern took, with a digit that is
+    not 0-9 refused first and named (#359).
+
+    ``float()`` is Unicode-wide like ``\\d``: it reads Arabic-Indic "41.5"
+    as 41.5 whatever ``re.ASCII`` does above it, so the fallback checks for
+    itself. A sexagesimal text in another script lands here too, since no
+    pattern matches it, and is refused by the same check.
+
+    The message names ``given``, the text as the caller passed it, since
+    ``text`` has been folded and, for a dec, had its unit marks blanked; and
+    it names the character, which on screen looks like the digit it is."""
+    for ch in text:
+        if ch.isdecimal() and not ch.isascii():
+            raise ValueError(
+                f"{given!r} has a digit that is not 0-9 (U+{ord(ch):04X} "
+                f"{unicodedata.name(ch, 'DIGIT')}); retype it with 0-9")
     return float(text)
 
 
+def parse_ra(text: str) -> float:
+    """Parse RA to hours. Accepts '5h 35m 17s', '05:35:17', '5.5883' (hours),
+    written with the digits 0-9 (see ``_RA_HMS``)."""
+    given = text
+    text = text.translate(_TYPOGRAPHIC).strip()
+    m = _RA_HMS.match(text)
+    if m:
+        h, mn, s = float(m[1]), float(m[2]), float(m[3])
+        return h + mn / 60 + s / 3600
+    m = _RA_HM.match(text)
+    if m:
+        return float(m[1]) + float(m[2]) / 60
+    return _decimal(text, given)
+
+
 def parse_dec(text: str) -> float:
-    """Parse Dec to degrees. Accepts \"-5° 23' 28\"\", '-05:23:28', '-5.391'.
+    """Parse Dec to degrees. Accepts \"-5° 23' 28\"\", '-05:23:28', '-5.391',
+    written with the digits 0-9 (see ``_RA_HMS``).
 
     Typographic primes and a true minus sign are accepted too — see
     ``_TYPOGRAPHIC``. That matters more here than for RA: a dec is the one
     coordinate that carries a sign, and U+2212 is what a well-set table uses
     for it."""
+    given = text
     text = (text.translate(_TYPOGRAPHIC).strip()
             .replace("°", " ").replace("'", " ").replace('"', " "))
     sign = -1.0 if text.lstrip().startswith("-") else 1.0
     body = text.strip("+- \t")
-    m = re.match(r"^(\d+)[:\s]+(\d+)[:\s]+([\d.]+)$", body)
+    m = _DEC_DMS.match(body)
     if m:
         d, mn, s = float(m[1]), float(m[2]), float(m[3])
         return sign * (d + mn / 60 + s / 3600)
-    m = re.match(r"^(\d+)[:\s]+([\d.]+)$", body)
+    m = _DEC_DM.match(body)
     if m:
         return sign * (float(m[1]) + float(m[2]) / 60)
-    return float(text)
+    return _decimal(text, given)
 
 
 def format_ra(hours: float) -> str:

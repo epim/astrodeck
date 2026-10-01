@@ -65,26 +65,57 @@ function near(a: number, b: number, tol: number, msg = ""): void {
 // and their ORDER matter to geometry — an output's row index is offset by the
 // input count of the same node, so a table with the right ports in the wrong
 // order would put every output wire on the wrong row.
+//
+// RE-TRANSCRIBED IN THE INTEGRATION OF MOSAIC S3 (#189): TARGET gained the
+// optional input `next` and CAPTURE LOOP and FILTER CYCLE the output `pass`
+// (spec 1.2), each LAST in its list, so no existing port moved row. The
+// capture card grows one row (3 -> 4), which the row and height pins below
+// now say; the §D.2 worked fit is unchanged, because the M16 bbox's binding
+// bottom edge is not a capture card. The re-pin is held by the parity test
+// below: RED under mutant "capture pass port missing" (in a private scratch
+// copy, `_e("pass", "pass done")` dropped from CAPTURE LOOP's outs in
+// nodeDefs.ts), observed:
+//   ✗ the fixture port table still matches NODE_DEFS — ids and ORDER, both
+//     ways: capture ports (in | out): expected run | complete,frame, got run |
+//     complete,frame,pass
+//
+// RE-TRANSCRIBED AGAIN IN MOSAIC S4 (#331): AUTOFOCUS and GUIDE gained the
+// output `pass`, LAST, so `focused` and `guiding` keep row 1 and each card
+// grows one row (2 -> 3), which the row and height pins below now say for
+// the M16 AUTOFOCUS (n5) and GUIDE (n6). Worked edge (b) lands on n5's INPUT,
+// row 0, and the §D.2 fit's binding bottom edge is ABORT + PARK's, so neither
+// moves. Held by the same parity test: RED under mutant "AUTOFOCUS has no
+// pass" (in a private scratch copy, `_e("pass", "pass done")` dropped from
+// AUTOFOCUS's outs in nodeDefs.ts), observed:
+//   ✗ the fixture port table still matches NODE_DEFS — ids and ORDER, both
+//     ways: autofocus ports (in | out): expected run | focused, got run |
+//     focused,pass
+//   ✗ AUTOFOCUS's `focused` keeps its row and `pass` takes the one below
+//     (S4, #331): pass on row 2, below it expected 407, got undefined
+//   (geometry.test: 25/27 passed)
 const PORTS: PortTable = {
   dusk: { ins: [], outs: [{ id: "window" }, { id: "nightend" }] },
-  target: { ins: [{ id: "arm" }], outs: [{ id: "target" }] },
+  target: { ins: [{ id: "arm" }, { id: "next" }], outs: [{ id: "target" }] },
   safety: { ins: [], outs: [{ id: "unsafe" }] },
   cloudwatch: { ins: [], outs: [{ id: "in" }, { id: "clear" }] },
   dome: { ins: [{ id: "run" }], outs: [{ id: "open" }] },
   flatpanel: { ins: [], outs: [{ id: "ready" }] },
   slew: { ins: [{ id: "run" }], outs: [{ id: "centered" }] },
-  autofocus: { ins: [{ id: "run" }], outs: [{ id: "focused" }] },
-  guide: { ins: [{ id: "run" }], outs: [{ id: "guiding" }] },
+  autofocus: { ins: [{ id: "run" }], outs: [{ id: "focused" }, { id: "pass" }] },
+  guide: { ins: [{ id: "run" }], outs: [{ id: "guiding" }, { id: "pass" }] },
   capture: {
     ins: [{ id: "run" }],
-    outs: [{ id: "complete" }, { id: "frame" }],
+    outs: [{ id: "complete" }, { id: "frame" }, { id: "pass" }],
   },
   duskflats: { ins: [{ id: "run" }], outs: [{ id: "done" }] },
   calib: {
     ins: [{ id: "do" }, { id: "stop" }, { id: "panel" }],
     outs: [],
   },
-  cycle: { ins: [{ id: "run" }], outs: [{ id: "complete" }, { id: "frame" }] },
+  cycle: {
+    ins: [{ id: "run" }],
+    outs: [{ id: "complete" }, { id: "frame" }, { id: "pass" }],
+  },
   pool: {
     ins: [{ id: "arm" }, { id: "advance" }],
     outs: [{ id: "target" }, { id: "floor" }],
@@ -128,7 +159,8 @@ test("NODE_DEFS is usable as geometry's PortTable at run time, not just to tsc",
   // A structural type says the shape fits; it does not say the values are
   // there. Anchor a real port through the real vocabulary.
   const p = portPos(mk("n7", "capture", 620, 320), "frame", "out", NODE_DEFS_IS_A_PORT_TABLE, "desktop");
-  // capture is ins:[run], outs:[complete, frame] — "frame" is row 2 of 3.
+  // capture is ins:[run], outs:[complete, frame, pass] — "frame" is row 2
+  // of 4 (`pass`, added in S3, is last, so "frame" did not move).
   eq(p?.x, 620 + NODE_W_WIDE, "capture.frame anchors at the card's right edge");
   eq(p?.y, 320 + 37 + 2 * 20 + 10, "capture.frame sits on the third port row");
 });
@@ -189,14 +221,17 @@ test("nodeW is device-based: 188 desktop/tablet, 150 phone", () => {
 test("nodeRows counts inputs THEN outputs, never interleaved", () => {
   eq(nodeRows(byId("n1"), PORTS), 2, "dusk: 0 in + 2 out");
   eq(nodeRows(byId("n4"), PORTS), 2, "slew: 1 in + 1 out");
-  eq(nodeRows(byId("n7"), PORTS), 3, "capture: 1 in + 2 out");
+  eq(nodeRows(byId("n7"), PORTS), 4, "capture: 1 in + 3 out (S3 added `pass`)");
+  eq(nodeRows(byId("n5"), PORTS), 3, "autofocus: 1 in + 2 out (S4 added `pass`, #331)");
+  eq(nodeRows(byId("n6"), PORTS), 3, "guide: 1 in + 2 out (S4 added `pass`, #331)");
   eq(nodeRows(byId("n15"), PORTS), 3, "calib: 3 in + 0 out");
 });
 
 test("nodeLayoutHeight is 37 + rows·20 + 26 (the FIT budget, not the DOM)", () => {
   eq(nodeLayoutHeight(byId("n1"), PORTS), 103, "2 rows (dusk gained `night ends`)");
   eq(nodeLayoutHeight(byId("n4"), PORTS), 103, "2 rows");
-  eq(nodeLayoutHeight(byId("n7"), PORTS), 123, "3 rows");
+  eq(nodeLayoutHeight(byId("n7"), PORTS), 143, "4 rows (S3 added `pass`)");
+  eq(nodeLayoutHeight(byId("n5"), PORTS), 123, "3 rows (S4 added AUTOFOCUS `pass`)");
   // The +8 sibling formula belongs to autoLayout.ts; if this file ever drifts
   // to +8 the fit zoom leaves 46% and every reference capture stops matching.
   assert(
@@ -207,7 +242,7 @@ test("nodeLayoutHeight is 37 + rows·20 + 26 (the FIT budget, not the DOM)", () 
 
 test("fitViewHeight is the same function under §C.5's name", () => {
   eq(fitViewHeight, nodeLayoutHeight, "one implementation, two names");
-  eq(fitViewHeight(byId("n7"), PORTS), 123);
+  eq(fitViewHeight(byId("n7"), PORTS), 143);
 });
 
 // ------------------------------------------------------------- port anchors
@@ -231,6 +266,22 @@ test("an output's row is offset by the node's INPUT count", () => {
   const p = pos("n4", "centered", "out");
   eq(p.x, 1138, "950 + 188");
   eq(p.y, 117, "50 + 37 + 1·20 + 10");
+});
+
+test("AUTOFOCUS's `focused` keeps its row and `pass` takes the one below (S4, #331)", () => {
+  // Through the REAL vocabulary: appended last is what keeps every saved
+  // `focused` wire attached where it was drawn.
+  //
+  // MUTANT "pass first" (in a private scratch copy, AUTOFOCUS's outs in
+  // nodeDefs.ts reordered to pass, focused). Observed:
+  //   ✗ the fixture port table still matches NODE_DEFS — ids and ORDER, both ways: autofocus ports (in | out): expected run | pass,focused, got run | focused,pass
+  //   ✗ AUTOFOCUS's `focused` keeps its row and `pass` takes the one below (S4, #331): focused on row 1, where it was expected 387, got 407
+  //   (geometry.test: 25/27 passed)
+  const n5 = byId("n5");
+  eq(portPos(n5, "focused", "out", NODE_DEFS_IS_A_PORT_TABLE, "tablet")?.y,
+     320 + 37 + 1 * 20 + 10, "focused on row 1, where it was");
+  eq(portPos(n5, "pass", "out", NODE_DEFS_IS_A_PORT_TABLE, "tablet")?.y,
+     320 + 37 + 2 * 20 + 10, "pass on row 2, below it");
 });
 
 test("the second input of a node is one 20px row lower", () => {

@@ -4,14 +4,19 @@
 export const CAPTURE_EXT = ".fits";
 export const DEFAULT_TEMPLATE =
   "$$TARGET$$/$$FRAMETYPE$$_$$TARGET$$_$$FILTER$$_$$DATE$$_$$TIME$$_$$FRAMENR$$";
+// PANEL is a mosaic panel's 1-based "row-col" label (#189 U-08). It is empty on
+// every frame that is not a panel, so it drops out of the path like any unset
+// token.
 export const NAMING_TOKENS = [
   "TARGET", "FRAMETYPE", "FILTER", "DATE", "TIME", "DATETIME", "NIGHT", "FRAMENR",
+  "PANEL",
 ] as const;
 
 // token name -> sanitize mode. Mirrors astrodeck.naming.KNOWN_TOKENS.
 const MODE: Record<string, "loose" | "strict"> = {
   TARGET: "loose", FRAMETYPE: "loose", FILTER: "strict", DATE: "loose",
   TIME: "loose", DATETIME: "loose", NIGHT: "loose", FRAMENR: "loose",
+  PANEL: "strict",
 };
 
 // Matches $$TOKEN$$ — kept in lock-step with astrodeck.naming._TOKEN_RE.

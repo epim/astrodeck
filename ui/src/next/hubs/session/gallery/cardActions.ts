@@ -58,6 +58,13 @@ export interface Verb {
   danger?: boolean;
 }
 
+/** Why a write verb will not fire for this principal, or null when it will.
+ *  One sentence for every card, including an unreadable file's DELETE (#242),
+ *  so the two deletes on one shelf are gated by the same words. */
+export function controlReason(canControl: boolean): string | null {
+  return canControl ? null : `That needs ${accessPhrase("control.mount")}.`;
+}
+
 /**
  * The verb list for one card, in the order the design shows them.
  *
@@ -67,7 +74,7 @@ export interface Verb {
  * work is refused with the server's own logic rather than discovered in a 409.
  */
 export function verbsFor(card: SessionCardData, canControl: boolean): Verb[] {
-  const capReason = canControl ? null : `That needs ${accessPhrase("control.mount")}.`;
+  const capReason = controlReason(canControl);
   const noSession = card.id ? null : "This night has a report but no session ledger, so there is nothing to act on.";
   const dormantOnly = card.status === "dormant" ? null : "Only a dormant session can be resumed or edited.";
   const notActive = card.status === "active" ? "The session is running - stop the run first." : null;

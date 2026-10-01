@@ -21,6 +21,19 @@ from astrodeck.sequence import (
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    # A store of the test's own, BEFORE anything below patches the cache: the
+    # singleton repointed at a file under tmp_path with its cache dropped,
+    # both through monkeypatch. A run that finds focus saves the temperature
+    # and position it anchored at (`_anchor_temp_comp`), and the autofocus instruction here left
+    # them on the process-wide config for every later test on the worker
+    # (#227).
+    # Without these two lines, the conftest guard errors at teardown
+    # (1 in this file alone, observed): "test_autofocus_reports_whether_it_actually_found_focus
+    # left the process-wide config changed: focus.temp_comp.reference_position,
+    # focus.temp_comp.reference_temp_c."
+    monkeypatch.setattr(hub_module.config_store, "_path",
+                        tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module.config_store, "_cfg", None)
     _safety = hub_module.config_store.cfg().safety
     monkeypatch.setattr(_safety, "solar_avoidance", False)
     monkeypatch.setenv("ASTRODECK_SIM_LEGACY_GUIDER", "1")
@@ -211,10 +224,22 @@ async def test_degenerate_run_target_does_not_abandon_the_active_target(
     # A is re-entered (resuming from its persisted per-step count) rather than
     # vanishing from the night, and every planned frame is still shot.
     assert seen == ["A", "A", "B"]
-    # 5, not 4: the instruction eval runs before `_done` advances for the frame
-    # that raised, so the resumed step re-shoots that one sub (it is on disk and
-    # in the report either way). One duplicate sub beats losing the target.
-    assert shots == 5
+    # 4: the frame that raised is banked before the instructions run (#373),
+    # so the resumed step goes on from it and every planned frame is shot
+    # exactly once.
+    #
+    # DELIBERATE PIN CHANGE (#373, S5-ENG-SCHED, S5 orchestrator ruling 3;
+    # re-pinned by the S5/S6 integration, S56-INTEG). This was 5, with the
+    # comment "the instruction eval runs before `_done` advances for the frame
+    # that raised, so the resumed step re-shoots that one sub": the duplicate
+    # sub was the cost of recording after the instructions. The old pin, run
+    # against this tree, observed for both ids:
+    #     assert 4 == 5
+    # Mutant "record after the instructions" (S5-ENG-SCHED's name: `_run_step`
+    # running the instructions before the frame is banked again), run in the
+    # private copy scratchpad S56-INTEG-mut, observed for both ids:
+    #     assert 5 == 4
+    assert shots == 4
     assert eng._jumps_spent == 1          # the unwind still spent budget
 
 

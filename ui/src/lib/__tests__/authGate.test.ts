@@ -211,6 +211,9 @@ function populateRig(): void {
     data: { id: 7, url: "/api/preview/7.jpg" } as unknown as Record<string, unknown>,
     ts: Date.now() / 1000,
   });
+  // What ws.ts writes after its snapshot read on connect (#399): the id of the
+  // rig's newest frame, which the LAST FRAME tile turns into a picture.
+  st.setSnapshotPreviewId(535);
   st.handleEvent({
     type: "log",
     data: { level: "error", source: "mount", message: "guiding lost" },
@@ -298,8 +301,21 @@ const NON_RIG_KEYS: Record<string, string> = {
   editorDirty: "a bare boolean: the draft has unsaved edits",
   siteDirty: "a bare boolean: the site FORM has unsaved edits. The site itself (`site`, `config`) is cleared.",
   opticsDirty: "a bare boolean: the optics form has unsaved edits",
-  atlasHandoff:
-    "a monotonic bump meaning 'the user pressed Send to plan'. It carries no payload — the panel COUNT the banner renders is `atlasBannerPending`, which IS cleared.",
+  // DELIBERATE PIN CHANGE (#196 S6; re-pinned by the S5/S6 integration,
+  // S56-INTEG): `atlasHandoff` left the store with the Plan side channel
+  // (S6-DOORS), so its exemption went: an exemption for a slice that is not
+  // there is the stale half this walk refuses. The old entry, run against
+  // this tree, observed:
+  //   x neither list can outlive the slices it is about: NON_RIG_KEYS exempts
+  //   "atlasHandoff", which is not a store slice
+  // Mutant "atlasHandoff back in the store" (store.ts's cold boot given
+  // `atlasHandoff: 0` again), observed in the private copy scratchpad
+  // S56-INTEG-mut:
+  //   x no slice can be added to the store without deciding whether the gate
+  //   clears it: atlasHandoff is a store slice the auth gate has never been
+  //   told what to do with. ...
+  // `atlasBannerPending` left the store and ClearedRigState together in the
+  // S5/S6 integration (#461), once next's PlanEditor.tsx stopped reading it.
 
   // ---- the person's screen, not the sky. The persisted ones (night, both
   // brightnesses, touch, photometry, overlays/stretch, coachSeen, autoMonitor)
@@ -374,8 +390,42 @@ const STORE_ACTIONS: string[] = [
   "setOpticsDirty", "setSite",
   // coach marks / first-run wizard
   "markSeen", "resetCoach", "openWizard", "closeWizard", "setWizardStep",
-  // atlas / framing
-  "openFraming", "setFraming", "addTargetsToPlan", "dismissAtlasBanner",
+  // atlas / framing. DELIBERATE PIN CHANGE (#196 S6; re-pinned by the S5/S6
+  // integration, S56-INTEG): `addTargetsToPlan` left the store with the Plan
+  // side channel (S6-DOORS), both doors now opening the flow wizard. The old
+  // entry, run against this tree, observed:
+  //   x the walk records what it skips instead of inferring it from the
+  //   value: STORE_ACTIONS records "addTargetsToPlan", which the store no
+  //   longer has
+  // Mutant "addTargetsToPlan back in the store" (store.ts given the action
+  // again), observed in the private copy scratchpad S56-INTEG-mut, both
+  // walks red:
+  //   x the walk records what it skips instead of inferring it from the
+  //   value: "addTargetsToPlan" is a function-valued member of the store that
+  //   nobody has classified. ...
+  //   x no slice can be added to the store without deciding whether the gate
+  //   clears it: addTargetsToPlan is a store slice the auth gate has never
+  //   been told what to do with. ...
+  // SECOND DELIBERATE PIN CHANGE (#196 S6, #461; the S5/S6 integration's
+  // close of S6-DOORS): `dismissAtlasBanner` left the store with its slice
+  // once #/next's PlanEditor stopped drawing the Plan banner. The old entry,
+  // run against this tree, observed:
+  //   x the walk records what it skips instead of inferring it from the
+  //   value: STORE_ACTIONS records "dismissAtlasBanner", which the store no
+  //   longer has
+  // Mutant "the dismiss action restored" (store.ts's cold boot given
+  // `dismissAtlasBanner: () => {}` again), observed in the private copy
+  // scratchpad S5-FINAL-INTEG-ui-mut, both walks red:
+  //   x the walk records what it skips instead of inferring it from the
+  //   value: "dismissAtlasBanner" is a function-valued member of the store
+  //   that nobody has classified. ...
+  //   x no slice can be added to the store without deciding whether the gate
+  //   clears it: dismissAtlasBanner is a store slice the auth gate has never
+  //   been told what to do with. ...
+  // and "the banner slice restored" (`atlasBannerPending: null` again) the
+  // second walk: "atlasBannerPending is a store slice the auth gate has never
+  // been told what to do with. ..."
+  "openFraming", "setFraming",
   // reliability
   "setWsPhase", "noteWsEvent", "setTelemetryStale", "enqueueToast",
   "dismissToast", "dismissExpired", "openLog", "closeLog", "reconcileLogs",
@@ -385,7 +435,8 @@ const STORE_ACTIONS: string[] = [
   // live preview
   "pushPreview", "selectPreview", "setViewport", "setStretch", "setOverlays",
   // monitor
-  "setAutoMonitor", "dismissRunBanner", "setResumeArm", "dismissArmedBanner",
+  "setAutoMonitor", "dismissRunBanner", "setSnapshotPreviewId", "setResumeArm",
+  "dismissArmedBanner",
   // touch
   "setLocked", "setMonitorAwake", "setTouch",
   // photometry
@@ -409,6 +460,20 @@ const STORE_ACTIONS: string[] = [
   "flowsBeginWire", "flowsMoveWire", "flowsEndWire", "flowsTapPort",
   "flowsCompile", "flowsFetchTonight", "flowsFetchCalHealth", "flowsRun",
   "flowsAppendLog", "flowsSetUi",
+  // Mosaic S4 (#189; recorded by the S4 integration, #406): the Target
+  // modal's DONE writes its framing through one action (one graph write, one
+  // compile), and WHILE A MOSAIC WAITS writes the flow's settings through
+  // another, which keeps the settings keys this build does not know. Both
+  // write `flows`, which ClearedRigState already classifies; neither is state.
+  // Mutant "flowsSetSetting not recorded" (the name left out here), observed
+  // in scratchpad/s4-integrate-q7m2, both walks red:
+  //   x the walk records what it skips instead of inferring it from the
+  //   value: "flowsSetSetting" is a function-valued member of the store that
+  //   nobody has classified. ...
+  //   x no slice can be added to the store without deciding whether the gate
+  //   clears it: flowsSetSetting is a store slice the auth gate has never
+  //   been told what to do with. ...
+  "flowsApplyFraming", "flowsSetSetting",
 ];
 
 /** The store's data slices as they actually are at cold boot: every member that
@@ -594,6 +659,7 @@ test("once the gate engages the store holds nothing describing the rig", () => {
   assert(live.weather !== null, "precondition: tonight's weather is held");
   assert(live.site !== null, "precondition: the site is held");
   assert(live.previews.length > 0, "precondition: preview frames are held");
+  eq(live.snapshotPreviewId, 535, "precondition: the snapshot's newest frame id is held");
   assert(live.logs.length > 0, "precondition: rig log lines are held");
   assert(live.toasts.length > 0, "precondition: a rig toast is up");
   assert(live.helpTopic !== null, "precondition: a hardware failure planted a help deep-link");
@@ -611,6 +677,16 @@ test("once the gate engages the store holds nothing describing the rig", () => {
   // The specific leak from the report, stated in its own terms.
   eq(useStore.getState().weather, null, "tonight's forecast is gone");
   eq(useStore.getState().weatherAlertKey, 0, "the once-per-night latch went with it");
+  // #399's store field, named because the walk above only covers what
+  // RIG_STATE_KEYS lists, and leaving it out of the clear drops it from there.
+  // Mutant A1 "gate keeps the snapshot frame" (snapshotPreviewId removed from
+  // ClearedRigState and clearedRigState()), observed:
+  //   x once the gate engages the store holds nothing describing the rig: the
+  //   snapshot's frame id outlived the session (got 535, want null)
+  //   x no slice can be added to the store without deciding whether the gate
+  //   clears it: snapshotPreviewId is a store slice the auth gate has never
+  //   been told what to do with. ...
+  eq(useStore.getState().snapshotPreviewId, null, "the snapshot's frame id outlived the session");
 });
 
 test("what the gate clears is exactly what a cold boot has", () => {
@@ -669,11 +745,17 @@ test("the rig cannot refill the store through the socket that is still open", ()
   st.handleEvent({ type: "log", data: { level: "error", source: "mount", message: "guiding lost" }, ts });
   st.handleEvent({ type: "safety", data: { is_safe: false, reason: "rain detected", stale: false } as unknown as Record<string, unknown>, ts });
   st.handleEvent({ type: "hello", data: { mode: "zwo-usb", site: { name: "Test Site" } } as unknown as Record<string, unknown>, ts });
-  // Not a WS frame: ws.onopen fetches /api/logs and AWAITS it, so this is the
-  // one rig-state write that can land without passing through handleEvent.
+  // Not WS frames: ws.onopen fetches /api/logs and /api/monitor/snapshot and
+  // AWAITS each, so these are the rig-state writes that can land without
+  // passing through handleEvent. (A relay gap re-reads the snapshot too.)
   st.reconcileLogs([
     { type: "log", ts, data: { level: "error", source: "mount", message: "guiding lost" } },
   ] as unknown as Parameters<typeof st.reconcileLogs>[0]);
+  // Mutant A2 "snapshot setter ignores the gate" (setSnapshotPreviewId's
+  // intakeBlocked line removed), observed:
+  //   x the rig cannot refill the store through the socket that is still
+  //   open: snapshotPreviewId was refilled behind the login screen: 9
+  st.setSnapshotPreviewId(9);
 
   const s = useStore.getState() as unknown as Record<string, unknown>;
   const pristine = clearedRigState() as unknown as Record<string, unknown>;

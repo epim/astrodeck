@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { planPolicy, type PolicyField } from "../lib/standards";
 import { api, ApiError } from "../api";
 import {
-  useStore, useConfig, useAtlasBannerPending, useLastReportId, defaultSchedule,
+  useStore, useConfig, useLastReportId, defaultSchedule,
   usePhotometry, usePreview,
 } from "../store";
 import {
@@ -229,13 +229,9 @@ export default function SequenceView() {
         ),
       )
     : null;
-  // Atlas hand-off: the store holds `atlasBannerPending` (the panel count of the
-  // latest Send) so the one-shot "N panels added from Atlas" banner survives this
-  // view's remount-on-nav. Dismiss clears the store flag. Store-held (not a useRef
-  // seeded from an already-bumped counter) is what lets the freshly-mounted view
-  // see the signal at all.
-  const atlasBannerPending = useAtlasBannerPending();
-  const dismissAtlasBanner = useStore((s) => s.dismissAtlasBanner);
+  // The one-shot "N panels added from Atlas" banner lived here. Nothing adds a
+  // framing to the Plan since S6 (#196): the Atlas's forward action is Send to
+  // Flow Wizard, which writes a flow, so the banner had nothing left to report.
   // VIEWER-READ-ONLY (W2.5): a sequence run SLEWS the mount to each target, so
   // the server's /api/sequence/{start,pause,resume,abort,recover} routes all
   // require control.mount, NOT control.capture (an operator can run a single
@@ -689,26 +685,6 @@ export default function SequenceView() {
     <SequenceRunStrip />
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="flex flex-col gap-4 min-w-0">
-        {/* ----------- one-shot Atlas hand-off banner (panels added from Atlas) */}
-        {atlasBannerPending != null && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="flex items-center gap-3 border border-accent/50 bg-accent/5 px-3 py-2"
-          >
-            <Icon name="check" size={16} className="text-good shrink-0" />
-            <span className="text-sm text-ink flex-1">
-              {atlasBannerPending} {atlasBannerPending === 1 ? "target" : "panels"} added from Atlas
-            </span>
-            <button
-              className="btn tap min-h-[44px] !px-3 !text-[11px]"
-              aria-label="Dismiss Atlas banner"
-              onClick={dismissAtlasBanner}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
         {/* -------------------------------- recover banner (no live panel) */}
         {recoverable && !showPanel && (
           <Panel title="Resume Interrupted Run">
@@ -1700,12 +1676,18 @@ export default function SequenceView() {
                   <RigChip f="max_eccentricity" />
                 </span>
               </label>
+              {/* The guard's set-aside lasts the night and no longer. Since S2
+                  it is a `Session.set_aside` record under tonight's night
+                  key, read back by a restart tonight and ignored on any other
+                  night, and the tooltip says exactly that, in the phrases the
+                  engine's own line uses. server/tests/test_set_aside_promises.py
+                  maps it to the tests that prove each half (#208). */}
               <label className="flex items-center justify-between gap-2">
                 <span className="text-dim inline-flex items-center gap-1">
                   skip step after N rejects
                   <InfoDot
                     label="About the per-step reject guard"
-                    content="Accepted-count mode only: after N consecutive rejected frames on one step, skip to the next step/target. The shortfall stays in the session ledger for another night."
+                    content="Accepted-count mode only: after N consecutive rejected frames on one step, that step is set aside for tonight and the run moves on to the next step or target. Its shortfall stays owed in the session ledger: a restart tonight does not retry it, the next night does."
                   />
                 </span>
                 <span className="inline-flex items-center gap-2">

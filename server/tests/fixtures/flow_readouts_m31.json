@@ -1,0 +1,36 @@
+{
+  "readouts": {
+    "n2": {
+      "node_id": "n2",
+      "mode": "rotate",
+      "panels": 6,
+      "steps": 4,
+      "rounds": 20,
+      "subs_per_panel": 80,
+      "subs_total": 480,
+      "pass_s": 480.0,
+      "panel_s": 9600.0,
+      "total_s": 57600.0,
+      "passes": 1,
+      "visit_min_s": 0.0,
+      "visit_passes": 1,
+      "visits_per_panel": 20,
+      "visits_total": 120,
+      "hop_s": 150.0,
+      "hop_measured": false,
+      "preflip_idle_s": 365.2,
+      "angle_tolerance_deg": 6.071,
+      "focus": "once",
+      "autofocus_every": 0,
+      "refocus_delta_c": 0.0
+    }
+  },
+  "rig": {
+    "fov_deg": null,
+    "fov_from": "",
+    "has_rotator": null,
+    "hop_s": null,
+    "hop_samples": 0,
+    "hop_measured": false
+  }
+}

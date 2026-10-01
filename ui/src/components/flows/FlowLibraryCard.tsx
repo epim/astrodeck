@@ -11,8 +11,18 @@
 // on this screen and they are the places a card would otherwise invent a value:
 // the meta line's FORMAT is designed but not served (§E.1), and `last_result`
 // has two more values than the design has copy (§G-26).
+//
+// A ROW FOR A FILE THIS BUILD CANNOT OPEN (#153) is drawn with the same card:
+// the server lists it with an `unreadable` reason so a damaged or newer flow
+// does not look deleted. The card prints that reason ONCE, is honest-disabled,
+// and a press does nothing - every route but the listing answers 404 for such
+// an id. The first cut also carried the reason as the card's `title` and raised
+// it as a toast on a press: one sentence three times, two of them repeating a
+// line the operator was already looking at (carry-over 6). Once is also what a
+// screen reader hears: the reason is part of the card's name, and nothing else
+// names it (#206).
 import { memo } from "react";
-import type { FlowCard } from "../../lib/flowsApi";
+import { unreadableReason, type FlowCard } from "../../lib/flowsApi";
 import type { LedState } from "../../types";
 import { Led } from "../ui";
 
@@ -37,7 +47,9 @@ export function cardMeta(card: FlowCard): string {
 export interface CardStatus {
   led: LedState;
   /** The visible word. Status is never colour alone — the LED is shape-coded
-   *  (dash / circle / SQUARE) and this word says the same thing in text. */
+   *  (dash / circle / SQUARE) and this word says the same thing in text. It
+   *  is also the only copy a screen reader hears; the LED beside it is
+   *  unlabelled (#217). */
   text: string;
   cls: string;
 }
@@ -58,6 +70,10 @@ export function cardStatus(lastResult: string): CardStatus {
     default:     return { led: "off",  text: "NEVER RUN",       cls: "text-faint" };
   }
 }
+
+/** The status word of an unreadable row. Not `NEVER RUN`, which is literally
+ *  true of it (the server claims no run) and reads as a flow waiting to be run. */
+const UNREADABLE_STATUS: CardStatus = { led: "warn", text: "CANNOT OPEN", cls: "text-warn" };
 
 // Chrome lifted from the prototype (dc.html:106): 16px pad, 150px floor,
 // radius 16, backdrop-blur 14, and an inset 1px white-5% top highlight that has
@@ -99,7 +115,8 @@ export interface FlowLibraryCardProps {
 export const FlowLibraryCard = memo(function FlowLibraryCard(
   { card, onOpen, highlight = false }: FlowLibraryCardProps,
 ) {
-  const status = cardStatus(card.last_result);
+  const unreadable = unreadableReason(card);
+  const status = unreadable ? UNREADABLE_STATUS : cardStatus(card.last_result);
   return (
     <button
       type="button"
@@ -107,11 +124,34 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
       // requires it VISIBLE — it is the only handle on a card.
       data-flow-id={card.id}
       data-flow-highlight={highlight ? "true" : undefined}
-      onClick={() => onOpen(card.id)}
+      // Honest-disabled, never `disabled`: the native attribute would drop the
+      // card out of the tab order, so a keyboard user could never reach it or
+      // hear the reason in its name.
+      aria-disabled={unreadable ? true : undefined}
+      // NO `aria-describedby`, NO `aria-label`, NO `title`. A <button> with no
+      // aria-label takes its accessible name from its content, and the printed
+      // reason line below is content, so a screen reader already hears the
+      // reason in the name. S1-09 also pointed aria-describedby at that line,
+      // which made it say the sentence twice - name, then description (#206).
+      // The two shapes that keep a description (aria-hidden on the line, or an
+      // aria-label that leaves the line out) make the description the ONLY
+      // place the reason is heard, and iOS VoiceOver reads descriptions as
+      // hints: a user with hints off would never hear why the card is locked.
+      // A `title` would be a second copy of the words for a sighted user as
+      // well (carry-over 6).
+      // NEVER `flowsOpen` for an unreadable row. The server answers 404 for its
+      // id, and `flowsOpen` writes that 404 into `libraryError` - which would
+      // replace a card that explains itself with "Could not read the flow
+      // library", a claim about the whole library that is false. And no toast:
+      // the reason is printed on the card that was just pressed, so a toast
+      // would repeat it (carry-over 6). The press is inert.
+      onClick={() => { if (!unreadable) onOpen(card.id); }}
       className={`text-left flex flex-col gap-1.5 lg:gap-2 p-3 lg:p-4 rounded-2xl
                   bg-panel backdrop-blur-[14px] text-ink border
-                  cursor-pointer transition-colors ${CARD_MIN_H} ${CARD_SHADOW} ${
-                    highlight ? "border-accent" : `border-line ${CARD_HOVER}`}`}
+                  transition-colors ${CARD_MIN_H} ${CARD_SHADOW} ${
+                    unreadable ? "cursor-default border-line"
+                      : highlight ? "cursor-pointer border-accent"
+                        : `cursor-pointer border-line ${CARD_HOVER}`}`}
     >
       <span className="font-display font-semibold text-[12.5px] tracking-[0.1em] uppercase">
         {card.name}
@@ -132,9 +172,25 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
                        lg:line-clamp-none [text-wrap:pretty]">
         {card.tagline}
       </span>
+      {/* The reason, as text on the card and NOT clamped: it is the whole
+          answer to "where did my flow go?", and a row carries no tagline to
+          make room for. The server caps it at a card line. The one copy of
+          it, for the eye and, as part of the button's name, for the ear. */}
+      {unreadable && (
+        <span data-flow-unreadable
+              className="text-[12px] text-warn leading-[1.45] [text-wrap:pretty]">
+          {unreadable}
+        </span>
+      )}
       <span className="font-mono text-[10px] text-faint">{cardMeta(card)}</span>
+      {/* The word is printed, so the LED beside it carries NO label, which
+          `Led` draws aria-hidden. A labelled LED is role="img" with that
+          label, and in a button named from its content the label stands in
+          for the LED: every card said its status twice ("... never run CANNOT
+          OPEN CANNOT OPEN", #217). The printed word is the one copy, for the
+          eye and for the ear, and it is why the status is not colour-only. */}
       <span className={`flex items-center gap-[7px] font-mono text-[10px] ${status.cls}`}>
-        <Led state={status.led} label={status.text} />
+        <Led state={status.led} />
         {status.text}
       </span>
     </button>

@@ -9,14 +9,24 @@
     ``WS_DATA`` frames out to EXACTLY that browser (fan-out isolation, §T7(4)),
     through a per-browser bounded EGRESS buffer.
 
-The per-browser egress buffer is the RELAY-side buffer (distinct from the
-home-side per-``ws_id`` buffer, W3.3.3): if it had none, ONE slow browser would
+The per-browser egress buffer is the RELAY-side buffer. The home side keeps
+none of its own per ``ws_id``: each viewer's bus subscription is the only
+buffer there (``relay_client._run_ws``). If the relay had none, ONE slow browser would
 back-pressure the relay's READ of the scope WSS and stall every sibling viewer of
 that home (a multi-tenant DoS). So a slow browser's buffer fills, applies the
-drop/coalesce policy (drop-oldest STATUS, keep-latest preview/sequence), and the
+drop/coalesce policy (keep-latest preview/sequence, drop-oldest STATUS), and the
 browser is DISCONNECTED on sustained overflow -- while siblings keep receiving
-the full stream (the §T7 fan-out-isolation case). The per-viewer ``seq`` survives
-the drop so the browser sees a gap and re-snapshots (detectable, not silent).
+the full stream (the §T7 fan-out-isolation case).
+
+A drop is announced, not silent: after the relay drops an event it sends ONE
+``{"type":"relay_gap"}`` text frame ahead of the next event it delivers, and the
+browser re-reads ``/api/monitor/snapshot`` on it (ui/src/ws.ts). This used to
+say the per-viewer ``seq`` let the browser see the gap, which nothing kept: the
+``seq`` rides the tunnel frame header and never reaches the browser, and the
+client never looked for one. Since #444 the home side sends the same frame
+after its own drops: a bus subscription that falls behind serves one
+``relay_gap`` marker (``events.Subscription``), which reaches the browser
+through the tunnel and through the server's LAN ``/ws`` alike.
 
 This layer is transport-free: a "browser response" is delivered to a callback,
 and a "browser WS" is an object with ``async send(text)`` + ``async close()``.
@@ -26,7 +36,7 @@ the unit tests drive them with in-memory fakes (NO WSS on the wire).
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import contextlib
 import json
 from dataclasses import dataclass, field
@@ -39,10 +49,16 @@ from .registry import HomeRegistration
 # Per-browser egress buffer bound (events queued toward one browser /ws).
 DEFAULT_WS_EGRESS_MAX = 200
 
-# Event ``type`` values we COALESCE on overflow (keep the latest, don't drop the
-# newest) vs DROP-OLDEST. Mirrors the home-side per-ws_id policy + the EventBus
-# drop-oldest. Status is the high-rate drop-tolerant class.
+# Event ``type`` values we COALESCE on overflow (a newer one replaces the queued
+# one of its type, so the latest always survives) vs DROP-OLDEST. Status is the
+# high-rate drop-tolerant class: the rig republishes it every 2 s. A preview is
+# published ONCE per frame and nothing republishes it, so dropping one is how
+# the LAST FRAME tile came to sit on NO FRAME YET for a whole run (#399).
 _COALESCE_TYPES = frozenset({"preview", "sequence"})
+
+# The text frame that tells a browser the relay dropped something on its way to
+# it. The browser answers by re-reading the monitor snapshot (ui/src/ws.ts).
+RELAY_GAP_FRAME = '{"type":"relay_gap"}'
 
 
 class ProxyError(Exception):
@@ -81,17 +97,86 @@ class BrowserWS:
 
 
 @dataclass
+class _Queued:
+    """One ``/ws`` event waiting in a viewer's egress buffer. ``etype`` is parsed
+    ONCE, on arrival: the overflow policy asks every queued event its type, and
+    re-parsing a full buffer's JSON on every overflowing event would put that
+    cost on the relay's read loop."""
+
+    seq: int
+    payload: bytes
+    etype: str
+
+
+class _EgressBuffer:
+    """A bounded FIFO of events toward one browser.
+
+    Not an ``asyncio.Queue``: the overflow policy has to replace a queued event
+    in its own slot and drop the oldest event OF A KIND, and a Queue offers
+    neither (only its private ``_queue``). ``maxsize <= 0`` is unbounded, as it
+    is for a Queue."""
+
+    def __init__(self, maxsize: int):
+        self.maxsize = maxsize
+        self._items: "deque[_Queued]" = deque()
+        self._ready = asyncio.Event()
+
+    def full(self) -> bool:
+        return self.maxsize > 0 and len(self._items) >= self.maxsize
+
+    def empty(self) -> bool:
+        return not self._items
+
+    def qsize(self) -> int:
+        return len(self._items)
+
+    def append(self, item: _Queued) -> None:
+        self._items.append(item)
+        self._ready.set()
+
+    def replace_newest(self, item: _Queued) -> bool:
+        """Put ``item`` in the slot of the NEWEST queued event of its type.
+        The newest, so a browser can never be handed an older event of a type
+        after a newer one. False when none of its type is queued."""
+        for i in range(len(self._items) - 1, -1, -1):
+            if self._items[i].etype == item.etype:
+                self._items[i] = item
+                return True
+        return False
+
+    def drop_oldest(self, keep_types: frozenset) -> bool:
+        """Remove the oldest queued event whose type is NOT in ``keep_types``.
+        False when every queued event is one of them."""
+        for i, q in enumerate(self._items):
+            if q.etype not in keep_types:
+                del self._items[i]
+                return True
+        return False
+
+    async def get(self) -> _Queued:
+        while not self._items:
+            self._ready.clear()
+            await self._ready.wait()
+        return self._items.popleft()
+
+
+@dataclass
 class _WsViewer:
     """Relay-side state for one tunnelled browser ``/ws``: the browser socket,
-    its bounded egress buffer, and the per-viewer ``seq`` continuity tracker."""
+    its bounded egress buffer, the last ``seq`` handed to it, and whether a drop
+    is owed a ``relay_gap`` frame."""
 
     ws_id: str
     stream_id: int
     browser: BrowserWS
     egress_max: int = DEFAULT_WS_EGRESS_MAX
-    buffer: "asyncio.Queue" = field(default_factory=asyncio.Queue)
+    buffer: _EgressBuffer = field(
+        default_factory=lambda: _EgressBuffer(DEFAULT_WS_EGRESS_MAX))
     last_seq: int = -1
     overflowed: bool = False
+    #: Set when the overflow policy drops an event; the pump clears it by
+    #: sending RELAY_GAP_FRAME ahead of the next event it delivers.
+    gap_pending: bool = False
     pump_task: Optional["asyncio.Task"] = None
 
 
@@ -191,7 +276,7 @@ class TunnelMultiplexer:
         stream_id = self.reg.next_stream_id()
         viewer = _WsViewer(ws_id=ws_id, stream_id=stream_id, browser=browser,
                            egress_max=self.ws_egress_max,
-                           buffer=asyncio.Queue(maxsize=self.ws_egress_max))
+                           buffer=_EgressBuffer(self.ws_egress_max))
         self._viewers[ws_id] = viewer
         self.reg.ws_routes[ws_id] = viewer
         viewer.pump_task = asyncio.ensure_future(self._pump_viewer(viewer))
@@ -311,34 +396,38 @@ class TunnelMultiplexer:
 
     def _enqueue_viewer(self, viewer: _WsViewer, seq: int, payload: bytes) -> None:
         """Enqueue one ``/ws`` event toward a browser, applying the bounded-
-        buffer drop/coalesce policy. The per-viewer ``seq`` is carried so a drop
-        is a DETECTABLE gap the browser re-snapshots on (not silent)."""
-        item = (seq, payload)
-        try:
-            viewer.buffer.put_nowait(item)
+        buffer drop/coalesce policy on overflow:
+
+          1. a preview/sequence REPLACES the newest queued event of its own
+             type, in that event's slot. Nothing the browser needs is lost (it
+             only ever wanted the latest), so no gap is owed;
+          2. otherwise the OLDEST non-coalesce event (a status, a log line) is
+             dropped to make room;
+          3. and if every queued event is a preview/sequence (a burst of them
+             filled the buffer before any status arrived), the oldest queued
+             event goes. That can be the only queued event of its type, which
+             is what the gap frame is for: the browser's snapshot read restores
+             status, sequence and the newest frame id.
+
+        Both arms of the old policy did the same thing, drop the oldest event
+        whatever it was, so a preview queued behind a run of 2 s status frames
+        was the first thing a slow browser lost (#399). A drop under (2) or (3)
+        owes the browser a ``relay_gap`` frame; the pump sends it."""
+        item = _Queued(seq, payload, _event_type(payload))
+        buf = viewer.buffer
+        if not buf.full():
+            buf.append(item)
             return
-        except asyncio.QueueFull:
-            pass
-        # Overflow: a slow browser. Apply the policy.
-        etype = _event_type(payload)
-        if etype in _COALESCE_TYPES:
-            # Keep the LATEST preview/sequence: drop one old item, push newest.
-            try:
-                viewer.buffer.get_nowait()
-                viewer.buffer.put_nowait(item)
-            except (asyncio.QueueEmpty, asyncio.QueueFull):
-                pass
-        else:
-            # Drop-oldest STATUS (tolerable): drop oldest, push newest.
-            try:
-                viewer.buffer.get_nowait()
-                viewer.buffer.put_nowait(item)
-            except (asyncio.QueueEmpty, asyncio.QueueFull):
-                pass
         # Sustained overflow flag: the pump disconnects the browser if the
         # buffer stays saturated (see _pump_viewer). We mark it on every overflow
         # so a persistently-full buffer trips the disconnect.
         viewer.overflowed = True
+        if item.etype in _COALESCE_TYPES and buf.replace_newest(item):
+            return
+        if not buf.drop_oldest(keep_types=_COALESCE_TYPES):
+            buf.drop_oldest(keep_types=frozenset())
+        buf.append(item)
+        viewer.gap_pending = True
 
     async def _pump_viewer(self, viewer: _WsViewer) -> None:
         """Drain one viewer's egress buffer to its browser socket. Runs as an
@@ -351,13 +440,17 @@ class TunnelMultiplexer:
         stream."""
         try:
             while True:
-                seq, payload = await viewer.buffer.get()
-                # Detectable-gap accounting: a non-contiguous seq means we
-                # dropped/coalesced -- the browser will re-snapshot. We still
-                # deliver the newest frame.
-                viewer.last_seq = seq
+                queued = await viewer.buffer.get()
+                viewer.last_seq = queued.seq
                 try:
-                    await viewer.browser.send_text(payload.decode("utf-8"))
+                    # The gap frame goes AHEAD of the next event so the browser
+                    # starts its snapshot read before it applies anything else.
+                    # Cleared before the send: a drop that lands while this send
+                    # is in flight re-arms it for the event after.
+                    if viewer.gap_pending:
+                        viewer.gap_pending = False
+                        await viewer.browser.send_text(RELAY_GAP_FRAME)
+                    await viewer.browser.send_text(queued.payload.decode("utf-8"))
                 except Exception:  # noqa: BLE001 - browser socket gone
                     await self.close_ws(viewer.ws_id, 1011)
                     return

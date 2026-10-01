@@ -418,6 +418,44 @@ await testAsync("the dew heater sends the level, and says the camera reports non
     "with no dew loop in the engine, the sheet dropped the sentence that says the level is hand-set");
 });
 
+// ---- issue #22: the cooler fan. Mutations run:
+//   drop the `/api/camera/fan` post from the stepper -> 'pressing the fan
+//   control sent nothing';
+//   `const fanLevel = fanReported ?? fanSent ?? 0` (the heater's rule) -> 'an
+//   unreported fan was drawn with a level'.
+await testAsync("the cooler fan shows the level the camera reported, and a press sends it", async () => {
+  seed({ status: camStatus({ camera: { has_fan_control: true, fan_power: 70 } }) });
+  mount();
+  await settle();
+  const row = q('[data-testid="fan-row"]');
+  assert(row != null, "a camera that reports a controllable fan got no fan row");
+  assert(/70%/.test(String(row.textContent)), `the fan level is not the one reported: "${row.textContent}"`);
+  assert(/read back from the camera/.test(String(row.textContent)), "the row does not say where the level came from");
+  asked.length = 0;
+  click(q('[data-testid="fan-power"] button[aria-label="Cooler fan power up"]'));
+  await settle();
+  const post = asked.find((a) => a.url === "/api/camera/fan");
+  assert(post != null, `pressing the fan control sent nothing (${JSON.stringify(asked)})`);
+  eq(JSON.stringify(post!.body), JSON.stringify({ power: 80 }), `the fan body is wrong (${JSON.stringify(post!.body)})`);
+});
+
+await testAsync("an unreported fan is not drawn at a level it never gave", async () => {
+  seed({ status: camStatus({ camera: { has_fan_control: true } }) });
+  mount();
+  await settle();
+  const row = q('[data-testid="fan-row"]');
+  assert(row != null, "premise: the camera declares a fan");
+  assert(q('[data-testid="fan-power"]') == null, "an unreported fan was drawn with a level");
+  assert(/has not reported its fan level/.test(String(row.textContent)), `the row does not say so: "${row.textContent}"`);
+});
+
+await testAsync("a camera with no controllable fan gets no fan row", async () => {
+  seed({ status: camStatus() });
+  mount();
+  await settle();
+  assert(q('[data-testid="fan-row"]') == null, "a fan row was drawn for a camera that declared none");
+});
+
 await testAsync("MEASURE GAIN runs the learn loop at the gain the camera is actually on", async () => {
   asked.length = 0;
   click(q('[data-testid="measure-gain"]'));

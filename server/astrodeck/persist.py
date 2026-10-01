@@ -222,6 +222,44 @@ def _refuse_component(name: str) -> bool:
             or name.split(".")[0].upper() in _WIN_RESERVED)
 
 
+def path_key(p: Path) -> str:
+    r"""A resolved path in a form two `Path.resolve()` calls can be compared in.
+
+    ISSUE #113, and it took three attempts to see. `safe_id_path` compared
+    `resolved.parent` with `base.resolve()` and refused a clean 32-character hex
+    session id roughly one full-suite run in seven, crashing whatever run was
+    starting. With the two paths finally printed, they were identical except
+    for four characters:
+
+        resolved.parent  C:\Users\...\captures\sessions
+        base.resolve()   \\?\C:\Users\...\captures\sessions
+
+    `ntpath.realpath` gets its answer from `_getfinalpathname`, which ALWAYS
+    returns the extended-length `\\?\` form, and then strips that prefix only
+    if re-resolving the stripped path yields the same final path. When that
+    verification call fails - which a concurrent create, delete or share-lock on
+    the directory can cause, and twelve xdist workers on one temporary tree
+    provide - the prefix is kept. So the two calls disagree not about WHERE the
+    path is but about how to spell it, and only sometimes.
+
+    The asymmetry is which call had an existing path to resolve: the file does
+    not exist yet, so that one takes realpath's non-strict fallback and comes
+    back stripped; the directory does exist, so that one goes through
+    `_getfinalpathname` and can keep the prefix.
+
+    `normcase` rides along because the same function is the other way two
+    resolutions of one directory can differ in spelling on Windows, and a
+    containment check has no business being case-sensitive on a filesystem that
+    is not.
+    """
+    text = os.fspath(p)
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[8:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    return os.path.normcase(text)
+
+
 def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
     """Resolve ``base/<ident><suffix>`` for a client-controllable ``ident``,
     raising ``KeyError`` for anything that is not a single contained filename
@@ -246,8 +284,48 @@ def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
             or _refuse_component(ident)):
         raise KeyError(ident)
     resolved = (base / f"{ident}{suffix}").resolve()
-    if resolved.parent != base.resolve():
-        raise KeyError(ident)
+    parent = base.resolve()
+    if path_key(resolved.parent) != path_key(parent):
+        # SAY WHAT WAS COMPARED (issue #113).
+        #
+        # This is the backstop, reached only after every string-level vector
+        # above has been excluded - so an id that gets here is one that looked
+        # like a plain filename and then failed a comparison of two resolved
+        # paths. That is either a real containment escape through a symlink, or
+        # the two `resolve()` calls disagreeing for a reason that has nothing to
+        # do with the id. Both are worth knowing about and the bare `KeyError`
+        # told them apart for nobody: a test that hit this spent a six-run hunt
+        # being read as a weather-gate failure, because the only thing anyone
+        # could see was that starting a run raised KeyError on a clean hex id.
+        #
+        # The two paths go to the LOG and not into the exception. Routes map
+        # this KeyError to a 404 and some of them put its argument in the body,
+        # so the argument stays the ident; a filesystem path in an HTTP body is
+        # a different bug.
+        try:
+            from .events import bus
+            bus.log("warning",
+                    f"safe_id_path refused {ident!r}: it resolves to {resolved} "
+                    f"(in {resolved.parent}) while the base resolves to "
+                    f"{parent}. The id itself is a plain filename, so this is "
+                    f"the containment backstop firing on the two paths and not "
+                    f"on the id.",
+                    "persist")
+        except Exception:      # noqa: BLE001 - never turn a refusal into a crash
+            pass
+        err = KeyError(ident)
+        # And on the EXCEPTION as a note, not in its args. `bus.log` reaches the
+        # run log; a pytest traceback shows neither that nor the local
+        # variables, so the first reproduction with the log in place still
+        # printed only `KeyError: <hex>`. PEP 678 notes are printed by the
+        # traceback formatter and are not part of `args`, so a route that puts
+        # `e.args[0]` in a 404 body is unaffected.
+        err.add_note(
+            f"safe_id_path: {ident!r} resolved to {resolved} (in "
+            f"{resolved.parent}) while the base {base} resolved to {parent}. "
+            f"The id is a plain filename, so the two resolutions disagreed - "
+            f"see issue #113.")
+        raise err
     return resolved
 
 
@@ -287,7 +365,11 @@ def safe_subpath(base: Path, relpath: str) -> Path:
         if _refuse_component(p):
             raise KeyError(relpath)
     resolved = base.joinpath(*parts).resolve()
-    if not resolved.is_relative_to(base.resolve()):
+    # Through `path_key` for the reason #113 gives: two `resolve()` calls on
+    # Windows can return the same directory spelled with and without the
+    # extended-length prefix, and `is_relative_to` is a string comparison.
+    _key, _root = path_key(resolved), path_key(base.resolve())
+    if not (_key == _root or _key.startswith(_root + os.sep)):
         raise KeyError(relpath)
     return resolved
 

@@ -773,6 +773,47 @@ await test('Over blank sky the gyro gets a frame past the pose gates that refuse
   sweep.stop();
 });
 
+await test('A no-pose record says WHICH source was missing (issue #76)',async()=>{
+  // The seven holds `chartyard-arc075-60` misses all record `no-pose`, and that
+  // one name covers two different states: the sensor placed the frame nowhere
+  // at all, or it read a tilt that this altitude is not entitled to use (the
+  // tilt-only path exists for the overhead band alone). They want different
+  // fixes and the log could not tell them apart.
+  //
+  // Measured with the field in place, replaying at 27cbc7aa: all 57 `no-pose`
+  // records on that case are `neither`. Not one is `below-overhead`, so the
+  // refusal is the sensor stack having nothing - which rules out the
+  // altitude-band half and is why this instrument was worth adding before any
+  // fix.
+  //
+  // The state below is the same one: a featureless hold with no gyro, where the
+  // strict rule's window is long past and the video yields no continuity.
+  const {sweep,tick,silentFrom}=await approachAndHold();
+  for(let i=0;i<25;i++)tick();
+  assert.equal(clock-silentFrom,2500);
+  flat=true;
+  const before=sweep.captureLog.length;
+  for(let i=0;i<30;i++)tick();
+  const window=sweep.captureLog.slice(before);
+  const none=window.filter(r=>r.wait==='no-pose');
+  // Without this the two assertions below are vacuous, which is exactly the
+  // shape this file keeps catching.
+  assert.ok(none.length>0,
+    `no grab over the blank hold recorded no-pose, so nothing here is graded: `
+    +`{${[...new Set(window.map(r=>`${r.outcome}/${r.wait??'-'}`))]}}`);
+  // Mutation: drop `gap` from the `no-pose` return in `grabFrame`. Observed
+  // red: 'a no-pose record did not say which source was missing'.
+  assert.ok(none.every(r=>r.gap!==undefined),
+    'a no-pose record did not say which source was missing');
+  // Mutation: `const gap:PoseGap='below-overhead';` unconditionally. Observed
+  // red: the set below reads {below-overhead}.
+  assert.deepEqual([...new Set(none.map(r=>r.gap))],['neither'],
+    `a blank hold with no gyro reported a source it did not have: `
+    +`{${[...new Set(none.map(r=>r.gap??'-'))]}}`);
+  flat=false;
+  sweep.stop();
+});
+
 await test('A gyro reporting exact zeros is not a witness, however long it reports them (issue #106)',async()=>{
   // The #63 fixture with one substitution: the stream is `{0, 0, 0}` on every
   // sample instead of a real phone's noise floor. A stuck driver, an emulator
@@ -1719,6 +1760,75 @@ await test('The same scene, the same camera: one sample per cell vouches for a v
   // the case above - putting the driver back on the grid - does NOT redden this
   // one, because this case builds its own buffers; that is the division of
   // labour between the two and the reason neither replaces the other.
+});
+
+await test('A lagged frame from before a turn is refused on the SEPARATION term (issue #104)',async()=>{
+  // The branch #104 found reached by nothing. The issue's mechanism said the
+  // two poses the term compares - forFrame at the frame's capture time, and
+  // forFrame at now - agree within 1.5 degrees by construction on the strict
+  // path, because the timed call returns a sample from inside the untimed
+  // call's 500 ms settle window. That is not so: a capture time is believed up
+  // to STALE_FRAME_MS (1000 ms) old, so the timed call can reach back past the
+  // window to a reading from before a turn, while the untimed call sees only
+  // the settled reading after it. The earlier attempt on the issue used a
+  // 1200 ms lag, which is past the stale bound and so answered no-pose.
+  //
+  // The state: readings every 100 ms (the strict rule needs them fresh, and
+  // they keep the silent-settle vouch from taking over), the phone held at
+  // offset 0, then turned 5 degrees and held again, with every frame stamped
+  // 900 ms behind the clock. From 500 ms after the turn the untimed window
+  // holds only the new heading, and until 800 ms after it the frame's capture
+  // time still lands on the old one - four 100 ms frames, which the 350 ms
+  // grab cadence cannot step over. AT 800 MS OF LAG THIS CASE FAILED FIRST:
+  // that leaves three frames, the grabs fell either side of them,
+  // and every refusal read 'unsettled'. The window is real but narrow, which
+  // is why no recording has ever shown it.
+  //
+  // The refusal is the right answer and not a false one: the frame shows the
+  // old heading while the phone is somewhere else, and nothing says the phone
+  // was still when that picture was taken.
+  // Mutation: in grabFrame, raise the separation threshold from 1.5 to 90.
+  // Observed red: 'no grab refused on the separation term'.
+  const {sweep,tick,aim}=await approachAndHold();
+  const step=(offset:number)=>{aim(offset,0);shift=0;tick(900);};
+  for(let i=0;i<12;i++)step(0);
+  const before=sweep.captureLog.length;
+  for(let i=0;i<12;i++)step(5);
+  const window=sweep.captureLog.slice(before);
+  const separated=window.filter(r=>r.outcome==='alignment-wait'&&r.wait==='separation');
+  assert.ok(separated.length>0,
+    'no grab refused on the separation term: '
+    +`{${[...new Set(window.map(r=>`${r.outcome}/${r.wait??'-'}`))]}}`);
+  // The number it decided on is the turn, not noise near the threshold.
+  assert.ok(separated.every(r=>(r.separation??0)>4&&(r.separation??0)<6),
+    `separation should read the 5 degree turn: ${separated.map(r=>r.separation)}`);
+  sweep.stop();
+});
+
+await test('The diagnostics carry the granted preview size and the readback timing (issue #90)',async()=>{
+  // #90's second half is two device numbers nothing off-device can produce:
+  // the preview resolution the browser GRANTS, and what the per-frame pixel
+  // readback costs a phone. This makes the next device scan record both in the
+  // report it already exports, instead of needing a harness of its own.
+  // In the envelope rather than only in the samples, because the session the
+  // report exists to explain is often the one with no accepted sample at all.
+  // Mutation: delete the `this.readbackMs.push(...)` line. Observed red:
+  // 'no readback was timed across a scan that read its pixels every frame'.
+  const {sweep,tick}=await approachAndHold();
+  for(let i=0;i<10;i++)tick();
+  const report=JSON.parse(sweep.alignmentReport());
+  assert.deepEqual(report.preview,{width:640,height:480},`preview was ${JSON.stringify(report.preview)}`);
+  assert.ok(report.readback&&report.readback.count>0,
+    `no readback was timed across a scan that read its pixels every frame: ${JSON.stringify(report.readback)}`);
+  for(const k of ['p50','p95','max'])assert.equal(typeof report.readback[k],'number',k);
+  sweep.stop();
+});
+
+await test('readbackSummary says "never read" rather than "read in 0 ms"',async()=>{
+  const {readbackSummary}=await import('../photosphere');
+  assert.equal(readbackSummary([]),null);
+  const s=readbackSummary(Array.from({length:100},(_,i)=>i+1))!;
+  assert.deepEqual(s,{count:100,p50:51,p95:96,max:100});
 });
 
 console.log(`photosphereStillnessDom.test: ${passed}/${passed+failed} passed`);

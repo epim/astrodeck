@@ -99,6 +99,7 @@ export function CatalogSearch({
   const [dismissed, setDismissed] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const dropRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   // px the suggestion list is nudged left so it cannot run off the screen. 0 in
   // every layout that already fits (see dropdownShiftPx).
   const [dropShift, setDropShift] = useState(0);
@@ -156,6 +157,13 @@ export function CatalogSearch({
     onPick(e);
     setSearch("");
     setResults([]);
+    // The field kept its focus through the press (the result buttons cancel
+    // their mousedown, below), so it gives it up once the pick has landed: a
+    // phone's keyboard closes over the page the pick changed, and a host that
+    // shrank its layout for typing grows it back. That is where focus ended
+    // up after a pick before, when the press moved it to the button the pick
+    // then removed.
+    inputRef.current?.blur();
   };
 
   const showDropdown = search.trim().length > 0 && !dismissed;
@@ -239,6 +247,7 @@ export function CatalogSearch({
         if (to && !e.currentTarget.contains(to)) setDismissed(true);
       }}>
       <input
+        ref={inputRef}
         className="field btn-touch"
         placeholder={placeholder}
         aria-label="Search the target catalog"
@@ -258,7 +267,21 @@ export function CatalogSearch({
             <p className="px-3 py-2 text-xs text-dim">Searching…</p>
           ) : results.length > 0 ? (
             results.map((r) => (
+              // A PRESS MUST NOT MOVE FOCUS (#492). Moving focus is the default
+              // action of mousedown, a touch screen's too (the tap's
+              // compatibility mousedown, after touchend), so the press took
+              // focus off the field before the release. A host that lays out
+              // differently while a field is focused re-laid out under the
+              // pointer: the Target modal leaves typing mode on that blur, its
+              // sky grew 52 px, the list moved down with it, and the release
+              // landed on another row, so a pick took two taps. Cancelling
+              // the mousedown keeps the field focused until the click, in
+              // every engine. Keeping the host's typing state while focus moves
+              // within this widget (a relatedTarget test) would not: WebKit
+              // and macOS Firefox never focus a pressed button, so there the
+              // field blurs to nothing, relatedTarget null.
               <button key={r.id} type="button" onClick={() => pick(r)}
+                onMouseDown={(e) => e.preventDefault()}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex justify-between cursor-pointer">
                 <span><span className="mono text-accent">{r.id}</span> {r.name}</span>
                 <span className={`mono ${altTone(r.alt, "text-dim")}`}>

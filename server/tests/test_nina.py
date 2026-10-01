@@ -9,6 +9,8 @@ import httpx
 import pytest
 
 import astrodeck.hub as hub_module
+
+from _simhub import a_real_site
 from astrodeck.devices.nina import build_nina_rig, _sep_deg
 from astrodeck.focus import run_autofocus
 from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Target
@@ -193,6 +195,11 @@ async def test_engine_flip_triggers_on_server_ha_not_device(nina_hub, monkeypatc
     # date/time independent.
     monkeypatch.setattr(hub_module.config_store.cfg().safety,
                         "solar_avoidance", False)
+    # A REAL SITE (#24). The whole case is a longitude computation, and
+    # the engine now declines a flip outright when the site is the 0,0
+    # default - so without this the assertion at the bottom grades the
+    # refusal rather than the countdown it is about.
+    a_real_site(monkeypatch)
 
     flips: list[tuple] = []
     real_flip = h.meridian_flip

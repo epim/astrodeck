@@ -18,14 +18,17 @@ enough to name.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
-from astrodeck.flows.compile import compile_plan
+from astrodeck.flows.compile import compile_plan, is_multi_panel
 from astrodeck.flows.examples import examples
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
 from astrodeck.flows.to_plan import (
-    GraphNotRunnable, LEGAL_ACTIONS, LEGAL_TRIGGERS, blocking_reasons,
-    to_sequence_plan)
+    GraphNotRunnable, LEGAL_ACTIONS, LEGAL_TRIGGERS, NODE_SETTINGS,
+    blocking_reasons, to_sequence_plan)
 
 
 def _n(nid, ntype, x=0.0, y=0.0, **params):
@@ -39,10 +42,11 @@ def _e(a, ap, b, bp):
 def _one_target(rotation=0, **capture):
     """A minimal runnable graph: dusk -> target -> capture.
 
-    ``rotation`` is passed EXPLICITLY because the TARGET node's shipped default
-    is 23.4 (it mirrors the M31 example), so a graph that simply omits it does
-    not exercise the unset case at all — which is the whole point of the
-    zero-means-no-constraint coercion.
+    ``rotation`` is passed EXPLICITLY so every test states the angle it means.
+    The TARGET node's shipped default was 23.4 (it mirrored the M31 example)
+    until #150 made it -1, "any angle"; a test that leaned on the default
+    would have changed meaning with it, silently, which is the class of the
+    zero-means-no-constraint coercion these tests exist for.
     """
     params = {"filter": "L", "exposure": 120, "gain": 100, "bin": "1",
               "count": 10, "goal": 0}
@@ -85,6 +89,37 @@ class TestTheSilentLosses:
         assert sched.start_offset_min == -30
         assert sched.stop_mode == "dawn"
         assert sched.min_altitude_deg == 30
+
+    def test_clock_time_start_and_stop_reach_the_target_s_schedule(self):
+        """WP-09 follow-up (#191, backlog W1). ``to_plan.SCHEDULE_KEYS``
+        left ``start_time``/``stop_time`` out of the tuple it filters the
+        compiled ``schedule`` dict through, so even after
+        ``compile._dusk_schedule`` learned to emit them for a Clock-time
+        Start or Stop, they were dropped right back out before ever
+        reaching the running ``Target.schedule`` -- a card that read "Clock
+        time" compiled a `start_mode`/`stop_mode` of "time" with no time on
+        the plan the engine actually runs.
+
+        RED under mutant "the two keys dropped again" (``SCHEDULE_KEYS``
+        reverted to its four original names), observed:
+
+            AssertionError: 'start_time'
+        """
+        g = FlowGraph(
+            nodes=[_n("d", "dusk", start="Clock time", startClock="20:15",
+                      offset=-30, stop="Clock time", stopClock="05:30",
+                      minAlt=30),
+                   _n("t", "target", x=100, name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09"),
+                   _n("c", "capture", x=200, filter="L", exposure=120,
+                      gain=100, bin="1", count=10, goal=0)],
+            edges=[_e("d", "window", "t", "arm"), _e("t", "target", "c", "run")])
+        plan, _ = to_sequence_plan(compile_plan(g, "n"))
+        sched = plan.targets[0].schedule
+        assert sched.start_mode == "time"
+        assert sched.start_time == "20:15"
+        assert sched.stop_mode == "time"
+        assert sched.stop_time == "05:30"
 
     def test_run_now_stays_run_now(self):
         g = _one_target()
@@ -552,3 +587,153 @@ class TestTheShippedExamples:
         assert plan.targets[0].schedule.start_mode == "now"
         step = plan.targets[0].steps[0]
         assert step.exposure_s == 4 and step.gain == 300 and step.binning == 2
+
+
+#: Every Example with no multi-panel block: all but the eighth (S3-W).
+_NO_MOSAIC = [e for e in examples()
+              if not any(is_multi_panel(n) for n in e.graph.nodes)]
+
+
+class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
+    """THE CONTROL FOR S3's COMPILE PATH (#170, #189). Every TARGET now tells
+    the run its centring, and nothing else about a plan with no multi-panel
+    block may move: not a step, not a schedule, not an id.
+
+    Each hash below is ``sha256(json.dumps(dump, sort_keys=True))`` of the
+    Example's plan, compiled with the flow id ``control-<example id>`` so the
+    target and step ids are in it, instruction ids blanked (uuid4 on every
+    compile), and ``center_tolerance_arcmin`` / ``center_attempts`` reset to
+    None on every target. Captured by running the same code against
+    ``compile.py`` and ``to_plan.py`` as they stood BEFORE this change (sha256
+    fda9f471... and 24576818..., scratchpad s3-cp/pre), and the dump of the
+    changed code matches every one of them.
+
+    Mutant "one more field on every Target" (the plain target also gets
+    ``autofocus_skip_if_fresh = True``), observed for every Example with a
+    TARGET, the first of the five:
+
+        AssertionError: example-m31 moved beyond its centring
+        assert '6d62fa81320b...307a84c65a1bc' == '06c06c24b384...bfb8228a430f7'
+
+    RE-PINNED IN THE INTEGRATION OF S3, deliberately, for two changes S3-W
+    made to the Examples and nothing else:
+
+    * THE EIGHTH EXAMPLE, example-m31-mosaic, is a 3x2 block: a plan WITH a
+      mosaic, which this class is not about. The corpus is every Example with
+      no multi-panel block (``_NO_MOSAIC``), and the one left out is named.
+    * EVERY EXAMPLE COUNTS ACCEPTED SUBS (Revision 2 ruling 2: a created block
+      counts them, and the Examples are what a person would create). So
+      ``count_mode`` is reset to "attempts", its value when the hashes were
+      captured, exactly as the centring is reset, and the deliberate half
+      below asserts "accepted" on every plan. Checked: with that reset, all
+      seven hashes match the current code unchanged.
+
+    RE-PINNED AGAIN IN BACKLOG WP-09 (#191, 2026-09-30), deliberately, for
+    one change and nothing else: every Example's DUSK WINDOW picks "Astro
+    dusk" (the unset-Start default), which now compiles its own
+    ``Schedule.twilight_deg`` (-18) onto every TARGET (`compile.
+    _dusk_schedule`, `to_plan.SCHEDULE_KEYS`) — a field the pre-fix dump did
+    not have at all, so all seven hashes move together. Checked: regenerated
+    from the SAME ``_dump`` below, against the fixed code, with no other
+    change to the Examples or the dump's own resets.
+    """
+
+    BEFORE = {
+        "example-campaign":
+            "c471f1e45b000d9fb5f749c6a117eeca290abd6d68b7b4ff9158936dc0059c64",
+        "example-m31":
+            "fe21b040ed860e8d8ac705dc6f9b870bfe186c51be3c591082731deac65e35ba",
+        "example-m16":
+            "b52f3243aaeeb357edc186e0251d19e32410cec3aaa34fe0907f3582fd776b7a",
+        "example-cycle":
+            "04e71d1ec8a9b707104d77c5fe7f43edb6f520a5e205c5f374263e7076740fb2",
+        "example-pool":
+            "80431c4d9bb24f79e0afba13cccca5d9cb3b0719f1cf671b6d2189cc837a77b2",
+        "example-nb":
+            "7fdfe1d9a411e80e1724bb7e3f9581a4e3c0e5bffffe697fd808bad5b540a947",
+        "example-eaa":
+            "fb6f5ec4ef967c6418d36f50b388d5d7e7657045c26e24b1afb04fbd47cdf5bf",
+    }
+
+    @staticmethod
+    def _dump(rec) -> tuple[str, list, str]:
+        plan, _ = to_sequence_plan(compile_plan(rec.graph, rec.name),
+                                   rec.graph, flow_id="control-" + rec.id)
+        got = plan.model_dump(mode="json")
+        for ins in got["instructions"]:
+            ins["id"] = ""
+        centre = []
+        for t in got["targets"]:
+            centre.append((t.pop("center_tolerance_arcmin"),
+                           t.pop("center_attempts")))
+            t["center_tolerance_arcmin"] = t["center_attempts"] = None
+        count_mode = got["count_mode"]
+        got["count_mode"] = "attempts"
+        blob = json.dumps(got, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest(), centre, count_mode
+
+    def test_the_corpus_is_every_example_with_no_mosaic(self):
+        assert set(self.BEFORE) == {e.id for e in _NO_MOSAIC}
+        assert {e.id for e in examples()} - set(self.BEFORE) == {
+            "example-m31-mosaic"}
+
+    @pytest.mark.parametrize("ex", _NO_MOSAIC, ids=lambda e: e.id)
+    def test_an_example_moves_only_by_its_centring(self, ex):
+        digest, _centre, _mode = self._dump(ex)
+        assert digest == self.BEFORE[ex.id], (
+            f"{ex.id} moved beyond its centring")
+
+    @pytest.mark.parametrize("ex", _NO_MOSAIC, ids=lambda e: e.id)
+    def test_every_example_counts_accepted_subs(self, ex):
+        """The other deliberate half: the count mode the hash resets.
+
+        Mutant "every plan counts attempts" (in a private scratch copy of
+        to_plan.py, the ``if _count_mode(built, unmapped) == "accepted":``
+        that sets ``fields["count_mode"]`` made ``if False:``), observed for
+        all seven:
+
+            AssertionError: example-campaign counts 'attempts'
+            assert 'attempts' == 'accepted'
+        """
+        _digest, _centre, mode = self._dump(ex)
+        assert mode == "accepted", f"{ex.id} counts {mode!r}"
+
+    @pytest.mark.parametrize("ex", _NO_MOSAIC, ids=lambda e: e.id)
+    def test_the_centring_is_the_targets_own_and_a_pool_member_has_none(
+            self, ex):
+        """The deliberate half: every TARGET carries the hub's own 1.2 arcmin
+        and 3 tries, which is what it centred to before, and a POOL member
+        carries nothing, so its call is the hub's default as it was.
+
+        Mutant "centring never reaches the Target" (``to_plan._centring``
+        returns ``{}``), observed:
+
+            AssertionError: assert [(None, None)] == [(1.2, 3)]
+        """
+        _digest, centre, _mode = self._dump(ex)
+        want = [(None, None) if n.type == "pool" else (1.2, 3)
+                for n in ex.graph.nodes if n.type in ("target", "pool")
+                for _ in (str(n.params.get("members") or "x").split(",")
+                          if n.type == "pool" else ["x"])]
+        assert centre == want
+
+
+class TestTheLegacySlewNote:
+    def test_the_slew_card_points_at_the_targets_centring(self):
+        """Spec 1.7: SLEW + CENTER is part of the TARGET block now, so where
+        the real tolerance lives is the TARGET's CENTRING section, not "the
+        run's own centring loop", and its own numbers are named as never
+        having reached a run.
+
+        Mutant "the note still names the run's loop" (the pre-S3 ``source``
+        and ``detail`` restored), observed:
+
+            AssertionError: assert "the TARGET block's CENTRING" in "the run's own centring loop (1.2 arcmin, at most 3 attempts, the rig's configured solver)"
+        """
+        note = NODE_SETTINGS["slew"]
+        detail, _carried, ignored, source = note.render(
+            {"tol": 0.5, "retries": 3, "solver": "ASTAP"})
+        assert "the TARGET block's CENTRING" in source
+        assert "the 0.5 arcmin tolerance" in ignored
+        assert "never reached the run" in detail
+        assert "set centring on the TARGET" in detail

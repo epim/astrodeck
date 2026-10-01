@@ -29,9 +29,10 @@ import astrodeck.sequence.engine as engine_mod
 from astrodeck.config import (AppConfig, ConfigStore, EscalationConfig,
                               SafetyConfig, Site)
 from astrodeck.devices.base import SafetyReading
+from astrodeck.events import bus
 from astrodeck.hub import Hub
 from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Target
-from astrodeck.sequence.report import SessionReporter
+from astrodeck.sequence.report import ReportRead, SessionReporter
 
 
 # --------------------------------------------------------------------- fixtures
@@ -119,31 +120,130 @@ async def wait_for(predicate, timeout=30.0):
     return False
 
 
+#: The bus lines that say a report write, or a report read, went wrong: the
+#: reporter's own warning, the engine's when finalize() raised past it, and a
+#: read that could not open the file.
+_REPORT_TROUBLE = ("session report write failed", "report finalize failed",
+                   "could not be read")
+
+
+async def _why_no_report(got: ReportRead, lines: asyncio.Queue) -> str:
+    """Everything the next occurrence of #370 needs to name its own cause.
+
+    #370's three candidates, and what separates them here: the write failed
+    (a "session report write failed" or "report finalize failed" line, and no
+    file), the read hit a transient lock while the report was on disk (reason
+    ``unreadable``, the file there), or the file was never there (``missing``,
+    no line). The directory listing shows a staging file when a write was in
+    flight at the read, and the second read, a second later, says whether the
+    report turned up after all."""
+    exists = got.path.exists()
+    folder = got.path.parent
+    listing = (sorted(p.name for p in folder.iterdir()) if folder.is_dir()
+               else "no reports directory")
+    trouble = []
+    while not lines.empty():
+        ev = lines.get_nowait()
+        msg = str(ev.data.get("message", "")) if ev.type == "log" else ""
+        if any(t in msg for t in _REPORT_TROUBLE):
+            trouble.append(f"{ev.data.get('source')}: {msg}")
+    await asyncio.sleep(1.0)
+    later = SessionReporter.read(got.path.stem)
+    return (f"no report after the unsafe abort (#370): read said "
+            f"reason={got.reason!r} ({got.detail}) after {got.attempts} "
+            f"attempt(s); path={got.path}; the file exists now: {exists}; "
+            f"the directory holds {listing}; report trouble on the bus: "
+            f"{trouble or 'none'}; read again 1 s later: "
+            f"reason={later.reason!r}, "
+            f"report {'present' if later.report else 'absent'}")
+
+
 # --------------------------------------------------------- abort_park_warm preset
 
 async def test_unsafe_aborts_and_parks_under_remote_preset(sim_hub, temp_store):
-    """on_unsafe=abort_park_warm + unsafe_consecutive=1: the first unsafe frame
+    r"""on_unsafe=abort_park_warm + unsafe_consecutive=1: the first unsafe frame
     tears the night down (aborted / end_reason unsafe), parks the mount, and
-    finalizes the report as 'unsafe'."""
+    finalizes the report as 'unsafe'.
+
+    THE REPORT ASSERTION EXPLAINS ITSELF (#370). It failed once in a loaded
+    full-suite run as ``assert None is not None``, which could not say whether
+    the write failed, the read hit a lock, or the file was never there. It now
+    reads through ``SessionReporter.read`` and fails with the reason, the path,
+    whether the file exists, the directory, the report trouble on the bus and
+    a second read (``_why_no_report``). Shown under two mutants of
+    ``report.py`` in a private copy (scratchpad/S5-REPORT-mut); the observed
+    messages, with the copy's temporary directory elided as <tmp>:
+
+    Mutant "report never written" (``_persist`` returns at once):
+        E   Failed: no report after the unsafe abort (#370): read said
+            reason='missing' (FileNotFoundError: [Errno 2] No such file or
+            directory) after 1 attempt(s);
+            path=<tmp>\captures\reports\safetytest-20260928-050930.json; the
+            file exists now: False; the directory holds no reports directory;
+            report trouble on the bus: none; read again 1 s later:
+            reason='missing', report absent
+
+    Mutant "every write refused" (``write_json_atomic`` in ``_persist``
+    replaced by a raise of the PermissionError a sharing violation gives):
+        E   Failed: no report after the unsafe abort (#370): read said
+            reason='missing' (FileNotFoundError: [Errno 2] No such file or
+            directory) after 1 attempt(s);
+            path=<tmp>\captures\reports\safetytest-20260928-050934.json; the
+            file exists now: False; the directory holds []; report trouble on
+            the bus: ['report: session report write failed (final report,
+            retrying once) at reports/safetytest-20260928-050934.json:
+            PermissionError: [WinError 32] The process cannot access the file
+            because it is being used by another process', 'report: session
+            report write failed (final report, after one retry) at
+            reports/safetytest-20260928-050934.json: PermissionError:
+            [WinError 32] ...', 'report: session report write failed
+            (snapshot) at reports/safetytest-20260928-050934.json:
+            PermissionError: [WinError 32] ...']; read again 1 s later:
+            reason='missing', report absent
+
+    WHICH CAUSE #370 WAS, from the reproduction in that copy with the pre-#370
+    read (no retry) put back and every write and read traced: #370's cause
+    (2). ``record_safety`` schedules a snapshot write as a task, the unsafe
+    verdict's SafetyAbort then finalizes synchronously, and the snapshot runs
+    after the final write, on a worker thread. The fast simulator's wind-down
+    ends first, so this test read the report while that snapshot was
+    rewriting it, and Windows refused the read: in 20 of 20 traced failures
+    the read opened the file while the snapshot's ``os.replace`` was putting
+    it over the report. Observed, abridged:
+        E   Failed: no report after the unsafe abort (#370): read said
+            reason='unreadable' (PermissionError: [Errno 13] Permission
+            denied) after 1 attempt(s); ...; the file exists now: True; ...;
+            read again 1 s later: reason=None, report present
+    The read now waits such a refusal out (``_READ_RETRIES``), which is why
+    the same stress on the fixed copy did not fail.
+    """
     set_safety(temp_store, enabled=True, on_unsafe="abort_park_warm",
                unsafe_consecutive=1, min_alt_deg=0.0)
     force_cached_unsafe(sim_hub, "cloud sensor")
 
-    engine = SequenceEngine(sim_hub)
-    engine.start(light_plan())
-    # wait for the run task to FULLY finish (the shielded wind-down runs after the
-    # 'aborted' state is published).
-    assert await wait_for(lambda: not engine.running)
-    assert engine.state.get("state") == "aborted"
-    assert engine.state.get("end_reason") == "unsafe"
-    # shielded wind-down parked the mount.
-    assert await sim_hub.require("telescope").is_parked()
-    # the report finalized as unsafe and is listable.
-    rep = SessionReporter.load(engine.reporter.id)
-    assert rep is not None
+    lines = bus.subscribe()
+    try:
+        engine = SequenceEngine(sim_hub)
+        engine.start(light_plan())
+        # wait for the run task to FULLY finish (the shielded wind-down runs
+        # after the 'aborted' state is published).
+        assert await wait_for(lambda: not engine.running)
+        assert engine.state.get("state") == "aborted"
+        assert engine.state.get("end_reason") == "unsafe"
+        # shielded wind-down parked the mount.
+        assert await sim_hub.require("telescope").is_parked()
+        # the report finalized as unsafe and is listable.
+        got = SessionReporter.read(engine.reporter.id)
+        if got.report is None:
+            pytest.fail(await _why_no_report(got, lines))
+    finally:
+        bus.unsubscribe(lines)
+    rep = got.report
     assert rep.end_reason == "unsafe"
     assert any(ev["reason"] == "cloud sensor" for ev in rep.safety_events)
-    assert engine.reporter.id in [r["id"] for r in SessionReporter.list_reports()]
+    scan = SessionReporter.scan_reports()
+    assert engine.reporter.id in [r["id"] for r in scan.summaries], (
+        f"not listed; the list could not read {scan.unreadable}")
 
 
 # ------------------------------------------------------- pause / auto-resume

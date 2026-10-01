@@ -39,6 +39,23 @@ from test_cloudmap_service import (  # the synthetic sky, shared verbatim
 
 REPO = Path(__file__).resolve().parents[2]
 
+#: A picked look direction, as the POST form carries it.
+#:
+#: RE-PINNED FOR #520, DELIBERATELY. Every case below that asked about a
+#: direction used to write it into the URL as ``/api/cloudmap/at?alt=45&az=180``.
+#: That form is gone: the mount's pointing is read server-side by the GET, and
+#: a picked direction travels in a POST body, where no access log writes it
+#: down. The assertions are unchanged; only the way the question is put moved.
+PICKED = {"alt": 45, "az": 180}
+
+
+def _raw_at(c, body: str):
+    """POST a body httpx will not encode itself. ``json=`` refuses NaN
+    (``allow_nan=False``), and a NaN azimuth is one of the domain errors this
+    file pins."""
+    return c.post("/api/cloudmap/at", content=body,
+                  headers={"content-type": "application/json"})
+
 
 # --------------------------------------------------------------------- harness
 
@@ -103,19 +120,26 @@ def test_disabled_returns_two_hundred_not_a_404(tmp_path, monkeypatch):
     _store, app, _svc = _make(tmp_path, monkeypatch, enabled=False,
                               populate=False)
     with TestClient(app) as c:
-        for url in ("/api/cloudmap",
-                    "/api/cloudmap/dome",
-                    "/api/cloudmap/at?alt=45&az=180"):
-            r = c.get(url)
-            assert r.status_code == 200, url + " -> " + r.text
+        # The look route is asked both ways (#520): the telescope GET, and a
+        # picked direction POSTed. Switched off is a 200 on both.
+        for label, ask in (("/api/cloudmap", lambda: c.get("/api/cloudmap")),
+                           ("/api/cloudmap/dome",
+                            lambda: c.get("/api/cloudmap/dome")),
+                           ("GET /api/cloudmap/at",
+                            lambda: c.get("/api/cloudmap/at")),
+                           ("POST /api/cloudmap/at",
+                            lambda: c.post("/api/cloudmap/at", json=PICKED))):
+            r = ask()
+            assert r.status_code == 200, label + " -> " + r.text
             body = r.json()
-            assert body["enabled"] is False, url
-            assert body["observed_at"] is None, url
-            assert body["credit"]["source"] == CREDIT_SOURCE, url
+            assert body["enabled"] is False, label
+            assert body["observed_at"] is None, label
+            assert body["credit"]["source"] == CREDIT_SOURCE, label
         assert c.get("/api/cloudmap").json()["motion"] is None
         assert c.get("/api/cloudmap/dome").json()["rows"] is None
-        assert c.get("/api/cloudmap/at?alt=45&az=180").json()["basis"] \
+        assert c.post("/api/cloudmap/at", json=PICKED).json()["basis"] \
             == "no_data"
+        assert c.get("/api/cloudmap/at").json()["basis"] == "no_data"
 
 
 # ================================================== 12. NOAA gets named
@@ -156,7 +180,9 @@ def test_the_dome_route_carries_the_noaa_credit(tmp_path, monkeypatch):
         assert body["stale"] is False
         # Every other surface carries it too, or 6b has to remember which.
         assert c.get("/api/cloudmap").json()["credit"]["source"] == CREDIT_SOURCE
-        assert c.get("/api/cloudmap/at?alt=45&az=180").json()["credit"][
+        assert c.post("/api/cloudmap/at", json=PICKED).json()["credit"][
+            "source"] == CREDIT_SOURCE
+        assert c.get("/api/cloudmap/at").json()["credit"][
             "source"] == CREDIT_SOURCE
 
 
@@ -172,7 +198,7 @@ def test_the_at_route_reports_the_beam_and_the_cell_together(
     quietly."""
     _store, app, _svc = _make(tmp_path, monkeypatch)
     with TestClient(app) as c:
-        r = c.get("/api/cloudmap/at?alt=45&az=180")
+        r = c.post("/api/cloudmap/at", json=PICKED)
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["basis"] in ("crossing", "mask_only")
@@ -206,8 +232,13 @@ def test_a_bad_step_is_a_400_and_a_missing_mask_is_a_200(tmp_path, monkeypatch):
                     "alt_step=-2"):
             r = c.get("/api/cloudmap/dome?" + bad)
             assert r.status_code == 400, bad + " -> " + str(r.status_code)
-        for bad in ("alt=0&az=180", "alt=91&az=180", "alt=45&az=nan",
-                    "alt=45&az=180&ahead_s=-1", "alt=45&az=180&ahead_s=nan"):
+        for bad in ('{"alt":0,"az":180}', '{"alt":91,"az":180}',
+                    '{"alt":45,"az":NaN}', '{"alt":45,"az":180,"ahead_s":-1}',
+                    '{"alt":45,"az":180,"ahead_s":NaN}'):
+            r = _raw_at(c, bad)
+            assert r.status_code == 400, bad + " -> " + str(r.status_code)
+        # The lead time is still the telescope GET's to get wrong.
+        for bad in ("ahead_s=-1", "ahead_s=nan"):
             r = c.get("/api/cloudmap/at?" + bad)
             assert r.status_code == 400, bad + " -> " + str(r.status_code)
         # 45 exactly is inside stage 4's (0, 45] and must be accepted.
@@ -235,20 +266,22 @@ def test_a_bad_step_is_a_400_and_a_missing_mask_is_a_200(tmp_path, monkeypatch):
         assert c.get("/api/cloudmap/dome?alt_step=0").status_code == 400
         assert c.get("/api/cloudmap/dome?alt_step=0.01&az_step=0.01"
                      ).status_code == 400
-        assert c.get("/api/cloudmap/at?alt=0&az=180").status_code == 400
-        assert c.get("/api/cloudmap/at?alt=45&az=180&ahead_s=-1"
-                     ).status_code == 400
+        assert _raw_at(c, '{"alt":0,"az":180}').status_code == 400
+        assert _raw_at(c, '{"alt":45,"az":180,"ahead_s":-1}'
+                       ).status_code == 400
+        assert c.get("/api/cloudmap/at?ahead_s=-1").status_code == 400
         r = c.get("/api/cloudmap/dome")
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["enabled"] is True
         assert body["rows"] is None
         assert body["reason"], "no rows and no reason is indistinguishable"
-        r = c.get("/api/cloudmap/at?alt=45&az=180")
-        assert r.status_code == 200
-        assert r.json()["basis"] == "no_data"
-        assert r.json()["probability"] is None
-        assert r.json()["reason"]
+        for r in (c.post("/api/cloudmap/at", json=PICKED),
+                  c.get("/api/cloudmap/at")):
+            assert r.status_code == 200
+            assert r.json()["basis"] == "no_data"
+            assert r.json()["probability"] is None
+            assert r.json()["reason"]
 
 
 # ================= 14b. the refusal has to be provable without the work
@@ -366,9 +399,13 @@ def test_no_route_here_is_reachable_without_a_session(tmp_path, monkeypatch):
         with TestClient(app) as c:
             for url in ("/api/cloudmap",
                         "/api/cloudmap/dome",
-                        "/api/cloudmap/at?alt=45&az=180"):
+                        "/api/cloudmap/at"):
                 r = c.get(url)
                 assert r.status_code == 401, url + " -> " + str(r.status_code)
+            # The picked-direction form is behind the same gate (#520).
+            r = c.post("/api/cloudmap/at", json=PICKED)
+            assert r.status_code == 401, "POST /api/cloudmap/at -> " + str(
+                r.status_code)
     finally:
         reset_active_provider()
 

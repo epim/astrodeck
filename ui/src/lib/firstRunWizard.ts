@@ -14,6 +14,15 @@ export interface WizardSnapshot {
   equipConnected: boolean;
   profileCount: number;
   targetCount: number;
+  /** Flows saved in the library. OPTIONAL, and why: since S6 (#196) the
+   *  "Pick a target" step sends the novice to SEND TO FLOW WIZARD, which saves
+   *  a flow and adds nothing to the Plan, so a step done only by `targetCount`
+   *  would never tick for the one route its own text gives. The two readers
+   *  that build this snapshot (`components/FirstRunWizard.tsx` and
+   *  `next/hubs/settings/general/useSetup.ts`) are not S6-DOORS's files and do
+   *  not pass it yet; until they do the step still ticks for a Plan target,
+   *  as it always did, and a snapshot without it means "no flow known". */
+  flowCount?: number;
   hasCooler: boolean;
   coolerActive: boolean;
   frameCount: number;
@@ -73,9 +82,12 @@ export const WIZARD_STEPS: readonly WizardStepDef[] = [
     body: "Back on Equipment, keep scrolling past Rig Actions to the Profiles panel. Save this rig and it reconnects with one tap.",
     need: "a profile is saved",
     cta: "Equipment", view: "connect" },
+  // SEND TO FLOW WIZARD, not the Plan (#196, spec section 8 S6): the Atlas's
+  // forward action opens the wizard, which saves a flow. A target typed into
+  // the Plan by hand still ticks the step, so `need` names both.
   { id: "target", title: "Pick a target",
-    body: "Open Atlas — on a phone it's behind MORE in the bottom bar. Search or tap the sky, then press Add target to Plan.",
-    need: "a target is in your plan",
+    body: "Open Atlas — on a phone it's behind MORE in the bottom bar. Search or tap the sky, then press SEND TO FLOW WIZARD.",
+    need: "the wizard has saved a flow, or a target is in your plan",
     cta: "Atlas", view: "atlas" },
   { id: "cool", title: "Cool the camera",
     body: "Open Capture and scroll all the way to the BOTTOM — the Cooler panel is down there. Type a Target °C, then press Cool.",
@@ -96,7 +108,7 @@ function isDone(id: WizardStepId, s: WizardSnapshot): boolean {
     case "location": return !s.siteIsDefault;
     case "connect":  return s.equipConnected;
     case "profile":  return s.profileCount > 0;
-    case "target":   return s.targetCount > 0;
+    case "target":   return s.targetCount > 0 || (s.flowCount ?? 0) > 0;
     case "cool":     return s.coolerActive;
     case "frame":    return s.frameCount > 0;
   }

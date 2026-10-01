@@ -479,3 +479,107 @@ def test_cal_reusable_accepts_the_good_dict():
     g = NativeGuider(rig["guide_camera"], rig["telescope"],
                      config={"image_scale_arcsec": 2.0}, profile_id=None)
     assert g._cal_reusable(_good_cal_dict()) is True
+
+
+def test_a_calibration_too_far_from_square_is_not_reused(caplog):
+    """#111. On 2026-09-20 a post-flip recalibration came back 39.83 degrees
+    from orthogonal, was marked is_valid, was persisted, and was then handed
+    straight back by a stop-and-start ("reusing persisted calibration") --
+    the operator's most natural remedy restoring the exact calibration that
+    was walking the field. Two axes that far from square decompose every
+    correction wrongly.
+
+    The threshold is the engine's own CAL_ALERT_ORTHOGONALITY_TOLERANCE_DEG,
+    the angle at which it already raises "RA/Dec axis angles are
+    questionable". Until this fix that advisory was the only consumer of its
+    own finding.
+
+    MUTATION: delete the orthogonality arm (the `ortho >
+    _MAX_CAL_ORTHO_ERROR_DEG` block) from `_cal_reusable`. Observed under it:
+    both assertions below fail, because the 39.83 and 28.29 degree dicts are
+    accepted for reuse exactly as they were on the night.
+    """
+    import math as _math
+
+    from astrodeck.guide.native import _MAX_CAL_ORTHO_ERROR_DEG, NativeGuider
+
+    rig = build_sim_rig()
+    g = NativeGuider(rig["guide_camera"], rig["telescope"],
+                     config={"image_scale_arcsec": 2.0}, profile_id=None)
+
+    # The two calibrations actually measured on the rig that night.
+    for measured_deg in (39.83, 28.29):
+        cal = _good_cal_dict()
+        cal["y_angle_error"] = _math.radians(measured_deg)
+        assert g._cal_reusable(cal) is False, (
+            f"a calibration {measured_deg} deg from orthogonal was accepted "
+            "for reuse")
+
+    # A rig whose DEC AXIS RUNS REVERSED calibrates with a raw error near pi
+    # and is perfectly square (GN-06). Folding is why that rig still gets its
+    # calibration reused instead of being refused every night.
+    reversed_but_square = _good_cal_dict()
+    reversed_but_square["y_angle_error"] = _math.pi - _math.radians(1.0)
+    assert g._cal_reusable(reversed_but_square) is True, (
+        "a reversed-Dec rig that is actually square was refused")
+
+    # And the boundary is the engine's number, not a rounder one nearby.
+    just_inside = _good_cal_dict()
+    just_inside["y_angle_error"] = _math.radians(_MAX_CAL_ORTHO_ERROR_DEG - 0.5)
+    assert g._cal_reusable(just_inside) is True
+    just_outside = _good_cal_dict()
+    just_outside["y_angle_error"] = _math.radians(_MAX_CAL_ORTHO_ERROR_DEG + 0.5)
+    assert g._cal_reusable(just_outside) is False
+
+
+def test_a_calibration_walked_at_a_far_declination_is_not_reused():
+    """#18. On 2026-09-14 the guider reused a calibration walked at NGC 7331's
+    +34.4 for NGC 7129 at +66.1. An RA pulse moves the star by cos(dec), so
+    only 49 per cent of the calibrated rate survived that move: the guider
+    asked for a 1742 ms RA pulse against the mount's 1000 ms cap and 88 to 98
+    per cent of stars trailed.
+
+    The gate is on the RATE RATIO rather than on degrees, which is the point
+    of this case. cos falls away sharply near the pole, so a fixed degree
+    threshold is simultaneously too tight at the equator and too loose near
+    it: twenty degrees at dec 0 keeps 94 per cent of the rate and is fine,
+    while eight degrees at +60 keeps 75 per cent and is not.
+
+    MUTATION: delete the `abs(ratio - 1.0) > _MAX_CAL_RA_RATE_DRIFT` arm from
+    `_cal_reusable`. Observed: the +34.4 calibration is accepted at +66.1 and
+    the first assertion fails.
+    """
+    import math as _math
+
+    from astrodeck.guide.native import NativeGuider
+
+    rig = build_sim_rig()
+    g = NativeGuider(rig["guide_camera"], rig["telescope"],
+                     config={"image_scale_arcsec": 2.0}, profile_id=None)
+
+    def cal_at(dec_deg: float) -> dict:
+        c = _good_cal_dict()
+        c["declination"] = _math.radians(dec_deg)
+        return c
+
+    # The night itself.
+    assert g._cal_reusable(cal_at(34.4), _math.radians(66.1)) is False, (
+        "a calibration walked at +34.4 was reused at +66.1, where it delivers "
+        "49 per cent of the rate it measured")
+
+    # A move the calibration survives: same axis, 93 per cent of the rate.
+    assert g._cal_reusable(cal_at(34.4), _math.radians(40.0)) is True
+
+    # Near the pole the same DEGREE change is decisive, which a degree
+    # threshold could not express: +60 to +66 keeps 81 per cent and is kept,
+    # +60 to +68 keeps 75 per cent and is not.
+    assert g._cal_reusable(cal_at(60.0), _math.radians(66.0)) is True
+    assert g._cal_reusable(cal_at(60.0), _math.radians(68.0)) is False
+
+    # ...while twenty degrees down at the equator is harmless.
+    assert g._cal_reusable(cal_at(0.0), _math.radians(20.0)) is True
+
+    # An unreadable current declination is not evidence of staleness, so the
+    # arm is skipped rather than guessed. Same posture as the engine's
+    # UNKNOWN_DECLINATION sentinel.
+    assert g._cal_reusable(cal_at(34.4), None) is True

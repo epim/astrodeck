@@ -13,9 +13,10 @@
 //     PLANETARY NEBULA - because `q=planet` matches that too, and a filter on
 //     the query rather than on the row's own `kind` would put a DSO in the
 //     planets.
-//  3. A ROW AND A SEARCH HIT DO THE SAME THING. Both aim the finder, through
-//     the hash, because the finder lives in a different component from this
-//     sheet and a sheet is route state rather than a child of the screen.
+//  3. A ROW AND A SEARCH HIT BOTH AIM THE FINDER, through the hash, because
+//     the finder lives in a different component from this sheet and a sheet
+//     is route state rather than a child of the screen. A search hit also
+//     carries its row (#504): it may be in no list the hub has.
 //  4. A VIEWER GETS THE SEARCH FIELD AND A SENTENCE. `/api/catalog/tonight` is
 //     `view.site_derived`-gated: without it there is no ranking, and an empty
 //     list would read as "nothing is up tonight".
@@ -371,8 +372,20 @@ await testAsync("the search field asks the catalogue, and a hit aims the finder"
     hit.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   await settle();
-  eq(win.location.hash, "#/sky?lock=m31",
-    "a search hit goes through the same handler a row press does");
+  // RE-PINNED (H4-USKY, #504). This was `#/sky?lock=m31`, the id alone, "the
+  // same handler a row press does". A row of the ranked list is in tonight's
+  // list, so its id is enough; a search hit is not, and with no list the hub
+  // had nothing to hold for an id and refused it. So a hit now carries its
+  // whole row beside the id (`finder/targets.ts lockRowParams`), keys sorted
+  // by the router, and the hub consumes every one of them with `lock`
+  // (`searchPickLock.test.tsx` grades that end). The id and the aim at `#/sky`
+  // are unchanged. MUTANT "id only" (`onPick`: `aim(e.id)`, the code as it
+  // was), in a private scratch copy (H4-USKY-mut), observed ("12/13 passed"):
+  //   x the search field asks the catalogue, and a hit aims the finder: a search hit aims the finder at its id and carries its row: (expected #/sky?lock=m31&lockDec=41.26917&lockKind=dso&lockName=Andromeda+Galaxy&lockRa=0.712305&lockSize=190&lockType=Galaxy, got #/sky?lock=m31)
+  eq(win.location.hash,
+    "#/sky?lock=m31&lockDec=41.26917&lockKind=dso&lockName=Andromeda+Galaxy"
+      + "&lockRa=0.712305&lockSize=190&lockType=Galaxy",
+    "a search hit aims the finder at its id and carries its row:");
 });
 
 // --------------------------------------------------------- 4. the viewer

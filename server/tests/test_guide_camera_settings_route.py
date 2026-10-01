@@ -36,9 +36,19 @@ import astrodeck.api.app as app_module
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    from astrodeck.config import ConfigStore
-    store = ConfigStore(tmp_path / "astrodeck.json")
-    monkeypatch.setattr(app_module, "config_store", store, raising=False)
+    # A store of the test's own FOR EVERY MODULE: the singleton repointed at a
+    # file under tmp_path with its cache dropped, both through monkeypatch.
+    # This used to swap a private store into `api.app`'s binding alone, and
+    # the PUT's write went on through `config.set_frame_settings`, which uses
+    # `astrodeck.config`'s own binding - so it landed on the process-wide
+    # config and left this file's guide exposure, gain and binning there for
+    # every later test on the worker (#227; the binding trap is #19's).
+    # Without these two lines, the conftest guard errors at teardown
+    # (3 in this file alone, observed): "test_put_accepts_a_json_body
+    # left the process-wide config changed: guide.exposure_s."
+    from astrodeck.config import config_store
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
     app = app_module.create_app()
     with TestClient(app) as c:
         c.post("/api/connect/sim")

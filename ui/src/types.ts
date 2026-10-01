@@ -203,6 +203,11 @@ export interface RigStatus {
     // fallback would move that same lie server-side"), so a consumer must show
     // the absence, never substitute a number for it.
     dew_heater?: number;
+    // The TEC's hot-side FAN (issue #22; config 21 on the Poseidon-M PRO).
+    // Same rule as dew_heater: read back from the camera, ABSENT when the
+    // camera cannot be asked, and a consumer must show that rather than 0.
+    has_fan_control?: boolean;
+    fan_power?: number;
     // WHAT COLOUR THIS SENSOR IS (ruling Q7). Server: hub.py:6871,6928-6929.
     // NORMALISED to the full four letters through `normalise_bayer`
     // (imaging/sessionstack.py:154-164): the native ZWO and Player One bindings
@@ -356,6 +361,48 @@ export interface RigStatus {
    *  run". `null` is typed alongside for a server that publishes the key with
    *  no snapshot behind it. */
   dew?: DewStatus | null;
+  /** The newest sky angle an imaging-camera plate solve measured (#174).
+   *  Server: `hub.poll_status` publishes `hub.last_sky_angle`, the record
+   *  `sky_angle.note_solved_rotation` writes on every such solve. `null` until
+   *  the first solve since the engine started; ABSENT on an engine older than
+   *  the recorder. It is what the mosaic modal's USE MEASURED chip (spec 2.4)
+   *  reads. */
+  sky_angle?: SkyAngleRecord | null;
+}
+
+/** `status.sky_angle` - one plate solve's measurement of the camera's sky
+ *  position angle, and whether it calibrated the rotator. Server:
+ *  `sky_angle.py` `note_solved_rotation`, which writes every key every time,
+ *  null where it has no value; `test_types_mirror_status.py` holds this type
+ *  to the record a real solve puts on the status frame. */
+export interface SkyAngleRecord {
+  /** Degrees [0, 360), the solver's CROTA2 as `mod360` folds it. Never folded
+   *  by pier side: after a flip the camera really is at the old angle + 180. */
+  pa_deg: number;
+  /** Unix seconds the solved frame was exposed (read before the exposure, or
+   *  as the shutter closed for the saved-frame WCS). Freshness is judged on
+   *  this, not on `solved_at`: a stale frame can finish solving late. */
+  exposed_at: number;
+  solved_at: number;
+  /** Which solve measured it: "plate solve + sync" (the goto centring and
+   *  the resume re-centre), "rotate to PA", "rotator sync", "polar
+   *  alignment", "guide-scope offset" or "saved-frame WCS". A plain string:
+   *  the server has no closed list of them. */
+  source: string;
+  pier_side: "east" | "west" | null;
+  /** The imaging camera's device name ("" when it has none). */
+  camera: string;
+  /** Did this solve re-sync the rotator's sky offset? */
+  calibrated: boolean;
+  /** Why it did not, in words; `null` when it did. */
+  reason: string | null;
+  /** The rotator's mechanical angle at exposure; `null` with no rotator
+   *  connected, or when it could not be read. */
+  mechanical_deg: number | null;
+  /** The rotator's sky angle just before the calibration, and the offset it
+   *  wrote: both `null` unless `calibrated`. */
+  rotator_before_deg: number | null;
+  offset_deg: number | null;
 }
 
 /** `status.dew` - what the heaters are doing about the dew point (D-RIG-3).
@@ -723,9 +770,19 @@ export interface SequenceProgress {
 
   eta_s?: number; // total predicted seconds to finish (authoritative magnitude)
   eta_confident?: boolean; // false until >= ETA_MIN_FRAMES real frames measured
+  /** False while the finish clock still owes hops between targets and none
+   *  has been measured, so `eta_s` prices them at the 150 s seed (engine
+   *  `compute_eta`, #189 U-07); true once a hop has been measured, and when
+   *  no hop is left to make. `eta_confident` is false whenever this is. A
+   *  readout says "hops not yet costed" exactly when it is false (S5). */
+  hops_costed?: boolean;
   server_now_ms?: number; // server epoch at emit; client uses to offset-correct
   current_exposure_s?: number; // exposure of the step in flight (for sub-frame bar)
-  frame_started_at_ms?: number; // server epoch when the in-flight exposure began
+  /** Server epoch when the in-flight exposure began. NULL between frames
+   *  (the engine sends `None` while no shutter is open), which every reader
+   *  already treats as "no frame in flight" (`!= null`, `?? null`); typed
+   *  `number` alone until S5 (#431). */
+  frame_started_at_ms?: number | null;
   // event-cost breakdown (transparency/debugging; not required by the UI):
   remaining_capture_s?: number;
   events_cost_s?: number; // sum of remaining dither/AF/flip costs
@@ -779,6 +836,10 @@ export interface SequenceState {
   // PRESENT) until the first target starts, so it must admit null, not just
   // undefined. The other fields are pydantic str/int-typed: never null.
   session?: { id: string; name: string; count_mode: string; accepted: number; target?: string | null };
+  /** The mosaic group the active target belongs to (S2, spec 5.10). ABSENT
+   *  whenever it belongs to none, so every payload without a group is the
+   *  payload it always was. */
+  group?: SequenceGroupState;
   // Terminal reason — drives the run-complete Badge + Report end-reason icon.
   // "incomplete" = the run did everything it was told to and the plan is still
   // short (a target set aside by its altitude floor, a missed start, a skip
@@ -794,12 +855,51 @@ export interface SequenceState {
     reason: string;
     text: string;
     holding: boolean;
+    /** The other half of `holding` (#221, #244): the engine's own sentence
+     *  while a scheduler wait meets a cloudy sky with no target to hold for,
+     *  so no hold opens, and null otherwise (`_note_hold_deferred`). Without
+     *  it the payload says `cloudy: true, holding: false` and leaves the
+     *  reader to guess why nothing is holding. Rendered as sent, and only
+     *  while non-null. Optional: a server older than H2 does not send it. */
+    hold_deferred?: string | null;
     latest_frame?: {
       cloudy: boolean | null;
       score: number | null;
       reason: string;
     };
   };
+}
+
+/** `SequenceState.group`: the published state of the mosaic group being shot
+ *  (#189 S2, spec 5.10). Words and counts only: the run publishes no time to
+ *  set and no meridian time anywhere, and the meridian wait is only the
+ *  `meridian_wait` flag below, not a topic of its own.
+ *
+ *  `panel` and `pass` are OPTIONAL because they are withheld from a principal
+ *  without `view.site_derived` while the group waits on the meridian rule: the
+ *  moment a panel is announced after that wait timestamps a transit, which
+ *  gives away the site's longitude (spec 6.9). `meridian_wait` says that is
+ *  what is happening, so a screen can say why they are missing rather than
+ *  showing a stale panel. */
+export interface SequenceGroupState {
+  id: string;
+  name: string;
+  mode: "rotate" | "sequential";
+  /** The pass over the panels, counted from 1. */
+  pass?: number;
+  /** The panel label, "<row>-<col>" counted from 1, e.g. "2-3". null while
+   *  the group waits before any panel is current (the engine's
+   *  `_group_state` publishes `None` then, e.g. when every panel is behind
+   *  the horizon mask at the start of a night); absent while withheld
+   *  across a meridian wait. */
+  panel?: string | null;
+  visit_elapsed_s: number;
+  panels_done: number;
+  panels_total: number;
+  /** Panels set aside tonight, each with its reason in words. */
+  set_aside: { panel: string; reason: string }[];
+  /** True while the group waits for a panel's meridian crossing. */
+  meridian_wait: boolean;
 }
 
 export interface CoolerInfo {
@@ -1022,9 +1122,57 @@ export interface Target {
   // --- atlas (additive; nullable so existing plans deserialize unchanged) ---
   rotation_deg?: number;    // target camera angle (PA) — guidance only, no rotator in rig
   mosaic_group?: string;    // e.g. "M31" to group panels in the Plan UI
+  // --- centring and hop focus (S1: #170 U-03, #189 U-05; additive). null
+  //     means "exactly today's call": the hub's own 1.2 arcmin and 3 attempts,
+  //     and a sweep at every target start. Server: sequence/models.py Target.
+  center_tolerance_arcmin?: number | null;
+  center_attempts?: number | null;
+  autofocus_skip_if_fresh?: boolean;
+  // --- mosaic panels (S2: #189, spec 3.4; additive). The panel's 0-based
+  //     place in its block's grid (row 0 col 0 is panel "1-1"), null on a
+  //     target that is not a panel. `after_group` is the id of a TargetGroup
+  //     this target waits for ("Wait for the mosaic", spec 1.6).
+  panel_row?: number | null;
+  panel_col?: number | null;
+  after_group?: string | null;
   // --- automation (Batch-4b; additive — backfilled with defaultSchedule() so old
   //     plans deserialize unchanged, see store.defaultSchedule / C1-27). ---
   schedule?: Schedule;
+}
+
+/** One TARGET block with a grid, as the engine runs it (#189 U-01, spec 3.4).
+ *  Mirrors server `sequence/models.py` `TargetGroup` field for field; the
+ *  server test `test_types_mirror_groups.py` holds the two together.
+ *
+ *  Its members are the targets whose `mosaic_group` equals `id`. A plan's
+ *  groups are written by the flow compile, never by a client, and the server
+ *  sends every field (pydantic defaults), so none is optional here. */
+export interface TargetGroup {
+  id: string;
+  name: string;
+  kind: "mosaic";
+  /** "rotate" visits each panel in turn and comes back (the loop wire);
+   *  "sequential" runs a panel to completion before the next. */
+  mode: "rotate" | "sequential";
+  /** Full filter passes per visit, 1 to 20. */
+  visit_passes: number;
+  /** A visit's floor in seconds, 0 to 10800, checked at round boundaries. */
+  visit_min_s: number;
+  order: "least_complete" | "setting_first" | "grid";
+  /** A panel that does not centre is deferred, never shot off its tile. */
+  require_centred: boolean;
+  /** Consecutive failed visits, 1 to 20, before a panel is set aside tonight. */
+  max_failed_visits: number;
+  /** Layout angle in the CROTA2 convention (#145); null when none is set. */
+  pa_deg: number | null;
+  /** True when the members carry rotation_deg = pa_deg. */
+  rotate: boolean;
+  /** null disables the angle check. */
+  angle_tolerance_deg: number | null;
+  /** Target ids of the skipped panels, which are not members (spec 5.9). */
+  skipped_ids: string[];
+  /** Provenance only (rows, cols, overlap, fov, key); nothing steers by it. */
+  geometry: Record<string, unknown>;
 }
 
 export interface SequencePlan {
@@ -1059,6 +1207,9 @@ export interface SequencePlan {
   max_eccentricity?: number | null;              // per-frame median-ecc ceiling, 0..1 (0 = off)
   // --- conditional sequencer (PRO-3; additive/optional — [] / absent === today) ---
   instructions?: Instruction[];
+  // --- mosaic groups (S2: #189, spec 3.4; additive/optional — [] / absent ===
+  //     today). One entry per TARGET block with a grid, written by the compile.
+  groups?: TargetGroup[];
 }
 
 // ============================================================================
@@ -1964,6 +2115,12 @@ export interface MosaicPanel {
   dec_deg: number;
   rotation_deg: number;
   transit_alt?: number;                    // peak alt tonight (NOT instantaneous "now" alt)
+  /** Why this panel has no `transit_alt`, in the server's words
+   *  (`framing._stamp_transit_alt`). Present exactly when a night was asked
+   *  for and this panel could not be answered; a mosaic nobody asked a night
+   *  about carries neither key, which is how "not asked" differs from "could
+   *  not". `mosaicNightSummary.ts` reads it from here (#174). */
+  transit_alt_error?: string;
 }
 
 export interface MosaicResult {
@@ -2380,6 +2537,39 @@ export interface Session {
   nights: string[];
   frames: SessionFrame[];
   auto_resume: boolean;
+  // --- S2 (#189, #208; additive, SESSION_SCHEMA still 1). Optional because a
+  //     server older than S2 does not send them.
+  /** Panels and steps set aside, each with the night it happened under. Only
+   *  the current night's records mean "not retried tonight"; the rest are
+   *  history, and those panels are retried. */
+  set_aside?: SetAsideRecord[];
+  /** Ruling 9's locked angles, by target id: the first solve's angle for an
+   *  unframed TARGET, commanded from then on like a planned one. */
+  locked_angles?: Record<string, LockedAngle>;
+}
+
+/** One `Session.set_aside` entry, as `Session.note_set_aside` writes it. */
+export interface SetAsideRecord {
+  target_id: string;
+  /** null when the whole panel was set aside; a step id for the reject guard. */
+  step_id: string | null;
+  /** Words only, for the report. */
+  reason: string;
+  /** The night key (`YYYY-MM-DD`, noon to noon) it was set aside under. */
+  night: string;
+}
+
+/** One `Session.locked_angles` value, as `Session.lock_angle` writes it. The
+ *  first lock wins, so this is the angle every later night commands. */
+export interface LockedAngle {
+  /** Degrees, CROTA2 convention. 0 is a real angle, never "unset". */
+  pa_deg: number;
+  /** Unix seconds when the solve that measured it finished. */
+  solved_at: number;
+  /** Unix seconds when that solve's frame was exposed; null when unknown. */
+  exposed_at: number | null;
+  /** Which solve measured it, in words, for "where the angle came from". */
+  source: string;
 }
 
 export interface SessionRow {
@@ -2394,13 +2584,77 @@ export interface SessionRow {
   auto_resume: boolean;
 }
 
-export interface PlanRow {
+/** A session file the store cannot read (#242): corrupt JSON, a file that is
+ *  not a valid Session, or one that states no status (#218, H2 orchestrator
+ *  ruling 12). `GET /api/sessions` lists it so the operator can see it and
+ *  DELETE it; before that, it was invisible and a shell on the rig was the
+ *  only way to remove it.
+ *
+ *  DELIBERATELY NOT A `SessionRow`. It has no counts, no nights and no
+ *  auto-resume flag, because the file that would carry them is the thing that
+ *  is broken (server `session.py` `_unreadable_row`). Typed apart, a list that
+ *  forgot to check `status` cannot draw it as a session with 0 of 0 frames or
+ *  offer it RESUME: the compiler refuses the field reads. */
+export interface UnreadableSessionRow {
+  /** The file's stem: what `DELETE /api/sessions/{id}` addresses. */
   id: string;
+  /** The name inside the file when it has one, else the stem. */
+  name: string;
+  status: "unreadable";
+  /** The store's own words for the damage ("not valid JSON", "fails
+   *  validation", "it has no status"), shown as sent. Never the parser's
+   *  detail: that can quote a frame's absolute path, and viewers read this. */
+  unreadable: string;
+  /** The FILE's mtime, which the server sorts the row in by. It is not a
+   *  session date, so it is not shown as one. */
+  updated_ts: number;
+}
+
+/** One entry of `GET /api/sessions` as the server sends it. Only the two
+ *  session lists read this (`listSessionRows`); everything else reads
+ *  `listSessions`, which never returns an unreadable row. */
+export type SessionListRow = SessionRow | UnreadableSessionRow;
+
+/** One entry of `GET /api/plans`: a saved plan's headline numbers or, since
+ *  #378, a plan FILE this build cannot read as a plan.
+ *
+ *  AN UNREADABLE ROW IS `{id, name?, status: "unreadable", unreadable, mtime}`
+ *  (server `plans.py` `PlanLibrary.list`). The server used to skip such a file,
+ *  so a damaged plan looked deleted; it is listed now so it can be seen and
+ *  deleted, and `GET /api/plans/{id}` and its export answer it 422. It carries
+ *  no `frames`, `integration_min`, `shutter_min` or `targets`, because nothing
+ *  was read to count. Those numbers stay typed as present because a plan row
+ *  always has them, and the readers written before #378 do arithmetic on
+ *  them: EVERY READER MUST ASK `planUnreadableReason` (`lib/planLibrary.ts`)
+ *  BEFORE IT READS ONE, and a row it answers for offers DELETE and nothing
+ *  else. That is also why this is one type with optional keys rather than a
+ *  union like `SessionListRow`. Not yet kept everywhere: the #/next Plan
+ *  hub's library (`next/hubs/session/plan/PlanLibrary.tsx`) shows the reason
+ *  through `planRowSummary` but still offers LOAD and EXPORT on the row, and
+ *  reads the list without `listPlans` (recorded on #378). */
+export interface PlanRow {
+  /** The file's stem: what GET, export and DELETE address. */
+  id: string;
+  /** Always a string once `listPlans` has read the row: the server leaves it
+   *  out of an unreadable row whose file gives no name a person could read,
+   *  and `listPlans` names that row by its id. */
   name: string;
   frames: number;
+  /** Light frames only (plans.py `_summarize`, UX #39). */
   integration_min: number;
+  /** Every exposure, calibration included. The server has always sent it on a
+   *  plan row; nothing on screen reads it yet. */
+  shutter_min?: number;
   targets: number;
+  /** The FILE's mtime, which the server sorts the list by. */
   mtime: number;
+  /** Present only on an unreadable row, and always "unreadable" there: a key
+   *  no plan row has. */
+  status?: "unreadable";
+  /** The server's reason, the same words its 422 carries ("fails validation:
+   *  targets.0.steps.0.frame_type: ...", "not valid JSON", "it holds no
+   *  plan"). Shown as sent. Read it through `planUnreadableReason`. */
+  unreadable?: string;
 }
 
 // ------------------------------------------------------------- touch ergonomics

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { bandForAltitude, cameraElevation, cameraPose, projectSweepColumns, robustSpread, traceSkyCoverage, OVERHEAD_BAND, type SkyColumn, type SweepFrame } from "../photosphere";
+import { readFileSync } from "node:fs";
+import { bandForAltitude, cameraElevation, cameraPose, projectSweepColumns, robustSpread, traceSkyCoverage, AZ_DEPARTURE, EXPOSURE_TOLERANCE, RE_EXPOSURE_BAND_PCT, RE_EXPOSURE_PCT, OVERHEAD_BAND, type SkyColumn, type SweepFrame } from "../photosphere";
 import { altFromY, SKY_Y } from "../horizonStrip";
 import { isObstructed, movePoint } from "../../../../lib/horizonModel";
 
@@ -168,6 +169,33 @@ test("A bright zenith row does not block the sky under it", () => {
   const trace = traceSkyCoverage(everywhere(glare));
   assert.deepEqual(trace.uncertainBins, []);
   assert.ok(trace.points.every(p => p.alt === 0));
+});
+test("A dark zenith SAMPLE blocks every bin but does not call that certain (issue #100)", () => {
+  // The residual #100 left open. Row 0 is the one overhead sample painted into
+  // every bin, and when it alone reads 34 per cent below the pool the zenith
+  // rule blocks the whole dome - correctly conservative, because relaxing it
+  // would risk open sky under a covered zenith - but it used to publish that
+  // as a MEASUREMENT, uncertain_bins empty, from one pixel. It now keeps the
+  // 90 and says what it is: every bin uncertain. An uncertain bin publishes 90
+  // as well, so this changes the claim and never the block.
+  // Mutation: set `zenithOnly: false` in the zenith rule. Observed red:
+  // 'a single dark sample was published as a certain dome'.
+  const lone = sample(row => (row === 0 ? 80 : 122));
+  const trace = traceSkyCoverage(everywhere(lone));
+  assert.ok(trace.points.every(p => p.alt === 90),
+    `the block itself must not move: ${trace.points.map(p => p.alt)}`);
+  assert.equal(trace.uncertainBins.length, 30,
+    `a single dark sample was published as a certain dome: uncertain ${JSON.stringify(trace.uncertainBins)}`);
+});
+test("A zenith that is really covered is still blocked, and certain", () => {
+  // The control for the case above: rows 0 to 5 dark, i.e. more than the one
+  // shared sample, is a covered zenith and stays a measurement.
+  // Mutation: set `zenithOnly: true` unconditionally. Observed red: 'a covered
+  // zenith was downgraded to uncertain'.
+  const roof = sample(row => (row <= 5 ? 80 : 122));
+  const trace = traceSkyCoverage(everywhere(roof));
+  assert.ok(trace.points.every(p => p.alt === 90), `${trace.points.map(p => p.alt)}`);
+  assert.deepEqual(trace.uncertainBins, [], 'a covered zenith was downgraded to uncertain');
 });
 test("A glint on top of a roof costs the boundary the glint's own height", () => {
   // The bound on the refinement, in the direction that is not safe. Two rows
@@ -438,5 +466,93 @@ test("Manual review can retain obstructions all the way to 90 degrees", () => {
   assert.equal(altFromY(SKY_Y), 90);
   assert.equal(movePoint([{ az: 180, alt: 90 }], 0, 180, 90)[0].alt, 90);
 });
+test("The anchor reaches one bin and six rows, and both limits are the rule (#107)", () => {
+  // AZ_SLOP_ROWS and the one-bin reach of `anchored` decide what the tracer
+  // publishes, and neither was graded: set the slop to 0, 1, 3, 20 or 60 and
+  // this file stayed at 28 of 28. A guard whose deletion changes no test is a
+  // guard nobody is holding.
+  //
+  // Both limits are stated in the constant's own comment -- "a six-row
+  // floating band two bins from a grounded wall stays open, and the same band
+  // in the adjacent bin with the same top row is published" -- so this is that
+  // sentence, made executable.
+  //
+  // Mutation: widen the reach to two bins (add -2 and 2 to the step list) and
+  // the two-bins-away band publishes.
+  // Mutation: raise AZ_SLOP_ROWS to 20 and the mismatched-top band publishes.
+  // Mutation: lower it to 0 and the matched-top band goes open.
+  const wall = sample(row => (row < 30 ? 122 : 40));
+  const floating = (top: number) => sample(row => (row >= top && row < top + 9 ? 40 : 122));
+
+  const place = (bins: Record<number, SkyColumn>) =>
+    traceSkyCoverage(mosaic(bin => bins[bin] ?? openSky));
+
+  // ADJACENT, tops four rows apart: inside the slop, so the wall vouches.
+  const near = place({ 5: wall, 6: floating(34) });
+  assert.ok(near.points[6].alt > 0,
+    `a band beside the wall, four rows off its top, was not published: ${near.points[6].alt}`);
+
+  // ADJACENT, tops ten rows apart: outside the six-row slop. The wall is right
+  // there, but it is not evidence for a surface at a quite different altitude.
+  const offset = place({ 5: wall, 6: floating(40) });
+  assert.equal(offset.points[6].alt, 0,
+    "a band ten rows off the wall's top was anchored anyway, so the slop decides nothing");
+
+  // TWO BINS AWAY, same top row: inside the slop but outside the reach.
+  const distant = place({ 5: wall, 7: floating(30) });
+  assert.equal(distant.points[7].alt, 0,
+    "a band two bins from the wall was anchored, so the one-bin reach decides nothing");
+
+  // ...and the same band one bin closer IS published, which is what makes the
+  // line above about the reach rather than about the band.
+  const adjacent = place({ 5: wall, 6: floating(30) });
+  assert.ok(adjacent.points[6].alt > 0,
+    `the same band in the adjacent bin was not published: ${adjacent.points[6].alt}`);
+});
+
+test('the column rule and the azimuth rule spell one measured fact (#107)', () => {
+  // `EXPOSURE_TOLERANCE` (.32) and `AZ_DEPARTURE` (.31) were derived
+  // independently - one from the column rule, one from the azimuth rule - and
+  // ended a hundredth apart with nothing saying they were the same
+  // measurement. Re-measure the chart yard's ordinary re-expose and only one of
+  // them moves, and the tracer's two halves then disagree about what an
+  // exposure step is.
+  //
+  // The values first, because the fact is a measurement and not a preference:
+  // both are still exactly what was measured through the real tracer.
+  assert.equal(EXPOSURE_TOLERANCE, .32);
+  assert.equal(AZ_DEPARTURE, .31);
+  // Exactly, not nearly. Stating them in hundredths and dividing gives the
+  // same doubles as the literals that used to stand there; `.30 + .02` happens
+  // to as well, but that is luck and this does not rely on it.
+  assert.equal(RE_EXPOSURE_PCT / 100, .3);
+  // The relations the two comments claim, which are what make them one fact:
+  // the wide allowance is the fact plus the whole #74 band, and the mosaic's
+  // threshold is the middle of that band.
+  assert.equal(EXPOSURE_TOLERANCE, (RE_EXPOSURE_PCT + RE_EXPOSURE_BAND_PCT) / 100);
+  assert.ok(AZ_DEPARTURE > RE_EXPOSURE_PCT / 100,
+    'a departure at the ordinary re-expose is not an obstruction');
+  assert.ok(AZ_DEPARTURE < EXPOSURE_TOLERANCE,
+    'the mosaic threshold must sit inside the band the column cannot see');
+  assert.equal(AZ_DEPARTURE - RE_EXPOSURE_PCT / 100,
+               EXPOSURE_TOLERANCE - AZ_DEPARTURE,
+               'the mosaic threshold is no longer the middle of the band');
+  // And the part that is not arithmetic: neither tolerance may be written out
+  // again. Everything above holds just as well if someone replaces both
+  // expressions with the literals they evaluate to - and that is precisely the
+  // state this issue is about, because then re-measuring the fact moves
+  // neither. Read from the file rather than from the module: the values are
+  // what the module can show, and this is a claim about how they are spelled.
+  const src = readFileSync(new URL('../photosphere.ts', import.meta.url), 'utf8');
+  for (const [name, decl] of [['EXPOSURE_TOLERANCE', /export const EXPOSURE_TOLERANCE\s*=\s*([^,;]+)/],
+                              ['AZ_DEPARTURE', /export const AZ_DEPARTURE\s*=\s*([^,;]+)/]] as const) {
+    const m = src.match(decl);
+    assert.ok(m, `${name} is no longer declared where this case can read it`);
+    assert.ok(m[1].includes('RE_EXPOSURE_PCT'),
+      `${name} is written out as ${m[1].trim()} instead of being expressed from `
+      + 'RE_EXPOSURE_PCT, so re-measuring the fact would move the other one only');
+  }
+});
+
 console.log(`photosphereVertical.test: ${passed}/${passed} passed`);
 export const result = { passed, failed: 0, total: passed };

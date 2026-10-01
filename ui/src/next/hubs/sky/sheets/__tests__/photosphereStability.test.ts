@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { VisualStability, SETTLE_MS, STALE_FRAME_MS, GRID_W, GRID_H, gradient, noiseGradient, GRADIENT_FLOOR, GRADIENT_HYSTERESIS } from '../photosphereStability';
+import { VisualStability, SETTLE_MS, STALE_FRAME_MS, GRID_W, GRID_H, CELL_SAMPLES, gradient, noiseGradient, GRADIENT_FLOOR, GRADIENT_HYSTERESIS } from '../photosphereStability';
 
 // The video is the only witness to a still phone: the orientation sensor goes
 // silent when nothing moves, so silence proves nothing on its own. These cases
@@ -813,6 +813,189 @@ test('clear() forgets the last break',()=>{
   s.clear();
   for(let t=1000;t<=1600;t+=100)s.observe(t,scene(0),W,H);
   assert.deepEqual(s.continuity(1600)!.lastBreak,{from:1000,to:1000});
+});
+
+// ---------------------------------------------------------------- issue #90
+// The fixtures the noise correction was never graded against. Every other
+// fixture in this file is piecewise-constant at the SAMPLE scale - ramps and
+// 17- and 23-pixel blocks - which is exactly the shape the estimator reads as
+// clean, so it has only ever been measured in the world that suits it.
+//
+// Measured at the LIVE 96x72 sampling and not the 320x240 the rest of the file
+// uses, because the estimator's whole discrimination is the ratio of samples to
+// cells: at 320x240 there are 100 samples behind a cell instead of 9.
+
+const LW = GRID_W * CELL_SAMPLES, LH = GRID_H * CELL_SAMPLES;   // 96 x 72
+
+/** A STATIC texture whose structure lives at the sample scale: deterministic,
+ *  identical frame to frame, and nothing a box average over 9 samples turns
+ *  into a constant. A fine dither, a resolution chart, foliage at the preview's
+ *  own scale. Its CELL grid still carries real structure - at amp 90 the
+ *  measured gradient is 0.0427, three and a third times GRADIENT_FLOOR - so a
+ *  shift would move it and the grid's own measure calls it a witness. */
+function sampleTexture(amp: number, base = 128): Uint8Array {
+  const px = new Uint8Array(LW * LH);
+  for (let y = 0; y < LH; y++) for (let x = 0; x < LW; x++) {
+    const k = ((x * 7 + y * 13) % 11) / 10 - 0.5;
+    px[y * LW + x] = Math.max(0, Math.min(255, Math.round(base + amp * k)));
+  }
+  return px;
+}
+
+/** A FLAT field carrying nothing but sensor noise: no scene at all, so any
+ *  witness this is granted is false and the hold it would vouch for never
+ *  happened. The control that decides issue #90. */
+function flatNoise(sigma: number, frame: number, base = 128): Uint8Array {
+  const px = new Uint8Array(LW * LH);
+  const next = xorshift32(Math.imul(frame + 1, 2654435761));
+  for (let i = 0; i < px.length; i++) {
+    let sum = 0; for (let k = 0; k < 12; k++) sum += next();
+    px[i] = Math.max(0, Math.min(255, Math.round(base + sigma * (sum - 6))));
+  }
+  return px;
+}
+
+/** The module's own resample-and-normalise, which is private to it. Replicated
+ *  rather than exported: two cases below need the RAW gradient of a frame to
+ *  say what the correction removed, and widening the module's surface for a
+ *  test is the wrong trade. The `canWitness` assertions go through the real
+ *  path, so a replica that drifted from it would show up there. */
+function normalisedGrid(px: Uint8Array): Float64Array {
+  const grid = new Float64Array(GRID_W * GRID_H);
+  for (let gy = 0; gy < GRID_H; gy++) {
+    const y0 = Math.floor(gy * LH / GRID_H);
+    const y1 = Math.min(LH, Math.max(y0 + 1, Math.floor((gy + 1) * LH / GRID_H)));
+    for (let gx = 0; gx < GRID_W; gx++) {
+      const x0 = Math.floor(gx * LW / GRID_W);
+      const x1 = Math.min(LW, Math.max(x0 + 1, Math.floor((gx + 1) * LW / GRID_W)));
+      let sum = 0, count = 0;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { sum += px[y * LW + x]; count++; }
+      grid[gy * GRID_W + gx] = count ? sum / count : 0;
+    }
+  }
+  let sum = 0; for (const v of grid) sum += v;
+  const mean = sum / grid.length;
+  if (mean > 0) for (let i = 0; i < grid.length; i++) grid[i] /= mean;
+  return grid;
+}
+
+function meanCellDiff(a: Float64Array, b: Float64Array): number {
+  let sum = 0; for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+  return sum / a.length;
+}
+
+test('A static sample-scale texture is refused, and that is the honest answer (issue #90)', () => {
+  // THE COST, reproduced. The estimator reads this frame's structure as noise
+  // by construction, the plain subtraction takes all of it, and the frame reads
+  // FEATURELESS however strong its cell-scale structure is. The three
+  // amplitudes here have RAW gradients of 1.5, 2.2 and 3.3 times the floor.
+  //
+  // The direction is a refusal and never a wrong pose, which is what keeps this
+  // a cost rather than a defect - and the case below is why the answer to #90
+  // is to accept it rather than to bound the subtraction.
+  //
+  // MUTATION: bound it, `Math.min(noiseGradient(...), 0.5 * gradient(grid))`,
+  // which is #90's own second suggestion. Observed: amp 60 and amp 90 both
+  // witness, and this fails on the first of them.
+  for (const amp of [40, 60, 90]) {
+    const raw = gradient(normalisedGrid(sampleTexture(amp)));
+    assert.ok(raw > GRADIENT_FLOOR,
+      `the fixture at amp ${amp} does not clear the floor even uncorrected `
+      + `(${raw.toFixed(6)}), so nothing here is about the correction`);
+    const s = new VisualStability();
+    s.observe(1000, sampleTexture(amp), LW, LH);
+    // Through `witness()` rather than the private `canWitness` it reads: a
+    // fresh first frame answers 'featureless' when the flag is false and
+    // 'moving' when it is true, so this says the same thing at the public
+    // surface. (The first draft touched the field and passed the tsx runner,
+    // which does not typecheck; `tsc -b` refused it. Issue #126.)
+    assert.equal(s.witness(1000), 'featureless',
+      `a static sample-scale texture at amp ${amp} was admitted as a witness`);
+  }
+});
+
+test('No bound on the subtraction admits that texture without admitting pure noise (issue #90)', () => {
+  // THE MEASUREMENT THAT DECIDES IT, and the reason the refusal above stays.
+  //
+  // #90 offers bounding the subtraction so it cannot remove more than a stated
+  // fraction of the measured gradient. Swept at the live sampling, asking of
+  // each bound where each population first wins a witness:
+  //
+  //   bound   pure noise first witnesses at   texture first witnesses at
+  //   1.00    never                           never
+  //   0.70    sigma 20  (G 0.0558)            never
+  //   0.50    sigma 10  (G 0.0277)            amp 60  (G 0.0284)
+  //   0.35    sigma 10  (G 0.0277)            amp 60  (G 0.0284)
+  //   0.25    sigma 10  (G 0.0277)            amp 40  (G 0.0190)
+  //
+  // At every bound loose enough to admit the texture, pure noise is admitted at
+  // a LOWER gradient than the texture needs. They are not separable by a
+  // fraction of the gradient, because to a single frame's Laplacian they are
+  // the same thing - the estimate-to-gradient ratio is 1.08 for the noise and
+  // 1.685 for the texture, and it is the NOISE that reads lower. So a bound
+  // cannot be tuned; it can only choose which of the two errors to make, and
+  // one of them is a false hold.
+  //
+  // This case pins the control half: pure noise must be refused. It is what a
+  // future bound would break, and it would break it silently, because a frame
+  // wrongly vouched for looks like any other.
+  //
+  // MUTATION: the same 0.5 bound. Observed: sigma 10, 20 and 30 all witness,
+  // and this fails on the first of them.
+  for (const sigma of [3, 10, 20, 30]) {
+    const s = new VisualStability();
+    s.observe(1000, flatNoise(sigma, 1), LW, LH);
+    // Public surface, for the reason given in the case above (issue #126).
+    assert.equal(s.witness(1000), 'featureless',
+      `a flat field of pure sigma ${sigma} noise was admitted as a witness, so `
+      + 'the module would vouch for a hold that never happened');
+  }
+});
+
+test('What WOULD separate them is the frame pair, not one frame (issue #90)', () => {
+  // Not a fix and not proposed as one - it is a redesign of the estimator, and
+  // this is a safety-relevant witness. Recorded because it turns "accept the
+  // refusal" from a shrug into a bounded statement: the refusal stands because
+  // the SINGLE-FRAME estimator cannot separate these, not because nothing can.
+  //
+  // Sensor noise is independent between frames and a static texture is not, and
+  // that is the one property a pair sees and a single frame's Laplacian never
+  // does.
+  //
+  // A FIRST VERSION OF THIS CASE WAS A TAUTOLOGY, and it is worth saying so
+  // where the next reader will see it: it asserted that two separately built
+  // copies of the static texture differ by zero, which is true of any
+  // deterministic function compared with itself and is a fact about the
+  // fixture, not about the module. It survived the mutation it claimed to
+  // catch. What is asserted now are the two claims that can actually be wrong.
+  //
+  // MUTATION 1: `return 0` from `noiseGradient`. Observed: the first assertion
+  // fails - the estimator no longer reads the texture's structure as noise, and
+  // with it the whole reason the texture is refused.
+  const texture = sampleTexture(90);
+  const textureG = gradient(normalisedGrid(texture));
+  assert.ok(noiseGradient(texture, LW, LH) > textureG,
+    `the estimator read only ${noiseGradient(texture, LW, LH).toFixed(6)} of `
+    + `noise on a texture whose own gradient is ${textureG.toFixed(6)}, so this `
+    + 'frame is no longer the case #90 is about');
+
+  // MUTATION 2: average the two axes in `gradient` instead of taking the
+  // smaller. Observed: the ratio leaves the band below, because the noise
+  // field's two axes no longer agree the way this measurement assumes.
+  //
+  // Pure noise moves between frames by about its OWN gradient - the ratio is
+  // near 1, not merely non-zero - which is the quantitative half. A static
+  // frame moves by exactly 0 and no band is needed for it.
+  const noiseG = gradient(normalisedGrid(flatNoise(30, 1)));
+  const moved = meanCellDiff(normalisedGrid(flatNoise(30, 1)),
+                             normalisedGrid(flatNoise(30, 2)));
+  assert.ok(moved / noiseG > 0.8 && moved / noiseG < 1.3,
+    `pure noise moved ${moved.toFixed(6)} between frames against its own `
+    + `gradient of ${noiseG.toFixed(6)} (ratio ${(moved / noiseG).toFixed(3)}), `
+    + 'so the separation this records is not the one measured');
+  assert.equal(
+    meanCellDiff(normalisedGrid(texture), normalisedGrid(sampleTexture(90))), 0,
+    'the texture fixture is not static');
 });
 
 console.log(`photosphereStability.test: ${passed}/${passed+failed} passed`);

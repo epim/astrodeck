@@ -5,6 +5,24 @@
 // (dormant/complete, soft-retire — plain confirm, reversible only via the
 // API, never active), delete (confirm-then-delete, no undo — server state).
 // Night-mode safe: existing tokens/classes only.
+//
+// A FILE THE STORE CANNOT READ GETS A ROW TOO (#242), and it is not a session
+// card. The server lists it with its reason (not valid JSON, fails validation,
+// or no status at all, #218) so that it can be seen and deleted; it used to be
+// invisible, and removing it took a shell on the rig. It shows the name the
+// file carries (its id beside it when they differ), the word UNREADABLE, the
+// reason as sent and the same delete as a session, gated the same way. It has
+// no counts, no dates, no review, resume, update or auto-resume, because every
+// one of those reads the file that is broken, and a row of "0/0" would say the
+// session is empty when nobody knows.
+//
+// ITS DELETE CONFIRM SAYS WHAT GOES (#266). The server removes only that file
+// when a backup sits beside it, and keeps the backup and the thumbnails, since
+// the backup can be the last good copy of the ledger; the row says
+// `backup: true` then. So the confirm is `unreadableDeleteBody`'s, which names
+// the file and, when the row reports one, the backup that stays. The session
+// sentence ("Removes the session ledger and thumbnails") is a readable
+// session's only.
 import { useCallback, useEffect, useState } from "react";
 import { useStore, useWeather } from "../../store";
 import { Panel, Toggle } from "../ui";
@@ -17,14 +35,21 @@ import { setIgnoreTonight } from "../../api/weather";
 import { ensurePlanIds } from "../../lib/ids";
 import { mergePreview, targetProgress } from "../../lib/sessions";
 import {
-  deleteSession, getSession, listSessions, patchSession, resumeSession,
+  deleteSession, getSession, isUnreadableRow, listSessionRows, patchSession, resumeSession,
+  unreadableDeleteBody,
 } from "../../api/sessions";
-import type { Session, SessionRow } from "../../types";
+import type { Session, SessionListRow, SessionRow } from "../../types";
 
-function StatusChip({ status }: { status: SessionRow["status"] }) {
+/** A readable session's delete confirm. Not an unreadable row's (#266): see
+ *  `unreadableDeleteBody`. */
+const SESSION_DELETE_BODY =
+  "Removes the session ledger and thumbnails. Saved FITS frames are NOT deleted. This cannot be undone.";
+
+function StatusChip({ status }: { status: SessionListRow["status"] }) {
   const cls = status === "active" ? "text-good blink"
     : status === "dormant" ? "text-warn"
-    : status === "complete" ? "text-accent" : "text-dim";
+    : status === "complete" ? "text-accent"
+    : status === "unreadable" ? "text-bad" : "text-dim";
   return <span className={`text-[10px] tracking-widest uppercase ${cls}`}>{status}</span>;
 }
 
@@ -49,16 +74,18 @@ export default function SessionsPanel() {
       showToast("error", `Weather override failed: ${(e as Error).message}`);
     }
   };
-  const [rows, setRows] = useState<SessionRow[]>([]);
+  const [rows, setRows] = useState<SessionListRow[]>([]);
   const [details, setDetails] = useState<Record<string, Session>>({});
   const [reviewId, setReviewId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const all = (await listSessions()).filter((r) => r.status !== "abandoned");
+      const all = (await listSessionRows()).filter((r) => r.status !== "abandoned");
       setRows(all);
+      // Not for an unreadable file: its GET answers 500 by construction, and
+      // there are no per-target bars to draw for it.
       const loaded = await Promise.all(
-        all.map((r) => getSession(r.id).catch(() => null)));
+        all.filter((r) => !isUnreadableRow(r)).map((r) => getSession(r.id).catch(() => null)));
       const map: Record<string, Session> = {};
       loaded.forEach((s) => { if (s) map[s.id] = s; });
       setDetails(map);
@@ -126,15 +153,18 @@ export default function SessionsPanel() {
     if (ok) await act("Abandon", () => patchSession(r.id, { status: "abandoned" }));
   };
 
-  const onDelete = async (r: SessionRow) => {
+  // By id and a label rather than a row, so an unreadable file (which has no
+  // name, only its id) goes through the very same confirm and route. The body
+  // is the caller's, because the two remove different things (#266).
+  const onDelete = async (id: string, label: string, body: string) => {
     const ok = await confirmDialog({
-      title: `Delete session "${r.name}"?`,
-      body: "Removes the session ledger and thumbnails. Saved FITS frames are NOT deleted. This cannot be undone.",
+      title: `Delete session "${label}"?`,
+      body,
       tone: "danger",
       mode: "confirm",
       confirmLabel: "Delete",
     });
-    if (ok) await act("Delete", () => deleteSession(r.id));
+    if (ok) await act("Delete", () => deleteSession(id));
   };
 
   if (rows.length === 0) return null;
@@ -144,13 +174,49 @@ export default function SessionsPanel() {
       <Panel title="Sessions">
       <div className="flex flex-col gap-3 text-xs">
         {rows.map((r) => {
+          if (isUnreadableRow(r)) {
+            // Read-only: the reason, and the delete gated exactly as a
+            // session's (control.mount; it can never be the running one).
+            return (
+              <div key={r.id} className="border border-bad/40 bg-bg/50 p-3 flex flex-col gap-2"
+                data-testid={`session-unreadable-${r.id}`}>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-display font-semibold text-ink tracking-wider break-all">{r.name}</span>
+                  {/* The id is what the delete removes; shown when the name
+                      inside the file does not already say it, so a broken
+                      copy can be told from a readable session of that name. */}
+                  {r.name !== r.id && (
+                    <span className="mono text-[11px] text-dim break-all">{r.id}</span>
+                  )}
+                  <StatusChip status={r.status} />
+                  <div className="flex-1" />
+                  {canControl && (
+                    <button
+                      className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center
+                        border border-bad/60 text-bad hover:bg-bad/10"
+                      aria-label={`Delete unreadable session ${r.name}`}
+                      title={`Delete ${r.id}`}
+                      onClick={() => void onDelete(r.id, r.name, unreadableDeleteBody(r))}>
+                      <Icon name="trash" size={14} />
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-dim break-words">{r.unreadable}</p>
+              </div>
+            );
+          }
           const s = details[r.id];
           return (
             <div key={r.id} className="border border-line bg-bg/50 p-3 flex flex-col gap-2">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-display font-semibold text-accent tracking-wider">{r.name}</span>
                 <StatusChip status={r.status} />
-                <span className="mono text-[11px] text-dim">
+                {/* `nights` is the OBSERVING nights the session has run, the
+                    server's `len(s.observing_nights())` (#430): a restart the
+                    same night is the same night here, as on the flow card and
+                    in CONTINUE. Printed as sent, never plus one for tonight.
+                    Until H4 the server sent the run count. */}
+                <span className="mono text-[11px] text-dim" data-testid="session-counts">
                   {r.accepted}/{r.total} · {r.nights} night{r.nights === 1 ? "" : "s"}
                 </span>
                 {/* #35 — which "Tonight" is this one? */}
@@ -195,7 +261,7 @@ export default function SessionsPanel() {
                       border border-bad/60 text-bad hover:bg-bad/10"
                     aria-label={`Delete session ${r.name}`}
                     title={`Delete ${r.name}`}
-                    onClick={() => void onDelete(r)}>
+                    onClick={() => void onDelete(r.id, r.name, SESSION_DELETE_BODY)}>
                     <Icon name="trash" size={14} />
                   </button>
                 )}

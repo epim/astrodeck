@@ -104,6 +104,14 @@ export interface FrameMetadata {
   presentedFrames: number;
 }
 
+/** A `devicemotion` reading: the rate of turn about the device's own axes, in
+ *  degrees per second. `MotionStability` reads `hypot(alpha, beta, gamma)` and
+ *  nothing else. */
+export interface MotionReading {
+  timeStamp: number;
+  rate: { alpha: number; beta: number; gamma: number };
+}
+
 export interface OrientationReading {
   timeStamp: number;
   alpha: number;
@@ -121,6 +129,12 @@ export interface ReplayHarness {
   /** The picture the camera is showing from now on. */
   setFrame(frame: Raster, captureMs: number): void;
   dispatchOrientation(reading: OrientationReading): void;
+  /** The SECOND witness (issue #105). `deviceorientation` is change-driven,
+   *  so a phone holding still goes silent; `devicemotion` fires at a fixed
+   *  rate whether or not anything moved. Until the recordings carried this
+   *  stream, `MotionStability` collected nothing in any replay and its
+   *  witness read `stale` from end to end. */
+  dispatchMotion(reading: MotionReading): void;
   /** Run the scanner's stored video-frame callback, if it has registered one.
    *  Returns false when it has not - which is itself a finding, not a silence
    *  to swallow: the scanner would then be on its interval fallback. */
@@ -248,6 +262,16 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
       current = frame;
       captureSeconds = captureMs / 1000;
       resampled = new Map();
+    },
+    dispatchMotion(reading: MotionReading) {
+      const event = new w.Event('devicemotion');
+      Object.defineProperty(event, 'timeStamp', { value: reading.timeStamp, configurable: true });
+      // `rotationRate` is the only member the scanner reads. The others a real
+      // DeviceMotionEvent carries - acceleration, interval - are left off
+      // rather than filled with zeros, so a reader of this harness cannot
+      // mistake an unmodelled field for a measured one.
+      Object.assign(event, { rotationRate: reading.rate });
+      w.dispatchEvent(event);
     },
     dispatchOrientation(reading: OrientationReading) {
       const event = new w.Event('deviceorientationabsolute');

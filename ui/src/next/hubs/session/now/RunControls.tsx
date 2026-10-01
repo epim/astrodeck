@@ -33,6 +33,7 @@
 import { useEffect, useRef, useState, type JSX } from "react";
 
 import { sessionStackImageUrl } from "../../../../api/sessionStack";
+import { EMPTY_SEQUENCE } from "../../../../lib/authGate";
 import { accessPhrase, useCanControlMount, useCan } from "../../../../lib/caps";
 import { fmtCountdown } from "../../../../lib/eta";
 import { useSeq, useStore } from "../../../../store";
@@ -41,6 +42,7 @@ import { NxIcon } from "../../../icons";
 import { explainLock } from "../../../shell/explain";
 import { nav } from "../../../router";
 import { acceptedByFilter, tonightNightKey } from "./filters";
+import { subsPhrase } from "./LiveStack";
 import { sendControl } from "./sendControl";
 import { useActiveSession } from "./sessionData";
 import { useSessionStackStatus } from "./stackView";
@@ -71,7 +73,11 @@ export function RunControls({ size = "lg" }: { size?: "lg" | "md" }): JSX.Elemen
 
   const [aborting, setAborting] = useState(false);
   const [downloadNote, setDownloadNote] = useState<string | null>(null);
-  const vibratedError = useRef(false);
+  // Seeded from the state at mount (#467); the buzz effect below says why,
+  // and why `null`.
+  const seqCold = seq === EMPTY_SEQUENCE;
+  const ended = seq.state === "error" || seq.state === "aborted";
+  const vibratedError = useRef<boolean | null>(seqCold ? null : ended);
 
   const running = LIVE_STATES.has(seq.state);
   const serverAborting = seq.state === "aborting";
@@ -92,14 +98,26 @@ export function RunControls({ size = "lg" }: { size?: "lg" | "md" }): JSX.Elemen
   // has always buzzed on both. The pattern is the legacy triple rather than one
   // long pulse, because a single 120 ms buzz is what an incoming notification
   // feels like and this is not one.
+  //
+  // AN ENTRY WHILE MOUNTED, NOT A MOUNT IN THE STATE (#467). The ref used to
+  // start false, and SessionColumn mounts this on every desktop #/next page
+  // and the Now screen on a phone, so every open, reload or remount over a run
+  // that ended hours before buzzed the alarm, and a desktop page load logged a
+  // blocked-vibrate console error (the S6 probe, 2026-09-28). The ref is
+  // seeded from the state at mount. The store's cold value (EMPTY_SEQUENCE,
+  // before any snapshot or event) is not a state the rig was in: it reads
+  // "idle", so the page load's snapshot looked like idle -> aborted. `null`
+  // means nothing is known yet, and the first known state seeds the ref
+  // without buzzing. The classic MonitorView keeps the same rule.
   useEffect(() => {
-    const bad = seq.state === "error" || seq.state === "aborted";
-    if (bad && !vibratedError.current) {
+    if (seqCold) { vibratedError.current = null; return; }
+    if (vibratedError.current === null) { vibratedError.current = ended; return; }
+    if (ended && !vibratedError.current) {
       vibratedError.current = true;
       try { navigator.vibrate?.([60, 40, 60]); } catch { /* unsupported */ }
     }
-    if (!bad) vibratedError.current = false;
-  }, [seq.state]);
+    if (!ended) vibratedError.current = false;
+  }, [ended, seqCold]);
 
   useEffect(() => {
     if (!downloadNote) return;
@@ -177,7 +195,9 @@ export function RunControls({ size = "lg" }: { size?: "lg" | "md" }): JSX.Elemen
           onPress={() => nav.sheet("files", { src: "current" })}
           data-testid="now-files"
         >
-          FILES · {subs} SUBS
+          {/* COUNTED, as the column's current line and the FILES sheet
+              count (#468 item 4): one banked sub read "FILES · 1 SUBS". */}
+          FILES · {subsPhrase(subs).toUpperCase()}
         </ActionButton>
         {/* A plain <a download>, never a fetch into a Blob: the composite is
             served as one file and iOS takes one file at a time, in the

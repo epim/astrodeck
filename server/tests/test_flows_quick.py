@@ -18,7 +18,8 @@ broken while every other test stayed green:
 2. **The doctor is silent.** wizard.py's header calls this the acceptance bar
    and says why: a generated graph that arrives already lit up with warnings
    teaches a first-time operator, on their first flow, that the doctor is
-   decoration.
+   decoration. An unguided flow whose subs reach the doctor's unguided line
+   is refused instead of generated (#518, test_h4_quick_unguided_line.py).
 
 3. **A filter this wheel does not have is refused, 422.** cyclePlanRows.ts
    opens on the reason -- a filter name is not a label; it lands in the FITS
@@ -122,16 +123,52 @@ class TestTheGeneratedGraph:
                                                   NGC6946["dec"])
 
     def test_it_is_the_proven_deep_sky_shape(self):
-        """Dusk window, target, slew + center, autofocus, guide, the capture
-        stage, session report -- plus the relative HFR watchdog and a safety
-        monitor that aborts and parks."""
+        """Dusk window, target, autofocus, guide, the capture stage, session
+        report -- plus the relative HFR watchdog and a safety monitor that
+        aborts and parks.
+
+        NO SLEW + CENTER since S3 (#189 U-09, spec 1.7): the TARGET block
+        centres, and the stage's settings never reached the run. RED under
+        mutant "SLEW left in the lane" (wizard.py appends ``"slew"`` before
+        ``"autofocus"`` again), observed verbatim:
+
+            E   AssertionError: ['dusk', 'target', 'slew', 'autofocus',
+                'guide', 'cycle', ...]
+            E   assert 'slew' not in ['dusk', 'target', 'slew', 'autofocus',
+                'guide', 'cycle', ...]
+
+        (and ``test_a_guided_quick_flow_has_no_issues_at_all`` with it, on
+        doctor L1's note).
+        """
         rec = wizard.quick(NGC6946, 10, ["L"])
         types = [n.type for n in rec.graph.nodes]
-        for want in ("dusk", "target", "slew", "autofocus", "guide", "cycle",
+        for want in ("dusk", "target", "autofocus", "guide", "cycle",
                      "report", "condition", "refocus", "safety", "abort"):
             assert want in types, f"a quick flow with no {want}: {types}"
+        assert "slew" not in types, types
         cond = _node(rec, "condition").params
         assert cond["when"] == "HFR above (x focus)" and cond["threshold"] == 1.3
+
+    def test_its_target_is_created_and_counts_accepted_subs(self):
+        """The quick flow's TARGET is made by the wizard, so it carries the
+        Created-as column (spec 3.1): accepted subs only (Revision 2 ruling
+        2), and no angle beyond "Any angle" (ruling 9), under the picker's
+        name and coordinates. Its plan counts accepted subs.
+
+        RED under mutant "the wizard reads the missing-key defaults"
+        (``_Canvas.add`` takes ``default_params``), observed verbatim:
+
+            E   KeyError: 'angle'
+
+        (the missing-key defaults have no `angle` at all: it is derived).
+        """
+        rec = wizard.quick(NGC6946, 4, ["L", "R"])
+        t = _node(rec, "target").params
+        assert (t["counts"], t["angle"], t["rotation"]) == (
+            "Accepted subs", "Any angle", -1)
+        plan, _ = to_sequence_plan(compile_plan(rec.graph, rec.name),
+                                   rec.graph)
+        assert plan.count_mode == "accepted"
 
     def test_the_watchdog_is_fed_by_the_cycle_and_fires_the_refocus(self):
         """A CONDITION with nothing wired into `events` never fires, and one
@@ -152,9 +189,26 @@ class TestTheGeneratedGraph:
                    and e.to == abort.id for e in rec.graph.edges)
 
     def test_unguided_drops_the_guide_node_and_keeps_the_rest(self):
+        """And the doctor is asked, which until H4 it never was on an
+        unguided quick flow (#518): L at its 60 s default is under the
+        unguided line, so nothing above a note. The matrix over guided and
+        unguided, broadband, narrowband and one channel at 119 and 120 s is
+        test_h4_quick_unguided_line.py's.
+
+        RED under the wizard.py mutant "the line refuses from half of it"
+        (``_within_the_unguided_line``'s comparison made ``secs >= line /
+        2``), observed:
+
+            ValueError: an unguided quick flow holds every sub under 120 s,
+            where the doctor warns that stars trail with no GUIDE stage
+            (rule 2), and L 60 s is at or past it: turn Guide on, or shorten
+            it
+        """
         rec = wizard.quick(NGC6946, 10, ["L"], guided=False)
         types = [n.type for n in rec.graph.nodes]
         assert "guide" not in types and "cycle" in types and "abort" in types
+        assert [i.text for i in flow_doctor(rec.graph)
+                if i.level != "note"] == []
 
     def test_no_wheel_is_one_channel_with_no_filter_name(self):
         """A colour camera has one channel. A one-slot FILTER CYCLE interleaves
@@ -214,6 +268,9 @@ class TestItPassesItsOwnDoctorAndRuns:
     @pytest.mark.parametrize("filters", [["L"], ["L", "R", "G", "B"],
                                          ["Ha", "OIII", "SII"], []])
     def test_every_filter_subset_is_clean(self, filters):
+        """Guided (the default). An unguided narrowband flow at these
+        defaults is refused rather than generated (#518), which
+        test_h4_quick_unguided_line.py holds."""
         rec = wizard.quick(NGC6946, 8, filters)
         assert [i.text for i in flow_doctor(rec.graph) if i.level != "note"] == []
 

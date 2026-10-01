@@ -1,16 +1,20 @@
 // FlowNode.tsx - one stage on the graph, and one port row on that stage
 // (wave R7 parity rows A4 and A5).
 //
-// THE RE-RENDER DISCIPLINE IS THE POINT OF THIS FILE. A `flow.node` status tick
-// must re-render ONE stage, not the graph. That holds only because the surface
-// is the single subscriber to the node ARRAY and passes each node down as a
-// prop, while this card subscribes to its own status, its own selectedness and
-// its own loss level with selectors that return PRIMITIVES - zustand compares
-// the selector's result with Object.is, so a status write for stage B cannot
-// wake stage A. `memo` then stops the surface's own re-renders walking every
-// card. Reaching for a `useFlowNode(id)` shape here would undo all of it: it
-// returns the node OBJECT, reference-equal only while every writer maps just the
-// node it touched.
+// THE RE-RENDER DISCIPLINE IS THE POINT OF THIS FILE. A write that concerns one
+// stage - selecting it, its progress chip - must re-render ONE stage, not the
+// graph. That holds only because the surface is the single subscriber to the
+// node ARRAY and passes each node down as a prop, while this card subscribes
+// to its own status, its own selectedness and its own loss level with
+// selectors that return PRIMITIVES - zustand compares the selector's result
+// with Object.is, so selecting stage B cannot wake stage A. Nothing sends a
+// per-stage status (there is no `flow.node` topic, and nothing writes
+// `flows.statuses`, #464, canvasModel `asNodeStatus`), so every stage reads
+// idle; the status selector is as narrow as the others so that a status feed,
+// once there is one, wakes one stage. `memo` then stops the surface's own
+// re-renders walking every card. Reaching for a `useFlowNode(id)` shape here
+// would undo all of it: it returns the node OBJECT, reference-equal only while
+// every writer maps just the node it touched.
 //
 // THE CARD IS NOT `<Card>`, AND THAT IS DELIBERATE. It wears the design's card
 // vocabulary - 14 px radius, `--bg-panel`, `--line`, the accent/purple tone
@@ -31,8 +35,13 @@
 import { memo, type JSX, type MouseEvent as RMouseEvent, type PointerEvent as RPointerEvent } from "react";
 
 import { NODE_DEFS, type PortDef } from "../../../../../components/flows/nodeDefs";
-import { PORT_ROW_H, nodeW, type PortDir } from "../../../../../components/flows/geometry";
+import {
+  PORT_ROW_H, nodeLayoutHeight, nodeW, type PortDir,
+} from "../../../../../components/flows/geometry";
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
+import { progressChip } from "../../../../../components/flows/flowProgress";
+import { withLoop, type LaneGraph } from "../../../../../components/flows/panelLane";
+import { targetFooter, targetLoops } from "../../../../../components/flows/targetSummary";
 import { useStore } from "../../../../../store";
 import { nav } from "../../../../router";
 import { ActionButton, Mono, Pill, StatusPill } from "../../../../ui";
@@ -40,6 +49,107 @@ import {
   NODE_STATUS_TONE, NODE_STATUS_WORD, RIG_VALUE_PREFIX, asNodeStatus, isLoss,
   markTone, markWord, nodeMarkDetail, nodeMarkLevel, portAttr, rigValueFor,
 } from "./canvasModel";
+
+// ------------------------------------------------- the card's height, drawn
+
+// THE CARD AS DRAWN IS TALLER THAN ITS FORMULA BOX (#357). The loop arc routes
+// under `geometry.nodeLayoutHeight`, a budget that keeps a card's height
+// knowable before it renders (spec 1.4: "computed from the card formula and
+// never measured from the DOM"). This card's footer grows past that budget:
+// its line wraps (10 px mono in 188 - 2 - 20 = 166 px holds 27 characters, and
+// the eighth Example's "M31 · rotate · 3x2 · PA 55.0 · 25%" is 34), its marks
+// row carries a pill during a run or once a session has counted the block, and
+// the selected card shows the 44 px EDIT STAGE. Computed from the stack below,
+// an idle card already reaches 10 px past its formula box (its empty marks row
+// still takes a gap); the wrapped line adds 15 (25), a pill 26 (36 with one
+// line), EDIT STAGE 6 + 44 (60), so either of the last two alone put the
+// card's bottom past the arc's 28 px drop and the run passed behind the card.
+// The issue's first option: lower the #/next run by what the card can reach,
+// computed here from the numbers beside the classes that draw it, so the run
+// is still the formula's.
+//
+// The stack, top to bottom (canvas.css and next.css; Tailwind's preflight
+// makes every box border-box and sets `line-height: 1.5`):
+const CARD_BORDER_PX = 1; //   .nx-flow-node         border: 1px, top and bottom
+const CARD_HEAD_PX = 32; //    .nx-flow-node-head    height: 32px
+const PORTS_PAD_PX = 5 + 2; // .nx-flow-node-ports   padding: 5px 0 2px
+const FOOT_PAD_PX = 3 + 8; //  .nx-flow-node-foot    padding: 3px 10px 8px
+const FOOT_GAP_PX = 6; //      .nx-flow-node-foot    gap: 6px
+const FOOT_LINE_PX = 10 * 1.5; // <Mono size={10}> at the preflight's 1.5
+const PILL_PX = 26; //         .nx-pill              height: 26px
+const BUTTON_PX = 44; //       .nx-btn               height: 44px (EDIT STAGE)
+
+/** The footer the budget allows for: the whole line wrapped once, as the
+ *  eighth Example's TARGET wraps. A longer name wraps again and is past it. */
+const FOOTER_LINES = 2;
+
+/** The rows' height is the formula's own (`PORT_ROW_H` each, on both), so it
+ *  cancels; this is the card with no rows. */
+const NO_ROWS = { id: "", type: "" as FlowNodeRec["type"], x: 0, y: 0, params: {} };
+
+/** How far below its formula box (`nodeLayoutHeight`) this card can reach,
+ *  with its footer wrapped to two lines, a pill in its marks row and EDIT
+ *  STAGE shown: 164 - 63 = 101 px. The #/next wire layer lowers the loop's
+ *  run by this (`geometry.lowerLoopRun`), so the run stands `LOOP_ARC_DROP`
+ *  below the card as drawn, where the classic canvas's stands below the
+ *  formula box.
+ *
+ *  Past this budget, the run's own 28 px absorbs a third footer line (15)
+ *  and the rig line GUIDE and SLEW add (6 + 15 = 21, level with the chip's
+ *  top, 7 px above the run). It does not absorb a marks row that wraps to a
+ *  second row (6 + 26: two 90 px pills and their gap are 186 px of a 166 px
+ *  row, the progress chip beside a mark on a TARGET), a fourth footer line,
+ *  or a selected TARGET that offers LOOP PANELS as well as EDIT STAGE
+ *  (6 + 44); those still put a card over the run (#554).
+ *
+ *  Tailwind builds only a class it finds written out, and the look lives in
+ *  the stylesheets, so the numbers cannot be read from them here;
+ *  canvas/__tests__/loopArcNext.test.tsx computes the mounted card's height
+ *  from its classes and holds the run to it, so a class that grows the card
+ *  and not this fails there. */
+export const CARD_OVERHANG_PX =
+  2 * CARD_BORDER_PX + CARD_HEAD_PX + PORTS_PAD_PX
+  + FOOT_PAD_PX + FOOTER_LINES * FOOT_LINE_PX + FOOT_GAP_PX + PILL_PX + FOOT_GAP_PX + BUTTON_PX
+  - nodeLayoutHeight(NO_ROWS, NODE_DEFS);
+
+// ------------------------------------------------------------ LOOP PANELS
+
+/** The one-tap button that adds a mosaic's loop wire (spec 1.4 "When the wire
+ *  is added": "the one-tap LOOP PANELS button on the card, in the stage list").
+ *  The phone stage list shows the same words. */
+export const LOOP_PANELS_LABEL = "LOOP PANELS";
+
+/** What the button says it does, for its tooltip and accessible name. The
+ *  doctor's M3 names the same wire in the same words. */
+export const LOOP_PANELS_WHY =
+  "Wire the panel lane's last stage 'pass done' to this TARGET's 'next panel', "
+  + "so every pass moves to the next panel";
+
+/** `withLoop` needs an id for a wire it would add; the offer only asks
+ *  WHETHER it would add one, so the wire is never kept. */
+const NO_ID = (): string => "";
+
+/** True when LOOP PANELS would change the block's loop wiring: exactly when
+ *  the press, `flowsApplyFraming(id, {}, true)`, would write anything.
+ *
+ *  ONE RULE FOR THE OFFER AND THE PRESS. `withLoop(true)` hands back the SAME
+ *  wires when it changes nothing, and it changes nothing unless the block is
+ *  a multi-panel TARGET, owns a lane with a single tail, and that tail has a
+ *  "pass done" to give; then it adds the loop wire when none leaves the tail
+ *  yet, and MOVES a pass wire stranded mid-lane (M12) to the tail rather than
+ *  adding a second (#410). Asked here with the same call, the button is shown
+ *  on exactly the blocks a press changes: never on a mosaic that rotates
+ *  (`targetLoops`; a second wire is doctor M4's "one is enough"), but on one
+ *  whose tail wire stands beside a stale mid-lane one, which the run refuses;
+ *  never on a single target, a block that owns no stage, or a lane that
+ *  branches or ends on a stage with no "pass done", where a button that did
+ *  nothing would be a dead control with a promise on it. The phone stage list
+ *  asks the same function.
+ *
+ *  A boolean, so a card's selector stays exact under Object.is. */
+export function offersLoopPanels(graph: LaneGraph, blockId: string): boolean {
+  return withLoop(graph, blockId, true, NO_ID) !== graph.edges;
+}
 
 // ------------------------------------------------------------------- a port
 
@@ -139,9 +249,10 @@ function FlowPortRowBase({ nodeId, port, dir, onStartWire, onTapPort, big = fals
   );
 }
 
-/** Every prop is stable across a status tick (`port` comes from `NODE_DEFS`,
- *  `nodeId` is a string, the handlers are the card's own props), so `memo` here
- *  is what keeps a status re-render from walking the whole port list. */
+/** Every prop is stable across a re-render of the card (`port` comes from
+ *  `NODE_DEFS`, `nodeId` is a string, the handlers are the card's own props),
+ *  so `memo` here is what keeps a selection, a chip or a loss re-render from
+ *  walking the whole port list. */
 export const FlowPortRow = memo(FlowPortRowBase);
 
 // -------------------------------------------------------------------- a node
@@ -160,18 +271,33 @@ export interface FlowNodeCardProps {
 }
 
 function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTapPort }: FlowNodeCardProps): JSX.Element {
-  // Five subscriptions, all returning a primitive, so all five are exact under
+  // Every subscription here returns a primitive, so each is exact under
   // Object.is. `nodeMarkLevel` returns a string or null and never a fresh
   // object, so a compile that changes nothing for this type does not wake this
   // card - and `rigValueFor` reaches into `status.providers` for ONE label
   // rather than taking the providers object, which would be a new reference on
   // every poll and would re-render every card on the canvas four times a
-  // minute.
+  // minute. `progressChip` is the same: the chip STRING, not the progress
+  // answer, which is a new object on every re-read.
   const status = useStore((s) => asNodeStatus(s.flows.statuses[node.id]));
   const selected = useStore((s) => s.flows.sel?.kind === "node" && s.flows.sel.id === node.id);
   const mark = useStore((s) => nodeMarkLevel(s.flows.compiled?.unmapped, node.type));
   const markWhy = useStore((s) => nodeMarkDetail(s.flows.compiled?.unmapped, node.type));
   const rigValue = useStore((s) => rigValueFor(node.type, s.status));
+  // THE PROGRESS CHIP (#189 S1 item 9), "212/315 subs". The classic card draws
+  // it from the same formatter, which decides everything - TARGET only, a
+  // session to count from, a saved graph - so the two canvases cannot disagree
+  // about when a count is true.
+  const chip = useStore((s) => progressChip(s.flows.progress, node.id, s.flows.dirty));
+  // A TARGET's footer names whether its panels rotate (#189 S4 item 6, spec
+  // 1.2), which is the loop wire in the GRAPH, not a param. A boolean, so a
+  // graph write that leaves this block's loop alone - a drag, another stage's
+  // param - does not wake this card, and `targetLoops` never calls `sum`.
+  const loops = useStore((s) => node.type === "target" && targetLoops(node, s.flows.graph));
+  // LOOP PANELS (#189 S4 item 6, spec 1.4): offered only while a press would
+  // add the loop wire or move a stranded one to the tail (#410). A boolean,
+  // for the same reason as `loops`.
+  const offersLoop = useStore((s) => node.type === "target" && offersLoopPanels(s.flows.graph, node.id));
   // A LOSS earns the `!` and the card outline; a note does not. The note says
   // the run uses the rig's own value for these settings, which is not a defect
   // in the graph and must not be painted as one.
@@ -180,6 +306,7 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
   // Actions are stable references on the store, so selecting them costs nothing.
   const select = useStore((s) => s.flowsSelect);
   const setEditNode = useStore((s) => s.flowsSetEditNode);
+  const applyFraming = useStore((s) => s.flowsApplyFraming);
 
   const def = NODE_DEFS[node.type];
   const w = nodeW(phone ? "phone" : "desktop");
@@ -330,8 +457,14 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
 
       <div className="nx-flow-node-foot">
         {/* Computed from the CURRENT params, so an edit shows on the card
-            without opening anything. */}
-        <Mono size={10} tone="dim">{def.sum(node.params)}</Mono>
+            without opening anything. A TARGET's line is `targetFooter` -
+            "M31 · rotate · 3x2 · PA 30.0 · 25%" - WHOLE, because this footer
+            wraps; the classic card's one line draws the same line fitted
+            (`fittedFooter`, S7 orchestrator ruling 9). It takes the name from
+            the same `def.sum`, once. */}
+        <Mono size={10} tone="dim" data-testid="flow-node-summary">
+          {node.type === "target" ? targetFooter(node, loops) : def.sum(node.params)}
+        </Mono>
         {/* And what the rig will really use, for the stages whose stored params
             name a provider it overrides: GUIDE ships "PHD2" and SLEW ships
             "ASTAP" in the vocabulary's own defaults, so a rig that guides
@@ -347,6 +480,11 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
           {status !== "idle" && (
             <StatusPill text={word} tone={NODE_STATUS_TONE[status]} pulse={status === "busy"} />
           )}
+          {chip && (
+            // A pill in the marks row, which wraps, rather than a third footer
+            // line: the 188 px card already clips the rig line to fit.
+            <Pill tone="info" data-testid="flow-node-progress">{chip}</Pill>
+          )}
           {mark && (
             // A word, not a ring. The night palette collapses warn and bad
             // toward coral, so a coloured mark alone is indistinguishable from
@@ -358,6 +496,24 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
             </Pill>
           )}
         </div>
+        {offersLoop && (
+          // THE ONE-TAP LOOP (spec 1.4). Amber because the block it sits on is
+          // doctor M3's warning, panels shot one after another, and this is
+          // the action that answers it. The press is the modal DONE's own
+          // write with an empty patch, so it is one graph write and one
+          // compile, and the wire leaves the lane's TAIL by `withLoop`, never
+          // an earlier stage (M12). In the footer, under the ports, so no wire
+          // anchor moves.
+          <ActionButton
+            kind="warn"
+            data-testid="flow-node-loop"
+            ariaLabel={`${LOOP_PANELS_LABEL}: ${LOOP_PANELS_WHY}`}
+            onPress={() => { void applyFraming(node.id, {}, true); }}
+            full
+          >
+            {LOOP_PANELS_LABEL}
+          </ActionButton>
+        )}
         {selected && (
           // The 44 px door to the same sheet the 28 px pencil opens. Revealed on
           // selection so every stage does not carry a button, and selection is a

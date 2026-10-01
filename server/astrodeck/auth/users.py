@@ -33,7 +33,8 @@ so a misconfiguration can never lock every admin out of their own rig.
 Import-light: depends only on ``capabilities`` (role validity), ``passwords``
 (bcrypt), ``persist`` (atomic JSON), and pydantic. No ``api.app`` / ``hub`` /
 ``config`` import -- the ``users.json`` PATH is injected (defaulting to
-``config.CONFIG_DIR / 'users.json'`` resolved lazily) so there is no import cycle.
+``config.CONFIG_DIR / 'users.json'`` resolved lazily, on every call, #436) so
+there is no import cycle.
 """
 from __future__ import annotations
 
@@ -55,7 +56,8 @@ from .passwords import (
 
 def _default_store_path() -> Path:
     """``server/config/users.json``. Resolved lazily so importing this module
-    never imports ``config`` (kept import-light / cycle-free)."""
+    never imports ``config`` (kept import-light / cycle-free), and on every
+    call, so it is wherever ``config.CONFIG_DIR`` points NOW (#436)."""
     from ..config import CONFIG_DIR  # lazy: avoid an import cycle at module load
     return CONFIG_DIR / "users.json"
 
@@ -168,10 +170,37 @@ class UserStore:
     """
 
     def __init__(self, path: Path | None = None):
-        self._path = Path(path) if path is not None else _default_store_path()
+        #: The file this store was built on, or None for the default, which
+        #: ``_path`` resolves on every call.
+        self._given = Path(path) if path is not None else None
         self._users: dict[str, User] | None = None   # id -> User (lazy)
         #: (mtime_ns, size) of the file as of the last load — see ``_cache``.
         self._stamp: tuple[int, int] | None = None
+        #: The file ``_users`` was read from — see ``_cache``.
+        self._source: Path | None = None
+
+    @property
+    def _path(self) -> Path:
+        """The store's file: the one it was built on, else
+        ``config.CONFIG_DIR / 'users.json'`` as the directory stands NOW.
+
+        ON EVERY CALL (#436). ``__init__`` used to resolve the default once,
+        and ``user_store = UserStore()`` runs at import, so the process
+        store stayed on the directory it was imported with while the module
+        docstring said "resolved lazily": repointing ``config.CONFIG_DIR``,
+        as a test's isolated config does, moved every other seam and left
+        the accounts file behind."""
+        return self._given if self._given is not None else _default_store_path()
+
+    @_path.setter
+    def _path(self, path: Path) -> None:
+        """Pin the store to ``path``, as a test's monkeypatch does; or, given
+        the file the default names right now, follow the default again.
+        That file is what this property answered before a pin, so it is
+        the value a monkeypatch puts back, and putting it back must not
+        leave the process store pinned to the directory of the moment."""
+        path = Path(path)
+        self._given = None if path == _default_store_path() else path
 
     # -- loading / persistence -------------------------------------------------
 
@@ -287,11 +316,19 @@ class UserStore:
         Keyed on (mtime_ns, size) rather than mtime alone: a same-second rewrite
         of a same-length file is exactly what a password reset looks like, and
         one-second mtime granularity on some filesystems would miss it. Cheap —
-        one stat per access, against a file that changes a few times a year."""
+        one stat per access, against a file that changes a few times a year.
+
+        AND KEYED ON THE FILE ITSELF (#436): a store with no path of its own
+        follows ``config.CONFIG_DIR`` (``_path``), and a cache read from the
+        old directory's file is not the new one's, even when the two files'
+        stamps agree, as two files written in the same instant and the same
+        length do."""
+        path = self._path
         stamp = self._file_stamp()
-        if self._users is None or stamp != self._stamp:
+        if self._users is None or path != self._source or stamp != self._stamp:
             self._users = self._load()
             self._stamp = stamp
+            self._source = path
         return self._users
 
     def _save(self) -> None:

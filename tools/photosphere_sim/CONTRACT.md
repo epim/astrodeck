@@ -77,6 +77,7 @@ reports, which is the only one of them no package manifest records, and it is
 `observations.jsonl`, one object per line, sorted by delivery time:
 - `{"kind":"frame","frame_id":"f000123","t_capture_ms":12300,"t_present_ms":12360,"width":480,"height":640,"file":"frames/f000123.png"}`
 - `{"kind":"orientation","t_event_ms":12280,"t_receive_ms":12300,"alpha":..,"beta":..,"gamma":..,"absolute":true}`
+- `{"kind":"motion","t_event_ms":12290,"t_receive_ms":12300,"rate":{"alpha":..,"beta":..,"gamma":..}}`
 Delivery time is `t_present_ms` for frames and `t_receive_ms` for events.
 
 At an equal delivery time the two files disagree on purpose, and both are
@@ -92,16 +93,42 @@ a reader of `observations.jsonl` must not infer the delivery order within a
 millisecond from the line order, and a driver must sort the merged stream with
 readings ahead of frames at equal delivery times.
 
-There is no `devicemotion` record, and no case can produce one. The scanner
-gained a gyroscope witness for the view the camera cannot judge (issue #63):
-on a featureless sky the video vouches for nothing, so a reading is held by a
-`rotationRate` that stays quiet. Every recording predates that channel and
-carries only frames and orientation, so in a replay the gyroscope is always
-absent and always refuses. A hold that the recordings score as missed for
-want of a pose may therefore be a hold a real phone would have captured, and
-`every_hold_captured` cannot settle it either way until a recording carries
-motion (issue #105). Issue #76's zenith holds on the arc routes are exactly
-that case.
+`motion` is the SECOND witness (issue #105). The scanner gained a gyroscope
+witness for the view the camera cannot judge (issue #63): on a featureless sky
+the video vouches for nothing, so a reading is held by a `rotationRate` that
+stays quiet. Before this channel existed no recording carried one, the
+gyroscope was absent in every replay and always refused, and a hold the
+recordings scored as missed for want of a pose might have been a hold a real
+phone would have captured - `every_hold_captured` could not settle it either
+way.
+
+Unlike `orientation`, `motion` is NOT change-driven: it is emitted on every
+tick of its 60 Hz grid whether or not anything moved, because that is what a
+`devicemotion` stream does and it is the whole reason the witness works. A
+phone holding still keeps producing these while the orientation stream goes
+silent.
+
+The three numbers are the rate of turn about the DEVICE's own axes, in degrees
+per second, which is not the rate of change of the Euler angles: d(alpha)/dt
+diverges near the poles while the phone turns perfectly steadily, and these
+routes end at the zenith. They are taken from the rotation of the device frame
+between the attitudes half a period either side of the sample, so the vector's
+magnitude is the trajectory's own `angular_rate_deg_s` - which is the only
+quantity the scanner reads, since `MotionStability` compares
+`hypot(alpha, beta, gamma)` against a threshold. Measured against
+`truth/trajectory.jsonl` over the arc route: median error 0.0001 deg/s,
+and exactly 0 through a hold.
+
+A case declares `gyro_noise_deg_s`, Gaussian per axis. The default is 0,
+which makes a hold read EXACTLY zero - and the scanner discards an exact zero
+triple as synthetic (`MotionStability.observe`, issue #106: a real MEMS gyro has
+a noise floor and never reports one twice). So an exact stream does not model a
+quiet gyro, it models a dead one, and at every held attitude the witness goes
+stale. Every chart-yard case therefore sets 0.05 deg/s, a phone gyro's floor at
+60 Hz: a sample's magnitude near 0.09 against `QUIET_RATE_DEG_S` 0.5, and a
+random-walk drift near 0.007 degrees a second against `QUIET_DRIFT_DEG` 0.5. A
+case that wants a gyro too noisy to vouch for anything raises it; issue #76 is
+the measurement that forced this (arc075-60, 43 to 46 of 48 holds).
 
 `actions.jsonl`: `{"t_ms":0,"action":"begin"}` and `{"t_ms":<end>,"action":"finish"}`.
 
@@ -139,9 +166,16 @@ the canopy is indistinguishable from one that also found the trunk.
   `{"t_ms","frame_id","compass_ready","tilt_ready","aim":<cell id|null>,"basis":{"right","up","forward"}|null,"frame_count","cue"}`.
 - `result/captures.jsonl`: the scanner's capture log, one line per attempt:
   `{"at","outcome","cell"?, "basis"?, "sensor_basis"?, "adjusted"?, "wait"?,
-  "separation"?, "anchor"?}`. The last three belong to `alignment-wait` and
-  were added for issue #76, because one outcome name covered three different
-  refusals and a log of them said only that a hold did not capture. `wait` is
+  "separation"?, "anchor"?, "gap"?, "overlap_term"?, "correlation"?,
+  "feature_correlation"?, "samples"?, "searched"?}`. The last five belong to
+  `overlap-wait` (issue #130): which term of the conflict refused
+  (`brightness`, `edges` or `both`), the two correlations it decided on, the
+  sample count, and whether registration searched before refusing. `wait`, `separation` and `anchor` belong to
+  `alignment-wait` and were added for issue #76, because one outcome name
+  covered three different refusals and a log of them said only that a hold did
+  not capture. `separation` is written on one other outcome:
+  `carry-too-large`, where it carries the size of the carried correction the
+  bound refused, measured on the refusing frame (issue #95). `wait` is
   `no-pose` (nothing could place the frame at all), `unsettled` (a pose was
   worn but the settle test found none) or `separation` (both poses exist and
   differ by more than 1.5 degrees); `separation` carries the degrees that last
@@ -453,7 +487,11 @@ no ray hit anything. Measured bin `i` of `N` covers
   unresolvable. `product_bins` is the number of points in THIS result's own
   `result/horizon.json` (whatever the scanner that produced it used, not a
   constant); `resolvable` is `visible_width_deg >= 360 / product_bins`.
-  `resolvable_width_deg` is `max(min_width_deg, 360 / product_bins)`, reported
+  `resolvable_width_deg` is `max(min_width_deg', 360 / product_bins)`, where
+  `min_width_deg'` is the declared label floored at `EDITOR_MIN_WIDTH_DEG`
+  (1.5577 degrees, issue #53: the owner's ruling that the narrowest obstruction
+  the planner honours is the closest two dots can be placed in the horizon
+  editor, at its finest zoom). It is reported
   on every row regardless of `resolvable`, and it still sets the verdict's
   width threshold once an obstacle IS resolvable: the declared value can
   still hold a wide obstacle to a wider minimum than one bin, it just cannot
@@ -480,8 +518,8 @@ no ray hit anything. Measured bin `i` of `N` covers
   `points` array is empty -- has `product_bins` 0, and there is then no
   product resolution to defer to. Nothing is excused: `measured_bins` is 0,
   `measured_resolution_deg` is `null`, every obstacle is `resolvable: true`,
-  `resolvable_width_deg` falls back to the scene's declared `min_width_deg`
-  (`null` where the scene declares none), no bin is resolved so a visible
+  `resolvable_width_deg` falls back to the scene's declared `min_width_deg`,
+  floored at `EDITOR_MIN_WIDTH_DEG` (`null` where the scene declares none), no bin is resolved so a visible
   obstacle's two deficit and two width figures are all `null`, and every
   VISIBLE obstacle is `missed` (an obstacle visible in no bin at all keeps
   its 0.0 widths and is not missed, exactly as at any other resolution).

@@ -1103,8 +1103,31 @@ async def test_cancelling_an_exposure_aborts_it_on_the_box(fake, monkeypatch):
     monkeypatch.setattr(ab, "POLL_S", 0.001)
     session = await _open()
     cam = await session.get_device("camera", _conn())
+    # WAIT FOR THE STATE, NOT FOR A DURATION (issue #122).
+    #
+    # The `except asyncio.CancelledError` that calls `abort_exposure` opens
+    # only after the whole setup sequence AND after `start_exposure` itself,
+    # and every step before it is an `asyncio.to_thread` - a real thread
+    # handoff. This used to sleep 50 ms and bet that all of them had finished;
+    # under full-suite parallel load they had not, the cancel landed where
+    # there was genuinely nothing to abort, and the suite reported that
+    # cancelling does not stop an exposure on the box.
+    #
+    # `_wait_capture_done` is the FIRST statement inside that try, so a spy on
+    # it that calls through is proof the guarded region has been entered. It
+    # sets the event and then awaits the real thing, so by the time this test
+    # resumes, the task is suspended inside the exposure sleep - inside the
+    # try. Nothing here is timed.
+    entered = asyncio.Event()
+    real_wait = cam._wait_capture_done
+
+    async def _note_entry(seconds):
+        entered.set()
+        await real_wait(seconds)
+
+    monkeypatch.setattr(cam, "_wait_capture_done", _note_entry)
     task = asyncio.create_task(cam.expose(5.0, 100, 10))
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(entered.wait(), 10)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
