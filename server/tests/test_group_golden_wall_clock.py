@@ -206,7 +206,18 @@ async def test_a_night_across_the_meridian_is_the_same_at_every_hour(
     assert (traces[0].count("meridian flip complete (pier side") == 1
             and "a meridian flip is owed" not in traces[0]), (
         "premise: the night flips at its first retry, with no flip-owed hold")
-    assert traces[1] == traces[0], _first_difference(traces[1], traces[0])
+    # D-04 (#595, backlog ruling, owner-approved 2026-09-30): engine.start
+    # now logs a WARNING naming every session its singleton silently
+    # disarmed. Both nights here share the session store and the golden
+    # flow plan's own name, so the second run's start finds the first run's
+    # session still auto-resume-armed and disarms it -- a fact about two
+    # nights sharing one store in this harness, not a thing the wall clock
+    # moved, so it is dropped from both traces (line by line) before the
+    # comparison rather than weakening what this case is about.
+    drop = "disarmed auto-resume for"
+    clean = [
+        "\n".join(l for l in t.splitlines() if drop not in l) for t in traces]
+    assert clean[1] == clean[0], _first_difference(clean[1], clean[0])
 
 
 @pytest.mark.parametrize("to_transit", [-0.25, 0.75, 0.25],

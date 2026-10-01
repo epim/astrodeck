@@ -1277,7 +1277,7 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
         # The call /api/sessions/{id}/resume makes: a continue is a NEW run
         # and re-reads the standing setpoint, which a plan with a temperature
         # ignores (replan_cooling).
-        engine.start(replan_cooling(
+        disarmed = engine.start(replan_cooling(
             plan, config_store.cfg().cooling.setpoint_c), session=s)
     if moved is not None:
         # After the start, not before it: a start the engine refused
@@ -1305,6 +1305,12 @@ def _continue_flow_session(first_read: Session, plan: SequencePlan,
     if adopted is not None:
         out["adopted"] = {"matched": adopted.frames_matched,
                           "unmatched": adopted.rest()}
+    if disarmed:
+        # #595, D-04: CONTINUE arms this session exactly as a fresh start
+        # does, so it rides the same singleton and can disarm another
+        # session just as silently. ``run_flow`` lifts this to the top of
+        # its own response, alongside the fresh-start branch's.
+        out["disarmed"] = disarmed
     return out
 
 
@@ -6966,6 +6972,7 @@ def create_app(*, bind_host: str | None = None,
         # lacks.
         plan_saved_ts = None if rec.readonly else rec.updated_ts
         continued: dict | None = None
+        disarmed: list[dict] = []
         try:
             hub.require("camera")
             # Both branches, and nothing awaits between here and either
@@ -6979,7 +6986,7 @@ def create_app(*, bind_host: str | None = None,
                 # Synchronous, and it owns its own task — do not await it, and
                 # do not wrap it in a busy lane. "Already running" is raised in
                 # here.
-                engine.start(plan, origin="flow", origin_id=flow_id)
+                disarmed = engine.start(plan, origin="flow", origin_id=flow_id)
                 _freeze_saved_version(plan_saved_ts)
         except DeviceError as e:
             raise _err(e)
@@ -6995,6 +7002,11 @@ def create_app(*, bind_host: str | None = None,
                            "dropped": 0}
         else:
             session_out = continued
+            # Lifted to the top of THIS route's own response (below), rather
+            # than left nested under "session": #595/D-04 names one field,
+            # not two different paths to the same answer depending on which
+            # branch started the run.
+            disarmed = session_out.pop("disarmed", [])
 
         # WHAT THIS READ REWROTE, SAID ON EVERY RUN UNTIL THE FLOW IS SAVED
         # (#150, spec 3.6). Only save() stamps FLOW_SCHEMA: `touch_run` below
@@ -7036,6 +7048,10 @@ def create_app(*, bind_host: str | None = None,
             # Absent when none is: every answer without a blocked panel is
             # byte-identical to before (spec 6.3).
             out["below_horizon"] = below_horizon
+        if disarmed:
+            # #595, D-04: same field, same place, whichever branch started
+            # the run (fresh or CONTINUE).
+            out["disarmed"] = disarmed
         return out
 
     # ------------------------------------------------ calibration library (PRO-1)
@@ -7216,7 +7232,7 @@ def create_app(*, bind_host: str | None = None,
             # A resume is a NEW run, so it re-reads the rig's standing setpoint
             # the same way a fresh start does -- but only if the stored plan has
             # no temperature at all. See replan_cooling for why the "only".
-            engine.start(replan_cooling(
+            disarmed = engine.start(replan_cooling(
                 s.plan, config_store.cfg().cooling.setpoint_c), session=s)
         except DeviceError as e:
             raise _err(e)
@@ -7227,6 +7243,10 @@ def create_app(*, bind_host: str | None = None,
         if below_horizon:
             # Absent when none is, so every other answer is unchanged.
             out["below_horizon"] = below_horizon
+        if disarmed:
+            # #595, D-04: a resume arms this session, same singleton as a
+            # fresh start, so it can disarm another just as silently.
+            out["disarmed"] = disarmed
         return out
 
     @app.patch("/api/sessions/{session_id}",
@@ -7260,6 +7280,7 @@ def create_app(*, bind_host: str | None = None,
                 raise HTTPException(409, "cannot abandon a running session")
             s.status = "abandoned"
             s.auto_resume = False
+        disarmed: list[dict] = []
         if body.auto_resume is not None:
             # ARMING AN ACTIVE SESSION IS THE POINT, NOT AN EDGE CASE.
             #
@@ -7293,7 +7314,21 @@ def create_app(*, bind_host: str | None = None,
                             "stopped before its next step",
                             session_id=other.id)
                         await asyncio.to_thread(session_store.save, other)
+                        disarmed.append({"id": other.id,
+                                         "name": other.name or other.plan.name})
             s.auto_resume = body.auto_resume
+        if disarmed:
+            # NAMED, NOT SILENT (#595, backlog ruling D-04, owner-approved
+            # 2026-09-30). #595's own text: "the same applies to PATCH
+            # auto_resume" -- this route runs its own copy of the singleton
+            # `engine.start` disarms with (above), so it owes the same
+            # warning and the same `disarmed` field in its response, not
+            # left for a caller to notice only by re-reading /api/sessions.
+            names = ", ".join(d["name"] or d["id"] for d in disarmed)
+            bus.log("warning",
+                    f"arming '{s.name or s.plan.name or s.id}' disarmed "
+                    f"auto-resume for: {names}",
+                    "sequence")
         # A DISARM STOPS THE LADDER RECOVERING THIS SESSION (#220). It used to
         # be read only after the ladder, by ResumeArm's re-check, so the mount
         # was solved and re-centred, minutes of motion, for a session the
@@ -7316,6 +7351,12 @@ def create_app(*, bind_host: str | None = None,
                "remaining": s.remaining()}
         if merge is not None:
             out["merge"] = merge
+        if disarmed:
+            # #595, D-04: present only when this PATCH actually disarmed
+            # another session, exactly as engine.start's own callers carry
+            # it (above), so a caller that arms a session here is told the
+            # same way a fresh run or CONTINUE would tell it.
+            out["disarmed"] = disarmed
         return out
 
     @app.patch("/api/sessions/{session_id}/frames/{frame_id}",
@@ -9355,7 +9396,7 @@ def create_app(*, bind_host: str | None = None,
             # The OTHER start path. Stamped so a session can say which of the
             # two screens built it - the question "is the flow running?" had no
             # answer because both paths produced identical plans.
-            engine.start(plan, origin="plan")
+            disarmed = engine.start(plan, origin="plan")
         except DeviceError as e:
             raise _err(e)
         _name_panels_below(plan, below_horizon)
@@ -9363,6 +9404,10 @@ def create_app(*, bind_host: str | None = None,
         if below_horizon:
             # Absent when none is, so every other answer is unchanged.
             out["below_horizon"] = below_horizon
+        if disarmed:
+            # #595, D-04: named here instead of silent, same as every other
+            # start route. Absent when nothing was armed.
+            out["disarmed"] = disarmed
         return out
 
     @app.get("/api/sequence/resume-arm")
@@ -9718,7 +9763,7 @@ def create_app(*, bind_host: str | None = None,
             _refuse_while_resume_recovers()          # no await until the start
             # Same re-resolve as /api/sessions/{id}/resume -- the three entries
             # into a dormant session must not disagree about its temperature.
-            engine.start(replan_cooling(
+            disarmed = engine.start(replan_cooling(
                 s.plan, config_store.cfg().cooling.setpoint_c), session=s)
         except DeviceError as e:
             raise _err(e)
@@ -9727,6 +9772,8 @@ def create_app(*, bind_host: str | None = None,
                "frames_remaining": sum(s.remaining().values())}
         if below_horizon:
             out["below_horizon"] = below_horizon     # absent when none is
+        if disarmed:
+            out["disarmed"] = disarmed               # #595, D-04
         return out
 
     # -------------------------------------------------------------- polar align

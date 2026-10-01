@@ -54,9 +54,9 @@ def _plan(count=2, mode="accepted") -> SequencePlan:
         steps=[ExposureStep(filter="L", exposure_s=60, count=count)])])
 
 
-def _session(status="dormant", count=2) -> Session:
+def _session(status="dormant", count=2, name="api") -> Session:
     plan = _plan(count=count)
-    s = Session(name="api", created_ts=1.0, status=status, plan=plan)
+    s = Session(name=name, created_ts=1.0, status=status, plan=plan)
     step = plan.targets[0].steps[0]
     for _ in range(2):
         s.frames.append(SessionFrame(ts=1.0, night="n1",
@@ -128,12 +128,33 @@ def test_patch_plan_dormant_only_with_id_merge(client):
                         json={"plan": _plan().model_dump()}).status_code == 409
 
 
-def test_auto_resume_singleton_and_abandon(client):
-    a, b = _session(), _session()
-    client.patch(f"/api/sessions/{a.id}", json={"auto_resume": True})
-    client.patch(f"/api/sessions/{b.id}", json={"auto_resume": True})
+def test_auto_resume_singleton_and_abandon(client, bus_lines):
+    """The server-enforced singleton: arming ``b`` disarms ``a``.
+
+    WP-31 (#595, backlog ruling D-04, owner-approved 2026-09-30): #595's own
+    text says "the same applies to PATCH auto_resume" -- this route runs its
+    own copy of the singleton ``engine.start`` disarms with, named below, so
+    it owes the same treatment: a WARNING naming every session it silently
+    disarmed, and a ``disarmed`` list in the response, present only when it
+    actually disarmed something (arming ``a`` first disarms nothing, so its
+    own response carries no such key).
+
+    RED under mutant "the PATCH singleton stays silent" (``disarmed.append``
+    and the ``bus.log`` call removed from ``patch_session``, the loop's
+    ``other.auto_resume = False`` kept), observed:
+        KeyError: 'disarmed'
+    """
+    a, b = _session(name="Session A"), _session(name="Session B")
+    r_a = client.patch(f"/api/sessions/{a.id}", json={"auto_resume": True})
+    assert "disarmed" not in r_a.json(), r_a.json()
+    r_b = client.patch(f"/api/sessions/{b.id}", json={"auto_resume": True})
     assert session_store.load(a.id).auto_resume is False      # disarmed by b
     assert session_store.load(b.id).auto_resume is True
+    assert r_b.json()["disarmed"] == [{"id": a.id, "name": a.name}], r_b.json()
+    warnings = [m for lvl, m, _src in bus_lines if lvl == "warning"]
+    assert warnings == [f"arming '{b.name}' disarmed auto-resume for: "
+                        f"{a.name}"], (warnings, "so arming b disarmed a "
+                                       "with no warning")
     r = client.patch(f"/api/sessions/{a.id}", json={"status": "abandoned"})
     assert r.json()["status"] == "abandoned"
     assert client.patch(f"/api/sessions/{a.id}",

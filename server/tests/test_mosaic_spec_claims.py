@@ -13607,6 +13607,25 @@ def test_1_5_says_what_a_graph_with_no_mosaic_compiles_to():
         9bdf287d15283e1d); before S3 it compiled to 897 bytes (sha256
         518141cdc2b4e9a0), so 1.5's sentence does not say what it compiles to
         assert (920, '9bdf2...a366d12e0f') == (897, '51814...523f406f9')
+
+    BOUNDED THE SAME WAY, AGAIN, FOR BACKLOG WP-34's top-level
+    ``resume_across_nights`` (#195, 2026-09-30): the TARGET graph's DUSK
+    WINDOW has no explicit ``repeat``, which defaults to "Single night", so
+    the compile now also writes ``resume_across_nights: false`` (#195:
+    "Single night" means auto-resume does not arm across nights) -- a key
+    1.5's sentence is not about and the pre-S3 bytes predate. Popped off
+    and checked here, not folded into ``_PRE_S3_NO_MOSAIC_TARGET``, for the
+    same reason ``twilight_deg`` is above. The POOL graph has no DUSK node,
+    so nothing to pop there either.
+
+    RED under mutant "resume_across_nights not bounded" (this pop
+    deleted), observed:
+
+        AssertionError: a graph with at most one owner block compiles its
+        TARGET entries, with ['angle', 'mosaic', 'loop', 'centre',
+        'count_mode', 'frame_anchor'] removed, to 928 bytes (sha256
+        690f6f7c03c56381); before S3 it compiled to 897 bytes (sha256
+        518141cdc2b4e9a0), so 1.5's sentence does not say what it compiles to
     """
     s15 = _section("1.5")
     lead = ("The key is absent when the list is empty, so a graph with at "
@@ -13645,6 +13664,16 @@ def test_1_5_says_what_a_graph_with_no_mosaic_compiles_to():
             assert angle == -18.0, (
                 f"premise: this graph's DUSK WINDOW compiles Astro dusk's "
                 f"own angle; got {angle!r}")
+        resume = compiled.pop("resume_across_nights", "<absent>")
+        if kind == "TARGET":
+            assert resume is False, (
+                f"premise: this graph's DUSK WINDOW has no explicit repeat, "
+                f"so it compiles Single night's own resume_across_nights; "
+                f"got {resume!r}")
+        else:
+            assert resume == "<absent>", (
+                f"premise: this graph has no DUSK WINDOW, so it compiles no "
+                f"resume_across_nights; got {resume!r}")
         data = json.dumps(compiled).encode("utf-8")
         got = (len(data), hashlib.sha256(data).hexdigest())
         assert got == pre_s3, (

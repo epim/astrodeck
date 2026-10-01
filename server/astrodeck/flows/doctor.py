@@ -731,31 +731,41 @@ def _mosaic_rules(graph: FlowGraph, rig: RigFacts | None) -> list[Issue]:
                 out.append(Issue(_m13_text(n, by_id, parents), "danger"))
 
     # M14. REPORT 'target done' is `on_target_complete`, and on a mosaic every
-    # panel is a target (#184): whatever it triggers runs once per panel. The
-    # REPORT sits at the end of the block's lane when its one flow parent is
-    # the block or a stage the block owns.
+    # panel is a target: whatever it triggers runs once per panel, no matter
+    # which lane the REPORT sits in (#184, owner comment 2026-09-25, found
+    # verifying S3-D).
+    #
+    # THIS USED TO SCOPE ITSELF TO THE REPORT THAT ENDS THE MOSAIC'S OWN LANE
+    # (its one flow parent was the block, or a stage the block owns), which
+    # restated spec 1.8's trigger instead of reading the engine. The compiled
+    # rule carries no `only_target` gate at all (`compile._trigger_for`;
+    # neither `compile.py` nor `to_plan.py` sets one), so the engine's
+    # `_fire_target_complete` runs it at EVERY target's completion, and every
+    # panel is a target. A REPORT after a single-panel TARGET drawn beside a
+    # mosaic looked safe under the old rule and was not: the wire still fired
+    # once per panel of the mosaic sitting in another lane entirely.
+    #
+    # An `only_target` gate would not close this gap either - it is a name
+    # gate, and panels are named "M31 1-1" and so on, so no single name
+    # means "the mosaic". So: any REPORT with a 'target done' wire, anywhere
+    # in a graph that has a multi-panel block, names every such block and its
+    # panel count.
     if mosaic:
+        # The grid's size, not a count of panels left to finish: a skipped
+        # panel never completes, but no reading of `skip` is shared with
+        # to_plan yet, and a second one here could disagree.
+        panel_counts = [f"{_block_name(b)} has {rows * cols} panels"
+                        for b in blocks for rows, cols in (_grid(b),)]
         for n in graph.nodes:
             if n.type != "report" or not any(
                     e.from_ == n.id and e.fromPort == "done"
                     for e in graph.edges):
                 continue
-            ps = parents.get(n.id, [])
-            if len(ps) != 1:
-                continue
-            up = ps[0]
-            block = up if up.type == "target" else owner_of(graph, up.id)
-            if block is None or not is_multi_panel(block):
-                continue
-            # The grid's size, not a count of the panels left to finish: a
-            # skipped panel never completes, but no reading of `skip` is
-            # shared with to_plan yet, and a second one here could disagree.
-            rows, cols = _grid(block)
             out.append(Issue(
                 f"▸ {NODE_DEFS['report'].label} '{_DONE}' fires once per "
-                f"panel, not once for the mosaic: {_block_name(block)} has "
-                f"{rows * cols} panels, so what the wire triggers runs once "
-                f"for each panel finished.", "note"))
+                f"panel, not once for the mosaic: {_and(panel_counts)}, so "
+                f"what the wire triggers runs once for each panel finished.",
+                "note"))
 
     # M15. The angle budget is spent (A.2: k = 0.5 - c <= 0): convergence
     # alone uses half the overlap, which leaves nothing for a camera angle

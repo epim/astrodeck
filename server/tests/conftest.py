@@ -78,6 +78,32 @@ def _fast_sim_delays(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _skip_target_holds(monkeypatch):
+    """Runtime seam (test-suite fast-path), the engine's own half of
+    ``_fast_sim_delays`` above (WP-31 integration follow-up, backlog wave
+    4, owner-approved 2026-09-30): skip ``SequenceEngine._await_target_
+    window``'s and ``_hold_for_light``'s real-time holds for the WHOLE
+    suite.
+
+    These two used to read ``ASTRODECK_FAST_TEST`` directly, the same flag
+    ``devices.sim`` and ``solve.simsolver`` read for their own pacing --
+    but those two are device/solver SIMULATORS faking elapsed time for
+    hardware that is not there, and a hold deciding whether to wait for a
+    real sky is not that: a probe or a simulator SERVER started with that
+    deployment flag set must still hold for a target's own window and for
+    light, exactly as a real rig would. So engine.py now reads its own
+    module switch, ``_SKIP_TARGET_HOLDS_FOR_TEST``, which only this
+    fixture and test_w4_target_window_and_light_hold.py's own opt-out test
+    (which flips it back to ``False`` for itself, in place of the old
+    ``monkeypatch.delenv("ASTRODECK_FAST_TEST")``) ever touch.
+    test_w4_no_engine_fast_test_read.py guards that no OTHER module under
+    server/astrodeck reads the env var at all."""
+    import astrodeck.sequence.engine as engine_mod
+    monkeypatch.setattr(engine_mod, "_SKIP_TARGET_HOLDS_FOR_TEST", True)
+    yield
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _never_touch_the_real_config():
     """Point the process-wide ``config_store`` at a throwaway file for the WHOLE
@@ -1083,6 +1109,43 @@ def isolated_config(tmp_path, monkeypatch) -> IsolatedConfig:
     rig facts built from them (#341); a fresh store has no optics until the
     test sets them."""
     return IsolatedConfig(monkeypatch, tmp_path)
+
+
+def _sweep_config_store(monkeypatch: pytest.MonkeyPatch, store) -> list[str]:
+    """Point every already-imported ``astrodeck`` module's bound
+    ``config_store`` name at ``store``. Returns the module names patched, so
+    a case can assert the sweep actually reached something.
+
+    ``from .config import config_store`` binds the singleton BY REFERENCE
+    into each importing module's own namespace at the time it is imported,
+    not a live lookup of the name. A test that instead patches one object --
+    ``monkeypatch.setattr(config_store, "cfg", ...)`` on the object its own
+    `from astrodeck.config import config_store` just fetched -- only reaches
+    callers that still hold THAT exact object. A module whose binding has
+    diverged from it (a reload of ``astrodeck.config``, or some earlier
+    test's own un-swept rebind of the name in one module: the #19 class)
+    keeps reading its own copy, unpatched, and answers from whatever config
+    that copy holds.
+
+    This is ``test_no_route_leaks_the_site_coordinates.py``'s private sweep
+    of the same name, pulled here so ``test_pier_side_is_published.py``'s
+    ``_am5`` can use it too (#497): the AM5 driver (``zwo_am5.py``) binds its
+    own module-level ``config_store`` at import, and was not one of the
+    handful of modules ``_am5`` used to patch by name, so the far-side
+    prediction read a store with no saved site and answered UNKNOWN instead
+    of predicting a side, in one parallel run. Swept, not listed, for the
+    same reason both copies give: a module imported tomorrow is covered
+    without anyone having to remember either exists.
+    """
+    patched: list[str] = []
+    for name, mod in list(sys.modules.items()):
+        if mod is None or not (name == "astrodeck" or name.startswith("astrodeck.")):
+            continue
+        if getattr(mod, "config_store", None) is None:
+            continue
+        monkeypatch.setattr(mod, "config_store", store, raising=False)
+        patched.append(name)
+    return patched
 
 
 @pytest.fixture(autouse=True)

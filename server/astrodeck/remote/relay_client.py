@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
+from ..aio import reap
 from ..config import RemoteConfig
 from ..events import RELAY_GAP, Event, bus
 from .protocol import (DEFAULT_MAX_PAYLOAD, DEFAULT_MAX_WIRE_SIZE, PROTO_VERSION,
@@ -882,8 +883,7 @@ class RelayClient:
             self._connected_since = None
             if config_watch is not None:
                 config_watch.cancel()
-                with contextlib.suppress(BaseException):
-                    await config_watch
+                await reap(config_watch)
             await self._teardown_connection(ws)
 
     async def _watch_connection_config(self, ws: Any, initial: RemoteConfig) -> None:

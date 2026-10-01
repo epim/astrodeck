@@ -8,6 +8,12 @@ in ui/src/lib/rotation.ts with the SAME test vectors.
 The one exception is ``one_sided_moves`` (#526, below): the plan the hub's
 rotate loop executes for a single move. It is server-only, since the UI
 never commands a move itself, so it has no mirror and no shared vectors.
+
+``sky_to_mechanical`` / ``mechanical_to_sky`` (R-4, #145) are server-only for
+the same reason: they exist to carry the LEARNED sky/mechanical sign into a
+move the hub is about to command, and the UI never commands one. The sign
+itself is hub state (``Hub._rotator_sky_sign``), not a pure-math constant,
+because it is MEASURED per rig, not derived — see ``Hub.learn_rotator_sign``.
 """
 from __future__ import annotations
 
@@ -73,17 +79,63 @@ def target_mechanical_position(p: float, range_type: str,
     return mod360(t)
 
 
+def sky_to_mechanical(sky_deg: float, mech_pos: float, sync_offset_deg: float,
+                      sky_sign: int = 1) -> float:
+    """The mechanical angle that puts the rotator at sky PA ``sky_deg``,
+    anchored at the point ``(mech_pos, sync_offset_deg)`` already describes:
+    ``mod360(mech_pos - sync_offset_deg)`` is what the rotator reads as sky
+    right now (``Rotator.get_position``'s own formula), and this is that
+    reading's inverse, extended by ``sky_sign`` (R-4, #145).
+
+    ``sky_sign`` is which way the sky PA moves when the mechanism does: +1
+    together (``sky = mech - offset``, what every rotator assumed before
+    R-4), -1 opposite -- measured on this rig's CAA, pier west (#145): the
+    solved PA ran one-for-one AGAINST the mechanical angle. Guessing +1 when
+    the truth is -1 does not just offset the target, it reverses the sense
+    of the correction, which is what turned five rotate attempts into a
+    camera spun through more than a full revolution on 2026-08-08 (the sign
+    was never measured before R-4).
+
+    ANCHORING ON ``mech_pos``, not treating ``sync_offset_deg`` as a global
+    sky-minus-mechanical constant, is what makes this correct for EITHER
+    sign. A constant difference (``mech - sky = offset`` everywhere) is only
+    the right invariant when ``sky_sign`` is +1; a -1 relationship keeps the
+    SUM constant instead (``mech + sky``), and recovering that needs an
+    actual anchor point -- the live ``mech_pos`` this was read at -- not the
+    offset alone. See ``mechanical_to_sky`` for the inverse direction."""
+    sky_now = mod360(mech_pos - sync_offset_deg)
+    return mod360(mech_pos + sky_sign * (sky_deg - sky_now))
+
+
+def mechanical_to_sky(mech_deg: float, mech_pos: float, sync_offset_deg: float,
+                      sky_sign: int = 1) -> float:
+    """The sky PA at mechanical angle ``mech_deg``: the inverse of
+    ``sky_to_mechanical`` (same anchor, same ``sky_sign`` -- see its
+    docstring)."""
+    sky_now = mod360(mech_pos - sync_offset_deg)
+    return mod360(sky_now + sky_sign * (mech_deg - mech_pos))
+
+
 def map_sky_target(sky_target: float, mech_pos: float, sync_offset_deg: float,
-                   range_type: str, range_start_deg: float) -> float:
+                   range_type: str, range_start_deg: float, *,
+                   sky_sign: int = 1) -> float:
     """§11.2 get_target_position: desired sky PA -> reachable sky PA given the
-    mechanical range. ``sync_offset_deg`` is mechanical − sky (Rotator ABC).
-    ``mech_pos`` is accepted for signature clarity/parity but the mapping only
-    needs the offset."""
-    del mech_pos  # parity signature; offset alone determines the mapping
+    mechanical range. ``sync_offset_deg`` is mechanical − sky at ``mech_pos``
+    (Rotator ABC). ``sky_sign`` is R-4's learned sign (#145, see
+    ``sky_to_mechanical``); the default +1 keeps every caller that predates
+    R-4 -- api/app.py's manual move, this module's own pre-R-4 tests --
+    reading exactly as it always did.
+
+    ``mech_pos`` was accepted for signature parity alone back when the
+    mapping assumed sign +1: that makes the sky<->mechanical relation a
+    GLOBAL constant offset, so any anchor point gives the same answer. R-4
+    changed that (``sky_to_mechanical``'s docstring): a -1 sign's invariant
+    is a sum, not a difference, and recovering it needs a real anchor, which
+    ``mech_pos`` now supplies."""
     position = mod360(sky_target)
-    mech = mod360(position + sync_offset_deg)
+    mech = sky_to_mechanical(position, mech_pos, sync_offset_deg, sky_sign)
     mech_tgt = target_mechanical_position(mech, range_type, range_start_deg)
-    return mod360(mech_tgt - sync_offset_deg + 360.0)
+    return mechanical_to_sky(mech_tgt, mech_pos, sync_offset_deg, sky_sign)
 
 
 def shortest_rotation(target_deg: float, orientation_deg: float,

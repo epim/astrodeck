@@ -1195,6 +1195,17 @@ def plan_extras(compiled: dict) -> dict:
     # `test_the_preview_cannot_promise_what_the_plan_drops` binds the two
     # together, so the next edit to either has to move both.
     out: dict = {"park_when_done": True, "warm_cooler_when_done": True}
+    # #195: DUSK WINDOW's "Single night" vs the other `repeat` choices,
+    # carried through to `SequencePlan.resume_across_nights` - but ONLY when
+    # `compile_plan` wrote it, which it does only for "Single night"
+    # (compile.py keeps the key absent when True, the same convention as
+    # `campaign`). Writing `True` here unconditionally would add a key to
+    # EVERY plan this function has ever built, breaking every byte-identical
+    # and exact-key-set fixture that pins `plan_extras` or a compiled plan's
+    # shape; the model's own default (True) already covers every caller that
+    # says nothing, which is every caller before this field existed.
+    if compiled.get("resume_across_nights") is False:
+        out["resume_across_nights"] = False
     quota = cq.get("quota")
     if isinstance(quota, (int, float)) and quota > 0:
         # The queue's quota is "how many of each kind the library wants". A hold

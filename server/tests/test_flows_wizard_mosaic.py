@@ -784,6 +784,16 @@ class TestTheGolden2x2:
         panels' ``schedule.twilight_deg`` is -18 (its DUSK WINDOW's own
         "Astro dusk" Sun altitude, ``flows.compile._dusk_schedule``), a
         field the golden predates. Regenerated from the same code path.
+
+        RE-PINNED AGAIN IN BACKLOG WP-34 (#195, 2026-09-30): ``plan`` now
+        carries ``resume_across_nights: false`` (``SequencePlan``'s new
+        field; #195: "Single night" means auto-resume does not arm across
+        nights, and the wizard's DUSK WINDOW has no explicit ``repeat``, so
+        it defaults to "Single night"), observed as the only diff:
+
+            E   AssertionError: $.plan.resume_across_nights: unexpected
+
+        Regenerated from the same code path, with no other change.
         """
         want = json.loads(GOLDEN.read_text(encoding="utf-8"))
         diffs = _same(want, _golden_now())

@@ -24,7 +24,9 @@ import type { SequenceState, ToastLevel } from "../../types";
 import { knownSessions } from "./flowRunState";
 import { NODE_DEFS, createParams } from "./nodeDefs";
 import { fitView, type Rect } from "./geometry";
-import { flowLoopRefusal, portKindOf } from "./flowLoop";
+import {
+  flowLoopRefusal, laneMismatchRefusal, portKindOf, SELF_WIRE_REFUSAL,
+} from "./flowLoop";
 import {
   NEXT_PORT, PASS_PORT, isMultiPanel, laneTail, ownerOf, panelLane, withLoop,
 } from "./panelLane";
@@ -1318,8 +1320,12 @@ export function createFlowsActions(
         // (M12), moving the first to the tail when the tail has none (#429
         // corrected this comment, which said `true` never lifts). So a DONE
         // that makes a looped mosaic a single target must send `false`: left
-        // in place, the wire is a pass wire into a 1x1 block, the doctor's M4
-        // note (spec 1.4 "As built", #349).
+        // in place, the wire is a pass wire into a 1x1 block, which the
+        // compile CONSUMES as a note from the doctor (M4) rather than
+        // refusing or rotating anything on it -- no rule, no loss, and Run
+        // asks nothing about it (S4 orchestrator ruling 3, spec 1.4 "As
+        // built", #349; #397 item 4 corrected this comment, which had left
+        // that consequence unsaid).
         const edges = withLoop({ ...g, nodes }, id, loop, nextEdgeId);
         if (nodes === g.nodes && edges === g.edges) return {};
         wrote = true;
@@ -1376,14 +1382,40 @@ export function createFlowsActions(
     }),
 
     flowsConnect: (from, fromPort, to, toPort) => {
-      // NO FLOW LOOPS (#149), refused HERE as well as in both drop resolvers,
-      // because tap-to-wire (`flowsTapPort`) reaches this action without
-      // passing through any resolver. A flow wire that closes a circle makes
-      // the compiler drop every stage on it, and none of them shoots a frame.
-      // So the graph is left exactly as it was and the server's own sentence
-      // goes to the flow log: a tap passes no resolver and so gets no toast,
-      // and a refusal that said nothing would read as a tap that missed.
+      // THE SELF-WIRE AND LANE CHECKS RUN HERE TOO (#197), not only in the two
+      // drop resolvers, for the same reason the loop check below does:
+      // tap-to-wire (`flowsTapPort`) reaches this action without passing
+      // through any resolver, so a check that lived only in `resolveWireDrop`
+      // (classic `FlowCanvas`) and its canvasModel.ts copy (#/next) would
+      // never see a tap. A drag never trips either branch below — both
+      // resolvers refuse the same two cases before they ever call
+      // `flowsConnect` — so in practice these are tap's own gates.
+      //
+      // SELF-WIRE gets a TOAST, not a log line, and that is the one place tap
+      // and drag still disagree on purpose: a drag that ends where it started
+      // is usually a mis-grab (refused silently), while tapping a second port
+      // on the stage just armed is a choice an operator made and gets told
+      // about (`flowLoop.SELF_WIRE_REFUSAL`).
+      if (from === to) {
+        get().enqueueToast?.({ level: "warning", title: SELF_WIRE_REFUSAL, source: "flows" });
+        return;
+      }
       const { nodes, edges } = get().flows.graph;
+      // LANE MISMATCH, the same sentence `resolveWireDrop` toasts on a drag
+      // (`flowLoop.laneMismatchRefusal`): into the flow log here, as the loop
+      // refusal below already is, since tap has no toast wired for either.
+      const lane = laneMismatchRefusal(
+        portKindOf(nodes, from, fromPort, "out"), portKindOf(nodes, to, toPort, "in"),
+      );
+      if (lane) {
+        get().flowsAppendLog(lane, "warn");
+        return;
+      }
+      // NO FLOW LOOPS (#149). A flow wire that closes a circle makes the
+      // compiler drop every stage on it, and none of them shoots a frame. So
+      // the graph is left exactly as it was and the server's own sentence
+      // goes to the flow log: a refusal that said nothing would read as a tap
+      // or a drop that missed.
       const loop = flowLoopRefusal(nodes, edges, { from, fromPort, to, toPort });
       if (loop) {
         get().flowsAppendLog(loop, "warn");

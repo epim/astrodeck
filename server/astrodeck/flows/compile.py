@@ -1395,8 +1395,18 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             }
         else:
             plan_campaign = None
+        # #195: "Single night" now means auto-resume does not arm across
+        # nights (`SequencePlan.resume_across_nights`, `ResumeArm.tick`).
+        # Every other `repeat` value keeps coming back by design, so it keeps
+        # the field True - the same value a flow with no DUSK WINDOW gets,
+        # below.
+        resume_across_nights = repeat != "Single night"
     else:
         plan_campaign = None
+        # A flow with no DUSK WINDOW carries no opinion on repeat at all, so
+        # it keeps doing what it has always done: whatever ends the run
+        # leaves it dormant and armed, exactly as before this field existed.
+        resume_across_nights = True
 
     instructions: list[dict] = []
     for e in graph.edges:
@@ -1464,6 +1474,13 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     # verbatim — a null there reads as "campaign: broken" to an operator.
     if plan_campaign is not None:
         out["campaign"] = plan_campaign
+    # ABSENT WHEN TRUE (#195), the same convention as `campaign` above and for
+    # the same reason: `SequencePlan.resume_across_nights` already defaults to
+    # True, so every compile before this field existed - and every one of
+    # today's that is not "Single night" - must produce the exact same dict it
+    # always has. Only "Single night" writes anything here.
+    if not resume_across_nights:
+        out["resume_across_nights"] = False
     # Absent when empty for the same reason, and because an empty list on
     # every compile would change the plan of every flow that has no mosaic.
     if notes:

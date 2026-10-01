@@ -89,9 +89,11 @@ SET_ASIDE_EXPIRY_S = 2700.0
 #: ruling as it was first built, number included; nothing here reads it.
 SET_ASIDE_RISE_DEG = 10.0
 
-#: Seconds a group waits after a pass in which EVERY panel attempted (at
-#: least two) failed centring, before it starts the next pass (#534, H4
-#: orchestrator ruling 2). That pass says the sky or the geometry is to
+#: Seconds a group waits after a pass in which every panel the pass tried for
+#: centring failed to centre, before it starts the next pass (#534, H4
+#: orchestrator ruling 2; the floor widened from "at least two" to "every
+#: LIVE member, down to the group's last one" by backlog ruling D-03, #591,
+#: owner-approved 2026-09-30). That pass says the sky or the geometry is to
 #: blame, not the panels, as "when every member rejects, the sky is to
 #: blame" (5.1), so no panel is struck, and the group holds, the way a cloud
 #: hold waits for the sky rather than giving up on it. Twice
@@ -451,8 +453,10 @@ class PassEnd:
       scheduler waits on, never a sleep inside the boundary).
     - ``"next_pass"``: :meth:`GroupRun.start_pass` and re-sort the group's
       slice of ``remaining``.
-    - ``"centring_hold"``: every panel attempted this pass (at least two)
-      failed centring (#534, :func:`centring_pass_verdict`). The sky or the
+    - ``"centring_hold"``: every panel the pass tried for centring failed to
+      centre -- at least two of them, or, since backlog ruling D-03 (#591,
+      owner-approved 2026-09-30), every LIVE member of the group down to its
+      last one (#534, :func:`centring_pass_verdict`). The sky or the
       geometry is to blame, no panel is struck, and
       :meth:`GroupRun.defer_next_pass` holds every live member for
       ``CENTRING_HOLD_RETRY_S`` before :meth:`GroupRun.start_pass` begins the
@@ -511,11 +515,12 @@ def guide_start_pass_verdict(attempted: int, failed: int) -> Literal["rig", "pan
     return "panel"
 
 
-def centring_pass_verdict(attempted: int,
-                          failed: int) -> Literal["sky", "panel"]:
+def centring_pass_verdict(attempted: int, failed: int, *,
+                          live: int | None = None) -> Literal["sky", "panel"]:
     """Whose fault is a pass's failed centrings (#534, H4 orchestrator ruling
-    2)? The guide-start rule's shape (:func:`guide_start_pass_verdict`), for
-    the hop's first check.
+    2; the floor widened by backlog ruling D-03, #591, owner-approved
+    2026-09-30)? The guide-start rule's shape
+    (:func:`guide_start_pass_verdict`), for the hop's first check.
 
     ``attempted`` counts the panels VISITED this pass, each once, whatever
     their visit came to, save one whose solve could not run
@@ -523,25 +528,51 @@ def centring_pass_verdict(attempted: int,
     those whose hop did not centre (:data:`CENTRING`). A visit that shot a
     frame, or deferred for anything that comes after the centring (the
     rotator, the angle, the pier side, the guider), centred, or its hop
-    would have stopped at the miss. At least two attempted and every one
-    failed is ``"sky"``: the sky or the geometry is to blame, not the
-    panels (a cloud bank, a target low behind the trees, the haze near the
-    horizon), the same reasoning as "when every member rejects, the sky is
-    to blame" (5.1). Anything else is ``"panel"``: one miss out of one
-    attempt proves nothing about the sky, and a miss beside a panel that
-    centred is that panel's.
+    would have stopped at the miss.
+
+    ``live``, when the caller has it (:meth:`GroupRun.close_pass` passes
+    ``len(self.live())``, read before this pass's own failures are applied),
+    is the group's whole live membership at this boundary -- a member this
+    same pass just completed no longer counts. EVERY LIVE MEMBER TRIED AND
+    MISSED (``attempted == live``, and at least one) is ``"sky"`` even when
+    that is a single panel: a rule keyed on a floor of two attempts can
+    never fire once only one peer is left, and the mosaic's last live panel
+    -- the one a final night most often owes -- is exactly that case (#591).
+    A caller with no ``live`` to give (the handful outside :class:`GroupRun`:
+    this file's own table tests, the spec-claims pin) asks only the
+    ORIGINAL question, unwidened by D-03: at least two attempted and every
+    one failed.
+
+    Short of the live-aware match -- some live member was left unvisited
+    this pass (a transient solve beside a miss, a panel another selection
+    held back) -- the floor is the one H4 first built: at least two
+    attempted and every one failed is ``"sky"``, the same reasoning as
+    "when every member rejects, the sky is to blame" (5.1). Anything else is
+    ``"panel"``: one miss out of one attempt, beside a live peer this pass
+    never reached, proves nothing about the sky, and a miss beside a panel
+    that centred is that panel's.
 
     WHY IT MATTERS: the first rig mosaic (NGC 1499, 2026-09-29) started low
     in the east behind an obstruction, every panel failed centring, and the
     three-strike rule set all six aside in 18 minutes, although the target
     rose clear within the hour. Charged to the sky, such a pass strikes no
     panel and the group waits ``CENTRING_HOLD_RETRY_S`` and tries again.
+    Before D-03, the same obstruction behind a mosaic's LAST live panel (the
+    others already complete or set aside tonight) struck that one panel out
+    in three passes instead: the floor of two attempts can never be met
+    with one peer left, so D-03's own escalation (the alert at 3 held
+    passes, the set-aside at 6) never got the chance to run and cap the
+    cost (#591).
     """
     _count("attempted", attempted)
     _count("failed", failed)
     if failed > attempted:
         raise ValueError(
             f"failed ({failed}) cannot exceed attempted ({attempted})")
+    if live is not None:
+        _count("live", live)
+        if attempted >= 1 and attempted == live and failed == attempted:
+            return "sky"
     if attempted >= 2 and failed == attempted:
         return "sky"
     return "panel"
@@ -1161,7 +1192,15 @@ class GroupRun:
         held_centring, self._held_centring = self._held_centring, []
         held_transient, self._held_transient = self._held_transient, []
         tried = len(self.centring_attempted)
-        if centring_pass_verdict(tried, len(self.centring_failed)) == "sky":
+        # ``live`` (#591, D-03): the group's whole live membership right now,
+        # a member this pass just completed excluded already (``visit_outcome``
+        # adds it to ``completed`` before this ever runs). Passed so the verdict
+        # can tell "every LIVE panel was tried and missed" from "two of several
+        # were", which a bare attempted/failed count cannot: the mosaic's last
+        # live panel makes this equal attempted one time in one, the shape the
+        # old floor of two attempts could never reach.
+        if centring_pass_verdict(tried, len(self.centring_failed),
+                                 live=len(self.live())) == "sky":
             # THE SKY OR THE GEOMETRY, NOT THE PANELS (#534, H4 orchestrator
             # ruling 2). Every panel tried failed to centre, so what failed
             # is what they share: the target low behind an obstruction, a
@@ -1285,6 +1324,19 @@ class GroupRun:
         itself, since only the caller may touch the bus, and
         ``HELD_PASS_SET_ASIDE_AT`` is handled here, the same
         :meth:`set_aside_all` an ordinary anti-spin pass already uses.
+
+        NAME THE PANEL WHEN ONLY ONE WAS LIVE (D-03, #591). The ruling
+        widened the hold itself to reach a group reduced to its last live
+        panel (:func:`centring_pass_verdict`), and the set-aside this
+        function makes is the one place that panel's own name could be
+        lost: ``set_aside_all``'s ``reason`` was written for a GROUP of
+        several panels ("the mosaic has been held ..."), and for exactly
+        one live member that sentence names no panel at all, where the
+        two other set-aside paths (a panel's own three-strike count, the
+        all-deferred anti-spin) both do. ``live_before`` is read here,
+        before :meth:`set_aside_all` empties it, so the wording can tell
+        one panel from several; for several it reads exactly as before
+        ("the mosaic ..."), so no multi-panel case changes.
         """
         if not is_held:
             self.held_streak = 0
@@ -1298,9 +1350,14 @@ class GroupRun:
         streak = self.held_streak
         self._held_pass_reason = reason_code
         if same_as_last or streak >= HELD_PASS_SET_ASIDE_AT:
+            live_before = self.live()
+            subject = (
+                "the mosaic" if len(live_before) != 1
+                else f"{self.members[live_before[0]]} (the mosaic's last "
+                     f"live panel)")
             if same_as_last:
                 reason = (
-                    f"two held passes in a row of the mosaic gave the "
+                    f"two held passes in a row of {subject} gave the "
                     f"identical reason ({reason_code!r}): a rig-side fault, "
                     f"not the sky, so it is set aside for tonight instead "
                     f"of held any further")
@@ -1309,7 +1366,7 @@ class GroupRun:
                 # file's own for a PANEL's own strike count ("1 of 3
                 # consecutive"), and this streak is the GROUP's.
                 reason = (
-                    f"the mosaic has been held for {streak} passes in a "
+                    f"{subject} has been held for {streak} passes in a "
                     f"row with no panel struck and no progress made; set "
                     f"aside for tonight")
             panels = self.set_aside_all(reason, kind="group")
