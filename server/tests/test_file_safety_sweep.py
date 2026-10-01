@@ -55,8 +55,11 @@ def test_the_two_windows_spellings_of_one_directory_are_the_same_directory(tmp_p
         f"the same directory spelled two ways is not one key: "
         f"{path_key(extended)} vs {path_key(plain)}")
     # And case, the other way two resolutions of one directory can differ on a
-    # filesystem that does not care about it.
-    assert path_key(Path(str(plain).upper())) == path_key(plain)
+    # filesystem that does not care about it. Windows only: on a POSIX runner
+    # /TMP and /tmp are two different directories, and path_key rightly keeps
+    # them apart (the CI run of 2026-10-01 failed on exactly this line).
+    if os.name == "nt":
+        assert path_key(Path(str(plain).upper())) == path_key(plain)
 
 
 def test_the_seam_survives_resolve_returning_the_two_spellings(tmp_path, monkeypatch):
