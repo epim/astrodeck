@@ -150,3 +150,9 @@ listening; a bad renewal fails closed. Repeat with `docker-compose.relay.yml`
 while its secret is loaded. Test HTTPS and WSS, mismatched SNI/Host, request
 limits, source-IP preservation, log redaction, certificate renewal,
 application restart recovery, and firewall denial of direct 8800/8080 access.
+
+## Check build inputs before deployment
+
+Run `python deploy/reverse-proxy/check_build_contexts.py` from the repository root with PyYAML installed. It checks the controller and relay Compose build contexts plus the relay Fly Dockerfile path, local COPY sources, ignored inputs and stage references. The relay Compose build uses `../../relay` as its context and `Dockerfile` within that context, matching Fly. This is a static build-input check; it does not build an image or contact a deployment.
+
+Dockerfile-specific ignore files take precedence over the context ignore file, as described in [Docker build contexts](https://docs.docker.com/build/concepts/context/). COPY wildcards follow path segments rather than recursive host globbing; `**` and character classes in COPY operands are rejected for review. Dockerignore supports whole-segment `**`. See the [COPY reference](https://docs.docker.com/reference/dockerfile/#copy) for the underlying rules. Other unsupported COPY syntax is also rejected.

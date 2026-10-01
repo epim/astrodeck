@@ -1,0 +1,39 @@
+# Release gate review, before the required rebase
+
+Date: 2026-10-01. These are local Windows/source results before the required rebase onto e764e172. They are not a release approval or evidence for an unbuilt Linux/macOS executable. Exact artifact hashes and findings counts are in `release-gate-pre-rebase.json`.
+
+## Actual artifacts and corrections
+
+The source tar contains 777 members. All source, UI and asset members are accounted against immutable Git 6e8dad9d, the earlier asset registry and individually read packaging deltas. Its eight findings are the existing nebula/IAU owner questions plus three central pending records. Two physical copies of the UI background produce separate asset findings. No Player One binary or DSS2 tile inclusion was accepted.
+
+The first native wheel (9700cc11) initially passed an insufficient gate. Parent review found its binary source archive incorrectly declared as a PEP 639 License-File. That result is superseded. The builder and gate now require four declared UTF-8, NUL-free text notices and an independently sealed ordinary source archive at `dist-info/source/native-source.tar.gz`. The rebuilt Windows wheel (9b2d8f28) passes: 12 members, zero findings. RECORD, extension/version/platform, exact source closure, tree digest, complete notice texts, declared paths, Cargo graph and SBOM seals are checked. This is build provenance, not a reproducible Rust compiler proof.
+
+The final pre-rebase executable has 3,450 expanded members, including Python modules inside PYZ/base_library.zip. Every member matches a retained TOC input by exact bytes or compiled-source equivalence. Equivalence preserves constants, bytecode, exception tables and code flags; it ignores filename/line bookkeeping and never executes application code. Some OS DLL inputs remain unclassified even though their bytes match an input.
+
+Its entire Windows executable also reconstructs byte for byte from the installed RECORD-verified PyInstaller 6.22.3 bootloader, default console icon, standard manifest and retained PKG, with only the documented timestamp and PE-checksum transforms. The collector never runs the reconstructed executable. Other PyInstaller versions, custom options, ELF and Mach-O transforms fail closed pending specific implementation and review.
+
+The frozen gate now reports 636 findings: 129 previously observed native-payload rights findings, one new psutil native extension, 496 provenance findings, two unreviewed-runtime credit findings, five owner decisions, two artwork findings and one server PEP 610 direct_url.json payload. Categories overlap in the underlying files. Independent review found that the interpreter installation directory did not authenticate its contents. The collector now requires an explicit reviewed per-file runtime source/hash record before assigning CPython verification. No such manifest has been auto-populated; the additional runtime findings are technical release blockers. Exact TOC source matching and authenticated distribution provenance are different checks. Historical bytes are not relabeled as rights approval. The private URL metadata is being excluded through a separately reviewed packaging change. No owner mode resolves unknown binaries, missing notices or platform provenance.
+
+An intermediate collection after the installed native wheel was replaced reported seven old native metadata mismatches. That was a stale artifact/environment pair, not a failure of the subsequent final build: the final collection again has zero unmatched TOC inputs. The prior zero-unmatched collection and the intermediate mismatch must not be presented as the same evidence snapshot.
+
+## Terms applied to actual retained paths
+
+PyInstaller's [versioned COPYING](https://github.com/pyinstaller/pyinstaller/blob/v6.22.3/COPYING.txt) permits combining its bootloader and loader files under its named bootloader exception, while runtime hooks/fake modules use Apache-2.0. Its phrase is "unlimited permission to link or embed compiled bootloader". Our scoped reading is limited to the exact named directories, unchanged compiled-source/input proof and the checked full notice digest. Ordinary PyInstaller build modules do not receive this exception automatically.
+
+The [community-hooks license](https://github.com/pyinstaller/pyinstaller-hooks-contrib/blob/v2026.8/LICENSE) distinguishes standard hooks from `_pyinstaller_hooks_contrib/rthooks`; only the latter retained runtime paths receive the Apache-2.0 reading. The gate checks the complete current notice digest and embedded full text. It does not rewrite environment metadata, classify the whole distribution as Apache, or treat the executable as containing no GPL-related code.
+
+Current Python notices are collected from installed distributions, including full short selector notices and vendored notices. A Python distribution and a Cargo crate with the same name have separate identities. Packages moved into the generator's flagged group retain their Python/Cargo scope. Absent optional comtypes, h5py and libasi are explicitly recorded without invented installed notices; missing core dependencies remain fatal.
+
+## Policy and trust boundary
+
+`packaging/distribution-policy.json` is the single owner-decision source. Pending preserves the historical per-artifact Player One selection but remains a blocker when retained. Fetch-only cannot clear a still-retained service/artwork/library. An explicit redistribute record resolves only its exact known owner finding and exact known bytes; it does not invent permission, waive source/relinking requirements or approve new data. Each actual new payload needs review.
+
+The source anchor stays 6e8dad9d. `release-reviewed-inputs.json` records only changes read individually, with exact normalized UTF-8 digests and a review explanation. The mandated new base must be reconciled by inspecting its shipped-source diff, not by moving the anchor to the mutable checkout.
+
+Build reports are tied to artifact hashes, collector hashes, installed RECORD checks and retained TOCs. They assume those build inputs and the audited tooling are trusted. They are not signatures against a malicious build host or proof that a compiler generated the intended machine code.
+
+## Validation and remaining work
+
+62 unit tests pass. All 23 named gate mutants fail through their intended assertions; original source bytes are restored in finally blocks and the restored suite passes. `release-gate-mutations.json` records source hashes and targets. The tests cover archive/metadata smuggling, native machine headers and seals, exact root notices and MPL expression, complete source, text licenses, owner modes, data provenance, same-name dependency groups, Python runtime-visible code names and raw PYZ duplicates/gaps/trailing bytes. Actual pre-rebase PYZ namespace and payload ranges pass the stricter reader. They do not establish unrun platform behavior.
+
+After the required rebase: review exact shipped input deltas, refresh the specific review hashes, rebuild native/credits/UI/tar/frozen artifacts, rerun collectors/gates and retain their new evidence. Windows OS/UCRT provenance, native subcomponent rights and other-platform transform reviews remain technical release blockers in addition to the owner's named questions. Root independently owns workflow/upload order, artifact builds and final reporting.

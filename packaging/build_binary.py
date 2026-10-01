@@ -15,14 +15,16 @@ Steps, in order, because each depends on the last:
   3. install the server into the CURRENT interpreter, so PyInstaller sees real
      installed metadata — the entry points that register every native device
      backend live in that metadata, not in any import
-  4. run PyInstaller against packaging/astrodeck.spec
-  5. smoke-test the result by RUNNING it, because a binary that builds and does
+  4. build and install the matching licensed ABI3 native wheel
+  5. run PyInstaller against packaging/astrodeck.spec; prove the native call
+  6. smoke-test the server by RUNNING it, because a binary that builds and does
      not start is the normal failure here, not the exotic one
 
 Flags:
   --skip-ui       reuse an existing server/astrodeck/webui (fast rebuilds)
   --skip-install  the server is already installed in this interpreter
-  --no-smoke      skip step 5 (not recommended; it is the only real check)
+  --no-smoke      skip server smoke only; native packaging probe is mandatory
+  --native-wheel reuse a source-matching wheel built by packaging/build_native.py
 """
 from __future__ import annotations
 
@@ -35,11 +37,17 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
+import zipfile
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "packaging"))
+import build_native
+from smoke_ownership import OwnedSmoke, OwnershipSetupError, process_api
+from distribution_policy import check_package_data, load_policy, include_file
 UI = ROOT / "ui"
 SERVER = ROOT / "server"
 WEBUI = SERVER / "astrodeck" / "webui"
@@ -79,14 +87,61 @@ def build_ui() -> None:
 
 
 def install_server() -> None:
-    run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
-    run([sys.executable, "-m", "pip", "install", "pyinstaller>=6.0"])
-    run([sys.executable, "-m", "pip", "install", str(SERVER)])
+    check_package_data(ROOT)
+    run([sys.executable, "-m", "pip", "install", "pyinstaller>=6.0", "maturin>=1.9,<2.0", "psutil>=5.9"])
+    scratch = ROOT / ".probe/release"
+    scratch.mkdir(parents=True, exist_ok=True)
+    # setuptools can retain package-data files in an old build/ tree. Build
+    # from a fresh private copy so an owner switch cannot inherit old binaries.
+    with tempfile.TemporaryDirectory(prefix="server-wheel-", dir=scratch) as temporary:
+        stage = Path(temporary)
+        shutil.copytree(SERVER, stage / "server", ignore=shutil.ignore_patterns(
+            "build", "dist", "*.egg-info", ".venv", "__pycache__", "*.pyc", "tests"))
+        run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-cache-dir",
+             "--wheel-dir", str(stage / "wheels"), str(stage / "server")])
+        wheels = list((stage / "wheels").glob("astrodeck-*.whl"))
+        if len(wheels) != 1:
+            raise SystemExit("server build did not produce exactly one wheel")
+        decisions = load_policy(ROOT)
+        with zipfile.ZipFile(wheels[0]) as archive:
+            for name in archive.namelist():
+                if name.startswith("astrodeck/") and not name.endswith("/"):
+                    if not include_file(name[len("astrodeck/"):], "server-wheel", decisions):
+                        raise SystemExit("server wheel contains data excluded by distribution policy")
+        run([sys.executable, "-m", "pip", "install", str(wheels[0])])
+
+
+def install_native(wheel: Path | None = None) -> Path:
+    """Install exactly the wheel built for this source and interpreter."""
+    wheel = wheel or build_native.build(ROOT / ".probe/release/native-wheels", ROOT)
+    expected = build_native.validate_wheel(wheel, ROOT)
+    run([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", str(wheel)])
+    result = subprocess.run([sys.executable, str(ROOT / "packaging/native_probe.py")],
+                            capture_output=True, text=True, check=True)
+    observed = json.loads(result.stdout)
+    if not observed.get("native_available") or observed.get("native_source_sha256") != expected["native_source_sha256"]:
+        raise SystemExit("installed native engine does not match the built wheel")
+    return wheel
+
+
+def native_smoke(exe: Path) -> dict:
+    """Actual frozen native call before any application server/state startup."""
+    result = subprocess.run([str(exe), "--packaging-probe"], capture_output=True,
+                            text=True, timeout=120, check=True)
+    try:
+        observed = json.loads(result.stdout)
+    except ValueError:
+        raise SystemExit("packaged native probe did not return JSON") from None
+    if not observed.get("native_available") or observed.get("native_source_sha256") != build_native.native_source_digest(ROOT):
+        raise SystemExit("packaged native engine does not match this source")
+    print("  native      ok (actual synthetic detector call)")
+    return observed
 
 
 def build_binary() -> Path:
+    os.environ["PYINSTALLER_CONFIG_DIR"] = str(ROOT / ".probe/release/pyinstaller-cache")
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-         "--distpath", str(DIST), "--workpath", str(ROOT / "build" / "pyi"),
+         "--distpath", str(DIST), "--workpath", str(ROOT / ".probe/release/pyi"),
          str(SPEC)])
     exe = DIST / ("astrodeck.exe" if sys.platform == "win32" else "astrodeck")
     if not exe.is_file():
@@ -103,39 +158,44 @@ def smoke(exe: Path) -> None:
     """
     env = dict(os.environ)
     # Never let the smoke test touch a real config or capture directory.
-    tmp = ROOT / "build" / "smoke-state"
-    if tmp.exists():
-        shutil.rmtree(tmp, ignore_errors=True)
-    env["ASTRODECK_CONFIG_DIR"] = str(tmp / "config")
-    env["ASTRODECK_CAPTURE_DIR"] = str(tmp / "captures")
-
-    # A leftover server on the smoke port would answer every check below and
-    # the test would grade a stranger. That happened: the previous release's
-    # smoke binary was still alive from an earlier build on the same machine,
-    # because a onefile bootloader's child outlives terminate(). Refuse the
-    # port unless it is free, and insist the answer is THIS build's version.
-    if _port_in_use(SMOKE_PORT):
-        raise SystemExit(
-            f"port {SMOKE_PORT} is already in use; the smoke test would talk "
-            "to whatever is listening there instead of the binary just built")
-    expected_version = _source_version()
-
-    proc = _launch_smoke(exe, SMOKE_PORT, env)
+    scratch = (ROOT / ".probe/release").resolve()
+    scratch.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="smoke-", dir=scratch))
+    proc = None
+    preserve = False
     try:
-        base = f"http://127.0.0.1:{SMOKE_PORT}"
+        import socket
+        with socket.socket() as reserved:
+            reserved.bind(("127.0.0.1", 0))
+            port = reserved.getsockname()[1]
+        env["ASTRODECK_CONFIG_DIR"] = str(tmp / "config")
+        env["ASTRODECK_CAPTURE_DIR"] = str(tmp / "captures")
+
+        # A leftover server on the smoke port would answer every check below and
+        # the test would grade a stranger. That happened: the previous release's
+        # smoke binary was still alive from an earlier build on the same machine,
+        # because a onefile bootloader's child outlives terminate(). Refuse the
+        # port unless it is free, and insist the answer is THIS build's version.
+        if _port_in_use(port):
+            raise SystemExit(
+                f"port {port} is already in use; the smoke test would talk "
+                "to whatever is listening there instead of the binary just built")
+        expected_version = _source_version()
+
+        proc = _launch_smoke(exe, port, env)
+        base = f"http://127.0.0.1:{port}"
         health = None
         # A frozen binary unpacks itself on first run, so first boot is slower
         # than any subsequent one. 60s is generous rather than tight.
         for _ in range(60):
             code = proc.poll()
             if code is not None:
-                tail = proc.output_tail()
                 hint = STARTUP_EXIT_HINTS.get(code & 0xFFFFFFFF)
                 raise SystemExit(
                     f"the binary exited during startup (code {code})"
-                    + (f" -- {hint}" if hint else "")
-                    + (f"\n--- what it wrote ---\n{tail}" if tail else ""))
+                    + (f" -- {hint}" if hint else ""))
             try:
+                proc.verify_listener()
                 with urllib.request.urlopen(f"{base}/healthz", timeout=2) as r:
                     health = json.load(r)
                 break
@@ -145,11 +205,12 @@ def smoke(exe: Path) -> None:
             raise SystemExit("the binary never answered /healthz")
         if health.get("version") != expected_version:
             raise SystemExit(
-                f"the server on port {SMOKE_PORT} reports version "
+                f"the server on port {port} reports version "
                 f"{health.get('version')!r}, but this tree is {expected_version!r}: "
                 "that is not the binary just built")
         print(f"  healthz     ok (version {health.get('version')})")
 
+        proc.verify_listener()
         with urllib.request.urlopen(base + "/", timeout=5) as r:
             body = r.read(2048).decode("utf-8", "replace")
         if "<!doctype html" not in body.lower():
@@ -161,6 +222,7 @@ def smoke(exe: Path) -> None:
         # Backends register through entry-point metadata, which is the piece
         # most easily lost in packaging: the app still runs, finds no hardware,
         # and gives no reason.
+        proc.verify_listener()
         with urllib.request.urlopen(f"{base}/api/backends", timeout=5) as r:
             backends = json.load(r)
         names = {b.get("name") for b in (backends if isinstance(backends, list)
@@ -170,9 +232,21 @@ def smoke(exe: Path) -> None:
                 "no device backends registered — the packaged build lost the "
                 "entry-point metadata, so every native driver is missing")
         print(f"  backends    ok ({len(names)} registered)")
+    except OwnershipSetupError as exc:
+        preserve = not exc.cleanup_complete
+        raise
     finally:
-        proc.stop()
-        shutil.rmtree(tmp, ignore_errors=True)
+        if proc is not None:
+            try:
+                proc.stop()
+            except BaseException:
+                preserve = True
+                raise RuntimeError("owned smoke cleanup incomplete; private state preserved") from None
+        if not preserve:
+            resolved = tmp.resolve()
+            if resolved.parent != scratch or not resolved.name.startswith("smoke-"):
+                raise RuntimeError("smoke cleanup path escaped its owned directory")
+            shutil.rmtree(resolved)
 
 
 def _port_in_use(port: int) -> bool:
@@ -191,21 +265,6 @@ def _source_version() -> str:
     if not m:
         raise SystemExit("could not read __version__ from server/astrodeck/__init__.py")
     return m.group(1)
-
-
-def _stop_tree(proc: subprocess.Popen) -> None:
-    """Stop the smoke server AND its children. A PyInstaller onefile binary is
-    a bootloader that runs the real program as a child; on Windows terminating
-    the parent leaves that child serving the port for the next build to find."""
-    if sys.platform == "win32":
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        proc.terminate()
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        proc.kill()
 
 
 def _is_elevated() -> bool:
@@ -716,7 +775,7 @@ class SmokeProcess:
     def __init__(self, port: int, popen: subprocess.Popen | None = None,
                  runner=None, log_path: Path | None = None,
                  handle: int | None = None, pid: int | None = None,
-                 cleanup=None):
+                 cleanup=None, ownership=None):
         self.port = port
         self._popen = popen
         self._run = runner or _run_text
@@ -725,7 +784,7 @@ class SmokeProcess:
         self._handle = handle
         self._pid = pid
         self._cleanup = cleanup
-        self._image_pids: list[int] = []
+        self._ownership = ownership
         self._stopped = False
 
     @property
@@ -735,17 +794,16 @@ class SmokeProcess:
         return self._pid
 
     def listener_pid(self) -> int | None:
-        """Whoever holds the smoke port. The wrapper PID is cmd.exe; the
-        listener is the bootloader's child, two processes further down."""
-        return _netstat_listener_pid(self._run(["netstat", "-ano"]), self.port)
+        return self.verify_listener()
+
+    def verify_listener(self):
+        if self._ownership is None:
+            raise RuntimeError("smoke ownership was not established")
+        return self._ownership.verify_listener()
 
     def output_tail(self, lines: int = 40) -> str:
-        """The last lines the child wrote, or "" when nothing was captured
-        (the Popen path inherits the console, so there is nothing to read)."""
-        if self.log_path is None or not self.log_path.exists():
-            return ""
-        text = self.log_path.read_text(encoding="utf-8", errors="replace")
-        return "\n".join(text.splitlines()[-lines:])
+        # Retained API, deliberately never reads or emits raw server logs.
+        return ""
 
     def poll(self) -> int | None:
         if self._popen is not None:
@@ -755,33 +813,20 @@ class SmokeProcess:
         return None
 
     def stop(self) -> None:
-        if self._popen is not None:
-            _stop_tree(self._popen)
-            return
         if self._stopped:
             return
-        self._stopped = True
         try:
-            # /T reaps the tree: cmd.exe -> onefile bootloader -> the server.
-            if self._pid:
-                self._run(["taskkill", "/PID", str(self._pid), "/T", "/F"])
-            # Backstop. A onefile bootloader's child has outlived its parent
-            # here before, and a survivor would answer the NEXT build's checks.
-            for pid in _tasklist_pids(self._run(
-                    ["tasklist", "/FI", "IMAGENAME eq astrodeck.exe",
-                     "/FO", "CSV", "/NH"])):
-                if pid != self._pid and pid not in self._image_pids:
-                    self._image_pids.append(pid)
-                    self._run(["taskkill", "/PID", str(pid), "/T", "/F"])
+            if self._ownership is None:
+                raise RuntimeError("smoke ownership was not established; no process stopped")
+            self._ownership.stop()
+            self._stopped = True
+        finally:
             if self._handle is not None:
                 _close_handle(self._handle)
-            for _ in range(15):
-                if not _port_in_use(self.port):
-                    break
-                time.sleep(1)
-        finally:
+                self._handle = None
             if self._cleanup is not None:
-                self._cleanup()
+                cleanup, self._cleanup = self._cleanup, None
+                cleanup()
 
 
 def _write_smoke_wrapper(wrapper: Path, log_path: Path, argv: list[str],
@@ -801,15 +846,23 @@ def _write_smoke_wrapper(wrapper: Path, log_path: Path, argv: list[str],
 
 def _launch_smoke(exe: Path, port: int, env: dict) -> SmokeProcess:
     """Start the binary for the smoke test, de-elevating if we have to."""
-    argv = [str(exe), "run", "--host", "127.0.0.1", "--port", str(port)]
+    process_api()  # Refuse a missing verifier before launching anything.
+    argv = [str(exe.resolve()), "run", "--host", "127.0.0.1", "--port", str(port)]
     if not (sys.platform == "win32" and _is_elevated()):
         print(f"\n$ {exe} run --host 127.0.0.1 --port {port}   (smoke test)")
-        return SmokeProcess(port, popen=subprocess.Popen(argv, env=env))
+        launched_at = time.time()
+        popen = subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            ownership = OwnedSmoke(popen.pid, launched_at, exe, port)
+        except OwnershipSetupError:
+            raise
+        except BaseException:
+            raise OwnershipSetupError() from None
+        return SmokeProcess(port, popen=popen, ownership=ownership)
 
     print("this process is elevated and the server refuses to run elevated, so "
           "the smoke test runs the binary as a throwaway unprivileged account")
-    state_dir = Path(env.get("ASTRODECK_CONFIG_DIR",
-                             str(ROOT / "build" / "smoke-state" / "config"))).parent
+    state_dir = Path(env["ASTRODECK_CONFIG_DIR"]).parent
     state_dir.mkdir(parents=True, exist_ok=True)
     log_path = state_dir / "smoke.log"
     wrapper = state_dir / "smoke.cmd"
@@ -827,19 +880,27 @@ def _launch_smoke(exe: Path, port: int, env: dict) -> SmokeProcess:
             restore_station()
         _delete_smoke_account(name, granted)
 
+    handle = None
     try:
         granted = _grant_smoke_access(name, exe, state_dir)
         restore_station = _grant_station_access(name)
-        cmdline = f'cmd /c "{wrapper}"'
+        command = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
+        cmdline = f'"{command}" /c "{wrapper}"'
         print(f"\n$ {cmdline}   (smoke test, as {name})")
         print(f"  wrapper: {subprocess.list2cmdline(argv)} > {log_path}")
+        launched_at = time.time()
         handle, pid = _create_process_as_user(name, password, cmdline, state_dir)
-    except BaseException:
+        ownership = OwnedSmoke(pid, launched_at, exe, port, wrapper=wrapper)
+    except BaseException as exc:
+        if handle is not None:
+            _close_handle(handle)
         cleanup()
+        if handle is not None and not isinstance(exc, OwnershipSetupError):
+            raise OwnershipSetupError() from None
         raise
     print(f"  started pid {pid}")
     return SmokeProcess(port, log_path=log_path, handle=handle, pid=pid,
-                        cleanup=cleanup)
+                        cleanup=cleanup, ownership=ownership)
 
 
 def main() -> int:
@@ -848,7 +909,9 @@ def main() -> int:
     ap.add_argument("--skip-ui", action="store_true")
     ap.add_argument("--skip-install", action="store_true")
     ap.add_argument("--no-smoke", action="store_true")
+    ap.add_argument("--native-wheel", type=Path, help="reuse a matching ABI3 wheel from packaging/build_native.py")
     args = ap.parse_args()
+    check_package_data(ROOT)
 
     if args.skip_ui:
         if not (WEBUI / "index.html").is_file():
@@ -860,10 +923,13 @@ def main() -> int:
     if not args.skip_install:
         install_server()
 
+    install_native(args.native_wheel)
+
     exe = build_binary()
     size_mb = exe.stat().st_size / 1e6
     print(f"\nbuilt {exe}  ({size_mb:.0f} MB)")
 
+    native_smoke(exe)  # never optional: import/call proves #630, no server needed
     if not args.no_smoke:
         smoke(exe)
         print("\nsmoke test passed")

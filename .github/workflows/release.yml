@@ -1,178 +1,135 @@
 name: release
 
-# Cut a release by bumping astrodeck.__version__ + pyproject, committing, then:
-#   git tag v0.2.0 && git push origin v0.2.0
-# This builds the UI, bundles a signed artifact, and publishes a GitHub Release.
-# The scope's self-update poller consumes the published artifact + .sig + .sha256.
-
+# Build all payloads first. No release upload happens unless every platform's
+# native wheel and frozen artifact, plus the source tarball, pass their gates.
 on:
   push:
     tags: ['v*']
-  # Re-run a release build without re-tagging. A tag push is a one-shot trigger,
-  # so a run that fails for a reason unrelated to the code — a billing block, a
-  # runner outage — would otherwise mean deleting and re-pushing the tag. Select
-  # the TAG as the ref when dispatching; every step reads github.ref_name, which
-  # is the tag name either way.
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # Gate every release on the self-update apply + rollback path, on BOTH the
-  # current Windows rig and Linux (spec section 8). A failure here blocks publish.
   selftest:
     strategy:
       fail-fast: true
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: server
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -e ".[dev]"
-      - name: Real-I/O apply + verify-reject + launcher/health probe
-        run: pytest -m selftest -q
-      - name: Supervisor swap + rollback state machine
-        run: pytest tests/test_supervisor.py tests/test_supervisor_protocol_parity.py -q
+      - name: Install test dependencies
+        run: python -m pip install -e "./server[dev]" PyYAML psutil setuptools wheel
+      - name: Require a version tag matching the package
+        shell: bash
+        run: |
+          python -c "import os,tomllib; from pathlib import Path; p=tomllib.loads(Path('server/pyproject.toml').read_text()); expected='v'+p['project']['version']; assert os.environ['GITHUB_REF_TYPE']=='tag' and os.environ['GITHUB_REF_NAME']==expected, 'release ref must be the matching version tag'"
+      - name: Required privacy gate
+        env:
+          ASTRODECK_PRIVACY_NEEDLES: ${{ secrets.ASTRODECK_PRIVACY_NEEDLES }}
+        run: python tools/privacy_scan.py --require
+      - name: Real-I/O update apply and rollback
+        working-directory: server
+        run: python -m pytest -m selftest -q
+      - name: Supervisor swap and rollback
+        working-directory: server
+        run: python -m pytest tests/test_supervisor.py tests/test_supervisor_protocol_parity.py -q
+      - name: Owner policy and Docker build inputs
+        run: |
+          python packaging/distribution_policy.py --check-package-data
+          python deploy/reverse-proxy/check_build_contexts.py
+      - name: Packaging and build-input regression tests
+        shell: bash
+        run: |
+          python -B -m unittest discover -s packaging/tests -p 'test_*.py'
+          python -B -m unittest discover -s server/tests -p 'test_release_build_contexts.py'
+          python -B -m unittest discover -s server/tests -p 'test_release_pipeline.py'
+          python -B -m unittest discover -s tools/licence -p 'test_release_gate.py'
+      - name: Existing release and licence regressions
+        shell: bash
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+        run: >-
+          python -B -m pytest --noconftest -o addopts='' -q
+          server/tests/test_build_binary_smoke.py server/tests/test_build_release*.py
+          server/tests/test_release_strictness.py server/tests/test_licence_*.py
+          server/tests/test_licensing.py server/tests/test_credits.py
 
   release:
     needs: selftest
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.probe/release/cargo-home
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.probe/release/cargo-target
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Build UI
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
-
+          node-version: '24'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install build deps
-        run: pip install "cryptography>=50.0.0"
-
-      - name: Verify tag matches package version
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install source artifact audit dependencies
+        run: python -m pip install ./server "cryptography>=50.0.0"
+      - name: Install locked UI dependencies
+        working-directory: ui
+        run: npm ci
+      - name: Prepare the locked Cargo notice graph
+        run: cargo fetch --locked --manifest-path native/Cargo.toml
+      - name: Generate credits for this build environment
+        run: python tools/licence/build_credits.py --out .probe/release/credits.generated.json
+      - name: Build UI and record actual inputs
+        run: node tools/licence/build_ui_inventory.mjs --credits .probe/release/credits.generated.json --out-dir .probe/release/ui-dist --report .probe/release/ui-inventory.json
+      - name: Stage the verified UI for the source packager
+        run: python -c "import shutil; shutil.copytree('.probe/release/ui-dist','ui/dist')"
+      # DSS2 remains fetch-only (#198/#631). Never fetch or pass a survey pack.
+      # ASTAP remains an explicitly recorded external prerequisite.
+      - name: Build source release bundle
+        shell: bash
+        run: python scripts/build_release.py --strict --version "${GITHUB_REF_NAME#v}" --out dist --allow-missing astap
+      - name: Gate every source archive member against reviewed evidence
+        shell: bash
+        run: python tools/licence/audit_release.py --kind source-tar --artifact "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz" --platform linux-x86_64 --ui-inventory .probe/release/ui-inventory.json --credits .probe/release/credits.generated.json --report .probe/release/source-gate.json
+      - name: Unpack the accepted source bundle for its SBOM
+        shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          PKG=$(python -c "import sys; sys.path.insert(0,'server'); import astrodeck; print(astrodeck.__version__)")
-          echo "tag=$TAG package=$PKG"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "::error::tag $TAG does not match astrodeck.__version__ $PKG (bump the version before tagging)"
-            exit 1
-          fi
-
-      # The pack that 0.2.18 shipped without. It is git-ignored and ~45 MB, so
-      # it does not exist until someone fetches it, and on 0.2.18 nobody did:
-      # the box booted with online fetch off (the correct offline-first default)
-      # and no local tiles, so every tile 404'd and the Atlas was simply black
-      # (#100). Fetching it HERE is what makes --strict below able to fail on it.
-      # If a mirror outage ever blocks a hotfix, the escape hatch is an explicit
-      # `--allow-missing survey-pack`, which puts the omission in the shipped
-      # manifest.json — not deleting this step.
-      - name: Fetch the baseline survey pack (DSS2-color order 3)
-        run: |
-          # the fetcher IS the package (astrodeck.catalog.survey_pack, which
-          # imports the hub), so it needs the install the build steps skip.
-          pip install -e ./server
-          python -m astrodeck.catalog.survey_pack fetch --order 3 --dest release-assets/dss2color
-
-      # --strict, because the default is to WARN and ship anyway, and a tag push
-      # is unattended by definition — nobody is reading this log. It fails the
-      # build on any asset a complete release has and this one does not, whether
-      # or not the command line asked for it, and names what each omission costs.
-      #
-      # ASTAP is the one deliberate hole, and --allow-missing states it here and
-      # in the shipped manifest.json instead of leaving it to be found on the
-      # box. Two things are unsettled, both outside this workflow: this tarball
-      # is OS-agnostic while solve/astap.py::_bundled_candidates reads ONE flat
-      # vendor/astap dir, so there is no single binary that is the right one to
-      # put in it; and scripts/fetch_astap.py nests binaries per platform
-      # (<dir>/linux-x86_64/astap_cli) with the 102 MB database flat alongside,
-      # a layout the runtime cannot read. Cost, stated so a user is not left to
-      # infer it: plate solving needs a separately-installed ASTAP.
-      - name: Build release bundle
-        run: |
-          python scripts/build_release.py --strict --version "${GITHUB_REF_NAME#v}" --out dist \
-            --survey-pack release-assets/dss2color \
-            --allow-missing astap
-
-      - name: Sign artifact (Ed25519 + SHA256 sidecars)
-        env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-        run: python scripts/sign_release.py "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz"
-
-      # Software bill of materials for the release (OPEN-006): a CycloneDX
-      # inventory of what actually SHIPS. Scan the unpacked release tarball,
-      # not the repo checkout -- the checkout carries node_modules dev tooling
-      # and the references/ reference SDKs, none of which are in the artifact,
-      # and an over-inclusive SBOM is a false inventory (re-review 2026-09-05).
-      - name: Unpack the release tarball for the SBOM
-        run: |
-          rm -rf sbom-src && mkdir sbom-src
+          mkdir sbom-src
           tar -xzf "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz" -C sbom-src
-      - name: Generate SBOM (CycloneDX)
+      - name: Generate source artifact SBOM
         uses: anchore/sbom-action@v0
         with:
           path: sbom-src
           format: cyclonedx-json
           output-file: dist/astrodeck-sbom.cdx.json
           upload-release-assets: false
-
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Retain accepted source release files
+        uses: actions/upload-artifact@v4
         with:
-          generate_release_notes: true
-          files: |
+          name: accepted-source
+          if-no-files-found: error
+          path: |
             dist/astrodeck-*.tar.gz
-            dist/astrodeck-*.tar.gz.sha256
-            dist/astrodeck-*.tar.gz.sig
             dist/astrodeck-sbom.cdx.json
+      - name: Retain source gate diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-gate-report
+          if-no-files-found: ignore
+          path: .probe/release/source-gate.json
 
-  # Single-file binaries: download one thing, run it, no Python install.
-  #
-  # PyInstaller cannot cross-compile, so each artefact is built on the OS AND
-  # architecture it targets — that is what the matrix is for, not parallelism.
-  # An arm64 macOS binary tells you nothing about an arm64 Linux one: same
-  # instruction set, different OS, libc and bootloader. So the Raspberry Pi
-  # needs its own row, not a Mac.
-  #
-  # Runner cost: macOS bills at 10x and arm64 Linux is free only on PUBLIC
-  # repos, so this job runs on a release tag only, never on a push.
-  #
-  # build_binary.py SMOKE-TESTS what it produced (starts it, checks /healthz,
-  # the SPA, and that the device backends registered). A binary that builds and
-  # does not run is the normal failure mode here, so "it compiled" is not a
-  # result worth publishing on.
-  #
-  # KNOWN GAP (v0.3.23, 2026-09-05; narrowed 2026-09-07): the windows-latest
-  # leg FAILED at the smoke step, not the build. Hosted Windows runners run
-  # every process with an elevated Administrator token, and the server's
-  # privilege interlock (runtime_security.require_unprivileged_runtime,
-  # OPEN-005) refuses to start elevated -- correctly; that is the behaviour a
-  # consumer double-clicking the .exe relies on, and it has no override on
-  # purpose. The fix is in the smoke harness, not the server: it creates a
-  # throwaway unprivileged local account and launches the binary under it
-  # (CreateProcessWithLogonW). `runas /trustlevel:0x20000` was the first
-  # attempt and does NOT work -- the SAFER token keeps TokenIsElevated set.
-  #
-  # That harness now runs end to end on an elevated Windows 11 box (see the
-  # binary-smoke-windows note in ci.yml for what was measured). What it has
-  # not yet done is run on a hosted runner: dispatch ci.yml with "binary
-  # smoke" ticked before trusting this leg with a tag. Until that passes the
-  # Windows .exe is still built and smoke-tested on a maintainer's box from
-  # the tagged commit and uploaded with `gh release upload`; the Linux,
-  # macOS, tarball, image, and SBOM legs are unaffected.
   binaries:
     needs: selftest
     strategy:
@@ -180,56 +137,141 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            platform: linux-x86_64
             asset: astrodeck-linux-x86_64
             path: dist/astrodeck
-          - os: ubuntu-24.04-arm      # native arm64 => the Raspberry Pi binary
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
             asset: astrodeck-linux-arm64
             path: dist/astrodeck
           - os: windows-latest
+            platform: windows-x86_64
             asset: astrodeck-windows-x86_64.exe
             path: dist/astrodeck.exe
-          - os: macos-latest          # arm64 runner => an Apple-silicon binary
+          - os: macos-latest
+            platform: macos-arm64
             asset: astrodeck-macos-arm64
             path: dist/astrodeck
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.probe/release/cargo-home
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.probe/release/cargo-target
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Build + smoke-test the binary
-        run: python packaging/build_binary.py
-      - name: Name the artefact for its platform
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build and inventory dependencies
+        run: python -m pip install ./server "pyinstaller>=6.0" "maturin>=1.9,<2" psutil
+      - name: Build this target's ABI3 engine with notices and source
+        run: python packaging/build_native.py --out dist
+      - name: Install the exact native wheel before collecting credits
         shell: bash
-        run: mv "${{ matrix.path }}" "dist/${{ matrix.asset }}"
-      # hashlib, not shasum: the Windows runner's Git Bash has no shasum, and
-      # that one missing command failed the v0.3.26 Windows leg AFTER the
-      # binary had built and passed its smoke test. Python is set up on every
-      # row of this matrix, and the output keeps shasum's "<hex>  <name>" shape
-      # that the self-update poller and `sha256sum -c` both read.
-      - name: Checksum
+        run: python -m pip install --no-deps --force-reinstall dist/*.whl
+      - name: Install locked UI dependencies
+        working-directory: ui
+        run: npm ci
+      - name: Generate fresh credits and audited UI
         shell: bash
         run: |
-          cd dist
-          python -c "import hashlib, sys; p = sys.argv[1]; print(hashlib.sha256(open(p, 'rb').read()).hexdigest() + '  ' + p)" "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
-          cat "${{ matrix.asset }}.sha256"
-      - name: Attach to the release
+          python tools/licence/build_credits.py --out .probe/release/credits.generated.json
+          node tools/licence/build_ui_inventory.mjs --credits .probe/release/credits.generated.json --out-dir .probe/release/ui-dist --report .probe/release/ui-inventory.json
+          python -c "import shutil; shutil.copytree('.probe/release/ui-dist','server/astrodeck/webui')"
+      - name: Build and smoke-test the frozen native engine and server
+        shell: bash
+        run: |
+          NATIVE_WHEEL=$(python -c "from pathlib import Path; xs=list(Path('dist').glob('*.whl')); assert len(xs)==1; print(xs[0].as_posix())")
+          python packaging/build_binary.py --skip-ui --native-wheel "$NATIVE_WHEEL"
+      - name: Record actual frozen build inputs
+        shell: bash
+        run: python tools/licence/release_provenance.py --artifact "${{ matrix.path }}" --build-dir .probe/release/pyi --report .probe/release/frozen-provenance.json
+      - name: Gate native wheel and frozen payload before upload
+        shell: bash
+        run: |
+          NATIVE_WHEEL=$(python -c "from pathlib import Path; xs=list(Path('dist').glob('*.whl')); assert len(xs)==1; print(xs[0].as_posix())")
+          python tools/licence/audit_release.py --kind native-wheel --artifact "$NATIVE_WHEEL" --platform "${{ matrix.platform }}" --credits .probe/release/credits.generated.json --report .probe/release/native-gate.json
+          python tools/licence/audit_release.py --kind frozen --artifact "${{ matrix.path }}" --platform "${{ matrix.platform }}" --ui-inventory .probe/release/ui-inventory.json --credits .probe/release/credits.generated.json --build-provenance .probe/release/frozen-provenance.json --report .probe/release/frozen-gate.json
+      - name: Name the accepted executable
+        shell: bash
+        run: mv "${{ matrix.path }}" "dist/${{ matrix.asset }}"
+      - name: Retain accepted platform files
+        uses: actions/upload-artifact@v4
+        with:
+          name: accepted-${{ matrix.platform }}
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            dist/${{ matrix.asset }}
+            dist/*.whl
+      - name: Retain platform gate diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-${{ matrix.platform }}
+          if-no-files-found: ignore
+          path: |
+            .probe/release/native-gate.json
+            .probe/release/frozen-gate.json
+
+  publish:
+    needs: [release, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download only accepted payloads
+        uses: actions/download-artifact@v4
+        with:
+          pattern: accepted-*
+          merge-multiple: true
+          path: dist
+      - name: Sign the accepted source tarball
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        shell: bash
+        run: |
+          python -m pip install "cryptography>=50.0.0"
+          python scripts/sign_release.py "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz"
+      - name: Checksum every accepted executable and wheel
+        shell: bash
+        run: |
+          python -c "from pathlib import Path; import hashlib; xs=[p for p in Path('dist').iterdir() if p.is_file() and (p.suffix=='.whl' or p.name.startswith(('astrodeck-linux-','astrodeck-windows-','astrodeck-macos-')))]; assert len(xs)==8, 'expected four wheels and four executables'; [p.with_name(p.name+'.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n',encoding='utf-8') for p in xs]"
+      - name: Publish only the fully accepted release
         uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
           files: |
-            dist/${{ matrix.asset }}
-            dist/${{ matrix.asset }}.sha256
+            dist/astrodeck-*.tar.gz
+            dist/astrodeck-*.tar.gz.sha256
+            dist/astrodeck-*.tar.gz.sig
+            dist/astrodeck-linux-*
+            dist/astrodeck-windows-*
+            dist/astrodeck-macos-*
+            dist/*.whl
+            dist/*.whl.sha256
+            dist/astrodeck-sbom.cdx.json
 
-  # Multi-arch container image (amd64 for a mini-PC, arm64 for a Raspberry Pi).
-  # Published to GHCR alongside the release so `docker pull` needs no build.
+  # OCI native-engine packaging and inventory remain tracked separately (#655).
+  # Existing image behavior is retained behind the complete artifact gates.
   image:
-    needs: selftest
+    needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -237,7 +279,10 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3        # arm64 emulation for the Pi image
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
