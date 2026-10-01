@@ -176,6 +176,14 @@ class ReleasePolicy(unittest.TestCase):
         self.assertEqual([True],clean)
         self.assertTrue(any("install" in cmd and any(".whl" in value for value in cmd) for cmd in commands))
 
+    def test_validated_server_wheel_replaces_same_version_without_dependency_changes(self):
+        commands,_ = self.exercise_server_install()
+        installs=[cmd for cmd in commands if "install" in cmd and any(value.endswith(".whl") for value in cmd)]
+        self.assertEqual(1,len(installs))
+        self.assertIn("--force-reinstall",installs[0],"same-version installed metadata must be replaced")
+        self.assertIn("--no-deps",installs[0],"validated wheel installation must preserve dependency versions")
+        self.assertNotIn("--upgrade",installs[0])
+
     def test_server_install_refuses_forbidden_actual_wheel_member(self):
         commands,_ = self.exercise_server_install(forbidden=True)
         self.assertFalse(any("install" in cmd and any(".whl" in value for value in cmd) for cmd in commands))

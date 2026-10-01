@@ -108,7 +108,7 @@ def install_server() -> None:
                 if name.startswith("astrodeck/") and not name.endswith("/"):
                     if not include_file(name[len("astrodeck/"):], "server-wheel", decisions):
                         raise SystemExit("server wheel contains data excluded by distribution policy")
-        run([sys.executable, "-m", "pip", "install", str(wheels[0])])
+        run([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", str(wheels[0])])
 
 
 def install_native(wheel: Path | None = None) -> Path:

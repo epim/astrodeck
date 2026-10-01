@@ -2,7 +2,7 @@
 
 Run with the test interpreter: `python -B packaging/mutation_check.py --run`. No artifact build may run concurrently.
 
-All 43 named mutants failed the selected assertion, without test errors. The full new packaging suite passed before and after. Every source was restored byte for byte in `finally`; SHA-256 values are in mutation-evidence.json.
+All 45 named mutants failed the selected assertion, without test errors. The full new packaging suite passed before and after. Every source was restored byte for byte in `finally`; SHA-256 values are in mutation-evidence.json.
 
 All process and HTTP behavior is mocked. Wheel builds use synthetic projects without dependency installation. This is regression evidence, not cross-platform runtime certification.
 
@@ -19,6 +19,8 @@ All process and HTTP behavior is mocked. Wheel builds use synthetic projects wit
 | spec-native-metadata | `test_release_packaging.ReleasePolicy.test_spec_collects_native_module_and_metadata` |
 | spec-policy-selection | `test_release_packaging.ReleasePolicy.test_spec_filters_actual_sdk_and_tile_files` |
 | server-clean-stage | `test_release_packaging.ReleasePolicy.test_server_install_never_reuses_stale_build` |
+| server-same-version-reinstalled | `test_release_packaging.ReleasePolicy.test_validated_server_wheel_replaces_same_version_without_dependency_changes` |
+| server-dependencies-preserved | `test_release_packaging.ReleasePolicy.test_validated_server_wheel_replaces_same_version_without_dependency_changes` |
 | server-wheel-policy-check | `test_release_packaging.ReleasePolicy.test_server_install_refuses_forbidden_actual_wheel_member` |
 | native-rebuild-source-data | `test_release_packaging.NativeWheel.test_rebuild_recipe_prepares_required_source_data` |
 | native-abi3-required | `test_release_packaging.NativeWheel.test_non_abi3_wheel_refused` |

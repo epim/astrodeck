@@ -144,7 +144,7 @@
   "restored_green": true,
   "exact_bytes_restored": true,
   "source_sha256": {
-    "tools/licence/audit_release.py": "bd7a7e5a7d8562300798ce182a079fa77a0d51b89ea6f8cbdca496f7f2ae6c8d",
-    "tools/licence/release_provenance.py": "c72398bf0b61ed69c0dfbc649f2b5b4130ac2a6f9492672cb25aa725869553dd"
+    "tools/licence/release_provenance.py": "b4989f11a63d30ebe51fd70b436e9eb55838baa2dd94f3fdcab9f15cdddc9fa1",
+    "tools/licence/audit_release.py": "c6c8c19f1864a20802eca86ffffb893347997fc407d75ece419ce2eb9b4d65bb"
   }
 }
