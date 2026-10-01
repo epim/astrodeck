@@ -40,7 +40,7 @@ After a completed flow, the toolbar can still show **STOP** ([#647](https://gith
 
 ## Continue on another night
 
-New target blocks count accepted subs. Existing saved targets can retain their older count mode. Review banked progress and [Sessions](sessions-multi-night.md) before changing framing or restarting a campaign.
+New target blocks count accepted subs. Review banked progress and [Sessions](sessions-multi-night.md) before changing framing or restarting a campaign.
 
 ## Node reference
 
@@ -66,7 +66,7 @@ Read **CHECKS**, **NOT HONOURED BY A RUN** and **BEFORE YOU RUN** after each cha
 | **HOLD / RESUME** | A pause event invokes the self-releasing cloud hold, which keeps dawn and safety checks active. The engine uses its 45-minute bound; the card's Max hold and other policy fields do not override it. |
 | **NOTIFY** | A supported event can call the engine's notification action. Sink routing comes from configured alerts; message text and severity on this node are not carried. |
 | **REFOCUS** | A supported event wire invokes autofocus at a frame boundary. The node's boundary field does not change that timing. |
-| **PARK + CLOSE** | Represents scheduled shutdown. Flow-derived plans already request park and warm, and wind-down closes the dust cover. Dome closure needs the configured policy. The card's Hold cold choice does not keep the camera cold indefinitely. |
+| **PARK + CLOSE** | Represents scheduled shutdown. Flow-derived plans already request park and warm, and wind-down closes the dust cover. Dome closure needs the configured policy. The node's Hold cold setting is not honoured. After-shutdown darks come from a calibration step wired to `on_shutdown_complete`, not this setting ([#646](https://github.com/epim/astrodeck/issues/646)). |
 | **ABORT + PARK** | A supported event invokes abort and park. Warming depends on the configured unsafe action, not the card alone. This is different from the operator's manual STOP, which does not park. |
 | **SESSION REPORT** | The engine writes a report for every run, even without this block. Its format and destination fields do not override the engine's report location. |
 
