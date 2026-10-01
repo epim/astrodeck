@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
+import os
 import time
 from pathlib import Path
 from statistics import median
@@ -918,6 +919,32 @@ class GroupSetAside(StopTarget):
     any catcher that is not the group driver still ends only that target."""
 
 
+class MountFloorStop(StopTarget):
+    """A MID-RUN slew's destination sank below the mount's OWN floor or
+    horizon mask — the safety-mandatory guard every slew carries
+    (`_enforce_mount_floor`), never the per-target opt-in `FloorStop` is
+    (`Schedule.on_floor == "advance"`). Raised in exactly one place, the
+    meridian flip's own pre-flip gate, and only when BOTH:
+
+    * the target is not a mosaic panel (`_group_of(target) is None`) — a
+      panel's own floor/ceiling reach-wait is `_visit_panel`'s question,
+      asked every pass, and changing that is out of this issue's scope
+      (#604 was filed on two plain targets, not a mosaic); and
+    * another target in the plan can still be reached before dawn
+      (`_another_target_reachable`).
+
+    Backlog shape c, orchestrator ruling 2026-10-01: "a multi-target night
+    should not lose its remaining targets to one that has set." When
+    NEITHER holds, the mount floor guard's own `SlewRefused`/`SafetyAbort`
+    goes on up completely unchanged — a night with nothing else to shoot
+    still ends, exactly as it always has. Either way THE MOUNT NEVER SLEWS
+    to the refused destination: this is raised only after
+    `_enforce_mount_floor` has already refused the slew, never in place of
+    asking it.
+
+    Every catcher of :class:`StopTarget` still catches it."""
+
+
 #: The StopTargets the group driver does NOT defer a member for
 #: (`_visit_panel`): its own floor sets the panel aside, a closed window
 #: ends every panel, and a group set aside takes them all. Every other
@@ -1550,7 +1577,7 @@ class SequenceEngine:
     def start(self, plan: SequencePlan, *, session: Session | None = None,
               origin: str = "", origin_id: str = "",
               tracking: Target | None = None,
-              focus_sweep: RecoverySweep | None = None) -> None:
+              focus_sweep: RecoverySweep | None = None) -> list[dict]:
         """Start a run. EVERY start owns a Session (spec §2): a fresh one when
         ``session`` is None (ids were backfilled by pydantic during plan
         validation — the server-side backfill seam), or a re-opened dormant one
@@ -1579,7 +1606,17 @@ class SequenceEngine:
         the first acquisition's initial autofocus is owed only under the hop
         rule (the sweep failed, a refocus is due, or the temperature moved
         past the delta), whatever that target's ``autofocus_skip_if_fresh``
-        says. The ladder hands over only a sweep that succeeded."""
+        says. The ladder hands over only a sweep that succeeded.
+
+        Returns the sessions the singleton below disarmed (#595, backlog
+        ruling D-04, owner-approved 2026-09-30): ``[{"id", "name"}, ...]``,
+        empty when none were armed. A silent disarm is the bug D-04 rules on
+        — starting the nightly run once took the owner's explicitly-armed
+        mosaic's auto-resume with it, and nothing said so until a manual read
+        of ``/api/sessions`` caught it. The caller (an API route) folds this
+        into its response as ``disarmed``; a rig-side starter or a resume
+        path that ignores the return still gets the warning below, logged
+        here rather than left to every caller to notice and say."""
         if self.running:
             raise DeviceError("a sequence is already running")
         if getattr(getattr(self.hub, "dusk_arm", None), "connecting", False):
@@ -1620,6 +1657,14 @@ class SequenceEngine:
         # not even a log line to notice — the whole feature was absent, quietly,
         # on exactly the path it exists for.
         session.auto_resume = True
+        # NAMED, NOT SILENT (#595, D-04). The singleton below used to disarm
+        # every other armed session with nothing to show for it: no log line,
+        # no response field, so the only way to notice was a manual read of
+        # /api/sessions. On 2026-09-29 that cost the owner's explicitly-armed
+        # NGC 1499 mosaic its auto-resume when a 7331 starter began a run —
+        # found by chance five minutes later. `disarmed` is handed back so an
+        # API route can put it in the start response as-is.
+        disarmed: list[dict] = []
         try:
             # Server-enforced singleton, same rule as the PATCH route: the
             # active session is THE armed one, so arming it disarms the rest.
@@ -1627,8 +1672,22 @@ class SequenceEngine:
                 if other.id != session.id and other.auto_resume:
                     other.auto_resume = False
                     session_store.save(other)
+                    disarmed.append({"id": other.id,
+                                     "name": other.name or other.plan.name})
         except Exception:  # noqa: BLE001 - never block a run over bookkeeping
             pass
+        if disarmed:
+            # A WARNING, not info: this is the owner's protection against a
+            # crash or restart going away, and it happened as a side effect
+            # of starting something else. Named here, inside the engine,
+            # because every start path reaches this line — the Plan editor,
+            # a flow run, CONTINUE, /resume, /recover, and ResumeArm's own
+            # auto-resume — so the one place that disarms is the one place
+            # that says so, rather than trusting each caller to ask.
+            names = ", ".join(d["name"] or d["id"] for d in disarmed)
+            bus.log("warning",
+                    f"starting '{plan.name or 'Tonight'}' disarmed "
+                    f"auto-resume for: {names}", "sequence")
         self._session = session
         self._done = dict(session.done_map()) if resume else {}
         self._frames_done = sum(self._done.values())
@@ -1841,6 +1900,7 @@ class SequenceEngine:
         self.state = {"state": "idle",
                       "progress": {"frames_done": self._frames_done}}
         self._task = asyncio.create_task(self._run())
+        return disarmed
 
     def pause(self) -> None:
         # A teardown is not pausable. ``self.running`` is still True inside it,
@@ -7287,6 +7347,207 @@ class SequenceEngine:
         if self._hop_guide_started:
             self._guiding_recoveries = 0
 
+    async def _await_target_window(self, target: Target) -> None:
+        """Hold HERE, before the slew, until TARGET's own window has opened
+        (#596, backlog shape b) — the per-target answer ``flows.tonight``
+        computes for the Tonight card, astronomical dark AND above this
+        target's own altitude floor, not the flow's single shared autorun
+        clock every target in the plan carries on ``target.schedule``.
+
+        NGC 7331, 2026-09-29: the flow's shared window opened at 19:20
+        (dusk -30 min, the RIG's configured twilight angle); this target's
+        own window opened at 20:23, 63 minutes later, because the field was
+        low in the east. Without this wait the run slewed, centred (281 ADU,
+        2 stars) and ran its one initial autofocus and guider calibration
+        against that empty field at 20:03, both of which then failed.
+
+        GROUP MEMBERS ARE NEVER HELD HERE: a mosaic panel's timing is its
+        group's own question (`_group_gate`, `_group_hop_checks`), asked
+        every pass; asking it again here would be a second, disagreeing
+        answer for the same panel. A CALIBRATION target has no place on the
+        sky and is never held either.
+
+        BEST-EFFORT: a site or window this function cannot resolve is
+        treated as open now (same convention as `schedule.gating_status`'s
+        "no site" branch) — a wait that cannot be judged must never become a
+        new way to never image anything. ``_enforce_stop_boundary`` is
+        checked on every tick, so a run whose OWN dawn/stop/max-run arrives
+        before this target's window opens raises ``StopTarget`` exactly as
+        it would have if the wait had never started, and the scheduler
+        moves on to whatever else the plan still owes (#604's concern, not
+        this one's: this method only ever waits for light, never ends a
+        target on its own)."""
+        if target.calibration or self._group_of(target) is not None:
+            return
+        try:
+            from ..flows.tonight import target_own_window
+            window = target_own_window(
+                target.ra_hours, target.dec_deg, site=self.hub.site,
+                min_altitude_deg=target.schedule.min_altitude_deg,
+                now=time.time())
+        except Exception:      # noqa: BLE001 - best-effort; never blocks a run
+            return
+        if window is None or time.time() >= window["end_unix"]:
+            # Unresolvable, or tonight's own window (if any) has already come
+            # and gone: nothing to wait FOR. A target already set is the
+            # altitude floor's question once it is running (#604), not this
+            # pre-slew gate's.
+            return
+        if os.environ.get("ASTRODECK_FAST_TEST") == "1":
+            # THE SAME FAST-TEST SEAM devices.sim._sim_delay reads (its own
+            # docstring: "read LIVE on every call"), extended here because
+            # this wait has the identical shape: how long it takes depends
+            # only on the WALL CLOCK against a window computed from whatever
+            # site and coordinates the caller happens to carry, never on a
+            # value the wait produces. Measured: this gate, inserted
+            # unconditionally into `_setup_target`, first took the whole
+            # existing engine suite from seconds to real HOURS -- hundreds
+            # of tests build a bare-double hub (``site = {}``, which
+            # ``site_gate.site_is_set`` reads as a configured site at 0N 0E,
+            # by the same "no is_default key means real" rule every
+            # hand-built site dict relies on) and a fixed test RA/Dec with
+            # no relationship to the wall clock the suite happens to run at,
+            # so the gap this loop would wait out is effectively arbitrary
+            # and occasionally measured in hours, not minutes. A test that
+            # wants this wait exercised for real (this file's own) opts out
+            # with ``monkeypatch.delenv("ASTRODECK_FAST_TEST")``, the same
+            # door every real-dwell test in this suite already uses.
+            return
+        said = False
+        while time.time() < window["start_unix"]:
+            self._enforce_stop_boundary(target)   # may raise StopTarget
+            if not said:
+                # WORDS ONLY (#19, #140, #233): an ETA to a target's own
+                # window and its mean altitude are both computed from the
+                # site's coordinates, the same class of number `SlewRefused`
+                # keeps out of its message and resume_arm.py keeps out of a
+                # hold's reason. Nothing here depends on either number.
+                bus.log("warning",
+                        f"{target.name}: holding before its own window "
+                        f"opens; the flow's shared start time is not this "
+                        f"target's own (#596)", "sequence")
+                said = True
+            await self._safety_gate(context="slew", target=target)
+            await asyncio.sleep(
+                max(1.0, min(CENTRING_HOLD_RETRY_S,
+                             window["start_unix"] - time.time())))
+
+    async def _centre_once(self, target: Target, rotation: float | None) -> dict:
+        """One centring attempt — the SAME goto+solve+sync call
+        `_setup_target` makes inline for its first attempt at a
+        ``target.center`` target (kept inline there rather than routed
+        through here: see the comment at that call for why), given a
+        method of its own so the no-light hold (`_hold_for_light`, #596
+        shape b) can retry it without re-implementing a second, inevitably
+        diverging copy of the tracking-refusal recovery. Behaviour matches
+        the inline copy exactly: raises ``SafetyAbort`` through, recovers a
+        tracking refusal the same way, and returns the raw
+        ``goto_and_center`` result (or the recovery's) for the caller to
+        read ``["centered"]`` / ``.get("error_arcmin")`` from."""
+        try:
+            result = await _bounded(
+                self.hub.goto_and_center(
+                    target.ra_hours, target.dec_deg,
+                    rotation_deg=rotation,
+                    **self._centring_kwargs(target)),
+                GOTO_TIMEOUT_S + (ROTATION_ALLOWANCE_S
+                                  if rotation is not None else 0),
+                f"goto+center {target.name}")
+        except SafetyAbort:
+            raise
+        except Exception as e:      # noqa: BLE001
+            if await self._tracking_now() is not False:
+                raise
+            bus.log("warning",
+                    f"{target.name}: the mount refused to track on the "
+                    f"way to the target ({e})", "sequence")
+            centring: dict = {}
+            if not await self._recover_from_tracking_refusal(
+                    target, centring=centring):
+                raise
+            result = centring
+        return result
+
+    #: #596 shape b: the attempt cap for `_hold_for_light` when the target's
+    #: own window cannot be resolved (no site) and so cannot bound the wait
+    #: itself. 6 retries at CENTRING_HOLD_RETRY_S (10 min) is an hour, the
+    #: same "stays dark" backoff resume_arm.py's NO_LIGHT_RETRY_S settles
+    #: into after its own first retry — chosen for consistency with that
+    #: number, not re-derived.
+    _NO_LIGHT_MAX_RETRIES = 6
+
+    async def _hold_for_light(self, target: Target, rotation: float | None,
+                              hop_centring: dict) -> dict:
+        """#596 (backlog shape b): a centring result that is not centred AND
+        carries no ``error_arcmin`` at all is ``GENERIC_SOLVE_FAILURE`` — the
+        solver found nothing to measure, not a mount a few arcminutes off.
+        For a target that is NOT a mosaic panel (a panel's miss is the
+        group's own hold, `_group_hop_checks`), that is read here as "no
+        light yet", and setup holds for it rather than spending the night's
+        one autofocus and guider calibration on a field with 2 stars in it
+        (NGC 7331, 20:03 and 20:07 on two consecutive nights, 2026-09-28/29).
+
+        Sleeps ``CENTRING_HOLD_RETRY_S`` (the group centring hold's own
+        cadence, #534) between retries of the SAME centring
+        (`_centre_once`), bounded by whichever comes first: this target's
+        own window closing (`flows.tonight.target_own_window`), the run's
+        frozen stop boundary (`_enforce_stop_boundary`, dawn/stop/max-run —
+        propagates ``StopTarget`` through, same as the pre-slew wait above),
+        or ``_NO_LIGHT_MAX_RETRIES`` attempts when the window cannot be
+        resolved. Giving up returns the last (still failed) result; the
+        caller is left to do what it always did with one of those — log and
+        continue — because this is a best-effort wait for light, not a
+        verdict that the target is hopeless (#604 is that question, asked of
+        the ALTITUDE floor, not of a solver's luck).
+
+        Returns the newest centring result once one centres, so the caller's
+        ``hop_centring``/``hop_angle`` bookkeeping is this acquisition's
+        real one and not the dark first attempt's."""
+        try:
+            from ..flows.tonight import target_own_window
+            window = target_own_window(
+                target.ra_hours, target.dec_deg, site=self.hub.site,
+                min_altitude_deg=target.schedule.min_altitude_deg,
+                now=time.time())
+        except Exception:      # noqa: BLE001 - best-effort only
+            window = None
+        said = False
+        attempts = 0
+        while (not hop_centring["centered"]
+              and hop_centring.get("error_arcmin") is None
+              and attempts < self._NO_LIGHT_MAX_RETRIES
+              and (window is None or time.time() < window["end_unix"])):
+            self._enforce_stop_boundary(target)   # may raise StopTarget
+            if not said:
+                bus.log("warning",
+                        f"{target.name}: centring found nothing to solve — "
+                        f"holding for light before autofocus and guider "
+                        f"calibration spend themselves on an empty field "
+                        f"(#596); retrying every "
+                        f"{CENTRING_HOLD_RETRY_S / 60:.0f} min", "sequence")
+                said = True
+            await self._safety_gate(context="slew", target=target)
+            # PACING ONLY (devices.sim._sim_delay's own convention): the
+            # retry COUNT and its condition are real state (`_centre_once`'s
+            # own answer, `_NO_LIGHT_MAX_RETRIES`), never faked here --
+            # only how long each wait between them takes. Collapsed under
+            # the suite's fast-test flag so a test whose stub answers "no
+            # light" for a plain target (test_engine_safety.py's
+            # `test_center_solve_failure_does_not_crash_run`, among others)
+            # retries all six attempts in well under a second instead of
+            # racing its own ``wait_for(timeout=...)`` against a real
+            # CENTRING_HOLD_RETRY_S-spaced hold -- and never passing or
+            # failing by luck of whether the window this hold also checks
+            # happens to have already closed at whatever moment the suite
+            # runs, real dwell's own hazard (`_await_target_window`'s
+            # comment at its own fast-test check explains the measurement).
+            await asyncio.sleep(
+                0.0 if os.environ.get("ASTRODECK_FAST_TEST") == "1"
+                else CENTRING_HOLD_RETRY_S)
+            attempts += 1
+            hop_centring = await self._centre_once(target, rotation)
+        return hop_centring
+
     async def _setup_target(self, ti: int, target: Target) -> None:
         # A slew + plate-solve + initial autofocus legitimately produces no frames
         # for minutes; keep the no-progress watchdog quiet until capture begins.
@@ -7377,6 +7638,14 @@ class SequenceEngine:
             except DeviceError as e:
                 raise SafetyAbort(f"slew blocked by sun-exclusion cone: {e}") from e
 
+        # TARGET'S OWN WINDOW (#596, shape b), after the Sun cone and before
+        # any motion: a mount that slews before this target's own sky is
+        # open has nothing to centre on, focus on or guide on, and it used
+        # to spend exactly those three on it anyway. See
+        # `_await_target_window`. Not charged to the hop clock below — the
+        # wait is the sky's, not this acquisition's.
+        await self._await_target_window(target)
+
         # THE HOP'S CLOCK STARTS HERE, after the gates (#189 U-07). The safety
         # gate can hold for weather, and a rain hold charged to the hop would
         # price every later hop at the length of a shower. The initial sweep
@@ -7444,6 +7713,28 @@ class SequenceEngine:
                 # run right here. Measured, not message-matched, and the
                 # one-attempt latch bounds it; the recovery's own park/unpark/
                 # re-slew IS the retry this call wanted.
+                #
+                # KEPT INLINE, not routed through `_centre_once` (its sibling
+                # copy below, used only by the no-light hold's retries,
+                # #596 shape b): test_mosaic_spec_claims.py's I-47 reads this
+                # method's own source for exactly this call shape
+                # (`goto_and_center(..., **self._centring_kwargs(target))`),
+                # so the one-time first attempt keeps its own copy rather
+                # than delegate to a differently-named method the AST check
+                # does not look inside.
+                # Whether `result` ends up being the RECOVERY's own measurement
+                # (below), not the plain first attempt's: the no-light hold
+                # (#596 shape b) never takes this branch, because
+                # test_recovery_centring_is_measured.py's whole point is that
+                # the recovery's miss is reported ONCE, immediately, by the
+                # line at the bottom of this block (#171) -- holding for
+                # light here would be a SECOND, later report of the same
+                # miss, through a different message, contradicting that
+                # file's own carefully mutant-tested contract. A recovery
+                # reached only because the mount refused to track is also a
+                # much rarer path than a first-attempt solve failure, so
+                # narrowing the hold to the common case costs little.
+                via_recovery = False
                 try:
                     result = await _bounded(
                         self.hub.goto_and_center(
@@ -7475,6 +7766,7 @@ class SequenceEngine:
                             target, centring=centring):
                         raise
                     result = centring
+                    via_recovery = True
                 hop_centring = result
                 if not result["centered"]:
                     # error_arcmin is None on the solve-failure and motion-fence
@@ -7490,6 +7782,26 @@ class SequenceEngine:
                         # deferred (`_group_hop_checks`), never shot off its
                         # tile (spec 5.6 step 4).
                         hop_miss = detail
+                    elif member is None and err is None and not via_recovery:
+                        # #596 shape b: a SOLVE FAILURE (not a mount a few
+                        # arcminutes off) on a target with no other panel to
+                        # try meanwhile reads as "no light yet" — holds and
+                        # retries the same centring rather than spending the
+                        # night's one autofocus and guider calibration on it.
+                        # A group member keeps today's behaviour (the branch
+                        # above handles `require_centred`; one that does not
+                        # require it falls to "continuing" below exactly as
+                        # it always has, unchanged by this).
+                        result = await self._hold_for_light(
+                            target, rotation, result)
+                        hop_centring = result
+                        if not result["centered"]:
+                            bus.log(
+                                "warning",
+                                f"{target.name}: still no light after "
+                                f"holding — continuing at the starting "
+                                f"focus, unguided if the guider cannot "
+                                f"start either", "sequence")
                     else:
                         bus.log("warning", f"{target.name}: centering {detail} — "
                                            "continuing", "sequence")
@@ -11483,6 +11795,55 @@ class SequenceEngine:
                                 verdict.site_detail)
         return None
 
+    async def _another_target_reachable(self, exclude: Target) -> Target | None:
+        """Is there anything ELSE in the plan still worth trying tonight
+        (#604, backlog shape c; orchestrator ruling 2026-10-01)? Asked only
+        once ``exclude``'s own next slew has already been refused by the
+        mount's floor/horizon mid-run, to decide between
+        :class:`MountFloorStop` (end just ``exclude``) and letting the
+        refusal's own :class:`SafetyAbort` end the night.
+
+        Returns the first other target that both HAS WORK LEFT
+        (``self._session.remaining()``, the same definition ``owed()`` and
+        the API layer use — not a fresh guess) and IS REACHABLE: its clock
+        window is open or still to come (`schedule.gating_status`) and the
+        mount's own geometry does not already refuse it
+        (`_mount_floor_verdict`, the SAME predicate the slew gate itself
+        just used on ``exclude`` — this can never disagree with what a
+        later selection would actually do with the answer). None when
+        nothing qualifies, or there is no plan/session to ask.
+
+        A target that is calibration-only, ``exclude`` itself, or whose
+        mount-floor read is itself unknown (a bounded pier/altitude read
+        that failed) does not count — "cannot tell" is not "yes"."""
+        plan, session = self.plan, self._session
+        if plan is None or session is None:
+            return None
+        owed = session.remaining()
+        cfg = self._cfg
+        twilight = float(cfg.safety.twilight_deg) if cfg else -12.0
+        site = self.hub.site
+        now = time.time()
+        for t in plan.targets:
+            if t is exclude or t.calibration:
+                continue
+            if sum(owed.get(s.id, 0) for s in t.steps) <= 0:
+                continue
+            try:
+                gs = schedule.gating_status(t, site, twilight, now,
+                                            window=self._frozen.get(id(t)))
+            except Exception:      # noqa: BLE001 - unjudgeable, not reachable
+                continue
+            if gs["state"] not in ("ready", "waiting"):
+                continue
+            try:
+                verdict = await self._mount_floor_verdict(t, projected=True)
+            except Exception:      # noqa: BLE001 - a failed read answers "unknown"
+                continue
+            if verdict is None or verdict.tag == "wait":
+                return t
+        return None
+
     @staticmethod
     async def _pier_guard_read(read, what: str, *,
                                suffix: str = TIMEOUT_ABORTING) -> PierSide:
@@ -12478,6 +12839,50 @@ class SequenceEngine:
                                      f"{pos + delta} and came back down onto it",
                             "sequence")
 
+    async def _flip_safety_gate(self, target: Target) -> None:
+        """The flip's own pre-slew safety + mount-floor gate (the flip IS a
+        slew, §1.9-B), with #604's StopTarget-vs-SafetyAbort decision (shape
+        c, orchestrator ruling 2026-10-01) factored out so it is one small
+        unit, independently callable, rather than inline in
+        `_maybe_meridian_flip`.
+
+        A target that has sunk below the mount's own floor or horizon mask
+        by the time its flip comes due has SET, on a clock no altitude gate
+        chosen at selection could have predicted. Today (before this) that
+        always ended the whole night: `_enforce_mount_floor` raises
+        `SlewRefused`, a `SafetyAbort`, and nothing here named it. Now it
+        ends only THIS target (`MountFloorStop`, still a `StopTarget`, still
+        caught the same way) when something else in the plan can still be
+        shot before dawn (`_another_target_reachable`), and still ends the
+        night exactly as before when nothing can.
+
+        ONLY the "floor" kind, and only for a target that is not a mosaic
+        panel (`_group_of`): a panel's own floor/ceiling reach-wait is
+        `_visit_panel`'s question, asked every pass, and is unchanged by
+        this. "ceiling" (the zenith keep-out), "pier" and "sun" refusals go
+        on up exactly as they always have — #604 was filed on a target that
+        set, not on the zenith or the Sun.
+
+        THE MOUNT NEVER SLEWS to the refused destination either way: this
+        runs only after `_enforce_mount_floor` has already refused the
+        slew, never in place of asking it."""
+        try:
+            await self._safety_gate(context="slew", target=target)
+        except SlewRefused as e:
+            other = None
+            if e.kind == "floor" and self._group_of(target) is None:
+                other = await self._another_target_reachable(target)
+            if other is None:
+                raise
+            bus.log("warning",
+                    f"{target.name}: ending this target at its meridian "
+                    f"flip — its next position is below the mount's floor "
+                    f"or horizon, and {other.name} can still be reached "
+                    f"before dawn (#604)", "sequence")
+            raise MountFloorStop(
+                f"{target.name}: below the mount's floor/horizon at its "
+                f"meridian flip, ending it for {other.name}") from e
+
     async def _maybe_meridian_flip(self, target: Target,
                                    next_exposure_s: float = 0.0) -> None:
         if not self.plan.meridian_flip or not self._flip_armed:
@@ -12669,7 +13074,10 @@ class SequenceEngine:
                 self._flip_point_handed = None
 
         # pre-flip safety + mount-floor gate (the flip is a slew — §1.9-B).
-        await self._safety_gate(context="slew", target=target)
+        # Factored into `_flip_safety_gate` (#604, shape c) so the
+        # SlewRefused-vs-StopTarget decision is one small, independently
+        # callable unit rather than inline here.
+        await self._flip_safety_gate(target)
         # The flip's goto turns tracking on, so nothing may still be asking
         # for an idle stop (`_idle_stop_retry`): a cloud hold looks for the
         # flip point before any setup has cancelled that retry. A no-op in the
