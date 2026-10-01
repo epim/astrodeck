@@ -39,7 +39,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
-from astrodeck.config import ConfigStore
 from astrodeck.flows.compile import compile_plan
 from astrodeck.flows.examples import examples
 from astrodeck.flows.models import FlowGraph
@@ -177,22 +176,44 @@ class TestTheSaveRefusesAFraction:
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    """test_flows_quick's isolation: the config store, CONFIG_DIR,
-    CAPTURE_DIR and the flow store, so nothing here reads the developer's
-    real library."""
-    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
-    import astrodeck.config as config_mod
-    import astrodeck.hub as hub_mod
-    monkeypatch.setattr(config_mod, "config_store", temp_store)
-    monkeypatch.setattr(hub_mod, "config_store", temp_store)
-    monkeypatch.setattr(app_module, "config_store", temp_store)
-    monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path)
+def client(isolated_config, tmp_path, monkeypatch):
+    """test_flows_quick's isolation: ``isolated_config`` (#341, and #587 for
+    this fixture) gives the config store, CONFIG_DIR and the capture root,
+    swept into every loaded ``astrodeck`` module rather than the three this
+    fixture used to list by name -- nothing here reads the developer's real
+    library. The flow store move stays this fixture's own."""
     monkeypatch.setattr(app_module, "flow_store",
                         FlowStore(tmp_path / "flows"))
-    with TestClient(app_module.create_app()) as c:
+    app = app_module.create_app()
+    isolated_config.sweep()
+    with TestClient(app) as c:
         yield c
+
+
+def test_w3_the_isolated_store_reaches_modules_outside_the_old_three(client):
+    """#587 (WP-27c): this fixture used to patch ``config_store`` directly on
+    only THREE modules (``astrodeck.config``, ``astrodeck.hub``,
+    ``astrodeck.api.app``). ``astrodeck.planning`` binds its own
+    ``from .config import config_store`` name at import time
+    (``astrodeck/planning.py``), so under the old three-module patch it kept
+    reading the worker's session-wide store while the three patched modules
+    read this test's. Switching to ``isolated_config`` sweeps every loaded
+    ``astrodeck`` module's ``config_store`` together, so all of them agree.
+
+    RED under mutant (fixture reverted to the three-module patch), observed:
+
+        >       assert planning_mod.config_store is config_mod.config_store, (
+        E       AssertionError: astrodeck.planning reads a config_store
+        other than astrodeck.config's: the isolation did not reach every
+        module
+        E       assert <astrodeck.config.ConfigStore object at 0x...> is
+        <astrodeck.config.ConfigStore object at 0x...>
+    """
+    import astrodeck.config as config_mod
+    import astrodeck.planning as planning_mod
+    assert planning_mod.config_store is config_mod.config_store, (
+        "astrodeck.planning reads a config_store other than astrodeck."
+        "config's: the isolation did not reach every module")
 
 
 class TestTheRoutesSayIt:

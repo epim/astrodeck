@@ -1037,10 +1037,15 @@ class _GuardSolver:
 
 @pytest.fixture
 def guard_rig(monkeypatch, tmp_path):
+    """Re-pinned for WP-30a (#532): the polar solve's write now goes through
+    ``hub._write_solve_frame``, which calls the ``save_fits`` name bound in
+    ``astrodeck.hub``, so ``astrodeck.imaging.save_fits`` alone no longer
+    reaches it."""
     import astrodeck.hub as hub_mod
     import astrodeck.imaging as imaging_mod
     monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(imaging_mod, "save_fits", lambda frame, path, **kw: path)
+    monkeypatch.setattr(hub_mod, "save_fits", lambda frame, path, **kw: path)
     return _GuardHub()
 
 

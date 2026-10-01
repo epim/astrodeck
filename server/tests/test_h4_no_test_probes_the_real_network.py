@@ -64,14 +64,14 @@ import astrodeck.config as config_mod
 import astrodeck.hub as hub_mod
 import astrodeck.remote.relay_client as rc
 from astrodeck.auth import reset_active_provider
-from astrodeck.config import ConfigStore, RemoteConfig
+from astrodeck.config import RemoteConfig
 
 #: A host under ``.invalid`` (RFC 2606), refused by the spy below before any
 #: resolver is asked, whatever the probes are.
 RELAY_HOST = "relay.h4-guard.invalid"
 
 
-def test_the_lifespan_client_runs_no_system_probe(tmp_path, monkeypatch):
+def test_the_lifespan_client_runs_no_system_probe(isolated_config, monkeypatch):
     route_reads: list[float] = []
     lookups: list[tuple] = []
 
@@ -101,11 +101,22 @@ def test_the_lifespan_client_runs_no_system_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(rc.RelayClient, "_default_connect", refuse)
 
     # test_remote_status.py's harness: a throwaway store, remote enabled.
-    store = ConfigStore(path=tmp_path / "astrodeck.json")
-    monkeypatch.setattr(config_mod, "config_store", store)
-    monkeypatch.setattr(hub_mod, "config_store", store)
-    monkeypatch.setattr(app_module, "config_store", store)
-    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path / "captures")
+    # isolated_config (#341, and #587 for this test) sweeps the store into
+    # every loaded astrodeck module -- astrodeck.planning included -- rather
+    # than the three this test used to patch by name, and moves the capture
+    # root with it (this test used to point it at tmp_path / "captures" by
+    # hand).
+    store = isolated_config.store
+    # RED under mutant (this line's two statements replaced with the old
+    # three-module patch: ``store = ConfigStore(path=tmp_path /
+    # "astrodeck.json")`` plus ``monkeypatch.setattr`` on config_mod,
+    # hub_mod and app_module), observed:
+    #     AssertionError: astrodeck.planning reads a config_store other
+    #     than astrodeck.config's: the isolation did not reach every module
+    import astrodeck.planning as planning_mod
+    assert planning_mod.config_store is config_mod.config_store, (
+        "astrodeck.planning reads a config_store other than astrodeck."
+        "config's: the isolation did not reach every module")
     monkeypatch.delenv(app_module.AUTH_ENV_VAR, raising=False)
     monkeypatch.setattr(app_module, "configure_provider_from_auth",
                         lambda _auth: app_module.get_active_provider())

@@ -100,6 +100,70 @@ SET_ASIDE_RISE_DEG = 10.0
 #: guide star.
 CENTRING_HOLD_RETRY_S = 600.0
 
+#: Consecutive HELD passes (backlog ruling D-03, owner-approved 2026-09-30;
+#: #563, #576) at which the operator is warned once. One counter covers both
+#: ways a pass can be held: the all-fail centring hold above
+#: (``centring_pass_verdict`` reads "sky") and an all-transient pass (every
+#: deferral SOLVE_TRANSIENT, #532) that would otherwise close as a plain
+#: ``defer_wait`` with nothing to say anything is wrong. Three
+#: CENTRING_HOLD_RETRY_S holds are about 30 minutes; an all-transient
+#: streak's shorter DEFER_WAIT_S makes three of those faster, because the
+#: ruling counts PASSES, the unit both #563 and #576 asked for, not minutes.
+#: Before this neither hold ever escalated: the first rig mosaic (#534)
+#: re-slewed every panel every ``CENTRING_HOLD_RETRY_S`` all night on a
+#: target that never cleared an obstruction, and a stuck solve-frame lock
+#: (#576) would have done the same on the shorter wait, with no alert
+#: either way.
+HELD_PASS_ALERT_AT = 3
+
+#: Consecutive held passes (D-03) at which the group is set aside for the
+#: night: the same action and the same "a restart tonight does not retry
+#: it" words the ordinary anti-spin set-aside already uses
+#: (``GroupRun.set_aside_all``), because six held passes with no panel
+#: struck and no exposure taken is the same no-progress shape, only slower
+#: to show than a pass of pure silence. Reaching this count is not the only
+#: way aside: two consecutive held passes that blame the identical
+#: rig-side reason are set aside at once (``GroupRun._apply_held_pass_rule``),
+#: since a fault that repeats its own words exactly is not a different
+#: transient moment each time.
+HELD_PASS_SET_ASIDE_AT = 6
+
+
+#: The centring miss the engine reports when a solve failed outright and no
+#: more specific cause came back (``error_arcmin is None``, engine.py's
+#: ``_setup_target``): NOT a rig-side reason code, a RIG-OR-SKY-AMBIGUOUS
+#: one -- the system has no way yet to tell "no light through the filter"
+#: or "solver not found" (#563's own examples of a rig-side code) from "not
+#: enough stars because of cloud or a low altitude", which is the sky's.
+#: :func:`_held_pass_reason_code` reads this one exact text as no code at
+#: all, the same as an empty ``last_error``, so an all-fail centring hold
+#: whose every pass gives only this generic text -- every one today, since
+#: nothing downstream of a plain solve failure says more -- is read by
+#: HELD_PASS_ALERT_AT/HELD_PASS_SET_ASIDE_AT alone, never the immediate
+#: same-reason path. A genuinely distinguishing ``last_error`` (a caught
+#: exception's own text, once a future change attaches one) is unaffected
+#: and the immediate path applies to it as D-03 says.
+GENERIC_SOLVE_FAILURE = "plate solve failed — used raw GoTo"
+
+
+def _held_pass_reason_code(
+        deferrals: Iterable[tuple[str, "PanelDeferred"]]) -> str | None:
+    """The one rig-side reason EVERY failure of a held pass gives, or
+    ``None`` (D-03; #563: "if the failures share one rig-side reason ...
+    stop holding and report it instead of retrying").
+
+    A pass whose panels do not all blame the same ``last_error`` is not
+    evidence of one persistent cause -- it reads exactly as a pass with no
+    reason at all, the same ``None`` an empty ``last_error`` gives (or
+    :data:`GENERIC_SOLVE_FAILURE`'s, which names no cause), so two of THOSE
+    in a row never short-circuits the held-pass streak early. A pass with
+    no deferrals to look at (should never reach here) is ``None`` too."""
+    errors = [d.last_error for _panel, d in deferrals]
+    if (errors and errors[0] and errors[0] != GENERIC_SOLVE_FAILURE
+            and all(e == errors[0] for e in errors)):
+        return errors[0]
+    return None
+
 
 def _finite(name: str, value: Any) -> float:
     """``value`` as a finite float, or ``ValueError``.
@@ -402,6 +466,15 @@ class PassEnd:
     counted without setting its panel aside, "(1 of 3 consecutive)": the
     count the visit's own line said before centring failures were held
     (#534), said now where it is made.
+
+    ``held_streak`` (D-03, #563, #576): the group's current count of
+    CONSECUTIVE held passes after this one closed -- nonzero only when
+    ``boundary`` is ``"centring_hold"`` or an all-transient ``"defer_wait"``
+    (:meth:`GroupRun._apply_held_pass_rule`), zero for every other boundary,
+    including the ``"set_aside_all"`` the streak itself can produce once it
+    escalates. The caller reads it to warn the operator once, at
+    ``HELD_PASS_ALERT_AT``, through the one route a caller has into
+    alerting.py's dispatcher: logging it at "warning" with ``bus.log``.
     """
 
     boundary: PassBoundary | Literal["guiding_action", "none_live",
@@ -409,6 +482,7 @@ class PassEnd:
     set_aside: tuple[tuple[str, str], ...]
     reason: str
     counted: tuple[tuple[str, str], ...] = ()
+    held_streak: int = 0
 
 
 def guide_start_pass_verdict(attempted: int, failed: int) -> Literal["rig", "panel"]:
@@ -568,7 +642,12 @@ def pass_boundary(exposures: int, deferrals: int) -> PassBoundary:
     - No exposures and no deferrals: ``"set_aside_all"``. A full pass shot
       nothing and nothing said why it could not, so another pass would spin.
     - No exposures, some deferrals: ``"defer_wait"`` (``DEFER_WAIT_S``), then a
-      new pass. ``max_failed_visits`` bounds this per panel.
+      new pass. ``max_failed_visits`` bounds a COUNTED deferral's own panel (a
+      centring miss, a guide-start failure); a SOLVE_TRANSIENT deferral counts
+      toward no panel's limit at all (#576), so a pass of only those is bounded
+      instead by D-03's held-pass streak when every deferral this pass agreed
+      (:meth:`GroupRun._apply_held_pass_rule`), or, short of that, only by the
+      target's own window.
     - Otherwise ``"next_pass"``.
 
     EXPOSURES, accepted plus rejected, never accepted frames: a clouded pass of
@@ -624,6 +703,11 @@ class GroupRun:
     - ``expired``: the panels whose centring set-aside expired this run
       (:meth:`expire_set_aside`). The engine keeps the night's count, which a
       restart reads back from ``Session.set_aside``.
+    - ``held_streak`` (D-03, #563, #576): consecutive held passes (the
+      all-fail centring hold or an all-transient pass), read off the
+      ``PassEnd`` :meth:`close_pass` returns so the engine can warn the
+      operator once, at ``HELD_PASS_ALERT_AT``. Reset the moment a pass is
+      not held.
     """
 
     def __init__(self, members: Mapping[str, str], *, max_failed_visits: int):
@@ -674,6 +758,21 @@ class GroupRun:
         self.centring_attempted: set[str] = set()
         self.centring_failed: set[str] = set()
         self._held_centring: list[tuple[str, PanelDeferred]] = []
+        # Every SOLVE_TRANSIENT deferral of the current pass (#532, #576):
+        # never counted (a transient tries nothing), kept only so a pass
+        # that turns out all-transient can be read for D-03's held-pass
+        # streak the way `_held_centring` already is for the all-fail hold.
+        self._held_transient: list[tuple[str, PanelDeferred]] = []
+        # D-03 (#563, #576): the group's count of CONSECUTIVE held passes
+        # (the all-fail centring hold or an all-transient pass), and the one
+        # rig-side reason the most recent held pass's failures all agreed
+        # on, or None (`_held_pass_reason_code`) -- compared against the
+        # NEXT held pass's own agreement to catch two in a row blaming the
+        # identical cause. Both reset the moment a pass is not held: a shot
+        # frame, a mixed pass, or a different hold (the guiding rig's) is
+        # progress, or someone else's fault, either way not this streak's.
+        self.held_streak = 0
+        self._held_pass_reason: str | None = None
 
     # -- membership
 
@@ -865,6 +964,10 @@ class GroupRun:
                     f"fails on every panel is the sky's or the geometry's, "
                     f"not a panel's)")
             if transient:
+                # Never counted (#532) -- kept only so a pass that turns out
+                # all-transient can be read for D-03's held-pass streak, the
+                # way a held centring miss already is for the all-fail hold.
+                self._held_transient.append((panel, deferred))
                 return VisitAction(
                     "requeue",
                     f"{self._deferral_words(label, deferred)}; retried on the "
@@ -1026,6 +1129,16 @@ class GroupRun:
     # -- the pass
 
     def close_pass(self) -> PassEnd:
+        """Decide the pass boundary (:meth:`_decide_pass_end`), then feed
+        D-03's held-pass streak (backlog ruling, owner-approved 2026-09-30;
+        #563, #576): see :meth:`_apply_held_pass_rule` for what the streak
+        does. Nothing is cleared here beyond what ``_decide_pass_end``
+        already clears; :meth:`start_pass` begins the next pass."""
+        end, is_held, deferrals = self._decide_pass_end()
+        return self._apply_held_pass_rule(end, is_held, deferrals)
+
+    def _decide_pass_end(
+            self) -> tuple[PassEnd, bool, list[tuple[str, PanelDeferred]]]:
         """Decide the pass boundary: the centring pass rule and the
         guide-start rule first, then the held deferrals, then
         :func:`pass_boundary`.
@@ -1036,11 +1149,17 @@ class GroupRun:
         the one whose zero exposures and all-deferred visits would otherwise
         read as a deferral wait. They cannot both hold: a pass in which no
         panel centred made no guide attempt, since the hop checks the
-        centring first (5.6 steps 4 and 7). Nothing is cleared here;
-        :meth:`start_pass` begins the next pass.
-        """
+        centring first (5.6 steps 4 and 7).
+
+        Returns ``(end, is_held, deferrals)`` for :meth:`close_pass`:
+        ``is_held`` is D-03's "this pass counts toward the held-pass streak"
+        (true for the centring hold, and for a ``defer_wait`` whose every
+        deferral was SOLVE_TRANSIENT, #576), and ``deferrals`` is whichever
+        held list backs that verdict, for :func:`_held_pass_reason_code` --
+        empty whenever ``is_held`` is false, since nothing then asks it."""
         held, self._held = self._held, []
         held_centring, self._held_centring = self._held_centring, []
+        held_transient, self._held_transient = self._held_transient, []
         tried = len(self.centring_attempted)
         if centring_pass_verdict(tried, len(self.centring_failed)) == "sky":
             # THE SKY OR THE GEOMETRY, NOT THE PANELS (#534, H4 orchestrator
@@ -1055,7 +1174,7 @@ class GroupRun:
                 f"pass {self.pass_no}: the sky or the geometry is to blame, "
                 f"not a panel, so no panel's failure count moved; holding the "
                 f"mosaic {CENTRING_HOLD_RETRY_S / 60:.0f} minutes before the "
-                f"next pass")
+                f"next pass"), True, held_centring
 
         set_aside: list[tuple[str, str]] = []
         counted: list[tuple[str, str]] = []
@@ -1096,7 +1215,7 @@ class GroupRun:
                 f"guiding did not start on any of the {attempts} panels tried "
                 f"this pass: the guider's fault, not a panel's; {also}, and "
                 f"the plan's guiding_action decides",
-                tuple(counted))
+                tuple(counted)), False, []
 
         for panel, deferred in held:
             if not self.is_live(panel):
@@ -1109,7 +1228,7 @@ class GroupRun:
         if not live:
             return PassEnd("none_live", tuple(set_aside),
                            "no panel is left to shoot tonight: every one is "
-                           "complete or set aside", tuple(counted))
+                           "complete or set aside", tuple(counted)), False, []
         boundary = pass_boundary(self.exposures_this_pass, self.deferred_this_pass)
         if boundary == "set_aside_all":
             reason = (f"a full pass over {len(live)} panels took no exposures; "
@@ -1118,31 +1237,104 @@ class GroupRun:
                 self.set_aside[p] = reason
                 self.set_aside_kind[p] = "group"
                 set_aside.append((p, reason))
-            return PassEnd(boundary, tuple(set_aside), reason, tuple(counted))
+            return PassEnd(boundary, tuple(set_aside), reason,
+                           tuple(counted)), False, []
         if boundary == "defer_wait":
+            # ALL-TRANSIENT (#576): every deferral this pass was a solve
+            # that could not run, so nothing about a panel or the sky
+            # failed -- the same shape the all-fail centring hold is, on
+            # the other path a hop's checks can defer by. D-03 counts it
+            # the same way: held, consecutively, toward one streak.
+            is_held = bool(held_transient) and (
+                len(held_transient) == self.deferred_this_pass)
             return PassEnd(
                 boundary, tuple(set_aside),
                 f"pass {self.pass_no} took no exposures and deferred "
                 f"{self.deferred_this_pass} visits; waiting "
-                f"{DEFER_WAIT_S:.0f} s before the next pass", tuple(counted))
+                f"{DEFER_WAIT_S:.0f} s before the next pass", tuple(counted)
+            ), is_held, (held_transient if is_held else [])
         return PassEnd(
             boundary, tuple(set_aside),
             f"pass {self.pass_no} ended with {self.exposures_this_pass} "
             f"exposures and {self.deferred_this_pass} deferrals",
-            tuple(counted))
+            tuple(counted)), False, []
+
+    def _apply_held_pass_rule(
+            self, end: PassEnd, is_held: bool,
+            deferrals: list[tuple[str, PanelDeferred]]) -> PassEnd:
+        """D-03 (backlog ruling, owner-approved 2026-09-30): one counter per
+        group of consecutive held passes, counting both #563's all-fail
+        centring hold and #576's all-transient pass -- the escalation
+        neither issue's own fix could reach alone, since each only ever saw
+        its own kind of pass.
+
+        A pass that is not held (``is_held`` false) breaks the streak and
+        ``end`` is returned untouched: it shot a frame, its deferrals were
+        not all one of the two held kinds, or a different hold (the
+        guiding rig's, ``"guiding_action"``) is already escalating its own
+        way.
+
+        A held pass that is the SECOND IN A ROW to blame one rig-side
+        reason -- every failure in both passes giving the identical
+        ``last_error`` (:func:`_held_pass_reason_code`) -- is set aside for
+        the night AT ONCE, short of the count: two passes naming the same
+        solver error, the same locked file, are one fault that has not
+        cleared, not two different transient moments (#563, #576).
+        Otherwise the streak is only counted, in ``end.held_streak``, for
+        the caller to read: it must log the ``HELD_PASS_ALERT_AT`` warning
+        itself, since only the caller may touch the bus, and
+        ``HELD_PASS_SET_ASIDE_AT`` is handled here, the same
+        :meth:`set_aside_all` an ordinary anti-spin pass already uses.
+        """
+        if not is_held:
+            self.held_streak = 0
+            self._held_pass_reason = None
+            return end
+        reason_code = _held_pass_reason_code(deferrals)
+        same_as_last = (reason_code is not None
+                        and self._held_pass_reason is not None
+                        and reason_code == self._held_pass_reason)
+        self.held_streak += 1
+        streak = self.held_streak
+        self._held_pass_reason = reason_code
+        if same_as_last or streak >= HELD_PASS_SET_ASIDE_AT:
+            if same_as_last:
+                reason = (
+                    f"two held passes in a row of the mosaic gave the "
+                    f"identical reason ({reason_code!r}): a rig-side fault, "
+                    f"not the sky, so it is set aside for tonight instead "
+                    f"of held any further")
+            else:
+                # "passes in a row", not "consecutive": that word is this
+                # file's own for a PANEL's own strike count ("1 of 3
+                # consecutive"), and this streak is the GROUP's.
+                reason = (
+                    f"the mosaic has been held for {streak} passes in a "
+                    f"row with no panel struck and no progress made; set "
+                    f"aside for tonight")
+            panels = self.set_aside_all(reason, kind="group")
+            self.held_streak = 0
+            self._held_pass_reason = None
+            return PassEnd("set_aside_all",
+                           tuple((p, reason) for p in panels), reason,
+                           end.counted)
+        return PassEnd(end.boundary, end.set_aside, end.reason, end.counted,
+                       held_streak=streak)
 
     def start_pass(self) -> None:
         """Begin the next pass: clear ``visited``, ``let_through`` and the
         pass's counts, the two pass rules' ledgers included.
 
-        Refuses while guide or centring deferrals are held, because that
-        means the pass was never closed and those failures would be dropped
-        uncounted.
+        Refuses while guide, centring or transient deferrals are held,
+        because that means the pass was never closed (:meth:`close_pass`)
+        and those failures -- or D-03's held-pass streak -- would be
+        dropped uncounted.
         """
-        if self._held or self._held_centring:
+        if self._held or self._held_centring or self._held_transient:
             raise RuntimeError(
-                "close_pass() first: this pass still holds guide-start or "
-                "centring deferrals that only the pass boundary can count")
+                "close_pass() first: this pass still holds guide-start, "
+                "centring or transient deferrals that only the pass "
+                "boundary can count")
         self.pass_no += 1
         self.visited.clear()
         self.let_through.clear()

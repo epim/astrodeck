@@ -922,8 +922,11 @@ function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
   const gotoInFlight = gotoBusy || gotoPreparing;
 
   // crosses-the-meridian-ish hint: a wide mosaic near transit. We don't have a
-  // per-panel ephemeris here, so this stays advisory text only when a rotation is
-  // set on a multi-panel grid (the honest "expect a stitch seam" note, spec §6).
+  // per-panel ephemeris here, so this stays advisory text only -- and it must
+  // NOT say post-flip panels need re-rotating (that claim was wrong and spec
+  // §6 is corrected): a frame turned 180 degrees covers the same footprint,
+  // same equality `rotation.py`'s `angle_equals_mod180` already encodes, so a
+  // meridian flip costs nothing to stitch.
   const headerName = target?.name ?? "Free roam";
 
   return (

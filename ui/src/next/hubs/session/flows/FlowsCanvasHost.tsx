@@ -81,6 +81,18 @@ export const CANVAS_LIBRARY = "library";
 export const CANVAS_NO_FLOW_HINT =
   "The canvas edits one flow at a time. Pick a flow in MY FLOWS to open it here.";
 
+/** The waiting card's hint while the open this host asked for is still out.
+ *
+ *  #592 class (WP-61 new defect, W3 integration): this used to be inlined as
+ *  "This flow's canvas shows once it has loaded", which told the reader
+ *  nothing the title "OPENING THIS FLOW" had not already - the exact defect
+ *  #592 fixed in `sky/sheets/flow.tsx`'s `FLOW_CARD_LOADING`. In that shape,
+ *  this now names the cause the title does not: the open is a request this
+ *  host made, and it has not come back yet. */
+export const CANVAS_LOADING_HINT =
+  "The open this host asked for has not answered yet, so there is nothing "
+  + "here to show.";
+
 /* THE TWO BOXES THIS FILE NEEDS LIVE IN `canvas/canvas.css` NOW.
  *
  * They were inline styles, on the argument that a cutover should not add a
@@ -153,7 +165,7 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
       ? { title: "NO FLOW OPEN", hint: CANVAS_NO_FLOW_HINT }
       : failed !== null
         ? { title: FLOW_OPEN_FAILED.toUpperCase(), hint: failed }
-        : { title: "OPENING THIS FLOW", hint: "This flow's canvas shows once it has loaded." };
+        : { title: "OPENING THIS FLOW", hint: CANVAS_LOADING_HINT };
 
   // PUT `?open=` BACK WHEN A SHEET TAKES IT AWAY.
   //

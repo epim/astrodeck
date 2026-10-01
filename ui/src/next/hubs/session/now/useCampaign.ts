@@ -102,10 +102,17 @@ export interface CampaignRead {
   /** Banked for this flow's own targets (#536) PLUS tonight's live share. */
   bankedH: number;
   tonightH: number;
-  night: number;
+  /** null exactly when `summary` drops its "night N of ~M" clause (#430
+   *  remainder): a session exists but its list row has not arrived or never
+   *  matched, so `session.nights.length` would be a RUN count, not an
+   *  observing-night count. A surface that reads this field directly
+   *  (`RunHeader.tsx`, `crossHub.ts`'s `CampaignChrome`, the Flows list row)
+   *  must show no night number here too, the same shape `summary` uses. */
+  night: number | null;
   /** DERIVED - there is no persisted planned-night count on the server, so
-   *  every string that carries it carries a tilde too (deviation D2). */
-  totalNights: number;
+   *  every string that carries it carries a tilde too (deviation D2). null
+   *  under the same condition as `night` above. */
+  totalNights: number | null;
   nightsLeft: number;
   summary: string;
   nights: NightCell[];
@@ -395,8 +402,36 @@ export function useCampaign(): CampaignState {
   const nightNo = row?.nights ?? (session?.nights?.length ?? 1);
   const totalNights = nightNo + nightsLeft;
 
-  const summary = `night ${nightNo} of ~${totalNights} · ${bankedH.toFixed(1)} of `
-    + `${goalH} h · ~${nightsLeft} clear night${nightsLeft === 1 ? "" : "s"} left`;
+  // WITH A SESSION BUT NO LIST ROW, NO NIGHT NUMBER (#430, closed - WP-25
+  // shipped the card's own summary sentence; this is its remainder, W3
+  // integration). `session.nights` is report ids, one per `engine.start`
+  // (#430's root defect), so reading its LENGTH is a RUN count, not an
+  // observing-night count: a same-night restart gets counted twice.
+  // `nightUnknown` names exactly the case that would misread it - a session
+  // exists (so there is a `nights` list to misread) and its row has not
+  // arrived or never matched - and NOT the case where there is no session at
+  // all: there `nightNo` is the untouched literal default of night 1, which
+  // is simply correct before anything has run, not a guess.
+  //
+  // `night`/`totalNights` are `number | null` on `CampaignRead` (widened from
+  // a plain `number`) precisely so every surface that reads them directly -
+  // not just this hook's own `summary` string - shows no night number under
+  // `nightUnknown`, the same shape `summary` already used: `RunHeader.tsx`'s
+  // target line, `crossHub.ts`'s `CampaignChrome` (the cross-hub strip), and
+  // the Flows list row's campaign meta line all gate on the null now too,
+  // instead of falling back to `nightNo`'s run-count guess.
+  //
+  // `nightNo` and the LOCAL `totalNights` below stay plain numbers: the night
+  // strip's fill fractions and "n5 planned" labels need a real number to
+  // divide and count by regardless, and they are not the number an operator
+  // reads as "which night is this" - only the fields exposed on
+  // `CampaignRead` are gated.
+  const nightUnknown = !row && session != null;
+  const summary = nightUnknown
+    ? `${bankedH.toFixed(1)} of ${goalH} h · `
+      + `~${nightsLeft} clear night${nightsLeft === 1 ? "" : "s"} left`
+    : `night ${nightNo} of ~${totalNights} · ${bankedH.toFixed(1)} of `
+      + `${goalH} h · ~${nightsLeft} clear night${nightsLeft === 1 ? "" : "s"} left`;
 
   // ---- the night strip ----------------------------------------------------
   const perNightGoalS = totalNights > 0 ? (goalH * 3600) / totalNights : 0;
@@ -456,8 +491,8 @@ export function useCampaign(): CampaignState {
       goalH,
       bankedH,
       tonightH,
-      night: nightNo,
-      totalNights,
+      night: nightUnknown ? null : nightNo,
+      totalNights: nightUnknown ? null : totalNights,
       nightsLeft,
       summary,
       nights: cells,

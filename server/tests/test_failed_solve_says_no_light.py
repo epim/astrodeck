@@ -385,6 +385,69 @@ async def test_a_bias_alone_is_the_reference():
     assert "no dark current is assumed" in ref.detail
 
 
+# SEVERAL MASTERS OF ONE KIND AT ONE READOUT (#274, H3 review). Every case
+# above ever hands ``reference_for`` a single bias and a single dark anchor,
+# so the picking rules (nearest in temperature) never had a choice to get
+# wrong. These two put two of each in front of it.
+
+async def test_two_biases_the_nearer_in_temperature_sets_the_floor():
+    """Two bias masters at this readout, far apart in temperature: the floor
+    is the NEARER one's level, never the farther's, however many frames
+    stand behind it (``_nearest_bias`` takes ANY temperature, so this is
+    the only axis that can decide between them here).
+
+    RED under mutant "farthest bias" (``_nearest_bias``'s ``min`` made
+    ``max``), observed verbatim:
+
+        E   AssertionError: Reference(level=300.0, sigma=1.0, source='the bias master plus the least dark current the doubling law allows', detail='bias master far; no dark to scale from, so no dark current is assumed')
+        E   assert 300.0 == 242.0
+    """
+    masters = [_rec("near", "BIAS", temp=18.0),
+               _rec("far", "BIAS", temp=-10.0)]
+    ref, why = light.reference_for(_frame(_no_light_frame(), temp=18.5),
+                                   masters,
+                                   level_of=_levels({"near": 242.0,
+                                                     "far": 300.0}))
+    assert why == ""
+    assert ref.level == 242.0, ref
+    assert "bias master near" in ref.detail, ref.detail
+
+
+async def test_two_dark_anchors_the_nearer_in_temperature_sets_the_scaling():
+    """Two dark masters that each qualify as a scaling anchor (same readout,
+    a real exposure, a known temperature), far apart in temperature: the
+    dark-current rate comes from the NEARER one, so the scaling extrapolates
+    least, never the farther, which (the module docstring says) widens the
+    no-light band and would swallow a fainter sky. Both anchors are shot at
+    60 s against the frame's 12 s, outside the matcher's 5 % window
+    regardless of temperature, so this is purely ``_dark_anchor``'s choice,
+    never option 1's.
+
+    RED under mutant "farthest anchor" (``_dark_anchor``'s ``min`` made
+    ``max``), observed verbatim:
+
+        E   AssertionError: Reference(level=441.7452746214181, sigma=1.0, source='the bias master plus the least dark current the doubling law all...bias master bias; dark current 1.0000 ADU/s from dark master far, scaled +28.5 C at one doubling per 7 C to 201.7 ADU')
+        E   assert 441.7452746214181 == 241.3921552633922 ± 1.0e-06
+    """
+    masters = [_rec("bias", "BIAS", temp=5.0),
+               _rec("near", "DARK", seconds=60.0, temp=17.0),
+               _rec("far", "DARK", seconds=60.0, temp=-10.0)]
+    frame = _frame(_no_light_frame(), seconds=12.0, temp=18.5)
+    ref, why = light.reference_for(frame, masters,
+                                   level_of=_levels({"bias": 240.0,
+                                                     "near": 246.0,
+                                                     "far": 300.0}))
+    assert why == ""
+    # The nearer anchor's rate: (246 - 240) / 60 = 0.1 ADU/s, scaled +1.5 C
+    # (the frame is warmer than the anchor) at the slow doubling for the
+    # floor and the fast one for the ceiling (reference_for's WARMER branch).
+    want_floor = 240.0 + 0.1 * 12.0 * 2 ** (1.5 / 7)
+    want_ceiling = 240.0 + 0.1 * 12.0 * 2 ** (1.5 / 5)
+    assert ref.level == pytest.approx(want_floor, abs=1e-6), ref
+    assert ref.ceiling == pytest.approx(want_ceiling, abs=1e-6), ref.ceiling
+    assert "dark master near" in ref.detail, ref.detail
+
+
 # A BIAS-BASED REFERENCE IS A FLOOR, NOT THE LEVEL (T9 verifier, H3). The
 # bias plus the least dark current is the least the no-light level could be.
 # Judged against that floor alone, a capped frame with more dark current than
@@ -523,6 +586,51 @@ def _write_master(tmp_path: Path, kind: str, level: float,
     fits.PrimaryHDU((level + rng.normal(0, 0.5, (64, 64)))
                     .astype(np.float32)).writeto(path)
     return _rec(path.stem, kind, path=str(path), **kw)
+
+
+# A WIDENED OPERATOR TOLERANCE REACHES A FARTHER MASTER (#274, H3 review).
+# ``reference_for``'s option 1 (the dark master for these settings) is asked
+# with the OPERATOR's match tolerance, read live off the config
+# (``_tolerance``); every case above either hands ``reference_for`` a ``tol``
+# of its own or runs with the matcher's bare default, so none of them ever
+# widened ``calibration.temp_tol_c`` and checked that a dark master a few
+# degrees further out than the default then wins.
+
+async def test_the_operators_widened_temperature_tolerance_reaches_the_dark_master(
+        sim_hub, monkeypatch, tmp_path):
+    """A dark master 4 C off the frame's own temperature: outside the
+    matcher's bare default of 2 C, inside an operator tolerance of 5 C. Only
+    ``failed_solve_error`` reads the operator's config (``_tolerance``);
+    ``reference_for`` alone takes whatever ``tol`` it is handed. A bias
+    master stands ready as the fallback a narrow tolerance would take
+    instead, so the two paths disagree on the reference's KIND, not only its
+    number.
+
+    RED under mutant "defaults always" (``_tolerance`` returns
+    ``MatchTolerance()`` without reading the config), observed verbatim:
+
+        E   AssertionError: FailedSolveError('plate solve failed: Not enough stars. (no level check was possible: the frame reads darker than the no-light reference, so that reference does not describe it)')
+        E   assert False
+        E    +  where False = isinstance(FailedSolveError('plate solve failed: Not enough stars. (no level check was possible: the frame reads darker than the no-light reference, so that reference does not describe it)'), <class 'astrodeck.solve.light.NoLightError'>)
+        E    +    where <class 'astrodeck.solve.light.NoLightError'> = light.NoLightError
+
+    At default tolerance the dark master misses (4 C is outside 2 C), so the
+    bias plus the dark's own scaling becomes the reference instead -- and that
+    floor sits ABOVE the capped frame's level, which reads as "darker than the
+    reference", not as no light at all.
+    """
+    from astrodeck.config import CalibrationConfig, config_store
+    config_store.set_calibration(CalibrationConfig(temp_tol_c=5.0))
+    sim_hub.master_library = _Library([
+        _write_master(tmp_path, "BIAS", 240.0, temp=-10.0),
+        _write_master(tmp_path, "DARK", 250.0, seconds=12.0, temp=14.5)])
+    frame = _frame(_no_light_frame())
+    e = await light.failed_solve_error(
+        frame, SolveResult(False, message="Not enough stars."),
+        prefix="plate solve failed", hub=sim_hub)
+    assert isinstance(e, light.NoLightError), e
+    assert e.reference_kind == light.DARK_MASTER, e.verdict
+    assert "dark master dark_250" in e.verdict.evidence(), e.verdict.evidence()
 
 
 # A NUMBER THAT IS NOT ONE (H3 review). ``classify`` compared a NaN level with

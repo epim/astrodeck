@@ -327,7 +327,12 @@ export function FlowsScreen(): JSX.Element {
     if (unreadable) {
       meta = unreadable;
     } else if (isCampaign) {
-      const head = `campaign · night ${camp.night} of ~${camp.totalNights}`;
+      // #430 remainder: no night number in the meta line when it is not
+      // known (the session has no matching list row yet), the same shape
+      // the campaign card's own summary sentence uses.
+      const head = camp.night != null && camp.totalNights != null
+        ? `campaign · night ${camp.night} of ~${camp.totalNights}`
+        : "campaign";
       if (isLive) meta = `${head} · running now`;
       else if (camp.parked) {
         meta = `${head} · parked · resumes at dusk${
