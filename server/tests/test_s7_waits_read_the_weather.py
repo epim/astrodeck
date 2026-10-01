@@ -500,6 +500,11 @@ async def test_control_with_no_monitor_to_read_the_lane_wait_asks_no_gate(
     t0 = run.t0
     plan = _plan(_constraint_waiter("Bravo", t0))
     plan.safety_check = True
+    # The lane wait asks no gate here (that is the premise under test), so
+    # nothing extends its deadline (#299, WP-40's `_Clock.monotonic` fix):
+    # widened past LANE_FREE_S so the wait is graded on whether it asks,
+    # not on racing its own timeout.
+    monkeypatch.setattr(engine_mod, "_CAMERA_LANE_WAIT_S", LANE_FREE_S + 60.0)
     _lane_held_until(run, monkeypatch, t0 + LANE_FREE_S)
     unsafe = _spy_unsafe(run, monkeypatch)
     lane = _spy_lane(run, monkeypatch)

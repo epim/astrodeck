@@ -465,8 +465,16 @@ await test("an ETA for a run this flow started, beside another flow's live run, 
   // `flows.run.phase` is "running" (this page pressed RUN; the slice writes
   // it optimistically) while the live run is another flow's: the ETA slots
   // show, and say the rig has not reported this run's time.
+  //
+  // `startedAt: Date.now()` alongside `phase` (#647, W5 integration): the
+  // real `flowsRun` always stamps both together, and `useFlowRunControls`'s
+  // `running` now trusts an optimistic "running" phase only within
+  // `RUN_PHASE_BRIDGE_MS` of its OWN `startedAt` - a phase seeded with no
+  // fresh timestamp reads as a STALE latch (correctly ignored), not as a
+  // page that just pressed RUN, and this fixture means the latter.
   seed({ ...SHOOTING, session: { ...SHOOTING.session, id: "another-flows-session" } },
-    { run: { ...useStore.getState().flows.run, phase: "running", frames: 0, frameGoal: 48 } });
+    { run: { ...useStore.getState().flows.run, phase: "running", startedAt: Date.now(),
+             frames: 0, frameGoal: 48 } });
   await mount();
   eq(text(within("classic-header", "flow-header-eta")), "ETA —", "the header's ETA");
   assert(text(within("next-toolbar", "flow-eta")).includes("-")

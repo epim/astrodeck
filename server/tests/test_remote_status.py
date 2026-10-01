@@ -31,6 +31,8 @@ from astrodeck.remote.protocol import (CONTROL_STREAM_ID, FrameType,
                                        decode_frame, encode_frame)
 from astrodeck.remote.relay_client import RelayClient, relay_status
 
+from _deadline import wait_until
+
 TEST_DEVICE_TOKEN = "t" * 43
 RELAY_URL = "wss://relay.example.test/scope"
 
@@ -228,10 +230,12 @@ def test_status_follows_the_live_client(tmp_path, monkeypatch):
 
     async def _drive():
         serve = asyncio.create_task(client._serve_once(client._config()))
-        for _ in range(400):                          # until the HELLO is ACKed
-            if client.status()["connected"]:
-                break
-            await asyncio.sleep(0.005)
+        # Until the HELLO is ACKed, on a wall-clock deadline (#610): 400 x
+        # sleep(0.005) is 2 s on Linux but 6.2 s on Windows (sleep rounds up
+        # to the 15.6 ms timer there), so a round count gives the two
+        # platforms different real patience.
+        await wait_until(lambda: client.status()["connected"], timeout_s=8.0,
+                         interval_s=0.005)
         snap = client.status()
         channel.finish()
         await asyncio.wait_for(serve, timeout=5.0)
@@ -260,10 +264,10 @@ def test_a_dial_failure_is_reported_as_last_error(tmp_path, monkeypatch):
 
     async def _one_pass():
         task = asyncio.create_task(client.run())
-        for _ in range(400):
-            if client.status()["last_error"]:
-                break
-            await asyncio.sleep(0.005)
+        # A wall-clock deadline (#610): see the sibling test above for why a
+        # round count of sub-0.1 s sleeps is platform-dependent.
+        await wait_until(lambda: client.status()["last_error"], timeout_s=8.0,
+                         interval_s=0.005)
         client.stop()
         await asyncio.wait_for(task, timeout=5.0)
 

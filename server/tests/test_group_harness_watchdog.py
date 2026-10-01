@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import threading
 import time
 
@@ -152,9 +153,40 @@ async def test_a_spin_that_never_yields_fails_the_night_and_names_the_spin(
         f"the spin ran its full {spun_out[0]:.1f} s: nothing broke it, and "
         f"the night then returned {done!r}")
     assert failed is not None, f"the night did not fail; run returned {done!r}"
-    assert took < BOUND_S + 3.0, (
-        f"the night failed {took:.1f} s after it started, for a bound of "
-        f"{BOUND_S} s")
+    # #620: bound on the WATCHDOG'S OWN measurement, not this test's wall
+    # clock. `took` spans the raise reaching the spinning thread AND
+    # `night.close()`'s teardown, both of which a loaded box can stretch by
+    # several seconds while the watchdog itself still fired right on time:
+    # a wave-3 verifier run beside twelve other worktrees' suites, -n 0
+    # (2026-10-01, seen twice, once against an unmodified engine.py) failed
+    # this exact assertion with "the night failed 4.x s after it started,
+    # for a bound of 1.0 s", a red full suite that was not a defect. The
+    # watchdog's own report text carries its own timeline (the real-seconds
+    # `away` it measured the instant it fired, `_SpinWatchdog._describe`'s
+    # own words), so that is what the bound is read from.
+    timeline = re.search(
+        r"did not come back for ([0-9.]+) s of real time, against a bound "
+        r"of ([0-9.]+) s", failed)
+    assert timeline, f"the failure text carries no watchdog timeline:\n{failed}"
+    away_s, reported_bound_s = (float(timeline.group(1)),
+                                float(timeline.group(2)))
+    assert reported_bound_s == BOUND_S, (
+        f"the report's own bound ({reported_bound_s} s) does not match "
+        f"this case's BOUND_S ({BOUND_S} s): {failed}")
+    # The watcher polls every min(0.25, bound_s / 8) = 0.125 s here, so a
+    # tick-sized overshoot past BOUND_S is normal; the rest of the margin is
+    # for a watcher THREAD starved by load rather than the loop itself.
+    # MEASURED beside a CPU burner (WP-68's proof for #620, not a rerun):
+    # 40 CPU-bound processes saturating all 24 cores at 100%, 8 runs of
+    # this case -- away_s stayed 1.0-1.1 s every time (the watcher's own
+    # 0.125 s tick granularity, not the load), while `took` (the OLD bound)
+    # ranged 1.17-3.02 s on the SAME runs: the wall clock is what the load
+    # stretches, not the watchdog's own measurement.
+    assert away_s < BOUND_S + 1.0, (
+        f"the watchdog's OWN timeline measured {away_s:.2f} s away, for a "
+        f"bound of {BOUND_S} s -- not this test's wall clock, which took "
+        f"{took:.2f} s in total (raise delivery + night.close() teardown "
+        f"included, both outside the watchdog's own measurement): {failed}")
     assert "the event loop did not come back" in failed, failed
     assert "#319" in failed, failed
     lines = failed.splitlines()

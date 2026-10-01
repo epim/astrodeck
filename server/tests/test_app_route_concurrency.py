@@ -12,6 +12,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from _deadline import wait_until
 import astrodeck.api.app as app_module
 from astrodeck.config import ConfigStore
 from astrodeck.profiles import Profile
@@ -101,10 +102,11 @@ async def test_spawn_replace_cancels_existing_task():
 
     res = app_module._spawn("goto", newcoro(), replace=True)
     assert res == {"started": "goto"}
-    for _ in range(50):
-        if old.done() and ran.is_set():
-            break
-        await asyncio.sleep(0.01)
+    # A wall-clock deadline (#610): 50 x sleep(0.01) is 0.5 s on Linux but
+    # 0.8 s on Windows (sleep rounds up to the 15.6 ms timer there), so a
+    # round count gives the two platforms different real patience.
+    await wait_until(lambda: old.done() and ran.is_set(), timeout_s=2.0,
+                     interval_s=0.01)
     assert old.cancelled() or old.done()
     assert ran.is_set()
 

@@ -470,14 +470,21 @@ def _gating_state(target: Target, site, twilight_deg: float,
     window resolved at ``now`` as the run resolves and freezes it at its
     start, which follows the ladder within moments.
 
-    A site the schedule cannot read answers "ready", the answer that
-    changes nothing: the same fallback ``ResumeArm._walk`` makes for the
-    same errors, since only a test double's site lacks the numbers."""
-    try:
-        return schedule.gating_status(target, site, twilight_deg,
-                                      now)["state"]
-    except (KeyError, TypeError, ValueError):
-        return "ready"
+    NO LONGER GUARDED (#611, the #543 class). This used to wrap the call in
+    ``except (KeyError, TypeError, ValueError): return "ready"`` for a site
+    ``gating_status`` could not read, the same fallback ``ResumeArm._walk``
+    made for the same errors before #543 removed it. Both ``gating_status``
+    and its ``constraint_gate`` helper (``schedule.py``) now read coordinates
+    through ``site_gate.site_lat_lon``, which answers ``None`` instead of
+    raising, so there is no longer a site that could reach this except: a
+    verifier ran the 16 test files that call ``_gating_state`` or
+    ``recentre_candidates`` (the full pool #543's own verifier used for
+    ``_walk``, plus every file calling either function directly), 366 tests,
+    with the except narrowed to ``except ZeroDivisionError`` on a byte
+    backup — all 366 still passed, through ``site_lat_lon``'s ``None``
+    instead of the catch. Removed rather than kept defensive, because a
+    branch no test can reach is a branch nobody will notice rot."""
+    return schedule.gating_status(target, site, twilight_deg, now)["state"]
 
 
 def recentre_candidates(session: Session, night: str,

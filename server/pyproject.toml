@@ -97,6 +97,42 @@ asiair = "astrodeck.devices.backends.asiair_backend:register_all"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# #622: pytest's temp dir was never pruned. 24 `pytest-N` base directories
+# under %TEMP%\pytest-of-bear had accumulated to 17.54 GB (17 of them from a
+# week of earlier days), and the dev box hit 0.18 GB free mid-integration --
+# a failure that then looks like every other test's own bug, because a full
+# C: fails every write pytest and git both make.
+#
+# THE "KEEP 3" DEFAULT WAS NEVER THE PROBLEM; policy WAS. pytest's own
+# cleanup (_pytest.pathlib.make_numbered_dir_with_cleanup) runs at process
+# exit and only deletes an OLD session dir whose lock is more than
+# LOCK_TIMEOUT (hard-coded, 3 days) older than the new one -- a deliberate
+# guard against deleting a dir a concurrent pytest process still holds. Runs
+# happen many times a day here, so almost nothing a `keep` count prunes is
+# ever 3 days stale, and a killed run (a crashed xdist worker, the group-
+# harness watchdog's own os._exit last resort, a cancelled CI job) skips the
+# exit-time cleanup entirely. `count` alone cannot fix that past-3-days
+# window; what IS in this file's control is `policy`, which deletes each
+# PASSED test's own tmp_path dir live, during the run, the moment that test
+# ends -- not at exit, and not gated on any lock age. That is what actually
+# bounds a SINGLE run's own footprint: the 2.67 GB `pytest-25085` and
+# 1.13 GB `pytest-28099` the issue measured were each one whole session's
+# worth of EVERY test's output, passing or not, baked into one directory
+# that, under the old default (policy="all"), nothing deletes until the
+# whole session dir is garbage-collected. `count = 1` then shrinks the
+# steady-state ceiling, once a dir does age past 3 days, from the default 3
+# kept sessions to 1.
+#
+# A process that never calls pytest's own atexit handler (a kill, a crash)
+# still leaves its dir behind forever; no [tool.pytest.ini_options] setting
+# reaches that case, and it needs a periodic external sweep instead (out of
+# this WP's file mandate -- server/pyproject.toml only).
+#
+# Proof (#622): two consecutive full runs leave at most one base directory,
+# under a stated size.
+
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
 # Run in parallel by default (pytest-xdist). Full suite ~800s serial -> ~250s at
 # -n 12. Capped at 12 (NOT `-n auto`) on purpose: the heavy native-guiding timing
 # tests (test_native_guider_ppec / test_native_guider_recovery) hold real compute
