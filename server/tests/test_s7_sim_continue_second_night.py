@@ -216,8 +216,18 @@ async def test_continue_on_night_two_retries_the_set_aside_panel_and_counts_nigh
         if night.engine.state.get("state") == "aborting":
             break
         await asyncio.sleep(0.001)
-    assert night.engine.state.get("state") == "aborting", (
-        f"{at}: the stop never reached the engine")
+    if night.engine.state.get("state") != "aborting":
+        # Make the failure explain itself (#610 follow-up, CI runs 36814198383
+        # and 36816188010): what the engine says, and where the stop task is.
+        where = "running"
+        if stop.done():
+            where = "done: %r" % (stop.exception(),)
+        else:
+            where = " <- ".join("%s:%d %s" % (fr.f_code.co_filename.rsplit("/", 1)[-1].rsplit(chr(92), 1)[-1], fr.f_lineno, fr.f_code.co_name) for fr in stop.get_stack(limit=12))
+        raise AssertionError(
+            f"{at}: the stop never reached the engine; engine state "
+            f"{night.engine.state.get('state')!r}, running="
+            f"{night.engine.running}; the stop task is {where}")
     night.release()
     await stop
     await night.finish()
