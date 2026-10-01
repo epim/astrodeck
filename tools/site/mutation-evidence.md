@@ -32,8 +32,11 @@ Each source file was restored from its byte backup in a finally block.
   Test: `MonitorCapture.test_monitor_plan_excludes_other_images`.
 - CAPTURE-PROVENANCE: `AssertionError: 'old-source' != 'new-source'`
   Test: `MonitorCapture.test_old_images_keep_old_provenance`.
-- ABOVE-HORIZON: `AssertionError: True is not false`
-  Test: `MonitorCapture.test_below_horizon_is_not_capture_ready`.
+- POINTING-READY (replaced ABOVE-HORIZON, 2026-10-01): `AssertionError: True is not false`
+  Test: `MonitorCapture.test_pointing_mismatch_is_not_capture_ready`. Readiness
+  no longer reads the mount's altitude: the #140 guard
+  (test_rig_precheck_site_is_redacted) forbids any tool reading a mount alt/az.
+  Above-horizon is pinned by HANLE-DECLINATION and the server's floor gate.
 - HANLE-DECLINATION: `AssertionError: 11.035007662661501 not greater than 60`
   Test: `MonitorCapture.test_hanle_target_is_above_horizon`.
 

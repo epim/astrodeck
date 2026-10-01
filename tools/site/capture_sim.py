@@ -6,7 +6,6 @@ No real rig, relay, remote address, survey layer, or saved real site is used.
 from __future__ import annotations
 import argparse
 import copy
-import math
 import runpy
 import os
 import socket
@@ -75,13 +74,19 @@ def synthetic_target(unix_time: float, synthetic_site: str = "siding-spring"):
 
 
 def above_horizon_target(status: dict, target: dict):
+    # Above the horizon by construction, not by reading the mount (#140): no
+    # tool reads a mount's alt/az (test_rig_precheck_site_is_redacted's guard),
+    # because a parked mount's altitude is the site latitude. The target is one
+    # hour east of the meridian at a per-scenario declination (pinned above 60
+    # degrees by MonitorCapture's geometry tests), and the slew goes out with
+    # force False, so the server's own floor gate refuses it below the horizon.
+    # Here we only confirm the mount arrived there and stopped.
     mount = status.get("mount", {})
     try:
-        altitude = float(mount["alt"])
         ra_error = abs((float(mount["ra_hours"]) - target["ra_hours"] + 12) % 24 - 12)
         dec_error = abs(float(mount["dec_deg"]) - target["dec_deg"])
         # The unsynced simulator deliberately lands with 0.028 degree DEC error.
-        return (math.isfinite(altitude) and altitude > 30 and ra_error < 0.01 and dec_error < 0.1
+        return (ra_error < 0.01 and dec_error < 0.1
                 and mount.get("slewing") is False and mount.get("parked") is False)
     except (KeyError, TypeError, ValueError):
         return False
@@ -106,7 +111,7 @@ def seed_monitor_scenario(request, synthetic_site: str = "siding-spring"):
         if above_horizon_target(simulator_status(request), target):
             return {"id": "public-" + synthetic_site, "site": dict(site_config),
                     "site_origin": "Fixed approximate public location used only in a fresh synthetic fixture.",
-                    "mount": f"Simulator slewed one hour east of the meridian at declination {declination:g}; settled above 30 degrees verified before capture.",
+                    "mount": f"Simulator slewed one hour east of the meridian at declination {declination:g} (above the horizon by construction and through the server's floor gate, force off); arrival and stop verified before capture.",
                     "exposure_s": 1.0, "saved_frame": False}
         time.sleep(0.25)
     raise RuntimeError("Simulator did not settle on the above-horizon target")
