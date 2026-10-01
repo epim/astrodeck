@@ -28,6 +28,7 @@ is quoted where it was observed.
 from __future__ import annotations
 
 import asyncio
+import time
 
 from _flow_night import (FlowRig, assert_the_three_agree, flow_rig,  # noqa: F401
                          moved, shot_counts, steps_by_panel)
@@ -206,7 +207,12 @@ async def test_continue_on_night_two_retries_the_set_aside_panel_and_counts_nigh
     # run before its first await, and only then is the clock let go, for
     # the wind-down alone.
     stop = asyncio.create_task(rig.abort(at=at))
-    for _ in range(2000):
+    # A wall-clock deadline, not an iteration count: 2000 sleeps of 1 ms are
+    # about 31 s on Windows (each sleep rounds up to the 15.6 ms timer) but
+    # about 2 s on Linux, where a loaded CI runner did not reach "aborting"
+    # in time (run 36814198383, 2026-10-01).
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
         if night.engine.state.get("state") == "aborting":
             break
         await asyncio.sleep(0.001)
