@@ -969,10 +969,14 @@ export function createFlowsActions(
       // answering after this open, writing nothing onto the flow now open)
       // is a race the slice already handles. What is left is narrow and is
       // said where it lands: should that PUT then fail, its catch writes
-      // `libraryError`, but the edit is no longer on screen (#500, with the
-      // close that clears whatever its save did). An edit made
-      // AFTER that PUT went out is on no PUT, so it is saved here as any
-      // other, and refused over when that fails.
+      // `libraryError`, but the edit is no longer on screen - the flow this
+      // open asked for has already replaced it. `flowsCloseEditor` no longer
+      // has this gap (#500: it now awaits its OWN save and refuses to clear
+      // while the record stays dirty), but this branch still does not await
+      // the carried PUT, so a failure here is still silent beyond
+      // `libraryError` (#500's residual, not built by this WP - see its
+      // tracking issue). An edit made AFTER that PUT went out is on no PUT,
+      // so it is saved here as any other, and refused over when that fails.
       const leaving = get().flows.record;
       const carried = saving !== null && leaving !== null && saving.id === leaving.id
         && saving.graph === get().flows.graph && saving.name === leaving.name;
@@ -1164,6 +1168,34 @@ export function createFlowsActions(
 
     flowsCloseEditor: async () => {
       await get().flowsSave();
+      // A SAVE THAT FAILED MUST NOT BE CLEARED AWAY (#500). `dirty` once the
+      // save above has settled is the same test `flowsOpen`'s own refusal
+      // reads (#450): the PUT failed (its catch wrote `libraryError`), or an
+      // edit landed inside its round trip (`flowsSave` keeps `dirty` for that,
+      // #215). Either way the graph on screen is not the one the server
+      // holds, and clearing it here would be worse than `flowsOpen`'s
+      // refusal: this close then reloads the library below, and a successful
+      // `flowsLoadLibrary` clears `libraryError` too (#555), so the save's own
+      // failure text would be gone along with the edit - the operator finding
+      // out only on the next reopen, or when a night runs the stale graph.
+      //
+      // `!record?.readonly` is the same carve-out `flowsOpen` makes for an
+      // Example (#450): the server refuses to save one at all, so
+      // `flowsSave` returns at once and `dirty` never clears on its own -
+      // refusing the close for it would trap the operator in an Example they
+      // cannot keep, for good.
+      const now = get().flows;
+      if (now.dirty && !now.record?.readonly) {
+        // In `libraryError` and a toast for the same reason `flowsOpen`'s
+        // refusal uses both: callers that read the door's outcome (a future
+        // `leaveFlowEditor`) read `libraryError`, and the callers that close
+        // from an effect, with nothing of their own to show, need the toast.
+        set((s) => patch(s, { libraryError: FLOW_OPEN_OVER_UNSAVED }));
+        get().enqueueToast?.({
+          level: "error", title: FLOW_NOT_OPENED, detail: FLOW_OPEN_OVER_UNSAVED, source: "flows",
+        });
+        return;
+      }
       set((s) => patch(s, {
         record: null, graph: { nodes: [], edges: [] }, dirty: false,
         sel: null, editNode: null, wire: null, tapWire: null,

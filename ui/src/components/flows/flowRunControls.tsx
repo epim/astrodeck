@@ -362,9 +362,25 @@ export function useFlowRunControls(): FlowRunControls {
     );
   }, [copy, pushConfirm, resolveConfirm, run]);
 
+  // THE ACTION IS DECIDED ON `ours`, NEVER ON `running` (#162). `running` is a
+  // DISPLAY flag: it is OR'd with the client's own phase latch so the button
+  // reads STOP the instant a press lands, before the engine's first publish.
+  // Nothing ever resets that latch once a run on this page has ended (no
+  // publish does; NowEmpty's RUN_PHASE_GRACE_MS clears it only for its own RUN
+  // press), so deciding the ACTION on `running` kept calling `stop()` forever
+  // after one run on this page, posting `/api/sequence/abort` to whatever the
+  // engine was doing next - including a run started elsewhere. `ours`
+  // (`flowRunLive` over `knownSessions`) is the half of `running` that is
+  // grounded in the rig's own state: the session the sequence state publishes
+  // NOW is one of this flow's. The pattern of the Send-to-Wizard fix (#454,
+  // SendToWizardSheet.tsx "THE START IS JUDGED ON WHAT THIS PRESS WROTE"): act
+  // on what the rig's own state says, not on a client flag that never clears.
+  // A press made against a stale latch therefore tries to START - harmless
+  // when nothing else is running, and a refusal logged rather than a
+  // stranger's night cut short when something is.
   const act = useCallback(() => {
-    void (running ? stop() : start());
-  }, [running, start, stop]);
+    void (ours ? stop() : start());
+  }, [ours, start, stop]);
   const pressStartOver = useCallback(() => { void startOver(); }, [startOver]);
 
   return {
