@@ -26,6 +26,7 @@ import asyncio
 import time
 from pathlib import Path
 
+from ..aio import reap
 # Imported as a MODULE, never `from ..config import config_store`: that would
 # bind whichever store existed at import time, and every consumer here has to
 # read the LIVE one (the same rule the factory-reset routes follow for
@@ -108,10 +109,7 @@ class PushRunner:
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            await reap(self._task)
             self._task = None
 
     # ----------------------------------------------------------- the capture seam

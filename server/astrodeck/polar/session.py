@@ -13,6 +13,7 @@ import random
 import time
 from typing import Any
 
+from ..aio import reap
 from ..config import FrameSettingsConfig, frames_payload, publish_frames, \
     set_frame_settings
 from ..devices.nina import pick
@@ -208,10 +209,7 @@ class PolarAlignSession:
                 pass
         if self._task and not self._task.done():
             self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await reap(self._task)
         self._task = None
         self._ws = None
         self._publish(state="idle", message="stopped", progress=0.0)
