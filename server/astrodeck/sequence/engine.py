@@ -1153,6 +1153,16 @@ class SequenceEngine:
         #: published ``meridian_wait`` and the ``site_derived`` flag on what
         #: the run publishes in between both read it (`_site_timed`).
         self._meridian_wait: dict[str, str] = {}
+        #: The group id a FOLLOWER's current hop is filling the wait of, or
+        #: None (#302, spec 1.6, 6.9). `_group_active` names the SELECTED
+        #: target's own group, which is None for a follower (it is no
+        #: member), so `_site_timed` read nothing while `_visit_follower`
+        #: ran and the hop that starts a follower's bounded visit -- said at
+        #: the same moment every panel ran out of room -- went unflagged.
+        #: Set for the span of the follower's own hop only (`_visit_follower`),
+        #: not its whole bounded visit: once set up, a follower's own frames
+        #: are timed by its own exposures, not by the crossing.
+        self._follower_group_active: str | None = None
         #: The pier side each group is on tonight, by group id, as its hops
         #: MEASURED it: the first hop's side, then the side its one pier
         #: change read (spec 5.6 step 5; `_group_pier_check`). A change read
@@ -1718,6 +1728,7 @@ class SequenceEngine:
         self._group_unguided = set()
         self._hop_guide_started = False
         self._meridian_wait = {}
+        self._follower_group_active = None
         self._group_side = {}
         self._group_side_verified = set()
         self._group_last_index = {}
@@ -2448,6 +2459,14 @@ class SequenceEngine:
             kw.setdefault("end_reason", state)
         self.state = {**self.state, **kw}
         payload = dict(self.state)
+        # ``_hop_site_derived`` (#166 item 1) is a STATE-only marker for
+        # ``GET /api/sequence/state`` (`api.redact._redact_sequence_for`):
+        # never published, the same discipline as ``_first_running`` in
+        # reverse. The WS/log seams already drop every publish across the
+        # broader wait span via ``SITE_DERIVED_KEY`` below, so publishing it
+        # too would add nothing a non-holder could read and a holder's WS
+        # stream would carry an implementation key no client declares.
+        payload.pop("_hop_site_derived", None)
         if first_running:
             payload["_first_running"] = True
         if self._site_timed():
@@ -3178,6 +3197,8 @@ class SequenceEngine:
             self._group_current = None
             self._visit_in_progress = None
             self._meridian_wait = {}
+            self._follower_group_active = None
+            self.state.pop("_hop_site_derived", None)
 
     async def _schedule_loop(self, plan: SequencePlan, remaining: list[Target],
                              frozen: dict, index_of: dict, site,
@@ -3868,9 +3889,20 @@ class SequenceEngine:
         ends at a computed crossing, so a publish or a line in between
         carries the crossing in its moment, whatever it says. Such a publish
         and such a line carry ``site_derived``, and the serving seams drop
-        them for a principal without the site-derived view (`api.redact`)."""
+        them for a principal without the site-derived view (`api.redact`).
+
+        A FOLLOWER FILLING THE WAIT COUNTS TOO (#302). `_group_active` names
+        the SELECTED target's own group, which is None for a follower (it is
+        no member of the group it fills in for), so without this a
+        follower's hop -- said at the same moment every panel ran out of
+        room -- was never flagged. `_follower_group_active` names that group
+        for the span of the follower's own hop (`_visit_follower`)."""
+        meridian_wait = getattr(self, "_meridian_wait", {})
         gid = getattr(self, "_group_active", None)
-        return gid is not None and gid in getattr(self, "_meridian_wait", {})
+        if gid is not None and gid in meridian_wait:
+            return True
+        fgid = getattr(self, "_follower_group_active", None)
+        return fgid is not None and fgid in meridian_wait
 
     def _group_flip_margin_s(self) -> float:
         """The margin the group's meridian rule keeps before each panel's
@@ -4329,7 +4361,22 @@ class SequenceEngine:
         It waits while the group can still shoot tonight, "after the M31
         mosaic"; once the group is set aside tonight it is skipped for the
         night, not done; once the group is complete it runs its normal
-        course. Pure: the caller says the wait, once."""
+        course. Pure: the caller says the wait, once.
+
+        THE SKIP NAMES ITS CAUSE (#302). "Set aside tonight" is a claim that
+        an escalation decided the group's night was over; it is also what
+        this said when every live member's window had simply closed (or
+        never rose) for the night, nothing having been decided at all. The
+        two are told apart below: a member of ``group`` still in
+        ``remaining`` that is LIVE (or awaiting a set-aside's expiry) means
+        nothing was set aside, only the sky closed on it -- asked only once
+        `_group_can_shoot_tonight` has already answered False, so such a
+        member is known by that answer to be past its window or never
+        rising, and this does not re-ask ``gs_now`` for it. Inlined rather
+        than a helper of its own so a caller that stands in for ``self``
+        over just `_group_can_shoot_tonight` (as the S4 spec test's
+        `_group_gate` stand-in does, always with ``remaining`` empty) is
+        not asked for a second method it does not know about."""
         group = self._groups[gid]
         run = self._group_runs[gid]
         mosaic = group.name or group.id
@@ -4337,9 +4384,14 @@ class SequenceEngine:
             return _FollowerGate("wait", reason=f"after the {mosaic} mosaic",
                                  group=group)
         if len(run.completed) < len(run.members):
+            out_of_window = any(
+                self._group_of(t) is group and
+                (run.is_live(t.id) or self._awaiting_expiry(run, t.id))
+                for t in remaining)
+            cause = "out of window" if out_of_window else "set aside"
             return _FollowerGate(
-                "skip", reason=f"the {mosaic} mosaic it waits for is set "
-                               f"aside tonight", group=group)
+                "skip", reason=f"the {mosaic} mosaic it waits for is "
+                               f"{cause} tonight", group=group)
         return _FollowerGate("ready", group=group)
 
     def _group_gate(self, group: TargetGroup, remaining: list[Target],
@@ -4511,7 +4563,18 @@ class SequenceEngine:
                         f"until the next panel is due", "sequence",
                 site_derived=True)
         self._visit_ended_by_deadline = False
-        await self._hop(ti, target)
+        # THE HOP ITSELF IS TIMED BY THE WAIT (#302): a follower is chosen
+        # only once every panel of ``group`` ran out of room, so its hop's
+        # line and setup publish land at that same moment. The follower is
+        # no MEMBER of ``group`` (`_group_of` reads None for it), which is
+        # why `_site_timed` cannot see this on its own and needs telling;
+        # cleared as soon as the hop ends, since the follower's own frames
+        # afterward are timed by its own exposures, not by the crossing.
+        self._follower_group_active = group.id if group is not None else None
+        try:
+            await self._hop(ti, target)
+        finally:
+            self._follower_group_active = None
         await self._run_steps(ti, target, visit=bound)
         if self._target_complete(ti, target):
             if self.plan and self.plan.instructions:
@@ -4775,6 +4838,7 @@ class SequenceEngine:
         self._group_side_verified = set()
         self._group_pier_saved = {}
         self._meridian_wait = {}
+        self._follower_group_active = None
         self._group_last_index = {}
         self._group_gates = {}
         self._group_gate_said = set()
@@ -7191,14 +7255,41 @@ class SequenceEngine:
         # The finish clock counts hops to the targets OTHER than this one
         # (`_remaining_hops`), from the moment its acquisition begins.
         self._acquiring_ti = ti
+        # IS THIS TARGET'S HOP THE ONE THAT ENDS ITS GROUP'S MERIDIAN WAIT
+        # (#166 item 1)? Computed BEFORE the publish below, for a MEMBER
+        # only (not a follower filling the wait, #302's own case, which
+        # publishes no ``group`` at all -- see ``_note_group_selected``):
+        # `_site_timed` is true for a member here only because
+        # `_note_meridian_waits` just flipped this same group's wait from
+        # "waiting" to "ending" in this scheduling tick, before ever
+        # reaching this call, so the two conditions coincide exactly.
+        ending_the_wait = (self._site_timed()
+                           and self._group_of(target) is not None)
+        if ending_the_wait:
+            # STATE-ONLY, never published (`_set_state` pops it before
+            # ``bus.publish`` -- the WS/log seams already drop the whole
+            # event for the broader wait span via `_site_timed`/
+            # ``site_derived``). This is the narrower signal
+            # ``GET /api/sequence/state`` needs: ``group.meridian_wait``
+            # alone cannot tell "waiting" (detail safe to show, spec 6.9's
+            # accepted residual) from "ending" (detail/target/target_index/
+            # schedule/session.target now name the panel the crossing
+            # revealed), and the merged ``self.state`` a poll reads carries
+            # no per-publish flag of its own. ``_capture`` pops it with
+            # ``_meridian_wait`` at the first exposure (api/redact.py).
+            self.state["_hop_site_derived"] = True
         # this target is now actually starting — clear any stale waiting sub-state
         # a prior gated wait published (wave-3 §2).
         self._set_state(target=target.name, target_index=ti, detail=f"slewing to {target.name}",
                         schedule=None)
-        if self._site_timed() and self._group_of(target) is not None:
+        if self._site_timed() and (self._group_of(target) is not None or
+                                   self._follower_group_active is not None):
             # THE HOP THAT ENDS A MERIDIAN WAIT starts at the crossing, so its
             # line names the panel at the moment a known RA transits (spec
             # 5.10, 6.9): flagged, for a holder of the site-derived view only.
+            # A FOLLOWER'S HOP INTO THE SAME WAIT is timed by it too (#302):
+            # the follower is no member (`_group_of` is None for it), which
+            # is why `_site_timed` also reads `_follower_group_active`.
             bus.log("info", f"target {ti + 1}/{len(self.plan.targets)}: "
                             f"{target.name}", "sequence", site_derived=True)
         else:
@@ -7755,6 +7846,9 @@ class SequenceEngine:
             # which the hop's own variation makes coarse. Cleared at the
             # crossing, they would come back at the crossing itself.
             self._meridian_wait.pop(group.id, None)
+            # ``_hop_site_derived`` (#166 item 1) ends here too: the next
+            # publish shows detail/target/target_index/schedule again.
+            self.state.pop("_hop_site_derived", None)
         info = await _bounded(
             self.hub.capture(exp, step.gain, step.offset, step.binning,
                              save=save, target=target.name if target else "",
@@ -10911,10 +11005,25 @@ class SequenceEngine:
         if self._hold_parked is not None:
             return
         self._hold_parked = why_kind
-        bus.log("warning",
-                f"{why} - stopping tracking; the cloud hold goes on but judges "
-                f"no sky until the mount can track the target again",
-                "sequence")
+        # A STOP TAKEN AT THE FLIP POINT IS TIMED BY IT (#166, #302): for
+        # ``why_kind == "flip"`` ``why`` is "<target> has reached its
+        # meridian flip point and the flip cannot be taken now", so this
+        # line's moment is that target's computed crossing, whatever its
+        # words say. The other reasons ("elsewhere", "ceiling") are not
+        # site-timed -- a keep-out or a lost pointing is not a function of
+        # the meridian -- so only this one call site is flagged, never
+        # unconditionally (passing the keyword at all, even False, breaks a
+        # caller that intercepts ``bus.log`` with a narrower signature).
+        if why_kind == "flip":
+            bus.log("warning",
+                    f"{why} - stopping tracking; the cloud hold goes on but "
+                    f"judges no sky until the mount can track the target "
+                    f"again", "sequence", site_derived=True)
+        else:
+            bus.log("warning",
+                    f"{why} - stopping tracking; the cloud hold goes on but judges "
+                    f"no sky until the mount can track the target again",
+                    "sequence")
         await self._stop_tracking_quietly()
         self._set_state(detail=f"held for cloud - the mount is stopped: {why}. "
                                f"The sky is not judged until it tracks again")
@@ -12767,10 +12876,20 @@ class SequenceEngine:
                     f"{side_after} — nothing flipped this time either. "
                     f"{self._flip_owed_words(key, side_after)}", "sequence")
         else:
+            # A COMPLETED FLIP IS TAKEN AT THE CROSSING (#166, #302): with no
+            # early-flip lead left to spend (#127) the re-slew that actually
+            # moves the pier runs at the transit itself, so this line's
+            # moment IS the target's RA crossing the meridian -- the site's
+            # longitude, read off the clock, whatever the words say. Flagged
+            # for a holder of the site-derived view only; the two "nothing
+            # flipped" branches above are NOT (a no-op re-slew's moment is
+            # the attempt's lead time or the retry's own band, already said
+            # in words with no site fact added by the line landing there).
             bus.log("info",
                     f"{target.name}: meridian flip complete (pier side "
                     f"{side_before or 'unreadable'} -> "
-                    f"{side_after or 'unreadable'})", "sequence")
+                    f"{side_after or 'unreadable'})", "sequence",
+                    site_derived=True)
         self._record_event_cost("flip", time.time() - _t0)
         # the flip wall-time is accounted analytically (events_cost_s), so flag
         # this frame to exclude it from the per-frame overhead EMA — matching the

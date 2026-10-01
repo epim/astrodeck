@@ -64,6 +64,20 @@ def _cal_path(root, profile: str):
     return root / "guider" / f"{profile}.json"
 
 
+async def _wait_until(predicate, timeout: float, interval: float = 0.05) -> bool:
+    """Poll ``predicate`` (a zero-arg callable) until it's truthy or
+    ``timeout`` seconds elapse. Returns whether it became true. Duplicated
+    from test_native_guider_recovery.py's helper of the same name rather than
+    imported, so this file's own test runs stay independent of that one's."""
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return bool(predicate())
+
+
 def _cal_dict(pier: str, scale: float = 2.0) -> dict:
     """A persisted-calibration dict that passes every ``_cal_reusable`` arm for
     a guider built with ``image_scale_arcsec=2.0``, ``binning=1`` — the shape
@@ -317,9 +331,22 @@ async def test_legacy_flip_path_behind_the_setting(
         "mirrored — no calibration walk")
     assert logs.has("flipped calibration"), (
         f"the guiding-start auto-flip must still fire; log was {logs.lines}")
-    # start_guiding persists what it will guide with, so the mirrored cal is
-    # already on disk carrying the mount's side.
-    assert json.loads(path.read_text(encoding="utf-8"))["pier_side"] == "west"
+    # RE-PINNED (W2 integration, WP-15/#135 orchestrator ruling): a REUSED
+    # calibration's persist (and its "calibrated and guiding" claim) is now
+    # deferred to the guide loop's own first real pulse succeeding
+    # (`NativeGuider._prove_reuse_with_first_pulse`), not written
+    # synchronously inside `start_guiding` as it was before this fix -- the
+    # mount read `start_guiding` already performs proves only that the link
+    # ANSWERS, not that it can be MOVED, which is the whole point of #135.
+    # So the file on disk right when `start_guiding` returns is still the
+    # UNmirrored one; this polls for the loop's first pulse to land it.
+    assert await _wait_until(
+        lambda: path.exists()
+        and json.loads(path.read_text(encoding="utf-8")).get("pier_side")
+        == "west",
+        timeout=10.0), (
+        f"the mirrored calibration was never persisted: "
+        f"{json.loads(path.read_text(encoding='utf-8')) if path.exists() else None}")
 
     await g.stop_guiding()
     ok = await g.flip_calibration()

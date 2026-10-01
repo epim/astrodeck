@@ -46,8 +46,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import {
-  isMultiPanel, laneBranched, laneTail, loopSource, loopWires, midLanePassWires, ownerOf,
-  panelLane, withLoop,
+  isMultiPanel, laneBranched, laneTail, loopSource, loopWires, midLanePassWires,
+  needsWireScoping, ownerOf, panelLane, withLoop,
 } from "../panelLane";
 import type { LaneGraph } from "../panelLane";
 import { targetLoops } from "../targetSummary";
@@ -805,6 +805,52 @@ if (!CHILD_CASE) {
       })
       .map((c) => `${c.id}: the edges were copied`);
     assert(bad.length === 0, bad.join("; "));
+  });
+
+  // ============================================= needsWireScoping (WP-19(a))
+  //
+  // W2 integration (backlog WP-19(a), #151, owner-approved 2026-09-30): the
+  // UI mirror of compile.py's `needs_wire_scoping`, which S3 originally
+  // trigged on a multi-panel TARGET alone; #151's general case is the SAME
+  // leak with no mosaic at all -- two ordinary TARGETs, each with its own
+  // lane -- which this function now also catches, matching the server.
+  //
+  // MUTANT "scoped by mosaics alone" (panelLane.ts needsWireScoping's
+  // `owners.length > 1 ||` dropped, S3's original, narrower trigger).
+  // Observed:
+  //   x needsWireScoping matches compile_plan's trigger for an ordinary two-target flow: expected true, got false
+  test("needsWireScoping matches compile_plan's trigger for an ordinary two-target flow", () => {
+    const node = (id: string, params: Record<string, unknown> = {}): FlowNodeRec =>
+      ({ id, type: "target", x: 0, y: 0, params } as FlowNodeRec);
+    const capture = (id: string): FlowNodeRec =>
+      ({ id, type: "capture", x: 0, y: 0, params: { filter: "L" } } as FlowNodeRec);
+
+    // One owner, no mosaic: canvas order stays in force (false), same as the
+    // server's "at most one owner block" exemption.
+    const lone: LaneGraph = {
+      nodes: [node("a"), capture("k")],
+      edges: [{ id: "e1", from: "a", fromPort: "target", to: "k", toPort: "run" } as any],
+    };
+    assert(needsWireScoping(lone) === false,
+      "a lone TARGET must not trigger wire scoping");
+
+    // Two owners, NEITHER a mosaic (#151's own general case): wire scoping
+    // must still turn on, whatever each TARGET's panel count.
+    const twoOrdinary: LaneGraph = {
+      nodes: [node("a"), node("b"), capture("k")],
+      edges: [{ id: "e1", from: "a", fromPort: "target", to: "k", toPort: "run" } as any],
+    };
+    assert(needsWireScoping(twoOrdinary) === true,
+      "two ordinary TARGETs (no mosaic) must trigger wire scoping (#151)");
+
+    // One of the two is a mosaic: the original S3 trigger alone would already
+    // have turned this on, so it must stay on.
+    const oneMosaic: LaneGraph = {
+      nodes: [node("a", { rows: 3, cols: 2 }), node("b"), capture("k")],
+      edges: [{ id: "e1", from: "a", fromPort: "target", to: "k", toPort: "run" } as any],
+    };
+    assert(needsWireScoping(oneMosaic) === true,
+      "a graph with a mosaic must still trigger wire scoping");
   });
 }
 

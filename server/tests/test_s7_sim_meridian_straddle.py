@@ -99,6 +99,13 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
         not do (spec 6.9, 5.10)
           Left contains 1 more item:
           {'detail': 'M31: waiting for the meridian'}
+
+    RED under mutant "live rejoins the derived table dropped" (``_DERIVED_
+    NODES`` in api/redact.py put back to its two original entries, ``mount``
+    and ``meridian``, #166 item 1): RED (observed):
+
+        AssertionError: at +1000.0 s of night 1: a viewer read the meridian
+        countdown: {'meridian_eta_s': 795}
     """
     rig: FlowRig = flow_rig
     night = await rig.night()
@@ -138,12 +145,18 @@ async def test_a_straddling_2x2_waits_for_the_meridian_and_changes_pier_side_onc
     assert "panel" not in seen and "pass" not in seen and {
         k: v for k, v in group.items() if k not in ("panel", "pass")} == seen, (
         f"{at}: a viewer is served {seen} across the meridian wait")
-    # ``live`` is left out, and is #166 item 1's: the meridian countdown is
-    # the site-derived value the status redaction strips as
-    # ``hours_to_flip``, and a viewer is served it here all the same
-    # (observed at this read: ``{'meridian_eta_s': 795}`` to both roles).
-    # Graded equal, this line would hold that leak as correct, and #166's
-    # fix would have to undo it.
+    # ``live.meridian_eta_s`` IS #166 ITEM 1's: the same countdown the status
+    # redaction strips as ``meridian.hours_to_flip`` (api/redact.py), republished
+    # unredacted a level up because the sequence node was never in
+    # ``_DERIVED_NODES``. The operator reads it (the premise below); a viewer
+    # must not, though it may still carry other, non-site chip fields
+    # (``sensor_temp_c``), so the check is on the one key, not on absence of
+    # the whole block.
+    assert (wait.state.get("live") or {}).get("meridian_eta_s"), (
+        f"{at}: premise, a countdown to grade the redaction against: "
+        f"{wait.state.get('live')}")
+    assert "meridian_eta_s" not in (wait.viewer.get("live") or {}), (
+        f"{at}: a viewer read the meridian countdown: {wait.viewer.get('live')}")
     assert {k: v for k, v in wait.state.items() if k not in ("group", "live")
             } == {k: v for k, v in wait.viewer.items()
                   if k not in ("group", "live")}, (

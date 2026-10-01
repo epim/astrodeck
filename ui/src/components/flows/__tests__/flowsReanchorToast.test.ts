@@ -212,18 +212,40 @@ await test("control: no toast when the answer re-anchored nothing", async () => 
 //   x control: a save answered after another flow opened raises no toast: the answer for f1 raised a toast over f2
 //   expected 0
 //   got      1
+// RE-PINNED (W2 integration, #500/#162 backlog WP-16 (b), owner-approved
+// 2026-09-30): `flowsOpen` now awaits a carried save's own promise rather
+// than sending a second PUT, so the held PUT below must answer BEFORE the
+// open is awaited -- answering it after, as this test used to, deadlocks
+// `flowsOpen` on its own await, since the save IS the thing the open is now
+// waiting on (nothing edited the graph again between `flowsSave()` and the
+// open).
+//
+// THIS CHANGES WHAT THE CASE PROVES. The save no longer arrives "after
+// another flow opened" -- `flowsOpen` holds the switch to f2 until it has
+// settled, so by the time the PUT answers f1 is STILL open, and the save is
+// no longer STALE (`flowsSave`'s own `cur.id !== record.id` guard sees them
+// equal). It is therefore no longer a race this control catches; it is an
+// ordinary save that re-anchored two blocks while its flow was open, which
+// DOES toast once, correctly -- and only THEN does f2 open, with nothing of
+// f1's left to leak onto it. The toast-count assertion moves from 0 to 1,
+// and a second assertion checks the toast is f1's own line, not a phantom
+// one, and that f2 raised none of its own.
 await test("control: a save answered after another flow opened raises no toast", async () => {
   answer = { reanchored: TWO_BLOCKS };
   let release!: () => void;
   hold = new Promise<void>((r) => { release = r; });
   const h = harness();
   const saving = h.a.flowsSave();
+  release();
   await h.a.flowsOpen("f2");
   eq(h.flows.record?.id, "f2", "precondition: the other flow opened");
-  release();
   await saving;
   hold = null;
-  eq(h.toasts.length, 0, "the answer for f1 raised a toast over f2");
+  eq(h.toasts.length, 1,
+    "the carried save settles on f1 before the switch, so it is no longer "
+    + "stale and toasts once, correctly, for f1");
+  eq(h.toasts[0]?.title, 'TARGET "M31" and a TARGET with no name start counting from zero',
+    "the one toast is f1's own reanchor line");
 });
 
 await test("control: a miniature store with no toast model still saves and logs", async () => {

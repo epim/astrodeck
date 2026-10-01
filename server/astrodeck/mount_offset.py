@@ -29,6 +29,27 @@ MAX_NUDGE_ARCMIN = 600.0
 #: Arcminutes of sky per hour of right ascension at dec 0: 15 degrees x 60.
 _ARCMIN_PER_RA_HOUR = 900.0
 
+#: ``POST /api/mount/nudge``'s 409 when the driver cannot vouch for the
+#: mount's CURRENT position (#144). A nudge is only a small correction if the
+#: position it is computed from is real: a mount that has just reset (or has
+#: never been synced) reports its home position -- on the AM5, pointing at
+#: the pole -- as though it were a measured pointing, and an offset added to
+#: that is a goto to an unknown point in the sky, not the "nudge further
+#: east" the operator asked for. ``POST /api/mount/move`` (the rate pad)
+#: never COMPUTES a destination from position the way a goto does, so a
+#: wrong believed position cannot send it to the wrong point in the sky --
+#: that is why the detail text below points there instead of leaving the
+#: operator to guess why the step buttons went quiet. It is NOT fully clear
+#: of #144's believed-position problem: a non-zero rate still runs a
+#: best-effort solar-exclusion check against ``tel.get_position()``, so on a
+#: reset mount that check runs against the same wrong (pole) reading rather
+#: than raising -- #144's third bullet, still open, not closed by this guard.
+POSITION_UNKNOWN_CODE = "position_unknown"
+POSITION_UNKNOWN_DETAIL = (
+    "mount position is not known (just reset, or never synced) - a nudge "
+    "cannot compute where that lands; use the rate-move pad to drive by eye"
+)
+
 #: An RA offset is never taken further than half a turn. Past 12 hours the
 #: "shorter way round" is the other direction, so a bigger number is not a
 #: bigger move - it is the same move described the long way.

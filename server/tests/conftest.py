@@ -1140,8 +1140,15 @@ def bus_lines(monkeypatch):
     """
     out: list[tuple[str, str, str]] = []
     from astrodeck import events
+    # **kw (W2 WP-11, #166): bus.log grew a ``site_derived`` keyword (and may
+    # grow others), and a spy that only took (level, message, source) raised
+    # TypeError the moment any call site passed it -- which is exactly what
+    # blocked flagging hub.py's own meridian-flip line. The tuple this
+    # fixture hands back is unchanged; unknown keywords are read and dropped,
+    # never recorded, so a caller reading `bus_lines` sees the same three
+    # fields as before.
     monkeypatch.setattr(events.bus, "log",
-                        lambda level, message, source="hub": out.append(
+                        lambda level, message, source="hub", **kw: out.append(
                             (level, message, source)))
     return out
 

@@ -323,9 +323,14 @@ function cloudIncident(inp: IncidentInputs): Incident | null {
         + "cooler holding at setpoint - nothing to redo when it clears.",
     next: `Watching the star count and the cloud score${skyText}; the ledger `
       + "keeps the sub count, so the plan picks up mid-pass.",
+    // #260: IGNORE WEATHER TONIGHT lifts the forecast rain veto for auto-resume
+    // and nothing else (weather.py `veto_reason`: "RAIN VETOES. CLOUD DOES
+    // NOT."); it cannot touch a hold this run's own frames opened, so it is
+    // relabelled to say so and is not the card's primary action - WAIT is,
+    // since letting the hold run its course is what actually clears it.
     actions: [
-      { id: "wait", label: "WAIT" },
-      { id: "ignore_weather", label: "IGNORE WEATHER TONIGHT", primary: true },
+      { id: "wait", label: "WAIT", primary: true },
+      { id: "ignore_weather", label: "IGNORE FORECAST RAIN TONIGHT" },
     ],
   };
 }
