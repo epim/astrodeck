@@ -1655,6 +1655,18 @@ def fov_deg(focal_mm: float, pixel_um: float, w_px: int, h_px: int) -> tuple[flo
     FOV is bin-INDEPENDENT — fewer, bigger binned pixels cover the same sky — so
     it is always computed at bin-1. Sending a binned scale to a plate solver
     would halve the hint.
+
+    TAKES A FOCAL LENGTH IN MM, NEVER A REDUCER, same as ``f_ratio`` above and
+    for the same reason: ``Optics.reducer`` is recorded, not applied, so
+    ``focal_mm`` is already the reduced number when "USE THE REDUCED FOCAL
+    LENGTH" was pressed, and the explicit one otherwise. This is the ONE FOV
+    formula's server anchor (#168): ``catalog/framing.py``'s
+    ``fov_deg_from_optics`` reads ``Optics`` and calls straight through to
+    this, and both client mirrors (``ui/src/lib/framing.ts``'s
+    ``fovFromOptics`` and ``ui/src/next/lib/fov.ts``'s ``fovDeg``, via their
+    shared ``fovDegFromSensorMm``) apply the same rule, so a mosaic tiled from
+    config and a UI's preview of that config no longer disagree over a
+    recorded reducer.
     """
     s = image_scale_arcsec_px(focal_mm, pixel_um, binning=1)
     fw = s * w_px / 3600.0
