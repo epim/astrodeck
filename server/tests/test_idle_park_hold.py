@@ -581,7 +581,11 @@ async def test_a_calibration_block_after_a_light_target_park_holds_mid_block(
         AssertionError: the mount kept tracking Alpha, unwatched, through the
         whole dark block; set_tracking(False) at [] s
     """
-    run = _Clocked(sim_hub, monkeypatch, horizon_s=600.0)
+    # horizon 400 s, not 600: the check fires at TEARDOWN plus at most one
+    # 10 s frame after Alpha, and every fake second of a dark block is a real
+    # simulated frame. A hosted CI runner got through 52 frames in the
+    # default 60 s and stopped at fake +540 s (2026-10-01), short of 600.
+    run = _Clocked(sim_hub, monkeypatch, horizon_s=400.0)
     t0 = run.t0
     a = _target("Alpha", _ra_at(-3.0, t0), 20.0)      # high, rising, flip hours off
     cal_exp = 10.0
@@ -595,7 +599,7 @@ async def test_a_calibration_block_after_a_light_target_park_holds_mid_block(
                                        frame_type="Dark")])
 
     try:
-        await run.night(_plan(a, darks))
+        await run.night(_plan(a, darks), timeout=240.0)
         idle = run.exposure_end("Alpha")
         offs = [t for t in run.tracking_off if t >= idle]
         assert offs, (
