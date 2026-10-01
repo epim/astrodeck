@@ -2465,17 +2465,46 @@ class Hub:
 
     def _check_horizon(self, ra_hours: float, dec_deg: float, *, force: bool = False) -> None:
         """Server-side below-horizon guard (defense in depth). Inert on a default
-        site; blocks only ``alt < 0`` (the visible horizon) on a real site. Called
-        from user-initiated GOTO / sequence-start paths only — never from
-        ``goto_and_center`` (shared by meridian_flip)."""
+        site; on a real site, blocks ``alt < 0`` (the true, visible horizon)
+        AND a target below the configured EFFECTIVE floor (#132 a) --
+        ``cfg.safety.min_alt_deg`` raised by the drawn obstruction-horizon
+        mask (``cfg.safety.horizon``) and any no-go wedge
+        (``cfg.safety.nogo_box``) at the target's azimuth, via the same
+        ``schedule.effective_floor`` the engine's slew gate
+        (``_altitude_limit_verdict`` / ``_mount_floor_verdict``) enforces
+        mid-run.
+
+        Before this, only ``alt < 0`` was checked here, so a target sitting
+        above the true horizon but behind a drawn tree line (or inside a
+        pier wedge) read "fine" at every caller that routes through this
+        guard -- the REST pre-flight (``_horizon_block`` / ``_start_
+        preflight``) and the goto/nudge routes -- and the run then hit the
+        engine's mid-run floor on the very first slew. On a rig with no
+        horizon/nogo/min_alt configured (``effective_floor`` returns 0) this
+        is exactly the old ``alt < 0`` check, so an unconfigured rig sees no
+        change.
+
+        Called from user-initiated GOTO / sequence-start paths only — never
+        from ``goto_and_center`` (shared by meridian_flip)."""
         s = self.site
         if s.get("is_default"):
             return
-        from .catalog import altaz
-        alt, _ = altaz(ra_hours, dec_deg, s["latitude"], s["longitude"])
+        from .catalog import altaz, round_az_deg
+        alt, az = altaz(ra_hours, dec_deg, s["latitude"], s["longitude"])
         if alt < 0 and not force:
             raise DeviceError(
                 f"target is below the visible horizon (alt {alt:.0f}°)")
+        from .sequence.schedule import effective_floor
+        safety = config_store.cfg().safety
+        floor = effective_floor(safety.min_alt_deg, safety.horizon, az,
+                                safety.nogo_box)
+        if alt < floor and not force:
+            # round_az_deg, not a raw {az:.0f} (#140-adjacent rounding trap):
+            # an az just under 360 formats as "360°" otherwise, outside the
+            # [0, 360) every caller of this message is told to expect.
+            raise DeviceError(
+                f"target is below the obstruction horizon (alt {alt:.0f}°, "
+                f"floor {floor:.0f}° at az {round_az_deg(az, 0):.0f}°)")
 
     def _check_solar(self, ra_hours: float, dec_deg: float, *,
                      force: bool = False) -> None:
@@ -7128,7 +7157,18 @@ class Hub:
         (``SolveFrameTransient``). It appears only when true, beside the key
         that says what the failure cost (``solve_failed`` or
         ``rotation_skipped``), and says the failure was this computer's, not
-        the sky's or the target's."""
+        the sky's or the target's.
+
+        SPLIT BY PHASE (#132 b, WP-22/WP-21): ``rotation_solve_transient``
+        is set when the held file was the ROTATE loop's, ``centring_
+        solve_transient`` when it was a CENTRING attempt's -- the two phases
+        fail for independent reasons (a rotator problem vs. a plain re-slew)
+        and a caller that only cares about one must not be told the other
+        held a file. ``solve_transient`` stays, as the union of the two (true
+        when either is), so a caller that reads only the old key -- and
+        ``_group_hop_checks`` until WP-21 adds the fallback -- keeps working
+        unchanged. Both halves can be true in the same call (the rotate loop
+        degrades transiently and the centring solve that follows also does)."""
         if solve_exposure_s is None:
             solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
@@ -7194,11 +7234,14 @@ class Hub:
         # one needs somebody to connect a device.
         rotation_unavailable = False
         # A solve frame another process would not let us write, on every
-        # bounded retry (#532, H4 contract 1): the rotate's or a centring
-        # attempt's. Not the sky's fault and not the panel's, so the engine
-        # does not count it as a centring strike; every return from here on
-        # carries it once it is true.
-        solve_transient = False
+        # bounded retry (#532, H4 contract 1): the ROTATE loop's. Not the
+        # sky's fault and not the panel's, so the engine does not count it
+        # as a centring strike; every return from here on carries it (and
+        # the old union key, ``solve_transient``) once it is true. Split
+        # from the centring half below (#132 b): a caller that asks "did
+        # the ROTATE solve hold a file" must not be answered by a centring
+        # attempt's unrelated hold.
+        rotation_solve_transient = False
         rot = self.devices.get("rotator")
         if rotation_deg is not None and rot is not None and rot.connected:
             # THE ROTATE SHORTCUT (U-06, mosaic spec 5.6 step 3). Asked before
@@ -7227,7 +7270,7 @@ class Hub:
                             f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
                             f"continuing without rotation", "rotator")
                     rotation_skipped = True
-                    solve_transient = isinstance(e, SolveFrameTransient)
+                    rotation_solve_transient = isinstance(e, SolveFrameTransient)
         elif rotation_deg is not None:
             rotation_unavailable = True
             # Logged here, once, not per attempt: the answer cannot change
@@ -7246,7 +7289,12 @@ class Hub:
                      **({"rotation_skipped": True} if rotation_skipped else {}),
                      **({"rotation_unavailable": True}
                         if rotation_unavailable else {}),
-                     **({"solve_transient": True} if solve_transient else {})}
+                     # The new, phase-specific key, and the old union key
+                     # beside it (#132 b) -- a caller reading only
+                     # ``solve_transient`` sees exactly what it always did.
+                     **({"rotation_solve_transient": True,
+                         "solve_transient": True}
+                        if rotation_solve_transient else {})}
         last_err = None
         for attempt in range(1, max_attempts + 1):
             bus.publish("mount", action="centering", attempt=attempt)
@@ -7286,9 +7334,16 @@ class Hub:
                 bus.log("warning",
                         f"centering: plate solve failed ({e}); using raw GoTo", "solve")
                 self.note_pointing_verified(False, reason=str("centering did not converge"))
+                # The CENTRING half of the split (#132 b): ``centring_
+                # solve_transient`` beside the kept union key
+                # ``solve_transient``, which is true here OR already carried
+                # by ``_rot_keys`` from a rotate-phase hold earlier in this
+                # same call -- the ``|`` merge is what makes it a union, not
+                # a replacement.
                 return ({"centered": False, "error_arcmin": None,
                          "attempts": attempt, "solve_failed": True} | _rot_keys
-                        | ({"solve_transient": True}
+                        | ({"centring_solve_transient": True,
+                            "solve_transient": True}
                            if isinstance(e, SolveFrameTransient) else {}))
             err = _ang_sep_deg(solved["ra_hours"], solved["dec_deg"], ra_hours, dec_deg)
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
