@@ -235,6 +235,13 @@ def _text(v) -> str:
 # be shot on all six M31 panels too. These functions answer it from the wires,
 # and they are pure, because compile, to_plan and the doctor (M3, M4, M12, M13)
 # all ask the same question and must get one answer.
+#
+# NOT ONLY MOSAICS (backlog WP-19(a), #151's own general case). The leak these
+# functions were built to stop - a stage going to whichever target canvas
+# order happened to place it near, rather than the one its wires lead to - is
+# exactly as real with two ordinary TARGETs and no grid at all. The switch
+# that turns this scoping on, ``needs_wire_scoping``, reads that; the lane
+# functions themselves never cared whether a block was a mosaic to begin with.
 
 #: LANE NODES (spec 1.5 item 1): the stages that happen TO a panel. AUTOFOCUS
 #: and GUIDE are in because their effect is re-established on every hop (5.6).
@@ -386,6 +393,33 @@ def is_multi_panel(node: FlowNode) -> bool:
         return False
     params = node.params or {}
     return _grid_dim(params.get("rows")) * _grid_dim(params.get("cols")) > 1
+
+
+def needs_wire_scoping(graph: FlowGraph) -> bool:
+    """True when ``compile_plan`` must scope stages by their wires rather than
+    by canvas order (spec 1.5, #151's general case).
+
+    ANY MULTI-PANEL TARGET (the original mosaic trigger, S3) - a stray stage
+    canvas order would add to it becomes a quota multiplied across every
+    panel, which is where the leak costs most.
+
+    MORE THAN ONE TARGET OR POOL BLOCK (#151). Canvas order hands every
+    capture or cycle stage to every target or pool seen earlier in the walk,
+    so with two independent lanes - TARGET A -> CAPTURE a, TARGET B ->
+    CAPTURE b - what a target shoots depends on where its card sits rather
+    than which wires lead to it: move B's card left of A's capture and A
+    gets both captures. The doctor (``flows.doctor``) already reasons about
+    a multi-block graph by wire ancestry (``_flow_upstream_types``), so a
+    compile that still read canvas order there was answering a different
+    question than the one the doctor's clean bill was about.
+
+    A GRAPH WITH AT MOST ONE BLOCK NEEDS NEITHER: there is nothing else a
+    stage could leak onto, so turning the switch on would only print notes
+    about a flow nothing is wrong with. That is also every flow saved before
+    mosaics existed and almost every Example, which is why this stays off
+    for them and their compile is untouched, byte for byte."""
+    owners = [n for n in graph.nodes if n.type in OWNER_TYPES]
+    return len(owners) > 1 or any(is_multi_panel(n) for n in owners)
 
 
 def _flow_wire(graph_nodes: dict[str, FlowNode], e: FlowEdge
@@ -613,9 +647,10 @@ def _scope_note(stage: FlowNode, owner: FlowNode | None, mine: list[dict],
     block = (f"TARGET {_entry_names(mine)}" if owner.type == "target"
              else f"{NODE_DEFS['pool'].label} ({_entry_names(mine)})")
     return {"node_id": stage.id, "level": "note", "text": (
-        f"{stage_name} is shot on {block} only: in a flow with a mosaic, a "
-        f"stage belongs to the block its wires lead back to. By canvas order "
-        f"it would also have been shot on {was}.")}
+        f"{stage_name} is shot on {block} only: with more than one TARGET or "
+        f"POOL in this flow, a stage belongs to the block its wires lead "
+        f"back to. By canvas order it would also have been shot on "
+        f"{was}.")}
 
 
 # ------------------------------------------------- the block's compile entry
@@ -1097,22 +1132,29 @@ def _trigger_for(node: FlowNode, from_port: str) -> str:
 def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     """The compiled plan: schedule + targets + automation + instructions.
 
-    WHICH TARGETS A STAGE GOES TO depends on the graph (spec 1.5):
+    WHICH TARGETS A STAGE GOES TO depends on the graph (spec 1.5,
+    ``needs_wire_scoping``):
 
-    * With no multi-panel TARGET, the canvas-order rule, byte for byte: every
-      capture or cycle stage goes to every target seen earlier in the walk.
-      Every Example and every flow saved before mosaics compiles as it did.
-      Its leak (a stage after a second TARGET reaches the first) is its own
-      defect, I-05, and changing it here would change saved nights.
-    * With one, EVERY stage in the graph goes to its ``owner_of`` block only,
+    * With at most one TARGET or POOL block and none of them a mosaic, the
+      canvas-order rule, byte for byte: every capture or cycle stage goes to
+      every target seen earlier in the walk. Every Example bar the pool ones
+      and every flow saved before mosaics compiles exactly as it did - a
+      single block has nothing else a stage could leak onto.
+    * Otherwise EVERY stage in the graph goes to its ``owner_of`` block only,
       and a stage with no owner goes nowhere (the doctor's M13 makes that
-      loud). The switch covers the whole graph because a mosaic is where the
-      leak costs most: one stray CAPTURE becomes a quota on every panel.
+      loud). A mosaic needs this because it is where a leak costs most - one
+      stray CAPTURE becomes a quota on every panel - but it is not the only
+      graph a leak costs: two ordinary TARGETs with independent lanes leaked
+      the same way, by canvas x and y alone, which was filed as the general
+      case of the mosaic fix (I-05, #151) and is covered here now rather than
+      deferred to a card's position on screen.
 
     Each stage the two rules assign differently gets an entry in ``notes``
     that names it, so the operator reads what the switch changed rather than
-    finding it in the plan. ``notes`` is ABSENT when empty, as ``campaign``
-    is, which is what keeps a plan with no mosaic byte-identical.
+    finding it in the plan - including a flow saved before this fix, the
+    first time it is opened or compiled after it ships. ``notes`` is ABSENT
+    when empty, as ``campaign`` is, which is what keeps a plan with one
+    TARGET or POOL byte-identical.
 
     EVERY TARGET ENTRY CARRIES THE BLOCK (spec 3.2, ``_target_entry``): its
     ``angle``, its grid as ``mosaic`` (None for one panel), ``loop``, its
@@ -1133,8 +1175,7 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     # The entries each TARGET or POOL node emitted, by node id: what a stage
     # scoped by its wires is appended to.
     by_block: dict[str, list[dict]] = {}
-    scoping = (_lane_index(graph)
-               if any(is_multi_panel(n) for n in graph.nodes) else None)
+    scoping = _lane_index(graph) if needs_wire_scoping(graph) else None
     notes: list[dict] = []
     # The loop wires the instructions pass leaves out, the blocks they make
     # rotate, and who follows which mosaic. All three are empty in a graph
