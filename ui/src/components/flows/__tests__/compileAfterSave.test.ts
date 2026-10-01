@@ -391,10 +391,9 @@ await test("control: a save with nothing to send, or of a read-only flow, compil
 // nothing.
 //
 // SINCE #450 AN OPEN SAVES A DIRTY OPEN RECORD FIRST, but not one whose SAVE
-// is already out carrying exactly the graph on screen: that PUT is neither
-// sent twice nor waited on, so f2 opens while f1's PUT is in flight and that
-// PUT is the stale completion, as before #450. The case after this one is
-// the other half: an edit made after the PUT went out is saved again.
+// is already out carrying exactly the graph on screen: that PUT is not sent
+// twice. The case after this one is the other half: an edit made after the
+// PUT went out is saved again.
 //
 // MUTANT "compile before the stale check" (flowsSave: the compile started
 // right after the PUT answers, above the `cur.id !== record.id` return).
@@ -406,29 +405,35 @@ await test("control: a save with nothing to send, or of a read-only flow, compil
 // Re-run on the #450 tree in scratchpad S7-USLICE-mut, the same two cases
 // red with the same lines (compileAfterSave.test: 14/16 passed).
 //
-// MUTANT "an in-flight save is never trusted" (flowsSlice.ts flowsOpen:
-// `carried` answered false, so the open sends f1's graph a second time and
-// waits for a PUT this case holds). Observed (compileAfterSave.test: 15/16
-// passed):
-//   x control: a save answered after another flow opened compiles nothing for it: opening f2 while f1's SAVE carries its graph is still waiting (on a PUT this case holds)
-// Four files this change did not own hold the same race and hung under this
-// mutant with no tally at all: countsNotice.test.ts, flowsSaveAnswer.test.ts,
-// flowsSaveRace.test.ts and flowsReanchorToast.test.ts, each at its "... after
-// another flow opened" control, which is how the rule was found.
+// RE-PINNED (W2 integration, #500/#162 backlog WP-16 (b), owner-approved
+// 2026-09-30): a carried save is now AWAITED by `flowsOpen` rather than fired
+// and forgotten -- this file's own comment above already named the shape of
+// that fix and the hang it produces if the held PUT is answered too late
+// ("MUTANT 'an in-flight save is never trusted'", observed when an earlier
+// draft of the fix made `flowsOpen` wait without this file's `puts[0]
+// .answer()` moving first). So `puts[0].answer()` now runs BEFORE the open
+// is awaited, which changes what this control proves: the PUT is no longer
+// "the stale completion" at all once answered -- f1 is still open when it
+// settles, so `flowsSave`'s own `cur.id !== record.id` guard sees them equal
+// and its own (correct, non-stale) compile for f1 runs BEFORE `flowsOpen`
+// proceeds to read and compile f2. Two compiles are now the right answer,
+// one per flow, in order; the old mutant's signature (a SECOND compile for
+// the flow that is no longer open) cannot arise here any more because the
+// open cannot start until the save it is carrying has already finished.
 await test("control: a save answered after another flow opened compiles nothing for it", async () => {
   const s = await openedAndSkipped();
   holdPuts = true;
   const saving = s.a.flowsSave();
   eq(puts.length, 1, "precondition: the PUT is in flight");
   compiles = [];
-  await settledOrHeld(s.a.flowsOpen("f2"), "opening f2 while f1's SAVE carries its graph");
-  eq(puts.length, 1, "the open sent f1's graph again although its SAVE was carrying it");
-  eq(compiles.length, 1, "precondition: opening f2 compiled f2");
   puts[0].answer();
+  await settledOrHeld(s.a.flowsOpen("f2"), "opening f2 once f1's carried save settled");
   await saving;
   await flush();
+  eq(puts.length, 1, "the open sent f1's graph again although its SAVE was carrying it");
   eq(s.flows.record?.id, "f2", "precondition: f2 is the flow open");
-  eq(compiles.length, 1, "the stale save compiled the other flow's graph a second time");
+  eq(compiles.length, 2,
+    "f1's own save, no longer stale, compiles once for f1, then the open compiles once for f2");
 });
 
 // THE OTHER HALF (#450): an edit made after the SAVE went out is on no PUT.

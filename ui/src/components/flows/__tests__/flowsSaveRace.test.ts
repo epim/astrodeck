@@ -216,14 +216,27 @@ await test("closing the editor after an edit made during a save sends that edit"
 //     is marked unsaved, so closing the editor PUTs it into f1's file
 //     expected "open f2, dirty false, PUTs on close 0"
 //     got      "open f1, dirty true, PUTs on close 1"
+// RE-PINNED (W2 integration, #500/#162 backlog WP-16 (b), owner-approved
+// 2026-09-30): `flowsOpen` now awaits a carried save's own promise (f1's PUT
+// above IS the one `flowsOpen("f2")` is about to wait on: nothing edited the
+// graph again after `flowsSave()`), instead of sending a second PUT and
+// letting a stale answer race the open unobserved. Answering `puts[0]` AFTER
+// the open, as this test used to, now deadlocks `flowsOpen` on its own
+// await, so it is answered FIRST. The save therefore settles on f1 (still
+// open) before the switch to f2, so the no-corruption outcome below no
+// longer needs `flowsSave`'s stale-id guard for THIS race (a save
+// `flowsOpen` is not waiting on, a non-carried one, still does); the
+// assertion is unchanged, because the operator-visible promise -- f1's
+// answer never lands on f2 -- is the stronger guarantee now, not a weaker
+// one.
 await test("a save that returns after another flow opened writes nothing onto it", async () => {
   const s = slice();
   await s.a.flowsOpen("f1");
   s.a.flowsSetParam("t1", "name", "M 31");
   const saving = s.a.flowsSave();
-  await s.a.flowsOpen("f2");
-  eq(s.flows.record?.id, "f2", "precondition: f2 opened while f1's PUT was in flight");
   answerPut(puts[0], 2);
+  await s.a.flowsOpen("f2");
+  eq(s.flows.record?.id, "f2", "precondition: f2 opened once f1's carried save settled");
   await saving;
   const open = s.flows.record?.id;
   const dirty = s.flows.dirty;

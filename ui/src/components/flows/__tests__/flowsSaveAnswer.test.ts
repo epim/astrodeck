@@ -364,18 +364,36 @@ await test("control: a save answer without either note logs nothing", async () =
 //   x control: a save answered after another flow opened says nothing on that flow's log: the answer for f1 wrote on f2's log
 //   expected 0
 //   got      1
+// RE-PINNED (W2 integration, #500/#162 backlog WP-16 (b), owner-approved
+// 2026-09-30): `flowsOpen` now awaits a carried save's own promise instead
+// of sending a second PUT, so the held PUT must answer BEFORE the open is
+// awaited -- after, as this test used to, deadlocks the open on it, since
+// the save IS the thing the open is now waiting on.
+//
+// THIS CHANGES WHAT THE CASE PROVES, the same way as flowsReanchorToast
+// .test.ts's analogous control: the save no longer arrives "after another
+// flow opened" -- it settles on f1 while f1 is STILL open (not stale), so
+// it correctly writes its own log line THEN, before f2 ever opens. The log
+// strip is not cleared by an open (`logs` persists across the switch), so
+// that line is still there once f2 is the open record, which is right: it
+// is f1's own history, not a leak of f1's answer onto f2's graph or counts.
+// The length assertion moves from 0 to 1, and a second assertion checks the
+// one line is f1's switch note, not a phantom one.
 await test("control: a save answered after another flow opened says nothing on that flow's log", async () => {
   answer = { migrated: [{ key: "counts", note: "x" }] };
   let release!: () => void;
   hold = new Promise<void>((r) => { release = r; });
   const h = harness();
   const saving = h.a.flowsSave();
+  release();
   await h.a.flowsOpen("f2");
   eq(h.flows.record?.id, "f2", "precondition: the other flow opened");
-  release();
   await saving;
   hold = null;
-  eq(h.flows.logs.length, 0, "the answer for f1 wrote on f2's log");
+  eq(h.flows.logs.length, 1,
+    "the carried save settles on f1 before the switch, so it is no longer "
+    + "stale and logs once, correctly, for f1");
+  eq(h.flows.logs[0]?.msg, COUNTS_SWITCHED_LINE, "the one line is f1's own switch note");
 });
 
 // ------------------------------------------------------------------- tally

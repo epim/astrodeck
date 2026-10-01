@@ -703,6 +703,29 @@ def commanded_rotation(session: Session, target: Target,
     return float(pa)
 
 
+def _unsuperseded_stalled(sessions: list[Session]) -> list[Session]:
+    """``sessions``, narrowed to dormant, auto-resume-off ones that a NEWER
+    session with the same origin has NOT already superseded (#139).
+
+    The 2026-09-23 incident: a session that had just completed (105 frames)
+    shared its name AND its ``origin_id`` with a stale dormant session from
+    three nights earlier (18 frames). `tick`'s stalled-session note named the
+    newer one's DOUBLE by display name alone and told the operator to arm
+    it -- which would have re-shot a plan a later run already finished.
+
+    A stalled session is superseded by ANY other session of the same
+    ``origin_id`` with a later ``updated_ts``, WHATEVER that other session's
+    own status: a completed run supersedes the dormant leftover it replaced
+    just as surely as another dormant one would. An empty ``origin_id``
+    ("unknown origin") never matches another empty one -- two unrelated
+    sessions that both fail to record an origin are not the same flow."""
+    stalled = [s for s in sessions
+              if s.status == "dormant" and not s.auto_resume]
+    return [s for s in stalled if not (s.origin_id and any(
+        o.id != s.id and o.origin_id == s.origin_id
+        and o.updated_ts > s.updated_ts for o in sessions))]
+
+
 class _LadderSweep(NamedTuple):
     """The recovery ladder's last successful autofocus (#402), as the
     ladder keeps it: made on the night ``night`` (``events.night_key`` of
@@ -1273,9 +1296,8 @@ class ResumeArm:
             # it must be VISIBLE, once, or the difference between "deliberately
             # not resuming" and "silently broken" cannot be told apart at 2am.
             #
-            # NAMED BY ID AND ORIGIN TOO: a name alone is not a key (#139).
-            stalled = [s for s in session_store.load_all()
-                       if s.status == "dormant" and not s.auto_resume]
+            # NAMED BY ID/ORIGIN; A SUPERSEDED ONE IS DROPPED (#139, helper).
+            stalled = _unsuperseded_stalled(session_store.load_all())
             if stalled:
                 newest = max(stalled, key=lambda s: s.updated_ts)
                 if self._quiet_note_for != newest.id:

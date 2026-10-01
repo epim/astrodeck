@@ -60,7 +60,7 @@ async def test_the_resent_hP_also_gets_its_own_Td_first(fixed_env, monkeypatch):
 
     RED under mutant "the re-send sends only :hP#" (the ``await
     self._stop_tracking_for_park()`` call removed from the loop's re-send
-    branch in `_send_park_and_wait`, i.e. S4 ruling 9 exactly as it first
+    branch in `_send_park_and_wait`, i.e. S4 orchestrator ruling 9 exactly as it first
     shipped), observed:
         AssertionError: :hP# at index 9 is not directly preceded by :Td#, got
         ['Gps', 'GAT', 'Td', 'hP', 'GR', 'GD', 'Gps', 'GR', 'GD', 'hP', 'Gps']

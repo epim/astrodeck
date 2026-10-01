@@ -119,6 +119,73 @@ async def test_the_not_armed_note_says_so_when_the_origin_is_unknown(
     assert "unknown" in notes[0], notes[0]
 
 
+async def test_resume_note_ignores_a_superseded_dormant_session(
+        sim_hub, bus_lines, monkeypatch):
+    """The 2026-09-23 incident, reproduced (#139's CORE fix, which (a) above
+    did not build -- it only made the note tell sessions apart, not stop
+    naming the wrong one). S_old: dormant, auto-resume off. S_new: COMPLETE
+    (not dormant -- the newer session need not itself be a resume candidate
+    to supersede the old one), same ``origin_id`` and name. A session with a
+    DIFFERENT origin_id (``other``, also dormant and unarmed, no newer
+    sibling) is the control: the note still owes the operator word of it.
+
+    ``session_store.save`` stamps ``updated_ts = time.time()`` on every save
+    (session.py), overwriting whatever the constructor was given, so the
+    ORDER the three are saved in, under a monkeypatched clock, is what fixes
+    "newest" -- not the constructor arguments. Saved other, old, new: by
+    real save order other < old < new, so without the fix `max(...,
+    key=updated_ts)` would already pick `old` over `other` on save order
+    alone (masking the bug this case exists to catch); WITH it old drops out
+    as superseded by new and `other` -- the control -- is reported, same as
+    today.
+
+    RED under mutant "drop the supersession filter" (`_unsuperseded_stalled`
+    returns ``stalled`` unfiltered, the code before this fix), observed:
+
+        AssertionError: arming S_old would re-shoot a plan S_new already
+        finished: auto-resume is NOT armed: 'NGC 7331 - LRGB+SHO with SN
+        2026aaiv' (<S_old id>, flow) is dormant with auto-resume off, so
+        nothing will restart it. Arm it from the session list to resume
+        tonight.
+    """
+    import astrodeck.sequence.session as session_mod
+
+    clock = {"t": 500.0}
+    monkeypatch.setattr(session_mod.time, "time", lambda: clock["t"])
+
+    name = "NGC 7331 - LRGB+SHO with SN 2026aaiv"
+    other = Session(name="unrelated plan", status="dormant",
+                    auto_resume=False, origin="flow", origin_id="flow-xyz",
+                    plan=_plan(_target("other-target")))
+    session_store.save(other)
+    clock["t"] = 1_000.0
+    old = Session(name=name, status="dormant", auto_resume=False,
+                 origin="flow", origin_id="flow-abc",
+                 plan=_plan(_target("old-target")))
+    session_store.save(old)
+    clock["t"] = 2_000.0
+    new = Session(name=name, status="complete", auto_resume=True,
+                 origin="flow", origin_id="flow-abc",
+                 plan=_plan(_target("new-target")))
+    session_store.save(new)
+    # No unpatch needed: nothing below saves again (`tick` only reads), and
+    # `monkeypatch` reverts this fixture-wide at teardown like every other
+    # patch here (including `bus_lines`' own, which an `undo()` here would
+    # also have reverted mid-test).
+
+    engine = SequenceEngine(sim_hub)
+    arm = ResumeArm(engine, sim_hub, clock=lambda: 1_700_000_000.0)
+    await arm.tick()
+
+    notes = [m for lv, m, _s in bus_lines if "is NOT armed" in m]
+    assert old.id not in "".join(notes), (
+        f"arming S_old would re-shoot a plan S_new already finished: "
+        f"{notes}")
+    assert len(notes) == 1 and other.id in notes[0], (
+        f"the control (a dormant session with no newer sibling) still "
+        f"needs its note: {notes}")
+
+
 # --------------------------------------------------------------- (b) #261
 
 

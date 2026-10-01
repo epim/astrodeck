@@ -559,34 +559,88 @@ def _withhold_group_timing(state: dict) -> dict:
                                if k not in _GROUP_TIMED_KEYS}}
 
 
+#: The engine's own internal (state-only, never published) marker that THIS
+#: publish of ``engine.state`` is the hop that ends a group's meridian wait
+#: (``sequence/engine.py`` ``_setup_target``, #166 item 1). It is never part
+#: of any served contract -- ``_redact_sequence_for`` always strips it below,
+#: for every principal, holder included -- so it exists purely to tell this
+#: module "waiting" (detail safe to show, spec 6.9's accepted residual) apart
+#: from "ending" (detail/target/target_index/schedule and session.target now
+#: name the panel a known RA transit chose), which ``group.meridian_wait``
+#: alone cannot do: that flag is the SAME value across both phases.
+_HOP_SITE_DERIVED_KEY = "_hop_site_derived"
+
+#: The state-level fields the HOP itself sets, timed by the crossing the same
+#: way ``group.panel``/``pass`` are (#166 item 1). ``session.target`` rides
+#: the same value a level down (`SequenceEngine._set_state`'s ``session``
+#: sub-object) and is handled separately below, since it is nested.
+_HOP_TIMED_KEYS = ("detail", "target", "target_index", "schedule")
+
+
+def _withhold_hop_timing(state: dict) -> dict:
+    """``state`` with the hop's timing-bearing fields ABSENT (not null) when
+    ``state`` carries ``_HOP_SITE_DERIVED_KEY`` -- the engine's own word that
+    THIS publish is the hop that ends a meridian wait, not the "waiting"
+    publishes before it (#166 item 1). ``state`` itself when the key is
+    absent or falsy, so a state from outside a wait, or from its "waiting"
+    phase, is served byte for byte, as it always was -- the residual spec 6.9
+    already accepts (the frame stream's own coarse edges) is untouched here.
+
+    Returns a NEW dict when it withholds anything, never mutating ``state``:
+    the same discipline as ``_withhold_group_timing``, for the same reason
+    (``state`` may be the engine's own live dict behind the GET route)."""
+    if not state.get(_HOP_SITE_DERIVED_KEY):
+        return state
+    out = {k: v for k, v in state.items() if k not in _HOP_TIMED_KEYS}
+    session = out.get("session")
+    if isinstance(session, dict) and "target" in session:
+        out["session"] = {k: v for k, v in session.items() if k != "target"}
+    return out
+
+
 def _redact_sequence_for(payload: dict, principal: Principal | None) -> dict:
     """A sequence state served to ``principal``: ``GET /api/sequence/state``
     and the monitor snapshot's ``sequence``. The WS ``sequence`` event takes
     the same helpers inside ``_redact_ws_event``, so the three seams cannot
     disagree (spec 5.10). A holder of ``view.site_derived`` gets ``payload``
-    itself; see ``_withhold_group_timing`` for ``group.panel``/``pass``, and
-    ``_strip_live_derived`` (through ``_DERIVED_NODES``) for
-    ``live.meridian_eta_s`` -- #166 item 1: the one GET that withholds the
-    panel across a meridian wait still served the countdown to its end
-    beside it, since the sequence node was never in that table.
+    itself, minus the engine's internal ``_HOP_SITE_DERIVED_KEY`` marker,
+    which no principal is ever served; see ``_withhold_group_timing`` for
+    ``group.panel``/``pass``, ``_strip_live_derived`` (through
+    ``_DERIVED_NODES``) for ``live.meridian_eta_s``, and
+    ``_withhold_hop_timing`` for ``detail``/``target``/``target_index``/
+    ``schedule``/``session.target`` -- #166 item 1: the one GET that
+    withholds the panel across a meridian wait still served the countdown to
+    its end, and then the panel itself a second way (named in ``target`` and
+    ``detail`` the moment the hop that ends the wait is set up), since the
+    sequence node was never in the derived table and merged state carries no
+    per-publish flag of its own.
 
     Never raises: on any error a non-holder gets the state without its
-    ``group`` and ``live`` rather than a 500."""
+    ``group``, ``live`` and the hop's timing-bearing fields rather than a
+    500."""
     if principal is not None and principal.has(CAP_VIEW_SITE_DERIVED):
-        return payload
+        if not isinstance(payload, dict) or _HOP_SITE_DERIVED_KEY not in payload:
+            return payload
+        return {k: v for k, v in payload.items() if k != _HOP_SITE_DERIVED_KEY}
     if not isinstance(payload, dict):
         return payload
     try:
         out = _withhold_group_timing(payload)
+        out = _withhold_hop_timing(out)
         # ``payload`` is always a fresh per-call dict (`_sequence_envelope`'s
         # ``engine.state | {...}``), so stripping ``out``'s top-level "live"
         # key in place -- which `_scrub_derived_node` does, copying the node
         # itself before it strips -- never touches the engine's own state,
-        # whether or not `_withhold_group_timing` handed back a new dict.
+        # whether or not `_withhold_group_timing`/`_withhold_hop_timing`
+        # handed back a new dict.
         _scrub_derived_node(out)
+        out.pop(_HOP_SITE_DERIVED_KEY, None)
         return out
     except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
-        return {k: v for k, v in payload.items() if k not in ("group", "live")}
+        return {k: v for k, v in payload.items()
+                if k not in ("group", "live", "detail", "target",
+                             "target_index", "schedule", "session",
+                             _HOP_SITE_DERIVED_KEY)}
 
 
 def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:

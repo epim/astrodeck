@@ -7400,17 +7400,17 @@ class Hub:
         discard the calibration and recalibrate on the new side (GN-01).
         """
         bus.publish("mount", action="meridian_flip")
-        # NOT FLAGGED site_derived, unlike the engine's own completion line
-        # for the same event (#166, #302): this call only happens when a
-        # flip is due, so its moment is always the target's computed
-        # transit, and by rights it belongs in the same class. Left alone
-        # here because a dozen tests across files this change does not own
-        # intercept ``bus.log`` with a narrower-than-``**kw`` signature
-        # (``tests/conftest.py``'s ``bus_lines`` among them) and reach this
-        # exact call site; passing the keyword raises TypeError through
-        # them. Blocked on widening those spies first -- see the WP-11
-        # return.
-        bus.log("info", "meridian flip: stopping guiding and re-slewing", "sequence")
+        # FLAGGED site_derived (W2 integration, #166, #302), matching the
+        # engine's own completion line for the same event: this call only
+        # happens when a flip is due, so its moment is always the target's
+        # computed transit. Previously left unflagged because
+        # ``tests/conftest.py``'s ``bus_lines`` spy (and every test built on
+        # it) intercepted ``bus.log`` with a narrower-than-``**kw`` signature
+        # and raised TypeError the moment this call passed the keyword;
+        # ``bus_lines`` now takes ``**kw`` and ignores it, which is what
+        # unblocks this line.
+        bus.log("info", "meridian flip: stopping guiding and re-slewing",
+                "sequence", site_derived=True)
         was_guiding = False
         if self.guider and self.guider.connected:
             try:

@@ -359,6 +359,41 @@ test("…but Park stays pressable, because Park IS the abort", () => {
 });
 await frame([]);
 
+// ----------------------------------------------- the slew pad's ceiling (#144)
+//
+// Backlog WP-20, W2 integration (owner-approved 2026-09-30): classic's
+// `<SlewPad />` used to be rendered with no props at all, so it offered only
+// the shipped 0.5 deg/s top rate whatever the connected driver can actually
+// do -- the AM5N measures 1.44 deg/s, nearly three times that. MountView now
+// reads `status.mount.max_rate_deg_s` and passes `slewRatesWithCeiling`'s
+// ladder (and the same ceiling for the hold-rate clamp) to the pad, mirroring
+// `#/next`'s mount sheet (`hubs/rig/sheets/mount.tsx`, `slewStops`).
+//
+// MUTANT "MountView never passes the ceiling" (`<SlewPad rates={slewRates}
+// maxRateDegS={maxRateDegS} />` reverted to the bare `<SlewPad />`), observed:
+//   x a mount with a high ceiling offers a fourth, faster rate: no slew-rate radio names the AM5N's measured ceiling: ["GUIDE","8× SID","0.5°/s"]
+const slewRateRadios = (): any[] =>
+  [...container.querySelectorAll('[role="radiogroup"][aria-label="Slew rate"] [role="radio"]')];
+
+await frame([], { max_rate_deg_s: 1.44 });
+test("a mount with a high ceiling offers a fourth, faster rate", () => {
+  const radios = slewRateRadios();
+  const labels = radios.map((r) => (r.textContent || "").trim());
+  assert(radios.length === 4,
+    `expected the shipped three stops plus one ceiling rung, got ${JSON.stringify(labels)}`);
+  assert(labels.some((l) => /1\.44/.test(l)),
+    `no slew-rate radio names the AM5N's measured ceiling: ${JSON.stringify(labels)}`);
+});
+
+await frame([], { max_rate_deg_s: null });
+test("a mount that does not report a ceiling keeps the shipped three stops", () => {
+  const radios = slewRateRadios();
+  assert(radios.length === 3,
+    `expected exactly the shipped three stops with no reported ceiling, got ${radios.length}`);
+});
+
+await frame([]);
+
 // ------------------------------------------------------------------- report
 await act(async () => { root.unmount(); });
 const total = passed + failed;
