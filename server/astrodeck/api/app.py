@@ -2182,6 +2182,34 @@ class PlanSaveBody(BaseModel):
     overwrite: bool = False
 
 
+def _accepted_count_mode_if_omitted(plan: SequencePlan) -> SequencePlan:
+    """``plan``, with ``count_mode`` stamped "accepted" when the CLIENT'S
+    OWN body never named it (#141, backlog WP-19(c), owner-approved
+    2026-09-30).
+
+    ``SequencePlan.count_mode``'s bare pydantic default stays "attempts"
+    (NOT flipped to "accepted"): the model is constructed at 377 sites
+    across the tree, and the coder who tried flipping the default found 2
+    regressions in a 17-file sample -- an unbounded blast radius for a fix
+    this narrow. The classic Plan tab is the ONE caller whose plans should
+    default to "accepted" (a prior UX review, #30, already made the UI's
+    OWN new-plan default send it explicitly), so this stamps it at the
+    ROUTE, only for a body that left the field out entirely.
+
+    ``plan.model_fields_set`` is what makes "omitted" legible at all: by
+    the time a route holds a validated ``SequencePlan``, a field the client
+    never sent and one the client sent as the SAME value as the bare
+    default are otherwise indistinguishable (`attempts == attempts`), so
+    checking `plan.count_mode` itself cannot tell "defaulted" from
+    "explicitly chosen". pydantic tracks, per model instance, exactly which
+    fields the input actually named -- including a NESTED model's own
+    fields, validated from its own slice of the body -- so this reads that
+    set rather than the value."""
+    if "count_mode" in plan.model_fields_set:
+        return plan
+    return plan.model_copy(update={"count_mode": "accepted"})
+
+
 class FlowWizardBody(BaseModel):
     """The sheet's three answers, the Mosaic kind's and the door's.
 
@@ -5828,7 +5856,8 @@ def create_app(*, bind_host: str | None = None,
             raise HTTPException(409, detail={
                 "detail": f"a plan named '{body.plan.name}' already exists",
                 "code": "name_collision"})
-        return await asyncio.to_thread(plan_library.save, body.plan, plan_id)
+        plan = _accepted_count_mode_if_omitted(body.plan)
+        return await asyncio.to_thread(plan_library.save, plan, plan_id)
 
     @app.delete("/api/plans/{plan_id}", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
@@ -9246,8 +9275,16 @@ def create_app(*, bind_host: str | None = None,
         # accepted a low/below-horizon target via the pre-flight gate) must
         # actually bypass the horizon 409 here.
         force = body.force
-        plan = SequencePlan.model_validate(
-            body.model_dump(exclude={"force"}))
+        # #141 (backlog WP-19(c)): ``model_dump`` fills in EVERY field,
+        # ``count_mode`` included, so checking the rebuilt plan's own
+        # ``model_fields_set`` below would always find it "set" -- the
+        # client's own OMISSION only survives on ``body`` itself, read
+        # before the dump (`_accepted_count_mode_if_omitted`'s own
+        # docstring explains why the value alone cannot say this).
+        dumped = body.model_dump(exclude={"force"})
+        if "count_mode" not in body.model_fields_set:
+            dumped["count_mode"] = "accepted"
+        plan = SequencePlan.model_validate(dumped)
         if not plan.targets or plan.total_frames() == 0:
             raise HTTPException(422, "plan has no frames")
         # BEFORE ANY OF THE PRE-FLIGHT, because a plan start is a SLEW. A

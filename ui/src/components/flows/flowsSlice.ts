@@ -824,9 +824,19 @@ export function createFlowsActions(
 
   /** The PUT `flowsSave` has out now: the flow, and the graph object and name
    *  it sent. `flowsOpen` reads it (#450): a save already carrying exactly
-   *  what is on screen is not sent a second time nor waited on. Cleared when
-   *  that PUT settles, unless a later save has replaced it meanwhile. */
+   *  what is on screen is not sent a second time. Cleared when that PUT
+   *  settles, unless a later save has replaced it meanwhile. */
   let saving: { id: string; graph: FlowGraphRec; name: string } | null = null;
+
+  /** `flowsSave`'s OWN promise for the in-flight PUT `saving` describes
+   *  (#500 residual): never rejects (the catch below is inside it), so
+   *  awaiting it is always safe. `flowsOpen`'s carried-save branch awaits
+   *  THIS, instead of calling `flowsSave()` a second time, which would send
+   *  a redundant PUT for a save already carrying what is on screen (the
+   *  reason the first version of this fix did not wait at all). Cleared in
+   *  the same `finally` as `saving`, and only when the two still agree -- a
+   *  newer save's promise must never be dropped by an older one settling. */
+  let savingPromise: Promise<void> | null = null;
 
   /** Re-read the open flow's progress into `flows.progress` (#189 S1 item 9).
    *  Never rejects, and every caller starts it without awaiting it.
@@ -961,28 +971,32 @@ export function createFlowsActions(
       // asked too, and `flowsSave` sends nothing for it; `dirty` after the
       // save is the one test, so there is no second one before it to drift.
       //
-      // A SAVE ALREADY CARRYING WHAT IS ON SCREEN is neither sent again nor
-      // waited on: the operator pressed SAVE, its PUT holds this very graph
-      // and name, and `dirty` stays set only until it answers. Sending a
-      // second one and waiting for it would hold the open for a round trip
-      // that stores nothing new, and #215's stale completion (that PUT
-      // answering after this open, writing nothing onto the flow now open)
-      // is a race the slice already handles. What is left is narrow and is
-      // said where it lands: should that PUT then fail, its catch writes
-      // `libraryError`, but the edit is no longer on screen - the flow this
-      // open asked for has already replaced it. `flowsCloseEditor` no longer
-      // has this gap (#500: it now awaits its OWN save and refuses to clear
-      // while the record stays dirty), but this branch still does not await
-      // the carried PUT, so a failure here is still silent beyond
-      // `libraryError` (#500's residual, not built by this WP - see its
-      // tracking issue). An edit made AFTER that PUT went out is on no PUT,
-      // so it is saved here as any other, and refused over when that fails.
+      // A SAVE ALREADY CARRYING WHAT IS ON SCREEN is not sent a SECOND time
+      // (#500 residual, W2 integration): the operator pressed SAVE, its PUT
+      // holds this very graph and name, and sending another would hold the
+      // open for a round trip that stores nothing new. Instead this AWAITS
+      // that same PUT's own promise (`savingPromise`), and #215's stale
+      // completion (that PUT answering after this open, writing nothing onto
+      // the flow now open) is still the race the slice already handles --
+      // `flowsSave`'s own stale-completion check (`cur.id !== record.id`)
+      // runs whether anyone is awaiting its promise or not. If the carried
+      // PUT fails, this folds the PUT's OWN error text into the refusal
+      // (the generic FLOW_OPEN_OVER_UNSAVED alone said nothing a corrupted-
+      // store or validation failure actually gave) -- ONLY for the carried
+      // branch: the non-carried refusal below is `hubSwitchSavesFlow.test
+      // .tsx`'s own pin (its mutant "a refusal leaves libraryError" grades
+      // the bare sentence exactly), and this fix's own files do not include
+      // that test.
       const leaving = get().flows.record;
       const carried = saving !== null && leaving !== null && saving.id === leaving.id
         && saving.graph === get().flows.graph && saving.name === leaving.name;
-      if (leaving && leaving.id !== id && !leaving.readonly && !carried) {
+      if (leaving && leaving.id !== id && !leaving.readonly) {
         const was = leaving.id;
-        await get().flowsSave();
+        if (carried) {
+          if (savingPromise) await savingPromise;
+        } else {
+          await get().flowsSave();
+        }
         const now = get().flows;
         // STILL DIRTY IS REFUSED, WHATEVER THE REASON: the PUT failed (its
         // catch wrote `libraryError`), or an edit landed inside its round
@@ -991,15 +1005,24 @@ export function createFlowsActions(
         // exists to prevent. A record that is no longer `was` means another
         // open landed meanwhile and made its own save; this one goes on.
         if (now.record?.id === was && now.dirty) {
+          // THE PUT'S OWN REASON, read before it is overwritten below, and
+          // folded in ONLY for the carried-save case (see the comment above
+          // this branch): `flowsSave`'s catch already wrote it to
+          // `libraryError` when the PUT itself failed; an edit that merely
+          // raced the round trip (#215) leaves it null, and the generic
+          // sentence alone is the whole story then, carried or not.
+          const own = now.libraryError;
+          const detail = carried && own && own !== FLOW_OPEN_OVER_UNSAVED
+            ? `${FLOW_OPEN_OVER_UNSAVED} (${own})` : FLOW_OPEN_OVER_UNSAVED;
           // In `libraryError` because that is where `openFlowById`'s callers
           // (openFlow.ts `flowOpenFailure`) and the wizard read why an open
           // did not land; in a toast because the callers that open from an
           // effect (the Sky's flow card, Tonight, the canvas host) report
           // nothing of their own, and a refusal nobody sees reads as a tap
           // that missed.
-          set((s) => patch(s, { libraryError: FLOW_OPEN_OVER_UNSAVED }));
+          set((s) => patch(s, { libraryError: detail }));
           get().enqueueToast?.({
-            level: "error", title: FLOW_NOT_OPENED, detail: FLOW_OPEN_OVER_UNSAVED, source: "flows",
+            level: "error", title: FLOW_NOT_OPENED, detail, source: "flows",
           });
           return;
         }
@@ -1073,6 +1096,13 @@ export function createFlowsActions(
       if (!record || record.readonly || !dirty) return;
       const sent = { id: record.id, graph, name: record.name };
       saving = sent;
+      // #500 residual: this call's own completion, exposed as `savingPromise`
+      // so `flowsOpen`'s carried-save branch can await THIS exact PUT rather
+      // than firing a second one. Wrapped rather than just awaiting `flowsSave()`
+      // itself recursively, because the try/catch/finally below must still run
+      // (and still clear `saving`) whether a caller is awaiting the promise or
+      // not -- the IIFE is the PUT's lifetime, `savingPromise` a handle onto it.
+      const run = (async () => {
       try {
         const saved = (await flowsApi.save(record.id,
           { ...record, graph })) as FlowRecordRec;
@@ -1162,8 +1192,11 @@ export function createFlowsActions(
       } catch (e) {
         set((s) => patch(s, { libraryError: errText(e) }));
       } finally {
-        if (saving === sent) saving = null;
+        if (saving === sent) { saving = null; savingPromise = null; }
       }
+      })();
+      savingPromise = run;
+      await run;
     },
 
     flowsCloseEditor: async () => {

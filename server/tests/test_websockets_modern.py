@@ -23,9 +23,26 @@ def test_websockets_connect_is_the_modern_asyncio_impl():
 
 
 def test_declared_floors_guarantee_the_modern_default():
+    """RE-PINNED (W2 integration, backlog WP-13/#597, owner-approved
+    2026-09-30): the relay's requirements -- both ``relay/requirements.txt``
+    (WP-13) and ``relay/pyproject.toml`` (WP-13's own mirror into the file
+    CI's relay job and deploy-relay's test job actually install from) -- are
+    now pinned to an EXACT version (``==``) rather than a floor (``>=``), so
+    a routine rebuild cannot silently drift to whatever is newest on PyPI
+    (#597: that drift is what made v9's tunnel drop hourly where v8 held it
+    for days). An exact pin guarantees the modern API just as surely as a
+    floor does -- 17.1 is no less >= 14 for being spelled ``==17.1`` -- so
+    the regex now reads either spelling.
+
+    RED under mutant "the regex forgets ==" (reverted to ``r"websockets>=
+    (\\d+)"`` alone, this test's pre-W2-integration shape), observed:
+
+        AssertionError: no websockets floor declared in relay/pyproject.toml
+        assert None
+    """
     for rel in ("server/pyproject.toml", "relay/pyproject.toml",
                 "relay/requirements.txt"):
         text = (ROOT / rel).read_text(encoding="utf-8")
-        m = re.search(r"websockets>=(\d+)(?:\.\d+)*", text)
+        m = re.search(r"websockets(?:>=|==)(\d+)(?:\.\d+)*", text)
         assert m, f"no websockets floor declared in {rel}"
         assert int(m.group(1)) >= 14, f"{rel} allows a pre-14 (legacy) websockets"

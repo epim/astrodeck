@@ -2459,6 +2459,14 @@ class SequenceEngine:
             kw.setdefault("end_reason", state)
         self.state = {**self.state, **kw}
         payload = dict(self.state)
+        # ``_hop_site_derived`` (#166 item 1) is a STATE-only marker for
+        # ``GET /api/sequence/state`` (`api.redact._redact_sequence_for`):
+        # never published, the same discipline as ``_first_running`` in
+        # reverse. The WS/log seams already drop every publish across the
+        # broader wait span via ``SITE_DERIVED_KEY`` below, so publishing it
+        # too would add nothing a non-holder could read and a holder's WS
+        # stream would carry an implementation key no client declares.
+        payload.pop("_hop_site_derived", None)
         if first_running:
             payload["_first_running"] = True
         if self._site_timed():
@@ -3190,6 +3198,7 @@ class SequenceEngine:
             self._visit_in_progress = None
             self._meridian_wait = {}
             self._follower_group_active = None
+            self.state.pop("_hop_site_derived", None)
 
     async def _schedule_loop(self, plan: SequencePlan, remaining: list[Target],
                              frozen: dict, index_of: dict, site,
@@ -7246,6 +7255,29 @@ class SequenceEngine:
         # The finish clock counts hops to the targets OTHER than this one
         # (`_remaining_hops`), from the moment its acquisition begins.
         self._acquiring_ti = ti
+        # IS THIS TARGET'S HOP THE ONE THAT ENDS ITS GROUP'S MERIDIAN WAIT
+        # (#166 item 1)? Computed BEFORE the publish below, for a MEMBER
+        # only (not a follower filling the wait, #302's own case, which
+        # publishes no ``group`` at all -- see ``_note_group_selected``):
+        # `_site_timed` is true for a member here only because
+        # `_note_meridian_waits` just flipped this same group's wait from
+        # "waiting" to "ending" in this scheduling tick, before ever
+        # reaching this call, so the two conditions coincide exactly.
+        ending_the_wait = (self._site_timed()
+                           and self._group_of(target) is not None)
+        if ending_the_wait:
+            # STATE-ONLY, never published (`_set_state` pops it before
+            # ``bus.publish`` -- the WS/log seams already drop the whole
+            # event for the broader wait span via `_site_timed`/
+            # ``site_derived``). This is the narrower signal
+            # ``GET /api/sequence/state`` needs: ``group.meridian_wait``
+            # alone cannot tell "waiting" (detail safe to show, spec 6.9's
+            # accepted residual) from "ending" (detail/target/target_index/
+            # schedule/session.target now name the panel the crossing
+            # revealed), and the merged ``self.state`` a poll reads carries
+            # no per-publish flag of its own. ``_capture`` pops it with
+            # ``_meridian_wait`` at the first exposure (api/redact.py).
+            self.state["_hop_site_derived"] = True
         # this target is now actually starting — clear any stale waiting sub-state
         # a prior gated wait published (wave-3 §2).
         self._set_state(target=target.name, target_index=ti, detail=f"slewing to {target.name}",
@@ -7814,6 +7846,9 @@ class SequenceEngine:
             # which the hop's own variation makes coarse. Cleared at the
             # crossing, they would come back at the crossing itself.
             self._meridian_wait.pop(group.id, None)
+            # ``_hop_site_derived`` (#166 item 1) ends here too: the next
+            # publish shows detail/target/target_index/schedule again.
+            self.state.pop("_hop_site_derived", None)
         info = await _bounded(
             self.hub.capture(exp, step.gain, step.offset, step.binning,
                              save=save, target=target.name if target else "",

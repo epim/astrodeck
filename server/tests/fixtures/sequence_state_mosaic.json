@@ -193,9 +193,7 @@
     "meridian_wait": true
    },
    "hold": null,
-   "live": {
-    "meridian_eta_s": 813
-   },
+   "live": {},
    "schedule": {
     "state": "waiting",
     "reason": "the mosaic waits for the meridian, so it changes pier side once",

@@ -135,6 +135,18 @@ def _spy_calibrate(g) -> list[int]:
     return calls
 
 
+async def _wait_until(predicate, timeout: float, interval: float = 0.05) -> bool:
+    """Poll ``predicate`` (a zero-arg callable) until it's truthy or
+    ``timeout`` seconds elapse. Returns whether it became true."""
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return bool(predicate())
+
+
 async def _connected_guider(profile: str, *, config: dict | None = None):
     """A connected ``NativeGuider`` over a REAL sim rig. Callers override
     individual ``tel`` methods afterwards -- the same technique
@@ -314,6 +326,168 @@ async def test_successful_reuse_still_makes_no_pulse_guide_calls(
     assert pulse_calls == [], (
         f"a healthy reuse must stay device-I/O-free for PulseGuide; got "
         f"{pulse_calls}")
+
+    await g.stop_guiding()
+    await g.disconnect()
+
+
+# -------------------------------- W2 integration: the first REAL pulse, not
+# -------------------------------- just the mount read, gates the claim
+
+# ORCHESTRATOR RULING (W2 integration, 2026-09-30, on top of WP-15's own
+# commit above): the mount-READ gate proves the link answers, not that it
+# can be MOVED. A standalone liveness pulse here was rejected a second time
+# (it would break the same zero-pulse invariant the module docstring already
+# explains), so instead ``start_guiding``'s reuse branch defers BOTH the
+# "calibrated and guiding" claim and the persisted-calibration write to the
+# guide loop's own first real "pulse"/"pulse_pair" dispatch
+# (``NativeGuider._prove_reuse_with_first_pulse``) -- the one the loop was
+# going to send anyway, never a synthetic extra. A mount that answers the
+# read but cannot be pulsed falls back to a fresh calibration, in place,
+# with a warning; one that can be pulsed earns the claim at that moment,
+# not before.
+
+
+@pytest.mark.asyncio
+async def test_a_reused_calibration_never_claims_before_its_first_pulse(
+        _isolated_config_dir, monkeypatch):
+    """MUTANT "claim before the first pulse" (``start_guiding``'s ``if not
+    reused:`` guards on the persist/log at the end of the reuse branch both
+    replaced with ``if True:``, so both run unconditionally the moment the
+    reuse path reaches them, as the code stood before this fix), restored
+    byte-identically after (sha256-verified): RED on both this test and
+    ``test_a_failed_first_pulse_recalibrates_instead_of_claiming`` below,
+    observed (this test):
+
+        AssertionError: the claim must not be logged before the loop has
+        even been scheduled, let alone pulsed: ['native guider connected',
+        '...calibration image scale...', 'native guider: reusing persisted
+        calibration for profile ...', 'native guider: saved calibration for
+        profile ...', 'native guider calibrated and guiding']
+
+    This is the control (a mount that answers both the read AND its first
+    pulse): the SAME assertion -- the claim is not yet in the log the
+    instant ``start_guiding`` returns -- then confirms the claim and the
+    persist both land once the loop's first real pulse has actually
+    succeeded, with no recalibration warning anywhere in between.
+    """
+    logs = _Logs(monkeypatch)
+    profile = _profile_id("proof-ok")
+    rig = build_sim_rig()
+    real_pier = (await rig["telescope"].pier_side()).value
+    planted = _plant_cal(_isolated_config_dir, profile, real_pier)
+    path = _cal_path(_isolated_config_dir, profile)
+
+    g, _cam, tel = await _connected_guider(profile)
+    calibrate_calls = _spy_calibrate(g)
+
+    await asyncio.wait_for(g.start_guiding(), timeout=120.0)
+    # THE GATE ITSELF: nothing has pulsed yet (the loop task this just
+    # scheduled has not had a single turn), so neither claim may exist.
+    assert not logs.has("calibrated and guiding"), (
+        f"the claim must not be logged before the loop has even been "
+        f"scheduled, let alone pulsed: {logs.lines}")
+    assert planted == json.loads(path.read_text(encoding="utf-8")), (
+        "the file must not move before the first pulse proves the reuse")
+
+    claimed = await _wait_until(
+        lambda: logs.has("calibrated and guiding"), timeout=15.0)
+    assert claimed, (
+        f"a mount that pulses fine never earned the claim: {logs.lines}")
+    assert not logs.has("recalibrating instead"), (
+        f"a healthy first pulse must not trigger a fallback: {logs.lines}")
+    assert calibrate_calls == [], (
+        "a healthy first pulse must not walk a fresh calibration"
+    )
+    assert await g.is_active()
+
+    await g.stop_guiding()
+    await g.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_first_pulse_recalibrates_instead_of_claiming(
+        _isolated_config_dir, monkeypatch):
+    """The reused calibration's mount READ succeeds (the WP-15 gate above
+    passes, so the engine reaches ``begin_guiding()``), but the very first
+    PULSE the guide loop issues on it fails -- a link that degrades between
+    the read and the first write, which the read-only gate above cannot
+    see. The claim must never be made for this attempt; the loop instead
+    recalibrates fresh, in place, and claims only once THAT succeeds.
+
+    RED under the same mutant as the control above (the persist/log made
+    unconditional), observed:
+
+        AssertionError: the claim must not be logged before the loop has
+        even been scheduled, let alone pulsed: ['native guider connected',
+        '...calibration image scale...', 'native guider: reusing persisted
+        calibration for profile ...', 'native guider: saved calibration for
+        profile ...', 'native guider calibrated and guiding']
+
+    (the first assertion catches it identically, before this test's extra
+    fallback checks ever run -- the mutant never even gets a chance to fail
+    the first pulse, since it claims before anything has been dispatched at
+    all).
+    """
+    logs = _Logs(monkeypatch)
+    profile = _profile_id("proof-fails")
+    rig = build_sim_rig()
+    real_pier = (await rig["telescope"].pier_side()).value
+    planted = _plant_cal(_isolated_config_dir, profile, real_pier)
+    path = _cal_path(_isolated_config_dir, profile)
+
+    g, _cam, tel = await _connected_guider(profile)
+    calibrate_calls = _spy_calibrate(g)
+    real_pulse_guide = tel.pulse_guide
+    pulse_calls: list[tuple[str, int]] = []
+    first_pulse_failed = {"v": False}
+
+    async def _flaky_pulse_guide(direction, ms):
+        pulse_calls.append((direction, ms))
+        if not first_pulse_failed["v"]:
+            first_pulse_failed["v"] = True
+            raise OSError("the first guide pulse found a dead write side "
+                          "of an otherwise readable link")
+        return await real_pulse_guide(direction, ms)
+
+    tel.pulse_guide = _flaky_pulse_guide
+
+    await asyncio.wait_for(g.start_guiding(), timeout=120.0)
+    assert not logs.has("calibrated and guiding"), (
+        f"the claim must not be logged before the loop has even been "
+        f"scheduled, let alone pulsed: {logs.lines}")
+
+    warned = await _wait_until(
+        lambda: logs.has("recalibrating instead"), timeout=15.0)
+    assert warned, (
+        f"a failed first pulse must say it is falling back: {logs.lines}")
+    claimed = await _wait_until(
+        lambda: logs.has("calibrated and guiding"), timeout=15.0)
+    assert claimed, (
+        f"the fallback calibration must still reach guiding once it "
+        f"succeeds: {logs.lines}")
+    # ORDER: the warning is said BEFORE the claim, never after.
+    warn_i = next(i for i, m in enumerate(logs.lines)
+                 if "recalibrating instead" in m)
+    claim_i = next(i for i, m in enumerate(logs.lines)
+                  if "calibrated and guiding" in m)
+    assert warn_i < claim_i, (
+        f"the claim must follow the fallback, not precede it: {logs.lines}")
+    assert calibrate_calls == [1], (
+        f"a failed first pulse must walk exactly one fresh calibration: "
+        f"{calibrate_calls}")
+    assert len(pulse_calls) >= 2, (
+        f"premise: the failed first pulse, then the fallback walk's real "
+        f"pulses, both reached tel.pulse_guide: {pulse_calls}")
+    assert await g.is_active(), (
+        "the session must still end up guiding, on the fresh calibration")
+
+    # The persisted file is now the FRESH calibration, not a re-save of the
+    # never-proven reused one.
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk != planted, (
+        "the persisted file must be the fresh calibration, not the "
+        "never-proven reused dict re-saved")
 
     await g.stop_guiding()
     await g.disconnect()

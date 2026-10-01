@@ -634,6 +634,17 @@ class NativeGuider(Guider):
         self._lost = False
         self._reacquire = 0
         self._fault_frames = 0
+        # WP-15 (#135) ORCHESTRATOR RULING: True for the span between a
+        # REUSED calibration's begin_guiding() and its first real
+        # "pulse"/"pulse_pair" dispatch -- the mount READ `start_guiding`
+        # already proved on the reuse path says the link answers, not that
+        # it can be MOVED. While this is set, `_guide_loop` withholds the
+        # "calibrated and guiding" claim and the persisted-calibration write
+        # until that first pulse actually succeeds, and falls back to a
+        # fresh calibration (with a warning) if it does not -- see
+        # `_guide_loop`. Always False for a fresh calibration, whose walk
+        # already sent dozens of real pulses to get here.
+        self._reuse_pulse_pending = False
 
         # GN-03 re-lock accounting. ``_lock_xy`` is the last LOCKED guide-star
         # position in guide-camera px (the engine exposes no lock position
@@ -1073,7 +1084,21 @@ class NativeGuider(Guider):
                 # scope pointing already stamped the current pier); load-bearing
                 # for a reused persisted calibration across a pier-side change.
                 await self._maybe_flip_for_pier()
-                self._persist_calibration()
+                # WP-15 (#135) ORCHESTRATOR RULING. A FRESH calibration's walk
+                # already sent dozens of real pulses to earn this -- persist
+                # and claim now, as always. A REUSED one has only proved the
+                # mount answers a READ (the gate above); the claim and the
+                # persisted-calibration write are deferred to the guide
+                # loop's own first real pulse succeeding (`_reuse_pulse_pending`,
+                # `_guide_loop`), which falls back to a fresh calibration with
+                # a warning if that pulse fails instead. Not deferred: this
+                # does NOT send a standalone probe pulse here (that would
+                # regress test_native_guider_recovery.py's zero-pulse
+                # reuse-start invariant, a real property of the P2-T2
+                # fast-restart contract) -- it waits for the FIRST PULSE THE
+                # LOOP WOULD HAVE SENT ANYWAY.
+                if not reused:
+                    self._persist_calibration()
 
                 # LAST GATE. A Stop that landed during the walk is caught by the
                 # walk's own polling; one that landed in the reuse path, the pier
@@ -1087,8 +1112,10 @@ class NativeGuider(Guider):
                 # "finding"/"calibrating" never outlives the transition it named.
                 self._phase_hint = None
                 self._active = True
+                self._reuse_pulse_pending = reused
                 self._loop_task = asyncio.create_task(self._guide_loop())
-                bus.log("info", "native guider calibrated and guiding", "guide")
+                if not reused:
+                    bus.log("info", "native guider calibrated and guiding", "guide")
                 bus.publish("guide", **self.stats().__dict__)
             except BaseException:
                 # A START THAT NEVER REACHED THE LOOP OWNS ITS OWN
@@ -1493,6 +1520,49 @@ class NativeGuider(Guider):
 
     # -------------------------------------------------------------- guide loop
 
+    async def _prove_reuse_with_first_pulse(self, action: dict) -> None:
+        """`_guide_loop`'s handling of the FIRST "pulse"/"pulse_pair" action
+        after a REUSED calibration's ``begin_guiding()`` (#135, WP-15
+        orchestrator ruling): dispatch it exactly as any other pulse, and
+        only once it SUCCEEDS does the reused calibration earn the
+        "calibrated and guiding" claim and the persisted-calibration write
+        that `start_guiding` deferred. ``_reuse_pulse_pending`` is cleared
+        either way, so this runs at most once per start.
+
+        A mount that answered the earlier READ gate but cannot actually be
+        PULSED (#135's own incident: a link that degrades between the read
+        and the first command) falls back to a FRESH calibration here,
+        in-place, rather than leaving the loop guiding on an unproven claim
+        or simply dying: ``_calibrate`` runs its own walk (which issues its
+        own real, unsuppressed pulses, proving the mount a second, harder
+        way) and leaves ``self._engine`` already in its guiding phase once
+        it completes, so the loop's ``while`` simply continues on the next
+        exposure. If ``_calibrate`` itself also fails, that raises out of
+        here into `_guide_loop`'s own outer handler, which ends the loop the
+        same way any other fatal start-up failure does.
+
+        Never sends a standalone probe pulse of its own: ``action`` is the
+        SAME action the engine already computed for this frame, the one
+        `_guide_loop` would have dispatched anyway."""
+        self._reuse_pulse_pending = False
+        try:
+            await self._dispatch(action)
+        except Exception as e:
+            bus.log("warning",
+                    f"native guider: the mount did not answer its first "
+                    f"pulse on a reused calibration ({e}); recalibrating "
+                    f"instead", "guide")
+            await self._calibrate()
+            # A calibration was actually MEASURED, so whatever was
+            # discarded before it no longer has anything to resurrect
+            # (GN-01) and the persist below is allowed to write again --
+            # the same bookkeeping `start_guiding`'s own fresh-calibration
+            # branch does.
+            self._cal_discarded = False
+            await self._maybe_flip_for_pier()
+        self._persist_calibration()
+        bus.log("info", "native guider calibrated and guiding", "guide")
+
     async def _guide_loop(self) -> None:
         """Per-frame guide loop: expose → ``process`` → dispatch the Action →
         publish stats. Runs until cancelled (stop_guiding/disconnect) or a real
@@ -1549,7 +1619,11 @@ class NativeGuider(Guider):
                 # and the re-lock this is looking for is exactly the frame on
                 # which that happens (GN-03).
                 self._note_lock(action, frame)
-                await self._dispatch(action)
+                if (self._reuse_pulse_pending
+                        and action["action"] in ("pulse", "pulse_pair")):
+                    await self._prove_reuse_with_first_pulse(action)
+                else:
+                    await self._dispatch(action)
                 self._sync_settle_window(action)
                 self._last_stats = self.stats()
                 bus.publish("guide", **self._last_stats.__dict__)
