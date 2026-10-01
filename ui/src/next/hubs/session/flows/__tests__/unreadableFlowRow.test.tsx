@@ -275,7 +275,15 @@ function seed(role: string, caps: string[], rig: Rig = {}): void {
         ...f,
         record: (rig.record ?? null) as never,
         dirty: false,
-        run: { ...f.run, phase: rig.phase ?? "idle" },
+        // `startedAt` alongside a live `phase` (#647, W5 integration): the
+        // real `flowsRun` always stamps both together, and
+        // `useFlowRunControls`'s `running` now trusts an optimistic
+        // "running" phase only within `RUN_PHASE_BRIDGE_MS` of its OWN
+        // `startedAt` - a phase with no fresh timestamp reads as a STALE
+        // latch, not as a page that just pressed RUN, which is what
+        // `rig.phase` here means.
+        run: { ...f.run, phase: rig.phase ?? "idle",
+               startedAt: rig.phase ? Date.now() : null },
         ui: { ...f.ui, screen: "library", query: "", folderChip: "all", highlightId: null },
       } as never,
     } as never);

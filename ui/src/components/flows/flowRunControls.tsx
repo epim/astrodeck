@@ -36,12 +36,13 @@ import { useShallow } from "zustand/react/shallow";
 import { api, ApiError } from "../../api";
 import { useStore, type ConfirmRequest } from "../../store";
 import { accessPhrase, useCanControlMount, useRoleConnected } from "../../lib/caps";
+import { disarmedWarningLine, type DisarmedSession } from "../../lib/disarmed";
 import type { FlowRunFlags, FlowUnmapped } from "../../lib/flowsApi";
 import {
   nextRunFlags, type FlowContinueCode, type FlowContinueQuestion,
   type FlowRunAcceptance, type FlowsActions,
 } from "./flowsSlice";
-import { flowRunLive, knownSessions } from "./flowRunState";
+import { flowRunLive, isRunPhaseLive, knownSessions } from "./flowRunState";
 import {
   START_OVER_TITLE, runCopy, runReadouts, startOverBody,
   type RunCopy, type RunReadouts,
@@ -84,14 +85,11 @@ export function runBlockedReason(
   return null;
 }
 
-/** True while the engine still owns the rig.
- *
- *  `stopping` counts: the engine publishes "aborting" the moment teardown
- *  starts and only says stopped once the rig has, so a button that flipped back
- *  to ▶ RUN here would offer to start over a moving mount. */
-export function isRunPhaseLive(phase: string): boolean {
-  return phase === "running" || phase === "holding" || phase === "stopping";
-}
+// `isRunPhaseLive` moved to `flowRunState.ts` at W5 integration (#647), so
+// `flowsSlice.ts` can read it too (to clear a finished run's optimistic
+// `phase`) without an import cycle back through this file. Re-exported here
+// so every existing import of it from "./flowRunControls" keeps resolving.
+export { isRunPhaseLive } from "./flowRunState";
 
 // ------------------------------------------------- CONTINUE's questions
 //
@@ -182,10 +180,15 @@ export async function askContinue(
 
 /** How one press of RUN ended. `answered` is the last yes the operator gave
  *  (null when the server asked nothing); `cancelled` is true when they
- *  declined a question, which starts nothing and is not a failure. */
+ *  declined a question, which starts nothing and is not a failure.
+ *  `disarmed` is non-empty only when the run that DID start (#643) turned
+ *  another session's auto-resume off (#595, D-04) - absent otherwise, the
+ *  codebase's own convention, so `outcome.disarmed?.length` reads false for
+ *  the overwhelmingly common case with no cast required. */
 export interface RunOutcome {
   cancelled: boolean;
   answered: FlowRunAcceptance | null;
+  disarmed?: DisarmedSession[];
 }
 
 /** Post the run, and answer each question the server asks until it starts,
@@ -213,6 +216,13 @@ export async function runAnsweringQuestions(
   let answered: FlowRunAcceptance | null = null;
   let answer = await (first ? run(first) : run());
   while (answer) {
+    // Not a question (#643): the run already started, and the server named
+    // sessions it disarmed along the way. Handed straight back as the
+    // outcome's own field, never into `askContinueQuestion` - that call
+    // expects an actual CONTINUE question's shape, which this is not.
+    if (answer.kind === "started") {
+      return { cancelled: false, answered, disarmed: answer.disarmed };
+    }
     const yes: FlowRunAcceptance | null = answer.kind === "unmapped"
       ? ((await askUnmapped(answer.unmapped)) ? "unmapped" : null)
       : await askContinueQuestion(answer.question);
@@ -222,6 +232,19 @@ export async function runAnsweringQuestions(
   }
   return { cancelled: false, answered };
 }
+
+/** How long `flows.run.phase`'s optimistic guess is trusted ON ITS OWN, past
+ *  the moment `flowsRun` stamped `startedAt` (#647). Past this window the
+ *  display defers to the server's own answer (`ours`) alone, whether or not
+ *  `flowsSlice.ts`'s own `onSequence` clear has already landed - belt and
+ *  braces, since that clear fires only once the server has actually reported
+ *  the run over, and a dropped or delayed publish must not leave a STOP
+ *  label live forever either. Not imported from `NowEmpty.tsx`'s identical
+ *  `RUN_PHASE_GRACE_MS`: that constant answers a different question (divert
+ *  navigation to Now), and importing a next/ screen's module into this
+ *  shared classic hook would couple the two for no reason beyond sharing a
+ *  number. */
+export const RUN_PHASE_BRIDGE_MS = 20_000;
 
 export interface FlowRunControls {
   /** Live-run flag; drives the glyph AND the word, so the state is never
@@ -234,7 +257,17 @@ export interface FlowRunControls {
    *  (`knownSessions`). The second is what makes the button read STOP over a
    *  run this flow did not start from this page, such as auto-resume on
    *  night two or another browser, and keeps it STOP through the re-read a
-   *  save starts, which blanks the progress answer it used to read (#449). */
+   *  save starts, which blanks the progress answer it used to read (#449).
+   *
+   *  THE FIRST SOURCE IS BOUNDED (#647). Before this fix `phase` stayed
+   *  "running" for the rest of the page's life once a run on it had ever
+   *  started - so after a run completed, navigating back to the canvas
+   *  showed a STOP that `act()` (below) would not actually honour, because
+   *  `act()` always decided on `ours` alone (#162). `running` now trusts the
+   *  optimistic `phase` only for `RUN_PHASE_BRIDGE_MS` after it was set, and
+   *  `flowsSlice.ts`'s `onSequence` clears it outright the moment the server
+   *  reports the run over - so once a server answer exists, `ours` is what
+   *  decides, same as `act()` already did. */
   running: boolean;
   /** Honest-disabled reason, or null. Never becomes a bare `disabled`. */
   reason: string | null;
@@ -248,6 +281,13 @@ export interface FlowRunControls {
   /** START OVER, offered beside CONTINUE only (`copy.verb === "CONTINUE"`).
    *  It asks a confirm first and posts `fresh` only on its yes. */
   startOver: () => void;
+  /** What `act()` WILL ACTUALLY DO on the next press: stop a run that really
+   *  is this flow's (`ours`), never `running`'s bridged/optimistic guess.
+   *  `FlowCanvasToolbar.runArm` (#647) gates CONFIRM RUN on this, not on
+   *  `copy.verb`, so a press whose real action is a start is confirmed
+   *  whatever the label happens to read - the two could disagree for up to
+   *  `RUN_PHASE_BRIDGE_MS`, or longer still if a publish were ever dropped. */
+  stopsOnPress: boolean;
 }
 
 /** Ask the graph question: the compile's losses, as the run route's 409
@@ -283,11 +323,21 @@ function askUnmappedWith(
 
 export function useFlowRunControls(): FlowRunControls {
   const phase = useStore((s) => s.flows.run.phase);
+  const phaseStartedAt = useStore((s) => s.flows.run.startedAt);
   // A boolean, so exact under Object.is: a frame landing on the run wakes
   // nothing here unless it changes whose run it is. Over the known sessions,
   // never the progress answer (#449): see `running` above.
   const ours = useStore((s) => flowRunLive(knownSessions(s.flows), s.sequence));
-  const running = isRunPhaseLive(phase) || ours;
+  // #647: the optimistic `phase` only bridges the gap between posting RUN
+  // and the engine's first answer - bounded by `RUN_PHASE_BRIDGE_MS` from
+  // the moment `flowsRun` stamped it, so a `phase` that outlives both the
+  // bridge AND `flowsSlice.ts`'s own end-of-run clear (a dropped or delayed
+  // publish) cannot keep reading live forever either. `ours` always wins
+  // when true; this is the ONLY case where `running` can be true while
+  // `ours` is false.
+  const bridging = isRunPhaseLive(phase) && phaseStartedAt !== null
+    && Date.now() - phaseStartedAt < RUN_PHASE_BRIDGE_MS;
+  const running = ours || bridging;
 
   // The copy's two inputs. `progress` changes identity only when a new
   // answer lands (open, save, a started run, a frame on a live one, at most
@@ -310,6 +360,21 @@ export function useFlowRunControls(): FlowRunControls {
     [enqueueToast],
   );
 
+  // #643 (W5 integration): the same warning `NowEmpty.tsx`'s WP-65 fix shows
+  // for its two routes, now for this one (`POST /api/flows/{id}/run`, both
+  // the plain start and the `fresh` one START OVER sends) - the route that
+  // fix could not reach because `flowsRun` discarded the response's
+  // `disarmed` list before any `NowEmpty.tsx`-owned code ever saw it.
+  const warnIfDisarmed = useCallback((outcome: RunOutcome) => {
+    if (outcome.disarmed && outcome.disarmed.length > 0) {
+      enqueueToast({
+        level: "warning",
+        title: "Starting this flow disarmed another session",
+        detail: disarmedWarningLine(outcome.disarmed),
+      });
+    }
+  }, [enqueueToast]);
+
   const stop = useCallback(async () => {
     try {
       await api.post("/api/sequence/abort");
@@ -329,12 +394,13 @@ export function useFlowRunControls(): FlowRunControls {
   }, [appendLog, enqueueToast]);
 
   const start = useCallback(async () => {
-    await runAnsweringQuestions(
+    const outcome = await runAnsweringQuestions(
       run,
       askUnmappedWith(pushConfirm),
       (q) => askContinue(q, pushConfirm, resolveConfirm),
     );
-  }, [pushConfirm, resolveConfirm, run]);
+    warnIfDisarmed(outcome);
+  }, [pushConfirm, resolveConfirm, run, warnIfDisarmed]);
 
   // START OVER, BEHIND A CONFIRM (spec 5.9: "START OVER behind a confirm").
   // The press walks away from a ledger CONTINUE would carry on, for good:
@@ -354,30 +420,33 @@ export function useFlowRunControls(): FlowRunControls {
       mode: "confirm",
     });
     if (!ok) return;
-    await runAnsweringQuestions(
+    const outcome = await runAnsweringQuestions(
       run,
       askUnmappedWith(pushConfirm),
       (q) => askContinue(q, pushConfirm, resolveConfirm),
       { fresh: true },
     );
-  }, [copy, pushConfirm, resolveConfirm, run]);
+    warnIfDisarmed(outcome);
+  }, [copy, pushConfirm, resolveConfirm, run, warnIfDisarmed]);
 
   // THE ACTION IS DECIDED ON `ours`, NEVER ON `running` (#162). `running` is a
-  // DISPLAY flag: it is OR'd with the client's own phase latch so the button
-  // reads STOP the instant a press lands, before the engine's first publish.
-  // Nothing ever resets that latch once a run on this page has ended (no
-  // publish does; NowEmpty's RUN_PHASE_GRACE_MS clears it only for its own RUN
-  // press), so deciding the ACTION on `running` kept calling `stop()` forever
-  // after one run on this page, posting `/api/sequence/abort` to whatever the
-  // engine was doing next - including a run started elsewhere. `ours`
+  // DISPLAY flag: it is OR'd with the client's own phase latch (bridged and
+  // cleared now, #647 - see `running`'s own doc comment above - but still
+  // only a guess while it applies) so the button reads STOP the instant a
+  // press lands, before the engine's first publish. Deciding the ACTION on
+  // `running` would call `stop()` for however long the bridge or a dropped
+  // publish left the latch live, posting `/api/sequence/abort` to whatever
+  // the engine is doing next - including a run started elsewhere. `ours`
   // (`flowRunLive` over `knownSessions`) is the half of `running` that is
   // grounded in the rig's own state: the session the sequence state publishes
   // NOW is one of this flow's. The pattern of the Send-to-Wizard fix (#454,
   // SendToWizardSheet.tsx "THE START IS JUDGED ON WHAT THIS PRESS WROTE"): act
-  // on what the rig's own state says, not on a client flag that never clears.
-  // A press made against a stale latch therefore tries to START - harmless
-  // when nothing else is running, and a refusal logged rather than a
-  // stranger's night cut short when something is.
+  // on what the rig's own state says, not on a client flag that can still be
+  // ahead of or behind it. A press made against a stale or bridging latch
+  // therefore tries to START - harmless when nothing else is running, and a
+  // refusal logged rather than a stranger's night cut short when something
+  // is; `stopsOnPress` below (`ours`, same source as this decision) is what
+  // lets the confirm agree with it even while `running`'s display does not.
   const act = useCallback(() => {
     void (ours ? stop() : start());
   }, [ours, start, stop]);
@@ -390,6 +459,7 @@ export function useFlowRunControls(): FlowRunControls {
     act,
     copy,
     startOver: pressStartOver,
+    stopsOnPress: ours,
   };
 }
 

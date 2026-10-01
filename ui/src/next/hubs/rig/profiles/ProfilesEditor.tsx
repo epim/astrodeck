@@ -67,13 +67,14 @@ import { UploadGlyph } from "./glyphs";
 import { waitForProfileActive } from "./profileActive";
 import {
   ACTIVATE_FAILED, CAPTURE_FAILED, CAPTURE_NEEDS_RIG, DEFAULT_CAPTURE_NAME,
-  DELETE_FAILED, EMPTY_HINT, EMPTY_TITLE, EXPORT_FAILED, FORCE_CONFIRM,
+  DELETE_FAILED, EMPTY_HINT, EMPTY_TITLE, EXPORT_FAILED,
   IMPORTED, IMPORT_LABEL, LANE_BUSY, LOADING, LOAD_FAILED, NAME_LABEL,
   NAME_PLACEHOLDER, PROFILES_CAP, PROFILES_EYEBROW, REFRESH_LABEL,
   RENAME_FAILED, RETRY_LABEL, SAVE_BLURB, SAVE_BUSY, SAVE_BUTTON, SAVE_EYEBROW,
   UPDATE_FAILED, UPDATE_NEEDS_RIG, activated, activating, alreadyGone,
-  deleted, errText, exported, importFailed, isGone, isLaneConflict,
-  isRunningConflict, notActiveYet, rowBusyToast, updateConfirm, updated,
+  deleted, errText, exported, forceActivateConfirm, importFailed, isGone,
+  isLaneConflict, isRunningConflict, notActiveYet, rowBusyToast, updateConfirm,
+  updated,
 } from "./profilesModel";
 import "./profiles.css";
 
@@ -206,7 +207,9 @@ export function ProfilesEditor({ onRows }: {
 
   const onActivateFailed = async (e: unknown, row: ProfileRow, wasForced: boolean) => {
     if (isRunningConflict(e) && !wasForced) {
-      if (await confirmDialog(FORCE_CONFIRM)) await activateAndWait(row, true);
+      if (await confirmDialog(forceActivateConfirm((e as ApiError).message))) {
+        await activateAndWait(row, true);
+      }
       return;
     }
     // The UNCODED 409 is `_spawn_connect`'s own lane guard, raised before

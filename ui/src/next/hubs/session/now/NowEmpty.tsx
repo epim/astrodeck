@@ -57,6 +57,7 @@ import { fmtIntegration } from "../../../../api/sessionStack";
 import { getPlan, listPlans, type PlanRow } from "../../../../api/plans";
 import { listReports } from "../../../../api/reports";
 import { resumeRecoveryLine, resumeSession } from "../../../../api/sessions";
+import { disarmedWarningLine, type DisarmedSession } from "../../../../lib/disarmed";
 import { endReasonMeta } from "../../../../lib/reportChart";
 import { planUnreadableReason } from "../../../../lib/planLibrary";
 import { useStopResumeRecovery } from "../../../../lib/stopResumeRecovery";
@@ -185,16 +186,12 @@ const DEFAULT_SITE: SiteInfo = {
 // returns `res.json() as Promise<T>`), so the field is on the runtime object
 // exactly as the server sent it regardless of what a narrower type claims -
 // only the type-level cast below is local to this file.
-interface DisarmedSession { id: string; name: string }
-
-/** The one sentence both call sites below use, so the two cannot drift into
- *  different wordings for the same event. Falls back to the id for the rare
- *  row a legacy session saved with no name - same fallback the server's own
- *  log line uses (`engine.py`'s `d["name"] or d["id"]`). */
-function disarmedWarningLine(disarmed: DisarmedSession[]): string {
-  const names = disarmed.map((d) => (d.name && d.name.trim()) || d.id);
-  return `Auto-resume was turned off for: ${names.join(", ")}.`;
-}
+//
+// `DisarmedSession` and `disarmedWarningLine` moved to `lib/disarmed.ts` at W5
+// integration (#643), when the classic flow run controls grew a second
+// surface that needed the exact same sentence - imported above, not
+// redeclared, since two copies of the same wording is how they drift apart
+// (the naming-preview sample, #278, is the same class of bug).
 
 type ReportsState =
   | { kind: "loading" }

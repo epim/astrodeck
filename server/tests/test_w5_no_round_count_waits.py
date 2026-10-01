@@ -48,11 +48,12 @@ DELIBERATE_ROUND_COUNTS = {
 #: file from this set without converting its loop(s) to ``wait_until``
 #: makes the scan below fail on them, which is the point: it is a allowlist
 #: for a known, still-open gap, not a blanket exemption.
-KNOWN_UNCONVERTED_GAPS = {
-    "test_w2_am5_park_pulse_lock.py::test_park_and_pulse_never_run_at_the_same_time",
-    "test_w2_am5_park_pulse_lock.py::test_pulse_waits_for_an_in_flight_park",
-    "test_w3_relay_drop_rate.py::test_recent_drop_count_counts_a_logged_link_check",
-}
+#:
+#: The three entries WP-68 itself could not touch were converted at W5
+#: integration (#610 remainder): test_w2_am5_park_pulse_lock.py's two cases
+#: and test_w3_relay_drop_rate.py's one now wait on ``wait_until`` like every
+#: other file in this suite, so nothing remains here.
+KNOWN_UNCONVERTED_GAPS: set[str] = set()
 
 
 def _is_range_call(node: ast.AST) -> bool:

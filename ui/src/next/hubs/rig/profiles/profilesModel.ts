@@ -146,18 +146,6 @@ export function rowBusyToast(name: string): string {
 
 // ------------------------------------------------------------------ confirms
 
-/** The coded 409 is the sequence / capture-loop / polar guard, and `force` is
- *  exactly what bypasses it (it aborts the engine first). Offered once, never
- *  twice, or a server that keeps saying "running" becomes a dialog loop. */
-export const FORCE_CONFIRM = {
-  title: "Rig is busy",
-  body: "A connect or sequence is already running. Force-activate this profile anyway?",
-  mode: "confirm" as const,
-  tone: "danger" as const,
-  confirmLabel: "Force activate",
-  cancelLabel: "Leave it running",
-};
-
 /** Turns a raw 409 `detail` fragment into a capitalized, punctuated sentence.
  *  The server writes these lower-case on purpose, so a route can splice one
  *  into a larger sentence (`_teardown_busy_detail` in app.py joins two with
@@ -171,7 +159,9 @@ export function sentenceFrom(detail: string): string {
 }
 
 /** The force-activate confirm, worded from the server's own coded-409 detail
- *  rather than the fixed sentence `FORCE_CONFIRM` carries (#256).
+ *  rather than a fixed sentence (#256; `ProfilesEditor.tsx`'s own call site
+ *  carried that fixed sentence as `FORCE_CONFIRM` until W5 integration moved
+ *  it onto this helper too, the same fix `ProfileList.tsx` already had).
  *
  *  The coded 409 now has three causes (app.py's `_teardown_busy_detail`): a
  *  sequence, capture loop or polar alignment; auto-resume's recovery ladder

@@ -76,6 +76,24 @@ export function flowRunLive(known: readonly string[] | null | undefined,
   return runIsLive(sequence) && Array.isArray(known) && known.includes(running);
 }
 
+/** True while the engine still owns the rig, from `flows.run.phase` (the
+ *  client's own OPTIMISTIC latch, never the server's own answer - that is
+ *  `flowRunLive` above).
+ *
+ *  `stopping` counts: the engine publishes "aborting" the moment teardown
+ *  starts and only says stopped once the rig has, so a button that flipped
+ *  back to RUN here would offer to start over a moving mount.
+ *
+ *  LIVES HERE, NOT IN `flowRunControls.tsx` (moved at W5 integration, #647):
+ *  `flowsSlice.ts`'s own `onSequence` needs it too, to clear a finished run's
+ *  `phase` back to idle the moment the server reports the run over, and this
+ *  module is the one both can import without a cycle (`flowRunControls.tsx`
+ *  imports FROM `flowsSlice.ts`). Re-exported from `flowRunControls.tsx` so
+ *  every existing import of it keeps resolving. */
+export function isRunPhaseLive(phase: string): boolean {
+  return phase === "running" || phase === "holding" || phase === "stopping";
+}
+
 /** The published group of the block whose `group_id` is `groupId`, or null.
  *
  *  The engine publishes `state.group` only while the target it is on belongs

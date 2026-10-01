@@ -9,7 +9,7 @@
   "native/crates/astro-star/Cargo.toml": "069abe1dfcf31871dda7a239ef27b2e810ef27bf36a81db82c96754fb6ad3ba5",
   "native/crates/astro-tppa/Cargo.toml": "fc26efa6fa15d95107742b35d260ea10771600ea4e008021324281be0a294e13",
   "native/crates/astrodeck-native/Cargo.toml": "7927b7d8952eb94b2b3aa177b1d83c5002ccaad9db32b2b4ea3893b9bb40768f",
-  "server/pyproject.toml": "b071c09bc4489c84611896bb483266be9f4e72bb7ffd4f550df007a75acca6bf",
+  "server/pyproject.toml": "e5830daedb18952f748ac0b81f0b5d3f15d346b8bd09fd7eaa7c23e714b81b11",
   "tools/credits_registry.py": "7a8f5a37ff7cfc93d291693ff1a34e8613996f7b17be6ccb8fa8f184a2d2a6f3",
   "tools/gen_credits.py": "fe36eb045d83905cab6de2f62afa9b45a4bd456fa6771dbb0b1430ca195f9e99",
   "tools/licence/bundled-components.json": "be612f4188608fbdd75b29ddc433db422fee72275fb7a497ce1478b31355e965",
