@@ -310,14 +310,19 @@ async def test_an_after_group_follower_is_skipped_once_the_mosaic_is_set_aside(
     then SKIPPED FOR THE NIGHT, NOT DONE: never slewed to, marked skipped,
     still owed, and the session stays dormant for the next night.
 
-    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). A lone panel's miss
-    is still its own and still counts, but a streak of centring misses now
-    sets the panel aside "for now": the set-aside expires once a night, 45
-    minutes on here, the panel strikes out again, and only that second
-    streak sets it aside for the night. So the session holds two records
-    for 1-1, the first marked expired, where it held one before H4, and
-    the follower waits for the mosaic through the expiry, as a follower of
-    a live mosaic does, until the mosaic is set aside for the night.
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2), AND AGAIN FOR WP-33
+    under backlog ruling D-03 (owner-approved 2026-09-30, #591). This
+    mosaic has exactly ONE panel, so 1-1 is the group's only live member
+    from its very first pass, and D-03 widens ``centring_pass_verdict`` to
+    call that case the sky's too: every one of 1-1's misses HOLDS the
+    group (``CENTRING_HOLD_RETRY_S`` = 600 s) rather than striking 1-1's
+    own three-strike floor, so the per-panel ``"centring"`` set-aside this
+    case pinned under H4 is never reached at all -- D-03's own escalation
+    (an alert at 3 consecutive held passes, the group set aside at 6)
+    decides it directly. So the session holds exactly ONE record, kind
+    ``"group"`` and never expiring, and the follower waits for the mosaic
+    through all six held passes, as a follower of a live mosaic does,
+    until the mosaic is set aside for the night at the sixth.
 
     MUTANT "after_group ignored", re-run by the H4 integration in a private
     copy of server/ (scratchpad H4-INTEG-mut; `_follower_gate`'s
@@ -347,10 +352,12 @@ async def test_an_after_group_follower_is_skipped_once_the_mosaic_is_set_aside(
                  panel_kw={"ha_h": -2.0})
     night = await _night(group_hub, monkeypatch, plan, goto=no_centre)
     assert night.done, night.trace[-3:]
-    # The first streak's record, expired (#534), and the second's.
-    assert [(r["target_id"], bool(r.get("expired")))
-            for r in night.stored.set_aside] == [("p00", True),
-                                                 ("p00", False)]
+    # D-03: one group-kind record, naming 1-1 as the mosaic's last live
+    # panel; never a per-panel "centring" one, and nothing expires.
+    assert [(r["target_id"], r.get("kind"), r.get("expired"))
+            for r in night.stored.set_aside] == [("p00", "group", None)]
+    assert night.said("1-1 (the mosaic's last live panel) has been held "
+                      "for 6 passes in a row")
     assert all(who != FOLLOWER for _t, who in night.gotos), night.gotos
     assert night.captures == [], night.captures[:2]
     assert night.said("Follower: skipped for tonight: the M31 mosaic it "

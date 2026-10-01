@@ -53,6 +53,7 @@ import logging
 import time
 from pathlib import Path
 
+from ...aio import reap
 from ...config import CONFIG_DIR
 
 log = logging.getLogger(__name__)
@@ -581,10 +582,7 @@ class EphemerisStore:
             if t is None:
                 continue
             t.cancel()
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            await reap(t)
 
     async def _run(self) -> None:
         while True:

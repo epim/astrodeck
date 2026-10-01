@@ -282,6 +282,15 @@ ROTATE_MIN_GAIN_DEG = 0.5
 #: play or slip in the train is told apart from a sign or wrap error.
 ROTATE_FOLLOW_FRACTION = 0.5
 
+#: The least mechanical OR sky travel ``learn_rotator_sign`` (R-4, #145) will
+#: read a sign from. Below this, noise -- plate-solve rotation noise (a few
+#: hundredths of a degree) or the reversal loss measured in this rig's CAA
+#: train (0.1-0.2°, #145) -- could flip the measured sign, and a wrong sign
+#: is worse than no sign at all: it REVERSES a correction instead of merely
+#: mis-sizing it (2026-08-08). Well under the default 2° step, so a healthy
+#: rotator clears it with room to spare.
+ROTATOR_SIGN_MIN_DEG = 0.5
+
 #: Where every plate-solve frame is written, under ``CAPTURE_DIR`` (#532).
 #: The gallery and the calibration library both skip it by name.
 SOLVE_DIRNAME = "_solve"
@@ -880,6 +889,18 @@ class Hub:
         #: why). Written only by ``sky_angle.note_solved_rotation``; surfaced on
         #: the status frame as ``sky_angle``.
         self.last_sky_angle: dict | None = None
+        #: d(sky PA)/d(mechanical) for the connected rotator: +1 together, -1
+        #: opposite, or None when it has not been MEASURED yet (R-4, #145).
+        #: Set only by ``learn_rotator_sign`` (two solves around a small known
+        #: move) -- never guessed, never defaulted to +1, because a wrong sign
+        #: does not just mis-offset a rotation, it reverses the correction's
+        #: sense (2026-08-08: five rotate attempts spun the camera through
+        #: more than a full revolution with the error growing on every move).
+        #: ``rotate_to_pa`` refuses outright while this is None. Process
+        #: memory only, like ``Rotator.sync_offset_deg``: a reconnect may
+        #: bring back different, unmeasured hardware (``_teardown``), and the
+        #: simulator's own physics are a KNOWN +1, set once on ``connect_sim``.
+        self._rotator_sky_sign: int | None = None
         #: ((ra, dec), taken_at_monotonic, (ra_j2000, dec_j2000)) - see
         #: ``from_mount_frame``. One entry, because a mount points at one place.
         self._precess_memo: tuple[tuple[float, float], float,
@@ -1130,6 +1151,14 @@ class Hub:
             await dev.connect()
             self.devices[role] = dev
             self._last_connect[role] = {"backend": "sim"}
+        if "rotator" in self.devices:
+            # R-4 (#145): the simulated rotator's physics are HARDCODED sign
+            # +1 (``SimSolver.solve``: ``rotation_deg = rotator_mech_deg +
+            # rotator_pa_offset_deg``) -- not a guess about unknown hardware,
+            # but a known fact about this controlled device, exactly like its
+            # ``rotator_pa_offset_deg = 0.0`` default. A real rig still
+            # refuses to rotate until ``learn_rotator_sign`` measures it.
+            self._rotator_sky_sign = 1
         self._seed_filter_config()  # UX-05: user slot names over hardware letters
         self._seed_egain_config()   # learned e-/ADU (driver value still wins)
         await guide_cam.connect()
@@ -1618,6 +1647,13 @@ class Hub:
         self.invalidate_field_solve("the rig disconnected")
         self._last_pointing = None
         self._solved_pointing = None
+        # R-4 (#145): a reconnect can bring back a DIFFERENT rotator, or the
+        # same one with its sign still unmeasured by this process. Cleared
+        # here, like the offset ``Rotator.sync_offset_deg`` already loses on
+        # reconnect, so the NEXT connect must either re-learn it (a real rig)
+        # or re-declare the known simulator default (``connect_sim``) --
+        # never carry a sign measured against hardware that is gone.
+        self._rotator_sky_sign = None
         # Warm ramp: FINALIZE (cooler off), do not merely cancel. The devices are
         # about to be disconnected a few lines below, so a cancelled ramp would
         # leave the camera holding whatever mid-ramp setpoint it happened to be
@@ -6336,19 +6372,36 @@ class Hub:
         return None
 
     async def _approach_rotator(self, rot, sky_deg: float, mech_now: float,
-                                rcfg) -> None:
+                                rcfg, epoch: int, sign: int) -> bool:
         """Move ``rot`` to the sky angle ``sky_deg``, arriving from the one
-        approach direction (#526, H4 orchestrator ruling 3).
+        approach direction (#526, H4 orchestrator ruling 3). Returns True iff
+        every planned leg was sent; False iff an abort landed mid-plan (#574)
+        and a leg was abandoned.
 
         ``rotation.one_sided_moves`` plans it from ``mech_now``, the
         mechanical angle just read: one move when the travel already runs the
         approach way, else ``ROTATOR_BACKLASH_DEG`` past the target and back,
         or direct, said in the log, when that overshoot would cross the edge
         of a limited mechanical range, or mechanical 0 on a full one.
-        Mechanical moves, through the same
-        offset ``Rotator.move_to`` applies, so the overshoot leg can be named
-        in the rotator's own terms."""
-        target = _rotation.mod360(sky_deg + float(rot.sync_offset_deg))
+        ``sky_deg`` is converted to a mechanical target through
+        ``rotation.sky_to_mechanical`` (R-4, #145: ``sign`` applied, anchored
+        at ``mech_now``/``rot.sync_offset_deg`` — the same pair ``map_sky_
+        target`` anchors on), so the overshoot leg can be planned and named
+        in the rotator's own terms.
+
+        THE MOTION FENCE, PER LEG (#574): a single-move plan already had no
+        re-check between the attempt loop's own fence (top of
+        ``_rotate_to_pa_attempts``) and the device command below it, and the
+        two-move plan this approach adds made that window TWO device commands
+        wide, seconds apart (each ``move_mechanical`` waits for arrival). A
+        STOP during the overshoot leg bumps the epoch but cancels only the
+        ``goto``/``solve`` busy tasks -- the engine's rotate is in neither --
+        so without a re-check here the RETURN leg would still be sent after
+        the operator's STOP. Checked before EVERY leg, including the first:
+        the loop's own fence was read before this attempt's solve+expose,
+        which is itself an await the next abort can land inside."""
+        target = _rotation.sky_to_mechanical(sky_deg, mech_now,
+                                             float(rot.sync_offset_deg), sign)
         plan = _rotation.one_sided_moves(mech_now, target, rcfg.range_type,
                                          rcfg.range_start_deg)
         if plan.skipped:
@@ -6360,7 +6413,11 @@ class Hub:
                     f"{_rotation.ROTATOR_BACKLASH_DEG:g}° past, to "
                     f"{plan.moves[0]:.2f}°, and comes back", "rotator")
         for mech in plan.moves:
+            if not self._motion_committed_clean(epoch):
+                bus.log("warning", "rotate abandoned: aborted", "rotator")
+                return False
             await rot.move_mechanical(mech)
+        return True
 
     async def measure_guide_offset(self, *, exposure_s: float = 4.0,
                                    guide_exposure_s: float = 4.0) -> dict:
@@ -6781,6 +6838,127 @@ class Hub:
         return {"synced": True, "pa_deg": orientation, "mechanical_deg": mech,
                 "offset_deg": rot.sync_offset_deg}
 
+    async def learn_rotator_sign(self, step_deg: float = 2.0,
+                                 exposure_s: float = 3.0) -> dict:
+        """Measure and store d(sky PA)/d(mechanical) for the connected
+        rotator (R-4, #145): solve, move the rotator by a small KNOWN
+        mechanical step, solve again, and read off which way the sky PA
+        moved.
+
+        WHY THIS IS MEASURED, NEVER GUESSED. Every rotator before R-4
+        assumed sky and mechanical angle move together (sign +1). Pier west
+        on this rig they run opposite, one for one (#145: 15 small steps,
+        every one agreeing). A rotation built on the wrong sign does not
+        just mis-size its correction, it REVERSES it — which is what turned
+        a -5.7 degree correction into a camera spun through more than a
+        full revolution over five attempts (2026-08-08) before the loop's
+        own not-converging check caught it. A sign error and play in the
+        train both look like "the move did not land"; only a measurement
+        against a KNOWN commanded step tells them apart. ``rotate_to_pa``
+        refuses outright until this has run at least once in this process
+        (``Hub._rotator_sky_sign`` — see its docstring for why it is never
+        persisted or defaulted).
+
+        Only the SIGN is trusted here, not the magnitude: a follow-fraction
+        check belongs to the rotate loop's own convergence test and to the
+        nightly self-test (D-05, WP-32b), not to this one-shot measurement.
+
+        Leaves the rotator wherever the second solve found it (``step_deg``
+        past where it started) — this is a calibration, not a framing
+        command; a caller wanting a particular angle next calls
+        ``rotate_to_pa`` or ``sync_rotator_to_sky`` once the sign is known.
+
+        Raises DeviceError when either solve fails, or when the move was too
+        small to read a sign from safely — mechanically (``step_deg`` did
+        not register) or in the sky (the solves barely saw it turn) — a
+        stuck, disconnected, or badly slipping rotator must not silently
+        "learn" a sign from noise.
+        """
+        rot = self.require("rotator")
+        cam: Camera = self.require("camera")
+        from . import providers as _providers
+        solver = _providers.pick_solver(self)
+        await self.yield_camera_for("rotator sign calibration")
+        tel = self.devices.get("telescope")
+        ra_hint = dec_hint = None
+        if tel is not None and tel.connected:
+            with contextlib.suppress(Exception):
+                ra_hint, dec_hint = await tel.get_position()
+                if ra_hint is not None:
+                    ra_hint, dec_hint = await self.from_mount_frame(
+                        tel, ra_hint, dec_hint)
+
+        async def _solve_once() -> tuple[float, float]:
+            """One exposure + solve: (solved sky PA, mechanical angle read
+            right after) — the same fresh, consistent pair every other
+            calibration in this file reads (``sync_rotator_to_sky``,
+            ``_rotate_to_pa_attempts``)."""
+            borrowed_slot = await self._borrow_wheel_for_solve()
+            try:
+                angle = await _sky_angle.exposure_context(self, cam)
+                through = await self._narrowband_filter_loaded()
+                async with self.exposure_guard("rotator sign calibration"):
+                    frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
+            self.last_frame = frame
+            await self._publish_preview(frame)
+            tmp = await _write_solve_frame(frame, "rotsign", ra_hours=ra_hint,
+                                           dec_deg=dec_hint,
+                                           instrument=cam.name)
+            opt = self.effective_optics()
+            try:
+                result = await solver.solve(
+                    tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                    fov_deg_hint=opt["fov_h_deg"] or None)
+            finally:
+                await _retire_solve_frame(tmp, "rotsign")
+            if not result.success:
+                from .solve import light as _light
+                raise await _light.failed_solve_error(
+                    frame, result, prefix="rotator sign: plate solve failed",
+                    hub=self, narrowband_filter=through)
+            rec = await _sky_angle.note_solved_rotation(
+                self, result, source="rotator sign calibration",
+                context=angle)
+            if rec is None:
+                raise DeviceError("rotator sign: the solve reported no "
+                                  "usable position angle")
+            return rec["pa_deg"], float(await rot.get_mechanical_position())
+
+        sky0, mech0 = await _solve_once()
+        await rot.move_mechanical(_rotation.mod360(mech0 + step_deg))
+        sky1, mech1 = await _solve_once()
+
+        mech_travel = _rotation.mechanical_travel(mech0, mech1)
+        if abs(mech_travel) < ROTATOR_SIGN_MIN_DEG:
+            raise DeviceError(
+                f"rotator sign: commanded {step_deg:g}° but the rotator "
+                f"only moved {mech_travel:+.2f}° mechanically — too little "
+                f"to read a sign from safely; check it is connected and "
+                f"free to turn")
+        # The same signed-shortest-delta idiom ``_rotate_to_pa_attempts``
+        # already uses for "did the camera follow the last move" (#526) —
+        # a sky angle, not a mechanical one, so ``mechanical_travel`` (tied
+        # to the ROTATOR's own range conventions) is the wrong reuse here.
+        sky_travel = ((sky1 - sky0 + 180.0) % 360.0) - 180.0
+        if abs(sky_travel) < ROTATOR_SIGN_MIN_DEG:
+            raise DeviceError(
+                f"rotator sign: the rotator moved {mech_travel:+.2f}° but "
+                f"the solves saw the sky turn only {sky_travel:+.2f}° — too "
+                f"little to read a sign from safely; a slipping camera or a "
+                f"stuck derotator would do this")
+        sign = 1 if (sky_travel >= 0.0) == (mech_travel >= 0.0) else -1
+        self._rotator_sky_sign = sign
+        bus.log("info",
+                f"rotator: learned sky sign {sign:+d} (mechanical "
+                f"{mech_travel:+.2f}°, sky {sky_travel:+.2f}°)", "rotator")
+        bus.publish("rotator", action="sign_learned", sign=sign,
+                    mechanical_travel_deg=round(mech_travel, 2),
+                    sky_travel_deg=round(sky_travel, 2))
+        return {"sign": sign, "mechanical_travel_deg": round(mech_travel, 2),
+                "sky_travel_deg": round(sky_travel, 2)}
+
     async def rotate_to_pa(self, target_pa_deg: float,
                            exposure_s: float = 3.0,
                            max_attempts: int = 5) -> dict:
@@ -6791,6 +6969,18 @@ class Hub:
         goto_and_center degrades it to rotation_skipped."""
         rot = self.require("rotator")
         cam: Camera = self.require("camera")
+        # R-4 (#145): refused OUTRIGHT, before any exposure, while the sign is
+        # unmeasured. A single local read — ``sign`` is this call's one source
+        # of truth from here on, so the mutant "sign forced to +1" is the one
+        # line below, not two independent ones in ``_rotate_to_pa_attempts``
+        # and ``_approach_rotator``.
+        sign = self._rotator_sky_sign
+        if sign is None:
+            raise DeviceError(
+                "rotator: the sky/mechanical sign has not been learned, so a "
+                "rotation is refused — guessing could turn the camera the "
+                "wrong way (R-4, #145); run the sign calibration (two solves "
+                "around a small known move, see learn_rotator_sign) first")
         from . import providers as _providers
         solver = _providers.pick_solver(self)
         rcfg = config_store.cfg().rotator
@@ -6824,7 +7014,7 @@ class Hub:
             return await self._rotate_to_pa_attempts(
                 rot, cam, solver, rcfg, target, exposure_s, max_attempts,
                 epoch, adjusted_to, moved, error, prev_error, trail,
-                orientation)
+                orientation, sign)
         finally:
             if stopped_loop:
                 with contextlib.suppress(Exception):
@@ -6833,10 +7023,13 @@ class Hub:
     async def _rotate_to_pa_attempts(self, rot, cam, solver, rcfg, target,
                                      exposure_s, max_attempts, epoch,
                                      adjusted_to, moved, error, prev_error,
-                                     trail, orientation) -> dict:
+                                     trail, orientation, sign: int) -> dict:
         """The solve→move→solve attempts themselves. Split out only so
         ``rotate_to_pa`` can wrap them in the loop-resume ``finally`` above
-        without indenting the whole body."""
+        without indenting the whole body. ``sign`` is R-4's learned
+        sky/mechanical sign (#145), read once by the caller and threaded
+        through unchanged — a rotation does not re-measure its own sign
+        mid-flight."""
         # The last move this loop made, as (solved PA before it, mechanical
         # angle before it, the sky move commanded), so the next solve can say
         # whether the camera followed it (#526).
@@ -6933,7 +7126,8 @@ class Hub:
             prev = target
             target = _rotation.map_sky_target(prev, mech, rot.sync_offset_deg,
                                               rcfg.range_type,
-                                              rcfg.range_start_deg)
+                                              rcfg.range_start_deg,
+                                              sky_sign=sign)
             if not _rotation.angle_equals(target, prev, 0.1):
                 # a ±90°/±270° adjustment genuinely changes framing (only ±180
                 # is equivalent) — surface it, never silently (spec §3.3).
@@ -6994,9 +7188,20 @@ class Hub:
                     f"commanded): {trail}")
             prev_error = error
             # From one side, every time (#526): see ``_approach_rotator``.
-            await self._approach_rotator(
+            completed = await self._approach_rotator(
                 rot, _rotation.mod360(orientation + distance), float(mech),
-                rcfg)
+                rcfg, epoch, sign)
+            if not completed:
+                # #574: an abort landed mid-plan (between the overshoot leg
+                # and the return leg) and ``_approach_rotator`` already logged
+                # it and sent no further move. Return the aborted result AT
+                # ONCE — this attempt did solve, so it counts, unlike the
+                # loop-top fence above which abandons an attempt that never
+                # started — rather than waiting for the next attempt's own
+                # fence check to notice on its NEXT solve.
+                return {"rotated": False, "aborted": True,
+                        "pa_deg": orientation, "adjusted_to": adjusted_to,
+                        "attempts": attempt, "error_deg": error}
             last_move = (orientation, float(mech), distance)
             moved = True
         last_error = f"(last error {error:.1f}°)" if error is not None else "(no attempts ran)"

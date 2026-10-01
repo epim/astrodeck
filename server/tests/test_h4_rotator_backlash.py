@@ -188,6 +188,49 @@ def test_on_a_full_range_the_overshoot_never_crosses_mechanical_zero():
     assert list(shifted.moves) == _approx([3.0]), shifted
 
 
+def test_a_zero_travel_move_is_direct():
+    """#584 R1: the rotator is already AT the target. ``travel >= 0.0`` is the
+    branch that sends a zero travel down the "already the approach way, one
+    move" path rather than treating it as "against the approach direction"
+    and sending a pointless overshoot-and-return.
+
+    Mutation 'a zero travel counts as against the approach' (``travel >= 0.0``
+    narrowed to ``travel > 0.0``, #584's R1) went red here:
+
+        >       assert plan.moves == (40.0,), plan
+        E       AssertionError: RotatorMoves(moves=(35.0, 40.0), skipped=None)
+        E       assert (35.0, 40.0) == (40.0,)
+        E
+        E         At index 0 diff: 35.0 != 40.0
+        E         Left contains one more item: 40.0
+    """
+    plan = one_sided_moves(40.0, 40.0, "full", 0.0)
+    assert plan.moves == (40.0,), plan
+    assert plan.skipped is None, plan
+
+
+def test_an_exact_180_degree_travel_ties_to_the_approach_way():
+    """#584 R4: ``mechanical_travel``'s docstring says a tie at exactly 180
+    degrees goes to +180 (``raw <= 180.0``), matching how
+    ``SimRotator.move_mechanical`` travels — so a move exactly half the
+    full range away is never treated as running against the approach
+    direction, and is one move, not an overshoot-and-return for nothing.
+
+    Mutation 'the 180 tie breaks the other way' (``raw <= 180.0`` narrowed to
+    ``raw < 180.0``, #584's R4) went red on the first assertion, before the
+    second ever ran:
+
+        >       assert mechanical_travel(40.0, 220.0) == 180.0
+        E       assert -180.0 == 180.0
+        E        +  where -180.0 = <function mechanical_travel at 0x...>(40.0, 220.0)
+    """
+    from astrodeck.rotation import mechanical_travel
+    assert mechanical_travel(40.0, 220.0) == 180.0
+    plan = one_sided_moves(40.0, 220.0, "full", 0.0)
+    assert plan.moves == (220.0,), plan
+    assert plan.skipped is None, plan
+
+
 # ------------------------------------------------------- the simulator's play
 
 
@@ -333,6 +376,60 @@ async def test_at_the_range_edge_the_move_is_direct_and_says_so(sim_hub,
     skipped = [m for _, m, src in bus_lines
                if src == "rotator" and SKIPPED_WORDS in m]
     assert len(skipped) == 1, bus_lines
+
+
+# ------------------------------------------------- the motion fence, per leg
+
+
+async def test_a_stop_mid_overshoot_abandons_the_return_leg(sim_hub,
+                                                             bus_lines,
+                                                             monkeypatch):
+    """#574: the one-side approach's overshoot leg is a second
+    ``move_mechanical`` the loop-top fence (``_rotate_to_pa_attempts``) never
+    sees, because each one WAITS for the rotator to arrive — seconds the
+    engine's rotate holds no busy-task name for, so a STOP cancels neither
+    it nor a goto. A STOP landing right after the overshoot leg lands must
+    still stop the RETURN leg; sending it anyway is the camera moving after
+    the operator pressed STOP.
+
+    Mutation 'no check before the second leg' (the
+    ``self._motion_committed_clean(epoch)`` call inside ``_approach_rotator``
+    removed, both legs always sent) went red here:
+
+        >       assert rot.moves == _approx([MECH - 10.7]), rot.moves
+        E       AssertionError: [126.82999999999996, 131.82999999999996]
+        E       assert [126.82999999...2999999999996] == [126.83 ± 1.0e-09]
+        E
+        E         Left contains one more item: 131.82999999999996
+    """
+    _rig_at(sim_hub, play=0.0, slack=0.0)
+    rot = sim_hub.devices["rotator"]
+    rot.moves.clear()
+
+    real_move = SimRotator.move_mechanical
+    calls = {"n": 0}
+
+    async def move_then_stop(self, mech_deg):
+        # The real move lands first (the overshoot leg completes — the rig
+        # really did turn, which is exactly why a late-arriving STOP matters:
+        # there is a real camera orientation to leave alone now), THEN the
+        # fence is bumped, the same order a STOP mid-wait would land in.
+        await real_move(self, mech_deg)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            sim_hub.bump_motion_epoch()
+
+    monkeypatch.setattr(SimRotator, "move_mechanical", move_then_stop)
+
+    result = await sim_hub.rotate_to_pa(PA - 5.7)
+
+    assert rot.moves == _approx([MECH - 10.7]), rot.moves
+    assert result["rotated"] is False and result["aborted"] is True, result
+    assert result["attempts"] == 1, result
+    assert result["pa_deg"] == pytest.approx(PA), result
+    assert result["error_deg"] == pytest.approx(5.7, abs=1e-6), result
+    assert any("rotate abandoned: aborted" in m for _, m, src in bus_lines
+               if src == "rotator"), bus_lines
 
 
 # ------------------------------------------- the camera that did not follow

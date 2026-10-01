@@ -636,23 +636,35 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
     not have at all, so all seven hashes move together. Checked: regenerated
     from the SAME ``_dump`` below, against the fixed code, with no other
     change to the Examples or the dump's own resets.
+
+    RE-PINNED AGAIN IN BACKLOG WP-34 (#195, 2026-09-30), deliberately, for
+    one change and nothing else: ``SequencePlan`` gained
+    ``resume_across_nights``, a field every one of these seven dumps now
+    carries (``plan.model_dump`` writes every field, not only the ones
+    ``compile_plan`` chose to write), so all seven hashes move together
+    again, whatever its own value (True for example-campaign and
+    example-eaa, whose DUSK WINDOWs are not "Single night"; False for the
+    other five, #195: "Single night" means auto-resume does not arm across
+    nights). Diffed against the pre-change dump for each of the seven and
+    confirmed this one key is the only thing that moved. Regenerated from
+    the SAME ``_dump`` below, against the fixed code, with no other change.
     """
 
     BEFORE = {
         "example-campaign":
-            "c471f1e45b000d9fb5f749c6a117eeca290abd6d68b7b4ff9158936dc0059c64",
+            "dc0a0db5532cc3330f71da63dc7319e99c0f27d1ab0a92558d0e6cbb1d9b16f5",
         "example-m31":
-            "fe21b040ed860e8d8ac705dc6f9b870bfe186c51be3c591082731deac65e35ba",
+            "e8c802454880bea53e7fe9d26674fd3ba2fb6aa8b8f1169b9cadbe89d421c66d",
         "example-m16":
-            "b52f3243aaeeb357edc186e0251d19e32410cec3aaa34fe0907f3582fd776b7a",
+            "e2c5f6ca44a99380183d839c3559678e120c2d5da6e82c326c30fe6cc3e906c6",
         "example-cycle":
-            "04e71d1ec8a9b707104d77c5fe7f43edb6f520a5e205c5f374263e7076740fb2",
+            "209ed15c4dc3d14bbd5c9ad33f5899b05a3843e0d9b5b14f49525e9fde09fe07",
         "example-pool":
-            "80431c4d9bb24f79e0afba13cccca5d9cb3b0719f1cf671b6d2189cc837a77b2",
+            "6e9f8d1c78c7f36bd13cdd0d13f6563b10ae3d4afbe63d7f53d55c4b219d97a1",
         "example-nb":
-            "7fdfe1d9a411e80e1724bb7e3f9581a4e3c0e5bffffe697fd808bad5b540a947",
+            "35cb51dd58cb87dd9fb0e8a52835a2bf00469344e0c4ae0562deaec4fbabee89",
         "example-eaa":
-            "fb6f5ec4ef967c6418d36f50b388d5d7e7657045c26e24b1afb04fbd47cdf5bf",
+            "4b05df067fcbb2baa4f627f98d946936faa73cb6dd6d1361ccad5d29cfa25ab0",
     }
 
     @staticmethod

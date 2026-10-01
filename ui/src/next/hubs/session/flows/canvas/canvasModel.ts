@@ -24,6 +24,7 @@
 
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
 import { portPos, type FlowTier, type Point, type PortDir } from "../../../../../components/flows/geometry";
+import { laneMismatchRefusal } from "../../../../../components/flows/flowLoop";
 import type {
   FlowEdgeRec, FlowLogLine, FlowLogTone, FlowNodeRec, FlowNodeStatus,
   FlowRunPhase, PortKind,
@@ -179,16 +180,15 @@ export function resolveWireDrop(
   // The lanes are the grammar. A flow port carries the single run cursor, an
   // event port fires any number of times, and the engine runs them through
   // different machinery - so the mismatch is refused, with a sentence.
+  // SHARED WITH THE STORE AND THE CLASSIC CANVAS (#197, backlog WP-36): this
+  // used to be its own copy of the same three lines `flowLoop.ts`'s
+  // `laneMismatchRefusal` and `flowsConnect` already carry, which is exactly
+  // the way the self-wire check above and the loop check below each read
+  // from one place instead of several. One checker, one sentence.
   const kOut = kindOf(wire.from, wire.fromPort, "out");
   const kIn = kindOf(nodeId, portId, "in");
-  if (kOut && kIn && kOut !== kIn) {
-    return {
-      ok: false,
-      refusal:
-        `${kOut === "flow" ? "Flow" : "Event"} output can't feed `
-        + `${kIn === "flow" ? "a flow" : "an event"} input`,
-    };
-  }
+  const laneRefusal = laneMismatchRefusal(kOut, kIn);
+  if (laneRefusal) return { ok: false, refusal: laneRefusal };
   // No flow loops (#149). A flow wire whose destination already reaches its
   // source closes a circle the run cursor cannot travel: the compiler drops
   // every stage on it, and none of them shoots a frame. Refused here, out loud,

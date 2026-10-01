@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from ..aio import reap
 from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..imaging.stars import (OVEREXPOSED_FRAC, focus_size, median_hfr,
@@ -1273,8 +1274,7 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         # awaited — the run is already being torn down.
         if pending is not None:
             pending.cancel()
-            with contextlib.suppress(BaseException):
-                await pending
+            await reap(pending)
         with contextlib.suppress(Exception):
             await asyncio.shield(focuser.move_to(start_pos))
         bus.publish("focus", state="failed",

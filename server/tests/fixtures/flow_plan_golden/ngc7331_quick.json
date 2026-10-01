@@ -57,6 +57,7 @@
   "park_when_done": true,
   "recover_guiding": null,
   "refocus_on_temp_delta_c": null,
+  "resume_across_nights": false,
   "safety_check": true,
   "targets": [
     {

@@ -16,6 +16,7 @@ import time
 from collections import deque
 from typing import Any
 
+from ..aio import reap
 from ..events import bus
 from .base import Guider, GuideStats
 
@@ -148,18 +149,12 @@ class PHD2Guider(Guider):
         self._reconnect_task = None
         if rtask:
             rtask.cancel()
-            try:
-                await rtask
-            except (asyncio.CancelledError, Exception):
-                pass
+            await reap(rtask)
         task = self._listen_task
         self._listen_task = None
         if task:
             task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await reap(task)
         if self._writer:
             try:
                 self._writer.close()

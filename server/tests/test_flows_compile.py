@@ -464,6 +464,25 @@ class TestTheExamplesCompile:
             AssertionError: example-campaign changed its compile beyond the
             S3 keys
             assert '{"auto...ge": 30}}' == '{"auto...ge": 30}}'
+
+        BOUNDED THE SAME WAY, AGAIN, FOR BACKLOG WP-34 (#195, 2026-09-30):
+        every Example whose DUSK WINDOW has no explicit ``repeat`` (so it
+        defaults to "Single night") now compiles ``resume_across_nights:
+        false`` (#195: "Single night" means auto-resume does not arm across
+        nights) -- example-m31, example-m16, example-cycle, example-pool and
+        example-nb, five of the six with a DUSK node; example-campaign's own
+        explicitly repeats, so it carries no opinion here and the key stays
+        absent, exactly as before. Popped off and checked here, not folded
+        into the fixture, for the same reason ``twilight_deg`` is above.
+
+        Mutant "resume_across_nights not bounded" (this pop deleted, the
+        fixture left alone), observed for the five:
+            AssertionError: example-cycle changed its compile beyond the S3
+            keys
+            assert '{"name": "M3...ghts": false}' == '{"name": "M3...shold": 40}]}'
+              Skipping 1420 identical leading characters in diff, use -v to show
+              - old": 40}]}
+              + old": 40}], "resume_across_nights": false}
         """
         ex = next((e for e in examples() if e.id == ex_id), None)
         assert ex is not None, f"{ex_id} is no longer an Example"
@@ -491,6 +510,19 @@ class TestTheExamplesCompile:
             assert not dusk_nodes or dusk_nodes[0].params.get(
                 "start") == "Clock time", (
                 f"{ex_id} has a sun-based DUSK WINDOW with no twilight_deg")
+        if "resume_across_nights" in compiled:
+            resume = compiled.pop("resume_across_nights")
+            repeat = str((dusk_nodes[0].params.get("repeat") if dusk_nodes
+                         else None) or "Single night")
+            assert resume is False and dusk_nodes and repeat == "Single night", (
+                f"{ex_id} compiles resume_across_nights although its DUSK "
+                f"WINDOW is not Single night: {resume}, {repeat}")
+        else:
+            repeat = str((dusk_nodes[0].params.get("repeat") if dusk_nodes
+                         else None) or "Single night")
+            assert not dusk_nodes or repeat != "Single night", (
+                f"{ex_id} has a Single-night DUSK WINDOW with no "
+                f"resume_across_nights")
         got = json.dumps(compiled, ensure_ascii=False)
         want = json.dumps(LEGACY_EXAMPLES[ex_id], ensure_ascii=False)
         assert got == want, f"{ex_id} changed its compile beyond the S3 keys"

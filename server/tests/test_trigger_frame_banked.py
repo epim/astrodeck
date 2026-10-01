@@ -224,7 +224,19 @@ async def test_a_rule_that_does_not_fire_changes_nothing(group_hub,
     """CONTROL. The same plan with a rule whose threshold no frame reaches
     publishes the same night, byte for byte, as the plan with no rule at
     all: moving the banking ahead of the instructions changes nothing when
-    nothing fires. GREEN under "record after the instructions" (observed)."""
+    nothing fires. GREEN under "record after the instructions" (observed).
+
+    RE-PINNED FOR WP-31 (backlog ruling D-04, owner-approved 2026-09-30,
+    #595). ``engine.start`` now logs a WARNING naming every session its
+    singleton silently disarmed. Both runs here share ``group_hub`` and the
+    session store, and both plans are named "trigger frame" (`_plan`'s own
+    default), so the second run's start finds the first run's session still
+    auto-resume-armed and disarms it, logging "starting 'trigger frame'
+    disarmed auto-resume for: trigger frame" for the SECOND run only -- a
+    fact about two runs sharing one store in this harness, not a thing the
+    rule under test moved, so it is dropped from both traces before the
+    byte-for-byte comparison rather than weakening what this case is about.
+    """
     quiet = Instruction(id="never", trigger="on_hfr_above", threshold=99.0,
                         action="run_target", target_arg="B")
     ruled, seen = await _run(group_hub, monkeypatch,
@@ -236,7 +248,14 @@ async def test_a_rule_that_does_not_fire_changes_nothing(group_hub,
     assert seen == [], f"premise: the rule never fired: {seen}"
     assert ruled.shots() == bare.shots() == [("A", "L"), ("A", "L"),
                                              ("B", "L")], ruled.shots()
-    assert ruled.trace_text() == bare.trace_text()
+    # D-04 (#595): see the docstring above for why this one line is dropped
+    # from both traces before the comparison.
+    drop = "disarmed auto-resume for"
+    ruled_trace = "\n".join(l for l in ruled.trace_text().splitlines()
+                            if drop not in l)
+    bare_trace = "\n".join(l for l in bare.trace_text().splitlines()
+                           if drop not in l)
+    assert ruled_trace == bare_trace
 
 
 async def test_in_accepted_mode_a_rejected_trigger_frame_stays_a_reject(
