@@ -5,12 +5,17 @@ name: deploy-relay
 # docs/infrastructure/. Requires the FLY_API_TOKEN repo secret (GitHub Actions
 # secrets are write-only: rotate, don't read).
 #
-# The push trigger (any change under relay/ on main) is OFF since 2026-09-30.
-# This job deploys without the build-identity args scripts/deploy_relay.ps1
-# passes and never checks /healthz's identity afterwards (#486), so a merge to
-# main would put an unidentified relay on Fly. The operator's path is
-# scripts/deploy_relay.ps1 (backlog plan WP-13 decides whether this job gets
-# the identity args back or stays manual).
+# The push trigger (any change under relay/ on main) is OFF since 2026-09-30
+# and MUST NOT be re-added: this job is one of several deploy paths that still
+# need a human to run it on purpose. The operator's day-to-day path remains
+# scripts/deploy_relay.ps1, run from the workstation.
+#
+# This job's own deploy step DOES pass the same build-identity args
+# scripts/deploy_relay.ps1 does, and polls /healthz for them afterwards
+# (#486, WP-13): a dispatch of this workflow is a real, if rare, deploy path
+# (e.g. after rotating FLY_API_TOKEN, where the workstation's flyctl login may
+# not be the one that still has access), and an identity-less relay on Fly is
+# the same problem whether it got there from a laptop or from Actions.
 
 on:
   workflow_dispatch: {}   # manual deploy (e.g. after rotating FLY_API_TOKEN)
@@ -47,8 +52,75 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Read the AstroDeck version for the build identity (#486)
+        id: version
+        # Mirrors scripts/deploy_relay.ps1's Get-ProjectVersion: only the
+        # [project] table's version, since a [tool.*] table can carry a
+        # version key too. Read from the checked-out commit, the same one
+        # github.sha names, so the identity always matches what is deployed.
+        run: |
+          version=$(python3 - <<'PY'
+          import re
+          in_project = False
+          with open("server/pyproject.toml", encoding="utf-8") as f:
+              for line in f:
+                  m = re.match(r"^\s*\[([^\]]+)\]\s*$", line)
+                  if m:
+                      in_project = m.group(1).strip() == "project"
+                      continue
+                  if in_project:
+                      m2 = re.match(r'^\s*version\s*=\s*"([^"]+)"', line)
+                      if m2:
+                          print(m2.group(1))
+                          break
+          PY
+          )
+          if [ -z "$version" ]; then
+            echo "could not read the [project] version from server/pyproject.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Deploy relay
         working-directory: relay
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: flyctl deploy --remote-only
+        run: |
+          flyctl deploy --remote-only \
+            --build-arg "RELAY_BUILD_COMMIT=${{ github.sha }}" \
+            --build-arg "RELAY_BUILD_VERSION=${{ steps.version.outputs.version }}"
+      - name: Verify /healthz reports this commit (#486)
+        # flyctl's exit code says the rollout finished, not which code is
+        # serving: only the relay can say that. Same proof deploy_relay.ps1
+        # runs, so a dispatch of this workflow cannot silently leave an
+        # unidentified (or stale) relay running the way a bare
+        # `flyctl deploy` with no verification could.
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          sha_lower=$(echo "$SHA" | tr 'A-Z' 'a-z')
+          deadline=$((SECONDS + 300))
+          last=""
+          while true; do
+            body=$(curl -fsS --max-time 15 -H 'Cache-Control: no-cache' \
+                   https://astrodeck-relay.fly.dev/healthz || true)
+            got=$(printf '%s' "$body" | python3 -c \
+                  "import json,sys
+          try:
+              d = json.load(sys.stdin)
+              print(str(d.get('commit', '')).strip().lower())
+          except Exception:
+              print('')" 2>/dev/null || true)
+            if [ -n "$got" ] && [ "$got" = "$sha_lower" ]; then
+              echo "relay deployed: /healthz reports commit $got"
+              exit 0
+            fi
+            if [ "$body" != "$last" ]; then
+              echo "   /healthz: ${body:-no answer}"
+              last="$body"
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "the relay's /healthz did not report commit $SHA within 300s; it last answered: ${body:-no answer}" >&2
+              exit 1
+            fi
+            sleep 5
+          done

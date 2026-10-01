@@ -1,7 +1,19 @@
 # AstroDeck relay -- runtime deps (kept SEPARATE from the server venv).
 # Minimal, host-agnostic. The pure protocol/proxy/registry/oidc core needs only
 # the stdlib + cryptography; starlette/uvicorn/websockets are the server shell.
-starlette>=1.6.0
-uvicorn[standard]>=0.30
-websockets>=14.0
-cryptography>=50.0.0
+#
+# Pinned to an exact version (#597): an unpinned `>=` line let a routine
+# rebuild silently pull whatever was newest on PyPI the day it ran. The v9
+# image (built 2026-09-28, Fly machine update 20:06:41Z) picked up uvicorn
+# 0.54.0, websockets 17.1 and starlette 1.7.0 that way -- the only libraries
+# that changed between v8 (which held a tunnel for 13-38 h) and v9 (which
+# drops one every hour). Pinned here to those same v9 versions, so a rebuild
+# reproduces the image already running rather than drifting again; the v8
+# versions could not be recovered to compare against. cryptography has no
+# known-good version to go back to, so it is pinned to the newest version
+# that resolved on 2026-09-30. server/tests/test_w2_relay_requirements_pinned.py
+# fails on any line here that is not an exact `==` pin.
+starlette==1.7.0
+uvicorn[standard]==0.54.0
+websockets==17.1
+cryptography==50.0.2

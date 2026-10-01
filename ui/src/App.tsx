@@ -742,7 +742,13 @@ export default function App() {
                 </span>
               )}
               {resumeArm.hold && (
-                <span className="text-dim"> · holding: {resumeArm.hold.reason}</span>
+                // site_detail carries the numbers behind a words-only reason
+                // (#258, #233); absent for a principal without
+                // view.site_derived, which is the normal case, not an error.
+                <span className="text-dim">
+                  {" · holding: " + resumeArm.hold.reason
+                    + (resumeArm.hold.site_detail ? ` - ${resumeArm.hold.site_detail}` : "")}
+                </span>
               )}
             </span>
             <div className="flex-1" />

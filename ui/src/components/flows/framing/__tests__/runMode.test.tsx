@@ -546,9 +546,20 @@ await test("a viewer during a meridian wait sees no panel being shot and no timi
   eq(runRows(), { "2-2": `${SET_ASIDE_TONIGHT}: ${REASON}` }, "the viewer's PANELS run lines");
   eq(skyStates()["2-2"], "set_aside", "2-2 for the viewer");
   const text = String(q("target-framing-sheet")?.textContent ?? "");
-  const tokens = timingTokens(WAIT_VIEWER);
+  // #166 item 1 (W2 integration): the server now withholds `live.meridian_eta_s`
+  // from a viewer's OWN recorded state too (api/redact.py's `_DERIVED_NODES`),
+  // so WAIT_VIEWER no longer carries "813"/"14 min" at all -- there is nothing
+  // left for this sheet to leak a second way. The premise and the check both
+  // move to WAIT_OPERATOR's tokens (the same countdown, still present there),
+  // graded against the VIEWER's rendered text: the sheet must not show it
+  // even if a future change to this fixture or route ever put it back on the
+  // wire, which is the regression this case exists to catch.
+  const tokens = timingTokens(WAIT_OPERATOR);
   assert(tokens.includes("813") && tokens.includes("14 min"),
-    `premise: the viewer's recorded state carries the meridian countdown: ${JSON.stringify(tokens)}`);
+    `premise: the operator's recorded state carries the meridian countdown: ${JSON.stringify(tokens)}`);
+  assert(!timingTokens(WAIT_VIEWER).includes("813"),
+    "premise: #166 item 1 means the viewer's own recorded state no longer " +
+    "carries the countdown at all");
   const shown = tokens.filter((t) => new RegExp(`(^|[^0-9])${t}($|[^0-9])`).test(text));
   eq(shown, [], "timing on the viewer's sheet");
   // The operator's wait names its panel and pass, and is not shooting it

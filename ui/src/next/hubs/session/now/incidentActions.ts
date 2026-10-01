@@ -90,8 +90,10 @@ export const INCIDENT_ACTIONS: Record<string, IncidentActionSpec> = {
   // site_lat/site_lon - server/astrodeck/api/app.py:2476-2481, reasoned at
   // :2462-2471). Declaring control.capture alone let a control.capture
   // holder without view.weather see this action as unlocked.
+  // #260: the label names what the route actually changes (the forecast rain
+  // veto, weather.py `veto_reason`), not the in-run cloud hold it cannot touch.
   ignore_weather: spec({
-    id: "ignore_weather", label: "IGNORE WEATHER TONIGHT", kind: "endpoint",
+    id: "ignore_weather", label: "IGNORE FORECAST RAIN TONIGHT", kind: "endpoint",
     path: "/api/weather/ignore-tonight", cap: "control.capture", cap2: "view.weather",
   }),
   // --- safety ------------------------------------------------------------
@@ -309,10 +311,19 @@ export function actionsFor(inc: Incident, ctx: RefineContext): IncidentAction[] 
   const keep = inc.actions.filter((a) => specFor(a.id) != null);
   switch (inc.kind) {
     case "cloud": {
+      // #260: ignore_weather lifts only the forecast rain veto (weather.py
+      // `veto_reason`: "RAIN VETOES. CLOUD DOES NOT.") and never the in-run
+      // cloud hold this card is about, so it must never be the card's primary
+      // action - that was the false affordance an operator met at 2am. WAIT
+      // carries primary instead, since letting the hold run its course is
+      // what actually clears it. The deferred variant's lone WAIT action
+      // (`CLOUD_DEFERRED_PILL`) is unaffected: the map below only ever touches
+      // an `ignore_weather` id, which that card never carries.
       const out = keep.map((a) =>
         a.id === "ignore_weather" && ctx.weatherIgnored
-          ? { ...a, label: "UNDO - STOP IGNORING WEATHER", primary: true }
-          : a.id === "ignore_weather" ? { ...a, primary: true } : { ...a, primary: false });
+          ? { ...a, label: "UNDO - STOP IGNORING FORECAST RAIN", primary: false }
+          : a.id === "ignore_weather" ? { ...a, primary: false }
+            : a.id === "wait" ? { ...a, primary: true } : a);
       return out;
     }
     case "link":

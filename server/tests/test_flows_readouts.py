@@ -457,8 +457,28 @@ class TestWhichTargetsAreWhichBlocks:
 
     def test_a_pool_is_walked_past_and_has_no_readouts(self):
         """A POOL's members are plan targets but not a TARGET block: they
-        are consumed in order and answered nothing, and the TARGET's
-        readouts are its own (one capture of 5, not a member's)."""
+        are consumed in order and answered nothing, and the capture after
+        the pool is not the ARMING target's either.
+
+        RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+        2026-09-30): this graph has TWO owner-type blocks (``t``, a TARGET,
+        and ``p``, a POOL -- ``OWNER_TYPES`` names both), so
+        ``needs_wire_scoping`` now turns on for it, same as any other
+        two-owner flow. The capture's wire leads to ``p`` (``p.target ->
+        c.run``), not to ``t`` (``t`` only ARMS the pool, on the ``arm``
+        port), so ``owner_of`` now correctly gives it to the POOL, which
+        means it is no longer ``t``'s 5 subs at all -- those subs are the
+        pool's members' (M31, M33), which readouts does not report per
+        block (the pool itself gets no entry, by the same design this
+        test's own docstring already named). ``t`` keeps its entry (every
+        TARGET does) but now honestly reports owning nothing, rather than
+        the pool's capture it never actually ran. Before #151 this flow's
+        only owner was ``t`` (a POOL was never a mosaic, so wire scoping
+        never turned on for a lone POOL+TARGET pair), so canvas order gave
+        the capture to ``t`` by position -- the same class of leak #151
+        closes elsewhere, here showing up as a target credited with frames
+        a pool actually ran.
+        """
         graph = {"nodes": [
             {"id": "t", "type": "target", "x": 0, "y": 0,
              "params": {"name": "M42", "ra": "05h 35m 17s",
@@ -473,7 +493,9 @@ class TestWhichTargetsAreWhichBlocks:
                        "toPort": "run"}]}
         got = _answer(graph)
         assert set(got) == {"t"}
-        assert got["t"]["subs_total"] == 5
+        assert got["t"]["subs_total"] == 0, (
+            "the capture belongs to the POOL's wire, not to the arming "
+            "TARGET, so t must not be credited with the pool's subs")
 
     def test_a_refused_compile_has_no_readouts(self):
         """No plan (the compile refused a half-built graph): nothing to

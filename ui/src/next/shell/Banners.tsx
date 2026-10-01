@@ -91,9 +91,15 @@ const NO_SAFETY_TEXT =
 const WEATHER_ALERT_TEXT =
   "High cloud in tonight's forecast. It does not hold the resume - a run holds "
   + "on what its own frames show.";
+// #260: this used to claim the override also turned off the IN-RUN cloud
+// hold. It only disarms `WeatherService.veto_reason`'s forecast-rain check
+// (weather.py: "RAIN VETOES. CLOUD DOES NOT."); a running cloud hold is
+// decided from the rig's own frames and never reads this flag at all. Same
+// corrected sentence as `now/NowBanners.tsx`'s WEATHER_OVERRIDE, so the two
+// surfaces cannot disagree about what the override does.
 const WEATHER_OVERRIDE_TEXT =
-  "Weather override on for tonight: the in-run cloud hold is off as well as the "
-  + "forecast.";
+  "Weather override on for tonight: forecast rain will not hold auto-resume "
+  + "until the next dusk (cloud forecasts never do).";
 
 export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.Element | null {
   const [dismissed, setDismissed] = useState<Record<string, true>>({});
@@ -189,7 +195,12 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
   const armed = resumeArm?.armed;
   if (armed && !runBanner?.active && !onSession && armedDismissed !== armed.id) {
     const owed = armed.owed > 0 ? ` - ${armed.owed} frame${armed.owed === 1 ? "" : "s"} owed` : "";
-    const hold = resumeArm?.hold ? ` - holding: ${resumeArm.hold.reason}` : "";
+    // site_detail carries the numbers behind a words-only reason (#258, #233);
+    // absent for a principal without view.site_derived, the normal case.
+    const hold = resumeArm?.hold
+      ? ` - holding: ${resumeArm.hold.reason}`
+        + (resumeArm.hold.site_detail ? ` - ${resumeArm.hold.site_detail}` : "")
+      : "";
     entries.push({
       key: `armed:${armed.id}`,
       kind: "armed",
