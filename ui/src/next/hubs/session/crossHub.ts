@@ -35,6 +35,7 @@ import { runIsLive } from "../../../lib/lastSessionFrame";
 import { useResumeArm, useLastReportId, useSeq, useWeather } from "../../../store";
 import { nav, useRoute } from "../../router";
 import { useIncidents } from "../../shell/useIncidents";
+import type { Incident } from "../../lib";
 import { useCampaign } from "./now/useCampaign";
 import { useActiveSession } from "./now/sessionData";
 
@@ -154,6 +155,19 @@ export interface BannerSpec {
   onDismiss: () => void;
 }
 
+/** The incident's own identity, not just its KIND (#268). Every cloud card
+ *  shares `kind: "cloud"` - the open hold and the deferred-hold card
+ *  (`sky.hold_deferred`, #221/#244) both do - so a dismissal keyed on kind
+ *  alone stuck for the rest of the session: a fresh hold after midnight, or a
+ *  deferred hold during a wait, never bannered again once the first cloud card
+ *  had been dismissed. `pill` tells HOLDING from WAITING apart even when
+ *  neither has dated itself (`sinceMs` null on both); `sinceMs` tells a fresh
+ *  hold from the one just dismissed when the pill repeats. No owner decision
+ *  gates this WP (WP-60); the key shape is the issue's own suggested fix. */
+function incidentBannerId(inc: Incident): string {
+  return `inc-${inc.kind}-${inc.pill}-${inc.sinceMs ?? "none"}`;
+}
+
 /** The first sentence of a paragraph, for a banner that has one line to say
  *  what a whole incident card says. */
 export function firstSentence(s: string): string {
@@ -220,12 +234,13 @@ export function useSessionBanners(nowMs: number = Date.now()): BannerSpec[] {
   //    the hub that already shows the card at full size.
   const top = incidents[0];
   if (top && route.hub !== "session") {
+    const id = incidentBannerId(top);
     out.push({
-      id: `inc-${top.kind}`,
+      id,
       tone: "warn",
       text: `${top.title}. ${firstSentence(top.engine)}`,
       cta: { label: "session", onPress: () => nav.go("/session/now") },
-      onDismiss: () => dismiss(`inc-${top.kind}`),
+      onDismiss: () => dismiss(id),
     });
   }
 
