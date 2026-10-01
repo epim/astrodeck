@@ -130,17 +130,21 @@ half of (#219).
 
 ## ASTAP — plate solver (MPL-2.0), bundled binary
 
-AstroDeck's releases bundle the ASTAP command-line solver (`astap_cli`) and one
-Gaia-derived star database, so that plate solving works without the user
-installing anything. ASTAP is by Han Kleijn — https://www.hnsky.org/astap.htm,
+AstroDeck's release tooling can bundle the ASTAP command-line solver (`astap_cli`)
+and a Gaia-derived star database. Check each artifact's manifest: the local
+October audit tarball explicitly omits ASTAP, and that omission is not evidence
+about a complete published release. ASTAP is by Han Kleijn — https://www.hnsky.org/astap.htm,
 source at https://github.com/han-k59/astap.
 
 ASTAP is licensed under the **Mozilla Public License, Version 2.0**. A copy is
 at https://mozilla.org/MPL/2.0/. MPL-2.0 is file-level copyleft covering ASTAP's
 own source; AstroDeck invokes `astap_cli` as a **separate process over its
 command-line interface** and does not link against it, so no MPL obligation
-extends to AstroDeck's code. Our obligation is to say so and to point at the
-upstream source, which is what this section does.
+extends merely through that command-line invocation. A binary distribution must
+carry the applicable licence and tell recipients how to obtain corresponding
+source; preserve the exact distributed version and its notices. The generated
+credits contain the full MPL text. This source link alone does not establish
+compliance for an uninspected binary or database.
 
 ### Star databases — ESA/Gaia/DPAC
 
@@ -165,3 +169,69 @@ non-commercial terms which AstroDeck has no reason to inherit:
 * HyperLEDA — *"available in open-source for non-commercial purposes."*
 
 AstroDeck has its own object catalogue, so nothing is lost by excluding them.
+
+
+## Components verified inside the October 2026 Windows artifact
+
+The local Windows executable inspected on 2026-10-01 contains additional
+components inside dependency wheels, interpreter libraries and compiled output.
+Their licences are not replaced by the top-level Python package's licence.
+The exact versions, artifact hashes, upstream text sources and scope are in
+[the bundled-component record](tools/licence/bundled-components.json).
+Full notices are linked below and reproduced in the generated credits.
+
+This inventory is not distribution clearance. WCSLIB and the GCC runtime retain
+explicit owner decisions under #638. Player One binaries are present in the
+executable even though the source tarball excludes them (#632). No written
+redistribution confirmation was found. The nebula background's provenance
+remains unresolved (#637). These findings are recorded in
+[the artifact audit](tools/licence/dependency-artifact-audit.md).
+
+| Component in the inspected artifact | Licence | Full text and notices |
+| --- | --- | --- |
+| WCSLIB (inside Astropy) 8.6 in Astropy 8.0.1 | LGPL-3.0-or-later | [bundled-wcslib-8.6-notice.txt](tools/licence_texts/bundled-wcslib-8.6-notice.txt); [bundled-wcslib-lgpl-3.0.txt](tools/licence_texts/bundled-wcslib-lgpl-3.0.txt); [bundled-gpl-3.0.txt](tools/licence_texts/bundled-gpl-3.0.txt) |
+| OpenBLAS (inside NumPy) 0.3.34.106.0 in NumPy 2.5.3 | BSD-3-Clause | [bundled-numpy-2.5.3-notices.txt](tools/licence_texts/bundled-numpy-2.5.3-notices.txt) |
+| LAPACK (inside NumPy OpenBLAS) Bundled with OpenBLAS 0.3.34.106.0 / NumPy 2.5.3; separate LAPACK revision not established | BSD-3-Clause-Open-MPI | [bundled-numpy-2.5.3-notices.txt](tools/licence_texts/bundled-numpy-2.5.3-notices.txt) |
+| GCC runtime library (inside NumPy OpenBLAS) Bundled with NumPy 2.5.3; separate GCC runtime revision not established | GPL-3.0-or-later WITH GCC-exception-3.1 | [bundled-numpy-2.5.3-notices.txt](tools/licence_texts/bundled-numpy-2.5.3-notices.txt) |
+| CPython bundled interpreter 3.12.10 | PSF-2.0 | [bundled-cpython-3.12.10.txt](tools/licence_texts/bundled-cpython-3.12.10.txt) |
+| OpenSSL (CPython runtime libraries) 3.0.16 | Apache-2.0 | [bundled-openssl-3.0.16.txt](tools/licence_texts/bundled-openssl-3.0.16.txt) |
+| OpenSSL (inside cryptography) 4.0.3 in cryptography 50.0.2 | Apache-2.0 | [bundled-openssl-4.0.3.txt](tools/licence_texts/bundled-openssl-4.0.3.txt) |
+| setuptools (retained in frozen runtime) 84.0.0 | MIT | [bundled-setuptools-84.0.0.txt](tools/licence_texts/bundled-setuptools-84.0.0.txt) |
+| setuptools vendor: backports.tarfile 1.2.0 | MIT | [bundled-setuptools-backports-tarfile-1.2.0-license.txt](tools/licence_texts/bundled-setuptools-backports-tarfile-1.2.0-license.txt); [bundled-setuptools-backports-tarfile-1.2.0-lars-notice.txt](tools/licence_texts/bundled-setuptools-backports-tarfile-1.2.0-lars-notice.txt) |
+| setuptools vendor: jaraco.context 6.1.0 | MIT | [bundled-setuptools-jaraco-context-6.1.0-license.txt](tools/licence_texts/bundled-setuptools-jaraco-context-6.1.0-license.txt) |
+| setuptools vendor: jaraco.functools 4.4.0 | MIT | [bundled-setuptools-jaraco-functools-4.4.0-license.txt](tools/licence_texts/bundled-setuptools-jaraco-functools-4.4.0-license.txt) |
+| setuptools vendor: jaraco.text 4.0.0 | MIT | [bundled-setuptools-jaraco-text-4.0.0-license.txt](tools/licence_texts/bundled-setuptools-jaraco-text-4.0.0-license.txt) |
+| setuptools vendor: more-itertools 10.8.0 | MIT | [bundled-setuptools-more-itertools-10.8.0-license.txt](tools/licence_texts/bundled-setuptools-more-itertools-10.8.0-license.txt) |
+| setuptools vendor: packaging 26.0 | Apache-2.0 OR BSD-2-Clause | [bundled-setuptools-packaging-26.0-license.txt](tools/licence_texts/bundled-setuptools-packaging-26.0-license.txt); [bundled-setuptools-packaging-26.0-license-apache.txt](tools/licence_texts/bundled-setuptools-packaging-26.0-license-apache.txt); [bundled-setuptools-packaging-26.0-license-bsd.txt](tools/licence_texts/bundled-setuptools-packaging-26.0-license-bsd.txt) |
+| setuptools vendor: tomli 2.4.0 | MIT | [bundled-setuptools-tomli-2.4.0-license.txt](tools/licence_texts/bundled-setuptools-tomli-2.4.0-license.txt) |
+| setuptools vendor: wheel 0.46.3 | MIT | [bundled-setuptools-wheel-0.46.3-license-txt.txt](tools/licence_texts/bundled-setuptools-wheel-0.46.3-license-txt.txt) |
+
+Vite's module/preload helpers and bundled CommonJS helper occur in the emitted
+JavaScript. Tailwind's preflight rules occur in the emitted CSS. Their MIT texts,
+including Vite's bundled plugin notices, are reproduced in generated credits.
+Classifying a tool as a development dependency does not remove a notice duty
+for its code in the delivered output.
+
+## Data and services, October 2026 corrections
+
+OpenNGC extracts retain CC BY-SA 4.0 and the stated extraction changes. IAU-CSN
+2022-04-04 says Creative Commons Attribution without a version; a 4.0 grant has
+not been established and that uncertainty remains visible. Constellation
+assignments are generated by AstroDeck using Astropy's Roman 1987 boundary
+table. The inspected tarball contains no survey pack, horizon dataset, NOAA
+granules or downloaded TLE cache. Dependency data in executables have a
+different scope.
+
+Current CDS DSS2 and 2MASS colour records declare ODbL 1.0 for the HiPS database.
+The [full ODbL text](tools/licence_texts/bundled-odbl-1.0.txt), database attribution
+and original-image acknowledgements are in generated credits. The database
+grant does not replace original-image rights or establish permission to bundle
+DSS2. Operator-local downloads remain subject to provider terms.
+
+Open-Meteo data attribution and free-service access conditions are separate.
+Astrospheric public-client use still needs clarification beyond an operator's
+personal-project acknowledgement. CelesTrak's stop-on-error policy is not
+satisfied by the current repeated-retry behavior. NOAA and MPC descriptions
+preserve their actual terms rather than infer public-domain dedication.
+See the dated [service/data audit](tools/licence/service-data-audit.md) for primary
+sources, quoted wording, our reading and the unresolved remedies.
