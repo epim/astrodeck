@@ -1,0 +1,1241 @@
+{
+  "schema_version": 1,
+  "labels": [
+    {
+      "page": "docs/guide/next-ui.md",
+      "label": "SKY",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 118
+    },
+    {
+      "page": "docs/guide/next-ui.md",
+      "label": "WEATHER",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 121
+    },
+    {
+      "page": "docs/guide/next-ui.md",
+      "label": "SESSION",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 131
+    },
+    {
+      "page": "docs/guide/next-ui.md",
+      "label": "RIG",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 153
+    },
+    {
+      "page": "docs/guide/next-ui.md",
+      "label": "MONITOR",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 167
+    },
+    {
+      "page": "docs/guide/next-ui.md",
+      "label": "SETTINGS",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 184
+    },
+    {
+      "page": "docs/guide/sky-atlas.md",
+      "label": "SKY",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 118
+    },
+    {
+      "page": "docs/guide/sky-atlas.md",
+      "label": "Search the target catalog",
+      "source": "ui/src/components/atlas/CatalogSearch.tsx",
+      "line": 253
+    },
+    {
+      "page": "docs/guide/sky-atlas.md",
+      "label": "ATLAS",
+      "source": "ui/src/next/hubs/sky/SkyHub.tsx",
+      "line": 1590
+    },
+    {
+      "page": "docs/guide/sky-atlas.md",
+      "label": "FRAME",
+      "source": "ui/src/next/hubs/sky/SkyHub.tsx",
+      "line": 1299
+    },
+    {
+      "page": "docs/guide/sky-atlas.md",
+      "label": "MATCH CAMERA",
+      "source": "ui/src/next/hubs/sky/frame/FrameTools.tsx",
+      "line": 166
+    },
+    {
+      "page": "docs/guide/sky-atlas.md",
+      "label": "FIT OBJECT",
+      "source": "ui/src/next/hubs/sky/frame/FrameTools.tsx",
+      "line": 158
+    },
+    {
+      "page": "docs/guide/sky-atlas.md",
+      "label": "PA",
+      "source": "ui/src/next/hubs/sky/frame/FramingCard.tsx",
+      "line": 211
+    },
+    {
+      "page": "docs/guide/sky-atlas.md",
+      "label": "SEND TO FLOW WIZARD",
+      "source": "ui/src/next/hubs/sky/sheets/quickCopy.ts",
+      "line": 228
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "SESSION",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 131
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "FLOWS",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 148
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "+ NEW FLOW",
+      "source": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+      "line": 459
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Deep-sky target",
+      "source": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
+      "line": 18
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Best of several",
+      "source": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
+      "line": 18
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "EAA quick look",
+      "source": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
+      "line": 18
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "GENERATE FLOW",
+      "source": "ui/src/next/hubs/session/flows/create/wizard.tsx",
+      "line": 192
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "START BLANK",
+      "source": "ui/src/next/hubs/session/flows/create/wizard.tsx",
+      "line": 203
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Guiding",
+      "source": "ui/src/next/hubs/session/flows/create/wizardModel.ts",
+      "line": 31
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "DELETE STAGE",
+      "source": "ui/src/next/hubs/session/flows/inspector/FlowNodeEditor.tsx",
+      "line": 143
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "CONFIRM DELETE",
+      "source": "ui/src/next/hubs/session/flows/inspector/FlowNodeEditor.tsx",
+      "line": 137
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "CAPTURE LOOP",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 473
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Exposure",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 488
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Count",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 491
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Integration goal",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 496
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "SAVE",
+      "source": "ui/src/next/hubs/session/flows/canvas/FlowCanvasToolbar.tsx",
+      "line": 146
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "RUN",
+      "source": "ui/src/components/flows/runCopy.ts",
+      "line": 51
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "CONFIRM RUN",
+      "source": "ui/src/next/hubs/session/flows/canvas/__tests__/canvasDom.test.tsx",
+      "line": 505,
+      "kind": "rendered-composition",
+      "rendering_source": "ui/src/next/hubs/session/flows/canvas/FlowCanvasToolbar.tsx",
+      "rendering_line": 141,
+      "rendered_suffix": "CONFIRM plus RUN for a new flow; dormant sessions use CONTINUE and recorded progress instead"
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "STOP",
+      "source": "ui/src/components/flows/runCopy.ts",
+      "line": 51
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "TARGET",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 268
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "FRAME ON SKY",
+      "source": "ui/src/next/hubs/session/flows/inspector/FlowNodeEditor.tsx",
+      "line": 39
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "WHERE",
+      "source": "ui/src/components/flows/framing/sections/WhereSection.tsx",
+      "line": 49
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "NAME",
+      "source": "ui/src/components/flows/framing/sections/WhereSection.tsx",
+      "line": 54
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "RA",
+      "source": "ui/src/components/flows/framing/sections/WhereSection.tsx",
+      "line": 59
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "DEC",
+      "source": "ui/src/components/flows/framing/sections/WhereSection.tsx",
+      "line": 65
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "GRID",
+      "source": "ui/src/components/flows/framing/sections/GridSection.tsx",
+      "line": 92
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "MATCH CAMERA",
+      "source": "ui/src/components/flows/framing/sections/GridSection.tsx",
+      "line": 115
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "COLS",
+      "source": "ui/src/components/flows/framing/sections/GridSection.tsx",
+      "line": 93
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "ROWS",
+      "source": "ui/src/components/flows/framing/sections/GridSection.tsx",
+      "line": 95
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "OVERLAP",
+      "source": "ui/src/components/flows/framing/sections/GridSection.tsx",
+      "line": 97
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "ANGLE",
+      "source": "ui/src/components/flows/framing/sections/AngleSection.tsx",
+      "line": 70
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "ANY ANGLE",
+      "source": "ui/src/components/flows/framing/sections/AngleSection.tsx",
+      "line": 37
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "ROTATE TO",
+      "source": "ui/src/components/flows/framing/sections/AngleSection.tsx",
+      "line": 38
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "CAMERA FIXED AT",
+      "source": "ui/src/components/flows/framing/sections/AngleSection.tsx",
+      "line": 39
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "CENTRING",
+      "source": "ui/src/components/flows/framing/sections/CentringSection.tsx",
+      "line": 45
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "PANELS",
+      "source": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
+      "line": 238
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "ORDER",
+      "source": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
+      "line": 240
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "SHOOT",
+      "source": "ui/src/components/flows/framing/sections/PanelsSection.tsx",
+      "line": 252
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "Rotate panels every pass",
+      "source": "ui/src/components/flows/framing/sections/RunSection.tsx",
+      "line": 41
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "PASSES PER VISIT",
+      "source": "ui/src/components/flows/framing/sections/RunSection.tsx",
+      "line": 103
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "AT LEAST",
+      "source": "ui/src/components/flows/framing/sections/RunSection.tsx",
+      "line": 105
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "DONE",
+      "source": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
+      "line": 613
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "RE-FRAME",
+      "source": "ui/src/components/flows/framing/TargetFramingSheet.tsx",
+      "line": 626
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "CHECKS",
+      "source": "ui/src/next/hubs/session/flows/inspector/FlowInspectorColumn.tsx",
+      "line": 208
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "NOT HONOURED BY A RUN",
+      "source": "ui/src/next/hubs/session/flows/inspector/FlowInspectorColumn.tsx",
+      "line": 225
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "BEFORE YOU RUN",
+      "source": "ui/src/next/hubs/session/flows/inspector/FlowInspectorColumn.tsx",
+      "line": 241
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "DUSK WINDOW",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 236
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "SAFETY MONITOR",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 332
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "CLOUD WATCH",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 357
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "DOME CONTROL",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 377
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "FLAT PANEL",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 399
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "SLEW + CENTER",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 418
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "AUTOFOCUS",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 435
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "GUIDE",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 456
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "FILTER CYCLE",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 503
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "DUSK FLATS",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 529
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "CALIBRATION QUEUE",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 551
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "TARGET POOL",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 587
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "CONDITION",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 627
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "HOLD / RESUME",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 657
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "NOTIFY",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 695
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "REFOCUS",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 713
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "PARK + CLOSE",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 730
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "ABORT + PARK",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 757
+    },
+    {
+      "page": "docs/guide/flows-and-mosaics.md",
+      "label": "SESSION REPORT",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 776
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "SESSION",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 131
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "FLOWS",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 148
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "PLAN EDITOR",
+      "source": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+      "line": 615
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "PLAN NAME",
+      "source": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+      "line": 238
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "LOAD",
+      "source": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+      "line": 358
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "IMPORT",
+      "source": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+      "line": 281
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "ADD TARGET",
+      "source": "ui/src/next/hubs/session/plan/PlanTargets.tsx",
+      "line": 257
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "Centre on this target",
+      "source": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+      "line": 138
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "Autofocus first",
+      "source": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+      "line": 145
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "EXPOSURE",
+      "source": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+      "line": 287
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "GAIN",
+      "source": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+      "line": 298
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "COUNT",
+      "source": "ui/src/next/hubs/session/plan/PlanTargetCard.tsx",
+      "line": 307
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "SAVE",
+      "source": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+      "line": 263
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "SAVE AS",
+      "source": "ui/src/next/hubs/session/plan/PlanLibrary.tsx",
+      "line": 272
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "HOW TO FIX",
+      "source": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+      "line": 219
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "START SEQUENCE",
+      "source": "ui/src/next/hubs/session/plan/PlanPreflight.tsx",
+      "line": 214
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "TAP AGAIN TO START",
+      "source": "ui/src/next/hubs/session/plan/PlanPreflight.tsx",
+      "line": 208
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "PAUSE",
+      "source": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+      "line": 259
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "CANCEL PAUSE",
+      "source": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+      "line": 243
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "RESUME",
+      "source": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+      "line": 243
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "STOP",
+      "source": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+      "line": 274
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "TAP AGAIN TO STOP",
+      "source": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+      "line": 264
+    },
+    {
+      "page": "docs/guide/plan-and-sequences.md",
+      "label": "RE-RUN PLAN",
+      "source": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+      "line": 305
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "RIG",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 153
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "CAPTURE",
+      "source": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+      "line": 86,
+      "kind": "dynamic-prefix",
+      "rendered_suffix": "count, exposure and filter"
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "STILL · FRAMES",
+      "source": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+      "line": 495
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "EXPOSURE",
+      "source": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+      "line": 300
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "GAIN",
+      "source": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+      "line": 250
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "COUNT",
+      "source": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+      "line": 262
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "BINNING",
+      "source": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+      "line": 288
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "FILTER",
+      "source": "ui/src/next/hubs/rig/capture/CaptureReadouts.tsx",
+      "line": 238
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "SAVE FITS TO LIBRARY",
+      "source": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+      "line": 591
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "STOP",
+      "source": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+      "line": 106
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "SAVE TO GALLERY",
+      "source": "ui/src/next/hubs/rig/capture/ResultCard.tsx",
+      "line": 160
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "RE-SHOOT AND SAVE",
+      "source": "ui/src/next/hubs/rig/capture/ResultCard.tsx",
+      "line": 170
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "LOOP",
+      "source": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+      "line": 132
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "LIVE VIEW",
+      "source": "ui/src/next/hubs/rig/capture/CaptureControls.tsx",
+      "line": 149
+    },
+    {
+      "page": "docs/guide/capture.md",
+      "label": "MATCH LAST LIGHTS",
+      "source": "ui/src/next/hubs/rig/capture/CaptureScreen.tsx",
+      "line": 584
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "RIG",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 153
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "DEVICES",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 158
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "FOCUS FRAME",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1022
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "SINGLE",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1038
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "LOOP",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1051
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "GO TO POSITION",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1099
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "GO",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1117
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "HALT",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1126
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "STOP",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1061
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "AUTOFOCUS PROVIDER",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1339
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "Autofocus settings",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1213
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "STEP SIZE",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1220
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "STEPS EACH SIDE",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1236
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "EXPOSURE",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1256
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "GAIN",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1282
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "BINNING",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1294
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "AUTOFOCUS NOW",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1192
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "BAHTINOV MODE",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1582
+    },
+    {
+      "page": "docs/guide/focus.md",
+      "label": "START",
+      "source": "ui/src/next/hubs/rig/sheets/focuser.tsx",
+      "line": 1596
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "RIG",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 153
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "DEVICES",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 158
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "EXPOSURE",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 539
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "LOOP + PICK STAR",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 726
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "DITHER NOW",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 637
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "SETTLE PX",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 641
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "SETTLE S",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 643
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "TIMEOUT S",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 645
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "STOP GUIDING",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 715
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "GUIDING ASSISTANT",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 1163
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "ALSO MEASURE MOUNT SLACK (MOVES THE SCOPE)",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 1188
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "RUN GUIDING ASSISTANT",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 1201
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "APPLY RECOMMENDED SETTINGS",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 1221
+    },
+    {
+      "page": "docs/guide/guiding.md",
+      "label": "APPLY SELECTED",
+      "source": "ui/src/next/hubs/rig/sheets/guider.tsx",
+      "line": 1274
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "MONITOR",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 167
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "LIVE",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 173
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "SESSION",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 131
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "NOW",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 140
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "RUN PROGRESS",
+      "source": "ui/src/next/hubs/monitor/live/RunProgress.tsx",
+      "line": 108
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "LAST FRAME",
+      "source": "ui/src/next/hubs/monitor/live/LiveScreen.tsx",
+      "line": 522
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "THERMAL",
+      "source": "ui/src/next/hubs/monitor/live/LiveScreen.tsx",
+      "line": 507
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "LOG",
+      "source": "ui/src/next/hubs/monitor/log/LogScreen.tsx",
+      "line": 170
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "PAUSE",
+      "source": "ui/src/next/hubs/session/plan/PlanRunHeader.tsx",
+      "line": 259
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "RESUME",
+      "source": "ui/src/next/hubs/session/now/RunControls.tsx",
+      "line": 264
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "STOP",
+      "source": "ui/src/next/hubs/session/now/RunControls.tsx",
+      "line": 280
+    },
+    {
+      "page": "docs/guide/monitor.md",
+      "label": "RESUME INTERRUPTED RUN",
+      "source": "ui/src/next/hubs/session/now/Interrupted.tsx",
+      "line": 158
+    },
+    {
+      "page": "docs/guide/weather.md",
+      "label": "WEATHER",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 121
+    },
+    {
+      "page": "docs/guide/weather.md",
+      "label": "CONDITIONS",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 124
+    },
+    {
+      "page": "docs/guide/weather.md",
+      "label": "WEATHER SETTINGS",
+      "source": "ui/src/next/hubs/weather/WeatherHub.tsx",
+      "line": 116
+    },
+    {
+      "page": "docs/guide/weather.md",
+      "label": "Weather enabled",
+      "source": "ui/src/next/hubs/weather/tuning/WeatherTuningPanel.tsx",
+      "line": 172
+    },
+    {
+      "page": "docs/guide/weather.md",
+      "label": "Cloud threshold (%)",
+      "source": "ui/src/next/hubs/weather/tuning/WeatherTuningPanel.tsx",
+      "line": 188
+    },
+    {
+      "page": "docs/guide/weather.md",
+      "label": "Sustained for (min)",
+      "source": "ui/src/next/hubs/weather/tuning/WeatherTuningPanel.tsx",
+      "line": 202
+    },
+    {
+      "page": "docs/guide/weather.md",
+      "label": "RADAR",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 126
+    },
+    {
+      "page": "docs/guide/weather.md",
+      "label": "SKY",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 118
+    },
+    {
+      "page": "docs/guide/weather.md",
+      "label": "IGNORE WEATHER TONIGHT",
+      "source": "ui/src/next/hubs/weather/conditions/ConditionsScreen.tsx",
+      "line": 336
+    },
+    {
+      "page": "docs/guide/safety-and-automation.md",
+      "label": "SETTINGS",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 184
+    },
+    {
+      "page": "docs/guide/safety-and-automation.md",
+      "label": "RIG",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 153
+    },
+    {
+      "page": "docs/guide/safety-and-automation.md",
+      "label": "LIVE SAFETY STATUS",
+      "source": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+      "line": 143
+    },
+    {
+      "page": "docs/guide/safety-and-automation.md",
+      "label": "WHEN A LIMIT TRIPS",
+      "source": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+      "line": 193
+    },
+    {
+      "page": "docs/guide/safety-and-automation.md",
+      "label": "LIMITS THE RIG ENFORCES",
+      "source": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+      "line": 201
+    },
+    {
+      "page": "docs/guide/safety-and-automation.md",
+      "label": "WARM RAMP",
+      "source": "ui/src/next/hubs/settings/tuning/safety/SafetyTuningPanel.tsx",
+      "line": 209
+    },
+    {
+      "page": "docs/guide/safety-and-automation.md",
+      "label": "ALERTS",
+      "source": "ui/src/next/hubs/monitor/alerts/AlertsScreen.tsx",
+      "line": 98
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "SESSION",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 131
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "GALLERY",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 147
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "MORE",
+      "source": "ui/src/next/hubs/session/gallery/SessionCard.tsx",
+      "line": 196
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "REPORT",
+      "source": "ui/src/next/hubs/session/gallery/cardActions.ts",
+      "line": 101
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "PLAN EDITOR",
+      "source": "ui/src/next/hubs/session/flows/FlowsScreen.tsx",
+      "line": 615
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "SESSIONS",
+      "source": "ui/src/next/hubs/session/plan/sessions/PlanSessionsSection.tsx",
+      "line": 194
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "review frames",
+      "source": "ui/src/next/hubs/session/plan/sessions/PlanSessionsSection.tsx",
+      "line": 259
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "RESUME",
+      "source": "ui/src/next/hubs/session/gallery/cardActions.ts",
+      "line": 86
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "UPDATE FROM PLAN",
+      "source": "ui/src/next/hubs/session/gallery/cardActions.ts",
+      "line": 91
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "AUTO-RESUME OFF",
+      "source": "ui/src/next/hubs/session/gallery/cardActions.ts",
+      "line": 96
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "AUTO-RESUME ON",
+      "source": "ui/src/next/hubs/session/gallery/cardActions.ts",
+      "line": 96
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "FITS originals",
+      "source": "ui/src/next/hubs/session/sheets/files.tsx",
+      "line": 682
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "JPEG previews",
+      "source": "ui/src/next/hubs/session/sheets/files.tsx",
+      "line": 683
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "DOWNLOAD BUNDLE",
+      "source": "ui/src/next/hubs/session/sheets/files.tsx",
+      "line": 1338
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "ABANDON",
+      "source": "ui/src/next/hubs/session/gallery/cardActions.ts",
+      "line": 106
+    },
+    {
+      "page": "docs/guide/sessions-multi-night.md",
+      "label": "DELETE",
+      "source": "ui/src/next/hubs/session/gallery/cardActions.ts",
+      "line": 113
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "SESSION",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 131
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "WEATHER",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 121
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "MONITOR",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 167
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "GALLERY",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 147
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "MORE",
+      "source": "ui/src/next/hubs/session/gallery/SessionCard.tsx",
+      "line": 196
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "AUTO-RESUME OFF",
+      "source": "ui/src/next/hubs/session/gallery/cardActions.ts",
+      "line": 96
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "AUTO-RESUME ON",
+      "source": "ui/src/next/hubs/session/gallery/cardActions.ts",
+      "line": 96
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "NOW",
+      "source": "ui/src/next/hubs/index.ts",
+      "line": 140
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "STOP AUTO-RESUME",
+      "source": "ui/src/next/hubs/session/now/NowEmpty.tsx",
+      "line": 678
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "HOLD / RESUME",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 657
+    },
+    {
+      "page": "docs/guide/unattended-nights.md",
+      "label": "Max hold",
+      "source": "ui/src/components/flows/nodeDefs.ts",
+      "line": 675
+    }
+  ]
+}

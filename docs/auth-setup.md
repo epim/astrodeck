@@ -1,208 +1,76 @@
-# AstroDeck Auth Setup Guide
+<a id="6-quick-start"></a>
 
-Operator guide to turning on authentication. Grounded in the real code:
-`auth/routes.py`, `auth/local_routes.py`, `auth/capabilities.py`,
-`config.py` (`AuthConfig`), `auth/passwords.py`, `auth/session.py`,
-and `__main__.py` (`create-admin`).
+<a id="astrodeck-auth-setup-guide"></a>
 
----
+# Authentication setup
 
-## 1. Overview
+Use a named local administrator before exposing AstroDeck beyond the controller. The initial server is loopback-only. An empty list of sign-in methods is not a safe LAN deployment, and a non-loopback launch without valid authentication is refused.
 
-**Default is OPEN.** Out of the box `AuthConfig.methods` is empty, so every
-caller resolves to **admin** with no credentials. The live LAN tablet just
-works — nothing to configure. Auth is strictly **opt-in**.
+<a id="cli-create-admin"></a>
 
-**Multi-method.** Auth is a *set* of methods, not a single provider:
-`methods: list[str]` is a subset of `{"local", "google"}`. Empty means open.
-You can enable **both** `local` and `google` at the same time (offline
-username/password *and* Google web sign-in on the same server). A legacy
-`provider: "google"` field is migration-only: if `methods` is empty it folds
-into `["google"]`, otherwise it is ignored.
+<a id="first-run-setup-create-the-first-admin-from-the-lan"></a>
 
-**Roles** (single source of truth: `auth/capabilities.py`):
+## 1. Create the administrator
 
-| Role | Capability summary |
-|------|--------------------|
-| `viewer` | Read-only: live status + downsized preview. No raw FITS, no precise site coords. |
-| `operator` | Viewer + imaging (`control.capture`) and guiding (`control.guide`). Cannot slew the mount, switch power, or change config. |
-| `admin` | Everything, including raw media, precise site, and all config/user/auth administration. |
+1. Use the account and configuration directory that normally run AstroDeck. Stop the server while preparing a deployment.
+2. From the installed server environment, run:
 
-> Order = privilege rank. `viewer` is the ceiling for an untrusted Google
-> `default_role` (see the ceiling rule below).
-
-**Do not expose the server to the WAN with no method enabled** — that grants
-admin to anyone who can reach it.
-
----
-
-## 2. Local Users (offline, no internet)
-
-Best for a self-contained rig with no internet. Enable the `local` method
-(add `"local"` to `methods`, e.g. via the admin config API / Auth panel, or
-edit `config.json` `auth.methods`).
-
-### First-run setup (create the first admin from the LAN)
-
-While the user store is **empty**, a one-time bootstrap screen is open:
-
-- **`POST /auth/setup/local`** — `{username, password, email?}` creates the
-  first **admin** and logs that browser straight in (sets the `ad_session`
-  cookie).
-- It is gated to: `local` enabled **AND** `local_enabled_first_run = true`
-  **AND** the user store is empty.
-- It **auto-closes** the instant any user exists (returns `409`). It can never
-  be used to add a second backdoor admin later.
-
-The UI decides what to render from the unauthenticated
-**`GET /api/auth/methods`** signal: `{methods, google_configured, first_run}`.
-
-### Managing users (admin Users panel)
-
-All routes are gated by `require(admin.users)`:
-
-| Method | Path | Action |
-|--------|------|--------|
-| `GET` | `/api/users` | List users (no password hash ever returned) |
-| `POST` | `/api/users` | Create a user (`role` defaults to `viewer`) |
-| `PATCH` | `/api/users/{id}` | Set role / enabled / rename / email |
-| `POST` | `/api/users/{id}/password` | Reset a password |
-| `DELETE` | `/api/users/{id}` | Delete a user |
-
-**Last-admin protection:** demoting, disabling, or deleting the last enabled
-admin is refused (`409`).
-
-### Password rules (`auth/passwords.py`)
-
-- **No blank / whitespace-only** passwords (min length after trimming = 1).
-- **72-byte maximum** (the bcrypt input limit). A longer password is rejected
-  (`422`), never silently truncated.
-- Hashed with bcrypt cost 12.
-
-### CLI: `create-admin`
-
-```
-python -m astrodeck create-admin <username> [--password PW]
+```text
+python -m astrodeck create-admin yourname
 ```
 
-- Seeds a new admin, or **resets** an existing user back to an enabled admin
-  with a fresh password (recovery).
-- Prompts for the password via `getpass` if `--password` is omitted.
-- **Never boots the server** and never imports the app — it only touches the
-  user store, so it works even if the server config is broken.
+3. Enter and confirm the password at the prompts. For a downloaded binary, use that executable followed by `create-admin yourname` instead.
+4. Restart the server and verify that the account can sign in. The command enables local sign-in automatically and exits without launching the server.
 
----
+The same command resets an existing account's password, enables it and restores its admin role. It is the local recovery path, so protect console access and the configuration directory. Do not pass a password on the command line.
 
-## 3. Google OIDC (web sign-in)
+<a id="2-local-users-offline-no-internet"></a>
 
-Use this for browser sign-in over the public internet. Two halves: configure
-Google, then configure AstroDeck.
+<a id="4-anti-lockout--recovery"></a>
 
-### A. Google Cloud Console
+<a id="managing-users-admin-users-panel"></a>
 
-1. Create (or pick) a **project**.
-2. Configure the **OAuth consent screen** (Internal if you have a Workspace and
-   want to restrict to your domain; otherwise External).
-3. Create credentials → **OAuth 2.0 Client ID** → application type
-   **Web application**.
-4. Set the **Authorized redirect URI** to exactly:
+## 2. Manage local users
 
-   ```
-   <base>/auth/google/callback
-   ```
+1. Open the classic interface at `#/classic/settings`, then **Users**.
+2. Add the intended account and role. Use viewer for status/previews, operator for imaging and mount operation, or syncer for a data-transfer account. Admin includes configuration and user management.
+3. Sign in as the new account in a separate browser session to verify the access you intended.
 
-   - Local example: `http://localhost:8800/auth/google/callback`
-   - Production: your public **HTTPS** relay URL, e.g.
-     `https://astro.example.com/auth/google/callback`
+Passwords are stored as bcrypt hashes. The current password rules reject fewer than 12 characters after trimming surrounding whitespace and more than 72 UTF-8 bytes. Choose a unique password that satisfies both limits.
 
-   > Google accepts **only** `localhost` or a **public HTTPS** redirect. A bare
-   > `http://` LAN IP (e.g. `http://192.168.1.x`) will be **rejected** by
-   > Google. For LAN access over Google, front the server with an HTTPS relay.
+<a id="b-astrodeck-fields-authconfig"></a>
 
-5. Copy the generated **Client ID** and **Client secret**.
+<a id="password-rules-authpasswordspy"></a>
 
-### B. AstroDeck fields (`AuthConfig`)
+## 3. Check sign-in methods
 
-| Field | Meaning |
-|-------|---------|
-| `google_client_id` | From Google. |
-| `google_client_secret` | From Google (secret; redacted from the config API). |
-| `google_redirect_uri` | Must match the Google redirect URI **exactly**. |
-| `role_allowlist` | `email -> role` map, re-evaluated on **every** login (remove an entry and the next login is denied/downgraded). |
-| `default_role` | Role for any authenticated-but-unlisted user. `null` = **deny** unlisted (recommended). |
-| `google_hd` | Optional Workspace hosted-domain pin (restricts to one domain). |
+1. In classic **Settings**, open **Auth** and **Sign-in methods**.
+2. Review **Enable local accounts** and **Trust loopback as admin**. Loopback trust can make a browser on the controller act as admin without testing an account's real permissions.
+3. Keep a working admin and local recovery console before disabling that trust. Press **Save methods** to apply the draft.
+4. Expect an authentication change to invalidate existing sessions. Sign in again and confirm the new settings.
 
-Then add `"google"` to `methods` to enable it.
+Turning off all methods is not a phone-access setup. Use the [network deployment guide](guide/remote-access-and-roles.md).
 
-**Login flow** (`auth/routes.py`): `GET /auth/login` starts Authorization-Code
-+ PKCE and 302s to Google; `GET /auth/google/callback` verifies state/PKCE/ID
-token, maps email→role, and mints the `ad_session` cookie. If Google is not
-enabled, both routes are inert (`404`).
+<a id="3-google-oidc-web-sign-in"></a>
 
-**Authorization order:** `role_allowlist[email]` wins; otherwise
-`default_role`; otherwise the login is **denied** (`403`, authenticated but not
-authorized).
+<a id="a-google-cloud-console"></a>
 
-> **Ceiling rule (enforced on save, `validate_auth_config`):** a `default_role`
-> **above `viewer`** (i.e. `operator` or `admin`) requires a non-empty
-> `google_hd`. Otherwise the save is rejected (`400`) — this refuses to
-> auto-elevate the entire Google population over the WAN. Keep `default_role`
-> at `null` or `viewer` unless you pin a Workspace domain.
+## 4. Google sign-in
 
----
+Google sign-in is optional and needs an OAuth client configured for the address users actually open. Retain a local administrator as a recovery route.
 
-## 4. Anti-Lockout / Recovery
+1. Prepare a Google OAuth web client and its callback address ending in `/auth/google/callback`.
+2. On the controller, stop the server and back up the private configuration directory. In its `astrodeck.json` auth block, configure `google_client_id`, `google_client_secret`, and `google_redirect_uri`; keep these secrets out of logs and source control. Preserve unrelated fields.
+3. Set `role_allowlist` for the intended email addresses. Keep `default_role` null to deny unlisted accounts, or viewer if that broader access is intended. Higher default roles require a pinned `google_hd` Workspace domain.
+4. Restart, open classic **Settings**, **Auth**, and enable **Enable Google sign-in**. Press **Save methods**.
+5. Test **Sign in with Google** in a separate browser. A successful Google identity does not grant access unless the allowlist or default role authorizes it.
 
-Three independent ways back in:
+Changing the address, proxy or relay can change the callback URL. Configure the OAuth client and server consistently. For a relay deployment, retain the `/h/<home_id>/` path prefix in the public callback URL.
 
-1. **Break-glass token (`ASTRODECK_TOKEN`).** Set this env var before launch.
-   A caller presenting it (as `X-Auth-Token` / bearer) is **always admin**,
-   **independent of any method**. Works even with `local`/`google` on. This is
-   the generalized shared-token gate (`admin_token` in config mirrors it).
-2. **`create-admin` CLI** (Section 2) — seeds or resets a local admin offline,
-   without booting the server.
-3. **First-run setup** (`POST /auth/setup/local`) — only while the user store
-   is empty.
+<a id="1-overview"></a>
 
-**If you are locked out:**
-- Set `ASTRODECK_TOKEN`, restart, and use it to fix config / users; **or**
-- Run `python -m astrodeck create-admin <you>` to reset your admin password
-  and log in via the local form.
+<a id="5-security-notes"></a>
 
----
+## 5. Recovery and remote access
 
-## 5. Security Notes
-
-- **Session secret auto-persists.** When you first enable a real method and
-  `ASTRODECK_SECRET` is unset, the boot path generates a random secret and
-  writes it to `config/session_secret`. Sessions are never signed with the
-  public dev sentinel. **In production, set `ASTRODECK_SECRET` explicitly** so
-  you manage the key. A fail-closed interlock refuses to mint/verify sessions
-  if a method is enabled but only the dev default is available.
-- **Cookies.** The session cookie (`ad_session`) is `HttpOnly`,
-  `SameSite=Strict`, and **`Secure` on HTTPS** (auto-detected, honoring
-  `X-Forwarded-Proto` behind a TLS-terminating proxy). The short-lived pre-auth
-  cookie (`ad_oauth`) is `SameSite=Lax` so it survives the redirect back from
-  Google.
-- **Never expose to the WAN without a method enabled** (or at minimum
-  `ASTRODECK_TOKEN`) — open = admin-for-all. For a local-only rig, bind
-  loopback: `--host 127.0.0.1`.
-- **Secrets are redacted** from the config API/WS broadcast:
-  `google_client_secret`, `admin_token`, and `session_private_key` are blanked
-  and replaced with `*_configured` booleans.
-- **Revocation is append-only.** Logout appends the session `jti` to
-  `revoked_jti` (killing that cookie on its next use); the registry can never be
-  shrunk on save.
-
----
-
-## 6. Quick Start
-
-- **Local-only offline rig:** add `"local"` to `methods` → open the tablet →
-  complete the first-run setup screen → manage the rest in the Users panel.
-  Set `ASTRODECK_SECRET` and keep `ASTRODECK_TOKEN` handy for recovery.
-- **Google web:** configure the Console (HTTPS redirect), fill the
-  `google_*` fields, set `role_allowlist`, leave `default_role = null`, add
-  `"google"` to `methods`.
-- **Both:** enable both methods — the login UI shows the local form and the
-  Google button.
+Use `create-admin` against the normal configuration directory when locked out. Do not delete account files or the whole configuration tree. For remote use, follow [relay deployment](relay-deploy.md) or the [TLS reverse-proxy instructions](../deploy/reverse-proxy/README.md). The current relay forwards home authentication; it does not provide public share-link creation or a separate relay login provider.

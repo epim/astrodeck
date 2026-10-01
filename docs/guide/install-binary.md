@@ -1,179 +1,66 @@
+<a id="building-the-raspberry-pi-binary-without-a-pi"></a>
+
+<a id="running-it-as-a-service"></a>
+
 # Running the AstroDeck binary
 
-Download one file, run it, open a browser. No Python, no Node, no install.
+Use the files attached to a [GitHub release](https://github.com/epim/astrodeck/releases). The release workflow targets these platforms; check that the chosen release actually contains the file you need.
+
+| Platform | Asset name |
+|---|---|
+| Windows x86-64 | `astrodeck-windows-x86_64.exe` |
+| Linux x86-64 | `astrodeck-linux-x86_64` |
+| Linux ARM64 | `astrodeck-linux-arm64` |
+| macOS Apple silicon | `astrodeck-macos-arm64` |
 
 ## Get it
 
-From the [latest release](https://github.com/epim/astrodeck/releases/latest):
+1. Read the chosen release's notes and download its matching binary and `.sha256` file.
+2. Calculate the binary's SHA-256 and compare it with that sidecar. On Windows use `Get-FileHash ./astrodeck-windows-x86_64.exe -Algorithm SHA256`; on Linux use `sha256sum astrodeck-linux-x86_64`.
+3. Keep the download only if the values match. A matching checksum checks the bytes against the sidecar; it does not establish trust in an unknown download source.
 
-| You have | Download |
-|---|---|
-| Windows | `astrodeck-windows-x86_64.exe` |
-| Linux (Intel/AMD) | `astrodeck-linux-x86_64` |
-| Linux on ARM — Raspberry Pi 4/5, 64-bit OS | `astrodeck-linux-arm64` |
-| Mac (Apple silicon) | `astrodeck-macos-arm64` |
+On Linux ARM64, `uname -m` should report `aarch64`. A 32-bit ARM system cannot use that asset.
 
-On a Pi, check you are on a 64-bit OS first — `uname -m` must say `aarch64`. A
-32-bit Raspberry Pi OS reports `armv7l` and none of these will run on it.
-
-Each has a `.sha256` beside it. Checking it takes a second and tells you the
-download is intact:
-
-```bash
-shasum -a 256 -c astrodeck-linux-x86_64.sha256
-```
+<a id="first-run-is-slow"></a>
 
 ## Run it
 
-**Windows** — double-click it, or from a terminal:
+1. On Windows, run `./astrodeck-windows-x86_64.exe` from PowerShell as a standard user. On Linux or macOS, mark the matching file executable with `chmod +x` and run it with `./`.
+2. Open `http://localhost:8800` on the same computer. The terminal prints the configuration and capture directories.
+3. Follow [getting started](getting-started.md) for the simulator walkthrough.
 
-```
-astrodeck-windows-x86_64.exe
-```
+The binary contains Python and the built browser interface. It is an executable, not an installer. It extracts bundled files at startup; startup time depends on the machine. If the operating system blocks an unfamiliar download, verify its source before changing that decision.
 
-**Linux / Mac** — mark it executable once, then run it:
+Native guiding and native autofocus require `astrodeck_native`, absent from published releases pending #630. ASTAP and its star database are a separate installation. Do not infer their presence from a working browser interface.
 
-```bash
-chmod +x astrodeck-linux-x86_64
-./astrodeck-linux-x86_64
-```
-
-It prints where to point your browser and where it is keeping things:
-
-```
-AstroDeck 0.2.17
-  open        http://localhost:8800
-  settings    /home/you/.local/share/astrodeck/config
-  captures    /home/you/.local/share/astrodeck/captures
-  stop        Ctrl-C
-```
-
-Open that address on the same machine, or `http://<this-machine>:8800` from a
-phone or tablet on the same network.
+<a id="the-security-warnings"></a>
 
 ## Where your data goes
 
-Not next to the binary — the binary might be in a Downloads folder, on a USB
-stick, or somewhere read-only. It uses the normal per-user location for your OS:
-
-| OS | Location |
+| OS | Default parent directory |
 |---|---|
-| Windows | `%LOCALAPPDATA%\AstroDeck` |
+| Windows | `%LOCALAPPDATA%/AstroDeck` |
 | macOS | `~/Library/Application Support/AstroDeck` |
-| Linux | `~/.local/share/astrodeck` |
+| Linux | `$XDG_DATA_HOME/astrodeck`, or `~/.local/share/astrodeck` when unset |
 
-On Windows, the configuration directory must be on NTFS or ReFS. At every
-startup AstroDeck verifies the filesystem and replaces inherited permissions
-with a protected DACL granting full control only to the account running
-AstroDeck, `SYSTEM`, and `BUILTIN\Administrators`. It also rejects junctions,
-symlinks, unexpected owners, and ACL API failures before opening a listening
-socket. FAT32 and exFAT are therefore suitable for exported captures, but not
-for `ASTRODECK_CONFIG_DIR`.
+The parent contains `config` and `captures`. Set `ASTRODECK_CONFIG_DIR` or `ASTRODECK_CAPTURE_DIR` before launch to override either directory. Keep configuration private and back up both directories before an update.
 
-Run a supervised Windows instance as its own standard user, not as
-Administrator or LocalSystem. Create and first start the configuration while
-signed in as that same identity; a directory owned by an unrelated account is
-rejected rather than silently taken over.
-
-Override either with an environment variable — useful for putting captures on an
-external drive:
-
-```bash
-ASTRODECK_CAPTURE_DIR=/media/ssd/astro ./astrodeck-linux-x86_64
-```
-
-Updating is replacing the file. Your settings and captures are not inside it.
-
-## First run is slow
-
-The binary unpacks itself to a temporary directory the first time, so give it up
-to a minute before deciding it has hung. Later starts are quick.
-
-## The security warnings
-
-The binaries are not code-signed yet, so:
-
-- **Windows** shows a SmartScreen prompt. "More info" → "Run anyway".
-- **macOS** refuses on the first attempt. Right-click → Open, then confirm; or
-  `xattr -d com.apple.quarantine astrodeck-macos-arm64`.
-
-Both are the OS saying "nobody has paid for a certificate for this", not that
-anything is wrong with the file. Verify the SHA-256 if you want certainty.
+Windows configuration must be on NTFS or ReFS and owned by the account running AstroDeck. Startup checks its permissions and rejects unsafe links or ownership. Use a standard account, including for a service. See [Windows rig](windows-rig.md).
 
 ## Other things it can do
 
-```bash
-astrodeck --port 9000              # a different port
-astrodeck --host 127.0.0.1         # this machine only, not the network
-astrodeck create-admin yourname    # create the first sign-in account
-astrodeck --help
+```text
+astrodeck-windows-x86_64.exe --port 9000
+astrodeck-windows-x86_64.exe create-admin yourname
+astrodeck-windows-x86_64.exe --help
 ```
 
-A fresh install has no sign-in method, so it binds loopback only. The CLI refuses
-an unauthenticated non-loopback bind. Before serving a LAN device, run
-`create-admin` and enable local auth, or set a long `ASTRODECK_TOKEN`. See
-[`docs/SECURITY.md`](../SECURITY.md).
+`create-admin` prompts for a password, enables local sign-in, and exits. Use the matching executable name on other systems. A fresh server is local-only; phone and remote access follow [remote access and roles](remote-access-and-roles.md).
 
-## Running it as a service
+## Updating
 
-On Linux, so it starts with the machine:
-
-```ini
-# /etc/systemd/system/astrodeck.service
-[Unit]
-Description=AstroDeck
-After=network-online.target
-
-[Service]
-EnvironmentFile=/etc/astrodeck.env
-ExecStart=/opt/astrodeck/astrodeck run --host 0.0.0.0 --port 8800
-User=astro
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo install -m 600 /dev/null /etc/astrodeck.env
-sudoedit /etc/astrodeck.env  # add ASTRODECK_TOKEN=<long random secret>
-sudo systemctl enable --now astrodeck
-```
-
-A serial-connected mount, focuser or filter wheel needs that user in the
-`dialout` group: `sudo usermod -aG dialout astro`.
+Stop AstroDeck before replacing its binary. Keep the previous executable and a configuration backup until you have confirmed the replacement starts and opens your existing configuration. Replacing a binary does not itself configure the supervised source-release updater.
 
 ## Building it yourself
 
-```bash
-python packaging/build_binary.py
-```
-
-Builds the UI, installs the server, produces `dist/astrodeck`, then starts it and
-checks that it serves — because a binary that builds and does not run is the
-normal failure here.
-
-**PyInstaller cannot cross-compile.** You get a binary for the OS *and*
-architecture you built on, and there is no flag that changes that. In particular
-an Apple-silicon Mac produces a macOS arm64 binary, not a Linux arm64 one: same
-instruction set, different OS, libc and bootloader. Testing one says nothing
-about the other.
-
-### Building the Raspberry Pi binary without a Pi
-
-On an Apple-silicon Mac, Docker runs arm64 Linux *natively* in its VM rather than
-under emulation, so an arm64 Linux container builds this at full speed:
-
-```bash
-docker run --rm -v "$PWD":/src -w /src --platform linux/arm64 python:3.12-slim \
-  sh -c "apt-get update -qq && apt-get install -y -qq curl binutils \
-         && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-         && apt-get install -y -qq nodejs \
-         && python packaging/build_binary.py"
-```
-
-`dist/astrodeck` is then a Linux arm64 binary. Copy it to the Pi and run it.
-
-The same command works on an Intel machine but goes through QEMU, which is slow
-enough (tens of minutes) that building on the Pi itself is usually the better
-trade.
+From a source checkout, `python packaging/build_binary.py` builds the UI, installs build dependencies and builds a PyInstaller executable for the current OS and architecture. It performs startup smoke checks. Use a separate build environment; it is not a cross-compiler. See [development](../development.md) for source work.

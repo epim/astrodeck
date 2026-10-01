@@ -1,0 +1,192 @@
+{
+  "recorded_date": "2026-10-01",
+  "source_commit": "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b",
+  "environment": {
+    "platform": "Windows x86_64",
+    "python": "3.12",
+    "server": "private editable base-server installation",
+    "ui": "Vite build using the existing shared dependency tree read-only; no clean npm install or complete source-install certification",
+    "browser": "private Playwright 1.58 Chromium headless shell",
+    "native_engine": "absent for first light; private offline-built ABI3 wheel for Flow and mosaic",
+    "native_wheel_sha256": "1c331608e8c1fb1892b18bc9277859e886febc5d6ed5405c9ea4baa1a6a013f9",
+    "site": "public synthetic Hanle tutorial; no private site configuration",
+    "network": "owned loopback servers only; external browser and survey/HiPS requests blocked"
+  },
+  "runs": [
+    {
+      "source_commit": "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b",
+      "run": "first-light-fixed-base",
+      "port": 8892,
+      "fresh_config": true,
+      "browser_external_requests": "blocked; survey/HiPS requests blocked as well",
+      "records": [
+        {
+          "step": "first-light.connect",
+          "observed": {
+            "ui_devices_badge": 10,
+            "camera_row": "Sim Camera 533MM",
+            "mount_row": "Sim Mount EQ6-R tracking",
+            "base_native_engine_installed": false
+          },
+          "route": "/rig/devices"
+        },
+        {
+          "step": "site.save-and-activate",
+          "observed": {
+            "public_synthetic_site": "Hanle tutorial",
+            "active": true
+          },
+          "route": "/settings/general/sites"
+        },
+        {
+          "step": "first-light.capture",
+          "observed": {
+            "exposure_s": 1,
+            "count": 1,
+            "save_fits": false,
+            "result": "CAPTURED · NOT SAVED",
+            "preview_canvas": [
+              1216,
+              912
+            ],
+            "detected_stars": 34,
+            "native_engine_installed": false
+          },
+          "route": "/rig/capture"
+        },
+        {
+          "step": "flow.generate-base",
+          "observed": {
+            "kind": "Deep-sky target",
+            "target": "M31",
+            "guiding": false,
+            "hfr_watchdog": false,
+            "generated_canvas": true,
+            "native_engine_installed": false,
+            "not_run": true
+          },
+          "route": "/session/flows?open=364c8f9c22ee4a0fa0ef95b5571bc7dd"
+        }
+      ],
+      "owned_server_stopped_on_console_exit": true
+    },
+    {
+      "source_commit": "6e8dad9d66f66b78d5df7cc12872f49e1f626d6b",
+      "run": "flow-native",
+      "port": 8893,
+      "fresh_config": true,
+      "browser_external_requests": "blocked; survey/HiPS requests blocked as well",
+      "records": [
+        {
+          "step": "native.connect",
+          "observed": {
+            "native_engine": "locally built 0.1.0 wheel",
+            "fresh_config": true,
+            "simulation_only": true
+          },
+          "route": "/rig/devices"
+        },
+        {
+          "step": "flow.first-run-refusal",
+          "observed": {
+            "result": "could not start: no camera connected",
+            "native_connect_previous_record": "connection was requested but not verified; this refusal supersedes it"
+          },
+          "route": "/session/flows?open=7e0b8696c98c4c199e7ec768a7ea2101"
+        },
+        {
+          "step": "native.connect-verified",
+          "observed": {
+            "connect_http_status": 200,
+            "rig_connect_control": "RIG CONNECTED",
+            "camera_row_verified": true,
+            "retry_from": "ADD A DEVICE > RUN THE SIMULATOR"
+          },
+          "route": "/rig/devices"
+        },
+        {
+          "step": "flow.single-target-run",
+          "observed": {
+            "target": "M31",
+            "exposure_s": 1,
+            "count": 1,
+            "integration_goal_h": 0,
+            "guiding": false,
+            "hfr_watchdog": false,
+            "native_engine_installed": true,
+            "phase": "DONE",
+            "integration": "INTEGRATION\n1 of 1 sub\n1/1 frames\nper-filter breakdown needs the session ledger"
+          },
+          "route": "/session/now"
+        },
+        {
+          "step": "mosaic.framing",
+          "observed": {
+            "target": "M31",
+            "grid": [
+              2,
+              2
+            ],
+            "overlap_pct": 25,
+            "match_camera": true,
+            "angle_mode": "Rotate to PA",
+            "pa_deg": 0,
+            "rotate_panels_each_pass": true,
+            "reframe_warning": "old 1 sub retained on disk; four panel counts restart",
+            "saved": true,
+            "survey_imagery": "blocked by runner",
+            "client_refresh_for_stale_STOP": true
+          },
+          "route": "/session/flows?open=7e0b8696c98c4c199e7ec768a7ea2101"
+        },
+        {
+          "step": "mosaic.run-complete",
+          "observed": {
+            "phase": "DONE",
+            "integration": "INTEGRATION\n4 of 4 subs\n4/4 frames\nper-filter breakdown needs the session ledger",
+            "files": "FILES · 4 SUBS",
+            "grid": [
+              2,
+              2
+            ],
+            "overlap_pct": 25,
+            "guiding": false,
+            "doctor_advisories": "unguided rig and short visits; no run override asked",
+            "native_engine_installed": true
+          },
+          "route": "/session/now"
+        },
+        {
+          "step": "auto-resume.arm-and-disarm",
+          "observed": {
+            "session_before": "DORMANT with work remaining",
+            "actions": [
+              "MORE",
+              "AUTO-RESUME OFF",
+              "reopen MORE",
+              "observed AUTO-RESUME ON",
+              "AUTO-RESUME ON",
+              "reopen MORE",
+              "observed AUTO-RESUME OFF",
+              "reload and verify OFF"
+            ],
+            "final_state": "OFF",
+            "natural_dusk_restart_tested": false,
+            "safety_monitor": "simulator connected"
+          },
+          "route": "/session/gallery"
+        }
+      ],
+      "owned_server_stopped_on_console_exit": true
+    }
+  ],
+  "limitations": [
+    "No hardware, release executable, relay deployment, all-platform installation or natural overnight behavior verified.",
+    "The first native-run connection request was not verified and the Flow correctly refused without a camera. The retry was verified through the UI before running.",
+    "Cloud hold, dawn and escalation evidence is from 52 controlled existing tests, not a natural live-simulator cloud event.",
+    "Auto-resume ON and OFF were observed, and OFF persisted after reload. No natural dusk restart was tested.",
+    "After completed Flows, the toolbar retained STOP. It was never pressed; a page reload restored RUN. Source review shows pressing stale STOP may start a run without the usual confirmation.",
+    "Four-panel mosaic completed with unguided-rig and short-visit advisories; no start override was requested.",
+    "No mount altitude/azimuth was read or recorded. No complete device-status payload or private server log was inspected for the post-fix procedures."
+  ]
+}
