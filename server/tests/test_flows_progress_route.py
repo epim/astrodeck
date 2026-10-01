@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import time
 
 import httpx
@@ -70,6 +69,7 @@ from astrodeck.sequence import SequenceEngine
 from astrodeck.sequence.models import SequencePlan
 from astrodeck.sequence.session import (Session, SessionFrame, SessionStore,
                                         session_store)
+from conftest import _sweep_config_store  # rootdir-relative, as test_capture_root_isolated does
 
 NAME = "progress me"
 SESSION_COOKIE = "ad_session"       # providers.SessionCookieProvider.COOKIE_NAME
@@ -189,24 +189,17 @@ def _seed(flow_id: str, plan: SequencePlan, frames: list[SessionFrame], *,
 
 # ------------------------------------------------------------------ harness
 
-def _sweep_config_store(monkeypatch, store: ConfigStore) -> None:
-    """Point every imported astrodeck module's ``config_store`` at ``store``.
-
-    ``from .config import config_store`` binds the singleton into each
-    importing module, so patching three modules by name leaves thirty-odd
-    reading the real store, and a site change the test makes would reach none
-    of them: a byte-identical answer would then prove nothing (the #19 scan's
-    own vacuum, see test_no_route_leaks_the_site_coordinates.py)."""
-    for name, mod in list(sys.modules.items()):
-        if (name.startswith("astrodeck") and mod is not None
-                and getattr(mod, "config_store", None) is not None):
-            monkeypatch.setattr(mod, "config_store", store, raising=False)
-
-
 def _isolate(tmp_path, monkeypatch) -> ConfigStore:
-    """A throwaway config store, flow library and captures directory; the
-    camera and the Sun check stubbed on the app's hub so ``/run`` can start
-    (the CONTINUE test). The default site never blocks the horizon check."""
+    """A throwaway config store (``conftest._sweep_config_store``, moved here
+    from a private copy by backlog WP-62, #497, 2026-09-30 -- see its own
+    docstring: ``from .config import config_store`` binds the singleton into
+    each importing module, so patching three modules by name leaves
+    thirty-odd reading the real store, and a site change the test makes
+    would reach none of them, a byte-identical answer then proving nothing,
+    the #19 scan's own vacuum, see test_no_route_leaks_the_site_coordinates.
+    py), flow library and captures directory; the camera and the Sun check
+    stubbed on the app's hub so ``/run`` can start (the CONTINUE test). The
+    default site never blocks the horizon check."""
     store = ConfigStore(path=tmp_path / "astrodeck.json")
     _sweep_config_store(monkeypatch, store)
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)

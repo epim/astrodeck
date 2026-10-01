@@ -1324,6 +1324,19 @@ class GroupRun:
         itself, since only the caller may touch the bus, and
         ``HELD_PASS_SET_ASIDE_AT`` is handled here, the same
         :meth:`set_aside_all` an ordinary anti-spin pass already uses.
+
+        NAME THE PANEL WHEN ONLY ONE WAS LIVE (D-03, #591). The ruling
+        widened the hold itself to reach a group reduced to its last live
+        panel (:func:`centring_pass_verdict`), and the set-aside this
+        function makes is the one place that panel's own name could be
+        lost: ``set_aside_all``'s ``reason`` was written for a GROUP of
+        several panels ("the mosaic has been held ..."), and for exactly
+        one live member that sentence names no panel at all, where the
+        two other set-aside paths (a panel's own three-strike count, the
+        all-deferred anti-spin) both do. ``live_before`` is read here,
+        before :meth:`set_aside_all` empties it, so the wording can tell
+        one panel from several; for several it reads exactly as before
+        ("the mosaic ..."), so no multi-panel case changes.
         """
         if not is_held:
             self.held_streak = 0
@@ -1337,9 +1350,14 @@ class GroupRun:
         streak = self.held_streak
         self._held_pass_reason = reason_code
         if same_as_last or streak >= HELD_PASS_SET_ASIDE_AT:
+            live_before = self.live()
+            subject = (
+                "the mosaic" if len(live_before) != 1
+                else f"{self.members[live_before[0]]} (the mosaic's last "
+                     f"live panel)")
             if same_as_last:
                 reason = (
-                    f"two held passes in a row of the mosaic gave the "
+                    f"two held passes in a row of {subject} gave the "
                     f"identical reason ({reason_code!r}): a rig-side fault, "
                     f"not the sky, so it is set aside for tonight instead "
                     f"of held any further")
@@ -1348,7 +1366,7 @@ class GroupRun:
                 # file's own for a PANEL's own strike count ("1 of 3
                 # consecutive"), and this streak is the GROUP's.
                 reason = (
-                    f"the mosaic has been held for {streak} passes in a "
+                    f"{subject} has been held for {streak} passes in a "
                     f"row with no panel struck and no progress made; set "
                     f"aside for tonight")
             panels = self.set_aside_all(reason, kind="group")

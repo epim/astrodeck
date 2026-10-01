@@ -975,21 +975,33 @@ class TestM14TargetDone:
         assert not _hits(check(_mosaic()), M14)
 
     def test_a_single_target_finishes_once(self):
-        """Beside a mosaic, so the rule runs and must look at whose lane the
-        REPORT ends: M33 is one panel. (Without the mosaic the rule never
-        runs, and mutant "M14 on any TARGET" survived that first version of
-        this test: ``183 passed``.) Mutant "M14 on any TARGET" turns this one
-        red: ``assert not [Issue(text="▸ SESSION REPORT 'target done' fires
-        once per panel, not once for the mosaic: TARGET M33 has 1 panels, so
-        what the wire triggers runs once for each panel finished.",
-        level='note')]``.
+        """Beside a mosaic: a REPORT wired only to M33 (one panel) still
+        fires once per M31 panel too, because the compiled rule carries no
+        ``only_target`` gate at all (``_fire_target_complete`` runs on
+        EVERY target's completion, panels included) -- a fact about the
+        wire the operator drew for M33, not about M33's own panel count.
+        (Without the mosaic the rule never runs at all, and mutant "M14 on
+        any TARGET" survived that first version of this test: ``183
+        passed``.)
 
-        KNOWN GAP, pinned on purpose until it is ruled on (#184, comment of
-        2026-09-25): this pins spec 1.8's trigger, which scopes M14 to the
-        REPORT that ends the mosaic's lane. The engine does not scope it.
-        REPORT 'target done' compiles to an ungated ``on_target_complete``,
-        so this REPORT's wire fires once per M31 panel too, 7 times in all.
-        The name says what the spec meant, not what the run does."""
+        RULED (#184, backlog WP-34, 2026-09-30): the KNOWN GAP this case
+        used to pin -- M14 scoping itself to "the REPORT that ends the
+        mosaic's own lane", which read as the spec's words rather than the
+        engine's wiring -- is closed. An ``only_target`` gate could not have
+        closed it either (panels are named "M31 1-1" and so on, so no
+        single name means "the mosaic"): the rule now fires for ANY REPORT
+        with a ``done`` wire, anywhere in a graph that has a multi-panel
+        block, and names that block and its panel count -- the real
+        consequence for the wire under test here, since M31's six panels
+        each retrigger it, not M33's own one.
+
+        Mutant "M14 on any TARGET" (the mosaic guard dropped, so the rule
+        also fires with no mosaic in the graph at all) turns this red by
+        changing the note it finds, not by removing it: with no mosaic the
+        hit would name M33's own one panel instead of M31's six --
+        ``test_a_report_with_no_done_wire_fires_nothing`` and
+        ``test_report_done_on_a_mosaic_fires_per_panel`` are the cases that
+        catch the mosaic guard directly."""
         g = _mosaic(
             extra_nodes=[_block("t2", 1200, name="M33", rows=1, cols=1),
                          _n("c2", "capture", 1400, filter="Ha"),
@@ -998,7 +1010,11 @@ class TestM14TargetDone:
             extra_edges=[_e("t2", "target", "c2", "run"),
                          _e("c2", "complete", "r2", "session"),
                          _e("r2", "done", "nt", "do")])
-        assert not _hits(check(g), M14)
+        hit = _one(check(g), M14)
+        assert (hit.level, hit.text) == (
+            "note", "▸ SESSION REPORT 'target done' fires once per panel, not "
+            "once for the mosaic: TARGET M31 has 6 panels, so what the wire "
+            "triggers runs once for each panel finished.")
 
 
 class TestM15BudgetSpent:

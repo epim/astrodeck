@@ -78,6 +78,32 @@ def _fast_sim_delays(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _skip_target_holds(monkeypatch):
+    """Runtime seam (test-suite fast-path), the engine's own half of
+    ``_fast_sim_delays`` above (WP-31 integration follow-up, backlog wave
+    4, owner-approved 2026-09-30): skip ``SequenceEngine._await_target_
+    window``'s and ``_hold_for_light``'s real-time holds for the WHOLE
+    suite.
+
+    These two used to read ``ASTRODECK_FAST_TEST`` directly, the same flag
+    ``devices.sim`` and ``solve.simsolver`` read for their own pacing --
+    but those two are device/solver SIMULATORS faking elapsed time for
+    hardware that is not there, and a hold deciding whether to wait for a
+    real sky is not that: a probe or a simulator SERVER started with that
+    deployment flag set must still hold for a target's own window and for
+    light, exactly as a real rig would. So engine.py now reads its own
+    module switch, ``_SKIP_TARGET_HOLDS_FOR_TEST``, which only this
+    fixture and test_w4_target_window_and_light_hold.py's own opt-out test
+    (which flips it back to ``False`` for itself, in place of the old
+    ``monkeypatch.delenv("ASTRODECK_FAST_TEST")``) ever touch.
+    test_w4_no_engine_fast_test_read.py guards that no OTHER module under
+    server/astrodeck reads the env var at all."""
+    import astrodeck.sequence.engine as engine_mod
+    monkeypatch.setattr(engine_mod, "_SKIP_TARGET_HOLDS_FOR_TEST", True)
+    yield
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _never_touch_the_real_config():
     """Point the process-wide ``config_store`` at a throwaway file for the WHOLE

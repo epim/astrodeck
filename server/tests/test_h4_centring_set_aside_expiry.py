@@ -320,12 +320,23 @@ async def test_a_panel_low_at_5_n_is_still_held_to_the_45_minutes(
 async def test_a_panel_struck_out_again_is_set_aside_for_the_night(
         group_hub, monkeypatch):
     """2-2 never centres. Set aside at 540 s, it is tried once more at its
-    expiry, and three more strikes, 300 s apart as a lone panel's deferrals
-    are, set it aside for the rest of the night: no second expiry, the run
-    ends, the second set-aside's line says a restart does not retry it, and
-    the report marks it skipped once. The session holds both records, the
-    first marked expired; a same-night restart reads the night's one expiry
-    and does not hop to 2-2 at all.
+    expiry, and -- RE-PINNED FOR WP-33 under backlog ruling D-03
+    (owner-approved 2026-09-30, #591) -- by then 1-1, 1-2 and 2-1 have all
+    completed, so 2-2 is the mosaic's only live panel: D-03 widens
+    ``centring_pass_verdict`` to call that case the sky's too, so 2-2's
+    misses from the expiry on HOLD the group (``CENTRING_HOLD_RETRY_S`` =
+    600 s, not a lone panel's own 300 s deferral) instead of striking its
+    own three-strike floor a second time, and D-03's escalation sets the
+    group (2-2 alone) aside at its 6th consecutive held pass: no second
+    expiry, the run ends, the second set-aside's line names 2-2 as the
+    mosaic's last live panel and says a restart does not retry it, and the
+    report marks it skipped once. The session holds both records, the
+    first marked expired and kind ``"centring"``, the second kind
+    ``"group"`` (never a second ``"centring"`` one: the three-strike path
+    is never reached again once 2-2 is alone); a same-night restart reads
+    the night's one expiry and does not hop to 2-2 at all. Before D-03 the
+    second streak was three more strikes 300 s apart, pinned as
+    ``[expiry, expiry + 300.0, expiry + 600.0]``.
 
     RED under mutant "expiry every selection" (``_may_expire`` without the
     night's count): 2-2 expires every 45 minutes all night, so the run is
@@ -348,15 +359,16 @@ async def test_a_panel_struck_out_again_is_set_aside_for_the_night(
     set_at = lines[0][0]
     expiry = set_at + SET_ASIDE_EXPIRY_S
     tried = _tried(night)
-    assert tried == FIRST_THREE + [expiry, expiry + 300.0, expiry + 600.0], (
-        f"2-2 was tried at {tried}")
-    assert [t for t, _m in lines] == [set_at, expiry + 600.0]
+    assert tried == FIRST_THREE + [
+        expiry, expiry + 600.0, expiry + 1200.0, expiry + 1800.0,
+        expiry + 2400.0, expiry + 3000.0], (f"2-2 was tried at {tried}")
+    assert [t for t, _m in lines] == [set_at, expiry + 3000.0]
     assert "a restart tonight does not retry it, the next night does" in (
         lines[1][1]), lines[1][1]
     assert _skips(night) == [f"skipped {MISSES}"]
     first, second = night.stored.set_aside
     assert (first["kind"], first.get("expired"), second["kind"],
-            second.get("expired")) == (CENTRING, True, CENTRING, None)
+            second.get("expired")) == (CENTRING, True, "group", None)
     tonight = night_key(T0)
     assert night.stored.set_aside_expiries_on(tonight) == {"p11": 1}
     assert night.stored.set_aside_on(tonight) == [second]
@@ -367,8 +379,13 @@ async def test_a_panel_struck_out_again_is_set_aside_for_the_night(
     assert again.done
     assert [who for _t, who in again.gotos] == [], (
         f"the restart hopped to 2-2: {_tried(again)}")
-    assert again.said(f"{MISSES}: set aside earlier tonight (centring failed "
-                      f"on 2-2 on 3 consecutive visits"), again.lines[-3:]
+    # The record the restart reads back is the second one (kind "group", a
+    # D-03 held-pass escalation on 2-2 alone), not a third "centring"
+    # three-strike record: once the group was down to 2-2 the three-strike
+    # path was never reached a second time.
+    assert again.said(f"{MISSES}: set aside earlier tonight (2-2 (the "
+                      f"mosaic's last live panel) has been held for 6 "
+                      f"passes in a row"), again.lines[-3:]
     assert again.said("a restart tonight does not retry it")
 
 

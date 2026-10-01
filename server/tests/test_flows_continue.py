@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -69,6 +68,7 @@ from astrodeck.sequence import SequenceEngine
 from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
 from astrodeck.sequence.session import (SESSION_STATUSES, Session, SessionFrame,
                                         SessionStore, session_store)
+from conftest import _sweep_config_store  # rootdir-relative, as test_capture_root_isolated does
 
 
 # ------------------------------------------------------------------ graphs
@@ -194,38 +194,34 @@ def _record_starts(engine: SequenceEngine, monkeypatch) -> list[Start]:
     return starts
 
 
-def _sweep_config_store(monkeypatch, store: ConfigStore) -> None:
-    """Point every imported astrodeck module's ``config_store`` at ``store``.
-
-    ``from .config import config_store`` binds the singleton into each
-    importing module, so the three names this harness used to patch
-    (``astrodeck.config``, ``astrodeck.hub``, ``astrodeck.api.app``) left
-    thirty-odd modules reading the REAL store. The one that matters here is
-    the engine: ``engine.start`` snapshots ``config_store.cfg()`` for the
-    run's policy, so every night these tests started ran under this
-    machine's own config rather than the throwaway one, and a setpoint a test
-    posts through ``/api/config`` would land in a store half the code never
-    reads. The same sweep as test_flows_progress_route.py, for the reason
-    test_no_route_leaks_the_site_coordinates.py records (#19)."""
-    for name, mod in list(sys.modules.items()):
-        if (name.startswith("astrodeck") and mod is not None
-                and getattr(mod, "config_store", None) is not None):
-            monkeypatch.setattr(mod, "config_store", store, raising=False)
-
-
 def _isolate(tmp_path, monkeypatch) -> ConfigStore:
     """test_plan_identity's ``api`` isolation: a throwaway config store swept
-    into every astrodeck module that holds one, a throwaway flow library and
-    captures directory, the camera and the Sun check stubbed on the app's hub.
-    A default site never blocks the horizon pre-flight.
+    (``conftest._sweep_config_store``, moved here from a private copy by
+    backlog WP-62, #497, 2026-09-30: ``from .config import config_store``
+    binds the singleton into each importing module, so the three names this
+    harness used to patch (``astrodeck.config``, ``astrodeck.hub``,
+    ``astrodeck.api.app``) left thirty-odd modules reading the REAL store.
+    The one that matters here is the engine: ``engine.start`` snapshots
+    ``config_store.cfg()`` for the run's policy, so every night these tests
+    started ran under this machine's own config rather than the throwaway
+    one, and a setpoint a test posts through ``/api/config`` would land in a
+    store half the code never reads) into every astrodeck module that holds
+    one, a throwaway flow library and captures directory, the camera and
+    the Sun check stubbed on the app's hub. A default site never blocks the
+    horizon pre-flight.
 
     THE KNOWN POSITIVE. A sweep that patched nothing would pass every test
     that never reads config, so the module the old three-name patch missed
     is asserted to read the throwaway store now: ``astrodeck.sequence.engine``.
+    Run here, against ``conftest._sweep_config_store``, not only in
+    conftest's own tests: a regression in the shared sweep breaks a flow
+    run's isolation specifically through the engine, the module this check
+    exists to watch.
 
-    RED under mutation "three-name patch only" (``_sweep_config_store``'s
-    loop replaced by the three ``monkeypatch.setattr`` calls this harness
-    had), as an ERROR at the setup of every test that uses ``rig``, observed:
+    RED under mutation "three-name patch only" (``conftest.
+    _sweep_config_store``'s loop replaced by the three
+    ``monkeypatch.setattr`` calls this harness had before WP-62), as an
+    ERROR at the setup of every test that uses ``rig``, observed:
 
         AssertionError: the engine reads the real config store, not this
         test's: the sweep missed astrodeck.sequence.engine

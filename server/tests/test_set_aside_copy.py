@@ -295,6 +295,18 @@ async def test_a_panel_set_aside_says_tonight(group_hub, monkeypatch):
         centring failed on 2-2 on 3 consecutive visits: plate solve failed
         — used raw GoTo; set aside for tonight: a restart tonight does not
         retry it, the next night does'
+
+    RE-PINNED AGAIN FOR WP-33 under backlog ruling D-03 (owner-approved
+    2026-09-30, #591). By the time 2-2's for-now set-aside expires, the
+    other three panels have completed, so 2-2 is the mosaic's only live
+    panel, and D-03 widens ``centring_pass_verdict`` to call that case the
+    sky's too: 2-2's second streak now HOLDS the group instead of striking
+    its own three-strike floor a second time, and D-03's own escalation (an
+    alert at 3 held passes, the group set aside at 6) decides the second
+    line instead of the panel's own three-strike count. So the second line
+    no longer starts with the three-strike words at all; it is D-03's
+    held-pass sentence, which still names 2-2 (as the mosaic's last live
+    panel, #591) and still says tonight.
     """
     def goto(who, n, result):
         if who == f"{GROUP_NAME} 2-2":
@@ -309,15 +321,20 @@ async def test_a_panel_set_aside_says_tonight(group_hub, monkeypatch):
     lines = [m for _t, lvl, m in night.lines
              if lvl == "warning" and "set aside" in m]
     assert len(lines) == 2, lines
-    for line in lines:
-        assert line.startswith(f"{GROUP_NAME}: centring failed on 2-2 on 3 "
-                               f"consecutive visits: "), line
     first, line = lines
+    assert first.startswith(f"{GROUP_NAME}: centring failed on 2-2 on 3 "
+                            f"consecutive visits: "), first
     # The first streak's set-aside expires tonight (#534): it says so, and
     # never that a restart tonight does not retry it.
     assert ("set aside for now, not for the night" in first
             and "set aside for tonight" not in first
             and TONIGHT[0] not in first), (
         f"the for-now set-aside said it lasts the night: {first!r}")
+    # D-03 (#591): the second line is the held-pass escalation on 2-2
+    # alone, naming it as the mosaic's last live panel, never a second
+    # three-strike line (the panel's own floor is not struck a second time
+    # once it is the group's only live member).
+    assert line.startswith(f"{GROUP_NAME}: 2-2 (the mosaic's last live "
+                           f"panel) has been held for 6 passes in a row"), line
     assert "set aside for tonight" in line and _wrong(line) == [], (
         _wrong(line), line)

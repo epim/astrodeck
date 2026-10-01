@@ -454,18 +454,37 @@ async def test_a_panel_that_will_not_centre_is_deferred_three_times_then_set_asi
          +  where False = <_group_harness.Night object at
         0x000001DBD8C38C80>.done
 
-    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2). 2-2's misses are
-    its own (its neighbours centre), and its third sets it aside, but a
-    streak of centring misses now sets it aside "for now": the set-aside
-    expires 45 minutes on (2-2 is hopped again at 3240 s), it strikes out
-    again, and that second streak is the one set aside for tonight, with
-    the WARNING this case reads. So 2-2 is hopped six times, not three, the
-    session holds two records (the first marked expired), and there is
-    still exactly one "set aside for tonight" line. The same mutant, re-run
-    by the H4 integration in a private copy of server/ (scratchpad
-    H4-INTEG-mut), is still RED at the fake horizon, with the failure
-    recorded above word for word ("(203, [(1788371229.0, 'info', 'M31: pass
-    194 took no exposures ...").
+    RE-PINNED FOR H4 (#534, H4 orchestrator ruling 2), AND AGAIN FOR WP-33
+    under backlog ruling D-03 (owner-approved 2026-09-30, #591). 2-2's
+    FIRST streak is still its own (its neighbours are still live and
+    centring beside it, so the ordinary two-tried floor applies
+    unchanged): three misses set it aside "for now", and it is hopped
+    again at 3240 s once that expires, exactly as H4 pinned it. But by
+    then 1-1, 1-2 and 2-1 have all completed, so 2-2's SECOND streak finds
+    it the mosaic's only live panel, and D-03 widens
+    ``centring_pass_verdict`` to call that the sky's too: 2-2's misses
+    from here HOLD the group (``CENTRING_HOLD_RETRY_S`` = 600 s) instead
+    of counting against its own three-strike floor a second time, and
+    D-03's own escalation takes over: an alert at 3 consecutive held
+    passes and the group (2-2 alone) set aside at 6. 2-2 is hopped NINE
+    times now, not six (3 for the first streak, 6 held passes for the
+    second), the session still holds two set-aside records, but the
+    second is kind ``"group"``, never a second ``"centring"`` one, and
+    its line NAMES 2-2 as the mosaic's last live panel (the naming this
+    case now also pins). The same mutant, re-run by the WP-33 integration
+    in a private copy of server/ (scratchpad H4-INTEG-mut), is still RED
+    at the fake horizon, with the failure recorded above word for word
+    ("(203, [(1788371229.0, 'info', 'M31: pass 194 took no exposures
+    ...").
+
+    MUTANT "the last live panel is not named" (the ``subject`` naming in
+    ``GroupRun._apply_held_pass_rule`` reverted to the bare "the mosaic"
+    string unconditionally): RED, observed:
+        AssertionError: ("M31: the mosaic has been held for 6 passes in a
+        row with no panel struck and no progress made; set aside for
+        tonight: a restart tonight does not retry it, the next night
+        does", 'does not name 2-2')
+        assert False
     """
     def goto(who, n, result):
         if who == _name("2-2"):
@@ -475,17 +494,25 @@ async def test_a_panel_that_will_not_centre_is_deferred_three_times_then_set_asi
     night = await _night(group_hub, monkeypatch, grid_plan(), goto=goto)
     assert night.done, (len(night.gotos), night.lines[-3:])
     assert _shot(night, "2-2") == [], night.shots()
-    assert len(_gotos(night, "2-2")) == 6, _gotos(night, "2-2")
-    alerts = [(lvl, m) for _t, lvl, m in night.lines
-              if "2-2" in m and "set aside for tonight" in m]
-    assert len(alerts) == 1 and alerts[0][0] == "warning", alerts
+    assert len(_gotos(night, "2-2")) == 9, _gotos(night, "2-2")
+    first_streak = [(lvl, m) for _t, lvl, m in night.lines
+                    if "2-2" in m and "set aside for now" in m]
+    assert len(first_streak) == 1 and first_streak[0][0] == "warning", first_streak
     assert ("centring failed on 2-2 on 3 consecutive visits: plate solve "
-            "failed" in alerts[0][1]), alerts
+            "failed" in first_streak[0][1]), first_streak
+    held_set_aside = [(lvl, m) for _t, lvl, m in night.lines
+                      if "set aside for tonight" in m]
+    assert len(held_set_aside) == 1 and held_set_aside[0][0] == "warning", (
+        held_set_aside)
+    assert held_set_aside[0][1].startswith(
+        "M31: 2-2 (the mosaic's last live panel) has been held for 6 "
+        "passes in a row"), (held_set_aside[0][1], "does not name 2-2")
+    assert night.said("held for 3 passes in a row"), night.lines
     for label in ("1-1", "1-2", "2-1"):
         assert _shot(night, label) == ["L", "R"] * 3, label
-    assert [(r["target_id"], bool(r.get("expired")))
-            for r in night.stored.set_aside] == [("p11", True),
-                                                 ("p11", False)]
+    assert [(r["target_id"], r.get("kind"), bool(r.get("expired")))
+            for r in night.stored.set_aside] == [
+        ("p11", "centring", True), ("p11", "group", False)]
 
 
 async def test_control_a_group_that_does_not_require_centring_shoots_the_panel(
@@ -1333,6 +1360,17 @@ async def test_the_group_drivers_lines_do_not_move_with_the_site(
         != 'M31: centring failed on 2-2 on 3 consecutive visits: plate solve
         failed — used raw GoTo (altitude 65.0); set aside for tonight: a
         restart tonight does not retry it, the next night does'
+
+    RE-PINNED FOR WP-31 (backlog ruling D-04, owner-approved 2026-09-30,
+    #595). ``engine.start`` now logs a WARNING naming every session its
+    singleton silently disarmed. Both nights here run the same
+    ``group_hub``/session store, so the second ``_night`` call finds the
+    first night's session still auto-resume-armed and disarms it, logging
+    "starting 'M31 mosaic' disarmed auto-resume for: M31 mosaic" for the
+    SECOND run only -- a fact about two runs sharing one store in this
+    harness, not a site-derived number, so it is dropped from both lists
+    before the word-for-word comparison rather than weakening what this
+    case is about.
     """
     from astrodeck.config import Site
     from _group_harness import LAT, LON
@@ -1347,8 +1385,15 @@ async def test_the_group_drivers_lines_do_not_move_with_the_site(
                               longitude=LON, is_default=False))
     there = await _night(group_hub, monkeypatch, grid_plan(), goto=goto)
     assert here.done and there.done
-    said_here = [m for _t, _l, m in here.lines]
-    said_there = [m for _t, _l, m in there.lines]
+    # D-04 (#595): the second run's engine.start sees the first run's
+    # session still auto-resume-armed in this shared store and disarms it,
+    # logging a warning that names it -- an artefact of running two nights
+    # back to back on one store, not a number either site set, so it is
+    # dropped from both sides before the comparison.
+    said_here = [m for _t, _l, m in here.lines
+                if "disarmed auto-resume for" not in m]
+    said_there = [m for _t, _l, m in there.lines
+                 if "disarmed auto-resume for" not in m]
     assert any("centring failed on 2-2" in m for m in said_here), said_here
     assert said_here == said_there, [
         (a, b) for a, b in zip(said_here, said_there) if a != b][:3]
