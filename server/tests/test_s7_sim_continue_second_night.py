@@ -206,6 +206,12 @@ async def test_continue_on_night_two_retries_the_set_aside_panel_and_counts_nigh
     # THE OPERATOR'S STOP, with the night still held: the abort cancels the
     # run before its first await, and only then is the clock let go, for
     # the wind-down alone.
+    # "aborting" OR "aborted": either means the stop reached the engine. On
+    # the Linux CI runner the abort and its wind-down both finish before the
+    # first poll sees the transient "aborting" (diagnosed in run 36817980463:
+    # engine state 'aborted', running=False, the stop task done with no
+    # exception), so the wind-down on this path does not wait on the held clock.
+    REACHED = ("aborting", "aborted")
     stop = asyncio.create_task(rig.abort(at=at))
     # A wall-clock deadline, not an iteration count: 2000 sleeps of 1 ms are
     # about 31 s on Windows (each sleep rounds up to the 15.6 ms timer) but
@@ -213,10 +219,10 @@ async def test_continue_on_night_two_retries_the_set_aside_panel_and_counts_nigh
     # in time (run 36814198383, 2026-10-01).
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
-        if night.engine.state.get("state") == "aborting":
+        if night.engine.state.get("state") in REACHED:
             break
         await asyncio.sleep(0.001)
-    if night.engine.state.get("state") != "aborting":
+    if night.engine.state.get("state") not in REACHED:
         # Make the failure explain itself (#610 follow-up, CI runs 36814198383
         # and 36816188010): what the engine says, and where the stop task is.
         where = "running"
