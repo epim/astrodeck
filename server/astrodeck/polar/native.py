@@ -791,8 +791,23 @@ async def _capture_and_solve(hub: Any, solver: Any, session: Any = None):
     Imaging settings come from the SESSION (operator-tunable, live) rather
     than constants: exposure, gain, offset, binning and optionally a filter.
     Until 2026-08-07 all five were hardcoded here, which on a night of
-    marginal solves left the operator no move at all."""
-    from ..hub import CAPTURE_DIR  # lazy: avoid a hub<->polar import cycle
+    marginal solves left the operator no move at all.
+
+    THE SOLVE FRAME GETS A UNIQUE NAME (#532). Every solve the hub itself runs
+    went through ``_write_solve_frame`` / ``_retire_solve_frame`` in H4
+    (#189); this is a polar alignment solve of the same imaging camera, run
+    dozens of times a session, so it is the same hazard: a fixed
+    ``_solve/polar.fits`` can be held open by a reader (a copy off the rig, an
+    antivirus scan, an indexer) exactly as ``solve.fits`` was, and a bare
+    write has no retry. ``_write_solve_frame`` retries a Windows sharing
+    violation under a new name and raises ``SolveFrameTransient`` (a
+    ``DeviceError``) only once ``SOLVE_WRITE_ATTEMPTS`` tries are exhausted --
+    which ``_solve_until_it_works`` then retries exactly like any other failed
+    solve, so a reader holding the frame costs one retried measurement
+    instead of ending the whole polar run."""
+    from ..hub import _retire_solve_frame, _write_solve_frame  # lazy: avoid a
+    # hub<->polar import cycle (the same reason CAPTURE_DIR used to be
+    # imported here directly).
     cam = hub.require("camera")
     tel = hub.require("telescope")
     cfg = _solve_config(session)
@@ -824,16 +839,16 @@ async def _capture_and_solve(hub: Any, solver: Any, session: Any = None):
         except Exception:
             pass
 
-        tmp = CAPTURE_DIR / "_solve" / "polar.fits"
-        from ..imaging import save_fits
         _publish_activity(session, "solving")
-        await asyncio.to_thread(save_fits, frame, tmp,
-                                ra_hours=ra_hint, dec_deg=dec_hint,
-                                instrument=cam.name)
+        tmp = await _write_solve_frame(frame, "polar", ra_hours=ra_hint,
+                                       dec_deg=dec_hint, instrument=cam.name)
         opt = hub.effective_optics()
         fov_hint = opt.get("fov_h_deg") or None
-        result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                    fov_deg_hint=fov_hint)
+        try:
+            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                                        fov_deg_hint=fov_hint)
+        finally:
+            await _retire_solve_frame(tmp, "polar")
     finally:
         # Cleared in ALL exits — a failed solve leaving "solving" on screen
         # would be the exact lie this field exists to remove.
