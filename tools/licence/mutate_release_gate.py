@@ -55,6 +55,11 @@ def main():
             for name, filename, before, after, test in MUTANTS:
                 path=ROOT/filename
                 text=original[filename].decode("utf-8")
+                # Git may restore CRLF on Windows. Match the source's newline
+                # style without changing unrelated bytes or restoration data.
+                newline="\r\n" if "\r\n" in text else "\n"
+                before=before.replace("\n",newline)
+                after=after.replace("\n",newline)
                 if text.count(before)!=1:
                     raise RuntimeError("ambiguous mutation anchor: "+name)
                 try:

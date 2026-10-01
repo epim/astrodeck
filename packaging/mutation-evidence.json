@@ -68,6 +68,18 @@
       "intended_assertion_failed": true
     },
     {
+      "name": "server-same-version-reinstalled",
+      "file": "packaging/build_binary.py",
+      "test": "test_release_packaging.ReleasePolicy.test_validated_server_wheel_replaces_same_version_without_dependency_changes",
+      "intended_assertion_failed": true
+    },
+    {
+      "name": "server-dependencies-preserved",
+      "file": "packaging/build_binary.py",
+      "test": "test_release_packaging.ReleasePolicy.test_validated_server_wheel_replaces_same_version_without_dependency_changes",
+      "intended_assertion_failed": true
+    },
+    {
       "name": "server-wheel-policy-check",
       "file": "packaging/build_binary.py",
       "test": "test_release_packaging.ReleasePolicy.test_server_install_refuses_forbidden_actual_wheel_member",
@@ -267,7 +279,7 @@
     "scripts/build_release.py": "e95396284e8d504431d997ba4320b0631dce9af63f42ef10c19e54c2588fae3f",
     "packaging/metadata_payloads.py": "a0a6f73789cd810904b1d0440888dd69b4aace463c94a945221368f23e5cbd60",
     "packaging/astrodeck.spec": "c7933260f5c2723dec20998b49bd2e3f072b78cef573be41c82035d0a4e3c0ed",
-    "packaging/build_binary.py": "3f93902c8b861b43fcbf9e528adfc246a7716f4e93557e5cfdafea0cb11aea07",
+    "packaging/build_binary.py": "a49e583e9349db296183e9035b2db4cb9442d4640a1257354c7cb92cc2f181c5",
     "packaging/build_native.py": "7f060b7ceef563cb6c31a7e6a6be74d71f852a6dcf14a827cd6ac8230eec9bf1",
     "packaging/native_probe.py": "f1fc366f5e450ecbfe9afd62cc11fac100d4ee6309f7159772039333e104f85b",
     "packaging/entry.py": "2a7e6474fe3fc5fa72eb4dbf7d27fe7e283bcee92a6b1284d23f4477e8566b8b",

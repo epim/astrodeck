@@ -2,7 +2,7 @@
 
 This change builds a source-matching `astrodeck-native` ABI3 wheel before freezing AstroDeck and always runs the packaged `--packaging-probe`, including when `--no-smoke` is selected. The probe imports the actual extension and runs the Rust star detector on a synthetic blank 32 by 32 uint16 frame. It runs before default state selection or application imports. It does not contact a camera, mount, relay or configured server.
 
-Use a private build environment with the server's base dependencies, PyInstaller, maturin, psutil and Rust. The binary builder installs the base server, not the optional COM host extra. It stages a fresh server source copy before building and validating its wheel, so an old setuptools build directory cannot retain package data excluded by policy. The native helper uses `.probe/release/cargo-home` and `.probe/release/cargo-target`.
+Use a private build environment with the server's base dependencies, PyInstaller, maturin, psutil and Rust. The binary builder installs the base server, not the optional COM host extra. It force-reinstalls the exact validated server wheel with --no-deps, replacing stale same-version metadata while preserving the prepared dependency versions. It stages a fresh server source copy before building and validating its wheel, so an old setuptools build directory cannot retain package data excluded by policy. The native helper uses `.probe/release/cargo-home` and `.probe/release/cargo-target`.
 
 ```text
 python packaging/distribution_policy.py --check-package-data
@@ -25,6 +25,6 @@ The existing `server/tests/test_build_binary_smoke.py` was explicitly authorized
 
 This is Windows-local build and regression evidence, not a claim that Linux x86_64, Linux arm64, macOS arm64, elevated Windows account creation, or real hardware operation has been executed here. The parent owns actual final artifact builds, inventories and release gate results. Earlier native and frozen artifacts produced before the PEP 639 correction are intermediate evidence only and must not be released.
 
-Final local packaging validation at handoff: 71 new tests passed; 43 named mutants failed their intended assertion and all source hashes restored exactly; the 23 repinned existing binary smoke tests passed. Full release clearance remains with the parent artifact gates.
+Final local packaging validation at handoff: 72 new tests passed; 45 named mutants failed their intended assertion and all source hashes restored exactly; the 23 repinned existing binary smoke tests passed. Full release clearance remains with the parent artifact gates.
 
 The frozen metadata collector omits only each server/native distribution root's installer-created direct_url.json, which can contain a private PEP 610 file URL. All other metadata bytes, including RECORD, notices, source archive and SBOM, remain selected.
