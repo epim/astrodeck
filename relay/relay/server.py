@@ -1010,13 +1010,26 @@ def uvicorn_log_config() -> dict:
 
 def uvicorn_options(cfg: RelayConfig) -> dict:
     """Every keyword ``main`` hands ``uvicorn.run``, in one place so the test
-    of the access log runs the server exactly as production does."""
+    of the access log runs the server exactly as production does.
+
+    ``ws_ping_interval``/``ws_ping_timeout`` are given explicitly, at
+    uvicorn's own current defaults (#597), rather than left to fall through
+    to whatever ``uvicorn.Config`` defaults to. They set the protocol-level
+    WebSocket PING/PONG uvicorn's own `websockets` layer sends underneath the
+    relay's unrelated 10 s application-level ping (``_ping_loop``, which
+    pings over the already-open tunnel, not the raw socket). The relay's
+    unpinned requirements let a routine rebuild silently pick up a newer
+    uvicorn whose default could differ; pinning the keyword here means a
+    library upgrade cannot also change this timing without a reviewed diff.
+    The Dockerfile's CMD is ``python -m relay`` with no arguments, so these
+    cannot be set on a command line -- they have to live here."""
     return dict(host=cfg.bind_host, port=cfg.bind_port,
                 proxy_headers=bool(cfg.forwarded_allow_ips),
                 forwarded_allow_ips=cfg.forwarded_allow_ips or "",
                 access_log=cfg.uvicorn_access_log,
                 log_config=uvicorn_log_config(),
                 ws_max_size=MAX_WIRE_SIZE, ws_max_queue=16,
+                ws_ping_interval=20.0, ws_ping_timeout=20.0,
                 limit_concurrency=256, backlog=128, timeout_keep_alive=5,
                 h11_max_incomplete_event_size=65536)
 
