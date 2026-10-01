@@ -302,6 +302,15 @@ class _StarletteBrowserWS(BrowserWS):
 #: TCP connection.
 NO_CLOSE_FRAME_CODE = 1006
 
+#: The reserved codes that carry no status from the peer, so neither names a
+#: close the home chose. 1006 is the dropped connection above. 1005 ("no status
+#: received", RFC 6455 7.4.1, also never sent on the wire) is what the newest
+#: uvicorn/websockets stack reports for the SAME abrupt drop: the CI runner,
+#: installing the relay's unpinned requirements on 2026-09-30, logged
+#: "close=1005" where the Windows dev box logged "no close frame" (#597's
+#: library difference). Both read as "no close frame", the rig's own words.
+NO_STATUS_CODES = (1005, NO_CLOSE_FRAME_CODE)
+
 #: Why the relay sends each code it closes a LIVE tunnel with. One call site
 #: per code: the keepalive (``_ping_loop``), revocation (``evict_home``) and
 #: generation fencing, where a newer HELLO replaces this socket. The 1012 the
@@ -334,7 +343,7 @@ def tunnel_end_line(home_id: str, generation: int, lived_s: float, *,
                 + (f": {why}" if why else ""))
     if error:
         return f"{head} close=none: {error}"
-    if received_code in (None, NO_CLOSE_FRAME_CODE):
+    if received_code is None or received_code in NO_STATUS_CODES:
         return f"{head} close=no close frame"
     return f"{head} close={received_code}"
 

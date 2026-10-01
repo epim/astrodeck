@@ -283,3 +283,24 @@ async def test_a_frame_the_relay_cannot_read_is_named(restore_logging):
     assert line.endswith(
         "close=none: the home sent a frame the relay could not decode or "
         "route"), line
+
+
+def test_both_status_less_codes_read_as_no_close_frame():
+    """1005 and 1006 are the two reserved codes that carry no status from the
+    home, so neither names a close the home chose. The CI runner's newer
+    uvicorn/websockets reported an abrupt drop as 1005 where the Windows dev
+    box reported 1006 (2026-09-30), and the end line said "close=1005", a code
+    that reads like the home's own choice. Both now read "no close frame",
+    the words the rig's side of the same drop uses.
+
+    MUTANT N1 "only 1006 is status-less" (``NO_STATUS_CODES =
+    (NO_CLOSE_FRAME_CODE,)``), observed:
+      AssertionError: home tunnel ended: home=h gen=1 lived=2.0s close=1005
+    """
+    from relay.server import tunnel_end_line
+    for code in (1005, 1006):
+        line = tunnel_end_line("h", 1, 2.0, received_code=code)
+        assert line.endswith("close=no close frame"), line
+    # Controls: no code at all, and a code the home really sent.
+    assert tunnel_end_line("h", 1, 2.0).endswith("close=no close frame")
+    assert tunnel_end_line("h", 1, 2.0, received_code=1011).endswith("close=1011")
