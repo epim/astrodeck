@@ -1652,6 +1652,30 @@ def fov_deg(focal_mm: float, pixel_um: float, w_px: int, h_px: int) -> tuple[flo
     FOV is bin-INDEPENDENT — fewer, bigger binned pixels cover the same sky — so
     it is always computed at bin-1. Sending a binned scale to a plate solver
     would halve the hint.
+
+    TAKES A FOCAL LENGTH IN MM, NEVER A REDUCER, same as ``f_ratio`` above and
+    for the same reason: ``Optics.reducer`` is recorded, not applied, so
+    ``focal_mm`` is already the reduced number when "USE THE REDUCED FOCAL
+    LENGTH" was pressed, and the explicit one otherwise. This is the ONE FOV
+    formula's server anchor (#168): ``catalog/framing.py``'s
+    ``fov_deg_from_optics`` reads ``Optics`` and calls straight through to
+    this, and both client mirrors (``ui/src/lib/framing.ts``'s
+    ``fovFromOptics`` and ``ui/src/next/lib/fov.ts``'s ``fovDeg``, via their
+    shared ``fovDegFromSensorMm``) apply the same rule about the reducer, so
+    a mosaic tiled from config and a UI's preview of that config no longer
+    disagree over a recorded one.
+
+    NOT A BIT-EXACT MATCH WITH THE CLIENT MIRRORS, otherwise (found during
+    W3 integration, #623, not fixed here -- a wider change
+    than one fix belongs in): this function still goes through
+    ``image_scale_arcsec_px``'s rounded ``ARCSEC_PER_RAD`` (206.265, not the
+    exact 206264.806.../1000), where ``fovDegFromSensorMm`` computes the
+    exact-trig ``(sensor_mm / focal_mm) * (180 / pi)`` directly. The two
+    client mirrors agree with EACH OTHER exactly (what #168 asked for); the
+    gap from this function is on the order of 1e-6 deg at typical amateur
+    rigs -- far below anything a plate solve or a mosaic tiling measures,
+    but real, and a test comparing the two bit-for-bit will see it
+    (``ui/src/components/flows/framing/__tests__/framingSections.test.tsx``).
     """
     s = image_scale_arcsec_px(focal_mm, pixel_um, binning=1)
     fw = s * w_px / 3600.0

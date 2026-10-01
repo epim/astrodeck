@@ -38,7 +38,8 @@ from pydantic import (BaseModel, ConfigDict, Field, field_validator,
 
 from ..auth import CAP_VIEW_SITE_DERIVED, require
 from ..auth.rbac import declare
-from ..config import ARCSEC_PER_RAD
+from ..config import ARCSEC_PER_RAD, Optics
+from ..config import fov_deg as _config_fov_deg
 # ``identity`` is pure (hashlib, json, uuid) and holds the one definition of
 # "the same geometry" (its canonical text) and of an anchor's stored form, so
 # the carry reads both from it rather than keeping a second copy here.
@@ -91,6 +92,29 @@ NORTH_PROBE_DEG = 1e-4
 
 #: A panel's four corners, as signs of its half-width and half-height.
 _CORNERS = ((-1, -1), (-1, 1), (1, -1), (1, 1))
+
+
+def fov_deg_from_optics(optics: Optics) -> tuple[float, float, float]:
+    """Field of view (width, height, diagonal) in degrees for the rig's
+    configured optics (#168) -- the server half of "one FOV function serves
+    both UIs". Delegates straight to ``config.fov_deg`` at bin 1, same as
+    ``hub.effective_optics``.
+
+    ``optics.reducer`` IS NEVER APPLIED HERE, matching ``Optics.reducer``'s own
+    doc (config.py:97-111) and ``f_ratio``'s precedent (config.py): the reducer
+    is recorded, not multiplied, so ``focal_length_mm`` alone drives the field
+    -- already the reduced number if "USE THE REDUCED FOCAL LENGTH" was
+    pressed, the explicit number otherwise. This is the SAME rule the client
+    mirrors apply: ``ui/src/lib/framing.ts``'s ``fovFromOptics`` and
+    ``ui/src/next/lib/fov.ts``'s ``fovDeg`` both read only the focal length,
+    through the one shared ``fovDegFromSensorMm`` formula. Before #168,
+    ``next/lib/fov.ts`` multiplied the reducer in while this server path and
+    ``fovFromOptics`` did not, so a mosaic framed from config and a UI preview
+    of the same config could disagree by the reducer factor whenever one was
+    recorded. A test pins all three to the same field for one config.
+    """
+    return _config_fov_deg(optics.focal_length_mm, optics.pixel_size_um,
+                            optics.sensor_width_px, optics.sensor_height_px)
 
 
 # ----------------------------------------------------------------- request model

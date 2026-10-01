@@ -28,7 +28,10 @@ export interface ActiveSession {
    *  quick run has none) or it has not loaded yet. */
   session: Session | null;
   /** The list row, which is where the NIGHT COUNT lives - `session.nights` is
-   *  report ids and `row.nights` is their count. */
+   *  report ids, one per `engine.start` (a RUN count), and `row.nights` is the
+   *  count of distinct OBSERVING nights those runs fall on (#430, H4
+   *  `len(s.observing_nights())`): a same-night restart is still one night
+   *  here, where it would be two runs. */
   row: SessionRow | null;
   loading: boolean;
   /** A failed read is not an empty ledger, and callers must be able to tell. */

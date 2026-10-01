@@ -1164,9 +1164,15 @@ async def test_the_image_scale_precedence_is_measured_then_configured_then_guess
     just taken, so it has to win; a configured scale is the operator's claim; the
     1.55 is a guess with no provenance at all. Getting this order wrong is
     invisible — every layer returns a plausible float.
+
+    Re-pinned for WP-30a (#532): the polar solve's frame write now goes
+    through ``hub._write_solve_frame``, which calls the ``save_fits`` name
+    bound in ``astrodeck.hub``, so patching ``astrodeck.imaging.save_fits``
+    alone no longer reaches it.
     """
     monkeypatch.setattr("astrodeck.imaging.save_fits",
                         lambda *a, **kw: None)
+    monkeypatch.setattr("astrodeck.hub.save_fits", lambda *a, **kw: None)
     hub = _GeomHub(optics)
     solver = _GeomSolver(_Solve(5.0, pixel_scale_arcsec=solver_scale))
     _frame, result, geom = await nat._capture_and_solve(hub, solver)
@@ -1182,8 +1188,13 @@ async def test_the_image_scale_precedence_is_measured_then_configured_then_guess
 async def test_a_failed_solve_stops_the_run_instead_of_returning_a_guess(
         monkeypatch) -> None:
     """The other half of the geometry contract: no solve, no numbers. A returned
-    default here would feed the fit a fabricated position."""
+    default here would feed the fit a fabricated position.
+
+    Re-pinned for WP-30a (#532): see the sibling test above -- the write now
+    goes through ``astrodeck.hub.save_fits``, not ``astrodeck.imaging.save_fits``.
+    """
     monkeypatch.setattr("astrodeck.imaging.save_fits", lambda *a, **kw: None)
+    monkeypatch.setattr("astrodeck.hub.save_fits", lambda *a, **kw: None)
 
     class _Bad:
         success = False

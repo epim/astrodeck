@@ -8,11 +8,21 @@
 // unreadable: <reason>, updated_ts}` (server `session.py` `_unreadable_row`).
 // The shelf has to draw it as its own read-only card: the name inside the
 // file, its id, the word, the reason as sent, and DELETE gated exactly as a
-// session card's DELETE (the
-// same capability sentence, the same verbatim confirm, the same route). It
+// session card's DELETE (the same capability sentence, the same route). It
 // must never become a session card: no "SUBS" count, no thumbnail read, no
 // MORE menu with RESUME, UPDATE FROM PLAN or AUTO-RESUME. The count above the
 // grid and the GALLERY chip count it, because it is on the shelf.
+//
+// THE CONFIRM AND THE TOAST ARE NOT ONE VERBATIM SENTENCE ANY MORE (#279).
+// Since #266 a DELETE on an unreadable file keeps its `.bak`, with the
+// thumbnails, when one sits beside it (the row then carries `backup: true`,
+// and the DELETE response carries `backup_kept`/`detail`), and `CONFIRM_DELETE`
+// ("Removes the session ledger and thumbnails") is false for that file: the
+// backup and the thumbnails stay. `cardActions.ts`'s `runDelete` now looks the
+// row up fresh and picks `unreadableDeleteBody(row)` for an unreadable row,
+// `CONFIRM_DELETE` otherwise, and the success toast reads the response's
+// `backup_kept`/`detail` rather than the generic FITS sentence when a backup
+// survived.
 //
 // NAMED MUTANTS, each run from a byte copy of the file it mutates and restored
 // byte-identical (sha256 checked); the observed failure is quoted at the test.
@@ -21,6 +31,11 @@
 //                                        returns nothing
 //   G2 "ungate the unreadable DELETE"    UnreadableSessionCard.tsx: lockedReason
 //                                        is null for every principal
+//   G3 "unreadable delete uses the session body"   cardActions.ts:
+//                                        `deleteConfirmBody` returns
+//                                        `CONFIRM_DELETE` unconditionally
+//   G4 "toast ignores backup_kept"       cardActions.ts: `deleteToastDetail`
+//                                        always returns the FITS sentence
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -71,10 +86,17 @@ const ROW = {
 const REASON = "fails validation";
 /** The name inside the damaged file, which the server passes on. */
 const BAD_NAME = "NGC 7000 Ha";
-const BAD = {
+/** `backup` starts false (no `.bak` beside the file) and a later test flips it
+ *  to true, re-mounting fresh each time: one row stands in for both of #266's
+ *  cases rather than two fixtures that could drift apart. */
+const BAD: { id: string; name: string; status: "unreadable"; unreadable: string; updated_ts: number; backup?: boolean } = {
   id: "s-bad", name: BAD_NAME, status: "unreadable", unreadable: REASON,
   updated_ts: 1_757_000_200,
 };
+/** The server's words for a kept backup (#266) - invented for this fixture,
+ *  not the production sentence verbatim, since the test pins only that the
+ *  toast carries WHATEVER the response's `detail` says, not its exact words. */
+const BACKUP_DETAIL = "Removed s-bad, which could not be read. Its backup s-bad.json.bak remains.";
 const SESSION = {
   id: "s1", schema_version: 1, name: "M31 LRGB",
   created_ts: ROW.created_ts, updated_ts: ROW.updated_ts, status: "dormant",
@@ -94,7 +116,11 @@ g.fetch = async (url: string, init?: { method?: string }) => {
   });
   // In the server's order: newest `updated_ts` first (the file's mtime for BAD).
   if (url === "/api/sessions") return json({ sessions: [BAD, ROW] });
-  if (url === "/api/sessions/s-bad" && method === "DELETE") return json({ deleted: "s-bad" });
+  if (url === "/api/sessions/s-bad" && method === "DELETE") {
+    return json(BAD.backup
+      ? { deleted: "s-bad", backup_kept: "s-bad.json.bak", detail: BACKUP_DETAIL }
+      : { deleted: "s-bad" });
+  }
   if (url === "/api/sessions/s-bad") return json({ detail: "unreadable", code: "session_unreadable" }, 500);
   if (url === "/api/sessions/s1") return json(SESSION);
   if (url.startsWith("/api/reports")) return json([]);
@@ -111,6 +137,7 @@ const { useStore } = await import("../../../../../store");
 const { CONFIRM_DELETE } = await import("../cardActions");
 const { GalleryScreen } = await import("../GalleryScreen");
 const { galleryCountFrom, resetSessionsIndex } = await import("../sessionsIndex");
+const { unreadableDeleteBody } = await import("../../../../../api/sessions");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -220,20 +247,64 @@ await testAsync("the count above the grid and the GALLERY chip both count the fi
   eq(galleryCountFrom([ROW as any], []), 1, "control, the chip's count with no unreadable file:");
 });
 
-await testAsync("DELETE confirms with the session delete's verbatim body, then deletes the file", async () => {
+await testAsync("DELETE confirms with the unreadable row's own body (no backup), then deletes the file", async () => {
+  // G3 "unreadable delete uses the session body", observed:
+  //   x DELETE confirms with the unreadable row's own body (no backup), then
+  //   deletes the file: the confirm body must name the damaged file, not the
+  //   session delete's sentence:
+  //     expected "Removes the file s-bad.json, which cannot be read, and its
+  //     thumbnails. Saved FITS frames are NOT deleted. This cannot be undone."
+  //     got      "Removes the session ledger and thumbnails. Saved FITS
+  //     frames are NOT deleted. This cannot be undone."
   const del = tid("session-unreadable-delete-s-bad");
   assert(del != null, "no DELETE on the card");
   assert(del.getAttribute("aria-disabled") == null, "an admin's DELETE must be live");
   await click(del);
   const req = (useStore.getState() as any).confirm;
   assert(req != null, "no confirm was raised - delete must never be one tap");
-  eq(req?.body as string, CONFIRM_DELETE, "the confirm body must be the session delete's verbatim sentence");
+  eq(req?.body as string, unreadableDeleteBody(BAD),
+    "the confirm body must name the damaged file, not the session delete's sentence");
+  assert(req?.body !== CONFIRM_DELETE,
+    "control: an unreadable row with no backup must not fall back to the session sentence either");
   const before = asked.filter((a) => a.method === "DELETE").length;
   await act(async () => { (useStore.getState() as any).resolveConfirm(true); });
   await settle();
   const sent = asked.filter((a) => a.method === "DELETE");
   eq(sent.length, before + 1, "confirming must issue the request");
   eq(sent[sent.length - 1].url, "/api/sessions/s-bad", "and against this file");
+  const toasts = (useStore.getState() as any).toasts as { title?: string; detail?: string }[];
+  eq(toasts[toasts.length - 1]?.detail, "The saved FITS frames are untouched.",
+    "with no backup_kept, the toast keeps the generic FITS sentence");
+});
+
+await testAsync("with a backup beside the file, DELETE names what stays and the toast says so", async () => {
+  // G3, observed (this case): the confirm names the file but never the
+  // backup -
+  //   x with a backup beside the file, DELETE names what stays and the toast
+  //   says so: the confirm does not say the backup stays:
+  //     expected true
+  //     got      false
+  // G4 "toast ignores backup_kept", observed:
+  //   x with a backup beside the file, DELETE names what stays and the toast
+  //   says so: the toast dropped the server's backup_kept detail:
+  //     expected "Removed s-bad, which could not be read. Its backup
+  //     s-bad.json.bak remains."
+  //     got      "The saved FITS frames are untouched."
+  BAD.backup = true;
+  await mount("admin", ["view.status", "view.preview", "view.media", "control.mount", "control.capture"]);
+  const del = tid("session-unreadable-delete-s-bad");
+  assert(del != null, "no DELETE on the card");
+  await click(del);
+  const req = (useStore.getState() as any).confirm;
+  assert(req != null, "no confirm was raised");
+  eq(req?.body as string, unreadableDeleteBody(BAD), "the confirm body must name the kept backup");
+  assert(/backup/i.test(String(req?.body)), `the confirm does not say the backup stays: ${req?.body}`);
+  await act(async () => { (useStore.getState() as any).resolveConfirm(true); });
+  await settle();
+  const toasts = (useStore.getState() as any).toasts as { title?: string; detail?: string }[];
+  eq(toasts[toasts.length - 1]?.detail, BACKUP_DETAIL,
+    "the toast dropped the server's backup_kept detail");
+  BAD.backup = false;
 });
 
 await testAsync("a viewer sees the card with DELETE honest-disabled, carrying the session delete's reason", async () => {

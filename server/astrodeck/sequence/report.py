@@ -13,7 +13,13 @@ Persistence model (resolves the "second blocking full-file rewrite" critique):
   in-memory lists and schedule a JSON snapshot write through
   :func:`asyncio.to_thread` (never a synchronous in-loop blocking write). The
   snapshot is the whole report — small (frames are downsampled when huge) and
-  written atomically via :func:`persist.write_json_atomic`.
+  written atomically via :func:`persist.write_json_atomic`. A snapshot write
+  that fails gets one bounded retry, off the loop, a short delay later (#579):
+  the old assumption that a failed snapshot is "repaired by the next one"
+  held only while a next event was coming soon, and during a long hold (a
+  set-aside expiry wait, a cloud hold, a wait for a target to rise) nothing
+  writes again until the hold ends, so the report could stay a frame behind
+  the ledger for as long as the hold lasted.
 * :meth:`finalize` stamps ``ended_at`` + ``end_reason`` and writes one last time,
   on the caller's thread; a retry of that write runs on a thread of its own
   (#477).
@@ -70,6 +76,7 @@ from .. import persist as _persist
 from ..events import bus
 from ..persist import (PrivatePermissionsError, ensure_dir, list_json,
                        read_json, write_json_atomic)
+from ..remote import relay_client
 from ..windows_acl import PrivateAclError
 
 # Append-only frame cap: once the list passes this, every other frame is dropped
@@ -101,6 +108,27 @@ _READ_BACKOFF_S = 0.05
 #: failing on a transient sharing violation. The wait is made on the retry's
 #: own thread whenever ``finalize()`` is called on a running loop (#477).
 _FINAL_RETRY_S = 0.25
+
+#: How long a failed NON-final (snapshot) write waits before its one retry
+#: (#579). A snapshot is ordinarily "repaired by the next one", but there may
+#: be no next one soon: a set-aside expiry wait, a cloud hold or a wait for a
+#: target to rise can all hold the night for minutes with no frame, safety
+#: event or sky-angle row to schedule another write. Unlike the final retry
+#: this one never needs a thread of its own: it only runs for a snapshot
+#: built off the loop (:meth:`_write_async`'s own ``asyncio.to_thread``
+#: worker), so the sleep is already on a thread with no loop to hold. A
+#: snapshot written inline with no loop at all (``_write_sync``, the
+#: synchronous/unit-test path) keeps the old single-attempt behaviour: that
+#: path exists for tests, and in production every writer reaches this one
+#: through the loop.
+_SNAPSHOT_RETRY_S = 0.25
+
+#: Shortest span of a report's OWN elapsed time (#521 fix 3) before its
+#: drops-per-hour figure shows a number. Below it, one early drop would read
+#: as an absurd rate -- one drop 10 s into a run answers 360/h -- so the
+#: field stays None, "nothing to report yet" rather than a number nobody
+#: would believe.
+_DROPS_RATE_MIN_SPAN_S = 300.0
 
 #: Report paths already warned about as unreadable, with the reason that was
 #: logged. ``GET /api/reports`` and the Tonight route list the store often, and
@@ -326,6 +354,17 @@ class SessionReport(BaseModel):
     #: event (the #166 class), which `GET /api/reports/{id}` serves a viewer
     #: whole until its redaction withholds it (#567).
     sky_angles: list[dict] = Field(default_factory=list)
+    #: RELAY TUNNEL DROPS PER HOUR over this report's own span (#521 fix 3):
+    #: a bad-network night (the rig's own internet blipping, as the 2026-09-22
+    #: cluster's DNS failure showed) is visible here without reading
+    #: ``captures/logs/<night>.jsonl`` by hand. Counted from the "relay link
+    #: check" line ``relay_client`` logs after every drop
+    #: (:func:`relay_client.recent_drop_count`), not re-derived from the log
+    #: file: a count kept at the moment those lines are written cannot drift
+    #: from what they say. None when the report has not run long enough for a
+    #: rate to mean anything (:data:`_DROPS_RATE_MIN_SPAN_S`), or when remote
+    #: access has never run in this process -- never 0 for "untried".
+    relay_drops_per_hour: float | None = None
 
 
 # ---------------------------------------------------------------- header builder
@@ -740,29 +779,47 @@ class SessionReporter:
     async def _write_async(self) -> None:
         async with self._lock:
             number, snapshot = self._snapshot()
-            await asyncio.to_thread(self._persist, snapshot, number)
+            # off_loop=True: this call is already inside asyncio.to_thread's
+            # own worker, so a failed snapshot's bounded retry (#579) can
+            # sleep right here without ever touching the loop.
+            await asyncio.to_thread(self._persist, snapshot, number,
+                                    off_loop=True)
 
     def _write_sync(self) -> None:
         number, snapshot = self._snapshot()
         self._persist(snapshot, number)
 
     def _persist(self, report: SessionReport, number: int, *,
-                 final: bool = False) -> None:
+                 final: bool = False, off_loop: bool = False) -> None:
         """Write one snapshot, unless a newer one is already on disk (#420).
 
         Never raises: a disk hiccup must not kill the run. A failure is logged
         at warning with the report's path (capture-root-relative, see
-        :func:`_shown`), and a FINAL write that fails is retried once, after
+        :func:`_shown`). A FINAL write that fails is retried once, after
         ``_FINAL_RETRY_S`` (#370): nothing writes after it, so its failure is
-        the report's ending lost, while a snapshot's is repaired by the next.
+        the report's ending lost. A non-final (snapshot) write that fails
+        gets its own one bounded retry, after ``_SNAPSHOT_RETRY_S`` (#579),
+        when ``off_loop`` says it is safe to -- see below.
 
-        The retry never sleeps on the event loop (#477, S7 orchestrator ruling
-        5). ``finalize()`` is called on the loop thread, and until #477 the
-        sleep and the retry's own write, ``write_json_atomic``'s replace
-        backoff inside it, held every coroutine of the wind-down for up to a
-        second. Called on a running loop, the retry is handed to a thread of
-        its own (:meth:`_retry_final`); with no loop on this thread there is
-        nothing to hold, and it is made here.
+        Neither retry blocks THIS method's own thread: it stays the single
+        "is it a final or a snapshot write" decision and never itself waits
+        out a backoff, which is what every caller is entitled to assume about
+        a method named like a one-shot write (#477, S7 orchestrator ruling 5
+        -- the rule the owner list's item 47 and test_mosaic_spec_claims.py's
+        ``test_the_owner_list_records_the_s7_orchestrator_rulings`` hold this
+        method to by inspecting its own source for the stdlib call that
+        would wait). ``finalize()`` is called on the loop thread, so a failed
+        final write's retry is handed to a thread of its own
+        (:meth:`_retry_final`); a failed snapshot write's retry
+        (:meth:`_retry_snapshot`) needs no second thread, because ``off_loop``
+        is True only when THIS call is already running inside
+        :meth:`_write_async`'s own ``asyncio.to_thread`` worker, which has no
+        loop to hold either. ``off_loop`` is False for :meth:`_write_sync`'s
+        inline, no-loop-at-all callers (unit tests): that path is not reached
+        in production, where every writer goes through :meth:`_write_async`,
+        so it keeps the single-attempt behaviour -- a long-running retry
+        thread spawned from a plain synchronous call would outlive the test
+        that started it.
 
         The ACL errors are caught with ``OSError`` because they come from the
         same write: ``ensure_private_dir`` and ``harden_private_file`` report a
@@ -777,6 +834,10 @@ class SessionReporter:
         bus.log("warning", f"session report write failed ({what}) at "
                            f"{_shown(path)}: {_described(failed)}", "report")
         if not final:
+            if off_loop:
+                # #579: one bounded retry, on this same already-off-loop
+                # worker thread -- see :meth:`_retry_snapshot`.
+                self._retry_snapshot(path, report, number)
             return
         try:
             loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
@@ -800,6 +861,26 @@ class SessionReporter:
             # ending is worth the wait on a loop that is going away anyway.
             self._final_retry = None
             self._retry_final(path, report, number, None)
+
+    def _retry_snapshot(self, path: Path, report: SessionReport,
+                        number: int) -> None:
+        """A failed snapshot's one bounded retry, after ``_SNAPSHOT_RETRY_S``
+        (#579).
+
+        Called only with ``off_loop=True`` (:meth:`_persist`), which is to
+        say only from :meth:`_write_async`'s own ``asyncio.to_thread``
+        worker -- a thread with no loop to hold -- so unlike
+        :meth:`_retry_final` this never needs a thread of its own: the sleep
+        is made right here, on that same worker. A second failure is logged
+        and then dropped: the next real event's snapshot, or finalize(), can
+        still repair it, and an unbounded retry loop would just be polling."""
+        time.sleep(_SNAPSHOT_RETRY_S)
+        failed = self._write(path, report, number)
+        if failed is None:
+            return
+        bus.log("warning", f"session report write failed (snapshot, after "
+                           f"one retry) at {_shown(path)}: "
+                           f"{_described(failed)}", "report")
 
     def _write(self, path: Path, report: SessionReport,
                number: int) -> BaseException | None:
@@ -864,6 +945,30 @@ class SessionReporter:
 
     # -- snapshot --------------------------------------------------------------
 
+    def _relay_drops_per_hour(self) -> float | None:
+        """Relay tunnel drops per hour over this report's own span so far
+        (#521 fix 3), counted from the "relay link check" line
+        ``relay_client`` logs after every drop
+        (:func:`relay_client.recent_drop_count`) rather than by re-reading
+        the night's log file: the count is kept at the moment those lines
+        are written, so there is nothing to parse back and nothing that can
+        drift from what the log says.
+
+        None, never 0, when remote access has never run in this process
+        (``relay_client.current_client()`` is None): a LAN-only install
+        never dialed a tunnel, so "0 drops/hour" would read as a tunnel that
+        stayed up rather than a question that does not apply. None too
+        before the report's own elapsed time reaches
+        :data:`_DROPS_RATE_MIN_SPAN_S` -- one drop in the first 10 s would
+        otherwise answer 360/h, a number nobody would believe."""
+        if relay_client.current_client() is None:
+            return None
+        end = self._ended_at if self._ended_at is not None else time.time()
+        span_s = end - self.started_at
+        if span_s < _DROPS_RATE_MIN_SPAN_S:
+            return None
+        return relay_client.recent_drop_count(self.started_at) / (span_s / 3600.0)
+
     def build(self) -> SessionReport:
         """Recompute the full report. The header (counts + breakdowns) comes from
         the cumulative running totals — NOT from ``self._frames`` (which may be
@@ -879,6 +984,7 @@ class SessionReporter:
             safety_events=list(self._safety), frames=list(self._frames),
             policy=dict(self._policy),
             sky_angles=[dict(r) for r in self._sky_angles],
+            relay_drops_per_hour=self._relay_drops_per_hour(),
         )
 
     def record_policy(self, record: dict[str, dict]) -> None:

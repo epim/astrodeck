@@ -61,13 +61,14 @@ from .instructions import (
     FireRecord, FiredAction, TriggerContext, evaluate_instructions,
 )
 from .angle_check import angle_verdict, fresh_sky_angle
-from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S, REACH_RECHECK_S,
-                          SET_ASIDE_EXPIRY_S, SOLAR_PER_SIDEREAL,
-                          SOLVE_TRANSIENT, TARGET_STOP, ExpiryCause, GroupRun,
-                          PanelDeferred, PanelMeridian, VisitBound,
-                          angle_decision, forward_clear_ts,
-                          meridian_eligibility, no_guider_defers,
-                          set_aside_expiry)
+from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S,
+                          GENERIC_SOLVE_FAILURE, HELD_PASS_ALERT_AT,
+                          REACH_RECHECK_S, SET_ASIDE_EXPIRY_S,
+                          SOLAR_PER_SIDEREAL, SOLVE_TRANSIENT, TARGET_STOP,
+                          ExpiryCause, GroupRun, PanelDeferred, PanelMeridian,
+                          PassEnd, VisitBound, angle_decision,
+                          forward_clear_ts, meridian_eligibility,
+                          no_guider_defers, set_aside_expiry)
 from .models import ExposureStep, SequencePlan, Target, TargetGroup
 from .panel_order import OrderSnapshot, order_panels
 from .report import FrameRecord, SessionReporter
@@ -5846,6 +5847,17 @@ class SequenceEngine:
         - ``next_pass`` starts the next pass, re-sorted. ``none_live``: every
           member is complete or set aside; nothing is left to start.
 
+        D-03 (backlog ruling, owner-approved 2026-09-30; #563, #576):
+        ``end.held_streak`` is this group's count of CONSECUTIVE held passes
+        (the centring hold above, or a ``defer_wait`` whose every deferral
+        was a solve that could not run) after THIS pass closed, nonzero only
+        on those two boundaries. `GroupRun` escalates it to a
+        ``set_aside_all`` on its own once it is warranted (six held passes,
+        or two in a row blaming the identical reason), which needs nothing
+        more from here than the ``set_aside_all`` handling below already
+        does; at ``HELD_PASS_ALERT_AT`` the operator is warned once, which
+        only the caller can do, since `GroupRun` never touches the bus.
+
         NOTHING HERE WAITS (#304). S2 awaited the deferral wait right here,
         so for its five minutes the scheduler could choose nothing, and a
         ready follower that could have filled it waited it out with the
@@ -5910,6 +5922,7 @@ class SequenceEngine:
                                f"this rig's guiding action says", "sequence")
         elif end.boundary == "defer_wait":
             bus.log("info", f"{mosaic}: {end.reason}", "sequence")
+            self._alert_held_streak(mosaic, end)
             run.defer_next_pass(time.time())
             self._publish_defer_wait(group)
         elif end.boundary == "centring_hold":
@@ -5920,11 +5933,36 @@ class SequenceEngine:
             # the safety gate and the idle clock on every tick, a follower
             # free to fill it), in its own words, and tries a new pass.
             bus.log("info", f"{mosaic}: {end.reason}", "sequence")
+            self._alert_held_streak(mosaic, end)
             run.defer_next_pass(time.time(), wait_s=CENTRING_HOLD_RETRY_S,
                                 why="centring")
             self._publish_defer_wait(group)
         run.start_pass()
         self._resort_group(group, remaining)
+
+    @staticmethod
+    def _alert_held_streak(mosaic: str, end: PassEnd) -> None:
+        """D-03 (backlog ruling, owner-approved 2026-09-30; #563, #576): at
+        the group's ``HELD_PASS_ALERT_AT``-th consecutive held pass, warn
+        the operator once. A plain ``bus.log`` at "warning" is the one route
+        a caller has into alerting.py's dispatcher (`AlertDispatcher.
+        _alert_for` maps a "warning"/"error" ``log`` event straight to an
+        alert); no direct call into alerting.py is needed or made here.
+
+        Exactly once per streak: `GroupRun._apply_held_pass_rule` only ever
+        returns this exact count on the pass where the streak reaches it,
+        never again until the streak has reset and climbed back (a held
+        pass's own ``end.reason`` already says which pass this is, so the
+        alert need not repeat it)."""
+        if end.held_streak == HELD_PASS_ALERT_AT:
+            # "passes in a row", not "consecutive": group_rules.py reserves
+            # that word for a PANEL's own strike count ("1 of 3
+            # consecutive"), and this streak is the GROUP's.
+            bus.log("warning",
+                    f"{mosaic}: held for {end.held_streak} passes in a row "
+                    f"with no panel struck and no progress made; see the "
+                    f"sequence log for the reason each pass gave",
+                    "sequence")
 
     async def _wait_until(self, deadline_ts: float) -> None:
         """Bounded, cancel- and pause-responsive wait until ``deadline_ts`` (or a
@@ -6799,17 +6837,28 @@ class SequenceEngine:
         neither the panel's failures nor the centring pass rule
         (`GroupRun.visit_outcome`). On the rig a copy taken off the machine
         at the wrong moment struck a panel toward its set-aside. The hub
-        sets the key beside whichever failure the held file cost, a centring
-        solve's (``centered`` false) or the rotate loop's
-        (``rotation_skipped``, the rotate's own solve frame), and either way
-        the failure was this computer's, so either way the deferral is the
-        one that does not count. The key cannot say which solve it was, so a
-        rotate that could not solve beside a centring that failed for the
-        sky reads as transient too: the side to err on, since a transient
-        is only waited out, never counted."""
+        used to set one key beside whichever failure the held file cost, a
+        centring solve's (``centered`` false) or the rotate loop's
+        (``rotation_skipped``, the rotate's own solve frame), so a rotate
+        that could not solve beside a centring that failed for the sky read
+        as transient too (#576's second part): the side it erred on, since a
+        transient is only waited out, never counted, but it hid a real
+        centring miss from the strike count and from the centring pass rule
+        (`GroupRun.close_pass`) all the same.
+
+        WP-22 (#132 (a), backlog wave 3) splits that single key into
+        ``centring_solve_transient`` and ``rotation_solve_transient``,
+        keeping ``solve_transient`` as their union for compatibility. This
+        reads the split key, falling back to the union when the split key
+        is absent (a hub this engine runs beside that has not taken WP-22
+        yet), so a centring miss is read as transient only when the
+        CENTRING solve itself could not run, never because the rotate
+        loop's did."""
         transient = bool(result.get("solve_transient"))
+        centring_transient = bool(
+            result.get("centring_solve_transient", transient))
         if miss is not None and group.require_centred:
-            if transient:
+            if centring_transient:
                 raise PanelDeferred("the centring solve could not run",
                                     kind=SOLVE_TRANSIENT, last_error=miss)
             raise PanelDeferred("centring failed", kind=CENTRING,
@@ -7434,7 +7483,7 @@ class SequenceEngine:
                     # whole run at its first target. Only format a real number.
                     err = result.get("error_arcmin")
                     detail = (f"converged to {err:.1f}'" if err is not None
-                              else "plate solve failed — used raw GoTo")
+                              else GENERIC_SOLVE_FAILURE)
                     member = self._group_of(target)
                     if member is not None and member.require_centred:
                         # Not "continuing": a panel that does not centre is

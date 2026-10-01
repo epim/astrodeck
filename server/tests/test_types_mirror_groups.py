@@ -51,6 +51,8 @@ import pytest
 
 from _group_harness import (GROUP_NAME, Night, grid_plan,  # noqa: F401
                             group_hub, group_store)
+from astrodeck.hub import Hub
+from astrodeck.sequence import SequenceEngine
 from astrodeck.sequence.models import (Instruction, SequencePlan, Target,
                                        TargetGroup)
 from astrodeck.sequence.session import Session
@@ -422,19 +424,47 @@ def test_the_new_fields_are_typed_as_their_records():
 # ------------------------------------------------ the session records
 
 def test_the_record_types_are_the_keys_the_helpers_write():
-    """Compared with what ``note_set_aside`` and ``lock_angle`` actually put
-    in the session, not with a list copied here, so a helper that changes
-    its record changes what this test demands.
+    """Compared with what the engine's own ``_persist_set_aside`` and
+    ``lock_angle`` actually put in the session, not with a hand-built dict
+    copied here, so a helper that changes its record changes what this test
+    demands.
+
+    ``_persist_set_aside`` is the one method every set-aside call site in
+    the engine goes through (#534, H4 orchestrator ruling 2); calling it
+    here, instead of ``Session.note_set_aside`` with keys chosen by this
+    test, means a kwarg the engine stops passing (or renames) changes the
+    record this test grades too. Taken on to ``expired`` through
+    ``note_set_aside_expired``, the same method ``_expire_set_aside`` calls
+    when a centring set-aside's 45 minutes run out: a record that never
+    expires is narrower than every record the engine writes once a panel is
+    struck out twice (#578).
 
     RED under mutant "exposed_at not nullable in types.ts"
     (``exposed_at: number``):
 
         E   AssertionError: assert 'null' in 'number'
+
+    RED under mutant "types.ts without expired" (the ``expired?: boolean;``
+    field and its doc comment removed from ``SetAsideRecord``):
+
+        E   AssertionError: assert {'kind', 'nig...get_id', 'ts'} ==
+            {'expired', '...rget_id', ...}
+        E     Extra items in the right set:
+        E     'expired'
     """
     s = Session()
-    s.note_set_aside("t1", "floor", night="2026-09-24")
-    s.lock_angle("t1", 12.5, solved_at=1.0, exposed_at=None, source="solve")
+    engine = SequenceEngine(Hub())
+    engine._session = s
+    # kind="centring": the one kind `note_set_aside_expired` will mark,
+    # exactly as `_expire_or_wait` finds a struck-out panel (group_rules
+    # CENTRING). step_id left None: a whole-panel set-aside, same as every
+    # call site that can expire.
+    engine._persist_set_aside("t1", "floor", kind="centring")
     record = s.set_aside[0]
+    expired = s.note_set_aside_expired("t1", night=record["night"])
+    assert expired is record, "premise: the engine's own expiry marked it"
+
+    s.lock_angle("t1", 12.5, solved_at=1.0, exposed_at=None, source="solve")
     lock = s.locked_angle("t1")
 
     set_aside = _interface("SetAsideRecord")

@@ -18,6 +18,7 @@ WCS guards in astap.py/fitsio.py are deliberately untouched and untested here
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from fastapi.testclient import TestClient
 import astrodeck.api.app as app_module
 import astrodeck.config as config_mod
 import astrodeck.hub as hub_module
+import conftest  # rootdir-relative, as test_capture_root_isolated does
 from astrodeck.config import ConfigStore, WcsStampConfig
 from astrodeck.hub import Hub
 from astrodeck.solve.base import SolveResult, WcsSolution
@@ -263,6 +265,65 @@ async def test_wcs_worker_is_cancelled_on_teardown(wcs_hub, monkeypatch):
 
 
 # ------------------------------------------------------- config route (§3 / RBAC)
+
+def test_the_active_auth_provider_reset_leaves_the_open_default_for_the_next_request(
+        tmp_path, monkeypatch):
+    """Re-pinned for WP-27 (#443, backlog wave 3 integration). This used to be
+    two tests: one left a provider active with no cleanup of its own, the
+    other made the same request ``test_wcs_config_route_round_trips_and_gates``
+    makes and asserted 200, relying on nothing but definition order (no
+    randomization plugin, so under ``-n0`` the second always ran right after
+    the first) to put the leak where the second test could see it.
+
+    ``pyproject.toml``'s ``addopts = "-n 12 --dist worksteal"`` splits
+    adjacent tests across worker PROCESSES in the normal full-suite run, so
+    the two tests do not reliably share a process, let alone run back to
+    back in it -- a fresh worker's ``TestClient`` never saw the leak in the
+    first place, so the pair could pass with the conftest guard deleted and
+    never go red in the suite's own normal run.
+
+    Self-contained instead: seeds the leak directly, then drives
+    ``conftest.py``'s REAL ``_reset_active_auth_provider`` fixture generator
+    (not a reimplementation of its reset) through the setup half that
+    pytest would run at the START of the next test regardless of what came
+    before, all inside one test function and one process. Needs no
+    particular worker or scheduling order.
+
+    RED under mutant (the fixture's body reduced to a bare ``yield``, its
+    ``reset_active_provider()`` calls removed from both halves), observed:
+
+        >       assert r.status_code == 200, r.text
+        E       AssertionError: {"detail":"authentication required"}
+        E       assert 401 == 200
+    """
+    from astrodeck.auth import TokenAdminProvider, set_active_provider
+
+    fixture_def = conftest._reset_active_auth_provider
+    raw = fixture_def.__wrapped__  # the real generator function, not a copy
+    assert inspect.isgeneratorfunction(raw)
+
+    # Simulate a prior test on this worker that left a non-default provider
+    # active and never reset it (the shape #443 found).
+    set_active_provider(TokenAdminProvider("left-active-on-purpose-" + "x" * 16))
+
+    # Drive the REAL fixture's setup half -- exactly what pytest runs at the
+    # start of the NEXT test, regardless of what the previous one left.
+    gen = raw()
+    next(gen)
+
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_mod, "config_store", store)
+    monkeypatch.setattr(hub_module, "config_store", store)
+    monkeypatch.setattr(app_module, "config_store", store)
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path / "captures")
+    c = TestClient(app_module.create_app())
+    r = c.post("/api/config/wcs", json={"solve_saved_lights": True,
+                                        "wcs_stamp": {"solver": "astap"}})
+    assert r.status_code == 200, r.text
+
+    with pytest.raises(StopIteration):
+        next(gen)  # the fixture's own teardown half, leaving no state behind
+
 
 def test_wcs_config_route_round_trips_and_gates(tmp_path, monkeypatch):
     store = ConfigStore(path=tmp_path / "astrodeck.json")
