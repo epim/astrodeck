@@ -109,8 +109,13 @@ export function RunArmedCard(): JSX.Element | null {
     resolvesItself: true,
     engine: `${armed.name} · ${armed.owed} frames owed of ${armed.total} · ${armed.accepted} accepted`,
     next: recovering
+      // site_detail carries the numbers behind a words-only reason (#258,
+      // #233); absent for a principal without view.site_derived, the normal
+      // case, in which only `hold.reason` prints, as before.
       ?? (hold
-        ? `Holding: ${hold.reason}. It starts by itself when that clears.`
+        ? `Holding: ${hold.reason}`
+          + (hold.site_detail ? ` - ${hold.site_detail}` : "")
+          + ". It starts by itself when that clears."
         : "It starts by itself when its window opens."),
     // No DISMISS while the ladder runs: the card ignores a dismissal then (see
     // above), and a button that changes nothing on screen is worse than none.

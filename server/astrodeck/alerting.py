@@ -70,7 +70,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .events import RELAY_GAP, bus
+from .events import RELAY_GAP, SITE_DERIVED_KEY, bus
 
 # State-change event types are NEVER deduped (C1-18). These are subscribed by
 # event *type*, not severity, so they also bypass the per-sink min_level gate
@@ -645,10 +645,22 @@ class AlertDispatcher:
         elif t == "heartbeat":
             alert = AlertEvent("heartbeat", "info", data.get("message", "heartbeat"))
         elif (t == "log" and data.get("level") in ("warning", "error")
-              and data.get("source") != _ALERT_LOG_SOURCE):
+              and data.get("source") != _ALERT_LOG_SOURCE
+              and not data.get(SITE_DERIVED_KEY)):
             # NB: skip the dispatcher's OWN failure diagnostics (source="alert").
             # They are logged from _dispatch on a delivery failure; re-mapping
             # them into a new alert would self-feed an alert-failure loop (#13).
+            #
+            # NB: skip a line flagged ``site_derived`` (#166, #302): its
+            # MOMENT was set by a site computation (a flip taken at the
+            # crossing, the idle hold at a flip point), the same fact
+            # ``api.redact`` withholds from a viewer on every other seam. An
+            # admin configures the sinks, but the channel itself (a shared
+            # Discord or Slack room, an ntfy topic) is not a principal
+            # `view.site_derived` can be checked against, so the safe
+            # default is to never forward one. The line still reaches a
+            # holder through the UI (`/api/logs`, `_redact_log_rows_for`)
+            # and the durable night-log file, which this never touches.
             alert = AlertEvent(data["level"], data["level"],
                                data.get("message", ""),
                                source=data.get("source", ""))

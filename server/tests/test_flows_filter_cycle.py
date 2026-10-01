@@ -86,13 +86,35 @@ class TestTheCompileKeepsTheStageWhole:
         assert [(s["filter"], s["exposure_s"]) for s in step["slots"]] == FILTERS
 
     def test_each_target_gets_its_own_copy_of_the_slots(self):
-        """A shared list would make one target's edit rewrite every other's."""
+        """A shared list would make one target's edit rewrite every other's.
+
+        RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+        2026-09-30): the original graph wired TWO targets into the SAME
+        "cy" stage's "run" port, which was never a real two-lane flow -- it
+        relied on the OLD canvas-order rule (mosaic-only: this graph has no
+        multi-panel TARGET, so wire scoping never turned on) to hand that
+        one stage to both targets by position. `needs_wire_scoping` now
+        turns on for ANY graph with more than one TARGET/POOL block
+        (#151's general case), whatever the panel count, and under that
+        rule a stage with two incoming wires on one port belongs to
+        neither -- correctly: `compile_plan` now reports it (`FILTER CYCLE
+        belongs to no TARGET`) rather than silently guessing by canvas
+        order. So this case now gives each target its OWN "cy" stage,
+        wired one to one, which is what a real two-lane flow looks like and
+        still exercises the thing under test: that two independently
+        compiled copies of the same slot-table definition are equal lists,
+        never the same list object.
+        """
         g = _graph()
         g.nodes.insert(1, FlowNode(id="t2", type="target", x=0, y=1,
                                    params={"name": "M33", "ra": "01h 33m 51s",
                                            "dec": "+30 39 37"}))
+        g.nodes.append(FlowNode(id="cy2", type="cycle", x=1, y=1,
+                                params={"plan": PLAN, "cycles": 45,
+                                        "perCycle": 1, "gain": 125,
+                                        "bin": "1", "reject": 3.5}))
         g.edges.append(FlowEdge(**{"from": "t2", "fromPort": "target",
-                                   "to": "cy", "toPort": "run"}))
+                                   "to": "cy2", "toPort": "run"}))
         targets = compile_plan(g, "n")["targets"]
         assert len(targets) == 2
         a, b = (t["steps"][0]["slots"] for t in targets)

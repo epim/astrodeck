@@ -391,6 +391,20 @@ await test("an edit made while the save is in flight survives the counts switch,
 //   x control: a counts switch answered after another flow opened leaves that flow alone: the answer for "old" switched the counts of "other", which is open
 //   expected undefined
 //   got      "Accepted subs"
+// RE-PINNED (W2 integration, #500/#162 backlog WP-16 (b), owner-approved
+// 2026-09-30): `flowsOpen` now AWAITS a carried save's own promise (the PUT
+// this test holds open IS the one `flowsOpen("other")` is about to wait on,
+// since nothing edited the graph again between `flowsSave()` and the open),
+// instead of sending a second PUT and letting a stale answer race the open
+// unobserved. Releasing the PUT AFTER the open, as this test used to, now
+// deadlocks `flowsOpen` on its own await -- so the PUT is answered FIRST.
+// That changes what this control actually proves: the save now always
+// settles on "old" (still open) BEFORE the switch to "other" happens, so
+// the answer for "old" can no longer land on "other" by construction, not
+// only because of `flowsSave`'s own stale-id guard (`cur.id !== record.id`)
+// -- which a save `flowsOpen` is not waiting on (a non-carried race) still
+// needs, and still has. The assertions are unchanged and still describe the
+// behaviour an operator sees; only the ordering that produces it moved.
 await test("control: a counts switch answered after another flow opened leaves that flow alone", async () => {
   served = {
     old: record("old", OLD, [{ key: "counts", note: COUNTS_NOTE }]),
@@ -403,8 +417,8 @@ await test("control: a counts switch answered after another flow opened leaves t
   putHold = new Promise<void>((r) => { release = r; });
   putNotes = { migrated: [{ key: "counts", note: "now counts accepted subs only" }] };
   const saving = h.a.flowsSave();
-  await h.a.flowsOpen("other");
   release();
+  await h.a.flowsOpen("other");
   await saving;
   putHold = null;
   putNotes = {};

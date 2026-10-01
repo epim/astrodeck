@@ -75,6 +75,38 @@ export function isMultiPanel(node: FlowNodeRec): boolean {
   return gridDim(p.rows) * gridDim(p.cols) > 1;
 }
 
+/** True when `ownerOf` must scope a graph's stages by their wires rather
+ *  than by canvas order (compile.py `needs_wire_scoping`, backlog WP-19(a),
+ *  #151's general case; W2 integration, owner-approved 2026-09-30).
+ *
+ *  ANY MULTI-PANEL TARGET (the original S3 trigger): a stray stage canvas
+ *  order would add to it becomes a quota multiplied across every panel.
+ *
+ *  MORE THAN ONE TARGET OR POOL BLOCK, whatever its panel count (#151): with
+ *  two independent lanes -- TARGET A -> CAPTURE a, TARGET B -> CAPTURE b --
+ *  canvas order hands every capture or cycle stage to every owner block seen
+ *  earlier in the walk, so what a target shoots depends on where its card
+ *  sits rather than which wires lead to it, with no mosaic involved at all.
+ *
+ *  A GRAPH WITH AT MOST ONE OWNER BLOCK needs neither: there is nothing else
+ *  a stage could leak onto. That is also every flow saved before mosaics
+ *  existed, so this reads false for them, same as `compile_plan` does.
+ *
+ *  No consumer in this file yet: `carryLoopWire` (flowsSlice.ts) gates on
+ *  `isMultiPanel` alone, deliberately, because moving a LOOP wire is a
+ *  mosaic-panel-cycling question (an ordinary 1x1 TARGET has no panels to
+ *  loop through), not a stage-OWNERSHIP one -- the two conditions answer
+ *  different questions and must not be conflated. This export exists so a
+ *  future UI preview of stage ownership (a doctor-equivalent, a readouts
+ *  estimate) can agree with the server from day one, and so the two
+ *  languages' rule for "when does ownership matter" is graded against the
+ *  same fixture `panelLane.test.ts` already shares with
+ *  test_flows_panel_lane.py. */
+export function needsWireScoping(g: LaneGraph): boolean {
+  const owners = g.nodes.filter((n) => OWNER_TYPES.has(n.type));
+  return owners.length > 1 || owners.some(isMultiPanel);
+}
+
 /** A port's lane on a node, or null when the type or the port is unknown
  *  (server `port_kind`). */
 function kindOf(n: FlowNodeRec, portId: string, dir: "in" | "out") {

@@ -591,7 +591,35 @@ def _coords(entry: dict, when: float | None
     return None if hit is None else (hit.ra_hours, hit.dec_deg, hit.identity)
 
 
-def _cycle_steps(step: dict, target_name: str, index: int) -> list[dict]:
+def _quota_cycles(entry: dict) -> int | None:
+    """A pool member's ``quota_cycles`` as a whole, positive cycle count, or
+    None when there is none to honour (#155).
+
+    ``compile_plan`` writes ``quota_cycles`` onto every pool member from the
+    POOL's own ``quota`` dial - "how many cycles this member owes before it
+    counts as done" - read finite-only (``compile._finite``), so a missing or
+    unreadable quota already arrives here as 0. An ordinary TARGET entry
+    carries no such key at all, and ``dict.get`` hands back None for it,
+    which is also this function's answer: nothing to override, and every
+    flow with no pool stays exactly as it compiled.
+
+    ZERO AND NEGATIVE ARE REFUSED, NOT CLAMPED (the #362 class): a quota of 0
+    is not "zero cycles are enough", it is "no quota was ever read", and
+    treating it as a count would make a 0 or an unreadable dial end a
+    campaign's member before its first visit - the opposite of #155's
+    complaint that the dial does nothing. The FILTER CYCLE's own count keeps
+    governing a member whose quota cannot be read, exactly as it does for a
+    flow with no pool at all."""
+    value = entry.get("quota_cycles")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return int(value)
+
+
+def _cycle_steps(step: dict, target_name: str, index: int,
+                 quota_cycles: int | None = None) -> list[dict]:
     """Expand one compiled FILTER CYCLE object into engine ``ExposureStep``s.
 
     The compile keeps the stage whole (``{strategy: "cycle", slots: […]}``)
@@ -606,6 +634,21 @@ def _cycle_steps(step: dict, target_name: str, index: int) -> list[dict]:
     engine's round-robin driver branches on. Both halves are needed: per_visit
     alone would sit inert on a target the engine still walks block-by-block.
 
+    ``quota_cycles``, WHEN GIVEN, REPLACES THE STAGE'S OWN ``cycles`` (#155).
+    A POOL member's finish line is the POOL's own dial - "how many cycles
+    this member owes" is what `advance` compares against - not the FILTER
+    CYCLE node's count, which is one template every member of the pool
+    shares. Before this the two were two separate numbers nothing reconciled:
+    the engine ran to the stage's own count while the Campaign tab (
+    ``tonight._campaign``) judged members against the pool's quota by name,
+    so the dial that looked like "how much this candidate gets" changed what
+    the tab claimed and nothing about when a night actually moved on. Mapping
+    the pool's number onto the step the engine runs makes the two the same
+    question asked once: ``tonight._campaign`` reads the POOL's ``quota``
+    straight off the node, unchanged, and now agrees with the engine by
+    construction, because this is the one place that number ever reaches a
+    run.
+
     AN EMPTY SLOT TABLE IS A REFUSAL, not an empty list. A cycle stage that
     compiles to nothing would let a graph carrying a visibly-configured capture
     node produce a plan with no frames, and the run would report "complete"
@@ -616,7 +659,8 @@ def _cycle_steps(step: dict, target_name: str, index: int) -> list[dict]:
         raise GraphNotRunnable(
             f"{target_name}: the FILTER CYCLE has no filters selected - "
             f"tick at least one row of the cycle plan")
-    cycles = max(1, int(step.get("cycles") or 1))
+    cycles = (quota_cycles if quota_cycles is not None
+             else max(1, int(step.get("cycles") or 1)))
     per_cycle = max(1, int(step.get("per_cycle") or 1))
     out: list[dict] = []
     for slot in slots:
@@ -641,10 +685,13 @@ def _cycle_steps(step: dict, target_name: str, index: int) -> list[dict]:
 
 
 def _steps(entry: dict, target_name: str, out: list[dict]) -> list[dict]:
+    # One answer per ENTRY (#155), read once: a pool member's quota governs
+    # every FILTER CYCLE stage it owns, not just the first.
+    quota_cycles = _quota_cycles(entry)
     steps: list[dict] = []
     for i, step in enumerate(entry.get("steps") or []):
         if step.get("strategy") == "cycle":
-            steps.extend(_cycle_steps(step, target_name, i))
+            steps.extend(_cycle_steps(step, target_name, i, quota_cycles))
             continue
         exposure = step.get("exposure_s")
         count = step.get("count")

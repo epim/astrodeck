@@ -6913,11 +6913,13 @@ def test_1_5_says_the_panel_lane_as_s3_built_it():
     block's panels own, its tail, what runs next, and, where the row says
     so, who owns the CAPTURE; `compile_plan` gives the block exactly the
     stages it owns and notes each stage the two rules assign differently,
-    at the level the section names; the same graph with a 1x1 block
-    compiles by canvas order with no ``notes`` key; a grid side that is not
-    a whole number of at least 1 reads as 1; a lane that ends on a GUIDE
-    has the GUIDE as its tail; and a stage with two flow parents has no
-    owner.
+    at the level the section names; the same graph with a 1x1 block still
+    scopes by wire and still notes the stage (W2 integration, backlog
+    WP-19(a), #151: its two owner blocks trigger wire scoping whatever
+    their panel count, since S3's original mosaic-only trigger was only
+    one way #151's leak could be reached); a grid side that is not a whole
+    number of at least 1 reads as 1; a lane that ends on a GUIDE has the
+    GUIDE as its tail; and a stage with two flow parents has no owner.
 
     RED under mutant "1.5 without its as-built paragraph":
 
@@ -7030,17 +7032,25 @@ def test_1_5_says_the_panel_lane_as_s3_built_it():
             f"{expect}")
         for x in compiled.get("notes", []):
             assert set(x) == {"node_id", "level", "text"}, x
-    # The same third case with a 1x1 block: canvas order, and no key.
+    # The same third case with a 1x1 block.
+    #
+    # RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+    # 2026-09-30): this graph still has TWO owner blocks (the 1x1 TARGET and
+    # M33), so ``needs_wire_scoping`` now turns on for it regardless of the
+    # panel count -- #151's general case is precisely this shape. It is no
+    # longer the "canvas order, and no key" control; it scopes by wire like
+    # the mosaic case above, and the compile notes the CAPTURE it narrowed.
     single = _case_graph("TARGET(1x1) -> CYCLE -> TARGET(M33) -> CAPTURE")
     plain = compile_plan(single)
-    assert "notes" not in plain, (
-        f"a graph with no multi-panel block compiles with a notes key "
-        f"({plain.get('notes')}); 1.5 says the key is absent when the list "
-        f"is empty")
+    notes = plain.get("notes") or []
+    assert any(n.get("node_id") == "n3" for n in notes), (
+        f"a two-owner graph with no mosaic must still note the CAPTURE "
+        f"canvas order would also have given the first TARGET: {notes}")
     first = next(t for t in plain["targets"] if t.get("node_id") == "n0")
-    assert [s.get("node_id") for s in first["steps"]] == ["n1", "n3"], (
-        "with no multi-panel block the first target no longer gets every "
-        "later stage; 1.5 says canvas order stays byte for byte")
+    assert [s.get("node_id") for s in first["steps"]] == ["n1"], (
+        "with more than one TARGET/POOL block the first target no longer "
+        "gets a later stage whose wires lead to the other one, mosaic or "
+        "not; 1.5 says wire scoping applies")
     # The silent cases the paragraph decides.
     node = single.nodes[0]
     for rows_, cols_, multi in ((2, 1, True), ("2", 1, True), (0, 5, True),
@@ -12979,19 +12989,24 @@ def test_s3_says_items_1_to_3_the_tests_and_what_was_not():
 
 def test_9_and_the_190_row_say_what_s3_did():
     """Section 9's I-05 row says S3 scopes every stage by its wires in a
-    graph with a multi-panel block (S3, #151) and that a graph with none
-    keeps the canvas-order rule, so the defect and #151 stand there. I-43
-    says all three stale docs are corrected (S3, #169; cbdb59a9). I-47 says
-    every block's centring reaches the run (S3, #170): S1's
-    `_centring_kwargs` and S3's ``centre``, with a legacy SLEW's fields
-    still ignored. The #190 row, among the issues filed while applying the
-    rulings, says the wizard resolves a typed name (S3, #190), and names
-    what still reads M31's (item 30) and what did until the integration of
-    S3 (#340).
+    graph with a multi-panel block (S3, #151), and, since the W2 backlog's
+    WP-19(a) (#151's own general case, owner-approved 2026-09-30), in any
+    graph with more than one TARGET/POOL block whatever its panel count;
+    only a graph with at most one owner block still keeps the canvas-order
+    rule, so only there does the defect still stand. I-43 says all three
+    stale docs are corrected (S3, #169; cbdb59a9). I-47 says every block's
+    centring reaches the run (S3, #170): S1's `_centring_kwargs` and S3's
+    ``centre``, with a legacy SLEW's fields still ignored. The #190 row,
+    among the issues filed while applying the rulings, says the wizard
+    resolves a typed name (S3, #190), and names what still reads M31's
+    (item 30) and what did until the integration of S3 (#340).
 
     The code: TARGET M31 wired to a CAPTURE, with TARGET M33 beside it and
-    unwired, gives M33 the CAPTURE's step when M31 is one panel (the
-    canvas-order defect, still there) and none when M31 is a 1x2; the
+    unwired, gives M33 the CAPTURE's step NEVER now, whatever M31's panel
+    count -- two owner blocks is enough on its own (WP-19(a)), so the
+    one-panel case no longer differs from the 1x2 one, and the unwired
+    M33 getting the capture under canvas order is exactly the residual
+    #151's general case closed; the
     doctor's docstring calls itself the only copy, the IA map says both
     Atlas routes require ``view.site_derived``, the framing route declares
     it, and the handoff contract's amendment counts the node types
@@ -13014,17 +13029,21 @@ def test_9_and_the_190_row_say_what_s3_did():
         created blank (`created_as`)'
         assert False
 
-    RED under the compile.py mutant "wires scope every graph" (the scoping
-    switch's ``if any(is_multi_panel(n) for n in graph.nodes)`` made ``if
-    True``), the case where the I-05 sentence that the defect stands is stale:
+    RED under the compile.py mutant "wires scope only a mosaic" (W2
+    integration: ``needs_wire_scoping``'s ``len(owners) > 1 or ...`` reverted
+    to just ``any(is_multi_panel(n) for n in owners)``, S3's original,
+    narrower trigger WP-19(a) widened): I-05's own sentence about the
+    general case goes stale again, observed:
 
-        AssertionError: the unwired M33 gets {'one panel': {'a': 1, 'b': 0}, 'a
-        1x2': {'a': 1, 'b': 0}}; I-05 says the canvas-order rule stands in a
-        graph with no mosaic (#151 there), and wires scope one with a mosaic
-        assert {'a 1x2': {'a...': 1, 'b': 0}} == {'a 1x2': {'a...': 1, 'b': 1}}
+        AssertionError: the unwired M33 gets {'one panel': {'a': 1, 'b': 1},
+        'a 1x2': {'a': 1, 'b': 0}}; I-05 says wires scope any graph with more
+        than one TARGET or POOL block, whatever its panel count, and only a
+        graph with at most one owner block keeps the canvas-order rule
+        assert {'a 1x2': {'a...': 1, 'b': 1}} == {'a 1x2': {'a...': 1, 'b':
+        0}}
           Omitting 1 identical items, use -vv to show
           Differing items:
-          {'one panel': {'a': 1, 'b': 0}} != {'one panel': {'a': 1, 'b': 1}}
+          {'one panel': {'a': 1, 'b': 1}} != {'one panel': {'a': 1, 'b': 0}}
           Use -v to get more diff
 
     RED under the doctor.py mutant "the doctor's docstring claims a UI copy
@@ -13091,9 +13110,10 @@ def test_9_and_the_190_row_say_what_s3_did():
     s9 = [text for name, text in _blocks() if name.startswith("9. ")][0]
     i05, i43, i47 = (_line(s9, f"| {i} |") for i in ("I-05", "I-43", "I-47"))
     _says(i05, ("S3 scopes every stage by its wires in a graph that holds a "
-                "multi-panel block (1.5; S3, #151)", "a graph with none keeps "
-                "the canvas-order rule byte for byte, so there the defect "
-                "stands, and #151 with it"), "I-05")
+                "multi-panel block (1.5; S3, #151)", "more than one "
+                "TARGET/POOL block", "only a graph with at most one owner "
+                "block, mosaic or not, keeps the canvas-order rule byte for "
+                "byte, so only there does the defect still stand"), "I-05")
     _says(i43, ("All three are corrected", "both Atlas routes require "
                 "`view.site_derived` (S3, #169)", "ruling 6's amendment marks "
                 "the contract's counts superseded", "(cbdb59a9)"), "I-43")
@@ -13110,7 +13130,10 @@ def test_9_and_the_190_row_say_what_s3_did():
                    "a name the catalogue does not know is left with no "
                    "coordinates and a note", "(owner list item 30)", "(#340)"),
           "the #190 row")
-    # I-05: the two rules, told apart by one unwired TARGET.
+    # I-05: the unwired TARGET, one panel and a 1x2 -- now identical (W2
+    # integration, backlog WP-19(a), #151's general case): two owner blocks
+    # is enough on its own, so the panel count no longer tells the two rules
+    # apart the way it did before WP-19(a).
     def steps(rows: int) -> dict:
         graph = _flow([("a", "target", {**_M31, "rows": rows, "cols": 1}),
                        ("b", "target", _M33), ("k", "capture", _HA)],
@@ -13119,11 +13142,12 @@ def test_9_and_the_190_row_say_what_s3_did():
                 for t in compile_plan(graph)["targets"]}
 
     scoped = {"one panel": steps(1), "a 1x2": steps(2)}
-    assert scoped == {"one panel": {"a": 1, "b": 1},
+    assert scoped == {"one panel": {"a": 1, "b": 0},
                       "a 1x2": {"a": 1, "b": 0}}, (
-        f"the unwired M33 gets {scoped}; I-05 says the canvas-order rule "
-        f"stands in a graph with no mosaic (#151 there), and wires scope "
-        f"one with a mosaic")
+        f"the unwired M33 gets {scoped}; I-05 says wires scope any graph "
+        f"with more than one TARGET or POOL block, whatever its panel "
+        f"count, and only a graph with at most one owner block keeps the "
+        f"canvas-order rule")
     # I-43: the three documents.
     ia = IA_MAP.read_text(encoding="utf-8")
     contract = CONTRACT.read_text(encoding="utf-8")
@@ -13437,133 +13461,160 @@ def test_the_owner_list_records_the_s4_orchestrator_rulings():
                  f"{_joined(s2)}"), "the note on items 31 to 39")
 
 
-#: A graph with no multi-panel block: a DUSK WINDOW; TARGET NGC 7331 at a
-#: set angle with a FILTER CYCLE; TARGET M33 by name with a CAPTURE LOOP,
-#: which NGC 7331 takes too by the canvas-order rule; a POOL of two with a
-#: CAPTURE LOOP of its own; and a NOTIFY rule on a graded frame. Laid out
-#: exactly as it was when ``_PRE_S3_NO_MOSAIC`` was computed.
-_NO_MOSAIC_GRAPH = {
+#: RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+#: 2026-09-30). The original fixture here held THREE owner blocks (TARGET
+#: NGC 7331, TARGET M33 and a POOL of two) specifically so that NGC 7331
+#: would take M33's CAPTURE by the canvas-order rule (I-05) -- which was
+#: the point, before #151: a graph with no MOSAIC kept the legacy rule no
+#: matter how many TARGET/POOL blocks it held. #151's general case is
+#: exactly that gap (two-or-more owners, no mosaic in sight), and
+#: ``needs_wire_scoping`` now closes it for ANY such graph, whatever its
+#: panel counts. So a three-owner "no mosaic" graph no longer compiles byte
+#: for byte as before S3 -- it now gets the SAME wire-scoped treatment any
+#: other multi-owner graph does, which is the fix working, not a claim this
+#: test should still make. The byte-for-byte guarantee 1.5 now states is
+#: narrower: AT MOST ONE owner block, whatever its panel count. Proving it
+#: for BOTH compiled-entry kinds (a plain TARGET entry and a POOL member)
+#: needs two such graphs, since a graph holding both a TARGET and a POOL is
+#: itself two owners: a lone TARGET (NGC 7331, a DUSK window, a FILTER
+#: CYCLE, a CAPTURE and a NOTIFY rule on a graded frame) and a lone POOL of
+#: two with a CAPTURE LOOP of its own. Laid out exactly as they were when
+#: ``_PRE_S3_NO_MOSAIC_TARGET``/``_POOL`` were computed.
+_NO_MOSAIC_TARGET_GRAPH = {
     "nodes": [
         {"id": "d", "type": "dusk", "x": 0, "y": 0, "params": {}},
         {"id": "t", "type": "target", "x": 200, "y": 0,
          "params": {"name": "NGC 7331", "ra": "22h 37m 04s",
                     "dec": "+34 24 56", "rotation": 30}},
         {"id": "c", "type": "cycle", "x": 400, "y": 0, "params": {}},
-        {"id": "u", "type": "target", "x": 600, "y": 0,
-         "params": {"name": "M33", "ra": "", "dec": ""}},
-        {"id": "k", "type": "capture", "x": 800, "y": 0,
+        {"id": "k", "type": "capture", "x": 600, "y": 0,
          "params": {"filter": "Ha"}},
-        {"id": "p", "type": "pool", "x": 1000, "y": 0,
-         "params": {"members": "M81, M82"}},
-        {"id": "q", "type": "capture", "x": 1200, "y": 0,
-         "params": {"filter": "L"}},
-        {"id": "n", "type": "notify", "x": 800, "y": 200, "params": {}},
+        {"id": "n", "type": "notify", "x": 400, "y": 200, "params": {}},
     ],
     "edges": [
         {"id": "e1", "from": "d", "fromPort": "window", "to": "t",
          "toPort": "arm"},
         {"id": "e2", "from": "t", "fromPort": "target", "to": "c",
          "toPort": "run"},
-        {"id": "e3", "from": "c", "fromPort": "complete", "to": "u",
-         "toPort": "arm"},
-        {"id": "e4", "from": "u", "fromPort": "target", "to": "k",
+        {"id": "e3", "from": "c", "fromPort": "complete", "to": "k",
          "toPort": "run"},
-        {"id": "e5", "from": "k", "fromPort": "complete", "to": "p",
-         "toPort": "arm"},
-        {"id": "e6", "from": "p", "fromPort": "target", "to": "q",
-         "toPort": "run"},
-        {"id": "e7", "from": "k", "fromPort": "frame", "to": "n",
+        {"id": "e4", "from": "c", "fromPort": "frame", "to": "n",
          "toPort": "do"},
     ],
 }
 
-#: What ``compile_plan`` made of ``_NO_MOSAIC_GRAPH`` (named "no mosaic")
-#: before S3, as ``json.dumps`` writes it (default separators, the dict's
-#: own order): its length in bytes and its sha256. Computed by running the
-#: S2 commit's package (e673dff8, the last commit before S3, extracted with
-#: ``git archive`` into a scratch directory) on this graph. The pre-S3 bytes
-#: are not kept here: they hold nothing the claim needs but their identity.
-_PRE_S3_NO_MOSAIC = (
-    2036, "b21a42459340fc94d90d701506a15510dcaef33924d145d8af3f4e1bea60ab96")
+_NO_MOSAIC_POOL_GRAPH = {
+    "nodes": [
+        {"id": "p", "type": "pool", "x": 0, "y": 0,
+         "params": {"members": "M81, M82"}},
+        {"id": "q", "type": "capture", "x": 200, "y": 0,
+         "params": {"filter": "L"}},
+    ],
+    "edges": [
+        {"id": "e1", "from": "p", "fromPort": "target", "to": "q",
+         "toPort": "run"},
+    ],
+}
+
+#: What ``compile_plan`` made of ``_NO_MOSAIC_TARGET_GRAPH``/``_POOL_GRAPH``
+#: (each named "no mosaic") before S3, as ``json.dumps`` writes it (default
+#: separators, the dict's own order): length in bytes and sha256. Computed
+#: by running the S2 commit's package (e673dff8, the last commit before S3,
+#: extracted with ``git archive`` into a scratch directory) on each graph.
+#: The pre-S3 bytes are not kept here: they hold nothing the claim needs
+#: but their identity.
+_PRE_S3_NO_MOSAIC_TARGET = (
+    897, "518141cdc2b4e9a082bf0fbc22b05db8523743ffb1b22f350441de4523f406f9")
+_PRE_S3_NO_MOSAIC_POOL = (
+    737, "960dccee597e641019aff27ea40798388ae28356d608969ad90ef540d635a8bf")
 
 
 def test_1_5_says_what_a_graph_with_no_mosaic_compiles_to():
     """1.5's as-built paragraph said the ``notes`` key "is absent when the
     list is empty, so a graph with no multi-panel block compiles byte for
-    byte as before". It does not: S3 gave every TARGET entry six keys
-    (3.2's ``angle``, ``mosaic``, ``loop``, ``centre``, ``count_mode`` and
-    ``frame_anchor``) and every POOL member ``count_mode``, whatever the
-    graph holds. The sentence now says what is true: byte for byte as
-    before S3 once those keys are removed, and it names them.
+    byte as before". S3 gave every TARGET entry six keys (3.2's ``angle``,
+    ``mosaic``, ``loop``, ``centre``, ``count_mode`` and ``frame_anchor``)
+    and every POOL member ``count_mode``, whatever the graph holds, so that
+    was never quite true either; the sentence said what is true once those
+    keys are removed, and named them.
 
-    The code: the graph above, compiled now, with exactly the keys the
-    sentence names removed from each entry of each kind, is the pre-S3
-    compile's bytes, by length and sha256. Each key the sentence names is
-    on every entry of its kind first, so the sentence cannot name a key the
-    compile never writes. The canvas-order rule is in those bytes too (NGC
-    7331 owns M33's CAPTURE), which 1.5's first paragraph keeps.
+    RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+    2026-09-30): "no multi-panel block" was never the right condition --
+    #151's general case is a graph with no mosaic AT ALL that still leaks
+    canvas order across two-or-more TARGET/POOL blocks, and
+    ``needs_wire_scoping`` now closes that gap too. So the byte-for-byte
+    guarantee only holds for a graph with AT MOST ONE owner block, whatever
+    its panel count; 1.5's sentence now says that instead.
+
+    The code: two graphs, each with exactly one owner (a lone TARGET and a
+    lone POOL, so between them every S3-added key is exercised without
+    either graph gaining a second owner, which would turn wire scoping back
+    on), compiled now with exactly the keys the sentence names removed from
+    each entry of its kind, are the pre-S3 compile's bytes, by length and
+    sha256, each computed separately (one owner apiece, one byte string
+    apiece). Each key the sentence names is on every entry of its kind
+    first, so the sentence cannot name a key the compile never writes.
 
     RED under mutant "restore the old sentence" ("compiles byte for byte as
     before."), which is also how this test failed before 1.5 was corrected:
 
-        AssertionError: a graph with no multi-panel block compiles, with []
-        removed from each TARGET entry and [] from each POOL member, to 2369
-        bytes (sha256 c159c40c8f004f2f); before S3 it compiled to 2036 bytes
-        (sha256 b21a42459340fc94), so 1.5's sentence does not say what it
-        compiles to
-        assert (2369, 'c159c...ad45bee9c057') == (2036, 'b21a4...4e1bea60ab96')
-          At index 0 diff: 2369 != 2036
+        AssertionError: a graph with at most one owner block compiles its
+        TARGET entries, with [] removed, to 1039 bytes (sha256
+        18e3ec0addf1006d); before S3 it compiled to 897 bytes (sha256
+        518141cdc2b4e9a0), so 1.5's sentence does not say what it compiles to
+        assert (1039, '18e3e...382101942') == (897, '51814...523f406f9')
+          At index 0 diff: 1039 != 897
           Use -v to get more diff
 
     RED under mutant "1.5 names one key fewer" (`frame_anchor` dropped
     from the sentence):
 
-        AssertionError: a graph with no multi-panel block compiles, with
-        ['angle', 'mosaic', 'loop', 'centre', 'count_mode'] removed from each
-        TARGET entry and ['count_mode'] from each POOL member, to 2076 bytes
-        (sha256 215a43ff76e8bebb); before S3 it compiled to 2036 bytes
-        (sha256 b21a42459340fc94), so 1.5's sentence does not say what it
-        compiles to
-        assert (2076, '215a4...42ff638ac5a7') == (2036, 'b21a4...4e1bea60ab96')
-          At index 0 diff: 2076 != 2036
+        AssertionError: a graph with at most one owner block compiles its
+        TARGET entries, with ['angle', 'mosaic', 'loop', 'centre',
+        'count_mode'] removed, to 917 bytes (sha256 b21832fc4c5503eb);
+        before S3 it compiled to 897 bytes (sha256 518141cdc2b4e9a0), so
+        1.5's sentence does not say what it compiles to
+        assert (917, 'b2183...431273b06b') == (897, '51814...523f406f9')
+          At index 0 diff: 917 != 897
           Use -v to get more diff
 
     RED under mutant "1.5 names a key the compile does not write" (`follows`
     added to the TARGET keys; it is written only after a mosaic's tail):
 
         AssertionError: 1.5 names ['follows'], which the compile does not
-        write on every entry of its kind
+        write on every TARGET entry
         assert ['follows'] == []
           Left contains one more item: 'follows'
           Use -v to get more diff
 
     BOUNDED THE SAME WAY, AGAIN, FOR BACKLOG WP-09's top-level
-    ``schedule.twilight_deg`` (#191, 2026-09-30): the graph's DUSK WINDOW
-    leaves its Start unset, which ``with_defaults()`` reads as "Astro dusk",
-    so ``_dusk_schedule`` now writes ``twilight_deg`` (-18) onto the
-    compile's own ``schedule`` dict - a key 1.5's sentence is not about (it
-    names only the per-entry TARGET/POOL keys S3 added) and the pre-S3 bytes
-    predate. Popped off and checked here, not folded into ``_PRE_S3_
-    NO_MOSAIC``: that frozen pair is "not kept here: it holds nothing the
-    claim needs but its identity", and a hash that could be regenerated to
-    match whatever the compile currently does would stop being that.
+    ``schedule.twilight_deg`` (#191, 2026-09-30): the TARGET graph's DUSK
+    WINDOW leaves its Start unset, which ``with_defaults()`` reads as
+    "Astro dusk", so ``_dusk_schedule`` now writes ``twilight_deg`` (-18)
+    onto the compile's own ``schedule`` dict - a key 1.5's sentence is not
+    about (it names only the per-entry TARGET/POOL keys S3 added) and the
+    pre-S3 bytes predate. Popped off and checked here, not folded into
+    ``_PRE_S3_NO_MOSAIC_TARGET``: that frozen pair is "not kept here: it
+    holds nothing the claim needs but its identity", and a hash that could
+    be regenerated to match whatever the compile currently does would stop
+    being that. The POOL graph has no DUSK node, so nothing to pop there.
 
     RED under mutant "the angle not bounded" (this pop deleted), observed:
 
-        AssertionError: a graph with no multi-panel block compiles, with
-        ['angle', 'mosaic', 'loop', 'centre', 'count_mode', 'frame_anchor']
-        removed from each TARGET entry and ['count_mode'] from each POOL
-        member, to 2059 bytes (sha256 7a4db03f6d1a637f); before S3 it
-        compiled to 2036 bytes (sha256 b21a42459340fc94), so 1.5's sentence
-        does not say what it compiles to
-        assert (2059, '7a4db...78a6274801fb') == (2036, 'b21a4...4e1bea60ab96')
+        AssertionError: a graph with at most one owner block compiles its
+        TARGET entries, with ['angle', 'mosaic', 'loop', 'centre',
+        'count_mode', 'frame_anchor'] removed, to 920 bytes (sha256
+        9bdf287d15283e1d); before S3 it compiled to 897 bytes (sha256
+        518141cdc2b4e9a0), so 1.5's sentence does not say what it compiles to
+        assert (920, '9bdf2...a366d12e0f') == (897, '51814...523f406f9')
     """
     s15 = _section("1.5")
-    lead = ("The key is absent when the list is empty, so a graph with no "
-            "multi-panel block compiles byte for byte")
+    lead = ("The key is absent when the list is empty, so a graph with at "
+            "most one TARGET or POOL block, whatever its panel count, "
+            "compiles byte for byte")
     start = s15.find(lead)
-    assert start != -1, ("1.5 no longer says what a graph with no "
-                         "multi-panel block compiles to")
+    assert start != -1, ("1.5 no longer says what a graph with at most one "
+                         "owner block compiles to")
     end = s15.find(". The worked cases above", start)
     sentence = s15[start:end]
 
@@ -13574,35 +13625,39 @@ def test_1_5_says_what_a_graph_with_no_mosaic_compiles_to():
 
     of_target, of_member = (named("a TARGET entry's "),
                             named("a POOL member's "))
-    compiled = compile_plan(FlowGraph.model_validate(_NO_MOSAIC_GRAPH),
-                            "no mosaic")
-    blocks = [e for e in compiled["targets"] if "pool_rank" not in e]
-    members = [e for e in compiled["targets"] if "pool_rank" in e]
-    assert (len(blocks), len(members), "notes" in compiled) == (2, 2, False), (
-        "premise: the graph compiles to two TARGET entries and two POOL "
-        "members, with no notes")
-    unwritten = sorted({k for e in blocks for k in of_target if k not in e}
-                       | {k for e in members for k in of_member
-                          if k not in e})
-    assert unwritten == [], (f"1.5 names {unwritten}, which the compile does "
-                             f"not write on every entry of its kind")
-    for entries, keys in ((blocks, of_target), (members, of_member)):
+
+    def _checked(graph: dict, kind: str, keys: list[str],
+                pre_s3: tuple[int, str]) -> None:
+        compiled = compile_plan(FlowGraph.model_validate(graph), "no mosaic")
+        assert "notes" not in compiled, (
+            f"a lone-owner {kind} graph compiles with a notes key "
+            f"({compiled.get('notes')}); 1.5 says the key is absent when "
+            f"the list is empty")
+        entries = compiled["targets"]
+        unwritten = sorted({k for e in entries for k in keys if k not in e})
+        assert unwritten == [], (f"1.5 names {unwritten}, which the compile "
+                                 f"does not write on every {kind} entry")
         for entry in entries:
             for key in keys:
                 del entry[key]
-    angle = compiled["schedule"].pop("twilight_deg", "<absent>")
-    assert angle == -18.0, (
-        f"premise: this graph's DUSK WINDOW compiles Astro dusk's own "
-        f"angle; got {angle!r}")
-    data = json.dumps(compiled).encode("utf-8")
-    got = (len(data), hashlib.sha256(data).hexdigest())
-    assert got == _PRE_S3_NO_MOSAIC, (
-        f"a graph with no multi-panel block compiles, with {of_target} "
-        f"removed from each TARGET entry and {of_member} from each POOL "
-        f"member, to {got[0]} bytes (sha256 {got[1][:16]}); before S3 it "
-        f"compiled to {_PRE_S3_NO_MOSAIC[0]} bytes (sha256 "
-        f"{_PRE_S3_NO_MOSAIC[1][:16]}), so 1.5's sentence does not say what "
-        f"it compiles to")
+        angle = compiled["schedule"].pop("twilight_deg", "<absent>")
+        if kind == "TARGET":
+            assert angle == -18.0, (
+                f"premise: this graph's DUSK WINDOW compiles Astro dusk's "
+                f"own angle; got {angle!r}")
+        data = json.dumps(compiled).encode("utf-8")
+        got = (len(data), hashlib.sha256(data).hexdigest())
+        assert got == pre_s3, (
+            f"a graph with at most one owner block compiles its {kind} "
+            f"entries, with {keys} removed, to {got[0]} bytes (sha256 "
+            f"{got[1][:16]}); before S3 it compiled to {pre_s3[0]} bytes "
+            f"(sha256 {pre_s3[1][:16]}), so 1.5's sentence does not say "
+            f"what it compiles to")
+
+    _checked(_NO_MOSAIC_TARGET_GRAPH, "TARGET", of_target,
+             _PRE_S3_NO_MOSAIC_TARGET)
+    _checked(_NO_MOSAIC_POOL_GRAPH, "POOL", of_member,
+             _PRE_S3_NO_MOSAIC_POOL)
 
 
 def _grid(cols: int, rows: int, overlap: float, dec: float,

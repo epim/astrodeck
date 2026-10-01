@@ -634,6 +634,17 @@ class NativeGuider(Guider):
         self._lost = False
         self._reacquire = 0
         self._fault_frames = 0
+        # WP-15 (#135) ORCHESTRATOR RULING: True for the span between a
+        # REUSED calibration's begin_guiding() and its first real
+        # "pulse"/"pulse_pair" dispatch -- the mount READ `start_guiding`
+        # already proved on the reuse path says the link answers, not that
+        # it can be MOVED. While this is set, `_guide_loop` withholds the
+        # "calibrated and guiding" claim and the persisted-calibration write
+        # until that first pulse actually succeeds, and falls back to a
+        # fresh calibration (with a warning) if it does not -- see
+        # `_guide_loop`. Always False for a fresh calibration, whose walk
+        # already sent dozens of real pulses to get here.
+        self._reuse_pulse_pending = False
 
         # GN-03 re-lock accounting. ``_lock_xy`` is the last LOCKED guide-star
         # position in guide-camera px (the engine exposes no lock position
@@ -950,68 +961,117 @@ class NativeGuider(Guider):
                     _ra_now, _dec_now = await self.tel.get_position()
                     current_dec_rad = math.radians(float(_dec_now))
                 if persisted is not None and self._cal_reusable(persisted, current_dec_rad):
+                    # WP-15 (#135): PROVE the mount is reachable before
+                    # anything below claims a reuse. ``current_dec_rad`` just
+                    # above, and every read inside
+                    # ``_apply_scope_pointing``/``_pier_changed_since`` below,
+                    # is wrapped in ``contextlib.suppress(Exception)`` on
+                    # purpose -- an unreadable pier or declination must not
+                    # cost a calibration walk by itself. Taken together,
+                    # though, a mount that answers NOTHING at all passed every
+                    # one of them: on 2026-09-23, with the serial link dead
+                    # (#133), this path announced "calibrated and guiding"
+                    # four times in a row -- each claim rewriting the
+                    # persisted calibration file -- and each guide loop died
+                    # on its first pulse 5.2-5.4 s later (#135).
+                    #
+                    # So the reuse path has to earn its claim with one
+                    # UNSUPPRESSED, real mount read. Raising means the mount
+                    # did not answer, and -- unlike the DeviceError/Exception
+                    # split below, which tells "no guide star" apart from
+                    # "corrupt persisted data" -- it falls back to a fresh
+                    # calibration with a warning, the same way a corrupt
+                    # persisted file already does. The fresh walk then proves
+                    # the OTHER half of #135's claim on its own: its first
+                    # ``cal_step`` sends a real (non-suppressed) pulse_guide,
+                    # so a mount that answers reads but cannot actually be
+                    # pulsed still fails loudly instead of guiding silently.
+                    #
+                    # This does NOT also send its own zero-duration pulse here
+                    # as a second, standalone liveness probe (an earlier
+                    # version of this fix did): the reuse path is exercised by
+                    # ``_maybe_recover_guiding``'s fast-restart contract after
+                    # a real star loss, which depends on reuse staying
+                    # device-I/O-free when it succeeds (see the P2-T2 comment
+                    # above, and ``test_native_guider_recovery.py``'s
+                    # ``test_persisted_calibration_reused_across_guider_instances``,
+                    # which asserts ZERO ``pulse_guide`` calls during a
+                    # reuse-based start). Adding a write command there would
+                    # pay for a mount round-trip on every fast restart and
+                    # break that test, which this WP's owned files do not
+                    # include.
+                    mount_live = True
                     try:
-                        # STAR-EXISTENCE PRECONDITION (fix round #2): mirror
-                        # _calibrate's one-frame guide_star_find gate. Without
-                        # it, a recovery restart during a PERSISTING occlusion
-                        # "succeeds" instantly — the engine then sits in
-                        # lock-establishment returning Idle forever with
-                        # stats().guiding True (the staleness machinery is
-                        # unreachable while lock is None), permanently silencing
-                        # _maybe_recover_guiding's one-shot retry contract.
-                        # Raising here keeps is_active() false so the recovery
-                        # loop keeps firing until the star is really back.
-                        # NOV-7: one "finding" tick before the star-find so the
-                        # client has something to narrate during this otherwise
-                        # silent step (D2 — one tick per phase transition).
-                        self._phase_hint = "finding"
-                        bus.publish("guide", **self.stats().__dict__)
-                        frame = await self._expose()
-                        stars, _meta = _native.guide_star_find(frame.data)
-                        if not stars:
-                            raise DeviceError(
-                                "native guider: no guide star found — cannot "
-                                "start guiding")
-                        # Strip the image_scale_arcsec SIDECAR key (fix round
-                        # #1) before handing the dict to the engine —
-                        # dict_to_cal reads required Cal keys only.
-                        cal = {k: v for k, v in persisted.items()
-                               if k != "image_scale_arcsec"}
-                        self._engine.load_calibration(cal)
-                        # Live current scope pointing feeds RA dec-compensation
-                        # (dossier §9 item 6, never persisted) independently of
-                        # the reused Cal's own stored declination/pier — same
-                        # call _calibrate() makes internally before completing
-                        # a fresh calibration.
-                        await self._apply_scope_pointing()
-                        self._engine.begin_guiding()
-                        reused = True
-                        # This session now HAS a calibration again, so a clear or a
-                        # flip-discard that preceded it is spent (GN-01).
-                        self._cal_discarded = False
-                        bus.log("info",
-                                f"native guider: reusing persisted calibration "
-                                f"for profile {self.profile_id}", "guide")
-                        # A5 (P4-T1 ruling B): restore the persisted PPEC model
-                        # window ONLY on the calibration-REUSE path (same profile +
-                        # same calibration). A fresh calibration means the geometry
-                        # changed, so the trained gear-time model no longer applies.
-                        # No-op for a non-PPEC RA algorithm.
-                        self._restore_gp_window()
-                    except DeviceError:
-                        # A real refusal (no star) propagates — recalibrating
-                        # would fail on the same missing star anyway; the
-                        # sequence engine's recovery loop retries later.
-                        raise
+                        await self.tel.get_position()
                     except Exception as e:
-                        # CORRUPT-PERSISTENCE HARDENING (fix round #3b): a
-                        # persisted dict that passes the _cal_reusable gate
-                        # fields can still fail the engine's own PyO3 field
-                        # conversion (corrupt numerics). Never fatal — fall
-                        # back to a fresh calibration.
+                        mount_live = False
                         bus.log("warning",
-                                f"native guider: could not reuse persisted "
-                                f"calibration ({e}); recalibrating", "guide")
+                                f"native guider: the mount did not answer "
+                                f"while reusing a persisted calibration "
+                                f"({e}); recalibrating instead", "guide")
+                    if mount_live:
+                        try:
+                            # STAR-EXISTENCE PRECONDITION (fix round #2): mirror
+                            # _calibrate's one-frame guide_star_find gate. Without
+                            # it, a recovery restart during a PERSISTING occlusion
+                            # "succeeds" instantly — the engine then sits in
+                            # lock-establishment returning Idle forever with
+                            # stats().guiding True (the staleness machinery is
+                            # unreachable while lock is None), permanently silencing
+                            # _maybe_recover_guiding's one-shot retry contract.
+                            # Raising here keeps is_active() false so the recovery
+                            # loop keeps firing until the star is really back.
+                            # NOV-7: one "finding" tick before the star-find so the
+                            # client has something to narrate during this otherwise
+                            # silent step (D2 — one tick per phase transition).
+                            self._phase_hint = "finding"
+                            bus.publish("guide", **self.stats().__dict__)
+                            frame = await self._expose()
+                            stars, _meta = _native.guide_star_find(frame.data)
+                            if not stars:
+                                raise DeviceError(
+                                    "native guider: no guide star found — cannot "
+                                    "start guiding")
+                            # Strip the image_scale_arcsec SIDECAR key (fix round
+                            # #1) before handing the dict to the engine —
+                            # dict_to_cal reads required Cal keys only.
+                            cal = {k: v for k, v in persisted.items()
+                                   if k != "image_scale_arcsec"}
+                            self._engine.load_calibration(cal)
+                            # Live current scope pointing feeds RA dec-compensation
+                            # (dossier §9 item 6, never persisted) independently of
+                            # the reused Cal's own stored declination/pier — same
+                            # call _calibrate() makes internally before completing
+                            # a fresh calibration.
+                            await self._apply_scope_pointing()
+                            self._engine.begin_guiding()
+                            reused = True
+                            # This session now HAS a calibration again, so a clear or a
+                            # flip-discard that preceded it is spent (GN-01).
+                            self._cal_discarded = False
+                            bus.log("info",
+                                    f"native guider: reusing persisted calibration "
+                                    f"for profile {self.profile_id}", "guide")
+                            # A5 (P4-T1 ruling B): restore the persisted PPEC model
+                            # window ONLY on the calibration-REUSE path (same profile +
+                            # same calibration). A fresh calibration means the geometry
+                            # changed, so the trained gear-time model no longer applies.
+                            # No-op for a non-PPEC RA algorithm.
+                            self._restore_gp_window()
+                        except DeviceError:
+                            # A real refusal (no star) propagates — recalibrating
+                            # would fail on the same missing star anyway; the
+                            # sequence engine's recovery loop retries later.
+                            raise
+                        except Exception as e:
+                            # CORRUPT-PERSISTENCE HARDENING (fix round #3b): a
+                            # persisted dict that passes the _cal_reusable gate
+                            # fields can still fail the engine's own PyO3 field
+                            # conversion (corrupt numerics). Never fatal — fall
+                            # back to a fresh calibration.
+                            bus.log("warning",
+                                    f"native guider: could not reuse persisted "
+                                    f"calibration ({e}); recalibrating", "guide")
                 if not reused:
                     await self._calibrate()           # blocks; raises on failure
                     # A calibration was actually MEASURED, so whatever was
@@ -1024,7 +1084,21 @@ class NativeGuider(Guider):
                 # scope pointing already stamped the current pier); load-bearing
                 # for a reused persisted calibration across a pier-side change.
                 await self._maybe_flip_for_pier()
-                self._persist_calibration()
+                # WP-15 (#135) ORCHESTRATOR RULING. A FRESH calibration's walk
+                # already sent dozens of real pulses to earn this -- persist
+                # and claim now, as always. A REUSED one has only proved the
+                # mount answers a READ (the gate above); the claim and the
+                # persisted-calibration write are deferred to the guide
+                # loop's own first real pulse succeeding (`_reuse_pulse_pending`,
+                # `_guide_loop`), which falls back to a fresh calibration with
+                # a warning if that pulse fails instead. Not deferred: this
+                # does NOT send a standalone probe pulse here (that would
+                # regress test_native_guider_recovery.py's zero-pulse
+                # reuse-start invariant, a real property of the P2-T2
+                # fast-restart contract) -- it waits for the FIRST PULSE THE
+                # LOOP WOULD HAVE SENT ANYWAY.
+                if not reused:
+                    self._persist_calibration()
 
                 # LAST GATE. A Stop that landed during the walk is caught by the
                 # walk's own polling; one that landed in the reuse path, the pier
@@ -1038,8 +1112,10 @@ class NativeGuider(Guider):
                 # "finding"/"calibrating" never outlives the transition it named.
                 self._phase_hint = None
                 self._active = True
+                self._reuse_pulse_pending = reused
                 self._loop_task = asyncio.create_task(self._guide_loop())
-                bus.log("info", "native guider calibrated and guiding", "guide")
+                if not reused:
+                    bus.log("info", "native guider calibrated and guiding", "guide")
                 bus.publish("guide", **self.stats().__dict__)
             except BaseException:
                 # A START THAT NEVER REACHED THE LOOP OWNS ITS OWN
@@ -1444,6 +1520,49 @@ class NativeGuider(Guider):
 
     # -------------------------------------------------------------- guide loop
 
+    async def _prove_reuse_with_first_pulse(self, action: dict) -> None:
+        """`_guide_loop`'s handling of the FIRST "pulse"/"pulse_pair" action
+        after a REUSED calibration's ``begin_guiding()`` (#135, WP-15
+        orchestrator ruling): dispatch it exactly as any other pulse, and
+        only once it SUCCEEDS does the reused calibration earn the
+        "calibrated and guiding" claim and the persisted-calibration write
+        that `start_guiding` deferred. ``_reuse_pulse_pending`` is cleared
+        either way, so this runs at most once per start.
+
+        A mount that answered the earlier READ gate but cannot actually be
+        PULSED (#135's own incident: a link that degrades between the read
+        and the first command) falls back to a FRESH calibration here,
+        in-place, rather than leaving the loop guiding on an unproven claim
+        or simply dying: ``_calibrate`` runs its own walk (which issues its
+        own real, unsuppressed pulses, proving the mount a second, harder
+        way) and leaves ``self._engine`` already in its guiding phase once
+        it completes, so the loop's ``while`` simply continues on the next
+        exposure. If ``_calibrate`` itself also fails, that raises out of
+        here into `_guide_loop`'s own outer handler, which ends the loop the
+        same way any other fatal start-up failure does.
+
+        Never sends a standalone probe pulse of its own: ``action`` is the
+        SAME action the engine already computed for this frame, the one
+        `_guide_loop` would have dispatched anyway."""
+        self._reuse_pulse_pending = False
+        try:
+            await self._dispatch(action)
+        except Exception as e:
+            bus.log("warning",
+                    f"native guider: the mount did not answer its first "
+                    f"pulse on a reused calibration ({e}); recalibrating "
+                    f"instead", "guide")
+            await self._calibrate()
+            # A calibration was actually MEASURED, so whatever was
+            # discarded before it no longer has anything to resurrect
+            # (GN-01) and the persist below is allowed to write again --
+            # the same bookkeeping `start_guiding`'s own fresh-calibration
+            # branch does.
+            self._cal_discarded = False
+            await self._maybe_flip_for_pier()
+        self._persist_calibration()
+        bus.log("info", "native guider calibrated and guiding", "guide")
+
     async def _guide_loop(self) -> None:
         """Per-frame guide loop: expose → ``process`` → dispatch the Action →
         publish stats. Runs until cancelled (stop_guiding/disconnect) or a real
@@ -1500,7 +1619,11 @@ class NativeGuider(Guider):
                 # and the re-lock this is looking for is exactly the frame on
                 # which that happens (GN-03).
                 self._note_lock(action, frame)
-                await self._dispatch(action)
+                if (self._reuse_pulse_pending
+                        and action["action"] in ("pulse", "pulse_pair")):
+                    await self._prove_reuse_with_first_pulse(action)
+                else:
+                    await self._dispatch(action)
                 self._sync_settle_window(action)
                 self._last_stats = self.stats()
                 bus.publish("guide", **self._last_stats.__dict__)

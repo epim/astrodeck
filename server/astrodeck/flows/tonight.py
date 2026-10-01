@@ -52,7 +52,8 @@ from typing import Any
 from ..sequence.schedule import (_clock_time_near_now, hours_to_meridian_flip,
                                  observing_night, prev_sun_event)
 from .compile import (_finite, _grid_of, compile_plan, flow_order, grid_size,
-                      is_multi_panel, loop_wires, owner_of, parse_skip)
+                      is_multi_panel, loop_wires, needs_wire_scoping,
+                      owner_of, parse_skip)
 from .models import FlowGraph, _not_a_count
 from .nodes import NODE_DEFS, parse_cycle_plan, target_angle
 from .rig import RigFacts
@@ -1514,21 +1515,22 @@ def _receives(block) -> bool:
 
 def _receivers(g: FlowGraph) -> dict[str, tuple]:
     """The blocks each capture stage is shot for, by the compile's own
-    scoping rule (``compile_plan``'s ``receivers``, spec 1.5), keyed by the
-    stage's node id.
+    scoping rule (``compile_plan``'s ``receivers``, spec 1.5, backlog
+    WP-19(a)), keyed by the stage's node id.
 
-    With a multi-panel TARGET in the graph, a stage is its ``owner_of``
-    block's alone, and nobody's when the chain reaches none (M13). With
-    none, it is every block the walk passed before it: the canvas-order
-    rule, whose leak (a stage after a second TARGET reaches the first too)
-    is I-05, and which the brief says rather than hides. A stage the walk
-    never reaches is absent, as the compile drops it.
+    When the graph ``needs_wire_scoping`` (a multi-panel TARGET, or more
+    than one TARGET/POOL block, #151), a stage is its ``owner_of`` block's
+    alone, and nobody's when the chain reaches none (M13). With at most one
+    block and none of them a mosaic, it is every block the walk passed
+    before it: the canvas-order rule, which a single block can never leak
+    out of. A stage the walk never reaches is absent, as the compile drops
+    it.
 
     READ OFF THE GRAPH, not the compile: the brief compiles only a graph
     with a mosaic (``_mosaic_entries``), and a graph with none must brief
     without a compile it never needed. ``test_flows_brief_stage_owner.py``
     holds this to the plan's own steps."""
-    mosaic = any(is_multi_panel(n) for n in g.nodes)
+    scoped = needs_wire_scoping(g)
     out: dict[str, tuple] = {}
     passed: list = []
     for n in flow_order(g):
@@ -1536,7 +1538,7 @@ def _receivers(g: FlowGraph) -> dict[str, tuple]:
             if _receives(n):
                 passed.append(n)
         elif n.type in _CAPTURE_TYPES:
-            if not mosaic:
+            if not scoped:
                 out[n.id] = tuple(passed)
                 continue
             owner = owner_of(g, n.id)

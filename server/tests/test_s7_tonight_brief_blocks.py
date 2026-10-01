@@ -178,28 +178,38 @@ class TestEveryBlockWhereItsLaneRuns:
 
     def test_blocks_read_in_flow_order_not_canvas_order(self):
         """A flow drawn right to left reads in the order it runs: M31, its
-        L stage, then M33 and its Ha stage, which the compile's canvas-order
-        rule gives to M31 too (I-05), as the lane says.
+        L stage, then M33 and its Ha stage, which the Ha stage's own wire
+        gives to M33 alone.
+
+        RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+        2026-09-30): this graph has two owner blocks (M31, M33), so
+        ``needs_wire_scoping`` now turns on for it regardless of mosaics,
+        and Ha's wire (``u.target -> h.run``) gives it to M33 alone -- the
+        canvas-order leak this case used to pin on purpose (I-05: Ha also
+        read as M31's) is exactly what #151's general case closes. The
+        block-and-lane ORDER this test is really about (M31 before M33,
+        each followed by its own lane, never canvas order's right-to-left
+        draw) is unchanged; only the now-correct ownership of Ha moved.
 
         RED under the tonight.py mutant "blocks in canvas order"
         (``_brief_walk``'s walk sorted by canvas x instead of taken from
         ``flow_order``), observed:
 
-            AssertionError: This flow arms M33. For M31 and M33 it captures
-            Ha 300 s × 4 (gain 100, bin 1). For M31 it captures L 60 s × 5
-            (gain 100, bin 1). It then arms M31.
+            AssertionError: This flow arms M33. For M33 it captures Ha 300 s
+            × 4 (gain 100, bin 1). For M31 it captures L 60 s × 5 (gain 100,
+            bin 1). It then arms M31.
 
         It is RED under "first block only" too (M33 never armed:
-        "[...] (gain 100, bin 1). For M31 and M33 it captures Ha [...]").
-        The tree before the change named the first TARGET in canvas order
-        and no other, observed: "AssertionError: This flow arms M33. For
-        M31 it captures L 60 s × 5 (gain 100, bin 1). For M31 and M33 it
-        captures Ha 300 s × 4 (gain 100, bin 1)."
+        "[...] (gain 100, bin 1). For M33 it captures Ha [...]"). The tree
+        before the change named the first TARGET in canvas order and no
+        other, observed: "AssertionError: This flow arms M33. For M31 it
+        captures L 60 s × 5 (gain 100, bin 1). For M33 it captures Ha 300 s
+        × 4 (gain 100, bin 1)."
         """
         text = brief(_right_to_left())
         assert text == (
             "This flow arms M31. For M31 it captures L 60 s × 5 (gain 100, bin "
-            "1). It then arms M33. For M31 and M33 it captures Ha 300 s × 4 "
+            "1). It then arms M33. For M33 it captures Ha 300 s × 4 "
             "(gain 100, bin 1)."), text
 
     def test_a_block_the_walk_never_reaches_is_still_named(self):

@@ -65,17 +65,38 @@ def _lock(s: Session, target_id: str, pa: float) -> None:
 
 
 def _target_and_pool():
-    """TARGET M31 feeding POOL (M42, M31) feeding one CAPTURE: a block of
-    each kind. Returns (compiled, plan, the TARGET's target, the members)."""
+    """TARGET M31, with its own CAPTURE, feeding POOL (M42, M31) feeding a
+    second CAPTURE: a block of each kind, each actually shooting something.
+    Returns (compiled, plan, the TARGET's target, the members).
+
+    RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+    2026-09-30): this graph has two owner blocks (TARGET M31 and the POOL),
+    so `needs_wire_scoping` now turns on for it regardless of panel count.
+    The TARGET used to arm the POOL directly, with no stage of its own
+    (`t.target -> p.arm`), and relied on the pre-#151 canvas-order leak to
+    pick up a COPY of the pool's own CAPTURE step as "its" step -- exactly
+    the leak #151 closes. `plan.targets[0]` (the TARGET) is correctly
+    stageless now, which the tests that need ``.steps[0]`` on it (an
+    unframed TARGET needs a step of its own to plate-solve and lock an
+    angle on) cannot build their premise on any more. Give the TARGET its
+    OWN capture, wired directly (`t.target -> tc.run`), then arm the pool
+    from that lane's tail (`tc.complete -> p.arm`, the same shape
+    `TARGET_POOL_AND_MOSAIC` in test_flows_progress_route.py already uses
+    for the block after the pool): the TARGET keeps exactly the "arms the
+    next block" relationship this fixture is about, and now also owns the
+    step a locked-angle test needs to exist on."""
     g = s1_pure
     graph = FlowGraph(
         nodes=[g._n("t", "target", name="M31", ra="00h 42m 44s",
                     dec="+41 16 09", rotation=-1),
-               g._n("p", "pool", x=50, members="M42, M31", minAlt=0,
+               g._n("tc", "capture", x=50, filter="L", exposure=60,
+                    gain=100, bin="1", count=5, goal=0),
+               g._n("p", "pool", x=100, members="M42, M31", minAlt=0,
                     moonSep=0, maxHA=0),
-               g._n("c", "capture", x=100, filter="L", exposure=60,
+               g._n("c", "capture", x=150, filter="L", exposure=60,
                     gain=100, bin="1", count=5, goal=0)],
-        edges=[g._e("t", "target", "p", "arm"),
+        edges=[g._e("t", "target", "tc", "run"),
+               g._e("tc", "complete", "p", "arm"),
                g._e("p", "target", "c", "run")])
     compiled, plan = g._compile(graph)
     return compiled, plan, plan.targets[0], plan.targets[1:]
@@ -324,11 +345,43 @@ class TestTheBlockLock:
 
 # ============================================================== the route half
 
+#: `TARGET_AND_POOL` (test_flows_progress_route.py), with the TARGET given
+#: its own CAPTURE before it arms the POOL, instead of arming it directly.
+#:
+#: RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+#: 2026-09-30): `TARGET_AND_POOL` is a shared fixture this file does not
+#: own, so it is not edited here; this is a LOCAL copy, for this route test
+#: alone. Two owner blocks (the TARGET and the POOL) now trigger wire
+#: scoping whatever either one's panel count (#151's general case), so the
+#: imported graph's TARGET -- which only armed the POOL, with no stage of
+#: its own -- no longer picks up a copy of the pool's CAPTURE step by
+#: canvas order; `plan.targets[0].steps` is correctly empty for it now.
+#: `_seed_locked` needs a step on EVERY target to bank a frame on (one
+#: per-step convention `test_flows_progress_route.py` itself does not need
+#: for its own, unlocked-angle tests), so this copy gives the TARGET one,
+#: the same fix `_target_and_pool()` above makes to its own local graph.
+_TARGET_AND_POOL_EACH_WITH_A_STEP = {
+    "nodes": [
+        TARGET_AND_POOL["nodes"][0],
+        {"id": "tc", "type": "capture", "x": 25, "y": 0,
+         "params": {"filter": "L", "exposure": 60, "gain": 100, "bin": "1",
+                    "count": 5}},
+        TARGET_AND_POOL["nodes"][1],
+        TARGET_AND_POOL["nodes"][2],
+    ],
+    "edges": [
+        {"from": "t", "fromPort": "target", "to": "tc", "toPort": "run"},
+        {"from": "tc", "fromPort": "complete", "to": "p", "toPort": "arm"},
+        TARGET_AND_POOL["edges"][1],
+    ],
+}
+
+
 def _seed_locked(fid: str, locks: dict[int, float]) -> Session:
     """The TARGET + POOL flow's session, dormant, with one frame on every
     target's first step and ``locks`` (plan target index -> angle), written
     as the file ``SessionStore.save`` writes."""
-    _c, plan = _compiled(TARGET_AND_POOL, fid)
+    _c, plan = _compiled(_TARGET_AND_POOL_EACH_WITH_A_STEP, fid)
     frames = [f for t in plan.targets
               for f in _route_frames(t.id, t.steps[0].id, 1)]
     s = Session(name=f"{fid}@100", created_ts=100.0, updated_ts=100.0,
@@ -366,7 +419,7 @@ class TestAViewerReadsTheLock:
         the first light frame at 21:43:07'} != {'source': "measured by the
         first shot's plate solve"}``).
         """
-        fid = await api.save_flow(TARGET_AND_POOL)
+        fid = await api.save_flow(_TARGET_AND_POOL_EACH_WITH_A_STEP)
         _seed_locked(fid, {0: 23.4})
         principal = principal_for_role(role)
         set_active_provider(_Fixed(principal))

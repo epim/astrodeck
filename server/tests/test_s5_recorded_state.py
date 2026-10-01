@@ -861,18 +861,32 @@ class TestTheSequenceStateFixture:
         assert {k: v for k, v in op["group"].items()
                 if k not in ("panel", "pass")} == vw["group"], (
             "the viewer lost more of the group than the panel and the pass")
-        # What this pins is the redaction AS IT STANDS, not a rule that a
-        # viewer must see everything else: outside the group the GET route
-        # withholds nothing, so the viewer is still served ``target`` ("M31
-        # 2-1", the panel the group withholds), ``detail`` and
-        # ``live.meridian_eta_s`` (the countdown ``redact`` strips from
-        # ``meridian.hours_to_flip``), and #166 records all three as the
-        # site-timing residual. When #166 withholds them, this premise and
-        # the file change together, on purpose.
-        assert {k: v for k, v in op.items() if k != "group"} == {
-            k: v for k, v in vw.items() if k != "group"}, (
-            "the viewer's state differs outside the group, which today's "
-            "redaction does not do (see #166 before rewriting the file)")
+        # #166 item 1, FIXED (W2 integration): ``live.meridian_eta_s`` -- the
+        # countdown ``redact`` strips from ``meridian.hours_to_flip`` -- is
+        # now withheld here too, through ``live`` joining ``_DERIVED_NODES``
+        # (api/redact.py). This recorded state is the WAIT'S "waiting" phase
+        # (the first publish whose group waits at all, picked by `_pick`
+        # above), not the hop that ENDS it, so ``target`` ("M31 2-1", the
+        # same panel the group's own ``panel`` key already named to the
+        # operator -- the last one actually visited, not the one the
+        # crossing will choose) and ``detail`` are still the same for both
+        # principals: naming the LAST panel, before any wait began, reveals
+        # no transit (spec 6.9's accepted residual). #166 item 1's remaining
+        # fix -- withholding ``detail``/``target``/``target_index``/
+        # ``schedule``/``session.target`` too -- applies only at the hop
+        # that ends the wait (``_hop_site_derived``, `api.redact
+        # ._withhold_hop_timing`), which this recorded night's picked "wait"
+        # state is not; that case is graded on the clocked simulator by
+        # test_w2_hop_state_site_derived.py, not by this byte-for-byte file.
+        assert op.get("live", {}).get("meridian_eta_s") and not vw.get(
+            "live", {}).get("meridian_eta_s"), (
+            f"premise: the operator's live countdown is withheld from the "
+            f"viewer: operator {op.get('live')}, viewer {vw.get('live')}")
+        assert {k: v for k, v in op.items() if k not in ("group", "live")} == {
+            k: v for k, v in vw.items() if k not in ("group", "live")}, (
+            "the viewer's state differs outside the group, the live chip "
+            "and #166 item 1's hop-timing fields, which today's redaction "
+            "does not do")
 
         held = _pick_held(await _held_states(group_store, monkeypatch))
         paused, holding, aborting = (held[k] for k in HELD)

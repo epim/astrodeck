@@ -541,17 +541,29 @@ class TestScopingInTheCompile:
         a["steps"][0]["count"] = 999
         assert b["steps"][0]["count"] == 5
 
-    def test_with_no_multi_panel_block_the_canvas_order_rule_stays(self):
-        """Worked case 3's graph with M31 made 1x1. The legacy rule is kept byte
-        for byte, leak and all (the leak is its own defect, I-05): the CAPTURE
-        after M33 still reaches M31, and the compile says nothing new.
+    def test_with_no_multi_panel_block_wire_scoping_still_applies(self):
+        """Worked case 3's graph with M31 made 1x1.
 
-        Mutant "the wire rule in every graph" failed (the only test that
-        catches it: all seven Examples compile the same under either rule, so
-        the Examples control cannot):
-            AssertionError: assert ['cy'] == ['cy', 'ha']
-        Mutant "an empty notes list on every compile" failed:
-            AssertionError: assert 'notes' not in {...}
+        RE-PINNED (W2 integration, backlog WP-19(a), #151, owner-approved
+        2026-09-30): this case used to pin the OLD, narrower trigger --
+        canvas order stayed in force for a graph with no multi-panel block,
+        leak and all (I-05: the CAPTURE after M33 also reached M31). #151's
+        own general case is exactly this leak with no mosaic involved at
+        all: two independent TARGETs, each with its own lane, where what a
+        stage shoots should depend on its wires, not where its card sits.
+        ``needs_wire_scoping`` now turns on for ANY graph with more than one
+        TARGET/POOL block (`len(owners) > 1`), not only a multi-panel one,
+        so this graph -- two TARGETs, M31 and M33, whatever M31's panel
+        count -- now scopes by wire exactly as the unmodified 3x2 case
+        above does: ``cy`` belongs to M31 alone (its own wire), ``ha`` to
+        M33 alone, and the compile notes that the CAPTURE would have
+        reached M31 too under canvas order. The old assertions
+        (``by["m31"] == ["cy", "ha"]``, no notes) described the leak this
+        WP was built to close; the new ones describe the fix.
+
+        Mutant "the wire rule only with a mosaic" (``needs_wire_scoping``
+        reverted to ``any(is_multi_panel(n) for n in owners)``), observed:
+            AssertionError: assert ['cy', 'ha'] == ['cy']
         """
         c = _case("second-target-owns-the-capture")
         nodes = [n if n["id"] != "m31" else {**n, "params": {"name": "M31"}}
@@ -559,9 +571,12 @@ class TestScopingInTheCompile:
         g = FlowGraph.model_validate({**c["graph"], "nodes": nodes})
         plan = compile_plan(g, "n")
         by = {t["node_id"]: [s["node_id"] for s in t["steps"]] for t in plan["targets"]}
-        assert by["m31"] == ["cy", "ha"]
+        assert by["m31"] == ["cy"]
         assert by["m33"] == ["ha"]
-        assert "notes" not in plan
+        notes = plan.get("notes") or []
+        assert any(n.get("node_id") == "ha" for n in notes), (
+            f"the scope note for the CAPTURE that canvas order would also "
+            f"have given M31 is missing: {notes}")
 
     @pytest.mark.parametrize("rows,cols,multi", [
         (None, None, False),        # absent means 1, which is every saved flow
