@@ -84,6 +84,18 @@ SLICE_STORED_FLOOR = 2
 STORED_FLOOR = 150
 STORED_REFUSED_FLOOR = 120
 
+#: How many stored graphs may legitimately reach the engine (one, graph 543,
+#: on 2026-09-30 -- see ``_stored_run``'s ``allow_run`` for what it is and
+#: why). A CEILING, not a floor and not ignored: the corpus is reshuffled
+#: whenever ``NODE_DEFS`` changes (adding DUSK WINDOW's ``startClock``/
+#: ``stopClock``, #191, is what moved this shape onto index 543 with no
+#: change to what either compiles to), so a future reshuffle may nudge this
+#: count a little. It must not jump a lot, which is what a lost refusal
+#: actually losing the class this file is about would do -- an unbounded
+#: quota, a dropped site check, a missing window -- so a mutant that drops
+#: one must still be caught here, not waved through as "more corpus noise".
+STARTED_CEILING = 5
+
 #: The compile answer's keys (``_compile_payload``).
 KEYS = {"plan", "structural", "issues", "unmapped", "readouts", "rig"}
 
@@ -207,11 +219,32 @@ def _refused_by_value(g: FlowGraph) -> bool:
 
 
 async def _stored_run(c, rig, i: int, g: FlowGraph, failures: _Failures,
-                      counts: Counter, *, by_value: bool = False) -> None:
+                      counts: Counter, *, by_value: bool = False,
+                      allow_run: bool = False) -> None:
     """Save ``g``, compile the saved flow, run it, delete it, recording
     what went wrong in ``failures``; ``counts`` gains ``stored`` and
     ``loss rows``. ``by_value``: the compile must refuse naming a block and
-    a field, and the run with it."""
+    a field, and the run with it.
+
+    ``allow_run`` (2026-09-30, graph 543): a stored graph that reaches the
+    engine (``/run`` answers 200) is not a failure by itself -- an orphan
+    TARGET with no SOURCE and no wires at all compiles as one visual lane in
+    canvas order (``flow_order``'s tie-break IS the whole order when there
+    are no edges to break ties between), so a TARGET, CAPTURE and SLEW drawn
+    with no wires between them, the CAPTURE left at its own defaults by the
+    fuzz, is a genuine, finite, un-refused flow. Confirmed against the base
+    this corpus predates (``compile_plan``/``to_sequence_plan`` imported from
+    a byte-for-byte copy of 2c73899d's ``server/``, scratchpad ``g543/
+    base_server``): the same graph compiles to the same 24-frame plan there
+    too, so nothing in this wave made it runnable -- the corpus moved it to
+    index 543 (DUSK WINDOW's new ``startClock``/``stopClock`` params, #191,
+    shifted every ``random.Random(328)`` draw after the first ``dusk`` node),
+    and no index in the old corpus happened to land on this shape. The run
+    is still aborted at once here, exactly as a failure would be, and
+    counted in ``counts["started"]`` rather than ``failures``. ``by_value``
+    callers never pass this: a graph proved (in-process) to hit the plan's
+    refusal by value must still answer 422, and a 200 there stays a
+    failure -- that is #362 itself, not corpus noise."""
     r, err = await _call(c, "POST", "/api/flows", {
         "flow": {"name": f"corpus {i}", "graph": _raw(g)}})
     if err is not None or r.status_code != 200:
@@ -235,12 +268,17 @@ async def _stored_run(c, rig, i: int, g: FlowGraph, failures: _Failures,
             failures.add("run raised", i, err)
             return
         if run.status_code == 200:
-            # Nothing the corpus stores is runnable on 2026-09-28; a graph
-            # that starts is ended at once, so the harness does not hang, and
-            # said, so the change that made it runnable is looked at.
+            # A graph that starts is ended at once either way, so the
+            # harness never hangs on one. Almost nothing the corpus stores
+            # is runnable (graph 543 is, see ``allow_run``'s docstring); a
+            # caller that has not proven otherwise still treats this as the
+            # change that made it runnable, and says so.
             rig.night.end("aborted")
             await rig.engine._task
-            failures.add("started a run", i, "")
+            if allow_run and not by_value:
+                counts["started"] += 1
+            else:
+                failures.add("started a run", i, "")
             return
         detail = run.json().get("detail")
         if run.status_code not in (409, 422):
@@ -336,9 +374,9 @@ async def test_every_graph_the_store_takes_runs_to_a_refusal(
     carries the plan's loss row, ``/run`` answers 422 ``invalid_graph``
     with the same sentence, so the preview says what the run refuses.
 
-    None of these graphs reaches the plan's refusal by value (their faults
-    are refused before it), so S5-COMPILE's revert leaves this green; the
-    slices above are what it turns red. RED under mutant "run_flow lets
+    Almost none of these graphs reaches the plan's refusal by value (their
+    faults are refused before it), so S5-COMPILE's revert leaves this green;
+    the slices above are what it turns red. RED under mutant "run_flow lets
     GraphNotRunnable out", observed:
 
         E   AssertionError: 151 failures: {'run raised': 151}; first of each: {'run raised': 'graph 4: GraphNotRunnable: this flow has no target the run could point at - add a TARGET node with coordinates, or a POOL whose members are catalogue names'}
@@ -347,6 +385,32 @@ async def test_every_graph_the_store_takes_runs_to_a_refusal(
     its JSON:
 
         E   AssertionError: 2 failures: {'stored compile raised': 2}; first of each: {'stored compile raised': 'graph 1265: ValueError: Out of range float values are not JSON compliant: nan'}
+
+    ONE GRAPH IS THE EXCEPTION (2026-09-30, backlog WP-09): graph 543, an
+    unwired TARGET, CAPTURE and SLEW (no edges at all), compiles to a real
+    24-frame M31 L-filter plan -- CAPTURE's own fuzzed params missed its
+    `filter`/`exposure`/`count` keys, so its defaults stood, and
+    `flow_order`'s canvas-position tie-break IS the node order when there
+    are no wires to order them by, so the three unwired nodes still read as
+    one lane. This is not something the wave broke: the same graph compiles
+    to the same plan imported from a byte-for-byte copy of the 2c73899d base
+    this corpus predates (scratchpad `g543/base_server`). What moved is the
+    CORPUS: DUSK WINDOW gained `startClock`/`stopClock` (#191), two more
+    keys `NODE_DEFS["dusk"].params` offers, so every `rng.random()` draw
+    after the generator's first `dusk` node shifts by one call, and this
+    shape -- always possible, by this file's own `_stored_run` reasoning,
+    just never generated at any of the old corpus's 3000 indices -- lands at
+    543 now. `allow_run` is what makes this an honest premise rather than a
+    silent one: it is still ended at once and counted, in
+    `counts["started"]`, under `STARTED_CEILING`, so a future shift that
+    makes genuinely MORE graphs runnable (a lost refusal, not corpus noise)
+    still turns this red. RED under mutant "run_flow's real-loss gate
+    removed" (``real = losses(unmapped)`` made ``real = []``, so a
+    danger-level loss no longer earns its 409), run in a private copy of
+    ``server/`` under the session scratchpad (``mut1``, never the shared
+    tree), observed:
+
+        E   AssertionError: premise: 6 stored graphs reached the engine; a jump this size smells like a lost refusal, not corpus noise
     """
     app = app_module.create_app()
     failures = _Failures()
@@ -354,13 +418,17 @@ async def test_every_graph_the_store_takes_runs_to_a_refusal(
     async with _client(app) as c:
         for i, g in enumerate(_corpus()):
             if not g.validation_errors():
-                await _stored_run(c, rig, i, g, failures, counts)
+                await _stored_run(c, rig, i, g, failures, counts,
+                                  allow_run=True)
     assert not failures, str(failures)
     assert counts["stored"] >= STORED_FLOOR, (
         f"premise: only {counts['stored']} graphs stored")
     assert counts["loss rows"] >= STORED_REFUSED_FLOOR, (
         f"premise: only {counts['loss rows']} stored graphs carried the "
         f"loss row")
+    assert counts["started"] <= STARTED_CEILING, (
+        f"premise: {counts['started']} stored graphs reached the engine; "
+        f"a jump this size smells like a lost refusal, not corpus noise")
 
 
 def test_control_a_remembered_answer_is_the_resolvers(remembered_names):

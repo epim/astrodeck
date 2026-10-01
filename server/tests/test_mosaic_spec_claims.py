@@ -8731,7 +8731,10 @@ def test_1_8_says_the_doctor_as_s3_built_it():
                 "typed coordinates", "and L1 last",
                 "M2 also fires for a set angle with a negative rotation",
                 "M8's note for a fixed camera needs the rotator fact too",
-                "so a \"Clock time\" stop counts as none (#191)",
+                "so a \"Clock time\" stop left blank on the card counts as "
+                "none, the same as no stop at all, and a \"Clock time\" "
+                "stop the card actually gives a time counts as a real "
+                "boundary (amended 2026-09-30 by backlog WP-09, #191)",
                 "`max(passes, ceil(minVisit / pass))` passes of shutter",
                 "M14 counts the grid, skipped panels included",
                 "is 20.5% of it, under the rule's own 25%"), "1.8")
@@ -13533,6 +13536,27 @@ def test_1_5_says_what_a_graph_with_no_mosaic_compiles_to():
         assert ['follows'] == []
           Left contains one more item: 'follows'
           Use -v to get more diff
+
+    BOUNDED THE SAME WAY, AGAIN, FOR BACKLOG WP-09's top-level
+    ``schedule.twilight_deg`` (#191, 2026-09-30): the graph's DUSK WINDOW
+    leaves its Start unset, which ``with_defaults()`` reads as "Astro dusk",
+    so ``_dusk_schedule`` now writes ``twilight_deg`` (-18) onto the
+    compile's own ``schedule`` dict - a key 1.5's sentence is not about (it
+    names only the per-entry TARGET/POOL keys S3 added) and the pre-S3 bytes
+    predate. Popped off and checked here, not folded into ``_PRE_S3_
+    NO_MOSAIC``: that frozen pair is "not kept here: it holds nothing the
+    claim needs but its identity", and a hash that could be regenerated to
+    match whatever the compile currently does would stop being that.
+
+    RED under mutant "the angle not bounded" (this pop deleted), observed:
+
+        AssertionError: a graph with no multi-panel block compiles, with
+        ['angle', 'mosaic', 'loop', 'centre', 'count_mode', 'frame_anchor']
+        removed from each TARGET entry and ['count_mode'] from each POOL
+        member, to 2059 bytes (sha256 7a4db03f6d1a637f); before S3 it
+        compiled to 2036 bytes (sha256 b21a42459340fc94), so 1.5's sentence
+        does not say what it compiles to
+        assert (2059, '7a4db...78a6274801fb') == (2036, 'b21a4...4e1bea60ab96')
     """
     s15 = _section("1.5")
     lead = ("The key is absent when the list is empty, so a graph with no "
@@ -13566,6 +13590,10 @@ def test_1_5_says_what_a_graph_with_no_mosaic_compiles_to():
         for entry in entries:
             for key in keys:
                 del entry[key]
+    angle = compiled["schedule"].pop("twilight_deg", "<absent>")
+    assert angle == -18.0, (
+        f"premise: this graph's DUSK WINDOW compiles Astro dusk's own "
+        f"angle; got {angle!r}")
     data = json.dumps(compiled).encode("utf-8")
     got = (len(data), hashlib.sha256(data).hexdigest())
     assert got == _PRE_S3_NO_MOSAIC, (
@@ -25189,6 +25217,27 @@ def test_the_owner_list_records_the_h4_orchestrator_rulings():
         no alert, so a rig-side solve fault slews every panel every 10
         minutes all night (#563)'
         assert False
+
+    AMENDED 2026-09-30 BY BACKLOG WP-07 (#564): the rise half filed against
+    ruling 2 above is not merely narrowed any more, it is gone -- dropped
+    outright from ``set_aside_expiry``, which now refuses the old altitude
+    keyword arguments rather than answering "rise" early for any site. Item
+    54's own text records that, and the code probe below proves it by the
+    ``TypeError`` this replaces the old "rise" return value with.
+
+    RED under the spec mutant "the amendment dropped" (item 54's "AMENDED
+    2026-09-30 by backlog WP-07" sentence taken out, the item's older
+    "when the target has risen" wording restored beside it):
+
+        AssertionError: owner list item 54 must say: 'AMENDED 2026-09-30 by
+        backlog WP-07: expiry is time-only, 45 min, #564'
+        assert False
+
+    RED under the group_rules.py mutant "rise restored" (the rise branch
+    and its two altitude keyword arguments pasted back into
+    ``set_aside_expiry``):
+
+        Failed: DID NOT RAISE <class 'TypeError'>
     """
     from astrodeck.flows import tonight as tonight_mod
     from astrodeck.flows import wizard as wizard_mod
@@ -25232,25 +25281,28 @@ def test_the_owner_list_records_the_h4_orchestrator_rulings():
                   "every route", "`GET /api/cloudmap/at` takes only "
                   "`ahead_s`", "422 `site_query_refused` "
                   "(`_refuse_site_query`)", "`?<withheld>`", "(#550)")),
-            (54, (f"when the target has risen "
-                  f"{group_rules.SET_ASIDE_RISE_DEG:g} "
-                  f"degrees since the set-aside or {expiry_min:g} minutes "
-                  f"have passed, whichever comes first", "the group holds "
-                  "like a cloud hold, with no strikes, retrying every "
-                  f"{hold_min:g} minutes within the night",
+            (54, ("AMENDED 2026-09-30 by backlog WP-07: expiry is "
+                  "time-only, 45 min, #564.",
+                  f"A centring set-aside expires once per panel per night, "
+                  f"{expiry_min:g} minutes after the set-aside, time only",
+                  f"a site-derived comparison that even floored still told "
+                  f"a viewer whenever it fired that the site sat within "
+                  f"about {round(_rise_latitude_bound())} degrees of the "
+                  f"equator, so WP-07 dropped that branch outright (#564, "
+                  f"closed by this amendment)",
+                  "the group holds like a cloud hold, with no strikes, "
+                  f"retrying every {hold_min:g} minutes within the night",
                   f"`SET_ASIDE_EXPIRY_S` ({group_rules.SET_ASIDE_EXPIRY_S:g} "
                   f"s)", f"`CENTRING_HOLD_RETRY_S` "
                   f"({group_rules.CENTRING_HOLD_RETRY_S:g} s)",
+                  f"`SET_ASIDE_RISE_DEG` ({group_rules.SET_ASIDE_RISE_DEG:g}, "
+                  f"historical only since this amendment)",
                   "`centring_pass_verdict`", "(`SOLVE_TRANSIENT`)",
                   # What is filed against the ruling as written.
                   "Filed against the ruling as written: the all-fail hold "
                   "has no bound but the window and raises no alert, so a "
                   f"rig-side solve fault slews every panel every "
-                  f"{hold_min:g} minutes all night (#563)",
-                  f"the rise can end a set-aside before the {expiry_min:g} "
-                  f"minutes only within about "
-                  f"{round(_rise_latitude_bound())} degrees of the equator, "
-                  f"so the moment it does tells a viewer that much (#564)")),
+                  f"{hold_min:g} minutes all night (#563)")),
             (55, (f"it overshoots by `ROTATOR_BACKLASH_DEG` (default "
                   f"{backlash:g}, a named constant) and returns",
                   "\"the rotator moved but the camera did not\" with both "
@@ -25327,23 +25379,25 @@ def test_the_owner_list_records_the_h4_orchestrator_rulings():
                     ["request", "ahead_s", "principal"], "?<withheld>"), (
         f"(the names a GET is refused for, the look route's parameters, "
         f"the relay's withheld query) = {got1}; owner list item 53 says so")
-    # Ruling 2's code, by behaviour: time and rise, once a night.
+    # Ruling 2's code, by behaviour, amended 2026-09-30 by backlog WP-07
+    # (#564): time only, once a night, and the dropped rise half refused
+    # outright rather than answering early for any site.
     t0 = 1_700_000_000.0
     expiry = group_rules.set_aside_expiry
     rise = group_rules.SET_ASIDE_RISE_DEG
     got2 = (expiry(now=t0 + group_rules.SET_ASIDE_EXPIRY_S, set_at=t0),
             expiry(now=t0 + group_rules.SET_ASIDE_EXPIRY_S - 1, set_at=t0),
-            expiry(now=t0 + 60, set_at=t0, alt_at_set=20.0,
-                   alt_now=20.0 + rise),
             expiry(now=t0 + group_rules.SET_ASIDE_EXPIRY_S, set_at=t0,
                    expiries=1))
     assert (got2, expiry_min, hold_min, rise) == (
-        ("time", None, "rise", None), 45, 10, 10), (
-        f"(expired at the time, a second before, risen, a second expiry; "
+        ("time", None, None), 45, 10, 10), (
+        f"(expired at the time, a second before, a second expiry; "
         f"minutes, hold minutes, degrees) = "
         f"{(got2, expiry_min, hold_min, rise)}"
-        f"; owner list item 54 says 45 minutes or 10 degrees, once a night, "
+        f"; owner list item 54 says 45 minutes, time only, once a night, "
         f"and a 10 minute hold")
+    with pytest.raises(TypeError):
+        expiry(now=t0 + 60, set_at=t0, alt_at_set=20.0, alt_now=20.0 + rise)
     # Ruling 3's code: the last leg always turns up, 5 degrees past; under
     # half the commanded move is the follow line's.
     down = rotation.one_sided_moves(30.0, 10.0, "full", 0.0)
@@ -25777,18 +25831,19 @@ def test_section_8_s7_says_what_h4_fixed_of_it():
 
 def test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them():
     """5.1 says what H4 built of a centring miss (H4, #534, #532, H4
-    orchestrator ruling 2): the miss judged at the pass boundary
+    orchestrator ruling 2, amended 2026-09-30 by backlog WP-07 #564,
+    expiry is time-only, 45 min): the miss judged at the pass boundary
     (`centring_pass_verdict`), a pass whose two or more panels all missed
     holding the group `CENTRING_HOLD_RETRY_S` with no strikes (the
     boundary's ``centring_hold``, decided before the guide-start rule), a
-    streak's set-aside for now expiring once a night at `SET_ASIDE_EXPIRY_S`
-    or `SET_ASIDE_RISE_DEG` of rise (`set_aside_expiry`,
-    `_expire_set_aside`), the report's skip only for the night, a transient
-    solve's `solve_transient` striking nothing, and the hold bounded by
-    the window alone; and (H4, #537, #498, #507) a complete target owed
-    nothing dropped (`_drop_complete`), the gate scan reaching the
-    window's close, and an autofocus failure under skip reaching the
-    plain-stop row only after its sparse retry. #498's "open" is history.
+    streak's set-aside for now expiring once a night at `SET_ASIDE_EXPIRY_S`,
+    time only (`set_aside_expiry`, `_expire_set_aside`), the report's skip
+    only for the night, a transient solve's `solve_transient` striking
+    nothing, and the hold bounded by the window alone; and (H4, #537, #498,
+    #507) a complete target owed nothing dropped (`_drop_complete`), the
+    gate scan reaching the window's close, and an autofocus failure under
+    skip reaching the plain-stop row only after its sparse retry. #498's
+    "open" is history.
 
     The code: the numbers from `group_rules`; `centring_pass_verdict` and
     `set_aside_expiry` by behaviour; `SOLVE_TRANSIENT` among the kinds;
@@ -25806,9 +25861,9 @@ def test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them():
     RED under the group_rules.py mutant "one miss of one is the sky" (the
     verdict's ``attempted >= 2`` made ``attempted >= 1``):
 
-        AssertionError: ((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed; half
-        the rise before the time; the transient kind a kind), (the hold arm's
-        wait, the drop's calls, the scan to the horizon)) = ((('sky', 'sky',
+        AssertionError: ((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed;
+        not yet at 60 s; the transient kind a kind), (the hold arm's wait,
+        the drop's calls, the scan to the horizon)) = ((('sky', 'sky',
         'panel'), None, True), (True, 2, True)); 5.1 says so
         assert ((('sky', 'sk...rue, 2, True)) == ((('sky', 'pa...rue, 2, True))
           At index 0 diff: (('sky', 'sky', 'panel'), None, True) != (('sky',
@@ -25819,9 +25874,9 @@ def test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them():
     (``wait_s=CENTRING_HOLD_RETRY_S,`` taken out of the ``centring_hold``
     arm):
 
-        AssertionError: ((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed; half
-        the rise before the time; the transient kind a kind), (the hold arm's
-        wait, the drop's calls, the scan to the horizon)) = ((('sky', 'panel',
+        AssertionError: ((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed;
+        not yet at 60 s; the transient kind a kind), (the hold arm's wait,
+        the drop's calls, the scan to the horizon)) = ((('sky', 'panel',
         'panel'), None, True), (False, 2, True)); 5.1 says so
         assert ((('sky', 'pa...lse, 2, True)) == ((('sky', 'pa...rue, 2, True))
           At index 1 diff: (False, 2, True) != (True, 2, True)
@@ -25831,36 +25886,49 @@ def test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them():
     min(now + i * _PEAK_STEP_S, horizon)`` made ``t = now + i *
     _PEAK_STEP_S``):
 
-        AssertionError: ((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed; half
-        the rise before the time; the transient kind a kind), (the hold arm's
-        wait, the drop's calls, the scan to the horizon)) = ((('sky', 'panel',
+        AssertionError: ((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed;
+        not yet at 60 s; the transient kind a kind), (the hold arm's wait,
+        the drop's calls, the scan to the horizon)) = ((('sky', 'panel',
         'panel'), None, True), (True, 2, False)); 5.1 says so
         assert ((('sky', 'pa...ue, 2, False)) == ((('sky', 'pa...rue, 2, True))
           At index 1 diff: (True, 2, False) != (True, 2, True)
           Use -v to get more diff
 
     SINCE THE H4-DOC VERIFIER 5.1 cites what is filed against ruling 2 as
-    written, where it says what each is about: the hold that has no bound
-    but the window logs its one line at info, which the alert dispatcher
-    does not forward (#563), and the rise branch can end a set-aside before
-    its time only within `_rise_latitude_bound` of the equator (about 28
-    degrees at 10 degrees in 45 minutes), so an early expiry tells a viewer
-    that much (#564). Both issues were filed before H4-DOC ran. In the
-    verifier's private copy (the session scratchpad's ``H4-DOC-verify-mut``,
-    each file from a byte backup, sha256 checked after), on the spec as
-    H4-DOC left it:
+    written: the hold that has no bound but the window logs its one line at
+    info, which the alert dispatcher does not forward (#563). Filed before
+    H4-DOC ran. In the verifier's private copy (the session scratchpad's
+    ``H4-DOC-verify-mut``, each file from a byte backup, sha256 checked
+    after), on the spec as H4-DOC left it:
 
         AssertionError: 5.1 must say: 'waits all night, its line at info,
         which no alert sink is sent (#563;'
         assert False
 
-    RED under the spec mutant "the bound at 27" (its "within about 28
-    degrees" made "27", the solar rate's answer and the issue's):
+    AMENDED 2026-09-30 BY BACKLOG WP-07 (#564): the ruling as first built
+    also freed a panel early once its centre had risen `SET_ASIDE_RISE_DEG`
+    since, a site-derived altitude comparison, which even floored still
+    told a viewer whenever it fired that the site sat within about
+    `_rise_latitude_bound` (28) degrees of the equator; this replaces the
+    RED case that used to be shown here (the spec mutant "the bound at 27")
+    with the two below, proving the branch is gone rather than narrowed.
 
-        AssertionError: 5.1 must say: 'but a rise of 10 degrees inside 45
-        minutes is possible only within about 28 degrees of the equator, so
-        an expiry before the time tells a viewer that much, #564)'
+    RED under the spec mutant "the amendment dropped" (the "AMENDED
+    2026-09-30 by backlog WP-07" sentence and its "#564, closed by this
+    amendment" taken out of section 5.1, restoring only the words):
+
+        AssertionError: 5.1 must say: 'time only (`set_aside_expiry`;
+        amended 2026-09-30 by backlog WP-07: expiry is time-only, 45 min,
+        #564'
         assert False
+
+    RED under the group_rules.py mutant "rise restored" (the rise branch
+    and its altitude keyword arguments pasted back into
+    ``set_aside_expiry``):
+
+        AssertionError: set_aside_expiry(alt_at_set=..., alt_now=...) must
+        be refused: the branch is gone, not narrowed
+        Failed: DID NOT RAISE <class 'TypeError'>
 
     RED under the engine.py mutant "the hold alerts" (the arm's
     ``bus.log("info", ...)`` made ``bus.log("warning", ...)``):
@@ -25885,10 +25953,10 @@ def test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them():
                 f"`centring_hold` outcome, decided before the guide-start "
                 f"rule, holds the group `CENTRING_HOLD_RETRY_S` ({hold:g} s)",
                 "A miss beside a panel that centred is that panel's, and "
-                "counts.", f"`SET_ASIDE_EXPIRY_S` ({expiry:g} s) after it or "
-                f"once the panel's centre has risen `SET_ASIDE_RISE_DEG` "
-                f"({rise:g} degrees) since, whichever comes first",
-                "(`set_aside_expiry`;", "(`_expire_set_aside`)",
+                "counts.", f"`SET_ASIDE_EXPIRY_S` ({expiry:g} s) after it, "
+                f"time only (`set_aside_expiry`; amended 2026-09-30 by "
+                f"backlog WP-07: expiry is time-only, 45 min, #564",
+                "so the branch is dropped outright)", "(`_expire_set_aside`)",
                 "The report marks a panel skipped only when it is set aside "
                 "for the night.", "kind `solve_transient`, which strikes "
                 "nothing and which the centring rule leaves out (5.6 step 4)",
@@ -25904,9 +25972,7 @@ def test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them():
     verdict = group_rules.centring_pass_verdict
     t0 = 1_700_000_000.0
     behaviour = ((verdict(2, 2), verdict(1, 1), verdict(3, 2)),
-                 group_rules.set_aside_expiry(now=t0 + 60, set_at=t0,
-                                              alt_at_set=20.0,
-                                              alt_now=20.0 + rise / 2),
+                 group_rules.set_aside_expiry(now=t0 + 60, set_at=t0),
                  group_rules.SOLVE_TRANSIENT in group_rules.DEFERRAL_KINDS)
     engine_src = inspect.getsource(engine_mod)
     arm = engine_src[engine_src.index(
@@ -25919,21 +25985,23 @@ def test_5_1_says_the_centring_hold_and_the_scan_as_h4_built_them():
             and "math.ceil((horizon - now) / _PEAK_STEP_S)" in scan)
     got = (behaviour, code)
     assert got == ((("sky", "panel", "panel"), None, True), (True, 2, True)), (
-        f"((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed; half the rise "
-        f"before the time; the transient kind a kind), (the hold arm's wait, "
+        f"((the verdict of 2 of 2, 1 of 1 and 2 of 3 missed; not yet at "
+        f"60 s; the transient kind a kind), (the hold arm's wait, "
         f"the drop's calls, the scan to the horizon)) = {got}; 5.1 says so")
+    # AMENDED 2026-09-30 by backlog WP-07 (#564): the rise half is gone, not
+    # narrowed, so the old signature must be refused outright -- the proof
+    # that a viewer can no longer be told anything about the site by it, at
+    # any bound.
+    with pytest.raises(TypeError):
+        group_rules.set_aside_expiry(now=t0 + 60, set_at=t0,
+                                     alt_at_set=20.0, alt_now=20.0 + rise / 2)
     # What is filed against ruling 2 as written, where 5.1 says what it is
     # about: the hold's line at info, which the alert dispatcher does not
     # forward (it sends warning and error lines), so a rig fault holds all
-    # night unannounced (#563); and the rise branch's timing, which can end
-    # a set-aside early only near the equator (#564). Their own assertion,
-    # so the tuple above keeps the failures recorded for it.
-    bound = round(_rise_latitude_bound())
+    # night unannounced (#563). Its own assertion, so the tuple above keeps
+    # the failure recorded for it.
     _says(s51, ("waits all night, its line at info, which no alert sink is "
-                "sent (#563;", f"but a rise of {rise:g} degrees inside "
-                f"{expiry / 60:g} minutes is possible only within about "
-                f"{bound} degrees of the equator, so an expiry before the "
-                f"time tells a viewer that much, #564)"), "5.1")
+                "sent (#563;",), "5.1")
     logs = re.findall(r'bus\.log\("(\w+)"', arm)
     assert logs == ["info"], (
         f"the centring hold's arm logs at {logs}; 5.1 says its one line is "

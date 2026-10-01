@@ -9,22 +9,32 @@ hour, although the target transited three hours later.
 
 WHAT IT DOES NOW. A set-aside made by a streak of centring failures and
 nothing else is set aside FOR NOW: the panel stays in the rotation as a
-waiter, and is tried once more 45 minutes after it was set aside, or sooner
-once its centre has risen 10 degrees since (``group_rules.set_aside_expiry``,
-engine ``_expire_or_wait``). Tried again and struck out again, it is set
-aside for the rest of the night, and a same-night restart does not expire it
-a second time (the session marks the expired record, ``Session.
-note_set_aside_expired``). No site saved means no altitude: the time half
-alone. A floor or a reject set-aside never expires. A crash-resume applies
-the time half itself, needing no ephemeris (``resume_arm.
-standing_set_asides``).
+waiter, and is tried once more 45 minutes after it was set aside, TIME ONLY
+(``group_rules.set_aside_expiry``, engine ``_expire_or_wait``). Tried again
+and struck out again, it is set aside for the rest of the night, and a
+same-night restart does not expire it a second time (the session marks the
+expired record, ``Session.note_set_aside_expired``). A floor or a reject
+set-aside never expires. A crash-resume applies the same time-only rule
+itself, needing no ephemeris (``resume_arm.standing_set_asides``).
+
+AMENDED BY BACKLOG WP-07 (#564, 2026-09-30). The ruling as first built also
+freed a panel early once its centre had risen 10 degrees since it was set
+aside, a SITE-DERIVED altitude comparison (#534's original text, and this
+file's own "the rise case" below, before this amendment); even narrowed by
+a floor under how soon it could fire (a prior #564 fix), an early "rise"
+answer still told a viewer the site sat within about 28 degrees of the
+equator. WP-07 dropped that branch outright: ``set_aside_expiry`` now takes
+no altitude at all, and every latitude behaves alike. The rise case this
+file once ran at 5 N (`test_a_panel_that_has_climbed_10_degrees_is_tried_
+before_45_minutes`) is replaced below by a case proving the site plays no
+part at that same low latitude.
 
 THE RUNS are the real `_run_scheduled` on the clocked simulator
 (tests/_group_harness.py): a 2x2 of 30 s frames, L and R three times each,
 2 h east of the meridian at the fixture site (40 N 74 W, nobody's rig), and
-2-2's centring scripted to fail. At that latitude nothing rises 10 degrees
-in 45 minutes, so the time half decides; the rise case moves the fixture to
-5 N, where a panel low in the east climbs 10 degrees in about 41 minutes.
+2-2's centring scripted to fail; the WP-07 replacement case moves the
+fixture to 5 N, where the pre-amendment rule would have freed the panel in
+about 41 minutes, well inside the 45.
 
 Every mutant was applied in a private copy of ``server/`` (scratchpad
 ``H4-ENG-A-r2-mut``), from a byte backup restored and sha256-checked after
@@ -39,7 +49,7 @@ import pytest
 
 import astrodeck.catalog as catalog_mod
 import astrodeck.sequence.engine as engine_mod
-from _group_harness import (GROUP_ID, GROUP_NAME, LAT, LON, T0, Night,
+from _group_harness import (GROUP_ID, GROUP_NAME, LON, T0, Night,
                             grid_plan, group_hub, group_store, panel)
 from astrodeck.catalog.coords import altaz
 from astrodeck.config import Site
@@ -176,10 +186,6 @@ async def test_a_struck_out_panel_is_tried_once_more_45_minutes_later(
     expiry = set_at + SET_ASIDE_EXPIRY_S
     assert tried == FIRST_THREE + [expiry, expiry + 60.0, expiry + 120.0], (
         f"2-2 was tried at {tried}")
-    p = next(t for t in grid_plan().targets if t.name == MISSES)
-    rise = (altaz(p.ra_hours, p.dec_deg, LAT, LON, T0 + tried[3])[0]
-            - altaz(p.ra_hours, p.dec_deg, LAT, LON, T0 + set_at)[0])
-    assert rise < SET_ASIDE_RISE_DEG, f"premise: 2-2 had not risen ({rise})"
 
     expired = [(night.rel(t), m) for t, _lvl, m in night.lines
                if "set-aside has expired" in m]
@@ -242,7 +248,7 @@ async def test_a_mosaic_waiting_only_on_an_expiry_parks_and_waits_once(
         details), details
 
 
-# ------------------------------------------------------------- the rise half
+# ------------------------- the rise half, dropped (backlog WP-07, #564)
 
 def _low_plan() -> SequencePlan:
     """The 2x2 moved to the celestial equator, low in the east at 5 N:
@@ -257,20 +263,26 @@ def _low_plan() -> SequencePlan:
                             geometry={"rows": 2, "cols": 2})])
 
 
-async def test_a_panel_that_has_climbed_10_degrees_is_tried_before_45_minutes(
+async def test_a_panel_low_at_5_n_is_still_held_to_the_45_minutes(
         group_hub, group_store, monkeypatch):
-    """At 5 N the struck-out panel climbs ``SET_ASIDE_RISE_DEG`` in about 41
-    minutes: it is tried at the first minute of the scheduler's scan at which
-    it has, before the 45 minutes are up, and the line that says so is
-    flagged ``site_derived``, since its moment is an altitude crossing the
-    site decides (6.9). It says why in words.
+    """AMENDED BY BACKLOG WP-07 (#564, 2026-09-30). This replaces
+    ``test_a_panel_that_has_climbed_10_degrees_is_tried_before_45_minutes``:
+    at 5 N the struck-out panel would have climbed ``SET_ASIDE_RISE_DEG`` in
+    about 41 minutes under H4 orchestrator ruling 2 as first built, freeing
+    it before the 45 minutes were up and, in doing so, telling a viewer the
+    site sat within about 28 degrees of the equator. It no longer does:
+    ``set_aside_expiry`` reads no altitude at all, so 2-2 is tried again only
+    at its full 45-minute expiry, the same instant a panel at any other
+    latitude would be, and no line about it is ever flagged ``site_derived``.
 
-    RED under mutant "rise ignored" (``_expire_or_wait`` computing no
-    altitude at the set-aside: ``alt_at = None``), observed:
+    RED under mutant "rise restored" (the rise branch and its altitude
+    reads pasted back into ``group_rules.set_aside_expiry`` and engine
+    ``_expire_or_wait``, the combined shape of H4 orchestrator ruling 2
+    before this amendment), observed:
 
-        AssertionError: 2-2 was tried again at 3240.0 s; it had risen 10
-        degrees by 3000.0 s
-        assert 3240.0 == 3000.0
+        AssertionError: 2-2 was tried again at 3240.0 s, before its 45
+        minutes were up (3240.0 s)
+        assert 3240.0 < 3240.0
     """
     lat = 5.0
     group_store.set_site(Site(name="Low fixture", latitude=lat, longitude=LON,
@@ -285,20 +297,21 @@ async def test_a_panel_that_has_climbed_10_degrees_is_tried_before_45_minutes(
         return (altaz(p.ra_hours, p.dec_deg, lat, LON, T0 + rel)[0]
                 - altaz(p.ra_hours, p.dec_deg, lat, LON, T0 + set_at)[0])
 
-    # The scan's minute at which it has risen, as the scheduler scans.
-    due = next(set_at + 60.0 * k for k in range(1, 46)
-               if risen(set_at + 60.0 * k) >= SET_ASIDE_RISE_DEG)
-    assert due < set_at + SET_ASIDE_EXPIRY_S, "premise: the rise comes first"
+    expiry = set_at + SET_ASIDE_EXPIRY_S
+    # Premise: at this latitude the pre-amendment rule would have freed 2-2
+    # early, inside the scheduler's 45-minute scan.
+    would_have_freed = next(set_at + 60.0 * k for k in range(1, 46)
+                            if risen(set_at + 60.0 * k) >= SET_ASIDE_RISE_DEG)
+    assert would_have_freed < expiry, (
+        "premise: the pre-amendment rule would have freed 2-2 early here")
     tried = _tried(night)
     assert tried[:3] == FIRST_THREE
-    assert tried[3] == due, (f"2-2 was tried again at {tried[3]} s; it had "
-                             f"risen 10 degrees by {due} s")
-    flagged = [(night.rel(t), m) for t, _l, m in night.flagged
-               if "set-aside has expired" in m]
-    assert flagged == [(due, "M31: 2-2's set-aside has expired (it has climbed "
-                             "well clear of where it failed); it is tried once "
-                             "more tonight, and set aside for the rest of the "
-                             "night if it fails as often again")], flagged
+    assert tried[3] >= expiry, (
+        f"2-2 was tried again at {tried[3]} s, before its 45 minutes were "
+        f"up ({expiry} s)")
+    assert tried[3] == expiry
+    assert not [m for _t, _l, m in night.flagged if "set-aside" in m], (
+        "no set-aside line is site-derived any more, at any latitude")
     _assert_in_words(night)
 
 

@@ -168,10 +168,14 @@ class TestCompile:
         assert plan["schedule"] == {"start_mode": "now"}
 
     def test_a_dusk_node_becomes_a_schedule(self):
+        """``twilight_deg`` is -18 (backlog WP-09, #191): with no "start"
+        param given, ``with_defaults()`` fills "Astro dusk", which
+        ``_dusk_schedule`` now compiles to its own Sun altitude."""
         g = FlowGraph(nodes=[_n("d", "dusk", offset=-30, stop="Dawn", minAlt=30)])
         assert compile_plan(g, "n")["schedule"] == {
             "start_mode": "dusk", "start_offset_min": -30,
-            "stop_mode": "dawn", "min_altitude_deg": 30}
+            "stop_mode": "dawn", "min_altitude_deg": 30,
+            "twilight_deg": -18.0}
 
     def test_stop_none_is_honoured(self):
         g = FlowGraph(nodes=[_n("d", "dusk", stop="None")])
@@ -443,6 +447,23 @@ class TestTheExamplesCompile:
               Omitting 5 identical items, use -vv to show
               Differing items:
               {'mosaic': {}} != {'mosaic': None}
+
+        BOUNDED THE SAME WAY, AGAIN, FOR BACKLOG WP-09's ``twilight_deg``
+        (#191, 2026-09-30): every Example with a DUSK WINDOW leaves its
+        Start unset, which ``with_defaults()`` reads as "Astro dusk", so
+        ``_dusk_schedule`` now writes ``schedule["twilight_deg"] = -18.0`` -
+        a key the fixture predates. Popped off and checked here, not folded
+        into the fixture: this file's own S3 keys were bounded rather than
+        regenerated for the same reason, and a fixture that could be
+        regenerated to match whatever the compile currently does would stop
+        being a control.
+
+        Mutant "the angle not bounded" (this pop deleted, the fixture left
+        alone), observed for the same six (every Example but example-eaa,
+        which has no DUSK node):
+            AssertionError: example-campaign changed its compile beyond the
+            S3 keys
+            assert '{"auto...ge": 30}}' == '{"auto...ge": 30}}'
         """
         ex = next((e for e in examples() if e.id == ex_id), None)
         assert ex is not None, f"{ex_id} is no longer an Example"
@@ -456,6 +477,20 @@ class TestTheExamplesCompile:
             taken = {k: entry.pop(k) for k in _S3_KEYS[node.type]
                      if k in entry}
             assert taken == _s3_keys(node), entry["node_id"]
+        sched = compiled.get("schedule") or {}
+        dusk_nodes = [n for n in ex.graph.with_defaults().nodes
+                     if n.type == "dusk"]
+        if "twilight_deg" in sched:
+            angle = sched.pop("twilight_deg")
+            assert dusk_nodes and dusk_nodes[0].params.get("start") not in (
+                "Clock time",), (ex_id, dusk_nodes)
+            assert angle == -18.0, (
+                f"{ex_id}'s DUSK WINDOW defaults to Astro dusk (-18); "
+                f"got {angle}")
+        else:
+            assert not dusk_nodes or dusk_nodes[0].params.get(
+                "start") == "Clock time", (
+                f"{ex_id} has a sun-based DUSK WINDOW with no twilight_deg")
         got = json.dumps(compiled, ensure_ascii=False)
         want = json.dumps(LEGACY_EXAMPLES[ex_id], ensure_ascii=False)
         assert got == want, f"{ex_id} changed its compile beyond the S3 keys"

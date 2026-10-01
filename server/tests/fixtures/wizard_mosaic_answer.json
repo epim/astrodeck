@@ -32,7 +32,9 @@
      "params": {
       "start": "Astro dusk",
       "offset": -30,
+      "startClock": "",
       "stop": "Dawn",
+      "stopClock": "",
       "minAlt": 30,
       "repeat": "Single night"
      }

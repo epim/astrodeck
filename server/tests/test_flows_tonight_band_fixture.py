@@ -316,6 +316,12 @@ def test_the_fixture_is_resolve_tonights_answer():
     RED under mutant "rows x cols" of the brief (the S3 spelling "M16 is a
     2x3 mosaic" restored), observed on the tolerant comparison: the same
     assertion, ``response.brief`` differing.
+
+    RE-RECORDED IN BACKLOG WP-09 (#191, 2026-09-30,
+    ``ASTRODECK_REWRITE_TONIGHT_FIXTURE=1``): the flow's DUSK WINDOW picks
+    "Astro dusk" (the unset-Start default), which now resolves its own Sun
+    altitude (-18) instead of the rig's -12, so the night is shorter and
+    every time-bearing field moves with it.
     """
     answer = _answer()
     if REWRITE:

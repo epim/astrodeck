@@ -12,15 +12,24 @@ text as ``start_time``/``stop_time``. A Stop of "None" (or anything this
 build does not recognise) still compiles to ``stop_mode: "none"``, but now
 with a compile warning naming the consequence, in ``compiled["notes"]``.
 
-A KNOWN RESIDUAL, DELIBERATELY NOT CLOSED HERE (documented, not silently
-dropped - the project's own convention for a gap a WP cannot reach, e.g.
-nodeDefs.test.ts's "KNOWN PROTOTYPE BUG, reproduced on purpose"). The three
-sun-based Start choices (Astro/Nautical/Civil dusk) still all compile to the
-one rig-wide ``start_mode: "dusk"``: telling them apart needs a per-target
-twilight angle on ``Schedule`` (sequence/models.py), a file outside this
-work package's list. ``test_sun_based_starts_still_share_one_dusk_mode``
-below is that control, pinned on purpose so the day someone adds the field
-and starts distinguishing them, this test is the one that says so.
+THE RESIDUAL IS NOW CLOSED (backlog WP-09, #191, 2026-09-30). The three
+sun-based Start choices (Astro/Nautical/Civil dusk) used to all compile to
+the one rig-wide ``start_mode: "dusk"``, indistinguishable from each other,
+because telling them apart needed a per-target twilight angle on
+``Schedule`` (sequence/models.py) that did not exist yet.
+``test_sun_based_starts_still_share_one_dusk_mode`` was this file's own
+control, pinned on purpose so the day someone added the field and started
+distinguishing them, that test would be the one to rewrite. That day is
+this one: ``Schedule.twilight_deg`` now carries a PER-TARGET Sun altitude
+(None means the rig's own ``safety.twilight_deg``, so a plan or a saved
+flow from before this field existed is unaffected), ``_dusk_schedule``
+compiles it from the Start choice (astro -18, nautical -12, civil -6), and
+``schedule.resolve_window`` resolves this target's dusk AND dawn boundaries
+at its own angle in place of the rig's. The control below is replaced by
+``test_the_three_sun_based_starts_now_resolve_three_different_angles``,
+which proves the opposite of what it did: that the three choices now
+compile three DIFFERENT ``twilight_deg`` values and, through
+``schedule.resolve_window``, three different dusk instants.
 
 Mutants were run from a byte backup inside this worktree (never in the
 shared tree), and each failure is quoted verbatim.
@@ -59,19 +68,47 @@ def test_clock_time_start_reaches_start_mode_and_a_start_time():
     assert sched["start_time"] == "20:15"
 
 
-def test_sun_based_starts_still_share_one_dusk_mode():
-    """KNOWN RESIDUAL (see module docstring): Astro, Nautical and Civil dusk
-    all compile identically, because ``Schedule`` has no per-target
-    twilight angle yet. This is the issue's own "test that shows it red"
-    for the FULL fix; WP-09 closes the Clock-time and Stop halves only, not
-    this one, since the field it needs lives in a file this WP does not
-    own (sequence/models.py). Pinned so the day that field exists, this
-    test - not a silent drift - is what asks to be rewritten."""
+def test_the_three_sun_based_starts_now_resolve_three_different_angles():
+    """Backlog WP-09 (#191, 2026-09-30) replaces
+    ``test_sun_based_starts_still_share_one_dusk_mode``: Astro, Nautical and
+    Civil dusk now compile three different ``twilight_deg`` values, the
+    standard astronomical figures, and each resolves its OWN dusk instant
+    through ``schedule.resolve_window`` (later at night for astro than for
+    civil, since the sun must sink further), not the one rig-wide instant
+    every choice silently shared before.
+
+    RED under mutant "one angle for all three" (``_DUSK_START_TWILIGHT_DEG``
+    made a single float instead of a per-choice table), observed:
+
+        AssertionError: assert -12.0 == -18.0
+    """
     astro = _schedule(_dusk_graph(start="Astro dusk"))
     nautical = _schedule(_dusk_graph(start="Nautical dusk"))
     civil = _schedule(_dusk_graph(start="Civil dusk"))
-    assert astro == nautical == civil
-    assert astro["start_mode"] == "dusk"
+    assert astro["start_mode"] == nautical["start_mode"] == civil[
+        "start_mode"] == "dusk"
+    assert (astro["twilight_deg"], nautical["twilight_deg"],
+            civil["twilight_deg"]) == (-18.0, -12.0, -6.0)
+
+    from astrodeck.sequence.models import Schedule
+    from astrodeck.sequence.schedule import resolve_window
+    site = {"latitude": 40.0, "longitude": -74.0, "is_default": False}
+    t_now = 1_800_000_000.0
+    starts = {}
+    for choice, sched in (("astro", astro), ("nautical", nautical),
+                          ("civil", civil)):
+        target_sched = Schedule(
+            start_mode=sched["start_mode"],
+            start_offset_min=sched["start_offset_min"],
+            twilight_deg=sched["twilight_deg"],
+            stop_mode=sched["stop_mode"],
+            min_altitude_deg=sched["min_altitude_deg"])
+        start_ts, _stop_ts = resolve_window(target_sched, site, -12.0, t_now)
+        starts[choice] = start_ts
+    # Astro dusk (sun -18) falls after nautical (-12), which falls after
+    # civil (-6): the sun keeps sinking, so each later choice's instant is
+    # later in the evening.
+    assert starts["civil"] < starts["nautical"] < starts["astro"]
 
 
 def test_a_start_with_no_clock_time_set_compiles_to_blank_text():
@@ -134,22 +171,35 @@ def test_dawn_and_clock_time_stops_get_no_warning():
 
 def test_a_flow_using_neither_clock_choice_compiles_the_old_four_keys_in_order():
     """test_flows_compile.py's byte-identical guard over the Examples
-    depends on this: a DUSK WINDOW that never picks "Clock time" must
-    compile to the exact dict shape it always did, in the same key order,
-    with no ``start_time``/``stop_time`` key at all (absent, not blank -
-    the same reading ``mosaic`` gives a 1x1 TARGET).
+    depends on the first half of this: a DUSK WINDOW that never picks
+    "Clock time" keeps the same four keys in the same order, with no
+    ``start_time``/``stop_time`` key at all (absent, not blank - the same
+    reading ``mosaic`` gives a 1x1 TARGET).
 
     Mutant "start_time always written" (``_dusk_schedule`` sets
     ``start_time`` unconditionally): RED, observed:
         assert ['start_mode', 'start_offset_min', 'start_time', 'stop_mode',
         'min_altitude_deg'] == ['start_mode', 'start_offset_min',
         'stop_mode', 'min_altitude_deg']
+
+    A SUN-BASED START NO LONGER STOPS AT FOUR (backlog WP-09, #191,
+    2026-09-30): Astro dusk's own ``twilight_deg`` is a fifth key, appended
+    after the four, so the "old four keys" promise now holds only for a
+    Start this build does not resolve to an angle at all (a hand-edited
+    file with an unrecognised value) - the CONTROL below.
     """
     sched = _schedule(_dusk_graph(start="Astro dusk", stop="Dawn"))
     assert list(sched.keys()) == [
-        "start_mode", "start_offset_min", "stop_mode", "min_altitude_deg"]
+        "start_mode", "start_offset_min", "stop_mode", "min_altitude_deg",
+        "twilight_deg"]
     assert "start_time" not in sched
     assert "stop_time" not in sched
+
+    # CONTROL: a Start this build does not recognise (a hand-edited file)
+    # still compiles the bare four keys, no `twilight_deg` guessed for it.
+    unknown = _schedule(_dusk_graph(start="Some future choice", stop="Dawn"))
+    assert list(unknown.keys()) == [
+        "start_mode", "start_offset_min", "stop_mode", "min_altitude_deg"]
 
 
 # ------------------------------------------------------------- no dusk node

@@ -605,7 +605,18 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
     t_now = time.time() if now is None else float(now)
     graph = plan if isinstance(plan, FlowGraph) else None
     plan_dict: dict = compile_plan(graph, name) if graph is not None else dict(plan or {})
-    tw = _twilight(twilight_deg)
+    rig_tw = _twilight(twilight_deg)
+    sched = plan_dict.get("schedule") or {}
+    # THE WINDOW IT RESOLVES (backlog WP-09, #191): a DUSK WINDOW's
+    # Astro/Nautical/Civil dusk Start compiles its own ``twilight_deg``
+    # (`compile._dusk_schedule`), and this preview reads it here, before the
+    # sun-crossing search, so a card that chose astro dusk shows astro
+    # dusk's own instant and says "sun -18°" rather than the rig's one
+    # setting repeated under three different labels. Absent (no schedule, a
+    # "Clock time" Start, or a flow this build does not recognise), ``tw``
+    # is the rig's angle, unchanged.
+    target_tw = sched.get("twilight_deg")
+    tw = rig_tw if target_tw is None else float(target_tw)
     resolver = resolve_name or (lambda n: catalog_coords(n, t_now))
 
     sd, why = _site_dict(site)
@@ -621,7 +632,6 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
             t_now, tw)
     dusk, dawn = pair
 
-    sched = plan_dict.get("schedule") or {}
     automation = plan_dict.get("automation") or {}
     offset_min = _num(sched.get("start_offset_min"))
     start_mode = str(sched.get("start_mode") or "now")

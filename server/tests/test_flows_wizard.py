@@ -551,16 +551,31 @@ _S3_POOL_KEYS = {"counts"}
 #: and the wires we0.. in order, and pull every lane card after it one lane
 #: pitch (228 px) left. Each graph is ``_s3_normal``'d and dumped with sorted
 #: keys, one per line.
+#:
+#: RE-PINNED IN BACKLOG WP-09 (#191, 2026-09-30), deliberately, for one
+#: change and nothing else: every generated DUSK WINDOW node now carries
+#: ``startClock``/``stopClock`` params (NODE_DEFS's Clock-time fields,
+#: `flows.nodes`), which ``with_defaults()``-free ``generate()`` writes onto
+#: every dusk node it creates, so they appear in the dump here for the
+#: first time. Checked: regenerated from the SAME transform against the
+#: fixed code, with no other change to the generator or ``_s3_normal``.
 THREE_ANSWER_GRAPHS_SHA256 = \
-    "36890d1771aacef29a42885728ebb96eb04f0980537082c32cb9e0a4d7f6a2df"
+    "a1c99c1bf8390127472af2f53480429c6d115049e7b2daec062c6275797cb68b"
 
 #: The pre-S3 generator's PLAN for every three-answer body with target "M31"
 #: (THREE_KINDS x all 64 chip subsets), ids blanked, hashed the same way.
 #: The TARGET's coordinates are held at the node's old M31 default, which is
 #: what the pre-S3 generator wrote for a name, so the only thing S3 may move
 #: is the count mode.
+#:
+#: RE-PINNED IN BACKLOG WP-09 (#191, 2026-09-30), deliberately, for one
+#: change and nothing else: every plan's targets now carry
+#: ``schedule.twilight_deg`` (-18, the DUSK WINDOW's default "Astro dusk"
+#: resolving to its own Sun altitude, `compile._dusk_schedule`), a field
+#: ``Schedule`` did not have when this hash was captured. Checked:
+#: regenerated with the SAME ``count_mode`` reset and no other change.
 WIZARD_PLANS_SHA256 = \
-    "211e6eac49ebf45c013f3665685ab7ad2f5fc5ee3fe5a2d211b9cde0ec3ee8e0"
+    "122ff5c79e4feacf261e5621aae18b71fe31d64047a6c34a92bd92ecb73a79ac"
 
 #: The pre-S3 TARGET's missing-key coordinates: M31's, verbatim.
 _OLD_M31 = ("00h 42m 44s", "+41° 16′ 09″")

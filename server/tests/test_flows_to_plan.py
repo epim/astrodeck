@@ -90,6 +90,37 @@ class TestTheSilentLosses:
         assert sched.stop_mode == "dawn"
         assert sched.min_altitude_deg == 30
 
+    def test_clock_time_start_and_stop_reach_the_target_s_schedule(self):
+        """WP-09 follow-up (#191, backlog W1). ``to_plan.SCHEDULE_KEYS``
+        left ``start_time``/``stop_time`` out of the tuple it filters the
+        compiled ``schedule`` dict through, so even after
+        ``compile._dusk_schedule`` learned to emit them for a Clock-time
+        Start or Stop, they were dropped right back out before ever
+        reaching the running ``Target.schedule`` -- a card that read "Clock
+        time" compiled a `start_mode`/`stop_mode` of "time" with no time on
+        the plan the engine actually runs.
+
+        RED under mutant "the two keys dropped again" (``SCHEDULE_KEYS``
+        reverted to its four original names), observed:
+
+            AssertionError: 'start_time'
+        """
+        g = FlowGraph(
+            nodes=[_n("d", "dusk", start="Clock time", startClock="20:15",
+                      offset=-30, stop="Clock time", stopClock="05:30",
+                      minAlt=30),
+                   _n("t", "target", x=100, name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09"),
+                   _n("c", "capture", x=200, filter="L", exposure=120,
+                      gain=100, bin="1", count=10, goal=0)],
+            edges=[_e("d", "window", "t", "arm"), _e("t", "target", "c", "run")])
+        plan, _ = to_sequence_plan(compile_plan(g, "n"))
+        sched = plan.targets[0].schedule
+        assert sched.start_mode == "time"
+        assert sched.start_time == "20:15"
+        assert sched.stop_mode == "time"
+        assert sched.stop_time == "05:30"
+
     def test_run_now_stays_run_now(self):
         g = _one_target()
         g = FlowGraph(nodes=[n for n in g.nodes if n.type != "dusk"],
@@ -596,23 +627,32 @@ class TestPlansWithNoMosaicMoveOnlyByTheirCentring:
       captured, exactly as the centring is reset, and the deliberate half
       below asserts "accepted" on every plan. Checked: with that reset, all
       seven hashes match the current code unchanged.
+
+    RE-PINNED AGAIN IN BACKLOG WP-09 (#191, 2026-09-30), deliberately, for
+    one change and nothing else: every Example's DUSK WINDOW picks "Astro
+    dusk" (the unset-Start default), which now compiles its own
+    ``Schedule.twilight_deg`` (-18) onto every TARGET (`compile.
+    _dusk_schedule`, `to_plan.SCHEDULE_KEYS`) — a field the pre-fix dump did
+    not have at all, so all seven hashes move together. Checked: regenerated
+    from the SAME ``_dump`` below, against the fixed code, with no other
+    change to the Examples or the dump's own resets.
     """
 
     BEFORE = {
         "example-campaign":
-            "45cc34a767b0ff4537100c29c9a22751f5b2878b4c0565f4b70b8acb7fc87d85",
+            "c471f1e45b000d9fb5f749c6a117eeca290abd6d68b7b4ff9158936dc0059c64",
         "example-m31":
-            "06c06c24b384ac54bd9dd4e9da07d12c4810d3845ef2f74ff81bfb8228a430f7",
+            "fe21b040ed860e8d8ac705dc6f9b870bfe186c51be3c591082731deac65e35ba",
         "example-m16":
-            "e23fd598cd21277bfee2825e9ead5a127e0833f51486649ab6d8f3d9988145d2",
+            "b52f3243aaeeb357edc186e0251d19e32410cec3aaa34fe0907f3582fd776b7a",
         "example-cycle":
-            "eb920f7ecd4bea782f2b5f54a671ca0411482f41a7d6a11878db779724852de2",
+            "04e71d1ec8a9b707104d77c5fe7f43edb6f520a5e205c5f374263e7076740fb2",
         "example-pool":
-            "fac3b67eb7d64ead60987baf6a63d774531cd408f5bbf33d47967ecef2a40edc",
+            "80431c4d9bb24f79e0afba13cccca5d9cb3b0719f1cf671b6d2189cc837a77b2",
         "example-nb":
-            "3a597e87ce34504b11824091118a1edeaeff08f43d4f687bb693a73e0f9caa16",
+            "7fdfe1d9a411e80e1724bb7e3f9581a4e3c0e5bffffe697fd808bad5b540a947",
         "example-eaa":
-            "10108104d67ada4a70421155c0104729aae2ce718801b94ae06b05fd8834aa13",
+            "fb6f5ec4ef967c6418d36f50b388d5d7e7657045c26e24b1afb04fbd47cdf5bf",
     }
 
     @staticmethod

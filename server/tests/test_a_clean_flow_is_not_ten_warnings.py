@@ -409,13 +409,20 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
 #:       Omitting 27 identical items, use -vv to show
 #:       Differing items:
 #:       {'count_mode': 'accepted'} != {'count_mode': 'attempts'}
+#: RE-PINNED IN BACKLOG WP-09 (#191, 2026-09-30): the quick flow's DUSK
+#: WINDOW compiles its own ``schedule.twilight_deg`` (-18, "Astro dusk"'s
+#: own Sun altitude), a field ``Schedule`` did not have when every hash
+#: below was last captured, so all five move together - the field is
+#: untouched by every ``_undo_*``/key-removal step below, so it rides
+#: through the whole chain down to ``GOLDEN_SHA256_BEFORE_S1`` unchanged.
+#: Regenerated from the SAME code path, with no other change.
 GOLDEN_SHA256 = \
-    "d5da5240f8c7d539700cc1502b5d840ebb73974f7f2c97857519aafd8698dea4"
+    "d05f57fe2b06b0bc58757ba3a1ee6b58ea3db0a4e717d5dbe2c98e4ec667797d"
 
 #: The hash as the S3 compile task left it. With the count mode set back to
 #: "attempts", the compiled plan must hash to exactly this.
 GOLDEN_SHA256_BEFORE_S3W = \
-    "06994be412fec6bc256c14b3a309e0fcfddc4628c1a4c89b42b2bfe5acf28446"
+    "77f3850ac8d11053a2564771cc0d0efcec5407b2c83e8783b0e5f2d0fc89011b"
 
 #: The one value the S3 wizard task moved on the plan, and what it was.
 S3W_COUNT = {"count_mode": "accepted"}
@@ -424,17 +431,17 @@ S3W_COUNT_BEFORE = {"count_mode": "attempts"}
 #: The hash as S2 left it. With the S3 centring set back to null, the
 #: compiled plan must hash to exactly this.
 GOLDEN_SHA256_BEFORE_S3 = \
-    "0a20172d4b9e422fab169d5113fb25ec00597bb33e4198e37e54de7ec32ff4fc"
+    "d5181f444e47cb86959c182ca04f657cf6be5d06cd263fa6a243450375e6cff6"
 
 #: The hash as S1 left it. With the four S2 keys taken off, the compiled plan
 #: must hash to exactly this.
 GOLDEN_SHA256_BEFORE_S2 = \
-    "d9ce9109734a3ec4b8340e3cdd255b9325fee6d2209208b029bc1bb76100b0c3"
+    "f000dc81be0067a3a8c9d31b652d4ca6a4595b3220078c6111387017064a6734"
 
 #: The hash as #150 left it. With the S2 keys and the three S1 keys taken off,
 #: the compiled plan must hash to exactly this.
 GOLDEN_SHA256_BEFORE_S1 = \
-    "4bb0e667cc784f7c4f0c6273c5a79e163314b93c0b0f62c48f220103899d5076"
+    "1143f98c1843b8bdca315ce60edc460d0de9583f9c4a6c8e0928f5ca01a41460"
 
 #: The S1 keys and the defaults the fixture carries them at.
 S1_KEYS = {"center_tolerance_arcmin": None, "center_attempts": None,

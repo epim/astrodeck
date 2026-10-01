@@ -57,21 +57,28 @@ MOSAIC_ID = "example-m31-mosaic"
 #: copy of server/ holding the pre-S3 examples.py, against the compile and
 #: to_plan the S3 tree has. The target and step ids are in it, so a changed
 #: id (which would orphan a ledger) is a changed hash.
+#:
+#: RE-PINNED IN BACKLOG WP-09 (#191, 2026-09-30): every Example's DUSK
+#: WINDOW picks "Astro dusk" (the unset-Start default), which now compiles
+#: its own ``schedule.twilight_deg`` (-18) onto every TARGET
+#: (``compile._dusk_schedule``), a field no Example's plan had when these
+#: hashes were last captured, so all seven move together. Regenerated from
+#: the same ``_plan_digest`` against the fixed code, with no other change.
 HEAD_PLAN_SHA256 = {
     "example-campaign":
-        "5a4aa5a2737a51edaea84230fd26dde6069dc452eb47b8950b37e5b67b988760",
+        "3bc040abec506830760d47d0bfb97bd42fb0cfa8b29d3b3cbda69fa0f22dcd2e",
     "example-m31":
-        "f41f9f28fc17bb1f1a5451db461343712f9a3d86b71cb053370b74670d123638",
+        "75b4a78ab5b1f08e9c2d4c9b08a151e585f908985ba08cebf2755902f4b82caf",
     "example-m16":
-        "6dd6f3fab6cb872ea8b1e9e21853ee963315e32c27ddd697aa10a036dc097a2a",
+        "7d42e252dda7627eab10e6ffc272cf2e10a7e275f41adf00f38e6ad18fa18e6e",
     "example-cycle":
-        "65c37f6100c125639ad8572335e3a3036cb843c804e136be30fb38f4071551c9",
+        "a5154a8ecf00924d66d3bafc550dc51c42334a0a1c5821ddd075e1252b34a442",
     "example-pool":
-        "ac9ffe40bce90cb5fd70a001aa59f1879bfb73557f95c6f0203da4966c368efd",
+        "351e2f59b35bb89e918aac6b4d427d9cfcb0cd286e55dafed849f58b36ae3f1b",
     "example-nb":
-        "344a10d6652fd34bef9ee4cd227450231f2175914a83eae296e54d7d0d84b216",
+        "9c6be3da7f0f187b06e13b82bb11ed64ffc2832fe93ddad020004a4494442784",
     "example-eaa":
-        "241219b4b4276318d8aaddddaf9b4351072d671d263ab2cc09e8febbb0072516",
+        "84382925b6c39a038e633a2cb9e09077a8bd2e308349db89dee555ac03baeef0",
 }
 
 

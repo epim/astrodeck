@@ -141,7 +141,8 @@
           "start_time": null,
           "stop_mode": "dawn",
           "stop_offset_min": 0,
-          "stop_time": null
+          "stop_time": null,
+          "twilight_deg": -18.0
         },
         "steps": [
           {
@@ -189,7 +190,8 @@
           "start_time": null,
           "stop_mode": "dawn",
           "stop_offset_min": 0,
-          "stop_time": null
+          "stop_time": null,
+          "twilight_deg": -18.0
         },
         "steps": [
           {
@@ -237,7 +239,8 @@
           "start_time": null,
           "stop_mode": "dawn",
           "stop_offset_min": 0,
-          "stop_time": null
+          "stop_time": null,
+          "twilight_deg": -18.0
         },
         "steps": [
           {
@@ -285,7 +288,8 @@
           "start_time": null,
           "stop_mode": "dawn",
           "stop_offset_min": 0,
-          "stop_time": null
+          "stop_time": null,
+          "twilight_deg": -18.0
         },
         "steps": [
           {

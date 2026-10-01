@@ -1703,30 +1703,59 @@ async def test_a_start_told_what_the_mount_is_tracking_watches_it(
 # ------------------------------------------------------------- no saved site
 
 async def test_with_no_site_the_flip_check_does_nothing_and_the_clock_still_runs(
-        sim_hub, temp_store, monkeypatch, bus_lines):
+        sim_hub, temp_store, monkeypatch):
     """No saved site: the flip point is hour angle, and hour angle at the 0,0
     default is the Gulf of Guinea's. Alpha is placed to reach ITS 0,0 flip
     point 75 s into the wait; the check must not act on that, and the idle
     clock must still stop tracking at WAIT_TEARDOWN_S.
 
+    RE-SEEDED (backlog WP-09 collateral, #191, 2026-09-30), asking
+    `_idle_hold_reason` directly instead of running a whole simulated night
+    through `_flip_run`'s Bravo. Bravo used to be `_constraint_waiter`, an
+    hour-angle wait that only held for two hours because `constraint_gate`
+    judged it at the 0,0 placeholder (#540) - the SAME bug this test's
+    premise names for Alpha's flip point, now closed everywhere at once.
+    With it closed, no schedule left with no site saved can produce a
+    "waiting, no fixed clock" state any more: a constraint or an altitude
+    gate now answers "ready, no site" outright (honest, but it rode the
+    scheduler's unwatched 5 s re-eval branch before, which is what let this
+    test observe the per-tick idle clock in the first place), and the one
+    kind of wait that still blocks a target with no site, a Clock-time
+    start, resolves to a REAL instant the scheduler recognises as a long
+    wait and parks for at once (`_idle_park_hold`, closing the idle latch
+    before a single per-tick look happens) - so a whole simulated night can
+    no longer exercise checks 1 and 3 of `_idle_hold_reason` for THIS case
+    at all, by either target. Asked directly, as
+    `test_with_no_site_a_configured_floor_does_not_park_hold` already asks
+    check 2 the same way, both checks still answer exactly as the premise
+    says: check 3 (the flip) is silent at the flip instant, and check 1
+    (the idle clock) still fires once ``WAIT_TEARDOWN_S`` have passed.
+
     Mutant "flip check computes the 0,0 default" (`_idle_flip_due` reads
     ``hub.site`` latitude/longitude instead of `site_lat_lon`): RED -
-        AssertionError: with no site, park-held at 75.0 s on a flip point
-        computed for longitude 0
+        AssertionError: with no site, the flip check must say nothing at
+        the flip instant: "Alpha has reached its meridian flip point"
     """
     _unset_the_site(temp_store, monkeypatch)
-    run, a, b, _t_flip = _flip_run(sim_hub, monkeypatch, lon=0.0)
-    try:
-        await run.night(_plan(a, b, flip=True))
-        assert sim_hub.site["is_default"] is True, "premise: no saved site"
-        idle = run.exposure_end("Alpha")
-        offs = [t for t in run.tracking_off if t >= idle]
-        assert offs, "with no site the idle clock must still stop tracking"
-        assert TEARDOWN <= offs[0] - idle <= TEARDOWN + TICK, (
-            f"with no site, park-held at {offs[0] - idle:.1f} s on a flip "
-            f"point computed for longitude 0")
-    finally:
-        await run.close()
+    e = SequenceEngine(sim_hub)
+    e.plan = _plan(flip=True)
+    e._cfg = AppConfig(safety=SafetyConfig(enabled=False))
+    t0 = time.time()
+    lead_h = schedule.MERIDIAN_FLIP_LEAD_MIN / 60.0
+    t_flip = t0 + 75.0
+    a = _target("Alpha", (_lst_h(t_flip, 0.0) + lead_h) % 24.0, 20.0)
+    e._idle_since = t0
+
+    monkeypatch.setattr(engine_mod.time, "time", lambda: t_flip)
+    assert await e._idle_hold_reason(a) is None, (
+        'with no site, the flip check must say nothing at the flip '
+        'instant: ' + repr(await e._idle_hold_reason(a)))
+
+    monkeypatch.setattr(engine_mod.time, "time", lambda: t0 + TEARDOWN)
+    reason = await e._idle_hold_reason(a)
+    assert reason is not None and "flip" not in reason, (
+        f"with no site, the idle clock must still stop tracking at "
+        f"WAIT_TEARDOWN_S, and never attribute it to the flip: {reason!r}")
 
 
 @pytest.mark.parametrize("limit", [{"min_alt_deg": 20.0}, {"max_alt_deg": 60.0}],

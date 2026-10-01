@@ -304,21 +304,20 @@ def standing_set_asides(session: Session, night: str,
                         now: float | None) -> list[dict]:
     """``night``'s set-aside records that still stand at ``now``: those
     ``Session.set_aside_on`` reads, less every centring set-aside whose 45
-    minutes have passed (#534, H4 orchestrator ruling 2).
+    minutes have passed (#534, H4 orchestrator ruling 2, amended by backlog
+    WP-07 #564 2026-09-30: time only).
 
     A CRASH-RESUME IS NOT HELD ALL NIGHT BY A SET-ASIDE THAT HAS EXPIRED. A
     centring set-aside expires once a night, when ``SET_ASIDE_EXPIRY_S`` have
-    passed since it was made or when its panel has risen
-    ``SET_ASIDE_RISE_DEG`` since, whichever comes first
-    (``group_rules.set_aside_expiry``), and the run marks the record when it
-    sees it expire. A run that died first never marks it, and read as it
-    stands the record would keep the panel out of every re-centre, and a
-    session whose only work it was out of every start (``NOTHING_TONIGHT``),
-    for the rest of the night. The time half needs no ephemeris, so it is
-    applied here; the rise half is the run's to apply, and holding a little
-    longer than the run would is the side to err on for a slew nobody
-    watches. The run, started, reads the same record and expires it at its
-    first selection by the same rule, so the two agree.
+    passed since it was made (``group_rules.set_aside_expiry``), and the run
+    marks the record when it sees it expire. A run that died first never
+    marks it, and read as it stands the record would keep the panel out of
+    every re-centre, and a session whose only work it was out of every start
+    (``NOTHING_TONIGHT``), for the rest of the night. The rule needs no
+    ephemeris, so it is applied here exactly as the run applies it; the two
+    always agree, which a ruling that read a site-derived altitude could not
+    have promised. The run, started, reads the same record and expires it
+    at its first selection by the same rule.
 
     Only a whole panel's record of kind ``"centring"``, with the clock time
     it was made, and only while the panel has not expired tonight already

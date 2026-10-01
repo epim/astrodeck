@@ -63,7 +63,7 @@ from .instructions import (
 from .angle_check import angle_verdict, fresh_sky_angle
 from .group_rules import (CENTRING, CENTRING_HOLD_RETRY_S, REACH_RECHECK_S,
                           SET_ASIDE_EXPIRY_S, SOLAR_PER_SIDEREAL,
-                          SOLVE_TRANSIENT, TARGET_STOP, GroupRun,
+                          SOLVE_TRANSIENT, TARGET_STOP, ExpiryCause, GroupRun,
                           PanelDeferred, PanelMeridian, VisitBound,
                           angle_decision, forward_clear_ts,
                           meridian_eligibility, no_guider_defers,
@@ -4851,10 +4851,11 @@ class SequenceEngine:
         6.7). Said once each, in words.
 
         A CENTRING SET-ASIDE THAT MAY STILL EXPIRE STAYS (#534, H4
-        orchestrator ruling 2): its panel is tried once more tonight, 45
-        minutes after it was set aside or once it has climbed clear, and a
-        restart in between must neither retry it at once nor forget it for
-        the night. It stays in the rotation as a waiter
+        orchestrator ruling 2, amended by backlog WP-07 #564 2026-09-30):
+        its panel is tried once more tonight, 45 minutes after it was set
+        aside, time only, and a restart in between must neither retry it at
+        once nor forget it for the night. It stays in the rotation as a
+        waiter
         (`_expire_or_wait`), and the line says so instead of "a restart
         tonight does not retry it"."""
         for t in list(remaining):
@@ -5190,14 +5191,14 @@ class SequenceEngine:
         `GroupRun` decided it, and its ``set_aside_kind`` says the kind.
 
         Returns True when the set-aside MAY STILL EXPIRE (#534, H4
-        orchestrator ruling 2): a streak of centring failures, the panel's
-        first set-aside of that kind tonight. Such a panel is set aside FOR
-        NOW, not for the night: it stays in the rotation as a waiter, and is
-        tried once more after ``SET_ASIDE_EXPIRY_S`` or once it has climbed
-        ``SET_ASIDE_RISE_DEG`` (`_expire_or_wait`), so the caller keeps it in
-        ``remaining``. Its line says that, in words, and never "a restart
-        tonight does not retry it", which for it is not true. Every other
-        set-aside answers False and leaves as before."""
+        orchestrator ruling 2, amended by backlog WP-07 #564 2026-09-30): a
+        streak of centring failures, the panel's first set-aside of that
+        kind tonight. Such a panel is set aside FOR NOW, not for the night:
+        it stays in the rotation as a waiter, and is tried once more after
+        ``SET_ASIDE_EXPIRY_S``, time only (`_expire_or_wait`), so the caller
+        keeps it in ``remaining``. Its line says that, in words, and never
+        "a restart tonight does not retry it", which for it is not true.
+        Every other set-aside answers False and leaves as before."""
         run = self._group_runs.get(group.id)
         if decided and run is not None and run.is_live(target.id):
             run.set_aside_panel(target.id, reason, kind=kind)
@@ -5209,8 +5210,7 @@ class SequenceEngine:
             bus.log("warning", f"{group.name or group.id}: {reason}; set aside "
                                f"for now, not for the night: it is tried once "
                                f"more tonight after "
-                               f"{SET_ASIDE_EXPIRY_S / 60:.0f} minutes, or "
-                               f"sooner once it has climbed well clear",
+                               f"{SET_ASIDE_EXPIRY_S / 60:.0f} minutes",
                     "sequence")
         elif say:
             bus.log("warning", f"{group.name or group.id}: {reason}; set aside "
@@ -5273,30 +5273,32 @@ class SequenceEngine:
                         gs_now: dict[int, dict],
                         elig: dict[str, _Eligibility]) -> list[Target]:
         """Each of ``group``'s members set aside FOR NOW (#534, H4 orchestrator
-        ruling 2), at this selection: expired, and live again; or a waiter
-        that wakes when it expires; or, once its window has closed, set aside
-        for the rest of the night. Returns the last kind, for the caller to
-        take out of ``remaining``.
+        ruling 2, amended by backlog WP-07 #564 2026-09-30), at this
+        selection: expired, and live again; or a waiter that wakes when it
+        expires; or, once its window has closed, set aside for the rest of
+        the night. Returns the last kind, for the caller to take out of
+        ``remaining``.
 
         THE EXPIRY (`group_rules.set_aside_expiry`): ``SET_ASIDE_EXPIRY_S``
-        after it was set aside, or sooner once the panel centre has risen
-        ``SET_ASIDE_RISE_DEG`` since, which needs both altitudes: with no
-        site saved `_frame_altitude` has none, and only the time half
-        applies. Both altitudes are computed here from the set-aside's clock
-        time and the target's coordinates, never stored and never said
+        after it was set aside, TIME ONLY. The ruling as first built also
+        freed a panel early once the panel centre had risen a site-derived
+        altitude since, which even floored (#564) still told a viewer
+        whenever it fired that the site sat within about 28 degrees of the
+        equator; WP-07 dropped that branch outright (#564), so no altitude
+        is read or computed here any more, and this selection's line, like
+        the expiry's own, says nothing about the site at any latitude
         (6.9). The first night of the mosaic on the rig lost every panel of
         a 3x2 to one early hour behind an obstruction, although the target
         transited three hours later.
 
         A WAITER WITH AN ETA, NOT A SPIN (#534, the #374 class). The wake is
-        the soonest of the time half, the first instant of a
-        ``REACH_RECHECK_S`` scan at which the rise half holds, and the
-        panel's frozen stop, so a group whose only work is such a panel is
-        waited on the scheduler's own path: the long-wait park-hold and the
-        idle clock apply, the run does not end while the panel may still be
-        tried, and nothing re-asks it in between. A wake that is not ahead
-        can only mean no expiry is coming, and the panel is then set aside
-        for the rest of the night rather than asked again at once."""
+        the sooner of the time half and the panel's frozen stop, so a group
+        whose only work is such a panel is waited on the scheduler's own
+        path: the long-wait park-hold and the idle clock apply, the run does
+        not end while the panel may still be tried, and nothing re-asks it
+        in between. A wake that is not ahead can only mean no expiry is
+        coming, and the panel is then set aside for the rest of the night
+        rather than asked again at once."""
         gone: list[Target] = []
         mosaic = group.name or group.id
         for t in list(remaining):
@@ -5314,23 +5316,11 @@ class SequenceEngine:
                                 f"its set-aside expired", "sequence")
                 gone.append(t)
                 continue
-            alt_at = _frame_altitude(t, site, ts)
-            alt_now = (_frame_altitude(t, site, now) if alt_at is not None
-                       else None)
-            cause = set_aside_expiry(now=now, set_at=ts, alt_at_set=alt_at,
-                                     alt_now=alt_now)
+            cause = set_aside_expiry(now=now, set_at=ts)
             if cause is not None:
                 self._expire_set_aside(group, run, t, cause, remaining, now)
                 continue
             wake = ts + SET_ASIDE_EXPIRY_S
-            if alt_at is not None and wake > now:
-                risen = forward_clear_ts(
-                    lambda x: set_aside_expiry(
-                        now=x, set_at=ts, alt_at_set=alt_at,
-                        alt_now=_frame_altitude(t, site, x)) == "rise",
-                    now, wake - now)
-                if risen is not None:
-                    wake = min(wake, risen)
             stop = (frozen.get(id(t)) or (None, None))[1]
             if stop is not None:
                 wake = min(wake, float(stop))
@@ -5351,7 +5341,7 @@ class SequenceEngine:
         return gone
 
     def _expire_set_aside(self, group: TargetGroup, run: GroupRun,
-                          target: Target, cause: str,
+                          target: Target, cause: ExpiryCause,
                           remaining: list[Target], now: float) -> None:
         """``target``'s centring set-aside has expired (#534): it is live
         again, with a clean slate (`GroupRun.expire_set_aside`), counted as
@@ -5359,13 +5349,13 @@ class SequenceEngine:
         session and saved at once, so a restart tonight takes it up and
         never expires it again, and said once, in words.
 
-        AN EXPIRY BY THE RISE IS TIMED BY THE SITE (6.9): the moment the
-        panel has climbed ``SET_ASIDE_RISE_DEG`` is a computed altitude
-        crossing, and a line said at it timestamps it, as a meridian wait's
-        end timestamps a transit. So that line carries ``site_derived``, and
-        a principal without the site-derived view is not served it. The time
-        half's moment is the set-aside's clock time plus a constant, which
-        the site does not decide.
+        ``cause`` is always ``"time"`` (amended by backlog WP-07, #564,
+        2026-09-30): the ruling as first built could also expire a set-aside
+        by a site-derived altitude crossing, which needed the line
+        ``site_derived`` (as a meridian wait's end timestamps a transit); WP-
+        07 dropped that branch outright, so this line never carries it, and
+        `ExpiryCause` names no other value. The moment is the set-aside's
+        clock time plus a constant, which the site does not decide.
 
         It goes to the front of the group's unvisited members, so the pass
         in progress takes it up rather than closing on a visited panel
@@ -5383,14 +5373,11 @@ class SequenceEngine:
             except Exception as e:  # noqa: BLE001 - bookkeeping never ends a run
                 bus.log("warning", f"session save failed: {e}", "sequence")
         label = run.members.get(target.id, target.name)
-        why = (f"{SET_ASIDE_EXPIRY_S / 60:.0f} minutes have passed"
-               if cause == "time"
-               else "it has climbed well clear of where it failed")
+        why = f"{SET_ASIDE_EXPIRY_S / 60:.0f} minutes have passed"
         bus.log("info", f"{group.name or group.id}: {label}'s set-aside has "
                         f"expired ({why}); it is tried once more tonight, and "
                         f"set aside for the rest of the night if it fails as "
-                        f"often again", "sequence",
-                site_derived=cause != "time")
+                        f"often again", "sequence")
         at = next((k for k, t in enumerate(remaining) if t is target), None)
         first_visited = next(
             (k for k, t in enumerate(remaining)

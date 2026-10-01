@@ -267,6 +267,20 @@ PASS_TYPES: frozenset[str] = frozenset(
     t for t, d in NODE_DEFS.items() if d.port(PASS_PORT, "out") is not None)
 
 
+#: The Sun altitude each sun-based Start choice means, degrees below the
+#: horizon (backlog WP-09, #191): the standard astronomical/nautical/civil
+#: twilight figures, matching ``catalog.visibility.ASTRO_DARK_DEG`` /
+#: ``NAUTICAL_DARK_DEG`` and ``dawn_park.CIVIL_TWILIGHT_DEG``. Not imported
+#: from those modules: this compile owns no dependency on the catalog or on
+#: dawn_park, and the three figures are fixed astronomical constants, not a
+#: number this compile invents.
+_DUSK_START_TWILIGHT_DEG = {
+    "Astro dusk": -18.0,
+    "Nautical dusk": -12.0,
+    "Civil dusk": -6.0,
+}
+
+
 def _dusk_schedule(dusk: FlowNode, notes: list[dict]) -> dict:
     """The ``schedule`` dict one DUSK WINDOW block compiles to (#191).
 
@@ -277,14 +291,18 @@ def _dusk_schedule(dusk: FlowNode, notes: list[dict]) -> dict:
     as a hand-edited file - reads as ``"dusk"``, the one this compile has
     always emitted.
 
-    A RESIDUAL, NOT CLOSED HERE: the three sun-based choices still all
-    compile to that one rig-wide ``start_mode: "dusk"``. ``Schedule``
-    (sequence/models.py) carries no PER-TARGET twilight angle to tell civil
-    (-6 deg), nautical (-12) and astronomical (-18) apart, only the rig's
-    single ``safety.twilight_deg``, so on a rig left at its default every
-    choice here still arms at the same instant. Giving each its own angle
-    needs a field on ``Schedule``, a file this compile has no ownership to
-    add in this pass. What IS fixed: "Clock time" used to compile to that
+    THE THREE SUN-BASED CHOICES NOW DIFFER (backlog WP-09, #191, closing the
+    residual S7 left open). Each compiles its own ``twilight_deg``
+    (``_DUSK_START_TWILIGHT_DEG``: astro -18, nautical -12, civil -6) onto
+    ``Schedule`` (sequence/models.py, which now carries this PER-TARGET
+    field), so ``schedule.resolve_window`` resolves this target's dusk AND
+    dawn boundaries at its own Sun altitude instead of the rig's single
+    ``safety.twilight_deg`` - three actually different arming instants
+    instead of three cards that all silently meant "the rig's one setting".
+    "Clock time", and anything this build does not recognise (a hand-edited
+    file), write no ``twilight_deg`` at all: ``Schedule``'s ``None`` default
+    keeps reading as the rig's angle, unchanged, for a Start this table does
+    not name. What IS ALSO fixed here: "Clock time" used to compile to that
     same "dusk" mode too, with no field to even hold a time, so picking it
     silently kept the sun-based arming; it now reads as its own mode below.
 
@@ -295,22 +313,27 @@ def _dusk_schedule(dusk: FlowNode, notes: list[dict]) -> dict:
     literal string "Dawn" was ever matched - so a flow the operator gave a
     real stop time ran with none at all, the same silent drop as the Start
     side, and a Stop of "None" gave no warning that the run would not park
-    itself.
+    itself. A Stop of "Dawn" shares the SAME ``twilight_deg`` this Start
+    wrote, if any: one target's night has one twilight definition, not a
+    different angle at each end of it.
 
     ``notes`` is the compile's own list (mutated, not returned): the same
     one ``_target_entry``'s skip warning and ``_scope_note`` write into, so
     every compile warning reaches the caller through one list regardless of
     which block raised it.
 
-    KEY ORDER IS PINNED (test_flows_compile.py's byte-identical guard on
-    every Example): the four keys a DUSK WINDOW has always emitted keep
-    their original order and are never conditional, so a flow that picks
-    neither Clock time choice - every Example, and every flow saved before
-    it existed - compiles to the exact dict it always did. ``start_time``
-    and ``stop_time`` are appended after them, only for the choice that
-    needs one, so they are simply ABSENT rather than empty for every other
-    flow - the same "not there at all" reading ``mosaic`` gives a 1x1
-    TARGET (S3's own precedent)."""
+    KEY ORDER IS PINNED for the four keys this DUSK WINDOW has always
+    emitted (test_flows_compile.py's byte-identical guard on every Example
+    predating this field): they keep their original order and are never
+    conditional. ``twilight_deg``, ``start_time`` and ``stop_time`` are
+    appended after them, each only for the choice that needs it, so they
+    are simply ABSENT rather than null for every flow that does not - the
+    same "not there at all" reading ``mosaic`` gives a 1x1 TARGET (S3's own
+    precedent). A flow whose Start is a sun-based choice - which by now
+    includes every Example and every flow saved before "Clock time" existed,
+    since ``with_defaults()`` fills an unset Start with "Astro dusk" - gains
+    ``twilight_deg`` and so no longer compiles the bare four keys; that
+    shift is this fix, not a regression of it."""
     start = str(dusk.params.get("start") or "")
     stop = str(dusk.params.get("stop") or "")
     start_mode = "time" if start == "Clock time" else "dusk"
@@ -334,6 +357,9 @@ def _dusk_schedule(dusk: FlowNode, notes: list[dict]) -> dict:
         "stop_mode": stop_mode,
         "min_altitude_deg": _finite(dusk.params.get("minAlt")),
     }
+    twilight_deg = _DUSK_START_TWILIGHT_DEG.get(start)
+    if twilight_deg is not None:
+        schedule["twilight_deg"] = twilight_deg
     if start_mode == "time":
         schedule["start_time"] = _text(dusk.params.get("startClock"))
     if stop_mode == "time":

@@ -166,8 +166,18 @@ GOLDEN = Path(__file__).parent / "fixtures" / "flow_plan_golden" / \
 #: sha256 of ``json.dumps(plan, sort_keys=True)`` for the golden as S1 left
 #: it, before this slice re-pinned it (``GOLDEN_SHA256`` in the golden's own
 #: test, which moves with this re-pin).
+#:
+#: RE-PINNED IN BACKLOG WP-09 (#191, 2026-09-30): the golden's one target's
+#: ``schedule.twilight_deg`` is -18 (its DUSK WINDOW's "Astro dusk", its own
+#: Sun altitude, ``flows.compile._dusk_schedule``), a field that did not
+#: exist at S1 but that neither this test nor
+#: ``test_a_clean_flow_is_not_ten_warnings.py`` reverts for any of S1's,
+#: S2's or S3's own moved fields (it rides along unchanged, the way a field
+#: no stage names always does), so it is part of this hash exactly as it is
+#: part of ``GOLDEN_SHA256`` and every other hash in that file - the two
+#: files' same-named constants still agree.
 GOLDEN_SHA256_BEFORE_S2 = \
-    "d9ce9109734a3ec4b8340e3cdd255b9325fee6d2209208b029bc1bb76100b0c3"
+    "f000dc81be0067a3a8c9d31b652d4ca6a4595b3220078c6111387017064a6734"
 
 #: The keys S2 adds to the dump, and the defaults the golden carries them at.
 S2_PLAN_KEYS = {"groups": []}
@@ -188,6 +198,15 @@ def test_the_golden_moved_by_the_s2_keys_and_nothing_else():
     hash), and the S1-shaped plan, read by this code, dumps as the re-pinned
     golden exactly. So the new keys are the only change to the dump, and a
     re-pin that waved through any other moved field is red here.
+
+    RE-PINNED AGAIN IN BACKLOG WP-09 (#191, 2026-09-30): the golden's DUSK
+    WINDOW now compiles its own ``schedule.twilight_deg`` (-18). The model
+    just stores and dumps it verbatim (never recomputes it), so the
+    S1-shaped validation below reproduces it unchanged with no special
+    handling, and it rides unreverted into the final hash too, exactly as
+    ``test_a_clean_flow_is_not_ten_warnings.py`` leaves it for its own
+    ``GOLDEN_SHA256_BEFORE_S2`` - the two files' same-named constants still
+    agree.
 
     RED against the golden as S1 left it, before the re-pin (with the fields
     already in the code):

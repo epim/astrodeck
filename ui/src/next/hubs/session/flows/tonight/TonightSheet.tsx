@@ -50,7 +50,7 @@ import "./tonight.css";
 export const TONIGHT_NO_FLOW =
   "No flow is open, so there is no graph to resolve a night for. Open a flow from MY FLOWS first.";
 
-/** Shown while the open this sheet asked for (`?id=`) is still out, in place
+/** Shown while the open this sheet asked for (`?open=`) is still out, in place
  *  of the four tabs (#553). Read-only, so a wrong flow drawn here cannot
  *  START anything the way a stray RUN could - but it can still MISLEAD: this
  *  sheet used to resolve and draw whatever flow was already open under a
@@ -73,10 +73,15 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
   const principal = usePrincipal();
   const locked = capAllowed(principal, "view.site_derived") ? null : TONIGHT_LOCK_REASON;
 
-  // A deep link carries the flow it was opened for. Idempotent: re-opening the
-  // flow already on the canvas would discard an unsaved edit and re-run the
-  // compile for nothing, so this fires only when they differ.
-  const wantId = params.id ?? "";
+  // A deep link carries the flow it was opened for, in `?open=` - the same
+  // param name every other sheet this canvas opens reads (FlowStagesPhoneSheet
+  // itself, FlowsCanvasHost, FlowsScreen, FlowFrameSheet); this sheet used to
+  // read `?id=` instead, so FlowStagesPhoneSheet's TONIGHT row (which, like
+  // every row out of it, carries `?open=`) never actually named a flow here
+  // (backlog WP-08, #553). Idempotent: re-opening the flow already on the
+  // canvas would discard an unsaved edit and re-run the compile for nothing,
+  // so this fires only when they differ.
+  const wantId = params.open ?? "";
 
   /** The last open this sheet asked for that did not land: which flow, the
    *  record that was open when it was asked, and the reason. A new attempt
@@ -104,7 +109,7 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
     return () => { current = false; };
   }, [locked, wantId, flowId]);
 
-  // A route with no `?id=` draws whatever is open (the canvas's own TONIGHT
+  // A route with no `?open=` draws whatever is open (the canvas's own TONIGHT
   // row, which never names a flow the store does not already hold); one that
   // does is "mine" only once its own open has landed.
   const mine = wantId === "" || wantId === flowId;

@@ -72,36 +72,22 @@ SOLAR_PER_SIDEREAL = 0.9972696
 #: panel that fails again after it is set aside for the rest of the night.
 SET_ASIDE_EXPIRY_S = 2700.0
 
-#: Degrees a centring set-aside's panel must have RISEN since it was set
-#: aside for the set-aside to expire before ``SET_ASIDE_EXPIRY_S`` (#534).
-#: A panel that has climbed this far has left the obstruction or the thick
-#: air it failed in, whatever the clock says. The altitudes it compares are
-#: SITE-DERIVED: the engine computes both when it asks, from the time the
-#: panel was set aside and its coordinates, stores neither, and never says
-#: either (6.9). At 40 degrees of latitude nothing rises faster than about
-#: 11.5 degrees an hour, so there this half can never beat the 45 minutes;
-#: nearer the equator a panel rising in the east can.
+#: H4 orchestrator ruling 2's OTHER number for a centring set-aside's expiry,
+#: historical only since backlog WP-07 (#564, 2026-09-30): the ruling as
+#: first built also freed a panel once its centre had RISEN this many
+#: degrees, before ``SET_ASIDE_EXPIRY_S`` was up. That half read two
+#: SITE-DERIVED altitudes (the engine computed both when it asked, from the
+#: time the panel was set aside and its coordinates, stored neither and
+#: never said either, 6.9), and even with a floor under it (a prior fix,
+#: also #564) an early "rise" answer still told a viewer the site sat within
+#: about 28 degrees of the equator, the one fixed latitude band nothing
+#: else in this rule ever named. WP-07 closed that leak the only way that
+#: leaves nothing to narrow: the rise half is gone from
+#: :func:`set_aside_expiry`, which now reads no altitude and takes no
+#: latitude in evidence at any degree. This constant stays, unused by
+#: behaviour, only because the spec's Revision 11 and owner list record the
+#: ruling as it was first built, number included; nothing here reads it.
 SET_ASIDE_RISE_DEG = 10.0
-
-#: Seconds after a set-aside before the rise half of :func:`set_aside_expiry`
-#: may answer at all (#564). No latitude rises faster than 15 degrees a
-#: clock hour (the line above: a body on the celestial equator, right at the
-#: horizon; every other latitude and declination is slower), so
-#: ``SET_ASIDE_RISE_DEG`` of climb needs at least this long ANYWHERE.
-#: Answering "rise" before it would not be a real sky: it would be a caller
-#: handing in two altitudes physics cannot connect that fast, and the rule
-#: refuses to trust that instead of reading it as an equatorial site. This
-#: also holds the earliest a "rise" answer can ever come to one fixed
-#: instant, the same whatever the site, so that instant alone says nothing
-#: about it (6.9); an H4-DOC finding the ticket that opened this left open
-#: (docs/superpowers/specs/2026-09-23-flows-mosaic-target-block-design.md,
-#: 5.1) is that "rise" answering AT ALL, ahead of ``SET_ASIDE_EXPIRY_S``,
-#: still means the site is within about 28 degrees of the equator; closing
-#: that needs the branch gone outright, which a sibling ticket (#564) leaves
-#: to a later call because two tests outside this file (H4's rise case at
-#: 5 N, and the spec-claims read of that same 28 degree number) are built on
-#: the branch answering early there.
-SET_ASIDE_RISE_FLOOR_S = SET_ASIDE_RISE_DEG / 15.0 * 3600.0
 
 #: Seconds a group waits after a pass in which EVERY panel attempted (at
 #: least two) failed centring, before it starts the next pass (#534, H4
@@ -487,34 +473,30 @@ def centring_pass_verdict(attempted: int,
     return "panel"
 
 
-ExpiryCause = Literal["time", "rise"]
+ExpiryCause = Literal["time"]
 
 
 def set_aside_expiry(*, now: float, set_at: float,
-                     alt_at_set: float | None = None,
-                     alt_now: float | None = None,
                      expiries: int = 0) -> ExpiryCause | None:
     """Has a CENTRING set-aside expired, and why (#534, H4 orchestrator
-    ruling 2)? ``None`` while it holds.
+    ruling 2, amended by backlog WP-07 #564 2026-09-30)? ``None`` while it
+    holds.
 
-    - ``"time"``: ``SET_ASIDE_EXPIRY_S`` have passed since ``set_at``.
-    - ``"rise"``: the panel centre has risen at least ``SET_ASIDE_RISE_DEG``
-      since ``set_at`` (``alt_now - alt_at_set``), before the time is up, and
-      not before ``SET_ASIDE_RISE_FLOOR_S`` have passed (#564): no latitude
-      rises that far that fast, so an earlier answer would be a bad altitude
-      pair, not a real sky. Asked only when both altitudes are given: with no
-      site saved there is no altitude, and the time half alone applies. A
-      panel that is setting never expires this way.
+    - ``"time"``: ``SET_ASIDE_EXPIRY_S`` have passed since ``set_at``. TIME
+      ONLY: the ruling as first built also freed a panel early once its
+      centre had risen ``SET_ASIDE_RISE_DEG`` (a SITE-DERIVED altitude
+      comparison), which even floored (a prior fix, also #564) still told a
+      viewer whenever it fired that the site sat within about 28 degrees of
+      the equator. WP-07 dropped that branch outright rather than narrow the
+      leak further: this function now takes no altitude and computes none,
+      so its answer, and its timing, say nothing about the site at any
+      latitude (6.9).
     - never, when ``expiries`` is at least 1: AT MOST ONE EXPIRY PER PANEL
       PER NIGHT. A panel that is tried again after its expiry and struck out
       again failed after the sky had its chance to change, so the second
       set-aside is for the rest of the night; expired again it would be
       retried every 45 minutes all night, three hops each time, which is the
       starving panel S2's rule exists to stop (#180).
-
-    The time half wins when both hold, because it is the one that is not
-    site-derived: a line saying why the set-aside expired then says nothing
-    about the site (6.9).
 
     Only a centring set-aside asks this. The engine decides that (a streak
     of centring failures and nothing else, :meth:`GroupRun.set_aside_kind`);
@@ -532,13 +514,6 @@ def set_aside_expiry(*, now: float, set_at: float,
     # an ulp short of the constant and the wake would find nothing to do.
     if t >= t0 + SET_ASIDE_EXPIRY_S:
         return "time"
-    if alt_at_set is not None and alt_now is not None:
-        # Both altitudes are checked for finite-ness whether or not the
-        # floor has passed: a NaN is a caller bug the moment it arrives, not
-        # only once the clock would otherwise let the rise half answer.
-        rise = _finite("alt_now", alt_now) - _finite("alt_at_set", alt_at_set)
-        if t >= t0 + SET_ASIDE_RISE_FLOOR_S and rise >= SET_ASIDE_RISE_DEG:
-            return "rise"
     return None
 
 

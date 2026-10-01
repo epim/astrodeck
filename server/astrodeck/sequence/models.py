@@ -82,6 +82,19 @@ class Schedule(BaseModel):
     start_mode: str = "now"            # now | dusk | dawn | time
     start_offset_min: int = 0          # ± minutes relative to dusk/dawn
     start_time: str | None = None      # "HH:MM" when start_mode == "time"
+    # The Sun altitude, in degrees, a "dusk"/"dawn" boundary crosses (backlog
+    # WP-09, #191). None (the default) means the rig's OWN
+    # ``SafetyConfig.twilight_deg`` — so a plan or a saved flow from before
+    # this field existed resolves exactly as it always did. Set, it is THIS
+    # TARGET's own choice, and no other target's or the rig's: a DUSK WINDOW
+    # card's Astro/Nautical/Civil dusk Start compiles to -18/-12/-6 here
+    # (``flows.compile._dusk_schedule``), so the three choices finally
+    # resolve to different instants instead of all collapsing onto the rig's
+    # one setting. ``schedule.resolve_window`` reads this in place of the
+    # rig's angle whenever it is not None, for both the dusk and the dawn
+    # boundary of the SAME target, since a target's own definition of night
+    # does not flip angle between the two ends of it.
+    twilight_deg: float | None = None
     min_altitude_deg: float = 0.0      # per-target START gate (target-alt). 0 = none
     # What to do when a RUNNING target sinks back below `min_altitude_deg`.
     #
@@ -600,13 +613,23 @@ def quota_unbounded(plan: SequencePlan, policy: "RunPolicy") -> bool:
     Calibration targets never enter the quota loop (``quota = count_mode ==
     "accepted" and not target.calibration`` in ``_run_step``), so they're
     excluded here; a plan with no non-calibration targets is never unbounded
-    by this rule."""
+    by this rule.
+
+    A "time" stop with a BLANK ``stop_time`` is unbounded too (backlog
+    WP-09, #191: a Clock-time stop left empty on the card never arrives,
+    the same as no stop at all), matching ``flows.doctor``'s M9, which
+    this plan's compile route runs beside this check (#328); the two must
+    agree, or a doctor warning that promises "Run will refuse it" would be
+    a plan Run actually accepts, or the reverse."""
     if plan.count_mode != "accepted":
         return False
     if policy.max_consecutive_rejects or policy.max_consecutive_rejects_night:
         return False
-    return any(t.schedule.stop_mode == "none" and not t.schedule.max_run_min
-               for t in plan.targets if not t.calibration)
+    def unbounded(sched) -> bool:
+        return ((sched.stop_mode == "none"
+                or (sched.stop_mode == "time" and not sched.stop_time))
+                and not sched.max_run_min)
+    return any(unbounded(t.schedule) for t in plan.targets if not t.calibration)
 
 
 def _names_rules_resolve(plan: SequencePlan) -> set[str]:
