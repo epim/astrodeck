@@ -32,6 +32,13 @@ import sys
 ALLOW_INSECURE_OPEN_ENV = "ASTRODECK_ALLOW_INSECURE_OPEN"
 REQUIRE_AUTH_ENV = "ASTRODECK_REQUIRE_AUTH"
 
+# #496 / backlog ruling D-12: the Windows proactor's overlapped-cache fault
+# (OSError [WinError 6] chained onto a KeyError out of run_forever) exits
+# with this code instead of tearing the process down as an unhandled
+# exception, so the rig's supervisor restarts the server and the durable log
+# says why it died.
+EXIT_EVENT_LOOP_FAULT = 1
+
 
 def _strict_env_bool(name: str, *, default: bool = False) -> bool:
     """Read a deployment security toggle without permissive fallbacks."""
@@ -218,12 +225,71 @@ def uvicorn_config_kwargs(*, host: str, port: int, access_log_enabled: bool,
     )
 
 
+def _is_windows_proactor_overlapped_fault(exc: BaseException) -> bool:
+    """True only for the EXACT Windows proactor fault #496 recorded: an
+    ``OSError`` ``[WinError 6]`` ("the handle is invalid") raised out of
+    CPython's ``IocpProactor._poll`` while it is unwinding a ``KeyError`` from
+    its overlapped cache (a stale completion-port address popped a miss, and
+    the handler's own ``_winapi.CloseHandle(key)`` then found the handle
+    already gone). That ``OSError`` is never routed through the loop's
+    ``call_exception_handler`` -- it is a bare exception escaping
+    ``run_forever()`` -- so this is a plain predicate on the exception object,
+    not an installed asyncio handler. Anything else (a different winerror, no
+    ``KeyError`` behind it, or not an ``OSError`` at all) returns False and
+    must propagate unchanged per D-12's adjudication: a key-name match alone
+    (just ``winerror == 6``) would also swallow a genuine, unrelated I/O
+    failure that happens to share the same Windows error code."""
+    if not isinstance(exc, OSError):
+        return False
+    if getattr(exc, "winerror", None) != 6:
+        return False
+    return isinstance(exc.__context__, KeyError)
+
+
+def _run_server_with_fault_handling(server: "uvicorn.Server") -> int:
+    """Run ``server`` to completion, turning the narrow Windows proactor
+    fault (#496, backlog ruling D-12) into a LOGGED, deliberate non-zero exit
+    instead of an unhandled traceback silently tearing the process down. D-12
+    keeps the proactor loop (the server runs ``asyncio.create_subprocess_exec``
+    in ``solve/astap.py``, which the selector loop cannot do on Windows), so
+    the fix is this narrow catch-log-exit, not a different event loop.
+
+    The rig's supervisor only restarts a process that has actually exited, so
+    this still lets the process die -- it just makes sure the durable log
+    says why before it does, instead of whatever ad hoc traceback uvicorn's
+    own shutdown path would otherwise produce.
+
+    Any OTHER exception out of ``server.run()`` -- including an OSError that
+    only superficially resembles #496 -- is reraised unchanged. That keeps
+    today's behaviour: an unhandled exception already prints a traceback to
+    stderr and the interpreter exits non-zero on its own, and this function
+    must not mask a different bug as the Windows proactor fault."""
+    try:
+        server.run()
+    except OSError as exc:
+        if not _is_windows_proactor_overlapped_fault(exc):
+            raise
+        logging.getLogger("astrodeck").error(
+            "Windows event-loop fault: the proactor's overlapped cache lost "
+            "a completion-port entry (KeyError in _poll) while closing a "
+            "stale handle, raising OSError [WinError 6] out of run_forever "
+            "(see #496). Exiting non-zero so the supervisor restarts the "
+            "server.",
+            exc_info=exc,
+        )
+        return EXIT_EVENT_LOOP_FAULT
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """``run`` front-end (and the bare-invocation default): start uvicorn.
 
-    Returns the process exit code: ``0`` on a normal shutdown, or
+    Returns the process exit code: ``0`` on a normal shutdown,
     ``EXIT_APPLY_UPDATE`` (92) when a self-update was applied -- the supervisor
-    reads that code to swap ``current`` and relaunch the new version. We build the
+    reads that code to swap ``current`` and relaunch the new version -- or
+    ``EXIT_EVENT_LOOP_FAULT`` (1) when the Windows proactor fault (#496, D-12)
+    was caught and logged; either way the supervisor sees a dead process and
+    restarts it. We build the
     ``uvicorn.Server`` explicitly (instead of ``uvicorn.run``) so the update
     service can request a graceful shutdown and arm the exit code."""
     from .runtime_security import (
@@ -304,7 +370,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     )
     server = uvicorn.Server(config)
     update_service.bind_server(server)  # enables graceful exit-92 on self-update
-    server.run()
+    fault_exit = _run_server_with_fault_handling(server)
+    if fault_exit != 0:
+        return fault_exit
     return update_service.consume_exit_code()
 
 
