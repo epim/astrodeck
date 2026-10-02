@@ -79,10 +79,27 @@ export function Dial<T>({ label, hint, options, value, onChange, stopPx = 64, lo
   };
 
   const endDrag = (e: RPointerEvent<HTMLDivElement>) => {
-    if (!drag.current) return;
+    const d = drag.current;
+    if (!d) return;
     drag.current = null;
     const el = e.currentTarget as unknown as { releasePointerCapture?: (id: number) => void };
     try { el.releasePointerCapture?.(e.pointerId); } catch { /* not supported here */ }
+    // A TAP: pointerdown and pointerup with no drag between them. This cannot
+    // be left to the browser's own "click" - `setPointerCapture` above
+    // redirects pointer EVENTS to this track for the whole gesture, and in
+    // some browsers that also redirects the click's hit-test here, so a
+    // stop's own onClick never fires (#656). Resolve it the same way
+    // FlowCanvasSurface resolves a wire drop: against the real element under
+    // the RELEASE coordinates, not wherever the click lands afterward.
+    //
+    // pointercancel shares this handler only to clear `drag.current` and
+    // release capture above - it is the gesture being taken away (a scroll
+    // won, the system intervened), never a release, so it must not commit.
+    if (e.type !== "pointerup" || d.moved || blocked()) return;
+    const stop = document.elementFromPoint?.(e.clientX, e.clientY)
+      ?.closest?.(".nx-dial-stop") as HTMLElement | null | undefined;
+    const idx = stop ? Number(stop.dataset.index) : NaN;
+    if (!Number.isNaN(idx)) commit(idx);
   };
 
   const onKeyDown = (e: RKeyboardEvent<HTMLDivElement>) => {
@@ -135,6 +152,7 @@ export function Dial<T>({ label, hint, options, value, onChange, stopPx = 64, lo
               className="nx-dial-stop"
               data-selected={i === at ? "true" : "false"}
               data-value={String(o.value)}
+              data-index={i}
               style={{ width: `${stopPx}px` }}
               onClick={() => { if (!blocked()) commit(i); }}
             >
